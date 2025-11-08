@@ -19,6 +19,72 @@ struct RustdocPathSummary: Decodable {
   let path: [String]
 }
 
+extension RustdocPathSummary {
+  /// Converts the Rustdoc path summary kind string into a `Kind` enum.
+  /// Returns `.info` for unknown or unmapped kinds.
+  func into_kind() -> Kind {
+    switch kind.lowercased() {
+    case "function":
+      return .function(
+        DocsFunction(
+          inputParameters: nil,
+          outputParameters: nil,
+          attributes: nil,
+          generics: nil,
+          name: path.last ?? "",
+          implemented: true,
+          visibility: nil
+        ))
+
+    case "module":
+      return .module
+
+    case "struct":
+      return .recordType(
+        DocsRecord(
+          name: path.last,
+          generics: nil,
+          kind: .named,
+          fields: nil,
+          visibility: nil
+        ))
+
+    case "enum":
+      return .sumType
+
+    case "constant":
+      return .constant
+
+    case "type_alias", "typealias":
+      return .typeAlias
+
+    case "trait":
+      return .interfaceType
+
+    case "impl":
+      return .info
+
+    case "macro":
+      return .macro
+
+    case "primitive":
+      return .primitiveType
+
+    case "union":
+      return .unionType
+
+    case "field":
+      return .field
+
+    case "static":
+      return .variable
+
+    default:
+      return .info
+    }
+  }
+}
+
 struct ExternalCrate: Decodable {
   let name: String
   let html_root_url: String?
@@ -424,6 +490,19 @@ enum rustStructKind: Decodable {
         in: container,
         debugDescription: "Unknown StructKind case: \(container.allKeys)"
       )
+    }
+  }
+}
+
+extension rustStructKind {
+  func fieldIDs() -> [Int] {
+    switch self {
+    case .unit:
+      return []
+    case .tuple(let ids):
+      return ids.compactMap { $0 }
+    case .plain(let fields, _):
+      return fields
     }
   }
 }
