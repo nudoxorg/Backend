@@ -6,7 +6,7 @@ public protocol HTTPRequesting {
   func request(
     _ url: String,
     method: HTTPMethod,
-    parameters: [String: Any]?,
+    parameters: [String: Sendable]?,
     headers: HTTPHeaders?
   ) async throws -> HTTPResponse
 }
@@ -29,30 +29,29 @@ public struct HTTPRequest: HTTPRequesting, Instrumentable {
   public func request(
     _ url: String,
     method: HTTPMethod = .get,
-    parameters: [String: Any]? = nil,
+    parameters: [String: Sendable]? = nil,
     headers: HTTPHeaders? = nil
   ) async throws -> HTTPResponse {
-    return try await instrument("http_request", metadata: ["url": url]) {
+    try await instrument("http_request", metadata: ["url": url]) {
+      // Capture parameters in a synchronous context
+      let capturedParams = parameters
+
       return try await withCheckedThrowingContinuation { continuation in
-        session.request(
-          url,
-          method: method,
-          parameters: parameters,
-          headers: headers
-        ).responseData { response in
-          switch response.result {
-          case .success(let data):
-            let httpResponse = HTTPResponse(
-              url: response.request?.url?.absoluteString ?? url,
-              statusCode: response.response?.statusCode ?? 0,
-              headers: response.response?.allHeaderFields as? [String: String] ?? [:],
-              data: data
-            )
-            continuation.resume(returning: httpResponse)
-          case .failure(let error):
-            continuation.resume(throwing: NewDocsError.networkError(error.localizedDescription))
+        session.request(url, method: method, parameters: capturedParams, headers: headers)
+          .responseData { response in
+            switch response.result {
+            case .success(let data):
+              continuation.resume(
+                returning: HTTPResponse(
+                  url: response.request?.url?.absoluteString ?? url,
+                  statusCode: response.response?.statusCode ?? 0,
+                  headers: response.response?.allHeaderFields as? [String: String] ?? [:],
+                  data: data
+                ))
+            case .failure(let error):
+              continuation.resume(throwing: NewDocsError.networkError(error.localizedDescription))
+            }
           }
-        }
       }
     }
   }

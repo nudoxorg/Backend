@@ -14,7 +14,7 @@ public protocol Documentation: Instrumentable, Encodable {
   var version: Version { get }  // The precise version of the doc
   var links: [String: URL] { get }  // Any extraneous links like the source page, or the projects home
 
-  func buildPages() -> AsyncThrowingStream<DocumentationPage, Error>
+  func buildPages() async throws -> [DocumentationPage]
 }
 
 private enum CodingKeys: String, CodingKey {

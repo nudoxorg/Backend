@@ -1,6 +1,6 @@
 import Foundation
 
-public struct DocumentationPage {
+public struct DocumentationPage: Sendable {
   public let path: [String]  // Array of components
   public let internalURLs: [URL]
   public let entries: [Entry]
