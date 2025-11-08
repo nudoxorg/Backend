@@ -267,10 +267,32 @@ public struct DocsRecord: Codable, Sendable {
 }
 
 public enum Visibility: String, Codable, Sendable {
+  /// Public symbols are accessible from any module or translation unit.
+  /// This level of visibility indicates that the function signature is part
+  /// of the module’s or library’s external interface and can be linked or
+  /// invoked by external code.
   case `public`
+
+  /// Private symbols are scoped only to the defining context (e.g., a class
+  /// or compilation unit). These are used for implementation details that
+  /// should not be accessible outside their immediate scope.
   case `private`
+
+  /// Protected symbols are visible to the defining entity and any of its
+  /// subclasses. This level is often used in object-oriented hierarchies
+  /// where inherited customization is allowed but external access is not.
   case `protected`
+
+  /// Internal symbols are visible within the same module but not exported
+  /// outside it. This level supports encapsulation at the module level, such
+  /// that functions can be shared internally without becoming part of the
+  /// module’s public API.
   case `internal`
+
+  /// Package-level visibility is used for symbols that should be accessible
+  /// to other code in the same package or namespace, but not externally.
+  /// This level is commonly seen in languages like Java and Kotlin and is
+  /// useful when modeling multi-module projects within a single codebase.
   case package
 }
 
@@ -325,7 +347,7 @@ public enum FunctionAttributes: Codable, Sendable {
 }
 
 /// Represents different kinds of code elements in a programming language or API.
-public enum Kind: Codable {
+public enum Kind: Sendable, Codable {
   /// A namespace, package, or module.
   case module
 
