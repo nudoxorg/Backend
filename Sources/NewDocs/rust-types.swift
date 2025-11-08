@@ -630,28 +630,44 @@ enum rustStructKind: Decodable {
   case plain(fields: [Int], has_stripped_fields: Bool)
 
   private enum CodingKeys: String, CodingKey {
-    case unit
     case tuple
     case plain
   }
 
   init(from decoder: Decoder) throws {
+    // First, try to decode as a simple string, which is how "unit" is represented.
+    if let stringValue = try? decoder.singleValueContainer().decode(String.self) {
+      if stringValue == "unit" {
+        self = .unit
+        return
+      } else {
+        throw DecodingError.dataCorruptedError(
+          in: try decoder.singleValueContainer(),
+          debugDescription: "Unknown rustStructKind string value: \(stringValue)"
+        )
+      }
+    }
+
+    // If it's not a string, it must be a keyed object for "tuple" or "plain".
     let container = try decoder.container(keyedBy: CodingKeys.self)
 
-    if container.contains(.unit) {
-      self = .unit
-    } else if let tupleVals = try? container.decode([Int?].self, forKey: .tuple) {
+    if let tupleVals = try? container.decode([Int?].self, forKey: .tuple) {
       self = .tuple(tupleVals)
-    } else if let plainPayload = try? container.decode(PlainStructPayload.self, forKey: .plain) {
+      return
+    }
+
+    if let plainPayload = try? container.decode(PlainStructPayload.self, forKey: .plain) {
       self = .plain(
         fields: plainPayload.fields, has_stripped_fields: plainPayload.has_stripped_fields)
-    } else {
-      throw DecodingError.dataCorruptedError(
-        forKey: .plain,
-        in: container,
-        debugDescription: "Unknown StructKind case: \(container.allKeys)"
-      )
+      return
     }
+
+    throw DecodingError.dataCorruptedError(
+      forKey: .plain,  // Fallback key
+      in: container,
+      debugDescription:
+        "Unknown rustStructKind case. Not a recognized string or object. Keys: \(container.allKeys)"
+    )
   }
 }
 
@@ -947,30 +963,39 @@ enum rustGenericArgs: Decodable {
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
 
-    if let payload = try? container.decode(AngleBracketedArgs.self, forKey: .angle_bracketed) {
-      self = .angle_bracketed(args: payload.args ?? [], constraints: payload.constraints)
+    if container.contains(.angle_bracketed) {
+      let payload = try container.decode(AngleBracketedArgs.self, forKey: .angle_bracketed)
+      self = .angle_bracketed(
+        args: payload.args ?? [], constraints: payload.constraints ?? []
+      )
       return
     }
-    if let payload = try? container.decode(ParenthesizedArgs.self, forKey: .parenthesized) {
+
+    if container.contains(.parenthesized) {
+      let payload = try container.decode(ParenthesizedArgs.self, forKey: .parenthesized)
       self = .parenthesized(inputs: payload.inputs, output: payload.output)
       return
     }
+
     if container.contains(.return_type_notation) {
       self = .return_type_notation
       return
     }
 
-    throw DecodingError.dataCorruptedError(
-      forKey: .return_type_notation,
-      in: container,
-      debugDescription: "Unknown GenericArgs case: \(container.allKeys)"
-    )
+    // If we got here, none of the expected keys were present.
+    let keys = container.allKeys.map(\.stringValue).joined(separator: ", ")
+    throw DecodingError.dataCorrupted(
+      DecodingError.Context(
+        codingPath: container.codingPath,
+        debugDescription:
+          "Unknown GenericArgs case. Expected one of [angle_bracketed, parenthesized, return_type_notation] but found keys: [\(keys)]"
+      ))
   }
 }
 
 private struct AngleBracketedArgs: Decodable {
   let args: [rustGenericArg]?
-  let constraints: [AssocItemConstraint]
+  let constraints: [AssocItemConstraint]?
 }
 
 private struct ParenthesizedArgs: Decodable {
@@ -1146,7 +1171,7 @@ indirect enum rustType: Decodable {
     case dynTrait = "dyn_trait"
     case generic
     case primitive
-    case functionPointer = "fn_pointer"
+    case functionPointer = "function_pointer"
     case tuple
     case slice
     case array
