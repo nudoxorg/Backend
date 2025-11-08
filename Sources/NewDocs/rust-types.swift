@@ -570,107 +570,9 @@ enum ItemEnum: Decodable {
   }
 }
 
-private func decodeFromRaw<T: Decodable>(_ raw: AnyDecodable, as type: T.Type) throws -> T {
-  let data = try JSONEncoder().encode(AnyEncodable(raw.value))
-  return try JSONDecoder().decode(T.self, from: data)
-}
-
 struct constantItem {
   let `type`: rustType
   let const: Constant
-}
-
-struct RawJSON: Decodable {
-  private let value: AnyDecodableValue
-
-  init(from decoder: Decoder) throws {
-    self.value = try decoder.singleValueContainer().decode(AnyDecodableValue.self)
-  }
-
-  func decoder() throws -> Decoder {
-    let data = try JSONEncoder().encode(value)
-    return try JSONDecoder().decode(DecodableDecoder.self, from: data).decoder
-  }
-}
-
-// MARK: - AnyDecodableValue
-struct AnyDecodableValue: Codable {
-  let value: Any
-
-  init(from decoder: Decoder) throws {
-    let container = try decoder.singleValueContainer()
-    if let intVal = try? container.decode(Int.self) {
-      value = intVal
-    } else if let doubleVal = try? container.decode(Double.self) {
-      value = doubleVal
-    } else if let boolVal = try? container.decode(Bool.self) {
-      value = boolVal
-    } else if let stringVal = try? container.decode(String.self) {
-      value = stringVal
-    } else if let dictVal = try? container.decode([String: AnyDecodableValue].self) {
-      value = dictVal.mapValues { $0.value }
-    } else if let arrayVal = try? container.decode([AnyDecodableValue].self) {
-      value = arrayVal.map { $0.value }
-    } else {
-      value = NSNull()
-    }
-  }
-
-  func encode(to encoder: Encoder) throws {
-    var container = encoder.singleValueContainer()
-    switch value {
-    case let intVal as Int:
-      try container.encode(intVal)
-    case let doubleVal as Double:
-      try container.encode(doubleVal)
-    case let boolVal as Bool:
-      try container.encode(boolVal)
-    case let stringVal as String:
-      try container.encode(stringVal)
-    case let dictVal as [String: Any]:
-      try container.encode(dictVal.mapValues { AnyEncodable($0) })
-    case let arrayVal as [Any]:
-      try container.encode(arrayVal.map { AnyEncodable($0) })
-    default:
-      try container.encodeNil()
-    }
-  }
-}
-
-struct AnyEncodable: Encodable {
-  private let value: Any
-
-  init(_ value: Any) {
-    self.value = value
-  }
-
-  func encode(to encoder: Encoder) throws {
-    var container = encoder.singleValueContainer()
-    switch value {
-    case let intVal as Int:
-      try container.encode(intVal)
-    case let doubleVal as Double:
-      try container.encode(doubleVal)
-    case let boolVal as Bool:
-      try container.encode(boolVal)
-    case let stringVal as String:
-      try container.encode(stringVal)
-    case let dictVal as [String: Any]:
-      try container.encode(dictVal.mapValues { AnyEncodable($0) })
-    case let arrayVal as [Any]:
-      try container.encode(arrayVal.map { AnyEncodable($0) })
-    default:
-      try container.encodeNil()
-    }
-  }
-}
-
-// MARK: - DecodableDecoder
-struct DecodableDecoder: Decodable {
-  let decoder: Decoder
-  init(from decoder: Decoder) throws {
-    self.decoder = decoder
-  }
 }
 
 // MARK: - Small helper structs
@@ -1083,32 +985,32 @@ enum rustGenericArg: Decodable {
   case const(Constant)
   case infer
 
+  private enum CodingKeys: String, CodingKey {
+    case lifetime
+    case type
+    case const
+    case infer
+  }
+
   init(from decoder: Decoder) throws {
-    let container = try decoder.singleValueContainer()
-    let raw = try container.decode([String: RawJSON].self)
+    let container = try decoder.container(keyedBy: CodingKeys.self)
 
-    guard let (key, rawValue) = raw.first else {
-      throw DecodingError.dataCorruptedError(
-        in: container,
-        debugDescription: "GenericArg object had no keys"
-      )
-    }
-
-    let valueDecoder = try rawValue.decoder()
-
-    switch key {
-    case "lifetime":
-      self = .lifetime(try String(from: valueDecoder))
-    case "type":
-      self = .type(try rustType(from: valueDecoder))  // <-- This now works because Type is fixed
-    case "const":
-      self = .const(try Constant(from: valueDecoder))
-    case "infer":
+    if container.contains(.lifetime) {
+      self = .lifetime(try container.decode(String.self, forKey: .lifetime))
+    } else if container.contains(.type) {
+      self = .type(try container.decode(rustType.self, forKey: .type))
+    } else if container.contains(.const) {
+      self = .const(try container.decode(Constant.self, forKey: .const))
+    } else if container.contains(.infer) {
+      // The "infer" variant is represented by the presence of the key.
       self = .infer
-    default:
-      throw DecodingError.dataCorruptedError(
-        in: container,
-        debugDescription: "Unknown GenericArg variant: \(key)"
+    } else {
+      let keys = container.allKeys.map(\.stringValue).joined(separator: ", ")
+      throw DecodingError.dataCorrupted(
+        DecodingError.Context(
+          codingPath: container.codingPath,
+          debugDescription: "Unable to decode rustGenericArg. Unexpected keys: [\(keys)]"
+        )
       )
     }
   }
@@ -1256,59 +1158,46 @@ indirect enum rustType: Decodable {
     case qualifiedPath = "qualified_path"
   }
 
+  // In rustType enum
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
 
-    // Try each case in order
-    if let value = try? container.decode(rustPath.self, forKey: .resolvedPath) {
+    // Try each case, being mindful of potential overlaps or specific structures
+    // Prioritize cases that might be substrings of others, or that
+    // have unique keys.
+    if container.contains(.resolvedPath) {
+      let value = try container.decode(rustPath.self, forKey: .resolvedPath)
       self = .resolvedPath(value)
       return
     }
-    if let value = try? container.decode(rustDynTrait.self, forKey: .dynTrait) {
+    if container.contains(.dynTrait) {
+      let value = try container.decode(rustDynTrait.self, forKey: .dynTrait)
       self = .dynTrait(value)
       return
     }
-    if let value = try? container.decode(String.self, forKey: .generic) {
-      self = .generic(value)
-      return
-    }
-    if let value = try? container.decode(String.self, forKey: .primitive) {
-      self = .primitive(value)
-      return
-    }
-    if let value = try? container.decode(rustFunctionPointer.self, forKey: .functionPointer) {
+    if container.contains(.functionPointer) {
+      let value = try container.decode(rustFunctionPointer.self, forKey: .functionPointer)
       self = .functionPointer(value)
       return
     }
-    if let value = try? container.decode([rustType].self, forKey: .tuple) {
-      self = .tuple(value)
-      return
-    }
-    if let value = try? container.decode(rustType.self, forKey: .slice) {
-      self = .slice(value)
-      return
-    }
-    if let payload = try? container.decode(ArrayPayload.self, forKey: .array) {
+    // Specific struct types before general primitives/generics
+    if container.contains(.array) {
+      let payload = try container.decode(ArrayPayload.self, forKey: .array)
       self = .array(type: payload.type, len: payload.len)
       return
     }
-    if let payload = try? container.decode(PatPayload.self, forKey: .pat) {
+    if container.contains(.pat) {
+      let payload = try container.decode(PatPayload.self, forKey: .pat)
       self = .pat(type: payload.type, unstable: payload.unstable)
       return
     }
-    if let value = try? container.decode([rustGenericBound].self, forKey: .implTrait) {
-      self = .implTrait(value)
-      return
-    }
-    if container.contains(.infer) {
-      self = .infer
-      return
-    }
-    if let payload = try? container.decode(RawPointerPayload.self, forKey: .rawPointer) {
+    if container.contains(.rawPointer) {
+      let payload = try container.decode(RawPointerPayload.self, forKey: .rawPointer)
       self = .rawPointer(isMutable: payload.is_mutable, type: payload.type)
       return
     }
-    if let payload = try? container.decode(BorrowedRefPayload.self, forKey: .borrowedRef) {
+    if container.contains(.borrowedRef) {
+      let payload = try container.decode(BorrowedRefPayload.self, forKey: .borrowedRef)
       self = .borrowedRef(
         lifetime: payload.lifetime,
         isMutable: payload.is_mutable,
@@ -1316,7 +1205,8 @@ indirect enum rustType: Decodable {
       )
       return
     }
-    if let payload = try? container.decode(QualifiedPathPayload.self, forKey: .qualifiedPath) {
+    if container.contains(.qualifiedPath) {
+      let payload = try container.decode(QualifiedPathPayload.self, forKey: .qualifiedPath)
       self = .qualifiedPath(
         name: payload.name,
         args: payload.args,
@@ -1325,20 +1215,69 @@ indirect enum rustType: Decodable {
       )
       return
     }
-
-    // Debugging: if we got here, decoding failed
-    let keys = container.allKeys.map { $0.stringValue }
-    var debugJSON = "<unavailable>"
-    if let raw = try? JSONSerialization.jsonObject(
-      with: decoder.codingPath.isEmpty ? Data() : Data())
-    {
-      debugJSON = String(describing: raw)
+    if container.contains(.implTrait) {
+      let value = try container.decode([rustGenericBound].self, forKey: .implTrait)
+      self = .implTrait(value)
+      return
     }
+
+    // Single-value cases
+    if container.contains(.tuple) {
+      let value = try container.decode([rustType].self, forKey: .tuple)
+      self = .tuple(value)
+      return
+    }
+    if container.contains(.slice) {
+      let value = try container.decode(rustType.self, forKey: .slice)
+      self = .slice(value)
+      return
+    }
+    if container.contains(.infer) {  // Infer doesn't have an associated value, just the key
+      // Need to check if it's explicitly null or just the key
+      if (try? container.decodeNil(forKey: .infer)) == true {
+        // Handle explicit null if rustdoc sends it, otherwise just the key
+        self = .infer
+      } else {
+        self = .infer
+      }
+      return
+    }
+    // Primitives and generics are often single string values.
+    // Check these last, as their keys might be used in other structs
+    // (though not directly if we're using a keyed container for rustType).
+    if container.contains(.generic) {
+      let value = try container.decode(String.self, forKey: .generic)
+      self = .generic(value)
+      return
+    }
+    if container.contains(.primitive) {
+      let value = try container.decode(String.self, forKey: .primitive)
+      self = .primitive(value)
+      return
+    }
+
+    // If we reach here, it's an unknown or unhandled case.
+    let keys = container.allKeys.map { $0.stringValue }
+    let codingPath = decoder.codingPath.map { $0.stringValue }
+    let debugJSON: String
+    if let data = try? decoder.singleValueContainer().decode(Data.self),
+      let jsonString = String(data: data, encoding: .utf8)
+    {
+      debugJSON = jsonString
+    } else {
+      debugJSON = "<could not decode raw JSON>"
+    }
+
     print(
-      "⚠️ Unknown Type variant. Keys: \(keys). CodingPath: \(decoder.codingPath). JSON: \(debugJSON)"
+      "⚠️ Unknown Type variant. Keys: \(keys). CodingPath: \(codingPath). JSON: \(debugJSON)"
     )
 
-    throw NewDocsError.fileNotFound("nope")
+    throw DecodingError.dataCorrupted(
+      DecodingError.Context(
+        codingPath: decoder.codingPath,
+        debugDescription: "Unable to decode rustType: no matching key found. Keys: \(keys)"
+      )
+    )
   }
 }
 
