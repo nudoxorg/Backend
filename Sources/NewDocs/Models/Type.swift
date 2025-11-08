@@ -374,6 +374,12 @@ public enum Kind: Sendable, Codable {
   /// Union type
   case unionType([Type])
 
+  /// Trait/protocol/interface definition
+  case traitDef(TraitDef)
+
+  /// Trait/protocol implementation
+  case traitImpl(TraitImpl)
+
   /// Enum, algebraic data type, discriminated union.
   case sumType([SumVariant])
 
@@ -413,6 +419,10 @@ public enum Kind: Sendable, Codable {
       return "A piece of unlinked documentation"
     case .recordType:
       return "Struct, class, record, or data class."
+    case .traitDef:
+      return "Trait def"
+    case .traitImpl:
+      return "Trait impl"
     case .unionType:
       return "Union type (C, C++, Rust, etc.)."
     case .sumType:
@@ -445,3 +455,296 @@ public enum Kind: Sendable, Codable {
 }
 
 extension Kind: CustomStringConvertible {}
+
+// MARK: - Trait/Protocol/Interface Representation
+
+/// Universal representation of traits (Rust), protocols (Swift), interfaces (Java/C#/TypeScript), etc.
+public struct TraitDef: Codable, Sendable {
+  /// The name of the trait/protocol/interface
+  public let name: String
+
+  /// Generic parameters
+  public let generics: Generics?
+
+  /// Supertraits/protocol inheritance/interface extends
+  public let superTraits: [TraitRef]?
+
+  /// Associated types (Rust/Swift protocols)
+  public let associatedTypes: [AssociatedType]?
+
+  /// Required methods
+  public let requiredMethods: [TraitMethod]?
+
+  /// Provided/default method implementations
+  public let providedMethods: [TraitMethod]?
+
+  /// Required constants/static members
+  public let requiredConstants: [TraitConstant]?
+
+  /// Trait-level attributes
+  public let attributes: [TraitAttribute]?
+
+  /// Visibility
+  public let visibility: Visibility?
+
+  /// Documentation
+  public let docs: String?
+
+  public init(
+    name: String,
+    generics: Generics? = nil,
+    superTraits: [TraitRef]? = nil,
+    associatedTypes: [AssociatedType]? = nil,
+    requiredMethods: [TraitMethod]? = nil,
+    providedMethods: [TraitMethod]? = nil,
+    requiredConstants: [TraitConstant]? = nil,
+    attributes: [TraitAttribute]? = nil,
+    visibility: Visibility? = nil,
+    docs: String? = nil
+  ) {
+    self.name = name
+    self.generics = generics
+    self.superTraits = superTraits
+    self.associatedTypes = associatedTypes
+    self.requiredMethods = requiredMethods
+    self.providedMethods = providedMethods
+    self.requiredConstants = requiredConstants
+    self.attributes = attributes
+    self.visibility = visibility
+    self.docs = docs
+  }
+}
+
+// MARK: - Associated Types
+
+/// Associated types in traits/protocols
+public struct AssociatedType: Codable, Sendable {
+  /// Name of the associated type
+  public let name: String
+
+  /// Bounds/constraints on the associated type
+  public let bounds: [GenericBound]?
+
+  /// Default type (if any)
+  public let defaultType: Type?
+
+  /// Documentation
+  public let docs: String?
+
+  public init(
+    name: String,
+    bounds: [GenericBound]? = nil,
+    defaultType: Type? = nil,
+    docs: String? = nil
+  ) {
+    self.name = name
+    self.bounds = bounds
+    self.defaultType = defaultType
+    self.docs = docs
+  }
+}
+
+// MARK: - Trait Methods
+
+/// A method signature within a trait/protocol/interface
+public struct TraitMethod: Codable, Sendable {
+  /// Method name
+  public let name: String
+
+  /// Input parameters
+  public let parameters: [Parameter]?
+
+  /// Return type
+  public let returnType: Type?
+
+  /// Generic parameters specific to this method
+  public let generics: Generics?
+
+  /// Method-level attributes
+  public let attributes: [FunctionAttributes]?
+
+  /// Receiver type (self, &self, &mut self, etc.)
+  public let receiver: ReceiverKind?
+
+  /// Whether this method has a default implementation
+  public let hasDefaultImplementation: Bool
+
+  /// Documentation
+  public let docs: String?
+
+  public init(
+    name: String,
+    parameters: [Parameter]? = nil,
+    returnType: Type? = nil,
+    generics: Generics? = nil,
+    attributes: [FunctionAttributes]? = nil,
+    receiver: ReceiverKind? = nil,
+    hasDefaultImplementation: Bool = false,
+    docs: String? = nil
+  ) {
+    self.name = name
+    self.parameters = parameters
+    self.returnType = returnType
+    self.generics = generics
+    self.attributes = attributes
+    self.receiver = receiver
+    self.hasDefaultImplementation = hasDefaultImplementation
+    self.docs = docs
+  }
+}
+
+/// Receiver/self parameter kind
+public enum ReceiverKind: String, Codable, Sendable {
+  /// Takes ownership (self in Rust, consuming in Swift)
+  case owned
+
+  /// Immutable reference (&self, borrowing in Swift)
+  case sharedRef
+
+  /// Mutable reference (&mut self, mutating in Swift)
+  case mutRef
+
+  /// Static/class method (no receiver)
+  case `static`
+
+  /// Arbitrary receiver (arbitrary self types in Rust)
+  case arbitrary
+}
+
+// MARK: - Trait Constants
+
+/// A constant/static member in a trait
+public struct TraitConstant: Codable, Sendable {
+  /// Constant name
+  public let name: String
+
+  /// Type of the constant
+  public let type: Type
+
+  /// Default value (if provided)
+  public let defaultValue: ConstExpr?
+
+  /// Documentation
+  public let docs: String?
+
+  public init(
+    name: String,
+    type: Type,
+    defaultValue: ConstExpr? = nil,
+    docs: String? = nil
+  ) {
+    self.name = name
+    self.type = type
+    self.defaultValue = defaultValue
+    self.docs = docs
+  }
+}
+
+// MARK: - Trait Attributes
+
+/// Attributes that can be applied to traits
+public enum TraitAttribute: Codable, Sendable {
+  /// Marker trait with no methods (e.g., Send, Sync in Rust)
+  case marker
+
+  /// Auto trait (automatically implemented, like Send/Sync)
+  case auto
+
+  /// Unsafe trait (requires unsafe to implement)
+  case unsafe
+
+  /// Object-safe/dyn-compatible trait
+  case objectSafe
+
+  /// Sealed trait (can only be implemented in current module)
+  case sealed
+
+  /// Functional interface (single abstract method, like Java's @FunctionalInterface)
+  case functional
+
+  /// Custom attribute with name and optional arguments
+  case custom(name: String, args: [String]?)
+}
+
+// MARK: - Trait Implementation
+
+/// Represents an implementation of a trait for a type
+public struct TraitImpl: Codable, Sendable {
+  /// The trait being implemented
+  public let trait: TraitRef
+
+  /// The type implementing the trait
+  public let forType: Type
+
+  /// Generic parameters for this impl
+  public let generics: Generics?
+
+  /// Where clauses/constraints
+  public let whereConstraints: [Constraint]?
+
+  /// Implemented methods
+  public let methods: [DocsFunction]?
+
+  /// Associated type implementations
+  public let associatedTypes: [AssociatedTypeImpl]?
+
+  /// Associated constant implementations
+  public let associatedConstants: [TraitConstant]?
+
+  /// Whether this is a negative impl (Rust: impl !Trait)
+  public let isNegative: Bool
+
+  /// Whether this is a blanket impl (impl<T> Trait for T)
+  public let isBlanket: Bool
+
+  /// Whether this impl is unsafe
+  public let isUnsafe: Bool
+
+  /// Visibility of the impl block
+  public let visibility: Visibility?
+
+  /// Documentation
+  public let docs: String?
+
+  public init(
+    trait: TraitRef,
+    forType: Type,
+    generics: Generics? = nil,
+    whereConstraints: [Constraint]? = nil,
+    methods: [DocsFunction]? = nil,
+    associatedTypes: [AssociatedTypeImpl]? = nil,
+    associatedConstants: [TraitConstant]? = nil,
+    isNegative: Bool = false,
+    isBlanket: Bool = false,
+    isUnsafe: Bool = false,
+    visibility: Visibility? = nil,
+    docs: String? = nil
+  ) {
+    self.trait = trait
+    self.forType = forType
+    self.generics = generics
+    self.whereConstraints = whereConstraints
+    self.methods = methods
+    self.associatedTypes = associatedTypes
+    self.associatedConstants = associatedConstants
+    self.isNegative = isNegative
+    self.isBlanket = isBlanket
+    self.isUnsafe = isUnsafe
+    self.visibility = visibility
+    self.docs = docs
+  }
+}
+
+/// Implementation of an associated type
+public struct AssociatedTypeImpl: Codable, Sendable {
+  /// Name of the associated type
+  public let name: String
+
+  /// The concrete type
+  public let type: Type
+
+  public init(name: String, type: Type) {
+    self.name = name
+    self.type = type
+  }
+}
