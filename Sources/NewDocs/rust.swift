@@ -249,10 +249,32 @@ public struct RustDocScraper: Documentation {
   /// This function builds pages
   public func buildPages() async throws -> [DocumentationPage] {
     // Decompress ZSTD
-    let url = URL(filePath: "./example.json")
     let out = URL(filePath: "./out.json")
-    let decompressedData = try Data(contentsOf: url)
-    let crateData = try JSONDecoder().decode(RustdocCrate.self, from: decompressedData)
+
+    let bin = Process()
+    bin.executableURL =
+      URL(
+        fileURLWithPath:
+          "/Users/philocalyst/.rustup/toolchains/nightly-aarch64-apple-darwin/bin/cargo")
+
+    let arguments = [
+      "rustdoc",
+      "--package", "axum",  // Specify the package you want to document
+      "--",  // Separator for rustdoc arguments
+      "--document-private-items",
+      "--output-format", "json",
+      "-Z", "unstable-options",
+    ]
+
+    bin.arguments = arguments
+
+    let estimated_location = URL(
+      fileURLWithPath: "out/target/doc/\(self.package.name).json",
+      relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+    let json = try await getJSON(
+      source: self.package.source, command: bin, output_location: estimated_location)
+
+    let crateData = try JSONDecoder().decode(RustdocCrate.self, from: json)
 
     let entries = try mapCrateToEntries(crateData)
     if let jsonData = try? JSONEncoder().encode(entries),
