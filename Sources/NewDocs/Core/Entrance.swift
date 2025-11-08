@@ -7,6 +7,8 @@ public struct NewDocumentations {
     switch language {
     case .Rust:
       return CargoRegistry()
+    case .Javascript:
+      return NPMRegistry()
     default:
       fatalError("Language \(language) not yet supported")
     }

@@ -200,7 +200,6 @@ public struct CargoPackage: Package {
 }
 
 // MARK: - Rust Documentation Scraper
-
 public struct RustDocScraper: Documentation {
   public let logger: Logger
   public let package: CargoPackage

@@ -17,11 +17,12 @@ public struct NPMRegistry: PackageRegistry {
 		do {
 			let encodedQuery =
 				query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-			let response = try await httpClient.reque(
+			let response = try await httpClient.request(
 				"https://registry.npmjs.org/-/v1/search?text=\(encodedQuery)")
 
 			guard response.isSuccess else {
-				return .failure(.networkError("Failed to search npm registry: \(response.statusCode)"))
+				return .failure(
+					.networkError("Failed to search npm registry: \(response.statusCode)"))
 			}
 
 			let json = try response.asJSON()
@@ -51,10 +52,12 @@ public struct NPMRegistry: PackageRegistry {
 
 	public func get_package(named: String) async -> Result<[Package], NewDocsError> {
 		do {
-			let response = try await httpClient.request("https://https://registry.npmjs.org/\(named)")
+			let response = try await httpClient.request(
+				"https://registry.npmjs.org/\(named)")
 
 			guard response.isSuccess else {
-				return .failure(.networkError("Failed to fetch npm packages: \(response.statusCode)"))
+				return .failure(
+					.networkError("Failed to fetch npm packages: \(response.statusCode)"))
 			}
 
 			let json = try response.asJSON()
@@ -135,7 +138,8 @@ public struct NPMPackage: Package {
 			let response = try await httpClient.request("https://registry.npmjs.org/\(encodedSlug)")
 
 			guard response.isSuccess else {
-				return .failure(.networkError("Failed to fetch dependencies: \(response.statusCode)"))
+				return .failure(
+					.networkError("Failed to fetch dependencies: \(response.statusCode)"))
 			}
 
 			let json = try response.asJSON()
