@@ -4,6 +4,7 @@ import Foundation
 import Logging
 import SemVer
 import SwiftSoup
+import zlib
 
 public struct CargoRegistry: PackageRegistry {
   private let logger: Logger
@@ -233,60 +234,42 @@ public struct RustDocScraper: Documentation {
     self.httpClient = HTTPRequest(logger: logger)
   }
 
-  public func buildPages() -> AsyncThrowingStream<DocumentationPage, Error> {
-    AsyncThrowingStream { continuation in
-      Task {
-        do {
-          let jsonURL = try rustdocJSONURL()
-          logger.info("Fetching rustdoc JSON from \(jsonURL)")
-          let response = try await httpClient.request(jsonURL)
+  /// This function builds pages
+  public func buildPages() async throws -> [DocumentationPage] {
+    let jsonURL = try rustdocJSONURL()
+    logger.info("Fetching rustdoc JSON from \(jsonURL)")
+    let response = try await httpClient.request(jsonURL)
 
-          // If JSON not found, fallback to HTML scraping
-          guard response.isSuccess else {
-            if response.statusCode == 404 {
-              logger.warning("No rustdoc JSON found, falling back to HTML scraping")
-              return
-            }
-            throw NewDocsError.networkError("Failed to fetch rustdoc JSON: \(response.statusCode)")
-          }
-
-          // Decompress ZSTD
-          let decompressedData = try await decompress_zstd(from: response.data)
-          let crateData = try JSONDecoder().decode(RustdocCrate.self, from: decompressedData)
-
-          let entries = try mapCrateToEntries(crateData)
-          print(entries)
-          let page = DocumentationPage(
-            path: [slug, "index"],
-            internalURLs: [],
-            entries: entries
-          )
-          continuation.yield(page)
-        } catch {
-          logger.error("RustDocScraper failed: \(error)")
-          continuation.finish(throwing: error)
-          return
-        }
-        continuation.finish()
+    // If JSON not found, fallback to HTML scraping
+    guard response.isSuccess else {
+      if response.statusCode == 404 {
+        logger.warning("No rustdoc JSON found, falling back to HTML scraping")
+        return []
       }
+      throw NewDocsError.networkError("Failed to fetch rustdoc JSON: \(response.statusCode)")
     }
+
+    // Decompress ZSTD
+    let decompressedData = try await decompress_zstd(from: response.data)
+    let crateData = try JSONDecoder().decode(RustdocCrate.self, from: decompressedData)
+    let entries = try mapCrateToEntries(crateData)
+    print(entries)
+
+    let page = DocumentationPage(
+      path: [slug, "index"],
+      internalURLs: [],
+      entries: entries
+    )
+
+    return [page]
   }
 
   // MARK: - JSON URL
-  private func rustdocJSONURL() throws -> String {
+  private func rustdocJSONURL() -> String {
     if isStandardLibrary {
       return "https://doc.rust-lang.org/nightly/std/std.json"
     } else {
       return "https://docs.rs/crate/\(package.slug)/\(version)/json"
-    }
-  }
-
-  private func visibilityString(_ vis: Visibility) -> String {
-    switch vis {
-    case .public: return "public"
-    case .default: return "default"
-    case .crate: return "crate"
-    case .restricted(_, let path): return "restricted(\(path))"
     }
   }
 
@@ -313,7 +296,7 @@ public struct RustDocScraper: Documentation {
     for (id, item) in crate.index {
       guard let name = item.name else { continue }
       let fqPath = getPath(for: id, name: name)
-      let kind = mapKind(from: crate.paths[id]?.kind, item: item)
+      let kind = crate.paths[id]!.into_kind()
       let visibility = item.visibility
       let docs = item.docs
 
@@ -327,10 +310,17 @@ public struct RustDocScraper: Documentation {
         members = module.items.compactMap { crate.index[$0]?.name }
       case .function(let fn):
         inputParams = fn.sig.inputs.map { tuple in
-          Parameter(name: tuple.name, type: tuple.type.toString())
+          Parameter(
+            name: tuple.name, type: tuple.type.toType(), attributes: nil,
+            defaultValue: nil,
+            description: nil)
         }
         if let output = fn.sig.output {
-          outputParams = [Parameter(name: "return", type: output.toString())]
+          outputParams = [
+            Parameter(
+              name: "return", type: output.toType(), attributes: nil, defaultValue: nil,
+              description: nil)
+          ]
         }
       default:
         break
@@ -411,26 +401,6 @@ public struct RustDocScraper: Documentation {
     }
 
     return Array(entries.values)
-  }
-
-  // MARK: - Helpers
-  private func mapKind(from kindString: String?, item: RustdocItem) -> Kind {
-    if let k = kindString {
-      switch k {
-      case "function": return .function
-      case "module": return .module
-      case "struct": return .recordType
-      case "enum": return .sumType
-      case "constant": return .constant
-      case "type_alias": return .typeAlias
-      case "trait": return .interfaceType
-      case "impl": return .info
-      case "macro": return .macro
-      case "primitive": return .primitiveType
-      default: break
-      }
-    }
-    return .info
   }
 
   private func findParent(of id: Int, in crate: RustdocCrate) -> RustdocItem? {
@@ -586,7 +556,7 @@ public struct RustEntriesFilter: Filter {
   }
 }
 
-private func resolveTypeId(_ type: Type, in crate: RustdocCrate) -> Int? {
+private func resolveTypeId(_ type: rustType, in crate: RustdocCrate) -> Int? {
   switch type {
   case .resolvedPath(let path):
     return path.id
@@ -608,18 +578,5 @@ extension Entry {
       documentation: self.documentation,
       name: self.name
     )
-  }
-}
-
-extension StructKind {
-  func fieldIDs() -> [Int] {
-    switch self {
-    case .unit:
-      return []
-    case .tuple(let ids):
-      return ids.compactMap { $0 }
-    case .plain(let fields, _):
-      return fields
-    }
   }
 }
