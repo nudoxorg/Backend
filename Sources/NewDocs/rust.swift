@@ -301,27 +301,62 @@ public struct RustDocScraper: Documentation {
       var inputParams: [Parameter]? = nil
       var outputParams: [Parameter]? = nil
       let typeParams: [String]? = nil
-      var enahs: [rustEnum]? = nil
 
       switch item.inner {
-      case .enumItem(let enah):
-        print()
+      case .enumItem(let enumData):
+        // Extract variant names for enum members
+        members = enumData.variants.compactMap { variantId in
+          guard let variantItem = crate.index[variantId] else { return nil }
+          return variantItem.name
+        }
+
+      case .structItem(let structData):
+        // Extract field names for struct members based on kind
+        switch structData.kind {
+        case .unit:
+          // Unit structs have no fields
+          members = []
+
+        case .tuple(let fieldIds):
+          // Tuple structs have positional fields
+          members = fieldIds.enumerated().compactMap { idx, fieldId in
+            guard let fieldId = fieldId else { return nil }
+            // Tuple fields are typically unnamed, use index
+            return "\(idx)"
+          }
+
+        case .plain(let fieldIds, _):
+          // Named structs have named fields
+          members = fieldIds.compactMap { fieldId in
+            crate.index[fieldId]?.name
+          }
+        }
+
       case .module(let module):
         members = module.items.compactMap { crate.index[$0]?.name }
+
       case .function(let fn):
         inputParams = fn.sig.inputs.map { tuple in
           Parameter(
-            name: tuple.name, type: tuple.type.toType(), attributes: nil,
+            name: tuple.name,
+            type: tuple.type.toType(),
+            attributes: nil,
             defaultValue: nil,
-            description: nil)
+            description: nil
+          )
         }
         if let output = fn.sig.output {
           outputParams = [
             Parameter(
-              name: "return", type: output.toType(), attributes: nil, defaultValue: nil,
-              description: nil)
+              name: "return",
+              type: output.toType(),
+              attributes: nil,
+              defaultValue: nil,
+              description: nil
+            )
           ]
         }
+
       default:
         break
       }
@@ -393,6 +428,16 @@ public struct RustDocScraper: Documentation {
           updatedMembers.append(contentsOf: assocNames)
           traitEntry = try traitEntry.withMembers(updatedMembers)
           entries[id] = traitEntry
+        }
+
+      // Link union fields
+      case .union(let unionData):
+        if var unionEntry = entries[id] {
+          let fieldNames = unionData.fields.compactMap { crate.index[$0]?.name }
+          var updatedMembers = unionEntry.members ?? []
+          updatedMembers.append(contentsOf: fieldNames)
+          unionEntry = try unionEntry.withMembers(updatedMembers)
+          entries[id] = unionEntry
         }
 
       default:
