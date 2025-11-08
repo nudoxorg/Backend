@@ -305,6 +305,7 @@ public struct RustDocScraper: Documentation {
   private func mapCrateToEntries(_ crate: RustdocCrate) throws -> [Entry] {
     var entries: [Int: Entry] = [:]
     var idToPath: [Int: [String]] = [:]
+    var traitImpls: [(implId: Int, impl: Impl)] = []
 
     // Build path map
     for (id, summary) in crate.paths {
@@ -322,7 +323,7 @@ public struct RustDocScraper: Documentation {
 
     // First pass: create entries
     for (id, item) in crate.index {
-      guard let name = item.name else { continue }
+      let name = item.name ?? "unnamed"
       let fqPath = getPath(for: id, name: name)
       let visibility = item.visibility
       let docs = item.docs
@@ -344,19 +345,15 @@ public struct RustDocScraper: Documentation {
         // Extract field names for struct members based on kind
         switch structData.kind {
         case .unit:
-          // Unit structs have no fields
           members = []
 
         case .tuple(let fieldIds):
-          // Tuple structs have positional fields
           members = fieldIds.enumerated().compactMap { idx, fieldId in
             guard let fieldId = fieldId else { return nil }
-            // Tuple fields are typically unnamed, use index
             return "\(idx)"
           }
 
         case .plain(let fieldIds, _):
-          // Named structs have named fields
           members = fieldIds.compactMap { fieldId in
             crate.index[fieldId]?.name
           }
@@ -387,6 +384,20 @@ public struct RustDocScraper: Documentation {
           ]
         }
 
+      case .traitItem(let traitData):
+        // Collect all trait members: methods, associated types, and constants
+        members = traitData.items.compactMap { itemId in
+          crate.index[itemId]?.name
+        }
+
+      case .impl(let implData):
+        // Store impl blocks for second pass
+        traitImpls.append((implId: id, impl: implData))
+        // For now, collect impl item names
+        members = implData.items.compactMap { itemId in
+          crate.index[itemId]?.name
+        }
+
       default:
         break
       }
@@ -406,12 +417,13 @@ public struct RustDocScraper: Documentation {
       entries[id] = entry
     }
 
-    // Second pass: link associated items
+    // Second pass: link associated items and create comprehensive trait/impl entries
     for (id, item) in crate.index {
       switch item.inner {
 
-      // Link impl items to parent type
+      // Link impl items to parent type AND create comprehensive impl entries
       case .impl(let implBlock):
+        // Link impl members to the type being implemented for
         if let parentId = resolveTypeId(implBlock.for, in: crate),
           var parentEntry = entries[parentId]
         {
@@ -429,6 +441,115 @@ public struct RustDocScraper: Documentation {
           updatedMembers.append(contentsOf: implMemberNames)
           parentEntry = try parentEntry.withMembers(updatedMembers)
           entries[parentId] = parentEntry
+        }
+
+        // If this is a trait impl, create a comprehensive TraitImpl entry
+        if let traitPath = implBlock.trait,
+          let implName = item.name,
+          let forType = resolveTypeId(implBlock.for, in: crate)
+        {
+          let implPath = getPath(for: id, name: implName)
+
+          // Collect implemented methods
+          let methods: [DocsFunction] = implBlock.items.compactMap { methodId in
+            guard let methodItem = crate.index[methodId],
+              case .function(let fn) = methodItem.inner,
+              let methodName = methodItem.name
+            else {
+              return nil
+            }
+
+            var attrs: [FunctionAttributes] = []
+            if fn.sig.is_c_variadic { attrs.append(.variadic) }
+            if fn.header.is_const { attrs.append(.const) }
+            if fn.header.is_async { attrs.append(.async) }
+            if fn.header.is_unsafe { attrs.append(.unsafe) }
+
+            return DocsFunction(
+              inputParameters: fn.sig.inputs.map { input in
+                Parameter(
+                  name: input.name,
+                  type: input.type.toType(),
+                  attributes: nil,
+                  defaultValue: nil,
+                  description: nil
+                )
+              },
+              outputParameters: fn.sig.output.map { outputType in
+                [
+                  Parameter(
+                    name: "return",
+                    type: outputType.toType(),
+                    attributes: nil,
+                    defaultValue: nil,
+                    description: nil
+                  )
+                ]
+              },
+              attributes: attrs.isEmpty ? nil : attrs,
+              generics: fn.generics.toGenerics(),
+              name: methodName,
+              implemented: fn.has_body,
+              visibility: methodItem.visibility.toVisibility()
+            )
+          }
+
+          // Collect associated type implementations
+          let assocTypes: [AssociatedTypeImpl] = implBlock.items.compactMap { itemId in
+            guard let implItem = crate.index[itemId],
+              case .assocType(_, _, let type) = implItem.inner,
+              let assocName = implItem.name,
+              let concreteType = type
+            else {
+              return nil
+            }
+            return AssociatedTypeImpl(name: assocName, type: concreteType.toType())
+          }
+
+          // Collect associated constant implementations
+          let assocConstants: [TraitConstant] = implBlock.items.compactMap { itemId in
+            guard let implItem = crate.index[itemId],
+              case .assocConst(let type, let value) = implItem.inner,
+              let constName = implItem.name
+            else {
+              return nil
+            }
+            return TraitConstant(
+              name: constName,
+              type: type.toType(),
+              defaultValue: value.map { ConstExpr(expr: $0) },
+              docs: implItem.docs
+            )
+          }
+
+          let traitImpl = TraitImpl(
+            trait: TraitRef(name: traitPath.path, args: []),
+            forType: implBlock.for.toType(),
+            generics: implBlock.generics.toGenerics(),
+            whereConstraints: nil,
+            methods: methods.isEmpty ? nil : methods,
+            associatedTypes: assocTypes.isEmpty ? nil : assocTypes,
+            associatedConstants: assocConstants.isEmpty ? nil : assocConstants,
+            isNegative: implBlock.is_negative,
+            isBlanket: implBlock.blanket_impl != nil,
+            isUnsafe: implBlock.is_unsafe,
+            visibility: item.visibility.toVisibility(),
+            docs: item.docs
+          )
+
+          let implEntry = try Entry(
+            path: implPath,
+            kind: .traitImpl(traitImpl),
+            visibility: item.visibility.toVisibility(),
+            members: implBlock.items.compactMap { crate.index[$0]?.name },
+            inputParameters: nil,
+            outputParameters: nil,
+            typeParameters: nil,
+            documentation: item.docs,
+            name: implName,
+            id: id
+          )
+          entries[id] = implEntry
         }
 
       // Link struct fields
@@ -451,13 +572,132 @@ public struct RustDocScraper: Documentation {
           entries[id] = enumEntry
         }
 
-      // Link trait associated items
+      // Create comprehensive trait definition entries
       case .traitItem(let traitData):
-        if var traitEntry = entries[id] {
-          let assocNames = traitData.items.compactMap { crate.index[$0]?.name }
-          var updatedMembers = traitEntry.members ?? []
-          updatedMembers.append(contentsOf: assocNames)
-          traitEntry = try traitEntry.withMembers(updatedMembers)
+        if var traitEntry = entries[id],
+          let traitName = item.name
+        {
+          // Collect required methods
+          let requiredMethods: [TraitMethod] = traitData.items.compactMap { itemId in
+            guard let traitItem = crate.index[itemId],
+              case .function(let fn) = traitItem.inner,
+              let methodName = traitItem.name
+            else {
+              return nil
+            }
+
+            var attrs: [FunctionAttributes] = []
+            if fn.sig.is_c_variadic { attrs.append(.variadic) }
+            if fn.header.is_const { attrs.append(.const) }
+            if fn.header.is_async { attrs.append(.async) }
+            if fn.header.is_unsafe { attrs.append(.unsafe) }
+
+            // Determine receiver kind
+            let receiver: ReceiverKind?
+            if let firstParam = fn.sig.inputs.first,
+              firstParam.name == "self"
+            {
+              switch firstParam.type {
+              case .borrowedRef(_, let isMutable, _):
+                receiver = isMutable ? .mutRef : .sharedRef
+              default:
+                receiver = .owned
+              }
+            } else {
+              receiver = .static
+            }
+
+            return TraitMethod(
+              name: methodName,
+              parameters: fn.sig.inputs.map { input in
+                Parameter(
+                  name: input.name,
+                  type: input.type.toType(),
+                  attributes: nil,
+                  defaultValue: nil,
+                  description: nil
+                )
+              },
+              returnType: fn.sig.output?.toType(),
+              generics: fn.generics.toGenerics(),
+              attributes: attrs.isEmpty ? nil : attrs,
+              receiver: receiver,
+              hasDefaultImplementation: fn.has_body,
+              docs: traitItem.docs
+            )
+          }
+
+          // Collect associated types
+          let assocTypes: [AssociatedType] = traitData.items.compactMap { itemId in
+            guard let traitItem = crate.index[itemId],
+              case .assocType(let generics, let bounds, let defaultType) = traitItem.inner,
+              let assocName = traitItem.name
+            else {
+              return nil
+            }
+            return AssociatedType(
+              name: assocName,
+              bounds: bounds.map { $0.toGenericBound() },
+              defaultType: defaultType?.toType(),
+              docs: traitItem.docs
+            )
+          }
+
+          // Collect required constants
+          let requiredConstants: [TraitConstant] = traitData.items.compactMap { itemId in
+            guard let traitItem = crate.index[itemId],
+              case .assocConst(let type, let value) = traitItem.inner,
+              let constName = traitItem.name
+            else {
+              return nil
+            }
+            return TraitConstant(
+              name: constName,
+              type: type.toType(),
+              defaultValue: value.map { ConstExpr(expr: $0) },
+              docs: traitItem.docs
+            )
+          }
+
+          // Collect supertraits
+          let superTraits = traitData.bounds.compactMap { bound -> TraitRef? in
+            if case .trait_bound(let trait, _, _) = bound {
+              return TraitRef(name: trait.path, args: [])
+            }
+            return nil
+          }
+
+          var attrs: [TraitAttribute] = []
+          if traitData.is_auto { attrs.append(.auto) }
+          if traitData.is_unsafe { attrs.append(.unsafe) }
+          if traitData.is_dyn_compatible { attrs.append(.objectSafe) }
+
+          let traitDef = TraitDef(
+            name: traitName,
+            generics: traitData.generics.toGenerics(),
+            superTraits: superTraits.isEmpty ? nil : superTraits,
+            associatedTypes: assocTypes.isEmpty ? nil : assocTypes,
+            requiredMethods: requiredMethods.isEmpty ? nil : requiredMethods,
+            providedMethods: nil,  // Could separate these based on has_body
+            requiredConstants: requiredConstants.isEmpty ? nil : requiredConstants,
+            attributes: attrs.isEmpty ? nil : attrs,
+            visibility: item.visibility.toVisibility(),
+            docs: item.docs
+          )
+
+          // Update entry with TraitDef kind
+          traitEntry = try Entry(
+            path: traitEntry.path,
+            kind: .traitDef(traitDef),
+            visibility: traitEntry.visibility,
+            members: traitEntry.members,
+            inputParameters: traitEntry.inputParameters,
+            outputParameters: traitEntry.outputParameters,
+            typeParameters: traitEntry.typeParameters,
+            documentation: traitEntry.documentation,
+            name: traitEntry.name,
+            id: traitEntry.id
+          )
           entries[id] = traitEntry
         }
 
