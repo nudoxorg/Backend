@@ -1,3 +1,16 @@
+public struct Parameter: Codable, Sendable {
+  public let name: String
+  public let type: Type?
+  public let attributes: [ParameterAttribute]?
+  public let defaultValue: ConstExpr?
+  public let description: String?
+}
+
+public enum ParameterAttribute: Codable, Sendable {
+  case mutable
+  case optional
+}
+
 public struct Entry: Codable, Hashable {
   // Required
   public let name: String // Semantic name for the entry (std::time, or to_string)
