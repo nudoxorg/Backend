@@ -248,10 +248,11 @@ public struct RustDocScraper: Documentation {
 
     let entries = try mapCrateToEntries(crateData)
     if let jsonData = try? JSONEncoder().encode(entries),
-   let jsonString = String(data: jsonData, encoding: .utf8) {
-try jsonData.write(to: out, options: .atomic)
-}
-    
+      let jsonString = String(data: jsonData, encoding: .utf8)
+    {
+      try jsonData.write(to: out, options: .atomic)
+    }
+
     let page = DocumentationPage(
       path: [slug, "index"],
       internalURLs: [],
@@ -324,8 +325,8 @@ try jsonData.write(to: out, options: .atomic)
 
       let entry = try Entry(
         path: fqPath,
-        kind: Kind.constant,
-        visibility: "hi",
+        kind: item.inner.toKind() ?? Kind.constant,
+        visibility: visibility.toVisibility(),
         members: members,
         inputParameters: inputParams,
         outputParameters: outputParams,

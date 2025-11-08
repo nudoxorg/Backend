@@ -1535,7 +1535,7 @@ extension rustType {
       return .qualifiedPath(
         QualifiedPath(
           name: name,
-          args: args?.toGenericArgs(),
+          genericArguments: args?.toGenericArgs(),
           selfType: selfType.toType(),
           trait: trait?.toPath()
         ))
@@ -1547,7 +1547,7 @@ extension rustPath {
   func toPath() -> Path {
     Path(
       path: path,
-      args: args?.toGenericArgs()
+      genericArgs: args?.toGenericArgs()
     )
   }
 }
@@ -1564,7 +1564,7 @@ extension rustDynTrait {
 extension rustPolyTrait {
   func toPolyTrait() -> PolyTrait {
     let typeExprs: [TypeExpr] =
-      trait.args?.toGenericArgs().args.compactMap { arg -> TypeExpr? in
+      trait.args?.toGenericArgs().compactMap { arg -> TypeExpr? in
         if case .type(let type) = arg {
           // Use toString() method instead of description
           return TypeExpr(name: type.toTypeString(), args: [])
@@ -1620,10 +1620,10 @@ extension rustFunctionPointer {
 }
 
 extension rustGenericArgs {
-  func toGenericArgs() -> GenericArgs {
+  func toGenericArgs() -> [GenericArg] {
     switch self {
     case .angle_bracketed(let args, _):
-      return GenericArgs(args: args.map { $0.toGenericArg() })
+      return args.map { $0.toGenericArg() }
 
     case .parenthesized(let inputs, let output):
       // Convert parenthesized args to type arguments
@@ -1631,10 +1631,10 @@ extension rustGenericArgs {
       if let out = output {
         result.append(.type(out.toType()))
       }
-      return GenericArgs(args: result)
+      return result
 
     case .return_type_notation:
-      return GenericArgs(args: [])
+      return []
     }
   }
 }
@@ -1662,7 +1662,7 @@ extension rustGenericBound {
     switch self {
     case .trait_bound(let trait, _, _):
       let typeExprs: [TypeExpr] =
-        trait.args?.toGenericArgs().args.compactMap { arg -> TypeExpr? in
+        trait.args?.toGenericArgs().compactMap { arg -> TypeExpr? in
           if case .type(let type) = arg {
             return TypeExpr(name: type.toTypeString(), args: [])
           }
