@@ -212,6 +212,7 @@ public struct JavaScriptDocScraper: Documentation {
           "/etc/profiles/per-user/philocalyst/bin/npx")
 
     let arguments = [
+      "documentation",
       "build",
       "index.js",
       "-f",
@@ -221,7 +222,8 @@ public struct JavaScriptDocScraper: Documentation {
     bin.arguments = arguments
 
     let json = try await getJSON(
-      source: self.package.source, command: bin, output_location: nil)
+      source: URL(string: "https://github.com/expressjs/express")!, command: bin,
+      output_location: nil)
 
     print(json)
 
