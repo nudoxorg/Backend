@@ -388,7 +388,7 @@ enum ItemEnum: Decodable {
   case union(Union)
   case structItem(rustStruct)
   case structField(rustType)
-  case enumItem(Enum)
+  case enumItem(rustEnum)
   case variant(Variant)
   case function(Function)
   case traitItem(Trait)
@@ -470,7 +470,7 @@ enum ItemEnum: Decodable {
     }
 
     if container.contains(.enumItem) {
-      let value = try container.decode(Enum.self, forKey: .enumItem)
+      let value = try container.decode(rustEnum.self, forKey: .enumItem)
       self = .enumItem(value)
       return
     }
@@ -689,7 +689,7 @@ private struct PlainStructPayload: Decodable {
   let has_stripped_fields: Bool
 }
 
-struct Enum: Decodable {
+struct rustEnum: Decodable {
   let generics: rustGenerics
   let has_stripped_variants: Bool
   let variants: [Int]

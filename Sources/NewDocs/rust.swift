@@ -301,8 +301,11 @@ public struct RustDocScraper: Documentation {
       var inputParams: [Parameter]? = nil
       var outputParams: [Parameter]? = nil
       let typeParams: [String]? = nil
+      var enahs: [rustEnum]? = nil
 
       switch item.inner {
+      case .enumItem(let enah):
+        print()
       case .module(let module):
         members = module.items.compactMap { crate.index[$0]?.name }
       case .function(let fn):
