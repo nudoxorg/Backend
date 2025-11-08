@@ -400,7 +400,8 @@ public struct RustDocScraper: Documentation {
         outputParameters: outputParams,
         typeParameters: typeParams,
         documentation: docs,
-        name: name
+        name: name,
+        id: id
       )
       entries[id] = entry
     }
@@ -651,7 +652,8 @@ extension Entry {
       outputParameters: self.outputParameters,
       typeParameters: self.typeParameters,
       documentation: self.documentation,
-      name: self.name
+      name: self.name,
+      id: self.id
     )
   }
 }

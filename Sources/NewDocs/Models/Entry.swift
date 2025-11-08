@@ -14,6 +14,7 @@ public enum ParameterAttribute: Codable, Sendable {
 public struct Entry: Sendable, Codable {
   // Required
   public let name: String  // Semantic name for the entry (std::time, or to_string)
+  public let id: Int  // A real nice way to link together other entries
   public let path: [String]  // The absolute path leading to the first instance of this entry
   public let kind: Kind  // The kind of entry this is
   public let visibility: Visibility?  // The visibility of this entry (public, private, flags?)
@@ -35,7 +36,8 @@ public struct Entry: Sendable, Codable {
     outputParameters: [Parameter]? = nil,
     typeParameters: [String]? = nil,
     documentation: String? = nil,
-    name: String
+    name: String,
+    id: Int
   ) throws {
     let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedName.isEmpty else {
@@ -47,6 +49,7 @@ public struct Entry: Sendable, Codable {
     self.visibility = visibility
     self.documentation = documentation
     self.name = trimmedName
+    self.id = id
     self.members = members  // Assigning the new property
     self.inputParameters = inputParameters  // Assigning the new property
     self.outputParameters = outputParameters  // Assigning the new property
