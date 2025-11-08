@@ -22,6 +22,8 @@ struct GenerateRustReference {
         version: version
       )
 
+      try await doc.buildPages()
+
       // 5) Prepare a local file‐system store
       let store = try FileSystemStore(baseDirectory: "./output")
 

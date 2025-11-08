@@ -242,12 +242,16 @@ public struct RustDocScraper: Documentation {
 
     // Decompress ZSTD
     let url = URL(filePath: "./example.json")
+    let out = URL(filePath: "./out.json")
     let decompressedData = try Data(contentsOf: url)
     let crateData = try JSONDecoder().decode(RustdocCrate.self, from: decompressedData)
 
     let entries = try mapCrateToEntries(crateData)
-    print(try JSONEncoder().encode(entries))
-
+    if let jsonData = try? JSONEncoder().encode(entries),
+   let jsonString = String(data: jsonData, encoding: .utf8) {
+try jsonData.write(to: out, options: .atomic)
+}
+    
     let page = DocumentationPage(
       path: [slug, "index"],
       internalURLs: [],
