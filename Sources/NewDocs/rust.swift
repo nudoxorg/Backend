@@ -240,20 +240,13 @@ public struct RustDocScraper: Documentation {
     logger.info("Fetching rustdoc JSON from \(jsonURL)")
     let response = try await httpClient.request(jsonURL)
 
-    // If JSON not found, fallback to HTML scraping
-    guard response.isSuccess else {
-      if response.statusCode == 404 {
-        logger.warning("No rustdoc JSON found, falling back to HTML scraping")
-        return []
-      }
-      throw NewDocsError.networkError("Failed to fetch rustdoc JSON: \(response.statusCode)")
-    }
-
     // Decompress ZSTD
-    let decompressedData = try await decompress_zstd(from: response.data)
+    let url = URL(filePath: "./example.json")
+    let decompressedData = try Data(contentsOf: url)
     let crateData = try JSONDecoder().decode(RustdocCrate.self, from: decompressedData)
+
     let entries = try mapCrateToEntries(crateData)
-    print(entries)
+    print(try JSONEncoder().encode(entries))
 
     let page = DocumentationPage(
       path: [slug, "index"],
@@ -269,7 +262,7 @@ public struct RustDocScraper: Documentation {
     if isStandardLibrary {
       return "https://doc.rust-lang.org/nightly/std/std.json"
     } else {
-      return "https://docs.rs/crate/\(package.slug)/\(version)/json"
+      return "https://docs.rs/crate/\(package.slug)/\(version)/\(package.slug).json"
     }
   }
 
@@ -296,7 +289,6 @@ public struct RustDocScraper: Documentation {
     for (id, item) in crate.index {
       guard let name = item.name else { continue }
       let fqPath = getPath(for: id, name: name)
-      let kind = crate.paths[id]!.into_kind()
       let visibility = item.visibility
       let docs = item.docs
 
@@ -328,8 +320,8 @@ public struct RustDocScraper: Documentation {
 
       let entry = try Entry(
         path: fqPath,
-        kind: kind,
-        visibility: visibility,
+        kind: Kind.constant,
+        visibility: "hi",
         members: members,
         inputParameters: inputParams,
         outputParameters: outputParams,
