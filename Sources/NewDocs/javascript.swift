@@ -173,7 +173,7 @@ public struct NPMPackage: Package {
   }
 
   public func retrieve(at version: Version, flags: [String]?) async throws -> Documentation {
-    throw NewDocsError.invalidEntry("JavaScript documentation retrieval is not implemented.")
+    return JavaScriptDocScraper(package: self, version: version)
   }
 }
 
@@ -202,11 +202,63 @@ public struct JavaScriptDocScraper: Documentation {
 
   /// This function builds pages by scraping TypeScript definitions and README
   public func buildPages() async throws -> [DocumentationPage] {
-    // Try to fetch type definitions from unpkg
-    let typeDefsURL = "https://unpkg.com/\(package.slug)@\(version)/index.d.ts"
-    let packageJsonURL = "https://unpkg.com/\(package.slug)@\(version)/package.json"
+    // Fetch the file listing from unpkg
+    let listingURL = "https://unpkg.com/\(package.slug)@\(version)/?meta"
+
+    guard let url = URL(string: listingURL) else {
+      throw NewDocsError.invalidEntry("h")
+
+    }
+
+    let (data, _) = try await URLSession.shared.data(from: url)
+
+    // Parse the JSON response from unpkg's meta endpoint
+    struct UnpkgFile: Codable {
+      let path: String
+      let type: String
+    }
+
+    struct UnpkgMeta: Codable {
+      let files: [UnpkgFile]
+    }
+
+    let meta = try JSONDecoder().decode(UnpkgMeta.self, from: data)
+
+    // Create a local directory for this package version
+    let fileManager = FileManager.default
+    let tempDir = fileManager.temporaryDirectory
+    let packageDir =
+      tempDir
+      .appendingPathComponent(package.slug)
+      .appendingPathComponent(version.versionString())
+
+    // Create the base directory if it doesn't exist
+    try fileManager.createDirectory(at: packageDir, withIntermediateDirectories: true)
+
+    // Filter for actual files and download each one
+    let files = meta.files.filter { $0.type == "file" }
+
+    for file in files {
+      let fileURL = "https://unpkg.com/\(package.slug)@\(version)\(file.path)"
+
+      guard let url = URL(string: fileURL) else { continue }
+
+      // Download the file
+      let (fileData, _) = try await URLSession.shared.data(from: url)
+
+      // Create the local file path, maintaining hierarchy
+      let localFilePath = packageDir.appendingPathComponent(file.path)
+
+      // Create parent directories if needed
+      let parentDir = localFilePath.deletingLastPathComponent()
+      try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+      // Write the file
+      try fileData.write(to: localFilePath)
+    }
 
     var entries: [Entry] = []
 
+    return []
   }
 }
