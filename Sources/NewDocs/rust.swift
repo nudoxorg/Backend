@@ -33,9 +33,10 @@ public struct CargoRegistry: PackageRegistry {
 
       let packages = crates.compactMap { crateData -> Package? in
         guard let name = crateData["name"] as? String,
-          let description = crateData["description"] as? String
+          let description = crateData["description"] as? String,
+          let source = crateData["source"] as? URL
         else { return nil }
-        return CargoPackage(slug: name, name: name, description: description)
+        return CargoPackage(slug: name, name: name, description: description, source: source)
       }
 
       return .success(packages)
@@ -64,8 +65,14 @@ public struct CargoRegistry: PackageRegistry {
         return .failure(.parsingError("Invalid crate response format"))
       }
 
+      guard let sourceData = json["repository"] as? URL
+      else {
+        return .failure(.parsingError("Invalid crate response format"))
+      }
+
       let description = crateData["description"] as? String
-      let package = CargoPackage(slug: name, name: name, description: description)
+      let package = CargoPackage(
+        slug: name, name: name, description: description, source: sourceData)
       return .success([package])
     } catch {
       return .failure(.networkError(error.localizedDescription))
@@ -76,7 +83,8 @@ public struct CargoRegistry: PackageRegistry {
     return CargoPackage(
       slug: "rust-reference",
       name: "The Rust Reference",
-      description: "The Rust Language Reference"
+      description: "The Rust Language Reference",
+      source: URL(string: "https://doc.rust-lang.org/reference/")!
     )
   }
 }
@@ -88,19 +96,20 @@ public struct CargoPackage: Package {
   public var name: String
   public var lang: Language = .Rust
   public let UUID: Int64
-  public let source: String = "cargo"
+  public let source: URL
 
   private let packageDescription: String?
   private let httpClient: HTTPRequesting
   private let logger: Logger
 
-  public init(slug: String, name: String?, description: String? = nil) {
+  public init(slug: String, name: String?, description: String? = nil, source: URL) {
     self.slug = slug
     self.name = name ?? slug
     self.packageDescription = description
     self.UUID = Int64(slug.hashValue)
     self.logger = Logger(label: "CargoPackage[\(slug)]")
     self.httpClient = HTTPRequest(logger: logger)
+    self.source = source
   }
 
   public func get_available_versions() async -> Result<[Version], NewDocsError> {
@@ -154,7 +163,8 @@ public struct CargoPackage: Package {
 
       let packages = deps.compactMap { depData -> Package? in
         guard let name = depData["crate_id"] as? String else { return nil }
-        return CargoPackage(slug: name, name: name)
+        guard let source = depData["repository"] as? URL else { return nil }
+        return CargoPackage(slug: name, name: name, source: source)
       }
 
       return .success(packages)
@@ -179,9 +189,10 @@ public struct CargoPackage: Package {
 
       let packages = deps.compactMap { depData -> Package? in
         guard let crateData = depData["crate"] as? [String: Any],
-          let name = crateData["name"] as? String
+          let name = crateData["name"] as? String,
+          let source = crateData["repository"] as? URL
         else { return nil }
-        return CargoPackage(slug: name, name: name)
+        return CargoPackage(slug: name, name: name, source: source)
       }
 
       return .success(packages)
@@ -235,9 +246,7 @@ public struct RustDocScraper: Documentation {
 
   /// This function builds pages
   public func buildPages() async throws -> [DocumentationPage] {
-    let jsonURL = try rustdocJSONURL()
-    logger.info("Fetching rustdoc JSON from \(jsonURL)")
-    let response = try await httpClient.request(jsonURL)
+    print(self.package.source)
 
     // Decompress ZSTD
     let url = URL(filePath: "./example.json")
