@@ -259,7 +259,7 @@ public struct RustDocScraper: Documentation {
 
     let arguments = [
       "rustdoc",
-      "--package", "axum",  // Specify the package you want to document
+      "--package", self.package.name,  // Specify the package you want to document
       "--",  // Separator for rustdoc arguments
       "--document-private-items",
       "--output-format", "json",
