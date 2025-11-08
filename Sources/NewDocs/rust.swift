@@ -3,6 +3,7 @@
 import Foundation
 import Logging
 import SemVer
+import SwiftGitX
 import SwiftSoup
 import zlib
 

@@ -5,6 +5,8 @@ import SemVer
 struct GenerateRustReference {
   static func main() async {
     do {
+      try SwiftGitX.initialize()
+
       // 1) Create the NewDocumentations driver
       let newdocs = NewDocumentations()
 
@@ -38,38 +40,4 @@ struct GenerateRustReference {
   }
 }
 
-struct GenerateJavascriptReference {
-	static func main() async {
-		do {
-			let newdocs = NewDocumentations()
-
-			//search npm registry for express framework
-			let npmRegistry = newdocs.registry(for: .Javascript)
-			let searchResult = await npmRegistry.search_packages(for: "express")
-			let packages = try searchResult.get()
-			print("🔎 Found \(packages.count) packages; first:", packages.first ?? "none")
-
-			// pick the first package
-			guard let package = packages.first else { return }
-			//get latest version
-			let version = Version(major: 5, minor: 1, patch: 0)
-
-			/*
-			print("NPM package: \(package)")
-			print("version: \(version)")
-			*/
-
-			let doc = try await newdocs.buildPackage(package: package, version: version)
-			_ = try await doc.buildPages()
-			let store = try FileSystemStore(baseDirectory: "./output")
-			try await Manifest().generate(docs: [doc], store: store)
-			print("✅ npm package docs generated at ./output/\(doc.slug)/")
-		} catch {
-			print("❌ Failed to generate npm docs:", error)
-			exit(1)
-		}
-	}
-}
-
-//await GenerateRustReference.main()
-await GenerateJavascriptReference.main()
+await GenerateRustReference.main()
