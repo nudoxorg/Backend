@@ -12,6 +12,7 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.6.0"),
+    .package(url: "https://github.com/ibrahimcetin/SwiftGitX.git", from: "0.1.9"),
     .package(url: "https://github.com/facebook/zstd", from: "1.5.6"),
     .package(url: "https://github.com/Alamofire/Alamofire.git", from: "5.8.0"),
     .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
@@ -23,6 +24,7 @@ let package = Package(
       dependencies: [
         "SwiftSoup",
         "Alamofire",
+        "SwiftGitX",
         .product(name: "SemVer", package: "semver"),
         .product(name: "libzstd", package: "zstd"),
         .product(name: "Logging", package: "swift-log"),
