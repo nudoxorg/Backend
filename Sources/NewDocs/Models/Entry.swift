@@ -7,7 +7,12 @@ public struct Parameter: Codable, Sendable {
 }
 
 public enum ParameterAttribute: Codable, Sendable {
+  case `inout`
   case mutable
+  case consuming
+  case borrowing
+  case isolated
+  case variadic
   case optional
 }
 
