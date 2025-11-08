@@ -202,63 +202,30 @@ public struct JavaScriptDocScraper: Documentation {
 
   /// This function builds pages by scraping TypeScript definitions and README
   public func buildPages() async throws -> [DocumentationPage] {
-    // Fetch the file listing from unpkg
-    let listingURL = "https://unpkg.com/\(package.slug)@\(version)/?meta"
+    // Decompress ZSTD
+    let out = URL(filePath: "./out.json")
 
-    guard let url = URL(string: listingURL) else {
-      throw NewDocsError.invalidEntry("h")
+    let bin = Process()
+    bin.executableURL =
+      URL(
+        fileURLWithPath:
+          "/etc/profiles/per-user/philocalyst/bin/npx")
 
-    }
+    let arguments = [
+      "build",
+      "index.js",
+      "-f",
+      "json",
+    ]
 
-    let (data, _) = try await URLSession.shared.data(from: url)
+    bin.arguments = arguments
 
-    // Parse the JSON response from unpkg's meta endpoint
-    struct UnpkgFile: Codable {
-      let path: String
-      let type: String
-    }
+    let json = try await getJSON(
+      source: self.package.source, command: bin, output_location: nil)
 
-    struct UnpkgMeta: Codable {
-      let files: [UnpkgFile]
-    }
+    print(json)
 
-    let meta = try JSONDecoder().decode(UnpkgMeta.self, from: data)
-
-    // Create a local directory for this package version
-    let fileManager = FileManager.default
-    let tempDir = fileManager.temporaryDirectory
-    let packageDir =
-      tempDir
-      .appendingPathComponent(package.slug)
-      .appendingPathComponent(version.versionString())
-
-    // Create the base directory if it doesn't exist
-    try fileManager.createDirectory(at: packageDir, withIntermediateDirectories: true)
-
-    // Filter for actual files and download each one
-    let files = meta.files.filter { $0.type == "file" }
-
-    for file in files {
-      let fileURL = "https://unpkg.com/\(package.slug)@\(version)\(file.path)"
-
-      guard let url = URL(string: fileURL) else { continue }
-
-      // Download the file
-      let (fileData, _) = try await URLSession.shared.data(from: url)
-
-      // Create the local file path, maintaining hierarchy
-      let localFilePath = packageDir.appendingPathComponent(file.path)
-
-      // Create parent directories if needed
-      let parentDir = localFilePath.deletingLastPathComponent()
-      try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
-
-      // Write the file
-      try fileData.write(to: localFilePath)
-    }
-
-    var entries: [Entry] = []
-
-    return []
+    let page = DocumentationPage(path: [], internalURLs: [], entries: [])
+    return [page]
   }
 }
