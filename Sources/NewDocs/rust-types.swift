@@ -20,52 +20,131 @@ struct RustdocPathSummary: Decodable {
 }
 
 extension ItemEnum {
-  func toKind() -> Kind? {
+  func toKind(
+    item: RustdocItem,
+    index: [Int: RustdocItem]
+  ) -> Kind? {
     switch self {
     case .module:
       return .module
-    case .externCrate:
-      // No direct equivalent in `Kind` for an extern crate declaration.
-      // It's more of an import statement.
+
+    case .externCrate, .use, .traitAlias, .impl, .externType:
       return nil
-    case .use:
-      // Similar to externCrate, a 'use' declaration doesn't map directly
-      // to a 'Kind' of code element. It's an import mechanism.
-      return nil
-    case .union:
-      return .unionType
+
+    case .union(let rustUnion):
+      // Convert union fields to types
+      let fieldTypes = rustUnion.fields.compactMap { fieldId -> Type? in
+        guard let fieldItem = index[fieldId],
+          case .structField(let fieldType) = fieldItem.inner
+        else {
+          return nil
+        }
+        return fieldType.toType()
+      }
+
+      return .unionType(fieldTypes)
+
     case .structItem(let rustStruct):
-      // Mapping Rust struct to DocsRecord
       let recordKind: RecordKind
+      let fields: [RecordField]?
+
       switch rustStruct.kind {
       case .unit:
         recordKind = .unit
-      case .tuple:
+        fields = nil
+
+      case .tuple(let fieldIds):
         recordKind = .tuple
-      case .plain:
+        fields = fieldIds.enumerated().compactMap { idx, fieldId in
+          guard let fieldId = fieldId,
+            let fieldItem = index[fieldId],
+            case .structField(let fieldType) = fieldItem.inner
+          else {
+            return nil
+          }
+          return RecordField(
+            name: nil,  // Tuple fields are positional
+            type: fieldType.toType(),
+            defaultValue: nil,
+            attributes: nil,
+            visibility: fieldItem.visibility.toVisibility()
+          )
+        }
+
+      case .plain(let fieldIds, _):
         recordKind = .named
+        fields = fieldIds.compactMap { fieldId in
+          guard let fieldItem = index[fieldId],
+            case .structField(let fieldType) = fieldItem.inner
+          else {
+            return nil
+          }
+          return RecordField(
+            name: fieldItem.name,
+            type: fieldType.toType(),
+            defaultValue: nil,
+            attributes: nil,
+            visibility: fieldItem.visibility.toVisibility()
+          )
+        }
       }
 
       return .recordType(
         DocsRecord(
-          name: nil,  // `RustdocItem` holds the name, not `rustStruct`
-          generics: nil,  // `rustGenerics` would need mapping for this
+          name: item.name,
+          generics: rustStruct.generics.toGenericArgs(),
           kind: recordKind,
-          fields: nil,  // `RustdocItem` would contain field IDs, needs lookup
-          visibility: nil  // `RustdocItem` holds visibility, not `rustStruct`
+          fields: fields,
+          visibility: item.visibility.toVisibility()
         ))
-    case .structField(let rustType):
-      // This is a bit tricky as a `Kind.field` expects a `RecordField`.
-      // We only have the `rustType` here. We can return `nil` or create
-      // a minimal `RecordField` without a name or full attributes.
-      // Opting for nil for now as context is missing.
+
+    case .structField:
       return nil
-    case .enumItem:
-      return .sumType
+
+    case .enumItem(let rustEnum):
+      // Convert enum to sum type
+      let variants = rustEnum.variants.compactMap { variantId -> SumVariant? in
+        guard let variantItem = index[variantId],
+          case .variant(let variant) = variantItem.inner,
+          let name = variantItem.name
+        else {
+          return nil
+        }
+
+        let types: [Type]?
+        switch variant.kind {
+        case .plain:
+          types = nil
+
+        case .tuple(let fieldIds):
+          types = fieldIds.compactMap { fieldId in
+            guard let fieldItem = index[fieldId],
+              case .structField(let fieldType) = fieldItem.inner
+            else {
+              return nil
+            }
+            return fieldType.toType()
+          }
+
+        case .struct(let fieldIds, _):
+          types = fieldIds.compactMap { fieldId in
+            guard let fieldItem = index[fieldId],
+              case .structField(let fieldType) = fieldItem.inner
+            else {
+              return nil
+            }
+            return fieldType.toType()
+          }
+        }
+
+        return SumVariant(name: name, types: types)
+      }
+
+      return .sumType(variants)
+
     case .variant:
-      // A variant is part of an enum, not a top-level "kind" itself.
-      // Returning nil is appropriate here.
       return nil
+
     case .function(let function):
       var attrs: [FunctionAttributes] = []
       if function.sig.is_c_variadic { attrs.append(.variadic) }
@@ -73,8 +152,6 @@ extension ItemEnum {
       if function.header.is_async { attrs.append(.async) }
       if function.header.is_unsafe { attrs.append(.unsafe) }
 
-      // Generics would need a full mapping from rustGenerics to Generics.
-      // Leaving nil for now.
       return .function(
         DocsFunction(
           inputParameters: function.sig.inputs.map { input in
@@ -89,48 +166,45 @@ extension ItemEnum {
           outputParameters: function.sig.output.map { outputType in
             [
               Parameter(
-                name: "return", type: outputType.toType(), attributes: nil,
+                name: "return",
+                type: outputType.toType(),
+                attributes: nil,
                 defaultValue: nil,
-                description: nil)
+                description: nil
+              )
             ]
           },
           attributes: attrs.isEmpty ? nil : attrs,
-          generics: nil,  // Requires more mapping logic
-          name: "",  // `RustdocItem` holds the name, not `Function`
+          generics: function.generics.toGenerics(),
+          name: item.name ?? "",
           implemented: function.has_body,
-          visibility: nil  // `RustdocItem` holds visibility
+          visibility: item.visibility.toVisibility()
         ))
+
     case .traitItem:
       return .interfaceType
-    case .traitAlias:
-      // Trait aliases are similar to type aliases but for traits.
-      // `interfaceType` is the closest, but it's not strictly an alias.
-      // `typeAlias` is also a possibility if you consider it an alias.
-      // Going with `nil` as it's not a primary "interface" but a grouping.
-      return nil
-    case .impl:
-      // Implementations (impl blocks) are not a "kind" of element in the `Kind` enum.
-      // They describe relationships and functionality.
-      return nil
+
     case .typeAlias:
       return .typeAlias
+
     case .constant:
       return .constant
+
     case .staticItem:
       return .variable
-    case .externType:
-      // No direct equivalent. External type declarations are FFI-related.
-      return nil
-    case .macroItem:
+
+    case .macroItem, .procMacro:
       return .macro
-    case .procMacro:
-      return .macro  // Proc macros are a type of macro.
+
     case .primitive:
       return .primitiveType
+
     case .assocConst:
-      return .constant  // Associated constants are still constants.
+      return .constant
+
     case .assocType:
-      return .typeAlias  // Associated types are effectively type aliases within a trait/impl.
+      return .typeAlias
+
     case .unknown:
       return nil
     }
@@ -168,7 +242,7 @@ extension RustdocPathSummary {
         ))
 
     case "enum":
-      return .sumType
+      return .sumType([])
 
     case "constant":
       return .constant
@@ -189,7 +263,7 @@ extension RustdocPathSummary {
       return .primitiveType
 
     case "union":
-      return .unionType
+      return .unionType([])
 
     case "field":
       return .field
@@ -833,6 +907,162 @@ struct rustPrimitive: Decodable {
 struct rustGenerics: Decodable {
   let params: [GenericParamDef]
   let where_predicates: [WherePredicate]
+}
+
+extension rustGenerics {
+  func toGenerics() -> Generics {
+    var typeParams: [TypeParam] = []
+    var constParams: [ConstParam] = []
+    var lifetimeParams: [LifetimeParam] = []
+    var constraints: [Constraint] = []
+
+    // Process generic parameters
+    for param in params {
+      switch param.kind {
+      case .type(let defaultType, let bounds, let isSynthetic):
+        typeParams.append(
+          TypeParam(
+            name: param.name,
+            kind: isSynthetic ? .associated : .type,
+            variance: .invariant,
+            defaultType: defaultType.map { type in
+              TypeExpr(name: type.toString(), args: [])
+            }
+          )
+        )
+
+        // Add trait bounds as constraints
+        for bound in bounds {
+          constraints.append(
+            contentsOf: bound.toConstraints(paramName: param.name)
+          )
+        }
+
+      case .const(let type, let defaultValue):
+        constParams.append(
+          ConstParam(
+            name: param.name,
+            type: TypeExpr(name: type.toString(), args: []),
+            defaultValue: defaultValue.map { ConstExpr(expr: $0) }
+          )
+        )
+
+      case .lifetime(let outlives):
+        lifetimeParams.append(
+          LifetimeParam(name: param.name, variance: .invariant)
+        )
+
+        // Add lifetime bounds as constraints
+        for longer in outlives {
+          constraints.append(
+            .lifetimeBound(shorter: param.name, longer: longer)
+          )
+        }
+      }
+    }
+
+    // Process where predicates
+    for predicate in where_predicates {
+      switch predicate {
+      case .bound_predicate(let type, _, let bounds):
+        let typeName = type.toString()
+        for bound in bounds {
+          constraints.append(
+            contentsOf: bound.toConstraints(paramName: typeName)
+          )
+        }
+
+      case .lifetime_predicate(let lifetime, let outlives):
+        for longer in outlives {
+          constraints.append(
+            .lifetimeBound(shorter: lifetime, longer: longer)
+          )
+        }
+
+      case .eq_predicate(let lhs, let rhs):
+        // Associated type equality: T::Item = u32
+        let lhsStr = lhs.toString()
+        let rhsStr: String
+        switch rhs {
+        case .type(let t):
+          rhsStr = t.toString()
+        case .constant(let c):
+          rhsStr = c.expr
+        }
+
+        if lhsStr.contains("::") {
+          let parts = lhsStr.split(separator: "::")
+          if parts.count >= 2 {
+            let param = String(parts[0])
+            let assocName = String(parts[1])
+            constraints.append(
+              .associatedTypeBound(
+                param: param,
+                assocName: assocName,
+                bound: TypeExpr(name: rhsStr, args: [])
+              )
+            )
+          }
+        }
+      }
+    }
+
+    return Generics(
+      typeParams: typeParams,
+      constParams: constParams,
+      lifetimeParams: lifetimeParams,
+      constraints: constraints
+    )
+  }
+
+  func toGenericArgs() -> [GenericArg]? {
+    let args = params.compactMap { param -> GenericArg? in
+      switch param.kind {
+      case .type(let defaultType, _, _):
+        if let defaultType = defaultType {
+          return .type(defaultType.toType())
+        }
+        return .type(.genericParam(param.name))
+      case .const(_, let defaultValue):
+        if let defaultValue = defaultValue {
+          return .constExpr(ConstExpr(expr: defaultValue))
+        }
+        return nil
+      case .lifetime:
+        return .lifetime(param.name)
+      }
+    }
+    return args.isEmpty ? nil : args
+  }
+}
+
+extension rustGenericBound {
+  func toConstraints(paramName: String) -> [Constraint] {
+    switch self {
+    case .trait_bound(let trait, _, _):
+      let typeExprs: [TypeExpr] =
+        trait.args?.toGenericArgs().compactMap { arg -> TypeExpr? in
+          if case .type(let type) = arg {
+            return TypeExpr(name: type.toTypeString(), args: [])
+          }
+          return nil
+        } ?? []
+
+      return [
+        .traitBound(
+          param: paramName,
+          trait: TraitRef(name: trait.path, args: typeExprs)
+        )
+      ]
+
+    case .outlives(let lifetime):
+      return [.lifetimeBound(shorter: paramName, longer: lifetime)]
+
+    case .use(_):
+      // Precise capturing doesn't map cleanly to constraints
+      return []
+    }
+  }
 }
 
 struct GenericParamDef: Decodable {

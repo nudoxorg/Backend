@@ -328,7 +328,7 @@ public struct RustDocScraper: Documentation {
 
       let entry = try Entry(
         path: fqPath,
-        kind: item.inner.toKind() ?? Kind.constant,
+        kind: item.inner.toKind(item: item, index: crate.index) ?? Kind.constant,
         visibility: visibility.toVisibility(),
         members: members,
         inputParameters: inputParams,
