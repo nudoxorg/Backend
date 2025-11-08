@@ -19,6 +19,124 @@ struct RustdocPathSummary: Decodable {
   let path: [String]
 }
 
+extension ItemEnum {
+  func toKind() -> Kind? {
+    switch self {
+    case .module:
+      return .module
+    case .externCrate:
+      // No direct equivalent in `Kind` for an extern crate declaration.
+      // It's more of an import statement.
+      return nil
+    case .use:
+      // Similar to externCrate, a 'use' declaration doesn't map directly
+      // to a 'Kind' of code element. It's an import mechanism.
+      return nil
+    case .union:
+      return .unionType
+    case .structItem(let rustStruct):
+      // Mapping Rust struct to DocsRecord
+      let recordKind: RecordKind
+      switch rustStruct.kind {
+      case .unit:
+        recordKind = .unit
+      case .tuple:
+        recordKind = .tuple
+      case .plain:
+        recordKind = .named
+      }
+
+      return .recordType(
+        DocsRecord(
+          name: nil,  // `RustdocItem` holds the name, not `rustStruct`
+          generics: nil,  // `rustGenerics` would need mapping for this
+          kind: recordKind,
+          fields: nil,  // `RustdocItem` would contain field IDs, needs lookup
+          visibility: nil  // `RustdocItem` holds visibility, not `rustStruct`
+        ))
+    case .structField(let rustType):
+      // This is a bit tricky as a `Kind.field` expects a `RecordField`.
+      // We only have the `rustType` here. We can return `nil` or create
+      // a minimal `RecordField` without a name or full attributes.
+      // Opting for nil for now as context is missing.
+      return nil
+    case .enumItem:
+      return .sumType
+    case .variant:
+      // A variant is part of an enum, not a top-level "kind" itself.
+      // Returning nil is appropriate here.
+      return nil
+    case .function(let function):
+      var attrs: [FunctionAttributes] = []
+      if function.sig.is_c_variadic { attrs.append(.variadic) }
+      if function.header.is_const { attrs.append(.const) }
+      if function.header.is_async { attrs.append(.async) }
+      if function.header.is_unsafe { attrs.append(.unsafe) }
+
+      // Generics would need a full mapping from rustGenerics to Generics.
+      // Leaving nil for now.
+      return .function(
+        DocsFunction(
+          inputParameters: function.sig.inputs.map { input in
+            Parameter(
+              name: input.name,
+              type: input.type.toType(),
+              attributes: nil,
+              defaultValue: nil,
+              description: nil
+            )
+          },
+          outputParameters: function.sig.output.map { outputType in
+            [
+              Parameter(
+                name: "return", type: outputType.toType(), attributes: nil,
+                defaultValue: nil,
+                description: nil)
+            ]
+          },
+          attributes: attrs.isEmpty ? nil : attrs,
+          generics: nil,  // Requires more mapping logic
+          name: "",  // `RustdocItem` holds the name, not `Function`
+          implemented: function.has_body,
+          visibility: nil  // `RustdocItem` holds visibility
+        ))
+    case .traitItem:
+      return .interfaceType
+    case .traitAlias:
+      // Trait aliases are similar to type aliases but for traits.
+      // `interfaceType` is the closest, but it's not strictly an alias.
+      // `typeAlias` is also a possibility if you consider it an alias.
+      // Going with `nil` as it's not a primary "interface" but a grouping.
+      return nil
+    case .impl:
+      // Implementations (impl blocks) are not a "kind" of element in the `Kind` enum.
+      // They describe relationships and functionality.
+      return nil
+    case .typeAlias:
+      return .typeAlias
+    case .constant:
+      return .constant
+    case .staticItem:
+      return .variable
+    case .externType:
+      // No direct equivalent. External type declarations are FFI-related.
+      return nil
+    case .macroItem:
+      return .macro
+    case .procMacro:
+      return .macro  // Proc macros are a type of macro.
+    case .primitive:
+      return .primitiveType
+    case .assocConst:
+      return .constant  // Associated constants are still constants.
+    case .assocType:
+      return .typeAlias  // Associated types are effectively type aliases within a trait/impl.
+    case .unknown:
+      return nil
+    }
+  }
+}
+
 extension RustdocPathSummary {
   /// Converts the Rustdoc path summary kind string into a `Kind` enum.
   /// Returns `.info` for unknown or unmapped kinds.
@@ -190,6 +308,32 @@ enum rustVisibility: Decodable {
         DecodingError.Context(
           codingPath: decoder.codingPath,
           debugDescription: "Unable to decode visibility"))
+    }
+  }
+}
+
+extension rustVisibility {
+  func toVisibility() -> Visibility {
+    switch self {
+    case .public:
+      return .public
+    case .default:
+      // This is a mapping decision. "Default" in Rust often means
+      // private to the module/crate. I'm aligning it with Swift's
+      // '.internal' for module-level visibility. Adjust if your
+      // interpretation of "default" differs in context.
+      return .internal
+    case .crate:
+      // Rust's 'crate' visibility is analogous to Swift's 'internal',
+      // meaning it's visible within the current compilation unit (crate).
+      return .internal
+    case .restricted:
+      // A 'restricted' visibility in Rust implies a scoped private
+      // access, usually to a specific path or module. The closest
+      // Swift equivalent for something not globally public or internal
+      // is '.private'. This is a lossy conversion as Swift's private
+      // doesn't have the same path-based restriction.
+      return .private
     }
   }
 }

@@ -16,7 +16,7 @@ public struct Entry: Sendable, Codable {
   public let name: String  // Semantic name for the entry (std::time, or to_string)
   public let path: [String]  // The absolute path leading to the first instance of this entry
   public let kind: Kind  // The kind of entry this is
-  public let visibility: String?  // The visibility of this entry (public, private, flags?)
+  public let visibility: Visibility?  // The visibility of this entry (public, private, flags?)
 
   public let documentation: String?  // The associated documentation
 
@@ -29,7 +29,7 @@ public struct Entry: Sendable, Codable {
   public init(
     path: [String],
     kind: Kind,
-    visibility: String? = nil,
+    visibility: Visibility? = nil,
     members: [String]? = nil,
     inputParameters: [Parameter]? = nil,
     outputParameters: [Parameter]? = nil,
