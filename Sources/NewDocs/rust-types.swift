@@ -1152,3 +1152,277 @@ struct FunctionInput: Decodable {
     type = try container.decode(rustType.self)
   }
 }
+
+extension rustType {
+  /// Converts a Rust type representation to the universal Type representation.
+  func toType() -> Type {
+    switch self {
+    case .resolvedPath(let path):
+      return .resolvedPath(path.toPath())
+
+    case .dynTrait(let dynTrait):
+      return .dynTrait(dynTrait.toDynTrait())
+
+    case .generic(let name):
+      return .genericParam(name)
+
+    case .primitive(let name):
+      return .primitive(name.toPrimitive())
+
+    case .functionPointer(let fnPtr):
+      return .functionPointer(fnPtr.toFunctionPointer())
+
+    case .tuple(let types):
+      return .tuple(types.map { $0.toType() })
+
+    case .slice(let inner):
+      return .slice(inner.toType())
+
+    case .array(let type, let len):
+      // Convert string length to UInt if possible, default to 0
+      let length = UInt(len) ?? 0
+      return .array(type: type.toType(), length: length)
+
+    case .pat(let type, _):
+      return .pattern(type: type.toType())
+
+    case .implTrait(let bounds):
+      return .implTrait(bounds.map { $0.toGenericBound() })
+
+    case .infer:
+      return .infer
+
+    case .rawPointer(let isMutable, let type):
+      return .rawPointer(isMutable: isMutable, type: type.toType())
+
+    case .borrowedRef(let lifetime, let isMutable, let type):
+      return .borrowedRef(lifetime: lifetime, isMutable: isMutable, type: type.toType())
+
+    case .qualifiedPath(let name, let args, let selfType, let trait):
+      return .qualifiedPath(
+        QualifiedPath(
+          name: name,
+          args: args?.toGenericArgs(),
+          selfType: selfType.toType(),
+          trait: trait?.toPath()
+        ))
+    }
+  }
+}
+
+extension rustPath {
+  func toPath() -> Path {
+    Path(
+      path: path,
+      args: args?.toGenericArgs()
+    )
+  }
+}
+
+extension rustDynTrait {
+  func toDynTrait() -> DynTrait {
+    DynTrait(
+      traits: traits.map { $0.toPolyTrait() },
+      lifetime: lifetime
+    )
+  }
+}
+
+extension rustPolyTrait {
+  func toPolyTrait() -> PolyTrait {
+    let typeExprs: [TypeExpr] =
+      trait.args?.toGenericArgs().args.compactMap { arg -> TypeExpr? in
+        if case .type(let type) = arg {
+          // Use toString() method instead of description
+          return TypeExpr(name: type.toTypeString(), args: [])
+        }
+        return nil
+      } ?? []
+
+    return PolyTrait(
+      trait: TraitRef(
+        name: trait.path,
+        args: typeExprs
+      ),
+      lifetimes: generic_params.compactMap { param in
+        if case .lifetime(let outlives) = param.kind {
+          return param.name
+        }
+        return nil
+      }
+    )
+  }
+}
+
+extension rustFunctionPointer {
+  func toFunctionPointer() -> FunctionPointer {
+    var attrs: [FunctionAttributes] = []
+    if sig.is_c_variadic { attrs.append(.variadic) }
+    if header.is_const { attrs.append(.const) }
+    if header.is_async { attrs.append(.async) }
+    if header.is_unsafe { attrs.append(.unsafe) }
+
+    let typeParams: [TypeParam]? = {
+      let params = generic_params.compactMap { param -> TypeParam? in
+        guard case .type(let defaultType, _, let isSynthetic) = param.kind else {
+          return nil
+        }
+        return TypeParam(
+          name: param.name,
+          kind: isSynthetic ? .associated : .type,
+          variance: .invariant,
+          defaultType: defaultType.map { TypeExpr(name: $0.toString(), args: []) }
+        )
+      }
+      return params.isEmpty ? nil : params
+    }()
+
+    return FunctionPointer(
+      inputs: nil,
+      outputs: nil,
+      genericParams: typeParams,
+      attributes: attrs.isEmpty ? nil : attrs
+    )
+  }
+}
+
+extension rustGenericArgs {
+  func toGenericArgs() -> GenericArgs {
+    switch self {
+    case .angle_bracketed(let args, _):
+      return GenericArgs(args: args.map { $0.toGenericArg() })
+
+    case .parenthesized(let inputs, let output):
+      // Convert parenthesized args to type arguments
+      var result = inputs.map { GenericArg.type($0.toType()) }
+      if let out = output {
+        result.append(.type(out.toType()))
+      }
+      return GenericArgs(args: result)
+
+    case .return_type_notation:
+      return GenericArgs(args: [])
+    }
+  }
+}
+
+extension rustGenericArg {
+  func toGenericArg() -> GenericArg {
+    switch self {
+    case .lifetime(let name):
+      return .lifetime(name)
+
+    case .type(let type):
+      return .type(type.toType())
+
+    case .const(let constant):
+      return .constExpr(ConstExpr(expr: constant.expr))
+
+    case .infer:
+      return .type(.infer)
+    }
+  }
+}
+
+extension rustGenericBound {
+  func toGenericBound() -> GenericBound {
+    switch self {
+    case .trait_bound(let trait, _, _):
+      let typeExprs: [TypeExpr] =
+        trait.args?.toGenericArgs().args.compactMap { arg -> TypeExpr? in
+          if case .type(let type) = arg {
+            return TypeExpr(name: type.toTypeString(), args: [])
+          }
+          return nil
+        } ?? []
+
+      return .trait(
+        TraitRef(
+          name: trait.path,
+          args: typeExprs
+        ))
+
+    case .outlives(let lifetime):
+      return .lifetime(lifetime)
+
+    case .use(_):
+      // Use bounds don't have a direct equivalent, treat as lifetime
+      return .lifetime("'_")
+    }
+  }
+}
+
+extension String {
+  func toPrimitive() -> Primitive {
+    switch self {
+    case "i8": return .int8(0)
+    case "i16": return .int16(0)
+    case "i32", "isize": return .int(0)
+    case "i64": return .int64(0)
+    case "i128": return .int128(0)
+    case "u8": return .uint8(0)
+    case "u16": return .uint16(0)
+    case "u32", "usize": return .uint(0)
+    case "u64": return .uint64(0)
+    case "u128": return .uint128(0)
+    case "f16": return .f16(0)
+    case "f32": return .float(0)
+    case "f64": return .double(0)
+    case "bool": return .bool(false)
+    case "str", "String": return .string("")
+    case "char": return .char(" ")
+    default: return .null
+    }
+  }
+}
+
+// Helper to convert Type to string representation
+extension Type {
+  func toTypeString() -> String {
+    switch self {
+    case .resolvedPath(let path):
+      return path.path
+    case .genericParam(let name):
+      return name
+    case .primitive(let prim):
+      return primitiveToString(prim)
+    case .tuple(let types):
+      return "(\(types.map { $0.toTypeString() }.joined(separator: ", ")))"
+    case .slice(let inner):
+      return "[\(inner.toTypeString())]"
+    case .array(let type, let len):
+      return "[\(type.toTypeString()); \(len)]"
+    case .infer:
+      return "_"
+    case .rawPointer(let isMutable, let type):
+      return "*\(isMutable ? "mut" : "const") \(type.toTypeString())"
+    case .borrowedRef(let lifetime, let isMutable, let type):
+      let lt = lifetime.map { "\($0) " } ?? ""
+      return "&\(lt)\(isMutable ? "mut " : "")\(type.toTypeString())"
+    default:
+      return "unknown"
+    }
+  }
+
+  private func primitiveToString(_ prim: Primitive) -> String {
+    switch prim {
+    case .int8: return "i8"
+    case .int16: return "i16"
+    case .int: return "i32"
+    case .int64: return "i64"
+    case .int128: return "i128"
+    case .uint8: return "u8"
+    case .uint16: return "u16"
+    case .uint: return "u32"
+    case .uint64: return "u64"
+    case .uint128: return "u128"
+    case .f16: return "f16"
+    case .float: return "f32"
+    case .double: return "f64"
+    case .bool: return "bool"
+    case .string: return "String"
+    case .char: return "char"
+    default: return "unknown"
+    }
+  }
+}
