@@ -13,8 +13,24 @@ indirect public enum Type: Codable, Sendable {
   case implTrait([GenericBound])
   case infer
   case rawPointer(isMutable: Bool, type: Type)
+  case union([Type])
+  case sum([SumVariant])
+  case intersection([Type])
   case borrowedRef(lifetime: String?, isMutable: Bool, type: Type)
   case qualifiedPath(QualifiedPath)
+}
+
+public struct SumVariant: Codable, Sendable {
+  /// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
+  public let name: String
+
+  /// Associated types for this variant (nil for unit variants)
+  public let types: [Type]?
+
+  public init(name: String, types: [Type]? = nil) {
+    self.name = name
+    self.types = types
+  }
 }
 
 public enum Primitive: Sendable, Codable {
@@ -184,7 +200,7 @@ public enum Primitive: Sendable, Codable {
 
 public struct Path: Codable, Sendable {
   public var path: String
-  public var args: GenericArgs?
+  public var genericArgs: [GenericArg]?
 }
 
 // MARK: - DynTrait
@@ -207,16 +223,12 @@ public struct FunctionPointer: Codable, Sendable {
 
 public struct QualifiedPath: Codable, Sendable {
   public var name: String
-  public var args: GenericArgs?
+  public var genericArguments: [GenericArg]?
   public var selfType: Type
   public var trait: Path?  // optional, None if inherent
 }
 
 // MARK: - GenericArgs
-
-public struct GenericArgs: Codable, Sendable {
-  public var args: [GenericArg]
-}
 
 public enum GenericArg: Codable, Sendable {
   case type(Type)
@@ -320,7 +332,7 @@ public struct RecordField: Codable, Sendable {
   public let type: Type?
 
   /// The default value
-  public let defaultValue: ConstExpr
+  public let defaultValue: ConstExpr?
 
   /// Attributes on the field
   public let attributes: FieldAttribute?
@@ -360,10 +372,10 @@ public enum Kind: Sendable, Codable {
   case info
 
   /// Union type
-  case unionType
+  case unionType([Type])
 
   /// Enum, algebraic data type, discriminated union.
-  case sumType
+  case sumType([SumVariant])
 
   /// Trait, interface, abstract base class.
   case interfaceType
