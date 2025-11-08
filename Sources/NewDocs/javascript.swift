@@ -176,3 +176,37 @@ public struct NPMPackage: Package {
     throw NewDocsError.invalidEntry("JavaScript documentation retrieval is not implemented.")
   }
 }
+
+public struct JavaScriptDocScraper: Documentation {
+  public let logger: Logger
+  public let package: NPMPackage
+  public let version: Version
+  private let httpClient: HTTPRequesting
+
+  public var name: String { package.name }
+  public var slug: String { package.slug }
+  public var links: [String: URL] {
+    return [
+      "home": URL(string: "https://www.npmjs.com/package/\(package.slug)")!,
+      "docs": URL(string: "https://unpkg.com/\(package.slug)@\(version)/")!,
+      "registry": URL(string: "https://registry.npmjs.org/\(package.slug)")!,
+    ]
+  }
+
+  public init(package: NPMPackage, version: Version) {
+    self.package = package
+    self.version = version
+    self.logger = Logger(label: "JavaScriptDocScraper[\(package.slug)]")
+    self.httpClient = HTTPRequest(logger: logger)
+  }
+
+  /// This function builds pages by scraping TypeScript definitions and README
+  public func buildPages() async throws -> [DocumentationPage] {
+    // Try to fetch type definitions from unpkg
+    let typeDefsURL = "https://unpkg.com/\(package.slug)@\(version)/index.d.ts"
+    let packageJsonURL = "https://unpkg.com/\(package.slug)@\(version)/package.json"
+
+    var entries: [Entry] = []
+
+  }
+}
