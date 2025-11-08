@@ -34,9 +34,10 @@ public struct CargoRegistry: PackageRegistry {
       let packages = crates.compactMap { crateData -> Package? in
         guard let name = crateData["name"] as? String,
           let description = crateData["description"] as? String,
-          let source = crateData["source"] as? URL
+          let source_string = crateData["repository"] as? String
         else { return nil }
-        return CargoPackage(slug: name, name: name, description: description, source: source)
+        return CargoPackage(
+          slug: name, name: name, description: description, source: URL(string: source_string)!)
       }
 
       return .success(packages)
@@ -246,8 +247,6 @@ public struct RustDocScraper: Documentation {
 
   /// This function builds pages
   public func buildPages() async throws -> [DocumentationPage] {
-    print(self.package.source)
-
     // Decompress ZSTD
     let url = URL(filePath: "./example.json")
     let out = URL(filePath: "./out.json")
