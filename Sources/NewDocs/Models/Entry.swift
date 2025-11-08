@@ -1,27 +1,17 @@
-import Foundation
-
-/// Strongly typed parameter
-public struct Parameter: Codable, Sendable {
-  public let name: String
-  public let type: Type?
-  public let attributes: [ParameterAttribute]?
-  public let defaultValue: ConstExpr?
-  public let description: String?
-}
-
-public enum ParameterAttribute: Codable, Sendable {
-  case mutable
-  case optional
-}
-
-public struct Entry: Codable {
+public struct Entry: Codable, Hashable {
   // Required
-  public let name: String  // Semantic name for the entry (std::time, or to_string)
-  public let path: [String]  // The absolute path leading to the first instance of this entry
-  public let kind: Kind  // The kind of entry this is
-  public let visibility: String?  // The visibility of this entry (public, private, flags?)
+  public let name: String // Semantic name for the entry (std::time, or to_string)
+  public let path: [String] // The absolute path leading to the first instance of this entry
+  public let kind: Kind // The kind of entry this is
+  public let visibility: String? // The visibility of this entry (public, private, flags?)
 
-  public let documentation: String?  // The associated documentation
+  public let documentation: String? // The associated documentation
+
+  // Added missing properties
+  public let members: [String]?
+  public let inputParameters: [Parameter]?
+  public let outputParameters: [Parameter]?
+  public let typeParameters: [String]?
 
   public init(
     path: [String],
@@ -32,7 +22,7 @@ public struct Entry: Codable {
     outputParameters: [Parameter]? = nil,
     typeParameters: [String]? = nil,
     documentation: String? = nil,
-    name: String,
+    name: String
   ) throws {
     let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedName.isEmpty else {
@@ -44,5 +34,9 @@ public struct Entry: Codable {
     self.visibility = visibility
     self.documentation = documentation
     self.name = trimmedName
+    self.members = members // Assigning the new property
+    self.inputParameters = inputParameters // Assigning the new property
+    self.outputParameters = outputParameters // Assigning the new property
+    self.typeParameters = typeParameters // Assigning the new property
   }
 }
