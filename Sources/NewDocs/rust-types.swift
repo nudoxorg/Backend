@@ -107,10 +107,10 @@ struct RustdocItem: Decodable {
   let crate_id: Int
   let name: String?
   let span: Span?
-  let visibility: String
+  let visibility: rustVisibility
   let docs: String?
   let links: [String: Int]
-  let attrs: [String]
+  let attrs: [AnyDecodable]
   let deprecation: Deprecation?
   let inner: ItemEnum
 }
@@ -125,29 +125,71 @@ enum rustVisibility: Decodable {
     case kind
     case parent
     case path
+    case `public`
+    case `default`
+    case crate
+    case restricted
   }
 
   init(from decoder: Decoder) throws {
+    // First try to decode as a simple string
+    if let stringValue = try? decoder.singleValueContainer().decode(String.self) {
+      switch stringValue {
+      case "public":
+        self = .public
+      case "default":
+        self = .default
+      case "crate":
+        self = .crate
+      default:
+        throw DecodingError.dataCorruptedError(
+          in: try decoder.singleValueContainer(),
+          debugDescription: "Unknown visibility string: \(stringValue)")
+      }
+      return
+    }
+
+    // Try as a dictionary
     let container = try decoder.container(keyedBy: CodingKeys.self)
 
-    // The "kind" field tells us which variant it is
-    let kind = try container.decode(String.self, forKey: .kind)
-    switch kind {
-    case "public":
+    // Check for direct variant keys first
+    if container.contains(.public) {
       self = .public
-    case "default":
+    } else if container.contains(.default) {
       self = .default
-    case "crate":
+    } else if container.contains(.crate) {
       self = .crate
-    case "restricted":
-      let parent = try container.decode(Int.self, forKey: .parent)
-      let path = try container.decode(String.self, forKey: .path)
+    } else if container.contains(.restricted) {
+      // For restricted, we need to decode the nested structure
+      let restrictedContainer = try container.nestedContainer(
+        keyedBy: CodingKeys.self, forKey: .restricted)
+      let parent = try restrictedContainer.decode(Int.self, forKey: .parent)
+      let path = try restrictedContainer.decode(String.self, forKey: .path)
       self = .restricted(parent: parent, path: path)
-    default:
-      throw DecodingError.dataCorruptedError(
-        forKey: .kind,
-        in: container,
-        debugDescription: "Unknown visibility kind: \(kind)")
+    } else if let kind = try? container.decode(String.self, forKey: .kind) {
+      // Fall back to "kind" field
+      switch kind {
+      case "public":
+        self = .public
+      case "default":
+        self = .default
+      case "crate":
+        self = .crate
+      case "restricted":
+        let parent = try container.decode(Int.self, forKey: .parent)
+        let path = try container.decode(String.self, forKey: .path)
+        self = .restricted(parent: parent, path: path)
+      default:
+        throw DecodingError.dataCorruptedError(
+          forKey: .kind,
+          in: container,
+          debugDescription: "Unknown visibility kind: \(kind)")
+      }
+    } else {
+      throw DecodingError.dataCorrupted(
+        DecodingError.Context(
+          codingPath: decoder.codingPath,
+          debugDescription: "Unable to decode visibility"))
     }
   }
 }
@@ -216,7 +258,7 @@ enum ItemEnum: Decodable {
   case procMacro(ProcMacro)
   case primitive(rustPrimitive)
   case assocConst(type: rustType, value: String?)
-  case assocType(generics: rustGenerics, bounds: [GenericBound], type: rustType?)
+  case assocType(generics: rustGenerics, bounds: [rustGenericBound], type: rustType?)
   case unknown
 
   private enum TopLevelCodingKeys: String, CodingKey {
@@ -246,68 +288,141 @@ enum ItemEnum: Decodable {
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: TopLevelCodingKeys.self)
 
-    // Use a series of `if let try?` to check for each possible key
-    if let value = try? container.decode(Module.self, forKey: .module) {
+    // Check for key existence first, then decode
+    if container.contains(.module) {
+      let value = try container.decode(Module.self, forKey: .module)
       self = .module(value)
-    } else if let value = try? container.decode(ExternCrate.self, forKey: .externCrate) {
-      self = .externCrate(name: value.name, rename: value.rename)
-    } else if let value = try? container.decode(Use.self, forKey: .use) {
-      self = .use(value)
-    } else if let value = try? container.decode(Union.self, forKey: .union) {
-      self = .union(value)
-    } else if let value = try? container.decode(rustStruct.self, forKey: .struct) {
-      self = .structItem(value)
-    } else if let value = try? container.decode(rustType.self, forKey: .structField) {
-      self = .structField(value)
-    } else if let value = try? container.decode(Enum.self, forKey: .enumItem) {
-      self = .enumItem(value)
-    } else if let value = try? container.decode(Variant.self, forKey: .variant) {
-      self = .variant(value)
-    } else if let value = try? container.decode(Function.self, forKey: .function) {
-      self = .function(value)
-    } else if let value = try? container.decode(Trait.self, forKey: .trait) {
-      self = .traitItem(value)
-    } else if let value = try? container.decode(TraitAlias.self, forKey: .traitAlias) {
-      self = .traitAlias(value)
-    } else if let value = try? container.decode(Impl.self, forKey: .impl) {
-      self = .impl(value)
-    } else if let value = try? container.decode(TypeAlias.self, forKey: .typeAlias) {
-      self = .typeAlias(value)
-    } else if let value = try? container.decode(ConstantItem.self, forKey: .constant) {
-      self = .constant(type: value.type, const: value.const)
-    } else if let value = try? container.decode(Static.self, forKey: .static) {
-      self = .staticItem(value)
-    } else if container.contains(.externType) {  // extern_type is a marker, no associated value
-      self = .externType
-    } else if let value = try? container.decode(String.self, forKey: .macro) {  // macro's value is just a string
-      self = .macroItem(value)
-    } else if let value = try? container.decode(ProcMacro.self, forKey: .procMacro) {
-      self = .procMacro(value)
-    } else if let value = try? container.decode(rustPrimitive.self, forKey: .primitive) {
-      self = .primitive(value)
-    } else if let value = try? container.decode(AssocConstItem.self, forKey: .assocConst) {
-      self = .assocConst(type: value.type, value: value.value)
-    } else if let value = try? container.decode(AssocTypeItem.self, forKey: .assocType) {
-      self = .assocType(generics: value.generics, bounds: value.bounds, type: value.type)
-    } else {
-      // Fallback for unknown keys or if none of the above succeeded
-      if let firstKey = container.allKeys.first {
-        // Attempt to get the raw JSON for better logging
-        // This still uses a temporary AnyEncodable, but ONLY for logging.
-        let debugJsonString: String
-        if let nestedContainer = try? container.decode(AnyDecodableValue.self, forKey: firstKey),
-          let jsonData = try? JSONEncoder().encode(nestedContainer)
-        {
-          debugJsonString = String(data: jsonData, encoding: .utf8) ?? "<unprintable JSON>"
-        } else {
-          debugJsonString = "<could not extract nested JSON for logging>"
-        }
-        print("⚠️ Unknown ItemEnum case: \(firstKey.stringValue)\n\(debugJsonString)")
-      } else {
-        print("⚠️ Unknown ItemEnum case: (no keys found in container)")
-      }
-      self = .unknown
+      return
     }
+
+    if container.contains(.externCrate) {
+      let value = try container.decode(ExternCrate.self, forKey: .externCrate)
+      self = .externCrate(name: value.name, rename: value.rename)
+      return
+    }
+
+    if container.contains(.use) {
+      let value = try container.decode(Use.self, forKey: .use)
+      self = .use(value)
+      return
+    }
+
+    if container.contains(.union) {
+      let value = try container.decode(Union.self, forKey: .union)
+      self = .union(value)
+      return
+    }
+
+    if container.contains(.struct) {
+      let value = try container.decode(rustStruct.self, forKey: .struct)
+      self = .structItem(value)
+      return
+    }
+
+    if container.contains(.structField) {
+      let value = try container.decode(rustType.self, forKey: .structField)
+      self = .structField(value)
+      return
+    }
+
+    if container.contains(.enumItem) {
+      let value = try container.decode(Enum.self, forKey: .enumItem)
+      self = .enumItem(value)
+      return
+    }
+
+    if container.contains(.variant) {
+      let value = try container.decode(Variant.self, forKey: .variant)
+      self = .variant(value)
+      return
+    }
+
+    if container.contains(.function) {
+      let value = try container.decode(Function.self, forKey: .function)
+      self = .function(value)
+      return
+    }
+
+    if container.contains(.trait) {
+      let value = try container.decode(Trait.self, forKey: .trait)
+      self = .traitItem(value)
+      return
+    }
+
+    if container.contains(.traitAlias) {
+      let value = try container.decode(TraitAlias.self, forKey: .traitAlias)
+      self = .traitAlias(value)
+      return
+    }
+
+    if container.contains(.impl) {
+      let value = try container.decode(Impl.self, forKey: .impl)
+      self = .impl(value)
+      return
+    }
+
+    if container.contains(.typeAlias) {
+      let value = try container.decode(TypeAlias.self, forKey: .typeAlias)
+      self = .typeAlias(value)
+      return
+    }
+
+    if container.contains(.constant) {
+      let value = try container.decode(ConstantItem.self, forKey: .constant)
+      self = .constant(type: value.type, const: value.const)
+      return
+    }
+
+    if container.contains(.static) {
+      let value = try container.decode(Static.self, forKey: .static)
+      self = .staticItem(value)
+      return
+    }
+
+    if container.contains(.externType) {
+      self = .externType
+      return
+    }
+
+    if container.contains(.macro) {
+      let value = try container.decode(String.self, forKey: .macro)
+      self = .macroItem(value)
+      return
+    }
+
+    if container.contains(.procMacro) {
+      let value = try container.decode(ProcMacro.self, forKey: .procMacro)
+      self = .procMacro(value)
+      return
+    }
+
+    if container.contains(.primitive) {
+      let value = try container.decode(rustPrimitive.self, forKey: .primitive)
+      self = .primitive(value)
+      return
+    }
+
+    if container.contains(.assocConst) {
+      let value = try container.decode(AssocConstItem.self, forKey: .assocConst)
+      self = .assocConst(type: value.type, value: value.value)
+      return
+    }
+
+    if container.contains(.assocType) {
+      let value = try container.decode(AssocTypeItem.self, forKey: .assocType)
+      self = .assocType(generics: value.generics, bounds: value.bounds, type: value.type)
+      return
+    }
+
+    // Better error reporting
+    let allKeys = container.allKeys.map { $0.stringValue }
+    print("⚠️ Unknown ItemEnum case. Available keys: \(allKeys)")
+
+    if let firstKey = container.allKeys.first {
+      print("   First key: \(firstKey.stringValue)")
+    }
+
+    self = .unknown
   }
 }
 
@@ -432,7 +547,7 @@ struct AssocConstItem: Decodable {
 
 struct AssocTypeItem: Decodable {
   let generics: rustGenerics
-  let bounds: [GenericBound]
+  let bounds: [rustGenericBound]
   let `type`: rustType?
 }
 // MARK: - Supporting structs
@@ -536,23 +651,41 @@ enum VariantKind: Decodable {
   }
 
   init(from decoder: Decoder) throws {
+    // First, try to decode as a simple string, which is how "plain" is represented.
+    if let stringValue = try? decoder.singleValueContainer().decode(String.self) {
+      if stringValue == "plain" {
+        self = .plain
+        return
+      } else {
+        throw DecodingError.dataCorruptedError(
+          in: try decoder.singleValueContainer(),
+          debugDescription: "Unknown VariantKind string value: \(stringValue)"
+        )
+      }
+    }
+
+    // If it's not a string, it must be a keyed object for "tuple" or "struct".
     let container = try decoder.container(keyedBy: CodingKeys.self)
 
-    if container.contains(.plain) {
-      self = .plain
-    } else if let tupleVals = try? container.decode([Int].self, forKey: .tuple) {
+    if let tupleVals = try? container.decode([Int].self, forKey: .tuple) {
       self = .tuple(tupleVals)
-    } else if let structPayload = try? container.decode(StructVariantPayload.self, forKey: .struct)
-    {
-      self = .struct(
-        fields: structPayload.fields, has_stripped_fields: structPayload.has_stripped_fields)
-    } else {
-      throw DecodingError.dataCorruptedError(
-        forKey: .plain,
-        in: container,
-        debugDescription: "Unknown VariantKind case: \(container.allKeys)"
-      )
+      return
     }
+
+    if let structPayload = try? container.decode(StructVariantPayload.self, forKey: .struct) {
+      self = .struct(
+        fields: structPayload.fields,
+        has_stripped_fields: structPayload.has_stripped_fields
+      )
+      return
+    }
+
+    throw DecodingError.dataCorruptedError(
+      forKey: .plain,  // Or any key, this is a fallback.
+      in: container,
+      debugDescription:
+        "Unknown VariantKind case. Not a recognized string or object. Keys: \(container.allKeys)"
+    )
   }
 }
 
@@ -592,13 +725,13 @@ struct Trait: Decodable {
   let is_dyn_compatible: Bool
   let items: [Int]
   let generics: rustGenerics
-  let bounds: [GenericBound]
+  let bounds: [rustGenericBound]
   let implementations: [Int]
 }
 
 struct TraitAlias: Decodable {
   let generics: rustGenerics
-  let params: [GenericBound]
+  let params: [rustGenericBound]
 }
 
 struct Impl: Decodable {
@@ -647,7 +780,7 @@ struct GenericParamDef: Decodable {
 
 enum GenericParamDefKind: Decodable {
   case lifetime(outlives: [String])
-  case type(default: rustType?, bounds: [GenericBound], is_synthetic: Bool)
+  case type(default: rustType?, bounds: [rustGenericBound], is_synthetic: Bool)
   case const(type: rustType, default: String?)
 }
 
@@ -656,7 +789,7 @@ private struct LifetimePayload: Decodable {
 }
 
 private struct TypeParamPayload: Decodable {
-  let bounds: [GenericBound]
+  let bounds: [rustGenericBound]
   let `default`: rustType?
   let is_synthetic: Bool
 }
@@ -678,28 +811,40 @@ enum rustGenericBound: Decodable {
   }
 
   init(from decoder: Decoder) throws {
+    // First, handle the case where the bound is just a simple string, e.g., "'a'".
+    if let lifetime = try? decoder.singleValueContainer().decode(String.self) {
+      self = .outlives(lifetime)
+      return
+    }
+
+    // If it's not a string, it must be a keyed object.
     let container = try decoder.container(keyedBy: CodingKeys.self)
+
+    // Handle the case where the object is {"outlives": "'a'"}.
+    if let lifetime = try? container.decode(String.self, forKey: .outlives) {
+      self = .outlives(lifetime)
+      return
+    }
 
     if let payload = try? container.decode(TraitBoundPayload.self, forKey: .trait_bound) {
       self = .trait_bound(
         trait: payload.trait,
         generic_params: payload.generic_params,
-        modifier: payload.modifier)
+        modifier: payload.modifier
+      )
       return
     }
-    if let lifetime = try? container.decode(String.self, forKey: .outlives) {
-      self = .outlives(lifetime)
-      return
-    }
+
     if let args = try? container.decode([PreciseCapturingArg].self, forKey: .use) {
       self = .use(args)
       return
     }
 
     throw DecodingError.dataCorruptedError(
-      forKey: .use,
+      forKey: .use,  // Fallback key
       in: container,
-      debugDescription: "Unknown GenericBound case: \(container.allKeys)"
+      debugDescription:
+        "Unknown GenericBound case. Could not decode as a String or a known keyed object. Keys: \(container.allKeys)"
     )
   }
 }
@@ -716,7 +861,8 @@ enum PreciseCapturingArg: Decodable {
 }
 
 enum WherePredicate: Decodable {
-  case bound_predicate(type: rustType, generic_params: [GenericParamDef], bounds: [GenericBound])
+  case bound_predicate(
+    type: rustType, generic_params: [GenericParamDef], bounds: [rustGenericBound])
   case lifetime_predicate(lifetime: String, outlives: [String])
   case eq_predicate(lhs: rustType, rhs: Term)
 }
