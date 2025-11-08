@@ -18,27 +18,27 @@ indirect public enum Type: Codable, Sendable {
 }
 
 public enum Primitive: Sendable, Codable {
-  case int8(Int8)
-  case int16(Int16)
-  case int(Int)
-  case int64(Int64)
-  case int128(Int128)
-  case uint8(UInt8)
-  case uint16(UInt16)
-  case uint(UInt)
-  case uint64(UInt64)
-  case uint128(UInt128)
-  case f16(Float16)
-  case float(Float)
-  case double(Double)
-  case bool(Bool)
-  case string(String)
-  case char(Character)
+  case int8(Int8?)
+  case int16(Int16?)
+  case int(Int?)
+  case int64(Int64?)
+  case int128(Int128?)
+  case uint8(UInt8?)
+  case uint16(UInt16?)
+  case uint(UInt?)
+  case uint64(UInt64?)
+  case uint128(UInt128?)
+  case f16(Float16?)
+  case float(Float?)
+  case double(Double?)
+  case bool(Bool?)
+  case string(String?)
+  case char(Character?)
 
   // MARK: - Special Values
   case null
-  case date(Date)
-  case data(Data)
+  case date(Date?)
+  case data(Data?)
 
   // MARK: - Codable Support
   private enum CodingKeys: String, CodingKey {
@@ -103,7 +103,9 @@ public enum Primitive: Sendable, Codable {
       try container.encode(v, forKey: .value)
     case .char(let v):
       try container.encode(CaseType.char, forKey: .type)
-      try container.encode(String(v), forKey: .value)
+      // Default initailizae
+      let val = v ?? Character("")
+      try container.encode(String(val), forKey: .value)
     case .null:
       try container.encode(CaseType.null, forKey: .type)
     case .date(let v):
@@ -111,7 +113,7 @@ public enum Primitive: Sendable, Codable {
       try container.encode(v, forKey: .value)
     case .data(let v):
       try container.encode(CaseType.data, forKey: .type)
-      try container.encode(v.base64EncodedString(), forKey: .value)
+      try container.encode(v, forKey: .value)
     }
   }
 
