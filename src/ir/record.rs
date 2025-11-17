@@ -1,4 +1,28 @@
-use crate::ir::{generics::ConstExpr, kind::Visibility, ty::Type};
+use crate::ir::{
+    generics::{ConstExpr, GenericArg},
+    kind::Visibility,
+    ty::Type,
+};
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Record {
+    /// Optional name of the record (e.g., "User", "Point").
+    /// Anonymous records (like tuples or JS objects) may omit this.
+    pub name: Option<String>,
+
+    /// Optional generic parameters (e.g., <T, U>).
+    pub generics: Option<Vec<GenericArg>>,
+
+    /// The kind of record (named, tuple, unit, dynamic).
+    pub kind: RecordKind,
+
+    /// The fields of the record (if applicable).
+    pub fields: Option<Vec<RecordField>>,
+
+    /// The visibility of the record
+    pub visibility: Option<Visibility>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -36,4 +60,15 @@ pub struct RecordField {
 pub enum FieldAttribute {
     Mutable,
     Optional,
+}
+
+// Adding sum variants here for historical reasons
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SumVariant {
+    /// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
+    pub name: String,
+    /// Associated types for this variant (None for unit variants)
+    pub types: Option<Vec<Type>>,
 }

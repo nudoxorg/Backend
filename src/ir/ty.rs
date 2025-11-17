@@ -1,10 +1,12 @@
 use crate::ir::{
     generics::{GenericArg, TraitRef, TypeParam},
-    kind::{FunctionAttribute, SumVariant},
     parameter::Parameter,
     primitives::Primitive,
     protocols::GenericBound,
+    record::SumVariant,
 };
+
+use super::function;
 
 /// Universal representation of types across languages.
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +82,7 @@ pub struct FunctionPointer {
     pub inputs: Option<Vec<Parameter>>,
     pub outputs: Option<Vec<Parameter>>,
     pub generic_params: Option<Vec<TypeParam>>,
-    pub attributes: Option<Vec<FunctionAttribute>>,
+    pub attributes: Option<Vec<function::Attribute>>,
 }
 
 // MARK: - PolyTrait

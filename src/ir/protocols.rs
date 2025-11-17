@@ -2,22 +2,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ir::{
+    function::Function,
     generics::{ConstExpr, Constraint, Generics, TraitRef},
-    kind::{DocsFunction, Visibility},
+    kind::Visibility,
     parameter::Parameter,
     ty::Type,
 };
 
-/// Attributes that can be applied to functions/methods.
-/// (Assuming this is what `FunctionAttributes` refers to)
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum FunctionAttribute {
-    Async,
-    Const,
-    Unsafe,
-    Custom(String, Option<Vec<String>>),
-}
+use super::function;
 
 // MARK: - TraitDef
 
@@ -102,7 +94,7 @@ pub struct TraitMethod {
     pub generics: Option<Generics>,
 
     /// Method-level attributes
-    pub attributes: Option<Vec<FunctionAttribute>>,
+    pub attributes: Option<Vec<function::Attribute>>,
 
     /// Receiver type (self, &self, &mut self, etc.)
     pub receiver: Option<ReceiverKind>,
@@ -193,7 +185,7 @@ pub struct TraitImpl {
     pub where_constraints: Option<Vec<Constraint>>,
 
     /// Implemented methods
-    pub methods: Option<Vec<DocsFunction>>,
+    pub methods: Option<Vec<Function>>,
 
     /// Associated type implementations
     pub associated_types: Option<Vec<AssociatedTypeImpl>>,

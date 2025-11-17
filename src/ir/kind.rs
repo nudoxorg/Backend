@@ -3,15 +3,6 @@ use serde::{Deserialize, Serialize};
 
 // MARK: - SumVariant
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct SumVariant {
-    /// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
-    pub name: String,
-    /// Associated types for this variant (None for unit variants)
-    pub types: Option<Vec<Type>>,
-}
-
 // MARK: - Path
 
 // MARK: - DynTrait
@@ -21,39 +12,6 @@ pub struct SumVariant {
 // MARK: - GenericArgs
 
 // MARK: Kind Types
-
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct DocsFunction {
-    pub input_parameters: Option<Vec<Parameter>>,
-    pub output_parameters: Option<Vec<Parameter>>,
-    pub attributes: Option<Vec<FunctionAttribute>>,
-    pub generics: Option<Generics>,
-    pub name: String,
-    /// Is there a function body?
-    pub implemented: bool,
-    pub visibility: Option<Visibility>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct DocsRecord {
-    /// Optional name of the record (e.g., "User", "Point").
-    /// Anonymous records (like tuples or JS objects) may omit this.
-    pub name: Option<String>,
-
-    /// Optional generic parameters (e.g., <T, U>).
-    pub generics: Option<Vec<GenericArg>>,
-
-    /// The kind of record (named, tuple, unit, dynamic).
-    pub kind: RecordKind,
-
-    /// The fields of the record (if applicable).
-    pub fields: Option<Vec<RecordField>>,
-
-    /// The visibility of the record
-    pub visibility: Option<Visibility>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -69,22 +27,6 @@ pub enum Visibility {
     Package,
 }
 
-/// The various attributes a function can have
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum FunctionAttribute {
-    /// Takes an arbitrary amount of arguments
-    Variadic,
-    /// Determined at compile-time
-    Const,
-    /// No side-effects
-    Pure,
-    /// Runs asynchronously
-    Async,
-    /// For Rust, happens within an unsafe context
-    Unsafe,
-}
-
 /// Represents different kinds of code elements in a programming language or API.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -95,7 +37,7 @@ pub enum Kind {
 
     /// Struct, class, record, or data class.
     #[cfg_attr(feature = "serde", serde(rename = "recordType"))]
-    RecordType(DocsRecord),
+    RecordType(Record),
 
     /// Unlinked documentation
     Info,
@@ -121,7 +63,7 @@ pub enum Kind {
     InterfaceType,
 
     /// Function, method, lambda (with metadata).
-    Function(DocsFunction),
+    Function(Function),
 
     /// Type alias, typedef, using alias.
     #[cfg_attr(feature = "serde", serde(rename = "typeAlias"))]
@@ -151,10 +93,11 @@ pub enum Kind {
 use std::fmt;
 
 use crate::ir::{
+    function::Function,
     generics::{GenericArg, Generics},
     parameter::Parameter,
     protocols::{TraitDef, TraitImpl},
-    record::{RecordField, RecordKind},
+    record::{Record, RecordField, RecordKind, SumVariant},
     ty::Type,
 };
 
