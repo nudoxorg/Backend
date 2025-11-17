@@ -1,17 +1,6 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-// MARK: - SumVariant
-
-// MARK: - Path
-
-// MARK: - DynTrait
-
-// MARK: - QualifiedPath
-
-// MARK: - GenericArgs
-
-// MARK: Kind Types
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

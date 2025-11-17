@@ -13,14 +13,10 @@ use super::function;
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))] // Example for tagged enum
 pub enum Type {
-    #[cfg_attr(feature = "serde", serde(rename = "resolvedPath"))]
     ResolvedPath(Path),
-    #[cfg_attr(feature = "serde", serde(rename = "dynTrait"))]
     DynTrait(DynTrait),
-    #[cfg_attr(feature = "serde", serde(rename = "genericParam"))]
     GenericParam(String),
     Primitive(Primitive),
-    #[cfg_attr(feature = "serde", serde(rename = "functionPointer"))]
     FunctionPointer(FunctionPointer),
     Tuple(Vec<Type>),
     Slice(Box<Type>),
@@ -31,10 +27,8 @@ pub enum Type {
     Pattern {
         ty: Box<Type>,
     },
-    #[cfg_attr(feature = "serde", serde(rename = "implTrait"))]
     ImplTrait(Vec<GenericBound>),
     Infer,
-    #[cfg_attr(feature = "serde", serde(rename = "rawPointer"))]
     RawPointer {
         is_mutable: bool,
         ty: Box<Type>,
@@ -42,13 +36,11 @@ pub enum Type {
     Union(Vec<Type>),
     Sum(Vec<SumVariant>),
     Intersection(Vec<Type>),
-    #[cfg_attr(feature = "serde", serde(rename = "borrowedRef"))]
     BorrowedRef {
         lifetime: Option<String>,
         is_mutable: bool,
         ty: Box<Type>,
     },
-    #[cfg_attr(feature = "serde", serde(rename = "qualifiedPath"))]
     QualifiedPath(QualifiedPath),
 }
 
