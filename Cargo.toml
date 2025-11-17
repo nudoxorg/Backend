@@ -4,5 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-jiff = { version = "0.2.16", features = ["serde"] }
+jiff = { version = "0.2.16"}
 rustdoc-types = "0.56.0"
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
