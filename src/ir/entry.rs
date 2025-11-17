@@ -1,6 +1,11 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::ir::{
+    kind::{Kind, Visibility},
+    parameter::Parameter,
+};
+
 /// A representation of a documented API entry.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

@@ -1,3 +1,5 @@
+use crate::ir::{generics::ConstExpr, kind::Visibility, ty::Type};
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum RecordKind {

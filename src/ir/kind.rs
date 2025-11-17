@@ -9,7 +9,7 @@ pub struct SumVariant {
     /// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
     pub name: String,
     /// Associated types for this variant (None for unit variants)
-    pub types: Option<Vec<Typee>>,
+    pub types: Option<Vec<Type>>,
 }
 
 // MARK: - Path
@@ -149,6 +149,14 @@ pub enum Kind {
 
 // Implementing `Display` for `Kind` to replace the Swift `description` computed property.
 use std::fmt;
+
+use crate::ir::{
+    generics::{GenericArg, Generics},
+    parameter::Parameter,
+    protocols::{TraitDef, TraitImpl},
+    record::{RecordField, RecordKind},
+    ty::Type,
+};
 
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

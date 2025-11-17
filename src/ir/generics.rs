@@ -1,6 +1,8 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::ir::ty::Type;
+
 /// A universal representation of generics across languages.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -128,7 +130,7 @@ pub struct PredicateExpr {
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))] // Example: Tagged enum for Serde
 pub enum GenericArg {
     #[cfg_attr(feature = "serde", serde(rename = "type"))]
-    Type(Box<Type>),
+    Type(Type),
     #[cfg_attr(feature = "serde", serde(rename = "constExpr"))]
     ConstExpr(ConstExpr),
     Lifetime(String),

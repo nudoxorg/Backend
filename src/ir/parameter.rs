@@ -1,12 +1,14 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::ir::{generics::ConstExpr, ty::Type};
+
 /// Represents a parameter in a function or method.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Parameter {
     pub name: String,
-    pub ty: Option<Box<Type>>, // Renamed 'type' to 'ty'
+    pub ty: Option<Type>, // Renamed 'type' to 'ty'
     pub attributes: Option<Vec<ParameterAttribute>>,
     pub default_value: Option<ConstExpr>,
     pub description: Option<String>,

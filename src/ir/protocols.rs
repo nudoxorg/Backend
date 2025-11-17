@@ -1,6 +1,13 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::ir::{
+    generics::{ConstExpr, Constraint, Generics, TraitRef},
+    kind::{DocsFunction, Visibility},
+    parameter::Parameter,
+    ty::Type,
+};
+
 /// Attributes that can be applied to functions/methods.
 /// (Assuming this is what `FunctionAttributes` refers to)
 #[derive(Debug, Clone, PartialEq)]
@@ -62,7 +69,7 @@ pub struct AssociatedType {
     pub bounds: Option<Vec<GenericBound>>,
 
     /// Default type (if any)
-    pub default_type: Option<Box<Type>>,
+    pub default_type: Option<Type>,
 
     /// Documentation
     pub docs: Option<String>,

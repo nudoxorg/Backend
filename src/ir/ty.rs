@@ -1,3 +1,11 @@
+use crate::ir::{
+    generics::{GenericArg, TraitRef, TypeParam},
+    kind::{FunctionAttribute, SumVariant},
+    parameter::Parameter,
+    primitives::Primitive,
+    protocols::GenericBound,
+};
+
 /// Universal representation of types across languages.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -57,7 +65,6 @@ pub struct QualifiedPath {
     pub self_type: Box<Type>,
     pub tr: Option<Path>,
 }
-
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DynTrait {
