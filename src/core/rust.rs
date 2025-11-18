@@ -1,4 +1,6 @@
-use crates_io_api::{CratesQuery, SyncClient};
+use crates_io_api::{Crate, CratesQuery, SyncClient};
+use lang_types::Language;
+use url::Url;
 
 use crate::traits::registry::Registry;
 
@@ -15,6 +17,30 @@ pub struct Package {
 }
 
 impl From<Crate> for Package {
+    fn from(crate_data: Crate) -> Self {
+        let slug = crate_data.name.to_lowercase().replace(' ', "-");
+
+        let source_url = crate_data
+            .repository
+            .and_then(|repo| Url::parse(&repo).ok())
+            .unwrap_or_else(|| {
+                // Fallback.
+                Url::parse(&format!("https://crates.io/crates/{}", crate_data.name))
+                    .expect("Failed to parse default URL")
+            });
+
+        let uuid = 0;
+
+        Package {
+            slug,
+            name: crate_data.name,
+            language: Language::Rust, // Assuming all crates are Rust, adjust if not.
+            uuid,
+            source: source_url,
+        }
+    }
+}
+
 impl Registry for Crates {
     async fn search_packages(
         &self,
