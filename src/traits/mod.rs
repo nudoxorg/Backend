@@ -1,3 +1,3 @@
-mod builder;
-mod package;
-mod registry;
+pub mod builder;
+pub mod package;
+pub mod registry;
