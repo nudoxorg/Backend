@@ -1,21 +1,25 @@
-use std::collections::HashMap;
-
-use semver::Version;
-use url::Url;
 
 pub trait Package {
-    // The name you'd expect to see it referred to as (Can just be a derivative of the slug)
-    fn name(&self) -> &str;
+// These are all async due to possible network requests/file IO
+    
+    // All of the published versions.
+    async fn get_available_versions(&self) -> Result<Vec<Version>, NewDocsError>;
 
-    // The battle-ready slug for encoding and references
-    fn slug(&self) -> &str;
+    // All of the available flags.
+    async fn flags(&self) -> Result<Option<Vec<String>>, NewDocsError>;
 
-    // The precise version of the doc
-    fn version(&self) -> &Version;
+    // A provided description as to the purpose of this package
+    async fn description(&self) -> Result<Option<String>, NewDocsError>;
 
-    // Any extraneous links like the source page, or the projects home
-    fn links(&self) -> &HashMap<String, Url>;
+    // Any other packages that this package relies on (none is an empty array)
+    async fn dependencies(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError>;
 
-    // Builds the pages and sends them off to mongo?
-    async fn build_pages(&self) -> Result<(), anyhow::Error>;
-}
+    // Any other packages that rely on this package (none is an empty array)
+    async fn dependents(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError>;
+
+    async fn retrieve(
+        &self,
+        version: Version,
+        flags: Option<Vec<String>>,
+    ) -> Result<String, NewDocsError>;
+};
