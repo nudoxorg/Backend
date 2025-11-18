@@ -2,13 +2,13 @@ use crates_io_api::{Crate, CratesQuery, SyncClient};
 use lang_types::Language;
 use url::Url;
 
-use crate::traits::registry::Registry;
+use crate::traits::{package::Package, registry::Registry};
 
 pub struct Crates {
     client: SyncClient,
 }
 
-pub struct Package {
+pub struct RPackage {
     pub slug: String,
     pub name: String,
     pub language: Language,
@@ -16,7 +16,7 @@ pub struct Package {
     pub source: Url,
 }
 
-impl From<Crate> for Package {
+impl From<Crate> for RPackage {
     fn from(crate_data: Crate) -> Self {
         let slug = crate_data.name.to_lowercase().replace(' ', "-");
 
@@ -31,13 +31,43 @@ impl From<Crate> for Package {
 
         let uuid = 0;
 
-        Package {
+        RPackage {
             slug,
             name: crate_data.name,
-            language: Language::Rust, // Assuming all crates are Rust, adjust if not.
+            language: Language::Rust,
             uuid,
             source: source_url,
         }
+    }
+}
+
+impl Package for RPackage {
+    fn get_available_versions(&self) -> Result<Vec<semver::Version>, NewDocsError> {
+        todo!()
+    }
+
+    fn flags(&self) -> Result<Option<Vec<String>>, NewDocsError> {
+        todo!()
+    }
+
+    fn description(&self) -> Result<Option<String>, NewDocsError> {
+        todo!()
+    }
+
+    fn dependencies(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
+        todo!()
+    }
+
+    fn dependents(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
+        todo!()
+    }
+
+    fn retrieve(
+        &self,
+        version: semver::Version,
+        flags: Option<Vec<String>>,
+    ) -> Result<String, NewDocsError> {
+        todo!()
     }
 }
 
