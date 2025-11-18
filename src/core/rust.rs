@@ -6,6 +6,15 @@ pub struct Crates {
     client: SyncClient,
 }
 
+pub struct Package {
+    pub slug: String,
+    pub name: String,
+    pub language: Language,
+    pub uuid: i64,
+    pub source: Url,
+}
+
+impl From<Crate> for Package {
 impl Registry for Crates {
     async fn search_packages(
         &self,
