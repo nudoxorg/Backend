@@ -1,8 +1,8 @@
+use crate::error::NewDocsError;
+use crate::traits::{package::Package, registry::Registry};
 use crates_io_api::{Crate, CratesQuery, SyncClient};
 use lang_types::Language;
 use url::Url;
-
-use crate::traits::{package::Package, registry::Registry};
 
 pub struct Crates {
     client: SyncClient,
@@ -16,10 +16,10 @@ pub struct RPackage {
     pub source: Url,
 }
 
+// Removed duplicate `From<Crate>` implementation - kept the more complete one
 impl From<Crate> for RPackage {
     fn from(crate_data: Crate) -> Self {
         let slug = crate_data.name.to_lowercase().replace(' ', "-");
-
         let source_url = crate_data
             .repository
             .and_then(|repo| Url::parse(&repo).ok())
@@ -28,9 +28,7 @@ impl From<Crate> for RPackage {
                 Url::parse(&format!("https://crates.io/crates/{}", crate_data.name))
                     .expect("Failed to parse default URL")
             });
-
         let uuid = 0;
-
         RPackage {
             slug,
             name: crate_data.name,
@@ -54,10 +52,6 @@ impl Package for RPackage {
         todo!()
     }
 
-    fn dependencies(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
-        todo!()
-    }
-
     fn dependents(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
         todo!()
     }
@@ -69,32 +63,41 @@ impl Package for RPackage {
     ) -> Result<String, NewDocsError> {
         todo!()
     }
+
+    fn dependencies(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
+        todo!()
+    }
 }
 
 impl Registry for Crates {
+    type Error = NewDocsError;
+
     async fn search_packages(
         &self,
         query: &str,
-    ) -> Result<Vec<Box<dyn crate::traits::package::Package>>, PackageRegistryError> {
+    ) -> Result<Vec<Box<dyn crate::traits::package::Package>>, NewDocsError> {
         let query = CratesQuery::builder().search(query).build();
         let result = self.client.crates(query)?;
 
-        result.crates
-
-        // Frankly do not care about multi-page results right now
+        // Fixed: convert Crate to RPackage, box it, and collect
+        Ok(result
+            .crates
+            .into_iter()
+            .map(|c| Box::new(RPackage::from(c)) as Box<dyn Package>)
+            .collect())
     }
 
     async fn get_package_by_uuid(
         &self,
         uuid: u64,
-    ) -> Result<Box<dyn crate::traits::package::Package>, PackageRegistryError> {
+    ) -> Result<Box<dyn crate::traits::package::Package>, NewDocsError> {
         todo!()
     }
 
     async fn get_packages_by_name(
         &self,
         name: &str,
-    ) -> Result<Vec<Box<dyn crate::traits::package::Package>>, PackageRegistryError> {
+    ) -> Result<Vec<Box<dyn crate::traits::package::Package>>, NewDocsError> {
         todo!()
     }
 

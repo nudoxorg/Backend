@@ -1,5 +1,7 @@
 use semver::Version;
 
+use crate::error::NewDocsError;
+
 pub trait Package {
     // These are all async due to possible network requests/file IO
 
