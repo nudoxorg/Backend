@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::ir::{generics::Generics, kind::Visibility, parameter::Parameter};
 
 #[derive(Debug, Clone, PartialEq)]
