@@ -10,7 +10,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum ParseError {
     #[error("Item not found: {0}")]
-    ItemNotFound(String),
+    ItemNotFound(u32),
 
     #[error("Invalid item kind for ID {id}: expected {expected}, got {actual}")]
     InvalidItemKind {
@@ -133,7 +133,7 @@ impl From<Crate> for RPackage {
             slug: c.name.to_lowercase(),
             name: c.name.clone(),
             language: Language::Rust,
-            uuid: (c.id as i64),
+            uuid: c.id.parse::<i64>().unwrap_or(0),
             source: Url::parse(
                 &c.repository
                     .unwrap_or_else(|| format!("https://crates.io/crates/{}", c.name)),
