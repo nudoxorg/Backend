@@ -1,7 +1,7 @@
 use crate::core::rust_parser::RustdocParser;
 use crate::error::NewDocsError;
 use crate::traits::{package::Package, registry::Registry};
-use crates_io_api::{Crate, CratesQuery, SyncClient};
+use crates_io_api::{AsyncClient, Crate, CratesQuery, SyncClient};
 use lang_types::Language;
 use url::Url;
 
@@ -69,7 +69,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 pub struct Crates {
-    pub client: SyncClient,
+    pub client: AsyncClient,
 }
 
 pub struct RPackage {
@@ -187,6 +187,7 @@ impl Registry for Crates {
         let result = self
             .client
             .crates(q)
+            .await
             .map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
 
         Ok(result
@@ -200,6 +201,7 @@ impl Registry for Crates {
         let c = self
             .client
             .get_crate(&uuid.to_string())
+            .await
             .map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
         Ok(Box::new(RPackage::from(c.crate_data)))
     }
@@ -211,6 +213,7 @@ impl Registry for Crates {
         let c = self
             .client
             .get_crate(name)
+            .await
             .map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
         Ok(vec![Box::new(RPackage::from(c.crate_data))])
     }

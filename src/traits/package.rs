@@ -2,7 +2,7 @@ use semver::Version;
 
 use crate::error::NewDocsError;
 
-pub trait Package {
+pub trait Package: Send + Sync {
     // These are all async due to possible network requests/file IO
 
     // All of the published versions.
