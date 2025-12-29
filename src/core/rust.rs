@@ -1,3 +1,4 @@
+use crate::core::rust_parser::RustdocParser;
 use crate::error::NewDocsError;
 use crate::traits::{package::Package, registry::Registry};
 use crates_io_api::{Crate, CratesQuery, SyncClient};
