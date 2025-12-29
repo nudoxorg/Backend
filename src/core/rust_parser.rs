@@ -83,9 +83,9 @@ impl RustdocParser {
     }
 
     pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
-        let root_item = self
-            .krate
-            .index
+        let index = self.krate.index.clone();
+
+        let root_item = index
             .get(&self.krate.root)
             .ok_or_else(|| ParseError::ItemNotFound(self.krate.root.0.clone()))?;
 
@@ -117,9 +117,9 @@ impl RustdocParser {
 
         self.visiting.insert(id.clone());
 
-        let item = self
-            .krate
-            .index
+        let index = self.krate.index.clone();
+
+        let item = index
             .get(id)
             .ok_or_else(|| ParseError::ItemNotFound(id.0))?;
 
@@ -208,7 +208,9 @@ impl RustdocParser {
     }
 
     fn parse_struct(&mut self, id: &Id, s: &rustdoc_types::Struct) -> Result<Record> {
-        let item = self.krate.index.get(id).unwrap();
+        let index = self.krate.index.clone();
+
+        let item = index.get(id).unwrap();
         let generics = s
             .generics
             .params
@@ -249,7 +251,8 @@ impl RustdocParser {
             .enumerate()
             .filter_map(|(idx, opt_id)| {
                 opt_id.as_ref().map(|id| {
-                    let item = self.krate.index.get(id)?;
+                    let index = self.krate.index.clone();
+                    let item = index.get(id)?;
                     if let ItemEnum::StructField(ty) = &item.inner {
                         let ty = self.parse_type(ty).ok()?;
                         Some(RecordField {
@@ -306,9 +309,8 @@ impl RustdocParser {
         e.variants
             .iter()
             .map(|variant_id| {
-                let item = self
-                    .krate
-                    .index
+                let index = self.krate.index.clone();
+                let item = index
                     .get(variant_id)
                     .ok_or_else(|| ParseError::ItemNotFound(variant_id.0.clone()))?;
 
@@ -322,10 +324,9 @@ impl RustdocParser {
                                 .iter()
                                 .filter_map(|opt_id| opt_id.as_ref())
                                 .map(|id| {
-                                    let field_item =
-                                        self.krate.index.get(id).ok_or_else(|| {
-                                            ParseError::ItemNotFound(id.0.clone())
-                                        })?;
+                                    let field_item = index
+                                        .get(id)
+                                        .ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
                                     if let ItemEnum::StructField(ty) = &field_item.inner {
                                         self.parse_type(ty)
                                     } else {
@@ -343,10 +344,9 @@ impl RustdocParser {
                             let types: Result<Vec<Type>> = fields
                                 .iter()
                                 .map(|id| {
-                                    let field_item =
-                                        self.krate.index.get(id).ok_or_else(|| {
-                                            ParseError::ItemNotFound(id.0.clone())
-                                        })?;
+                                    let field_item = index
+                                        .get(id)
+                                        .ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
                                     if let ItemEnum::StructField(ty) = &field_item.inner {
                                         self.parse_type(&ty)
                                     } else {
@@ -572,7 +572,8 @@ impl RustdocParser {
     }
 
     fn parse_trait_method(&mut self, id: &Id, f: &rustdoc_types::Function) -> Result<TraitMethod> {
-        let item = self.krate.index.get(id).unwrap();
+        let index = self.krate.index.clone();
+        let item = index.get(id).unwrap();
 
         let parameters = if f.sig.inputs.is_empty() {
             None
@@ -630,7 +631,8 @@ impl RustdocParser {
     }
 
     fn parse_impl(&mut self, id: &Id, i: &rustdoc_types::Impl) -> Result<TraitImpl> {
-        let item = self.krate.index.get(id).unwrap();
+        let index = self.krate.index.clone();
+        let item = index.get(id).unwrap();
 
         let tr = i
             .trait_
@@ -660,9 +662,9 @@ impl RustdocParser {
         let mut associated_constants = Vec::new();
 
         for item_id in &i.items {
-            let impl_item = self
-                .krate
-                .index
+            let index = self.krate.index.clone();
+
+            let impl_item = index
                 .get(item_id)
                 .ok_or_else(|| ParseError::ItemNotFound(item_id.0.clone()))?;
 
@@ -727,9 +729,9 @@ impl RustdocParser {
         u.fields
             .iter()
             .map(|id| {
-                let item = self
-                    .krate
-                    .index
+                let index = self.krate.index.clone();
+
+                let item = index
                     .get(id)
                     .ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
                 if let ItemEnum::StructField(ty) = &item.inner {
@@ -1104,6 +1106,7 @@ impl RustdocParser {
                         },
                     }])
                 }
+                rustdoc_types::WherePredicate::LifetimePredicate { lifetime, outlives } => todo!(),
             })
             .collect::<Result<Vec<Vec<_>>>>()
             .map(|v| v.into_iter().flatten().collect())
