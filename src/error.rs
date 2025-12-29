@@ -8,6 +8,9 @@ pub enum NewDocsError {
     #[error("invalid entry")]
     InvalidEntry,
 
+    #[error("Parse error: {0}")]
+    ParseError(String),
+
     #[error("Network error: {0}")]
     NetworkError(String),
 
