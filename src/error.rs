@@ -8,11 +8,32 @@ pub enum NewDocsError {
     #[error("invalid entry")]
     InvalidEntry,
 
-    #[error("network error")]
-    NetworkError,
+    #[error("Network error: {0}")]
+    NetworkError(String),
 
-    #[error("parsing error")]
-    ParsingError,
+    #[error("Parsing error: {0}")]
+    ParsingError(String),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("Process error: {0}")]
+    ProcessError(String),
+
+    #[error("Item not found: {0}")]
+    NotFound(String),
+
+    #[error("Invalid entry: {0}")]
+    InvalidEntry(String),
+
+    #[error("Feature not implemented")]
+    NotImplemented,
+
+    #[error("network error: {0}")]
+    NetworkError(String),
+
+    #[error("parsing error: {0}")]
+    ParsingError(String),
 
     #[error("file not found")]
     FileNotFound,
