@@ -121,7 +121,7 @@ impl RustdocParser {
             .krate
             .index
             .get(id)
-            .ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+            .ok_or_else(|| ParseError::ItemNotFound(id.0))?;
 
         let entry = self.convert_item(id, item)?;
 
@@ -279,10 +279,11 @@ impl RustdocParser {
                     .krate
                     .index
                     .get(id)
-                    .ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+                    .ok_or_else(|| ParseError::ItemNotFound(id.0))?
+                    .clone();
 
                 if let ItemEnum::StructField(ty) = &item.inner {
-                    let ty = self.parse_type(ty)?;
+                    let ty = self.parse_type(&ty)?;
                     Ok(RecordField {
                         name: item.name.clone(),
                         ty: Some(Box::new(ty)),
@@ -329,7 +330,7 @@ impl RustdocParser {
                                         self.parse_type(ty)
                                     } else {
                                         Err(ParseError::InvalidItemKind {
-                                            id: id.0.clone(),
+                                            id: id.0.to_string(),
                                             expected: "StructField".to_string(),
                                             actual: format!("{:?}", field_item.inner),
                                         })
@@ -350,7 +351,7 @@ impl RustdocParser {
                                         self.parse_type(&ty)
                                     } else {
                                         Err(ParseError::InvalidItemKind {
-                                            id: id.0.clone(),
+                                            id: id.0.to_string(),
                                             expected: "StructField".to_string(),
                                             actual: format!("{:?}", field_item.inner),
                                         })
@@ -364,7 +365,7 @@ impl RustdocParser {
                     Ok(SumVariant { name, types })
                 } else {
                     Err(ParseError::InvalidItemKind {
-                        id: variant_id.0.clone(),
+                        id: variant_id.0.to_string(),
                         expected: "Variant".to_string(),
                         actual: format!("{:?}", item.inner),
                     })
@@ -375,6 +376,8 @@ impl RustdocParser {
 
     fn parse_function(&mut self, id: &Id, f: &rustdoc_types::Function) -> Result<Function> {
         let item = self.krate.index.get(id).unwrap();
+        let visibility_clone = item.visibility.clone();
+        let name = item.name.clone().unwrap_or_default();
 
         let input_parameters = if f.sig.inputs.is_empty() {
             None
@@ -402,14 +405,14 @@ impl RustdocParser {
             self.parse_generic_params(&f.generics)
         };
 
-        let visibility = Some(self.parse_visibility(&item.visibility));
+        let visibility = Some(self.parse_visibility(&visibility_clone));
 
         Ok(Function {
             input_parameters,
             output_parameters,
             attributes,
             generics,
-            name: item.name.clone().unwrap_or_default(),
+            name,
             implemented: true,
             visibility,
         })
@@ -453,6 +456,9 @@ impl RustdocParser {
 
     fn parse_trait(&mut self, id: &Id, t: &rustdoc_types::Trait) -> Result<TraitDef> {
         let item = self.krate.index.get(id).unwrap();
+        let visibility_clone = item.visibility.clone();
+        let name = item.name.clone().unwrap_or_default();
+        let docs = item.docs.clone();
 
         let generics = if t.generics.params.is_empty() {
             None
@@ -471,16 +477,20 @@ impl RustdocParser {
         let mut associated_types = Vec::new();
         let mut required_constants = Vec::new();
 
-        for item_id in &t.items {
+        // Clone items to avoid borrow issues
+        let trait_items: Vec<Id> = t.items.clone();
+
+        for item_id in trait_items {
             let trait_item = self
                 .krate
                 .index
-                .get(item_id)
-                .ok_or_else(|| ParseError::ItemNotFound(item_id.0.clone()))?;
+                .get(&item_id)
+                .ok_or_else(|| ParseError::ItemNotFound(item_id.0))?
+                .clone();
 
             match &trait_item.inner {
                 ItemEnum::Function(f) => {
-                    let method = self.parse_trait_method(item_id, f)?;
+                    let method = self.parse_trait_method(&item_id, f)?;
                     if f.has_body {
                         provided_methods.push(method);
                     } else {
@@ -488,7 +498,7 @@ impl RustdocParser {
                     }
                 }
                 ItemEnum::AssocType {
-                    generics,
+                    generics: _,
                     bounds,
                     type_,
                 } => {
@@ -499,7 +509,11 @@ impl RustdocParser {
                         } else {
                             Some(self.parse_generic_bounds(bounds)?)
                         },
-                        default_type: type_.as_ref().map(|ty| self.parse_type(ty)).transpose()?,
+                        default_type: if let Some(ty) = type_ {
+                            Some(self.parse_type(ty)?)
+                        } else {
+                            None
+                        },
                         docs: trait_item.docs.clone(),
                     };
                     associated_types.push(assoc_type);
@@ -525,10 +539,10 @@ impl RustdocParser {
             None
         };
 
-        let visibility = Some(self.parse_visibility(&item.visibility));
+        let visibility = Some(self.parse_visibility(&visibility_clone));
 
         Ok(TraitDef {
-            name: item.name.clone().unwrap_or_default(),
+            name,
             generics,
             super_traits,
             associated_types: if associated_types.is_empty() {
@@ -553,21 +567,21 @@ impl RustdocParser {
             },
             attributes,
             visibility,
-            docs: item.docs.clone(),
+            docs,
         })
     }
 
     fn parse_trait_method(&mut self, id: &Id, f: &rustdoc_types::Function) -> Result<TraitMethod> {
         let item = self.krate.index.get(id).unwrap();
 
-        let parameters = if f.decl.inputs.is_empty() {
+        let parameters = if f.sig.inputs.is_empty() {
             None
         } else {
-            Some(self.parse_function_inputs(&f.decl.inputs)?)
+            Some(self.parse_function_inputs(&f.sig.inputs)?)
         };
 
         let return_type = f
-            .decl
+            .sig
             .output
             .as_ref()
             .map(|ty| self.parse_type(ty).map(Box::new))
@@ -581,7 +595,7 @@ impl RustdocParser {
 
         let attributes = self.parse_function_attributes(f);
 
-        let receiver = Self::determine_receiver(&f.decl.inputs);
+        let receiver = Self::determine_receiver(&f.sig.inputs);
 
         Ok(TraitMethod {
             name: item.name.clone().unwrap_or_default(),
@@ -657,8 +671,8 @@ impl RustdocParser {
                     let function = self.parse_function(item_id, f)?;
                     methods.push(function);
                 }
-                ItemEnum::AssocType { default, .. } => {
-                    if let Some(ty) = default {
+                ItemEnum::AssocType { type_, .. } => {
+                    if let Some(ty) = type_ {
                         let assoc_type_impl = AssociatedTypeImpl {
                             name: impl_item.name.clone().unwrap_or_default(),
                             ty: Box::new(self.parse_type(ty)?),
@@ -666,11 +680,11 @@ impl RustdocParser {
                         associated_types.push(assoc_type_impl);
                     }
                 }
-                ItemEnum::AssocConst { type_, default } => {
+                ItemEnum::AssocConst { type_, value } => {
                     let constant = TraitConstant {
                         name: impl_item.name.clone().unwrap_or_default(),
                         ty: Box::new(self.parse_type(type_)?),
-                        default_value: default.as_ref().map(|d| ConstExpr { expr: d.clone() }),
+                        default_value: value.as_ref().map(|d| ConstExpr { expr: d.clone() }),
                         docs: impl_item.docs.clone(),
                     };
                     associated_constants.push(constant);
@@ -722,7 +736,7 @@ impl RustdocParser {
                     self.parse_type(ty)
                 } else {
                     Err(ParseError::InvalidItemKind {
-                        id: id.0.clone(),
+                        id: id.0.to_string(),
                         expected: "StructField".to_string(),
                         actual: format!("{:?}", item.inner),
                     })
@@ -850,7 +864,7 @@ impl RustdocParser {
     }
 
     fn parse_resolved_path(&mut self, path: &rustdoc_types::Path) -> Result<IRPath> {
-        let path_str = path.name.clone();
+        let path_str = path.path.clone();
         let generic_args = path
             .args
             .as_ref()
@@ -900,7 +914,7 @@ impl RustdocParser {
             .unwrap_or_default();
 
         Ok(TraitRef {
-            name: path.name.clone(),
+            name: path.path.clone(),
             args,
         })
     }
@@ -970,16 +984,15 @@ impl RustdocParser {
         };
 
         let mut attributes = Vec::new();
-        if let Some(header) = &fp.header {
-            if header.const_ {
-                attributes.push(FnAttribute::Const);
-            }
-            if header.unsafe_ {
-                attributes.push(FnAttribute::Unsafe);
-            }
-            if header.async_ {
-                attributes.push(FnAttribute::Async);
-            }
+
+        if fp.header.is_const {
+            attributes.push(FnAttribute::Const);
+        }
+        if fp.header.is_unsafe {
+            attributes.push(FnAttribute::Unsafe);
+        }
+        if fp.header.is_async {
+            attributes.push(FnAttribute::Async);
         }
 
         Ok(FunctionPointer {
@@ -1008,9 +1021,9 @@ impl RustdocParser {
                 rustdoc_types::GenericParamDefKind::Type {
                     bounds,
                     default,
-                    synthetic,
+                    is_synthetic,
                 } => {
-                    if !synthetic {
+                    if !is_synthetic {
                         type_params.push(TypeParam {
                             name: param.name.clone(),
                             kind: TypeKind::Type,
@@ -1080,18 +1093,6 @@ impl RustdocParser {
                         .map(|bound| self.parse_generic_bound_to_constraint(&param_name, bound))
                         .collect::<Result<Vec<_>>>()
                 }
-                rustdoc_types::WherePredicate::RegionPredicate { lifetime, bounds } => bounds
-                    .iter()
-                    .filter_map(|bound| match bound {
-                        rustdoc_types::GenericBound::Outlives(longer) => {
-                            Some(Ok(Constraint::LifetimeBound {
-                                shorter: lifetime.clone(),
-                                longer: longer.clone(),
-                            }))
-                        }
-                        _ => None,
-                    })
-                    .collect(),
                 rustdoc_types::WherePredicate::EqPredicate { lhs, rhs } => {
                     let lhs_str = format!("{:?}", lhs);
                     Ok(vec![Constraint::AssociatedTypeBound {
@@ -1168,6 +1169,7 @@ impl RustdocParser {
                 rustdoc_types::GenericBound::Outlives(lifetime) => {
                     Ok(GenericBound::Lifetime(lifetime.clone()))
                 }
+                rustdoc_types::GenericBound::Use(precise_capturing_args) => todo!(),
             })
             .collect()
     }
@@ -1214,6 +1216,7 @@ impl RustdocParser {
 
                 Ok(result)
             }
+            rustdoc_types::GenericArgs::ReturnTypeNotation => Ok(vec![]),
         }
     }
 
