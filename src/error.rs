@@ -23,17 +23,8 @@ pub enum NewDocsError {
     #[error("Item not found: {0}")]
     NotFound(String),
 
-    #[error("Invalid entry: {0}")]
-    InvalidEntry(String),
-
     #[error("Feature not implemented")]
     NotImplemented,
-
-    #[error("network error: {0}")]
-    NetworkError(String),
-
-    #[error("parsing error: {0}")]
-    ParsingError(String),
 
     #[error("file not found")]
     FileNotFound,
