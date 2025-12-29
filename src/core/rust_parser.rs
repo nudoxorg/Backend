@@ -11,7 +11,7 @@ use crate::{
         function::{Attribute as FnAttribute, Function},
         generics::*,
         kind::{Kind, Visibility},
-        parameter::{Parameter, ParameterAttribute},
+        parameter::Parameter,
         primitives::Primitive,
         protocols::*,
         record::*,

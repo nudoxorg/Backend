@@ -12,6 +12,4 @@ fn main() {
     println!("Hello, world!");
 
     let registry = get_registry(lang_types::Language::Rust);
-
-    dbg!(registry.get_reference());
 }

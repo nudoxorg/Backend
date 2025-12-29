@@ -123,7 +123,7 @@ impl RPackage {
             .map_err(|e| NewDocsError::ParsingError(format!("JSON fail: {}", e)))?;
 
         let mut parser = RustdocParser::new(rustdoc_crate)?;
-        parser.parse_crate()
+        Ok(parser.parse_crate().unwrap())
     }
 }
 
