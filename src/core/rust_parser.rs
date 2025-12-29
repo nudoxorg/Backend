@@ -3,17 +3,27 @@ use std::collections::{HashMap, HashSet};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
-use crate::{core::rust::ParseError, ir::{
-    entry::Entry,
-    function::{Attribute as FnAttribute, Function},
-    generics::*,
-    kind::{Kind, Visibility},
-    parameter::{Parameter, ParameterAttribute},
-    primitives::Primitive,
-    protocols::*,
-    record::*,
-    ty::{DynTrait, FunctionPointer, Path as IRPath, PolyTrait, QualifiedPath, Type},
-}};
+use crate::{
+    core::rust::ParseError,
+    error::NewDocsError,
+    ir::{
+        entry::Entry,
+        function::{Attribute as FnAttribute, Function},
+        generics::*,
+        kind::{Kind, Visibility},
+        parameter::{Parameter, ParameterAttribute},
+        primitives::Primitive,
+        protocols::*,
+        record::*,
+        ty::{DynTrait, FunctionPointer, Path as IRPath, PolyTrait, QualifiedPath, Type},
+    },
+};
+
+impl From<crate::core::rust::ParseError> for NewDocsError {
+    fn from(err: crate::core::rust::ParseError) -> Self {
+        NewDocsError::ParseError(err.to_string())
+    }
+}
 
 pub struct RustdocParser {
     krate: Crate,
@@ -37,9 +47,9 @@ impl RustdocParser {
         Ok(parser)
     }
 
-    /// Build a mapping of all item IDs to their full paths
     fn build_path_map(&mut self) -> Result<()> {
-        self.build_path_map_recursive(&self.krate.root, vec![])?;
+        let root = self.krate.root.clone();
+        self.build_path_map_recursive(&root, vec![])?;
         Ok(())
     }
 
@@ -48,37 +58,25 @@ impl RustdocParser {
             .krate
             .index
             .get(id)
-            .ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+            .ok_or_else(|| ParseError::ItemNotFound(id.0))?;
 
-        if let Some(name) = &item.name {
-            path.push(name.clone());
+        let name = item.name.clone();
+        let children: Vec<_> = match &item.inner {
+            ItemEnum::Module(m) => m.items.clone(),
+            ItemEnum::Struct(s) => s.impls.clone(),
+            ItemEnum::Enum(e) => e.impls.clone(),
+            ItemEnum::Trait(t) => t.items.clone(),
+            _ => vec![],
+        };
+
+        if let Some(n) = name {
+            path.push(n);
         }
 
         self.id_to_path.insert(id.clone(), path.clone());
 
-        // Recurse into children
-        match &item.inner {
-            ItemEnum::Module(m) => {
-                for child_id in &m.items {
-                    self.build_path_map_recursive(child_id, path.clone())?;
-                }
-            }
-            ItemEnum::Struct(s) => {
-                for impl_id in &s.impls {
-                    self.build_path_map_recursive(impl_id, path.clone())?;
-                }
-            }
-            ItemEnum::Enum(e) => {
-                for impl_id in &e.impls {
-                    self.build_path_map_recursive(impl_id, path.clone())?;
-                }
-            }
-            ItemEnum::Trait(t) => {
-                for item_id in &t.items {
-                    self.build_path_map_recursive(item_id, path.clone())?;
-                }
-            }
-            _ => {}
+        for child_id in children {
+            self.build_path_map_recursive(&child_id, path.clone())?;
         }
 
         Ok(())
@@ -136,7 +134,7 @@ impl RustdocParser {
     fn convert_item(&mut self, id: &Id, item: &Item) -> Result<Entry> {
         let name = item.name.clone().unwrap_or_default();
         let path = self.get_path(id)?;
-        let visibility = item.visibility.as_ref().map(|v| self.parse_visibility(v));
+        let visibility = Some(self.parse_visibility(&item.visibility));
         let documentation = item.docs.clone();
 
         let kind = self.parse_item_kind(id, &item.inner)?;
@@ -234,7 +232,7 @@ impl RustdocParser {
             }
         };
 
-        let visibility = item.visibility.as_ref().map(|v| self.parse_visibility(v));
+        let visibility = Some(self.parse_visibility(&item.visibility));
 
         Ok(Record {
             name: item.name.clone(),
@@ -259,7 +257,7 @@ impl RustdocParser {
                             ty: Some(Box::new(ty)),
                             default_value: None,
                             attributes: None,
-                            visibility: item.visibility.as_ref().map(|v| self.parse_visibility(v)),
+                            visibility: Some(self.parse_visibility(&item.visibility)),
                         })
                     } else {
                         None
@@ -290,11 +288,11 @@ impl RustdocParser {
                         ty: Some(Box::new(ty)),
                         default_value: None,
                         attributes: None,
-                        visibility: item.visibility.as_ref().map(|v| self.parse_visibility(v)),
+                        visibility: Some(self.parse_visibility(&item.visibility)),
                     })
                 } else {
                     Err(ParseError::InvalidItemKind {
-                        id: id.0.clone(),
+                        id: id.0.to_string(),
                         expected: "StructField".to_string(),
                         actual: format!("{:?}", item.inner),
                     })
@@ -378,13 +376,13 @@ impl RustdocParser {
     fn parse_function(&mut self, id: &Id, f: &rustdoc_types::Function) -> Result<Function> {
         let item = self.krate.index.get(id).unwrap();
 
-        let input_parameters = if f.decl.inputs.is_empty() {
+        let input_parameters = if f.sig.inputs.is_empty() {
             None
         } else {
-            Some(self.parse_function_inputs(&f.decl.inputs)?)
+            Some(self.parse_function_inputs(&f.sig.inputs)?)
         };
 
-        let output_parameters = if let Some(output_ty) = &f.decl.output {
+        let output_parameters = if let Some(output_ty) = &f.sig.output {
             Some(vec![Parameter {
                 name: "return".to_string(),
                 ty: Some(self.parse_type(output_ty)?),
@@ -404,7 +402,7 @@ impl RustdocParser {
             self.parse_generic_params(&f.generics)
         };
 
-        let visibility = item.visibility.as_ref().map(|v| self.parse_visibility(v));
+        let visibility = Some(self.parse_visibility(&item.visibility));
 
         Ok(Function {
             input_parameters,
@@ -439,51 +437,18 @@ impl RustdocParser {
     fn parse_function_attributes(&self, f: &rustdoc_types::Function) -> Option<Vec<FnAttribute>> {
         let mut attrs = Vec::new();
 
-        if let Some(header) = &f.header {
-            if header.const_ {
-                attrs.push(FnAttribute::Const);
-            }
-            if header.unsafe_ {
-                attrs.push(FnAttribute::Unsafe);
-            }
-            if header.async_ {
-                attrs.push(FnAttribute::Async);
-            }
+        let header = &f.header;
+        if header.is_const {
+            attrs.push(FnAttribute::Const);
+        }
+        if header.is_unsafe {
+            attrs.push(FnAttribute::Unsafe);
+        }
+        if header.is_async {
+            attrs.push(FnAttribute::Async);
         }
 
-        if attrs.is_empty() {
-            None
-        } else {
-
-
-            None
-        } else {
-
-
-            None
-        } else {
-
-
-            None
-        } else {
-
-
-            None
-        } else {
-
-
-            None
-        } else {
-
-
-            None
-        } else {
-
-
-            None
-        } else {
-            Some(attrs)
-        }
+        if attrs.is_empty() { None } else { Some(attrs) }
     }
 
     fn parse_trait(&mut self, id: &Id, t: &rustdoc_types::Trait) -> Result<TraitDef> {
@@ -525,7 +490,7 @@ impl RustdocParser {
                 ItemEnum::AssocType {
                     generics,
                     bounds,
-                    default,
+                    type_,
                 } => {
                     let assoc_type = AssociatedType {
                         name: trait_item.name.clone().unwrap_or_default(),
@@ -534,16 +499,16 @@ impl RustdocParser {
                         } else {
                             Some(self.parse_generic_bounds(bounds)?)
                         },
-                        default_type: default.as_ref().map(|ty| self.parse_type(ty)).transpose()?,
+                        default_type: type_.as_ref().map(|ty| self.parse_type(ty)).transpose()?,
                         docs: trait_item.docs.clone(),
                     };
                     associated_types.push(assoc_type);
                 }
-                ItemEnum::AssocConst { type_, default } => {
+                ItemEnum::AssocConst { type_, value } => {
                     let constant = TraitConstant {
                         name: trait_item.name.clone().unwrap_or_default(),
                         ty: Box::new(self.parse_type(type_)?),
-                        default_value: default.as_ref().map(|d| ConstExpr { expr: d.clone() }),
+                        default_value: value.as_ref().map(|d| ConstExpr { expr: d.clone() }),
                         docs: trait_item.docs.clone(),
                     };
                     required_constants.push(constant);
@@ -560,7 +525,7 @@ impl RustdocParser {
             None
         };
 
-        let visibility = item.visibility.as_ref().map(|v| self.parse_visibility(v));
+        let visibility = Some(self.parse_visibility(&item.visibility));
 
         Ok(TraitDef {
             name: item.name.clone().unwrap_or_default(),
@@ -636,8 +601,8 @@ impl RustdocParser {
                 return Some(ReceiverKind::Owned);
             }
             match ty {
-                rustdoc_types::Type::BorrowedRef { mutable, .. } => {
-                    if *mutable {
+                rustdoc_types::Type::BorrowedRef { is_mutable, .. } => {
+                    if *is_mutable {
                         Some(ReceiverKind::MutRef)
                     } else {
                         Some(ReceiverKind::SharedRef)
@@ -714,7 +679,7 @@ impl RustdocParser {
             }
         }
 
-        let visibility = item.visibility.as_ref().map(|v| self.parse_visibility(v));
+        let visibility = Some(self.parse_visibility(&item.visibility));
 
         Ok(TraitImpl {
             tr,
@@ -824,7 +789,7 @@ impl RustdocParser {
                 })
             }
 
-            rustdoc_types::Type::Pat { type_ } => {
+            rustdoc_types::Type::Pat { type_, .. } => {
                 let parsed_ty = Box::new(self.parse_type(type_)?);
                 Ok(Type::Pattern { ty: parsed_ty })
             }
@@ -836,23 +801,23 @@ impl RustdocParser {
 
             rustdoc_types::Type::Infer => Ok(Type::Infer),
 
-            rustdoc_types::Type::RawPointer { mutable, type_ } => {
+            rustdoc_types::Type::RawPointer { is_mutable, type_ } => {
                 let parsed_ty = Box::new(self.parse_type(type_)?);
                 Ok(Type::RawPointer {
-                    is_mutable: *mutable,
+                    is_mutable: *is_mutable,
                     ty: parsed_ty,
                 })
             }
 
             rustdoc_types::Type::BorrowedRef {
                 lifetime,
-                mutable,
+                is_mutable,
                 type_,
             } => {
                 let parsed_ty = Box::new(self.parse_type(type_)?);
                 Ok(Type::BorrowedRef {
                     lifetime: lifetime.clone(),
-                    is_mutable: *mutable,
+                    is_mutable: *is_mutable,
                     ty: parsed_ty,
                 })
             }
@@ -903,7 +868,7 @@ impl RustdocParser {
         let trait_ref = self.parse_path_to_trait_ref(&pt.trait_)?;
         Ok(PolyTrait {
             tr: trait_ref,
-            lifetimes: pt.generic_params.clone(),
+            lifetimes: pt.generic_params.iter().map(|gp| gp.name.clone()).collect(),
         })
     }
 
@@ -965,14 +930,14 @@ impl RustdocParser {
         &mut self,
         fp: &rustdoc_types::FunctionPointer,
     ) -> Result<FunctionPointer> {
-        let inputs = if fp.decl.inputs.is_empty() {
+        let inputs = if fp.sig.inputs.is_empty() {
             None
         } else {
-            Some(self.parse_function_inputs(&fp.decl.inputs)?)
+            Some(self.parse_function_inputs(&fp.sig.inputs)?)
         };
 
         let outputs = fp
-            .decl
+            .sig
             .output
             .as_ref()
             .map(|ty| {
@@ -1160,6 +1125,13 @@ impl RustdocParser {
                     trait_ref,
                 })
             }
+            rustdoc_types::GenericBound::Use(_) => Ok(Constraint::TraitBound {
+                param: param.to_string(),
+                trait_ref: TraitRef {
+                    name: "Use".to_string(),
+                    args: vec![],
+                },
+            }),
             rustdoc_types::GenericBound::Outlives(lifetime) => Ok(Constraint::LifetimeBound {
                 shorter: param.to_string(),
                 longer: lifetime.clone(),
@@ -1202,7 +1174,7 @@ impl RustdocParser {
 
     fn parse_generic_args(&mut self, args: &rustdoc_types::GenericArgs) -> Result<Vec<GenericArg>> {
         match args {
-            rustdoc_types::GenericArgs::AngleBracketed { args, bindings } => {
+            rustdoc_types::GenericArgs::AngleBracketed { args, constraints } => {
                 let mut result = Vec::new();
 
                 for arg in args {
@@ -1261,7 +1233,7 @@ impl RustdocParser {
             .ok_or_else(|| ParseError::PathParsing(format!("No path found for ID: {}", id.0)))
     }
 
-     fn id_to_number(&self, id: &Id) -> i64 {
+    fn id_to_number(&self, id: &Id) -> i64 {
         // Simple hash of the ID string to generate a consistent number
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -1271,14 +1243,12 @@ impl RustdocParser {
         hasher.finish() as i64
     }
 
-         fn generics_to_args(&self, generics: &Generics) -> Option<Vec<GenericArg>> {
+    fn generics_to_args(&self, generics: &Generics) -> Option<Vec<GenericArg>> {
         let mut args = Vec::new();
 
         for type_param in &generics.type_params {
             if let Some(default) = &type_param.default_type {
-                args.push(GenericArg::Type(Type::GenericParam(
-                    default.name.clone(),
-                )));
+                args.push(GenericArg::Type(Type::GenericParam(default.name.clone())));
             } else {
                 args.push(GenericArg::Type(Type::GenericParam(
                     type_param.name.clone(),
@@ -1296,13 +1266,6 @@ impl RustdocParser {
             args.push(GenericArg::Lifetime(lifetime_param.name.clone()));
         }
 
-        if args.is_empty() {
-            None
-        } else {
-            Some(args)
-        }
+        if args.is_empty() { None } else { Some(args) }
     }
-
-
-
 }
