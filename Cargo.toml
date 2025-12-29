@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 crates_io_api = "0.12.0"
-jiff = { version = "0.2.16"}
+jiff = { version = "0.2.16", features = ["serde"] }
 lang-types = { version = "0.1.0", features = ["serde"] }
 rustdoc-types = "0.56.0"
 semver = { version = "1.0.27", features = ["serde"] }
@@ -16,4 +16,5 @@ thiserror = "2.0.17"
 url = { version = "2.5.7", features = ["serde"] }
 
 [features]
+default = ['serde']
 serde = ["dep:serde"]
