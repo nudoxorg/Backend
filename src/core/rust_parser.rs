@@ -1,5 +1,5 @@
 use rustdoc_types::{Crate, Id, Item, ItemEnum};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
@@ -145,10 +145,10 @@ impl RustdocParser {
                         // We map "crate::internal::Bar" ID to "crate::foo::Bar" path.
 
                         let new_path = current_path.clone(); // Path includes the import name already?
-                                                                                                  // Note: In rustdoc, the Import item has the name of the import.
-                                                                                                  // The item we popped (id) corresponds to the Import itself.
-                                                                                                  // current_path points to this Import.
-                                                                                                  // We want to map `target_id` to `current_path`.
+                        // Note: In rustdoc, the Import item has the name of the import.
+                        // The item we popped (id) corresponds to the Import itself.
+                        // current_path points to this Import.
+                        // We want to map `target_id` to `current_path`.
 
                         if !self.id_to_path.contains_key(target_id) {
                             self.id_to_path
@@ -209,26 +209,6 @@ impl RustdocParser {
                 }
             }
         }
-    }
-
-    pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
-        let index = self.krate.index.clone();
-
-        let root_item = index
-            .get(&self.krate.root)
-            .ok_or_else(|| ParseError::ItemNotFound(self.krate.root.0.clone()))?;
-
-        let mut entries = Vec::new();
-
-        if let ItemEnum::Module(module) = &root_item.inner {
-            for item_id in &module.items {
-                if let Ok(entry) = self.parse_item(item_id) {
-                    entries.push(entry);
-                }
-            }
-        }
-
-        Ok(entries)
     }
 
     pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
@@ -315,6 +295,20 @@ impl RustdocParser {
                     }
                 }
                 Some(trait_members)
+            }
+            ItemEnum::Module(m) => {
+                let mut children = Vec::new();
+                for item_id in &m.items {
+                    // Only add if we can resolve it
+                    if let Ok(child) = self.parse_item(item_id) {
+                        children.push(child);
+                    }
+                }
+                if children.is_empty() {
+                    None
+                } else {
+                    Some(children)
+                }
             }
             _ => None,
         };
