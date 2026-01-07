@@ -90,29 +90,92 @@ impl RustdocParser {
     }
 
     fn build_path_map(&mut self) -> Result<()> {
-        let root = self.krate.root.clone();
-        self.build_path_map_recursive(&root, vec![])?;
+        let root_id = self.krate.root.clone();
+
+        // BFS queue: (ID, current_path)
+        let mut queue = VecDeque::new();
+        let mut visited = HashSet::new();
+
+        // Initialize with root
+        if let Some(root_item) = self.krate.index.get(&root_id) {
+            let root_name = root_item
+                .name
+                .clone()
+                .unwrap_or_else(|| "crate".to_string());
+            let root_path = vec![root_name];
+            self.id_to_path.insert(root_id.clone(), root_path.clone());
+            queue.push_back((root_id, root_path));
+        }
+
+        while let Some((id, current_path)) = queue.pop_front() {
+            if visited.contains(&id) {
+                continue;
+            }
+            visited.insert(id.clone());
+            let index = self.krate.index.clone();
+
+            let item = match index.get(&id) {
+                Some(i) => i,
+                None => continue, // Skip broken links
+            };
+
+            match &item.inner {
+                ItemEnum::Module(m) => {
+                    for child_id in &m.items {
+                        // For module children, append their name to the path
+                        if let Some(child_item) = self.krate.index.get(child_id) {
+                            if let Some(name) = &child_item.name {
+                                let mut new_path = current_path.clone();
+                                new_path.push(name.clone());
+
+                                // Insert only if not present (BFS guarantees shortest path is first)
+                                if !self.id_to_path.contains_key(child_id) {
+                                    self.id_to_path.insert(child_id.clone(), new_path.clone());
+                                    queue.push_back((child_id.clone(), new_path));
+                                }
+                            }
+                        }
+                    }
+                }
+                ItemEnum::Use(import) => {
+                    // "Deep Path Resolution": Follow the import
+                    if let Some(target_id) = &import.id {
+                        // If we are importing something, we give it a path at this location.
+                        // e.g., "crate::foo::Bar" might point to "crate::internal::Bar"
+                        // We map "crate::internal::Bar" ID to "crate::foo::Bar" path.
+
+                        let new_path = current_path.clone(); // Path includes the import name already?
+                                                                                                  // Note: In rustdoc, the Import item has the name of the import.
+                                                                                                  // The item we popped (id) corresponds to the Import itself.
+                                                                                                  // current_path points to this Import.
+                                                                                                  // We want to map `target_id` to `current_path`.
+
+                        if !self.id_to_path.contains_key(target_id) {
+                            self.id_to_path
+                                .insert(target_id.clone(), current_path.clone());
+                            // Continue BFS from the target item, using this new public path
+                            queue.push_back((target_id.clone(), current_path));
+                        }
+                    } else if import.is_glob {
+                        // Handle Glob imports if necessary: read the module and bring all children up.
+                        // (Simplified for this snippet: requires resolving the path string to an ID if not explicit)
+                    }
+                }
+                ItemEnum::Struct(s) => self.queue_impls(&mut queue, &s.impls, &current_path),
+                ItemEnum::Enum(e) => self.queue_impls(&mut queue, &e.impls, &current_path),
+                ItemEnum::Trait(t) => {
+                    // Trait items (required methods) are children
+                    for item_id in &t.items {
+                        self.queue_child(&mut queue, item_id, &current_path);
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
-    fn build_path_map_recursive(&mut self, id: &Id, mut path: Vec<String>) -> Result<()> {
-        let item = self
-            .krate
-            .index
-            .get(id)
-            .ok_or_else(|| ParseError::ItemNotFound(id.0))?;
-
-        let name = item.name.clone();
-        let children: Vec<_> = match &item.inner {
-            ItemEnum::Module(m) => m.items.clone(),
-            ItemEnum::Struct(s) => s.impls.clone(),
-            ItemEnum::Enum(e) => e.impls.clone(),
-            ItemEnum::Trait(t) => t.items.clone(),
-            _ => vec![],
-        };
-
-        if let Some(n) = name {
-            path.push(n);
+    fn queue_child(
         }
 
         self.id_to_path.insert(id.clone(), path.clone());
