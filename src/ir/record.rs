@@ -72,5 +72,5 @@ pub struct SumVariant {
     /// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
     pub name: String,
     /// Associated types for this variant (None for unit variants)
-    pub types: Option<Vec<Type>>,
+    pub types: Option<Vec<Type>>, // has to be vec because it could technically hold more than one?? Might want to use an enum for this idk
 }
