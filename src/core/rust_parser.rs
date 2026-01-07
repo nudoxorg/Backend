@@ -176,15 +176,39 @@ impl RustdocParser {
     }
 
     fn queue_child(
+        &mut self,
+        queue: &mut VecDeque<(Id, Vec<String>)>,
+        id: &Id,
+        parent_path: &[String],
+    ) {
+        if let Some(item) = self.krate.index.get(id) {
+            if let Some(name) = &item.name {
+                let mut path = parent_path.to_vec();
+                path.push(name.clone());
+                if !self.id_to_path.contains_key(id) {
+                    self.id_to_path.insert(id.clone(), path.clone());
+                    queue.push_back((id.clone(), path));
+                }
+            }
         }
+    }
 
-        self.id_to_path.insert(id.clone(), path.clone());
-
-        for child_id in children {
-            self.build_path_map_recursive(&child_id, path.clone())?;
+    // Helper to traverse into impls during path building to ensure associated types/methods get paths
+    fn queue_impls(
+        &mut self,
+        queue: &mut VecDeque<(Id, Vec<String>)>,
+        impls: &[Id],
+        parent_path: &[String],
+    ) {
+        for impl_id in impls {
+            if let Some(item) = self.krate.index.clone().get(impl_id) {
+                if let ItemEnum::Impl(i) = &item.inner {
+                    for item_id in &i.items {
+                        self.queue_child(queue, item_id, parent_path);
+                    }
+                }
+            }
         }
-
-        Ok(())
     }
 
     pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
@@ -201,6 +225,36 @@ impl RustdocParser {
                 if let Ok(entry) = self.parse_item(item_id) {
                     entries.push(entry);
                 }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
+        // 1. Gather all IDs we found paths for (this includes deep items, re-exports, etc.)
+        let mut all_ids: Vec<_> = self.id_to_path.keys().cloned().collect();
+
+        // 2. Sort them by path for deterministic output order
+        //    (e.g. "axum::body::Body" comes before "axum::extract::Json")
+        all_ids.sort_by(|a, b| {
+            let path_a = &self.id_to_path[a];
+            let path_b = &self.id_to_path[b];
+            path_a.cmp(path_b)
+        });
+
+        let mut entries = Vec::new();
+
+        for id in all_ids {
+            // We parse every reachable item.
+            // The `entry_cache` inside `parse_item` ensures we don't duplicate work
+            // if an item was already visited during a previous recursion.
+            if let Ok(entry) = self.parse_item(&id) {
+                // Optional: Filter out items you don't want top-level entries for.
+                // For example, if you don't want standalone entries for methods (because
+                // they are already inside the Struct's `members`), you could check `kind`.
+                // For a raw search index, keeping them is usually fine/better.
+                entries.push(entry);
             }
         }
 
