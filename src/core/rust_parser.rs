@@ -133,13 +133,32 @@ impl RustdocParser {
 
     fn convert_item(&mut self, id: &Id, item: &Item) -> Result<Entry> {
         let name = item.name.clone().unwrap_or_default();
-        let path = self.get_path(id)?;
+        // Path logic handles the lookup, potentially falling back if path map failed
+        let path = self.get_path(id).unwrap_or_else(|_| vec![name.clone()]);
         let visibility = Some(self.parse_visibility(&item.visibility));
         let documentation = item.docs.clone();
-
         let kind = self.parse_item_kind(id, &item.inner)?;
-
         let id_num = self.id_to_number(id);
+
+        // Identify items that have impls and collect their children
+        let members = match &item.inner {
+            ItemEnum::Struct(s) => Some(self.collect_impl_members(&s.impls)?),
+            ItemEnum::Enum(e) => Some(self.collect_impl_members(&e.impls)?),
+            ItemEnum::Union(u) => Some(self.collect_impl_members(&u.impls)?),
+            ItemEnum::Primitive(p) => Some(self.collect_impl_members(&p.impls)?),
+            // Trait definitions already contain their required/provided methods in `parse_trait`
+            // but if we want them in `members` as well:
+            ItemEnum::Trait(t) => {
+                let mut trait_members = Vec::new();
+                for method_id in &t.items {
+                    if let Ok(entry) = self.parse_item(method_id) {
+                        trait_members.push(entry);
+                    }
+                }
+                Some(trait_members)
+            }
+            _ => None,
+        };
 
         Ok(Entry {
             name,
@@ -148,7 +167,7 @@ impl RustdocParser {
             kind,
             visibility,
             documentation,
-            members: None,
+            members,
             input_parameters: None,
             output_parameters: None,
             type_parameters: None,
