@@ -20,7 +20,7 @@ pub struct Entry {
     pub documentation: Option<String>, // The associated documentation
 
     // Added missing properties
-    pub members: Option<Vec<String>>,
+    pub members: Option<Vec<Entry>>,
     pub input_parameters: Option<Vec<Parameter>>,
     pub output_parameters: Option<Vec<Parameter>>,
     pub type_parameters: Option<Vec<String>>,
