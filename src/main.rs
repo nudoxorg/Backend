@@ -13,10 +13,12 @@ mod traits;
 
 use std::sync::Arc;
 
+const TEST_PACKAGE: &str = "axum";
+
 #[tokio::main]
 async fn main() {
     let registry = get_registry(lang_types::Language::Rust);
-    let packages = registry.get_packages_by_name("axum").await;
+    let packages = registry.get_packages_by_name(TEST_PACKAGE).await;
 
     let out = match packages {
         Ok(mut packages) => {
