@@ -62,6 +62,33 @@ impl RustdocParser {
         }
     }
 
+    fn collect_impl_members(&mut self, impl_ids: &[Id]) -> Result<Vec<Entry>> {
+        let mut members = Vec::new();
+        let index = self.krate.index.clone();
+
+        for impl_id in impl_ids {
+            let impl_item = match index.get(impl_id) {
+                Some(i) => i,
+                None => continue,
+            };
+
+            if let ItemEnum::Impl(imp) = &impl_item.inner {
+                // You can filter here: e.g., only inherent impls (where trait_ is None)
+                // or include trait methods too.
+                // The "Genealogy" code usually flattens everything.
+
+                for assoc_item_id in &imp.items {
+                    // Check circular dep/cache for the method
+                    if let Ok(entry) = self.parse_item(assoc_item_id) {
+                        members.push(entry);
+                    }
+                }
+            }
+        }
+
+        Ok(members)
+    }
+
     fn build_path_map(&mut self) -> Result<()> {
         let root = self.krate.root.clone();
         self.build_path_map_recursive(&root, vec![])?;
