@@ -1,4 +1,5 @@
 use semver::Version;
+use tokio::fs::write;
 
 use crate::traits::{
     builder::{self, get_registry},
@@ -16,6 +17,7 @@ use std::sync::Arc;
 async fn main() {
     let registry = get_registry(lang_types::Language::Rust);
     let packages = registry.get_packages_by_name("axum").await;
+
     let out = match packages {
         Ok(mut packages) => {
             let pkg = packages.remove(0); // Take ownership by removing from vec
@@ -26,5 +28,6 @@ async fn main() {
         Err(_other) => todo!(),
     }
     .unwrap();
-    dbg!(out);
+
+    write("out.json", out).await;
 }
