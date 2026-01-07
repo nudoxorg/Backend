@@ -33,6 +33,8 @@ pub struct RustdocParser {
     visiting: HashSet<Id>,
     /// Cache of parsed entries
     entry_cache: HashMap<Id, Entry>,
+    /// Primitive name to ID mapping (for Genealogy resolution)
+    primitive_map: HashMap<String, Id>,
 }
 
 impl RustdocParser {
@@ -42,9 +44,22 @@ impl RustdocParser {
             id_to_path: HashMap::new(),
             visiting: HashSet::new(),
             entry_cache: HashMap::new(),
+            primitive_map: HashMap::new(),
         };
+        // Pre-scan primitives to handle them like the "old" code
+        parser.scan_primitives();
         parser.build_path_map()?;
         Ok(parser)
+    }
+
+    fn scan_primitives(&mut self) {
+        for (id, item) in &self.krate.index {
+            if let ItemEnum::Primitive(p) = &item.inner {
+                self.primitive_map.insert(p.name.clone(), id.clone());
+                // Primitives don't always have a path from root, so we ensure they exist in the map
+                self.id_to_path.insert(id.clone(), vec![p.name.clone()]);
+            }
+        }
     }
 
     fn build_path_map(&mut self) -> Result<()> {
