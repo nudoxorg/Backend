@@ -133,6 +133,13 @@ impl RustdocParser {
                                     self.id_to_path.insert(child_id.clone(), new_path.clone());
                                     queue.push_back((child_id.clone(), new_path));
                                 }
+                            } else {
+                                // I believe this is the path that items that are inlined take, usually re-exports.
+                                if !self.id_to_path.contains_key(child_id) {
+                                    self.id_to_path
+                                        .insert(child_id.clone(), current_path.clone());
+                                    queue.push_back((child_id.clone(), current_path.clone()));
+                                }
                             }
                         }
                     }
