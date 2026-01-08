@@ -62,7 +62,7 @@ pub enum ParseError {
     InvalidPrimitive(String),
 }
 
-use crate::ir::entry::Entry;
+use crate::ir::entry::{Entry, Index};
 use semver::Version;
 use std::fs;
 use std::path::PathBuf;
@@ -83,7 +83,7 @@ pub struct RPackage {
 
 impl RPackage {
     /// Internal helper to run cargo rustdoc and return the parsed Entry IR
-    fn generate_ir(&self, version: &Version) -> Result<Vec<Entry>, NewDocsError> {
+    fn generate_ir(&self, version: &Version) -> Result<Index, NewDocsError> {
         let target_dir = std::env::current_dir()
             .map_err(|e| NewDocsError::IoError(e))?
             .join("target")
