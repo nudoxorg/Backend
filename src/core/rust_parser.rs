@@ -7,7 +7,7 @@ use crate::{
     core::rust::ParseError,
     error::NewDocsError,
     ir::{
-        entry::Entry,
+        entry::{Entry, EntryRef},
         function::{Attribute as FnAttribute, Function},
         generics::*,
         kind::{Kind, Visibility},
@@ -62,7 +62,7 @@ impl RustdocParser {
         }
     }
 
-    fn collect_impl_members(&mut self, impl_ids: &[Id]) -> Result<Vec<Entry>> {
+    fn collect_impl_members(&mut self, impl_ids: &[Id]) -> Result<Vec<EntryRef>> {
         let mut members = Vec::new();
         let index = self.krate.index.clone();
 
@@ -80,7 +80,11 @@ impl RustdocParser {
                 for assoc_item_id in &imp.items {
                     // Check circular dep/cache for the method
                     if let Ok(entry) = self.parse_item(assoc_item_id) {
-                        members.push(entry);
+                        // EntryRef as a pointer for member instead of nested duplication
+                        members.push(EntryRef {
+                            id: entry.id,
+                            path: entry.path,
+                        });
                     }
                 }
             }
@@ -294,11 +298,15 @@ impl RustdocParser {
             ItemEnum::Primitive(p) => Some(self.collect_impl_members(&p.impls)?),
             // Trait definitions already contain their required/provided methods in `parse_trait`
             // but if we want them in `members` as well:
+            // change to entry ref -> might break traits
             ItemEnum::Trait(t) => {
                 let mut trait_members = Vec::new();
                 for method_id in &t.items {
                     if let Ok(entry) = self.parse_item(method_id) {
-                        trait_members.push(entry);
+                        trait_members.push(EntryRef {
+                            id: entry.id,
+                            path: entry.path,
+                        });
                     }
                 }
                 Some(trait_members)
@@ -308,7 +316,10 @@ impl RustdocParser {
                 for item_id in &m.items {
                     // Only add if we can resolve it
                     if let Ok(child) = self.parse_item(item_id) {
-                        children.push(child);
+                        children.push(EntryRef {
+                            id: child.id,
+                            path: child.path,
+                        });
                     }
                 }
                 if children.is_empty() {
