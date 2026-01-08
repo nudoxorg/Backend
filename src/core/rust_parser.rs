@@ -7,7 +7,7 @@ use crate::{
     core::rust::ParseError,
     error::NewDocsError,
     ir::{
-        entry::{Entry, EntryRef},
+        entry::{Entry, EntryRef, Index},
         function::{Attribute as FnAttribute, Function},
         generics::*,
         kind::{Kind, Visibility},
@@ -27,8 +27,8 @@ impl From<crate::core::rust::ParseError> for NewDocsError {
 
 pub struct RustdocParser {
     krate: Crate,
-    /// Maps rustdoc IDs to resolved paths
-    id_to_path: HashMap<Id, Vec<String>>,
+    /// Maps rustdoc IDs to a set of resolved paths
+    id_to_paths: HashMap<Id, HashSet<Vec<String>>>, // HashSet tracks path of re-exports on same ID
     /// Tracks visited items to detect circular dependencies
     visiting: HashSet<Id>,
     /// Cache of parsed entries
@@ -41,7 +41,7 @@ impl RustdocParser {
     pub fn new(krate: Crate) -> Result<Self> {
         let mut parser = Self {
             krate,
-            id_to_path: HashMap::new(),
+            id_to_paths: HashMap::new(),
             visiting: HashSet::new(),
             entry_cache: HashMap::new(),
             primitive_map: HashMap::new(),
@@ -57,9 +57,48 @@ impl RustdocParser {
             if let ItemEnum::Primitive(p) = &item.inner {
                 self.primitive_map.insert(p.name.clone(), id.clone());
                 // Primitives don't always have a path from root, so we ensure they exist in the map
-                self.id_to_path.insert(id.clone(), vec![p.name.clone()]);
+                // potentially, multiple paths (primary + aliases/re-exports) can exist per id
+                self.id_to_paths
+                    .entry(id.clone())
+                    .and_modify(|hash_set| {
+                        hash_set.insert(vec![p.name.clone()]);
+                    })
+                    .or_insert_with(|| {
+                        // build hashset and add initial path
+                        let mut hs = HashSet::default();
+                        hs.insert(vec![p.name.clone()]);
+                        hs
+                    });
             }
         }
+    }
+
+    /// Helper for HashSet insertion on new id_to_paths
+    fn add_path(&mut self, id: &Id, path: Vec<String>) {
+        self.id_to_paths
+            .entry(id.clone())
+            .and_modify(|hash_set| {
+                hash_set.insert(path.clone());
+            })
+            .or_insert_with(|| {
+                let mut hs = HashSet::default();
+                hs.insert(path);
+                hs
+            });
+    }
+
+    fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> {
+        self.id_to_paths.get(id)
+    }
+
+    /// Resolve Primary path in HashSet, currently returns shortest
+    fn get_primary_path(&self, id: &Id) -> Result<Vec<String>> {
+        // TODO validate primary vs alias selection logic
+        // prefer a path that matches the public modules
+        self.get_paths(id)
+            .and_then(|paths| paths.iter().min_by(|a, b| a.cmp(b)))
+            .cloned()
+            .ok_or_else(|| ParseError::PathParsing(format!("No path found for ID: {}", id.0)))
     }
 
     fn collect_impl_members(&mut self, impl_ids: &[Id]) -> Result<Vec<EntryRef>> {
@@ -107,7 +146,8 @@ impl RustdocParser {
                 .clone()
                 .unwrap_or_else(|| "crate".to_string());
             let root_path = vec![root_name];
-            self.id_to_path.insert(root_id.clone(), root_path.clone());
+            // Allow possibility of multiple paths in a HashSet on ID for re-exports
+            self.add_path(&root_id, root_path.clone());
             queue.push_back((root_id, root_path));
         }
 
@@ -132,17 +172,21 @@ impl RustdocParser {
                                 let mut new_path = current_path.clone();
                                 new_path.push(name.clone());
 
-                                // Insert only if not present (BFS guarantees shortest path is first)
-                                if !self.id_to_path.contains_key(child_id) {
-                                    self.id_to_path.insert(child_id.clone(), new_path.clone());
+                                // Record the path for this ID; BFS traversal uses the first-seen path.
+                                if !visited.contains(child_id) {
+                                    self.add_path(child_id, new_path.clone());
                                     queue.push_back((child_id.clone(), new_path));
+                                } else {
+                                    self.add_path(child_id, new_path);
                                 }
                             } else {
                                 // I believe this is the path that items that are inlined take, usually re-exports.
-                                if !self.id_to_path.contains_key(child_id) {
-                                    self.id_to_path
-                                        .insert(child_id.clone(), current_path.clone());
+                                // Only continue down paths not visited
+                                if !visited.contains(child_id) {
+                                    self.add_path(child_id, current_path.clone());
                                     queue.push_back((child_id.clone(), current_path.clone()));
+                                } else {
+                                    self.add_path(child_id, current_path.clone());
                                 }
                             }
                         }
@@ -153,18 +197,11 @@ impl RustdocParser {
                     if let Some(target_id) = &import.id {
                         // If we are importing something, we give it a path at this location.
                         // e.g., "crate::foo::Bar" might point to "crate::internal::Bar"
-                        // We map "crate::internal::Bar" ID to "crate::foo::Bar" path.
+                        // We treat this as an alias path for the target ID.
+                        self.add_path(target_id, current_path.clone());
 
-                        let new_path = current_path.clone(); // Path includes the import name already?
-                        // Note: In rustdoc, the Import item has the name of the import.
-                        // The item we popped (id) corresponds to the Import itself.
-                        // current_path points to this Import.
-                        // We want to map `target_id` to `current_path`.
-
-                        if !self.id_to_path.contains_key(target_id) {
-                            self.id_to_path
-                                .insert(target_id.clone(), current_path.clone());
-                            // Continue BFS from the target item, using this new public path
+                        // Continue BFS from the target item, using this new public path
+                        if !visited.contains(target_id) {
                             queue.push_back((target_id.clone(), current_path));
                         }
                     } else if import.is_glob {
@@ -196,10 +233,9 @@ impl RustdocParser {
             if let Some(name) = &item.name {
                 let mut path = parent_path.to_vec();
                 path.push(name.clone());
-                if !self.id_to_path.contains_key(id) {
-                    self.id_to_path.insert(id.clone(), path.clone());
-                    queue.push_back((id.clone(), path));
-                }
+                // Record additional paths for this ID (associated items can be reachable in multiple places)
+                self.add_path(id, path.clone());
+                queue.push_back((id.clone(), path));
             }
         }
     }
@@ -222,34 +258,36 @@ impl RustdocParser {
         }
     }
 
-    pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
+    pub fn parse_crate(&mut self) -> Result<Index> {
         // 1. Gather all IDs we found paths for (this includes deep items, re-exports, etc.)
-        let mut all_ids: Vec<_> = self.id_to_path.keys().cloned().collect();
+        let mut all_ids: Vec<_> = self.id_to_paths.keys().cloned().collect();
 
         // 2. Sort them by path for deterministic output order
         //    (e.g. "axum::body::Body" comes before "axum::extract::Json")
         all_ids.sort_by(|a, b| {
-            let path_a = &self.id_to_path[a];
-            let path_b = &self.id_to_path[b];
-            path_a.cmp(path_b)
+            let path_a = self.get_primary_path(a).unwrap_or_default();
+            let path_b = self.get_primary_path(b).unwrap_or_default();
+            path_a.cmp(&path_b)
         });
 
-        let mut entries = Vec::new();
+        let mut entries_by_id: HashMap<i64, Entry> = HashMap::new();
 
         for id in all_ids {
             // We parse every reachable item.
             // The `entry_cache` inside `parse_item` ensures we don't duplicate work
             // if an item was already visited during a previous recursion.
             if let Ok(entry) = self.parse_item(&id) {
-                // Optional: Filter out items you don't want top-level entries for.
-                // For example, if you don't want standalone entries for methods (because
-                // they are already inside the Struct's `members`), you could check `kind`.
-                // For a raw search index, keeping them is usually fine/better.
-                entries.push(entry);
+                entries_by_id.insert(entry.id, entry);
             }
         }
 
-        Ok(entries)
+        // Root IDs are the crate root module
+        let root_ids = vec![self.id_to_number(&self.krate.root)];
+
+        Ok(Index {
+            root_ids,
+            entries_by_id,
+        })
     }
 
     fn parse_item(&mut self, id: &Id) -> Result<Entry> {
@@ -261,7 +299,7 @@ impl RustdocParser {
         // Detect circular dependencies
         if self.visiting.contains(id) {
             return Err(ParseError::CircularDependency {
-                path: self.get_path(id)?.join("::"),
+                path: self.get_primary_path(id)?.join("::"),
             });
         }
 
@@ -283,8 +321,18 @@ impl RustdocParser {
 
     fn convert_item(&mut self, id: &Id, item: &Item) -> Result<Entry> {
         let name = item.name.clone().unwrap_or_default();
-        // Path logic handles the lookup, potentially falling back if path map failed
-        let path = self.get_path(id).unwrap_or_else(|_| vec![name.clone()]);
+        let path = self
+            .get_primary_path(id)
+            .unwrap_or_else(|_| vec![name.clone()]);
+        // check aliases, find where None
+        let aliases = self
+            .get_paths(id)
+            .map(|paths| {
+                let mut hs = paths.clone();
+                hs.remove(&path);
+                hs
+            })
+            .and_then(|hs| if hs.is_empty() { None } else { Some(hs) });
         let visibility = Some(self.parse_visibility(&item.visibility));
         let documentation = item.docs.clone();
         let kind = self.parse_item_kind(id, &item.inner)?;
@@ -335,6 +383,7 @@ impl RustdocParser {
             name,
             id: id_num,
             path,
+            aliases,
             kind,
             visibility,
             documentation,
@@ -1423,10 +1472,8 @@ impl RustdocParser {
     }
 
     fn get_path(&self, id: &Id) -> Result<Vec<String>> {
-        self.id_to_path
-            .get(id)
-            .cloned()
-            .ok_or_else(|| ParseError::PathParsing(format!("No path found for ID: {}", id.0)))
+        // Backwards-compatible shim for any call sites still expecting a single path.
+        self.get_primary_path(id)
     }
 
     fn id_to_number(&self, id: &Id) -> i64 {
