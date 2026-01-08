@@ -20,8 +20,16 @@ pub struct Entry {
     pub documentation: Option<String>, // The associated documentation
 
     // Added missing properties
-    pub members: Option<Vec<Entry>>,
+    pub members: Option<Vec<Entry>>, // TODO fix Entry to EntryRef -> referring to local (current version) linkage.
     pub input_parameters: Option<Vec<Parameter>>,
     pub output_parameters: Option<Vec<Parameter>>,
     pub type_parameters: Option<Vec<String>>,
+}
+
+/// Reference to Entry with ID and path if an API entry used in members
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct EntryRef {
+    pub id: i64,
+    pub path: Vec<String>,
 }
