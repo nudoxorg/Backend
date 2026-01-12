@@ -2,10 +2,9 @@
 	path = jsonld
 	url = https://github.com/nu-dox/jsonld
 
-[submodule "ir"]
-	path = ir
-	url = https://github.com/nu-dox/ir
-
 [submodule "compiler"]
 	path = compiler
 	url = https://github.com/nu-dox/compiler
+[submodule "ir"]
+	path = ir
+	url = https://github.com/nu-dox/ir
