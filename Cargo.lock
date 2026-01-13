@@ -1023,6 +1023,7 @@ dependencies = [
  "facet",
  "facet-json",
  "facet-value",
+ "ir",
  "owo-colors",
  "serde",
  "serde_json",
