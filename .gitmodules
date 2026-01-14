@@ -5,6 +5,7 @@
 [submodule "compiler"]
 	path = compiler
 	url = https://github.com/nu-dox/compiler
+
 [submodule "ir"]
 	path = ir
 	url = https://github.com/nu-dox/ir
