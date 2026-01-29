@@ -50,18 +50,19 @@
 //!
 //! The core idea is to store a Map of URI -> Json Values, representing the symbol/kind/etc URI and the corresponding values. Some context will be passed to contain URIs, metadata, etc. to include on various types/enum variants for Kind.
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
-type URI = String;
+pub type URI = String;
 
 /// Store Mapping of URI -> Documents in JsonLD form, ready for insertion
-struct DocStore {
+pub struct DocStore {
     // can switch to Async type in the future
-    docs: HashMap<URI, Value>,
+    pub docs: HashMap<URI, Value>,
 }
 
 impl DocStore {
-    fn init() -> Self {
+    pub fn init() -> Self {
         DocStore {
             docs: HashMap::default(),
         }
@@ -69,16 +70,41 @@ impl DocStore {
 }
 
 /// Stores Global Info about the Crate
-struct CrateInfo {
-    lang: &'static str,
-    crate_name: &'static str,
-    crate_ver: &'static str,
+// this will live for the duration of the program, need cheap copies for insertion
+pub struct CrateInfo {
+    lang: Cow<'static, str>,
+    crate_name: Cow<'static, str>,
+    crate_ver: Cow<'static, str>,
+}
+
+impl CrateInfo {
+    pub fn new(
+        lang: impl Into<Cow<'static, str>>,
+        crate_name: impl Into<Cow<'static, str>>,
+        crate_ver: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        CrateInfo {
+            lang: lang.into(),
+            crate_name: crate_name.into(),
+            crate_ver: crate_ver.into(),
+        }
+    }
 }
 
 /// Context to be used including lib/crate info, schema context, uri rules, etc.
 // TODO - add more attributes depending on needs
-struct DocCtx {
+pub struct DocCtx {
+    // stays private.
     crate_info: CrateInfo,
+}
+
+impl DocCtx {
+    /// Initialize Must have the CrateInfo
+    pub fn init(crate_info: CrateInfo) -> Self {
+        Self {
+            crate_info: crate_info,
+        }
+    }
 }
 
 trait EmitJsonLD {
