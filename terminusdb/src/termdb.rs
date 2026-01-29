@@ -62,7 +62,7 @@ pub struct DocStore {
 }
 
 impl DocStore {
-    pub fn init() -> Self {
+    pub fn new() -> Self {
         DocStore {
             docs: HashMap::default(),
         }
@@ -93,6 +93,7 @@ impl CrateInfo {
 
 /// Context to be used including lib/crate info, schema context, uri rules, etc.
 // TODO - add more attributes depending on needs
+// maybe URI builder function
 pub struct DocCtx {
     // stays private.
     crate_info: CrateInfo,
@@ -111,5 +112,5 @@ trait EmitJsonLD {
     /// Takes some type, context, and document store. Returns a URI if succesfull, or some String for now if unsuccesfull.
     // TODO -> Look at Legitamate Error Handling, for now just return URI inserted into HashMap of entry
     // If already exists should not throw an error, but maybe if the URI exists and points to a value that does NOT match, throw an error
-    fn emit(&self, ctx: DocCtx, doc_store: DocStore) -> URI;
+    fn emit(&self, ctx: &DocCtx, doc_store: &mut DocStore) -> URI;
 }
