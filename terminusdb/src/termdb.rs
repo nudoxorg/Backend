@@ -49,3 +49,41 @@
 //! # Architecture
 //!
 //! The core idea is to store a Map of URI -> Json Values, representing the symbol/kind/etc URI and the corresponding values. Some context will be passed to contain URIs, metadata, etc. to include on various types/enum variants for Kind.
+use serde_json::Value;
+use std::collections::HashMap;
+
+type URI = String;
+
+/// Store Mapping of URI -> Documents in JsonLD form, ready for insertion
+struct DocStore {
+    // can switch to Async type in the future
+    docs: HashMap<URI, Value>,
+}
+
+impl DocStore {
+    fn init() -> Self {
+        DocStore {
+            docs: HashMap::default(),
+        }
+    }
+}
+
+/// Stores Global Info about the Crate
+struct CrateInfo {
+    lang: &'static str,
+    crate_name: &'static str,
+    crate_ver: &'static str,
+}
+
+/// Context to be used including lib/crate info, schema context, uri rules, etc.
+// TODO - add more attributes depending on needs
+struct DocCtx {
+    crate_info: CrateInfo,
+}
+
+trait EmitJsonLD {
+    /// Takes some type, context, and document store. Returns a URI if succesfull, or some String for now if unsuccesfull.
+    // TODO -> Look at Legitamate Error Handling, for now just return URI inserted into HashMap of entry
+    // If already exists should not throw an error, but maybe if the URI exists and points to a value that does NOT match, throw an error
+    fn emit(&self, ctx: DocCtx, doc_store: DocStore) -> URI;
+}
