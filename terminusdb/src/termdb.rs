@@ -11,15 +11,15 @@
 //! Example
 //! ```json
 //! {
-//!   "@id": "Entry/jsonld/<symbol_id>",
+//!   "@id": "Entry/rust/jsonld/<symbol_id>",
 //!   "@type": "Entry",
 //!   "fq_name": "jsonld::convert::testing",
 //!   "path": ["jsonld", "convert", "testing"],
 //!   "visibility": "public",
 //!   "kind_tag": "Function",
-//!   "kind": { "@id": "Kind/Function/<symbol_id>" },
+//!   "kind": { "@id": "Kind/rust/Function/<symbol_id>" },
 //!   "members": [
-//!     { "@id": "Entry/jsonld/<member_symbol_id>" }
+//!     { "@id": "Entry/rust/jsonld/<member_symbol_id>" }
 //!   ]
 //! }
 //! ```
