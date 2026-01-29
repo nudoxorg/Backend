@@ -89,6 +89,18 @@ impl CrateInfo {
             crate_ver: crate_ver.into(),
         }
     }
+
+    // Getters
+    pub fn lang(&self) -> &str {
+        self.lang.as_ref()
+    }
+    pub fn crate_name(&self) -> &str {
+        self.crate_name.as_ref()
+    }
+
+    pub fn crate_ver(&self) -> &str {
+        self.crate_ver.as_ref()
+    }
 }
 
 /// Context to be used including lib/crate info, schema context, uri rules, etc.
