@@ -4,7 +4,6 @@ members = [
     "./ir",
     "./compiler",
     "./terminusdb",
-    "./jsonld",
     ]
 default-members = ["./compiler"]
 
