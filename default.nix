@@ -12,6 +12,7 @@ let
     "cargo"
     "clippy"
     "rust-src"
+    "rust-docs"
     "rustc"
     "rustfmt"
   ];
