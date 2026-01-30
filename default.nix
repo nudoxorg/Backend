@@ -34,7 +34,6 @@ pkgs.mkShellNoCC {
 
    shellHook = ''
    cowsay "Welcome to the NuNuShell" | lolcat
-   just
 
    # Ensure all repositories are up to date
    rad sync
