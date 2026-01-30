@@ -1,9 +1,10 @@
 {
   system ? builtins.currentSystem,
+
   # Fenix for nightly
   fenix ? import (fetchTarball "https://github.com/nix-community/fenix/archive/main.tar.gz") { },
 
-  # TODO: Switch to npins for reproducibility
+  # TODO: Switch to npins for reproducibility (Also port fenix)
   pkgs ? import <nixpkgs> { inherit system; },
 }:
 let
@@ -19,9 +20,13 @@ pkgs.mkShellNoCC {
   packages = [
     rust-nightly
     pkgs.nushell
+    pkgs.git
+    pkgs.jujutsu
+    pkgs.rust-analyzer
+    pkgs.typos
+    pkgs.just
     pkgs.radicle-node
     pkgs.radicle-tui
-    pkgs.nixpkgs-review
     pkgs.headscale
   ];
 }
