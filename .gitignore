@@ -1,1 +1,55 @@
-target
+# Ignore everything by default
+/**/*
+
+# Allow all directories for traversal
+!**/
+
+# Deny common build/cache directories
+.DS_Store
+**/.DS_Store
+**/target/
+**/.cache/
+**/.git/
+
+# Deny Nix symlinks and generated files
+**/result
+**/result-*
+
+# Deny temporary/log files 
+**/*.log
+
+# Root level files 
+!/.gitignore
+!/README.md
+!/LICENSE
+!/justfile
+!/default.nix
+!/here
+
+# Rust / Cargo 
+!/**/Cargo.toml
+!/**/Cargo.lock
+!/**/*.rs
+!/**/rustfmt.toml
+
+# Nix 
+!/**/*.nix
+
+# Data and Configuration Artifacts 
+# TODO: Remove from pipeline (currently used for debugging/regression tracking)
+!/**/example.json
+!/**/out.json
+!/**/docs.json
+!/**/schema.json
+
+#  General Configuration 
+!/**/*.toml
+!/**/*.yaml
+!/**/*.yml
+!/**/*.json
+
+# Documentation 
+!/**/*.md
+
+# Allow empty .keep files
+!/**/.keep
