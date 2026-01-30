@@ -3,8 +3,9 @@ resolver = "3"
 members = [
     "./ir",
     "./compiler",
-    "./jsonld", "ir",
-]
+    "./terminusdb",
+    "./jsonld",
+    ]
 default-members = ["./compiler"]
 
 [workspace.package]
