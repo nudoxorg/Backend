@@ -1,11 +1,11 @@
 [submodule "jsonld"]
 	path = jsonld
-	url = https://github.com/nu-dox/jsonld
+	url = rad://z2hgxYo89dJ8bYccoDsYXCBjb7u5w
 
 [submodule "compiler"]
 	path = compiler
-	url = https://github.com/nu-dox/compiler
+	url = rad://z3sfmm9VKr4v6NoZLo3ttSpHy1TgV
 
 [submodule "ir"]
 	path = ir
-	url = https://github.com/nu-dox/ir
+	url = rad://z6CDMGDrttB6hJeoSn6gwNcTAQT6
