@@ -28,5 +28,12 @@ pkgs.mkShellNoCC {
     pkgs.radicle-node
     pkgs.radicle-tui
     pkgs.headscale
+    pkgs.cowsay
+    pkgs.lolcat
   ];
+
+   shellHook = ''
+   cowsay "Welcome to the NuNuShell" | lolcat
+   just
+  '';
 }
