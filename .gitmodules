@@ -1,5 +1,5 @@
-[submodule "jsonld"]
-	path = jsonld
+[submodule "terminusdb"]
+	path = terminusdb
 	url = rad://z2hgxYo89dJ8bYccoDsYXCBjb7u5w
 
 [submodule "compiler"]
