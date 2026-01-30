@@ -47,6 +47,7 @@ explain_issue issue_id:
 	    | get $'submodule "($project_name)"'
 	    | get url 
 	    | str replace --all "//" ""
+	    | str substring 0..32
 	)
 	# Run rad issue show command with verbose output
 	rad issue show {{ issue_id }} --verbose --repo $rad_id
@@ -75,6 +76,7 @@ create_issue title description="":
 	    | get $'submodule "($project_name)"'
 	    | get url 
 	    | str replace --all "//" ""
+	    | str substring 0..32
 	)
 	# Run rad issue open command
 	rad issue open --title "{{ title }}" --description "{{ description }}" --repo $rad_id
@@ -109,6 +111,7 @@ issues:
 	    | get $'submodule "($project_name)"'
 	    | get url 
 	    | str replace --all "//" ""
+	    | str substring 0..32
 	)
 
 	# Run rad issue command
