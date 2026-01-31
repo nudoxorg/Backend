@@ -2,16 +2,15 @@
   # Import packages
   sources ? (import ./npins),
   nixpkgs ? sources.nixpkgs,
-
   system ? builtins.currentSystem,
   pkgs ? (import nixpkgs { inherit system; }),
-
-
-  # Fenix for nightly
-  fenix ? import (fetchTarball "https://github.com/nix-community/fenix/archive/main.tar.gz") { },
 }:
 let
-  rust-nightly = fenix.complete.withComponents [
+  # Evaluate fenix once and cache it
+  fenix-pkg = import sources.fenix { };
+  
+  # Build the rust toolchain once
+  rust-nightly = fenix-pkg.complete.withComponents [
     "cargo"
     "clippy"
     "rust-src"
