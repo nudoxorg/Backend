@@ -84,6 +84,15 @@
         }
       );
 
+      # Expose devShell as a package for `nix shell` compatibility
+      packages = eachSystem (
+        { system, ... }:
+        {
+          default = self.devShells.${system}.default;
+        }
+      );
+
       formatter = eachSystem ({ pkgs, ... }: pkgs.nixfmt-rfc-style);
     };
 }
+
