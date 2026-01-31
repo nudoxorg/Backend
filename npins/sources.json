@@ -1,5 +1,18 @@
 {
   "pins": {
+    "fenix": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "nix-community",
+        "repo": "fenix"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "6c51b42ac2c25328067956ff980572482786d20c",
+      "url": "https://github.com/nix-community/fenix/archive/6c51b42ac2c25328067956ff980572482786d20c.tar.gz",
+      "hash": "sha256-GqbD7+WVvBD/kpcwOXz4EFuKcRI3qoGebKmzxjS7EY0="
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
