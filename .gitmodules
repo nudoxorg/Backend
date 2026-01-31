@@ -1,11 +1,11 @@
 [submodule "terminusdb"]
 	path = terminusdb
-	url = rad://z2hgxYo89dJ8bYccoDsYXCBjb7u5w/z6MkwYL9HcHm9grcB8BctsMEyVqpBhfaJhLokz6koBHxgeZ8
+	url = rad:///z3XeFQeAfjszAQoTMCdQaMMfoMue1/z6MkmTC76GDv4H7YdZB9UvMhjxpxZXoNTeQaMqGsoiRpZsJf@redhawk:8776
 
 [submodule "compiler"]
 	path = compiler
-	url = rad://z3sfmm9VKr4v6NoZLo3ttSpHy1TgV/z6MkwYL9HcHm9grcB8BctsMEyVqpBhfaJhLokz6koBHxgeZ8
+	url = rad://z3CB3vxSCxkDisBS3fSVVo7EKDdRq/z6MkmTC76GDv4H7YdZB9UvMhjxpxZXoNTeQaMqGsoiRpZsJf@redhawk:8776
 
 [submodule "ir"]
 	path = ir
-	url = rad://z6CDMGDrttB6hJeoSn6gwNcTAQT6/z6MkwYL9HcHm9grcB8BctsMEyVqpBhfaJhLokz6koBHxgeZ8
+	url = rad://z2dXcpNPbq63WoB5gJTVwzraDtw3M/z6MkmTC76GDv4H7YdZB9UvMhjxpxZXoNTeQaMqGsoiRpZsJf@redhawk:8776
