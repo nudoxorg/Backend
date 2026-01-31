@@ -33,7 +33,8 @@
 !/**/rustfmt.toml
 
 # Nix 
-!/**/*.nix
+!/flake.nix
+!/flake.lock
 
 # Data and Configuration Artifacts 
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
