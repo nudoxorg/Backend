@@ -1,6 +1,6 @@
 [submodule "terminusdb"]
 	path = terminusdb
-	url = rad:///z3XeFQeAfjszAQoTMCdQaMMfoMue1/z6MkmTC76GDv4H7YdZB9UvMhjxpxZXoNTeQaMqGsoiRpZsJf@redhawk:8776
+	url = rad://z3XeFQeAfjszAQoTMCdQaMMfoMue1/z6MkmTC76GDv4H7YdZB9UvMhjxpxZXoNTeQaMqGsoiRpZsJf@redhawk:8776
 
 [submodule "compiler"]
 	path = compiler
