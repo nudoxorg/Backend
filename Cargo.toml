@@ -13,5 +13,6 @@ edition = "2024"
 
 [workspace.dependencies]
 ir = { path = "./ir" }
+terminusdb = { path = "./terminusdb" }
 
 
