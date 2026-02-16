@@ -1,28 +1,33 @@
 {
   description = "NuNuShell development environment";
-
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
-
   outputs =
     {
       self,
       nixpkgs,
       fenix,
+      git-hooks,
     }:
     let
+      prePushHook = hook: hook // { stages = [ "pre-push" ]; };
+
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
         "x86_64-darwin"
         "x86_64-linux"
       ];
-      
+
       eachSystem =
         f:
         nixpkgs.lib.genAttrs systems (
@@ -35,6 +40,26 @@
         );
     in
     {
+      checks = eachSystem (
+        {
+          pkgs,
+          system,
+          ...
+        }:
+        {
+          pre-commit-check = git-hooks.lib.${system}.run {
+            src = ./.;
+            package = pkgs.prek;
+            hooks = {
+              nixfmt = prePushHook { enable = true; };
+              rustfmt = prePushHook { enable = true; };
+              clippy = prePushHook { enable = true; };
+              cargo-check = prePushHook { enable = true; };
+            };
+          };
+        }
+      );
+
       devShells = eachSystem (
         {
           pkgs,
@@ -50,6 +75,7 @@
             "rustc"
             "rustfmt"
           ];
+          pre-commit-check = self.checks.${system}.pre-commit-check;
         in
         {
           default = pkgs.mkShellNoCC {
@@ -57,33 +83,42 @@
               extra-substituters = https://nix-community.cachix.org
               extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
             '';
-            
+
             packages = [
               rust-nightly
               pkgs.nushell
+              pkgs.ollama
               pkgs.git
+              pkgs.cargo-bump # Version bumping
               pkgs.jujutsu
               pkgs.rust-analyzer
+              pkgs.flock
               pkgs.typos
               pkgs.just
               pkgs.radicle-node
               pkgs.radicle-tui
               pkgs.headscale
-              pkgs.cowsay
-              pkgs.lolcat
-            ];
-            
+              pkgs.kittysay
+              pkgs.dotacat # Rust lolcat
+            ]
+            ++ pre-commit-check.enabledPackages;
+
             shellHook = ''
-              cowsay "Welcome to the NuNuShell" | lolcat
-              # Ensure all repositories are up to date
-              rad sync
-              git pull
-              git submodule update --init --recursive
+              ${pre-commit-check.shellHook}
+              (
+                # Use a lockfile to prevent multiple instances from stomping on Git
+                flock -n 9 || exit 1
+
+                # Ensure all repositories are up to date
+                rad sync --fetch > /dev/null 2>&1
+
+              ) 9>/tmp/nunu_sync.lock &
+              # Immediately show the welcome message
+              kittysay --think "the nu is the now" | dotacat 
             '';
           };
         }
       );
-
       # Expose devShell as a package for `nix shell` compatibility
       packages = eachSystem (
         { system, ... }:
@@ -91,8 +126,6 @@
           default = self.devShells.${system}.default;
         }
       );
-
       formatter = eachSystem ({ pkgs, ... }: pkgs.nixfmt-rfc-style);
     };
 }
-
