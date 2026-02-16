@@ -57,7 +57,8 @@ For consistency, every commit should follow the [conventional commit](https://ww
 # Types: build (deps/build), chore (maintenance), ci, docs, feat (new),
 #        fix (bug), perf, refactor (no behavior change), revert (undo),
 #        style (format/comments), test 
-# Scope: from edited filenames. Body: bullets for what + why.
+# Scope: from edited filenames.
+# Body: bullets for what + why.
 # Footer: Fixes: | BREAKING CHANGE: | Refs: | Co-authored-by:
 ```
 
