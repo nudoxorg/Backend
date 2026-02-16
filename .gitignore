@@ -54,3 +54,4 @@
 
 # Allow empty .keep files
 !/**/.keep
+.pre-commit-config.yaml
