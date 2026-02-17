@@ -102,6 +102,7 @@
               pkgs.kittysay
               pkgs.dotacat # Rust lolcat
             ]
+            ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.wild
             ++ pre-commit-check.enabledPackages;
 
             shellHook = ''
