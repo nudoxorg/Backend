@@ -74,6 +74,7 @@
             "rust-docs"
             "rustc"
             "rustfmt"
+            "rustc-codegen-cranelift-preview"
           ];
           pre-commit-check = self.checks.${system}.pre-commit-check;
         in

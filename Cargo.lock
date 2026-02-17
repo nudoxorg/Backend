@@ -992,44 +992,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "facet-format"
-version = "0.42.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "332a9d31f60d8439a68589331f49e5f058937a9e17d067217f3c87621490753d"
-dependencies = [
- "facet-core",
- "facet-path",
- "facet-reflect",
- "facet-solver",
-]
-
-[[package]]
-name = "facet-json"
-version = "0.42.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51d60e09db2c089aa31f9bd5a642cec0cf43be18233560203671231f8cf7832c"
-dependencies = [
- "facet",
- "facet-core",
- "facet-format",
- "facet-reflect",
- "memchr",
-]
-
-[[package]]
-name = "facet-jsonld"
-version = "0.1.0"
-dependencies = [
- "facet",
- "facet-json",
- "facet-value",
- "ir",
- "owo-colors",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "facet-macro-parse"
 version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1072,45 +1034,6 @@ dependencies = [
  "quote",
  "strsim",
  "unsynn",
-]
-
-[[package]]
-name = "facet-path"
-version = "0.42.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd02b5b9608066f2417238aae3181a18a3b16b698aca7b448a2ec31ad0dba15c"
-dependencies = [
- "facet-core",
-]
-
-[[package]]
-name = "facet-reflect"
-version = "0.42.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8571d80d292b6a256d2c26a6e85dbb4bc7adad7768457c5157b1d9ab044ee24f"
-dependencies = [
- "facet-core",
-]
-
-[[package]]
-name = "facet-solver"
-version = "0.42.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27e7f3e9d1169c905d07e354cd1d8e4621945f1c1e55881332d30791781c0e52"
-dependencies = [
- "facet-core",
- "facet-reflect",
-]
-
-[[package]]
-name = "facet-value"
-version = "0.42.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b36f71319787d3266d075e7c9b9546e474a1bdf800dba37e2c766541d2520af"
-dependencies = [
- "facet-core",
- "facet-reflect",
- "indexmap",
 ]
 
 [[package]]
@@ -2251,6 +2174,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "terminusdb",
  "thiserror 2.0.17",
  "tokio",
  "url",
@@ -2632,12 +2556,6 @@ checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
 ]
-
-[[package]]
-name = "owo-colors"
-version = "4.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c6901729fa79e91a0913333229e9ca5dc725089d1c363b2f4b4760709dc4a52"
 
 [[package]]
 name = "parking"
@@ -3468,6 +3386,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "terminusdb"
+version = "0.1.0"
+dependencies = [
+ "ir",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

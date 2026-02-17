@@ -1,18 +1,21 @@
+cargo-features = ["codegen-backend"]
+
 [workspace]
 resolver = "3"
 members = [
     "./ir",
     "./compiler",
     "./terminusdb",
-    ]
+]
 default-members = ["./compiler"]
 
 [workspace.package]
-publish = false
-edition = "2024"
+publish  = false
+edition  = "2024"
 
 [workspace.dependencies]
-ir = { path = "./ir" }
+ir         = { path = "./ir" }
 terminusdb = { path = "./terminusdb" }
 
-
+[profile.dev]
+codegen-backend = "cranelift"
