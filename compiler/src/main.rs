@@ -36,6 +36,7 @@ async fn main() {
 		"xsd": "http://www.w3.org/2001/XMLSchema#",
 		"sys": "http://terminusdb.com/schema/sys#"
 	});
+
 	let mut runner = Runner::new(DocCtx::init(
 		CrateInfo::new("rust", TEST_PACKAGE, VERSION.to_string()),
 		context_object,
