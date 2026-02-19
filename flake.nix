@@ -44,16 +44,34 @@
         {
           pkgs,
           system,
+          fenix-pkg,
           ...
         }:
+        let
+          rust-nightly = fenix-pkg.complete.withComponents [
+            "cargo"
+            "clippy"
+            "rustc"
+            "rustfmt"
+            "rustc-codegen-cranelift-preview"
+          ];
+        in
         {
           pre-commit-check = git-hooks.lib.${system}.run {
             src = ./.;
             package = pkgs.prek;
             hooks = {
               nixfmt = prePushHook { enable = true; };
-              rustfmt = prePushHook { enable = true; };
-              clippy = prePushHook { enable = true; };
+              rustfmt = prePushHook {
+                enable = true;
+                packageOverrides.cargo = rust-nightly;
+                packageOverrides.rustfmt = rust-nightly;
+              };
+              clippy = prePushHook {
+                enable = true;
+                packageOverrides.cargo = rust-nightly;
+                packageOverrides.clippy = rust-nightly;
+              };
               cargo-check = prePushHook { enable = true; };
             };
           };
@@ -128,6 +146,7 @@
           default = self.devShells.${system}.default;
         }
       );
+
       formatter = eachSystem ({ pkgs, ... }: pkgs.nixfmt-rfc-style);
     };
 }
