@@ -3,31 +3,27 @@ use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    generics::{ConstExpr, GenericArg},
-    kind::Visibility,
-    ty::Type,
-};
+use crate::{generics::{ConstExpr, GenericArg}, kind::Visibility, ty::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Record {
-    /// Optional name of the record (e.g., "User", "Point").
-    /// Anonymous records (like tuples or JS objects) may omit this.
-    pub name: Option<String>,
+	/// Optional name of the record (e.g., "User", "Point").
+	/// Anonymous records (like tuples or JS objects) may omit this.
+	pub name: Option<String>,
 
-    /// Optional generic parameters (e.g., <T, U>).
-    pub generics: Option<Vec<GenericArg>>,
+	/// Optional generic parameters (e.g., <T, U>).
+	pub generics: Option<Vec<GenericArg>>,
 
-    /// The kind of record (named, tuple, unit, dynamic).
-    pub kind: RecordKind,
+	/// The kind of record (named, tuple, unit, dynamic).
+	pub kind: RecordKind,
 
-    /// The fields of the record (if applicable).
-    pub fields: Option<Vec<Field>>,
+	/// The fields of the record (if applicable).
+	pub fields: Option<Vec<Field>>,
 
-    /// The visibility of the record
-    pub visibility: Option<Visibility>,
+	/// The visibility of the record
+	pub visibility: Option<Visibility>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,43 +31,43 @@ pub struct Record {
 #[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 #[serde(rename_all_fields = "snake_case")]
 pub enum RecordKind {
-    /// A record with no fields (unit struct, empty object).
-    Unit,
-    /// A record with ordered, positional fields (tuple, tuple struct).
-    Tuple,
-    /// A record with named fields (struct, class, record, object).
-    Named,
-    /// A record with dynamic/unknown fields (JS object, Python dict).
-    Dynamic,
+	/// A record with no fields (unit struct, empty object).
+	Unit,
+	/// A record with ordered, positional fields (tuple, tuple struct).
+	Tuple,
+	/// A record with named fields (struct, class, record, object).
+	Named,
+	/// A record with dynamic/unknown fields (JS object, Python dict).
+	Dynamic,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Field {
-    /// Field name (None if tuple-like).
-    pub name: Option<String>,
+	/// Field name (None if tuple-like).
+	pub name: Option<String>,
 
-    pub type_entry_id: Option<i64>,
+	pub type_entry_id: Option<i64>,
 
-    /// Type of the field (if known).
-    pub ty: Option<Box<Type>>,
-    /// The default value
-    pub default_value: Option<ConstExpr>,
+	/// Type of the field (if known).
+	pub ty:            Option<Box<Type>>,
+	/// The default value
+	pub default_value: Option<ConstExpr>,
 
-    /// Attributes on the field
-    pub attributes: Option<FieldAttribute>,
+	/// Attributes on the field
+	pub attributes: Option<FieldAttribute>,
 
-    /// Visibility
-    pub visibility: Option<Visibility>,
+	/// Visibility
+	pub visibility: Option<Visibility>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum FieldAttribute {
-    Mutable,
-    Optional,
+	Mutable,
+	Optional,
 }
 
 // Adding sum variants here for historical reasons
@@ -80,9 +76,9 @@ pub enum FieldAttribute {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "facet", derive(Facet))]
 pub struct SumVariant {
-    /// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
-    pub name: String,
-    /// Associated types for this variant (None for unit variants)
-    pub types: Option<Vec<Type>>, /* has to be vec because it could technically hold more than
-                                   * one?? Might want to use an enum for this idk */
+	/// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
+	pub name:  String,
+	/// Associated types for this variant (None for unit variants)
+	pub types: Option<Vec<Type>>, /* has to be vec because it could technically hold more than
+	                               * one?? Might want to use an enum for this idk */
 }
