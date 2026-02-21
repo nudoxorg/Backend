@@ -11,15 +11,18 @@ def main [directory: string] {
 
     let dir = $directory
     if not ($dir | path exists) {
+        log error $"Directory '($dir)' does not exist"
         build_error $"Directory '($dir)' does not exist"
     }
 
     try {
         # Find all package directories
         mut package_dirs = ls $dir | where type == dir | get name
+        log debug $"Found package directories: ($package_dirs | str join ', ')"
 
         if (($package_dirs | length) == 0) {
             # Just one package found to compress
+            log debug $"No subdirectories found, assuming single package in ($dir)"
             $package_dirs = ($package_dirs | append $dir)
         }
 
@@ -30,8 +33,10 @@ def main [directory: string] {
             try {
                 let parent_dir = ($pkg_dir | path dirname)
                 let archive_name = $'($prime)-($sys).tar.gz'
+                log debug $"Archive name: ($archive_name), Parent dir: ($parent_dir)"
 
                 # Use tar command to create compressed archive
+                log debug $"Running tar -czf ($archive_name) -C ($parent_dir) ($pkg_name)"
                 let result = (run-external 'tar' '-czf' $archive_name '-C' $parent_dir $pkg_name | complete)
 
                 if $result.exit_code != 0 {

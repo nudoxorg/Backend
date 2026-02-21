@@ -9,6 +9,7 @@ def main [target: string] {
     let prime = $env.MAIN_PACKAGE
     let out = $env.OUTPUT_DIRECTORY
     let artifact_dir = $"target/($target)/release"
+    log debug $"Package: ($prime), Output: ($out), Artifact Dir: ($artifact_dir)"
 
     try {
         # We can't use 'just' here anymore if we are replacing it.
@@ -27,15 +28,18 @@ def main [target: string] {
 
         # Windows the only one that has an executable extension
         let ext = if ($target | str contains 'windows-msvc') { '.exe' } else { '' }
+        log debug $"Target: ($target), Extension: ($ext)"
 
         # Example: package-triplet
         let qualified_name = $"($prime)-($target)"
 
         let bin_path = $'($artifact_dir)/($prime)($ext)' # Where rust puts the binary artifact
         let out_path = $'($out)/($qualified_name)($ext)'
+        log debug $"Source binary: ($bin_path), Target binary: ($out_path)"
 
         # Create output directory structure
         try {
+            log debug $"Creating directory: ($out)"
             mkdir $out
         } catch {|e| 
             build_error $"Failed to create directory: ($out)" $e
@@ -43,6 +47,7 @@ def main [target: string] {
 
         # Copy completion scripts
         let completions = [$'($prime).bash', $'($prime).elv', $'($prime).fish', $'_($prime).ps1', $'_($prime)']
+        log debug $"Looking for completion scripts: ($completions)"
 
         for completion in $completions {
             let src = $'($artifact_dir)/($completion)'
@@ -50,6 +55,7 @@ def main [target: string] {
 
             if ($src | path exists) {
                 try {
+                    log debug $"Copying ($src) to ($dst)"
                     cp --force $src $dst # Using force here because default nu copy only works with existing files otherwise
                     log info $"('Successfully copied completion to destination:' | ansi gradient --fgstart '0x00ff00' --fgend '0xff0080' --bgstart '0x1a1a1a' --bgend '0x0d0d0d') (basename $src)"
                 } catch {|e| 
@@ -62,6 +68,7 @@ def main [target: string] {
 
         # Copy main binary
         try {
+            log debug $"Copying binary ($bin_path) to ($out_path)"
             cp --force $bin_path $out_path
             log info $"('Successfully copied binary to destination:' | ansi gradient --fgstart '0x00ff00' --fgend '0xff0080' --bgstart '0x1a1a1a' --bgend '0x0d0d0d') (basename $bin_path)"
         } catch {  |e| 

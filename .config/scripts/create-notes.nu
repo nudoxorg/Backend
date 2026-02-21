@@ -17,29 +17,37 @@ def main [raw_tag: string, outfile: string, changelog: string] {
         log info $"Extracting notes for tag: ($tag_v) \(searching for section [($tag)]\)"
 
         # Write header to output file
+        log debug $"Writing header to ($outfile)"
         "# What's new\n" | save --force $outfile
 
         # Read and process changelog
+        log debug $"Reading changelog from ($changelog_file)"
         let content = (open $changelog_file | lines)
 
         # Find the start of the target section
         let start_idx = ($content | enumerate | where ($it.item | str contains $tag) | get index | first)
+        log debug $"Found tag at line ($start_idx)"
 
         if ($start_idx | is-empty) {
+            log error $"Could not find tag ($tag) in ($changelog_file)"
             build_error $"Could not find tag ($tag) in ($changelog_file)"
         }
 
         # Find the end of the target section (next ## [ header)
         let remaining_lines = ($content | skip ($start_idx + 1))
         let next_section_idx = ($remaining_lines | enumerate | where item =~ '^## \[' | get index | first)
+        log debug $"Next section starts at offset ($next_section_idx)"
 
         let section_lines = if ($next_section_idx | is-empty) {
+            log debug "No next section found, taking rest of file"
             $remaining_lines
         } else {
+            log debug $"Taking ($next_section_idx) lines"
             $remaining_lines | take $next_section_idx
         }
 
         # Append section content to output file
+        log debug $"Appending ($section_lines | length) lines to ($outfile)"
         $section_lines | str join (char newline) | save --append $outfile
 
         # Check if output file has meaningful content
