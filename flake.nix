@@ -199,6 +199,7 @@
               (mkCommand "create-notes" "Extract release notes from changelog for specified tag" "maintenance")
               (mkCommand "update" "Update Cargo dependencies" "maintenance")
               (mkCommand "clean" "Clean build artifacts" "maintenance")
+              (mkCommand "patch" "Update or create a patch from a branch" "maintenance")
 
               # --- Installation --- #
               (mkCommand "install" "Build and install binary to system" "installation")
