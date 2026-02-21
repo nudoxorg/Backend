@@ -139,6 +139,10 @@
               }
             ];
 
+            motd = ''
+              $($(type -p kittysay) --think "the nu is the now" | dotacat)
+            '';
+
             packages = [
               rust-nightly
               pkgs.nushell
@@ -219,9 +223,6 @@
                 rad sync --fetch > /dev/null 2>&1
 
               ) 9>/tmp/nunu_sync.lock &
-
-              # Immediately show the welcome message
-              kittysay --think "the nu is the now" | dotacat
             '';
           };
         }
