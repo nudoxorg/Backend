@@ -1,17 +1,17 @@
 [package]
 name = "ir"
 version = "0.1.0"
-publish.workspace = true
 edition.workspace = true
+publish.workspace = true
 
-[features]
-default = []
-facet = []
-serde = []
+[lib]
+path = "lib.rs"
 
 [dependencies]
 facet = "0.42.0"
 serde = { version = "1.0.228", features = ["derive"] }
 
-[lib]
-path = "lib.rs"
+[features]
+default = []
+facet = []
+serde = []
