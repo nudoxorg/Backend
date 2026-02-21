@@ -58,3 +58,4 @@
 
 /.envrc
 /.editorconfig
+/.config/scripts/*.nu
