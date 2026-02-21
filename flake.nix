@@ -100,14 +100,24 @@
             "rustc-codegen-cranelift-preview"
           ];
           pre-commit-check = self.checks.${system}.pre-commit-check;
+          mkCommand = name: help: category: {
+            inherit name help category;
+            command = "cd $PRJ_ROOT && nu .config/scripts/${name}.nu \"$@\"";
+          };
         in
         {
           default = (devshell.legacyPackages.${system}.mkShell) {
             name = "NuNuShell";
-            # NIX_CONFIG = ''
-            #   extra-substituters = https://nix-community.cachix.org
-            #   extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
-            # '';
+            env = [
+              {
+                name = "MAIN_PACKAGE";
+                value = "nudox";
+              }
+              {
+                name = "OUTPUT_DIRECTORY";
+                value = "dist";
+              }
+            ];
 
             packages = [
               rust-nightly
@@ -119,6 +129,7 @@
               pkgs.jujutsu
               pkgs.rust-analyzer
               pkgs.flock
+              pkgs.nixfmt
               pkgs.typos
               pkgs.just
               pkgs.radicle-node
@@ -130,50 +141,49 @@
             ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.wild;
 
             commands = [
-              {
-                name = "build";
-                help = "build the project";
-                command = "cargo build";
-                category = "rust";
-              }
-              {
-                name = "test";
-                help = "run all tests";
-                command = "cargo test";
-                category = "rust";
-              }
-              {
-                name = "lint";
-                help = "run clippy lints";
-                command = "cargo clippy";
-                category = "rust";
-              }
-              {
-                name = "fmt";
-                help = "format rust and nix sources";
-                command = "cargo fmt && nixfmt-rfc-style **/*.nix";
-                category = "formatters";
-              }
-              {
-                name = "spellcheck";
-                help = "check for typos";
-                command = "typos";
-                category = "linters";
-              }
-              {
-                name = "run-recipe";
-                help = "run a just recipe (pass recipe name as arg)";
-                command = "just \"$@\"";
-                category = "utilities";
-              }
-              {
-                name = "rad-sync";
-                help = "manually sync radicle repos";
-                command = "rad sync --fetch";
-                category = "utilities";
-              }
+              # --- Build & Check --- #
+              (mkCommand "check" "Check workspace for compilation and syntax errors" "build")
+              (mkCommand "build" "Build workspace in debug mode" "build")
+              (mkCommand "build-release" "Build workspace in release mode" "build")
+
+              # --- Packaging --- #
+              (mkCommand "package" "Package release binary with completions for distribution" "packaging")
+              (mkCommand "checksum" "Generate checksums for distribution files" "packaging")
+              (mkCommand "compress" "Compress all release packages into tar.gz archives" "packaging")
+              (mkCommand "release" "Complete release pipeline: build, checksum, and compress" "packaging")
+
+              # --- Execution --- #
+              (mkCommand "run" "Run application in debug mode" "execution")
+              (mkCommand "run-release" "Run application in release mode" "execution")
+
+              # --- Testing --- #
+              (mkCommand "test" "Run all workspace tests" "testing")
+              (mkCommand "test-with" "Run workspace tests with additional arguments" "testing")
+
+              # --- Code Quality --- #
+              (mkCommand "fmt" "Format all Rust code in the workspace" "quality")
+              (mkCommand "fmt-check" "Check if Rust code is properly formatted" "quality")
+              (mkCommand "lint" "Lint code with Clippy in debug mode" "quality")
+              (mkCommand "lint-fix" "Automatically fix Clippy lints where possible" "quality")
+
+              # --- Documentation --- #
+              (mkCommand "doc" "Generate project documentation" "documentation")
+              (mkCommand "doc-open" "Generate and open project documentation in browser" "documentation")
+
+              # --- Maintenance --- #
+              (mkCommand "create-notes" "Extract release notes from changelog for specified tag" "maintenance")
+              (mkCommand "update" "Update Cargo dependencies" "maintenance")
+              (mkCommand "clean" "Clean build artifacts" "maintenance")
+
+              # --- Installation --- #
+              (mkCommand "install" "Build and install binary to system" "installation")
+              (mkCommand "install-force" "Force install binary" "installation")
+
+              # --- Utilities --- #
+              (mkCommand "rad-sync" "manually sync radicle repos" "utilities")
             ];
             devshell.startup.shellHook.text = ''
+              export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
               ${pre-commit-check.shellHook}
               (
                 # Use a lockfile to prevent multiple instances from stomping on Git
