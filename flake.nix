@@ -67,7 +67,7 @@
             package = pkgs.prek;
             hooks = {
               nixfmt = prePushHook { enable = true; };
-             convco = prePushHook { enable = true; };
+              convco = prePushHook { enable = true; };
               rustfmt = prePushHook {
                 enable = true;
                 packageOverrides.cargo = rust-nightly;
