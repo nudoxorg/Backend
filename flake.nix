@@ -66,7 +66,10 @@
             src = ./.;
             package = pkgs.prek;
             hooks = {
-              nixfmt = prePushHook { enable = true; pass_filenames = false; };
+              nixfmt = prePushHook {
+                enable = true;
+                pass_filenames = false;
+              };
               convco = prePushHook { enable = true; };
               rustfmt = prePushHook {
                 enable = true;
