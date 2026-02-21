@@ -15,9 +15,11 @@ in Nix and let Lix handle the isolation.
     ~~~~ bash
     curl -sSfL https://install.lix.systems/lix | sh -s -- install
     ~~~~
+
 2.  **Enable Flakes**: During installation, you will be prompted to enable
     **Flakes** and the **New CLI**. **Say yes.** Flakes provide pinning of our
     dependencies so the tooling can be rebuilt at any point in time.
+
 3.  **Verify**: Ensure the binary is in your path by checking the version:
 
     ~~~~ bash
@@ -33,6 +35,7 @@ specific versions of Node, Go, or Rust, we use ephemeral shells.
 **To enter a development environment:**
 
 1.  Navigate to any NuDox repository.
+
 2.  Execute the entry command:
 
     ~~~~ bash
@@ -109,14 +112,17 @@ cryptographic keys rather than an email address.
 Before you can interact with the network, you must forge your identity.
 
 1.  **Installation**: [Install Radicle] for your OS.
+
 2.  **Authentication**: Run `rad auth` in your terminal. You will be prompted for
     an alias and a passphrase.
      -  **Note**: Your passphrase encrypts your private key. If you lose it, you lose
         access to your identity and your ability to sign code. There is no
         password reset :(.
+
 3.  **Identify your DID**: Upon completion, the CLI returns your **DID**
     (Decentralized Identifier). You can view this at any time by running
     `rad self --did`.
+
 4.  **Start the Engine**: Radicle requires a local node to handle replication and
     gossip. Start it as a background daemon:
 
@@ -147,8 +153,10 @@ on the server.
     ~~~~ bash
     ssh leaf@100.114.38.65
     ~~~~
+
 2.  **Locate the Project**: Navigate to the specific repository directory in the
     seed's storage.
+
 3.  **Update the Allow List**: Run the following to grant your identity access:
 
     ~~~~ bash
@@ -189,12 +197,14 @@ the hosting server (the leaf node) and your teammates see your work:
     ~~~~ bash
     rad sync
     ~~~~
+
 2.  **Verify replication**: If you aren't sure if the server has your latest
     commit, check the sync status:
 
     ~~~~ bash
     rad sync status
     ~~~~
+
 3.  **Watch the repository**: If you’ve just been added to a new private repo, you
     must explicitly tell your node to start tracking it:
 
