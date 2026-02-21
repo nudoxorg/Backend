@@ -4,15 +4,17 @@ use common.nu *
 def main [] {
     log "💅" "Formatting"
 
-		# Format all in the workspace
-    cargo fmt
+    let nix_files = (glob **/*.nix)
+    let md_files = (glob **/*.md)
+    let main_id = (job id)
 
-		# Format all found nix files
-		nixfmt ...(glob **/*.nix)
+    job spawn { cargo fmt; null | job send $main_id }
+    job spawn { nixfmt ...$nix_files; null | job send $main_id }
+    job spawn { tombi format; null | job send $main_id }
+    job spawn { hongdown --write ...$md_files; null | job send $main_id }
 
-		# Format TOML
-		tombi format
-
-		# Format all Markdown files
-		hongdown --write ...(glob **/*.md)
+    job recv
+    job recv
+    job recv
+    job recv
 }

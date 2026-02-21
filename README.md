@@ -89,7 +89,7 @@ messages need to follow this format (Add it to your gitconfig if you'd like):
 
 # Types: build (deps/build), chore (maintenance), ci, docs, feat (new),
 #        fix (bug), perf, refactor (no behavior change), revert (undo),
-#        style (format/comments), test 
+#        style (format/comments), test
 # Scope: from edited filenames.
 # Body: bullets for what + why.
 # Footer: Fixes: | BREAKING CHANGE: | Refs: | Co-authored-by:
