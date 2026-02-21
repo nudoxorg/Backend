@@ -15,10 +15,10 @@
 **/result
 **/result-*
 
-# Deny temporary/log files 
+# Deny temporary/log files
 **/*.log
 
-# Root level files 
+# Root level files
 !/.gitignore
 !/README.md
 !/LICENSE
@@ -26,30 +26,30 @@
 !/default.nix
 !/here
 
-# Rust / Cargo 
+# Rust / Cargo
 !/**/Cargo.toml
 !/**/Cargo.lock
 !/**/*.rs
 !/**/rustfmt.toml
 
-# Nix 
+# Nix
 !/flake.nix
 !/flake.lock
 
-# Data and Configuration Artifacts 
+# Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
 !/**/example.json
 !/**/out.json
 !/**/docs.json
 !/**/schema.json
 
-#  General Configuration 
+#  General Configuration
 !/**/*.toml
 !/**/*.yaml
 !/**/*.yml
 !/**/*.json
 
-# Documentation 
+# Documentation
 !/**/*.md
 
 # Allow empty .keep files
@@ -57,3 +57,4 @@
 .pre-commit-config.yaml
 
 /.envrc
+/.editorconfig
