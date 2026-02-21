@@ -85,7 +85,7 @@
                 packageOverrides.cargo = rust-nightly;
                 packageOverrides.rustfmt = rust-nightly;
               };
-              markdownfmt = {
+              markdownfmt = prePushHook {
                 enable = true;
                 name = "hongdown";
                 entry = "hongdown --write";
