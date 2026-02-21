@@ -151,6 +151,9 @@
               pkgs.radicle-tui
               pkgs.headscale
               pkgs.kittysay
+              pkgs.marksman
+              pkgs.taplo
+              pkgs.nil
               pkgs.dotacat # Rust lolcat
             ]
             ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.wild;
