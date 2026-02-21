@@ -10,6 +10,10 @@
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    devshell = {
+      url = "github:numtide/devshell";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
   outputs =
     {
@@ -17,6 +21,7 @@
       nixpkgs,
       fenix,
       git-hooks,
+      devshell,
     }:
     let
       prePushHook = hook: hook // { stages = [ "pre-push" ]; };
@@ -97,11 +102,12 @@
           pre-commit-check = self.checks.${system}.pre-commit-check;
         in
         {
-          default = pkgs.mkShellNoCC {
-            NIX_CONFIG = ''
-              extra-substituters = https://nix-community.cachix.org
-              extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
-            '';
+          default = (devshell.legacyPackages.${system}.mkShell) {
+            name = "NuNuShell";
+            # NIX_CONFIG = ''
+            #   extra-substituters = https://nix-community.cachix.org
+            #   extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+            # '';
 
             packages = [
               rust-nightly
@@ -121,10 +127,53 @@
               pkgs.kittysay
               pkgs.dotacat # Rust lolcat
             ]
-            ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.wild
-            ++ pre-commit-check.enabledPackages;
+            ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.wild;
 
-            shellHook = ''
+            commands = [
+              {
+                name = "build";
+                help = "build the project";
+                command = "cargo build";
+                category = "rust";
+              }
+              {
+                name = "test";
+                help = "run all tests";
+                command = "cargo test";
+                category = "rust";
+              }
+              {
+                name = "lint";
+                help = "run clippy lints";
+                command = "cargo clippy";
+                category = "rust";
+              }
+              {
+                name = "fmt";
+                help = "format rust and nix sources";
+                command = "cargo fmt && nixfmt-rfc-style **/*.nix";
+                category = "formatters";
+              }
+              {
+                name = "spellcheck";
+                help = "check for typos";
+                command = "typos";
+                category = "linters";
+              }
+              {
+                name = "run-recipe";
+                help = "run a just recipe (pass recipe name as arg)";
+                command = "just \"$@\"";
+                category = "utilities";
+              }
+              {
+                name = "rad-sync";
+                help = "manually sync radicle repos";
+                command = "rad sync --fetch";
+                category = "utilities";
+              }
+            ];
+            devshell.startup.shellHook.text = ''
               ${pre-commit-check.shellHook}
               (
                 # Use a lockfile to prevent multiple instances from stomping on Git
@@ -134,8 +183,9 @@
                 rad sync --fetch > /dev/null 2>&1
 
               ) 9>/tmp/nunu_sync.lock &
+
               # Immediately show the welcome message
-              kittysay --think "the nu is the now" | dotacat 
+              kittysay --think "the nu is the now" | dotacat
             '';
           };
         }
