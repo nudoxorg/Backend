@@ -130,7 +130,9 @@
               pkgs.rust-analyzer
               pkgs.flock
               pkgs.nixfmt
+              pkgs.tombi
               pkgs.typos
+              pkgs.hongdown
               pkgs.just
               pkgs.radicle-node
               pkgs.radicle-tui
