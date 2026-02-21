@@ -85,11 +85,9 @@
                 packageOverrides.cargo = rust-nightly;
                 packageOverrides.rustfmt = rust-nightly;
               };
-              markdownfmt = {
+              mdformat = {
                 enable = true;
-                entry = "hongdown .";
-                pass_filenames = false;
-                files = "\\.md$";
+                entry = "hongdown";
                 stages = [ "pre-push" ];
               };
               clippy = prePushHook {
