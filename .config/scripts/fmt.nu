@@ -1,8 +1,10 @@
 #!/usr/bin/env nu
 use common.nu *
 
+use std/log
+
 def main [] {
-    log "💅" "Formatting"
+    log info "💅 Formatting"
 
     let nix_files = (glob **/*.nix)
     let md_files = (glob **/*.md)

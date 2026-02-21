@@ -1,7 +1,9 @@
 #!/usr/bin/env nu
 use common.nu *
 
+use std/log
+
 def main [] {
-    log "🔄" "Updating dependencies..."
+    log info "Updating dependencies..."
     cargo update
 }

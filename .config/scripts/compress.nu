@@ -1,11 +1,13 @@
 #!/usr/bin/env nu
 use common.nu *
 
+use std/log
+
 def main [directory: string] {
     let prime = $env.MAIN_PACKAGE
     let sys = $env.RUST_TARGET # Using RUST_TARGET from env
     
-    print "🗜️ Compressing release packages..."
+    log info "🗜️ Compressing release packages..."
 
     let dir = $directory
     if not ($dir | path exists) {
@@ -23,7 +25,7 @@ def main [directory: string] {
 
         for pkg_dir in $package_dirs {
             let pkg_name = ($pkg_dir | path basename)
-            print $"🎁 Compressing package: ($pkg_name)"
+            log info $"🎁 Compressing package: ($pkg_name)"
 
             try {
                 let parent_dir = ($pkg_dir | path dirname)
@@ -36,14 +38,14 @@ def main [directory: string] {
                     build_error $"Failed to create archive for ($pkg_name): ($result.stderr)"
                 }
 
-                print $"✅ Successfully compressed ($pkg_name)"
+                log info $"✅ Successfully compressed ($pkg_name)"
 
             } catch { |e| 
                 build_error $"Compression failed for ($pkg_name)" $e
             }
         }
 
-        print "🎉 All packages compressed successfully!"
+        log info "🎉 All packages compressed successfully!"
 
     } catch { |e| 
         build_error $"Compression process failed" $e

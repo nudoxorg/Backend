@@ -1,7 +1,9 @@
 #!/usr/bin/env nu
 use common.nu *
 
+use std/log
+
 def main [] {
-    log "🧪" "Running workspace tests..."
+    log info "Running workspace tests..."
     cargo test --workspace
 }

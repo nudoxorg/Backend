@@ -1,9 +1,11 @@
 #!/usr/bin/env nu
 use common.nu *
 
+use std/log
+
 def main [directory: string] {
     let dir = $directory
-    print $"🔒 Generating checksums in '($dir)'…"
+    log info $"🔒 Generating checksums in '($dir)'…"
 
     # Validate directory exists
     if not ($dir | path exists) {
@@ -24,7 +26,7 @@ def main [directory: string] {
         let files = ls | where type == file | where name !~ '\.sum$' | get name
 
         if (($files | length) == 0) {
-            print --stderr "Warning: No files found to checksum"
+            log warning "No files found to checksum"
             return
         }
 
@@ -65,7 +67,7 @@ def main [directory: string] {
             build_error $"Failed to generate BLAKE3 checksums" $e
         }
 
-        print $"✅ Checksums created in '($dir)'"
+        log info $"✅ Checksums created in '($dir)'"
 
     } catch {|e| 
         build_error $"Checksum generation failed" $e

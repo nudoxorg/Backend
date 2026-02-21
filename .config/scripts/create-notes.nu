@@ -1,6 +1,8 @@
 #!/usr/bin/env nu
 use common.nu *
 
+use std/log
+
 def main [raw_tag: string, outfile: string, changelog: string] {
     let tag_v = $raw_tag
     let tag = ($tag_v | str replace --regex '^v' '')  # Remove prefix v
@@ -12,7 +14,7 @@ def main [raw_tag: string, outfile: string, changelog: string] {
             build_error $"($changelog_file) not found."
         }
 
-        print $"Extracting notes for tag: ($tag_v) \(searching for section [($tag)]\)"
+        log info $"Extracting notes for tag: ($tag_v) \(searching for section [($tag)]\)"
 
         # Write header to output file
         "# What's new\n" | save --force $outfile
@@ -43,9 +45,9 @@ def main [raw_tag: string, outfile: string, changelog: string] {
         # Check if output file has meaningful content
         let output_size = (open $outfile | str length)
         if $output_size > 20 {  # More than just the header
-            print $"Successfully extracted release notes to '($outfile)'."
+            log info $"Successfully extracted release notes to '($outfile)'."
         } else {
-            print --stderr $"Warning: '($outfile)' appears empty. Is '($tag)' present in '($changelog_file)'?"
+            log warning $"Warning: '($outfile)' appears empty. Is '($tag)' present in '($changelog_file)'?"
         }
 
     } catch { |e| 

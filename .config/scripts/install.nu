@@ -1,6 +1,8 @@
 #!/usr/bin/env nu
 use common.nu *
 
+use std/log
+
 def main [] {
     # Call build-release first? Or assume called?
     # Original 'install' recipe calls 'build-release' first.
@@ -11,6 +13,6 @@ def main [] {
     
     nu .config/scripts/build-release.nu
     
-    log "💾" $"Installing ($env.MAIN_PACKAGE) binary..."
+    log info $"Installing ($env.MAIN_PACKAGE) binary..."
     cargo install --bin $env.MAIN_PACKAGE
 }

@@ -1,8 +1,10 @@
 #!/usr/bin/env nu
 use common.nu *
 
+use std/log
+
 def main [target: string] {
-    print "📦 Packaging release binary…"
+    log info "Packaging release binary…"
 
     let prime = $env.MAIN_PACKAGE
     let out = $env.OUTPUT_DIRECTORY
@@ -18,10 +20,10 @@ def main [target: string] {
         # The user wants "linked commands".
         # Let's call cargo directly to be safe and independent of alias availability in non-interactive shells.
         
-        print $"🚀 Building workspace (release) for ($target)…"
+        log info $"Building workspace (release) for ($target)…"
         cargo build --workspace --release --bin $prime --target $target
 
-        print $'🛬 Destination is ($out)'
+        log info $'Destination is ($out)'
 
         # Windows the only one that has an executable extension
         let ext = if ($target | str contains 'windows-msvc') { '.exe' } else { '' }
@@ -49,19 +51,19 @@ def main [target: string] {
             if ($src | path exists) {
                 try {
                     cp --force $src $dst # Using force here because default nu copy only works with existing files otherwise
-                    print $"('Successfully copied completion to destination:' | ansi gradient --fgstart '0x00ff00' --fgend '0xff0080' --bgstart '0x1a1a1a' --bgend '0x0d0d0d') (basename $src)"
+                    log info $"('Successfully copied completion to destination:' | ansi gradient --fgstart '0x00ff00' --fgend '0xff0080' --bgstart '0x1a1a1a' --bgend '0x0d0d0d') (basename $src)"
                 } catch {|e| 
                     build_error $"Failed to copy completion script ($src)" $e
                 }
             } else {
-                print --stderr $"Warning: completion script missing: ($src)"
+                log warning $"Warning: completion script missing: ($src)"
             }
         }
 
         # Copy main binary
         try {
             cp --force $bin_path $out_path
-            print $"('Successfully copied binary to destination:' | ansi gradient --fgstart '0x00ff00' --fgend '0xff0080' --bgstart '0x1a1a1a' --bgend '0x0d0d0d') (basename $bin_path)"
+            log info $"('Successfully copied binary to destination:' | ansi gradient --fgstart '0x00ff00' --fgend '0xff0080' --bgstart '0x1a1a1a' --bgend '0x0d0d0d') (basename $bin_path)"
         } catch {  |e| 
             build_error $"Failed to copy binary ($bin_path)" $e
         }
