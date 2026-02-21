@@ -72,6 +72,11 @@
               convco = prePushHook {
                 enable = true;
                 pass_filenames = false;
+                entry = pkgs.writeShellScript "convco-pre-push" ''
+                  while read local_ref local_sha remote_ref remote_sha; do
+                    ${pkgs.convco}/bin/convco check "$remote_sha..$local_sha"
+                  done
+                '';
               };
               rustfmt = prePushHook {
                 enable = true;
