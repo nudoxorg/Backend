@@ -43,19 +43,12 @@
 !/**/docs.json
 !/**/schema.json
 
-#  General Configuration
-!/**/*.toml
-!/**/*.yaml
-!/**/*.yml
-!/**/*.json
-
 # Documentation
 !/**/*.md
 
 # Allow empty .keep files
 !/**/.keep
-.pre-commit-config.yaml
 
-/.envrc
-/.editorconfig
-/.config/scripts/*.nu
+!/.envrc
+!/.editorconfig
+!/.config/scripts/*.nu
