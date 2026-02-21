@@ -108,6 +108,7 @@
               pkgs.nushell
               pkgs.ollama
               pkgs.git
+              pkgs.clang
               pkgs.cargo-bump # Version bumping
               pkgs.jujutsu
               pkgs.rust-analyzer
