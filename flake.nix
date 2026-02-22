@@ -92,6 +92,14 @@
                 files = "\\.md$";
                 language = "system";
               };
+              testrust = {
+                enable = true;
+                name = "testrust";
+                entry = "cargo test";
+                language = "system";
+                pass_filenames = false;
+                stages = [ "pre-merge-commit" ];
+              };
               clippy = prePushHook {
                 enable = true;
                 packageOverrides.cargo = rust-nightly;
