@@ -1,7 +1,3 @@
-# http://editorconfig.org/
-
-# Tabs are preferred where possible; this is the only accessible choice
-
 root = true
 
 [*]
