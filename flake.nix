@@ -24,8 +24,6 @@
       devshell,
     }:
     let
-      prePushHook = hook: hook // { stages = [ "pre-push" ]; };
-
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
@@ -65,11 +63,11 @@
           pre-commit-check = git-hooks.lib.${system}.run {
             src = ./.;
             package = pkgs.prek;
+            default_stages = [ "pre-push" ];
             hooks = {
-              nixfmt = prePushHook {
-                enable = true;
-              };
-              convco = prePushHook {
+              nixfmt.enable = true;
+
+              convco = {
                 enable = true;
                 pass_filenames = false;
                 entry = toString (
@@ -80,32 +78,37 @@
                   ''
                 );
               };
-              rustfmt = prePushHook {
+
+              rustfmt = {
                 enable = true;
                 packageOverrides.cargo = rust-nightly;
                 packageOverrides.rustfmt = rust-nightly;
               };
-              markdownfmt = prePushHook {
+
+              markdownfmt = {
                 enable = true;
                 name = "hongdown";
                 entry = "hongdown --write";
                 files = "\\.md$";
                 language = "system";
               };
+
               testrust = {
                 enable = true;
                 name = "testrust";
-                entry = "cargo test";
+                entry = "cargo nextest run";
                 language = "system";
                 pass_filenames = false;
                 stages = [ "pre-merge-commit" ];
               };
-              clippy = prePushHook {
+
+              clippy = {
                 enable = true;
                 packageOverrides.cargo = rust-nightly;
                 packageOverrides.clippy = rust-nightly;
               };
-              cargo-check = prePushHook { enable = true; };
+
+              cargo-check.enable = true;
             };
           };
         }
