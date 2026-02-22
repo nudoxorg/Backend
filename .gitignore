@@ -5,50 +5,35 @@
 !**/
 
 # Deny common build/cache directories
-.DS_Store
 **/.DS_Store
 **/target/
 **/.cache/
 **/.git/
 
 # Deny Nix symlinks and generated files
-**/result
-**/result-*
+**/result{,-*}
 
 # Deny temporary/log files
 **/*.log
 
 # Root level files
-!/.gitignore
-!/README.md
-!/LICENSE
-!/justfile
-!/default.nix
-!/here
+!/{.gitignore,README.md,LICENSE,justfile,default.nix,here,.envrc,.editorconfig}
 
 # Rust / Cargo
-!/**/Cargo.toml
-!/**/Cargo.lock
+!/**/Cargo.{toml,lock}
 !/**/*.rs
 !/**/rustfmt.toml
 
 # Nix
-!/flake.nix
-!/flake.lock
+!/flake.{nix,lock}
 
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
-!/**/example.json
-!/**/out.json
-!/**/docs.json
-!/**/schema.json
+!/**/{example,out,docs,schema}.json
 
 # Documentation
 !/**/*.md
 
 # Allow empty .keep files
 !/**/.keep
-
-!/.envrc
-!/.editorconfig
 !/.config/scripts/*.nu
