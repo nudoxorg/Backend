@@ -195,6 +195,7 @@
               pkgs.cargo-nextest # Next-gen test runner
               pkgs.libiconv # Character encoding library, associated with linker error
               pkgs.nil # Nix LSP server
+              pkgs.jsonfmt # JSON formatting
               pkgs.dotacat # Colorful terminal output
             ]
             ++ pkgs.lib.optional pkgs.stdenv.isLinux [
