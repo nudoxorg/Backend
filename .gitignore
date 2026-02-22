@@ -37,3 +37,7 @@
 # Allow empty .keep files
 !/**/.keep
 !/.config/scripts/*.nu
+
+## Cue
+!/.config/**/*.cue
+
