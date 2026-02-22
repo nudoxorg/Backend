@@ -168,6 +168,31 @@ package release
 	}
 })
 
+// Across Config
+//
+// Configuration for a variable in an across step.
+#AcrossConfig: close({
+	// Var
+	//
+	// The name of the variable to set for each iteration.
+	var!: string
+
+	// Values
+	//
+	// The list of values to iterate over.
+	values!: [...]
+
+	// Max In Flight
+	//
+	// Limits how many iterations can run concurrently.
+	max_in_flight?: int | "all"
+
+	// Fail Fast
+	//
+	// When true, aborts remaining iterations if one fails.
+	fail_fast?: bool
+})
+
 // Task Run Config
 //
 // Specifies the executable entry point for a task container.
@@ -254,6 +279,12 @@ package release
 	//
 	// Target OS platform (e.g., "linux", "windows", "darwin").
 	platform!: string
+
+	// Image
+	//
+	// Reference to a previously fetched image. This allows the task to run
+	// using a rootfs from a get step.
+	image?: string
 
 	// Image Resource
 	//
@@ -676,6 +707,18 @@ package release
 	//
 	// Pushes to the named resource and emits a new version.
 	put?: string
+
+	// No Get
+	//
+	// When true, the put step will not perform its implicit get step after
+	// successfully pushing. This is used to save time and resources when the
+	// resulting version is not needed by the rest of the plan.
+	no_get?: bool
+
+	// Across
+	//
+	// Executes a step once for each combination of the defined variables.
+	across?: [...#AcrossConfig]
 
 	// Get Params
 	//
