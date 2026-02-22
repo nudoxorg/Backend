@@ -138,6 +138,10 @@
             name = "NuNuShell";
             env = [
               {
+                name = "LIBRARY_PATH";
+                value = "$(nix eval --raw nixpkgs#libiconv.outPath)/lib";
+              }
+              {
                 name = "MAIN_PACKAGE";
                 value = "nudox";
               }
@@ -172,6 +176,8 @@
               pkgs.kittysay
               pkgs.marksman
               pkgs.taplo
+              pkgs.cargo-nextest
+              pkgs.libiconv
               pkgs.nil
               pkgs.dotacat # Rust lolcat
             ]
