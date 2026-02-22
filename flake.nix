@@ -107,8 +107,6 @@
                 packageOverrides.cargo = rust-nightly;
                 packageOverrides.clippy = rust-nightly;
               };
-
-              cargo-check.enable = true;
             };
           };
         }
