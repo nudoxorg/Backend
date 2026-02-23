@@ -17,7 +17,7 @@ goreleaser.#Project & {
 	}]
 	checksum: {
 		name_template: "SHA256.sum"
-		algorithm:     "sha256" // TODO: PR support for Blake3 and migrate
+		algorithm:     "sha256"
 	}
 	snapshot: name_template: "{{ .Tag }}-next"
 	release: disable:        true
