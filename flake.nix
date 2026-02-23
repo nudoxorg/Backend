@@ -197,6 +197,9 @@
               pkgs.nil # Nix LSP server
               pkgs.jsonfmt # JSON formatting
               pkgs.dotacat # Colorful terminal output
+              pkgs.goreleaser
+              pkgs.cuelsp
+              pkgs.b3sum
             ]
             ++ pkgs.lib.optional pkgs.stdenv.isLinux [
               pkgs.wild
@@ -210,10 +213,12 @@
               (mkCommand "build-release" "Build workspace in release mode" "build")
 
               # --- Packaging --- #
-              (mkCommand "package" "Package release binary with completions for distribution" "packaging")
-              (mkCommand "checksum" "Generate checksums for distribution files" "packaging")
-              (mkCommand "compress" "Compress all release packages into tar.gz archives" "packaging")
-              (mkCommand "release" "Complete release pipeline: build, checksum, and compress" "packaging")
+              {
+                name = "release";
+                help = "Complete release pipeline using GoReleaser (snapshot, single-target)";
+                category = "packaging";
+                command = "nu .config/scripts/release.nu";
+              }
 
               # --- Execution --- #
               (mkCommand "run" "Run application in debug mode" "execution")

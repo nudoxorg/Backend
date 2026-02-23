@@ -1,4 +1,5 @@
 #!/usr/bin/env nu
+
 use common.nu *
 
 use std/log
