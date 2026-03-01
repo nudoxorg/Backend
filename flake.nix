@@ -177,7 +177,7 @@
               $($(type -p kittysay) --think "the nu is the now" | dotacat)
             '';
 
-            packages = [
+            packages = builtins.filter (x: x != null) [
               rust-nightly # Rust nightly toolchain
               pkgs.git # Version control
               pkgs.cargo-bump # Bump crate versions
@@ -200,12 +200,9 @@
               pkgs.goreleaser
               pkgs.cuelsp
               pkgs.b3sum
-            ]
-            ++ pkgs.lib.optional pkgs.stdenv.isLinux [
-              pkgs.wild
-              pkgs.clang
-            ]; # Fast linker (RUST), only works with clang for now
-
+              (if pkgs.stdenv.isLinux then pkgs.wild-unwrapped else null) # Fast linker (RUST), only works with clang for now
+              (if pkgs.stdenv.isLinux then pkgs.clang else null)
+            ];
             commands = [
               # --- Build & Check --- #
               (mkCommand "check" "Check workspace for compilation and syntax errors" "build")
