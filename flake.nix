@@ -171,6 +171,18 @@
                 name = "OUTPUT_DIRECTORY";
                 value = "dist";
               }
+              {
+                name = "OPENSSL_DIR";
+                value = "${pkgs.openssl.dev}";
+              }
+              {
+                name = "OPENSSL_LIB_DIR";
+                value = "${pkgs.openssl.out}/lib";
+              }
+              {
+                name = "OPENSSL_INCLUDE_DIR";
+                value = "${pkgs.openssl.dev}/include";
+              }
             ];
 
             motd = ''
