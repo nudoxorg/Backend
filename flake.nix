@@ -201,6 +201,7 @@
               pkgs.cuelsp
               pkgs.b3sum
               (if pkgs.stdenv.isLinux then pkgs.wild-unwrapped else null) # Fast linker (RUST), only works with clang for now
+              (if pkgs.stdenv.isLinux then pkgs.openssl else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.clang else null)
             ];
             commands = [
