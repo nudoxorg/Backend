@@ -172,6 +172,11 @@
                 value = "dist";
               }
               {
+                name = "LD_LIBRARY_PATH";
+                value = "${pkgs.openssl.out}/lib:$LD_LIBRARY_PATH";
+              }
+              {
+
                 name = "OPENSSL_DIR";
                 value = "${pkgs.openssl.dev}";
               }
