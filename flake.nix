@@ -273,9 +273,6 @@
                 # Use a lockfile to prevent multiple instances from stomping on Git
                 flock -n 9 || exit 1
 
-                # Ensure all repositories are up to date
-                rad sync --fetch > /dev/null 2>&1
-
               ) 9>/tmp/nunu_sync.lock &
             '';
           };
