@@ -1,16 +1,20 @@
 use std::time::Duration;
 
-use crates_io_api::{AsyncClient, SyncClient};
+use crates_io_api::AsyncClient;
 use lang_types::Language;
 
-use crate::{core::rust::Crates, traits::{package::Package, registry::Registry}};
+use crate::core::rust::Crates;
 
-pub fn get_registry(language: Language) -> impl Registry {
-	// There's a large set of languages we're yet to support unfortunately
+/// Construct the appropriate registry for the given language.
+///
+/// When additional languages are supported, this should be refactored into a
+/// generic dispatch (e.g. a top-level match that invokes a generic pipeline)
+/// since each language returns a distinct concrete type.
+pub fn get_registry(language: Language) -> Crates {
 	match language {
 		Language::Rust => Crates {
 			client: AsyncClient::new("my_bot (help@my_bot.com)", Duration::from_secs(1)).unwrap(),
 		},
-		_ => todo!(),
+		_ => todo!("registry not yet implemented for {language:?}"),
 	}
 }

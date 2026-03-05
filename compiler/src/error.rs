@@ -1,40 +1,39 @@
 use thiserror::Error;
 
+/// Errors arising from package registry interactions (network, lookup, API).
 #[derive(Debug, Error)]
-pub enum NewDocsError {
-	#[error("setup error")]
-	SetupError,
+pub enum RegistryError {
+	#[error("network error: {0}")]
+	Network(String),
 
-	#[error("invalid entry")]
-	InvalidEntry,
-
-	#[error("Parse error: {0}")]
-	ParseError(String),
-
-	#[error("Network error: {0}")]
-	NetworkError(String),
-
-	#[error("Parsing error: {0}")]
-	ParsingError(String),
-
-	#[error("IO error: {0}")]
-	IoError(#[from] std::io::Error),
-
-	#[error("Process error: {0}")]
-	ProcessError(String),
-
-	#[error("Item not found: {0}")]
+	#[error("package not found: {0}")]
 	NotFound(String),
 
-	#[error("Feature not implemented")]
-	NotImplemented,
-
-	#[error("file not found")]
-	FileNotFound,
+	#[error("crates.io API error: {0}")]
+	CratesIo(#[from] crates_io_api::Error),
 
 	#[error("invalid configuration")]
 	InvalidConfiguration,
+}
 
-	#[error("crates.io api error: {0}")]
-	CratesIo(#[from] crates_io_api::Error),
+/// Errors arising from package-level operations (doc generation, parsing, IO).
+#[derive(Debug, Error)]
+pub enum PackageError {
+	#[error("IO error: {0}")]
+	Io(#[from] std::io::Error),
+
+	#[error("process error: {0}")]
+	Process(String),
+
+	#[error("parse error: {0}")]
+	Parse(String),
+
+	#[error("serialization error: {0}")]
+	Serialization(#[from] serde_json::Error),
+
+	#[error("feature not implemented")]
+	NotImplemented,
+
+	#[error("registry error: {0}")]
+	Registry(#[from] RegistryError),
 }

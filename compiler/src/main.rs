@@ -1,11 +1,10 @@
-use ir::entry::Entry;
 use lang_types::Language;
 use semver::Version;
 use serde_json::json;
 use terminusdb::{Runner, termdb::{CrateInfo, DocCtx}};
 use tokio::fs::write;
 
-use crate::traits::{builder::get_registry, package::{AnyPackage, Package}, registry::Registry};
+use crate::traits::{builder::get_registry, package::Package, registry::Registry};
 
 mod core;
 mod error;
@@ -19,18 +18,16 @@ async fn main() {
 	let registry = get_registry(Language::Rust);
 	let packages = registry.get_packages_by_name(TEST_PACKAGE).await;
 
-	let out = match packages {
+	let entries = match packages {
 		Ok(mut packages) => {
-			let pkg = packages.remove(0); // Take ownership by removing from vec
-			match pkg {
-				AnyPackage::Rust(package) => package.retrieve(VERSION, None),
-			}
+			let pkg = packages.remove(0);
+			pkg.retrieve(VERSION, None)
 		}
 		Err(_other) => todo!(),
 	}
 	.unwrap();
 
-	let entry_struct: Vec<Entry> = serde_json::from_str(&out).unwrap();
+	let json_out = serde_json::to_string(&entries).unwrap();
 
 	let context_object = json!({
 		"@type": "@context",
@@ -45,14 +42,12 @@ async fn main() {
 		context_object,
 	));
 
-	runner.run(entry_struct);
+	runner.run(entries);
 
 	let store = runner.into_docs();
-	// Vec of Values
 	if let Ok(jsonld_out) = store.into_json_ld_insert() {
-		// write the map { "<uri>": <Value>, ... }
 		write("out.jsonld", jsonld_out).await;
 	}
 
-	write("out.json", out).await;
+	write("out.json", json_out).await;
 }

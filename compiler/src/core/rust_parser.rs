@@ -6,11 +6,7 @@ pub type Result<T> = std::result::Result<T, ParseError>;
 
 use ir::{entry::{Entry, EntryRef}, function::{Attribute as FnAttribute, Function}, generics::*, kind::{Kind, Visibility}, parameter::Parameter, primitives::Primitive, protocols::*, record::*, ty::{DynTrait, FunctionPointer, Path as IRPath, PolyTrait, QualifiedPath, Type}};
 
-use crate::{core::rust::ParseError, error::NewDocsError};
-
-impl From<crate::core::rust::ParseError> for NewDocsError {
-	fn from(err: crate::core::rust::ParseError) -> Self { NewDocsError::ParseError(err.to_string()) }
-}
+use crate::core::rust::ParseError;
 
 pub struct RustdocParser {
 	krate:         Crate,
@@ -1088,19 +1084,21 @@ impl RustdocParser {
 		match prim {
 			"i8" => Ok(Primitive::Int8(None)),
 			"i16" => Ok(Primitive::Int16(None)),
-			"isize" => Ok(Primitive::Int(None)),
+			"i32" | "isize" => Ok(Primitive::Int(None)),
 			"i64" => Ok(Primitive::Int64(None)),
 			"i128" => Ok(Primitive::Int128(None)),
 			"u8" => Ok(Primitive::UInt8(None)),
 			"u16" => Ok(Primitive::UInt16(None)),
-			"usize" => Ok(Primitive::UInt(None)),
+			"u32" | "usize" => Ok(Primitive::UInt(None)),
 			"u64" => Ok(Primitive::UInt64(None)),
 			"u128" => Ok(Primitive::UInt128(None)),
+			"f16" => Ok(Primitive::F16(None)),
 			"f32" => Ok(Primitive::Float(None)),
-			"f64" => Ok(Primitive::Double(None)),
+			"f64" | "f128" => Ok(Primitive::Double(None)),
 			"bool" => Ok(Primitive::Bool(None)),
 			"str" => Ok(Primitive::String(None)),
 			"char" => Ok(Primitive::Char(None)),
+			"never" | "!" => Ok(Primitive::Null),
 			_ => Err(ParseError::InvalidPrimitive(prim.to_string())),
 		}
 	}

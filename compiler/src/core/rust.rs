@@ -1,10 +1,17 @@
-use crates_io_api::{AsyncClient, Crate, CratesQuery, SyncClient};
+use std::{fs, path::PathBuf, process::Command};
+
+use crates_io_api::{AsyncClient, Crate, CratesQuery};
 use ir::entry::Entry;
 use lang_types::Language;
+use semver::Version;
 use thiserror::Error;
 use url::Url;
 
-use crate::{core::rust_parser::RustdocParser, error::NewDocsError, traits::{self, package::{self, AnyPackage}, registry::Registry}};
+use crate::{
+	core::rust_parser::RustdocParser,
+	error::{PackageError, RegistryError},
+	traits::{package::Package, registry::Registry},
+};
 
 #[derive(Error, Debug)]
 pub enum ParseError {
@@ -57,24 +64,20 @@ pub enum ParseError {
 	InvalidPrimitive(String),
 }
 
-use std::{fs, path::PathBuf, process::Command};
-
-use semver::Version;
-
 pub struct Crates {
 	pub client: AsyncClient,
 }
 
-pub struct Package {
+pub struct RustPackage {
 	pub slug:        String,
 	pub name:        String,
 	pub language:    Language,
-	pub uuid:        i64,
+	pub uuid:        u64,
 	pub source:      Url,
 	pub description: Option<String>,
 }
 
-impl Default for self::Package {
+impl Default for RustPackage {
 	fn default() -> Self {
 		Self {
 			slug:        String::default(),
@@ -87,20 +90,15 @@ impl Default for self::Package {
 	}
 }
 
-impl self::Package {
-	/// Internal helper to run cargo rustdoc and return the parsed Entry IR
-	fn generate_ir(&self, version: &Version) -> Result<Vec<Entry>, NewDocsError> {
-		let target_dir = std::env::current_dir()
-			.map_err(|e| NewDocsError::IoError(e))?
-			.join("target")
-			.join("doc_json");
+impl RustPackage {
+	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
+	fn generate_ir(&self, version: &Version) -> Result<Vec<Entry>, PackageError> {
+		let target_dir = std::env::current_dir()?.join("target").join("doc_json");
 
 		if !target_dir.exists() {
-			fs::create_dir_all(&target_dir).map_err(|e| NewDocsError::IoError(e))?;
+			fs::create_dir_all(&target_dir)?;
 		}
 
-		// Execute: cargo rustdoc --output-format json -Z unstable-options
-		// Note: This requires a nightly toolchain
 		let status = Command::new("cargo")
 			.arg("rustdoc")
 			.arg("--package")
@@ -111,33 +109,33 @@ impl self::Package {
 			.arg("--output-format")
 			.arg("json")
 			.status()
-			.map_err(|e| NewDocsError::ProcessError(format!("Failed to run cargo: {}", e)))?;
+			.map_err(|e| PackageError::Process(format!("Failed to run cargo: {e}")))?;
 
 		if !status.success() {
-			return Err(NewDocsError::ProcessError("Cargo rustdoc failed".to_string()));
+			return Err(PackageError::Process("Cargo rustdoc failed".to_string()));
 		}
 
-		// Location follows Cargo's standard: target/doc/package_name.json
 		let json_path =
 			PathBuf::from("target/doc").join(format!("{}.json", self.name.replace('-', "_")));
 
-		let json_content = fs::read_to_string(&json_path).map_err(|e| NewDocsError::IoError(e))?;
+		let json_content = fs::read_to_string(&json_path)?;
 
-		let rustdoc_crate: rustdoc_types::Crate = serde_json::from_str(&json_content)
-			.map_err(|e| NewDocsError::ParsingError(format!("JSON fail: {}", e)))?;
+		let rustdoc_crate: rustdoc_types::Crate = serde_json::from_str(&json_content)?;
 
-		let mut parser = RustdocParser::new(rustdoc_crate)?;
-		Ok(parser.parse_crate().unwrap())
+		let mut parser =
+			RustdocParser::new(rustdoc_crate).map_err(|e| PackageError::Parse(e.to_string()))?;
+
+		parser.parse_crate().map_err(|e| PackageError::Parse(e.to_string()))
 	}
 }
 
-impl From<Crate> for self::Package {
+impl From<Crate> for RustPackage {
 	fn from(c: Crate) -> Self {
-		self::Package {
+		RustPackage {
 			slug:        c.name.to_lowercase(),
 			name:        c.name.clone(),
 			language:    Language::Rust,
-			uuid:        c.id.parse::<i64>().unwrap_or(0),
+			uuid:        c.id.parse::<u64>().unwrap_or(0),
 			source:      Url::parse(
 				&c.repository.unwrap_or_else(|| format!("https://crates.io/crates/{}", c.name)),
 			)
@@ -147,73 +145,67 @@ impl From<Crate> for self::Package {
 	}
 }
 
-impl package::Package for self::Package {
-	fn get_available_versions(&self) -> Result<Vec<Version>, NewDocsError> {
-		// In a real implementation, you'd use the crates_io_api client here
-		// For brevity, assuming the versions are fetched via the registry client
-		Err(NewDocsError::NotImplemented)
+impl Package for RustPackage {
+	type Error = PackageError;
+
+	fn get_available_versions(&self) -> Result<Vec<Version>, Self::Error> {
+		Err(PackageError::NotImplemented)
 	}
 
-	fn flags(&self) -> Result<Option<Vec<String>>, NewDocsError> {
-		// Mocking common Rust features as per the Swift prototype
+	fn flags(&self) -> Result<Option<Vec<String>>, Self::Error> {
 		Ok(Some(vec!["default".into(), "std".into(), "alloc".into()]))
 	}
 
-	fn description(&self) -> Result<Option<String>, NewDocsError> { Ok(self.description.clone()) }
+	fn description(&self) -> Result<Option<String>, Self::Error> {
+		Ok(self.description.clone())
+	}
 
 	fn retrieve(
 		&self,
 		version: Version,
 		_flags: Option<Vec<String>>,
-	) -> Result<String, NewDocsError> {
-		let entries = self.generate_ir(&version)?;
-		serde_json::to_string(&entries).map_err(|e| NewDocsError::ParsingError(e.to_string()))
+	) -> Result<Vec<Entry>, Self::Error> {
+		self.generate_ir(&version)
 	}
 
-	fn dependencies(&self) -> Result<Vec<AnyPackage>, NewDocsError> {
-		// Logic to fetch dependencies via crates.io API
+	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> {
 		todo!("Implement dependency resolution")
 	}
 
-	fn dependents(&self) -> Result<Vec<AnyPackage>, NewDocsError> {
+	fn dependents(&self) -> Result<Vec<Self>, Self::Error> {
 		todo!("Implement reverse dependency resolution")
 	}
 }
 
 impl Registry for Crates {
-	type Error = NewDocsError;
+	type Pkg = RustPackage;
+	type Error = RegistryError;
 
-	async fn search_packages(&self, query: &str) -> Result<Vec<AnyPackage>, NewDocsError> {
+	async fn search_packages(&self, query: &str) -> Result<Vec<RustPackage>, RegistryError> {
 		let q = CratesQuery::builder().search(query).build();
-		let result =
-			self.client.crates(q).await.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
+		let result = self.client.crates(q).await?;
 
-		Ok(result.crates.into_iter().map(|c| AnyPackage::Rust(self::Package::from(c))).collect())
+		Ok(result.crates.into_iter().map(RustPackage::from).collect())
 	}
 
-	async fn get_package_by_uuid(&self, uuid: u64) -> Result<AnyPackage, NewDocsError> {
-		let c = self
-			.client
-			.get_crate(&uuid.to_string())
-			.await
-			.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
-		Ok(AnyPackage::Rust(Package::from(c.crate_data)))
+	async fn get_package_by_id(&self, id: u64) -> Result<RustPackage, RegistryError> {
+		let c = self.client.get_crate(&id.to_string()).await?;
+		Ok(RustPackage::from(c.crate_data))
 	}
 
-	async fn get_packages_by_name(&self, name: &str) -> Result<Vec<AnyPackage>, NewDocsError> {
-		let c =
-			self.client.get_crate(name).await.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
-		Ok(vec![AnyPackage::Rust(self::Package::from(c.crate_data))])
+	async fn get_packages_by_name(&self, name: &str) -> Result<Vec<RustPackage>, RegistryError> {
+		let c = self.client.get_crate(name).await?;
+		Ok(vec![RustPackage::from(c.crate_data)])
 	}
 
-	async fn get_reference(&self) -> AnyPackage {
-		AnyPackage::Rust(self::Package {
+	async fn get_reference(&self) -> RustPackage {
+		RustPackage {
 			slug:        "rust-reference".into(),
 			name:        "The Rust Reference".into(),
 			language:    Language::Rust,
 			uuid:        0,
 			source:      Url::parse("https://doc.rust-lang.org/reference/").unwrap(),
 			description: Some("The official reference manual for the Rust language".into()),
-		})
+		}
 	}
 }
