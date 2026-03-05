@@ -88,7 +88,7 @@ impl Default for RustPackage {
 
 impl RustPackage {
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
-	fn generate_ir(&self, version: &Version) -> Result<Vec<Entry>, PackageError> {
+	fn generate_ir(&self, version: &Version) -> Result<Ir<Collected>, PackageError> {
 		let target_dir = std::env::current_dir()?.join("target").join("doc_json");
 
 		if !target_dir.exists() {
@@ -121,7 +121,9 @@ impl RustPackage {
 		let mut parser =
 			RustdocParser::new(rustdoc_crate).map_err(|e| PackageError::Parse(e.to_string()))?;
 
-		parser.parse_crate().map_err(|e| PackageError::Parse(e.to_string()))
+		let parse_result = parser.parse_crate().map_err(|e| PackageError::Parse(e.to_string()))?;
+
+		Ok(Ir::from_entries(parse_result))
 	}
 }
 
@@ -160,7 +162,6 @@ impl Package for RustPackage {
 		_flags: Option<Vec<String>>,
 	) -> Result<Ir<Collected>, Self::Error> {
 		let entries = self.generate_ir(&version)?;
-		Ok(Ir::from_entries(entries))
 	}
 
 	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> {

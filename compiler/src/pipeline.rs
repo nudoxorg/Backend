@@ -2,8 +2,12 @@ use std::collections::HashMap;
 
 use ir::entry::{Entry, Index};
 
-/// Entries freshly collected from a language parser — unindexed.
+/// Entries freshly collected from a language parser — unindexed and
+/// unversioned.
 pub struct Collected;
+
+/// Entries with that conform to a standard of versioning
+pub struct Versioned;
 
 /// Entries indexed by ID, cross-referenceable, ready for emission.
 pub struct Indexed;
@@ -14,6 +18,10 @@ pub trait Stage {
 }
 
 impl Stage for Collected {
+	type Data = Vec<Entry>;
+}
+
+impl Stage for Versioned {
 	type Data = Vec<Entry>;
 }
 
