@@ -8,124 +8,253 @@ use ir::{entry::{Entry, EntryRef}, function::{Attribute as FnAttribute, Function
 
 use crate::core::rust::ParseError;
 
-pub struct RustdocParser {
-	krate:         Crate,
+/// Immutable context.
+pub struct ParseContext {
+	krate:       Crate,
 	/// Maps rustdoc IDs to resolved paths
-	id_to_paths:   HashMap<Id, HashSet<Vec<String>>>, // HashSet tracks path of re-exports on same ID
-	/// Tracks visited items to detect circular dependencies
-	visiting:      HashSet<Id>,
-	/// Cache of parsed entries
-	entry_cache:   HashMap<Id, Entry>,
+	id_to_paths: HashMap<Id, HashSet<Vec<String>>>,
+
 	/// Primitive name to ID mapping (for Genealogy resolution)
 	primitive_map: HashMap<String, Id>,
 	path_to_id:    HashMap<String, Id>,
 }
 
+/// Mutable state that only changes during `parse_crate`.
+#[derive(Default)]
+pub struct ParseState {
+	/// Tracks visited items to detect circular dependencies
+	visiting:    HashSet<Id>,
+	/// Cache of parsed entries
+	entry_cache: HashMap<Id, Entry>,
+}
+
+pub struct RustdocParser {
+	ctx:   ParseContext,
+	state: ParseState,
+}
+
+fn add_path(id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>, id: &Id, path: Vec<String>) {
+	id_to_paths
+		.entry(id.clone())
+		.and_modify(|hash_set| {
+			hash_set.insert(path.clone());
+		})
+		.or_insert_with(|| {
+			let mut hs = HashSet::default();
+			hs.insert(path);
+			hs
+		});
+}
+
+fn queue_child(
+	index: &HashMap<Id, Item>,
+	id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>,
+	queue: &mut VecDeque<(Id, Vec<String>)>,
+	id: &Id,
+	parent_path: &[String],
+) {
+	if let Some(item) = index.get(id) {
+		if let Some(name) = &item.name {
+			let mut path = parent_path.to_vec();
+			path.push(name.clone());
+			add_path(id_to_paths, id, path.clone());
+			queue.push_back((id.clone(), path));
+		}
+	}
+}
+
+fn queue_impls(
+	index: &HashMap<Id, Item>,
+	id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>,
+	queue: &mut VecDeque<(Id, Vec<String>)>,
+	impls: &[Id],
+	parent_path: &[String],
+) {
+	for impl_id in impls {
+		if let Some(item) = index.get(impl_id) {
+			if let ItemEnum::Impl(i) = &item.inner {
+				for item_id in &i.items {
+					queue_child(index, id_to_paths, queue, item_id, parent_path);
+				}
+			}
+		}
+	}
+}
+
 impl RustdocParser {
-	fn resolve_path_to_id(&self, path: &str) -> Option<Id> {
-		// Try exact match first
-		if let Some(id) = self.path_to_id.get(path) {
-			return Some(id.clone());
-		}
-
-		// Try without crate prefix (e.g., "Affine" instead of "xilem::Affine")
-		for (key, id) in &self.path_to_id {
-			if key.ends_with(&format!("::{}", path)) || key == path {
-				return Some(id.clone());
-			}
-		}
-
-		None
-	}
-
-	fn resolve_type_to_entry_id(&self, ty: &Type) -> Option<i64> {
-		match ty {
-			Type::ResolvedPath(ir_path) => {
-				self.resolve_path_to_id(&ir_path.path).map(|id| self.id_to_number(&id))
-			}
-			Type::Primitive(prim) => {
-				// Look up in primitive_map
-				let name = match prim {
-					Primitive::Int8(_) => "i8",
-					Primitive::Int16(_) => "i16",
-					Primitive::Int(_) => "isize",
-					Primitive::Int64(_) => "i64",
-					Primitive::Int128(_) => "i128",
-					Primitive::UInt8(_) => "u8",
-					Primitive::UInt16(_) => "u16",
-					Primitive::UInt(_) => "usize",
-					Primitive::UInt64(_) => "u64",
-					Primitive::UInt128(_) => "u128",
-					Primitive::Float(_) => "f32",
-					Primitive::Double(_) => "f64",
-					Primitive::Bool(_) => "bool",
-					Primitive::String(_) => "str",
-					Primitive::Char(_) => "char",
-					_ => return None,
-				};
-				self.primitive_map.get(name).map(|id| self.id_to_number(id))
-			}
-			_ => None,
-		}
-	}
-
 	pub fn new(krate: Crate) -> Result<Self> {
-		let mut parser = Self {
+		let mut ctx = ParseContext {
 			krate,
 			id_to_paths: HashMap::new(),
-			visiting: HashSet::new(),
-			entry_cache: HashMap::new(),
 			primitive_map: HashMap::new(),
 			path_to_id: HashMap::new(),
 		};
-		// Pre-scan primitives to handle them like the "old" code
-		parser.scan_primitives();
-		parser.build_path_map()?;
-		Ok(parser)
+		ctx.scan_primitives();
+		ctx.build_path_map()?;
+		Ok(Self { ctx, state: ParseState::default() })
 	}
 
+	pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
+		let mut all_ids: Vec<_> = self.ctx.id_to_paths.keys().cloned().collect();
+
+		all_ids.sort_by(|a, b| {
+			let path_a = &self.ctx.id_to_paths[a];
+			let path_b = &self.ctx.id_to_paths[b];
+			path_a.into_iter().cmp(path_b)
+		});
+
+		let mut entries = Vec::new();
+
+		for id in all_ids {
+			if let Ok(entry) = self.ctx.parse_item(&mut self.state, &id) {
+				entries.push(entry);
+			}
+		}
+
+		Ok(entries)
+	}
+}
+
+impl ParseContext {
 	fn scan_primitives(&mut self) {
 		for (id, item) in &self.krate.index {
 			if let ItemEnum::Primitive(p) = &item.inner {
 				self.primitive_map.insert(p.name.clone(), id.clone());
-				// Primitives don't always have a path from root, so we ensure they exist in the
-				// map potentially, multiple paths (primary + aliases/re-exports) can exist
-				// per id
-				self
-					.id_to_paths
-					.entry(id.clone())
-					.and_modify(|hash_set| {
-						hash_set.insert(vec![p.name.clone()]);
-					})
-					.or_insert_with(|| {
-						// build hashset and add initial path
-						let mut hs = HashSet::default();
-						hs.insert(vec![p.name.clone()]);
-						hs
-					});
+				add_path(&mut self.id_to_paths, id, vec![p.name.clone()]);
 			}
 		}
 	}
 
-	fn collect_impl_members(&mut self, impl_ids: &[Id]) -> Result<Vec<EntryRef>> {
+	fn build_path_map(&mut self) -> Result<()> {
+		let root_id = self.krate.root.clone();
+
+		let mut queue = VecDeque::new();
+		let mut visited = HashSet::new();
+
+		if let Some(root_item) = self.krate.index.get(&root_id) {
+			let root_name = root_item.name.clone().unwrap_or_else(|| "crate".to_string());
+			let root_path = vec![root_name];
+			add_path(&mut self.id_to_paths, &root_id, root_path.clone());
+			queue.push_back((root_id, root_path));
+		}
+
+		while let Some((id, current_path)) = queue.pop_front() {
+			if visited.contains(&id) {
+				continue;
+			}
+			visited.insert(id.clone());
+
+			let item = match self.krate.index.get(&id) {
+				Some(i) => i,
+				None => continue,
+			};
+
+			match &item.inner {
+				ItemEnum::Module(m) => {
+					for child_id in &m.items {
+						if let Some(child_item) = self.krate.index.get(child_id) {
+							if let Some(name) = &child_item.name {
+								let mut new_path = current_path.clone();
+								new_path.push(name.clone());
+
+								if !visited.contains(child_id) {
+									add_path(&mut self.id_to_paths, child_id, new_path.clone());
+									queue.push_back((child_id.clone(), new_path));
+								} else {
+									add_path(&mut self.id_to_paths, child_id, new_path);
+								}
+							} else {
+								if !visited.contains(child_id) {
+									add_path(&mut self.id_to_paths, child_id, current_path.clone());
+									queue.push_back((child_id.clone(), current_path.clone()));
+								} else {
+									add_path(&mut self.id_to_paths, child_id, current_path.clone());
+								}
+							}
+						}
+					}
+				}
+				ItemEnum::Use(import) => {
+					if let Some(target_id) = &import.id {
+						add_path(&mut self.id_to_paths, target_id, current_path.clone());
+
+						if !visited.contains(target_id) {
+							queue.push_back((target_id.clone(), current_path));
+						}
+					} else if import.is_glob {
+						// Glob imports: requires resolving the path string to an ID
+					}
+				}
+				ItemEnum::Struct(s) => {
+					queue_impls(
+						&self.krate.index,
+						&mut self.id_to_paths,
+						&mut queue,
+						&s.impls,
+						&current_path,
+					);
+				}
+				ItemEnum::Enum(e) => {
+					queue_impls(
+						&self.krate.index,
+						&mut self.id_to_paths,
+						&mut queue,
+						&e.impls,
+						&current_path,
+					);
+				}
+				ItemEnum::Trait(t) => {
+					for item_id in &t.items {
+						queue_child(
+							&self.krate.index,
+							&mut self.id_to_paths,
+							&mut queue,
+							item_id,
+							&current_path,
+						);
+					}
+				}
+				_ => {}
+			}
+		}
+		Ok(())
+	}
+}
+
+impl ParseContext {
+	fn parse_item(&self, state: &mut ParseState, id: &Id) -> Result<Entry> {
+		if let Some(cached) = state.entry_cache.get(id) {
+			return Ok(cached.clone());
+		}
+
+		if state.visiting.contains(id) {
+			return Err(ParseError::CircularDependency { path: self.get_path(id)?.join("::") });
+		}
+
+		state.visiting.insert(id.clone());
+
+		let item = self.krate.index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0))?;
+
+		let entry = self.convert_item(state, id, item)?;
+
+		state.visiting.remove(id);
+		state.entry_cache.insert(id.clone(), entry.clone());
+
+		Ok(entry)
+	}
+
+	fn collect_impl_members(&self, state: &mut ParseState, impl_ids: &[Id]) -> Result<Vec<EntryRef>> {
 		let mut members = Vec::new();
-		let index = self.krate.index.clone();
 
 		for impl_id in impl_ids {
-			let impl_item = match index.get(impl_id) {
+			let impl_item = match self.krate.index.get(impl_id) {
 				Some(i) => i,
 				None => continue,
 			};
 
 			if let ItemEnum::Impl(imp) = &impl_item.inner {
-				// You can filter here: e.g., only inherent impls (where trait_ is None)
-				// or include trait methods too.
-				// The "Genealogy" code usually flattens everything.
-
 				for assoc_item_id in &imp.items {
-					// Check circular dep/cache for the method
-					if let Ok(entry) = self.parse_item(assoc_item_id) {
-						// EntryRef as a pointer for member instead of nested duplication
+					if let Ok(entry) = self.parse_item(state, assoc_item_id) {
 						members.push(EntryRef { id: entry.id, path: entry.path });
 					}
 				}
@@ -135,209 +264,9 @@ impl RustdocParser {
 		Ok(members)
 	}
 
-	fn build_path_map(&mut self) -> Result<()> {
-		let root_id = self.krate.root.clone();
-
-		// BFS queue: (ID, current_path)
-		let mut queue = VecDeque::new();
-		let mut visited = HashSet::new();
-
-		// Initialize with root
-		if let Some(root_item) = self.krate.index.get(&root_id) {
-			let root_name = root_item.name.clone().unwrap_or_else(|| "crate".to_string());
-			let root_path = vec![root_name];
-			// Allow possibility of multiple paths in a HashSet on ID for re-exports
-			self.add_path(&root_id, root_path.clone());
-			queue.push_back((root_id, root_path));
-		}
-
-		while let Some((id, current_path)) = queue.pop_front() {
-			if visited.contains(&id) {
-				continue;
-			}
-			visited.insert(id.clone());
-			let index = self.krate.index.clone();
-
-			let item = match index.get(&id) {
-				Some(i) => i,
-				None => continue, // Skip broken links
-			};
-
-			match &item.inner {
-				ItemEnum::Module(m) => {
-					for child_id in &m.items {
-						// For module children, append their name to the path
-						if let Some(child_item) = self.krate.index.get(child_id) {
-							if let Some(name) = &child_item.name {
-								let mut new_path = current_path.clone();
-								new_path.push(name.clone());
-
-								// Record the path for this ID; BFS traversal uses the first-seen path.
-								if !visited.contains(child_id) {
-									self.add_path(child_id, new_path.clone());
-									queue.push_back((child_id.clone(), new_path));
-								} else {
-									self.add_path(child_id, new_path);
-								}
-							} else {
-								// I believe this is the path that items that are inlined take, usually
-								// re-exports. Only continue down paths not visited
-								if !visited.contains(child_id) {
-									self.add_path(child_id, current_path.clone());
-									queue.push_back((child_id.clone(), current_path.clone()));
-								} else {
-									self.add_path(child_id, current_path.clone());
-								}
-							}
-						}
-					}
-				}
-				ItemEnum::Use(import) => {
-					// "Deep Path Resolution": Follow the import
-					if let Some(target_id) = &import.id {
-						// If we are importing something, we give it a path at this location.
-						// e.g., "crate::foo::Bar" might point to "crate::internal::Bar"
-						// We treat this as an alias path for the target ID.
-						self.add_path(target_id, current_path.clone());
-
-						// Continue BFS from the target item, using this new public path
-						if !visited.contains(target_id) {
-							queue.push_back((target_id.clone(), current_path));
-						}
-					} else if import.is_glob {
-						// Handle Glob imports if necessary: read the module and bring all
-						// children up. (Simplified for this snippet: requires
-						// resolving the path string to an ID if not explicit)
-					}
-				}
-				ItemEnum::Struct(s) => self.queue_impls(&mut queue, &s.impls, &current_path),
-				ItemEnum::Enum(e) => self.queue_impls(&mut queue, &e.impls, &current_path),
-				ItemEnum::Trait(t) => {
-					// Trait items (required methods) are children
-					for item_id in &t.items {
-						self.queue_child(&mut queue, item_id, &current_path);
-					}
-				}
-				_ => {}
-			}
-		}
-		Ok(())
-	}
-
-	/// Helper for HashSet insertion on new id_to_paths
-	fn add_path(&mut self, id: &Id, path: Vec<String>) {
-		self
-			.id_to_paths
-			.entry(id.clone())
-			.and_modify(|hash_set| {
-				hash_set.insert(path.clone());
-			})
-			.or_insert_with(|| {
-				let mut hs = HashSet::default();
-				hs.insert(path);
-				hs
-			});
-	}
-
-	fn queue_child(
-		&mut self,
-		queue: &mut VecDeque<(Id, Vec<String>)>,
-		id: &Id,
-		parent_path: &[String],
-	) {
-		if let Some(item) = self.krate.index.get(id) {
-			if let Some(name) = &item.name {
-				let mut path = parent_path.to_vec();
-				path.push(name.clone());
-				// Record additional paths for this ID (associated items can be reachable in
-				// multiple places)
-				self.add_path(id, path.clone());
-				queue.push_back((id.clone(), path));
-			}
-		}
-	}
-
-	// Helper to traverse into impls during path building to ensure associated
-	// types/methods get paths
-	fn queue_impls(
-		&mut self,
-		queue: &mut VecDeque<(Id, Vec<String>)>,
-		impls: &[Id],
-		parent_path: &[String],
-	) {
-		for impl_id in impls {
-			if let Some(item) = self.krate.index.clone().get(impl_id) {
-				if let ItemEnum::Impl(i) = &item.inner {
-					for item_id in &i.items {
-						self.queue_child(queue, item_id, parent_path);
-					}
-				}
-			}
-		}
-	}
-
-	pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
-		// 1. Gather all IDs we found paths for (this includes deep items, re-exports,
-		//    etc.)
-		let mut all_ids: Vec<_> = self.id_to_paths.keys().cloned().collect();
-
-		// 2. Sort them by path for deterministic output order (e.g. "axum::body::Body"
-		//    comes before "axum::extract::Json")
-		all_ids.sort_by(|a, b| {
-			let path_a = &self.id_to_paths[a];
-			let path_b = &self.id_to_paths[b];
-			path_a.into_iter().cmp(path_b)
-		});
-
-		let mut entries = Vec::new();
-
-		for id in all_ids {
-			// We parse every reachable item.
-			// The `entry_cache` inside `parse_item` ensures we don't duplicate work
-			// if an item was already visited during a previous recursion.
-			if let Ok(entry) = self.parse_item(&id) {
-				// Optional: Filter out items you don't want top-level entries for.
-				// For example, if you don't want standalone entries for methods (because
-				// they are already inside the Struct's `members`), you could check `kind`.
-				// For a raw search index, keeping them is usually fine/better.
-				entries.push(entry);
-			}
-		}
-
-		Ok(entries)
-	}
-
-	fn parse_item(&mut self, id: &Id) -> Result<Entry> {
-		// Check cache first
-		if let Some(cached) = self.entry_cache.get(id) {
-			return Ok(cached.clone());
-		}
-
-		// Detect circular dependencies
-		if self.visiting.contains(id) {
-			return Err(ParseError::CircularDependency { path: self.get_path(id)?.join("::") });
-		}
-
-		self.visiting.insert(id.clone());
-
-		let index = self.krate.index.clone();
-
-		let item = index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0))?;
-
-		let entry = self.convert_item(id, item)?;
-
-		self.visiting.remove(id);
-		self.entry_cache.insert(id.clone(), entry.clone());
-
-		Ok(entry)
-	}
-
 	fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> { self.id_to_paths.get(id) }
 
-	/// Resolve Primary path in HashSet, currently returns shortest
 	fn get_primary_path(&self, id: &Id) -> Result<Vec<String>> {
-		// TODO validate primary vs alias selection logic
-		// prefer a path that matches the public modules
 		self
 			.get_paths(id)
 			.and_then(|paths| paths.iter().min_by(|a, b| a.cmp(b)))
@@ -345,10 +274,11 @@ impl RustdocParser {
 			.ok_or_else(|| ParseError::PathParsing(format!("No path found for ID: {}", id.0)))
 	}
 
-	fn convert_item(&mut self, id: &Id, item: &Item) -> Result<Entry> {
+	fn get_path(&self, id: &Id) -> Result<Vec<String>> { self.get_primary_path(id) }
+
+	fn convert_item(&self, state: &mut ParseState, id: &Id, item: &Item) -> Result<Entry> {
 		let name = item.name.clone().unwrap_or_default();
 		let path = self.get_primary_path(id).unwrap_or_else(|_| vec![name.clone()]);
-		// check aliases, find where None
 		let aliases = self
 			.get_paths(id)
 			.map(|paths| {
@@ -359,22 +289,18 @@ impl RustdocParser {
 			.and_then(|hs| if hs.is_empty() { None } else { Some(hs) });
 		let visibility = Some(self.parse_visibility(&item.visibility));
 		let documentation = item.docs.clone();
-		let kind = self.parse_item_kind(id, &item.inner)?;
+		let kind = self.parse_item_kind(state, id, &item.inner)?;
 		let id_num = self.id_to_number(id);
 
-		// Identify items that have impls and collect their children
 		let members = match &item.inner {
-			ItemEnum::Struct(s) => Some(self.collect_impl_members(&s.impls)?),
-			ItemEnum::Enum(e) => Some(self.collect_impl_members(&e.impls)?),
-			ItemEnum::Union(u) => Some(self.collect_impl_members(&u.impls)?),
-			ItemEnum::Primitive(p) => Some(self.collect_impl_members(&p.impls)?),
-			// Trait definitions already contain their required/provided methods in `parse_trait`
-			// but if we want them in `members` as well:
-			// change to entry ref -> might break traits
+			ItemEnum::Struct(s) => Some(self.collect_impl_members(state, &s.impls)?),
+			ItemEnum::Enum(e) => Some(self.collect_impl_members(state, &e.impls)?),
+			ItemEnum::Union(u) => Some(self.collect_impl_members(state, &u.impls)?),
+			ItemEnum::Primitive(p) => Some(self.collect_impl_members(state, &p.impls)?),
 			ItemEnum::Trait(t) => {
 				let mut trait_members = Vec::new();
 				for method_id in &t.items {
-					if let Ok(entry) = self.parse_item(method_id) {
+					if let Ok(entry) = self.parse_item(state, method_id) {
 						trait_members.push(EntryRef { id: entry.id, path: entry.path });
 					}
 				}
@@ -383,8 +309,7 @@ impl RustdocParser {
 			ItemEnum::Module(m) => {
 				let mut children = Vec::new();
 				for item_id in &m.items {
-					// Only add if we can resolve it
-					if let Ok(child) = self.parse_item(item_id) {
+					if let Ok(child) = self.parse_item(state, item_id) {
 						children.push(EntryRef { id: child.id, path: child.path });
 					}
 				}
@@ -396,7 +321,7 @@ impl RustdocParser {
 		Ok(Entry { name, id: id_num, path, aliases, kind, visibility, documentation, members })
 	}
 
-	fn parse_item_kind(&mut self, id: &Id, inner: &ItemEnum) -> Result<Kind> {
+	fn parse_item_kind(&self, state: &mut ParseState, id: &Id, inner: &ItemEnum) -> Result<Kind> {
 		match inner {
 			ItemEnum::Module(_) => Ok(Kind::Module),
 
@@ -416,16 +341,15 @@ impl RustdocParser {
 			}
 
 			ItemEnum::Trait(t) => {
-				let trait_def = self.parse_trait(id, t)?;
+				let trait_def = self.parse_trait(state, id, t)?;
 				Ok(Kind::TraitDef(trait_def))
 			}
 
 			ItemEnum::Impl(i) => {
-				let trait_impl = self.parse_impl(id, i)?;
+				let trait_impl = self.parse_impl(state, id, i)?;
 				Ok(Kind::TraitImpl(trait_impl))
 			}
 
-			// TODO: Process generics here if applicable, make sure display impl is ther
 			ItemEnum::TypeAlias(alias) => Ok(Kind::TypeAlias(self.parse_type(&alias.type_)?)),
 
 			ItemEnum::Constant { .. } => Ok(Kind::Constant),
@@ -436,11 +360,7 @@ impl RustdocParser {
 
 			ItemEnum::ProcMacro(_) => Ok(Kind::Macro),
 
-			// ItemEnum::Primitive(_) => Ok(Kind::Primitive),
-
-			// These are useful only when linked to their parent struct, so ignore the internal type,
-			// which is dealt with during the struct field resolution
-			ItemEnum::StructField(ty) => Ok(Kind::Field),
+			ItemEnum::StructField(_ty) => Ok(Kind::Field),
 
 			ItemEnum::Union(u) => {
 				let types = self.parse_union_fields(u)?;
@@ -451,10 +371,8 @@ impl RustdocParser {
 		}
 	}
 
-	fn parse_struct(&mut self, id: &Id, s: &rustdoc_types::Struct) -> Result<Record> {
-		let index = self.krate.index.clone();
-
-		let item = index.get(id).unwrap();
+	fn parse_struct(&self, id: &Id, s: &rustdoc_types::Struct) -> Result<Record> {
+		let item = self.krate.index.get(id).unwrap();
 		let generics =
 			s.generics.params.is_empty().then(|| self.parse_generic_params(&s.generics)).flatten();
 
@@ -477,17 +395,16 @@ impl RustdocParser {
 		Ok(Record { name: item.name.clone(), generics: generic_args, kind, fields, visibility })
 	}
 
-	fn parse_tuple_fields(&mut self, field_ids: &[Option<Id>]) -> Result<Vec<Field>> {
+	fn parse_tuple_fields(&self, field_ids: &[Option<Id>]) -> Result<Vec<Field>> {
 		field_ids
 			.iter()
 			.enumerate()
 			.filter_map(|(idx, opt_id)| {
 				opt_id.as_ref().map(|id| {
-					let index = self.krate.index.clone();
-					let item = index.get(id)?;
+					let item = self.krate.index.get(id)?;
 					if let ItemEnum::StructField(ty) = &item.inner {
 						let parsed_ty = self.parse_type(ty).ok()?;
-						let type_entry_id = self.resolve_type_to_entry_id(&parsed_ty); // ← NEW
+						let type_entry_id = self.resolve_type_to_entry_id(&parsed_ty);
 
 						Some(Field {
 							name: Some(idx.to_string()),
@@ -495,7 +412,7 @@ impl RustdocParser {
 							default_value: None,
 							attributes: None,
 							visibility: Some(self.parse_visibility(&item.visibility)),
-							type_entry_id, // ← NEW
+							type_entry_id,
 						})
 					} else {
 						None
@@ -509,15 +426,15 @@ impl RustdocParser {
 			})
 	}
 
-	fn parse_named_fields(&mut self, field_ids: &[Id]) -> Result<Vec<Field>> {
+	fn parse_named_fields(&self, field_ids: &[Id]) -> Result<Vec<Field>> {
 		field_ids
 			.iter()
 			.map(|id| {
-				let item = self.krate.index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0))?.clone();
+				let item = self.krate.index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0))?;
 
 				if let ItemEnum::StructField(ty) = &item.inner {
-					let parsed_ty = self.parse_type(&ty)?;
-					let type_entry_id = self.resolve_type_to_entry_id(&parsed_ty); // ← NEW
+					let parsed_ty = self.parse_type(ty)?;
+					let type_entry_id = self.resolve_type_to_entry_id(&parsed_ty);
 
 					Ok(Field {
 						name: item.name.clone(),
@@ -525,7 +442,7 @@ impl RustdocParser {
 						default_value: None,
 						attributes: None,
 						visibility: Some(self.parse_visibility(&item.visibility)),
-						type_entry_id, // ← NEW
+						type_entry_id,
 					})
 				} else {
 					Err(ParseError::InvalidItemKind {
@@ -538,13 +455,15 @@ impl RustdocParser {
 			.collect()
 	}
 
-	fn parse_enum_variants(&mut self, e: &rustdoc_types::Enum) -> Result<Vec<SumVariant>> {
+	fn parse_enum_variants(&self, e: &rustdoc_types::Enum) -> Result<Vec<SumVariant>> {
 		e.variants
 			.iter()
 			.map(|variant_id| {
-				let index = self.krate.index.clone();
-				let item =
-					index.get(variant_id).ok_or_else(|| ParseError::ItemNotFound(variant_id.0.clone()))?;
+				let item = self
+					.krate
+					.index
+					.get(variant_id)
+					.ok_or_else(|| ParseError::ItemNotFound(variant_id.0.clone()))?;
 
 				let name = item.name.clone().unwrap_or_default();
 
@@ -556,8 +475,11 @@ impl RustdocParser {
 								.iter()
 								.filter_map(|opt_id| opt_id.as_ref())
 								.map(|id| {
-									let field_item =
-										index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+									let field_item = self
+										.krate
+										.index
+										.get(id)
+										.ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
 									if let ItemEnum::StructField(ty) = &field_item.inner {
 										self.parse_type(ty)
 									} else {
@@ -575,10 +497,13 @@ impl RustdocParser {
 							let types: Result<Vec<Type>> = fields
 								.iter()
 								.map(|id| {
-									let field_item =
-										index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+									let field_item = self
+										.krate
+										.index
+										.get(id)
+										.ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
 									if let ItemEnum::StructField(ty) = &field_item.inner {
-										self.parse_type(&ty)
+										self.parse_type(ty)
 									} else {
 										Err(ParseError::InvalidItemKind {
 											id:       id.0.to_string(),
@@ -604,9 +529,9 @@ impl RustdocParser {
 			.collect()
 	}
 
-	fn parse_function(&mut self, id: &Id, f: &rustdoc_types::Function) -> Result<Function> {
+	fn parse_function(&self, id: &Id, f: &rustdoc_types::Function) -> Result<Function> {
 		let item = self.krate.index.get(id).unwrap();
-		let visibility_clone = item.visibility.clone();
+		let vis = item.visibility.clone();
 		let name = item.name.clone().unwrap_or_default();
 
 		let input_parameters =
@@ -629,30 +554,25 @@ impl RustdocParser {
 		let generics =
 			if f.generics.params.is_empty() { None } else { self.parse_generic_params(&f.generics) };
 
-		let visibility = Some(self.parse_visibility(&visibility_clone));
+		let visibility = Some(self.parse_visibility(&vis));
 
-		// NEW: Compute type_links for function parameters
 		let type_links = {
 			let mut links = HashMap::new();
 
-			// Link input parameters to their type definitions
 			if let Some(ref params) = input_parameters {
 				for param in params {
 					if let Some(ref ty) = param.ty {
 						if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
-							// Use "in." prefix to distinguish input params
 							links.insert(format!("in.{}", param.name), entry_id);
 						}
 					}
 				}
 			}
 
-			// Link output parameters to their type definitions
 			if let Some(ref params) = output_parameters {
 				for param in params {
 					if let Some(ref ty) = param.ty {
 						if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
-							// Use "out." prefix for return type
 							links.insert(format!("out.{}", param.name), entry_id);
 						}
 					}
@@ -670,12 +590,12 @@ impl RustdocParser {
 			name,
 			implemented: true,
 			visibility,
-			type_links, // ← NEW
+			type_links,
 		})
 	}
 
 	fn parse_function_inputs(
-		&mut self,
+		&self,
 		inputs: &[(String, rustdoc_types::Type)],
 	) -> Result<Vec<Parameter>> {
 		inputs
@@ -710,9 +630,14 @@ impl RustdocParser {
 		if attrs.is_empty() { None } else { Some(attrs) }
 	}
 
-	fn parse_trait(&mut self, id: &Id, t: &rustdoc_types::Trait) -> Result<TraitDef> {
+	fn parse_trait(
+		&self,
+		state: &mut ParseState,
+		id: &Id,
+		t: &rustdoc_types::Trait,
+	) -> Result<TraitDef> {
 		let item = self.krate.index.get(id).unwrap();
-		let visibility_clone = item.visibility.clone();
+		let vis = item.visibility.clone();
 		let name = item.name.clone().unwrap_or_default();
 		let docs = item.docs.clone();
 
@@ -727,16 +652,13 @@ impl RustdocParser {
 		let mut associated_types = Vec::new();
 		let mut required_constants = Vec::new();
 
-		// Clone items to avoid borrow issues
-		let trait_items: Vec<Id> = t.items.clone();
-
-		for item_id in trait_items {
+		for item_id in &t.items {
 			let trait_item =
-				self.krate.index.get(&item_id).ok_or_else(|| ParseError::ItemNotFound(item_id.0))?.clone();
+				self.krate.index.get(item_id).ok_or_else(|| ParseError::ItemNotFound(item_id.0))?;
 
 			match &trait_item.inner {
 				ItemEnum::Function(f) => {
-					let method = self.parse_trait_method(&item_id, f)?;
+					let method = self.parse_trait_method(item_id, f)?;
 					if f.has_body {
 						provided_methods.push(method);
 					} else {
@@ -777,7 +699,7 @@ impl RustdocParser {
 			None
 		};
 
-		let visibility = Some(self.parse_visibility(&visibility_clone));
+		let visibility = Some(self.parse_visibility(&vis));
 
 		Ok(TraitDef {
 			name,
@@ -797,9 +719,8 @@ impl RustdocParser {
 		})
 	}
 
-	fn parse_trait_method(&mut self, id: &Id, f: &rustdoc_types::Function) -> Result<TraitMethod> {
-		let index = self.krate.index.clone();
-		let item = index.get(id).unwrap();
+	fn parse_trait_method(&self, id: &Id, f: &rustdoc_types::Function) -> Result<TraitMethod> {
+		let item = self.krate.index.get(id).unwrap();
 
 		let parameters =
 			if f.sig.inputs.is_empty() { None } else { Some(self.parse_function_inputs(&f.sig.inputs)?) };
@@ -846,9 +767,13 @@ impl RustdocParser {
 		}
 	}
 
-	fn parse_impl(&mut self, id: &Id, i: &rustdoc_types::Impl) -> Result<TraitImpl> {
-		let index = self.krate.index.clone();
-		let item = index.get(id).unwrap();
+	fn parse_impl(
+		&self,
+		state: &mut ParseState,
+		id: &Id,
+		i: &rustdoc_types::Impl,
+	) -> Result<TraitImpl> {
+		let item = self.krate.index.get(id).unwrap();
 
 		let tr =
 			i.trait_.as_ref().map(|path| self.parse_path_to_trait_ref(path)).transpose()?.ok_or_else(
@@ -873,10 +798,8 @@ impl RustdocParser {
 		let mut associated_constants = Vec::new();
 
 		for item_id in &i.items {
-			let index = self.krate.index.clone();
-
 			let impl_item =
-				index.get(item_id).ok_or_else(|| ParseError::ItemNotFound(item_id.0.clone()))?;
+				self.krate.index.get(item_id).ok_or_else(|| ParseError::ItemNotFound(item_id.0.clone()))?;
 
 			match &impl_item.inner {
 				ItemEnum::Function(f) => {
@@ -927,13 +850,12 @@ impl RustdocParser {
 		})
 	}
 
-	fn parse_union_fields(&mut self, u: &rustdoc_types::Union) -> Result<Vec<Type>> {
+	fn parse_union_fields(&self, u: &rustdoc_types::Union) -> Result<Vec<Type>> {
 		u.fields
 			.iter()
 			.map(|id| {
-				let index = self.krate.index.clone();
-
-				let item = index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+				let item =
+					self.krate.index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
 				if let ItemEnum::StructField(ty) = &item.inner {
 					self.parse_type(ty)
 				} else {
@@ -947,7 +869,90 @@ impl RustdocParser {
 			.collect()
 	}
 
-	fn parse_type(&mut self, ty: &rustdoc_types::Type) -> Result<Type> {
+	fn resolve_path_to_id(&self, path: &str) -> Option<Id> {
+		if let Some(id) = self.path_to_id.get(path) {
+			return Some(id.clone());
+		}
+
+		for (key, id) in &self.path_to_id {
+			if key.ends_with(&format!("::{}", path)) || key == path {
+				return Some(id.clone());
+			}
+		}
+
+		None
+	}
+
+	fn resolve_type_to_entry_id(&self, ty: &Type) -> Option<i64> {
+		match ty {
+			Type::ResolvedPath(ir_path) => {
+				self.resolve_path_to_id(&ir_path.path).map(|id| self.id_to_number(&id))
+			}
+			Type::Primitive(prim) => {
+				let name = match prim {
+					Primitive::Int8(_) => "i8",
+					Primitive::Int16(_) => "i16",
+					Primitive::Int(_) => "isize",
+					Primitive::Int64(_) => "i64",
+					Primitive::Int128(_) => "i128",
+					Primitive::UInt8(_) => "u8",
+					Primitive::UInt16(_) => "u16",
+					Primitive::UInt(_) => "usize",
+					Primitive::UInt64(_) => "u64",
+					Primitive::UInt128(_) => "u128",
+					Primitive::Float(_) => "f32",
+					Primitive::Double(_) => "f64",
+					Primitive::Bool(_) => "bool",
+					Primitive::String(_) => "str",
+					Primitive::Char(_) => "char",
+					_ => return None,
+				};
+				self.primitive_map.get(name).map(|id| self.id_to_number(id))
+			}
+			_ => None,
+		}
+	}
+
+	fn id_to_number(&self, id: &Id) -> i64 {
+		use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
+
+		let mut hasher = DefaultHasher::new();
+		id.0.hash(&mut hasher);
+		hasher.finish() as i64
+	}
+
+	fn parse_visibility(&self, vis: &rustdoc_types::Visibility) -> Visibility {
+		match vis {
+			rustdoc_types::Visibility::Public => Visibility::Public,
+			rustdoc_types::Visibility::Default => Visibility::Private,
+			rustdoc_types::Visibility::Crate => Visibility::Internal,
+			rustdoc_types::Visibility::Restricted { .. } => Visibility::Package,
+		}
+	}
+
+	fn generics_to_args(&self, generics: &Generics) -> Option<Vec<GenericArg>> {
+		let mut args = Vec::new();
+
+		for type_param in &generics.type_params {
+			if let Some(default) = &type_param.default_type {
+				args.push(GenericArg::Type(Type::GenericParam(default.name.clone())));
+			} else {
+				args.push(GenericArg::Type(Type::GenericParam(type_param.name.clone())));
+			}
+		}
+
+		for const_param in &generics.const_params {
+			args.push(GenericArg::ConstExpr(ConstExpr { expr: const_param.name.clone() }));
+		}
+
+		for lifetime_param in &generics.lifetime_params {
+			args.push(GenericArg::Lifetime(lifetime_param.name.clone()));
+		}
+
+		if args.is_empty() { None } else { Some(args) }
+	}
+
+	fn parse_type(&self, ty: &rustdoc_types::Type) -> Result<Type> {
 		match ty {
 			rustdoc_types::Type::ResolvedPath(path) => {
 				let ir_path = self.parse_resolved_path(path)?;
@@ -1038,7 +1043,7 @@ impl RustdocParser {
 		}
 	}
 
-	fn parse_resolved_path(&mut self, path: &rustdoc_types::Path) -> Result<IRPath> {
+	fn parse_resolved_path(&self, path: &rustdoc_types::Path) -> Result<IRPath> {
 		let path_str = path.path.clone();
 		let generic_args = path
 			.args
@@ -1050,7 +1055,7 @@ impl RustdocParser {
 		Ok(IRPath { path: path_str, generic_args })
 	}
 
-	fn parse_poly_trait(&mut self, pt: &rustdoc_types::PolyTrait) -> Result<PolyTrait> {
+	fn parse_poly_trait(&self, pt: &rustdoc_types::PolyTrait) -> Result<PolyTrait> {
 		let trait_ref = self.parse_path_to_trait_ref(&pt.trait_)?;
 		Ok(PolyTrait {
 			tr:        trait_ref,
@@ -1058,7 +1063,7 @@ impl RustdocParser {
 		})
 	}
 
-	fn parse_path_to_trait_ref(&mut self, path: &rustdoc_types::Path) -> Result<TraitRef> {
+	fn parse_path_to_trait_ref(&self, path: &rustdoc_types::Path) -> Result<TraitRef> {
 		let args = path
 			.args
 			.as_ref()
@@ -1103,10 +1108,7 @@ impl RustdocParser {
 		}
 	}
 
-	fn parse_function_pointer(
-		&mut self,
-		fp: &rustdoc_types::FunctionPointer,
-	) -> Result<FunctionPointer> {
+	fn parse_function_pointer(&self, fp: &rustdoc_types::FunctionPointer) -> Result<FunctionPointer> {
 		let inputs = if fp.sig.inputs.is_empty() {
 			None
 		} else {
@@ -1166,7 +1168,7 @@ impl RustdocParser {
 		})
 	}
 
-	fn parse_generic_params(&mut self, generics: &rustdoc_types::Generics) -> Option<Generics> {
+	fn parse_generic_params(&self, generics: &rustdoc_types::Generics) -> Option<Generics> {
 		if generics.params.is_empty() && generics.where_predicates.is_empty() {
 			return None;
 		}
@@ -1212,7 +1214,7 @@ impl RustdocParser {
 	}
 
 	fn parse_where_predicates(
-		&mut self,
+		&self,
 		predicates: &[rustdoc_types::WherePredicate],
 	) -> Result<Vec<Constraint>> {
 		predicates
@@ -1244,7 +1246,7 @@ impl RustdocParser {
 	}
 
 	fn parse_generic_bound_to_constraint(
-		&mut self,
+		&self,
 		param: &str,
 		bound: &rustdoc_types::GenericBound,
 	) -> Result<Constraint> {
@@ -1263,10 +1265,7 @@ impl RustdocParser {
 		}
 	}
 
-	fn parse_trait_bounds(
-		&mut self,
-		bounds: &[rustdoc_types::GenericBound],
-	) -> Result<Vec<TraitRef>> {
+	fn parse_trait_bounds(&self, bounds: &[rustdoc_types::GenericBound]) -> Result<Vec<TraitRef>> {
 		bounds
 			.iter()
 			.filter_map(|bound| match bound {
@@ -1279,7 +1278,7 @@ impl RustdocParser {
 	}
 
 	fn parse_generic_bounds(
-		&mut self,
+		&self,
 		bounds: &[rustdoc_types::GenericBound],
 	) -> Result<Vec<GenericBound>> {
 		bounds
@@ -1297,7 +1296,7 @@ impl RustdocParser {
 			.collect()
 	}
 
-	fn parse_generic_args(&mut self, args: &rustdoc_types::GenericArgs) -> Result<Vec<GenericArg>> {
+	fn parse_generic_args(&self, args: &rustdoc_types::GenericArgs) -> Result<Vec<GenericArg>> {
 		match args {
 			rustdoc_types::GenericArgs::AngleBracketed { args, constraints } => {
 				let mut result = Vec::new();
@@ -1339,50 +1338,5 @@ impl RustdocParser {
 			}
 			rustdoc_types::GenericArgs::ReturnTypeNotation => Ok(vec![]),
 		}
-	}
-
-	fn parse_visibility(&self, vis: &rustdoc_types::Visibility) -> Visibility {
-		match vis {
-			rustdoc_types::Visibility::Public => Visibility::Public,
-			rustdoc_types::Visibility::Default => Visibility::Private,
-			rustdoc_types::Visibility::Crate => Visibility::Internal,
-			rustdoc_types::Visibility::Restricted { .. } => Visibility::Package,
-		}
-	}
-
-	fn get_path(&self, id: &Id) -> Result<Vec<String>> {
-		// Backwards-compatible shim for any call sites still expecting a single path.
-		self.get_primary_path(id)
-	}
-
-	fn id_to_number(&self, id: &Id) -> i64 {
-		// Simple hash of the ID string to generate a consistent number
-		use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
-
-		let mut hasher = DefaultHasher::new();
-		id.0.hash(&mut hasher);
-		hasher.finish() as i64
-	}
-
-	fn generics_to_args(&self, generics: &Generics) -> Option<Vec<GenericArg>> {
-		let mut args = Vec::new();
-
-		for type_param in &generics.type_params {
-			if let Some(default) = &type_param.default_type {
-				args.push(GenericArg::Type(Type::GenericParam(default.name.clone())));
-			} else {
-				args.push(GenericArg::Type(Type::GenericParam(type_param.name.clone())));
-			}
-		}
-
-		for const_param in &generics.const_params {
-			args.push(GenericArg::ConstExpr(ConstExpr { expr: const_param.name.clone() }));
-		}
-
-		for lifetime_param in &generics.lifetime_params {
-			args.push(GenericArg::Lifetime(lifetime_param.name.clone()));
-		}
-
-		if args.is_empty() { None } else { Some(args) }
 	}
 }
