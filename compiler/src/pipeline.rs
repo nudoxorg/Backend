@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, marker::PhantomData};
 
+use gix::ObjectId;
 use ir::entry::{Entry, Index};
+use semver::Version;
 
 /// Entries freshly collected from a language parser — unindexed and
 /// unversioned.
@@ -21,8 +23,16 @@ impl Stage for Collected {
 	type Data = Vec<Entry>;
 }
 
+/// A trait for grounding an external object to the git model
+struct GroundedEntry {
+	commit:  ObjectId,
+	branch:  String,
+	version: Version,
+	object:  Entry,
+}
+
 impl Stage for Versioned {
-	type Data = Vec<Entry>;
+	type Data = Index;
 }
 
 impl Stage for Indexed {

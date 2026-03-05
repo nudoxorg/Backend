@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.100"
 axum = "0.8.8"
 crates_io_api = "0.12.0"
+gix = "0.80.0"
 ir = { workspace = true, features = ["serde"] }
 jiff = { version = "0.2.16", features = ["serde"] }
 lang-types = { version = "0.1.0", features = ["serde"] }
