@@ -11,25 +11,38 @@
 **/.git/
 
 # Deny Nix symlinks and generated files
-**/result{,-*}
+**/result
+**/result-*
 
 # Deny temporary/log files
 **/*.log
 
 # Root level files
-!/{.gitignore,README.md,LICENSE,justfile,default.nix,here,.envrc,.editorconfig}
+!/.gitignore
+!/README.md
+!/LICENSE
+!/justfile
+!/default.nix
+!/here
+!/.envrc
+!/.editorconfig
 
 # Rust / Cargo
-!/**/Cargo.{toml,lock}
+!/**/Cargo.toml
+!/**/Cargo.lock
 !/**/*.rs
 !/**/rustfmt.toml
 
 # Nix
-!/flake.{nix,lock}
+!/flake.nix
+!/flake.lock
 
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
-!/**/{example,out,docs,schema}.json
+!/**/example.json
+!/**/out.json
+!/**/docs.json
+!/**/schema.json
 
 # Documentation
 !/**/*.md
@@ -40,4 +53,3 @@
 
 ## Cue
 !/.config/**/*.cue
-
