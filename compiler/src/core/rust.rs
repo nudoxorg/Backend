@@ -4,7 +4,7 @@ use lang_types::Language;
 use thiserror::Error;
 use url::Url;
 
-use crate::{core::rust_parser::RustdocParser, error::NewDocsError, traits::{self, package, registry::Registry}};
+use crate::{core::rust_parser::RustdocParser, error::NewDocsError, traits::{self, package::{self, AnyPackage}, registry::Registry}};
 
 #[derive(Error, Debug)]
 pub enum ParseError {
@@ -170,12 +170,12 @@ impl package::Package for self::Package {
 		serde_json::to_string(&entries).map_err(|e| NewDocsError::ParsingError(e.to_string()))
 	}
 
-	fn dependencies(&self) -> Result<Vec<Box<dyn package::Package>>, NewDocsError> {
+	fn dependencies(&self) -> Result<Vec<AnyPackage>, NewDocsError> {
 		// Logic to fetch dependencies via crates.io API
 		todo!("Implement dependency resolution")
 	}
 
-	fn dependents(&self) -> Result<Vec<Box<dyn package::Package>>, NewDocsError> {
+	fn dependents(&self) -> Result<Vec<AnyPackage>, NewDocsError> {
 		todo!("Implement reverse dependency resolution")
 	}
 }
@@ -183,46 +183,31 @@ impl package::Package for self::Package {
 impl Registry for Crates {
 	type Error = NewDocsError;
 
-	async fn search_packages(
-		&self,
-		query: &str,
-	) -> Result<Vec<Box<dyn package::Package>>, NewDocsError> {
+	async fn search_packages(&self, query: &str) -> Result<Vec<AnyPackage>, NewDocsError> {
 		let q = CratesQuery::builder().search(query).build();
 		let result =
 			self.client.crates(q).await.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
 
-		Ok(
-			result
-				.crates
-				.into_iter()
-				.map(|c| Box::new(Package::from(c)) as Box<dyn package::Package>)
-				.collect(),
-		)
+		Ok(result.crates.into_iter().map(|c| AnyPackage::Rust(self::Package::from(c))).collect())
 	}
 
-	async fn get_package_by_uuid(
-		&self,
-		uuid: u64,
-	) -> Result<Box<dyn package::Package>, NewDocsError> {
+	async fn get_package_by_uuid(&self, uuid: u64) -> Result<AnyPackage, NewDocsError> {
 		let c = self
 			.client
 			.get_crate(&uuid.to_string())
 			.await
 			.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
-		Ok(Box::new(Package::from(c.crate_data)))
+		Ok(AnyPackage::Rust(Package::from(c.crate_data)))
 	}
 
-	async fn get_packages_by_name(
-		&self,
-		name: &str,
-	) -> Result<Vec<Box<dyn package::Package>>, NewDocsError> {
+	async fn get_packages_by_name(&self, name: &str) -> Result<Vec<AnyPackage>, NewDocsError> {
 		let c =
 			self.client.get_crate(name).await.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
-		Ok(vec![Box::new(self::Package::from(c.crate_data))])
+		Ok(vec![AnyPackage::Rust(self::Package::from(c.crate_data))])
 	}
 
-	async fn get_reference(&self) -> Box<dyn package::Package> {
-		Box::new(self::Package {
+	async fn get_reference(&self) -> AnyPackage {
+		AnyPackage::Rust(self::Package {
 			slug:        "rust-reference".into(),
 			name:        "The Rust Reference".into(),
 			language:    Language::Rust,

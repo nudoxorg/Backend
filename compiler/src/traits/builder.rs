@@ -3,7 +3,7 @@ use std::time::Duration;
 use crates_io_api::{AsyncClient, SyncClient};
 use lang_types::Language;
 
-use crate::{core::rust::{Crates, RPackage}, traits::{package::Package, registry::Registry}};
+use crate::{core::rust::Crates, traits::{package::Package, registry::Registry}};
 
 pub fn get_registry(language: Language) -> impl Registry {
 	// There's a large set of languages we're yet to support unfortunately

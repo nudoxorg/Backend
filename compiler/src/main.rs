@@ -5,7 +5,7 @@ use serde_json::json;
 use terminusdb::{Runner, termdb::{CrateInfo, DocCtx}};
 use tokio::fs::write;
 
-use crate::traits::{builder::get_registry, registry::Registry};
+use crate::traits::{builder::get_registry, package::{AnyPackage, Package}, registry::Registry};
 
 mod core;
 mod error;
@@ -22,7 +22,9 @@ async fn main() {
 	let out = match packages {
 		Ok(mut packages) => {
 			let pkg = packages.remove(0); // Take ownership by removing from vec
-			tokio::task::spawn_blocking(move || pkg.retrieve(VERSION, None)).await.unwrap()
+			match pkg {
+				AnyPackage::Rust(package) => package.retrieve(VERSION, None),
+			}
 		}
 		Err(_other) => todo!(),
 	}
