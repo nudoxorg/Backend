@@ -4,7 +4,7 @@ use lang_types::Language;
 use thiserror::Error;
 use url::Url;
 
-use crate::{core::rust_parser::RustdocParser, error::NewDocsError, traits::{package::Package, registry::Registry}};
+use crate::{core::rust_parser::RustdocParser, error::NewDocsError, traits::{self, package, registry::Registry}};
 
 #[derive(Error, Debug)]
 pub enum ParseError {
@@ -65,7 +65,7 @@ pub struct Crates {
 	pub client: AsyncClient,
 }
 
-pub struct RPackage {
+pub struct Package {
 	pub slug:        String,
 	pub name:        String,
 	pub language:    Language,
@@ -74,7 +74,7 @@ pub struct RPackage {
 	pub description: Option<String>,
 }
 
-impl Default for RPackage {
+impl Default for self::Package {
 	fn default() -> Self {
 		Self {
 			slug:        String::default(),
@@ -87,7 +87,7 @@ impl Default for RPackage {
 	}
 }
 
-impl RPackage {
+impl self::Package {
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR
 	fn generate_ir(&self, version: &Version) -> Result<Vec<Entry>, NewDocsError> {
 		let target_dir = std::env::current_dir()
@@ -131,9 +131,9 @@ impl RPackage {
 	}
 }
 
-impl From<Crate> for RPackage {
+impl From<Crate> for self::Package {
 	fn from(c: Crate) -> Self {
-		RPackage {
+		self::Package {
 			slug:        c.name.to_lowercase(),
 			name:        c.name.clone(),
 			language:    Language::Rust,
@@ -147,7 +147,7 @@ impl From<Crate> for RPackage {
 	}
 }
 
-impl Package for RPackage {
+impl package::Package for self::Package {
 	fn get_available_versions(&self) -> Result<Vec<Version>, NewDocsError> {
 		// In a real implementation, you'd use the crates_io_api client here
 		// For brevity, assuming the versions are fetched via the registry client
@@ -170,12 +170,12 @@ impl Package for RPackage {
 		serde_json::to_string(&entries).map_err(|e| NewDocsError::ParsingError(e.to_string()))
 	}
 
-	fn dependencies(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
+	fn dependencies(&self) -> Result<Vec<Box<dyn package::Package>>, NewDocsError> {
 		// Logic to fetch dependencies via crates.io API
 		todo!("Implement dependency resolution")
 	}
 
-	fn dependents(&self) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
+	fn dependents(&self) -> Result<Vec<Box<dyn package::Package>>, NewDocsError> {
 		todo!("Implement reverse dependency resolution")
 	}
 }
@@ -183,31 +183,46 @@ impl Package for RPackage {
 impl Registry for Crates {
 	type Error = NewDocsError;
 
-	async fn search_packages(&self, query: &str) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
+	async fn search_packages(
+		&self,
+		query: &str,
+	) -> Result<Vec<Box<dyn package::Package>>, NewDocsError> {
 		let q = CratesQuery::builder().search(query).build();
 		let result =
 			self.client.crates(q).await.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
 
-		Ok(result.crates.into_iter().map(|c| Box::new(RPackage::from(c)) as Box<dyn Package>).collect())
+		Ok(
+			result
+				.crates
+				.into_iter()
+				.map(|c| Box::new(Package::from(c)) as Box<dyn package::Package>)
+				.collect(),
+		)
 	}
 
-	async fn get_package_by_uuid(&self, uuid: u64) -> Result<Box<dyn Package>, NewDocsError> {
+	async fn get_package_by_uuid(
+		&self,
+		uuid: u64,
+	) -> Result<Box<dyn package::Package>, NewDocsError> {
 		let c = self
 			.client
 			.get_crate(&uuid.to_string())
 			.await
 			.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
-		Ok(Box::new(RPackage::from(c.crate_data)))
+		Ok(Box::new(Package::from(c.crate_data)))
 	}
 
-	async fn get_packages_by_name(&self, name: &str) -> Result<Vec<Box<dyn Package>>, NewDocsError> {
+	async fn get_packages_by_name(
+		&self,
+		name: &str,
+	) -> Result<Vec<Box<dyn package::Package>>, NewDocsError> {
 		let c =
 			self.client.get_crate(name).await.map_err(|e| NewDocsError::NetworkError(e.to_string()))?;
-		Ok(vec![Box::new(RPackage::from(c.crate_data))])
+		Ok(vec![Box::new(self::Package::from(c.crate_data))])
 	}
 
-	async fn get_reference(&self) -> Box<dyn Package> {
-		Box::new(RPackage {
+	async fn get_reference(&self) -> Box<dyn package::Package> {
+		Box::new(self::Package {
 			slug:        "rust-reference".into(),
 			name:        "The Rust Reference".into(),
 			language:    Language::Rust,

@@ -11,6 +11,6 @@ pub fn get_registry(language: Language) -> impl Registry {
 		Language::Rust => Crates {
 			client: AsyncClient::new("my_bot (help@my_bot.com)", Duration::from_secs(1)).unwrap(),
 		},
-		other => todo!(),
+		_ => todo!(),
 	}
 }

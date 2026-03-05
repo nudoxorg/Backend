@@ -1,4 +1,5 @@
 use ir::entry::Entry;
+use lang_types::Language;
 use semver::Version;
 use serde_json::json;
 use terminusdb::{Runner, termdb::{CrateInfo, DocCtx}};
@@ -15,7 +16,7 @@ const VERSION: Version = Version::new(0, 8, 8);
 
 #[tokio::main]
 async fn main() {
-	let registry = get_registry(lang_types::Language::Rust);
+	let registry = get_registry(Language::Rust);
 	let packages = registry.get_packages_by_name(TEST_PACKAGE).await;
 
 	let out = match packages {
