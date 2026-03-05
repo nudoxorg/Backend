@@ -23,7 +23,8 @@ pub struct ParseContext {
 #[derive(Default)]
 pub struct ParseState {
 	/// Tracks visited items to detect circular dependencies
-	visiting:    HashSet<Id>,
+	visiting: HashSet<Id>,
+
 	/// Cache of parsed entries
 	entry_cache: HashMap<Id, Entry>,
 }

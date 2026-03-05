@@ -7,12 +7,7 @@ use semver::Version;
 use thiserror::Error;
 use url::Url;
 
-use crate::{
-	core::rust_parser::RustdocParser,
-	error::{PackageError, RegistryError},
-	pipeline::{Collected, Ir},
-	traits::{package::Package, registry::Registry},
-};
+use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError}, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
 
 #[derive(Error, Debug)]
 pub enum ParseError {
@@ -157,9 +152,7 @@ impl Package for RustPackage {
 		Ok(Some(vec!["default".into(), "std".into(), "alloc".into()]))
 	}
 
-	fn description(&self) -> Result<Option<String>, Self::Error> {
-		Ok(self.description.clone())
-	}
+	fn description(&self) -> Result<Option<String>, Self::Error> { Ok(self.description.clone()) }
 
 	fn retrieve(
 		&self,
@@ -180,8 +173,8 @@ impl Package for RustPackage {
 }
 
 impl Registry for Crates {
-	type Pkg = RustPackage;
 	type Error = RegistryError;
+	type Pkg = RustPackage;
 
 	async fn search_packages(&self, query: &str) -> Result<Vec<RustPackage>, RegistryError> {
 		let q = CratesQuery::builder().search(query).build();
