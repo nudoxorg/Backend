@@ -1,5 +1,6 @@
-use ir::entry::Entry;
 use semver::Version;
+
+use crate::pipeline::{Collected, Ir};
 
 pub trait Package: Send + Sync + Sized {
 	type Error: std::error::Error + Send + Sync;
@@ -19,10 +20,12 @@ pub trait Package: Send + Sync + Sized {
 	/// Any other packages that rely on this package (none is an empty vec).
 	fn dependents(&self) -> Result<Vec<Self>, Self::Error>;
 
-	/// Generate the IR entries for the given version and optional feature flags.
+	/// Generate the IR for the given version and optional feature flags.
+	///
+	/// Returns an `Ir<Collected>` which must be `.index()`ed before emission.
 	fn retrieve(
 		&self,
 		version: Version,
 		flags: Option<Vec<String>>,
-	) -> Result<Vec<Entry>, Self::Error>;
+	) -> Result<Ir<Collected>, Self::Error>;
 }

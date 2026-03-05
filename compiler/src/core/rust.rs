@@ -10,6 +10,7 @@ use url::Url;
 use crate::{
 	core::rust_parser::RustdocParser,
 	error::{PackageError, RegistryError},
+	pipeline::{Collected, Ir},
 	traits::{package::Package, registry::Registry},
 };
 
@@ -164,8 +165,9 @@ impl Package for RustPackage {
 		&self,
 		version: Version,
 		_flags: Option<Vec<String>>,
-	) -> Result<Vec<Entry>, Self::Error> {
-		self.generate_ir(&version)
+	) -> Result<Ir<Collected>, Self::Error> {
+		let entries = self.generate_ir(&version)?;
+		Ok(Ir::from_entries(entries))
 	}
 
 	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> {

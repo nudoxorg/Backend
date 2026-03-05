@@ -8,6 +8,7 @@ use crate::traits::{builder::get_registry, package::Package, registry::Registry}
 
 mod core;
 mod error;
+mod pipeline;
 mod traits;
 
 const TEST_PACKAGE: &str = "axum";
@@ -18,7 +19,7 @@ async fn main() {
 	let registry = get_registry(Language::Rust);
 	let packages = registry.get_packages_by_name(TEST_PACKAGE).await;
 
-	let entries = match packages {
+	let ir = match packages {
 		Ok(mut packages) => {
 			let pkg = packages.remove(0);
 			pkg.retrieve(VERSION, None)
@@ -27,7 +28,11 @@ async fn main() {
 	}
 	.unwrap();
 
-	let json_out = serde_json::to_string(&entries).unwrap();
+	// Collected → Indexed
+	let index = ir.index().into_index();
+
+	// Serialize the full index for file output
+	let json_out = serde_json::to_string(&index).unwrap();
 
 	let context_object = json!({
 		"@type": "@context",
@@ -42,7 +47,8 @@ async fn main() {
 		context_object,
 	));
 
-	runner.run(entries);
+	// Feed entries from the index into the runner
+	runner.run(index.entries_by_id.into_values());
 
 	let store = runner.into_docs();
 	if let Ok(jsonld_out) = store.into_json_ld_insert() {
