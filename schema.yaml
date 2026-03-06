@@ -373,9 +373,6 @@ classes:
       - members
       - kind
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Kind (abstract base) — structural representation of a symbol
-  # ─────────────────────────────────────────────────────────────────────────
   Kind:
     abstract: true
     description: >-
@@ -385,7 +382,6 @@ classes:
     slots:
       - kind_tag
 
-  # ── Hub / skeleton kinds (no extra payload) ────────────────────────────
   Module:
     is_a: Kind
     description: >-
@@ -442,8 +438,6 @@ classes:
     description: >-
       Event-like symbol (framework / language dependent).
     class_uri: nudox:Event
-
-  # ── Authority kinds (rich payload) ─────────────────────────────────────
 
   Function:
     is_a: Kind

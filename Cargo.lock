@@ -4025,6 +4025,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 1.0.4+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "xilem",
 ]

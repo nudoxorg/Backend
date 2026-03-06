@@ -1,6 +1,7 @@
 use lang_types::Language;
 use semver::Version;
 use serde_json::json;
+use tracing_subscriber::EnvFilter;
 use url::Url;
 
 use crate::{terminusdb::{Runner, termdb::{CrateInfo, DocCtx}, upload::{TerminusConfig, upload_documents, upload_schema}}, traits::{builder::get_registry, package::Package, registry::Registry}};
@@ -17,6 +18,12 @@ const VERSION: Version = Version::new(0, 8, 8);
 
 #[tokio::main]
 async fn main() {
+	tracing_subscriber::fmt()
+    .with_env_filter(EnvFilter::new("debug"))
+    .with_target(true)  // temporarily enable to see the actual targets
+    .compact()
+    .init();
+
 	let config = TerminusConfig {
 		endpoint: Url::parse("http://54.159.188.191:6363").unwrap(),
 		user:     "admin".into(),
@@ -59,9 +66,10 @@ async fn main() {
 	let store = runner.into_docs();
 
 	// Upload schema first, then instance documents
-	let schema_json: Vec<serde_json::Value> =
-		serde_json::from_str(include_str!("../schema.json")).unwrap();
-	if let Err(e) = upload_schema(&config, schema_json).await {
+	let schema_json: serde_json::Value =
+		serde_json::from_str(include_str!("../../schema.jsonld")).unwrap();
+
+	if let Err(e) = upload_schema(&config, vec![schema_json]).await {
 		eprintln!("Schema upload failed: {e}");
 	}
 
