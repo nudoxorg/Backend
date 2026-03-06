@@ -1240,7 +1240,15 @@ impl ParseContext {
 						bound:      TypeExpr { name: format!("{:?}", rhs), args: vec![] },
 					}])
 				}
-				rustdoc_types::WherePredicate::LifetimePredicate { lifetime: _, outlives: _ } => todo!(),
+				rustdoc_types::WherePredicate::LifetimePredicate { lifetime, outlives } => {
+					Ok(outlives
+						.iter()
+						.map(|o| Constraint::LifetimeBound {
+							shorter: lifetime.clone(),
+							longer:  o.clone(),
+						})
+						.collect())
+				}
 			})
 			.collect::<Result<Vec<Vec<_>>>>()
 			.map(|v| v.into_iter().flatten().collect())
@@ -1292,7 +1300,9 @@ impl ParseContext {
 				rustdoc_types::GenericBound::Outlives(lifetime) => {
 					Ok(GenericBound::Lifetime(lifetime.clone()))
 				}
-				rustdoc_types::GenericBound::Use(_precise_capturing_args) => todo!(),
+				rustdoc_types::GenericBound::Use(_) => {
+					Ok(GenericBound::Trait(TraitRef { name: "Use".into(), args: vec![] }))
+				}
 			})
 			.collect()
 	}
