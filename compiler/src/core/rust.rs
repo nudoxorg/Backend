@@ -1,6 +1,7 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use crates_io_api::{AsyncClient, Crate, CratesQuery};
+use gix::{clone, progress::Discard, remote};
 use ir::entry::Entry;
 use lang_types::Language;
 use semver::Version;
@@ -161,7 +162,21 @@ impl Package for RustPackage {
 		version: Version,
 		_flags: Option<Vec<String>>,
 	) -> Result<Ir<Collected>, Self::Error> {
-		let entries = self.generate_ir(&version)?;
+		// Clone the repository
+		let mut fetch_handle = gix::prepare_clone(self.source.to_string(), "./out")
+			.unwrap()
+			.with_fetch_options(remote::ref_map::Options::default());
+
+		// Get the repository, ignoring the progress object, and monitoring for
+		// interruptions, then stripping the returned Outcome object, taking only
+		// repository.
+		let (mut repository, _) =
+			fetch_handle.fetch_then_checkout(Discard, &gix::interrupt::IS_INTERRUPTED).unwrap();
+
+		// Checkout the tree into disk, again ignoring details for streamlined process
+		let (repo, _) = repository.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED).unwrap();
+
+		self.generate_ir(&version)
 	}
 
 	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> {
