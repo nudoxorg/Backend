@@ -9,7 +9,7 @@ use semver::Version;
 use thiserror::Error;
 use url::Url;
 
-use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError}, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
+use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
 
 #[derive(Error, Debug)]
 pub enum ParseError {
@@ -166,20 +166,14 @@ impl Package for RustPackage {
 		_flags: Option<Vec<String>>,
 	) -> Result<Ir<Collected>, Self::Error> {
 		let output_directory = PathBuf::from("out");
-
 		let repository = crate::git::clone_repository(&output_directory, &self.source);
 
-		// Gix doesn't yet have a good API for checkouts, so we resort to the Git CLI
-		Command::new("git")
-    .args(["checkout", "axum-v0.8.7"])  // or a commit hash
-    .current_dir(&output_directory)
-    .status()?;
+		let target_oid = find_commit_for_version(&repository, &version, &self.name).unwrap();
 
-		let metadata = MetadataCommand::new()
-			.manifest_path(output_directory.join("./Cargo.toml"))
-			.features(CargoOpt::AllFeatures)
-			.exec()
-			.unwrap();
+		Command::new("git")
+			.args(["checkout", &target_oid.to_hex().to_string()])
+			.current_dir(&output_directory)
+			.status()?;
 
 		self.generate_ir(&output_directory)
 	}
