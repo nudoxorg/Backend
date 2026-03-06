@@ -19,8 +19,8 @@ const VERSION: Version = Version::new(0, 8, 8);
 async fn main() {
 	let config = TerminusConfig {
 		endpoint: Url::parse("http://54.159.188.191:6363").unwrap(),
-		user:     "onyx".into(),
-		password: "B0tbN1ght^".into(),
+		user:     "admin".into(),
+		password: "root".into(),
 		org:      "nudox".into(),
 		db:       "main".into(),
 	};
