@@ -5,6 +5,7 @@ pub mod upload;
 use ir::{entry::Entry, kind::Kind};
 use serde_json::{Map, Value, json};
 use termdb::{DocCtx, DocStore, EmitJsonLD, URI};
+use tracing::{debug, instrument, warn};
 
 use crate::terminusdb::{ld::LDKind, termdb::UriOps};
 
@@ -56,9 +57,9 @@ impl EmitJsonLD for Entry {
 		let value = Value::Object(obj);
 
 		match docs.insert(entry_uri.clone(), value) {
-			Ok(_uri) => { /*do nothing*/ }
+			Ok(_uri) => {}
 			Err(uri) => {
-				eprintln!("Error with Insertion of {uri}");
+				warn!(uri = %uri, "duplicate entry insertion with differing value");
 			}
 		}
 		// call EmitJsonLD for the Kind Associated with this entry
@@ -79,20 +80,18 @@ impl EmitJsonLD for Kind {
 		// Shouldnt fail to serialize
 		if let Ok(mut emitted_value) = serde_json::to_value(to_emit) {
 			let obj = emitted_value.as_object_mut().expect("");
-			// inject context object
 			// TODO store the context at the DocStore root level.. Not on each document,
 			// only when writing (not when being stored in the BtreeMap)
 			obj.insert("@context".into(), ctx.context().clone());
 
-			// inject context into it
 			match docs.insert(emitted_uri.clone(), emitted_value) {
-				Ok(_uri) => { /*do nothing*/ }
+				Ok(_uri) => {}
 				Err(uri) => {
-					eprintln!("Error with Insertion of {uri}");
+					warn!(uri = %uri, "duplicate kind insertion with differing value");
 				}
 			}
 		} else {
-			eprintln!("Failed to Serialize {}", &emitted_uri);
+			warn!(uri = %emitted_uri, "failed to serialize kind");
 		}
 
 		emitted_uri
@@ -107,13 +106,13 @@ pub struct Runner {
 impl Runner {
 	pub fn new(ctx: DocCtx) -> Self { Self { ctx, docs: DocStore::new() } }
 
-	// Entry is application code
+	#[instrument(skip_all, name = "runner")]
 	pub fn run<I>(&mut self, items: I)
 	where
-		// here
 		I: IntoIterator<Item = Entry>,
 	{
 		for entry in items {
+			debug!(name = %entry.name, "emitting entry");
 			let _ = entry.emit(&mut self.ctx, &mut self.docs);
 		}
 	}

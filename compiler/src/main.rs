@@ -1,6 +1,7 @@
 use lang_types::Language;
 use semver::Version;
 use serde_json::json;
+use tracing::{error, info, info_span};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
@@ -45,7 +46,7 @@ async fn main() {
 	.unwrap();
 
 	// Collected → Indexed
-	let index = ir.index().into_index();
+	let index = info_span!("indexing", package = TEST_PACKAGE).in_scope(|| ir.index().into_index());
 
 	let context_object = json!({
 		"@type": "@context",
@@ -64,16 +65,17 @@ async fn main() {
 	runner.run(index.entries_by_id.into_values());
 
 	let store = runner.into_docs();
+	info!(documents = store.docs.len(), "emission complete");
 
 	// Upload schema first, then instance documents
 	let schema_json: serde_json::Value =
 		serde_json::from_str(include_str!("../../schema.jsonld")).unwrap();
 
 	if let Err(e) = upload_schema(&config, vec![schema_json]).await {
-		eprintln!("Schema upload failed: {e}");
+		error!(error = %e, "schema upload failed");
 	}
 
 	if let Err(e) = upload_documents(&config, store).await {
-		eprintln!("Document upload failed: {e}");
+		error!(error = %e, "document upload failed");
 	}
 }

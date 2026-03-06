@@ -1,5 +1,6 @@
 use serde_json::Value;
 use terminusdb_client::{BranchSpec, DocumentInsertArgs, TerminusDBHttpClient};
+use tracing::{debug, info, instrument, warn};
 use url::Url;
 
 use super::termdb::DocStore;
@@ -18,6 +19,7 @@ pub struct TerminusConfig {
 /// This inserts the raw JSON-LD values directly using PUT with `create=true`
 /// (upsert semantics), matching the existing JSON-LD format produced by the
 /// `Runner`.
+#[instrument(skip_all, fields(org = %config.org, db = %config.db))]
 pub async fn upload_documents(config: &TerminusConfig, store: DocStore) -> anyhow::Result<()> {
 	let client = TerminusDBHttpClient::new_with_database(
 		config.endpoint.clone(),
@@ -30,11 +32,11 @@ pub async fn upload_documents(config: &TerminusConfig, store: DocStore) -> anyho
 
 	let documents = store.into_documents();
 	if documents.is_empty() {
-		eprintln!("No documents to upload");
+		warn!("no documents to upload");
 		return Ok(());
 	}
 
-	eprintln!("Uploading {} documents to {}/{}", documents.len(), config.org, config.db);
+	info!(count = documents.len(), "uploading documents");
 
 	let spec = BranchSpec::new(&config.db);
 	let args = DocumentInsertArgs {
@@ -49,7 +51,7 @@ pub async fn upload_documents(config: &TerminusConfig, store: DocStore) -> anyho
 	let result = client.insert_documents(doc_refs, args).await?;
 
 	if let Some(commit_id) = result.extract_commit_id() {
-		eprintln!("Upload committed: {commit_id}");
+		info!(commit = %commit_id, "upload committed");
 	}
 
 	let mut inserted = 0usize;
@@ -60,7 +62,7 @@ pub async fn upload_documents(config: &TerminusConfig, store: DocStore) -> anyho
 			terminusdb_client::TDBInsertInstanceResult::AlreadyExists(_) => updated += 1,
 		}
 	}
-	eprintln!("Result: {inserted} inserted, {updated} updated");
+	debug!(inserted, updated, "upload result");
 
 	Ok(())
 }
@@ -69,6 +71,7 @@ pub async fn upload_documents(config: &TerminusConfig, store: DocStore) -> anyho
 ///
 /// The schema JSON is expected to be the array of class/context definitions
 /// matching the TerminusDB schema format (e.g. from `schema.json`).
+#[instrument(skip_all, fields(org = %config.org, db = %config.db))]
 pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> anyhow::Result<()> {
 	let client = TerminusDBHttpClient::new_with_database(
 		config.endpoint.clone(),
@@ -80,11 +83,11 @@ pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> 
 	.await?;
 
 	if schema_docs.is_empty() {
-		eprintln!("No schema documents to upload");
+		warn!("no schema documents to upload");
 		return Ok(());
 	}
 
-	eprintln!("Uploading {} schema documents to {}/{}", schema_docs.len(), config.org, config.db);
+	info!(count = schema_docs.len(), "uploading schema");
 
 	let spec = BranchSpec::new(&config.db);
 	let args = DocumentInsertArgs {
@@ -100,7 +103,7 @@ pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> 
 	let result = client.insert_documents(doc_refs, args).await?;
 
 	if let Some(commit_id) = result.extract_commit_id() {
-		eprintln!("Schema upload committed: {commit_id}");
+		info!(commit = %commit_id, "schema upload committed");
 	}
 
 	Ok(())

@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
-use gix::{Repository, progress::Discard, remote, trace::warn};
+use gix::{Repository, progress::Discard, remote};
+use tracing::{debug, instrument, warn};
 use url::Url;
 
+#[instrument(skip_all, fields(remote = %remote))]
 pub fn clone_repository(out_path: &PathBuf, remote: &Url) -> Repository {
 	// Clone the repository
 	let mut fetch_handle = gix::prepare_clone(remote.to_string(), &out_path)
@@ -21,6 +23,7 @@ pub fn clone_repository(out_path: &PathBuf, remote: &Url) -> Repository {
 
 /// Walk newest→oldest. First commit whose Cargo.toml has `package_name` at
 /// `target_version` is the latest commit for that version.
+#[instrument(skip(repo), fields(package = %package_name, version = %target_version))]
 pub fn find_commit_for_version(
 	repo: &gix::Repository,
 	target_version: &semver::Version,
@@ -36,6 +39,7 @@ pub fn find_commit_for_version(
 
 		match extract_package_version(repo, &tree, package_name) {
 			Ok(Some(v)) if &v == target_version => {
+				debug!(commit = %commit_id.id(), "found matching commit");
 				return Some(commit_id.id().detach());
 			}
 			_ => continue,

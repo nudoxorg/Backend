@@ -75,6 +75,7 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use ir::kind::Kind;
 use serde_json::{Value, json};
+use tracing::warn;
 
 pub type URI = String;
 
@@ -89,15 +90,10 @@ impl DocStore {
 
 	pub fn insert(&mut self, uri: URI, value: Value) -> Result<URI, URI> {
 		if let Some(v) = self.docs.insert(uri.clone(), value.clone()) {
-			// this means that there was an item alrady there
-			// compare for identicals
 			if v == value {
-				// value was the same, this is Fine
 				Ok(uri)
 			} else {
-				eprintln!(
-					"Attempted insert of non-identical values to same URI: {uri},\nOriginal Value: {v}\nNewValue: {value}"
-				);
+				warn!(uri = %uri, "non-identical values inserted at same URI");
 				Err(uri)
 			}
 		} else {

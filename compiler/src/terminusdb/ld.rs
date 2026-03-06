@@ -1,6 +1,7 @@
 use ir::{kind::{Kind, Visibility}, record::RecordKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tracing::warn;
 
 use crate::terminusdb::termdb::{DocCtx, URI, UriOps};
 
@@ -56,9 +57,7 @@ impl LDKind {
 			inheritor: match LDInheritor::try_from(kind) {
 				Ok(i) => i,
 				Err(e) => {
-					// TODO log error -> this shouldnt happen
-					dbg!(e);
-					// and just set to empty
+					warn!(error = ?e, "kind→LDInheritor conversion failed, defaulting to None");
 					LDInheritor::None
 				}
 			},

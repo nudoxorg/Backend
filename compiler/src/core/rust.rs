@@ -4,6 +4,7 @@ use crates_io_api::{AsyncClient, Crate, CratesQuery};
 use lang_types::Language;
 use semver::Version;
 use thiserror::Error;
+use tracing::{debug, info, instrument};
 use url::Url;
 
 use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
@@ -90,6 +91,7 @@ impl Default for RustPackage {
 impl RustPackage {
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
 	/// Takes an input of `code` which is the location of the source code on disk
+	#[instrument(skip_all, fields(package = %self.name))]
 	fn generate_ir(&self, code: &PathBuf) -> Result<Ir<Collected>, PackageError> {
 		let target_dir = code.join("target").join("doc_json");
 
@@ -120,11 +122,13 @@ impl RustPackage {
 		let json_content = fs::read_to_string(&json_path)?;
 
 		let rustdoc_crate: rustdoc_types::Crate = serde_json::from_str(&json_content)?;
+		debug!("rustdoc JSON parsed");
 
 		let mut parser =
 			RustdocParser::new(rustdoc_crate).map_err(|e| PackageError::Parse(e.to_string()))?;
 
 		let parse_result = parser.parse_crate().map_err(|e| PackageError::Parse(e.to_string()))?;
+		info!(entries = parse_result.len(), "IR generation complete");
 
 		Ok(Ir::from_entries(parse_result))
 	}
@@ -159,6 +163,7 @@ impl Package for RustPackage {
 
 	fn description(&self) -> Result<Option<String>, Self::Error> { Ok(self.description.clone()) }
 
+	#[instrument(skip(self, _flags), fields(package = %self.name, version = %version))]
 	fn retrieve(
 		&self,
 		version: Version,
