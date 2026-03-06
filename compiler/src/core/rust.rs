@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf, process::Command};
 
+use cargo_metadata::{CargoOpt, MetadataCommand};
 use crates_io_api::{AsyncClient, Crate, CratesQuery};
 use gix::{clone, progress::Discard, remote};
 use ir::entry::Entry;
@@ -173,6 +174,12 @@ impl Package for RustPackage {
     .args(["checkout", "axum-v0.8.7"])  // or a commit hash
     .current_dir(&output_directory)
     .status()?;
+
+		let metadata = MetadataCommand::new()
+			.manifest_path(output_directory.join("./Cargo.toml"))
+			.features(CargoOpt::AllFeatures)
+			.exec()
+			.unwrap();
 
 		self.generate_ir(&output_directory)
 	}
