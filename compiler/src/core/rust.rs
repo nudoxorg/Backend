@@ -89,8 +89,8 @@ impl Default for RustPackage {
 
 impl RustPackage {
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
-	fn generate_ir(&self, version: &Version) -> Result<Ir<Collected>, PackageError> {
-		let target_dir = std::env::current_dir()?.join("target").join("doc_json");
+	fn generate_ir(&self, code: &PathBuf) -> Result<Ir<Collected>, PackageError> {
+		let target_dir = code.join("target").join("doc_json");
 
 		if !target_dir.exists() {
 			fs::create_dir_all(&target_dir)?;
@@ -105,6 +105,7 @@ impl RustPackage {
 			.arg("unstable-options")
 			.arg("--output-format")
 			.arg("json")
+			.current_dir(&code)
 			.status()
 			.map_err(|e| PackageError::Process(format!("Failed to run cargo: {e}")))?;
 
@@ -113,7 +114,7 @@ impl RustPackage {
 		}
 
 		let json_path =
-			PathBuf::from("target/doc").join(format!("{}.json", self.name.replace('-', "_")));
+			code.join("target").join("doc").join(format!("{}.json", self.name.replace('-', "_")));
 
 		let json_content = fs::read_to_string(&json_path)?;
 
@@ -162,8 +163,10 @@ impl Package for RustPackage {
 		version: Version,
 		_flags: Option<Vec<String>>,
 	) -> Result<Ir<Collected>, Self::Error> {
+		let out_path = PathBuf::from("out");
+
 		// Clone the repository
-		let mut fetch_handle = gix::prepare_clone(self.source.to_string(), "./out")
+		let mut fetch_handle = gix::prepare_clone(self.source.to_string(), &out_path)
 			.unwrap()
 			.with_fetch_options(remote::ref_map::Options::default());
 
@@ -176,7 +179,9 @@ impl Package for RustPackage {
 		// Checkout the tree into disk, again ignoring details for streamlined process
 		let (repo, _) = repository.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED).unwrap();
 
-		self.generate_ir(&version)
+		dbg!("here we are");
+
+		self.generate_ir(&out_path)
 	}
 
 	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> {
