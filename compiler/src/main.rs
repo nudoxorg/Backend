@@ -1,24 +1,19 @@
+use color_eyre::eyre::{self, WrapErr};
 use lang_types::Language;
+use nudox::{terminusdb::{Runner, termdb::{CrateInfo, DocCtx}, upload::{TerminusConfig, upload_documents, upload_schema}}, traits::{builder::get_registry, package::Package, registry::Registry}};
 use semver::Version;
 use serde_json::json;
-use tracing::{error, info, info_span};
+use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 use url::Url;
-
-use crate::{terminusdb::{Runner, termdb::{CrateInfo, DocCtx}, upload::{TerminusConfig, upload_documents, upload_schema}}, traits::{builder::get_registry, package::Package, registry::Registry}};
-
-mod core;
-mod error;
-pub(crate) mod git;
-mod pipeline;
-mod terminusdb;
-mod traits;
 
 const TEST_PACKAGE: &str = "axum";
 const VERSION: Version = Version::new(0, 8, 8);
 
 #[tokio::main]
-async fn main() {
+async fn main() -> eyre::Result<()> {
+	color_eyre::install()?;
+
 	tracing_subscriber::fmt()
     .with_env_filter(EnvFilter::new("debug"))
     .with_target(true)  // temporarily enable to see the actual targets
@@ -34,26 +29,15 @@ async fn main() {
 	};
 
 	let registry = get_registry(Language::Rust);
-	let packages = registry.get_packages_by_name(TEST_PACKAGE).await;
+	let mut packages = registry
+		.get_packages_by_name(TEST_PACKAGE)
+		.await
+		.wrap_err_with(|| format!("registry lookup failed for `{TEST_PACKAGE}`"))?;
 
-	let ir = match packages {
-		Ok(mut packages) => {
-			let pkg = packages.remove(0);
-			pkg.retrieve(VERSION, None)
-		}
-		Err(e) => {
-			error!(error = %e, package = TEST_PACKAGE, "registry lookup failed");
-			return;
-		}
-	};
-
-	let ir = match ir {
-		Ok(ir) => ir,
-		Err(e) => {
-			error!(error = %e, package = TEST_PACKAGE, "IR retrieval failed");
-			return;
-		}
-	};
+	let pkg = packages.remove(0);
+	let ir = pkg
+		.retrieve(VERSION, None)
+		.wrap_err_with(|| format!("IR retrieval failed for `{TEST_PACKAGE}`"))?;
 
 	// Collected → Indexed
 	let index = info_span!("indexing", package = TEST_PACKAGE).in_scope(|| ir.index().into_index());
@@ -81,11 +65,15 @@ async fn main() {
 	let schema_json: serde_json::Value =
 		serde_json::from_str(include_str!("../../schema.jsonld")).unwrap();
 
-	if let Err(e) = upload_schema(&config, vec![schema_json]).await {
-		error!(error = %e, "schema upload failed");
-	}
+	upload_schema(&config, vec![schema_json])
+		.await
+		.map_err(|e| eyre::eyre!(e))
+		.wrap_err("schema upload failed")?;
 
-	if let Err(e) = upload_documents(&config, store).await {
-		error!(error = %e, "document upload failed");
-	}
+	upload_documents(&config, store)
+		.await
+		.map_err(|e| eyre::eyre!(e))
+		.wrap_err("document upload failed")?;
+
+	Ok(())
 }
