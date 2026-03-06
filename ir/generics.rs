@@ -1,5 +1,3 @@
-#[cfg(feature = "facet")]
-use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +6,6 @@ use crate::ty::Type;
 /// A universal representation of generics across languages.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Generics {
 	pub type_params:     Vec<TypeParam>,
 	pub const_params:    Vec<ConstParam>,
@@ -20,7 +17,6 @@ pub struct Generics {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct TypeParam {
 	pub name:         String,
 	pub kind:         TypeKind,
@@ -30,7 +26,6 @@ pub struct TypeParam {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum TypeKind {
 	Type,
 	HigherKinded,
@@ -41,7 +36,6 @@ pub enum TypeKind {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct ConstParam {
 	pub name:          String,
 	pub ty:            TypeExpr,
@@ -52,7 +46,6 @@ pub struct ConstParam {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct LifetimeParam {
 	pub name:     String,
 	pub variance: Variance,
@@ -62,7 +55,6 @@ pub struct LifetimeParam {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum Constraint {
 	TraitBound { param: String, trait_ref: TraitRef },
 	AssociatedTypeBound { param: String, assoc_name: String, bound: TypeExpr },
@@ -76,7 +68,6 @@ pub enum Constraint {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct TraitRef {
 	pub name: String,
 	pub args: Vec<TypeExpr>,
@@ -84,7 +75,6 @@ pub struct TraitRef {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum Variance {
 	Covariant,
 	Contravariant,
@@ -94,7 +84,6 @@ pub enum Variance {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct TypeExpr {
 	pub name: String,
 	pub args: Vec<TypeExpr>,
@@ -102,21 +91,18 @@ pub struct TypeExpr {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct ConstExpr {
 	pub expr: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct KindExpr {
 	pub signature: String, // e.g. "* -> *"
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct PredicateExpr {
 	pub expr: String, // logical expression, e.g. "T: Clone && U: Copy"
 }
@@ -124,7 +110,6 @@ pub struct PredicateExpr {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))] // Example: Tagged enum for Serde
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum GenericArg {
 	#[cfg_attr(feature = "serde", serde(rename = "type"))]
 	Type(Type),

@@ -1,5 +1,3 @@
-#[cfg(feature = "facet")]
-use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +6,6 @@ use crate::{generics::ConstExpr, ty::Type};
 /// Represents a parameter in a function or method.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Parameter {
 	pub name:          String,
 	pub ty:            Option<Type>, // Renamed 'type' to 'ty'
@@ -19,7 +16,6 @@ pub struct Parameter {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum ParameterAttribute {
 	Inout,
 	Mutable,

@@ -1,5 +1,3 @@
-#[cfg(feature = "facet")]
-use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +10,6 @@ use crate::{function::Function, generics::{ConstExpr, Constraint, Generics, Trai
 /// (Java/C#/TypeScript), etc.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct TraitDef {
 	/// The name of the trait/protocol/interface
 	pub name: String,
@@ -50,7 +47,6 @@ pub struct TraitDef {
 /// Associated types in traits/protocols
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct AssociatedType {
 	/// Name of the associated type
 	pub name: String,
@@ -68,7 +64,6 @@ pub struct AssociatedType {
 // Assuming GenericBound is a new enum/struct
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum GenericBound {
 	Trait(TraitRef),
 	Lifetime(String),
@@ -79,7 +74,6 @@ pub enum GenericBound {
 /// A method signature within a trait/protocol/interface
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct TraitMethod {
 	/// Method name
 	pub name: String,
@@ -109,7 +103,6 @@ pub struct TraitMethod {
 /// Receiver/self parameter kind
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum ReceiverKind {
 	/// Takes ownership (self in Rust, consuming in Swift)
 	Owned,
@@ -128,7 +121,6 @@ pub enum ReceiverKind {
 /// A constant/static member in a trait
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct TraitConstant {
 	/// Constant name
 	pub name: String,
@@ -148,7 +140,6 @@ pub struct TraitConstant {
 /// Attributes that can be applied to traits
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum TraitAttribute {
 	/// Marker trait with no methods (e.g., Send, Sync in Rust)
 	Marker,
@@ -172,7 +163,6 @@ pub enum TraitAttribute {
 /// Represents an implementation of a trait for a type
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct TraitImpl {
 	/// The trait being implemented
 	pub tr: TraitRef,
@@ -214,7 +204,6 @@ pub struct TraitImpl {
 /// Implementation of an associated type
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct AssociatedTypeImpl {
 	/// Name of the associated type
 	pub name: String,

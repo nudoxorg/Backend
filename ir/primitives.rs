@@ -1,5 +1,3 @@
-#[cfg(feature = "facet")]
-use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -7,7 +5,6 @@ type Float16 = f32; // Placeholder
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum Primitive {
 	Int8(Option<i8>),
 	Int16(Option<i16>),

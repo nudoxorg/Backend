@@ -1,5 +1,3 @@
-#[cfg(feature = "facet")]
-use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +8,6 @@ use crate::{generics::{GenericArg, TraitRef, TypeParam}, parameter::Parameter, p
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))] // Example for tagged enum
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum Type {
 	ResolvedPath(Path),
 	DynTrait(DynTrait),
@@ -33,7 +30,6 @@ pub enum Type {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Path {
 	pub path:         String,
 	pub generic_args: Option<Vec<GenericArg>>,
@@ -41,7 +37,6 @@ pub struct Path {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct QualifiedPath {
 	pub name:              String,
 	pub generic_arguments: Option<Vec<GenericArg>>,
@@ -50,7 +45,6 @@ pub struct QualifiedPath {
 }
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct DynTrait {
 	pub traits:   Vec<PolyTrait>,
 	pub lifetime: Option<String>,
@@ -60,7 +54,6 @@ pub struct DynTrait {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct FunctionPointer {
 	pub inputs:         Option<Vec<Parameter>>,
 	pub outputs:        Option<Vec<Parameter>>,
@@ -72,7 +65,6 @@ pub struct FunctionPointer {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct PolyTrait {
 	pub tr:        TraitRef,
 	pub lifetimes: Vec<String>,

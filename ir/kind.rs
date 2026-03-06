@@ -1,11 +1,8 @@
-#[cfg(feature = "facet")]
-use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum Visibility {
 	#[cfg_attr(feature = "serde", serde(rename = "public"))]
 	Public,
@@ -24,7 +21,6 @@ pub enum Visibility {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kind", content = "value"))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum Kind {
 	/// A namespace, package, or module.
 	Module,

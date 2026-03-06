@@ -1,5 +1,3 @@
-#[cfg(feature = "facet")]
-use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -7,7 +5,6 @@ use crate::{generics::{ConstExpr, GenericArg}, kind::Visibility, ty::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Record {
 	/// Optional name of the record (e.g., "User", "Point").
 	/// Anonymous records (like tuples or JS objects) may omit this.
@@ -28,7 +25,6 @@ pub struct Record {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 #[serde(rename_all_fields = "snake_case")]
 pub enum RecordKind {
 	/// A record with no fields (unit struct, empty object).
@@ -43,7 +39,6 @@ pub enum RecordKind {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Field {
 	/// Field name (None if tuple-like).
 	pub name: Option<String>,
@@ -64,7 +59,6 @@ pub struct Field {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet), repr(C))]
 pub enum FieldAttribute {
 	Mutable,
 	Optional,
@@ -74,7 +68,6 @@ pub enum FieldAttribute {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct SumVariant {
 	/// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
 	pub name:  String,

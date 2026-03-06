@@ -1,7 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-#[cfg(feature = "facet")]
-use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +8,6 @@ use crate::kind::{Kind, Visibility};
 /// A representation of a documented API entry.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Entry {
 	// Required
 	pub name:       String, // Semantic name for the entry (std::time, or to_string)
@@ -31,7 +28,6 @@ pub struct Entry {
 /// TerminusDB integration is much smoother with this
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct Index {
 	pub root_ids:      Vec<i64>,
 	pub entries_by_id: HashMap<i64, Entry>,
@@ -40,7 +36,6 @@ pub struct Index {
 /// Reference to Entry with ID and path if an API entry used in members
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "facet", derive(Facet))]
 pub struct EntryRef {
 	pub id:   i64,
 	pub path: Vec<String>,
