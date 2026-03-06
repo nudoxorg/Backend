@@ -53,3 +53,5 @@
 
 ## Cue
 !/.config/**/*.cue
+
+/.direnv
