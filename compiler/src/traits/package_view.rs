@@ -19,5 +19,5 @@ pub trait PackageView {
 	fn links(&self) -> &HashMap<String, Url>;
 
 	// Builds the pages and sends them off to mongo?
-	async fn build_pages(&self) -> Result<(), anyhow::Error>;
+	fn build_pages(&self) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send;
 }

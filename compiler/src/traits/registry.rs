@@ -7,14 +7,14 @@ pub trait Registry: Send + Sync {
 
 	/// Search all available packages for a specific query and return any hits.
 	/// No hits are represented as an empty vec.
-	async fn search_packages(&self, query: &str) -> Result<Vec<Self::Pkg>, Self::Error>;
+	fn search_packages(&self, query: &str) -> impl std::future::Future<Output = Result<Vec<Self::Pkg>, Self::Error>> + Send;
 
 	/// Find a specific package by ID.
-	async fn get_package_by_id(&self, id: u64) -> Result<Self::Pkg, Self::Error>;
+	fn get_package_by_id(&self, id: u64) -> impl std::future::Future<Output = Result<Self::Pkg, Self::Error>> + Send;
 
 	/// Find all packages that share a specific name.
-	async fn get_packages_by_name(&self, name: &str) -> Result<Vec<Self::Pkg>, Self::Error>;
+	fn get_packages_by_name(&self, name: &str) -> impl std::future::Future<Output = Result<Vec<Self::Pkg>, Self::Error>> + Send;
 
 	/// Return the package reflecting the language reference.
-	async fn get_reference(&self) -> Self::Pkg;
+	fn get_reference(&self) -> impl std::future::Future<Output = Self::Pkg> + Send;
 }
