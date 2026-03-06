@@ -100,3 +100,31 @@ impl IntoIterator for Ir<Indexed> {
 
 	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_id.into_values() }
 }
+
+impl Ir<Versioned> {
+	/// Look up an entry by its ID.
+	pub fn get(&self, id: i64) -> Option<&Entry> { self.data.entries_by_id.get(&id) }
+
+	/// The root entry IDs.
+	pub fn root_ids(&self) -> &[i64] { &self.data.root_ids }
+
+	/// Iterate over all versioned entries (by reference).
+	pub fn iter(&self) -> impl Iterator<Item = &Entry> { self.data.entries_by_id.values() }
+
+	/// Number of versioned entries.
+	pub fn len(&self) -> usize { self.data.entries_by_id.len() }
+
+	pub fn is_empty(&self) -> bool { self.data.entries_by_id.is_empty() }
+
+	/// Consume the IR and return the underlying `Index`.
+	pub fn into_index(self) -> Index { self.data }
+}
+
+/// Allows `Ir<Versioned>` to be fed directly to anything accepting
+/// `IntoIterator<Item = Entry>` (e.g. `Runner::run`).
+impl IntoIterator for Ir<Versioned> {
+	type IntoIter = std::collections::hash_map::IntoValues<i64, Entry>;
+	type Item = Entry;
+
+	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_id.into_values() }
+}
