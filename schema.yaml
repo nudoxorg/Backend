@@ -354,15 +354,8 @@ slots:
     required: true
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Classes
-# ═══════════════════════════════════════════════════════════════════════════════
-
 classes:
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Entry — the symbol metadata / navigation node
-  # ─────────────────────────────────────────────────────────────────────────
   Entry:
     tree_root: true
     description: >-
@@ -544,10 +537,6 @@ classes:
     class_uri: nudox:TypeAlias
     slots:
       - aliased_type
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Supporting / inline classes  (previously sys:JSON blobs)
-  # ─────────────────────────────────────────────────────────────────────────
 
   Parameter:
     description: A parameter in a function or method signature.
