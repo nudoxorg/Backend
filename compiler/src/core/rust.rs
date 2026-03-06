@@ -89,6 +89,7 @@ impl Default for RustPackage {
 
 impl RustPackage {
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
+	/// Takes an input of `code` which is the location of the source code on disk
 	fn generate_ir(&self, code: &PathBuf) -> Result<Ir<Collected>, PackageError> {
 		let target_dir = code.join("target").join("doc_json");
 
@@ -163,25 +164,17 @@ impl Package for RustPackage {
 		version: Version,
 		_flags: Option<Vec<String>>,
 	) -> Result<Ir<Collected>, Self::Error> {
-		let out_path = PathBuf::from("out");
+		let output_directory = PathBuf::from("out");
 
-		// Clone the repository
-		let mut fetch_handle = gix::prepare_clone(self.source.to_string(), &out_path)
-			.unwrap()
-			.with_fetch_options(remote::ref_map::Options::default());
+		let repository = crate::git::clone_repository(&output_directory, &self.source);
 
-		// Get the repository, ignoring the progress object, and monitoring for
-		// interruptions, then stripping the returned Outcome object, taking only
-		// repository.
-		let (mut repository, _) =
-			fetch_handle.fetch_then_checkout(Discard, &gix::interrupt::IS_INTERRUPTED).unwrap();
+		// Gix doesn't yet have a good API for checkouts, so we resort to the Git CLI
+		Command::new("git")
+    .args(["checkout", "axum-v0.8.7"])  // or a commit hash
+    .current_dir(&output_directory)
+    .status()?;
 
-		// Checkout the tree into disk, again ignoring details for streamlined process
-		let (repo, _) = repository.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED).unwrap();
-
-		dbg!("here we are");
-
-		self.generate_ir(&out_path)
+		self.generate_ir(&output_directory)
 	}
 
 	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> {

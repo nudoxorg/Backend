@@ -8,6 +8,7 @@ use crate::traits::{builder::get_registry, package::Package, registry::Registry}
 
 mod core;
 mod error;
+pub(crate) mod git;
 mod pipeline;
 mod traits;
 
