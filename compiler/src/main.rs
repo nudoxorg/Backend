@@ -1,15 +1,15 @@
 use lang_types::Language;
 use semver::Version;
 use serde_json::json;
-use terminusdb::{Runner, termdb::{CrateInfo, DocCtx}};
-use tokio::fs::write;
+use url::Url;
 
-use crate::traits::{builder::get_registry, package::Package, registry::Registry};
+use crate::{terminusdb::{Runner, termdb::{CrateInfo, DocCtx}, upload::{TerminusConfig, upload_documents, upload_schema}}, traits::{builder::get_registry, package::Package, registry::Registry}};
 
 mod core;
 mod error;
 pub(crate) mod git;
 mod pipeline;
+mod terminusdb;
 mod traits;
 
 const TEST_PACKAGE: &str = "axum";
@@ -17,6 +17,14 @@ const VERSION: Version = Version::new(0, 8, 8);
 
 #[tokio::main]
 async fn main() {
+	let config = TerminusConfig {
+		endpoint: Url::parse("http://54.159.188.191:6363").unwrap(),
+		user:     "onyx".into(),
+		password: "B0tbN1ght^".into(),
+		org:      "nudox".into(),
+		db:       "main".into(),
+	};
+
 	let registry = get_registry(Language::Rust);
 	let packages = registry.get_packages_by_name(TEST_PACKAGE).await;
 
@@ -31,9 +39,6 @@ async fn main() {
 
 	// Collected → Indexed
 	let index = ir.index().into_index();
-
-	// Serialize the full index for file output
-	let json_out = serde_json::to_string(&index).unwrap();
 
 	let context_object = json!({
 		"@type": "@context",
@@ -52,9 +57,15 @@ async fn main() {
 	runner.run(index.entries_by_id.into_values());
 
 	let store = runner.into_docs();
-	if let Ok(jsonld_out) = store.into_json_ld_insert() {
-		write("out.jsonld", jsonld_out).await;
+
+	// Upload schema first, then instance documents
+	let schema_json: Vec<serde_json::Value> =
+		serde_json::from_str(include_str!("../schema.json")).unwrap();
+	if let Err(e) = upload_schema(&config, schema_json).await {
+		eprintln!("Schema upload failed: {e}");
 	}
 
-	write("out.json", json_out).await;
+	if let Err(e) = upload_documents(&config, store).await {
+		eprintln!("Document upload failed: {e}");
+	}
 }
