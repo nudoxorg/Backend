@@ -105,6 +105,7 @@ impl DocStore {
 		}
 	}
 
+	#[allow(dead_code)]
 	pub fn into_json_ld_insert(self) -> Result<String, serde_json::Error> {
 		let mut keys: Vec<&URI> = self.docs.keys().collect();
 		keys.sort();
@@ -125,6 +126,7 @@ impl DocStore {
 /// Stores Global Info about the Crate
 // this will live for the duration of the program, need cheap copies for
 // insertion
+#[allow(dead_code)]
 pub struct CrateInfo {
 	lang:       Cow<'static, str>,
 	crate_name: Cow<'static, str>,
@@ -149,6 +151,7 @@ impl CrateInfo {
 
 	pub fn crate_name(&self) -> &str { self.crate_name.as_ref() }
 
+	#[allow(dead_code)]
 	pub fn crate_ver(&self) -> &str { self.crate_ver.as_ref() }
 }
 
@@ -173,10 +176,12 @@ impl DocCtx {
 
 	pub fn context(&self) -> &Value { &self.context_obj }
 
+	#[allow(dead_code)]
 	pub fn context_cloned(&self) -> Value { self.context_obj.clone() }
 }
 
 /// Trait for edges and URI construction
+#[allow(dead_code)]
 pub trait UriOps {
 	fn entry_uri(&self, path: &[String]) -> URI;
 	fn kind_uri(&self, kind: &Kind, path: &[String]) -> URI;

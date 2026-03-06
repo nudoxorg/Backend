@@ -5,7 +5,7 @@ use facet::Facet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{kind::{Kind, Visibility}, parameter::Parameter};
+use crate::kind::{Kind, Visibility};
 
 /// A representation of a documented API entry.
 #[derive(Debug, Clone, PartialEq)]

@@ -1,5 +1,6 @@
 use crate::traits::package::Package;
 
+#[allow(dead_code)]
 pub trait Registry: Send + Sync {
 	type Pkg: Package;
 	type Error: std::error::Error + Send + Sync;

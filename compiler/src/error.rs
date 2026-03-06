@@ -3,6 +3,7 @@ use thiserror::Error;
 
 /// Errors arising from package registry interactions (network, lookup, API).
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum RegistryError {
 	#[error("network error: {0}")]
 	Network(String),
@@ -19,6 +20,7 @@ pub enum RegistryError {
 
 /// Errors arising from package-level operations (doc generation, parsing, IO).
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum PackageError {
 	#[error("IO error: {0}")]
 	Io(#[from] std::io::Error),

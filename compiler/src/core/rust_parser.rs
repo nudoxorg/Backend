@@ -633,7 +633,7 @@ impl ParseContext {
 
 	fn parse_trait(
 		&self,
-		state: &mut ParseState,
+		_state: &mut ParseState,
 		id: &Id,
 		t: &rustdoc_types::Trait,
 	) -> Result<TraitDef> {
@@ -770,7 +770,7 @@ impl ParseContext {
 
 	fn parse_impl(
 		&self,
-		state: &mut ParseState,
+		_state: &mut ParseState,
 		id: &Id,
 		i: &rustdoc_types::Impl,
 	) -> Result<TraitImpl> {
@@ -1180,7 +1180,7 @@ impl ParseContext {
 
 		for param in &generics.params {
 			match &param.kind {
-				rustdoc_types::GenericParamDefKind::Type { bounds, default, is_synthetic } => {
+				rustdoc_types::GenericParamDefKind::Type { bounds: _, default, is_synthetic } => {
 					if !is_synthetic {
 						type_params.push(TypeParam {
 							name:         param.name.clone(),
@@ -1202,7 +1202,7 @@ impl ParseContext {
 						});
 					}
 				}
-				rustdoc_types::GenericParamDefKind::Lifetime { outlives } => {
+				rustdoc_types::GenericParamDefKind::Lifetime { outlives: _ } => {
 					lifetime_params
 						.push(LifetimeParam { name: param.name.clone(), variance: Variance::Invariant });
 				}
@@ -1221,7 +1221,7 @@ impl ParseContext {
 		predicates
 			.iter()
 			.map(|pred| match pred {
-				rustdoc_types::WherePredicate::BoundPredicate { type_, bounds, generic_params } => {
+				rustdoc_types::WherePredicate::BoundPredicate { type_, bounds, generic_params: _ } => {
 					let param_name = match type_ {
 						rustdoc_types::Type::Generic(name) => name.clone(),
 						_ => format!("{:?}", type_),
@@ -1240,7 +1240,7 @@ impl ParseContext {
 						bound:      TypeExpr { name: format!("{:?}", rhs), args: vec![] },
 					}])
 				}
-				rustdoc_types::WherePredicate::LifetimePredicate { lifetime, outlives } => todo!(),
+				rustdoc_types::WherePredicate::LifetimePredicate { lifetime: _, outlives: _ } => todo!(),
 			})
 			.collect::<Result<Vec<Vec<_>>>>()
 			.map(|v| v.into_iter().flatten().collect())
@@ -1252,7 +1252,7 @@ impl ParseContext {
 		bound: &rustdoc_types::GenericBound,
 	) -> Result<Constraint> {
 		match bound {
-			rustdoc_types::GenericBound::TraitBound { trait_, generic_params, modifier } => {
+			rustdoc_types::GenericBound::TraitBound { trait_, generic_params: _, modifier: _ } => {
 				let trait_ref = self.parse_path_to_trait_ref(trait_)?;
 				Ok(Constraint::TraitBound { param: param.to_string(), trait_ref })
 			}
@@ -1292,14 +1292,14 @@ impl ParseContext {
 				rustdoc_types::GenericBound::Outlives(lifetime) => {
 					Ok(GenericBound::Lifetime(lifetime.clone()))
 				}
-				rustdoc_types::GenericBound::Use(precise_capturing_args) => todo!(),
+				rustdoc_types::GenericBound::Use(_precise_capturing_args) => todo!(),
 			})
 			.collect()
 	}
 
 	fn parse_generic_args(&self, args: &rustdoc_types::GenericArgs) -> Result<Vec<GenericArg>> {
 		match args {
-			rustdoc_types::GenericArgs::AngleBracketed { args, constraints } => {
+			rustdoc_types::GenericArgs::AngleBracketed { args, constraints: _ } => {
 				let mut result = Vec::new();
 
 				for arg in args {

@@ -135,7 +135,6 @@ impl TryFrom<Kind> for LDInheritor {
 			Kind::PrimitiveType => Ok(LDInheritor::PrimitiveType),
 			Kind::Field => Ok(LDInheritor::Field),
 			Kind::Event => Ok(LDInheritor::Event),
-			_ => Ok(LDInheritor::None),
 		}
 	}
 }

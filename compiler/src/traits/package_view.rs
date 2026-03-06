@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use semver::Version;
 use url::Url;
 
+#[allow(dead_code)]
 pub trait PackageView {
 	// The name you'd expect to see it referred to as (Can just be a derivative of
 	// the slug)

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::collections::HashMap;
 
 use gix::ObjectId;
 use ir::entry::{Entry, Index};
@@ -24,6 +24,7 @@ impl Stage for Collected {
 }
 
 /// A trait for grounding an external object to the git model
+#[allow(dead_code)]
 struct GroundedEntry {
 	commit:  ObjectId,
 	branch:  String,
@@ -43,6 +44,7 @@ pub struct Ir<S: Stage> {
 	data: S::Data,
 }
 
+#[allow(dead_code)]
 impl Ir<Collected> {
 	/// Wrap raw parser output into the IR pipeline.
 	pub fn from_entries(entries: Vec<Entry>) -> Self { Ir { data: entries } }
@@ -73,6 +75,7 @@ impl Ir<Collected> {
 	pub fn entries(&self) -> &[Entry] { &self.data }
 }
 
+#[allow(dead_code)]
 impl Ir<Indexed> {
 	/// Look up an entry by its ID.
 	pub fn get(&self, id: i64) -> Option<&Entry> { self.data.entries_by_id.get(&id) }
@@ -101,6 +104,7 @@ impl IntoIterator for Ir<Indexed> {
 	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_id.into_values() }
 }
 
+#[allow(dead_code)]
 impl Ir<Versioned> {
 	/// Look up an entry by its ID.
 	pub fn get(&self, id: i64) -> Option<&Entry> { self.data.entries_by_id.get(&id) }

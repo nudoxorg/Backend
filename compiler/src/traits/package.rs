@@ -2,6 +2,7 @@ use semver::Version;
 
 use crate::pipeline::{Collected, Ir};
 
+#[allow(dead_code)]
 pub trait Package: Send + Sync + Sized {
 	type Error: std::error::Error + Send + Sync;
 

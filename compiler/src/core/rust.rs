@@ -1,9 +1,6 @@
 use std::{fs, path::PathBuf, process::Command};
 
-use cargo_metadata::{CargoOpt, MetadataCommand};
 use crates_io_api::{AsyncClient, Crate, CratesQuery};
-use gix::{clone, progress::Discard, remote};
-use ir::entry::Entry;
 use lang_types::Language;
 use semver::Version;
 use thiserror::Error;
@@ -12,6 +9,7 @@ use url::Url;
 use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
 
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum ParseError {
 	#[error("Item not found: {0}")]
 	ItemNotFound(u32),
@@ -66,6 +64,7 @@ pub struct Crates {
 	pub client: AsyncClient,
 }
 
+#[allow(dead_code)]
 pub struct RustPackage {
 	pub slug:        String,
 	pub name:        String,
