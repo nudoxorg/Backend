@@ -143,7 +143,7 @@ impl ParseContext {
 			if visited.contains(&id) {
 				continue;
 			}
-			visited.insert(id.clone());
+			visited.insert(id);
 
 			let item = match self.krate.index.get(&id) {
 				Some(i) => i,
@@ -638,7 +638,7 @@ impl ParseContext {
 		t: &rustdoc_types::Trait,
 	) -> Result<TraitDef> {
 		let item = self.krate.index.get(id).unwrap();
-		let vis = item.visibility.clone();
+		let vis = &item.visibility;
 		let name = item.name.clone().unwrap_or_default();
 		let docs = item.docs.clone();
 
@@ -700,7 +700,7 @@ impl ParseContext {
 			None
 		};
 
-		let visibility = Some(self.parse_visibility(&vis));
+		let visibility = Some(self.parse_visibility(vis));
 
 		Ok(TraitDef {
 			name,
@@ -870,14 +870,14 @@ impl ParseContext {
 			.collect()
 	}
 
-	fn resolve_path_to_id(&self, path: &str) -> Option<Id> {
+	fn resolve_path_to_id(&self, path: &str) -> Option<&Id> {
 		if let Some(id) = self.path_to_id.get(path) {
-			return Some(id.clone());
+			return Some(id);
 		}
 
 		for (key, id) in &self.path_to_id {
 			if key.ends_with(&format!("::{}", path)) || key == path {
-				return Some(id.clone());
+				return Some(&id);
 			}
 		}
 
@@ -1045,7 +1045,7 @@ impl ParseContext {
 	}
 
 	fn parse_resolved_path(&self, path: &rustdoc_types::Path) -> Result<IRPath> {
-		let path_str = path.path.clone();
+		let path_str = &path.path;
 		let generic_args = path
 			.args
 			.as_ref()
@@ -1053,7 +1053,7 @@ impl ParseContext {
 			.transpose()?
 			.and_then(|v| if v.is_empty() { None } else { Some(v) });
 
-		Ok(IRPath { path: path_str, generic_args })
+		Ok(IRPath { path: path_str.clone(), generic_args })
 	}
 
 	fn parse_poly_trait(&self, pt: &rustdoc_types::PolyTrait) -> Result<PolyTrait> {
