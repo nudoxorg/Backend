@@ -56,3 +56,8 @@
 
 /.direnv
 !/schema.yaml
+
+# Devenv
+!/devenv.yaml
+!/devenv.nix
+!/devenv.lock
