@@ -5,7 +5,6 @@ resolver = "3"
 members = [
   "./compiler",
   "./ir",
-  "./terminusdb",
 ]
 default-members = ["./compiler"]
 
@@ -15,7 +14,6 @@ publish = false
 
 [workspace.dependencies]
 ir = { path = "./ir" }
-terminusdb = { path = "./terminusdb" }
 
 [profile.dev]
 codegen-backend = "cranelift"

@@ -2,7 +2,7 @@ use ir::{kind::{Kind, Visibility}, record::RecordKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::termdb::{DocCtx, URI, UriOps};
+use crate::terminusdb::termdb::{DocCtx, URI, UriOps};
 
 /// Represents the abstract class Kind in JsonLD format
 /// this is what will be serialized with serde

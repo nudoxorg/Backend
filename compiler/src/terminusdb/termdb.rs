@@ -30,7 +30,7 @@
 //!
 //! ## Kind
 //! A **Kind** structurally represents a symbol. Think Function, Struct, Enum,
-//! Module, etc. Kinds hold payload fields that descrie the symbol’s
+//! Module, etc. Kinds hold payload fields that descrie the symbol's
 //! behavior/shape (params/return types for functions). Kind will also store a
 //! Lexical Hash of important fields that ca be used for future similarity
 //! checks within the evnetual database instance.
@@ -111,6 +111,14 @@ impl DocStore {
 
 		let docs: Vec<Value> = keys.into_iter().map(|k| self.docs[k].clone()).collect();
 		serde_json::to_string(&docs)
+	}
+
+	/// Consume the store and return all documents as a sorted `Vec<Value>`,
+	/// suitable for bulk upload via the TerminusDB client.
+	pub fn into_documents(self) -> Vec<Value> {
+		let mut keys: Vec<&URI> = self.docs.keys().collect();
+		keys.sort();
+		keys.into_iter().map(|k| self.docs[k].clone()).collect()
 	}
 }
 

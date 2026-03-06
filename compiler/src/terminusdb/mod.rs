@@ -1,11 +1,12 @@
 pub mod ld;
 pub mod termdb;
+pub mod upload;
 
 use ir::{entry::Entry, kind::Kind};
 use serde_json::{Map, Value, json};
 use termdb::{DocCtx, DocStore, EmitJsonLD, URI};
 
-use crate::{ld::LDKind, termdb::UriOps};
+use crate::terminusdb::{ld::LDKind, termdb::UriOps};
 
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
