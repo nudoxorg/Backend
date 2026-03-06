@@ -62,16 +62,33 @@ pub enum GitError {
 	Checkout(#[source] Box<dyn std::error::Error + Send + Sync>),
 
 	#[error("failed to read tree entry at `{path}`: {source}")]
-	TreeLookup { path: String, #[source] source: Box<dyn std::error::Error + Send + Sync> },
+	TreeLookup {
+		path:   String,
+		#[source]
+		source: Box<dyn std::error::Error + Send + Sync>,
+	},
 
 	#[error("invalid utf-8 in blob at `{path}`")]
-	BlobEncoding { path: String, #[source] source: std::str::Utf8Error },
+	BlobEncoding {
+		path:   String,
+		#[source]
+		source: std::str::Utf8Error,
+	},
 
 	#[error("failed to parse `{path}` as TOML: {source}")]
-	TomlParse { path: String, #[source] source: toml::de::Error },
+	TomlParse {
+		path:   String,
+		#[source]
+		source: toml::de::Error,
+	},
 
 	#[error("invalid version `{version}` in `{path}`: {source}")]
-	VersionParse { path: String, version: String, #[source] source: semver::Error },
+	VersionParse {
+		path:    String,
+		version: String,
+		#[source]
+		source:  semver::Error,
+	},
 
 	#[error("unsupported workspace glob pattern: {pattern}")]
 	UnsupportedGlob { pattern: String },

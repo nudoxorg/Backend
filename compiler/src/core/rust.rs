@@ -174,10 +174,8 @@ impl Package for RustPackage {
 			.ok_or_else(|| PackageError::VersionNotFound(version.clone()))?;
 
 		let hex = target_oid.to_hex().to_string();
-		let status = Command::new("git")
-			.args(["checkout", &hex])
-			.current_dir(&output_directory)
-			.status()?;
+		let status =
+			Command::new("git").args(["checkout", &hex]).current_dir(&output_directory).status()?;
 
 		if !status.success() {
 			return Err(PackageError::Process { command: format!("git checkout {hex}"), status });

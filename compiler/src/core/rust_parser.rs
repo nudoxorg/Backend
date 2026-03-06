@@ -1240,15 +1240,12 @@ impl ParseContext {
 						bound:      TypeExpr { name: format!("{:?}", rhs), args: vec![] },
 					}])
 				}
-				rustdoc_types::WherePredicate::LifetimePredicate { lifetime, outlives } => {
-					Ok(outlives
+				rustdoc_types::WherePredicate::LifetimePredicate { lifetime, outlives } => Ok(
+					outlives
 						.iter()
-						.map(|o| Constraint::LifetimeBound {
-							shorter: lifetime.clone(),
-							longer:  o.clone(),
-						})
-						.collect())
-				}
+						.map(|o| Constraint::LifetimeBound { shorter: lifetime.clone(), longer: o.clone() })
+						.collect(),
+				),
 			})
 			.collect::<Result<Vec<Vec<_>>>>()
 			.map(|v| v.into_iter().flatten().collect())

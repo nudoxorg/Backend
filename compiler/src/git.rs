@@ -134,10 +134,8 @@ pub fn resolve_workspace_members(
 				.find_tree(dir_entry.oid())
 				.map_err(|e| GitError::TreeLookup { path: prefix.into(), source: e.into() })?;
 			for child in subtree.iter() {
-				let child = child.map_err(|e| GitError::TreeLookup {
-					path: prefix.into(),
-					source: e.into(),
-				})?;
+				let child =
+					child.map_err(|e| GitError::TreeLookup { path: prefix.into(), source: e.into() })?;
 				if child.mode().is_tree() {
 					resolved.push(format!("{}/{}", prefix, child.filename()));
 				}
