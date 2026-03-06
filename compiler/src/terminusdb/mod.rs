@@ -79,7 +79,7 @@ impl EmitJsonLD for Kind {
 		let emitted_uri = to_emit.uri.clone();
 		// Shouldnt fail to serialize
 		if let Ok(mut emitted_value) = serde_json::to_value(to_emit) {
-			let obj = emitted_value.as_object_mut().expect("");
+			let obj = emitted_value.as_object_mut().expect("serde_json::to_value produced a non-object");
 			// TODO store the context at the DocStore root level.. Not on each document,
 			// only when writing (not when being stored in the BtreeMap)
 			obj.insert("@context".into(), ctx.context().clone());

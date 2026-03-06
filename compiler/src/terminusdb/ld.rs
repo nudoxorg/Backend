@@ -95,10 +95,11 @@ pub enum LDInheritor {
 	None,
 }
 
-#[derive(Debug)]
-// HINT add mor eerrors here for specific kinds
+#[derive(Debug, thiserror::Error)]
 pub enum LDConversionError {
+	#[error("required `name` field is missing")]
 	NameMissing,
+	#[error("required `visibility` field is missing")]
 	VisibilityMissing,
 }
 

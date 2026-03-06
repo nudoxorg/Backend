@@ -109,11 +109,10 @@ impl RustPackage {
 			.arg("--output-format")
 			.arg("json")
 			.current_dir(&code)
-			.status()
-			.map_err(|e| PackageError::Process(format!("Failed to run cargo: {e}")))?;
+			.status()?;
 
 		if !status.success() {
-			return Err(PackageError::Process("Cargo rustdoc failed".to_string()));
+			return Err(PackageError::Process { command: "cargo rustdoc".into(), status });
 		}
 
 		let json_path =
@@ -124,10 +123,9 @@ impl RustPackage {
 		let rustdoc_crate: rustdoc_types::Crate = serde_json::from_str(&json_content)?;
 		debug!("rustdoc JSON parsed");
 
-		let mut parser =
-			RustdocParser::new(rustdoc_crate).map_err(|e| PackageError::Parse(e.to_string()))?;
+		let mut parser = RustdocParser::new(rustdoc_crate)?;
 
-		let parse_result = parser.parse_crate().map_err(|e| PackageError::Parse(e.to_string()))?;
+		let parse_result = parser.parse_crate()?;
 		info!(entries = parse_result.len(), "IR generation complete");
 
 		Ok(Ir::from_entries(parse_result))
@@ -170,26 +168,27 @@ impl Package for RustPackage {
 		_flags: Option<Vec<String>>,
 	) -> Result<Ir<Collected>, Self::Error> {
 		let output_directory = PathBuf::from("out");
-		let repository = crate::git::clone_repository(&output_directory, &self.source);
+		let repository = crate::git::clone_repository(&output_directory, &self.source)?;
 
 		let target_oid = find_commit_for_version(&repository, &version, &self.name)
-			.ok_or_else(|| PackageError::VersionNotFound(version))?;
+			.ok_or_else(|| PackageError::VersionNotFound(version.clone()))?;
 
-		Command::new("git")
-			.args(["checkout", &target_oid.to_hex().to_string()])
+		let hex = target_oid.to_hex().to_string();
+		let status = Command::new("git")
+			.args(["checkout", &hex])
 			.current_dir(&output_directory)
 			.status()?;
+
+		if !status.success() {
+			return Err(PackageError::Process { command: format!("git checkout {hex}"), status });
+		}
 
 		self.generate_ir(&output_directory)
 	}
 
-	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> {
-		todo!("Implement dependency resolution")
-	}
+	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> { Err(PackageError::NotImplemented) }
 
-	fn dependents(&self) -> Result<Vec<Self>, Self::Error> {
-		todo!("Implement reverse dependency resolution")
-	}
+	fn dependents(&self) -> Result<Vec<Self>, Self::Error> { Err(PackageError::NotImplemented) }
 }
 
 impl Registry for Crates {

@@ -41,9 +41,19 @@ async fn main() {
 			let pkg = packages.remove(0);
 			pkg.retrieve(VERSION, None)
 		}
-		Err(_other) => todo!(),
-	}
-	.unwrap();
+		Err(e) => {
+			error!(error = %e, package = TEST_PACKAGE, "registry lookup failed");
+			return;
+		}
+	};
+
+	let ir = match ir {
+		Ok(ir) => ir,
+		Err(e) => {
+			error!(error = %e, package = TEST_PACKAGE, "IR retrieval failed");
+			return;
+		}
+	};
 
 	// Collected → Indexed
 	let index = info_span!("indexing", package = TEST_PACKAGE).in_scope(|| ir.index().into_index());

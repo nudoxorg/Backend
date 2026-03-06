@@ -373,7 +373,7 @@ impl ParseContext {
 	}
 
 	fn parse_struct(&self, id: &Id, s: &rustdoc_types::Struct) -> Result<Record> {
-		let item = self.krate.index.get(id).unwrap();
+		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 		let generics =
 			s.generics.params.is_empty().then(|| self.parse_generic_params(&s.generics)).flatten();
 
@@ -531,7 +531,7 @@ impl ParseContext {
 	}
 
 	fn parse_function(&self, id: &Id, f: &rustdoc_types::Function) -> Result<Function> {
-		let item = self.krate.index.get(id).unwrap();
+		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 		let vis = item.visibility.clone();
 		let name = item.name.clone().unwrap_or_default();
 
@@ -637,7 +637,7 @@ impl ParseContext {
 		id: &Id,
 		t: &rustdoc_types::Trait,
 	) -> Result<TraitDef> {
-		let item = self.krate.index.get(id).unwrap();
+		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 		let vis = &item.visibility;
 		let name = item.name.clone().unwrap_or_default();
 		let docs = item.docs.clone();
@@ -721,7 +721,7 @@ impl ParseContext {
 	}
 
 	fn parse_trait_method(&self, id: &Id, f: &rustdoc_types::Function) -> Result<TraitMethod> {
-		let item = self.krate.index.get(id).unwrap();
+		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 
 		let parameters =
 			if f.sig.inputs.is_empty() { None } else { Some(self.parse_function_inputs(&f.sig.inputs)?) };
@@ -774,7 +774,7 @@ impl ParseContext {
 		id: &Id,
 		i: &rustdoc_types::Impl,
 	) -> Result<TraitImpl> {
-		let item = self.krate.index.get(id).unwrap();
+		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 
 		let tr =
 			i.trait_.as_ref().map(|path| self.parse_path_to_trait_ref(path)).transpose()?.ok_or_else(

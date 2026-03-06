@@ -4,21 +4,23 @@ use gix::{Repository, progress::Discard, remote};
 use tracing::{debug, instrument, warn};
 use url::Url;
 
+use crate::error::GitError;
+
 #[instrument(skip_all, fields(remote = %remote))]
-pub fn clone_repository(out_path: &PathBuf, remote: &Url) -> Repository {
-	// Clone the repository
+pub fn clone_repository(out_path: &PathBuf, remote: &Url) -> Result<Repository, GitError> {
 	let mut fetch_handle = gix::prepare_clone(remote.to_string(), &out_path)
-		.unwrap()
+		.map_err(|e| GitError::Clone(e.into()))?
 		.with_fetch_options(remote::ref_map::Options::default());
 
-	// Get the repository, ignoring the progress object, and monitoring for
-	// interruptions, then stripping the returned Outcome object, taking only
-	// repository.
-	let (mut checkout_handle, _) =
-		fetch_handle.fetch_then_checkout(Discard, &gix::interrupt::IS_INTERRUPTED).unwrap();
+	let (mut checkout_handle, _) = fetch_handle
+		.fetch_then_checkout(Discard, &gix::interrupt::IS_INTERRUPTED)
+		.map_err(|e| GitError::Checkout(e.into()))?;
 
-	// Checkout the tree into disk, again ignoring details for streamlined process
-	checkout_handle.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED).unwrap().0
+	let (repo, _) = checkout_handle
+		.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED)
+		.map_err(|e| GitError::Checkout(e.into()))?;
+
+	Ok(repo)
 }
 
 /// Walk newest→oldest. First commit whose Cargo.toml has `package_name` at
@@ -53,17 +55,24 @@ pub fn extract_package_version(
 	repo: &gix::Repository,
 	tree: &gix::Tree,
 	package_name: &str,
-) -> Result<Option<semver::Version>, Box<dyn std::error::Error>> {
-	let Some(entry) = tree.lookup_entry_by_path("Cargo.toml")?.filter(|e| e.mode().is_blob()) else {
+) -> Result<Option<semver::Version>, GitError> {
+	let Some(entry) = tree
+		.lookup_entry_by_path("Cargo.toml")
+		.map_err(|e| GitError::TreeLookup { path: "Cargo.toml".into(), source: e.into() })?
+		.filter(|e| e.mode().is_blob())
+	else {
 		return Ok(None);
 	};
 
-	let blob = repo.find_blob(entry.oid())?;
-	let content = std::str::from_utf8(&blob.data)?;
-	let manifest: toml::Value = toml::from_str(content)?;
+	let blob = repo
+		.find_blob(entry.oid())
+		.map_err(|e| GitError::TreeLookup { path: "Cargo.toml".into(), source: e.into() })?;
+	let content = std::str::from_utf8(&blob.data)
+		.map_err(|e| GitError::BlobEncoding { path: "Cargo.toml".into(), source: e })?;
+	let manifest: toml::Value = toml::from_str(content)
+		.map_err(|e| GitError::TomlParse { path: "Cargo.toml".into(), source: e })?;
 
 	if let Some(workspace) = manifest.get("workspace") {
-		// Workspace root — don't check [package] here, descend into members
 		let members: Vec<String> = workspace
 			.get("members")
 			.and_then(|m| m.as_array())
@@ -72,25 +81,30 @@ pub fn extract_package_version(
 
 		for member_path in resolve_workspace_members(repo, tree, &members)? {
 			let cargo_path = format!("{}/Cargo.toml", member_path);
-			let Some(member_entry) =
-				tree.lookup_entry_by_path(&cargo_path)?.filter(|e| e.mode().is_blob())
+			let Some(member_entry) = tree
+				.lookup_entry_by_path(&cargo_path)
+				.map_err(|e| GitError::TreeLookup { path: cargo_path.clone(), source: e.into() })?
+				.filter(|e| e.mode().is_blob())
 			else {
 				continue;
 			};
 
-			let blob = repo.find_blob(member_entry.oid())?;
-			let content = std::str::from_utf8(&blob.data)?;
-			let member_manifest: toml::Value = toml::from_str(content)?;
+			let blob = repo
+				.find_blob(member_entry.oid())
+				.map_err(|e| GitError::TreeLookup { path: cargo_path.clone(), source: e.into() })?;
+			let content = std::str::from_utf8(&blob.data)
+				.map_err(|e| GitError::BlobEncoding { path: cargo_path.clone(), source: e })?;
+			let member_manifest: toml::Value = toml::from_str(content)
+				.map_err(|e| GitError::TomlParse { path: cargo_path.clone(), source: e })?;
 
-			if let Some(v) = check_package_version(&member_manifest, package_name)? {
+			if let Some(v) = check_package_version(&member_manifest, package_name, &cargo_path)? {
 				return Ok(Some(v));
 			}
 		}
 
 		Ok(None)
 	} else {
-		// Single-crate repo
-		check_package_version(&manifest, package_name)
+		check_package_version(&manifest, package_name, "Cargo.toml")
 	}
 }
 
@@ -100,13 +114,15 @@ pub fn resolve_workspace_members(
 	repo: &gix::Repository,
 	tree: &gix::Tree,
 	members: &[String],
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, GitError> {
 	let mut resolved = Vec::new();
 
 	for member in members {
 		if let Some(prefix) = member.strip_suffix("/*") {
-			// e.g. "crates/*" — list direct children of the directory
-			let Some(dir_entry) = tree.lookup_entry_by_path(prefix)? else {
+			let Some(dir_entry) = tree
+				.lookup_entry_by_path(prefix)
+				.map_err(|e| GitError::TreeLookup { path: prefix.into(), source: e.into() })?
+			else {
 				continue;
 			};
 
@@ -114,16 +130,20 @@ pub fn resolve_workspace_members(
 				continue;
 			}
 
-			let subtree = repo.find_tree(dir_entry.oid())?;
+			let subtree = repo
+				.find_tree(dir_entry.oid())
+				.map_err(|e| GitError::TreeLookup { path: prefix.into(), source: e.into() })?;
 			for child in subtree.iter() {
-				let child = child?;
+				let child = child.map_err(|e| GitError::TreeLookup {
+					path: prefix.into(),
+					source: e.into(),
+				})?;
 				if child.mode().is_tree() {
 					resolved.push(format!("{}/{}", prefix, child.filename()));
 				}
 			}
 		} else if member.contains('*') {
-			// Multi-level globs (e.g. `crates/*/*`) aren't handled — log and skip.
-			warn!(pattern = member, "Skipping unsupported workspace glob; only `prefix/*` is resolved");
+			warn!(pattern = member, "skipping unsupported workspace glob; only `prefix/*` is resolved");
 		} else {
 			resolved.push(member.clone());
 		}
@@ -135,7 +155,8 @@ pub fn resolve_workspace_members(
 pub fn check_package_version(
 	manifest: &toml::Value,
 	package_name: &str,
-) -> Result<Option<semver::Version>, Box<dyn std::error::Error>> {
+	manifest_path: &str,
+) -> Result<Option<semver::Version>, GitError> {
 	let Some(pkg) = manifest.get("package") else {
 		return Ok(None);
 	};
@@ -149,5 +170,11 @@ pub fn check_package_version(
 		return Ok(None);
 	};
 
-	Ok(Some(semver::Version::parse(ver_str)?))
+	let version = semver::Version::parse(ver_str).map_err(|e| GitError::VersionParse {
+		path:    manifest_path.into(),
+		version: ver_str.into(),
+		source:  e,
+	})?;
+
+	Ok(Some(version))
 }
