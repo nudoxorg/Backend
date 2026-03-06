@@ -1,3 +1,4 @@
+use semver::Version;
 use thiserror::Error;
 
 /// Errors arising from package registry interactions (network, lookup, API).
@@ -36,4 +37,7 @@ pub enum PackageError {
 
 	#[error("registry error: {0}")]
 	Registry(#[from] RegistryError),
+
+	#[error("registry error: {0}")]
+	VersionNotFound(Version),
 }

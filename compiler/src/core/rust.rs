@@ -168,7 +168,8 @@ impl Package for RustPackage {
 		let output_directory = PathBuf::from("out");
 		let repository = crate::git::clone_repository(&output_directory, &self.source);
 
-		let target_oid = find_commit_for_version(&repository, &version, &self.name).unwrap();
+		let target_oid = find_commit_for_version(&repository, &version, &self.name)
+			.ok_or_else(|| PackageError::VersionNotFound(version))?;
 
 		Command::new("git")
 			.args(["checkout", &target_oid.to_hex().to_string()])
