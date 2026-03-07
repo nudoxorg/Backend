@@ -62,10 +62,11 @@ async fn main() -> eyre::Result<()> {
 	info!(documents = store.docs.len(), "emission complete");
 
 	// Upload schema first, then instance documents
-	let schema_json: serde_json::Value =
-		serde_json::from_str(include_str!("../../schema.jsonld")).unwrap();
+	// TODO: Switch to the LinkML outputted schema
+	let schema_json: Vec<serde_json::Value> =
+		serde_json::from_str(include_str!("../schema.json")).unwrap();
 
-	upload_schema(&config, vec![schema_json])
+	upload_schema(&config, schema_json)
 		.await
 		.map_err(|e| eyre::eyre!(e))
 		.wrap_err("schema upload failed")?;
