@@ -20,6 +20,8 @@ async fn main() -> eyre::Result<()> {
     .compact()
     .init();
 
+	// Add some identification to the instance that the compiler is running on
+	// USE ENV Variables
 	let config = TerminusConfig {
 		endpoint: Url::parse("http://54.159.188.191:6363").unwrap(),
 		user:     "admin".into(),
@@ -66,6 +68,9 @@ async fn main() -> eyre::Result<()> {
 	let schema_json: Vec<serde_json::Value> =
 		serde_json::from_str(include_str!("../schema.json")).unwrap();
 
+	// The schema should NOT FAIL .. if it does somehting is inherently wrong, and
+	// we should just stop the server/throw a Major Error Alert Also only needs to
+	// be uploaded at schema changes/new DB creations
 	upload_schema(&config, schema_json)
 		.await
 		.map_err(|e| eyre::eyre!(e))
