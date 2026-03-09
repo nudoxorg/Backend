@@ -61,3 +61,6 @@
 !/devenv.yaml
 !/devenv.nix
 !/devenv.lock
+
+# TODO: Remove when upstreamed
+!/linkml
