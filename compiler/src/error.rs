@@ -7,7 +7,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::task::JoinError;
 
-use crate::core::rust::ParseError;
+use crate::core::{clang::ClangError, rust::ParseError};
 
 pub(crate) fn summarize_command_output(bytes: &[u8]) -> String {
 	let text = String::from_utf8_lossy(bytes);
@@ -154,6 +154,9 @@ pub enum PackageError {
 
 	#[error("git error: {0}")]
 	Git(#[from] GitError),
+
+	#[error("clang error: {0}")]
+	ClangError(#[from] ClangError),
 }
 
 /// Errors arising from git operations (clone, checkout, version lookup).

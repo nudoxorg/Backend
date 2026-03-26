@@ -18,4 +18,6 @@ ir = { path = "./ir" }
 yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
+clang = "1.0"
+ouroboros = "0.15.1"
 
