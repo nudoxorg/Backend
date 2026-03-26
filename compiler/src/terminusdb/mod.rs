@@ -1,7 +1,7 @@
+pub mod embeddings;
 pub mod ld;
 pub mod termdb;
 pub mod upload;
-
 use ir::{entry::Entry, kind::Kind};
 use serde_json::{Map, Value, json};
 use termdb::{DocCtx, DocStore, EmitJsonLD, URI};

@@ -80,6 +80,7 @@ use tracing::warn;
 pub type URI = String;
 
 /// Store Mapping of URI -> Documents in JsonLD form, ready for insertion
+/// Store Mapping of URI -> Vector Embeddings + Payload (including paylod)
 pub struct DocStore {
 	// can switch to Async type in the future
 	pub docs: BTreeMap<URI, Value>,
