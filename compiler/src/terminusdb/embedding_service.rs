@@ -82,6 +82,8 @@
 //! Those concerns belong in separate runtime or retrieval-facing components.
 use std::collections::HashMap;
 
+use async_openai::{Client, config::OpenAIConfig, types::embeddings::CreateEmbeddingRequestArgs};
+use async_trait::async_trait;
 use qdrant_client::{Payload, qdrant::{PointId, PointStruct, Value}};
 
 use crate::terminusdb::termdb::DocStore;
@@ -377,20 +379,21 @@ impl EmbeddedRecord {
 ///
 /// Keep it synchronous for now if that simplifies your initial pipeline.
 /// If your project is already async-heavy, convert this to async later.
+#[async_trait]
 pub trait EmbeddingProvider {
 	/// Provider/model name used for payload and collection compatibility checks.
 	fn model_name(&self) -> &str;
 
 	/// Generate a vector from text.
-	fn embed_text(&self, text: &str) -> Result<Vec<f32>, EmbeddingError>;
+	async fn embed_text(&self, text: &str) -> Result<Vec<f32>, EmbeddingError>;
 }
-
 /// Minimal service layer that coordinates:
 /// - document validation
 /// - provider call
 /// - internal vector record construction
 ///
 /// This is the core boilerplate for ingestion.
+
 pub struct EmbeddingService<P> {
 	provider: P,
 }
@@ -402,10 +405,13 @@ where
 	pub fn new(provider: P) -> Self { Self { provider } }
 
 	/// Embed a single document into a store-agnostic vector record.
-	pub fn embed_document(&self, doc: EmbeddingDocument) -> Result<EmbeddedRecord, EmbeddingError> {
+	pub async fn embed_document(
+		&self,
+		doc: EmbeddingDocument,
+	) -> Result<EmbeddedRecord, EmbeddingError> {
 		doc.validate()?;
 
-		let vector = self.provider.embed_text(&doc.text)?;
+		let vector = self.provider.embed_text(&doc.text).await?;
 		if vector.is_empty() {
 			return Err(EmbeddingError::MissingVector);
 		}
@@ -430,12 +436,78 @@ where
 
 	/// Embed multiple documents in order.
 	///
-	/// Later you can optimize this with provider-side batching.
-	pub fn embed_documents(
+	/// Keep this simple for now. You can add true API batching later.
+	pub async fn embed_documents(
 		&self,
 		docs: impl IntoIterator<Item = EmbeddingDocument>,
 	) -> Result<Vec<EmbeddedRecord>, EmbeddingError> {
-		docs.into_iter().map(|doc| self.embed_document(doc)).collect()
+		let mut out = Vec::new();
+
+		for doc in docs {
+			out.push(self.embed_document(doc).await?);
+		}
+
+		Ok(out)
+	}
+}
+
+/// OpenAI-backed embedding provider.
+///
+/// This uses the standard OpenAI API key flow. By default, `Client::new()`
+/// reads `OPENAI_API_KEY` from the environment. If you want to inject a key
+/// directly, use `new_with_api_key(...)` instead.
+pub struct OpenAIEmbeddingProvider {
+	client:     Client<OpenAIConfig>,
+	model_name: String,
+}
+
+impl OpenAIEmbeddingProvider {
+	/// Construct from environment configuration.
+	///
+	/// Expects `OPENAI_API_KEY` to be set.
+	pub fn new(model_name: impl Into<String>) -> Self {
+		Self { client: Client::new(), model_name: model_name.into() }
+	}
+
+	/// Construct with an explicit API key.
+	pub fn new_with_api_key(api_key: impl Into<String>, model_name: impl Into<String>) -> Self {
+		let config = OpenAIConfig::new().with_api_key(api_key.into());
+		let client = Client::with_config(config);
+
+		Self { client, model_name: model_name.into() }
+	}
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAIEmbeddingProvider {
+	fn model_name(&self) -> &str { &self.model_name }
+
+	async fn embed_text(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+		if text.trim().is_empty() {
+			return Err(EmbeddingError::MissingText);
+		}
+
+		let request = CreateEmbeddingRequestArgs::default()
+			.model(self.model_name.clone())
+			.input(text)
+			.build()
+			.map_err(|e| EmbeddingError::Provider(format!("failed to build embedding request: {e}")))?;
+
+		let response = self
+			.client
+			.embeddings()
+			.create(request)
+			.await
+			.map_err(|e| EmbeddingError::Provider(format!("openai embeddings request failed: {e}")))?;
+
+		let embedding =
+			response.data.into_iter().next().ok_or(EmbeddingError::MissingVector)?.embedding;
+
+		if embedding.is_empty() {
+			return Err(EmbeddingError::MissingVector);
+		}
+
+		Ok(embedding)
 	}
 }
 
@@ -489,34 +561,6 @@ impl PointIdFactory {
 	}
 }
 
-/// Example of a provider stub to wire the pipeline before real API integration.
-///
-/// Replace this with your OpenAI-backed provider implementation later.
-pub struct StubEmbeddingProvider {
-	model_name:  String,
-	vector_size: usize,
-}
-
-impl StubEmbeddingProvider {
-	pub fn new(model_name: impl Into<String>, vector_size: usize) -> Self {
-		Self { model_name: model_name.into(), vector_size }
-	}
-}
-
-impl EmbeddingProvider for StubEmbeddingProvider {
-	fn model_name(&self) -> &str { &self.model_name }
-
-	fn embed_text(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-		if text.trim().is_empty() {
-			return Err(EmbeddingError::MissingText);
-		}
-
-		// Placeholder output only.
-		// This is here so the rest of the ingestion pipeline can be wired first.
-		Ok(vec![0.0; self.vector_size])
-	}
-}
-
 /// Small helper for future ingestion code.
 ///
 /// This is the likely shape of your backend flow:
@@ -526,7 +570,7 @@ impl EmbeddingProvider for StubEmbeddingProvider {
 /// 4. convert to Qdrant points
 ///
 /// This helper keeps that boilerplate together for one document.
-pub fn embed_and_build_qdrant_point<P>(
+pub async fn embed_and_build_qdrant_point<P>(
 	service: &EmbeddingService<P>,
 	point_id: PointId,
 	doc: EmbeddingDocument,
@@ -534,7 +578,7 @@ pub fn embed_and_build_qdrant_point<P>(
 where
 	P: EmbeddingProvider,
 {
-	let record = service.embed_document(doc)?;
+	let record = service.embed_document(doc).await?;
 	QdrantPointFactory::build_point(point_id, record)
 }
 
