@@ -102,6 +102,28 @@ impl DocStore {
 		}
 	}
 
+	/// Return all documents as sorted borrowed references.
+	///
+	/// This is the non-consuming projection path for:
+	/// - embedding preparation
+	/// - inspection/logging
+	/// - future parallel upload prep
+	pub fn documents_sorted(&self) -> Vec<(&URI, &Value)> {
+		let mut keys: Vec<&URI> = self.docs.keys().collect();
+		keys.sort();
+		keys.into_iter().map(|k| (k, &self.docs[k])).collect()
+	}
+
+	/// Return all documents cloned into a sorted Vec<Value>.
+	///
+	/// This keeps the original store intact while matching the same ordering
+	/// semantics as `into_documents`.
+	pub fn documents_cloned(&self) -> Vec<Value> {
+		let mut keys: Vec<&URI> = self.docs.keys().collect();
+		keys.sort();
+		keys.into_iter().map(|k| self.docs[k].clone()).collect()
+	}
+
 	#[allow(dead_code)]
 	pub fn into_json_ld_insert(self) -> Result<String, serde_json::Error> {
 		let mut keys: Vec<&URI> = self.docs.keys().collect();
@@ -119,7 +141,6 @@ impl DocStore {
 		keys.into_iter().map(|k| self.docs[k].clone()).collect()
 	}
 }
-
 /// Stores Global Info about the Crate
 // this will live for the duration of the program, need cheap copies for
 // insertion
