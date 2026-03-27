@@ -19,8 +19,9 @@ pub struct TerminusConfig {
 /// This inserts the raw JSON-LD values directly using PUT with `create=true`
 /// (upsert semantics), matching the existing JSON-LD format produced by the
 /// `Runner`.
+
 #[instrument(skip_all, fields(org = %config.org, db = %config.db))]
-pub async fn upload_documents(config: &TerminusConfig, store: DocStore) -> anyhow::Result<()> {
+pub async fn upload_documents(config: &TerminusConfig, store: &DocStore) -> anyhow::Result<()> {
 	let client = TerminusDBHttpClient::new_with_database(
 		config.endpoint.clone(),
 		&config.user,
@@ -30,7 +31,7 @@ pub async fn upload_documents(config: &TerminusConfig, store: DocStore) -> anyho
 	)
 	.await?;
 
-	let documents = store.into_documents();
+	let documents = store.documents_cloned();
 	if documents.is_empty() {
 		warn!("no documents to upload");
 		return Ok(());
@@ -66,7 +67,6 @@ pub async fn upload_documents(config: &TerminusConfig, store: DocStore) -> anyho
 
 	Ok(())
 }
-
 /// Upload schema documents to the TerminusDB instance schema graph.
 ///
 /// The schema JSON is expected to be the array of class/context definitions
