@@ -76,7 +76,7 @@ async fn main() -> eyre::Result<()> {
 		.map_err(|e| eyre::eyre!(e))
 		.wrap_err("schema upload failed")?;
 
-	upload_documents(&config, store)
+	upload_documents(&config, &store)
 		.await
 		.map_err(|e| eyre::eyre!(e))
 		.wrap_err("document upload failed")?;
