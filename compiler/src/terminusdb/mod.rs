@@ -1,4 +1,4 @@
-pub mod embeddings;
+pub mod embedding_service;
 pub mod ld;
 pub mod termdb;
 pub mod upload;
