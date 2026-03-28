@@ -1,6 +1,7 @@
 use color_eyre::eyre::{self, WrapErr};
 use lang_types::Language;
-use nudox::{terminusdb::{Runner, termdb::{CrateInfo, DocCtx}, upload::{TerminusConfig, upload_documents, upload_schema}}, traits::{builder::get_registry, package::Package, registry::Registry}};
+use nudox::{terminusdb::{Runner, embedding_service::{EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx}, upload::{TerminusConfig, upload_documents, upload_schema}}, traits::{builder::get_registry, package::Package, registry::Registry}};
+use qdrant_client::qdrant::Distance;
 use semver::Version;
 use serde_json::json;
 use tracing::{info, info_span};
@@ -28,6 +29,13 @@ async fn main() -> eyre::Result<()> {
 		password: "root".into(),
 		org:      "nudox".into(),
 		db:       "main".into(),
+	};
+
+	let qdrant_config = QdrantConfig {
+		endpoint:        Url::parse("http://localhost:6334").unwrap(),
+		collection_name: format!("rust_{}_{}", TEST_PACKAGE, VERSION),
+		vector_size:     1536,
+		distance:        Distance::Cosine,
 	};
 
 	let registry = get_registry(Language::Rust);
@@ -63,6 +71,8 @@ async fn main() -> eyre::Result<()> {
 	let store = runner.into_docs();
 	info!(documents = store.docs.len(), "emission complete");
 
+	let embedding_provider = OpenAIEmbeddingProvider::new("text-embedding-3-small");
+	let embedding_service = EmbeddingService::new(embedding_provider);
 	// Upload schema first, then instance documents
 	// TODO: Switch to the LinkML outputted schema
 	let schema_json: Vec<serde_json::Value> =
@@ -81,5 +91,37 @@ async fn main() -> eyre::Result<()> {
 		.map_err(|e| eyre::eyre!(e))
 		.wrap_err("document upload failed")?;
 
+	let version_string = VERSION.to_string();
+
+	let embedding_docs =
+		embedding_documents_from_docstore(&store, "rust", TEST_PACKAGE, Some(version_string.as_str()))
+			.map_err(|e| eyre::eyre!(e))
+			.wrap_err("embedding document projection failed")?;
+
+	info!(count = embedding_docs.len(), "embedding documents prepared");
+
+	let embedded_records = embedding_service
+		.embed_documents(embedding_docs)
+		.await
+		.map_err(|e| eyre::eyre!(e))
+		.wrap_err("embedding generation failed")?;
+
+	info!(count = embedded_records.len(), "embedding generation complete");
+
+	let mut points = Vec::with_capacity(embedded_records.len());
+	for (idx, record) in embedded_records.into_iter().enumerate() {
+		let point_id = PointIdFactory::from_u64(idx as u64 + 1);
+
+		let point = QdrantPointFactory::build_point(point_id, record)
+			.map_err(|e| eyre::eyre!(e))
+			.wrap_err("qdrant point construction failed")?;
+
+		points.push(point);
+	}
+
+	upload_points(&qdrant_config, points)
+		.await
+		.map_err(|e| eyre::eyre!(e))
+		.wrap_err("qdrant upload failed")?;
 	Ok(())
 }
