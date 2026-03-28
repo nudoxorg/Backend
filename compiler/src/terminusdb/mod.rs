@@ -1,5 +1,6 @@
 pub mod embedding_service;
 pub mod ld;
+pub mod qdrant_upload;
 pub mod termdb;
 pub mod upload;
 use ir::{entry::Entry, kind::Kind};

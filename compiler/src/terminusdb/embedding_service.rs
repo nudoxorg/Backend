@@ -545,22 +545,30 @@ impl QdrantPointFactory {
 /// - string ids if supported by your chosen qdrant-client API version
 ///
 /// For now this helper provides the minimal conversion surface.
+
 pub struct PointIdFactory;
 
 impl PointIdFactory {
 	/// Use a u64 when you already have one from a deterministic id scheme.
 	pub fn from_u64(id: u64) -> PointId { PointId::from(id) }
 
-	/// Placeholder for future deterministic hashing from record_key / URI.
+	/// Temporary non-stable point id generation for sprint usage.
 	///
-	/// You will likely replace this with:
-	/// - a stable hash of record_key
-	/// - maybe xxhash / blake3-derived truncated u64
+	/// This ignores the record key and generates a pseudo-random-ish u64 from the
+	/// current time. This is NOT suitable for long-term idempotent upserts.
+	/// Replace this later with a deterministic hash of `record_key`.
 	pub fn from_record_key(_record_key: &str) -> Result<PointId, EmbeddingError> {
-		Err(EmbeddingError::InvalidPointId("from_record_key is not implemented yet".to_string()))
+		use std::time::{SystemTime, UNIX_EPOCH};
+
+		let nanos = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.map_err(|e| EmbeddingError::InvalidPointId(format!("system clock error: {e}")))?
+			.as_nanos();
+
+		let id = (nanos & u64::MAX as u128) as u64;
+		Ok(PointId::from(id))
 	}
 }
-
 /// Small helper for future ingestion code.
 ///
 /// This is the likely shape of your backend flow:
