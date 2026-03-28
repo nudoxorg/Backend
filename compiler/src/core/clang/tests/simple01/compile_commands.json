@@ -1,7 +1,0 @@
-[
-	{
-		"directory": "/home/avalsch/dev/nudox/backend/compiler/src/core/clang/tests/simple01",
-		"arguments": ["/usr/bin/clang", "-c", "simple01.c"],
-		"file": "simple01.c"
-	}
-]

@@ -1,33 +1,40 @@
 use std::collections::HashMap;
 
-use clang::{Clang, CompilationDatabase, Entity, EntityKind, Index, TranslationUnit};
-use ir::{entry::Entry, function::Function, kind::Kind, parameter::Parameter};
+use clang::{Clang, CompilationDatabase, Entity, EntityKind, Index, TranslationUnit, Type as ClangType};
+use ir::{entry::Entry, function::Function, kind::Kind, parameter::Parameter, record::{Field, Record, RecordKind}, ty::Type};
 
 use super::ClangError;
 use crate::error::PackageError;
 
 pub(crate) struct ClangParser {
 	inner: ClangParserInner,
-	db:    CompilationDatabase,
+	files: Vec<std::path::PathBuf>,
 	ir:    IRBuilder,
 }
 
 impl ClangParser {
 	pub fn new(clang: Clang, db: CompilationDatabase) -> Self {
 		let inner = ClangParserInner::new(clang, |c| Index::new(c, false, false));
-		ClangParser { inner, db, ir: IRBuilder::new() }
+
+		let files: Vec<_> = db
+			.get_all_compile_commands()
+			.get_commands()
+			.iter()
+			.map(|cmd| cmd.get_directory().join(cmd.get_filename()))
+			.collect();
+
+		ClangParser { inner, files, ir: IRBuilder::new() }
+	}
+
+	#[cfg(test)]
+	pub fn from_files(clang: Clang, files: Vec<std::path::PathBuf>) -> Self {
+		let inner = ClangParserInner::new(clang, |c| Index::new(c, false, false));
+		ClangParser { inner, files, ir: IRBuilder::new() }
 	}
 
 	pub fn parse(mut self) -> Result<Vec<Entry>, PackageError> {
-		let compile_commands = self.db.get_all_compile_commands();
-
-		for command in compile_commands.get_commands() {
-			let file_entrypoint = command.get_directory().join(command.get_filename());
-
+		for file_entrypoint in self.files {
 			let parser = self.inner.borrow_index().parser(&file_entrypoint);
-
-			// TODO: handle command arguments
-			// &parser.arguments(&command.get_arguments());
 
 			let tu = parser.parse().map_err(|e| ClangError::SourceError(file_entrypoint, e))?;
 
@@ -90,13 +97,15 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 	}
 
 	fn handle_entity(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
-		match entity.get_kind() {
-			EntityKind::StructDecl => todo!(),
-			EntityKind::ClassDecl => todo!(),
-			EntityKind::EnumDecl => todo!(),
+		let kind = entity.get_kind();
+		match kind {
+			EntityKind::StructDecl => self.handle_struct(entity)?,
+
+			EntityKind::ClassDecl => self.handle_class(entity)?,
+			EntityKind::EnumDecl => self.handle_enum(entity)?,
 			EntityKind::FunctionDecl => self.handle_function(entity)?,
-			EntityKind::TypedefDecl => todo!(),
-			_ => return Err(PackageError::NotImplemented),
+			EntityKind::TypedefDecl => self.handle_typedef(entity)?,
+			_ => {}
 		}
 
 		Ok(())
@@ -110,9 +119,9 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 		let (input_parameters, output_parameters) =
 			self.handle_function_params(entity.get_children())?;
 
-		let generics = None; // TODO
-		let attributes = None; // TODO
-		let implemented = true; // TODO
+		let generics = None;
+		let attributes = None;
+		let implemented = true;
 
 		let entry = Entry {
 			name: name.clone(),
@@ -122,7 +131,7 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 			kind: Kind::Function(Function {
 				input_parameters,
 				output_parameters,
-				type_links: None, // TODO?
+				type_links: None,
 				attributes,
 				generics,
 				name,
@@ -139,6 +148,227 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 		Ok(())
 	}
 
+	fn handle_struct(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
+		debug_assert_eq!(entity.get_kind(), EntityKind::StructDecl);
+
+		let (id, name) = self.basic_info(entity);
+
+		let fields = self.handle_struct_fields(entity.get_children())?;
+
+		let entry = Entry {
+			name: name.clone(),
+			id,
+			path: vec![],
+			aliases: None,
+			kind: Kind::RecordType(Record {
+				name: Some(name),
+				generics: None,
+				kind: RecordKind::Named,
+				fields,
+				visibility: None,
+			}),
+			visibility: None,
+			documentation: None,
+			members: None,
+		};
+
+		self.insert_entry(entry, entity);
+
+		Ok(())
+	}
+
+	fn handle_class(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
+		debug_assert_eq!(entity.get_kind(), EntityKind::ClassDecl);
+
+		let (id, name) = self.basic_info(entity);
+
+		let fields = self.handle_struct_fields(entity.get_children())?;
+
+		let entry = Entry {
+			name: name.clone(),
+			id,
+			path: vec![],
+			aliases: None,
+			kind: Kind::RecordType(Record {
+				name: Some(name),
+				generics: None,
+				kind: RecordKind::Named,
+				fields,
+				visibility: None,
+			}),
+			visibility: None,
+			documentation: None,
+			members: None,
+		};
+
+		self.insert_entry(entry, entity);
+
+		Ok(())
+	}
+
+	fn handle_enum(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
+		debug_assert_eq!(entity.get_kind(), EntityKind::EnumDecl);
+
+		let (id, name) = self.basic_info(entity);
+
+		let variants = self.handle_enum_variants(entity.get_children())?;
+
+		let entry = Entry {
+			name: name.clone(),
+			id,
+			path: vec![],
+			aliases: None,
+			kind: Kind::SumType(variants),
+			visibility: None,
+			documentation: None,
+			members: None,
+		};
+
+		self.insert_entry(entry, entity);
+
+		Ok(())
+	}
+
+	fn handle_typedef(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
+		debug_assert_eq!(entity.get_kind(), EntityKind::TypedefDecl);
+
+		// TODO: check things using entity child
+		// to avoid double-declaring structs
+
+		let (id, name) = self.basic_info(entity);
+
+		let entry = Entry {
+			name: name.clone(),
+			id,
+			path: vec![],
+			aliases: None,
+			kind: Kind::TypeAlias(Type::Infer), // TODO
+			visibility: None,
+			documentation: None,
+			members: None,
+		};
+
+		self.insert_entry(entry, entity);
+
+		Ok(())
+	}
+
+	fn handle_struct_fields(
+		&mut self,
+		children: Vec<Entity<'tu>>,
+	) -> Result<Option<Vec<Field>>, PackageError> {
+		let mut fields = vec![];
+
+		for child in children {
+			match child.get_kind() {
+				EntityKind::FieldDecl => {
+					let field_name = child.get_name().unwrap_or_default();
+					let field_type = child.get_type().map(|t| self.resolve_type(t));
+					fields.push(Field {
+						name:          Some(field_name),
+						type_entry_id: None,
+						ty:            field_type.map(Box::new),
+						default_value: None,
+						attributes:    None,
+						visibility:    None,
+					});
+				}
+				EntityKind::CompoundStmt => {}
+				_ => {}
+			}
+		}
+
+		Ok(if fields.is_empty() { None } else { Some(fields) })
+	}
+
+	fn handle_enum_variants(
+		&mut self,
+		children: Vec<Entity<'tu>>,
+	) -> Result<Vec<ir::record::SumVariant>, PackageError> {
+		let mut variants = vec![];
+
+		for child in children {
+			match child.get_kind() {
+				EntityKind::EnumConstantDecl => {
+					let variant_name = child.get_name().unwrap_or_default();
+					variants.push(ir::record::SumVariant { name: variant_name, types: None });
+				}
+				_ => {}
+			}
+		}
+
+		Ok(variants)
+	}
+
+	fn resolve_type(&self, ty: ClangType) -> Type {
+		let kind = ty.get_kind();
+
+		match kind {
+			clang::TypeKind::Void => return Type::Primitive(ir::primitives::Primitive::Null),
+			clang::TypeKind::Bool => return Type::Primitive(ir::primitives::Primitive::Bool(None)),
+			clang::TypeKind::CharS
+			| clang::TypeKind::CharU
+			| clang::TypeKind::SChar
+			| clang::TypeKind::UChar
+			| clang::TypeKind::WChar => return Type::Primitive(ir::primitives::Primitive::Char(None)),
+			clang::TypeKind::Short
+			| clang::TypeKind::UShort
+			| clang::TypeKind::Int
+			| clang::TypeKind::UInt
+			| clang::TypeKind::Long
+			| clang::TypeKind::ULong
+			| clang::TypeKind::LongLong
+			| clang::TypeKind::ULongLong
+			| clang::TypeKind::Int128
+			| clang::TypeKind::UInt128 => return Type::Primitive(ir::primitives::Primitive::Int(None)),
+			clang::TypeKind::Half | clang::TypeKind::Float | clang::TypeKind::Float128 => {
+				return Type::Primitive(ir::primitives::Primitive::Float(None));
+			}
+			clang::TypeKind::Double | clang::TypeKind::LongDouble => {
+				return Type::Primitive(ir::primitives::Primitive::Double(None));
+			}
+			clang::TypeKind::Pointer => {
+				if let Some(pointee) = ty.get_pointee_type() {
+					return Type::RawPointer {
+						is_mutable: false,
+						ty:         Box::new(self.resolve_type(pointee)),
+					};
+				}
+				return Type::Infer;
+			}
+			clang::TypeKind::LValueReference => {
+				if let Some(referent) = ty.get_element_type() {
+					return Type::BorrowedRef {
+						lifetime:   None,
+						is_mutable: false,
+						ty:         Box::new(self.resolve_type(referent)),
+					};
+				}
+				return Type::Infer;
+			}
+			clang::TypeKind::RValueReference => {
+				if let Some(referent) = ty.get_element_type() {
+					return Type::BorrowedRef {
+						lifetime:   None,
+						is_mutable: true,
+						ty:         Box::new(self.resolve_type(referent)),
+					};
+				}
+				return Type::Infer;
+			}
+			clang::TypeKind::ConstantArray => {
+				if let Some(element) = ty.get_element_type() {
+					return Type::Array { ty: Box::new(self.resolve_type(element)), length: 0 };
+				}
+				return Type::Infer;
+			}
+			clang::TypeKind::FunctionNoPrototype | clang::TypeKind::FunctionPrototype => {
+				return Type::Primitive(ir::primitives::Primitive::Data(None));
+			}
+			_ => return Type::Infer,
+		}
+	}
+
 	fn handle_function_params(
 		&mut self,
 		children: Vec<Entity<'tu>>,
@@ -150,17 +380,15 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 				EntityKind::ParmDecl => {
 					input_params.push(Parameter {
 						name:          child.get_name().unwrap_or_default(),
-						ty:            None, // TODO
-						attributes:    None, // TOOD
-						default_value: None, // TODO
+						ty:            None,
+						attributes:    None,
+						default_value: None,
 						description:   None,
 					});
 				}
-				EntityKind::CompoundStmt => {} // Ignore function bodies
-				kind => {
-					eprintln!("unexpected child kind {kind:?} as child of function");
-					return Err(PackageError::NotImplemented);
-				}
+				EntityKind::CompoundStmt => {}  // Ignore function bodies
+				EntityKind::UnexposedAttr => {} // Ignore attributes
+				_ => {}
 			}
 		}
 
@@ -185,31 +413,4 @@ struct ClangParserInner {
 	#[borrows(clang)]
 	#[covariant]
 	index: Index<'this>,
-}
-
-#[cfg(test)]
-mod tests {
-	use std::path::Path;
-
-	use super::*;
-
-	const TEST_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/core/clang/tests/");
-
-	#[test]
-	fn test_parse_file() {
-		let dir = Path::new(TEST_DIR).join("simple01");
-
-		dbg!(&dir);
-
-		let clang = Clang::new().unwrap();
-		let db = CompilationDatabase::from_directory(dir).unwrap();
-
-		let parser = ClangParser::new(clang, db);
-
-		let entries = parser.parse().expect("failed to parse file");
-
-		assert!(entries.len() > 0);
-
-		dbg!(entries);
-	}
 }

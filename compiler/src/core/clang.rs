@@ -1,5 +1,8 @@
 mod parser;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::{Path, PathBuf};
 
 use clang::{Clang, CompilationDatabase, SourceError};

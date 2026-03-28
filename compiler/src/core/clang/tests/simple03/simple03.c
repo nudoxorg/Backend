@@ -1,9 +1,10 @@
-#include <stdio.h>
+typedef struct {
+  int x, y;
+} Point;
 
-void hello() {
-    printf("Hello, World!\n");
+Point new_point(int x, int y) {
+  Point point = {x, y};
+  return point;
 }
 
-struct Point {
-    int x, y;
-};
+typedef Point P;
