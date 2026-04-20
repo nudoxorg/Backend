@@ -28,7 +28,7 @@ impl EmitJsonLD for Entry {
 		// construct kind reference
 		// This needs to propogate through to the kind emit
 		let prefix = self.kind.to_string();
-		let kind_ref = prefix + &ctx.uri_path(&self.path);
+		let kind_ref: String = prefix + ctx.uri_path(&self.path).as_str();
 
 		// output json object
 		let mut obj = Map::<String, Value>::new();
