@@ -4,21 +4,13 @@
 /// pipeline.  `TsPackage` implements the `Package` trait by shelling out to
 /// Deno (the same way `RustPackage` shells out to `cargo rustdoc`), capturing
 /// the `jsr:@deno/doc` JSON output, and feeding it through `TsDocParser`.
-use std::{
-	collections::HashMap,
-	process::ExitStatus,
-	process::Command,
-};
+use std::{collections::HashMap, process::Command, process::ExitStatus};
 
 use semver::Version;
 use thiserror::Error;
 use url::Url;
 
-use crate::{
-	core::ts_parser::{ParseError, TsDocParser},
-	pipeline::{Collected, Ir},
-	traits::{package::Package, registry::Registry},
-};
+use crate::{core::ts_parser::{ParseError, TsDocParser}, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
 
 // ============================================================================
 // Error types
@@ -145,9 +137,7 @@ impl Package for TsPackage {
 
 	fn flags(&self) -> Result<Option<Vec<String>>, Self::Error> { Ok(None) }
 
-	fn description(&self) -> Result<Option<String>, Self::Error> {
-		Ok(self.description.clone())
-	}
+	fn description(&self) -> Result<Option<String>, Self::Error> { Ok(self.description.clone()) }
 
 	fn retrieve(
 		&self,
@@ -157,13 +147,9 @@ impl Package for TsPackage {
 		self.generate_ir()
 	}
 
-	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> {
-		Err(TsPackageError::NotImplemented)
-	}
+	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> { Err(TsPackageError::NotImplemented) }
 
-	fn dependents(&self) -> Result<Vec<Self>, Self::Error> {
-		Err(TsPackageError::NotImplemented)
-	}
+	fn dependents(&self) -> Result<Vec<Self>, Self::Error> { Err(TsPackageError::NotImplemented) }
 }
 
 // ============================================================================
@@ -179,21 +165,14 @@ pub struct Npm {
 }
 
 impl Default for Npm {
-	fn default() -> Self {
-		Self {
-			registry_url: Url::parse("https://registry.npmjs.org").unwrap(),
-		}
-	}
+	fn default() -> Self { Self { registry_url: Url::parse("https://registry.npmjs.org").unwrap() } }
 }
 
 impl Registry for Npm {
 	type Error = TsPackageError;
 	type Pkg = TsPackage;
 
-	async fn search_packages(
-		&self,
-		query: &str,
-	) -> Result<Vec<TsPackage>, TsPackageError> {
+	async fn search_packages(&self, query: &str) -> Result<Vec<TsPackage>, TsPackageError> {
 		// npm search via the registry API (`/-/v1/search?text=<query>`).
 		// Full HTTP client integration would use `reqwest` or similar; for
 		// now return NotImplemented until the HTTP layer is wired in.
@@ -201,28 +180,19 @@ impl Registry for Npm {
 		Err(TsPackageError::NotImplemented)
 	}
 
-	async fn get_package_by_id(
-		&self,
-		id: u64,
-	) -> Result<TsPackage, TsPackageError> {
+	async fn get_package_by_id(&self, id: u64) -> Result<TsPackage, TsPackageError> {
 		let _ = id;
 		Err(TsPackageError::NotImplemented)
 	}
 
-	async fn get_packages_by_name(
-		&self,
-		name: &str,
-	) -> Result<Vec<TsPackage>, TsPackageError> {
+	async fn get_packages_by_name(&self, name: &str) -> Result<Vec<TsPackage>, TsPackageError> {
 		// Construct an `npm:` specifier and return a stub package.
 		let slug = name.to_lowercase().replace('/', "__");
 		Ok(vec![TsPackage {
 			slug:        slug.clone(),
 			name:        name.to_string(),
 			uuid:        0,
-			source:      self
-				.registry_url
-				.join(name)
-				.unwrap_or_else(|_| self.registry_url.clone()),
+			source:      self.registry_url.join(name).unwrap_or_else(|_| self.registry_url.clone()),
 			description: None,
 			entry_point: format!("npm:{}", name),
 		}])
@@ -234,9 +204,7 @@ impl Registry for Npm {
 			name:        "TypeScript Reference".into(),
 			uuid:        0,
 			source:      Url::parse("https://www.typescriptlang.org/docs/").unwrap(),
-			description: Some(
-				"The official TypeScript language reference documentation".into(),
-			),
+			description: Some("The official TypeScript language reference documentation".into()),
 			entry_point: "npm:typescript".into(),
 		}
 	}

@@ -1,38 +1,8 @@
-use std::{
-	collections::{HashMap, HashSet},
-	sync::Arc,
-};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 use deno_ast::swc::ast::{Accessibility, VarDeclKind};
-use deno_doc::{
-	Declaration, DeclarationDef, Document,
-	class::{ClassConstructorDef, ClassDef, ClassMethodDef},
-	r#enum::EnumDef,
-	function::FunctionDef,
-	interface::InterfaceDef,
-	js_doc::JsDoc,
-	node::{DeclarationKind, NamespaceDef, Symbol},
-	params::{ParamDef, ParamPatternDef},
-	ts_type::{
-		CallSignatureDef, IndexSignatureDef, LiteralDef, LiteralDefKind, MethodDef, TsTypeDef,
-		TsTypeDefKind,
-	},
-	ts_type_param::TsTypeParamDef,
-	type_alias::TypeAliasDef,
-	variable::VariableDef,
-};
-
-use ir::{
-	entry::{Entry, EntryRef},
-	function::{Attribute as FnAttribute, Function},
-	generics::*,
-	kind::{Kind, Visibility},
-	parameter::{Parameter, ParameterAttribute},
-	primitives::Primitive,
-	protocols::*,
-	record::*,
-	ty::{FunctionPointer, Path as IrPath, QualifiedPath, Type},
-};
+use deno_doc::{Declaration, DeclarationDef, Document, class::{ClassConstructorDef, ClassDef, ClassMethodDef}, r#enum::EnumDef, function::FunctionDef, interface::InterfaceDef, js_doc::JsDoc, node::{DeclarationKind, NamespaceDef, Symbol}, params::{ParamDef, ParamPatternDef}, ts_type::{CallSignatureDef, IndexSignatureDef, LiteralDef, LiteralDefKind, MethodDef, TsTypeDef, TsTypeDefKind}, ts_type_param::TsTypeParamDef, type_alias::TypeAliasDef, variable::VariableDef};
+use ir::{entry::{Entry, EntryRef}, function::{Attribute as FnAttribute, Function}, generics::*, kind::{Kind, Visibility}, parameter::{Parameter, ParameterAttribute}, primitives::Primitive, protocols::*, record::*, ty::{FunctionPointer, Path as IrPath, QualifiedPath, Type}};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
@@ -73,20 +43,17 @@ pub struct TsParseContext {
 
 #[derive(Default)]
 pub struct TsParseState {
-	visiting: HashSet<Vec<String>>,
+	visiting:    HashSet<Vec<String>>,
 	entry_cache: HashMap<Vec<String>, Entry>,
 }
 
 pub struct TsDocParser {
-	ctx: TsParseContext,
+	ctx:   TsParseContext,
 	state: TsParseState,
 }
 
 pub fn path_to_id(path: &[String]) -> i64 {
-	use std::{
-		collections::hash_map::DefaultHasher,
-		hash::{Hash, Hasher},
-	};
+	use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 	let mut hasher = DefaultHasher::new();
 	path.hash(&mut hasher);
 	hasher.finish() as i64
@@ -652,10 +619,10 @@ impl TsDocParser {
 				.properties
 				.iter()
 				.map(|p| AssociatedType {
-					name: p.name.clone(),
-					bounds: None,
+					name:         p.name.clone(),
+					bounds:       None,
 					default_type: p.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok()),
-					docs: extract_doc(&p.js_doc),
+					docs:         extract_doc(&p.js_doc),
 				})
 				.collect();
 			if v.is_empty() { None } else { Some(v) }
@@ -777,11 +744,11 @@ impl TsDocParser {
 		let output_parameters: Option<Vec<Parameter>> = func.return_type.as_ref().and_then(|rt| {
 			self.parse_ts_type(rt).ok().map(|ty| {
 				vec![Parameter {
-					name: "return".to_string(),
-					ty: Some(ty),
-					attributes: None,
+					name:          "return".to_string(),
+					ty:            Some(ty),
+					attributes:    None,
 					default_value: None,
-					description: None,
+					description:   None,
 				}]
 			})
 		});
@@ -1021,11 +988,11 @@ impl TsDocParser {
 					value.params.iter().map(|p| self.parse_param_type_only(p)).collect();
 
 				let outputs = Some(vec![Parameter {
-					name: "return".to_string(),
-					ty: Some(self.parse_ts_type(&value.ts_type)?),
-					attributes: None,
+					name:          "return".to_string(),
+					ty:            Some(self.parse_ts_type(&value.ts_type)?),
+					attributes:    None,
 					default_value: None,
-					description: None,
+					description:   None,
 				}]);
 
 				let generic_params = if value.type_params.is_empty() {
@@ -1113,7 +1080,9 @@ impl TsDocParser {
 			"null" | "undefined" | "never" | "void" => Type::Primitive(Primitive::Null),
 			"any" | "unknown" => Type::Infer,
 			"this" => Type::GenericParam("this".to_string()),
-			"object" => Type::ResolvedPath(IrPath { path: "object".to_string(), generic_args: None }),
+			"object" => {
+				Type::ResolvedPath(IrPath { path: "object".to_string(), generic_args: None })
+			}
 			"symbol" | "unique symbol" => {
 				Type::ResolvedPath(IrPath { path: "Symbol".to_string(), generic_args: None })
 			}
