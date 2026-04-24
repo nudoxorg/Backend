@@ -16,5 +16,3 @@ publish = false
 [workspace.dependencies]
 ir = { path = "./ir" }
 
-[profile.dev]
-codegen-backend = "cranelift"
