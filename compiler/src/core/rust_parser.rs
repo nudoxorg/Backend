@@ -1309,6 +1309,37 @@ impl ParseContext {
 			rustdoc_types::GenericArgs::AngleBracketed { args, constraints: _ } => {
 				let mut result = Vec::new();
 
+				for constraint in constraints {
+					result.push(GenericArg::Constraint(Constraint::AssociatedItem {
+						name: constraint.name.clone(),
+						args: constraint.args.as_ref().map(|a| self.parse_generic_args(&*a.clone()).unwrap()),
+						term: match &constraint.binding {
+							rustdoc_types::AssocItemConstraintKind::Equality(term) => {
+								self.map_rustdoc_term(term.clone())
+							}
+							rustdoc_types::AssocItemConstraintKind::Constraint(bounds) => Term::Bound(
+								bounds
+									.iter()
+									.flat_map(|t| {
+										let parsed = self.parse_generic_bounds(std::slice::from_ref(t)).unwrap();
+										parsed
+											.into_iter()
+											.map(|b| match b {
+												GenericBound::Trait(tr) => {
+													Constraint::TraitBound { param: String::new(), trait_ref: tr }
+												}
+												GenericBound::Lifetime(lt) => {
+													Constraint::LifetimeBound { shorter: String::new(), longer: lt }
+												}
+											})
+											.collect::<Vec<_>>()
+									})
+									.collect(),
+							),
+						},
+					}));
+				}
+
 				for arg in args {
 					match arg {
 						rustdoc_types::GenericArg::Lifetime(lt) => {
