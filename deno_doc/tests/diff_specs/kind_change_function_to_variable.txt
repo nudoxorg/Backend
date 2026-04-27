@@ -1,0 +1,40 @@
+# old/mod.ts
+export function foo() {}
+
+# new/mod.ts
+export const foo = () => {};
+
+# output.json
+{
+  "modifiedModules": {
+    "file:///mod.ts": {
+      "modified": [
+        {
+          "name": "foo",
+          "declarations": {
+            "modified": [
+              {
+                "kind": "function",
+                "defChanges": {
+                  "type": "function",
+                  "returnTypeChange": {
+                    "old": {
+                      "repr": "void",
+                      "kind": "keyword",
+                      "value": "void"
+                    },
+                    "new": {
+                      "repr": "void",
+                      "kind": "keyword",
+                      "value": "void"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

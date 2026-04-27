@@ -64,3 +64,5 @@
 
 # TODO: Remove when upstreamed
 !/linkml
+
+!/deno_doc/**/*
