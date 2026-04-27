@@ -74,12 +74,14 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
 use ir::kind::Kind;
+use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::warn;
 
 pub type URI = String;
 
 /// Store Mapping of URI -> Documents in JsonLD form, ready for insertion
+#[derive(Serialize)]
 pub struct DocStore {
 	// can switch to Async type in the future
 	pub docs: BTreeMap<URI, Value>,
@@ -94,6 +96,9 @@ impl DocStore {
 				Ok(uri)
 			} else {
 				warn!(uri = %uri, "non-identical values inserted at same URI");
+				// Collision! One value overwrites the other.
+				// todo!("Handle URI collision for {}: decide if we should merge or
+				// disambiguate.", uri);
 				Err(uri)
 			}
 		} else {
