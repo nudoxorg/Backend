@@ -558,14 +558,9 @@ impl TsDocParser {
 		let generics =
 			if cls.type_params.is_empty() { None } else { self.parse_type_params(&cls.type_params) };
 
-		let generic_args = generics
-			.as_ref()
-			.and_then(|g| self.generics_to_generic_args(g))
-			.and_then(|v| if v.is_empty() { None } else { Some(v) });
-
 		let record = Record {
 			name: Some(class_name.to_string()),
-			generics: generic_args,
+			generics,
 			kind: record_kind,
 			fields,
 			visibility: None,
