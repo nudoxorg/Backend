@@ -56,44 +56,20 @@ pub struct LifetimeParam {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Term {
-	Equality(Box<TypeExpr>),
+	Equality(Box<Type>),
 	Bound(Vec<Constraint>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Constraint {
-	TraitBound {
-		param:     String,
-		trait_ref: TraitRef,
-	},
-	AssociatedTypeBound {
-		param:      String,
-		assoc_name: String,
-		bound:      TypeExpr,
-	},
-	HigherKindedBound {
-		param: String,
-		kind:  KindExpr,
-	},
-	AssociatedItem {
-		param:     String,
-		trait_ref: TraitRef,
-		name:      String,
-		args:      Option<Vec<GenericArg>>,
-		term:      Term,
-	},
-	LifetimeBound {
-		shorter: String,
-		longer:  String,
-	},
-	ConstExprBound {
-		param: String,
-		expr:  ConstExpr,
-	},
-	LogicalPredicate {
-		expr: PredicateExpr,
-	},
+	TraitBound { param: String, trait_ref: TraitRef },
+	AssociatedTypeBound { param: String, assoc_name: String, bound: TypeExpr },
+	HigherKindedBound { param: String, kind: KindExpr },
+	AssociatedItem { name: String, args: Option<Vec<GenericArg>>, term: Term },
+	LifetimeBound { shorter: String, longer: String },
+	ConstExprBound { param: String, expr: ConstExpr },
+	LogicalPredicate { expr: PredicateExpr },
 }
 
 // MARK: - Supporting Types
