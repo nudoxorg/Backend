@@ -1,7 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{generics::{ConstExpr, GenericArg}, kind::Visibility, ty::Type};
+use crate::{generics::{ConstExpr, GenericArg, Generics}, kind::Visibility, ty::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -11,7 +11,7 @@ pub struct Record {
 	pub name: Option<String>,
 
 	/// Optional generic parameters (e.g., <T, U>).
-	pub generics: Option<Vec<GenericArg>>,
+	pub generics: Option<Generics>,
 
 	/// The kind of record (named, tuple, unit, dynamic).
 	pub kind: RecordKind,
