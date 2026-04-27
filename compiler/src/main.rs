@@ -1,3 +1,5 @@
+use std::fs;
+
 use color_eyre::eyre::{self, WrapErr};
 use lang_types::Language;
 use nudox::{terminusdb::{Runner, termdb::{CrateInfo, DocCtx}, upload::{TerminusConfig, upload_documents, upload_schema}}, traits::{builder::get_registry, package::Package, registry::Registry}};
@@ -68,18 +70,20 @@ async fn main() -> eyre::Result<()> {
 	let schema_json: Vec<serde_json::Value> =
 		serde_json::from_str(include_str!("../schema.json")).unwrap();
 
-	// The schema should NOT FAIL .. if it does somehting is inherently wrong, and
-	// we should just stop the server/throw a Major Error Alert Also only needs to
-	// be uploaded at schema changes/new DB creations
-	upload_schema(&config, schema_json)
-		.await
-		.map_err(|e| eyre::eyre!(e))
-		.wrap_err("schema upload failed")?;
+	fs::write("out.json", serde_json::to_string(&store).unwrap());
 
-	upload_documents(&config, store)
-		.await
-		.map_err(|e| eyre::eyre!(e))
-		.wrap_err("document upload failed")?;
+	// // The schema should NOT FAIL .. if it does somehting is inherently wrong,
+	// and // we should just stop the server/throw a Major Error Alert Also only
+	// needs to // be uploaded at schema changes/new DB creations
+	// upload_schema(&config, schema_json)
+	// 	.await
+	// 	.map_err(|e| eyre::eyre!(e))
+	// 	.wrap_err("schema upload failed")?;
+
+	// upload_documents(&config, store)
+	// 	.await
+	// 	.map_err(|e| eyre::eyre!(e))
+	// 	.wrap_err("document upload failed")?;
 
 	Ok(())
 }
