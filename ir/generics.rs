@@ -55,6 +55,13 @@ pub struct LifetimeParam {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Term {
+	Equality(Box<TypeExpr>),
+	Bound(Vec<Constraint>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Constraint {
 	TraitBound { param: String, trait_ref: TraitRef },
 	AssociatedTypeBound { param: String, assoc_name: String, bound: TypeExpr },
