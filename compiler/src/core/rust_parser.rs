@@ -177,10 +177,12 @@ impl ParseContext {
 				}
 				ItemEnum::Use(import) => {
 					if let Some(target_id) = &import.id {
-						add_path(&mut self.id_to_paths, target_id, current_path.clone());
+						let mut new_path = current_path.clone();
+						new_path.push(import.name.clone());
+						add_path(&mut self.id_to_paths, target_id, new_path.clone());
 
 						if !visited.contains(target_id) {
-							queue.push_back((target_id.clone(), current_path));
+							queue.push_back((target_id.clone(), new_path));
 						}
 					} else if import.is_glob {
 						// Glob imports: requires resolving the path string to an ID
