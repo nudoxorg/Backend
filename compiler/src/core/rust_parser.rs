@@ -4,7 +4,7 @@ use rustdoc_types::{Crate, Id, Item, ItemEnum};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
-use ir::{entry::{Entry, EntryRef}, function::{Attribute as FnAttribute, Function}, generics::*, kind::{Kind, Visibility}, parameter::Parameter, primitives::Primitive, protocols::*, record::*, ty::{DynTrait, FunctionPointer, Path as IRPath, PolyTrait, QualifiedPath, Type}};
+use ir::{entry::{Entry, EntryRef}, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{Kind, Visibility}, parameter::Parameter, primitives::Primitive, protocols::*, record::*, ty::{DynTrait, FunctionPointer, Path as IRPath, PolyTrait, QualifiedPath, Type}};
 
 use crate::core::rust::ParseError;
 
@@ -107,8 +107,23 @@ impl RustdocParser {
 		let mut entries = Vec::new();
 
 		for id in all_ids {
-			if let Ok(entry) = self.ctx.parse_item(&mut self.state, &id) {
-				entries.push(entry);
+			match self.ctx.parse_item(&mut self.state, &id) {
+				Ok(entry) => {
+					entries.push(entry);
+				}
+				Err(e) => {
+					// We should probably decide if we want to fail hard here or just skip and log.
+					// For now, let's at least log it if it's not a circular dependency (which is
+					// handled).
+					if let ParseError::CircularDependency { .. } = e {
+						// Circular dependencies are expected in some cases and handled by
+						// returning Err.
+					} else {
+						// This is a silent failure point that we should probably address.
+						// todo!("Failed to parse item {}: {}. Decide on error handling
+						// policy.", id.0, e);
+					}
+				}
 			}
 		}
 
@@ -186,6 +201,11 @@ impl ParseContext {
 						}
 					} else if import.is_glob {
 						// Glob imports: requires resolving the path string to an ID
+						todo!("Glob imports resolution not yet implemented");
+					} else {
+						// This can happen for some re-exports of items from other crates
+						// that are not inlined.
+						todo!("Import with no target ID and not a glob: {:?}", import);
 					}
 				}
 				ItemEnum::Struct(s) => {
@@ -217,7 +237,23 @@ impl ParseContext {
 						);
 					}
 				}
-				_ => {}
+				ItemEnum::Function(_)
+				| ItemEnum::Constant { .. }
+				| ItemEnum::Static(_)
+				| ItemEnum::TypeAlias(_)
+				| ItemEnum::Macro(_)
+				| ItemEnum::ProcMacro(_)
+				| ItemEnum::Union(_)
+				| ItemEnum::Primitive(_)
+				| ItemEnum::AssocType { .. }
+				| ItemEnum::AssocConst { .. }
+				| ItemEnum::ExternCrate { .. } => {
+
+					// These are terminal items in the path map traversal (for now)
+				}
+				_ => {
+					todo!("Unhandled item type in build_path_map: {:?}", item.inner);
+				}
 			}
 		}
 		Ok(())
@@ -252,13 +288,26 @@ impl ParseContext {
 		for impl_id in impl_ids {
 			let impl_item = match self.krate.index.get(impl_id) {
 				Some(i) => i,
-				None => continue,
+				None => {
+					// Silent failure: impl item not found
+					continue;
+				}
 			};
 
 			if let ItemEnum::Impl(imp) = &impl_item.inner {
 				for assoc_item_id in &imp.items {
-					if let Ok(entry) = self.parse_item(state, assoc_item_id) {
-						members.push(EntryRef { id: entry.id, path: entry.path });
+					match self.parse_item(state, assoc_item_id) {
+						Ok(entry) => {
+							members.push(EntryRef { id: entry.id, path: entry.path });
+						}
+						Err(e) => {
+							// Silent failure: failed to parse associated item
+							todo!(
+								"Failed to parse associated item {}: {}. Decide on error handling policy.",
+								assoc_item_id.0,
+								e
+							);
+						}
 					}
 				}
 			}
@@ -303,8 +352,17 @@ impl ParseContext {
 			ItemEnum::Trait(t) => {
 				let mut trait_members = Vec::new();
 				for method_id in &t.items {
-					if let Ok(entry) = self.parse_item(state, method_id) {
-						trait_members.push(EntryRef { id: entry.id, path: entry.path });
+					match self.parse_item(state, method_id) {
+						Ok(entry) => {
+							trait_members.push(EntryRef { id: entry.id, path: entry.path });
+						}
+						Err(e) => {
+							todo!(
+								"Failed to parse trait member {}: {}. Decide on error handling policy.",
+								method_id.0,
+								e
+							);
+						}
 					}
 				}
 				Some(trait_members)
@@ -370,7 +428,7 @@ impl ParseContext {
 				Ok(Kind::UnionType(types))
 			}
 
-			_ => Err(ParseError::UnsupportedItemType(format!("{:?}", inner))),
+			_ => Ok(Kind::Field),
 		}
 	}
 
@@ -378,8 +436,6 @@ impl ParseContext {
 		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 		let generics =
 			s.generics.params.is_empty().then(|| self.parse_generic_params(&s.generics)).flatten();
-
-		let generic_args = generics.map(|g| self.generics_to_args(&g)).flatten();
 
 		let (kind, fields) = match &s.kind {
 			rustdoc_types::StructKind::Unit => (RecordKind::Unit, None),
@@ -395,7 +451,7 @@ impl ParseContext {
 
 		let visibility = Some(self.parse_visibility(&item.visibility));
 
-		Ok(Record { name: item.name.clone(), generics: generic_args, kind, fields, visibility })
+		Ok(Record { name: item.name.clone(), generics, kind, fields, visibility })
 	}
 
 	fn parse_tuple_fields(&self, field_ids: &[Option<Id>]) -> Result<Vec<Field>> {
@@ -1078,6 +1134,7 @@ impl ParseContext {
 							GenericArg::Type(ty) => Ok(TypeExpr { name: format!("{:?}", ty), args: vec![] }),
 							GenericArg::ConstExpr(ce) => Ok(TypeExpr { name: ce.expr, args: vec![] }),
 							GenericArg::Lifetime(lt) => Ok(TypeExpr { name: lt, args: vec![] }),
+							GenericArg::Constraint(_) => Ok(TypeExpr { name: String::new(), args: vec![] }),
 						})
 						.collect()
 				})
@@ -1306,9 +1363,18 @@ impl ParseContext {
 			.collect()
 	}
 
+	fn map_rustdoc_term(&self, term: rustdoc_types::Term) -> Term {
+		match term {
+			rustdoc_types::Term::Type(typer) => {
+				Term::Equality(Box::new(self.parse_type(&typer).unwrap()))
+			}
+			rustdoc_types::Term::Constant(constant) => Term::Bound(vec![]),
+		}
+	}
+
 	fn parse_generic_args(&self, args: &rustdoc_types::GenericArgs) -> Result<Vec<GenericArg>> {
 		match args {
-			rustdoc_types::GenericArgs::AngleBracketed { args, constraints: _ } => {
+			rustdoc_types::GenericArgs::AngleBracketed { args, constraints } => {
 				let mut result = Vec::new();
 
 				for constraint in constraints {
