@@ -30,7 +30,7 @@ pub struct Entry {
 }
 
 /// A path to a location within the Nudox registry.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum NudoxPath {
 	/// A path inside an external dependency, bundled with its crate/package name.
@@ -47,7 +47,7 @@ pub enum NudoxPath {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Index {
-	pub root_ids: Vec<i64>,
-	pub entries_by_id: HashMap<i64, Entry>,
+	pub root_ids: Vec<NudoxPath>,
+	pub entries_by_path: HashMap<NudoxPath, Entry>,
 }
 
