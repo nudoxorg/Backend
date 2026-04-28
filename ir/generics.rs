@@ -1,27 +1,28 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{
-	parameter::{ConstParam, LifetimeParam, Parameter, TypeParam},
-	ty::Type,
-};
+use crate::{parameter::Parameter, ty::Type};
+
+// MARK: - Generics
 
 /// A universal representation of a generic parameter list across languages.
 ///
-/// `Generics` bundles all four flavors of compile-time parameters — type,
-/// constant, and lifetime variables, plus the constraints that govern them —
-/// into a single, language-agnostic structure.  It mirrors closely what an
-/// angle-bracket list encodes in languages like Rust, C++, Swift, and
-/// TypeScript.
+/// `Generics` bundles every kind of compile-time parameter — type, constant,
+/// lifetime, dependent, and module variables — together with the constraints
+/// that govern them into a single, language-agnostic structure.  It mirrors
+/// closely what an angle-bracket or parenthetical list encodes in languages
+/// like Rust, C++, Swift, TypeScript, Scala, OCaml, Agda, and Haskell.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Generics {
-	/// The parameteres that this set of generics accepts
+	/// The parameters this generic scope introduces, in declaration order.
 	pub params: Vec<Parameter>,
 
-	/// Additional constraints relating the parameters above.
+	/// Additional constraints that must hold over the parameters above.
 	pub constraints: Vec<Constraint>,
 }
+
+// MARK: - Constraints
 
 /// A predicate that restricts how the generic parameters of a declaration may
 /// be instantiated.
@@ -32,16 +33,17 @@ pub struct Generics {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Constraint {
-	/// A trait / protocol conformance bound (e.g., `T: Clone`).
+	/// A trait or protocol conformance bound (e.g., `T: Clone`).
 	TraitBound { param: String, trait_ref: TraitRef },
 
 	/// A bound on an associated type (e.g., `T::Item: Display`).
 	AssociatedTypeBound { param: String, assoc_name: String, bound: TypeExpr },
 
-	/// A higher-kinded bound constraining the *kind* of a type constructor.
-	HigherKindedBound { param: String, kind: KindExpr },
+	/// A higher-kinded bound constraining the *kind* of a type constructor
+	/// (e.g., `F: * -> *`).
+	HigherKindedBound { param: String, kind: Kind },
 
-	/// An associated item equality constraint (e.g., `Iterator<Item = u8>`).
+	/// An associated-item equality constraint (e.g., `Iterator<Item = u8>`).
 	AssociatedItem { name: String, args: Option<Vec<GenericArg>>, term: Term },
 
 	/// A lifetime outlives relation (e.g., `'a: 'b` — `'a` outlives `'b`).
@@ -50,8 +52,21 @@ pub enum Constraint {
 	/// A constant-expression bound (e.g., `N > 0`).
 	ConstExprBound { param: String, expr: ConstExpr },
 
-	/// An arbitrary logical predicate over the parameters (e.g., `T: Clone && U: Copy`).
-	LogicalPredicate { expr: PredicateExpr },
+	/// A compound logical predicate over the parameters.
+	/// Used for conditions that span multiple parameters or require boolean
+	/// connectives (e.g., `T: Clone && U: Copy`).
+	LogicalPredicate { pred: Predicate },
+
+	/// A Haskell-style functional dependency: the `sources` parameters
+	/// uniquely determine the `determined` parameters within a typeclass
+	/// or multi-parameter typeclass declaration (e.g., `class C f e | f -> e`).
+	FunctionalDependency { sources: Vec<String>, determined: Vec<String> },
+
+	/// A Scala / Haskell implicit-evidence bound: an implicit or given
+	/// instance of the trait must be available in scope at the call site, but
+	/// is threaded through automatically rather than named explicitly.
+	/// (e.g., `[T: Ordering]` in Scala 3, `(implicit ev: Ordering[T])` in Scala 2).
+	ImplicitBound { param: String, trait_ref: TraitRef },
 }
 
 /// The right-hand side of an associated-type equality constraint.
@@ -64,6 +79,133 @@ pub enum Term {
 	/// A set of sub-constraints the term must satisfy.
 	Bound(Vec<Constraint>),
 }
+
+// MARK: - Kind
+
+/// The *kind* of a type or type constructor, expressed as a structured tree.
+///
+/// Kinds are the types of types.  An ordinary type like `i32` has kind `*`
+/// (represented by [`Kind::Type`]).  A type constructor like `Vec` has kind
+/// `* -> *` (represented by `Kind::Arrow(box Type, box Type)`).  Richer kind
+/// systems found in Haskell, Agda, and PureScript introduce additional base
+/// kinds and kind variables.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Kind {
+	/// The base kind of all ordinary types (`*` or `Type`).
+	Type,
+
+	/// The kind of typeclass or trait constraints (Haskell's `Constraint` kind).
+	Constraint,
+
+	/// The extensible row kind used in PureScript and similar systems.
+	Row,
+
+	/// A type constructor: maps one kind to another (e.g., `* -> *`).
+	Arrow(Box<Kind>, Box<Kind>),
+
+	/// A named kind variable, used in kind-polymorphic systems.
+	Var(String),
+}
+
+// MARK: - ConstExpr
+
+/// A compile-time constant expression that can appear in generic bounds,
+/// array lengths, default values, and dependent-type annotations.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ConstExpr {
+	/// An integer literal (e.g., `4`, `-1`).
+	Int(i64),
+
+	/// A floating-point literal (e.g., `3.14`).
+	Float(f64),
+
+	/// A boolean literal (`true`, `false`).
+	Bool(bool),
+
+	/// A string literal (e.g., `"hello"`).
+	Str(String),
+
+	/// A reference to a named binding or constant (e.g., `MAX`, `N`).
+	Var(String),
+
+	/// A binary operation (e.g., `N + 1`, `SIZE * 2`).
+	BinOp { op: BinOp, lhs: Box<ConstExpr>, rhs: Box<ConstExpr> },
+
+	/// A unary operation (e.g., `-N`, `!flag`).
+	UnaryOp { op: UnaryOp, operand: Box<ConstExpr> },
+
+	/// A function or constructor call (e.g., `size_of::<T>()`, `min(A, B)`).
+	Call { func: String, args: Vec<ConstExpr> },
+
+	/// A type ascription, used in dependent-type contexts to annotate a
+	/// constant with its type (e.g., `(expr : Ty)` in Agda / Idris).
+	Ascription { expr: Box<ConstExpr>, ty: Box<TypeExpr> },
+}
+
+/// Binary operators that may appear inside a [`ConstExpr`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum BinOp {
+	Add,
+	Sub,
+	Mul,
+	Div,
+	Rem,
+	BitAnd,
+	BitOr,
+	BitXor,
+	Shl,
+	Shr,
+	Eq,
+	Ne,
+	Lt,
+	Le,
+	Gt,
+	Ge,
+	And,
+	Or,
+}
+
+/// Unary operators that may appear inside a [`ConstExpr`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum UnaryOp {
+	/// Arithmetic negation (`-x`).
+	Neg,
+	/// Logical or bitwise negation (`!x`).
+	Not,
+	/// Borrow / address-of (`&x`).
+	Ref,
+	/// Dereference (`*x`).
+	Deref,
+}
+
+// MARK: - Predicate
+
+/// A structured boolean predicate over generic parameters.
+///
+/// Predicates replace the old flat `PredicateExpr` string and allow
+/// compound conditions (conjunctions, disjunctions, negations) over
+/// individual [`Constraint`]s to be expressed and inspected structurally.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Predicate {
+	/// A single atomic constraint.
+	Atom(Box<Constraint>),
+
+	/// All inner predicates must hold simultaneously.
+	And(Vec<Predicate>),
+
+	/// At least one inner predicate must hold.
+	Or(Vec<Predicate>),
+
+	/// The inner predicate must not hold.
+	Not(Box<Predicate>),
+}
+
+// MARK: - Supporting Types
 
 /// A reference to a trait or protocol, optionally parameterised.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,34 +230,12 @@ pub struct TypeExpr {
 	pub args: Vec<TypeExpr>,
 }
 
-/// A compile-time constant expression, used in default values and bounds.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ConstExpr {
-	/// Source-level text of the expression (e.g., `"1 + 1"`, `"true"`).
-	pub expr: String,
-}
-
-/// The *kind* of a type constructor, expressed as a signature string.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct KindExpr {
-	/// Kind signature in arrow notation (e.g., `"* -> *"`, `"* -> * -> *"`).
-	pub signature: String,
-}
-
-/// A logical predicate over generic parameters.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct PredicateExpr {
-	/// Textual logical expression (e.g., `"T: Clone && U: Copy"`).
-	pub expr: String,
-}
+// MARK: - GenericArg
 
 /// A single argument supplied to a generic parameter position.
 ///
 /// Generic arguments appear at call or instantiation sites
-/// (e.g., `Vec<u8>`, `array<4>`, `&'a str`).
+/// (e.g., `Vec<u8>`, `array<4>`, `&'a str`, `Functor(Map)`).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))]
@@ -133,7 +253,13 @@ pub enum GenericArg {
 
 	/// An inline constraint supplied as an argument (rare, but expressible).
 	Constraint(Constraint),
+
+	/// A module reference supplied to a functor parameter (OCaml, ML-family).
+	/// The string holds the module path (e.g., `"Map.Make"`).
+	Module(String),
 }
+
+// MARK: - Variance
 
 /// The variance of a type or lifetime parameter with respect to subtyping.
 ///
