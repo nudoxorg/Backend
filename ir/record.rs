@@ -79,7 +79,7 @@ pub struct KnownField {
 	pub key: FieldKey,
 
 	/// Type of the field (if known).
-	pub ty: Option<Box<Type>>,
+	pub r#type: Option<Box<Type>>,
 
 	/// The default value
 	/// Some languages hold default values in external stores (I.E Default impls
