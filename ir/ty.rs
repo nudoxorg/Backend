@@ -46,7 +46,7 @@ pub enum Type {
 
 	/// A fixed-size contiguous sequence.
 	/// Ex: `[i32; 4]` or `std::array<int, 4>`.
-	Array { ty: Box<Type>, length: usize },
+	Array { r#type Box<Type>, length: usize },
 
 	/// An abstract type bound by traits (Existential types).
 	/// Ex: `impl Iterator<Item = u8>`.
@@ -66,11 +66,11 @@ pub enum Type {
 
 	/// A raw, unmanaged pointer.
 	/// Ex: `*mut T`, `int*`.
-	RawPointer { is_mutable: bool, ty: Box<Type> },
+	RawPointer { is_mutable: bool, r#type Box<Type> },
 
 	/// A managed reference with optional lifetime/mutability tracking.
 	/// Ex: `&'a mut T`.
-	BorrowedRef { lifetime: Option<String>, is_mutable: bool, ty: Box<Type> },
+	BorrowedRef { lifetime: Option<String>, is_mutable: bool, r#type Box<Type> },
 
 	/// An untagged union or sum of types.
 	/// Ex: `string | number`.

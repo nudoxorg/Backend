@@ -4,15 +4,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Visibility {
-	#[cfg_attr(feature = "serde", serde(rename = "public"))]
 	Public,
-	#[cfg_attr(feature = "serde", serde(rename = "private"))]
 	Private,
-	#[cfg_attr(feature = "serde", serde(rename = "protected"))]
 	Protected,
-	#[cfg_attr(feature = "serde", serde(rename = "internal"))]
 	Internal,
-	#[cfg_attr(feature = "serde", serde(rename = "package"))]
 	Package,
 }
 
@@ -84,7 +79,12 @@ pub enum Kind {
 // property.
 use std::fmt;
 
-use crate::{function::Function, protocols::{TraitDef, TraitImpl}, record::{Record, SumVariant}, ty::Type};
+use crate::{
+	function::Function,
+	protocols::{TraitDef, TraitImpl},
+	record::{Record, SumVariant},
+	r#type:Type,
+};
 
 impl fmt::Display for Kind {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
 	generics::{ConstExpr, TypeParam},
-	ty::Type,
+	r#type:Type,
 };
 
 /// Represents a parameter in a function or method.
@@ -17,6 +17,7 @@ pub struct LiteralParameter {
 	pub description: Option<String>,
 }
 
+// TODO: Expand this to also handle typical generic parameters
 pub enum Parmeter {
 	Literal(LiteralParameter),
 	Generic(TypeParam),

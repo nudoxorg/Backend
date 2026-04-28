@@ -2,7 +2,13 @@
 use serde::{Deserialize, Serialize};
 
 use super::function;
-use crate::{function::Function, generics::{ConstExpr, Constraint, Generics, TraitRef}, kind::Visibility, parameter::Parameter, ty::Type};
+use crate::{
+	function::Function,
+	generics::{ConstExpr, Constraint, Generics, TraitRef},
+	kind::Visibility,
+	parameter::Parameter,
+	r#type:Type,
+};
 
 // MARK: - TraitDef
 
@@ -18,13 +24,13 @@ pub struct TraitDef {
 	pub generics: Option<Generics>,
 
 	/// Supertraits/protocol inheritance/interface extends
-	pub super_traits: Option<Vec<TraitRef>>, // Renamed superTraits
+	pub super_traits: Option<Vec<TraitRef>>,
 
 	/// Associated types (Rust/Swift protocols)
-	pub associated_types: Option<Vec<AssociatedType>>, // Renamed associatedTypes
+	pub associated_types: Option<Vec<AssociatedType>>,
 
 	/// Required methods
-	pub required_methods: Option<Vec<TraitMethod>>, // Renamed requiredMethods
+	pub required_methods: Option<Vec<TraitMethod>>,
 
 	/// Provided/default method implementations
 	pub provided_methods: Option<Vec<TraitMethod>>,
@@ -106,12 +112,16 @@ pub struct TraitMethod {
 pub enum ReceiverKind {
 	/// Takes ownership (self in Rust, consuming in Swift)
 	Owned,
+
 	/// Immutable reference (&self, borrowing in Swift)
 	SharedRef,
+
 	/// Mutable reference (&mut self, mutating in Swift)
 	MutRef,
+
 	/// Static/class method (no receiver)
 	Static,
+
 	/// Arbitrary receiver (arbitrary self types in Rust)
 	Arbitrary,
 }
@@ -126,7 +136,7 @@ pub struct TraitConstant {
 	pub name: String,
 
 	/// Type of the constant
-	pub ty: Box<Type>,
+	pub r#type Box<Type>,
 
 	/// Default value (if provided)
 	pub default_value: Option<ConstExpr>,
@@ -209,5 +219,5 @@ pub struct AssociatedTypeImpl {
 	pub name: String,
 
 	/// The concrete type
-	pub ty: Box<Type>,
+	pub r#type Box<Type>,
 }

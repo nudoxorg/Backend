@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
 	generics::{ConstExpr, GenericArg, Generics},
 	kind::Visibility,
-	ty::Type,
+	r#type:Type,
 };
 
 #[derive(Debug, Clone, PartialEq)]

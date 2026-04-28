@@ -24,6 +24,7 @@ pub struct Entry {
 
 	pub documentation: Option<String>, // The associated documentation
 
+	// TODO: Attempt to repalce this with targeted expansions along the Module type for example
 	pub members: Option<Vec<EntryRef>>, // References instead of duplicates
 }
 

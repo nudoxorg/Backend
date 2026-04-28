@@ -1,7 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::ty::Type;
+use crate::r#type:Type;
 
 /// A universal representation of generics across languages.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,7 +38,7 @@ pub enum TypeKind {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ConstParam {
 	pub name:          String,
-	pub ty:            TypeExpr,
+	pub r#type            TypeExpr,
 	pub default_value: Option<ConstExpr>,
 }
 
