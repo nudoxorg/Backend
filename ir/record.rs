@@ -18,10 +18,8 @@ pub struct Record {
 	pub generics: Option<Generics>,
 
 	/// The fields of the record (if applicable).
-	/// A (empty lack of fields implies dynamic fields, AKA classical JS and Python
-	/// We avoid None for this because there ARE still fields, just unkown. So it would be Some(Unknown)
-	/// None is exclusively for unit types
-	// TODO: Use an Optional wrapper where this is indicated
+	/// An empty lack of fields implies dynamic fields, AKA classical JS and Python.
+	/// None is exclusively for unit types.
 	pub fields: Option<Vec<Field>>,
 
 	/// The visibility of the record
@@ -34,6 +32,8 @@ pub struct Record {
 
 /// For defining the shape of data
 /// Ex: [key: string]: number;
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct IndexSignature {
 	pub key_type: Box<Type>, // Usually String or Number
 	pub value_type: Box<Type>,
@@ -43,6 +43,8 @@ pub struct IndexSignature {
 /// As is the commonality for static languages
 /// But also be able to express fields that are not known (yet)
 /// As in JS/Py
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Field {
 	/// For when the exact requirements are provided
 	Known(KnownField),
@@ -51,11 +53,12 @@ pub enum Field {
 	Pattern(IndexSignature),
 
 	/// When nothing is known about this field.
-	// TODO: Find a more robust representation for this.
+	/// Used for gradual typing or unparsed dynamic objects.
 	Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum FieldKey {
 	/// Standard identifier: `name: "value"`
 	Ident(String),
@@ -83,8 +86,8 @@ pub struct KnownField {
 	/// Some languages hold default values in external stores (I.E Default impls in Rust, for which this would still be none, but in which it is assumed a developer would expect this case, and search there.)
 	pub default_value: Option<ConstExpr>,
 
-	/// The state of potential changes to the field
-	pub mutability: Option<FieldAttribute>,
+	/// The state and metadata of potential changes to the field
+	pub attributes: FieldAttributes,
 
 	/// To whom the field can be viewed by
 	pub visibility: Option<Visibility>,
@@ -92,16 +95,20 @@ pub struct KnownField {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct FieldAttribute {
-	// TODO: Add support for inline declarations like Java's @Override
-	// Or serde(default)-like attributes in Rust
+pub struct FieldAttributes {
+	/// Support for inline declarations like Java's @Override,
+	/// Python decorators, or serde(default)-like attributes in Rust
+	pub decorators: Vec<String>, // TODO: Use a dedicated Metadata/Expr struct
 
-	// For fields that are marked as mutable
-	// If fields are immutable by default in the language just mark this as false.
-	is_mutable: bool,
+	/// For fields that are marked as mutable
+	/// If fields are immutable by default in the language just mark this as false.
+	pub is_mutable: bool,
 
-	// For fields that are marked as optional
-	is_optional: bool,
+	/// For fields that are marked as optional
+	pub is_optional: bool,
+
+	/// For differentiating instance properties from static class properties
+	pub is_static: bool,
 }
 
 /// Adding sum variants here for historical reasons
@@ -111,14 +118,16 @@ pub struct SumVariant {
 	/// The variant/tag name (e.g., "Some", "None", "Ok", "Err")
 	pub name: String,
 
-	/// Associated types for this variant (None for unit variants)
-	pub types: Option<Vec<Type>>,
+	/// Associated data for this variant (None for unit variants)
+	pub data: Option<SumField>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum SumField {
-	/// For inline types that have no names
+	/// For inline types that have no names (e.g., Tuple variants in Rust)
 	Tuple(Vec<Type>),
 
-	/// For internal field like structures
+	/// For internal field like structures (e.g., Struct variants in Rust)
 	StructLike(Vec<Field>),
 }
