@@ -32,6 +32,8 @@ pub struct Record {
 	pub prototypes: Vec<Type>,
 }
 
+/// For defining the shape of data
+/// Ex: [key: string]: number;
 pub struct IndexSignature {
 	pub key_type: Box<Type>, // Usually String or Number
 	pub value_type: Box<Type>,
@@ -42,8 +44,15 @@ pub struct IndexSignature {
 /// But also be able to express fields that are not known (yet)
 /// As in JS/Py
 pub enum Field {
+	/// For when the exact requirements are provided
 	Known(KnownField),
-	Unknown(IndexSignature),
+
+	/// For when the general shape of the data is known
+	Pattern(IndexSignature),
+
+	/// When nothing is known about this field.
+	// TODO: Find a more robust representation for this.
+	Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq)]
