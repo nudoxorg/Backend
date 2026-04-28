@@ -17,24 +17,58 @@ pub struct Record {
 	/// Optional generic parameters (e.g., <T, U>).
 	pub generics: Option<Generics>,
 
+	/// Specifically for languages like TS that define the type of dynamic keys.
+	pub index_signature: Option<IndexSignature>,
+
 	/// The fields of the record (if applicable).
 	/// A (empty lack of fields implies dynamic fields, AKA classical JS and Python
 	/// We avoid None for this because there ARE still fields, just unkown. So it would be Some([])
 	/// None is exclusively for unit types
 	// TODO: Use an Optional wrapper where this is indicated
-	pub fields: Option<Vec<Field>>,
+	pub fields: Option<Vec<KnownField>>,
 
 	/// The visibility of the record
 	pub visibility: Visibility,
+
+	/// For JS `__proto__`, Python base classes, or CSS mixins.
+	/// This represents the delegation link.
+	pub prototypes: Vec<Type>,
+}
+
+pub struct IndexSignature {
+	pub key_type: Box<Type>, // Usually String or Number
+	pub value_type: Box<Type>,
+}
+
+/// Route and wrap fields that are known/declared
+/// As is the commonality for static languages
+/// But also be able to express fields that are not known (yet)
+/// As in JS/Py
+pub enum Field {
+	Known(KnownField),
+	Unknown(),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldKey {
+	/// Standard identifier: `name: "value"`
+	Ident(String),
+
+	/// For tuples: `(1, 2, 3)` -> indices 0, 1, 2
+	Index(usize),
+
+	/// Computed keys: `[Symbol.iterator]`, `["key" + i]`
+	/// This wraps a ConstExpr or even a full Expr depending on your IR depth.
+	Computed(ConstExpr),
 }
 
 /// A field on a Record
 /// If this record is a classical tuple, expect for the fields to have no name
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Field {
-	/// Field name (None if tuple-like).
-	pub name: Option<String>,
+pub struct KnownField {
+	/// Field name.
+	pub key: FieldKey,
 
 	/// Type of the field (if known).
 	pub ty: Option<Box<Type>>,
