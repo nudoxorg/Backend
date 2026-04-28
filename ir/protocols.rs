@@ -2,13 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::function;
-use crate::{
-	function::Function,
-	generics::{ConstExpr, Constraint, Generics, TraitRef},
-	kind::Visibility,
-	parameter::Parameter,
-	ty::Type,
-};
+use crate::{function::Function, generics::{ConstExpr, Constraint, Generics, TraitRef}, kind::Visibility, parameter::Parameter, ty::Type};
 
 // MARK: - TraitDef
 

@@ -2,13 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::function;
-use crate::{
-	generics::{GenericArg, TraitRef},
-	parameter::Parameter,
-	primitives::Primitive,
-	protocols::GenericBound,
-	record::SumVariant,
-};
+use crate::{generics::{GenericArg, TraitRef}, parameter::Parameter, primitives::Primitive, protocols::GenericBound, record::SumVariant};
 
 /// Universal representation of types across languages.
 #[derive(Debug, Clone, PartialEq)]
@@ -97,7 +91,7 @@ pub enum Type {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TypeReference {
 	/// The name/identifier of the type (e.g., "std::vec::Vec")
-	pub identifier: String,
+	pub identifier:   String,
 	/// Arguments for the reference (e.g., the "T" in "Vec<T>")
 	pub generic_args: Option<Vec<GenericArg>>,
 }
@@ -105,11 +99,11 @@ pub struct TypeReference {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct QualifiedPath {
-	pub name: String,
+	pub name:              String,
 	pub generic_arguments: Option<Vec<GenericArg>>,
-	pub self_type: Box<Type>,
+	pub self_type:         Box<Type>,
 	/// The specific trait the reference is being qualified through.
-	pub tr: Option<TypeReference>,
+	pub tr:                Option<TypeReference>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,13 +112,13 @@ pub struct GenericParam {
 	pub name: String,
 
 	/// For Higher-Kinded Types (HKTs), the expected kind/shape of this variable.
-	pub kind: Option<Type>,
+	pub kind: Option<Box<Type>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct FunctionPointer {
-	pub inputs: Option<Vec<Parameter>>,
+	pub inputs:  Option<Vec<Parameter>>,
 	pub outputs: Option<Vec<Parameter>>,
 
 	/// Metadata like `#[unsafe]`, `extern "C"`, or async status.
@@ -134,7 +128,7 @@ pub struct FunctionPointer {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DynTrait {
-	pub traits: Vec<PolyTrait>,
+	pub traits:   Vec<PolyTrait>,
 	pub lifetime: Option<String>,
 }
 

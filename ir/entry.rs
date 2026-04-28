@@ -1,4 +1,9 @@
-///! We store our data as a nested tree structure to ensure maximum composability for building the structure, and the ease of Serde and so on and so forth. We're able to store references to other objects using absolute paths, and during upload time, a graph is composed once. A (highly) unsafe structure should be considered in the future to avoid this reconstruction between backends.
+/// ! We store our data as a nested tree structure to ensure maximum
+/// composability for building the structure, and the ease of Serde and so on
+/// and so forth. We're able to store references to other objects using absolute
+/// paths, and during upload time, a graph is composed once. A (highly) unsafe
+/// structure should be considered in the future to avoid this reconstruction
+/// between backends.
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -51,7 +56,7 @@ pub enum NudoxPath {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Index {
-	pub root_ids: Vec<i64>,
+	pub root_ids:      Vec<i64>,
 	pub entries_by_id: HashMap<i64, Entry>,
 }
 
@@ -59,6 +64,6 @@ pub struct Index {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct EntryRef {
-	pub id: i64,
+	pub id:   i64,
 	pub path: Vec<String>,
 }

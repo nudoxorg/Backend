@@ -65,7 +65,8 @@ pub enum Constraint {
 	/// A Scala / Haskell implicit-evidence bound: an implicit or given
 	/// instance of the trait must be available in scope at the call site, but
 	/// is threaded through automatically rather than named explicitly.
-	/// (e.g., `[T: Ordering]` in Scala 3, `(implicit ev: Ordering[T])` in Scala 2).
+	/// (e.g., `[T: Ordering]` in Scala 3, `(implicit ev: Ordering[T])` in Scala
+	/// 2).
 	ImplicitBound { param: String, trait_ref: TraitRef },
 }
 

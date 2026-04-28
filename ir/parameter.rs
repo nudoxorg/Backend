@@ -1,10 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{
-	generics::{ConstExpr, Kind, TypeExpr, Variance},
-	ty::Type,
-};
+use crate::{generics::{ConstExpr, Kind, TypeExpr, Variance}, ty::Type};
 
 // MARK: - Parameter
 
@@ -106,7 +103,7 @@ pub enum ParameterAttribute {
 /// - `kind`   — the type-theoretic kind of the variable (is it `*`, `* -> *`…?)
 /// - `origin` — where/how the parameter was introduced in the source
 /// - `params` — for higher-kinded / template-template params, the inner
-///              parameter list the type constructor itself accepts
+///   parameter list the type constructor itself accepts
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TypeParam {
@@ -231,7 +228,8 @@ pub struct DependentParam {
 /// optional module-type signature that the supplied module must satisfy.
 ///
 /// Example — `module Make (Ord : Map.OrderedType) = ...` produces a
-/// `ModuleParam { name: "Ord", signature: Some(TypeExpr { name: "Map.OrderedType", .. }) }`.
+/// `ModuleParam { name: "Ord", signature: Some(TypeExpr { name:
+/// "Map.OrderedType", .. }) }`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ModuleParam {

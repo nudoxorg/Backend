@@ -1,12 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{
-	function::Function,
-	protocols::{TraitDef, TraitImpl},
-	record::{Record, SumVariant},
-	ty::Type,
-};
+use crate::{function::Function, protocols::{TraitDef, TraitImpl}, record::{Record, SumVariant}, ty::Type};
 
 /// The visibility of an entry in the source language.
 #[derive(Debug, Clone, PartialEq)]
