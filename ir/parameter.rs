@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
 	generics::{ConstExpr, TypeParam},
-	r#type:Type,
+	ty::Type,
 };
 
 /// Represents a parameter in a function or method.
