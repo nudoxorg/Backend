@@ -1,7 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{generics::{ConstExpr, Generics}, kind::Visibility, ty::Type};
+use crate::{entry::NudoxPath, generics::{ConstExpr, Generics}, kind::Visibility, ty::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -20,9 +20,18 @@ pub struct Record {
 	/// The visibility of the record
 	pub visibility: Visibility,
 
-	/// For JS `__proto__`, Python base classes, or CSS mixins.
-	/// This represents the delegation link.
-	pub prototypes: Vec<Type>,
+	/// Record-level documentation comments.
+	pub documentation: Option<String>,
+
+	/// Child entries conceptually scoped to this Record.
+	///
+	/// Explicit struct fields are tracked via the `fields` array inline. However,
+	/// a Record might also encapsulate full nested types (e.g., Java nested classes),
+	/// static namespaces, or separated explicit methods (e.g., Rust inherent `impl` blocks).
+	pub members: Option<Vec<NudoxPath>>,
+
+	/// Protocols, traits, or interfaces this Record explicitly implements.
+	pub implemented_protocols: Option<Vec<NudoxPath>>,
 }
 
 /// For defining the shape of data
@@ -88,6 +97,9 @@ pub struct KnownField {
 
 	/// To whom the field can be viewed by
 	pub visibility: Option<Visibility>,
+
+	/// Field-level documentation strings.
+	pub documentation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +130,9 @@ pub struct SumVariant {
 
 	/// Associated data for this variant (None for unit variants)
 	pub data: Option<SumField>,
+
+	/// Variant-level documentation strings.
+	pub documentation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

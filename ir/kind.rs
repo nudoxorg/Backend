@@ -1,7 +1,13 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{function::Function, protocols::{TraitDef, TraitImpl}, record::{Record, SumVariant}, ty::Type};
+use crate::{
+	function::Function,
+	module::Module,
+	protocols::{TraitDef, TraitImpl},
+	record::{Record, SumVariant},
+	ty::Type,
+};
 
 /// The visibility of an entry in the source language.
 #[derive(Debug, Clone, PartialEq)]
@@ -10,8 +16,10 @@ pub enum Visibility {
 	Public,
 	Private,
 	Protected,
+
 	/// Module-internal (e.g., Rust `pub(crate)`, C# `internal`).
 	Internal,
+
 	/// Package-scoped (e.g., Java package-private).
 	Package,
 }
@@ -27,7 +35,7 @@ pub enum Visibility {
 #[cfg_attr(feature = "serde", serde(tag = "kind", content = "value"))]
 pub enum EntryKind {
 	/// A namespace, package, or module — a container for other entries.
-	Module,
+	Module(Module),
 
 	/// A product type: struct, class, record, or data class.
 	RecordType(Record),

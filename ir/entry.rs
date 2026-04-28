@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::kind::{EntryKind, Visibility};
+use crate::kind::EntryKind;
 
 /// A representation of a documented API entry.
 #[derive(Debug, Clone, PartialEq)]
@@ -27,15 +27,6 @@ pub struct Entry {
 
 	/// The syntactic / semantic kind of this entry.
 	pub kind: EntryKind,
-
-	/// Declared visibility, if the source language supports it.
-	pub visibility: Option<Visibility>,
-
-	/// Associated documentation string.
-	pub documentation: Option<String>,
-
-	/// Child entries (members, nested items, etc.).
-	pub members: Option<Vec<EntryRef>>,
 }
 
 /// A path to a location within the Nudox registry.
@@ -56,14 +47,7 @@ pub enum NudoxPath {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Index {
-	pub root_ids:      Vec<i64>,
+	pub root_ids: Vec<i64>,
 	pub entries_by_id: HashMap<i64, Entry>,
 }
 
-/// A lightweight cross-reference to another `Entry`.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct EntryRef {
-	pub id:   i64,
-	pub path: Vec<String>,
-}

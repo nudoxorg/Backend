@@ -175,10 +175,13 @@ pub enum BinOp {
 pub enum UnaryOp {
 	/// Arithmetic negation (`-x`).
 	Neg,
+
 	/// Logical or bitwise negation (`!x`).
 	Not,
+
 	/// Borrow / address-of (`&x`).
 	Ref,
+
 	/// Dereference (`*x`).
 	Deref,
 }

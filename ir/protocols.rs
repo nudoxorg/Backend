@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::function;
-use crate::{function::Function, generics::{ConstExpr, Constraint, Generics, TraitRef}, kind::Visibility, parameter::Parameter, ty::Type};
+use crate::{entry::NudoxPath, function::Function, generics::{ConstExpr, Constraint, Generics, TraitRef}, kind::Visibility, parameter::Parameter, ty::Type};
 
 // MARK: - TraitDef
 
@@ -40,6 +40,13 @@ pub struct TraitDef {
 
 	/// Documentation
 	pub docs: Option<String>,
+
+	/// Child entries conceptually scoped to this protocol.
+	///
+	/// While methods, types, and constants are tracked rigorously inline via specific properties,
+	/// a protocol or trait may occasionally encapsulate other generic namespaces or properties
+	/// not explicitly mapped by the source language's strict abstract method design.
+	pub members: Option<Vec<NudoxPath>>,
 }
 
 // MARK: - Associated Types
@@ -203,6 +210,13 @@ pub struct TraitImpl {
 
 	/// Documentation
 	pub docs: Option<String>,
+
+	/// Child entries conceptually scoped to this trait implementation block.
+	///
+	/// Used primarily to capture auxiliary items or nested definitions defined specifically
+	/// within the `impl` block that are not inherently methods or associated types natively
+	/// mapped by the layout of this struct.
+	pub members: Option<Vec<NudoxPath>>,
 }
 
 /// Implementation of an associated type
