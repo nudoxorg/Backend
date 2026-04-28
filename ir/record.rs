@@ -108,6 +108,13 @@ pub struct SumVariant {
 	pub name: String,
 
 	/// Associated types for this variant (None for unit variants)
-	pub types: Option<Vec<Type>>, /* has to be vec because it could technically hold more than
-	                               * one?? Might want to use an enum for this idk */
+	pub types: Option<Vec<Type>>,
+}
+
+pub enum SumField {
+	/// For inline types that have no names
+	Tuple(Vec<Type>),
+
+	/// For internal field like structures
+	StructLike(Vec<Field>),
 }
