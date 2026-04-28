@@ -1,11 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{
-	generics::{ConstExpr, GenericArg, Generics},
-	kind::Visibility,
-	ty::Type,
-};
+use crate::{generics::{ConstExpr, GenericArg, Generics}, kind::Visibility, ty::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -18,8 +14,8 @@ pub struct Record {
 	pub generics: Option<Generics>,
 
 	/// The fields of the record (if applicable).
-	/// An empty lack of fields implies dynamic fields, AKA classical JS and Python.
-	/// None is exclusively for unit types.
+	/// An empty lack of fields implies dynamic fields, AKA classical JS and
+	/// Python. None is exclusively for unit types.
 	pub fields: Option<Vec<Field>>,
 
 	/// The visibility of the record
@@ -35,7 +31,7 @@ pub struct Record {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct IndexSignature {
-	pub key_type: Box<Type>, // Usually String or Number
+	pub key_type:   Box<Type>, // Usually String or Number
 	pub value_type: Box<Type>,
 }
 
@@ -83,7 +79,9 @@ pub struct KnownField {
 	pub ty: Option<Box<Type>>,
 
 	/// The default value
-	/// Some languages hold default values in external stores (I.E Default impls in Rust, for which this would still be none, but in which it is assumed a developer would expect this case, and search there.)
+	/// Some languages hold default values in external stores (I.E Default impls
+	/// in Rust, for which this would still be none, but in which it is assumed a
+	/// developer would expect this case, and search there.)
 	pub default_value: Option<ConstExpr>,
 
 	/// The state and metadata of potential changes to the field
@@ -101,7 +99,8 @@ pub struct FieldAttributes {
 	pub decorators: Vec<String>, // TODO: Use a dedicated Metadata/Expr struct
 
 	/// For fields that are marked as mutable
-	/// If fields are immutable by default in the language just mark this as false.
+	/// If fields are immutable by default in the language just mark this as
+	/// false.
 	pub is_mutable: bool,
 
 	/// For fields that are marked as optional
