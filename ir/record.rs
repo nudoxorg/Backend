@@ -17,12 +17,9 @@ pub struct Record {
 	/// Optional generic parameters (e.g., <T, U>).
 	pub generics: Option<Generics>,
 
-	/// Specifically for languages like TS that define the type of dynamic keys.
-	pub index_signature: Option<IndexSignature>,
-
 	/// The fields of the record (if applicable).
 	/// A (empty lack of fields implies dynamic fields, AKA classical JS and Python
-	/// We avoid None for this because there ARE still fields, just unkown. So it would be Some([])
+	/// We avoid None for this because there ARE still fields, just unkown. So it would be Some(Unknown)
 	/// None is exclusively for unit types
 	// TODO: Use an Optional wrapper where this is indicated
 	pub fields: Option<Vec<KnownField>>,
@@ -46,7 +43,7 @@ pub struct IndexSignature {
 /// As in JS/Py
 pub enum Field {
 	Known(KnownField),
-	Unknown(),
+	Unknown(IndexSignature),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,7 +84,10 @@ pub struct KnownField {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum FieldAttribute {
+	// For fields that are marked as mutable
 	Mutable,
+
+	// For fields that are marked as optional
 	Optional,
 }
 
