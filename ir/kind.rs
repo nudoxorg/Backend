@@ -1,68 +1,78 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::{
+	function::Function,
+	protocols::{TraitDef, TraitImpl},
+	record::{Record, SumVariant},
+	ty::Type,
+};
+
+/// The visibility of an entry in the source language.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Visibility {
 	Public,
 	Private,
 	Protected,
+	/// Module-internal (e.g., Rust `pub(crate)`, C# `internal`).
 	Internal,
+	/// Package-scoped (e.g., Java package-private).
 	Package,
 }
 
-/// Represents different kinds of code elements in a programming language or
-/// API.
+/// The syntactic / semantic kind of a documented API entry.
+///
+/// Each variant carries its data inline, so no separate lookup is required
+/// to understand what shape the entry has.  Variants that carry no structured
+/// data are leaf entries whose content is fully captured by their `Entry`
+/// fields.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kind", content = "value"))]
-pub enum Kind {
-	/// A namespace, package, or module.
+pub enum EntryKind {
+	/// A namespace, package, or module — a container for other entries.
 	Module,
 
-	/// Struct, class, record, or data class.
+	/// A product type: struct, class, record, or data class.
 	RecordType(Record),
 
-	/// Unlinked documentation
+	/// Unlinked, free-form documentation (prose articles, guides, etc.).
 	Info,
 
-	/// Union type
+	/// An anonymous or tagged union of concrete types.
 	UnionType(Vec<Type>),
 
-	/// Trait/protocol/interface definition
+	/// A trait, protocol, or interface definition.
 	TraitDef(TraitDef),
 
-	/// Trait/protocol implementation
+	/// A concrete implementation of a trait or protocol for a specific type.
 	TraitImpl(TraitImpl),
 
-	/// Enum, algebraic data type, discriminated union.
+	/// An algebraic sum type: enum, discriminated union, or sealed class.
 	SumType(Vec<SumVariant>),
 
-	/// Trait, interface, abstract base class.
-	InterfaceType,
-
-	/// Function, method, lambda (with metadata).
+	/// A function, method, or lambda with its full signature.
 	Function(Function),
 
-	/// Type alias, typedef, using alias.
+	/// A type alias, typedef, or `using` alias.
 	TypeAlias(Type),
 
-	// value in compler output for now... Quick PAtch for now
-	/// Constant or immutable global.
+	/// A named constant or immutable global binding.
 	Constant,
 
-	/// Mutable global/static variable.
+	/// A mutable global or static variable.
 	Variable,
 
-	/// Macro, template, codegen hook.
+	/// A macro, template, or code-generation hook.
 	Macro,
 
-	/// Built‑in primitive type.
+	/// A built-in primitive type (integer, float, bool, …).
 	PrimitiveType,
 
-	/// Field or property of a type.
+	/// A field or property of a containing type.
 	Field,
 
-	/// Event, signal, or callback definition.
+	/// An event, signal, or callback definition.
 	Event,
 }

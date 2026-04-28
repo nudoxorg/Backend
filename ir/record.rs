@@ -2,9 +2,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	generics::{ConstExpr, GenericArg, Generics},
+	generics::{ConstExpr, Generics},
 	kind::Visibility,
-	r#type:Type,
+	ty::Type,
 };
 
 #[derive(Debug, Clone, PartialEq)]

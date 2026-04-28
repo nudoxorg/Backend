@@ -1,44 +1,53 @@
 ///! We store our data as a nested tree structure to ensure maximum composability for building the structure, and the ease of Serde and so on and so forth. We're able to store references to other objects using absolute paths, and during upload time, a graph is composed once. A (highly) unsafe structure should be considered in the future to avoid this reconstruction between backends.
-use std::{
-	collections::{HashMap, HashSet},
-	path::Path,
-};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::kind::{Kind, Visibility};
+use crate::kind::{EntryKind, Visibility};
 
 /// A representation of a documented API entry.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Entry {
-	// Required
-	pub name: String,    // Semantic name for the entry (std::time, or to_string)
-	pub path: NudoxPath, // The absolute path leading to the first/canonical instance of this entry
+	/// Semantic name of the entry (e.g., `"std::time"`, `"to_string"`).
+	pub name: String,
 
-	// aliases = re-exports/other instances of path occurences of same id
+	/// Absolute path to the first / canonical occurrence of this entry.
+	pub path: NudoxPath,
+
+	/// Alternate paths (re-exports, aliased imports, etc.).
 	pub aliases: Option<HashSet<Vec<String>>>,
-	pub kind: Kind,                     // The kind of entry this is
-	pub visibility: Option<Visibility>, // The visibility of this entry (public, private, flags?)
 
-	pub documentation: Option<String>, // The associated documentation
+	/// The syntactic / semantic kind of this entry.
+	pub kind: EntryKind,
 
-	// TODO: Attempt to repalce this with targeted expansions along the Module type for example
-	pub members: Option<Vec<EntryRef>>, // References instead of duplicates
+	/// Declared visibility, if the source language supports it.
+	pub visibility: Option<Visibility>,
+
+	/// Associated documentation string.
+	pub documentation: Option<String>,
+
+	/// Child entries (members, nested items, etc.).
+	pub members: Option<Vec<EntryRef>>,
 }
 
-/// Stores the path to an exact location within the Nudox registry
+/// A path to a location within the Nudox registry.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum NudoxPath {
-	/// Is this path from an external dependency?
-	External { path: Path, dependency: String },
+	/// A path inside an external dependency, bundled with its crate/package name.
+	External { path: PathBuf, dependency: String },
 
-	/// Is this path local to the project/crate/whatever
-	Local(Path),
+	/// A path local to the current project / crate / package.
+	Local(PathBuf),
 }
 
-/// Top-level table for the IR entries/roots
-/// TerminusDB integration is much smoother with this
+/// Top-level index table for IR entries.
+///
+/// A flat `HashMap` keyed by stable integer IDs keeps TerminusDB integration
+/// straightforward and avoids deep nesting at the root level.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Index {
@@ -46,7 +55,7 @@ pub struct Index {
 	pub entries_by_id: HashMap<i64, Entry>,
 }
 
-/// Reference to Entry with ID and path if an API entry used in members
+/// A lightweight cross-reference to another `Entry`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct EntryRef {
