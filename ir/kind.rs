@@ -79,3 +79,26 @@ pub enum EntryKind {
 	/// An event, signal, or callback definition.
 	Event,
 }
+
+impl std::fmt::Display for EntryKind {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let tag = match self {
+			EntryKind::Module(_) => "module",
+			EntryKind::Info => "info",
+			EntryKind::Constant => "constant",
+			EntryKind::Variable => "variable",
+			EntryKind::Macro => "macro",
+			EntryKind::PrimitiveType => "primitive_type",
+			EntryKind::Event => "event",
+			EntryKind::Field => "field",
+			EntryKind::RecordType(_) => "record",
+			EntryKind::UnionType(_) => "union",
+			EntryKind::TraitDef(_) => "trait_def",
+			EntryKind::TraitImpl(_) => "trait_impl",
+			EntryKind::SumType(_) => "sum_type",
+			EntryKind::TypeAlias(_) => "type_alias",
+			EntryKind::Function(_) => "function",
+		};
+		write!(f, "{}", tag)
+	}
+}
