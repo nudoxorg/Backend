@@ -2,11 +2,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	parameter::{ConstParam, LifetimeParam, TypeParam},
+	parameter::{ConstParam, LifetimeParam, Parameter, TypeParam},
 	ty::Type,
 };
-
-// MARK: - Generics
 
 /// A universal representation of a generic parameter list across languages.
 ///
@@ -18,20 +16,12 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Generics {
-	/// The type variables introduced (e.g., `T`, `K: Hashable`).
-	pub type_params: Vec<TypeParam>,
-
-	/// The constant variables introduced (e.g., `const N: usize`).
-	pub const_params: Vec<ConstParam>,
-
-	/// The lifetime / region variables introduced (e.g., `'a`).
-	pub lifetime_params: Vec<LifetimeParam>,
+	/// The parameteres that this set of generics accepts
+	pub params: Vec<Parameter>,
 
 	/// Additional constraints relating the parameters above.
 	pub constraints: Vec<Constraint>,
 }
-
-// MARK: - Constraints
 
 /// A predicate that restricts how the generic parameters of a declaration may
 /// be instantiated.
@@ -74,8 +64,6 @@ pub enum Term {
 	/// A set of sub-constraints the term must satisfy.
 	Bound(Vec<Constraint>),
 }
-
-// MARK: - Supporting Types
 
 /// A reference to a trait or protocol, optionally parameterised.
 #[derive(Debug, Clone, PartialEq)]
