@@ -73,7 +73,7 @@
 //! variants for Kind.
 use std::{borrow::Cow, collections::BTreeMap};
 
-use ir::kind::Kind;
+use ir::kind::EntryKind;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::warn;
@@ -161,19 +161,19 @@ impl CrateInfo {
 // maybe URI builder function
 pub struct DocCtx {
 	pub crate_info:   CrateInfo,
-	pub current_path: Vec<String>, // the stable uri builder can live here
+	pub current_path: Option<ir::entry::NudoxPath>,
 	pub context_obj:  Value,
 }
 
 impl DocCtx {
 	/// Initialize Must have the CrateInfo
 	pub fn init(crate_info: CrateInfo, context_obj: Value) -> Self {
-		Self { crate_info, current_path: Vec::default(), context_obj }
+		Self { crate_info, current_path: None, context_obj }
 	}
 
 	/// Set path to current entry's path
 	// TODO refactor, such that this is not a global path holder
-	pub fn update_path(&mut self, path: &[String]) { self.current_path = path.into() }
+	pub fn update_path(&mut self, path: &ir::entry::NudoxPath) { self.current_path = Some(path.clone()) }
 
 	pub fn context(&self) -> &Value { &self.context_obj }
 
@@ -184,34 +184,41 @@ impl DocCtx {
 /// Trait for edges and URI construction
 #[allow(dead_code)]
 pub trait UriOps {
-	fn entry_uri(&self, path: &[String]) -> URI;
-	fn kind_uri(&self, kind: &Kind, path: &[String]) -> URI;
+	fn entry_uri(&self, path: &ir::entry::NudoxPath) -> URI;
+	fn kind_uri(&self, kind: &ir::kind::EntryKind, path: &ir::entry::NudoxPath) -> URI;
 
-	fn uri_path(&self, path: &[String]) -> URI;
+	fn uri_path(&self, path: &ir::entry::NudoxPath) -> URI;
 	// This returns a JsonLd Edge - {"@id": "<URI>"}
 	fn build_edge(uri: &URI) -> Value;
 }
 
 /// Responsible for URI construction
 impl UriOps for DocCtx {
-	fn entry_uri(&self, path: &[String]) -> URI {
-		// Entry/lang/crate/path
-		let path = path.join("/");
-		format!("Entry/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path)
+	fn entry_uri(&self, path: &ir::entry::NudoxPath) -> URI {
+		let path_str = match path {
+			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
+			ir::entry::NudoxPath::External { path, dependency } => format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+		};
+		format!("Entry/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path_str)
 	}
 
-	fn kind_uri(&self, kind: &Kind, path: &[String]) -> URI {
-		// Kind/lang/crate/path
-		let path = path.join("/");
+	fn kind_uri(&self, kind: &ir::kind::EntryKind, path: &ir::entry::NudoxPath) -> URI {
+		let path_str = match path {
+			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
+			ir::entry::NudoxPath::External { path, dependency } => format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+		};
 		let prefix = kind.to_string();
-		format!("{}/{}/{}/{}", prefix, self.crate_info.lang(), self.crate_info.crate_name(), path)
+		format!("{}/{}/{}/{}", prefix, self.crate_info.lang(), self.crate_info.crate_name(), path_str)
 	}
 
 	/// Builds the path + concat with / between
 	/// Used for new kind_tag
-	fn uri_path(&self, path: &[String]) -> URI {
-		let path = path.join("/");
-		format!("/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path)
+	fn uri_path(&self, path: &ir::entry::NudoxPath) -> URI {
+		let path_str = match path {
+			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
+			ir::entry::NudoxPath::External { path, dependency } => format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+		};
+		format!("/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path_str)
 	}
 
 	fn build_edge(uri: &URI) -> Value { json!({"@id": uri}) }

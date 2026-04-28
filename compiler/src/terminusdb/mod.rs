@@ -2,7 +2,8 @@ pub mod ld;
 pub mod termdb;
 pub mod upload;
 
-use ir::{entry::Entry, kind::Kind};
+use ir::entry::{Entry, NudoxPath};
+use ir::kind::EntryKind;
 use serde_json::{Map, Value, json};
 use termdb::{DocCtx, DocStore, EmitJsonLD, URI};
 use tracing::{debug, instrument, warn};
@@ -13,10 +14,22 @@ impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
 		let entry_uri: URI = ctx.entry_uri(&self.path);
 
-		let fq_name: String = self.path.join("::");
+		let fq_name: String = match &self.path {
+			NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/").replace("/", "::"),
+			NudoxPath::External { path, dependency } => format!("{}::{}", dependency, path.to_string_lossy().replace("\\", "/").replace("/", "::"))
+		};
+		
+		let (entry_members, entry_visibility, entry_documentation): (Option<Vec<NudoxPath>>, Option<ir::kind::Visibility>, Option<String>) = match &self.kind {
+			EntryKind::Module(m) => (m.members.clone(), Some(m.visibility.clone()), m.documentation.clone()),
+			EntryKind::RecordType(r) => (r.members.clone(), Some(r.visibility.clone()), r.documentation.clone()),
+			EntryKind::Function(f) => (f.members.clone(), f.visibility.clone(), f.documentation.clone()),
+			EntryKind::TraitDef(t) => (None, t.visibility.clone(), t.docs.clone()),
+			_ => (None, None, None),
+		};
+
 		// No longer {"@id": "Ref"} -> ["ref1", .. "refn"] now
-		let members: Vec<String> = match self.members.as_ref() {
-			Some(members) => members.iter().map(|m| ctx.entry_uri(&m.path)).collect(),
+		let members: Vec<String> = match entry_members.as_ref() {
+			Some(members) => members.iter().map(|m| ctx.entry_uri(m)).collect(),
 			None => Vec::default(),
 		};
 
@@ -46,11 +59,11 @@ impl EmitJsonLD for Entry {
 		obj.insert("fq_name".into(), Value::String(fq_name));
 		obj.insert("members".into(), json!(members));
 
-		if let Some(vis) = self.visibility.as_ref() {
+		if let Some(vis) = entry_visibility.as_ref() {
 			obj.insert("visibility".into(), json!(vis));
 		}
 
-		if let Some(doc) = self.documentation.as_deref() {
+		if let Some(doc) = entry_documentation.as_deref() {
 			obj.insert("documentation".into(), Value::String(doc.to_owned()));
 		}
 
@@ -72,10 +85,11 @@ impl EmitJsonLD for Entry {
 	}
 }
 
-impl EmitJsonLD for Kind {
+impl EmitJsonLD for EntryKind {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
 		// transform into LDKind
-		let to_emit = LDKind::new(&ctx.current_path, self, ctx);
+		// Use unwrap safely since current_path is set above
+		let to_emit = LDKind::new(ctx.current_path.as_ref().unwrap(), self, ctx);
 		let emitted_uri = to_emit.uri.clone();
 		// Shouldnt fail to serialize
 		if let Ok(mut emitted_value) = serde_json::to_value(to_emit) {

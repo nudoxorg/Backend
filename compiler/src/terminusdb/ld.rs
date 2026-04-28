@@ -1,4 +1,4 @@
-use ir::{kind::{Kind, Visibility}, record::RecordKind};
+use ir::kind::{EntryKind, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
@@ -24,25 +24,24 @@ pub trait TagGen {
 }
 
 /// snake_case tags for kind
-impl TagGen for Kind {
+impl TagGen for EntryKind {
 	fn tag(&self) -> &'static str {
 		let tag = match self {
-			Kind::Module => "module",
-			Kind::Info => "info",
-			Kind::InterfaceType => "interface_type",
-			Kind::Constant => "constant",
-			Kind::Variable => "variable",
-			Kind::Macro => "macro",
-			Kind::PrimitiveType => "primitive_type",
-			Kind::Event => "event",
-			Kind::Field => "field",
-			Kind::RecordType(_) => "record",
-			Kind::UnionType(_) => "union",
-			Kind::TraitDef(_) => "trait_def",
-			Kind::TraitImpl(_) => "trait_impl",
-			Kind::SumType(_) => "sum_type",
-			Kind::TypeAlias(_) => "type_alias",
-			Kind::Function(_) => "function",
+			EntryKind::Module(_) => "module",
+			EntryKind::Info => "info",
+			EntryKind::Constant => "constant",
+			EntryKind::Variable => "variable",
+			EntryKind::Macro => "macro",
+			EntryKind::PrimitiveType => "primitive_type",
+			EntryKind::Event => "event",
+			EntryKind::Field => "field",
+			EntryKind::RecordType(_) => "record",
+			EntryKind::UnionType(_) => "union",
+			EntryKind::TraitDef(_) => "trait_def",
+			EntryKind::TraitImpl(_) => "trait_impl",
+			EntryKind::SumType(_) => "sum_type",
+			EntryKind::TypeAlias(_) => "type_alias",
+			EntryKind::Function(_) => "function",
 		};
 		tag
 	}
@@ -50,7 +49,7 @@ impl TagGen for Kind {
 
 impl LDKind {
 	/// Should never fail, but using try_from, so handle errors here
-	pub fn new(path: &[String], kind: Kind, ctx: &DocCtx) -> Self {
+	pub fn new(path: &ir::entry::NudoxPath, kind: EntryKind, ctx: &DocCtx) -> Self {
 		LDKind {
 			uri:       ctx.kind_uri(&kind, path),
 			kind_tag:  kind.tag(),
@@ -105,36 +104,35 @@ pub enum LDConversionError {
 
 /// Handles the conversion from inner Kind type to an LDInheritor type,
 /// which represents the concrete implementation of that class
-impl TryFrom<Kind> for LDInheritor {
+impl TryFrom<EntryKind> for LDInheritor {
 	type Error = LDConversionError;
 
-	fn try_from(item: Kind) -> Result<Self, Self::Error> {
+	fn try_from(item: EntryKind) -> Result<Self, Self::Error> {
 		match item {
 			// HINT add match case here for next supported item
-			Kind::RecordType(rk) => {
+			EntryKind::RecordType(rk) => {
 				// try to get LDRecord, either returns error OR ldrecord wrapped into
 				// LDInheritor Enum
 				LDRecord::try_from(rk).map(|ldrecord| LDInheritor::RecordType(ldrecord))
 			}
-			Kind::UnionType(ut) => LDUnion::try_from(ut).map(|ldunion| LDInheritor::UnionType(ldunion)),
-			Kind::TraitDef(td) => LDTraitDef::try_from(td).map(|ldtrait| LDInheritor::TraitDef(ldtrait)),
-			Kind::TraitImpl(ti) => LDTraitImpl::try_from(ti).map(|ldimpl| LDInheritor::TraitImpl(ldimpl)),
-			Kind::SumType(st) => LDSum::try_from(st).map(|ldsum| LDInheritor::SumType(ldsum)),
-			Kind::Function(func) => {
+			EntryKind::UnionType(ut) => LDUnion::try_from(ut).map(|ldunion| LDInheritor::UnionType(ldunion)),
+			EntryKind::TraitDef(td) => LDTraitDef::try_from(td).map(|ldtrait| LDInheritor::TraitDef(ldtrait)),
+			EntryKind::TraitImpl(ti) => LDTraitImpl::try_from(ti).map(|ldimpl| LDInheritor::TraitImpl(ldimpl)),
+			EntryKind::SumType(st) => LDSum::try_from(st).map(|ldsum| LDInheritor::SumType(ldsum)),
+			EntryKind::Function(func) => {
 				LDFunction::try_from(func).map(|ldfunc| LDInheritor::Function(ldfunc))
 			}
-			Kind::TypeAlias(ta) => {
+			EntryKind::TypeAlias(ta) => {
 				LDTypeAlias::try_from(ta).map(|ldalias| LDInheritor::TypeAlias(ldalias))
 			}
-			Kind::Module => Ok(LDInheritor::Module),
-			Kind::Info => Ok(LDInheritor::Info),
-			Kind::InterfaceType => Ok(LDInheritor::InterfaceType),
-			Kind::Constant => Ok(LDInheritor::Constant),
-			Kind::Variable => Ok(LDInheritor::Variable),
-			Kind::Macro => Ok(LDInheritor::Macro),
-			Kind::PrimitiveType => Ok(LDInheritor::PrimitiveType),
-			Kind::Field => Ok(LDInheritor::Field),
-			Kind::Event => Ok(LDInheritor::Event),
+			EntryKind::Module(_) => Ok(LDInheritor::Module),
+			EntryKind::Info => Ok(LDInheritor::Info),
+			EntryKind::Constant => Ok(LDInheritor::Constant),
+			EntryKind::Variable => Ok(LDInheritor::Variable),
+			EntryKind::Macro => Ok(LDInheritor::Macro),
+			EntryKind::PrimitiveType => Ok(LDInheritor::PrimitiveType),
+			EntryKind::Field => Ok(LDInheritor::Field),
+			EntryKind::Event => Ok(LDInheritor::Event),
 		}
 	}
 }
@@ -147,7 +145,6 @@ impl TryFrom<Kind> for LDInheritor {
 // here, so we require it
 pub struct LDRecord {
 	pub name:        String,
-	pub record_kind: RecordKind,
 	pub visibility:  Visibility,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	// skip serialization for non-existent generics
@@ -170,13 +167,9 @@ impl TryFrom<ir::record::Record> for LDRecord {
 					None => return Err(LDConversionError::NameMissing),
 				}
 			},
-			record_kind: item.kind,
-			visibility:  match item.visibility {
-				Some(v) => v,
-				None => return Err(LDConversionError::VisibilityMissing),
-			},
+			visibility:  item.visibility,
 			generics:    item.generics.map(|g| json!(g)),
-			fields:      item.fields.iter().flatten().map(|f| json!(f)).collect(),
+			fields:      item.fields.iter().map(|f| json!(f)).collect(),
 		};
 		Ok(res)
 	}
