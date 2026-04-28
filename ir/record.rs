@@ -22,7 +22,7 @@ pub struct Record {
 	/// We avoid None for this because there ARE still fields, just unkown. So it would be Some(Unknown)
 	/// None is exclusively for unit types
 	// TODO: Use an Optional wrapper where this is indicated
-	pub fields: Option<Vec<KnownField>>,
+	pub fields: Option<Vec<Field>>,
 
 	/// The visibility of the record
 	pub visibility: Visibility,
