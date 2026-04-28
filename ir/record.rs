@@ -92,12 +92,16 @@ pub struct KnownField {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum FieldAttribute {
+pub struct FieldAttribute {
+	// TODO: Add support for inline declarations like Java's @Override
+	// Or serde(default)-like attributes in Rust
+
 	// For fields that are marked as mutable
-	Mutable,
+	// If fields are immutable by default in the language just mark this as false.
+	is_mutable: bool,
 
 	// For fields that are marked as optional
-	Optional,
+	is_optional: bool,
 }
 
 /// Adding sum variants here for historical reasons
