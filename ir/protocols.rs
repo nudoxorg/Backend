@@ -7,7 +7,7 @@ use crate::{
 	generics::{ConstExpr, Constraint, Generics, TraitRef},
 	kind::Visibility,
 	parameter::Parameter,
-	r#type:Type,
+	ty::Type,
 };
 
 // MARK: - TraitDef
@@ -136,7 +136,7 @@ pub struct TraitConstant {
 	pub name: String,
 
 	/// Type of the constant
-	pub r#type Box<Type>,
+	pub r#type: Box<Type>,
 
 	/// Default value (if provided)
 	pub default_value: Option<ConstExpr>,
@@ -219,5 +219,5 @@ pub struct AssociatedTypeImpl {
 	pub name: String,
 
 	/// The concrete type
-	pub r#type Box<Type>,
+	pub r#type: Box<Type>,
 }

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use super::function;
 use crate::{
-	generics::{GenericArg, TraitRef, TypeParam},
-	parameter::{LiteralParameter, Parmeter},
+	generics::{GenericArg, TraitRef},
+	parameter::{LiteralParameter, Parameter, TypeParam},
 	primitives::Primitive,
 	protocols::GenericBound,
 	record::SumVariant,
@@ -124,8 +124,8 @@ pub struct GenericParam {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct FunctionPointer {
-	pub inputs: Option<Vec<Parmeter>>,
-	pub outputs: Option<Vec<Parmeter>>,
+	pub inputs: Option<Vec<Parameter>>,
+	pub outputs: Option<Vec<Parameter>>,
 
 	/// Metadata like `#[unsafe]`, `extern "C"`, or async status.
 	pub attributes: Option<Vec<function::Attribute>>,
