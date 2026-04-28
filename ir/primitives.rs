@@ -1,29 +1,51 @@
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
-type Float16 = f32; // Placeholder
-
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Primitive {
-	Int8(Option<i8>),
-	Int16(Option<i16>),
-	Int(Option<isize>),
-	Int64(Option<i64>),
-	Int128(Option<i128>),
-	UInt8(Option<u8>),
-	UInt16(Option<u16>),
-	UInt(Option<usize>),
-	UInt64(Option<u64>),
-	UInt128(Option<u128>),
-	F16(Option<Float16>),
-	Float(Option<f32>),
-	Double(Option<f64>),
-	Bool(Option<bool>),
-	String(Option<String>),
-	Char(Option<char>),
-	// MARK: - Special Values
-	Null,
-	Date(Option<String>), // Using jiff::Timestamp
-	Data(Option<Vec<u8>>),
+	/// Signed Integers (8, 16, 32, 64, 128, and Architecture-dependent)
+	Int(IntWidth),
+
+	/// Unsigned Integers (8, 16, 32, 64, 128, and Architecture-dependent)
+	UInt(IntWidth),
+
+	/// Floating point numbers
+	Float(FloatWidth),
+
+	/// Boolean logic
+	Bool,
+
+	/// UTF-8 or similar string types
+	String,
+
+	/// Single character type
+	Char,
+
+	/// Binary data / Byte buffers
+	Bytes,
+
+	/// Temporal/Date types
+	Date,
+
+	/// A pointer-sized address (void*)
+	Address,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum IntWidth {
+	W8,
+	W16,
+	W32,
+	W64,
+	W128,
+
+	/// Machine dependent/usize
+	Arch,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FloatWidth {
+	W16,
+	W32,
+	W64,
 }
