@@ -1,7 +1,11 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{generics::{ConstExpr, GenericArg, Generics}, kind::Visibility, ty::Type};
+use crate::{
+	generics::{ConstExpr, GenericArg, Generics},
+	kind::Visibility,
+	ty::Type,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -15,8 +19,7 @@ pub struct Record {
 
 	/// The fields of the record (if applicable).
 	/// An empty lack of fields implies dynamic fields, AKA classical JS and
-	/// Python. None is exclusively for unit types.
-	pub fields: Option<Vec<Field>>,
+	pub fields: Vec<Field>,
 
 	/// The visibility of the record
 	pub visibility: Visibility,
@@ -31,7 +34,7 @@ pub struct Record {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct IndexSignature {
-	pub key_type:   Box<Type>, // Usually String or Number
+	pub key_type: Box<Type>, // Usually String or Number
 	pub value_type: Box<Type>,
 }
 
