@@ -15,6 +15,8 @@ pub struct Function {
 	pub attributes: Option<Vec<Attribute>>,
 	pub generics: Option<Generics>,
 	pub name: String,
+	pub visibility: Option<crate::kind::Visibility>,
+	pub implemented: bool,
 
 	/// Function-level documentation comments.
 	pub documentation: Option<String>,
