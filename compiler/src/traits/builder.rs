@@ -3,7 +3,7 @@ use std::time::Duration;
 use crates_io_api::AsyncClient;
 use lang_types::Language;
 
-use crate::core::{rust::Crates, ts::Npm};
+use crate::core::rust::Crates;
 
 /// Construct the Rust crates.io registry.
 ///
@@ -19,5 +19,3 @@ pub fn get_registry(language: Language) -> Crates {
 	}
 }
 
-/// Construct the npm registry for TypeScript/JavaScript packages.
-pub fn get_ts_registry() -> Npm { Npm::default() }
