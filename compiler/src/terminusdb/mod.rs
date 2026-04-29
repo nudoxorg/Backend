@@ -65,8 +65,7 @@ impl EmitJsonLD for Entry {
 		obj.insert("path".into(), json!(self.path));
 		obj.insert("aliases".into(), json!(aliases_fq));
 		obj.insert("name".into(), Value::String(self.name.clone()));
-		obj.insert("fq_name".into(), Value::String(fq_name));
-		obj.insert("members".into(), json!(members));
+		obj.insert("members".into(), json!(members)); // TODO: Remove this
 
 		if let Some(vis) = entry_visibility.as_ref() {
 			obj.insert("visibility".into(), json!(vis));
