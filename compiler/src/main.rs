@@ -60,7 +60,7 @@ async fn main() -> eyre::Result<()> {
 	));
 
 	// Feed entries from the index into the runner
-	runner.run(index.entries_by_id.into_values());
+	runner.run(index.entries_by_path.into_values());
 
 	let store = runner.into_docs();
 	info!(documents = store.docs.len(), "emission complete");

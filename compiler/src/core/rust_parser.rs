@@ -4,19 +4,31 @@ use rustdoc_types::{Crate, Id, Item, ItemEnum};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
-use ir::{entry::{Entry, EntryRef}, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{Kind, Visibility}, parameter::Parameter, primitives::Primitive, protocols::*, record::*, ty::{DynTrait, FunctionPointer, Path as IRPath, PolyTrait, QualifiedPath, Type}};
+use ir::{
+	entry::{Entry, NudoxPath},
+	function::{Attribute as FnAttribute, Function},
+	generics::{Term, *},
+	kind::{EntryKind, Visibility},
+	parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin},
+	primitives::{FloatWidth, IntWidth, Primitive},
+	protocols::*,
+	record::*,
+	ty::{
+		DynTrait, FunctionPointer, GenericParam, PolyTrait, QualifiedPath, Type, TypeReference,
+	},
+};
 
 use crate::core::rust::ParseError;
 
 /// Immutable context.
 pub struct ParseContext {
-	krate:       Crate,
+	krate: Crate,
 	/// Maps rustdoc IDs to resolved paths
 	id_to_paths: HashMap<Id, HashSet<Vec<String>>>,
 
 	/// Primitive name to ID mapping (for Genealogy resolution)
 	primitive_map: HashMap<String, Id>,
-	path_to_id:    HashMap<String, Id>,
+	path_to_id: HashMap<String, Id>,
 }
 
 /// Mutable state that only changes during `parse_crate`.
@@ -30,7 +42,7 @@ pub struct ParseState {
 }
 
 pub struct RustdocParser {
-	ctx:   ParseContext,
+	ctx: ParseContext,
 	state: ParseState,
 }
 
@@ -282,7 +294,11 @@ impl ParseContext {
 		Ok(entry)
 	}
 
-	fn collect_impl_members(&self, state: &mut ParseState, impl_ids: &[Id]) -> Result<Vec<EntryRef>> {
+	fn collect_impl_members(
+		&self,
+		state: &mut ParseState,
+		impl_ids: &[Id],
+	) -> Result<Vec<NudoxPath>> {
 		let mut members = Vec::new();
 
 		for impl_id in impl_ids {
@@ -298,7 +314,7 @@ impl ParseContext {
 				for assoc_item_id in &imp.items {
 					match self.parse_item(state, assoc_item_id) {
 						Ok(entry) => {
-							members.push(EntryRef { id: entry.id, path: entry.path });
+							members.push(entry.path);
 						}
 						Err(e) => {
 							// Silent failure: failed to parse associated item
@@ -316,7 +332,9 @@ impl ParseContext {
 		Ok(members)
 	}
 
-	fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> { self.id_to_paths.get(id) }
+	fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> {
+		self.id_to_paths.get(id)
+	}
 
 	fn get_primary_path(&self, id: &Id) -> Result<Vec<String>> {
 		self
@@ -326,7 +344,9 @@ impl ParseContext {
 			.ok_or_else(|| ParseError::PathParsing(format!("No path found for ID: {}", id.0)))
 	}
 
-	fn get_path(&self, id: &Id) -> Result<Vec<String>> { self.get_primary_path(id) }
+	fn get_path(&self, id: &Id) -> Result<Vec<String>> {
+		self.get_primary_path(id)
+	}
 
 	fn convert_item(&self, state: &mut ParseState, id: &Id, item: &Item) -> Result<Entry> {
 		let name = item.name.clone().unwrap_or_default();
@@ -354,7 +374,7 @@ impl ParseContext {
 				for method_id in &t.items {
 					match self.parse_item(state, method_id) {
 						Ok(entry) => {
-							trait_members.push(EntryRef { id: entry.id, path: entry.path });
+							trait_members.push(entry.path);
 						}
 						Err(e) => {
 							todo!(
@@ -371,7 +391,7 @@ impl ParseContext {
 				let mut children = Vec::new();
 				for item_id in &m.items {
 					if let Ok(child) = self.parse_item(state, item_id) {
-						children.push(EntryRef { id: child.id, path: child.path });
+						children.push(child.path);
 					}
 				}
 				if children.is_empty() { None } else { Some(children) }
@@ -379,56 +399,95 @@ impl ParseContext {
 			_ => None,
 		};
 
-		Ok(Entry { name, id: id_num, path, aliases, kind, visibility, documentation, members })
+		let mut kind = kind;
+		match &mut kind {
+			EntryKind::Module(m) => {
+				m.members = members.clone();
+				m.visibility = visibility.clone().unwrap_or(ir::kind::Visibility::Public);
+				m.documentation = documentation.clone();
+			}
+			EntryKind::RecordType(r) => {
+				r.members = members.clone();
+				r.visibility = visibility.clone().unwrap_or(ir::kind::Visibility::Public);
+				r.documentation = documentation.clone();
+			}
+			EntryKind::Function(f) => {
+				f.members = members.clone();
+				f.visibility = visibility.clone();
+				f.documentation = documentation.clone();
+			}
+			EntryKind::TraitDef(t) => {
+				t.members = members.clone();
+				t.visibility = visibility.clone();
+				t.docs = documentation.clone();
+			}
+			EntryKind::TraitImpl(t) => {
+				t.members = members.clone();
+				t.visibility = visibility.clone();
+				t.docs = documentation.clone();
+			}
+			_ => {}
+		}
+
+		Ok(Entry { name, path: NudoxPath::Local(std::path::PathBuf::from(path.join("::"))), aliases, kind })
 	}
 
-	fn parse_item_kind(&self, state: &mut ParseState, id: &Id, inner: &ItemEnum) -> Result<Kind> {
+	fn parse_item_kind(
+		&self,
+		state: &mut ParseState,
+		id: &Id,
+		inner: &ItemEnum,
+	) -> Result<EntryKind> {
 		match inner {
-			ItemEnum::Module(_) => Ok(Kind::Module),
+			ItemEnum::Module(_) => Ok(EntryKind::Module(ir::module::Module {
+				members: None,
+				visibility: ir::kind::Visibility::Public,
+				documentation: None,
+			})),
 
 			ItemEnum::Struct(s) => {
 				let record = self.parse_struct(id, s)?;
-				Ok(Kind::RecordType(record))
+				Ok(EntryKind::RecordType(record))
 			}
 
 			ItemEnum::Enum(e) => {
 				let variants = self.parse_enum_variants(e)?;
-				Ok(Kind::SumType(variants))
+				Ok(EntryKind::SumType(variants))
 			}
 
 			ItemEnum::Function(f) => {
 				let function = self.parse_function(id, f)?;
-				Ok(Kind::Function(function))
+				Ok(EntryKind::Function(function))
 			}
 
 			ItemEnum::Trait(t) => {
 				let trait_def = self.parse_trait(state, id, t)?;
-				Ok(Kind::TraitDef(trait_def))
+				Ok(EntryKind::TraitDef(trait_def))
 			}
 
 			ItemEnum::Impl(i) => {
 				let trait_impl = self.parse_impl(state, id, i)?;
-				Ok(Kind::TraitImpl(trait_impl))
+				Ok(EntryKind::TraitImpl(trait_impl))
 			}
 
-			ItemEnum::TypeAlias(alias) => Ok(Kind::TypeAlias(self.parse_type(&alias.type_)?)),
+			ItemEnum::TypeAlias(alias) => Ok(EntryKind::TypeAlias(self.parse_type(&alias.type_)?)),
 
-			ItemEnum::Constant { .. } => Ok(Kind::Constant),
+			ItemEnum::Constant { .. } => Ok(EntryKind::Constant),
 
-			ItemEnum::Static(_) => Ok(Kind::Variable),
+			ItemEnum::Static(_) => Ok(EntryKind::Variable),
 
-			ItemEnum::Macro(_) => Ok(Kind::Macro),
+			ItemEnum::Macro(_) => Ok(EntryKind::Macro),
 
-			ItemEnum::ProcMacro(_) => Ok(Kind::Macro),
+			ItemEnum::ProcMacro(_) => Ok(EntryKind::Macro),
 
-			ItemEnum::StructField(_ty) => Ok(Kind::Field),
+			ItemEnum::StructField(_ty) => Ok(EntryKind::Field),
 
 			ItemEnum::Union(u) => {
 				let types = self.parse_union_fields(u)?;
-				Ok(Kind::UnionType(types))
+				Ok(EntryKind::UnionType(types))
 			}
 
-			_ => Ok(Kind::Field),
+			_ => Ok(EntryKind::Field),
 		}
 	}
 
@@ -437,21 +496,25 @@ impl ParseContext {
 		let generics =
 			s.generics.params.is_empty().then(|| self.parse_generic_params(&s.generics)).flatten();
 
-		let (kind, fields) = match &s.kind {
-			rustdoc_types::StructKind::Unit => (RecordKind::Unit, None),
-			rustdoc_types::StructKind::Tuple(field_ids) => {
-				let fields = self.parse_tuple_fields(field_ids)?;
-				(RecordKind::Tuple, Some(fields))
-			}
+		let fields = match &s.kind {
+			rustdoc_types::StructKind::Unit => vec![],
+			rustdoc_types::StructKind::Tuple(field_ids) => self.parse_tuple_fields(field_ids)?,
 			rustdoc_types::StructKind::Plain { fields: field_ids, .. } => {
-				let fields = self.parse_named_fields(field_ids)?;
-				(RecordKind::Named, Some(fields))
+				self.parse_named_fields(field_ids)?
 			}
 		};
 
-		let visibility = Some(self.parse_visibility(&item.visibility));
+		let visibility = self.parse_visibility(&item.visibility);
 
-		Ok(Record { name: item.name.clone(), generics, kind, fields, visibility })
+		Ok(Record {
+			name: item.name.clone(),
+			generics,
+			fields,
+			visibility,
+			documentation: item.docs.clone(),
+			implemented_protocols: None,
+			members: None,
+		})
 	}
 
 	fn parse_tuple_fields(&self, field_ids: &[Option<Id>]) -> Result<Vec<Field>> {
@@ -463,16 +526,20 @@ impl ParseContext {
 					let item = self.krate.index.get(id)?;
 					if let ItemEnum::StructField(ty) = &item.inner {
 						let parsed_ty = self.parse_type(ty).ok()?;
-						let type_entry_id = self.resolve_type_to_entry_id(&parsed_ty);
 
-						Some(Field {
-							name: Some(idx.to_string()),
-							ty: Some(Box::new(parsed_ty)),
+						Some(Field::Known(KnownField {
+							key:           FieldKey::Index(idx),
+							r#type:        Some(Box::new(parsed_ty)),
 							default_value: None,
-							attributes: None,
-							visibility: Some(self.parse_visibility(&item.visibility)),
-							type_entry_id,
-						})
+							attributes:    FieldAttributes {
+								decorators:  vec![],
+								is_mutable:  false,
+								is_optional: false,
+								is_static:   false,
+							},
+							visibility:    Some(self.parse_visibility(&item.visibility)),
+							documentation: item.docs.clone(),
+						}))
 					} else {
 						None
 					}
@@ -480,7 +547,7 @@ impl ParseContext {
 			})
 			.collect::<Option<Vec<_>>>()
 			.ok_or_else(|| ParseError::MissingField {
-				field:   "tuple fields".to_string(),
+				field: "tuple fields".to_string(),
 				context: "struct".to_string(),
 			})
 	}
@@ -493,16 +560,20 @@ impl ParseContext {
 
 				if let ItemEnum::StructField(ty) = &item.inner {
 					let parsed_ty = self.parse_type(ty)?;
-					let type_entry_id = self.resolve_type_to_entry_id(&parsed_ty);
 
-					Ok(Field {
-						name: item.name.clone(),
-						ty: Some(Box::new(parsed_ty)),
+					Ok(Field::Known(KnownField {
+						key:           FieldKey::Ident(item.name.clone().unwrap_or_default()),
+						r#type:        Some(Box::new(parsed_ty)),
 						default_value: None,
-						attributes: None,
-						visibility: Some(self.parse_visibility(&item.visibility)),
-						type_entry_id,
-					})
+						attributes:    FieldAttributes {
+							decorators:  vec![],
+							is_mutable:  false,
+							is_optional: false,
+							is_static:   false,
+						},
+						visibility:    Some(self.parse_visibility(&item.visibility)),
+						documentation: item.docs.clone(),
+					}))
 				} else {
 					Err(ParseError::InvalidItemKind {
 						id:       id.0.to_string(),
@@ -527,7 +598,7 @@ impl ParseContext {
 				let name = item.name.clone().unwrap_or_default();
 
 				if let ItemEnum::Variant(v) = &item.inner {
-					let types = match &v.kind {
+					let data = match &v.kind {
 						rustdoc_types::VariantKind::Plain => None,
 						rustdoc_types::VariantKind::Tuple(fields) => {
 							let types: Result<Vec<Type>> = fields
@@ -543,17 +614,17 @@ impl ParseContext {
 										self.parse_type(ty)
 									} else {
 										Err(ParseError::InvalidItemKind {
-											id:       id.0.to_string(),
+											id: id.0.to_string(),
 											expected: "StructField".to_string(),
-											actual:   format!("{:?}", field_item.inner),
+											actual: format!("{:?}", field_item.inner),
 										})
 									}
 								})
 								.collect();
-							Some(types?)
+							Some(ir::record::SumField::Tuple(types?))
 						}
 						rustdoc_types::VariantKind::Struct { fields, .. } => {
-							let types: Result<Vec<Type>> = fields
+							let types: Result<Vec<Field>> = fields
 								.iter()
 								.map(|id| {
 									let field_item = self
@@ -562,26 +633,38 @@ impl ParseContext {
 										.get(id)
 										.ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
 									if let ItemEnum::StructField(ty) = &field_item.inner {
-										self.parse_type(ty)
+										Ok(Field::Known(ir::record::KnownField {
+											key: ir::record::FieldKey::Ident(field_item.name.clone().unwrap_or_default()),
+											r#type: Some(Box::new(self.parse_type(ty)?)),
+											default_value: None,
+											attributes: ir::record::FieldAttributes {
+												is_mutable: false,
+												is_optional: false,
+												decorators: vec![],
+												is_static: false,
+											},
+											visibility: Some(self.parse_visibility(&field_item.visibility)),
+											documentation: field_item.docs.clone(),
+										}))
 									} else {
 										Err(ParseError::InvalidItemKind {
-											id:       id.0.to_string(),
+											id: id.0.to_string(),
 											expected: "StructField".to_string(),
-											actual:   format!("{:?}", field_item.inner),
+											actual: format!("{:?}", field_item.inner),
 										})
 									}
 								})
 								.collect();
-							Some(types?)
+							Some(ir::record::SumField::StructLike(types?))
 						}
 					};
 
-					Ok(SumVariant { name, types })
+					Ok(SumVariant { name, data, documentation: item.docs.clone() })
 				} else {
 					Err(ParseError::InvalidItemKind {
-						id:       variant_id.0.to_string(),
+						id: variant_id.0.to_string(),
 						expected: "Variant".to_string(),
-						actual:   format!("{:?}", item.inner),
+						actual: format!("{:?}", item.inner),
 					})
 				}
 			})
@@ -597,13 +680,13 @@ impl ParseContext {
 			if f.sig.inputs.is_empty() { None } else { Some(self.parse_function_inputs(&f.sig.inputs)?) };
 
 		let output_parameters = if let Some(output_ty) = &f.sig.output {
-			Some(vec![Parameter {
-				name:          "return".to_string(),
-				ty:            Some(self.parse_type(output_ty)?),
-				attributes:    None,
+			Some(vec![Parameter::Literal(ir::parameter::LiteralParameter {
+				name: "return".to_string(),
+				r#type: Some(self.parse_type(output_ty)?),
+				attributes: None,
 				default_value: None,
-				description:   None,
-			}])
+				description: None,
+			})])
 		} else {
 			None
 		};
@@ -620,9 +703,11 @@ impl ParseContext {
 
 			if let Some(ref params) = input_parameters {
 				for param in params {
-					if let Some(ref ty) = param.ty {
-						if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
-							links.insert(format!("in.{}", param.name), entry_id);
+					if let Parameter::Literal(l) = param {
+						if let Some(ref ty) = l.r#type {
+							if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
+								links.insert(format!("in.{}", l.name), entry_id);
+							}
 						}
 					}
 				}
@@ -630,9 +715,11 @@ impl ParseContext {
 
 			if let Some(ref params) = output_parameters {
 				for param in params {
-					if let Some(ref ty) = param.ty {
-						if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
-							links.insert(format!("out.{}", param.name), entry_id);
+					if let Parameter::Literal(l) = param {
+						if let Some(ref ty) = l.r#type {
+							if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
+								links.insert(format!("out.{}", l.name), entry_id);
+							}
 						}
 					}
 				}
@@ -650,6 +737,9 @@ impl ParseContext {
 			implemented: true,
 			visibility,
 			type_links,
+			documentation: item.docs.clone(),
+			implemented_protocols: None,
+			members: None,
 		})
 	}
 
@@ -661,13 +751,13 @@ impl ParseContext {
 			.iter()
 			.map(|(name, ty)| {
 				let parsed_ty = self.parse_type(ty)?;
-				Ok(Parameter {
-					name:          name.clone(),
-					ty:            Some(parsed_ty),
-					attributes:    None,
+				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
+					name: name.clone(),
+					r#type: Some(parsed_ty),
+					attributes: None,
 					default_value: None,
-					description:   None,
-				})
+					description: None,
+				}))
 			})
 			.collect()
 	}
@@ -726,23 +816,19 @@ impl ParseContext {
 				}
 				ItemEnum::AssocType { generics: _, bounds, type_ } => {
 					let assoc_type = AssociatedType {
-						name:         trait_item.name.clone().unwrap_or_default(),
-						bounds:       if bounds.is_empty() {
-							None
-						} else {
-							Some(self.parse_generic_bounds(bounds)?)
-						},
+						name: trait_item.name.clone().unwrap_or_default(),
+						bounds: if bounds.is_empty() { None } else { Some(self.parse_generic_bounds(bounds)?) },
 						default_type: if let Some(ty) = type_ { Some(self.parse_type(ty)?) } else { None },
-						docs:         trait_item.docs.clone(),
+						docs: trait_item.docs.clone(),
 					};
 					associated_types.push(assoc_type);
 				}
 				ItemEnum::AssocConst { type_, value } => {
 					let constant = TraitConstant {
-						name:          trait_item.name.clone().unwrap_or_default(),
-						ty:            Box::new(self.parse_type(type_)?),
-						default_value: value.as_ref().map(|d| ConstExpr { expr: d.clone() }),
-						docs:          trait_item.docs.clone(),
+						name: trait_item.name.clone().unwrap_or_default(),
+						r#type: Box::new(self.parse_type(type_)?),
+						default_value: value.as_ref().map(|d| ConstExpr::Var(d.clone())),
+						docs: trait_item.docs.clone(),
 					};
 					required_constants.push(constant);
 				}
@@ -775,6 +861,7 @@ impl ParseContext {
 			attributes,
 			visibility,
 			docs,
+			members: None,
 		})
 	}
 
@@ -869,17 +956,17 @@ impl ParseContext {
 					if let Some(ty) = type_ {
 						let assoc_type_impl = AssociatedTypeImpl {
 							name: impl_item.name.clone().unwrap_or_default(),
-							ty:   Box::new(self.parse_type(ty)?),
+							r#type: Box::new(self.parse_type(ty)?),
 						};
 						associated_types.push(assoc_type_impl);
 					}
 				}
 				ItemEnum::AssocConst { type_, value } => {
 					let constant = TraitConstant {
-						name:          impl_item.name.clone().unwrap_or_default(),
-						ty:            Box::new(self.parse_type(type_)?),
-						default_value: value.as_ref().map(|d| ConstExpr { expr: d.clone() }),
-						docs:          impl_item.docs.clone(),
+						name: impl_item.name.clone().unwrap_or_default(),
+						r#type: Box::new(self.parse_type(type_)?),
+						default_value: value.as_ref().map(|d| ConstExpr::Var(d.clone())),
+						docs: impl_item.docs.clone(),
 					};
 					associated_constants.push(constant);
 				}
@@ -906,6 +993,7 @@ impl ParseContext {
 			is_unsafe: i.is_unsafe,
 			visibility,
 			docs: item.docs.clone(),
+			members: None,
 		})
 	}
 
@@ -919,9 +1007,9 @@ impl ParseContext {
 					self.parse_type(ty)
 				} else {
 					Err(ParseError::InvalidItemKind {
-						id:       id.0.to_string(),
+						id: id.0.to_string(),
 						expected: "StructField".to_string(),
-						actual:   format!("{:?}", item.inner),
+						actual: format!("{:?}", item.inner),
 					})
 				}
 			})
@@ -944,26 +1032,27 @@ impl ParseContext {
 
 	fn resolve_type_to_entry_id(&self, ty: &Type) -> Option<i64> {
 		match ty {
-			Type::ResolvedPath(ir_path) => {
-				self.resolve_path_to_id(&ir_path.path).map(|id| self.id_to_number(&id))
+			Type::TypeReference(tr) => {
+				self.resolve_path_to_id(&tr.identifier).map(|id| self.id_to_number(&id))
 			}
 			Type::Primitive(prim) => {
 				let name = match prim {
-					Primitive::Int8(_) => "i8",
-					Primitive::Int16(_) => "i16",
-					Primitive::Int(_) => "isize",
-					Primitive::Int64(_) => "i64",
-					Primitive::Int128(_) => "i128",
-					Primitive::UInt8(_) => "u8",
-					Primitive::UInt16(_) => "u16",
-					Primitive::UInt(_) => "usize",
-					Primitive::UInt64(_) => "u64",
-					Primitive::UInt128(_) => "u128",
-					Primitive::Float(_) => "f32",
-					Primitive::Double(_) => "f64",
-					Primitive::Bool(_) => "bool",
-					Primitive::String(_) => "str",
-					Primitive::Char(_) => "char",
+					Primitive::Int(IntWidth::W8) => "i8",
+					Primitive::Int(IntWidth::W16) => "i16",
+					Primitive::Int(IntWidth::Arch) => "isize",
+					Primitive::Int(IntWidth::W64) => "i64",
+					Primitive::Int(IntWidth::W128) => "i128",
+					Primitive::UInt(IntWidth::W8) => "u8",
+					Primitive::UInt(IntWidth::W16) => "u16",
+					Primitive::UInt(IntWidth::Arch) => "usize",
+					Primitive::UInt(IntWidth::W64) => "u64",
+					Primitive::UInt(IntWidth::W128) => "u128",
+					Primitive::Float(FloatWidth::W16) => "f16",
+					Primitive::Float(FloatWidth::W32) => "f32",
+					Primitive::Float(FloatWidth::W64) => "f64",
+					Primitive::Bool => "bool",
+					Primitive::String => "str",
+					Primitive::Char => "char",
 					_ => return None,
 				};
 				self.primitive_map.get(name).map(|id| self.id_to_number(id))
@@ -973,7 +1062,10 @@ impl ParseContext {
 	}
 
 	fn id_to_number(&self, id: &Id) -> i64 {
-		use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
+		use std::{
+			collections::hash_map::DefaultHasher,
+			hash::{Hash, Hasher},
+		};
 
 		let mut hasher = DefaultHasher::new();
 		id.0.hash(&mut hasher);
@@ -992,20 +1084,30 @@ impl ParseContext {
 	fn generics_to_args(&self, generics: &Generics) -> Option<Vec<GenericArg>> {
 		let mut args = Vec::new();
 
-		for type_param in &generics.type_params {
-			if let Some(default) = &type_param.default_type {
-				args.push(GenericArg::Type(Type::GenericParam(default.name.clone())));
-			} else {
-				args.push(GenericArg::Type(Type::GenericParam(type_param.name.clone())));
+		for param in &generics.params {
+			match param {
+				Parameter::Type(type_param) => {
+					let name = type_param.name.clone().unwrap_or_default();
+					if let Some(default) = &type_param.default_type {
+						args.push(GenericArg::Type(Type::GenericParam(ir::ty::GenericParam {
+							name: default.name.clone(),
+							kind: None,
+						})));
+					} else {
+						args.push(GenericArg::Type(Type::GenericParam(ir::ty::GenericParam {
+							name,
+							kind: None,
+						})));
+					}
+				}
+				Parameter::Const(const_param) => {
+					args.push(GenericArg::ConstExpr(ConstExpr::Var(const_param.name.clone())));
+				}
+				Parameter::Lifetime(lifetime_param) => {
+					args.push(GenericArg::Lifetime(lifetime_param.name.clone()));
+				}
+				_ => {}
 			}
-		}
-
-		for const_param in &generics.const_params {
-			args.push(GenericArg::ConstExpr(ConstExpr { expr: const_param.name.clone() }));
-		}
-
-		for lifetime_param in &generics.lifetime_params {
-			args.push(GenericArg::Lifetime(lifetime_param.name.clone()));
 		}
 
 		if args.is_empty() { None } else { Some(args) }
@@ -1015,7 +1117,7 @@ impl ParseContext {
 		match ty {
 			rustdoc_types::Type::ResolvedPath(path) => {
 				let ir_path = self.parse_resolved_path(path)?;
-				Ok(Type::ResolvedPath(ir_path))
+				Ok(Type::TypeReference(ir_path))
 			}
 
 			rustdoc_types::Type::DynTrait(dyn_trait) => {
@@ -1028,7 +1130,9 @@ impl ParseContext {
 				Ok(Type::DynTrait(DynTrait { traits, lifetime: dyn_trait.lifetime.clone() }))
 			}
 
-			rustdoc_types::Type::Generic(name) => Ok(Type::GenericParam(name.clone())),
+			rustdoc_types::Type::Generic(name) => {
+				Ok(Type::GenericParam(ir::ty::GenericParam { name: name.clone(), kind: None }))
+			}
 
 			rustdoc_types::Type::Primitive(prim) => Ok(Type::Primitive(self.parse_primitive(prim)?)),
 
@@ -1051,15 +1155,12 @@ impl ParseContext {
 				let parsed_ty = Box::new(self.parse_type(type_)?);
 				let length = len.parse::<usize>().map_err(|_| ParseError::TypeResolution {
 					type_name: "array".to_string(),
-					reason:    format!("Invalid array length: {}", len),
+					reason: format!("Invalid array length: {}", len),
 				})?;
-				Ok(Type::Array { ty: parsed_ty, length })
+				Ok(Type::Array { r#type: parsed_ty, length })
 			}
 
-			rustdoc_types::Type::Pat { type_, .. } => {
-				let parsed_ty = Box::new(self.parse_type(type_)?);
-				Ok(Type::Pattern { ty: parsed_ty })
-			}
+			rustdoc_types::Type::Pat { .. } => Ok(Type::Infer),
 
 			rustdoc_types::Type::ImplTrait(bounds) => {
 				let generic_bounds = self.parse_generic_bounds(bounds)?;
@@ -1070,15 +1171,15 @@ impl ParseContext {
 
 			rustdoc_types::Type::RawPointer { is_mutable, type_ } => {
 				let parsed_ty = Box::new(self.parse_type(type_)?);
-				Ok(Type::RawPointer { is_mutable: *is_mutable, ty: parsed_ty })
+				Ok(Type::RawPointer { is_mutable: *is_mutable, r#type: parsed_ty })
 			}
 
 			rustdoc_types::Type::BorrowedRef { lifetime, is_mutable, type_ } => {
 				let parsed_ty = Box::new(self.parse_type(type_)?);
 				Ok(Type::BorrowedRef {
-					lifetime:   lifetime.clone(),
+					lifetime: lifetime.clone(),
 					is_mutable: *is_mutable,
-					ty:         parsed_ty,
+					r#type: parsed_ty,
 				})
 			}
 
@@ -1093,16 +1194,16 @@ impl ParseContext {
 					.and_then(|v| if v.is_empty() { None } else { Some(v) });
 
 				Ok(Type::QualifiedPath(QualifiedPath {
-					name:              name.clone(),
+					name: name.clone(),
 					generic_arguments: generic_args,
-					self_type:         parsed_self_type,
-					tr:                parsed_trait,
+					self_type: parsed_self_type,
+					tr: parsed_trait,
 				}))
 			}
 		}
 	}
 
-	fn parse_resolved_path(&self, path: &rustdoc_types::Path) -> Result<IRPath> {
+	fn parse_resolved_path(&self, path: &rustdoc_types::Path) -> Result<TypeReference> {
 		let path_str = &path.path;
 		let generic_args = path
 			.args
@@ -1111,13 +1212,13 @@ impl ParseContext {
 			.transpose()?
 			.and_then(|v| if v.is_empty() { None } else { Some(v) });
 
-		Ok(IRPath { path: path_str.clone(), generic_args })
+		Ok(TypeReference { identifier: path_str.clone(), generic_args })
 	}
 
 	fn parse_poly_trait(&self, pt: &rustdoc_types::PolyTrait) -> Result<PolyTrait> {
 		let trait_ref = self.parse_path_to_trait_ref(&pt.trait_)?;
 		Ok(PolyTrait {
-			tr:        trait_ref,
+			trait_ref,
 			lifetimes: pt.generic_params.iter().map(|gp| gp.name.clone()).collect(),
 		})
 	}
@@ -1132,9 +1233,10 @@ impl ParseContext {
 						.into_iter()
 						.map(|arg| match arg {
 							GenericArg::Type(ty) => Ok(TypeExpr { name: format!("{:?}", ty), args: vec![] }),
-							GenericArg::ConstExpr(ce) => Ok(TypeExpr { name: ce.expr, args: vec![] }),
+							GenericArg::ConstExpr(ce) => Ok(TypeExpr { name: format!("{:?}", ce), args: vec![] }),
 							GenericArg::Lifetime(lt) => Ok(TypeExpr { name: lt, args: vec![] }),
 							GenericArg::Constraint(_) => Ok(TypeExpr { name: String::new(), args: vec![] }),
+							GenericArg::Module(_) => Ok(TypeExpr { name: String::new(), args: vec![] }),
 						})
 						.collect()
 				})
@@ -1147,23 +1249,23 @@ impl ParseContext {
 
 	fn parse_primitive(&self, prim: &str) -> Result<Primitive> {
 		match prim {
-			"i8" => Ok(Primitive::Int8(None)),
-			"i16" => Ok(Primitive::Int16(None)),
-			"i32" | "isize" => Ok(Primitive::Int(None)),
-			"i64" => Ok(Primitive::Int64(None)),
-			"i128" => Ok(Primitive::Int128(None)),
-			"u8" => Ok(Primitive::UInt8(None)),
-			"u16" => Ok(Primitive::UInt16(None)),
-			"u32" | "usize" => Ok(Primitive::UInt(None)),
-			"u64" => Ok(Primitive::UInt64(None)),
-			"u128" => Ok(Primitive::UInt128(None)),
-			"f16" => Ok(Primitive::F16(None)),
-			"f32" => Ok(Primitive::Float(None)),
-			"f64" | "f128" => Ok(Primitive::Double(None)),
-			"bool" => Ok(Primitive::Bool(None)),
-			"str" => Ok(Primitive::String(None)),
-			"char" => Ok(Primitive::Char(None)),
-			"never" | "!" => Ok(Primitive::Null),
+			"i8" => Ok(Primitive::Int(IntWidth::W8)),
+			"i16" => Ok(Primitive::Int(IntWidth::W16)),
+			"i32" | "isize" => Ok(Primitive::Int(IntWidth::Arch)),
+			"i64" => Ok(Primitive::Int(IntWidth::W64)),
+			"i128" => Ok(Primitive::Int(IntWidth::W128)),
+			"u8" => Ok(Primitive::UInt(IntWidth::W8)),
+			"u16" => Ok(Primitive::UInt(IntWidth::W16)),
+			"u32" | "usize" => Ok(Primitive::UInt(IntWidth::Arch)),
+			"u64" => Ok(Primitive::UInt(IntWidth::W64)),
+			"u128" => Ok(Primitive::UInt(IntWidth::W128)),
+			"f16" => Ok(Primitive::Float(FloatWidth::W16)),
+			"f32" => Ok(Primitive::Float(FloatWidth::W32)),
+			"f64" | "f128" => Ok(Primitive::Float(FloatWidth::W64)),
+			"bool" => Ok(Primitive::Bool),
+			"str" => Ok(Primitive::String),
+			"char" => Ok(Primitive::Char),
+			"never" | "!" => Err(ParseError::InvalidPrimitive(prim.to_string())),
 			_ => Err(ParseError::InvalidPrimitive(prim.to_string())),
 		}
 	}
@@ -1181,35 +1283,18 @@ impl ParseContext {
 			.as_ref()
 			.map(|ty| {
 				self.parse_type(ty).map(|t| {
-					vec![Parameter {
+					vec![Parameter::Literal(ir::parameter::LiteralParameter {
 						name:          "return".to_string(),
-						ty:            Some(t),
+						r#type:        Some(t),
 						attributes:    None,
 						default_value: None,
 						description:   None,
-					}]
+					})]
 				})
 			})
 			.transpose()?;
 
-		let generic_params = if fp.generic_params.is_empty() {
-			None
-		} else {
-			Some(
-				fp.generic_params
-					.iter()
-					.map(|gp| TypeParam {
-						name:         gp.name.clone(),
-						kind:         TypeKind::Type,
-						variance:     Variance::Invariant,
-						default_type: None,
-					})
-					.collect(),
-			)
-		};
-
 		let mut attributes = Vec::new();
-
 		if fp.header.is_const {
 			attributes.push(FnAttribute::Const);
 		}
@@ -1223,7 +1308,6 @@ impl ParseContext {
 		Ok(FunctionPointer {
 			inputs,
 			outputs,
-			generic_params,
 			attributes: if attributes.is_empty() { None } else { Some(attributes) },
 		})
 	}
@@ -1233,44 +1317,46 @@ impl ParseContext {
 			return None;
 		}
 
-		let mut type_params = Vec::new();
-		let mut const_params = Vec::new();
-		let mut lifetime_params = Vec::new();
+		let mut params = Vec::new();
 
 		for param in &generics.params {
 			match &param.kind {
 				rustdoc_types::GenericParamDefKind::Type { bounds: _, default, is_synthetic } => {
 					if !is_synthetic {
-						type_params.push(TypeParam {
-							name:         param.name.clone(),
-							kind:         TypeKind::Type,
-							variance:     Variance::Invariant,
+						params.push(Parameter::Type(TypeParam {
+							name: Some(param.name.clone()),
+							kind: ir::generics::Kind::Type,
+							variance: Variance::Invariant,
 							default_type: default
 								.as_ref()
 								.and_then(|ty| self.parse_type(ty).ok())
 								.map(|ty| TypeExpr { name: format!("{:?}", ty), args: vec![] }),
-						});
+							params: None,
+							origin: TypeParamOrigin::Free,
+						}));
 					}
 				}
 				rustdoc_types::GenericParamDefKind::Const { type_, default } => {
 					if let Ok(ty) = self.parse_type(type_) {
-						const_params.push(ConstParam {
-							name:          param.name.clone(),
-							ty:            TypeExpr { name: format!("{:?}", ty), args: vec![] },
-							default_value: default.as_ref().map(|d| ConstExpr { expr: d.clone() }),
-						});
+						params.push(Parameter::Const(ConstParam {
+							name: param.name.clone(),
+							r#type: TypeExpr { name: format!("{:?}", ty), args: vec![] },
+							default_value: default.as_ref().map(|d| ConstExpr::Var(d.clone())),
+						}));
 					}
 				}
 				rustdoc_types::GenericParamDefKind::Lifetime { outlives: _ } => {
-					lifetime_params
-						.push(LifetimeParam { name: param.name.clone(), variance: Variance::Invariant });
+					params.push(Parameter::Lifetime(LifetimeParam {
+						name: param.name.clone(),
+						variance: Variance::Invariant,
+					}));
 				}
 			}
 		}
 
 		let constraints = self.parse_where_predicates(&generics.where_predicates).unwrap_or_default();
 
-		Some(Generics { type_params, const_params, lifetime_params, constraints })
+		Some(Generics { params, constraints })
 	}
 
 	fn parse_where_predicates(
@@ -1294,9 +1380,9 @@ impl ParseContext {
 				rustdoc_types::WherePredicate::EqPredicate { lhs, rhs } => {
 					let lhs_str = format!("{:?}", lhs);
 					Ok(vec![Constraint::AssociatedTypeBound {
-						param:      lhs_str.clone(),
+						param: lhs_str.clone(),
 						assoc_name: lhs_str,
-						bound:      TypeExpr { name: format!("{:?}", rhs), args: vec![] },
+						bound: TypeExpr { name: format!("{:?}", rhs), args: vec![] },
 					}])
 				}
 				rustdoc_types::WherePredicate::LifetimePredicate { lifetime, outlives } => Ok(
@@ -1321,7 +1407,7 @@ impl ParseContext {
 				Ok(Constraint::TraitBound { param: param.to_string(), trait_ref })
 			}
 			rustdoc_types::GenericBound::Use(_) => Ok(Constraint::TraitBound {
-				param:     param.to_string(),
+				param: param.to_string(),
 				trait_ref: TraitRef { name: "Use".to_string(), args: vec![] },
 			}),
 			rustdoc_types::GenericBound::Outlives(lifetime) => {
@@ -1368,7 +1454,7 @@ impl ParseContext {
 			rustdoc_types::Term::Type(typer) => {
 				Term::Equality(Box::new(self.parse_type(&typer).unwrap()))
 			}
-			rustdoc_types::Term::Constant(constant) => Term::Bound(vec![]),
+			rustdoc_types::Term::Constant(_constant) => Term::Bound(vec![]),
 		}
 	}
 
@@ -1418,7 +1504,7 @@ impl ParseContext {
 							result.push(GenericArg::Type(parsed_ty));
 						}
 						rustdoc_types::GenericArg::Const(c) => {
-							result.push(GenericArg::ConstExpr(ConstExpr { expr: c.expr.clone() }));
+							result.push(GenericArg::ConstExpr(ConstExpr::Var(c.expr.clone())));
 						}
 						rustdoc_types::GenericArg::Infer => {
 							result.push(GenericArg::Type(Type::Infer));

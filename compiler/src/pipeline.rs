@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use gix::ObjectId;
-use ir::entry::{Entry, Index};
+use ir::entry::{Entry, Index, NudoxPath};
 use semver::Version;
 
 /// Entries freshly collected from a language parser — unindexed and
@@ -53,17 +53,19 @@ impl Ir<Collected> {
 	///
 	/// Root entries are those whose path has a single segment (the crate root).
 	pub fn index(self) -> Ir<Indexed> {
-		let mut entries_by_id = HashMap::with_capacity(self.data.len());
+		let mut entries_by_path = HashMap::with_capacity(self.data.len());
 		let mut root_ids = Vec::new();
 
 		for entry in self.data {
-			if entry.path.len() <= 1 {
-				root_ids.push(entry.id);
+			if let NudoxPath::Local(p) = &entry.path {
+				if p.iter().count() <= 1 {
+					root_ids.push(entry.path.clone());
+				}
 			}
-			entries_by_id.insert(entry.id, entry);
+			entries_by_path.insert(entry.path.clone(), entry);
 		}
 
-		Ir { data: Index { root_ids, entries_by_id } }
+		Ir { data: Index { root_ids, entries_by_path } }
 	}
 
 	/// Number of collected entries.
@@ -78,18 +80,18 @@ impl Ir<Collected> {
 #[allow(dead_code)]
 impl Ir<Indexed> {
 	/// Look up an entry by its ID.
-	pub fn get(&self, id: i64) -> Option<&Entry> { self.data.entries_by_id.get(&id) }
+	pub fn get(&self, id: &NudoxPath) -> Option<&Entry> { self.data.entries_by_path.get(id) }
 
 	/// The root entry IDs.
-	pub fn root_ids(&self) -> &[i64] { &self.data.root_ids }
+	pub fn root_ids(&self) -> &[NudoxPath] { &self.data.root_ids }
 
 	/// Iterate over all indexed entries (by reference).
-	pub fn iter(&self) -> impl Iterator<Item = &Entry> { self.data.entries_by_id.values() }
+	pub fn iter(&self) -> impl Iterator<Item = &Entry> { self.data.entries_by_path.values() }
 
 	/// Number of indexed entries.
-	pub fn len(&self) -> usize { self.data.entries_by_id.len() }
+	pub fn len(&self) -> usize { self.data.entries_by_path.len() }
 
-	pub fn is_empty(&self) -> bool { self.data.entries_by_id.is_empty() }
+	pub fn is_empty(&self) -> bool { self.data.entries_by_path.is_empty() }
 
 	/// Consume the IR and return the underlying `Index`.
 	pub fn into_index(self) -> Index { self.data }
@@ -98,27 +100,27 @@ impl Ir<Indexed> {
 /// Allows `Ir<Indexed>` to be fed directly to anything accepting
 /// `IntoIterator<Item = Entry>` (e.g. `Runner::run`).
 impl IntoIterator for Ir<Indexed> {
-	type IntoIter = std::collections::hash_map::IntoValues<i64, Entry>;
+	type IntoIter = std::collections::hash_map::IntoValues<NudoxPath, Entry>;
 	type Item = Entry;
 
-	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_id.into_values() }
+	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_path.into_values() }
 }
 
 #[allow(dead_code)]
 impl Ir<Versioned> {
 	/// Look up an entry by its ID.
-	pub fn get(&self, id: i64) -> Option<&Entry> { self.data.entries_by_id.get(&id) }
+	pub fn get(&self, id: &NudoxPath) -> Option<&Entry> { self.data.entries_by_path.get(id) }
 
 	/// The root entry IDs.
-	pub fn root_ids(&self) -> &[i64] { &self.data.root_ids }
+	pub fn root_ids(&self) -> &[NudoxPath] { &self.data.root_ids }
 
 	/// Iterate over all versioned entries (by reference).
-	pub fn iter(&self) -> impl Iterator<Item = &Entry> { self.data.entries_by_id.values() }
+	pub fn iter(&self) -> impl Iterator<Item = &Entry> { self.data.entries_by_path.values() }
 
 	/// Number of versioned entries.
-	pub fn len(&self) -> usize { self.data.entries_by_id.len() }
+	pub fn len(&self) -> usize { self.data.entries_by_path.len() }
 
-	pub fn is_empty(&self) -> bool { self.data.entries_by_id.is_empty() }
+	pub fn is_empty(&self) -> bool { self.data.entries_by_path.is_empty() }
 
 	/// Consume the IR and return the underlying `Index`.
 	pub fn into_index(self) -> Index { self.data }
@@ -127,8 +129,8 @@ impl Ir<Versioned> {
 /// Allows `Ir<Versioned>` to be fed directly to anything accepting
 /// `IntoIterator<Item = Entry>` (e.g. `Runner::run`).
 impl IntoIterator for Ir<Versioned> {
-	type IntoIter = std::collections::hash_map::IntoValues<i64, Entry>;
+	type IntoIter = std::collections::hash_map::IntoValues<NudoxPath, Entry>;
 	type Item = Entry;
 
-	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_id.into_values() }
+	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_path.into_values() }
 }
