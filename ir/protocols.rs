@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::function;
 use crate::{entry::NudoxPath, function::Function, generics::{ConstExpr, Constraint, Generics, TraitRef}, kind::Visibility, parameter::Parameter, ty::Type};
 
-// MARK: - TraitDef
+
 
 /// Universal representation of traits (Rust), protocols (Swift), interfaces
 /// (Java/C#/TypeScript), etc.
@@ -49,7 +49,7 @@ pub struct TraitDef {
 	pub members: Option<Vec<NudoxPath>>,
 }
 
-// MARK: - Associated Types
+
 
 /// Associated types in traits/protocols
 #[derive(Debug, Clone, PartialEq)]
@@ -76,7 +76,7 @@ pub enum GenericBound {
 	Lifetime(String),
 }
 
-// MARK: - Trait Methods
+
 
 /// A method signature within a trait/protocol/interface
 #[derive(Debug, Clone, PartialEq)]
@@ -127,7 +127,7 @@ pub enum ReceiverKind {
 	Arbitrary,
 }
 
-// MARK: - Trait Constants
+
 
 /// A constant/static member in a trait
 #[derive(Debug, Clone, PartialEq)]
@@ -146,7 +146,7 @@ pub struct TraitConstant {
 	pub docs: Option<String>,
 }
 
-// MARK: - Trait Attributes
+
 
 /// Attributes that can be applied to traits
 #[derive(Debug, Clone, PartialEq)]
@@ -169,7 +169,7 @@ pub enum TraitAttribute {
 	Custom { name: String, args: Option<Vec<String>> },
 }
 
-// MARK: - Trait Implementation
+
 
 /// Represents an implementation of a trait for a type
 #[derive(Debug, Clone, PartialEq)]

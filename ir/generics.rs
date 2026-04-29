@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{parameter::Parameter, ty::Type};
 
-// MARK: - Generics
+
 
 /// A universal representation of a generic parameter list across languages.
 ///
@@ -22,7 +22,7 @@ pub struct Generics {
 	pub constraints: Vec<Constraint>,
 }
 
-// MARK: - Constraints
+
 
 /// A predicate that restricts how the generic parameters of a declaration may
 /// be instantiated.
@@ -81,7 +81,7 @@ pub enum Term {
 	Bound(Vec<Constraint>),
 }
 
-// MARK: - Kind
+
 
 /// The *kind* of a type or type constructor, expressed as a structured tree.
 ///
@@ -109,7 +109,7 @@ pub enum Kind {
 	Var(String),
 }
 
-// MARK: - ConstExpr
+
 
 /// A compile-time constant expression that can appear in generic bounds,
 /// array lengths, default values, and dependent-type annotations.
@@ -186,7 +186,7 @@ pub enum UnaryOp {
 	Deref,
 }
 
-// MARK: - Predicate
+
 
 /// A structured boolean predicate over generic parameters.
 ///
@@ -209,7 +209,7 @@ pub enum Predicate {
 	Not(Box<Predicate>),
 }
 
-// MARK: - Supporting Types
+
 
 /// A reference to a trait or protocol, optionally parameterised.
 #[derive(Debug, Clone, PartialEq)]
@@ -234,7 +234,7 @@ pub struct TypeExpr {
 	pub args: Vec<TypeExpr>,
 }
 
-// MARK: - GenericArg
+
 
 /// A single argument supplied to a generic parameter position.
 ///
@@ -263,7 +263,7 @@ pub enum GenericArg {
 	Module(String),
 }
 
-// MARK: - Variance
+
 
 /// The variance of a type or lifetime parameter with respect to subtyping.
 ///

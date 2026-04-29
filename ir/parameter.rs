@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{generics::{ConstExpr, Kind, TypeExpr, Variance}, ty::Type};
 
-// MARK: - Parameter
+
 
 /// Represents a complete parameter — whether value-level (a typed argument)
 /// or generic (type, constant, lifetime, dependent, or module).
@@ -36,7 +36,7 @@ pub enum Parameter {
 	Module(ModuleParam),
 }
 
-// MARK: - Literal Parameters
+
 
 /// A concrete, value-level parameter in a function or method signature.
 ///
@@ -93,7 +93,7 @@ pub enum ParameterAttribute {
 	Optional,
 }
 
-// MARK: - Type Parameters
+
 
 /// A generic type parameter introduced in an angle-bracket or similar list
 /// (e.g., `T`, `K: Hashable`, `Output = i32`, `template<typename> class F`).
@@ -154,7 +154,7 @@ pub enum TypeParamOrigin {
 	Inferred,
 }
 
-// MARK: - Const Parameters
+
 
 /// A generic *constant* parameter whose value is supplied at monomorphisation
 /// time (e.g., Rust `const N: usize`, C++ non-type template parameter).
@@ -171,7 +171,7 @@ pub struct ConstParam {
 	pub default_value: Option<ConstExpr>,
 }
 
-// MARK: - Lifetime Parameters
+
 
 /// A lifetime / region parameter that scopes the validity of borrows
 /// (e.g., Rust's `'a`, `'static`).
@@ -185,7 +185,7 @@ pub struct LifetimeParam {
 	pub variance: Variance,
 }
 
-// MARK: - Dependent Parameters
+
 
 /// A dependently-typed parameter: a value-level term whose *type* may
 /// reference the names of earlier parameters.
@@ -219,7 +219,7 @@ pub struct DependentParam {
 	pub implicit: bool,
 }
 
-// MARK: - Module Parameters
+
 
 /// A module-level parameter used in ML-family functors.
 ///
