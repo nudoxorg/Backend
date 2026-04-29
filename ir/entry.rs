@@ -10,24 +10,7 @@ use std::path::PathBuf;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::kind::EntryKind;
-
-/// A representation of a documented API entry.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Entry {
-	/// Semantic name of the entry (e.g., `"std::time"`, `"to_string"`).
-	pub name: String,
-
-	/// Absolute path to the first / canonical occurrence of this entry.
-	pub path: NudoxPath,
-
-	/// Alternate paths (re-exports, aliased imports, etc.).
-	pub aliases: Option<HashSet<Vec<String>>>,
-
-	/// The syntactic / semantic kind of this entry.
-	pub kind: EntryKind,
-}
+use crate::kind::Entry;
 
 /// A path to a location within the Nudox registry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
