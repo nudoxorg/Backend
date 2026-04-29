@@ -1126,7 +1126,13 @@ impl ParseContext {
 				Ok(Type::GenericParam(ir::ty::GenericParam { name: name.clone(), kind: None }))
 			}
 
-			rustdoc_types::Type::Primitive(prim) => Ok(Type::Primitive(self.parse_primitive(prim)?)),
+			rustdoc_types::Type::Primitive(prim) => {
+				if prim == "never" || prim == "!" {
+					Ok(Type::Never)
+				} else {
+					Ok(Type::Primitive(self.parse_primitive(prim)?))
+				}
+			}
 
 			rustdoc_types::Type::FunctionPointer(fp) => {
 				let function_pointer = self.parse_function_pointer(fp)?;
@@ -1257,7 +1263,6 @@ impl ParseContext {
 			"bool" => Ok(Primitive::Bool),
 			"str" => Ok(Primitive::String),
 			"char" => Ok(Primitive::Char),
-			"never" | "!" => Err(ParseError::InvalidPrimitive(prim.to_string())),
 			_ => Err(ParseError::InvalidPrimitive(prim.to_string())),
 		}
 	}
