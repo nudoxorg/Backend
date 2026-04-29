@@ -24,7 +24,7 @@ async fn main() -> eyre::Result<()> {
 	// Add some identification to the instance that the compiler is running on
 	// USE ENV Variables
 	let config = TerminusConfig {
-		endpoint: Url::parse("http://54.159.188.191:6363").unwrap(),
+		endpoint: Url::parse("http://87.99.136.215:6363").unwrap(),
 		user:     "admin".into(),
 		password: "root".into(),
 		org:      "admin".into(),
@@ -32,7 +32,7 @@ async fn main() -> eyre::Result<()> {
 	};
 
 	let qdrant_config = QdrantConfig {
-		endpoint:        Url::parse("http://localhost:6334").unwrap(),
+		endpoint:        Url::parse("http://87.99.136.215:6334").unwrap(),
 		collection_name: format!("rust_{}_{}", TEST_PACKAGE, VERSION),
 		vector_size:     1536,
 		distance:        Distance::Cosine,

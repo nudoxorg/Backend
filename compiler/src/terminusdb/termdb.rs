@@ -214,7 +214,7 @@ impl UriOps for DocCtx {
 	fn entry_uri(&self, path: &[String]) -> URI {
 		// Entry/lang/crate/path
 		let path = path.join("/");
-		format!("Entry/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path)
+		format!("Entry/{}", path)
 	}
 
 	fn kind_uri(&self, kind: &Kind, path: &[String]) -> URI {
