@@ -26,8 +26,9 @@ pub struct Record {
 	/// Child entries conceptually scoped to this Record.
 	///
 	/// Explicit struct fields are tracked via the `fields` array inline. However,
-	/// a Record might also encapsulate full nested types (e.g., Java nested classes),
-	/// static namespaces, or separated explicit methods (e.g., Rust inherent `impl` blocks).
+	/// a Record might also encapsulate full nested types (e.g., Java nested
+	/// classes), static namespaces, or separated explicit methods (e.g., Rust
+	/// inherent `impl` blocks).
 	pub members: Option<Vec<NudoxPath>>,
 
 	/// Protocols, traits, or interfaces this Record explicitly implements.

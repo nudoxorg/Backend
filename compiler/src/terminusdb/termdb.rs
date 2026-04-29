@@ -173,7 +173,9 @@ impl DocCtx {
 
 	/// Set path to current entry's path
 	// TODO refactor, such that this is not a global path holder
-	pub fn update_path(&mut self, path: &ir::entry::NudoxPath) { self.current_path = Some(path.clone()) }
+	pub fn update_path(&mut self, path: &ir::entry::NudoxPath) {
+		self.current_path = Some(path.clone())
+	}
 
 	pub fn context(&self) -> &Value { &self.context_obj }
 
@@ -197,7 +199,9 @@ impl UriOps for DocCtx {
 	fn entry_uri(&self, path: &ir::entry::NudoxPath) -> URI {
 		let path_str = match path {
 			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
-			ir::entry::NudoxPath::External { path, dependency } => format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+			ir::entry::NudoxPath::External { path, dependency } => {
+				format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+			}
 		};
 		format!("Entry/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path_str)
 	}
@@ -205,7 +209,9 @@ impl UriOps for DocCtx {
 	fn kind_uri(&self, kind: &ir::kind::EntryKind, path: &ir::entry::NudoxPath) -> URI {
 		let path_str = match path {
 			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
-			ir::entry::NudoxPath::External { path, dependency } => format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+			ir::entry::NudoxPath::External { path, dependency } => {
+				format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+			}
 		};
 		let prefix = kind.to_string();
 		format!("{}/{}/{}/{}", prefix, self.crate_info.lang(), self.crate_info.crate_name(), path_str)
@@ -216,7 +222,9 @@ impl UriOps for DocCtx {
 	fn uri_path(&self, path: &ir::entry::NudoxPath) -> URI {
 		let path_str = match path {
 			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
-			ir::entry::NudoxPath::External { path, dependency } => format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+			ir::entry::NudoxPath::External { path, dependency } => {
+				format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+			}
 		};
 		format!("/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path_str)
 	}

@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{generics::{ConstExpr, Kind, TypeExpr, Variance}, ty::Type};
 
-
-
 /// Represents a complete parameter — whether value-level (a typed argument)
 /// or generic (type, constant, lifetime, dependent, or module).
 ///
@@ -35,8 +33,6 @@ pub enum Parameter {
 	/// (e.g., OCaml `(M : Map.OrderedType)`).
 	Module(ModuleParam),
 }
-
-
 
 /// A concrete, value-level parameter in a function or method signature.
 ///
@@ -92,8 +88,6 @@ pub enum ParameterAttribute {
 	/// The argument may be omitted entirely at call-sites.
 	Optional,
 }
-
-
 
 /// A generic type parameter introduced in an angle-bracket or similar list
 /// (e.g., `T`, `K: Hashable`, `Output = i32`, `template<typename> class F`).
@@ -154,8 +148,6 @@ pub enum TypeParamOrigin {
 	Inferred,
 }
 
-
-
 /// A generic *constant* parameter whose value is supplied at monomorphisation
 /// time (e.g., Rust `const N: usize`, C++ non-type template parameter).
 #[derive(Debug, Clone, PartialEq)]
@@ -171,8 +163,6 @@ pub struct ConstParam {
 	pub default_value: Option<ConstExpr>,
 }
 
-
-
 /// A lifetime / region parameter that scopes the validity of borrows
 /// (e.g., Rust's `'a`, `'static`).
 #[derive(Debug, Clone, PartialEq)]
@@ -184,8 +174,6 @@ pub struct LifetimeParam {
 	/// The variance of this lifetime with respect to the types that mention it.
 	pub variance: Variance,
 }
-
-
 
 /// A dependently-typed parameter: a value-level term whose *type* may
 /// reference the names of earlier parameters.
@@ -218,8 +206,6 @@ pub struct DependentParam {
 	/// while parentheses `(n : Nat)` mark explicit ones.
 	pub implicit: bool,
 }
-
-
 
 /// A module-level parameter used in ML-family functors.
 ///

@@ -2,8 +2,7 @@ pub mod ld;
 pub mod termdb;
 pub mod upload;
 
-use ir::entry::{Entry, NudoxPath};
-use ir::kind::EntryKind;
+use ir::{entry::{Entry, NudoxPath}, kind::EntryKind};
 use serde_json::{Map, Value, json};
 use termdb::{DocCtx, DocStore, EmitJsonLD, URI};
 use tracing::{debug, instrument, warn};
@@ -16,12 +15,22 @@ impl EmitJsonLD for Entry {
 
 		let fq_name: String = match &self.path {
 			NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/").replace("/", "::"),
-			NudoxPath::External { path, dependency } => format!("{}::{}", dependency, path.to_string_lossy().replace("\\", "/").replace("/", "::"))
+			NudoxPath::External { path, dependency } => {
+				format!("{}::{}", dependency, path.to_string_lossy().replace("\\", "/").replace("/", "::"))
+			}
 		};
-		
-		let (entry_members, entry_visibility, entry_documentation): (Option<Vec<NudoxPath>>, Option<ir::kind::Visibility>, Option<String>) = match &self.kind {
-			EntryKind::Module(m) => (m.members.clone(), Some(m.visibility.clone()), m.documentation.clone()),
-			EntryKind::RecordType(r) => (r.members.clone(), Some(r.visibility.clone()), r.documentation.clone()),
+
+		let (entry_members, entry_visibility, entry_documentation): (
+			Option<Vec<NudoxPath>>,
+			Option<ir::kind::Visibility>,
+			Option<String>,
+		) = match &self.kind {
+			EntryKind::Module(m) => {
+				(m.members.clone(), Some(m.visibility.clone()), m.documentation.clone())
+			}
+			EntryKind::RecordType(r) => {
+				(r.members.clone(), Some(r.visibility.clone()), r.documentation.clone())
+			}
 			EntryKind::Function(f) => (f.members.clone(), f.visibility.clone(), f.documentation.clone()),
 			EntryKind::TraitDef(t) => (None, t.visibility.clone(), t.docs.clone()),
 			_ => (None, None, None),

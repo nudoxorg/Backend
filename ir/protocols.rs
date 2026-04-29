@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 use super::function;
 use crate::{entry::NudoxPath, function::Function, generics::{ConstExpr, Constraint, Generics, TraitRef}, kind::Visibility, parameter::Parameter, ty::Type};
 
-
-
 /// Universal representation of traits (Rust), protocols (Swift), interfaces
 /// (Java/C#/TypeScript), etc.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,13 +41,12 @@ pub struct TraitDef {
 
 	/// Child entries conceptually scoped to this protocol.
 	///
-	/// While methods, types, and constants are tracked rigorously inline via specific properties,
-	/// a protocol or trait may occasionally encapsulate other generic namespaces or properties
-	/// not explicitly mapped by the source language's strict abstract method design.
+	/// While methods, types, and constants are tracked rigorously inline via
+	/// specific properties, a protocol or trait may occasionally encapsulate
+	/// other generic namespaces or properties not explicitly mapped by the
+	/// source language's strict abstract method design.
 	pub members: Option<Vec<NudoxPath>>,
 }
-
-
 
 /// Associated types in traits/protocols
 #[derive(Debug, Clone, PartialEq)]
@@ -75,8 +72,6 @@ pub enum GenericBound {
 	Trait(TraitRef),
 	Lifetime(String),
 }
-
-
 
 /// A method signature within a trait/protocol/interface
 #[derive(Debug, Clone, PartialEq)]
@@ -127,8 +122,6 @@ pub enum ReceiverKind {
 	Arbitrary,
 }
 
-
-
 /// A constant/static member in a trait
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -145,8 +138,6 @@ pub struct TraitConstant {
 	/// Documentation
 	pub docs: Option<String>,
 }
-
-
 
 /// Attributes that can be applied to traits
 #[derive(Debug, Clone, PartialEq)]
@@ -168,8 +159,6 @@ pub enum TraitAttribute {
 	/// Custom attribute with name and optional arguments
 	Custom { name: String, args: Option<Vec<String>> },
 }
-
-
 
 /// Represents an implementation of a trait for a type
 #[derive(Debug, Clone, PartialEq)]
@@ -213,9 +202,9 @@ pub struct TraitImpl {
 
 	/// Child entries conceptually scoped to this trait implementation block.
 	///
-	/// Used primarily to capture auxiliary items or nested definitions defined specifically
-	/// within the `impl` block that are not inherently methods or associated types natively
-	/// mapped by the layout of this struct.
+	/// Used primarily to capture auxiliary items or nested definitions defined
+	/// specifically within the `impl` block that are not inherently methods or
+	/// associated types natively mapped by the layout of this struct.
 	pub members: Option<Vec<NudoxPath>>,
 }
 

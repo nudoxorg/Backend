@@ -8,14 +8,14 @@ use crate::{entry::NudoxPath, generics::Generics, parameter::Parameter};
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Function {
-	pub input_parameters: Option<Vec<Parameter>>,
+	pub input_parameters:  Option<Vec<Parameter>>,
 	pub output_parameters: Option<Vec<Parameter>>,
 
-	pub type_links: Option<HashMap<String, i64>>,
-	pub attributes: Option<Vec<Attribute>>,
-	pub generics: Option<Generics>,
-	pub name: String,
-	pub visibility: Option<crate::kind::Visibility>,
+	pub type_links:  Option<HashMap<String, i64>>,
+	pub attributes:  Option<Vec<Attribute>>,
+	pub generics:    Option<Generics>,
+	pub name:        String,
+	pub visibility:  Option<crate::kind::Visibility>,
 	pub implemented: bool,
 
 	/// Function-level documentation comments.
@@ -24,8 +24,8 @@ pub struct Function {
 	/// Child entries conceptually scoped inside this function.
 	///
 	/// In many dynamic languages (e.g., JavaScript/TypeScript), functions are
-	/// first-class objects that can act as namespaces containing static properties,
-	/// nested classes, or secondary exported functions.
+	/// first-class objects that can act as namespaces containing static
+	/// properties, nested classes, or secondary exported functions.
 	pub members: Option<Vec<NudoxPath>>,
 
 	/// Protocols or traits implemented explicitly by this function object.

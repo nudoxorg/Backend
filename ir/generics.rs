@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{parameter::Parameter, ty::Type};
 
-
-
 /// A universal representation of a generic parameter list across languages.
 ///
 /// `Generics` bundles every kind of compile-time parameter — type, constant,
@@ -21,8 +19,6 @@ pub struct Generics {
 	/// Additional constraints that must hold over the parameters above.
 	pub constraints: Vec<Constraint>,
 }
-
-
 
 /// A predicate that restricts how the generic parameters of a declaration may
 /// be instantiated.
@@ -81,8 +77,6 @@ pub enum Term {
 	Bound(Vec<Constraint>),
 }
 
-
-
 /// The *kind* of a type or type constructor, expressed as a structured tree.
 ///
 /// Kinds are the types of types.  An ordinary type like `i32` has kind `*`
@@ -108,8 +102,6 @@ pub enum Kind {
 	/// A named kind variable, used in kind-polymorphic systems.
 	Var(String),
 }
-
-
 
 /// A compile-time constant expression that can appear in generic bounds,
 /// array lengths, default values, and dependent-type annotations.
@@ -186,8 +178,6 @@ pub enum UnaryOp {
 	Deref,
 }
 
-
-
 /// A structured boolean predicate over generic parameters.
 ///
 /// Predicates replace the old flat `PredicateExpr` string and allow
@@ -208,8 +198,6 @@ pub enum Predicate {
 	/// The inner predicate must not hold.
 	Not(Box<Predicate>),
 }
-
-
 
 /// A reference to a trait or protocol, optionally parameterised.
 #[derive(Debug, Clone, PartialEq)]
@@ -233,8 +221,6 @@ pub struct TypeExpr {
 	/// Recursive type arguments (e.g., `[TypeExpr { name: "u8", args: [] }]`).
 	pub args: Vec<TypeExpr>,
 }
-
-
 
 /// A single argument supplied to a generic parameter position.
 ///
@@ -262,8 +248,6 @@ pub enum GenericArg {
 	/// The string holds the module path (e.g., `"Map.Make"`).
 	Module(String),
 }
-
-
 
 /// The variance of a type or lifetime parameter with respect to subtyping.
 ///

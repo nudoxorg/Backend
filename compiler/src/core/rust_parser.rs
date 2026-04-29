@@ -4,31 +4,19 @@ use rustdoc_types::{Crate, Id, Item, ItemEnum};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
-use ir::{
-	entry::{Entry, NudoxPath},
-	function::{Attribute as FnAttribute, Function},
-	generics::{Term, *},
-	kind::{EntryKind, Visibility},
-	parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin},
-	primitives::{FloatWidth, IntWidth, Primitive},
-	protocols::*,
-	record::*,
-	ty::{
-		DynTrait, FunctionPointer, GenericParam, PolyTrait, QualifiedPath, Type, TypeReference,
-	},
-};
+use ir::{entry::{Entry, NudoxPath}, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{EntryKind, Visibility}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, primitives::{FloatWidth, IntWidth, Primitive}, protocols::*, record::*, ty::{DynTrait, FunctionPointer, GenericParam, PolyTrait, QualifiedPath, Type, TypeReference}};
 
 use crate::core::rust::ParseError;
 
 /// Immutable context.
 pub struct ParseContext {
-	krate: Crate,
+	krate:       Crate,
 	/// Maps rustdoc IDs to resolved paths
 	id_to_paths: HashMap<Id, HashSet<Vec<String>>>,
 
 	/// Primitive name to ID mapping (for Genealogy resolution)
 	primitive_map: HashMap<String, Id>,
-	path_to_id: HashMap<String, Id>,
+	path_to_id:    HashMap<String, Id>,
 }
 
 /// Mutable state that only changes during `parse_crate`.
@@ -42,7 +30,7 @@ pub struct ParseState {
 }
 
 pub struct RustdocParser {
-	ctx: ParseContext,
+	ctx:   ParseContext,
 	state: ParseState,
 }
 
@@ -332,9 +320,7 @@ impl ParseContext {
 		Ok(members)
 	}
 
-	fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> {
-		self.id_to_paths.get(id)
-	}
+	fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> { self.id_to_paths.get(id) }
 
 	fn get_primary_path(&self, id: &Id) -> Result<Vec<String>> {
 		self
@@ -344,9 +330,7 @@ impl ParseContext {
 			.ok_or_else(|| ParseError::PathParsing(format!("No path found for ID: {}", id.0)))
 	}
 
-	fn get_path(&self, id: &Id) -> Result<Vec<String>> {
-		self.get_primary_path(id)
-	}
+	fn get_path(&self, id: &Id) -> Result<Vec<String>> { self.get_primary_path(id) }
 
 	fn convert_item(&self, state: &mut ParseState, id: &Id, item: &Item) -> Result<Entry> {
 		let name = item.name.clone().unwrap_or_default();
@@ -429,7 +413,12 @@ impl ParseContext {
 			_ => {}
 		}
 
-		Ok(Entry { name, path: NudoxPath::Local(std::path::PathBuf::from(path.join("::"))), aliases, kind })
+		Ok(Entry {
+			name,
+			path: NudoxPath::Local(std::path::PathBuf::from(path.join("::"))),
+			aliases,
+			kind,
+		})
 	}
 
 	fn parse_item_kind(
@@ -440,8 +429,8 @@ impl ParseContext {
 	) -> Result<EntryKind> {
 		match inner {
 			ItemEnum::Module(_) => Ok(EntryKind::Module(ir::module::Module {
-				members: None,
-				visibility: ir::kind::Visibility::Public,
+				members:       None,
+				visibility:    ir::kind::Visibility::Public,
 				documentation: None,
 			})),
 
@@ -547,7 +536,7 @@ impl ParseContext {
 			})
 			.collect::<Option<Vec<_>>>()
 			.ok_or_else(|| ParseError::MissingField {
-				field: "tuple fields".to_string(),
+				field:   "tuple fields".to_string(),
 				context: "struct".to_string(),
 			})
 	}
@@ -614,9 +603,9 @@ impl ParseContext {
 										self.parse_type(ty)
 									} else {
 										Err(ParseError::InvalidItemKind {
-											id: id.0.to_string(),
+											id:       id.0.to_string(),
 											expected: "StructField".to_string(),
-											actual: format!("{:?}", field_item.inner),
+											actual:   format!("{:?}", field_item.inner),
 										})
 									}
 								})
@@ -634,23 +623,25 @@ impl ParseContext {
 										.ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
 									if let ItemEnum::StructField(ty) = &field_item.inner {
 										Ok(Field::Known(ir::record::KnownField {
-											key: ir::record::FieldKey::Ident(field_item.name.clone().unwrap_or_default()),
-											r#type: Some(Box::new(self.parse_type(ty)?)),
+											key:           ir::record::FieldKey::Ident(
+												field_item.name.clone().unwrap_or_default(),
+											),
+											r#type:        Some(Box::new(self.parse_type(ty)?)),
 											default_value: None,
-											attributes: ir::record::FieldAttributes {
-												is_mutable: false,
+											attributes:    ir::record::FieldAttributes {
+												is_mutable:  false,
 												is_optional: false,
-												decorators: vec![],
-												is_static: false,
+												decorators:  vec![],
+												is_static:   false,
 											},
-											visibility: Some(self.parse_visibility(&field_item.visibility)),
+											visibility:    Some(self.parse_visibility(&field_item.visibility)),
 											documentation: field_item.docs.clone(),
 										}))
 									} else {
 										Err(ParseError::InvalidItemKind {
-											id: id.0.to_string(),
+											id:       id.0.to_string(),
 											expected: "StructField".to_string(),
-											actual: format!("{:?}", field_item.inner),
+											actual:   format!("{:?}", field_item.inner),
 										})
 									}
 								})
@@ -662,9 +653,9 @@ impl ParseContext {
 					Ok(SumVariant { name, data, documentation: item.docs.clone() })
 				} else {
 					Err(ParseError::InvalidItemKind {
-						id: variant_id.0.to_string(),
+						id:       variant_id.0.to_string(),
 						expected: "Variant".to_string(),
-						actual: format!("{:?}", item.inner),
+						actual:   format!("{:?}", item.inner),
 					})
 				}
 			})
@@ -681,11 +672,11 @@ impl ParseContext {
 
 		let output_parameters = if let Some(output_ty) = &f.sig.output {
 			Some(vec![Parameter::Literal(ir::parameter::LiteralParameter {
-				name: "return".to_string(),
-				r#type: Some(self.parse_type(output_ty)?),
-				attributes: None,
+				name:          "return".to_string(),
+				r#type:        Some(self.parse_type(output_ty)?),
+				attributes:    None,
 				default_value: None,
-				description: None,
+				description:   None,
 			})])
 		} else {
 			None
@@ -752,11 +743,11 @@ impl ParseContext {
 			.map(|(name, ty)| {
 				let parsed_ty = self.parse_type(ty)?;
 				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
-					name: name.clone(),
-					r#type: Some(parsed_ty),
-					attributes: None,
+					name:          name.clone(),
+					r#type:        Some(parsed_ty),
+					attributes:    None,
 					default_value: None,
-					description: None,
+					description:   None,
 				}))
 			})
 			.collect()
@@ -816,19 +807,23 @@ impl ParseContext {
 				}
 				ItemEnum::AssocType { generics: _, bounds, type_ } => {
 					let assoc_type = AssociatedType {
-						name: trait_item.name.clone().unwrap_or_default(),
-						bounds: if bounds.is_empty() { None } else { Some(self.parse_generic_bounds(bounds)?) },
+						name:         trait_item.name.clone().unwrap_or_default(),
+						bounds:       if bounds.is_empty() {
+							None
+						} else {
+							Some(self.parse_generic_bounds(bounds)?)
+						},
 						default_type: if let Some(ty) = type_ { Some(self.parse_type(ty)?) } else { None },
-						docs: trait_item.docs.clone(),
+						docs:         trait_item.docs.clone(),
 					};
 					associated_types.push(assoc_type);
 				}
 				ItemEnum::AssocConst { type_, value } => {
 					let constant = TraitConstant {
-						name: trait_item.name.clone().unwrap_or_default(),
-						r#type: Box::new(self.parse_type(type_)?),
+						name:          trait_item.name.clone().unwrap_or_default(),
+						r#type:        Box::new(self.parse_type(type_)?),
 						default_value: value.as_ref().map(|d| ConstExpr::Var(d.clone())),
-						docs: trait_item.docs.clone(),
+						docs:          trait_item.docs.clone(),
 					};
 					required_constants.push(constant);
 				}
@@ -955,7 +950,7 @@ impl ParseContext {
 				ItemEnum::AssocType { type_, .. } => {
 					if let Some(ty) = type_ {
 						let assoc_type_impl = AssociatedTypeImpl {
-							name: impl_item.name.clone().unwrap_or_default(),
+							name:   impl_item.name.clone().unwrap_or_default(),
 							r#type: Box::new(self.parse_type(ty)?),
 						};
 						associated_types.push(assoc_type_impl);
@@ -963,10 +958,10 @@ impl ParseContext {
 				}
 				ItemEnum::AssocConst { type_, value } => {
 					let constant = TraitConstant {
-						name: impl_item.name.clone().unwrap_or_default(),
-						r#type: Box::new(self.parse_type(type_)?),
+						name:          impl_item.name.clone().unwrap_or_default(),
+						r#type:        Box::new(self.parse_type(type_)?),
 						default_value: value.as_ref().map(|d| ConstExpr::Var(d.clone())),
-						docs: impl_item.docs.clone(),
+						docs:          impl_item.docs.clone(),
 					};
 					associated_constants.push(constant);
 				}
@@ -1007,9 +1002,9 @@ impl ParseContext {
 					self.parse_type(ty)
 				} else {
 					Err(ParseError::InvalidItemKind {
-						id: id.0.to_string(),
+						id:       id.0.to_string(),
 						expected: "StructField".to_string(),
-						actual: format!("{:?}", item.inner),
+						actual:   format!("{:?}", item.inner),
 					})
 				}
 			})
@@ -1062,10 +1057,7 @@ impl ParseContext {
 	}
 
 	fn id_to_number(&self, id: &Id) -> i64 {
-		use std::{
-			collections::hash_map::DefaultHasher,
-			hash::{Hash, Hasher},
-		};
+		use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 
 		let mut hasher = DefaultHasher::new();
 		id.0.hash(&mut hasher);
@@ -1155,7 +1147,7 @@ impl ParseContext {
 				let parsed_ty = Box::new(self.parse_type(type_)?);
 				let length = len.parse::<usize>().map_err(|_| ParseError::TypeResolution {
 					type_name: "array".to_string(),
-					reason: format!("Invalid array length: {}", len),
+					reason:    format!("Invalid array length: {}", len),
 				})?;
 				Ok(Type::Array { r#type: parsed_ty, length })
 			}
@@ -1177,9 +1169,9 @@ impl ParseContext {
 			rustdoc_types::Type::BorrowedRef { lifetime, is_mutable, type_ } => {
 				let parsed_ty = Box::new(self.parse_type(type_)?);
 				Ok(Type::BorrowedRef {
-					lifetime: lifetime.clone(),
+					lifetime:   lifetime.clone(),
 					is_mutable: *is_mutable,
-					r#type: parsed_ty,
+					r#type:     parsed_ty,
 				})
 			}
 
@@ -1194,10 +1186,10 @@ impl ParseContext {
 					.and_then(|v| if v.is_empty() { None } else { Some(v) });
 
 				Ok(Type::QualifiedPath(QualifiedPath {
-					name: name.clone(),
+					name:              name.clone(),
 					generic_arguments: generic_args,
-					self_type: parsed_self_type,
-					tr: parsed_trait,
+					self_type:         parsed_self_type,
+					tr:                parsed_trait,
 				}))
 			}
 		}
@@ -1324,30 +1316,30 @@ impl ParseContext {
 				rustdoc_types::GenericParamDefKind::Type { bounds: _, default, is_synthetic } => {
 					if !is_synthetic {
 						params.push(Parameter::Type(TypeParam {
-							name: Some(param.name.clone()),
-							kind: ir::generics::Kind::Type,
-							variance: Variance::Invariant,
+							name:         Some(param.name.clone()),
+							kind:         ir::generics::Kind::Type,
+							variance:     Variance::Invariant,
 							default_type: default
 								.as_ref()
 								.and_then(|ty| self.parse_type(ty).ok())
 								.map(|ty| TypeExpr { name: format!("{:?}", ty), args: vec![] }),
-							params: None,
-							origin: TypeParamOrigin::Free,
+							params:       None,
+							origin:       TypeParamOrigin::Free,
 						}));
 					}
 				}
 				rustdoc_types::GenericParamDefKind::Const { type_, default } => {
 					if let Ok(ty) = self.parse_type(type_) {
 						params.push(Parameter::Const(ConstParam {
-							name: param.name.clone(),
-							r#type: TypeExpr { name: format!("{:?}", ty), args: vec![] },
+							name:          param.name.clone(),
+							r#type:        TypeExpr { name: format!("{:?}", ty), args: vec![] },
 							default_value: default.as_ref().map(|d| ConstExpr::Var(d.clone())),
 						}));
 					}
 				}
 				rustdoc_types::GenericParamDefKind::Lifetime { outlives: _ } => {
 					params.push(Parameter::Lifetime(LifetimeParam {
-						name: param.name.clone(),
+						name:     param.name.clone(),
 						variance: Variance::Invariant,
 					}));
 				}
@@ -1380,9 +1372,9 @@ impl ParseContext {
 				rustdoc_types::WherePredicate::EqPredicate { lhs, rhs } => {
 					let lhs_str = format!("{:?}", lhs);
 					Ok(vec![Constraint::AssociatedTypeBound {
-						param: lhs_str.clone(),
+						param:      lhs_str.clone(),
 						assoc_name: lhs_str,
-						bound: TypeExpr { name: format!("{:?}", rhs), args: vec![] },
+						bound:      TypeExpr { name: format!("{:?}", rhs), args: vec![] },
 					}])
 				}
 				rustdoc_types::WherePredicate::LifetimePredicate { lifetime, outlives } => Ok(
@@ -1407,7 +1399,7 @@ impl ParseContext {
 				Ok(Constraint::TraitBound { param: param.to_string(), trait_ref })
 			}
 			rustdoc_types::GenericBound::Use(_) => Ok(Constraint::TraitBound {
-				param: param.to_string(),
+				param:     param.to_string(),
 				trait_ref: TraitRef { name: "Use".to_string(), args: vec![] },
 			}),
 			rustdoc_types::GenericBound::Outlives(lifetime) => {

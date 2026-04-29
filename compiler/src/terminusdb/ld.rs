@@ -115,9 +115,15 @@ impl TryFrom<EntryKind> for LDInheritor {
 				// LDInheritor Enum
 				LDRecord::try_from(rk).map(|ldrecord| LDInheritor::RecordType(ldrecord))
 			}
-			EntryKind::UnionType(ut) => LDUnion::try_from(ut).map(|ldunion| LDInheritor::UnionType(ldunion)),
-			EntryKind::TraitDef(td) => LDTraitDef::try_from(td).map(|ldtrait| LDInheritor::TraitDef(ldtrait)),
-			EntryKind::TraitImpl(ti) => LDTraitImpl::try_from(ti).map(|ldimpl| LDInheritor::TraitImpl(ldimpl)),
+			EntryKind::UnionType(ut) => {
+				LDUnion::try_from(ut).map(|ldunion| LDInheritor::UnionType(ldunion))
+			}
+			EntryKind::TraitDef(td) => {
+				LDTraitDef::try_from(td).map(|ldtrait| LDInheritor::TraitDef(ldtrait))
+			}
+			EntryKind::TraitImpl(ti) => {
+				LDTraitImpl::try_from(ti).map(|ldimpl| LDInheritor::TraitImpl(ldimpl))
+			}
 			EntryKind::SumType(st) => LDSum::try_from(st).map(|ldsum| LDInheritor::SumType(ldsum)),
 			EntryKind::Function(func) => {
 				LDFunction::try_from(func).map(|ldfunc| LDInheritor::Function(ldfunc))
@@ -144,15 +150,15 @@ impl TryFrom<EntryKind> for LDInheritor {
 // that is missing in the ir types, name is optional, but it is mostly needed
 // here, so we require it
 pub struct LDRecord {
-	pub name:        String,
-	pub visibility:  Visibility,
+	pub name:       String,
+	pub visibility: Visibility,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	// skip serialization for non-existent generics
 	pub generics: Option<Value>,
 	// TODO improve -> Create type Field in the TerminusDB schema and have this that
 	// this should be fixed on the LDField kind when implemented, or create better rules for
 	// flattening overall do this after main Kind variants are supported
-	pub fields:      Vec<Value>,
+	pub fields:     Vec<Value>,
 }
 
 impl TryFrom<ir::record::Record> for LDRecord {
@@ -161,15 +167,15 @@ impl TryFrom<ir::record::Record> for LDRecord {
 
 	fn try_from(item: ir::record::Record) -> Result<Self, Self::Error> {
 		let res = LDRecord {
-			name:        {
+			name:       {
 				match item.name {
 					Some(s) => s,
 					None => return Err(LDConversionError::NameMissing),
 				}
 			},
-			visibility:  item.visibility,
-			generics:    item.generics.map(|g| json!(g)),
-			fields:      item.fields.iter().map(|f| json!(f)).collect(),
+			visibility: item.visibility,
+			generics:   item.generics.map(|g| json!(g)),
+			fields:     item.fields.iter().map(|f| json!(f)).collect(),
 		};
 		Ok(res)
 	}

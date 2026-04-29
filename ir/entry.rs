@@ -47,7 +47,6 @@ pub enum NudoxPath {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Index {
-	pub root_ids: Vec<NudoxPath>,
+	pub root_ids:        Vec<NudoxPath>,
 	pub entries_by_path: HashMap<NudoxPath, Entry>,
 }
-

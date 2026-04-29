@@ -18,4 +18,3 @@ pub fn get_registry(language: Language) -> Crates {
 		_ => todo!("registry not yet implemented for {language:?}"),
 	}
 }
-
