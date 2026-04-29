@@ -2,7 +2,7 @@ use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 use deno_ast::swc::ast::{Accessibility, VarDeclKind};
 use deno_doc::{Declaration, DeclarationDef, Document, class::{ClassConstructorDef, ClassDef, ClassMethodDef}, r#enum::EnumDef, function::FunctionDef, interface::InterfaceDef, js_doc::JsDoc, node::{DeclarationKind, NamespaceDef, Symbol}, params::{ParamDef, ParamPatternDef}, ts_type::{CallSignatureDef, IndexSignatureDef, LiteralDef, LiteralDefKind, MethodDef, TsTypeDef, TsTypeDefKind}, ts_type_param::TsTypeParamDef, type_alias::TypeAliasDef, variable::VariableDef};
-use ir::{entry::{Entry, EntryRef}, function::{Attribute as FnAttribute, Function}, generics::*, kind::{Kind, Visibility}, parameter::{Parameter, ParameterAttribute}, primitives::Primitive, protocols::*, record::*, ty::{FunctionPointer, Path as IrPath, QualifiedPath, Type}};
+use ir::{entry::{Entry, NudoxPath}, function::{Attribute as FnAttribute, Function}, generics::*, kind::{EntryKind, Visibility}, parameter::{Parameter, ParameterAttribute, ConstParam, LifetimeParam, TypeParam, TypeParamOrigin}, primitives::{Primitive, IntWidth, FloatWidth}, protocols::*, record::*, ty::{FunctionPointer, QualifiedPath, Type, TypeReference}};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
@@ -247,19 +247,15 @@ impl TsDocParser {
 		if let Some(doc) = &doc {
 			for symbol in &doc.symbols {
 				let sym_path = vec![module_name.to_string(), symbol.name.to_string()];
-				members.push(EntryRef { id: path_to_id(&sym_path), path: sym_path });
+				members.push(NudoxPath::Local(std::path::PathBuf::from(sym_path.join("::"))));
 			}
 		}
 
 		Ok(Entry {
 			name: module_name.to_string(),
-			id: module_id,
-			path: module_path,
+			path: NudoxPath::Local(std::path::PathBuf::from(module_path.join("::"))),
 			aliases: None,
-			kind: Kind::Module,
-			visibility: Some(Visibility::Public),
-			documentation,
-			members: if members.is_empty() { None } else { Some(members) },
+			kind: EntryKind::Module(ir::module::Module { members: if members.is_empty() { None } else { Some(members) }, visibility: Visibility::Public, documentation }),
 		})
 	}
 
@@ -291,18 +287,23 @@ impl TsDocParser {
 		let visibility = Some(declaration_kind_to_visibility(decl.declaration_kind));
 		let documentation = extract_doc(&decl.js_doc);
 
-		let (kind, mut extra_entries, members) =
+		let (mut kind, mut extra_entries, members) =
 			self.parse_declaration(module_name, symbol.name.as_ref(), decl)?;
+
+		match &mut kind {
+			EntryKind::Module(m) => { m.members = if members.is_empty() { None } else { Some(members) }; m.visibility = visibility.unwrap_or(Visibility::Public); m.documentation = documentation; }
+			EntryKind::RecordType(r) => { r.members = if members.is_empty() { None } else { Some(members) }; r.visibility = visibility.unwrap_or(Visibility::Public); r.documentation = documentation; }
+			EntryKind::Function(f) => { f.members = if members.is_empty() { None } else { Some(members) }; f.visibility = visibility; f.documentation = documentation; }
+			EntryKind::TraitDef(t) => { t.members = if members.is_empty() { None } else { Some(members) }; t.visibility = visibility; t.docs = documentation; }
+			EntryKind::TraitImpl(t) => { t.members = if members.is_empty() { None } else { Some(members) }; t.visibility = visibility; t.docs = documentation; }
+			_ => {}
+		}
 
 		let entry = Entry {
 			name: symbol.name.to_string(),
-			id: path_to_id(&path),
-			path,
+			path: NudoxPath::Local(std::path::PathBuf::from(path.join("::"))),
 			aliases: None,
 			kind,
-			visibility,
-			documentation,
-			members: if members.is_empty() { None } else { Some(members) },
 		};
 
 		extra_entries.insert(0, entry);
@@ -314,32 +315,32 @@ impl TsDocParser {
 		module_name: &str,
 		symbol_name: &str,
 		decl: &Declaration,
-	) -> Result<(Kind, Vec<Entry>, Vec<EntryRef>)> {
+	) -> Result<(EntryKind, Vec<Entry>, Vec<NudoxPath>)> {
 		match &decl.def {
 			DeclarationDef::Function(f) => {
 				let path = vec![module_name.to_string(), symbol_name.to_string()];
 				let func = self.parse_function_def(symbol_name, f, &path)?;
-				Ok((Kind::Function(func), vec![], vec![]))
+				Ok((EntryKind::Function(func), vec![], vec![]))
 			}
 
 			DeclarationDef::Variable(v) => {
-				let kind = if v.kind == VarDeclKind::Const { Kind::Constant } else { Kind::Variable };
+				let kind = if v.kind == VarDeclKind::Const { EntryKind::Constant } else { EntryKind::Variable };
 				Ok((kind, vec![], vec![]))
 			}
 
 			DeclarationDef::Enum(e) => {
 				let variants = self.parse_enum_def(e)?;
-				Ok((Kind::SumType(variants), vec![], vec![]))
+				Ok((EntryKind::SumType(variants), vec![], vec![]))
 			}
 
 			DeclarationDef::Class(cls) => {
 				let (record, extra, member_refs) = self.parse_class_def(module_name, symbol_name, cls)?;
-				Ok((Kind::RecordType(record), extra, member_refs))
+				Ok((EntryKind::RecordType(record), extra, member_refs))
 			}
 
 			DeclarationDef::TypeAlias(ta) => {
 				let ty = self.parse_ts_type(&ta.ts_type)?;
-				Ok((Kind::TypeAlias(ty), vec![], vec![]))
+				Ok((EntryKind::TypeAlias(ty), vec![], vec![]))
 			}
 
 			DeclarationDef::Namespace(_) => {
@@ -372,7 +373,7 @@ impl TsDocParser {
 
 				for elem_name in &elements {
 					let elem_path = vec![module_name.to_string(), symbol_name.to_string(), elem_name.clone()];
-					member_refs.push(EntryRef { id: path_to_id(&elem_path), path: elem_path });
+					member_refs.push(NudoxPath::Local(std::path::PathBuf::from(elem_path.join("::"))));
 				}
 
 				let ns_elements: Vec<Arc<Symbol>> = self
@@ -398,15 +399,15 @@ impl TsDocParser {
 					}
 				}
 
-				Ok((Kind::Module, extra_entries, member_refs))
+				Ok((EntryKind::Module(ir::module::Module { members: None, visibility: Visibility::Public, documentation: None }), extra_entries, member_refs))
 			}
 
 			DeclarationDef::Interface(iface) => {
 				let trait_def = self.parse_interface_def(symbol_name, iface)?;
-				Ok((Kind::TraitDef(trait_def), vec![], vec![]))
+				Ok((EntryKind::TraitDef(trait_def), vec![], vec![]))
 			}
 
-			DeclarationDef::Reference(_) => Ok((Kind::Info, vec![], vec![])),
+			DeclarationDef::Reference(_) => Ok((EntryKind::Info, vec![], vec![])),
 		}
 	}
 
@@ -462,13 +463,9 @@ impl TsDocParser {
 
 		Ok(Entry {
 			name: method.name.to_string(),
-			id: path_to_id(&path),
-			path,
+			path: NudoxPath::Local(std::path::PathBuf::from(path.join("::"))),
 			aliases: None,
-			kind: Kind::Function(func),
-			visibility,
-			documentation,
-			members: None,
+			kind: EntryKind::Function(func),
 		})
 	}
 
@@ -499,17 +496,16 @@ impl TsDocParser {
 			generics: None,
 			implemented: ctor.has_body,
 			visibility: Some(accessibility_to_visibility(ctor.accessibility)),
+			documentation: extract_doc(&ctor.js_doc),
+			members: None,
+			implemented_protocols: None,
 		};
 
 		Ok(Entry {
 			name: "constructor".to_string(),
-			id: path_to_id(&path),
-			path,
+			path: NudoxPath::Local(std::path::PathBuf::from(path.join("::"))),
 			aliases: None,
-			kind: Kind::Function(func),
-			visibility: Some(Visibility::Public),
-			documentation: extract_doc(&ctor.js_doc),
-			members: None,
+			kind: EntryKind::Function(func),
 		})
 	}
 }
@@ -520,7 +516,7 @@ impl TsDocParser {
 		module_name: &str,
 		class_name: &str,
 		cls: &ClassDef,
-	) -> Result<(Record, Vec<Entry>, Vec<EntryRef>)> {
+	) -> Result<(Record, Vec<Entry>, Vec<NudoxPath>)> {
 		let fields: Option<Vec<Field>> = if cls.properties.is_empty() {
 			None
 		} else {
@@ -531,28 +527,22 @@ impl TsDocParser {
 					.map(|prop| {
 						let ty = prop.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok()).map(Box::new);
 
-						let attributes = if prop.optional { Some(FieldAttribute::Optional) } else { None };
-
-						Field {
-							name: Some(prop.name.to_string()),
-							type_entry_id: prop
-								.ts_type
-								.as_ref()
-								.and_then(|t| self.resolve_ts_type_to_entry_id(t)),
-							ty,
+						Field::Known(ir::record::KnownField {
+							key: ir::record::FieldKey::Ident(prop.name.to_string()),
+							r#type: ty,
 							default_value: None,
-							attributes,
+							attributes: ir::record::FieldAttributes {
+								is_mutable: false,
+								is_optional: prop.optional,
+								decorators: vec![],
+								is_static: false,
+							},
 							visibility: Some(accessibility_to_visibility(prop.accessibility)),
-						}
+							documentation: extract_doc(&prop.js_doc),
+						})
 					})
 					.collect(),
 			)
-		};
-
-		let record_kind = if fields.as_ref().map(|f| f.is_empty()).unwrap_or(true) {
-			RecordKind::Unit
-		} else {
-			RecordKind::Named
 		};
 
 		let generics =
@@ -561,9 +551,11 @@ impl TsDocParser {
 		let record = Record {
 			name: Some(class_name.to_string()),
 			generics,
-			kind: record_kind,
-			fields,
-			visibility: None,
+			fields: fields.unwrap_or_default(),
+			visibility: Visibility::Public,
+			documentation: None,
+			implemented_protocols: None,
+			members: None,
 		};
 
 		let mut extra_entries = Vec::new();
@@ -571,14 +563,14 @@ impl TsDocParser {
 
 		if let Some(ctor) = cls.constructors.first() {
 			let ctor_entry = self.parse_constructor_entry(module_name, class_name, ctor)?;
-			member_refs.push(EntryRef { id: ctor_entry.id, path: ctor_entry.path.clone() });
+			member_refs.push(ctor_entry.path.clone());
 			extra_entries.push(ctor_entry);
 		}
 
 		let methods_cloned: Vec<ClassMethodDef> = cls.methods.iter().cloned().collect();
 		for method in &methods_cloned {
 			let method_entry = self.parse_method_entry(module_name, class_name, method)?;
-			member_refs.push(EntryRef { id: method_entry.id, path: method_entry.path.clone() });
+			member_refs.push(method_entry.path.clone());
 			extra_entries.push(method_entry);
 		}
 
@@ -634,6 +626,7 @@ impl TsDocParser {
 			attributes: None,
 			visibility: None,
 			docs: None,
+			members: None,
 		})
 	}
 
@@ -738,13 +731,13 @@ impl TsDocParser {
 
 		let output_parameters: Option<Vec<Parameter>> = func.return_type.as_ref().and_then(|rt| {
 			self.parse_ts_type(rt).ok().map(|ty| {
-				vec![Parameter {
+				vec![Parameter::Literal(ir::parameter::LiteralParameter {
 					name:          "return".to_string(),
-					ty:            Some(ty),
+					r#type:        Some(ty),
 					attributes:    None,
 					default_value: None,
 					description:   None,
-				}]
+				})]
 			})
 		});
 
@@ -765,6 +758,9 @@ impl TsDocParser {
 			generics,
 			implemented: func.has_body,
 			visibility: None,
+			documentation: None,
+			members: None,
+			implemented_protocols: None,
 		})
 	}
 
@@ -788,9 +784,11 @@ impl TsDocParser {
 
 		if let Some(params) = inputs {
 			for param in params {
-				if let Some(ref ty) = param.ty {
-					if let Some(entry_id) = self.resolve_ir_type_to_entry_id(ty) {
-						links.insert(format!("in.{}", param.name), entry_id);
+				if let Parameter::Literal(l) = param {
+					if let Some(ref ty) = l.r#type {
+						if let Some(entry_id) = self.resolve_ir_type_to_entry_id(ty) {
+							links.insert(format!("in.{}", l.name), entry_id);
+						}
 					}
 				}
 			}
@@ -798,9 +796,11 @@ impl TsDocParser {
 
 		if let Some(params) = outputs {
 			for param in params {
-				if let Some(ref ty) = param.ty {
-					if let Some(entry_id) = self.resolve_ir_type_to_entry_id(ty) {
-						links.insert(format!("out.{}", param.name), entry_id);
+				if let Parameter::Literal(l) = param {
+					if let Some(ref ty) = l.r#type {
+						if let Some(entry_id) = self.resolve_ir_type_to_entry_id(ty) {
+							links.insert(format!("out.{}", l.name), entry_id);
+						}
 					}
 				}
 			}
@@ -812,7 +812,7 @@ impl TsDocParser {
 
 impl TsDocParser {
 	fn parse_enum_def(&self, enum_def: &EnumDef) -> Result<Vec<SumVariant>> {
-		Ok(enum_def.members.iter().map(|m| SumVariant { name: m.name.clone(), types: None }).collect())
+		Ok(enum_def.members.iter().map(|m| SumVariant { name: m.name.clone(), data: None, documentation: None }).collect())
 	}
 }
 
@@ -822,7 +822,7 @@ impl TsDocParser {
 			ParamPatternDef::Identifier { name, optional } => {
 				let ty = param.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok());
 				let attributes = if *optional { Some(vec![ParameterAttribute::Optional]) } else { None };
-				Ok(Parameter { name: name.clone(), ty, attributes, default_value: None, description: None })
+				Ok(Parameter::Literal(ir::parameter::LiteralParameter { name: name.clone(), r#type: ty, attributes, default_value: None, description: None }))
 			}
 
 			ParamPatternDef::Rest { arg } => {
@@ -831,46 +831,48 @@ impl TsDocParser {
 					.as_ref()
 					.and_then(|t| self.parse_ts_type(t).ok())
 					.or_else(|| arg.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok()));
-				Ok(Parameter {
+				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
 					name: "rest".to_string(),
-					ty,
+					r#type: ty,
 					attributes: Some(vec![ParameterAttribute::Variadic]),
 					default_value: None,
 					description: None,
-				})
+				}))
 			}
 
 			ParamPatternDef::Assign { left, right } => {
 				let mut inner = self.parse_param(left)?;
-				if inner.ty.is_none() {
-					inner.ty = param.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok());
+				if let Parameter::Literal(ref mut l) = inner {
+					if l.r#type.is_none() {
+						l.r#type = param.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok());
+					}
+					l.default_value = Some(ConstExpr::Var(right.clone()));
 				}
-				inner.default_value = Some(ConstExpr { expr: right.clone() });
 				Ok(inner)
 			}
 
 			ParamPatternDef::Array { optional, .. } => {
 				let ty = param.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok());
 				let attributes = if *optional { Some(vec![ParameterAttribute::Optional]) } else { None };
-				Ok(Parameter {
+				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
 					name: "array".to_string(),
-					ty,
+					r#type: ty,
 					attributes,
 					default_value: None,
 					description: None,
-				})
+				}))
 			}
 
 			ParamPatternDef::Object { optional, .. } => {
 				let ty = param.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok());
 				let attributes = if *optional { Some(vec![ParameterAttribute::Optional]) } else { None };
-				Ok(Parameter {
+				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
 					name: "object".to_string(),
-					ty,
+					r#type: ty,
 					attributes,
 					default_value: None,
 					description: None,
-				})
+				}))
 			}
 		}
 	}
@@ -890,14 +892,16 @@ impl TsDocParser {
 				.default
 				.as_ref()
 				.and_then(|t| self.parse_ts_type(t).ok())
-				.map(|ty| TypeExpr { name: format!("{:?}", ty), args: vec![] });
+				.map(|ty| self.parse_type_to_expr(&ty));
 
-			type_params.push(TypeParam {
-				name: p.name.clone(),
-				kind: TypeKind::Type,
+			type_params.push(Parameter::Type(TypeParam {
+				name: Some(p.name.clone()),
+				kind: ir::generics::Kind::Type,
 				variance: Variance::Invariant,
 				default_type,
-			});
+				params: None,
+				origin: TypeParamOrigin::Free,
+			}));
 
 			if let Some(constraint) = &p.constraint {
 				if let Some(trait_ref) = self.ts_type_to_trait_ref(constraint) {
@@ -906,17 +910,41 @@ impl TsDocParser {
 			}
 		}
 
-		Some(Generics { type_params, const_params: vec![], lifetime_params: vec![], constraints })
+		Some(Generics { params: type_params, constraints })
 	}
 
 	fn generics_to_generic_args(&self, generics: &Generics) -> Option<Vec<GenericArg>> {
 		let args: Vec<GenericArg> = generics
-			.type_params
+			.params
 			.iter()
-			.map(|tp| GenericArg::Type(Type::GenericParam(tp.name.clone())))
+			.filter_map(|p| {
+				if let Parameter::Type(tp) = p {
+					Some(GenericArg::Type(Type::GenericParam(ir::ty::GenericParam { name: tp.name.clone().unwrap_or_default(), kind: None })))
+				} else {
+					None
+				}
+			})
 			.collect();
 
 		if args.is_empty() { None } else { Some(args) }
+	}
+
+	fn parse_type_to_expr(&self, ty: &Type) -> TypeExpr {
+		match ty {
+			Type::TypeReference(tr) => {
+				let args = tr.generic_args.as_ref().map(|args| {
+					args.iter().filter_map(|arg| {
+						if let GenericArg::Type(t) = arg {
+							Some(self.parse_type_to_expr(t))
+						} else {
+							None
+						}
+					}).collect()
+				}).unwrap_or_default();
+				TypeExpr { name: tr.identifier.clone(), args }
+			}
+			_ => TypeExpr { name: format!("{:?}", ty), args: vec![] },
+		}
 	}
 
 	fn ts_type_to_trait_ref(&self, ty: &TsTypeDef) -> Option<TraitRef> {
@@ -958,7 +986,7 @@ impl TsDocParser {
 					.transpose()?
 					.and_then(|v| if v.is_empty() { None } else { Some(v) });
 
-				Ok(Type::ResolvedPath(IrPath { path: value.type_name.clone(), generic_args }))
+				Ok(Type::TypeReference(TypeReference { identifier: value.type_name.clone(), generic_args }))
 			}
 
 			TsTypeDefKind::Union(value) => {
@@ -982,24 +1010,23 @@ impl TsDocParser {
 				let inputs: Result<Vec<Parameter>> =
 					value.params.iter().map(|p| self.parse_param_type_only(p)).collect();
 
-				let outputs = Some(vec![Parameter {
-					name:          "return".to_string(),
-					ty:            Some(self.parse_ts_type(&value.ts_type)?),
-					attributes:    None,
+				let outputs = Some(vec![Parameter::Literal(ir::parameter::LiteralParameter {
+					name: "return".to_string(),
+					r#type: Some(self.parse_ts_type(&value.ts_type)?),
+					attributes: None,
 					default_value: None,
-					description:   None,
-				}]);
+					description: None,
+				})]);
 
 				let generic_params = if value.type_params.is_empty() {
 					None
 				} else {
-					self.parse_type_params(&value.type_params).map(|g| g.type_params)
+					self.parse_type_params(&value.type_params).map(|g| g.params)
 				};
 
 				Ok(Type::FunctionPointer(FunctionPointer {
 					inputs: Some(inputs?),
 					outputs,
-					generic_params,
 					attributes: None,
 				}))
 			}
@@ -1011,13 +1038,13 @@ impl TsDocParser {
 			TsTypeDefKind::Optional(value) => self.parse_ts_type(value),
 
 			TsTypeDefKind::TypeQuery(value) => {
-				Ok(Type::ResolvedPath(IrPath { path: value.clone(), generic_args: None }))
+				Ok(Type::TypeReference(TypeReference { identifier: value.clone(), generic_args: None }))
 			}
 
-			TsTypeDefKind::This => Ok(Type::GenericParam("this".to_string())),
+			TsTypeDefKind::This => Ok(Type::GenericParam(ir::ty::GenericParam { name: "this".to_string(), kind: None })),
 
-			TsTypeDefKind::Conditional(value) => {
-				Ok(Type::Pattern { ty: Box::new(self.parse_ts_type(&value.check_type)?) })
+			TsTypeDefKind::Conditional(_) => {
+				Ok(Type::Any)
 			}
 
 			TsTypeDefKind::Infer(_) => Ok(Type::Infer),
@@ -1033,16 +1060,16 @@ impl TsDocParser {
 				}))
 			}
 
-			TsTypeDefKind::TypeOperator(value) => {
-				Ok(Type::Pattern { ty: Box::new(self.parse_ts_type(&value.ts_type)?) })
+			TsTypeDefKind::TypeOperator(_) => {
+				Ok(Type::Any)
 			}
 
 			TsTypeDefKind::TypeLiteral(_) => {
-				Ok(Type::ResolvedPath(IrPath { path: "[object]".to_string(), generic_args: None }))
+				Ok(Type::TypeReference(TypeReference { identifier: "[object]".to_string(), generic_args: None }))
 			}
 
 			TsTypeDefKind::Mapped(_) => {
-				Ok(Type::ResolvedPath(IrPath { path: "[mapped]".to_string(), generic_args: None }))
+				Ok(Type::TypeReference(TypeReference { identifier: "[mapped]".to_string(), generic_args: None }))
 			}
 
 			TsTypeDefKind::ImportType(value) => {
@@ -1057,10 +1084,10 @@ impl TsDocParser {
 					})
 					.transpose()?
 					.and_then(|v| if v.is_empty() { None } else { Some(v) });
-				Ok(Type::ResolvedPath(IrPath { path: name, generic_args }))
+				Ok(Type::TypeReference(TypeReference { identifier: name, generic_args }))
 			}
 
-			TsTypeDefKind::TypePredicate(_) => Ok(Type::Primitive(Primitive::Bool(None))),
+			TsTypeDefKind::TypePredicate(_) => Ok(Type::Primitive(Primitive::Bool)),
 
 			TsTypeDefKind::Unsupported => Ok(Type::Infer),
 		}
@@ -1068,30 +1095,31 @@ impl TsDocParser {
 
 	fn parse_keyword_type(&self, keyword: &str) -> Type {
 		match keyword {
-			"string" => Type::Primitive(Primitive::String(None)),
-			"number" => Type::Primitive(Primitive::Double(None)),
-			"boolean" => Type::Primitive(Primitive::Bool(None)),
-			"bigint" => Type::Primitive(Primitive::Int128(None)),
-			"null" | "undefined" | "never" | "void" => Type::Primitive(Primitive::Null),
-			"any" | "unknown" => Type::Infer,
-			"this" => Type::GenericParam("this".to_string()),
+			"string" => Type::Primitive(Primitive::String),
+			"number" => Type::Primitive(Primitive::Float(FloatWidth::W64)),
+			"boolean" => Type::Primitive(Primitive::Bool),
+			"bigint" => Type::Primitive(Primitive::Int(IntWidth::W128)),
+			"null" | "undefined" | "void" => Type::Tuple(vec![]),
+			"never" => Type::Never,
+			"any" | "unknown" => Type::Any,
+			"this" => Type::GenericParam(ir::ty::GenericParam { name: "this".to_string(), kind: None }),
 			"object" => {
-				Type::ResolvedPath(IrPath { path: "object".to_string(), generic_args: None })
+				Type::TypeReference(TypeReference { identifier: "object".to_string(), generic_args: None })
 			}
 			"symbol" | "unique symbol" => {
-				Type::ResolvedPath(IrPath { path: "Symbol".to_string(), generic_args: None })
+				Type::TypeReference(TypeReference { identifier: "Symbol".to_string(), generic_args: None })
 			}
-			other => Type::ResolvedPath(IrPath { path: other.to_string(), generic_args: None }),
+			other => Type::TypeReference(TypeReference { identifier: other.to_string(), generic_args: None }),
 		}
 	}
 
 	fn parse_literal_type(&self, lit: &LiteralDef) -> Type {
 		match lit.kind {
-			LiteralDefKind::String => Type::Primitive(Primitive::String(lit.string.clone())),
-			LiteralDefKind::Number => Type::Primitive(Primitive::Double(lit.number)),
-			LiteralDefKind::Boolean => Type::Primitive(Primitive::Bool(lit.boolean)),
-			LiteralDefKind::BigInt => Type::Primitive(Primitive::Int128(None)),
-			LiteralDefKind::Template => Type::Primitive(Primitive::String(None)),
+			LiteralDefKind::String => Type::Primitive(Primitive::String),
+			LiteralDefKind::Number => Type::Primitive(Primitive::Float(FloatWidth::W64)),
+			LiteralDefKind::Boolean => Type::Primitive(Primitive::Bool),
+			LiteralDefKind::BigInt => Type::Primitive(Primitive::Int(IntWidth::W128)),
+			LiteralDefKind::Template => Type::Primitive(Primitive::String),
 		}
 	}
 
@@ -1122,7 +1150,7 @@ impl TsDocParser {
 		};
 
 		let ty = param.ts_type.as_ref().and_then(|t| self.parse_ts_type(t).ok());
-		Ok(Parameter { name, ty, attributes: attrs, default_value: None, description: None })
+		Ok(Parameter::Literal(ir::parameter::LiteralParameter { name, r#type: ty, attributes: attrs, default_value: None, description: None }))
 	}
 }
 
@@ -1147,12 +1175,12 @@ impl TsDocParser {
 
 	fn resolve_ir_type_to_entry_id(&self, ty: &Type) -> Option<i64> {
 		match ty {
-			Type::ResolvedPath(path) => {
-				if let Some(&id) = self.ctx.type_name_to_id.get(path.path.as_str()) {
+			Type::TypeReference(tr) => {
+				if let Some(&id) = self.ctx.type_name_to_id.get(tr.identifier.as_str()) {
 					return Some(id);
 				}
 				for (k, &v) in &self.ctx.type_name_to_id {
-					if k.ends_with(path.path.as_str()) {
+					if k.ends_with(tr.identifier.as_str()) {
 						return Some(v);
 					}
 				}
