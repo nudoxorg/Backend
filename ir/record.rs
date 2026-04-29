@@ -1,12 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{
-	entry::NudoxPath,
-	generics::{ConstExpr, Generics},
-	kind::Visibility,
-	ty::Type,
-};
+use crate::{entry::NudoxPath, generics::{ConstExpr, Generics}, kind::Visibility, ty::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -48,7 +43,7 @@ pub struct Record {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct IndexSignature {
-	pub key_type: Box<Type>, // Usually String or Number
+	pub key_type:   Box<Type>, // Usually String or Number
 	pub value_type: Box<Type>,
 }
 
