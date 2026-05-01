@@ -16,9 +16,17 @@ impl EmitJsonLD for Entry {
 		let path = self.path().clone();
 		let entry_uri: URI = ctx.entry_uri(&path);
 
-		let (entry_members, entry_visibility, entry_documentation, aliases, name) = match &self {
+		let (
+			entry_members,
+			implemented_protocols,
+			entry_visibility,
+			entry_documentation,
+			aliases,
+			name,
+		) = match &self {
 			Entry::Module(s) => (
 				s.inner.members.clone(),
+				None,
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
 				s.aliases.clone(),
@@ -26,6 +34,7 @@ impl EmitJsonLD for Entry {
 			),
 			Entry::RecordType(s) => (
 				s.inner.members.clone(),
+				s.inner.implemented_protocols.clone(),
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
 				s.aliases.clone(),
@@ -33,6 +42,7 @@ impl EmitJsonLD for Entry {
 			),
 			Entry::Function(s) => (
 				s.inner.members.clone(),
+				s.inner.implemented_protocols.clone(),
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
 				s.aliases.clone(),
@@ -40,6 +50,7 @@ impl EmitJsonLD for Entry {
 			),
 			Entry::TraitDef(s) => (
 				s.inner.members.clone(),
+				None,
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
 				s.aliases.clone(),
@@ -47,6 +58,7 @@ impl EmitJsonLD for Entry {
 			),
 			Entry::TraitImpl(s) => (
 				s.inner.members.clone(),
+				None,
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
 				s.aliases.clone(),
@@ -59,12 +71,14 @@ impl EmitJsonLD for Entry {
 			| Entry::Field(s)
 			| Entry::Event(s) => (
 				None,
+				None,
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
 				s.aliases.clone(),
 				s.name.clone(),
 			),
 			Entry::Info(s) => (
+				None,
 				None,
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
@@ -73,6 +87,7 @@ impl EmitJsonLD for Entry {
 			),
 			Entry::UnionType(s) => (
 				None,
+				None,
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
 				s.aliases.clone(),
@@ -80,12 +95,14 @@ impl EmitJsonLD for Entry {
 			),
 			Entry::TypeAlias(s) => (
 				None,
+				None,
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
 				s.aliases.clone(),
 				s.name.clone(),
 			),
 			Entry::SumType(s) => (
+				None,
 				None,
 				Some(s.visibility.clone()),
 				s.documentation.clone(),
@@ -96,6 +113,10 @@ impl EmitJsonLD for Entry {
 
 		let members: Vec<String> = match entry_members.as_ref() {
 			Some(members) => members.iter().map(|m| ctx.entry_uri(m)).collect(),
+			None => Vec::default(),
+		};
+		let implemented_protocols: Vec<String> = match implemented_protocols.as_ref() {
+			Some(protocols) => protocols.iter().map(|protocol| ctx.entry_uri(protocol)).collect(),
 			None => Vec::default(),
 		};
 
@@ -117,6 +138,7 @@ impl EmitJsonLD for Entry {
 		obj.insert("aliases".into(), json!(aliases_fq));
 		obj.insert("name".into(), Value::String(name));
 		obj.insert("members".into(), json!(members));
+		obj.insert("implemented_protocols".into(), json!(implemented_protocols));
 
 		if let Some(vis) = entry_visibility.as_ref() {
 			obj.insert("visibility".into(), json!(vis));
