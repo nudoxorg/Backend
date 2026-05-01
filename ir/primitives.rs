@@ -4,23 +4,16 @@ use serde::{Deserialize, Serialize};
 /// An unsigned integer width.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum IntWidth {
+pub enum Width {
 	W8,
 	W16,
 	W32,
 	W64,
 	W128,
-	/// Machine-dependent / pointer-sized (e.g., `usize`, `isize`).
-	Arch,
-}
 
-/// A floating-point width.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum FloatWidth {
-	W16,
-	W32,
-	W64,
+	/// Machine-dependent / pointer-sized (e.g., `usize`, `isize`).
+	/// Generally not applicable to Floats
+	Arch,
 }
 
 /// A language-level primitive type, independent of any target architecture.
@@ -28,13 +21,13 @@ pub enum FloatWidth {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Primitive {
 	/// Signed integer (8 / 16 / 32 / 64 / 128 / arch-dependent bits).
-	Int(IntWidth),
+	Int(Width),
 
 	/// Unsigned integer (8 / 16 / 32 / 64 / 128 / arch-dependent bits).
-	UInt(IntWidth),
+	UInt(Width),
 
 	/// Floating-point number (16 / 32 / 64 bits).
-	Float(FloatWidth),
+	Float(Width),
 
 	/// Boolean logic.
 	Bool,

@@ -4,13 +4,13 @@
 /// paths, and during upload time, a graph is composed once. A (highly) unsafe
 /// structure should be considered in the future to avoid this reconstruction
 /// between backends.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::kind::Entry;
+pub use crate::kind::Entry;
 
 /// A path to a location within the Nudox registry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

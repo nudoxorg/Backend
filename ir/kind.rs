@@ -1,7 +1,15 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
-use crate::{function::Function, module::Module, protocols::{TraitDef, TraitImpl}, record::{Record, SumVariant}, ty::Type};
+use crate::{
+	entry::NudoxPath,
+	function::Function,
+	module::Module,
+	protocols::{TraitDef, TraitImpl},
+	record::{Record, SumVariant},
+	ty::Type,
+};
 
 /// The visibility of an entry in the source language.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,80 +26,152 @@ pub enum Visibility {
 	Package,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Symbol<T> {
+	pub name: String,
+	pub path: NudoxPath,
+	pub aliases: Option<HashSet<Vec<String>>>,
+	pub visibility: Visibility,
+	pub documentation: Option<String>,
+	pub inner: T,
+}
+
+impl<T> Symbol<T> {
+	pub fn placeholder(inner: T) -> Self {
+		Self {
+			name:          String::new(),
+			path:          NudoxPath::Local(std::path::PathBuf::new()),
+			aliases:       None,
+			visibility:    Visibility::Public,
+			documentation: None,
+			inner,
+		}
+	}
+
+	pub fn clone_with<U>(&self, inner: U) -> Symbol<U> {
+		Symbol {
+			name:          self.name.clone(),
+			path:          self.path.clone(),
+			aliases:       self.aliases.clone(),
+			visibility:    self.visibility.clone(),
+			documentation: self.documentation.clone(),
+			inner,
+		}
+	}
+}
+
 /// The syntactic / semantic kind of a documented API entry.
-///
-/// Each variant carries its data inline, so no separate lookup is required
-/// to understand what shape the entry has.  Variants that carry no structured
-/// data are leaf entries whose content is fully captured by their `Entry`
-/// fields.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kind", content = "value"))]
-pub enum EntryKind {
+pub enum Entry {
 	/// A namespace, package, or module — a container for other entries.
-	Module(Module),
+	Module(Symbol<Module>),
 
 	/// A product type: struct, class, record, or data class.
-	RecordType(Record),
+	RecordType(Symbol<Record>),
 
 	/// Unlinked, free-form documentation (prose articles, guides, etc.).
-	Info,
+	Info(Symbol<String>),
 
 	/// An anonymous or tagged union of concrete types.
-	UnionType(Vec<Type>),
+	UnionType(Symbol<Vec<Type>>),
 
 	/// A trait, protocol, or interface definition.
-	TraitDef(TraitDef),
+	TraitDef(Symbol<TraitDef>),
 
 	/// A concrete implementation of a trait or protocol for a specific type.
-	TraitImpl(TraitImpl),
+	TraitImpl(Symbol<TraitImpl>),
 
 	/// An algebraic sum type: enum, discriminated union, or sealed class.
-	SumType(Vec<SumVariant>),
+	SumType(Symbol<Vec<SumVariant>>),
 
 	/// A function, method, or lambda with its full signature.
-	Function(Function),
+	Function(Symbol<Function>),
 
 	/// A type alias, typedef, or `using` alias.
-	TypeAlias(Type),
+	TypeAlias(Symbol<Type>),
 
 	/// A named constant or immutable global binding.
-	Constant,
+	Constant(Symbol<()>),
 
 	/// A mutable global or static variable.
-	Variable,
+	Variable(Symbol<()>),
 
 	/// A macro, template, or code-generation hook.
-	Macro,
+	Macro(Symbol<()>),
 
 	/// A built-in primitive type (integer, float, bool, …).
-	PrimitiveType,
+	PrimitiveType(Symbol<()>),
 
 	/// A field or property of a containing type.
-	Field,
+	Field(Symbol<()>),
 
 	/// An event, signal, or callback definition.
-	Event,
+	Event(Symbol<()>),
 }
 
-impl std::fmt::Display for EntryKind {
+impl Entry {
+	pub fn path(&self) -> &NudoxPath {
+		match self {
+			Entry::Module(s) => &s.path,
+			Entry::RecordType(s) => &s.path,
+			Entry::Info(s) => &s.path,
+			Entry::UnionType(s) => &s.path,
+			Entry::TraitDef(s) => &s.path,
+			Entry::TraitImpl(s) => &s.path,
+			Entry::SumType(s) => &s.path,
+			Entry::Function(s) => &s.path,
+			Entry::TypeAlias(s) => &s.path,
+			Entry::Constant(s) => &s.path,
+			Entry::Variable(s) => &s.path,
+			Entry::Macro(s) => &s.path,
+			Entry::PrimitiveType(s) => &s.path,
+			Entry::Field(s) => &s.path,
+			Entry::Event(s) => &s.path,
+		}
+	}
+
+	pub fn name(&self) -> &str {
+		match self {
+			Entry::Module(s) => &s.name,
+			Entry::RecordType(s) => &s.name,
+			Entry::Info(s) => &s.name,
+			Entry::UnionType(s) => &s.name,
+			Entry::TraitDef(s) => &s.name,
+			Entry::TraitImpl(s) => &s.name,
+			Entry::SumType(s) => &s.name,
+			Entry::Function(s) => &s.name,
+			Entry::TypeAlias(s) => &s.name,
+			Entry::Constant(s) => &s.name,
+			Entry::Variable(s) => &s.name,
+			Entry::Macro(s) => &s.name,
+			Entry::PrimitiveType(s) => &s.name,
+			Entry::Field(s) => &s.name,
+			Entry::Event(s) => &s.name,
+		}
+	}
+}
+
+impl std::fmt::Display for Entry {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let tag = match self {
-			EntryKind::Module(_) => "module",
-			EntryKind::Info => "info",
-			EntryKind::Constant => "constant",
-			EntryKind::Variable => "variable",
-			EntryKind::Macro => "macro",
-			EntryKind::PrimitiveType => "primitive_type",
-			EntryKind::Event => "event",
-			EntryKind::Field => "field",
-			EntryKind::RecordType(_) => "record",
-			EntryKind::UnionType(_) => "union",
-			EntryKind::TraitDef(_) => "trait_def",
-			EntryKind::TraitImpl(_) => "trait_impl",
-			EntryKind::SumType(_) => "sum_type",
-			EntryKind::TypeAlias(_) => "type_alias",
-			EntryKind::Function(_) => "function",
+			Entry::Module(_) => "module",
+			Entry::Info(_) => "info",
+			Entry::Constant(_) => "constant",
+			Entry::Variable(_) => "variable",
+			Entry::Macro(_) => "macro",
+			Entry::PrimitiveType(_) => "primitive_type",
+			Entry::Event(_) => "event",
+			Entry::Field(_) => "field",
+			Entry::RecordType(_) => "record",
+			Entry::UnionType(_) => "union",
+			Entry::TraitDef(_) => "trait_def",
+			Entry::TraitImpl(_) => "trait_impl",
+			Entry::SumType(_) => "sum_type",
+			Entry::TypeAlias(_) => "type_alias",
+			Entry::Function(_) => "function",
 		};
 		write!(f, "{}", tag)
 	}

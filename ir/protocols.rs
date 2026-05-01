@@ -9,9 +9,6 @@ use crate::{entry::NudoxPath, function::Function, generics::{ConstExpr, Constrai
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TraitDef {
-	/// The name of the trait/protocol/interface
-	pub name: String,
-
 	/// Generic parameters
 	pub generics: Option<Generics>,
 
@@ -32,12 +29,6 @@ pub struct TraitDef {
 
 	/// Trait-level attributes
 	pub attributes: Option<Vec<TraitAttribute>>,
-
-	/// Visibility
-	pub visibility: Option<Visibility>,
-
-	/// Documentation
-	pub docs: Option<String>,
 
 	/// Child entries conceptually scoped to this protocol.
 	///
@@ -60,9 +51,6 @@ pub struct AssociatedType {
 
 	/// Default type (if any)
 	pub default_type: Option<Type>,
-
-	/// Documentation
-	pub docs: Option<String>,
 }
 
 // Assuming GenericBound is a new enum/struct
@@ -97,9 +85,6 @@ pub struct TraitMethod {
 
 	/// Whether this method has a default implementation
 	pub has_default_implementation: bool,
-
-	/// Documentation
-	pub docs: Option<String>,
 }
 
 /// Receiver/self parameter kind
@@ -134,9 +119,6 @@ pub struct TraitConstant {
 
 	/// Default value (if provided)
 	pub default_value: Option<ConstExpr>,
-
-	/// Documentation
-	pub docs: Option<String>,
 }
 
 /// Attributes that can be applied to traits
@@ -193,12 +175,6 @@ pub struct TraitImpl {
 
 	/// Whether this impl is unsafe
 	pub is_unsafe: bool,
-
-	/// Visibility of the impl block
-	pub visibility: Option<Visibility>,
-
-	/// Documentation
-	pub docs: Option<String>,
 
 	/// Child entries conceptually scoped to this trait implementation block.
 	///

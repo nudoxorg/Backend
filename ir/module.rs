@@ -1,15 +1,12 @@
+use std::collections::HashSet;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{entry::NudoxPath, kind::Visibility};
+use crate::entry::NudoxPath;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Module {
-	pub members:       Option<Vec<NudoxPath>>,
-	pub visibility:    Visibility,
-	pub documentation: Option<String>,
-
-	/// Alternate paths (re-exports, aliased imports, etc.).
-	pub aliases: Option<HashSet<Vec<String>>>,
+	pub members: Option<Vec<NudoxPath>>,
 }

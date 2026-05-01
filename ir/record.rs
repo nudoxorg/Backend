@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -16,15 +18,6 @@ pub struct Record {
 	/// The fields of the record (if applicable).
 	/// An empty lack of fields implies dynamic fields, AKA classical JS and
 	pub fields: Vec<Field>,
-
-	/// The visibility of the record
-	pub visibility: Visibility,
-
-	/// Record-level documentation comments.
-	pub documentation: Option<String>,
-
-	/// Alternate paths (re-exports, aliased imports, etc.).
-	pub aliases: Option<HashSet<Vec<String>>>,
 
 	/// Child entries conceptually scoped to this Record.
 	///
