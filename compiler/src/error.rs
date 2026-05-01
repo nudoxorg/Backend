@@ -1,9 +1,91 @@
-use std::process::ExitStatus;
+use std::{io, path::PathBuf, process::ExitStatus};
 
+use axum::{Json, http::StatusCode, response::{IntoResponse, Response}};
+use lang_types::Language;
 use semver::Version;
+use serde_json::json;
 use thiserror::Error;
+use tokio::task::JoinError;
 
 use crate::core::rust::ParseError;
+
+#[derive(Debug, Error)]
+pub enum AppError {
+	#[error("{field}: {message}")]
+	Configuration { field: &'static str, message: String },
+
+	#[error("failed to determine storage root")]
+	StorageRootDiscovery {
+		#[source]
+		source: io::Error,
+	},
+
+	#[error("storage operation failed at `{path}`")]
+	Storage {
+		path:   PathBuf,
+		#[source]
+		source: io::Error,
+	},
+
+	#[error("package `{id}` is not tracked")]
+	PackageNotTracked { id: u64 },
+
+	#[error("language `{language:?}` is not supported by this deployment")]
+	UnsupportedLanguage { language: Language },
+
+	#[error("registry lookup failed for `{package}` in `{language:?}`: {message}")]
+	RegistryLookup { language: Language, package: String, message: String },
+
+	#[error("embedding pipeline failed: {0}")]
+	Embedding(String),
+
+	#[error("blocking task join failed during `{action}`")]
+	TaskJoin {
+		action: &'static str,
+		#[source]
+		source: JoinError,
+	},
+
+	#[error("internal error: {message}")]
+	Internal { message: String },
+
+	#[error(transparent)]
+	Io(#[from] io::Error),
+
+	#[error(transparent)]
+	Anyhow(#[from] anyhow::Error),
+
+	#[error(transparent)]
+	Eyre(#[from] color_eyre::Report),
+
+	#[error(transparent)]
+	Json(#[from] serde_json::Error),
+
+	#[error(transparent)]
+	Package(#[from] PackageError),
+
+	#[error(transparent)]
+	Git(#[from] GitError),
+}
+
+impl IntoResponse for AppError {
+	fn into_response(self) -> Response {
+		let status = match self {
+			AppError::Configuration { .. }
+			| AppError::UnsupportedLanguage { .. }
+			| AppError::RegistryLookup { .. } => StatusCode::BAD_REQUEST,
+			AppError::PackageNotTracked { .. } => StatusCode::NOT_FOUND,
+			AppError::Package(PackageError::VersionNotFound(_)) => StatusCode::NOT_FOUND,
+			_ => StatusCode::INTERNAL_SERVER_ERROR,
+		};
+
+		let body = Json(json!({
+			"error": self.to_string(),
+		}));
+
+		(status, body).into_response()
+	}
+}
 
 /// Errors arising from package registry interactions (network, lookup, API).
 #[derive(Debug, Error)]
@@ -27,7 +109,7 @@ pub enum RegistryError {
 #[allow(dead_code)]
 pub enum PackageError {
 	#[error("IO error: {0}")]
-	Io(#[from] std::io::Error),
+	Io(#[from] io::Error),
 
 	#[error("process `{command}` failed with {status}")]
 	Process { command: String, status: ExitStatus },
@@ -58,8 +140,44 @@ pub enum GitError {
 	#[error("clone failed: {0}")]
 	Clone(#[source] Box<dyn std::error::Error + Send + Sync>),
 
+	#[error("failed to open repository at `{path}`: {source}")]
+	Open {
+		path:   PathBuf,
+		#[source]
+		source: Box<dyn std::error::Error + Send + Sync>,
+	},
+
+	#[error("fetch failed: {0}")]
+	Fetch(#[source] Box<dyn std::error::Error + Send + Sync>),
+
 	#[error("fetch/checkout failed: {0}")]
 	Checkout(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+	#[error("failed to resolve git reference `{name}`: {source}")]
+	Reference {
+		name:   String,
+		#[source]
+		source: Box<dyn std::error::Error + Send + Sync>,
+	},
+
+	#[error("failed to build index from tree `{tree}`: {source}")]
+	IndexFromTree {
+		tree:   String,
+		#[source]
+		source: Box<dyn std::error::Error + Send + Sync>,
+	},
+
+	#[error("failed to obtain checkout options: {0}")]
+	CheckoutOptions(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+	#[error("failed to materialize worktree: {0}")]
+	Materialize(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+	#[error("failed to open an Arc-backed object database")]
+	OpenArcObjects {
+		#[source]
+		source: io::Error,
+	},
 
 	#[error("failed to read tree entry at `{path}`: {source}")]
 	TreeLookup {
