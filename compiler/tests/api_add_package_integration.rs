@@ -2,7 +2,7 @@ use std::{fs, path::{Path, PathBuf}, process::Command, sync::Arc, time::Duration
 
 use color_eyre::eyre::WrapErr;
 use lang_types::Language;
-use nudox::{api::{self, AppState}, config::PipelineConfig, local_registry::LocalRegistry, storage::StorageLayout};
+use nudox::{api::{self, AppState}, config::PipelineConfig, local_registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
 use reqwest::{Client, StatusCode};
 use semver::Version;
 use serde_json::{Value, json};
@@ -96,7 +96,16 @@ impl TestServer {
 				embedding_model: "text-embedding-3-small".to_owned(),
 				upload_schema:   false,
 			}));
-		let app = api::router(AppState { registry });
+		let app = api::router(AppState {
+			registry,
+			pipeline: PipelineConfig {
+				terminus:        None,
+				qdrant:          None,
+				embedding_model: "text-embedding-3-small".to_owned(),
+				upload_schema:   false,
+			},
+			sessions: SessionStore::default(),
+		});
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
 		let address = listener.local_addr()?;
 		let task = tokio::spawn(async move {

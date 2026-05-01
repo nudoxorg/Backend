@@ -6,6 +6,7 @@ use tempfile::{TempDir, tempdir_in};
 pub struct StorageLayout {
 	root:             PathBuf,
 	repositories_dir: PathBuf,
+	sessions_dir:     PathBuf,
 	workspaces_dir:   PathBuf,
 }
 
@@ -13,12 +14,14 @@ impl StorageLayout {
 	pub fn new(root: impl Into<PathBuf>) -> Self {
 		let root = root.into();
 		let repositories_dir = root.join("repositories");
+		let sessions_dir = root.join("sessions");
 		let workspaces_dir = root.join("workspaces");
-		Self { root, repositories_dir, workspaces_dir }
+		Self { root, repositories_dir, sessions_dir, workspaces_dir }
 	}
 
 	pub fn ensure(&self) -> io::Result<()> {
 		fs::create_dir_all(&self.repositories_dir)?;
+		fs::create_dir_all(&self.sessions_dir)?;
 		fs::create_dir_all(&self.workspaces_dir)?;
 		Ok(())
 	}
@@ -28,6 +31,8 @@ impl StorageLayout {
 	}
 
 	pub fn create_workspace(&self) -> io::Result<TempDir> { tempdir_in(&self.workspaces_dir) }
+
+	pub fn sessions_dir(&self) -> &Path { &self.sessions_dir }
 
 	pub fn root(&self) -> &Path { &self.root }
 }

@@ -6,6 +6,7 @@ pub mod git;
 pub mod ingest;
 pub mod local_registry;
 pub mod pipeline;
+pub mod search;
 pub mod server;
 pub mod storage;
 pub mod terminusdb;

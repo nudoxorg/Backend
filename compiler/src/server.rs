@@ -3,11 +3,12 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::info;
 
-use crate::{api::{self, AppState}, config::AppConfig, error::AppError, local_registry::LocalRegistry, storage::StorageLayout};
+use crate::{api::{self, AppState}, config::AppConfig, error::AppError, local_registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
 
 pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	let storage = StorageLayout::new(config.storage_root.clone());
 	storage.ensure()?;
+	let sessions = SessionStore::new(storage.sessions_dir())?;
 
 	let registry =
 		Arc::new(LocalRegistry::new(storage, config.monitor_interval, config.pipeline.clone()));
@@ -17,7 +18,7 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 		monitor_registry.run_monitor().await;
 	});
 
-	let state = AppState { registry };
+	let state = AppState { registry, pipeline: config.pipeline.clone(), sessions };
 	let app = api::router(state);
 	let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
 
