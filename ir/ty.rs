@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::function;
-use crate::{generics::{GenericArg, TraitRef}, parameter::Parameter, primitives::Primitive, protocols::GenericBound, record::SumVariant};
+use crate::{generics::{GenericArg, TraitRef}, parameter::Parameter, primitives::Primitive, protocols::GenericBound, record::{Record, SumVariant}};
 
 /// Universal representation of types across languages.
 #[derive(Debug, Clone, PartialEq)]
@@ -12,6 +12,9 @@ pub enum Type {
 	/// A named reference to a concrete type or struct.
 	/// Ex: `std::string::String`, `MyStruct`, `Vec<T>`
 	TypeReference(TypeReference),
+
+	/// A receiver/self type such as Rust `Self` or TypeScript `this`.
+	SelfType,
 
 	/// A dynamically dispatched trait object or interface.
 	/// Ex: `dyn std::fmt::Display` in Rust, or `Runnable` in Java.
@@ -33,6 +36,9 @@ pub enum Type {
 	/// A fixed-length, heterogeneous collection of types.
 	/// Ex: `(i32, String)`. An empty vec `()` represents the Unit type.
 	Tuple(Vec<Type>),
+
+	/// An inline record or object literal type.
+	RecordLiteral(Box<Record>),
 
 	/// A dynamically-sized view into a contiguous sequence.
 	/// Ex: `[u8]` or `[]T`.
@@ -85,6 +91,18 @@ pub enum Type {
 	/// Variadic types or parameter packs.
 	/// Ex: `...T` in TypeScript or `Args...` in C++.
 	Variadic(Box<Type>),
+
+	/// Type-level operators such as `keyof T` or `readonly T`.
+	TypeOperator(TypeOperator),
+
+	/// Conditional types such as `T extends U ? X : Y`.
+	Conditional(ConditionalType),
+
+	/// Mapped types such as `{ [K in keyof T]: T[K] }`.
+	Mapped(MappedType),
+
+	/// Type predicates such as `value is Foo` or `asserts this is Bar`.
+	Predicate(TypePredicate),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,4 +159,54 @@ pub struct PolyTrait {
 	/// For Higher-Rank Trait Bounds (HRTBs) like `for<'a> Trait<'a>`
 	// TODO: Type this too fr
 	pub lifetimes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TypeOperator {
+	pub operator: String,
+	pub r#type:   Box<Type>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ConditionalType {
+	pub check_type:   Box<Type>,
+	pub extends_type: Box<Type>,
+	pub true_type:    Box<Type>,
+	pub false_type:   Box<Type>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ModifierPrefix {
+	Preserve,
+	Add,
+	Remove,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MappedType {
+	pub readonly:    Option<ModifierPrefix>,
+	pub optional:    Option<ModifierPrefix>,
+	pub parameter:   String,
+	pub source_type: Box<Type>,
+	pub name_type:   Option<Box<Type>>,
+	pub value_type:  Option<Box<Type>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum PredicateSubject {
+	This,
+	Identifier(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TypePredicate {
+	pub asserts: bool,
+	pub subject: PredicateSubject,
+	pub r#type:  Option<Box<Type>>,
 }
