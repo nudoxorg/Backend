@@ -1,15 +1,9 @@
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::{
-	entry::NudoxPath,
-	function::Function,
-	module::Module,
-	protocols::{TraitDef, TraitImpl},
-	record::{Record, SumVariant},
-	ty::Type,
-};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+use crate::{entry::NudoxPath, function::Function, module::Module, protocols::{TraitDef, TraitImpl}, record::{Record, SumVariant}, ty::Type};
 
 /// The visibility of an entry in the source language.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,21 +23,21 @@ pub enum Visibility {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Symbol<T> {
-	pub name: String,
-	pub path: NudoxPath,
-	pub aliases: Option<HashSet<Vec<String>>>,
-	pub visibility: Visibility,
+	pub name:          String,
+	pub path:          NudoxPath,
+	pub aliases:       Option<HashSet<Vec<String>>>,
+	pub visibility:    Visibility,
 	pub documentation: Option<String>,
-	pub inner: T,
+	pub inner:         T,
 }
 
 impl<T> Symbol<T> {
 	pub fn placeholder(inner: T) -> Self {
 		Self {
-			name:          String::new(),
-			path:          NudoxPath::Local(std::path::PathBuf::new()),
-			aliases:       None,
-			visibility:    Visibility::Public,
+			name: String::new(),
+			path: NudoxPath::Local(std::path::PathBuf::new()),
+			aliases: None,
+			visibility: Visibility::Public,
 			documentation: None,
 			inner,
 		}
@@ -51,10 +45,10 @@ impl<T> Symbol<T> {
 
 	pub fn clone_with<U>(&self, inner: U) -> Symbol<U> {
 		Symbol {
-			name:          self.name.clone(),
-			path:          self.path.clone(),
-			aliases:       self.aliases.clone(),
-			visibility:    self.visibility.clone(),
+			name: self.name.clone(),
+			path: self.path.clone(),
+			aliases: self.aliases.clone(),
+			visibility: self.visibility.clone(),
 			documentation: self.documentation.clone(),
 			inner,
 		}
