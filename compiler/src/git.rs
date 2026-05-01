@@ -297,8 +297,10 @@ pub fn check_package_version(
 		return Ok(None);
 	};
 
-	let version = Version::parse(version_string).map_err(|source| {
-		GitError::VersionParse { path: manifest_path.into(), version: version_string.into(), source }
+	let version = Version::parse(version_string).map_err(|source| GitError::VersionParse {
+		path: manifest_path.into(),
+		version: version_string.into(),
+		source,
 	})?;
 
 	Ok(Some(version))
