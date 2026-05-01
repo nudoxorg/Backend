@@ -1,11 +1,13 @@
+pub mod embedding_service;
 pub mod ld;
+pub mod qdrant_upload;
 pub mod termdb;
 pub mod upload;
 
 use ir::entry::Entry;
 use serde_json::{Map, Value, json};
 use termdb::{DocCtx, DocStore, EmitJsonLD, URI};
-use tracing::warn;
+use tracing::{debug, instrument, warn};
 
 use crate::terminusdb::{ld::LDKind, termdb::UriOps};
 
@@ -118,4 +120,32 @@ impl EntryOps for Entry {
 
 		emitted_uri
 	}
+}
+
+pub struct Runner {
+	ctx:  DocCtx,
+	docs: DocStore,
+}
+
+impl Runner {
+	pub fn new(ctx: DocCtx) -> Self { Self { ctx, docs: DocStore::new() } }
+
+	#[instrument(skip_all, name = "runner")]
+	pub fn run<I>(&mut self, items: I)
+	where
+		I: IntoIterator<Item = Entry>,
+	{
+		for entry in items {
+			debug!(name = %entry.name(), "emitting entry");
+			let _ = entry.emit(&mut self.ctx, &mut self.docs);
+		}
+	}
+
+	#[allow(dead_code)]
+	pub fn docs(&self) -> &DocStore { &self.docs }
+
+	#[allow(dead_code)]
+	pub fn docs_mut(&mut self) -> &mut DocStore { &mut self.docs }
+
+	pub fn into_docs(self) -> DocStore { self.docs }
 }
