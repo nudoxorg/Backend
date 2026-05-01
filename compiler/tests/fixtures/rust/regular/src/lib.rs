@@ -2,6 +2,18 @@
 
 pub fn add(left: i32, right: i32) -> i32 { left + right }
 
+pub trait BlanketView {
+	type View;
+
+	fn view(&self) -> &Self::View;
+}
+
+impl<T> BlanketView for T {
+	type View = T;
+
+	fn view(&self) -> &Self::View { self }
+}
+
 pub struct Counter {
 	value: i32,
 }
