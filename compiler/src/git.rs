@@ -1,26 +1,119 @@
-use std::path::PathBuf;
+use std::path::Path;
 
-use gix::{Repository, progress::Discard, remote};
+use gix::{Repository, bstr::ByteSlice, progress::Discard, remote};
 use tracing::{debug, instrument, warn};
 use url::Url;
 
 use crate::error::GitError;
 
-#[instrument(skip_all, fields(remote = %remote))]
-pub fn clone_repository(out_path: &PathBuf, remote: &Url) -> Result<Repository, GitError> {
-	let mut fetch_handle = gix::prepare_clone(remote.to_string(), &out_path)
-		.map_err(|e| GitError::Clone(e.into()))?
+#[instrument(skip_all, fields(remote = %remote, path = %out_path.display()))]
+pub fn open_or_clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, GitError> {
+	if out_path.exists() {
+		return gix::open(out_path)
+			.map_err(|source| GitError::Open { path: out_path.to_path_buf(), source: source.into() });
+	}
+
+	clone_repository(out_path, remote)
+}
+
+#[instrument(skip_all, fields(remote = %remote, path = %out_path.display()))]
+pub fn clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, GitError> {
+	if let Some(parent) = out_path.parent() {
+		std::fs::create_dir_all(parent)
+			.map_err(|source| GitError::Open { path: parent.to_path_buf(), source: source.into() })?;
+	}
+
+	let mut fetch_handle = gix::prepare_clone(remote.to_string(), out_path)
+		.map_err(|source| GitError::Clone(source.into()))?
 		.with_fetch_options(remote::ref_map::Options::default());
 
 	let (mut checkout_handle, _) = fetch_handle
 		.fetch_then_checkout(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(|e| GitError::Checkout(e.into()))?;
+		.map_err(|source| GitError::Checkout(source.into()))?;
 
 	let (repo, _) = checkout_handle
 		.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(|e| GitError::Checkout(e.into()))?;
+		.map_err(|source| GitError::Checkout(source.into()))?;
 
 	Ok(repo)
+}
+
+#[instrument(skip(repo), fields(remote = remote_name.unwrap_or("origin")))]
+pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Result<(), GitError> {
+	let remote = repo
+		.find_fetch_remote(remote_name.map(|name| name.as_bytes().as_bstr()))
+		.map_err(|source| GitError::Fetch(source.into()))?;
+
+	let connection =
+		remote.connect(remote::Direction::Fetch).map_err(|source| GitError::Fetch(source.into()))?;
+	let prepare = connection
+		.prepare_fetch(Discard, remote::ref_map::Options::default())
+		.map_err(|source| GitError::Fetch(source.into()))?;
+
+	prepare
+		.with_write_packed_refs_only(true)
+		.with_reflog_message(gix::remote::fetch::RefLogMessage::Prefixed { action: "fetch".to_owned() })
+		.receive(Discard, &gix::interrupt::IS_INTERRUPTED)
+		.map_err(|source| GitError::Fetch(source.into()))?;
+
+	Ok(())
+}
+
+#[instrument(skip(repo), fields(remote = %remote_name, branch = %branch))]
+pub fn remote_branch_commit(
+	repo: &Repository,
+	remote_name: &str,
+	branch: &str,
+) -> Option<gix::ObjectId> {
+	let ref_name = format!("refs/remotes/{remote_name}/{branch}");
+	repo.find_reference(&ref_name).ok()?.peel_to_id().ok().map(|id| id.detach())
+}
+
+#[instrument(skip_all, fields(commit = %commit, destination = %destination.display()))]
+pub fn materialize_commit(
+	repo: &Repository,
+	commit: gix::ObjectId,
+	destination: &Path,
+) -> Result<(), GitError> {
+	std::fs::create_dir_all(destination).map_err(|source| GitError::Open {
+		path:   destination.to_path_buf(),
+		source: source.into(),
+	})?;
+
+	let tree_id = repo
+		.find_commit(commit)
+		.map_err(|source| GitError::Reference {
+			name:   commit.to_hex().to_string(),
+			source: source.into(),
+		})?
+		.tree_id()
+		.map_err(|source| GitError::Reference {
+			name:   commit.to_hex().to_string(),
+			source: source.into(),
+		})?;
+
+	let mut index = repo.index_from_tree(&tree_id).map_err(|source| GitError::IndexFromTree {
+		tree:   tree_id.to_string(),
+		source: source.into(),
+	})?;
+	let mut options = repo
+		.checkout_options(gix_worktree::stack::state::attributes::Source::IdMapping)
+		.map_err(|source| GitError::CheckoutOptions(source.into()))?;
+	options.destination_is_initially_empty = true;
+	options.overwrite_existing = true;
+
+	gix_worktree_state::checkout(
+		&mut index,
+		destination,
+		repo.objects.clone().into_arc().map_err(|source| GitError::OpenArcObjects { source })?,
+		&Discard,
+		&Discard,
+		&gix::interrupt::IS_INTERRUPTED,
+		options,
+	)
+	.map_err(|source| GitError::Materialize(source.into()))?;
+
+	Ok(())
 }
 
 /// Walk newest→oldest. First commit whose Cargo.toml has `package_name` at
@@ -58,47 +151,52 @@ pub fn extract_package_version(
 ) -> Result<Option<semver::Version>, GitError> {
 	let Some(entry) = tree
 		.lookup_entry_by_path("Cargo.toml")
-		.map_err(|e| GitError::TreeLookup { path: "Cargo.toml".into(), source: e.into() })?
-		.filter(|e| e.mode().is_blob())
+		.map_err(|source| GitError::TreeLookup { path: "Cargo.toml".into(), source: source.into() })?
+		.filter(|entry| entry.mode().is_blob())
 	else {
 		return Ok(None);
 	};
 
-	let blob = repo
-		.find_blob(entry.oid())
-		.map_err(|e| GitError::TreeLookup { path: "Cargo.toml".into(), source: e.into() })?;
+	let blob = repo.find_blob(entry.oid()).map_err(|source| GitError::TreeLookup {
+		path:   "Cargo.toml".into(),
+		source: source.into(),
+	})?;
 	let content = std::str::from_utf8(&blob.data)
-		.map_err(|e| GitError::BlobEncoding { path: "Cargo.toml".into(), source: e })?;
+		.map_err(|source| GitError::BlobEncoding { path: "Cargo.toml".into(), source })?;
 	let manifest: toml::Value = toml::from_str(content)
-		.map_err(|e| GitError::TomlParse { path: "Cargo.toml".into(), source: e })?;
+		.map_err(|source| GitError::TomlParse { path: "Cargo.toml".into(), source })?;
 
 	if let Some(workspace) = manifest.get("workspace") {
 		let members: Vec<String> = workspace
 			.get("members")
-			.and_then(|m| m.as_array())
-			.map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+			.and_then(|members| members.as_array())
+			.map(|members| members.iter().filter_map(|value| value.as_str().map(String::from)).collect())
 			.unwrap_or_default();
 
 		for member_path in resolve_workspace_members(repo, tree, &members)? {
-			let cargo_path = format!("{}/Cargo.toml", member_path);
+			let cargo_path = format!("{member_path}/Cargo.toml");
 			let Some(member_entry) = tree
 				.lookup_entry_by_path(&cargo_path)
-				.map_err(|e| GitError::TreeLookup { path: cargo_path.clone(), source: e.into() })?
-				.filter(|e| e.mode().is_blob())
+				.map_err(|source| GitError::TreeLookup {
+					path:   cargo_path.clone(),
+					source: source.into(),
+				})?
+				.filter(|entry| entry.mode().is_blob())
 			else {
 				continue;
 			};
 
-			let blob = repo
-				.find_blob(member_entry.oid())
-				.map_err(|e| GitError::TreeLookup { path: cargo_path.clone(), source: e.into() })?;
+			let blob = repo.find_blob(member_entry.oid()).map_err(|source| GitError::TreeLookup {
+				path:   cargo_path.clone(),
+				source: source.into(),
+			})?;
 			let content = std::str::from_utf8(&blob.data)
-				.map_err(|e| GitError::BlobEncoding { path: cargo_path.clone(), source: e })?;
+				.map_err(|source| GitError::BlobEncoding { path: cargo_path.clone(), source })?;
 			let member_manifest: toml::Value = toml::from_str(content)
-				.map_err(|e| GitError::TomlParse { path: cargo_path.clone(), source: e })?;
+				.map_err(|source| GitError::TomlParse { path: cargo_path.clone(), source })?;
 
-			if let Some(v) = check_package_version(&member_manifest, package_name, &cargo_path)? {
-				return Ok(Some(v));
+			if let Some(version) = check_package_version(&member_manifest, package_name, &cargo_path)? {
+				return Ok(Some(version));
 			}
 		}
 
@@ -121,7 +219,7 @@ pub fn resolve_workspace_members(
 		if let Some(prefix) = member.strip_suffix("/*") {
 			let Some(dir_entry) = tree
 				.lookup_entry_by_path(prefix)
-				.map_err(|e| GitError::TreeLookup { path: prefix.into(), source: e.into() })?
+				.map_err(|source| GitError::TreeLookup { path: prefix.into(), source: source.into() })?
 			else {
 				continue;
 			};
@@ -132,12 +230,14 @@ pub fn resolve_workspace_members(
 
 			let subtree = repo
 				.find_tree(dir_entry.oid())
-				.map_err(|e| GitError::TreeLookup { path: prefix.into(), source: e.into() })?;
+				.map_err(|source| GitError::TreeLookup { path: prefix.into(), source: source.into() })?;
 			for child in subtree.iter() {
-				let child =
-					child.map_err(|e| GitError::TreeLookup { path: prefix.into(), source: e.into() })?;
+				let child = child.map_err(|source| GitError::TreeLookup {
+					path:   prefix.into(),
+					source: source.into(),
+				})?;
 				if child.mode().is_tree() {
-					resolved.push(format!("{}/{}", prefix, child.filename()));
+					resolved.push(format!("{prefix}/{}", child.filename()));
 				}
 			}
 		} else if member.contains('*') {
@@ -159,19 +259,17 @@ pub fn check_package_version(
 		return Ok(None);
 	};
 
-	let name = pkg.get("name").and_then(|n| n.as_str()).unwrap_or("");
+	let name = pkg.get("name").and_then(|name| name.as_str()).unwrap_or("");
 	if name != package_name {
 		return Ok(None);
 	}
 
-	let Some(ver_str) = pkg.get("version").and_then(|v| v.as_str()) else {
+	let Some(version_string) = pkg.get("version").and_then(|version| version.as_str()) else {
 		return Ok(None);
 	};
 
-	let version = semver::Version::parse(ver_str).map_err(|e| GitError::VersionParse {
-		path:    manifest_path.into(),
-		version: ver_str.into(),
-		source:  e,
+	let version = semver::Version::parse(version_string).map_err(|source| {
+		GitError::VersionParse { path: manifest_path.into(), version: version_string.into(), source }
 	})?;
 
 	Ok(Some(version))
