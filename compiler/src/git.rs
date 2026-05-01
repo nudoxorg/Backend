@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use gix::{Repository, bstr::ByteSlice, progress::Discard, remote};
+use semver::Version;
 use tracing::{debug, instrument, warn};
 use url::Url;
 
@@ -121,7 +122,7 @@ pub fn materialize_commit(
 #[instrument(skip(repo), fields(package = %package_name, version = %target_version))]
 pub fn find_commit_for_version(
 	repo: &gix::Repository,
-	target_version: &semver::Version,
+	target_version: &Version,
 	package_name: &str,
 ) -> Option<gix::ObjectId> {
 	let head_id = repo.head().ok()?.peel_to_object().ok()?.id();
@@ -144,11 +145,39 @@ pub fn find_commit_for_version(
 	None
 }
 
+/// Walk newest→oldest. First commit whose package.json has `package_name` at
+/// `target_version` is the latest commit for that version.
+#[instrument(skip(repo), fields(package = %package_name, version = %target_version))]
+pub fn find_typescript_commit_for_version(
+	repo: &gix::Repository,
+	target_version: &Version,
+	package_name: &str,
+) -> Option<gix::ObjectId> {
+	let head_id = repo.head().ok()?.peel_to_object().ok()?.id();
+	let revwalk = repo.rev_walk([head_id]);
+
+	for commit_id in revwalk.all().ok()? {
+		let commit_id = commit_id.ok()?;
+		let commit = repo.find_commit(commit_id.id()).ok()?;
+		let tree = commit.tree().ok()?;
+
+		match extract_typescript_package_version(repo, &tree, package_name) {
+			Some(version) if &version == target_version => {
+				debug!(commit = %commit_id.id(), "found matching TypeScript package version");
+				return Some(commit_id.id().detach());
+			}
+			_ => continue,
+		}
+	}
+
+	None
+}
+
 pub fn extract_package_version(
 	repo: &gix::Repository,
 	tree: &gix::Tree,
 	package_name: &str,
-) -> Result<Option<semver::Version>, GitError> {
+) -> Result<Option<Version>, GitError> {
 	let Some(entry) = tree
 		.lookup_entry_by_path("Cargo.toml")
 		.map_err(|source| GitError::TreeLookup { path: "Cargo.toml".into(), source: source.into() })?
@@ -254,7 +283,7 @@ pub fn check_package_version(
 	manifest: &toml::Value,
 	package_name: &str,
 	manifest_path: &str,
-) -> Result<Option<semver::Version>, GitError> {
+) -> Result<Option<Version>, GitError> {
 	let Some(pkg) = manifest.get("package") else {
 		return Ok(None);
 	};
@@ -268,9 +297,31 @@ pub fn check_package_version(
 		return Ok(None);
 	};
 
-	let version = semver::Version::parse(version_string).map_err(|source| {
+	let version = Version::parse(version_string).map_err(|source| {
 		GitError::VersionParse { path: manifest_path.into(), version: version_string.into(), source }
 	})?;
 
 	Ok(Some(version))
+}
+
+fn extract_typescript_package_version(
+	repo: &gix::Repository,
+	tree: &gix::Tree,
+	package_name: &str,
+) -> Option<Version> {
+	let entry = tree.lookup_entry_by_path("package.json").ok()??;
+	if !entry.mode().is_blob() {
+		return None;
+	}
+
+	let blob = repo.find_blob(entry.oid()).ok()?;
+	let content = std::str::from_utf8(&blob.data).ok()?;
+	let manifest: serde_json::Value = serde_json::from_str(content).ok()?;
+	let pkg_name = manifest.get("name").and_then(serde_json::Value::as_str)?;
+	if pkg_name != package_name {
+		return None;
+	}
+
+	let version = manifest.get("version").and_then(serde_json::Value::as_str)?;
+	Version::parse(version).ok()
 }

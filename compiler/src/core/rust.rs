@@ -66,6 +66,7 @@ pub struct Crates {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug)]
 pub struct RustPackage {
 	pub slug:        String,
 	pub name:        String,
@@ -92,7 +93,7 @@ impl RustPackage {
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
 	/// Takes an input of `code` which is the location of the source code on disk
 	#[instrument(skip_all, fields(package = %self.name))]
-	fn generate_ir(&self, code: &PathBuf) -> Result<Ir<Collected>, PackageError> {
+	pub(crate) fn generate_ir(&self, code: &PathBuf) -> Result<Ir<Collected>, PackageError> {
 		let target_dir = code.join("target").join("doc_json");
 
 		if !target_dir.exists() {
@@ -130,22 +131,29 @@ impl RustPackage {
 
 		Ok(Ir::from_entries(parse_result))
 	}
-}
 
-impl From<Crate> for RustPackage {
-	fn from(c: Crate) -> Self {
+	pub(crate) fn from_registry_crate(c: Crate) -> Self {
+		let fallback = format!("https://crates.io/crates/{}", c.name);
+		let source = c
+			.repository
+			.as_deref()
+			.and_then(|repository| Url::parse(repository).ok())
+			.or_else(|| Url::parse(&fallback).ok())
+			.unwrap_or_else(|| Url::parse("https://crates.io").unwrap());
+
 		RustPackage {
-			slug:        c.name.to_lowercase(),
-			name:        c.name.clone(),
-			language:    Language::Rust,
-			uuid:        c.id.parse::<u64>().unwrap_or(0),
-			source:      Url::parse(
-				&c.repository.unwrap_or_else(|| format!("https://crates.io/crates/{}", c.name)),
-			)
-			.unwrap_or_else(|_| Url::parse("https://crates.io").unwrap()),
+			slug: c.name.to_lowercase(),
+			name: c.name.clone(),
+			language: Language::Rust,
+			uuid: c.id.parse::<u64>().unwrap_or(0),
+			source,
 			description: c.description,
 		}
 	}
+}
+
+impl From<Crate> for RustPackage {
+	fn from(c: Crate) -> Self { Self::from_registry_crate(c) }
 }
 
 impl Package for RustPackage {
@@ -167,21 +175,15 @@ impl Package for RustPackage {
 		version: Version,
 		_flags: Option<Vec<String>>,
 	) -> Result<Ir<Collected>, Self::Error> {
-		let output_directory = PathBuf::from("out");
-		let repository = crate::git::clone_repository(&output_directory, &self.source)?;
+		let scratch = tempfile::tempdir()?;
+		let repository_dir = scratch.path().join("repository");
+		let workspace_dir = scratch.path().join("workspace");
+		let repository = crate::git::clone_repository(&repository_dir, &self.source)?;
 
 		let target_oid = find_commit_for_version(&repository, &version, &self.name)
 			.ok_or_else(|| PackageError::VersionNotFound(version.clone()))?;
-
-		let hex = target_oid.to_hex().to_string();
-		let status =
-			Command::new("git").args(["checkout", &hex]).current_dir(&output_directory).status()?;
-
-		if !status.success() {
-			return Err(PackageError::Process { command: format!("git checkout {hex}"), status });
-		}
-
-		self.generate_ir(&output_directory)
+		crate::git::materialize_commit(&repository, target_oid, &workspace_dir)?;
+		self.generate_ir(&workspace_dir)
 	}
 
 	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> { Err(PackageError::NotImplemented) }
@@ -219,5 +221,26 @@ impl Registry for Crates {
 			source:      Url::parse("https://doc.rust-lang.org/reference/").unwrap(),
 			description: Some("The official reference manual for the Rust language".into()),
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::time::Duration;
+
+	use super::*;
+	use crate::traits::registry::Registry;
+
+	fn live_registry() -> Crates {
+		Crates {
+			client: AsyncClient::new("nudox-tests (help@nudox.invalid)", Duration::from_secs(1)).unwrap(),
+		}
+	}
+
+	#[tokio::test]
+	async fn rust_registry_results_snapshot() {
+		let registry = live_registry();
+		let packages = registry.get_packages_by_name("serde").await.unwrap();
+		insta::assert_debug_snapshot!(packages);
 	}
 }

@@ -6,27 +6,13 @@ use semver::Version;
 use tokio::runtime::Handle;
 use tracing::info;
 
-use crate::{
-	config::{PipelineConfig, QdrantSettings},
-	core::{rust::RustPackage, ts::TsPackage},
-	error::AppError,
-	terminusdb::{
-		Runner,
-		embedding_service::{
-			EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory,
-			embedding_documents_from_docstore,
-		},
-		qdrant_upload::{QdrantConfig, upload_points},
-		termdb::{CrateInfo, DocCtx, DocStore},
-		upload::{upload_documents, upload_schema},
-	},
-};
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, terminusdb::{Runner, embedding_service::{EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{upload_documents, upload_schema}}};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
-	pub entry_count: usize,
+	pub entry_count:    usize,
 	pub document_count: usize,
-	pub vector_count: usize,
+	pub vector_count:   usize,
 }
 
 pub fn run_rust_pipeline(
@@ -147,10 +133,10 @@ async fn upload_embeddings(
 	}
 
 	let qdrant_config = QdrantConfig {
-		endpoint: settings.endpoint.clone(),
+		endpoint:        settings.endpoint.clone(),
 		collection_name: collection_name(settings, language, package_name, version),
-		vector_size: settings.vector_size,
-		distance: settings.distance,
+		vector_size:     settings.vector_size,
+		distance:        settings.distance,
 	};
 	upload_points(&qdrant_config, points).await?;
 

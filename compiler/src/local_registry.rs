@@ -1,50 +1,75 @@
-use std::{collections::HashMap, num::NonZeroU64, sync::{Arc, atomic::{AtomicU64, Ordering}}};
+use std::{
+	collections::HashMap,
+	fs,
+	num::NonZeroU64,
+	path::{Path, PathBuf},
+	sync::{
+		Arc,
+		atomic::{AtomicU64, Ordering},
+	},
+};
 
 use jiff::Timestamp;
 use lang_types::Language;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use tokio::{sync::{Mutex, RwLock}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
+use tokio::{
+	sync::{Mutex, RwLock},
+	task::spawn_blocking,
+	time::{Duration, MissedTickBehavior},
+};
 use tracing::{info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, traits::{builder::get_registry, registry::Registry}};
+use crate::{
+	config::PipelineConfig,
+	core::{rust::RustPackage, ts::TsPackage},
+	error::{AppError, PackageError},
+	git,
+	ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline},
+	storage::StorageLayout,
+	traits::{builder::get_registry, registry::Registry},
+};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewPackageRequest {
-	pub language:    Language,
-	pub name:        String,
-	pub version:     Version,
+	pub language: Language,
+	pub name: String,
+	pub version: Version,
 	#[serde(default)]
-	pub branch:      Option<String>,
+	pub source: Option<String>,
+	#[serde(default)]
+	pub entry_point: Option<String>,
+	#[serde(default)]
+	pub branch: Option<String>,
 	#[serde(default = "default_sync_on_add")]
 	pub sync_on_add: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PackageSnapshot {
-	pub id:       u64,
+	pub id: u64,
 	pub language: Language,
-	pub name:     String,
-	pub slug:     String,
-	pub source:   Url,
-	pub version:  Version,
-	pub branch:   String,
-	pub state:    PackageStateSnapshot,
+	pub name: String,
+	pub slug: String,
+	pub source: Url,
+	pub version: Version,
+	pub branch: String,
+	pub state: PackageStateSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PackageStateSnapshot {
-	pub health:                  PackageHealth,
-	pub last_checked_at:         Option<Timestamp>,
-	pub last_synced_at:          Option<Timestamp>,
-	pub tracked_version_commit:  Option<String>,
-	pub latest_remote_commit:    Option<String>,
+	pub health: PackageHealth,
+	pub last_checked_at: Option<Timestamp>,
+	pub last_synced_at: Option<Timestamp>,
+	pub tracked_version_commit: Option<String>,
+	pub latest_remote_commit: Option<String>,
 	pub remote_update_available: bool,
-	pub entry_count:             usize,
-	pub document_count:          usize,
-	pub vector_count:            usize,
-	pub last_error:              Option<String>,
+	pub entry_count: usize,
+	pub document_count: usize,
+	pub vector_count: usize,
+	pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -56,37 +81,39 @@ pub enum PackageHealth {
 }
 
 pub struct LocalRegistry {
-	storage:          StorageLayout,
+	storage: StorageLayout,
 	monitor_interval: Duration,
-	pipeline:         PipelineConfig,
-	next_id:          AtomicU64,
-	packages:         Arc<RwLock<HashMap<PackageId, Arc<TrackedPackage>>>>,
-	keys:             Arc<RwLock<HashMap<PackageKey, PackageId>>>,
+	pipeline: PipelineConfig,
+	next_id: AtomicU64,
+	packages: Arc<RwLock<HashMap<PackageId, Arc<TrackedPackage>>>>,
+	keys: Arc<RwLock<HashMap<PackageKey, PackageId>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PackageId(NonZeroU64);
 
 impl PackageId {
-	fn get(self) -> u64 { self.0.get() }
+	fn get(self) -> u64 {
+		self.0.get()
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PackageKey {
 	language: Language,
-	name:     String,
-	version:  Version,
-	branch:   String,
+	name: String,
+	version: Version,
+	branch: String,
 }
 
 #[derive(Debug, Clone)]
 struct PackageSpec {
 	language: Language,
-	name:     String,
-	slug:     String,
-	version:  Version,
-	branch:   String,
-	source:   Url,
+	name: String,
+	slug: String,
+	version: Version,
+	branch: String,
+	source: Url,
 }
 
 #[derive(Debug, Clone)]
@@ -96,41 +123,45 @@ enum PackageHandle {
 }
 
 struct TrackedPackage {
-	id:        PackageId,
-	spec:      PackageSpec,
-	handle:    PackageHandle,
-	state:     RwLock<TrackedPackageState>,
+	id: PackageId,
+	spec: PackageSpec,
+	handle: PackageHandle,
+	state: RwLock<TrackedPackageState>,
 	sync_lock: Mutex<()>,
 }
 
 #[derive(Debug, Clone)]
 struct TrackedPackageState {
-	health:                  PackageHealth,
-	last_checked_at:         Option<Timestamp>,
-	last_synced_at:          Option<Timestamp>,
-	tracked_version_commit:  Option<String>,
-	latest_remote_commit:    Option<String>,
+	health: PackageHealth,
+	last_checked_at: Option<Timestamp>,
+	last_synced_at: Option<Timestamp>,
+	tracked_version_commit: Option<String>,
+	latest_remote_commit: Option<String>,
 	remote_update_available: bool,
-	entry_count:             usize,
-	document_count:          usize,
-	vector_count:            usize,
-	last_error:              Option<String>,
+	entry_count: usize,
+	document_count: usize,
+	vector_count: usize,
+	last_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct SyncExecution {
 	tracked_version_commit: String,
-	latest_remote_commit:   Option<String>,
-	summary:                IngestionSummary,
+	latest_remote_commit: Option<String>,
+	summary: IngestionSummary,
 }
 
 #[derive(Debug, Clone)]
 struct MonitorExecution {
-	latest_remote_commit:    Option<String>,
+	latest_remote_commit: Option<String>,
 	remote_update_available: bool,
 }
 
-fn default_sync_on_add() -> bool { true }
+fn default_sync_on_add() -> bool {
+	true
+}
+
+const TYPESCRIPT_REPOSITORY_ENTRY_PREFIX: &str = "repo:";
 
 impl LocalRegistry {
 	pub fn new(storage: StorageLayout, monitor_interval: Duration, pipeline: PipelineConfig) -> Self {
@@ -144,7 +175,9 @@ impl LocalRegistry {
 		}
 	}
 
-	pub async fn package_count(&self) -> usize { self.packages.read().await.len() }
+	pub async fn package_count(&self) -> usize {
+		self.packages.read().await.len()
+	}
 
 	pub async fn list_packages(&self) -> Vec<PackageSnapshot> {
 		let packages: Vec<Arc<TrackedPackage>> = self.packages.read().await.values().cloned().collect();
@@ -169,9 +202,9 @@ impl LocalRegistry {
 			.unwrap_or_else(|| default_tracking_branch(request.language).to_owned());
 		let key = PackageKey {
 			language: request.language,
-			name:     request.name.clone(),
-			version:  request.version.clone(),
-			branch:   branch.clone(),
+			name: request.name.clone(),
+			version: request.version.clone(),
+			branch: branch.clone(),
 		};
 
 		if let Some(existing_id) = self.keys.read().await.get(&key).copied() {
@@ -309,24 +342,24 @@ impl TrackedPackage {
 	async fn snapshot(&self) -> PackageSnapshot {
 		let state = self.state.read().await.clone();
 		PackageSnapshot {
-			id:       self.id.get(),
+			id: self.id.get(),
 			language: self.spec.language,
-			name:     self.spec.name.clone(),
-			slug:     self.spec.slug.clone(),
-			source:   self.spec.source.clone(),
-			version:  self.spec.version.clone(),
-			branch:   self.spec.branch.clone(),
-			state:    PackageStateSnapshot {
-				health:                  state.health,
-				last_checked_at:         state.last_checked_at,
-				last_synced_at:          state.last_synced_at,
-				tracked_version_commit:  state.tracked_version_commit,
-				latest_remote_commit:    state.latest_remote_commit,
+			name: self.spec.name.clone(),
+			slug: self.spec.slug.clone(),
+			source: self.spec.source.clone(),
+			version: self.spec.version.clone(),
+			branch: self.spec.branch.clone(),
+			state: PackageStateSnapshot {
+				health: state.health,
+				last_checked_at: state.last_checked_at,
+				last_synced_at: state.last_synced_at,
+				tracked_version_commit: state.tracked_version_commit,
+				latest_remote_commit: state.latest_remote_commit,
 				remote_update_available: state.remote_update_available,
-				entry_count:             state.entry_count,
-				document_count:          state.document_count,
-				vector_count:            state.vector_count,
-				last_error:              state.last_error,
+				entry_count: state.entry_count,
+				document_count: state.document_count,
+				vector_count: state.vector_count,
+				last_error: state.last_error,
 			},
 		}
 	}
@@ -368,16 +401,16 @@ impl TrackedPackage {
 impl TrackedPackageState {
 	fn new() -> Self {
 		Self {
-			health:                  PackageHealth::Pending,
-			last_checked_at:         None,
-			last_synced_at:          None,
-			tracked_version_commit:  None,
-			latest_remote_commit:    None,
+			health: PackageHealth::Pending,
+			last_checked_at: None,
+			last_synced_at: None,
+			tracked_version_commit: None,
+			latest_remote_commit: None,
 			remote_update_available: false,
-			entry_count:             0,
-			document_count:          0,
-			vector_count:            0,
-			last_error:              None,
+			entry_count: 0,
+			document_count: 0,
+			vector_count: 0,
+			last_error: None,
 		}
 	}
 }
@@ -421,31 +454,68 @@ async fn resolve_package_handle(request: &NewPackageRequest) -> Result<PackageHa
 			let packages = registry.get_packages_by_name(&request.name).await.map_err(|source| {
 				AppError::RegistryLookup {
 					language: request.language,
-					package:  request.name.clone(),
-					message:  source.to_string(),
+					package: request.name.clone(),
+					message: source.to_string(),
 				}
 			})?;
-
-			let package = packages.into_iter().next().ok_or_else(|| AppError::RegistryLookup {
-				language: request.language,
-				package:  request.name.clone(),
-				message:  "package not found".to_owned(),
-			})?;
-			Ok(PackageHandle::Rust(package))
+			resolve_rust_package_handle(request, packages)
 		}
-		Language::TypeScript => Ok(PackageHandle::TypeScript(TsPackage {
-			slug:        request.name.to_ascii_lowercase().replace('/', "__"),
-			name:        request.name.clone(),
-			uuid:        0,
-			source:      Url::parse("https://www.npmjs.com")
-				.unwrap()
-				.join(&format!("package/{}", request.name))
-				.unwrap_or_else(|_| Url::parse("https://www.npmjs.com").unwrap()),
-			description: None,
-			entry_point: format!("npm:{}@{}", request.name, request.version),
-		})),
+		Language::TypeScript => resolve_typescript_package_handle(request).await,
 		other => Err(AppError::UnsupportedLanguage { language: other }),
 	}
+}
+
+fn resolve_rust_package_handle(
+	request: &NewPackageRequest,
+	packages: Vec<RustPackage>,
+) -> Result<PackageHandle, AppError> {
+	let package = packages.into_iter().next().ok_or_else(|| AppError::RegistryLookup {
+		language: request.language,
+		package: request.name.clone(),
+		message: "package not found".to_owned(),
+	})?;
+	Ok(PackageHandle::Rust(package))
+}
+
+async fn resolve_typescript_package_handle(
+	request: &NewPackageRequest,
+) -> Result<PackageHandle, AppError> {
+	if request.source.is_some() {
+		return resolve_explicit_typescript_package_handle(request);
+	}
+
+	let registry = crate::core::ts::Npm::default();
+	let package =
+		registry.resolve_package_version(&request.name, &request.version).await.map_err(|source| {
+			AppError::RegistryLookup {
+				language: request.language,
+				package: request.name.clone(),
+				message: source.to_string(),
+			}
+		})?;
+	Ok(PackageHandle::TypeScript(package))
+}
+
+fn resolve_explicit_typescript_package_handle(
+	request: &NewPackageRequest,
+) -> Result<PackageHandle, AppError> {
+	let source = request.source.as_deref().ok_or_else(|| AppError::Internal {
+		message: "missing explicit TypeScript source".to_owned(),
+	})?;
+	let source = parse_explicit_typescript_source(request, source)?;
+	let entry_point = format!(
+		"{TYPESCRIPT_REPOSITORY_ENTRY_PREFIX}{}",
+		request.entry_point.as_deref().unwrap_or_default()
+	);
+
+	Ok(PackageHandle::TypeScript(TsPackage {
+		slug: typescript_slug(&request.name),
+		name: request.name.clone(),
+		uuid: 0,
+		source,
+		description: None,
+		entry_point,
+	}))
 }
 
 fn run_sync(
@@ -481,12 +551,16 @@ fn run_sync(
 			})
 		}
 		PackageHandle::TypeScript(package) => {
-			let summary = run_typescript_pipeline(&package, &spec.version, &pipeline, &runtime)?;
-			Ok(SyncExecution {
-				tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
-				latest_remote_commit: None,
-				summary,
-			})
+			if typescript_package_uses_repository(&package) {
+				run_repository_backed_typescript_sync(storage, pipeline, package_id, package, spec, runtime)
+			} else {
+				let summary = run_typescript_pipeline(&package, &spec.version, &pipeline, &runtime)?;
+				Ok(SyncExecution {
+					tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
+					latest_remote_commit: None,
+					summary,
+				})
+			}
 		}
 	}
 }
@@ -515,8 +589,12 @@ fn run_monitor_refresh(
 				latest_remote_commit,
 			})
 		}
-		PackageHandle::TypeScript(_) => {
-			Ok(MonitorExecution { latest_remote_commit: None, remote_update_available: false })
+		PackageHandle::TypeScript(package) => {
+			if typescript_package_uses_repository(&package) {
+				run_repository_backed_typescript_monitor(storage, package_id, package, spec)
+			} else {
+				Ok(MonitorExecution { latest_remote_commit: None, remote_update_available: false })
+			}
 		}
 	}
 }
@@ -525,5 +603,222 @@ fn default_tracking_branch(language: Language) -> &'static str {
 	match language {
 		Language::Rust | Language::TypeScript => "main",
 		_ => "main",
+	}
+}
+
+fn run_repository_backed_typescript_sync(
+	storage: StorageLayout,
+	pipeline: PipelineConfig,
+	package_id: PackageId,
+	package: TsPackage,
+	spec: PackageSpec,
+	runtime: tokio::runtime::Handle,
+) -> Result<SyncExecution, AppError> {
+	let repo_dir = storage.repository_dir(package_id.get());
+	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
+	git::fetch_remote_updates(&repository, Some("origin"))?;
+
+	let latest_remote_commit = git::remote_branch_commit(&repository, "origin", &spec.branch)
+		.map(|object_id| object_id.to_hex().to_string());
+	let target_commit =
+		git::find_typescript_commit_for_version(&repository, &spec.version, &package.name)
+			.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?;
+
+	let workspace = storage
+		.create_workspace()
+		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
+	git::materialize_commit(&repository, target_commit, workspace.path())?;
+
+	let entry_point = resolve_typescript_repository_entry_point(
+		workspace.path(),
+		typescript_repository_entry_hint(&package),
+	)?;
+	let mut materialized_package = package.clone();
+	materialized_package.entry_point = entry_point.display().to_string();
+
+	let summary = run_typescript_pipeline(&materialized_package, &spec.version, &pipeline, &runtime)?;
+
+	Ok(SyncExecution {
+		tracked_version_commit: target_commit.to_hex().to_string(),
+		latest_remote_commit,
+		summary,
+	})
+}
+
+fn run_repository_backed_typescript_monitor(
+	storage: StorageLayout,
+	package_id: PackageId,
+	package: TsPackage,
+	spec: PackageSpec,
+) -> Result<MonitorExecution, AppError> {
+	let repo_dir = storage.repository_dir(package_id.get());
+	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
+	git::fetch_remote_updates(&repository, Some("origin"))?;
+
+	let latest_remote_commit = git::remote_branch_commit(&repository, "origin", &spec.branch)
+		.map(|object_id| object_id.to_hex().to_string());
+	let tracked_commit =
+		git::find_typescript_commit_for_version(&repository, &spec.version, &package.name)
+			.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?
+			.to_hex()
+			.to_string();
+
+	Ok(MonitorExecution {
+		remote_update_available: latest_remote_commit.as_deref() != Some(tracked_commit.as_str()),
+		latest_remote_commit,
+	})
+}
+
+fn typescript_package_uses_repository(package: &TsPackage) -> bool {
+	package.entry_point.starts_with(TYPESCRIPT_REPOSITORY_ENTRY_PREFIX)
+}
+
+fn typescript_repository_entry_hint(package: &TsPackage) -> Option<&str> {
+	package
+		.entry_point
+		.strip_prefix(TYPESCRIPT_REPOSITORY_ENTRY_PREFIX)
+		.filter(|entry_point| !entry_point.is_empty())
+}
+
+fn parse_explicit_typescript_source(
+	request: &NewPackageRequest,
+	source: &str,
+) -> Result<Url, AppError> {
+	if let Ok(url) = Url::parse(source) {
+		return Ok(url);
+	}
+
+	let path = PathBuf::from(source);
+	let canonical = path.canonicalize().map_err(|error| AppError::RegistryLookup {
+		language: request.language,
+		package:  request.name.clone(),
+		message:  format!("failed to resolve `{source}` as a local path: {error}"),
+	})?;
+
+	Url::from_directory_path(&canonical)
+		.or_else(|()| Url::from_file_path(&canonical))
+		.map_err(|()| AppError::RegistryLookup {
+			language: request.language,
+			package:  request.name.clone(),
+			message:  format!("`{}` is not a valid repository path or URL", canonical.display()),
+		})
+}
+
+fn typescript_slug(name: &str) -> String { name.to_ascii_lowercase().replace('/', "__") }
+
+fn resolve_typescript_repository_entry_point(
+	repository_root: &Path,
+	entry_hint: Option<&str>,
+) -> Result<PathBuf, AppError> {
+	if let Some(entry_hint) = entry_hint {
+		let candidate = repository_root.join(entry_hint);
+		return ensure_typescript_entry_point(candidate);
+	}
+
+	if let Some(candidate) = read_typescript_entry_point_from_package_json(repository_root)? {
+		return ensure_typescript_entry_point(candidate);
+	}
+
+	for candidate in ["mod.ts", "index.ts", "src/mod.ts", "src/index.ts"] {
+		let candidate = repository_root.join(candidate);
+		if candidate.is_file() {
+			return Ok(candidate);
+		}
+	}
+
+	Err(AppError::Internal {
+		message: format!(
+			"could not determine a TypeScript entry point in `{}`",
+			repository_root.display()
+		),
+	})
+}
+
+fn ensure_typescript_entry_point(candidate: PathBuf) -> Result<PathBuf, AppError> {
+	if candidate.is_file() {
+		return Ok(candidate);
+	}
+
+	Err(AppError::Internal {
+		message: format!("TypeScript entry point `{}` does not exist", candidate.display()),
+	})
+}
+
+fn read_typescript_entry_point_from_package_json(
+	repository_root: &Path,
+) -> Result<Option<PathBuf>, AppError> {
+	let manifest_path = repository_root.join("package.json");
+	if !manifest_path.is_file() {
+		return Ok(None);
+	}
+
+	let content = fs::read_to_string(&manifest_path).map_err(|source| AppError::Storage {
+		path: manifest_path.clone(),
+		source,
+	})?;
+	let manifest: serde_json::Value = serde_json::from_str(&content)?;
+
+	for key in ["types", "typings", "module", "main"] {
+		if let Some(value) = manifest.get(key).and_then(serde_json::Value::as_str) {
+			return Ok(Some(repository_root.join(value)));
+		}
+	}
+
+	if let Some(exports) = manifest.get("exports") {
+		for value in [
+			exports.get(".").and_then(serde_json::Value::as_str),
+			exports
+				.get(".")
+				.and_then(serde_json::Value::as_object)
+				.and_then(|entry| entry.get("types"))
+				.and_then(serde_json::Value::as_str),
+			exports
+				.get(".")
+				.and_then(serde_json::Value::as_object)
+				.and_then(|entry| entry.get("default"))
+				.and_then(serde_json::Value::as_str),
+			exports.get("types").and_then(serde_json::Value::as_str),
+		] {
+			if let Some(value) = value {
+				return Ok(Some(repository_root.join(value)));
+			}
+		}
+	}
+
+	Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+	use lang_types::Language;
+	use semver::Version;
+
+	use super::*;
+
+	fn request(language: Language, name: &str, version: &str) -> NewPackageRequest {
+		NewPackageRequest {
+			language,
+			name: name.to_owned(),
+			version: Version::parse(version).unwrap(),
+			source: None,
+			entry_point: None,
+			branch: None,
+			sync_on_add: false,
+		}
+	}
+
+	#[tokio::test]
+	async fn resolves_typescript_package_handle_snapshot() {
+		let handle = resolve_package_handle(&request(Language::TypeScript, "@types/node", "24.0.0"))
+			.await
+			.unwrap();
+		insta::assert_debug_snapshot!(handle);
+	}
+
+	#[tokio::test]
+	async fn resolves_rust_package_handle_snapshot() {
+		let handle =
+			resolve_package_handle(&request(Language::Rust, "serde", "1.0.228")).await.unwrap();
+		insta::assert_debug_snapshot!(handle);
 	}
 }
