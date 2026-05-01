@@ -15,8 +15,8 @@ pub fn router(state: AppState) -> Router {
 	Router::new()
 		.route("/healthz", get(health))
 		.route("/api/packages", get(list_packages).post(add_package))
-		.route("/api/packages/:id", get(get_package))
-		.route("/api/packages/:id/sync", post(sync_package))
+		.route("/api/packages/{id}", get(get_package))
+		.route("/api/packages/{id}/sync", post(sync_package))
 		.layer(TraceLayer::new_for_http())
 		.with_state(state)
 }
