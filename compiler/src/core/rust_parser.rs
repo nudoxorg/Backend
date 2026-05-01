@@ -432,16 +432,11 @@ impl ParseContext {
 		Ok(entry)
 	}
 
-	fn parse_item_kind(
-		&self,
-		state: &mut ParseState,
-		id: &Id,
-		inner: &ItemEnum,
-	) -> Result<Entry> {
+	fn parse_item_kind(&self, state: &mut ParseState, id: &Id, inner: &ItemEnum) -> Result<Entry> {
 		match inner {
-			ItemEnum::Module(_) => Ok(Entry::Module(ir::kind::Symbol::placeholder(ir::module::Module {
-				members: None,
-			}))),
+			ItemEnum::Module(_) => {
+				Ok(Entry::Module(ir::kind::Symbol::placeholder(ir::module::Module { members: None })))
+			}
 
 			ItemEnum::Struct(s) => {
 				let record = self.parse_struct(id, s)?;

@@ -98,8 +98,8 @@ async fn main() -> eyre::Result<()> {
 
 	// let version_string = VERSION.to_string();
 	// let embedding_docs =
-	// 	embedding_documents_from_docstore(&store, "rust", TEST_PACKAGE, Some(version_string.as_str()))
-	// 		.map_err(|e| eyre::eyre!(e))
+	// 	embedding_documents_from_docstore(&store, "rust", TEST_PACKAGE,
+	// Some(version_string.as_str())) 		.map_err(|e| eyre::eyre!(e))
 	// 		.wrap_err("embedding document projection failed")?;
 	// info!(count = embedding_docs.len(), "embedding documents prepared");
 	// let embedded_records = embedding_service

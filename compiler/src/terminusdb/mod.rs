@@ -17,36 +17,81 @@ impl EmitJsonLD for Entry {
 		let entry_uri: URI = ctx.entry_uri(&path);
 
 		let (entry_members, entry_visibility, entry_documentation, aliases, name) = match &self {
-			Entry::Module(s) => {
-				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::RecordType(s) => {
-				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::Function(s) => {
-				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::TraitDef(s) => {
-				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::TraitImpl(s) => {
-				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::Constant(s) | Entry::Variable(s) | Entry::Macro(s) | Entry::PrimitiveType(s) | Entry::Field(s) | Entry::Event(s) => {
-				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::Info(s) => {
-				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::UnionType(s) => {
-				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::TypeAlias(s) => {
-				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
-			Entry::SumType(s) => {
-				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
-			}
+			Entry::Module(s) => (
+				s.inner.members.clone(),
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::RecordType(s) => (
+				s.inner.members.clone(),
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::Function(s) => (
+				s.inner.members.clone(),
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::TraitDef(s) => (
+				s.inner.members.clone(),
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::TraitImpl(s) => (
+				s.inner.members.clone(),
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::Constant(s)
+			| Entry::Variable(s)
+			| Entry::Macro(s)
+			| Entry::PrimitiveType(s)
+			| Entry::Field(s)
+			| Entry::Event(s) => (
+				None,
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::Info(s) => (
+				None,
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::UnionType(s) => (
+				None,
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::TypeAlias(s) => (
+				None,
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
+			Entry::SumType(s) => (
+				None,
+				Some(s.visibility.clone()),
+				s.documentation.clone(),
+				s.aliases.clone(),
+				s.name.clone(),
+			),
 		};
 
 		let members: Vec<String> = match entry_members.as_ref() {

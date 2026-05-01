@@ -115,19 +115,11 @@ impl TryFrom<&Entry> for LDInheritor {
 				// LDInheritor Enum
 				LDRecord::try_from(s).map(|ldrecord| LDInheritor::RecordType(ldrecord))
 			}
-			Entry::UnionType(s) => {
-				LDUnion::try_from(s).map(|ldunion| LDInheritor::UnionType(ldunion))
-			}
-			Entry::TraitDef(s) => {
-				LDTraitDef::try_from(s).map(|ldtrait| LDInheritor::TraitDef(ldtrait))
-			}
-			Entry::TraitImpl(s) => {
-				LDTraitImpl::try_from(s).map(|ldimpl| LDInheritor::TraitImpl(ldimpl))
-			}
+			Entry::UnionType(s) => LDUnion::try_from(s).map(|ldunion| LDInheritor::UnionType(ldunion)),
+			Entry::TraitDef(s) => LDTraitDef::try_from(s).map(|ldtrait| LDInheritor::TraitDef(ldtrait)),
+			Entry::TraitImpl(s) => LDTraitImpl::try_from(s).map(|ldimpl| LDInheritor::TraitImpl(ldimpl)),
 			Entry::SumType(s) => LDSum::try_from(s).map(|ldsum| LDInheritor::SumType(ldsum)),
-			Entry::Function(s) => {
-				LDFunction::try_from(s).map(|ldfunc| LDInheritor::Function(ldfunc))
-			}
+			Entry::Function(s) => LDFunction::try_from(s).map(|ldfunc| LDInheritor::Function(ldfunc)),
 			Entry::TypeAlias(s) => {
 				LDTypeAlias::try_from(s).map(|ldalias| LDInheritor::TypeAlias(ldalias))
 			}

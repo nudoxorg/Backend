@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use gix::ObjectId;
-use ir::entry::{Index, NudoxPath};
-use ir::kind::Entry;
+use ir::{entry::{Index, NudoxPath}, kind::Entry};
 use semver::Version;
 
 /// Entries freshly collected from a language parser — unindexed and
