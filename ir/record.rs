@@ -1,9 +1,7 @@
-use std::collections::HashSet;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{entry::NudoxPath, generics::{ConstExpr, Generics}, kind::Visibility, ty::Type};
+use crate::{entry::NudoxPath, function::Function, generics::{ConstExpr, Generics}, kind::Visibility, ty::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -18,6 +16,21 @@ pub struct Record {
 	/// The fields of the record (if applicable).
 	/// An empty lack of fields implies dynamic fields, AKA classical JS and
 	pub fields: Vec<Field>,
+
+	/// Callable signatures attached directly to the record shape.
+	pub call_signatures: Option<Vec<Function>>,
+
+	/// Constructor signatures attached directly to the record shape.
+	pub constructors: Option<Vec<Function>>,
+
+	/// Inline methods declared directly on the record shape.
+	pub methods: Option<Vec<Function>>,
+
+	/// Index signatures such as `[key: string]: number`.
+	pub index_signatures: Option<Vec<IndexSignature>>,
+
+	/// Base or implemented types explicitly referenced by this record.
+	pub super_types: Option<Vec<Type>>,
 
 	/// Child entries conceptually scoped to this Record.
 	///
