@@ -3,7 +3,7 @@
 /// Mirrors the architecture of `compiler/src/core/rust.rs` for the Rust
 /// pipeline. `TsPackage` prefers the in-process Rust `deno_doc` path for local
 /// files and falls back to the Deno CLI for remote/npm/jsr specifiers.
-use std::{collections::HashMap, path::PathBuf, process::{Command, ExitStatus}, sync::Arc};
+use std::{collections::HashMap, io::Cursor, path::{Path, PathBuf}, process::{Command, ExitStatus}, sync::Arc};
 
 use deno_doc::{DocParser, DocParserOptions};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph, ModuleSpecifier, ast::CapturingModuleAnalyzer, source::{LoadFuture, LoadOptions, LoadResponse, Loader}};
@@ -291,6 +291,30 @@ impl Npm {
 			.ok_or_else(|| TsPackageError::NotFound(format!("{name}@{version}")))?;
 		Ok(metadata.to_versioned_package(name, version, package_version))
 	}
+
+	pub(crate) async fn materialize_package_version(
+		&self,
+		name: &str,
+		version: &Version,
+		destination: &Path,
+	) -> Result<PathBuf, TsPackageError> {
+		let metadata = self.fetch_package_metadata(name).await?;
+		let version_key = version.to_string();
+		let package_version = metadata
+			.versions
+			.get(&version_key)
+			.ok_or_else(|| TsPackageError::NotFound(format!("{name}@{version}")))?;
+		let tarball = package_version
+			.dist
+			.as_ref()
+			.map(|distribution| distribution.tarball.clone())
+			.ok_or_else(|| TsPackageError::NotFound(format!("missing tarball for {name}@{version}")))?;
+
+		let bytes =
+			reqwest::Client::new().get(tarball).send().await?.error_for_status()?.bytes().await?;
+		unpack_npm_tarball(bytes.as_ref(), destination)?;
+		resolve_materialized_entry_point(destination)
+	}
 }
 
 impl Registry for Npm {
@@ -389,6 +413,12 @@ struct NpmPackageVersion {
 	description: Option<String>,
 	repository:  Option<NpmRepository>,
 	homepage:    Option<String>,
+	dist:        Option<NpmDistribution>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmDistribution {
+	tarball: Url,
 }
 
 #[derive(Debug, Deserialize)]
@@ -469,6 +499,101 @@ fn normalize_package_url(url: &str) -> Option<Url> {
 fn npm_package_page_url(name: &str) -> Url {
 	let registry_url = Url::parse("https://www.npmjs.com").unwrap();
 	registry_url.join(&format!("package/{name}")).unwrap_or(registry_url)
+}
+
+fn unpack_npm_tarball(bytes: &[u8], destination: &Path) -> Result<(), TsPackageError> {
+	let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
+	let mut archive = tar::Archive::new(decoder);
+
+	for entry in archive.entries()? {
+		let mut entry = entry?;
+		let path = entry.path()?;
+		let mut components = path.components();
+		let Some(_) = components.next() else {
+			continue;
+		};
+		let relative_path: PathBuf = components.collect();
+
+		if relative_path.as_os_str().is_empty() {
+			continue;
+		}
+
+		let output_path = destination.join(relative_path);
+		if let Some(parent) = output_path.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
+		entry.unpack(output_path)?;
+	}
+
+	Ok(())
+}
+
+fn resolve_materialized_entry_point(root: &Path) -> Result<PathBuf, TsPackageError> {
+	if let Some(candidate) = read_entry_point_from_package_json(root)? {
+		return ensure_materialized_entry_point(candidate);
+	}
+
+	for candidate in ["mod.ts", "index.ts", "src/mod.ts", "src/index.ts", "index.d.ts"] {
+		let candidate = root.join(candidate);
+		if candidate.is_file() {
+			return Ok(candidate);
+		}
+	}
+
+	Err(TsPackageError::InvalidLocalEntryPoint(format!(
+		"could not determine a TypeScript entry point in `{}`",
+		root.display()
+	)))
+}
+
+fn ensure_materialized_entry_point(candidate: PathBuf) -> Result<PathBuf, TsPackageError> {
+	if candidate.is_file() {
+		return Ok(candidate);
+	}
+
+	Err(TsPackageError::InvalidLocalEntryPoint(format!(
+		"TypeScript entry point `{}` does not exist",
+		candidate.display()
+	)))
+}
+
+fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, TsPackageError> {
+	let manifest_path = root.join("package.json");
+	if !manifest_path.is_file() {
+		return Ok(None);
+	}
+
+	let content = std::fs::read_to_string(&manifest_path)?;
+	let manifest: serde_json::Value = serde_json::from_str(&content)?;
+
+	for key in ["types", "typings", "module", "main"] {
+		if let Some(value) = manifest.get(key).and_then(serde_json::Value::as_str) {
+			return Ok(Some(root.join(value)));
+		}
+	}
+
+	if let Some(exports) = manifest.get("exports") {
+		for value in [
+			exports.get(".").and_then(serde_json::Value::as_str),
+			exports
+				.get(".")
+				.and_then(serde_json::Value::as_object)
+				.and_then(|entry| entry.get("types"))
+				.and_then(serde_json::Value::as_str),
+			exports
+				.get(".")
+				.and_then(serde_json::Value::as_object)
+				.and_then(|entry| entry.get("default"))
+				.and_then(serde_json::Value::as_str),
+			exports.get("types").and_then(serde_json::Value::as_str),
+		] {
+			if let Some(value) = value {
+				return Ok(Some(root.join(value)));
+			}
+		}
+	}
+
+	Ok(None)
 }
 
 #[cfg(test)]
