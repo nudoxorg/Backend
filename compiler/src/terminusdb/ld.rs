@@ -1,4 +1,4 @@
-use ir::kind::{EntryKind, Visibility};
+use ir::{entry::Entry, kind::Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
@@ -24,24 +24,24 @@ pub trait TagGen {
 }
 
 /// snake_case tags for kind
-impl TagGen for EntryKind {
+impl TagGen for Entry {
 	fn tag(&self) -> &'static str {
 		let tag = match self {
-			EntryKind::Module(_) => "module",
-			EntryKind::Info => "info",
-			EntryKind::Constant => "constant",
-			EntryKind::Variable => "variable",
-			EntryKind::Macro => "macro",
-			EntryKind::PrimitiveType => "primitive_type",
-			EntryKind::Event => "event",
-			EntryKind::Field => "field",
-			EntryKind::RecordType(_) => "record",
-			EntryKind::UnionType(_) => "union",
-			EntryKind::TraitDef(_) => "trait_def",
-			EntryKind::TraitImpl(_) => "trait_impl",
-			EntryKind::SumType(_) => "sum_type",
-			EntryKind::TypeAlias(_) => "type_alias",
-			EntryKind::Function(_) => "function",
+			Entry::Module(_) => "module",
+			Entry::Info(_) => "info",
+			Entry::Constant(_) => "constant",
+			Entry::Variable(_) => "variable",
+			Entry::Macro(_) => "macro",
+			Entry::PrimitiveType(_) => "primitive_type",
+			Entry::Event(_) => "event",
+			Entry::Field(_) => "field",
+			Entry::RecordType(_) => "record",
+			Entry::UnionType(_) => "union",
+			Entry::TraitDef(_) => "trait_def",
+			Entry::TraitImpl(_) => "trait_impl",
+			Entry::SumType(_) => "sum_type",
+			Entry::TypeAlias(_) => "type_alias",
+			Entry::Function(_) => "function",
 		};
 		tag
 	}
@@ -49,9 +49,9 @@ impl TagGen for EntryKind {
 
 impl LDKind {
 	/// Should never fail, but using try_from, so handle errors here
-	pub fn new(path: &ir::entry::NudoxPath, kind: EntryKind, ctx: &DocCtx) -> Self {
+	pub fn new(path: &ir::entry::NudoxPath, kind: &Entry, ctx: &DocCtx) -> Self {
 		LDKind {
-			uri:       ctx.kind_uri(&kind, path),
+			uri:       ctx.kind_uri(kind, path),
 			kind_tag:  kind.tag(),
 			inheritor: match LDInheritor::try_from(kind) {
 				Ok(i) => i,
@@ -104,41 +104,41 @@ pub enum LDConversionError {
 
 /// Handles the conversion from inner Kind type to an LDInheritor type,
 /// which represents the concrete implementation of that class
-impl TryFrom<EntryKind> for LDInheritor {
+impl TryFrom<&Entry> for LDInheritor {
 	type Error = LDConversionError;
 
-	fn try_from(item: EntryKind) -> Result<Self, Self::Error> {
+	fn try_from(item: &Entry) -> Result<Self, Self::Error> {
 		match item {
 			// HINT add match case here for next supported item
-			EntryKind::RecordType(rk) => {
+			Entry::RecordType(s) => {
 				// try to get LDRecord, either returns error OR ldrecord wrapped into
 				// LDInheritor Enum
-				LDRecord::try_from(rk).map(|ldrecord| LDInheritor::RecordType(ldrecord))
+				LDRecord::try_from(s).map(|ldrecord| LDInheritor::RecordType(ldrecord))
 			}
-			EntryKind::UnionType(ut) => {
-				LDUnion::try_from(ut).map(|ldunion| LDInheritor::UnionType(ldunion))
+			Entry::UnionType(s) => {
+				LDUnion::try_from(s).map(|ldunion| LDInheritor::UnionType(ldunion))
 			}
-			EntryKind::TraitDef(td) => {
-				LDTraitDef::try_from(td).map(|ldtrait| LDInheritor::TraitDef(ldtrait))
+			Entry::TraitDef(s) => {
+				LDTraitDef::try_from(s).map(|ldtrait| LDInheritor::TraitDef(ldtrait))
 			}
-			EntryKind::TraitImpl(ti) => {
-				LDTraitImpl::try_from(ti).map(|ldimpl| LDInheritor::TraitImpl(ldimpl))
+			Entry::TraitImpl(s) => {
+				LDTraitImpl::try_from(s).map(|ldimpl| LDInheritor::TraitImpl(ldimpl))
 			}
-			EntryKind::SumType(st) => LDSum::try_from(st).map(|ldsum| LDInheritor::SumType(ldsum)),
-			EntryKind::Function(func) => {
-				LDFunction::try_from(func).map(|ldfunc| LDInheritor::Function(ldfunc))
+			Entry::SumType(s) => LDSum::try_from(s).map(|ldsum| LDInheritor::SumType(ldsum)),
+			Entry::Function(s) => {
+				LDFunction::try_from(s).map(|ldfunc| LDInheritor::Function(ldfunc))
 			}
-			EntryKind::TypeAlias(ta) => {
-				LDTypeAlias::try_from(ta).map(|ldalias| LDInheritor::TypeAlias(ldalias))
+			Entry::TypeAlias(s) => {
+				LDTypeAlias::try_from(s).map(|ldalias| LDInheritor::TypeAlias(ldalias))
 			}
-			EntryKind::Module(_) => Ok(LDInheritor::Module),
-			EntryKind::Info => Ok(LDInheritor::Info),
-			EntryKind::Constant => Ok(LDInheritor::Constant),
-			EntryKind::Variable => Ok(LDInheritor::Variable),
-			EntryKind::Macro => Ok(LDInheritor::Macro),
-			EntryKind::PrimitiveType => Ok(LDInheritor::PrimitiveType),
-			EntryKind::Field => Ok(LDInheritor::Field),
-			EntryKind::Event => Ok(LDInheritor::Event),
+			Entry::Module(_) => Ok(LDInheritor::Module),
+			Entry::Info(_) => Ok(LDInheritor::Info),
+			Entry::Constant(_) => Ok(LDInheritor::Constant),
+			Entry::Variable(_) => Ok(LDInheritor::Variable),
+			Entry::Macro(_) => Ok(LDInheritor::Macro),
+			Entry::PrimitiveType(_) => Ok(LDInheritor::PrimitiveType),
+			Entry::Field(_) => Ok(LDInheritor::Field),
+			Entry::Event(_) => Ok(LDInheritor::Event),
 		}
 	}
 }
@@ -161,21 +161,16 @@ pub struct LDRecord {
 	pub fields:     Vec<Value>,
 }
 
-impl TryFrom<ir::record::Record> for LDRecord {
+impl TryFrom<&ir::kind::Symbol<ir::record::Record>> for LDRecord {
 	// for fields that can fail
 	type Error = LDConversionError;
 
-	fn try_from(item: ir::record::Record) -> Result<Self, Self::Error> {
+	fn try_from(s: &ir::kind::Symbol<ir::record::Record>) -> Result<Self, Self::Error> {
 		let res = LDRecord {
-			name:       {
-				match item.name {
-					Some(s) => s,
-					None => return Err(LDConversionError::NameMissing),
-				}
-			},
-			visibility: item.visibility,
-			generics:   item.generics.map(|g| json!(g)),
-			fields:     item.fields.iter().map(|f| json!(f)).collect(),
+			name:       s.name.clone(),
+			visibility: s.visibility.clone(),
+			generics:   s.inner.generics.as_ref().map(|g| json!(g)),
+			fields:     s.inner.fields.iter().map(|f| json!(f)).collect(),
 		};
 		Ok(res)
 	}
@@ -188,11 +183,11 @@ pub struct LDUnion {
 	pub types: Vec<Value>,
 }
 
-impl TryFrom<Vec<ir::ty::Type>> for LDUnion {
+impl TryFrom<&ir::kind::Symbol<Vec<ir::ty::Type>>> for LDUnion {
 	type Error = LDConversionError;
 
-	fn try_from(item: Vec<ir::ty::Type>) -> Result<Self, Self::Error> {
-		Ok(LDUnion { types: item.iter().map(|t| json!(t)).collect() })
+	fn try_from(s: &ir::kind::Symbol<Vec<ir::ty::Type>>) -> Result<Self, Self::Error> {
+		Ok(LDUnion { types: s.inner.iter().map(|t| json!(t)).collect() })
 	}
 }
 
@@ -214,24 +209,21 @@ pub struct LDTraitDef {
 	pub provided_methods:   Option<Value>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub required_constants: Option<Value>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub docs:               Option<String>,
 }
 
-impl TryFrom<ir::protocols::TraitDef> for LDTraitDef {
+impl TryFrom<&ir::kind::Symbol<ir::protocols::TraitDef>> for LDTraitDef {
 	type Error = LDConversionError;
 
-	fn try_from(item: ir::protocols::TraitDef) -> Result<Self, Self::Error> {
+	fn try_from(s: &ir::kind::Symbol<ir::protocols::TraitDef>) -> Result<Self, Self::Error> {
 		Ok(LDTraitDef {
-			name:               item.name,
-			visibility:         item.visibility.ok_or(LDConversionError::VisibilityMissing)?,
-			generics:           item.generics.map(|g| json!(g)),
-			super_traits:       item.super_traits.map(|s| json!(s)),
-			associated_types:   item.associated_types.map(|a| json!(a)),
-			required_methods:   item.required_methods.map(|r| json!(r)),
-			provided_methods:   item.provided_methods.map(|p| json!(p)),
-			required_constants: item.required_constants.map(|c| json!(c)),
-			docs:               item.docs,
+			name:               s.name.clone(),
+			visibility:         s.visibility.clone(),
+			generics:           s.inner.generics.as_ref().map(|g| json!(g)),
+			super_traits:       s.inner.super_traits.as_ref().map(|s| json!(s)),
+			associated_types:   s.inner.associated_types.as_ref().map(|a| json!(a)),
+			required_methods:   s.inner.required_methods.as_ref().map(|r| json!(r)),
+			provided_methods:   s.inner.provided_methods.as_ref().map(|p| json!(p)),
+			required_constants: s.inner.required_constants.as_ref().map(|c| json!(c)),
 		})
 	}
 }
@@ -254,26 +246,23 @@ pub struct LDTraitImpl {
 	pub is_negative:          bool,
 	pub is_blanket:           bool,
 	pub is_unsafe:            bool,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub docs:                 Option<String>,
 }
 
-impl TryFrom<ir::protocols::TraitImpl> for LDTraitImpl {
+impl TryFrom<&ir::kind::Symbol<ir::protocols::TraitImpl>> for LDTraitImpl {
 	type Error = LDConversionError;
 
-	fn try_from(item: ir::protocols::TraitImpl) -> Result<Self, Self::Error> {
+	fn try_from(s: &ir::kind::Symbol<ir::protocols::TraitImpl>) -> Result<Self, Self::Error> {
 		Ok(LDTraitImpl {
-			trait_ref:            json!(item.tr),
-			for_type:             json!(item.for_type),
-			visibility:           item.visibility.ok_or(LDConversionError::VisibilityMissing)?,
-			generics:             item.generics.map(|g| json!(g)),
-			methods:              item.methods.map(|m| json!(m)),
-			associated_types:     item.associated_types.map(|a| json!(a)),
-			associated_constants: item.associated_constants.map(|c| json!(c)),
-			is_negative:          item.is_negative,
-			is_blanket:           item.is_blanket,
-			is_unsafe:            item.is_unsafe,
-			docs:                 item.docs,
+			trait_ref:            json!(s.inner.tr),
+			for_type:             json!(s.inner.for_type),
+			visibility:           s.visibility.clone(),
+			generics:             s.inner.generics.as_ref().map(|g| json!(g)),
+			methods:              s.inner.methods.as_ref().map(|m| json!(m)),
+			associated_types:     s.inner.associated_types.as_ref().map(|a| json!(a)),
+			associated_constants: s.inner.associated_constants.as_ref().map(|c| json!(c)),
+			is_negative:          s.inner.is_negative,
+			is_blanket:           s.inner.is_blanket,
+			is_unsafe:            s.inner.is_unsafe,
 		})
 	}
 }
@@ -285,11 +274,11 @@ pub struct LDSum {
 	pub variants: Vec<Value>,
 }
 
-impl TryFrom<Vec<ir::record::SumVariant>> for LDSum {
+impl TryFrom<&ir::kind::Symbol<Vec<ir::record::SumVariant>>> for LDSum {
 	type Error = LDConversionError;
 
-	fn try_from(item: Vec<ir::record::SumVariant>) -> Result<Self, Self::Error> {
-		Ok(LDSum { variants: item.iter().map(|v| json!(v)).collect() })
+	fn try_from(s: &ir::kind::Symbol<Vec<ir::record::SumVariant>>) -> Result<Self, Self::Error> {
+		Ok(LDSum { variants: s.inner.iter().map(|v| json!(v)).collect() })
 	}
 }
 
@@ -310,18 +299,18 @@ pub struct LDFunction {
 	pub generics:          Option<Value>,
 }
 
-impl TryFrom<ir::function::Function> for LDFunction {
+impl TryFrom<&ir::kind::Symbol<ir::function::Function>> for LDFunction {
 	type Error = LDConversionError;
 
-	fn try_from(item: ir::function::Function) -> Result<Self, Self::Error> {
+	fn try_from(s: &ir::kind::Symbol<ir::function::Function>) -> Result<Self, Self::Error> {
 		Ok(LDFunction {
-			name:              item.name,
-			visibility:        item.visibility.ok_or(LDConversionError::VisibilityMissing)?,
-			implemented:       item.implemented,
-			input_parameters:  item.input_parameters.map(|i| json!(i)),
-			output_parameters: item.output_parameters.map(|o| json!(o)),
-			attributes:        item.attributes.map(|a| json!(a)),
-			generics:          item.generics.map(|g| json!(g)),
+			name:              s.name.clone(),
+			visibility:        s.visibility.clone(),
+			implemented:       s.inner.implemented,
+			input_parameters:  s.inner.input_parameters.as_ref().map(|i| json!(i)),
+			output_parameters: s.inner.output_parameters.as_ref().map(|o| json!(o)),
+			attributes:        s.inner.attributes.as_ref().map(|a| json!(a)),
+			generics:          s.inner.generics.as_ref().map(|g| json!(g)),
 		})
 	}
 }
@@ -333,10 +322,10 @@ pub struct LDTypeAlias {
 	pub aliased_type: Value,
 }
 
-impl TryFrom<ir::ty::Type> for LDTypeAlias {
+impl TryFrom<&ir::kind::Symbol<ir::ty::Type>> for LDTypeAlias {
 	type Error = LDConversionError;
 
-	fn try_from(item: ir::ty::Type) -> Result<Self, Self::Error> {
-		Ok(LDTypeAlias { aliased_type: json!(item) })
+	fn try_from(s: &ir::kind::Symbol<ir::ty::Type>) -> Result<Self, Self::Error> {
+		Ok(LDTypeAlias { aliased_type: json!(s.inner) })
 	}
 }

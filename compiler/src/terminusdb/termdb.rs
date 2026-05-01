@@ -206,7 +206,7 @@ impl UriOps for DocCtx {
 		format!("Entry/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path_str)
 	}
 
-	fn kind_uri(&self, kind: &ir::kind::EntryKind, path: &ir::entry::NudoxPath) -> URI {
+	fn kind_uri(&self, kind: &ir::kind::Entry, path: &ir::entry::NudoxPath) -> URI {
 		let path_str = match path {
 			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
 			ir::entry::NudoxPath::External { path, dependency } => {

@@ -2,70 +2,74 @@ pub mod ld;
 pub mod termdb;
 pub mod upload;
 
-use ir::{entry::{Entry, NudoxPath}, kind::EntryKind};
+use ir::entry::Entry;
 use serde_json::{Map, Value, json};
 use termdb::{DocCtx, DocStore, EmitJsonLD, URI};
-use tracing::{debug, instrument, warn};
+use tracing::warn;
 
 use crate::terminusdb::{ld::LDKind, termdb::UriOps};
 
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
-		let entry_uri: URI = ctx.entry_uri(&self.path);
+		let path = self.path().clone();
+		let entry_uri: URI = ctx.entry_uri(&path);
 
-		let fq_name: String = match &self.path {
-			NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/").replace("/", "::"),
-			NudoxPath::External { path, dependency } => {
-				format!("{}::{}", dependency, path.to_string_lossy().replace("\\", "/").replace("/", "::"))
+		let (entry_members, entry_visibility, entry_documentation, aliases, name) = match &self {
+			Entry::Module(s) => {
+				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::RecordType(s) => {
+				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::Function(s) => {
+				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::TraitDef(s) => {
+				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::TraitImpl(s) => {
+				(s.inner.members.clone(), Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::Constant(s) | Entry::Variable(s) | Entry::Macro(s) | Entry::PrimitiveType(s) | Entry::Field(s) | Entry::Event(s) => {
+				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::Info(s) => {
+				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::UnionType(s) => {
+				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::TypeAlias(s) => {
+				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
+			}
+			Entry::SumType(s) => {
+				(None, Some(s.visibility.clone()), s.documentation.clone(), s.aliases.clone(), s.name.clone())
 			}
 		};
 
-		let (entry_members, entry_visibility, entry_documentation): (
-			Option<Vec<NudoxPath>>,
-			Option<ir::kind::Visibility>,
-			Option<String>,
-		) = match &self.kind {
-			EntryKind::Module(m) => {
-				(m.members.clone(), Some(m.visibility.clone()), m.documentation.clone())
-			}
-			EntryKind::RecordType(r) => {
-				(r.members.clone(), Some(r.visibility.clone()), r.documentation.clone())
-			}
-			EntryKind::Function(f) => (f.members.clone(), f.visibility.clone(), f.documentation.clone()),
-			EntryKind::TraitDef(t) => (None, t.visibility.clone(), t.docs.clone()),
-			_ => (None, None, None),
-		};
-
-		// No longer {"@id": "Ref"} -> ["ref1", .. "refn"] now
 		let members: Vec<String> = match entry_members.as_ref() {
 			Some(members) => members.iter().map(|m| ctx.entry_uri(m)).collect(),
 			None => Vec::default(),
 		};
 
-		let aliases_fq: Vec<String> = match self.aliases.as_ref() {
+		let aliases_fq: Vec<String> = match aliases.as_ref() {
 			Some(aliaie) => aliaie.iter().map(|p| p.join("::")).collect(),
 			None => vec![],
 		};
 
-		// construct kind reference
-		// This needs to propogate through to the kind emit
-		let prefix = self.kind.to_string();
-		let kind_ref: String = prefix + ctx.uri_path(&self.path).as_str();
+		let prefix = self.to_string();
+		let kind_ref: String = prefix + ctx.uri_path(&path).as_str();
 
-		// output json object
 		let mut obj = Map::<String, Value>::new();
-		// inject context type ?? HINT Maybe refactor into the BtreeMap
-		// iteartion in the runner to write them with the file there
 		obj.insert("@context".into(), json!(ctx.context()));
 
-		// required fields, always present!
 		obj.insert("@type".into(), Value::String("Entry".into()));
 		obj.insert("@id".into(), Value::String(entry_uri.as_str().to_owned()));
 		obj.insert("kind".into(), Value::String(kind_ref.to_owned()));
-		obj.insert("path".into(), json!(self.path));
+		obj.insert("path".into(), json!(path));
 		obj.insert("aliases".into(), json!(aliases_fq));
-		obj.insert("name".into(), Value::String(self.name.clone()));
-		obj.insert("members".into(), json!(members)); // TODO: Remove this
+		obj.insert("name".into(), Value::String(name));
+		obj.insert("members".into(), json!(members));
 
 		if let Some(vis) = entry_visibility.as_ref() {
 			obj.insert("visibility".into(), json!(vis));
@@ -83,27 +87,23 @@ impl EmitJsonLD for Entry {
 				warn!(uri = %uri, "duplicate entry insertion with differing value");
 			}
 		}
-		// call EmitJsonLD for the Kind Associated with this entry
-		// first update context
-		ctx.update_path(&self.path);
-		// emit kind
-		self.kind.emit(ctx, docs);
+		ctx.update_path(&path);
+		self.emit_kind(ctx, docs);
 
 		entry_uri
 	}
 }
 
-impl EmitJsonLD for EntryKind {
-	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
-		// transform into LDKind
-		// Use unwrap safely since current_path is set above
+trait EntryOps {
+	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI;
+}
+
+impl EntryOps for Entry {
+	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
 		let to_emit = LDKind::new(ctx.current_path.as_ref().unwrap(), self, ctx);
 		let emitted_uri = to_emit.uri.clone();
-		// Shouldnt fail to serialize
 		if let Ok(mut emitted_value) = serde_json::to_value(to_emit) {
 			let obj = emitted_value.as_object_mut().expect("serde_json::to_value produced a non-object");
-			// TODO store the context at the DocStore root level.. Not on each document,
-			// only when writing (not when being stored in the BtreeMap)
 			obj.insert("@context".into(), ctx.context().clone());
 
 			match docs.insert(emitted_uri.clone(), emitted_value) {
@@ -118,32 +118,4 @@ impl EmitJsonLD for EntryKind {
 
 		emitted_uri
 	}
-}
-
-pub struct Runner {
-	ctx:  DocCtx,
-	docs: DocStore,
-}
-
-impl Runner {
-	pub fn new(ctx: DocCtx) -> Self { Self { ctx, docs: DocStore::new() } }
-
-	#[instrument(skip_all, name = "runner")]
-	pub fn run<I>(&mut self, items: I)
-	where
-		I: IntoIterator<Item = Entry>,
-	{
-		for entry in items {
-			debug!(name = %entry.name, "emitting entry");
-			let _ = entry.emit(&mut self.ctx, &mut self.docs);
-		}
-	}
-
-	#[allow(dead_code)]
-	pub fn docs(&self) -> &DocStore { &self.docs }
-
-	#[allow(dead_code)]
-	pub fn docs_mut(&mut self) -> &mut DocStore { &mut self.docs }
-
-	pub fn into_docs(self) -> DocStore { self.docs }
 }
