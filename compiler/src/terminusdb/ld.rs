@@ -151,6 +151,8 @@ pub struct LDRecord {
 	// this should be fixed on the LDField kind when implemented, or create better rules for
 	// flattening overall do this after main Kind variants are supported
 	pub fields:     Vec<Value>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub methods:    Option<Value>,
 }
 
 impl TryFrom<&ir::kind::Symbol<ir::record::Record>> for LDRecord {
@@ -163,6 +165,7 @@ impl TryFrom<&ir::kind::Symbol<ir::record::Record>> for LDRecord {
 			visibility: s.visibility.clone(),
 			generics:   s.inner.generics.as_ref().map(|g| json!(g)),
 			fields:     s.inner.fields.iter().map(|f| json!(f)).collect(),
+			methods:    s.inner.methods.as_ref().map(|methods| json!(methods)),
 		};
 		Ok(res)
 	}

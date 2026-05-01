@@ -10,10 +10,9 @@ use crate::core::rust::ParseError;
 
 /// Immutable context.
 pub struct ParseContext {
-	krate:         Crate,
+	krate:       Crate,
 	/// Maps rustdoc IDs to resolved paths
-	id_to_paths:   HashMap<Id, HashSet<Vec<String>>>,
-	item_to_impls: HashMap<Id, Vec<Id>>,
+	id_to_paths: HashMap<Id, HashSet<Vec<String>>>,
 
 	/// Primitive name to ID mapping (for Genealogy resolution)
 	primitive_map: HashMap<String, Id>,
@@ -86,28 +85,12 @@ fn queue_child(
 }
 
 fn queue_impls(
-	index: &HashMap<Id, Item>,
-	id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>,
-	item_to_impls: &mut HashMap<Id, Vec<Id>>,
-	queue: &mut VecDeque<(Id, Vec<String>)>,
-	impls: &[Id],
-	parent_path: &[String],
+	_index: &HashMap<Id, Item>,
+	_id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>,
+	_queue: &mut VecDeque<(Id, Vec<String>)>,
+	_impls: &[Id],
+	_parent_path: &[String],
 ) {
-	for impl_id in impls {
-		if let Some(item) = index.get(impl_id) {
-			if let ItemEnum::Impl(i) = &item.inner {
-				for item_id in &i.items {
-					if index
-						.get(item_id)
-						.is_some_and(|assoc_item| matches!(assoc_item.inner, ItemEnum::Function(_)))
-					{
-						item_to_impls.entry(item_id.clone()).or_default().push(impl_id.clone());
-						queue_child(index, id_to_paths, queue, item_id, parent_path);
-					}
-				}
-			}
-		}
-	}
 }
 
 impl RustdocParser {
@@ -115,7 +98,6 @@ impl RustdocParser {
 		let mut ctx = ParseContext {
 			krate,
 			id_to_paths: HashMap::new(),
-			item_to_impls: HashMap::new(),
 			primitive_map: HashMap::new(),
 			path_to_id: HashMap::new(),
 		};
@@ -241,7 +223,6 @@ impl ParseContext {
 					queue_impls(
 						&self.krate.index,
 						&mut self.id_to_paths,
-						&mut self.item_to_impls,
 						&mut queue,
 						&s.impls,
 						&current_path,
@@ -251,7 +232,6 @@ impl ParseContext {
 					queue_impls(
 						&self.krate.index,
 						&mut self.id_to_paths,
-						&mut self.item_to_impls,
 						&mut queue,
 						&e.impls,
 						&current_path,
@@ -320,52 +300,6 @@ impl ParseContext {
 		Ok(entry)
 	}
 
-	fn collect_impl_members(
-		&self,
-		state: &mut ParseState,
-		impl_ids: &[Id],
-	) -> Result<Vec<NudoxPath>> {
-		let mut members = Vec::new();
-
-		for impl_id in impl_ids {
-			let impl_item = match self.krate.index.get(impl_id) {
-				Some(i) => i,
-				None => {
-					// Silent failure: impl item not found
-					continue;
-				}
-			};
-
-			if let ItemEnum::Impl(imp) = &impl_item.inner {
-				for assoc_item_id in &imp.items {
-					let Some(assoc_item) = self.krate.index.get(assoc_item_id) else {
-						continue;
-					};
-
-					if !matches!(assoc_item.inner, ItemEnum::Function(_)) {
-						continue;
-					}
-
-					match self.parse_item(state, assoc_item_id) {
-						Ok(entry) => {
-							members.push(entry.path().clone());
-						}
-						Err(e) => {
-							// Silent failure: failed to parse associated item
-							todo!(
-								"Failed to parse associated item {}: {}. Decide on error handling policy.",
-								assoc_item_id.0,
-								e
-							);
-						}
-					}
-				}
-			}
-		}
-
-		Ok(members)
-	}
-
 	fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> { self.id_to_paths.get(id) }
 
 	fn get_primary_path(&self, id: &Id) -> Result<Vec<String>> {
@@ -377,10 +311,6 @@ impl ParseContext {
 	}
 
 	fn get_path(&self, id: &Id) -> Result<Vec<String>> { self.get_primary_path(id) }
-
-	fn get_item_impls(&self, id: &Id) -> &[Id] {
-		self.item_to_impls.get(id).map(Vec::as_slice).unwrap_or(&[])
-	}
 
 	fn nudox_path_for_rustdoc_path(&self, path: &rustdoc_types::Path) -> NudoxPath {
 		if let Ok(local_path) = self.get_primary_path(&path.id) {
@@ -429,6 +359,43 @@ impl ParseContext {
 		implemented_protocols
 	}
 
+	fn collect_record_methods(&self, impl_ids: &[Id]) -> Result<Vec<Function>> {
+		let mut methods = Vec::new();
+
+		for impl_id in impl_ids {
+			let Some(impl_item) = self.krate.index.get(impl_id) else {
+				continue;
+			};
+
+			let ItemEnum::Impl(imp) = &impl_item.inner else {
+				continue;
+			};
+
+			if imp.is_negative {
+				continue;
+			}
+
+			let implemented_protocol =
+				imp.trait_.as_ref().map(|path| self.nudox_path_for_rustdoc_path(path));
+
+			for assoc_item_id in &imp.items {
+				let Some(assoc_item) = self.krate.index.get(assoc_item_id) else {
+					continue;
+				};
+
+				let ItemEnum::Function(function_item) = &assoc_item.inner else {
+					continue;
+				};
+
+				let mut function = self.parse_function(assoc_item_id, function_item)?;
+				function.implemented_protocols = implemented_protocol.clone().map(|path| vec![path]);
+				methods.push(function);
+			}
+		}
+
+		Ok(methods)
+	}
+
 	fn convert_item(&self, state: &mut ParseState, id: &Id, item: &Item) -> Result<Entry> {
 		let name = item.name.clone().unwrap_or_default();
 		let path = self.get_primary_path(id).unwrap_or_else(|_| vec![name.clone()]);
@@ -445,10 +412,6 @@ impl ParseContext {
 		let kind = self.parse_item_kind(state, id, &item.inner)?;
 
 		let members = match &item.inner {
-			ItemEnum::Struct(s) => Some(self.collect_impl_members(state, &s.impls)?),
-			ItemEnum::Enum(e) => Some(self.collect_impl_members(state, &e.impls)?),
-			ItemEnum::Union(u) => Some(self.collect_impl_members(state, &u.impls)?),
-			ItemEnum::Primitive(p) => Some(self.collect_impl_members(state, &p.impls)?),
 			ItemEnum::Trait(t) => {
 				let mut trait_members = Vec::new();
 				for method_id in &t.items {
@@ -505,6 +468,11 @@ impl ParseContext {
 			Entry::RecordType(s) => {
 				let mut inner = s.inner;
 				inner.members = members;
+				let methods = match &item.inner {
+					ItemEnum::Struct(struct_item) => self.collect_record_methods(&struct_item.impls)?,
+					_ => Vec::new(),
+				};
+				inner.methods = if methods.is_empty() { None } else { Some(methods) };
 				let implemented_protocols = match &item.inner {
 					ItemEnum::Struct(struct_item) => self.collect_implemented_protocols(&struct_item.impls),
 					_ => Vec::new(),
@@ -516,9 +484,6 @@ impl ParseContext {
 			Entry::Function(s) => {
 				let mut inner = s.inner;
 				inner.members = members;
-				let implemented_protocols = self.collect_implemented_protocols(self.get_item_impls(id));
-				inner.implemented_protocols =
-					if implemented_protocols.is_empty() { None } else { Some(implemented_protocols) };
 				Entry::Function(symbol_template.clone_with(inner))
 			}
 			Entry::TraitDef(s) => {
@@ -794,8 +759,13 @@ impl ParseContext {
 		let vis = item.visibility.clone();
 		let (receiver, input_parameters) = self.parse_function_inputs(&f.sig.inputs)?;
 
-		let output_parameters =
-			f.sig.output.as_ref().map(|output_ty| self.parse_type(output_ty)).transpose()?.and_then(output_parameters_from_type);
+		let output_parameters = f
+			.sig
+			.output
+			.as_ref()
+			.map(|output_ty| self.parse_type(output_ty))
+			.transpose()?
+			.and_then(output_parameters_from_type);
 
 		let attributes = self.parse_function_attributes(f);
 
@@ -807,27 +777,27 @@ impl ParseContext {
 		let type_links = {
 			let mut links = HashMap::new();
 
-				if let Some(ref params) = input_parameters {
-					for (idx, param) in params.iter().enumerate() {
-						if let Parameter::Literal(l) = param {
-							if let Some(ref ty) = l.r#type {
-								if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
-									links.insert(parameter_link_key("in", idx, params.len(), &l.name), entry_id);
-								}
+			if let Some(ref params) = input_parameters {
+				for (idx, param) in params.iter().enumerate() {
+					if let Parameter::Literal(l) = param {
+						if let Some(ref ty) = l.r#type {
+							if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
+								links.insert(parameter_link_key("in", idx, params.len(), &l.name), entry_id);
 							}
 						}
+					}
 				}
 			}
 
-				if let Some(ref params) = output_parameters {
-					for (idx, param) in params.iter().enumerate() {
-						if let Parameter::Literal(l) = param {
-							if let Some(ref ty) = l.r#type {
-								if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
-									links.insert(parameter_link_key("out", idx, params.len(), &l.name), entry_id);
-								}
+			if let Some(ref params) = output_parameters {
+				for (idx, param) in params.iter().enumerate() {
+					if let Parameter::Literal(l) = param {
+						if let Some(ref ty) = l.r#type {
+							if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
+								links.insert(parameter_link_key("out", idx, params.len(), &l.name), entry_id);
 							}
 						}
+					}
 				}
 			}
 
@@ -835,15 +805,15 @@ impl ParseContext {
 		};
 
 		Ok(Function {
-				input_parameters,
-				output_parameters,
-				attributes,
-				generics,
-				receiver: match receiver {
-					Some(ReceiverKind::Static) | None => None,
-					other => other,
-				},
-				overloads: None,
+			input_parameters,
+			output_parameters,
+			attributes,
+			generics,
+			receiver: match receiver {
+				Some(ReceiverKind::Static) | None => None,
+				other => other,
+			},
+			overloads: None,
 			implemented: true,
 			type_links,
 			implemented_protocols: None,
@@ -1208,14 +1178,14 @@ impl ParseContext {
 	}
 
 	fn parse_type(&self, ty: &rustdoc_types::Type) -> Result<Type> {
-			match ty {
-				rustdoc_types::Type::ResolvedPath(path) => {
-					if path.path == "Self" {
-						return Ok(Type::SelfType);
-					}
-					let ir_path = self.parse_resolved_path(path)?;
-					Ok(Type::TypeReference(ir_path))
+		match ty {
+			rustdoc_types::Type::ResolvedPath(path) => {
+				if path.path == "Self" {
+					return Ok(Type::SelfType);
 				}
+				let ir_path = self.parse_resolved_path(path)?;
+				Ok(Type::TypeReference(ir_path))
+			}
 
 			rustdoc_types::Type::DynTrait(dyn_trait) => {
 				let traits = dyn_trait
@@ -1227,13 +1197,13 @@ impl ParseContext {
 				Ok(Type::DynTrait(DynTrait { traits, lifetime: dyn_trait.lifetime.clone() }))
 			}
 
-				rustdoc_types::Type::Generic(name) => {
-					if name == "Self" {
-						Ok(Type::SelfType)
-					} else {
-						Ok(Type::GenericParam(ir::ty::GenericParam { name: name.clone(), kind: None }))
-					}
+			rustdoc_types::Type::Generic(name) => {
+				if name == "Self" {
+					Ok(Type::SelfType)
+				} else {
+					Ok(Type::GenericParam(ir::ty::GenericParam { name: name.clone(), kind: None }))
 				}
+			}
 
 			rustdoc_types::Type::Primitive(prim) => {
 				if prim == "never" || prim == "!" {
@@ -1379,12 +1349,7 @@ impl ParseContext {
 	fn parse_function_pointer(&self, fp: &rustdoc_types::FunctionPointer) -> Result<FunctionPointer> {
 		let (_, inputs) = self.parse_function_inputs(&fp.sig.inputs)?;
 
-		let outputs = fp
-			.sig
-			.output
-			.as_ref()
-			.map(|ty| self.parse_type(ty))
-			.transpose()?;
+		let outputs = fp.sig.output.as_ref().map(|ty| self.parse_type(ty)).transpose()?;
 
 		let mut attributes = Vec::new();
 		if fp.header.is_const {
@@ -1397,12 +1362,12 @@ impl ParseContext {
 			attributes.push(FnAttribute::Async);
 		}
 
-			Ok(FunctionPointer {
-				inputs,
-				outputs: outputs.and_then(output_parameters_from_type),
-				attributes: if attributes.is_empty() { None } else { Some(attributes) },
-			})
-		}
+		Ok(FunctionPointer {
+			inputs,
+			outputs: outputs.and_then(output_parameters_from_type),
+			attributes: if attributes.is_empty() { None } else { Some(attributes) },
+		})
+	}
 
 	fn parse_generic_params(&self, generics: &rustdoc_types::Generics) -> Option<Generics> {
 		if generics.params.is_empty() && generics.where_predicates.is_empty() {

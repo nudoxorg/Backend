@@ -23,16 +23,16 @@ fn rust_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 	let names = doc_names(&store);
 	let counter_entry = entry_with_path_suffix(&store, "calculator::Counter")
 		.expect("expected Counter entry in emitted Rust docs");
-	let view_entry = entry_with_path_suffix(&store, "calculator::Counter::view")
-		.expect("expected blanket impl method to remain visible on Counter");
+	let counter_kind =
+		kind_for_entry(&store, counter_entry).expect("expected Counter kind in emitted docs");
 	let implemented_protocols = counter_entry
 		.get("implemented_protocols")
 		.and_then(|value| value.as_array())
 		.expect("expected Counter entry to expose implemented_protocols");
-	let view_implemented_protocols = view_entry
-		.get("implemented_protocols")
+	let methods = counter_kind
+		.get("methods")
 		.and_then(|value| value.as_array())
-		.expect("expected view entry to expose implemented_protocols");
+		.expect("expected Counter kind to inline impl methods");
 
 	assert!(names.contains("add"));
 	assert!(names.contains("Counter"));
@@ -41,12 +41,9 @@ fn rust_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 			.iter()
 			.any(|value| { value.as_str().is_some_and(|uri| uri.ends_with("calculator::BlanketView")) })
 	);
-	assert!(
-		view_implemented_protocols
-			.iter()
-			.any(|value| { value.as_str().is_some_and(|uri| uri.ends_with("calculator::BlanketView")) })
-	);
+	assert!(methods.len() > 3);
 	assert!(!has_entry_path_suffix(&store, "calculator::Counter::View"));
+	assert!(!has_entry_path_suffix(&store, "calculator::Counter::view"));
 	assert!(store.docs.len() >= 4);
 
 	Ok(())
@@ -165,6 +162,13 @@ fn entry_with_path_suffix<'a>(store: &'a DocStore, suffix: &str) -> Option<&'a s
 		.iter()
 		.find(|(uri, _)| uri.starts_with("Entry/") && uri.ends_with(suffix))
 		.map(|(_, value)| value)
+}
+
+fn kind_for_entry<'a>(
+	store: &'a DocStore,
+	entry: &serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+	entry.get("kind").and_then(|value| value.as_str()).and_then(|kind_uri| store.docs.get(kind_uri))
 }
 
 fn git_fixture(relative_fixture: &str) -> color_eyre::Result<TempDir> {

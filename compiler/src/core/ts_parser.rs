@@ -471,11 +471,11 @@ impl TsDocParser {
 					})
 					.unwrap_or_default();
 
-					for elem in &ns_elements {
-						let ns_module = format!("{}.{}", module_name, symbol_name);
-						let mut batch = self.parse_symbol(&ns_module, elem)?;
-						extra_entries.append(&mut batch);
-					}
+				for elem in &ns_elements {
+					let ns_module = format!("{}.{}", module_name, symbol_name);
+					let mut batch = self.parse_symbol(&ns_module, elem)?;
+					extra_entries.append(&mut batch);
+				}
 
 				Ok((
 					Entry::Module(ir::kind::Symbol::placeholder(ir::module::Module { members: None })),
@@ -1541,7 +1541,7 @@ impl TsDocParser {
 			"null" | "undefined" | "void" => Type::Tuple(vec![]),
 			"never" => Type::Never,
 			"any" | "unknown" => Type::Any,
-				"this" => Type::SelfType,
+			"this" => Type::SelfType,
 			"object" => Type::TypeReference(TypeReference {
 				identifier:   "object".to_string(),
 				generic_args: None,
