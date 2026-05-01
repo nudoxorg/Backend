@@ -390,10 +390,8 @@ pub trait EmbeddingProvider {
 /// Minimal service layer that coordinates:
 /// - document validation
 /// - provider call
-/// - internal vector record construction
-///
-/// This is the core boilerplate for ingestion.
-
+/// - internal vector record construction This is the core boilerplate for
+///   ingestion.
 pub struct EmbeddingService<P> {
 	provider: P,
 }
@@ -542,10 +540,8 @@ impl QdrantPointFactory {
 /// Qdrant supports multiple point id forms. Do not hard-code a numeric `1_u64`.
 /// Keep the policy explicit here so you can later switch to:
 /// - deterministic hash -> u64
-/// - string ids if supported by your chosen qdrant-client API version
-///
-/// For now this helper provides the minimal conversion surface.
-
+/// - string ids if supported by your chosen qdrant-client API version For now
+///   this helper provides the minimal conversion surface.
 pub struct PointIdFactory;
 
 impl PointIdFactory {

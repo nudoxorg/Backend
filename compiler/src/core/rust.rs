@@ -109,7 +109,7 @@ impl RustPackage {
 			.arg("unstable-options")
 			.arg("--output-format")
 			.arg("json")
-			.current_dir(&code)
+			.current_dir(code)
 			.status()?;
 
 		if !status.success() {

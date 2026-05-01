@@ -26,7 +26,7 @@ pub trait TagGen {
 /// snake_case tags for kind
 impl TagGen for Entry {
 	fn tag(&self) -> &'static str {
-		let tag = match self {
+		(match self {
 			Entry::Module(_) => "module",
 			Entry::Info(_) => "info",
 			Entry::Constant(_) => "constant",
@@ -42,8 +42,7 @@ impl TagGen for Entry {
 			Entry::SumType(_) => "sum_type",
 			Entry::TypeAlias(_) => "type_alias",
 			Entry::Function(_) => "function",
-		};
-		tag
+		}) as _
 	}
 }
 
@@ -113,16 +112,14 @@ impl TryFrom<&Entry> for LDInheritor {
 			Entry::RecordType(s) => {
 				// try to get LDRecord, either returns error OR ldrecord wrapped into
 				// LDInheritor Enum
-				LDRecord::try_from(s).map(|ldrecord| LDInheritor::RecordType(ldrecord))
+				LDRecord::try_from(s).map(LDInheritor::RecordType)
 			}
-			Entry::UnionType(s) => LDUnion::try_from(s).map(|ldunion| LDInheritor::UnionType(ldunion)),
-			Entry::TraitDef(s) => LDTraitDef::try_from(s).map(|ldtrait| LDInheritor::TraitDef(ldtrait)),
-			Entry::TraitImpl(s) => LDTraitImpl::try_from(s).map(|ldimpl| LDInheritor::TraitImpl(ldimpl)),
-			Entry::SumType(s) => LDSum::try_from(s).map(|ldsum| LDInheritor::SumType(ldsum)),
-			Entry::Function(s) => LDFunction::try_from(s).map(|ldfunc| LDInheritor::Function(ldfunc)),
-			Entry::TypeAlias(s) => {
-				LDTypeAlias::try_from(s).map(|ldalias| LDInheritor::TypeAlias(ldalias))
-			}
+			Entry::UnionType(s) => LDUnion::try_from(s).map(LDInheritor::UnionType),
+			Entry::TraitDef(s) => LDTraitDef::try_from(s).map(LDInheritor::TraitDef),
+			Entry::TraitImpl(s) => LDTraitImpl::try_from(s).map(LDInheritor::TraitImpl),
+			Entry::SumType(s) => LDSum::try_from(s).map(LDInheritor::SumType),
+			Entry::Function(s) => LDFunction::try_from(s).map(LDInheritor::Function),
+			Entry::TypeAlias(s) => LDTypeAlias::try_from(s).map(LDInheritor::TypeAlias),
 			Entry::Module(_) => Ok(LDInheritor::Module),
 			Entry::Info(_) => Ok(LDInheritor::Info),
 			Entry::Constant(_) => Ok(LDInheritor::Constant),

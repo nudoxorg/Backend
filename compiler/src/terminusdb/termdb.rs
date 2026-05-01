@@ -86,6 +86,10 @@ pub struct DocStore {
 	pub docs: BTreeMap<URI, Value>,
 }
 
+impl Default for DocStore {
+	fn default() -> Self { Self::new() }
+}
+
 impl DocStore {
 	pub fn new() -> Self { DocStore { docs: BTreeMap::default() } }
 

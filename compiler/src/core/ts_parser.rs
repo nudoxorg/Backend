@@ -65,7 +65,7 @@ pub fn specifier_to_module_name(specifier: &str) -> String {
 	let clean =
 		specifier.split('?').next().unwrap_or(specifier).split('#').next().unwrap_or(specifier);
 
-	let last = clean.split('/').last().unwrap_or(clean);
+	let last = clean.split('/').next_back().unwrap_or(clean);
 
 	let name = last
 		.trim_end_matches(".ts")
@@ -82,6 +82,15 @@ pub fn specifier_to_module_name(specifier: &str) -> String {
 
 fn extract_doc(js_doc: &JsDoc) -> Option<String> {
 	if js_doc.is_empty() { None } else { js_doc.doc.as_deref().map(str::to_string) }
+}
+
+struct PropertyFieldMetadata<'a> {
+	optional:      bool,
+	readonly:      bool,
+	is_static:     bool,
+	visibility:    Option<Visibility>,
+	documentation: Option<String>,
+	decorators:    &'a [String],
 }
 
 fn pick_primary_declaration(declarations: &[Declaration]) -> &Declaration {
@@ -243,10 +252,10 @@ impl TsDocParser {
 
 		self.state.visiting.remove(path);
 
-		if let Ok(ref batch) = result {
-			if let Some(primary) = batch.first() {
-				self.state.entry_cache.insert(path.to_vec(), primary.clone());
-			}
+		if let Ok(ref batch) = result
+			&& let Some(primary) = batch.first()
+		{
+			self.state.entry_cache.insert(path.to_vec(), primary.clone());
 		}
 
 		result
@@ -277,7 +286,7 @@ impl TsDocParser {
 		let mut members = Vec::new();
 		if let Some(doc) = &doc {
 			for symbol in &doc.symbols {
-				let sym_path = vec![module_name.to_string(), symbol.name.to_string()];
+				let sym_path = [module_name.to_string(), symbol.name.to_string()];
 				members.push(NudoxPath::Local(std::path::PathBuf::from(sym_path.join("::"))));
 			}
 		}
@@ -314,7 +323,7 @@ impl TsDocParser {
 	}
 
 	fn parse_symbol(&mut self, module_name: &str, symbol: &Symbol) -> Result<Vec<Entry>> {
-		let path = vec![module_name.to_string(), symbol.name.to_string()];
+		let path = [module_name.to_string(), symbol.name.to_string()];
 		let decl = pick_primary_declaration(&symbol.declarations);
 		let visibility = declaration_kind_to_visibility(decl.declaration_kind);
 		let documentation = extract_doc(&decl.js_doc);
@@ -369,12 +378,30 @@ impl TsDocParser {
 				inner.members = if members.is_empty() { None } else { Some(members) };
 				Entry::TraitImpl(symbol_template.clone_with(inner))
 			}
-			Entry::Constant(s) => Entry::Constant(symbol_template.clone_with(s.inner)),
-			Entry::Variable(s) => Entry::Variable(symbol_template.clone_with(s.inner)),
-			Entry::Macro(s) => Entry::Macro(symbol_template.clone_with(s.inner)),
-			Entry::PrimitiveType(s) => Entry::PrimitiveType(symbol_template.clone_with(s.inner)),
-			Entry::Field(s) => Entry::Field(symbol_template.clone_with(s.inner)),
-			Entry::Event(s) => Entry::Event(symbol_template.clone_with(s.inner)),
+			Entry::Constant(s) => Entry::Constant({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::Variable(s) => Entry::Variable({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::Macro(s) => Entry::Macro({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::PrimitiveType(s) => Entry::PrimitiveType({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::Field(s) => Entry::Field({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::Event(s) => Entry::Event({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
 			Entry::Info(s) => Entry::Info(symbol_template.clone_with(s.inner)),
 			Entry::UnionType(s) => Entry::UnionType(symbol_template.clone_with(s.inner)),
 			Entry::TypeAlias(s) => Entry::TypeAlias(symbol_template.clone_with(s.inner)),
@@ -451,7 +478,7 @@ impl TsDocParser {
 				let mut member_refs = Vec::new();
 
 				for elem_name in &elements {
-					let elem_path = vec![module_name.to_string(), symbol_name.to_string(), elem_name.clone()];
+					let elem_path = [module_name.to_string(), symbol_name.to_string(), elem_name.clone()];
 					member_refs.push(NudoxPath::Local(std::path::PathBuf::from(elem_path.join("::"))));
 				}
 
@@ -520,11 +547,9 @@ impl TsDocParser {
 
 		for decl in &parent_symbol.declarations {
 			if let DeclarationDef::Class(cls) = &decl.def {
-				if member_name == "constructor" {
-					if !cls.constructors.is_empty() {
-						let constructors: Vec<&ClassConstructorDef> = cls.constructors.iter().collect();
-						return self.parse_constructor_group_entry(module_name, parent_name, &constructors);
-					}
+				if member_name == "constructor" && !cls.constructors.is_empty() {
+					let constructors: Vec<&ClassConstructorDef> = cls.constructors.iter().collect();
+					return self.parse_constructor_group_entry(module_name, parent_name, &constructors);
 				}
 				let methods: Vec<&ClassMethodDef> =
 					cls.methods.iter().filter(|m| m.name.as_ref() == member_name).collect();
@@ -588,7 +613,7 @@ impl TsDocParser {
 		class_name: &str,
 		ctor: &ClassConstructorDef,
 	) -> Result<Entry> {
-		let path = vec![module_name.to_string(), class_name.to_string(), "constructor".to_string()];
+		let path = [module_name.to_string(), class_name.to_string(), "constructor".to_string()];
 		let func = self.parse_constructor_signature(ctor)?;
 
 		Ok(Entry::Function(ir::kind::Symbol {
@@ -781,26 +806,21 @@ impl TsDocParser {
 		&mut self,
 		name: &str,
 		ts_type: Option<&TsTypeDef>,
-		optional: bool,
-		readonly: bool,
-		is_static: bool,
-		visibility: Option<Visibility>,
-		documentation: Option<String>,
-		decorators: &[String],
+		metadata: PropertyFieldMetadata<'_>,
 	) -> Result<Field> {
 		let ty = ts_type.map(|t| self.parse_ts_type(t).map(Box::new)).transpose()?;
 		Ok(Field::Known(ir::record::KnownField {
-			key: ir::record::FieldKey::Ident(name.to_string()),
-			r#type: ty,
+			key:           ir::record::FieldKey::Ident(name.to_string()),
+			r#type:        ty,
 			default_value: None,
-			attributes: ir::record::FieldAttributes {
-				is_mutable: !readonly,
-				is_optional: optional,
-				decorators: decorators.to_vec(),
-				is_static,
+			attributes:    ir::record::FieldAttributes {
+				is_mutable:  !metadata.readonly,
+				is_optional: metadata.optional,
+				decorators:  metadata.decorators.to_vec(),
+				is_static:   metadata.is_static,
 			},
-			visibility,
-			documentation,
+			visibility:    metadata.visibility,
+			documentation: metadata.documentation,
 		}))
 	}
 
@@ -832,16 +852,14 @@ impl TsDocParser {
 			.properties
 			.iter()
 			.map(|prop| {
-				self.parse_property_field(
-					&prop.name,
-					prop.ts_type.as_ref(),
-					prop.optional,
-					prop.readonly,
-					false,
-					None,
-					extract_doc(&prop.js_doc),
-					&[],
-				)
+				self.parse_property_field(&prop.name, prop.ts_type.as_ref(), PropertyFieldMetadata {
+					optional:      prop.optional,
+					readonly:      prop.readonly,
+					is_static:     false,
+					visibility:    None,
+					documentation: extract_doc(&prop.js_doc),
+					decorators:    &[],
+				})
 			})
 			.collect::<Result<Vec<_>>>()?;
 		let index_signatures = literal
@@ -900,12 +918,14 @@ impl TsDocParser {
 				self.parse_property_field(
 					prop.name.as_ref(),
 					prop.ts_type.as_ref(),
-					prop.optional,
-					prop.readonly,
-					prop.is_static,
-					Some(accessibility_to_visibility(prop.accessibility)),
-					extract_doc(&prop.js_doc),
-					&decorators,
+					PropertyFieldMetadata {
+						optional:      prop.optional,
+						readonly:      prop.readonly,
+						is_static:     prop.is_static,
+						visibility:    Some(accessibility_to_visibility(prop.accessibility)),
+						documentation: extract_doc(&prop.js_doc),
+						decorators:    &decorators,
+					},
 				)
 			})
 			.collect::<Result<Vec<_>>>()?;
@@ -1009,16 +1029,14 @@ impl TsDocParser {
 				if prop.readonly {
 					decorators.push("readonly".to_string());
 				}
-				self.parse_property_field(
-					&prop.name,
-					prop.ts_type.as_ref(),
-					prop.optional,
-					prop.readonly,
-					false,
-					None,
-					extract_doc(&prop.js_doc),
-					&decorators,
-				)
+				self.parse_property_field(&prop.name, prop.ts_type.as_ref(), PropertyFieldMetadata {
+					optional:      prop.optional,
+					readonly:      prop.readonly,
+					is_static:     false,
+					visibility:    None,
+					documentation: extract_doc(&prop.js_doc),
+					decorators:    &decorators,
+				})
 			})
 			.collect::<Result<Vec<_>>>()?;
 
@@ -1176,24 +1194,22 @@ impl TsDocParser {
 
 		if let Some(params) = inputs {
 			for (idx, param) in params.iter().enumerate() {
-				if let Parameter::Literal(l) = param {
-					if let Some(ref ty) = l.r#type {
-						if let Some(entry_id) = self.resolve_ir_type_to_entry_id(ty) {
-							links.insert(parameter_link_key("in", idx, params.len(), &l.name), entry_id);
-						}
-					}
+				if let Parameter::Literal(l) = param
+					&& let Some(ref ty) = l.r#type
+					&& let Some(entry_id) = self.resolve_ir_type_to_entry_id(ty)
+				{
+					links.insert(parameter_link_key("in", idx, params.len(), &l.name), entry_id);
 				}
 			}
 		}
 
 		if let Some(params) = outputs {
 			for (idx, param) in params.iter().enumerate() {
-				if let Parameter::Literal(l) = param {
-					if let Some(ref ty) = l.r#type {
-						if let Some(entry_id) = self.resolve_ir_type_to_entry_id(ty) {
-							links.insert(parameter_link_key("out", idx, params.len(), &l.name), entry_id);
-						}
-					}
+				if let Parameter::Literal(l) = param
+					&& let Some(ref ty) = l.r#type
+					&& let Some(entry_id) = self.resolve_ir_type_to_entry_id(ty)
+				{
+					links.insert(parameter_link_key("out", idx, params.len(), &l.name), entry_id);
 				}
 			}
 		}
@@ -1320,25 +1336,6 @@ impl TsDocParser {
 		}
 
 		Ok(Some(Generics { params: type_params, constraints }))
-	}
-
-	fn generics_to_generic_args(&self, generics: &Generics) -> Option<Vec<GenericArg>> {
-		let args: Vec<GenericArg> = generics
-			.params
-			.iter()
-			.filter_map(|p| {
-				if let Parameter::Type(tp) = p {
-					Some(GenericArg::Type(Type::GenericParam(ir::ty::GenericParam {
-						name: tp.name.clone().unwrap_or_default(),
-						kind: None,
-					})))
-				} else {
-					None
-				}
-			})
-			.collect();
-
-		if args.is_empty() { None } else { Some(args) }
 	}
 
 	fn parse_type_to_expr(&self, ty: &Type) -> TypeExpr {
@@ -1602,24 +1599,6 @@ impl TsDocParser {
 }
 
 impl TsDocParser {
-	fn resolve_ts_type_to_entry_id(&self, ts_type: &TsTypeDef) -> Option<i64> {
-		match &ts_type.kind {
-			TsTypeDefKind::TypeRef(type_ref) => {
-				let name = &type_ref.type_name;
-				if let Some(&id) = self.ctx.type_name_to_id.get(name.as_str()) {
-					return Some(id);
-				}
-				for (k, &v) in &self.ctx.type_name_to_id {
-					if k.ends_with(name.as_str()) {
-						return Some(v);
-					}
-				}
-				None
-			}
-			_ => None,
-		}
-	}
-
 	fn resolve_ir_type_to_entry_id(&self, ty: &Type) -> Option<i64> {
 		match ty {
 			Type::TypeReference(tr) => {

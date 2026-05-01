@@ -572,8 +572,8 @@ fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, Ts
 		}
 	}
 
-	if let Some(exports) = manifest.get("exports") {
-		for value in [
+	if let Some(exports) = manifest.get("exports")
+		&& let Some(value) = [
 			exports.get(".").and_then(serde_json::Value::as_str),
 			exports
 				.get(".")
@@ -586,37 +586,15 @@ fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, Ts
 				.and_then(|entry| entry.get("default"))
 				.and_then(serde_json::Value::as_str),
 			exports.get("types").and_then(serde_json::Value::as_str),
-		] {
-			if let Some(value) = value {
-				return Ok(Some(root.join(value)));
-			}
-		}
+		]
+		.into_iter()
+		.flatten()
+		.next()
+	{
+		return Ok(Some(root.join(value)));
 	}
 
 	Ok(None)
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::traits::registry::Registry;
-
-	#[tokio::test]
-	async fn npm_registry_results_snapshot() {
-		let registry = Npm::default();
-		let packages = registry.get_packages_by_name("@types/node").await.unwrap();
-		insta::assert_debug_snapshot!(packages);
-	}
-
-	#[tokio::test]
-	async fn npm_version_resolution_snapshot() {
-		let registry = Npm::default();
-		let package = registry
-			.resolve_package_version("@types/node", &Version::parse("24.0.0").unwrap())
-			.await
-			.unwrap();
-		insta::assert_debug_snapshot!(package);
-	}
 }
 
 struct SourceFileLoader;
@@ -646,5 +624,28 @@ impl Loader for SourceFileLoader {
 				mtime: None,
 			}))
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::traits::registry::Registry;
+
+	#[tokio::test]
+	async fn npm_registry_results_snapshot() {
+		let registry = Npm::default();
+		let packages = registry.get_packages_by_name("@types/node").await.unwrap();
+		insta::assert_debug_snapshot!(packages);
+	}
+
+	#[tokio::test]
+	async fn npm_version_resolution_snapshot() {
+		let registry = Npm::default();
+		let package = registry
+			.resolve_package_version("@types/node", &Version::parse("24.0.0").unwrap())
+			.await
+			.unwrap();
+		insta::assert_debug_snapshot!(package);
 	}
 }

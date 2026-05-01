@@ -56,7 +56,7 @@ fn parameter_link_key(prefix: &str, idx: usize, total: usize, name: &str) -> Str
 
 fn add_path(id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>, id: &Id, path: Vec<String>) {
 	id_to_paths
-		.entry(id.clone())
+		.entry(*id)
 		.and_modify(|hash_set| {
 			hash_set.insert(path.clone());
 		})
@@ -74,13 +74,13 @@ fn queue_child(
 	id: &Id,
 	parent_path: &[String],
 ) {
-	if let Some(item) = index.get(id) {
-		if let Some(name) = &item.name {
-			let mut path = parent_path.to_vec();
-			path.push(name.clone());
-			add_path(id_to_paths, id, path.clone());
-			queue.push_back((id.clone(), path));
-		}
+	if let Some(item) = index.get(id)
+		&& let Some(name) = &item.name
+	{
+		let mut path = parent_path.to_vec();
+		path.push(name.clone());
+		add_path(id_to_paths, id, path.clone());
+		queue.push_back((*id, path));
 	}
 }
 
@@ -112,7 +112,7 @@ impl RustdocParser {
 		all_ids.sort_by(|a, b| {
 			let path_a = &self.ctx.id_to_paths[a];
 			let path_b = &self.ctx.id_to_paths[b];
-			path_a.into_iter().cmp(path_b)
+			path_a.iter().cmp(path_b)
 		});
 
 		let mut entries = Vec::new();
@@ -146,14 +146,14 @@ impl ParseContext {
 	fn scan_primitives(&mut self) {
 		for (id, item) in &self.krate.index {
 			if let ItemEnum::Primitive(p) = &item.inner {
-				self.primitive_map.insert(p.name.clone(), id.clone());
+				self.primitive_map.insert(p.name.clone(), *id);
 				add_path(&mut self.id_to_paths, id, vec![p.name.clone()]);
 			}
 		}
 	}
 
 	fn build_path_map(&mut self) -> Result<()> {
-		let root_id = self.krate.root.clone();
+		let root_id = self.krate.root;
 
 		let mut queue = VecDeque::new();
 		let mut visited = HashSet::new();
@@ -186,14 +186,14 @@ impl ParseContext {
 
 								if !visited.contains(child_id) {
 									add_path(&mut self.id_to_paths, child_id, new_path.clone());
-									queue.push_back((child_id.clone(), new_path));
+									queue.push_back((*child_id, new_path));
 								} else {
 									add_path(&mut self.id_to_paths, child_id, new_path);
 								}
 							} else {
 								if !visited.contains(child_id) {
 									add_path(&mut self.id_to_paths, child_id, current_path.clone());
-									queue.push_back((child_id.clone(), current_path.clone()));
+									queue.push_back((*child_id, current_path.clone()));
 								} else {
 									add_path(&mut self.id_to_paths, child_id, current_path.clone());
 								}
@@ -208,7 +208,7 @@ impl ParseContext {
 						add_path(&mut self.id_to_paths, target_id, new_path.clone());
 
 						if !visited.contains(target_id) {
-							queue.push_back((target_id.clone(), new_path));
+							queue.push_back((*target_id, new_path));
 						}
 					} else if import.is_glob {
 						// Glob imports: requires resolving the path string to an ID
@@ -288,14 +288,14 @@ impl ParseContext {
 			return Err(ParseError::CircularDependency { path: self.get_path(id)?.join("::") });
 		}
 
-		state.visiting.insert(id.clone());
+		state.visiting.insert(*id);
 
-		let item = self.krate.index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0))?;
+		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 
 		let entry = self.convert_item(state, id, item)?;
 
 		state.visiting.remove(id);
-		state.entry_cache.insert(id.clone(), entry.clone());
+		state.entry_cache.insert(*id, entry.clone());
 
 		Ok(entry)
 	}
@@ -496,12 +496,30 @@ impl ParseContext {
 				inner.members = members;
 				Entry::TraitImpl(symbol_template.clone_with(inner))
 			}
-			Entry::Constant(s) => Entry::Constant(symbol_template.clone_with(s.inner)),
-			Entry::Variable(s) => Entry::Variable(symbol_template.clone_with(s.inner)),
-			Entry::Macro(s) => Entry::Macro(symbol_template.clone_with(s.inner)),
-			Entry::PrimitiveType(s) => Entry::PrimitiveType(symbol_template.clone_with(s.inner)),
-			Entry::Field(s) => Entry::Field(symbol_template.clone_with(s.inner)),
-			Entry::Event(s) => Entry::Event(symbol_template.clone_with(s.inner)),
+			Entry::Constant(s) => Entry::Constant({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::Variable(s) => Entry::Variable({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::Macro(s) => Entry::Macro({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::PrimitiveType(s) => Entry::PrimitiveType({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::Field(s) => Entry::Field({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
+			Entry::Event(s) => Entry::Event({
+				let _: () = s.inner;
+				symbol_template.clone_with(())
+			}),
 			Entry::Info(s) => Entry::Info(symbol_template.clone_with(s.inner)),
 			Entry::UnionType(s) => Entry::UnionType(symbol_template.clone_with(s.inner)),
 			Entry::TypeAlias(s) => Entry::TypeAlias(symbol_template.clone_with(s.inner)),
@@ -637,7 +655,7 @@ impl ParseContext {
 		field_ids
 			.iter()
 			.map(|id| {
-				let item = self.krate.index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0))?;
+				let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 
 				if let ItemEnum::StructField(ty) = &item.inner {
 					let parsed_ty = self.parse_type(ty)?;
@@ -670,11 +688,8 @@ impl ParseContext {
 		e.variants
 			.iter()
 			.map(|variant_id| {
-				let item = self
-					.krate
-					.index
-					.get(variant_id)
-					.ok_or_else(|| ParseError::ItemNotFound(variant_id.0.clone()))?;
+				let item =
+					self.krate.index.get(variant_id).ok_or(ParseError::ItemNotFound(variant_id.0))?;
 
 				let name = item.name.clone().unwrap_or_default();
 
@@ -686,11 +701,8 @@ impl ParseContext {
 								.iter()
 								.filter_map(|opt_id| opt_id.as_ref())
 								.map(|id| {
-									let field_item = self
-										.krate
-										.index
-										.get(id)
-										.ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+									let field_item =
+										self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 									if let ItemEnum::StructField(ty) = &field_item.inner {
 										self.parse_type(ty)
 									} else {
@@ -708,11 +720,8 @@ impl ParseContext {
 							let types: Result<Vec<Field>> = fields
 								.iter()
 								.map(|id| {
-									let field_item = self
-										.krate
-										.index
-										.get(id)
-										.ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+									let field_item =
+										self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 									if let ItemEnum::StructField(ty) = &field_item.inner {
 										Ok(Field::Known(ir::record::KnownField {
 											key:           ir::record::FieldKey::Ident(
@@ -779,24 +788,22 @@ impl ParseContext {
 
 			if let Some(ref params) = input_parameters {
 				for (idx, param) in params.iter().enumerate() {
-					if let Parameter::Literal(l) = param {
-						if let Some(ref ty) = l.r#type {
-							if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
-								links.insert(parameter_link_key("in", idx, params.len(), &l.name), entry_id);
-							}
-						}
+					if let Parameter::Literal(l) = param
+						&& let Some(ref ty) = l.r#type
+						&& let Some(entry_id) = self.resolve_type_to_entry_id(ty)
+					{
+						links.insert(parameter_link_key("in", idx, params.len(), &l.name), entry_id);
 					}
 				}
 			}
 
 			if let Some(ref params) = output_parameters {
 				for (idx, param) in params.iter().enumerate() {
-					if let Parameter::Literal(l) = param {
-						if let Some(ref ty) = l.r#type {
-							if let Some(entry_id) = self.resolve_type_to_entry_id(ty) {
-								links.insert(parameter_link_key("out", idx, params.len(), &l.name), entry_id);
-							}
-						}
+					if let Parameter::Literal(l) = param
+						&& let Some(ref ty) = l.r#type
+						&& let Some(entry_id) = self.resolve_type_to_entry_id(ty)
+					{
+						links.insert(parameter_link_key("out", idx, params.len(), &l.name), entry_id);
 					}
 				}
 			}
@@ -879,8 +886,7 @@ impl ParseContext {
 		let mut required_constants = Vec::new();
 
 		for item_id in &t.items {
-			let trait_item =
-				self.krate.index.get(item_id).ok_or_else(|| ParseError::ItemNotFound(item_id.0))?;
+			let trait_item = self.krate.index.get(item_id).ok_or(ParseError::ItemNotFound(item_id.0))?;
 
 			match &trait_item.inner {
 				ItemEnum::Function(f) => {
@@ -1016,23 +1022,21 @@ impl ParseContext {
 		let mut associated_constants = Vec::new();
 
 		for item_id in &i.items {
-			let impl_item =
-				self.krate.index.get(item_id).ok_or_else(|| ParseError::ItemNotFound(item_id.0.clone()))?;
+			let impl_item = self.krate.index.get(item_id).ok_or(ParseError::ItemNotFound(item_id.0))?;
 
 			match &impl_item.inner {
 				ItemEnum::Function(f) => {
 					let function = self.parse_function(item_id, f)?;
 					methods.push(function);
 				}
-				ItemEnum::AssocType { type_, .. } => {
-					if let Some(ty) = type_ {
-						let assoc_type_impl = AssociatedTypeImpl {
-							name:   impl_item.name.clone().unwrap_or_default(),
-							r#type: Box::new(self.parse_type(ty)?),
-						};
-						associated_types.push(assoc_type_impl);
-					}
+				ItemEnum::AssocType { type_: Some(ty), .. } => {
+					let assoc_type_impl = AssociatedTypeImpl {
+						name:   impl_item.name.clone().unwrap_or_default(),
+						r#type: Box::new(self.parse_type(ty)?),
+					};
+					associated_types.push(assoc_type_impl);
 				}
+				ItemEnum::AssocType { type_: None, .. } => {}
 				ItemEnum::AssocConst { type_, value } => {
 					let constant = TraitConstant {
 						name:          impl_item.name.clone().unwrap_or_default(),
@@ -1068,8 +1072,7 @@ impl ParseContext {
 		u.fields
 			.iter()
 			.map(|id| {
-				let item =
-					self.krate.index.get(id).ok_or_else(|| ParseError::ItemNotFound(id.0.clone()))?;
+				let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
 				if let ItemEnum::StructField(ty) = &item.inner {
 					self.parse_type(ty)
 				} else {
@@ -1090,7 +1093,7 @@ impl ParseContext {
 
 		for (key, id) in &self.path_to_id {
 			if key.ends_with(&format!("::{}", path)) || key == path {
-				return Some(&id);
+				return Some(id);
 			}
 		}
 
@@ -1100,7 +1103,7 @@ impl ParseContext {
 	fn resolve_type_to_entry_id(&self, ty: &Type) -> Option<i64> {
 		match ty {
 			Type::TypeReference(tr) => {
-				self.resolve_path_to_id(&tr.identifier).map(|id| self.id_to_number(&id))
+				self.resolve_path_to_id(&tr.identifier).map(|id| self.id_to_number(id))
 			}
 			Type::Primitive(prim) => {
 				let name = match prim {
@@ -1143,38 +1146,6 @@ impl ParseContext {
 			rustdoc_types::Visibility::Crate => Visibility::Internal,
 			rustdoc_types::Visibility::Restricted { .. } => Visibility::Package,
 		}
-	}
-
-	fn generics_to_args(&self, generics: &Generics) -> Option<Vec<GenericArg>> {
-		let mut args = Vec::new();
-
-		for param in &generics.params {
-			match param {
-				Parameter::Type(type_param) => {
-					let name = type_param.name.clone().unwrap_or_default();
-					if let Some(default) = &type_param.default_type {
-						args.push(GenericArg::Type(Type::GenericParam(ir::ty::GenericParam {
-							name: default.name.clone(),
-							kind: None,
-						})));
-					} else {
-						args.push(GenericArg::Type(Type::GenericParam(ir::ty::GenericParam {
-							name,
-							kind: None,
-						})));
-					}
-				}
-				Parameter::Const(const_param) => {
-					args.push(GenericArg::ConstExpr(ConstExpr::Var(const_param.name.clone())));
-				}
-				Parameter::Lifetime(lifetime_param) => {
-					args.push(GenericArg::Lifetime(lifetime_param.name.clone()));
-				}
-				_ => {}
-			}
-		}
-
-		if args.is_empty() { None } else { Some(args) }
 	}
 
 	fn parse_type(&self, ty: &rustdoc_types::Type) -> Result<Type> {
@@ -1523,7 +1494,7 @@ impl ParseContext {
 				for constraint in constraints {
 					result.push(GenericArg::Constraint(Constraint::AssociatedItem {
 						name: constraint.name.clone(),
-						args: constraint.args.as_ref().map(|a| self.parse_generic_args(&*a.clone()).unwrap()),
+						args: constraint.args.as_ref().map(|a| self.parse_generic_args(&a.clone()).unwrap()),
 						term: match &constraint.binding {
 							rustdoc_types::AssocItemConstraintKind::Equality(term) => {
 								self.map_rustdoc_term(term.clone())

@@ -158,7 +158,7 @@ impl LocalRegistry {
 		for package in packages {
 			snapshots.push(package.snapshot().await);
 		}
-		snapshots.sort_by(|left, right| left.id.cmp(&right.id));
+		snapshots.sort_by_key(|left| left.id);
 		snapshots
 	}
 
@@ -753,8 +753,8 @@ fn read_typescript_entry_point_from_package_json(
 		}
 	}
 
-	if let Some(exports) = manifest.get("exports") {
-		for value in [
+	if let Some(exports) = manifest.get("exports")
+		&& let Some(value) = [
 			exports.get(".").and_then(serde_json::Value::as_str),
 			exports
 				.get(".")
@@ -767,11 +767,12 @@ fn read_typescript_entry_point_from_package_json(
 				.and_then(|entry| entry.get("default"))
 				.and_then(serde_json::Value::as_str),
 			exports.get("types").and_then(serde_json::Value::as_str),
-		] {
-			if let Some(value) = value {
-				return Ok(Some(repository_root.join(value)));
-			}
-		}
+		]
+		.into_iter()
+		.flatten()
+		.next()
+	{
+		return Ok(Some(repository_root.join(value)));
 	}
 
 	Ok(None)

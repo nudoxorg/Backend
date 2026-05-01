@@ -57,10 +57,10 @@ impl Ir<Collected> {
 		let mut root_ids = Vec::new();
 
 		for entry in self.data {
-			if let NudoxPath::Local(p) = entry.path() {
-				if p.iter().count() <= 1 {
-					root_ids.push(entry.path().clone());
-				}
+			if let NudoxPath::Local(p) = entry.path()
+				&& p.iter().count() <= 1
+			{
+				root_ids.push(entry.path().clone());
 			}
 			entries_by_path.insert(entry.path().clone(), entry);
 		}
