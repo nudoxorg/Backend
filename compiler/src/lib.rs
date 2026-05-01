@@ -1,6 +1,12 @@
+pub mod api;
+pub mod config;
 pub mod core;
 pub mod error;
 pub mod git;
+pub mod ingest;
+pub mod local_registry;
 pub mod pipeline;
+pub mod server;
+pub mod storage;
 pub mod terminusdb;
 pub mod traits;
