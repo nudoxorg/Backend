@@ -266,7 +266,7 @@ impl TsDocParser {
 			0 => Ok(vec![]),
 			1 => self.parse_module_entry(&path[0]).map(|e| vec![e]),
 			2 => self.parse_symbol_at_path(&path[0], &path[1]),
-			3 => self.parse_member_at_path(&path[0], &path[1], &path[2]).map(|e| vec![e]),
+			3 => self.parse_member_at_path(&path[0], &path[1], &path[2]),
 			_ => Ok(vec![]),
 		}
 	}
@@ -527,7 +527,7 @@ impl TsDocParser {
 		module_name: &str,
 		parent_name: &str,
 		member_name: &str,
-	) -> Result<Entry> {
+	) -> Result<Vec<Entry>> {
 		let specifier = self
 			.ctx
 			.documents
@@ -549,13 +549,25 @@ impl TsDocParser {
 			if let DeclarationDef::Class(cls) = &decl.def {
 				if member_name == "constructor" && !cls.constructors.is_empty() {
 					let constructors: Vec<&ClassConstructorDef> = cls.constructors.iter().collect();
-					return self.parse_constructor_group_entry(module_name, parent_name, &constructors);
+					return self
+						.parse_constructor_group_entry(module_name, parent_name, &constructors)
+						.map(|entry| vec![entry]);
 				}
 				let methods: Vec<&ClassMethodDef> =
 					cls.methods.iter().filter(|m| m.name.as_ref() == member_name).collect();
 				if !methods.is_empty() {
-					return self.parse_method_group_entry(module_name, parent_name, &methods);
+					return self
+						.parse_method_group_entry(module_name, parent_name, &methods)
+						.map(|entry| vec![entry]);
 				}
+			}
+
+			if let DeclarationDef::Namespace(ns) = &decl.def
+				&& let Some(element) =
+					ns.elements.iter().find(|element| element.name.as_ref() == member_name)
+			{
+				let nested_module_name = format!("{module_name}::{parent_name}");
+				return self.parse_symbol(&nested_module_name, element);
 			}
 		}
 
