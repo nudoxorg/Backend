@@ -6,6 +6,7 @@ use url::Url;
 use super::termdb::DocStore;
 
 /// Configuration for connecting to a TerminusDB instance.
+#[derive(Clone, Debug)]
 pub struct TerminusConfig {
 	pub endpoint: Url,
 	pub user:     String,

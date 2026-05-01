@@ -8,6 +8,7 @@ use url::Url;
 /// - http://localhost:6334
 ///
 /// The Rust client uses the gRPC endpoint for its main operations.
+#[derive(Clone, Debug)]
 pub struct QdrantConfig {
 	pub endpoint:        Url,
 	pub collection_name: String,
