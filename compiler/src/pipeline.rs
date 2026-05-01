@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use gix::ObjectId;
-use ir::entry::{Entry, Index, NudoxPath};
+use ir::entry::{Index, NudoxPath};
+use ir::kind::Entry;
 use semver::Version;
 
 /// Entries freshly collected from a language parser — unindexed and
@@ -57,12 +58,12 @@ impl Ir<Collected> {
 		let mut root_ids = Vec::new();
 
 		for entry in self.data {
-			if let NudoxPath::Local(p) = &entry.path {
+			if let NudoxPath::Local(p) = entry.path() {
 				if p.iter().count() <= 1 {
-					root_ids.push(entry.path.clone());
+					root_ids.push(entry.path().clone());
 				}
 			}
-			entries_by_path.insert(entry.path.clone(), entry);
+			entries_by_path.insert(entry.path().clone(), entry);
 		}
 
 		Ir { data: Index { root_ids, entries_by_path } }
