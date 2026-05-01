@@ -152,10 +152,6 @@ impl Package for TsPackage {
 	fn dependents(&self) -> Result<Vec<Self>, Self::Error> { Err(TsPackageError::NotImplemented) }
 }
 
-// ============================================================================
-// Npm — implements the Registry trait
-// ============================================================================
-
 /// npm registry client for discovering and fetching TypeScript packages.
 ///
 /// Mirrors `Crates` in `rust.rs`.

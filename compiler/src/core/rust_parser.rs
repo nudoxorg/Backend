@@ -4,7 +4,7 @@ use rustdoc_types::{Crate, Id, Item, ItemEnum};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
-use ir::{entry::{Entry, NudoxPath}, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{EntryKind, Visibility}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, primitives::{FloatWidth, IntWidth, Primitive}, protocols::*, record::*, ty::{DynTrait, FunctionPointer, GenericParam, PolyTrait, QualifiedPath, Type, TypeReference}};
+use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{Entry, Visibility}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{DynTrait, FunctionPointer, GenericParam, PolyTrait, QualifiedPath, Type, TypeReference}};
 
 use crate::core::rust::ParseError;
 
@@ -302,7 +302,7 @@ impl ParseContext {
 				for assoc_item_id in &imp.items {
 					match self.parse_item(state, assoc_item_id) {
 						Ok(entry) => {
-							members.push(entry.path);
+							members.push(entry.path().clone());
 						}
 						Err(e) => {
 							// Silent failure: failed to parse associated item
@@ -343,10 +343,9 @@ impl ParseContext {
 				hs
 			})
 			.and_then(|hs| if hs.is_empty() { None } else { Some(hs) });
-		let visibility = Some(self.parse_visibility(&item.visibility));
+		let visibility = self.parse_visibility(&item.visibility);
 		let documentation = item.docs.clone();
 		let kind = self.parse_item_kind(state, id, &item.inner)?;
-		let id_num = self.id_to_number(id);
 
 		let members = match &item.inner {
 			ItemEnum::Struct(s) => Some(self.collect_impl_members(state, &s.impls)?),
@@ -358,7 +357,7 @@ impl ParseContext {
 				for method_id in &t.items {
 					match self.parse_item(state, method_id) {
 						Ok(entry) => {
-							trait_members.push(entry.path);
+							trait_members.push(entry.path().clone());
 						}
 						Err(e) => {
 							todo!(
@@ -375,7 +374,7 @@ impl ParseContext {
 				let mut children = Vec::new();
 				for item_id in &m.items {
 					if let Ok(child) = self.parse_item(state, item_id) {
-						children.push(child.path);
+						children.push(child.path().clone());
 					}
 				}
 				if children.is_empty() { None } else { Some(children) }
@@ -383,42 +382,54 @@ impl ParseContext {
 			_ => None,
 		};
 
-		let mut kind = kind;
-		match &mut kind {
-			EntryKind::Module(m) => {
-				m.members = members.clone();
-				m.visibility = visibility.clone().unwrap_or(ir::kind::Visibility::Public);
-				m.documentation = documentation.clone();
-			}
-			EntryKind::RecordType(r) => {
-				r.members = members.clone();
-				r.visibility = visibility.clone().unwrap_or(ir::kind::Visibility::Public);
-				r.documentation = documentation.clone();
-			}
-			EntryKind::Function(f) => {
-				f.members = members.clone();
-				f.visibility = visibility.clone();
-				f.documentation = documentation.clone();
-			}
-			EntryKind::TraitDef(t) => {
-				t.members = members.clone();
-				t.visibility = visibility.clone();
-				t.docs = documentation.clone();
-			}
-			EntryKind::TraitImpl(t) => {
-				t.members = members.clone();
-				t.visibility = visibility.clone();
-				t.docs = documentation.clone();
-			}
-			_ => {}
-		}
-
-		Ok(Entry {
+		let symbol_template = ir::kind::Symbol {
 			name,
 			path: NudoxPath::Local(std::path::PathBuf::from(path.join("::"))),
 			aliases,
-			kind,
-		})
+			visibility,
+			documentation,
+			inner: (),
+		};
+
+		let entry = match kind {
+			Entry::Module(s) => {
+				let mut inner = s.inner;
+				inner.members = members;
+				Entry::Module(symbol_template.clone_with(inner))
+			}
+			Entry::RecordType(s) => {
+				let mut inner = s.inner;
+				inner.members = members;
+				Entry::RecordType(symbol_template.clone_with(inner))
+			}
+			Entry::Function(s) => {
+				let mut inner = s.inner;
+				inner.members = members;
+				Entry::Function(symbol_template.clone_with(inner))
+			}
+			Entry::TraitDef(s) => {
+				let mut inner = s.inner;
+				inner.members = members;
+				Entry::TraitDef(symbol_template.clone_with(inner))
+			}
+			Entry::TraitImpl(s) => {
+				let mut inner = s.inner;
+				inner.members = members;
+				Entry::TraitImpl(symbol_template.clone_with(inner))
+			}
+			Entry::Constant(s) => Entry::Constant(symbol_template.clone_with(s.inner)),
+			Entry::Variable(s) => Entry::Variable(symbol_template.clone_with(s.inner)),
+			Entry::Macro(s) => Entry::Macro(symbol_template.clone_with(s.inner)),
+			Entry::PrimitiveType(s) => Entry::PrimitiveType(symbol_template.clone_with(s.inner)),
+			Entry::Field(s) => Entry::Field(symbol_template.clone_with(s.inner)),
+			Entry::Event(s) => Entry::Event(symbol_template.clone_with(s.inner)),
+			Entry::Info(s) => Entry::Info(symbol_template.clone_with(s.inner)),
+			Entry::UnionType(s) => Entry::UnionType(symbol_template.clone_with(s.inner)),
+			Entry::TypeAlias(s) => Entry::TypeAlias(symbol_template.clone_with(s.inner)),
+			Entry::SumType(s) => Entry::SumType(symbol_template.clone_with(s.inner)),
+		};
+
+		Ok(entry)
 	}
 
 	fn parse_item_kind(
@@ -426,57 +437,57 @@ impl ParseContext {
 		state: &mut ParseState,
 		id: &Id,
 		inner: &ItemEnum,
-	) -> Result<EntryKind> {
+	) -> Result<Entry> {
 		match inner {
-			ItemEnum::Module(_) => Ok(EntryKind::Module(ir::module::Module {
-				members:       None,
-				visibility:    ir::kind::Visibility::Public,
-				documentation: None,
-			})),
+			ItemEnum::Module(_) => Ok(Entry::Module(ir::kind::Symbol::placeholder(ir::module::Module {
+				members: None,
+			}))),
 
 			ItemEnum::Struct(s) => {
 				let record = self.parse_struct(id, s)?;
-				Ok(EntryKind::RecordType(record))
+				Ok(Entry::RecordType(ir::kind::Symbol::placeholder(record)))
 			}
 
 			ItemEnum::Enum(e) => {
 				let variants = self.parse_enum_variants(e)?;
-				Ok(EntryKind::SumType(variants))
+				Ok(Entry::SumType(ir::kind::Symbol::placeholder(variants)))
 			}
 
 			ItemEnum::Function(f) => {
 				let function = self.parse_function(id, f)?;
-				Ok(EntryKind::Function(function))
+				Ok(Entry::Function(ir::kind::Symbol::placeholder(function)))
 			}
 
 			ItemEnum::Trait(t) => {
 				let trait_def = self.parse_trait(state, id, t)?;
-				Ok(EntryKind::TraitDef(trait_def))
+				Ok(Entry::TraitDef(ir::kind::Symbol::placeholder(trait_def)))
 			}
 
 			ItemEnum::Impl(i) => {
 				let trait_impl = self.parse_impl(state, id, i)?;
-				Ok(EntryKind::TraitImpl(trait_impl))
+				Ok(Entry::TraitImpl(ir::kind::Symbol::placeholder(trait_impl)))
 			}
 
-			ItemEnum::TypeAlias(alias) => Ok(EntryKind::TypeAlias(self.parse_type(&alias.type_)?)),
+			ItemEnum::TypeAlias(alias) => {
+				Ok(Entry::TypeAlias(ir::kind::Symbol::placeholder(self.parse_type(&alias.type_)?)))
+			}
 
-			ItemEnum::Constant { .. } => Ok(EntryKind::Constant),
+			ItemEnum::Constant { .. } => Ok(Entry::Constant(ir::kind::Symbol::placeholder(()))),
 
-			ItemEnum::Static(_) => Ok(EntryKind::Variable),
+			ItemEnum::Static(_) => Ok(Entry::Variable(ir::kind::Symbol::placeholder(()))),
 
-			ItemEnum::Macro(_) => Ok(EntryKind::Macro),
+			ItemEnum::Macro(_) => Ok(Entry::Macro(ir::kind::Symbol::placeholder(()))),
 
-			ItemEnum::ProcMacro(_) => Ok(EntryKind::Macro),
+			ItemEnum::ProcMacro(_) => Ok(Entry::Macro(ir::kind::Symbol::placeholder(()))),
 
-			ItemEnum::StructField(_ty) => Ok(EntryKind::Field),
+			ItemEnum::StructField(_ty) => Ok(Entry::Field(ir::kind::Symbol::placeholder(()))),
 
 			ItemEnum::Union(u) => {
 				let types = self.parse_union_fields(u)?;
-				Ok(EntryKind::UnionType(types))
+				Ok(Entry::UnionType(ir::kind::Symbol::placeholder(types)))
 			}
 
-			_ => Ok(EntryKind::Field),
+			_ => Ok(Entry::Field(ir::kind::Symbol::placeholder(()))),
 		}
 	}
 
@@ -499,8 +510,6 @@ impl ParseContext {
 			name: item.name.clone(),
 			generics,
 			fields,
-			visibility,
-			documentation: item.docs.clone(),
 			implemented_protocols: None,
 			members: None,
 		})
@@ -724,11 +733,8 @@ impl ParseContext {
 			output_parameters,
 			attributes,
 			generics,
-			name,
 			implemented: true,
-			visibility,
 			type_links,
-			documentation: item.docs.clone(),
 			implemented_protocols: None,
 			members: None,
 		})
@@ -776,11 +782,6 @@ impl ParseContext {
 		id: &Id,
 		t: &rustdoc_types::Trait,
 	) -> Result<TraitDef> {
-		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
-		let vis = &item.visibility;
-		let name = item.name.clone().unwrap_or_default();
-		let docs = item.docs.clone();
-
 		let generics =
 			if t.generics.params.is_empty() { None } else { self.parse_generic_params(&t.generics) };
 
@@ -814,7 +815,6 @@ impl ParseContext {
 							Some(self.parse_generic_bounds(bounds)?)
 						},
 						default_type: if let Some(ty) = type_ { Some(self.parse_type(ty)?) } else { None },
-						docs:         trait_item.docs.clone(),
 					};
 					associated_types.push(assoc_type);
 				}
@@ -823,7 +823,6 @@ impl ParseContext {
 						name:          trait_item.name.clone().unwrap_or_default(),
 						r#type:        Box::new(self.parse_type(type_)?),
 						default_value: value.as_ref().map(|d| ConstExpr::Var(d.clone())),
-						docs:          trait_item.docs.clone(),
 					};
 					required_constants.push(constant);
 				}
@@ -839,10 +838,7 @@ impl ParseContext {
 			None
 		};
 
-		let visibility = Some(self.parse_visibility(vis));
-
 		Ok(TraitDef {
-			name,
 			generics,
 			super_traits,
 			associated_types: if associated_types.is_empty() { None } else { Some(associated_types) },
@@ -854,8 +850,6 @@ impl ParseContext {
 				Some(required_constants)
 			},
 			attributes,
-			visibility,
-			docs,
 			members: None,
 		})
 	}
@@ -884,7 +878,6 @@ impl ParseContext {
 			attributes,
 			receiver,
 			has_default_implementation: f.has_body,
-			docs: item.docs.clone(),
 		})
 	}
 
@@ -914,8 +907,6 @@ impl ParseContext {
 		id: &Id,
 		i: &rustdoc_types::Impl,
 	) -> Result<TraitImpl> {
-		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
-
 		let tr =
 			i.trait_.as_ref().map(|path| self.parse_path_to_trait_ref(path)).transpose()?.ok_or_else(
 				|| ParseError::ImplBlockParsing {
@@ -961,15 +952,12 @@ impl ParseContext {
 						name:          impl_item.name.clone().unwrap_or_default(),
 						r#type:        Box::new(self.parse_type(type_)?),
 						default_value: value.as_ref().map(|d| ConstExpr::Var(d.clone())),
-						docs:          impl_item.docs.clone(),
 					};
 					associated_constants.push(constant);
 				}
 				_ => {}
 			}
 		}
-
-		let visibility = Some(self.parse_visibility(&item.visibility));
 
 		Ok(TraitImpl {
 			tr,
@@ -986,8 +974,6 @@ impl ParseContext {
 			is_negative: i.is_negative,
 			is_blanket: i.blanket_impl.is_some(),
 			is_unsafe: i.is_unsafe,
-			visibility,
-			docs: item.docs.clone(),
 			members: None,
 		})
 	}
@@ -1032,19 +1018,19 @@ impl ParseContext {
 			}
 			Type::Primitive(prim) => {
 				let name = match prim {
-					Primitive::Int(IntWidth::W8) => "i8",
-					Primitive::Int(IntWidth::W16) => "i16",
-					Primitive::Int(IntWidth::Arch) => "isize",
-					Primitive::Int(IntWidth::W64) => "i64",
-					Primitive::Int(IntWidth::W128) => "i128",
-					Primitive::UInt(IntWidth::W8) => "u8",
-					Primitive::UInt(IntWidth::W16) => "u16",
-					Primitive::UInt(IntWidth::Arch) => "usize",
-					Primitive::UInt(IntWidth::W64) => "u64",
-					Primitive::UInt(IntWidth::W128) => "u128",
-					Primitive::Float(FloatWidth::W16) => "f16",
-					Primitive::Float(FloatWidth::W32) => "f32",
-					Primitive::Float(FloatWidth::W64) => "f64",
+					Primitive::Int(Width::W8) => "i8",
+					Primitive::Int(Width::W16) => "i16",
+					Primitive::Int(Width::Arch) => "isize",
+					Primitive::Int(Width::W64) => "i64",
+					Primitive::Int(Width::W128) => "i128",
+					Primitive::UInt(Width::W8) => "u8",
+					Primitive::UInt(Width::W16) => "u16",
+					Primitive::UInt(Width::Arch) => "usize",
+					Primitive::UInt(Width::W64) => "u64",
+					Primitive::UInt(Width::W128) => "u128",
+					Primitive::Float(Width::W16) => "f16",
+					Primitive::Float(Width::W32) => "f32",
+					Primitive::Float(Width::W64) => "f64",
 					Primitive::Bool => "bool",
 					Primitive::String => "str",
 					Primitive::Char => "char",
@@ -1247,19 +1233,19 @@ impl ParseContext {
 
 	fn parse_primitive(&self, prim: &str) -> Result<Primitive> {
 		match prim {
-			"i8" => Ok(Primitive::Int(IntWidth::W8)),
-			"i16" => Ok(Primitive::Int(IntWidth::W16)),
-			"i32" | "isize" => Ok(Primitive::Int(IntWidth::Arch)),
-			"i64" => Ok(Primitive::Int(IntWidth::W64)),
-			"i128" => Ok(Primitive::Int(IntWidth::W128)),
-			"u8" => Ok(Primitive::UInt(IntWidth::W8)),
-			"u16" => Ok(Primitive::UInt(IntWidth::W16)),
-			"u32" | "usize" => Ok(Primitive::UInt(IntWidth::Arch)),
-			"u64" => Ok(Primitive::UInt(IntWidth::W64)),
-			"u128" => Ok(Primitive::UInt(IntWidth::W128)),
-			"f16" => Ok(Primitive::Float(FloatWidth::W16)),
-			"f32" => Ok(Primitive::Float(FloatWidth::W32)),
-			"f64" | "f128" => Ok(Primitive::Float(FloatWidth::W64)),
+			"i8" => Ok(Primitive::Int(Width::W8)),
+			"i16" => Ok(Primitive::Int(Width::W16)),
+			"i32" | "isize" => Ok(Primitive::Int(Width::Arch)),
+			"i64" => Ok(Primitive::Int(Width::W64)),
+			"i128" => Ok(Primitive::Int(Width::W128)),
+			"u8" => Ok(Primitive::UInt(Width::W8)),
+			"u16" => Ok(Primitive::UInt(Width::W16)),
+			"u32" | "usize" => Ok(Primitive::UInt(Width::Arch)),
+			"u64" => Ok(Primitive::UInt(Width::W64)),
+			"u128" => Ok(Primitive::UInt(Width::W128)),
+			"f16" => Ok(Primitive::Float(Width::W16)),
+			"f32" => Ok(Primitive::Float(Width::W32)),
+			"f64" | "f128" => Ok(Primitive::Float(Width::W64)),
 			"bool" => Ok(Primitive::Bool),
 			"str" => Ok(Primitive::String),
 			"char" => Ok(Primitive::Char),
