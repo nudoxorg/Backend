@@ -3,7 +3,7 @@ use std::collections::HashMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{entry::NudoxPath, generics::Generics, parameter::Parameter};
+use crate::{entry::NudoxPath, generics::Generics, parameter::Parameter, protocols::ReceiverKind};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -14,6 +14,8 @@ pub struct Function {
 	pub type_links:  Option<HashMap<String, i64>>,
 	pub attributes:  Option<Vec<Attribute>>,
 	pub generics:    Option<Generics>,
+	pub receiver:    Option<ReceiverKind>,
+	pub overloads:   Option<Vec<Function>>,
 	pub implemented: bool,
 
 	/// Child entries conceptually scoped inside this function.
@@ -36,6 +38,9 @@ pub struct Function {
 pub enum Attribute {
 	/// Takes an arbitrary amount of arguments
 	Variadic,
+
+	/// Can suspend and resume execution between yields.
+	Generator,
 
 	/// Determined at compile-time
 	Const,
