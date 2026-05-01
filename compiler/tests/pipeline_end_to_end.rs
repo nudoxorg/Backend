@@ -21,9 +21,32 @@ fn rust_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 	let ir = package.retrieve(Version::parse("0.1.0")?, None)?;
 	let store = emit_store("rust", "calculator", Version::parse("0.1.0")?, ir)?;
 	let names = doc_names(&store);
+	let counter_entry = entry_with_path_suffix(&store, "calculator::Counter")
+		.expect("expected Counter entry in emitted Rust docs");
+	let view_entry = entry_with_path_suffix(&store, "calculator::Counter::view")
+		.expect("expected blanket impl method to remain visible on Counter");
+	let implemented_protocols = counter_entry
+		.get("implemented_protocols")
+		.and_then(|value| value.as_array())
+		.expect("expected Counter entry to expose implemented_protocols");
+	let view_implemented_protocols = view_entry
+		.get("implemented_protocols")
+		.and_then(|value| value.as_array())
+		.expect("expected view entry to expose implemented_protocols");
 
 	assert!(names.contains("add"));
 	assert!(names.contains("Counter"));
+	assert!(
+		implemented_protocols
+			.iter()
+			.any(|value| { value.as_str().is_some_and(|uri| uri.ends_with("calculator::BlanketView")) })
+	);
+	assert!(
+		view_implemented_protocols
+			.iter()
+			.any(|value| { value.as_str().is_some_and(|uri| uri.ends_with("calculator::BlanketView")) })
+	);
+	assert!(!has_entry_path_suffix(&store, "calculator::Counter::View"));
 	assert!(store.docs.len() >= 4);
 
 	Ok(())
@@ -130,6 +153,18 @@ fn doc_names(store: &DocStore) -> BTreeSet<String> {
 		.filter_map(|value| value.get("name").and_then(|name| name.as_str()))
 		.map(str::to_owned)
 		.collect()
+}
+
+fn has_entry_path_suffix(store: &DocStore, suffix: &str) -> bool {
+	store.docs.keys().any(|uri| uri.starts_with("Entry/") && uri.ends_with(suffix))
+}
+
+fn entry_with_path_suffix<'a>(store: &'a DocStore, suffix: &str) -> Option<&'a serde_json::Value> {
+	store
+		.docs
+		.iter()
+		.find(|(uri, _)| uri.starts_with("Entry/") && uri.ends_with(suffix))
+		.map(|(_, value)| value)
 }
 
 fn git_fixture(relative_fixture: &str) -> color_eyre::Result<TempDir> {
