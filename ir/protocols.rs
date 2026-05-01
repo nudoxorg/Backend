@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::function;
-use crate::{entry::NudoxPath, function::Function, generics::{ConstExpr, Constraint, Generics, TraitRef}, kind::Visibility, parameter::Parameter, ty::Type};
+use crate::{entry::NudoxPath, function::Function, generics::{ConstExpr, Constraint, Generics, TraitRef}, parameter::Parameter, record::Field, ty::Type};
 
 /// Universal representation of traits (Rust), protocols (Swift), interfaces
 /// (Java/C#/TypeScript), etc.
@@ -17,6 +17,9 @@ pub struct TraitDef {
 
 	/// Associated types (Rust/Swift protocols)
 	pub associated_types: Option<Vec<AssociatedType>>,
+
+	/// Property requirements declared directly on the trait or interface.
+	pub properties: Option<Vec<Field>>,
 
 	/// Required methods
 	pub required_methods: Option<Vec<TraitMethod>>,
@@ -79,6 +82,9 @@ pub struct TraitMethod {
 
 	/// Method-level attributes
 	pub attributes: Option<Vec<function::Attribute>>,
+
+	/// Documentation attached directly to this method signature.
+	pub documentation: Option<String>,
 
 	/// Receiver type (self, &self, &mut self, etc.)
 	pub receiver: Option<ReceiverKind>,
