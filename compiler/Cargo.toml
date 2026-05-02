@@ -36,7 +36,6 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tempfile = "3.23.0"
 url = { version = "2.5.7", features = ["serde"] }
-xilem = "0.4.0"
 qdrant-client = "1.17.0"
 gix-worktree = "0.43.1"
 gix-worktree-state = "0.21.0"
