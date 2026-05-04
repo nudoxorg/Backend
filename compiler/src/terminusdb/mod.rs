@@ -23,6 +23,8 @@ fn path_segments(path: &ir::entry::NudoxPath) -> Vec<String> {
 	}
 }
 
+fn fq_name(path: &ir::entry::NudoxPath) -> String { path_segments(path).join("::") }
+
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
 		let path = self.path().clone();
@@ -152,6 +154,7 @@ impl EmitJsonLD for Entry {
 		obj.insert("@id".into(), Value::String(entry_uri.as_str().to_owned()));
 		obj.insert("kind".into(), Value::String(kind_ref.as_str().to_owned()));
 		obj.insert("path".into(), json!(path_segments(&path)));
+		obj.insert("fq_name".into(), Value::String(fq_name(&path)));
 		obj.insert("aliases".into(), json!(aliases_fq));
 		obj.insert("name".into(), Value::String(name));
 		obj.insert("members".into(), json!(members));
