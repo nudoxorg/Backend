@@ -1,13 +1,12 @@
 use std::{fs, io, path::{Path, PathBuf}};
 
-use tempfile::{TempDir, tempdir_in};
+use tempfile::{Builder, TempDir};
 
 #[derive(Clone, Debug)]
 pub struct StorageLayout {
 	root:             PathBuf,
 	repositories_dir: PathBuf,
 	sessions_dir:     PathBuf,
-	workspaces_dir:   PathBuf,
 }
 
 impl StorageLayout {
@@ -15,14 +14,12 @@ impl StorageLayout {
 		let root = root.into();
 		let repositories_dir = root.join("repositories");
 		let sessions_dir = root.join("sessions");
-		let workspaces_dir = root.join("workspaces");
-		Self { root, repositories_dir, sessions_dir, workspaces_dir }
+		Self { root, repositories_dir, sessions_dir }
 	}
 
 	pub fn ensure(&self) -> io::Result<()> {
 		fs::create_dir_all(&self.repositories_dir)?;
 		fs::create_dir_all(&self.sessions_dir)?;
-		fs::create_dir_all(&self.workspaces_dir)?;
 		Ok(())
 	}
 
@@ -30,7 +27,9 @@ impl StorageLayout {
 		self.repositories_dir.join(package_id.to_string())
 	}
 
-	pub fn create_workspace(&self) -> io::Result<TempDir> { tempdir_in(&self.workspaces_dir) }
+	pub fn create_workspace(&self) -> io::Result<TempDir> {
+		Builder::new().prefix("nudox-workspace-").tempdir()
+	}
 
 	pub fn sessions_dir(&self) -> &Path { &self.sessions_dir }
 

@@ -167,7 +167,6 @@ slots:
   fq_name:
     description: Fully-qualified name string for display and lookup.
     range: string
-    required: true
 
   aliases:
     description: >-
@@ -194,17 +193,21 @@ slots:
 
   members:
     description: >-
-      Child Entries contained by this Entry. Unordered collection.
+      Child Entry URIs contained by this Entry. Unordered collection.
     multivalued: true
-    range: Entry
-    inlined: false
+    range: string
+
+  implemented_protocols:
+    description: >-
+      URIs of protocols, traits, or interfaces explicitly implemented by this symbol.
+    multivalued: true
+    range: string
 
   kind:
     description: >-
-      Reference to the structural Kind node for this Entry.
-    range: Kind
+      URI of the structural Kind node for this Entry.
+    range: string
     required: true
-    inlined: false
 
   kind_tag:
     description: >-
@@ -371,6 +374,7 @@ classes:
       - visibility
       - path
       - members
+      - implemented_protocols
       - kind
 
   Kind:
@@ -467,9 +471,14 @@ classes:
       - record_kind
       - fields
       - generics
+      - methods
     slot_usage:
       name:
         description: Display name for the record type.
+      record_kind:
+        description: Optional record-shape discriminator when the source language provides one directly.
+      methods:
+        description: Inherent or associated methods carried by the record type.
 
   SumType:
     is_a: Kind

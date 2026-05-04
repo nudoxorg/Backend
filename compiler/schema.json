@@ -17,9 +17,16 @@
       "@class": "xsd:string",
       "@type": "Optional"
     },
-    "fq_name": "xsd:string",
-    "kind": "Kind",
-    "members": { "@type": "Set", "@class": "Entry" },
+    "fq_name": {
+      "@class": "xsd:string",
+      "@type": "Optional"
+    },
+    "implemented_protocols": {
+      "@type": "Set",
+      "@class": "xsd:string"
+    },
+    "kind": "xsd:string",
+    "members": { "@type": "Set", "@class": "xsd:string" },
     "name": "xsd:string",
     "path": { "@type": "List", "@class": "xsd:string" },
     "visibility": "xsd:string"
@@ -201,9 +208,15 @@
       "@type": "Optional",
       "@class": "sys:JSON"
     },
+    "methods": {
+      "@type": "Optional",
+      "@class": "sys:JSON"
+    },
     "name": "xsd:string",
-    "record_kind": "xsd:string",
+    "record_kind": {
+      "@type": "Optional",
+      "@class": "xsd:string"
+    },
     "visibility": "xsd:string"
   }
 ]
-

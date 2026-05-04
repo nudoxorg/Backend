@@ -11,6 +11,18 @@ use tracing::{debug, instrument, warn};
 
 use crate::terminusdb::{ld::LDKind, termdb::UriOps};
 
+fn path_segments(path: &ir::entry::NudoxPath) -> Vec<String> {
+	match path {
+		ir::entry::NudoxPath::Local(local_path) => local_path
+			.iter()
+			.map(|segment| segment.to_string_lossy().into_owned())
+			.collect(),
+		ir::entry::NudoxPath::External { path, dependency } => std::iter::once(dependency.clone())
+			.chain(path.iter().map(|segment| segment.to_string_lossy().into_owned()))
+			.collect(),
+	}
+}
+
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
 		let path = self.path().clone();
@@ -112,11 +124,17 @@ impl EmitJsonLD for Entry {
 		};
 
 		let members: Vec<String> = match entry_members.as_ref() {
-			Some(members) => members.iter().map(|m| ctx.entry_uri(m)).collect(),
+			Some(members) => members
+				.iter()
+				.map(|member| ctx.entry_uri(member).as_str().to_owned())
+				.collect(),
 			None => Vec::default(),
 		};
 		let implemented_protocols: Vec<String> = match implemented_protocols.as_ref() {
-			Some(protocols) => protocols.iter().map(|protocol| ctx.entry_uri(protocol)).collect(),
+			Some(protocols) => protocols
+				.iter()
+				.map(|protocol| ctx.entry_uri(protocol).as_str().to_owned())
+				.collect(),
 			None => Vec::default(),
 		};
 
@@ -125,16 +143,15 @@ impl EmitJsonLD for Entry {
 			None => vec![],
 		};
 
-		let prefix = self.to_string();
-		let kind_ref: String = prefix + ctx.uri_path(&path).as_str();
+		let kind_ref = ctx.kind_uri(&self, &path);
 
 		let mut obj = Map::<String, Value>::new();
 		obj.insert("@context".into(), json!(ctx.context()));
 
 		obj.insert("@type".into(), Value::String("Entry".into()));
 		obj.insert("@id".into(), Value::String(entry_uri.as_str().to_owned()));
-		obj.insert("kind".into(), Value::String(kind_ref.to_owned()));
-		obj.insert("path".into(), json!(path));
+		obj.insert("kind".into(), Value::String(kind_ref.as_str().to_owned()));
+		obj.insert("path".into(), json!(path_segments(&path)));
 		obj.insert("aliases".into(), json!(aliases_fq));
 		obj.insert("name".into(), Value::String(name));
 		obj.insert("members".into(), json!(members));

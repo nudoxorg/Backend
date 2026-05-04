@@ -1,9 +1,10 @@
 use std::{collections::BTreeSet, fs, path::{Path, PathBuf}, process::Command};
 
 use color_eyre::eyre::WrapErr;
-use nudox::{core::{rust::RustPackage, ts::TsPackage}, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, traits::package::Package};
+use nudox::{core::{rust::RustPackage, ts::TsPackage}, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}, traits::package::Package};
 use semver::Version;
 use tempfile::TempDir;
+use terminusdb_client::{BranchSpec, DocumentInsertArgs, TerminusDBHttpClient};
 use url::Url;
 
 #[test]
@@ -44,6 +45,7 @@ fn rust_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 	assert!(methods.len() > 3);
 	assert!(!has_entry_path_suffix(&store, "calculator::Counter::View"));
 	assert!(!has_entry_path_suffix(&store, "calculator::Counter::view"));
+	assert!(store.docs.contains_key("RecordType/rust/calculator/calculator::Counter"));
 	assert!(store.docs.len() >= 4);
 
 	Ok(())
@@ -69,6 +71,115 @@ fn rust_workspace_pipeline_end_to_end() -> color_eyre::Result<()> {
 	assert!(names.contains("Mode"));
 	assert!(names.contains("Behavior"));
 	assert!(store.docs.len() >= 6);
+
+	Ok(())
+}
+
+#[test]
+#[ignore = "local repro for axum parser failures"]
+fn rust_axum_pipeline_repro() -> color_eyre::Result<()> {
+	let package = RustPackage {
+		slug:        "axum".into(),
+		name:        "axum".into(),
+		language:    lang_types::Language::Rust,
+		uuid:        5,
+		source:      Url::parse("https://github.com/tokio-rs/axum")?,
+		description: Some("live axum repro".into()),
+	};
+
+	match package.retrieve(Version::parse("0.8.8")?, None) {
+		Ok(ir) => {
+			let store = emit_store("rust", "axum", Version::parse("0.8.8")?, ir)?;
+			eprintln!("axum emitted document count: {}", store.docs.len());
+			assert!(!store.docs.is_empty(), "expected axum docs to be emitted");
+			assert!(store.docs.keys().all(|uri| !uri.starts_with("trait_def/")));
+			assert!(store.docs.keys().all(|uri| !uri.starts_with("record/")));
+			assert!(store.docs.keys().any(|uri| uri.starts_with("TraitDef/")));
+			Ok(())
+		}
+		Err(error) => panic!("axum retrieve failed: {error:?}"),
+	}
+}
+
+#[tokio::test]
+#[ignore = "manual repro for axum terminus uploads"]
+async fn rust_axum_terminus_upload_repro() -> color_eyre::Result<()> {
+	let package = RustPackage {
+		slug:        "axum".into(),
+		name:        "axum".into(),
+		language:    lang_types::Language::Rust,
+		uuid:        6,
+		source:      Url::parse("https://github.com/tokio-rs/axum")?,
+		description: Some("live axum terminus repro".into()),
+	};
+
+	let ir = package.retrieve(Version::parse("0.8.8")?, None)?;
+	let store = emit_store("rust", "axum", Version::parse("0.8.8")?, ir)?;
+	if let Some(module_doc) = store.docs.get("Module/rust/axum/axum") {
+		eprintln!(
+			"module kind payload:\n{}",
+			serde_json::to_string_pretty(module_doc).expect("module doc should serialize")
+		);
+	}
+	let config = TerminusConfig {
+		endpoint: Url::parse(
+			&std::env::var("NUDOX_TERMINUS_ENDPOINT")
+				.unwrap_or_else(|_| "http://127.0.0.1:63630".to_owned()),
+		)?,
+		user:     std::env::var("NUDOX_TERMINUS_USER").unwrap_or_else(|_| "admin".to_owned()),
+		password: std::env::var("NUDOX_TERMINUS_PASSWORD").unwrap_or_else(|_| "root".to_owned()),
+		org:      std::env::var("NUDOX_TERMINUS_ORG").unwrap_or_else(|_| "admin".to_owned()),
+		db:       std::env::var("NUDOX_TERMINUS_DB").unwrap_or_else(|_| "main".to_owned()),
+	};
+
+	let schema_json: Vec<serde_json::Value> =
+		serde_json::from_str(include_str!("../schema.json"))?;
+	upload_schema(&config, schema_json)
+		.await
+		.map_err(|error| color_eyre::eyre::eyre!("failed to upload schema for axum repro: {error}"))?;
+
+	let client = TerminusDBHttpClient::new_with_database(
+		config.endpoint.clone(),
+		&config.user,
+		&config.password,
+		&config.db,
+		&config.org,
+	)
+	.await
+	.map_err(|error| color_eyre::eyre::eyre!("failed to create terminus client: {error}"))?;
+	let args = DocumentInsertArgs {
+		spec: BranchSpec::new(&config.db),
+		author: "nudox-compiler".to_string(),
+		message: "manual axum repro".to_string(),
+		skip_existence_check: true,
+		..Default::default()
+	};
+
+	let mut docs: Vec<(&String, &serde_json::Value)> = store.docs.iter().collect();
+	docs.sort_by(|(left_uri, left_doc), (right_uri, right_doc)| {
+		let left_is_entry = left_doc.get("@type").and_then(|value| value.as_str()) == Some("Entry");
+		let right_is_entry = right_doc.get("@type").and_then(|value| value.as_str()) == Some("Entry");
+		let left_depth =
+			left_doc.get("path").and_then(|value| value.as_array()).map_or(0, |segments| segments.len());
+		let right_depth =
+			right_doc.get("path").and_then(|value| value.as_array()).map_or(0, |segments| segments.len());
+		left_is_entry
+			.cmp(&right_is_entry)
+			.then_with(|| right_depth.cmp(&left_depth))
+			.then_with(|| left_uri.cmp(right_uri))
+	});
+
+		for (uri, doc) in docs {
+			eprintln!("inserting uri: {uri}");
+			if let Err(error) = client.insert_documents(vec![doc], args.clone()).await {
+				eprintln!("failed uri: {uri}");
+				eprintln!(
+				"failed payload:\n{}",
+				serde_json::to_string_pretty(doc).expect("payload should serialize")
+			);
+			panic!("terminus insert failed for {uri}: {error:?}");
+		}
+	}
 
 	Ok(())
 }

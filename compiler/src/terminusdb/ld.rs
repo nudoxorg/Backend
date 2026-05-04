@@ -25,25 +25,7 @@ pub trait TagGen {
 
 /// snake_case tags for kind
 impl TagGen for Entry {
-	fn tag(&self) -> &'static str {
-		(match self {
-			Entry::Module(_) => "module",
-			Entry::Info(_) => "info",
-			Entry::Constant(_) => "constant",
-			Entry::Variable(_) => "variable",
-			Entry::Macro(_) => "macro",
-			Entry::PrimitiveType(_) => "primitive_type",
-			Entry::Event(_) => "event",
-			Entry::Field(_) => "field",
-			Entry::RecordType(_) => "record",
-			Entry::UnionType(_) => "union",
-			Entry::TraitDef(_) => "trait_def",
-			Entry::TraitImpl(_) => "trait_impl",
-			Entry::SumType(_) => "sum_type",
-			Entry::TypeAlias(_) => "type_alias",
-			Entry::Function(_) => "function",
-		}) as _
-	}
+	fn tag(&self) -> &'static str { self.kind_tag() }
 }
 
 impl LDKind {

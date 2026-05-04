@@ -5,6 +5,39 @@ use url::Url;
 
 use super::termdb::DocStore;
 
+fn documents_in_dependency_order(store: &DocStore) -> Vec<Value> {
+	let mut kinds = Vec::new();
+	let mut entries = Vec::new();
+
+	for (_uri, value) in store.documents_sorted() {
+		match value.get("@type").and_then(|ty| ty.as_str()) {
+			Some("Entry") => entries.push(value.clone()),
+			_ => kinds.push(value.clone()),
+		}
+	}
+
+	entries.sort_by(|left, right| {
+		let left_depth = left
+			.get("path")
+			.and_then(|value| value.as_array())
+			.map_or(0, |segments| segments.len());
+		let right_depth = right
+			.get("path")
+			.and_then(|value| value.as_array())
+			.map_or(0, |segments| segments.len());
+		right_depth
+			.cmp(&left_depth)
+			.then_with(|| {
+				left.get("@id")
+					.and_then(|value| value.as_str())
+					.cmp(&right.get("@id").and_then(|value| value.as_str()))
+			})
+	});
+
+	kinds.extend(entries);
+	kinds
+}
+
 /// Configuration for connecting to a TerminusDB instance.
 #[derive(Clone, Debug)]
 pub struct TerminusConfig {
@@ -32,7 +65,7 @@ pub async fn upload_documents(config: &TerminusConfig, store: &DocStore) -> anyh
 	)
 	.await?;
 
-	let documents = store.documents_cloned();
+	let documents = documents_in_dependency_order(store);
 	if documents.is_empty() {
 		warn!("no documents to upload");
 		return Ok(());

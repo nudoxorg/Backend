@@ -146,11 +146,9 @@ impl Entry {
 			Entry::Event(s) => &s.name,
 		}
 	}
-}
 
-impl std::fmt::Display for Entry {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let tag = match self {
+	pub fn kind_tag(&self) -> &'static str {
+		match self {
 			Entry::Module(_) => "module",
 			Entry::Info(_) => "info",
 			Entry::Constant(_) => "constant",
@@ -166,7 +164,30 @@ impl std::fmt::Display for Entry {
 			Entry::SumType(_) => "sum_type",
 			Entry::TypeAlias(_) => "type_alias",
 			Entry::Function(_) => "function",
-		};
-		write!(f, "{}", tag)
+		}
 	}
+
+	pub fn schema_class(&self) -> &'static str {
+		match self {
+			Entry::Module(_) => "Module",
+			Entry::RecordType(_) => "RecordType",
+			Entry::Info(_) => "Info",
+			Entry::UnionType(_) => "UnionType",
+			Entry::TraitDef(_) => "TraitDef",
+			Entry::TraitImpl(_) => "TraitImpl",
+			Entry::SumType(_) => "SumType",
+			Entry::Function(_) => "Function",
+			Entry::TypeAlias(_) => "TypeAlias",
+			Entry::Constant(_) => "Constant",
+			Entry::Variable(_) => "Variable",
+			Entry::Macro(_) => "Macro",
+			Entry::PrimitiveType(_) => "PrimitiveType",
+			Entry::Field(_) => "Field",
+			Entry::Event(_) => "Event",
+		}
+	}
+}
+
+impl std::fmt::Display for Entry {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.kind_tag()) }
 }

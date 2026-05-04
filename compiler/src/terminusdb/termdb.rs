@@ -237,7 +237,7 @@ impl UriOps for DocCtx {
 				format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
 			}
 		};
-		let prefix = kind.to_string();
+		let prefix = kind.schema_class();
 		format!("{}/{}/{}/{}", prefix, self.crate_info.lang(), self.crate_info.crate_name(), path_str)
 	}
 
