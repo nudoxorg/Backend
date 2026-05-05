@@ -4,7 +4,7 @@ use jiff::Timestamp;
 use lang_types::Language;
 use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize};
-use tokio::{runtime::Handle, sync::{Mutex, RwLock}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
+use tokio::{sync::{Mutex, RwLock}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
@@ -344,6 +344,8 @@ impl LocalRegistry {
 		let blocking_handle = tracked.handle.clone();
 		let blocking_spec = tracked.spec.clone();
 		let blocking_id = tracked.id;
+		let runtime = tokio::runtime::Handle::current();
+		let progress_runtime = runtime.clone();
 		let progress = {
 			let registry = Arc::clone(self);
 			let tracked = Arc::clone(&tracked);
@@ -355,7 +357,8 @@ impl LocalRegistry {
 				let detail_for_log = detail.clone();
 				let package = package.clone();
 				let version = version.clone();
-				Handle::current().block_on(async move {
+				let runtime = progress_runtime.clone();
+				runtime.spawn(async move {
 					info!(
 						package = %package,
 						version = %version,
@@ -370,7 +373,6 @@ impl LocalRegistry {
 				});
 			})
 		};
-		let runtime = tokio::runtime::Handle::current();
 		tracked.mark_sync_running(PackageSyncPhase::Resolving, Some("starting sync".to_owned())).await;
 		self.persist().await?;
 
