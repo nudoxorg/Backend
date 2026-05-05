@@ -13,10 +13,9 @@ use crate::terminusdb::{ld::LDKind, termdb::UriOps};
 
 fn path_segments(path: &ir::entry::NudoxPath) -> Vec<String> {
 	match path {
-		ir::entry::NudoxPath::Local(local_path) => local_path
-			.iter()
-			.map(|segment| segment.to_string_lossy().into_owned())
-			.collect(),
+		ir::entry::NudoxPath::Local(local_path) => {
+			local_path.iter().map(|segment| segment.to_string_lossy().into_owned()).collect()
+		}
 		ir::entry::NudoxPath::External { path, dependency } => std::iter::once(dependency.clone())
 			.chain(path.iter().map(|segment| segment.to_string_lossy().into_owned()))
 			.collect(),
@@ -126,17 +125,15 @@ impl EmitJsonLD for Entry {
 		};
 
 		let members: Vec<String> = match entry_members.as_ref() {
-			Some(members) => members
-				.iter()
-				.map(|member| ctx.entry_uri(member).as_str().to_owned())
-				.collect(),
+			Some(members) => {
+				members.iter().map(|member| ctx.entry_uri(member).as_str().to_owned()).collect()
+			}
 			None => Vec::default(),
 		};
 		let implemented_protocols: Vec<String> = match implemented_protocols.as_ref() {
-			Some(protocols) => protocols
-				.iter()
-				.map(|protocol| ctx.entry_uri(protocol).as_str().to_owned())
-				.collect(),
+			Some(protocols) => {
+				protocols.iter().map(|protocol| ctx.entry_uri(protocol).as_str().to_owned()).collect()
+			}
 			None => Vec::default(),
 		};
 

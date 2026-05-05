@@ -20,7 +20,8 @@ fn deserialize_lenient_version<'de, D: Deserializer<'de>>(d: D) -> Result<Versio
 		1 => format!("{s}.0"),
 		_ => s.clone(),
 	};
-	Version::parse(&padded).map_err(|e| serde::de::Error::custom(format!("invalid version `{s}`: {e}")))
+	Version::parse(&padded)
+		.map_err(|e| serde::de::Error::custom(format!("invalid version `{s}`: {e}")))
 }
 
 #[derive(Debug, Clone, Deserialize)]

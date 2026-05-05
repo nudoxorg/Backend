@@ -17,21 +17,16 @@ fn documents_in_dependency_order(store: &DocStore) -> Vec<Value> {
 	}
 
 	entries.sort_by(|left, right| {
-		let left_depth = left
-			.get("path")
-			.and_then(|value| value.as_array())
-			.map_or(0, |segments| segments.len());
-		let right_depth = right
-			.get("path")
-			.and_then(|value| value.as_array())
-			.map_or(0, |segments| segments.len());
-		right_depth
-			.cmp(&left_depth)
-			.then_with(|| {
-				left.get("@id")
-					.and_then(|value| value.as_str())
-					.cmp(&right.get("@id").and_then(|value| value.as_str()))
-			})
+		let left_depth =
+			left.get("path").and_then(|value| value.as_array()).map_or(0, |segments| segments.len());
+		let right_depth =
+			right.get("path").and_then(|value| value.as_array()).map_or(0, |segments| segments.len());
+		right_depth.cmp(&left_depth).then_with(|| {
+			left
+				.get("@id")
+				.and_then(|value| value.as_str())
+				.cmp(&right.get("@id").and_then(|value| value.as_str()))
+		})
 	});
 
 	kinds.extend(entries);

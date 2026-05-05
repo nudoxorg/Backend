@@ -1,8 +1,7 @@
 use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}, process::Command};
 
 use color_eyre::eyre::WrapErr;
-use nudox::git::{clone_repository, find_commit_for_version, materialize_commit};
-use nudox::{core::{rust::RustPackage, ts::TsPackage}, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}, traits::package::Package};
+use nudox::{core::{rust::RustPackage, ts::TsPackage}, git::{clone_repository, find_commit_for_version, materialize_commit}, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}, traits::package::Package};
 use rustdoc_types::{Crate as RustdocCrate, ItemEnum};
 use semver::Version;
 use tempfile::TempDir;
@@ -163,10 +162,7 @@ fn rust_axum_089_entry_diagnostic() -> color_eyre::Result<()> {
 		serde_json::to_string_pretty(&rustdoc_kind_counts)?
 	);
 	eprintln!("axum 0.8.9 nudox entry count: {}", index.len());
-	eprintln!(
-		"axum 0.8.9 nudox entry kinds:\n{}",
-		serde_json::to_string_pretty(&entry_kind_counts)?
-	);
+	eprintln!("axum 0.8.9 nudox entry kinds:\n{}", serde_json::to_string_pretty(&entry_kind_counts)?);
 
 	assert!(index.len() >= 150, "expected axum 0.8.9 to produce at least 150 entries");
 
@@ -204,8 +200,7 @@ async fn rust_axum_terminus_upload_repro() -> color_eyre::Result<()> {
 		db:       std::env::var("NUDOX_TERMINUS_DB").unwrap_or_else(|_| "main".to_owned()),
 	};
 
-	let schema_json: Vec<serde_json::Value> =
-		serde_json::from_str(include_str!("../schema.json"))?;
+	let schema_json: Vec<serde_json::Value> = serde_json::from_str(include_str!("../schema.json"))?;
 	upload_schema(&config, schema_json)
 		.await
 		.map_err(|error| color_eyre::eyre::eyre!("failed to upload schema for axum repro: {error}"))?;
@@ -241,11 +236,11 @@ async fn rust_axum_terminus_upload_repro() -> color_eyre::Result<()> {
 			.then_with(|| left_uri.cmp(right_uri))
 	});
 
-		for (uri, doc) in docs {
-			eprintln!("inserting uri: {uri}");
-			if let Err(error) = client.insert_documents(vec![doc], args.clone()).await {
-				eprintln!("failed uri: {uri}");
-				eprintln!(
+	for (uri, doc) in docs {
+		eprintln!("inserting uri: {uri}");
+		if let Err(error) = client.insert_documents(vec![doc], args.clone()).await {
+			eprintln!("failed uri: {uri}");
+			eprintln!(
 				"failed payload:\n{}",
 				serde_json::to_string_pretty(doc).expect("payload should serialize")
 			);
