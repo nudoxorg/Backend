@@ -5,6 +5,7 @@ use tempfile::{Builder, TempDir};
 #[derive(Clone, Debug)]
 pub struct StorageLayout {
 	root:             PathBuf,
+	packages_file:    PathBuf,
 	repositories_dir: PathBuf,
 	sessions_dir:     PathBuf,
 }
@@ -12,9 +13,10 @@ pub struct StorageLayout {
 impl StorageLayout {
 	pub fn new(root: impl Into<PathBuf>) -> Self {
 		let root = root.into();
+		let packages_file = root.join("packages.json");
 		let repositories_dir = root.join("repositories");
 		let sessions_dir = root.join("sessions");
-		Self { root, repositories_dir, sessions_dir }
+		Self { root, packages_file, repositories_dir, sessions_dir }
 	}
 
 	pub fn ensure(&self) -> io::Result<()> {
@@ -32,6 +34,8 @@ impl StorageLayout {
 	}
 
 	pub fn sessions_dir(&self) -> &Path { &self.sessions_dir }
+
+	pub fn packages_file(&self) -> &Path { &self.packages_file }
 
 	pub fn root(&self) -> &Path { &self.root }
 }

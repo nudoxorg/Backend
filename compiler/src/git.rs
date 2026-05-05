@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::Path};
+use std::{collections::HashSet, fs, path::Path};
 
 use gix::{Repository, bstr::ByteSlice, progress::Discard, remote};
 use semver::Version;
@@ -10,8 +10,17 @@ use crate::error::GitError;
 #[instrument(skip_all, fields(remote = %remote, path = %out_path.display()))]
 pub fn open_or_clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, GitError> {
 	if out_path.exists() {
-		return gix::open(out_path)
-			.map_err(|source| GitError::Open { path: out_path.to_path_buf(), source: source.into() });
+		let repo = gix::open(out_path)
+			.map_err(|source| GitError::Open { path: out_path.to_path_buf(), source: source.into() })?;
+
+		if repository_matches_remote(&repo, remote)? {
+			return Ok(repo);
+		}
+
+		fs::remove_dir_all(out_path).map_err(|source| GitError::Open {
+			path:   out_path.to_path_buf(),
+			source: source.into(),
+		})?;
 	}
 
 	clone_repository(out_path, remote)
@@ -37,6 +46,18 @@ pub fn clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, Git
 		.map_err(|source| GitError::Checkout(source.into()))?;
 
 	Ok(repo)
+}
+
+fn repository_matches_remote(repo: &Repository, remote: &Url) -> Result<bool, GitError> {
+	let fetch_remote = repo
+		.find_fetch_remote(Some("origin".as_bytes().as_bstr()))
+		.or_else(|_| repo.find_fetch_remote(None))
+		.map_err(|source| GitError::Fetch(source.into()))?;
+	let Some(configured_url) = fetch_remote.url(remote::Direction::Fetch) else {
+		return Ok(false);
+	};
+
+	Ok(configured_url.to_string() == remote.as_str())
 }
 
 #[instrument(skip(repo), fields(remote = remote_name.unwrap_or("origin")))]
@@ -650,6 +671,34 @@ version = { workspace = true }
 		let found = find_commit_for_version(&repo, &Version::parse("0.2.0")?, "widget", None);
 
 		assert!(found.is_some(), "expected to find version on non-head branch");
+		Ok(())
+	}
+
+	#[test]
+	fn open_or_clone_repository_reclones_when_cached_remote_differs() -> color_eyre::Result<()> {
+		let first_remote = git_fixture_dir(
+			&[("Cargo.toml", "[package]\nname = \"first\"\nversion = \"0.1.0\"\n")],
+			&[],
+		)?;
+		let second_remote = git_fixture_dir(
+			&[("Cargo.toml", "[package]\nname = \"second\"\nversion = \"0.2.0\"\n")],
+			&[],
+		)?;
+		let cache_dir = tempfile::tempdir()?;
+		let checkout_path = cache_dir.path().join("repo");
+		let first_url = Url::from_directory_path(first_remote.path()).unwrap();
+		let second_url = Url::from_directory_path(second_remote.path()).unwrap();
+
+		open_or_clone_repository(&checkout_path, &first_url)?;
+		let recloned = open_or_clone_repository(&checkout_path, &second_url)?;
+		let head = recloned.head()?.peel_to_commit()?;
+		let tree = head.tree()?;
+
+		assert_eq!(
+			extract_package_version(&recloned, &tree, "second")?,
+			Some(Version::parse("0.2.0")?)
+		);
+		assert_eq!(extract_package_version(&recloned, &tree, "first")?, None);
 		Ok(())
 	}
 

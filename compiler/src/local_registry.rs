@@ -66,7 +66,7 @@ pub struct PackageStateSnapshot {
 	pub last_error:              Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageHealth {
 	Pending,
@@ -81,6 +81,48 @@ pub struct LocalRegistry {
 	next_id:          AtomicU64,
 	packages:         Arc<RwLock<HashMap<PackageId, Arc<TrackedPackage>>>>,
 	keys:             Arc<RwLock<HashMap<PackageKey, PackageId>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedRegistry {
+	packages: Vec<PersistedPackage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedPackage {
+	id:     u64,
+	spec:   PersistedPackageSpec,
+	handle: PersistedPackageHandle,
+	state:  TrackedPackageState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedPackageSpec {
+	language: Language,
+	name:     String,
+	slug:     String,
+	version:  Version,
+	branch:   String,
+	source:   Url,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PersistedPackageHandle {
+	Rust {
+		name:        String,
+		slug:        String,
+		source:      Url,
+		description: Option<String>,
+	},
+	TypeScript {
+		name:        String,
+		slug:        String,
+		uuid:        u64,
+		source:      Url,
+		description: Option<String>,
+		entry_point: String,
+	},
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -122,7 +164,7 @@ struct TrackedPackage {
 	sync_lock: Mutex<()>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrackedPackageState {
 	health:                  PackageHealth,
 	last_checked_at:         Option<Timestamp>,
@@ -155,13 +197,22 @@ const TYPESCRIPT_REPOSITORY_ENTRY_PREFIX: &str = "repo:";
 
 impl LocalRegistry {
 	pub fn new(storage: StorageLayout, monitor_interval: Duration, pipeline: PipelineConfig) -> Self {
+		let persisted = load_persisted_registry(&storage);
+		let next_id = persisted
+			.as_ref()
+			.map(|registry| registry.packages.iter().map(|package| package.id).max().unwrap_or(0) + 1)
+			.unwrap_or(1);
+		let (packages, keys) = persisted
+			.map(rehydrate_registry)
+			.unwrap_or_else(|| (HashMap::new(), HashMap::new()));
+
 		Self {
 			storage,
 			monitor_interval,
 			pipeline,
-			next_id: AtomicU64::new(1),
-			packages: Arc::new(RwLock::new(HashMap::new())),
-			keys: Arc::new(RwLock::new(HashMap::new())),
+			next_id: AtomicU64::new(next_id),
+			packages: Arc::new(RwLock::new(packages)),
+			keys: Arc::new(RwLock::new(keys)),
 		}
 	}
 
@@ -217,6 +268,7 @@ impl LocalRegistry {
 		let tracked = Arc::new(TrackedPackage::new(package_id, spec, handle));
 		self.packages.write().await.insert(package_id, Arc::clone(&tracked));
 		self.keys.write().await.insert(key, package_id);
+		self.persist().await?;
 
 		if request.sync_on_add {
 			self.sync_existing(tracked).await
@@ -272,10 +324,12 @@ impl LocalRegistry {
 		match result {
 			Ok(execution) => {
 				tracked.record_sync_success(execution).await;
+				self.persist().await?;
 				info!(package = %tracked.spec.name, version = %tracked.spec.version, "package sync complete");
 			}
 			Err(error) => {
 				tracked.record_failure(error.to_string()).await;
+				self.persist().await?;
 				return Err(error);
 			}
 		}
@@ -300,6 +354,7 @@ impl LocalRegistry {
 			Ok(execution) => tracked.record_monitor_success(execution).await,
 			Err(error) => tracked.record_failure(error.to_string()).await,
 		}
+		self.persist().await?;
 
 		Ok(())
 	}
@@ -314,6 +369,23 @@ impl LocalRegistry {
 	async fn get_tracked(&self, id: PackageId) -> Result<Arc<TrackedPackage>, AppError> {
 		self.packages.read().await.get(&id).cloned().ok_or(AppError::PackageNotTracked { id: id.get() })
 	}
+
+	async fn persist(&self) -> Result<(), AppError> {
+		let packages: Vec<Arc<TrackedPackage>> = self.packages.read().await.values().cloned().collect();
+		let mut persisted = Vec::with_capacity(packages.len());
+		for package in packages {
+			persisted.push(package.persisted().await);
+		}
+		persisted.sort_by_key(|package| package.id);
+
+		let payload = PersistedRegistry { packages: persisted };
+		let bytes = serde_json::to_vec_pretty(&payload)?;
+		fs::write(self.storage.packages_file(), bytes).map_err(|source| AppError::Storage {
+			path: self.storage.packages_file().to_path_buf(),
+			source,
+		})?;
+		Ok(())
+	}
 }
 
 impl TrackedPackage {
@@ -325,6 +397,15 @@ impl TrackedPackage {
 			state: RwLock::new(TrackedPackageState::new()),
 			sync_lock: Mutex::new(()),
 		}
+	}
+
+	fn rehydrated(
+		id: PackageId,
+		spec: PackageSpec,
+		handle: PackageHandle,
+		state: TrackedPackageState,
+	) -> Self {
+		Self { id, spec, handle, state: RwLock::new(state), sync_lock: Mutex::new(()) }
 	}
 
 	async fn snapshot(&self) -> PackageSnapshot {
@@ -349,6 +430,15 @@ impl TrackedPackage {
 				vector_count:            state.vector_count,
 				last_error:              state.last_error,
 			},
+		}
+	}
+
+	async fn persisted(&self) -> PersistedPackage {
+		PersistedPackage {
+			id:     self.id.get(),
+			spec:   PersistedPackageSpec::from(&self.spec),
+			handle: PersistedPackageHandle::from(&self.handle),
+			state:  self.state.read().await.clone(),
 		}
 	}
 
@@ -403,6 +493,32 @@ impl TrackedPackageState {
 	}
 }
 
+impl From<&PackageSpec> for PersistedPackageSpec {
+	fn from(value: &PackageSpec) -> Self {
+		Self {
+			language: value.language,
+			name:     value.name.clone(),
+			slug:     value.slug.clone(),
+			version:  value.version.clone(),
+			branch:   value.branch.clone(),
+			source:   value.source.clone(),
+		}
+	}
+}
+
+impl From<&PersistedPackageSpec> for PackageSpec {
+	fn from(value: &PersistedPackageSpec) -> Self {
+		Self {
+			language: value.language,
+			name:     value.name.clone(),
+			slug:     value.slug.clone(),
+			version:  value.version.clone(),
+			branch:   value.branch.clone(),
+			source:   value.source.clone(),
+		}
+	}
+}
+
 impl PackageHandle {
 	fn name(&self) -> &str {
 		match self {
@@ -424,6 +540,112 @@ impl PackageHandle {
 			Self::TypeScript(package) => &package.source,
 		}
 	}
+}
+
+impl From<&PackageHandle> for PersistedPackageHandle {
+	fn from(value: &PackageHandle) -> Self {
+		match value {
+			PackageHandle::Rust(package) => Self::Rust {
+				name:        package.name.clone(),
+				slug:        package.slug.clone(),
+				source:      package.source.clone(),
+				description: package.description.clone(),
+			},
+			PackageHandle::TypeScript(package) => Self::TypeScript {
+				name:        package.name.clone(),
+				slug:        package.slug.clone(),
+				uuid:        package.uuid,
+				source:      package.source.clone(),
+				description: package.description.clone(),
+				entry_point: package.entry_point.clone(),
+			},
+		}
+	}
+}
+
+impl From<PersistedPackageHandle> for PackageHandle {
+	fn from(value: PersistedPackageHandle) -> Self {
+		match value {
+			PersistedPackageHandle::Rust { name, slug, source, description } => {
+				PackageHandle::Rust(RustPackage {
+					slug,
+					name,
+					language: Language::Rust,
+					uuid: 0,
+					source,
+					description,
+				})
+			}
+			PersistedPackageHandle::TypeScript {
+				name,
+				slug,
+				uuid,
+				source,
+				description,
+				entry_point,
+			} => PackageHandle::TypeScript(TsPackage {
+				slug,
+				name,
+				uuid,
+				source,
+				description,
+				entry_point,
+			}),
+		}
+	}
+}
+
+fn load_persisted_registry(storage: &StorageLayout) -> Option<PersistedRegistry> {
+	let path = storage.packages_file();
+	if !path.is_file() {
+		return None;
+	}
+
+	let bytes = match fs::read(path) {
+		Ok(bytes) => bytes,
+		Err(error) => {
+			warn!(path = %path.display(), error = %error, "failed to read persisted package registry");
+			return None;
+		}
+	};
+
+	match serde_json::from_slice::<PersistedRegistry>(&bytes) {
+		Ok(registry) => Some(registry),
+		Err(error) => {
+			warn!(path = %path.display(), error = %error, "failed to parse persisted package registry");
+			None
+		}
+	}
+}
+
+fn rehydrate_registry(
+	registry: PersistedRegistry,
+) -> (HashMap<PackageId, Arc<TrackedPackage>>, HashMap<PackageKey, PackageId>) {
+	let mut packages = HashMap::new();
+	let mut keys = HashMap::new();
+
+	for package in registry.packages {
+		let Some(id) = NonZeroU64::new(package.id).map(PackageId) else {
+			continue;
+		};
+		let spec = PackageSpec::from(&package.spec);
+		let key = PackageKey {
+			language: spec.language,
+			name:     spec.name.clone(),
+			version:  spec.version.clone(),
+			branch:   spec.branch.clone(),
+		};
+		let tracked = Arc::new(TrackedPackage::rehydrated(
+			id,
+			spec,
+			package.handle.into(),
+			package.state,
+		));
+		keys.insert(key, id);
+		packages.insert(id, tracked);
+	}
+
+	(packages, keys)
 }
 
 impl TryFrom<u64> for PackageId {
@@ -797,10 +1019,15 @@ fn read_typescript_entry_point_from_package_json(
 
 #[cfg(test)]
 mod tests {
+	use std::{num::NonZeroU64, time::Duration};
+
 	use lang_types::Language;
 	use semver::Version;
+	use tempfile::TempDir;
+	use url::Url;
 
 	use super::*;
+	use crate::config::PipelineConfig;
 
 	fn request(language: Language, name: &str, version: &str) -> NewPackageRequest {
 		NewPackageRequest {
@@ -827,5 +1054,72 @@ mod tests {
 		let handle =
 			resolve_package_handle(&request(Language::Rust, "serde", "1.0.228")).await.unwrap();
 		insta::assert_debug_snapshot!(handle);
+	}
+
+	#[tokio::test]
+	async fn persists_registry_across_restart() {
+		let tempdir = TempDir::new().unwrap();
+		let storage = StorageLayout::new(tempdir.path());
+		storage.ensure().unwrap();
+
+		let registry =
+			LocalRegistry::new(storage.clone(), Duration::from_secs(60), test_pipeline_config());
+		let package_id = PackageId(NonZeroU64::new(7).unwrap());
+		let version = Version::parse("0.1.1").unwrap();
+		let tracked = Arc::new(TrackedPackage::new(
+			package_id,
+			PackageSpec {
+				language: Language::Rust,
+				name:     "any-tts".to_owned(),
+				slug:     "any-tts".to_owned(),
+				version:  version.clone(),
+				branch:   "main".to_owned(),
+				source:   Url::parse("https://github.com/example/any-tts").unwrap(),
+			},
+			PackageHandle::Rust(RustPackage {
+				slug:        "any-tts".to_owned(),
+				name:        "any-tts".to_owned(),
+				language:    Language::Rust,
+				uuid:        0,
+				source:      Url::parse("https://github.com/example/any-tts").unwrap(),
+				description: Some("fixture".to_owned()),
+			}),
+		));
+		tracked.record_failure("fixture failure".to_owned()).await;
+
+		registry.packages.write().await.insert(package_id, Arc::clone(&tracked));
+		registry.keys.write().await.insert(
+			PackageKey {
+				language: Language::Rust,
+				name:     "any-tts".to_owned(),
+				version:  version.clone(),
+				branch:   "main".to_owned(),
+			},
+			package_id,
+		);
+		registry.persist().await.unwrap();
+
+		let rehydrated =
+			LocalRegistry::new(storage.clone(), Duration::from_secs(60), test_pipeline_config());
+		let packages = rehydrated.list_packages().await;
+
+		assert_eq!(packages.len(), 1);
+		assert_eq!(packages[0].id, 7);
+		assert_eq!(packages[0].name, "any-tts");
+		assert_eq!(packages[0].version, version);
+		assert!(matches!(packages[0].state.health, PackageHealth::Degraded));
+		assert_eq!(packages[0].state.last_error.as_deref(), Some("fixture failure"));
+
+		let next_id = rehydrated.allocate_id().unwrap();
+		assert_eq!(next_id.get(), 8);
+	}
+
+	fn test_pipeline_config() -> PipelineConfig {
+		PipelineConfig {
+			terminus:        None,
+			qdrant:          None,
+			embedding_model: "text-embedding-3-small".to_owned(),
+			upload_schema:   false,
+		}
 	}
 }
