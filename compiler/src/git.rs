@@ -131,7 +131,7 @@ pub fn find_commit_for_version(
 ) -> Option<gix::ObjectId> {
 	let head_id = match start {
 		Some(id) => id,
-		None => repo.head().ok()?.peel_to_object().ok()?.id(),
+		None => repo.head().ok()?.peel_to_object().ok()?.id().into(),
 	};
 	let revwalk = repo.rev_walk([head_id]);
 
@@ -166,7 +166,7 @@ pub fn find_typescript_commit_for_version(
 ) -> Option<gix::ObjectId> {
 	let head_id = match start {
 		Some(id) => id,
-		None => repo.head().ok()?.peel_to_object().ok()?.id(),
+		None => repo.head().ok()?.peel_to_object().ok()?.id().into(),
 	};
 	let revwalk = repo.rev_walk([head_id]);
 
