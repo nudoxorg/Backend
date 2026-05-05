@@ -415,8 +415,6 @@ impl<'a> DocParser<'a> {
           }
         }
 
-        debug_assert!(false, "should not reach here");
-
         Ok(Some(None))
       }
       Module::Npm(_) | Module::Node(_) | Module::External(_) => Ok(None),
