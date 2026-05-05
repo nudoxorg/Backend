@@ -1,7 +1,9 @@
-use std::{collections::BTreeSet, fs, path::{Path, PathBuf}, process::Command};
+use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}, process::Command};
 
 use color_eyre::eyre::WrapErr;
+use nudox::git::{clone_repository, find_commit_for_version, materialize_commit};
 use nudox::{core::{rust::RustPackage, ts::TsPackage}, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}, traits::package::Package};
+use rustdoc_types::{Crate as RustdocCrate, ItemEnum};
 use semver::Version;
 use tempfile::TempDir;
 use terminusdb_client::{BranchSpec, DocumentInsertArgs, TerminusDBHttpClient};
@@ -99,6 +101,76 @@ fn rust_axum_pipeline_repro() -> color_eyre::Result<()> {
 		}
 		Err(error) => panic!("axum retrieve failed: {error:?}"),
 	}
+}
+
+#[test]
+#[ignore = "manual diagnostic for axum entry cardinality"]
+fn rust_axum_089_entry_diagnostic() -> color_eyre::Result<()> {
+	let package = RustPackage {
+		slug:        "axum".into(),
+		name:        "axum".into(),
+		language:    lang_types::Language::Rust,
+		uuid:        7,
+		source:      Url::parse("https://github.com/tokio-rs/axum")?,
+		description: Some("live axum 0.8.9 diagnostic".into()),
+	};
+	let version = Version::parse("0.8.9")?;
+	let scratch = tempfile::tempdir()?;
+	let repository_dir = scratch.path().join("repository");
+	let workspace_dir = scratch.path().join("workspace");
+	let repository = clone_repository(&repository_dir, &package.source)?;
+	let target_oid = find_commit_for_version(&repository, &version, &package.name)
+		.ok_or_else(|| color_eyre::eyre::eyre!("failed to find commit for axum 0.8.9"))?;
+	materialize_commit(&repository, target_oid, &workspace_dir)?;
+
+	let status = Command::new("cargo")
+		.arg("rustdoc")
+		.arg("--package")
+		.arg("axum")
+		.arg("--")
+		.arg("-Z")
+		.arg("unstable-options")
+		.arg("--output-format")
+		.arg("json")
+		.current_dir(&workspace_dir)
+		.status()
+		.wrap_err("failed to spawn cargo rustdoc for axum 0.8.9")?;
+
+	if !status.success() {
+		color_eyre::eyre::bail!("cargo rustdoc failed for axum 0.8.9 with status {status}");
+	}
+
+	let json_path = workspace_dir.join("target/doc/axum.json");
+	let json_content = fs::read_to_string(&json_path)
+		.wrap_err_with(|| format!("failed to read rustdoc JSON at {}", json_path.display()))?;
+	let rustdoc_crate: RustdocCrate = serde_json::from_str(&json_content)?;
+
+	let mut rustdoc_kind_counts = BTreeMap::new();
+	for item in rustdoc_crate.index.values() {
+		*rustdoc_kind_counts.entry(rustdoc_kind_name(&item.inner)).or_insert(0usize) += 1;
+	}
+
+	let ir = package.retrieve(version.clone(), None)?;
+	let index = ir.index();
+	let mut entry_kind_counts = BTreeMap::new();
+	for entry in index.iter() {
+		*entry_kind_counts.entry(entry.kind_tag()).or_insert(0usize) += 1;
+	}
+
+	eprintln!("axum 0.8.9 rustdoc item count: {}", rustdoc_crate.index.len());
+	eprintln!(
+		"axum 0.8.9 rustdoc item kinds:\n{}",
+		serde_json::to_string_pretty(&rustdoc_kind_counts)?
+	);
+	eprintln!("axum 0.8.9 nudox entry count: {}", index.len());
+	eprintln!(
+		"axum 0.8.9 nudox entry kinds:\n{}",
+		serde_json::to_string_pretty(&entry_kind_counts)?
+	);
+
+	assert!(index.len() >= 150, "expected axum 0.8.9 to produce at least 150 entries");
+
+	Ok(())
 }
 
 #[tokio::test]
@@ -337,4 +409,30 @@ fn fixture_root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("t
 fn file_url(path: &Path) -> color_eyre::Result<Url> {
 	Url::from_file_path(path)
 		.map_err(|_| color_eyre::eyre::eyre!("failed to convert `{}` into a file URL", path.display()))
+}
+
+fn rustdoc_kind_name(inner: &ItemEnum) -> &'static str {
+	match inner {
+		ItemEnum::Module(_) => "module",
+		ItemEnum::ExternCrate { .. } => "extern_crate",
+		ItemEnum::Use(_) => "use",
+		ItemEnum::Union(_) => "union",
+		ItemEnum::Struct(_) => "struct",
+		ItemEnum::StructField(_) => "struct_field",
+		ItemEnum::Enum(_) => "enum",
+		ItemEnum::Variant(_) => "variant",
+		ItemEnum::Function(_) => "function",
+		ItemEnum::Trait(_) => "trait",
+		ItemEnum::TraitAlias(_) => "trait_alias",
+		ItemEnum::Impl(_) => "impl",
+		ItemEnum::TypeAlias(_) => "type_alias",
+		ItemEnum::Constant { .. } => "constant",
+		ItemEnum::Static(_) => "static",
+		ItemEnum::Macro(_) => "macro",
+		ItemEnum::ProcMacro(_) => "proc_macro",
+		ItemEnum::Primitive(_) => "primitive",
+		ItemEnum::AssocConst { .. } => "assoc_const",
+		ItemEnum::AssocType { .. } => "assoc_type",
+		ItemEnum::ExternType => "extern_type",
+	}
 }
