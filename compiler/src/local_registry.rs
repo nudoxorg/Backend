@@ -738,7 +738,7 @@ fn run_sync(
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
-			let repo_dir = storage.repository_dir(package_id.get());
+			let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 			git::fetch_remote_updates(&repository, Some("origin"))?;
 
@@ -802,7 +802,7 @@ fn run_monitor_refresh(
 ) -> Result<MonitorExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
-			let repo_dir = storage.repository_dir(package_id.get());
+			let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 			git::fetch_remote_updates(&repository, Some("origin"))?;
 
@@ -839,12 +839,12 @@ fn default_tracking_branch(language: Language) -> &'static str {
 fn run_repository_backed_typescript_sync(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
-	package_id: PackageId,
+	_package_id: PackageId,
 	package: TsPackage,
 	spec: PackageSpec,
 	runtime: tokio::runtime::Handle,
 ) -> Result<SyncExecution, AppError> {
-	let repo_dir = storage.repository_dir(package_id.get());
+	let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 	git::fetch_remote_updates(&repository, Some("origin"))?;
 
@@ -877,11 +877,11 @@ fn run_repository_backed_typescript_sync(
 
 fn run_repository_backed_typescript_monitor(
 	storage: StorageLayout,
-	package_id: PackageId,
+	_package_id: PackageId,
 	package: TsPackage,
 	spec: PackageSpec,
 ) -> Result<MonitorExecution, AppError> {
-	let repo_dir = storage.repository_dir(package_id.get());
+	let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 	git::fetch_remote_updates(&repository, Some("origin"))?;
 
