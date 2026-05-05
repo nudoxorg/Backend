@@ -5,6 +5,8 @@ use url::Url;
 
 use super::termdb::DocStore;
 
+const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 1_000;
+
 fn documents_in_dependency_order(store: &DocStore) -> Vec<Value> {
 	let mut kinds = Vec::new();
 	let mut entries = Vec::new();
@@ -68,28 +70,39 @@ pub async fn upload_documents(config: &TerminusConfig, store: &DocStore) -> anyh
 
 	info!(count = documents.len(), "uploading documents");
 
-	let spec = BranchSpec::new(&config.db);
-	let args = DocumentInsertArgs {
-		spec,
-		author: "nudox-compiler".to_string(),
-		message: "automated upload from compiler pipeline".to_string(),
-		skip_existence_check: true,
-		..Default::default()
-	};
-
-	let doc_refs: Vec<&Value> = documents.iter().collect();
-	let result = client.insert_documents(doc_refs, args).await?;
-
-	if let Some(commit_id) = result.extract_commit_id() {
-		info!(commit = %commit_id, "upload committed");
-	}
-
 	let mut inserted = 0usize;
 	let mut updated = 0usize;
-	for (_id, res) in result.iter() {
-		match res {
-			terminusdb_client::TDBInsertInstanceResult::Inserted(_) => inserted += 1,
-			terminusdb_client::TDBInsertInstanceResult::AlreadyExists(_) => updated += 1,
+	let chunk_count = documents.len().div_ceil(DOCUMENT_UPLOAD_CHUNK_SIZE);
+
+	for (chunk_index, chunk) in documents.chunks(DOCUMENT_UPLOAD_CHUNK_SIZE).enumerate() {
+		info!(
+			chunk_index = chunk_index + 1,
+			chunk_count,
+			chunk_size = chunk.len(),
+			"uploading document chunk"
+		);
+
+		let spec = BranchSpec::new(&config.db);
+		let args = DocumentInsertArgs {
+			spec,
+			author: "nudox-compiler".to_string(),
+			message: "automated upload from compiler pipeline".to_string(),
+			skip_existence_check: true,
+			..Default::default()
+		};
+
+		let doc_refs: Vec<&Value> = chunk.iter().collect();
+		let result = client.insert_documents(doc_refs, args).await?;
+
+		if let Some(commit_id) = result.extract_commit_id() {
+			info!(commit = %commit_id, chunk_index = chunk_index + 1, "upload chunk committed");
+		}
+
+		for (_id, res) in result.iter() {
+			match res {
+				terminusdb_client::TDBInsertInstanceResult::Inserted(_) => inserted += 1,
+				terminusdb_client::TDBInsertInstanceResult::AlreadyExists(_) => updated += 1,
+			}
 		}
 	}
 	debug!(inserted, updated, "upload result");
