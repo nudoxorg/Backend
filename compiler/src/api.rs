@@ -52,15 +52,16 @@ async fn add_package(
 	State(state): State<AppState>,
 	Json(request): Json<NewPackageRequest>,
 ) -> Result<(StatusCode, Json<PackageSnapshot>), AppError> {
+	let status = if request.sync_on_add { StatusCode::ACCEPTED } else { StatusCode::CREATED };
 	let package = state.registry.add_package(request).await?;
-	Ok((StatusCode::CREATED, Json(package)))
+	Ok((status, Json(package)))
 }
 
 async fn sync_package(
 	State(state): State<AppState>,
 	Path(id): Path<u64>,
-) -> Result<Json<PackageSnapshot>, AppError> {
-	Ok(Json(state.registry.sync_package(id).await?))
+) -> Result<(StatusCode, Json<PackageSnapshot>), AppError> {
+	Ok((StatusCode::ACCEPTED, Json(state.registry.sync_package(id).await?)))
 }
 
 async fn search_docs(

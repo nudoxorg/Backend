@@ -28,9 +28,11 @@ impl StorageLayout {
 	}
 
 	pub fn repository_dir(&self, language: Language, slug: &str, source: &Url) -> PathBuf {
-		self.repositories_dir
-			.join(language.to_string().to_ascii_lowercase())
-			.join(format!("{}-{}", sanitize_repository_slug(slug), sanitize_repository_source(source)))
+		self.repositories_dir.join(language.to_string().to_ascii_lowercase()).join(format!(
+			"{}-{}",
+			sanitize_repository_slug(slug),
+			sanitize_repository_source(source)
+		))
 	}
 
 	pub fn create_workspace(&self) -> io::Result<TempDir> {

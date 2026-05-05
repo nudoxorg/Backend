@@ -17,10 +17,8 @@ pub fn open_or_clone_repository(out_path: &Path, remote: &Url) -> Result<Reposit
 			return Ok(repo);
 		}
 
-		fs::remove_dir_all(out_path).map_err(|source| GitError::Open {
-			path:   out_path.to_path_buf(),
-			source: source.into(),
-		})?;
+		fs::remove_dir_all(out_path)
+			.map_err(|source| GitError::Open { path: out_path.to_path_buf(), source: source.into() })?;
 	}
 
 	clone_repository(out_path, remote)
@@ -242,7 +240,9 @@ pub fn extract_package_version(
 
 	if let Some(workspace) = manifest.get("workspace") {
 		// A workspace root can also be a package itself ([workspace] + [package]).
-		if let Some(version) = check_package_version(&manifest, Some(&manifest), package_name, "Cargo.toml")? {
+		if let Some(version) =
+			check_package_version(&manifest, Some(&manifest), package_name, "Cargo.toml")?
+		{
 			return Ok(Some(version));
 		}
 
@@ -290,8 +290,8 @@ fn read_toml(
 	let blob = repo
 		.find_blob(entry.oid())
 		.map_err(|source| GitError::TreeLookup { path: path.into(), source: source.into() })?;
-	let content =
-		std::str::from_utf8(&blob.data).map_err(|source| GitError::BlobEncoding { path: path.into(), source })?;
+	let content = std::str::from_utf8(&blob.data)
+		.map_err(|source| GitError::BlobEncoding { path: path.into(), source })?;
 
 	toml::from_str(content).map_err(|source| GitError::TomlParse { path: path.into(), source })
 }
@@ -311,11 +311,8 @@ pub fn resolve_workspace_members(
 		let mut matched = false;
 
 		for candidate in &candidates {
-			let is_match = if is_glob {
-				path_matches_pattern(candidate, member)
-			} else {
-				candidate == member
-			};
+			let is_match =
+				if is_glob { path_matches_pattern(candidate, member) } else { candidate == member };
 
 			if !is_match || excludes.iter().any(|exclude| path_matches_pattern(candidate, exclude)) {
 				continue;
@@ -398,10 +395,8 @@ fn collect_manifest_directories(
 	out: &mut Vec<String>,
 ) -> Result<Vec<String>, GitError> {
 	for entry in tree.iter() {
-		let entry = entry.map_err(|source| GitError::TreeLookup {
-			path:   prefix.into(),
-			source: source.into(),
-		})?;
+		let entry = entry
+			.map_err(|source| GitError::TreeLookup { path: prefix.into(), source: source.into() })?;
 		let name = entry.filename().to_string();
 		let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
 
@@ -425,16 +420,10 @@ fn collect_manifest_directories(
 }
 
 fn path_matches_pattern(path: &str, pattern: &str) -> bool {
-	let path_segments = if path.is_empty() {
-		Vec::new()
-	} else {
-		path.split('/').collect::<Vec<_>>()
-	};
-	let pattern_segments = if pattern.is_empty() {
-		Vec::new()
-	} else {
-		pattern.split('/').collect::<Vec<_>>()
-	};
+	let path_segments =
+		if path.is_empty() { Vec::new() } else { path.split('/').collect::<Vec<_>>() };
+	let pattern_segments =
+		if pattern.is_empty() { Vec::new() } else { pattern.split('/').collect::<Vec<_>>() };
 
 	match_path_segments(&path_segments, &pattern_segments)
 }
@@ -567,8 +556,12 @@ version = { workspace = true }
 "#,
 		)?;
 
-		let version =
-			check_package_version(&member_manifest, Some(&workspace_manifest), "iced", "crates/iced/Cargo.toml")?;
+		let version = check_package_version(
+			&member_manifest,
+			Some(&workspace_manifest),
+			"iced",
+			"crates/iced/Cargo.toml",
+		)?;
 
 		assert_eq!(version, Some(Version::parse("0.14.0")?));
 		Ok(())
@@ -578,9 +571,15 @@ version = { workspace = true }
 	fn resolve_workspace_members_supports_nested_globs_and_excludes() -> color_eyre::Result<()> {
 		let repo = git_fixture(
 			&[
-				("Cargo.toml", "[workspace]\nmembers = [\"packages/*/*\"]\nexclude = [\"packages/gui/internal\"]\n"),
+				(
+					"Cargo.toml",
+					"[workspace]\nmembers = [\"packages/*/*\"]\nexclude = [\"packages/gui/internal\"]\n",
+				),
 				("packages/gui/public/Cargo.toml", "[package]\nname = \"public\"\nversion = \"0.1.0\"\n"),
-				("packages/gui/internal/Cargo.toml", "[package]\nname = \"internal\"\nversion = \"0.1.0\"\n"),
+				(
+					"packages/gui/internal/Cargo.toml",
+					"[package]\nname = \"internal\"\nversion = \"0.1.0\"\n",
+				),
 				("packages/core/model/Cargo.toml", "[package]\nname = \"model\"\nversion = \"0.1.0\"\n"),
 			],
 			&[],
@@ -588,32 +587,24 @@ version = { workspace = true }
 		let head = repo.head()?.peel_to_commit()?;
 		let tree = head.tree()?;
 
-		let members = resolve_workspace_members(
-			&repo,
-			&tree,
-			&["packages/*/*".to_string()],
-			&["packages/gui/internal".to_string()],
-		)?;
+		let members = resolve_workspace_members(&repo, &tree, &["packages/*/*".to_string()], &[
+			"packages/gui/internal".to_string(),
+		])?;
 
-		assert_eq!(
-			members,
-			vec!["packages/core/model".to_string(), "packages/gui/public".to_string()]
-		);
+		assert_eq!(members, vec!["packages/core/model".to_string(), "packages/gui/public".to_string()]);
 		Ok(())
 	}
 
 	#[test]
-	fn extract_package_version_reads_workspace_member_version_from_manifest() -> color_eyre::Result<()> {
+	fn extract_package_version_reads_workspace_member_version_from_manifest() -> color_eyre::Result<()>
+	{
 		let repo = git_fixture(
 			&[
 				(
 					"Cargo.toml",
 					"[workspace]\nmembers = [\"crates/*\"]\n[workspace.package]\nversion = \"0.14.0\"\n",
 				),
-				(
-					"crates/iced/Cargo.toml",
-					"[package]\nname = \"iced\"\nversion = { workspace = true }\n",
-				),
+				("crates/iced/Cargo.toml", "[package]\nname = \"iced\"\nversion = { workspace = true }\n"),
 			],
 			&[],
 		)?;
@@ -629,9 +620,7 @@ version = { workspace = true }
 	#[test]
 	fn find_commit_for_version_scans_all_refs_not_just_head_history() -> color_eyre::Result<()> {
 		let repo_dir = git_fixture_dir(
-			&[
-				("Cargo.toml", "[package]\nname = \"widget\"\nversion = \"0.1.0\"\n"),
-			],
+			&[("Cargo.toml", "[package]\nname = \"widget\"\nversion = \"0.1.0\"\n")],
 			&[],
 		)?;
 
@@ -676,10 +665,9 @@ version = { workspace = true }
 
 	#[test]
 	fn open_or_clone_repository_reclones_when_cached_remote_differs() -> color_eyre::Result<()> {
-		let first_remote = git_fixture_dir(
-			&[("Cargo.toml", "[package]\nname = \"first\"\nversion = \"0.1.0\"\n")],
-			&[],
-		)?;
+		let first_remote =
+			git_fixture_dir(&[("Cargo.toml", "[package]\nname = \"first\"\nversion = \"0.1.0\"\n")], &[
+			])?;
 		let second_remote = git_fixture_dir(
 			&[("Cargo.toml", "[package]\nname = \"second\"\nversion = \"0.2.0\"\n")],
 			&[],

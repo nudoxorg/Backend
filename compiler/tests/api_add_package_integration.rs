@@ -7,8 +7,7 @@ use reqwest::{Client, StatusCode};
 use semver::Version;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use tokio::{task::JoinHandle, time::Instant};
 use url::Url;
 
 #[tokio::test]
@@ -79,6 +78,33 @@ async fn add_typescript_packages_via_api_supports_registry_and_explicit_git_sour
 }
 
 #[tokio::test]
+async fn add_package_returns_immediately_while_background_sync_runs() -> color_eyre::Result<()> {
+	let server = TestServer::spawn().await?;
+	let repo = git_typescript_fixture("async-toolkit", "4.0.0")?;
+
+	let package = server
+		.enqueue_package(json!({
+			"language": Language::TypeScript,
+			"name": "async-toolkit",
+			"version": Version::parse("4.0.0")?,
+			"source": repo.path().display().to_string(),
+		}))
+		.await?;
+
+	assert_eq!(package["name"], "async-toolkit");
+	assert_eq!(package["state"]["sync_status"], "queued");
+	assert_eq!(package["state"]["health"], "pending");
+
+	let package_id = package["id"].as_u64().expect("package id should be present");
+	let eventual = server.wait_for_terminal_package(package_id).await?;
+	assert_eq!(eventual["state"]["health"], "healthy");
+	assert_eq!(eventual["state"]["sync_status"], "idle");
+	assert!(eventual["state"]["last_error"].is_null());
+
+	Ok(())
+}
+
+#[tokio::test]
 async fn package_registry_persists_across_server_restart() -> color_eyre::Result<()> {
 	let base_storage = tempfile::tempdir()?;
 	let first_server = TestServer::spawn_with_storage(base_storage.path()).await?;
@@ -139,11 +165,9 @@ async fn repository_backed_packages_ignore_legacy_numeric_cache_directories()
 
 	assert_eq!(package["state"]["health"], "healthy");
 	assert!(base_storage.path().join("repositories/1/.git/HEAD").is_file());
-	assert!(base_storage
-		.path()
-		.join("repositories/typescript")
-		.read_dir()?
-		.any(|entry| entry.is_ok()));
+	assert!(
+		base_storage.path().join("repositories/typescript").read_dir()?.any(|entry| entry.is_ok())
+	);
 
 	Ok(())
 }
@@ -153,11 +177,7 @@ async fn repository_backed_packages_ignore_legacy_numeric_cache_directories()
 async fn add_live_typescript_registry_packages_smoke() -> color_eyre::Result<()> {
 	let server = TestServer::spawn().await?;
 
-	for (name, version) in [
-		("@types/node", "24.0.0"),
-		("zod", "3.25.76"),
-		("nanoid", "5.1.6"),
-	] {
+	for (name, version) in [("@types/node", "24.0.0"), ("zod", "3.25.76"), ("nanoid", "5.1.6")] {
 		let started = Instant::now();
 		let package = server
 			.add_package(json!({
@@ -235,12 +255,21 @@ impl TestServer {
 	}
 
 	async fn add_package(&self, payload: Value) -> color_eyre::Result<Value> {
+		let package = self.enqueue_package(payload).await?;
+		let package_id = package["id"].as_u64().expect("package id should be present");
+		self.wait_for_terminal_package(package_id).await
+	}
+
+	async fn enqueue_package(&self, payload: Value) -> color_eyre::Result<Value> {
 		let response =
 			Client::new().post(format!("{}/api/packages", self.base_url)).json(&payload).send().await?;
 
 		let status = response.status();
 		let body = response.text().await?;
-		assert_eq!(status, StatusCode::CREATED, "unexpected response body: {body}");
+		assert!(
+			matches!(status, StatusCode::CREATED | StatusCode::ACCEPTED),
+			"unexpected response body: {body}"
+		);
 		Ok(serde_json::from_str(&body)?)
 	}
 
@@ -250,6 +279,30 @@ impl TestServer {
 		let body = response.text().await?;
 		assert_eq!(status, StatusCode::OK, "unexpected response body: {body}");
 		Ok(serde_json::from_str(&body)?)
+	}
+
+	async fn get_package(&self, id: u64) -> color_eyre::Result<Value> {
+		let response = Client::new().get(format!("{}/api/packages/{id}", self.base_url)).send().await?;
+		let status = response.status();
+		let body = response.text().await?;
+		assert_eq!(status, StatusCode::OK, "unexpected response body: {body}");
+		Ok(serde_json::from_str(&body)?)
+	}
+
+	async fn wait_for_terminal_package(&self, id: u64) -> color_eyre::Result<Value> {
+		let deadline = Instant::now() + Duration::from_secs(30);
+		loop {
+			let package = self.get_package(id).await?;
+			let sync_status = package["state"]["sync_status"].as_str().unwrap_or_default();
+			let health = package["state"]["health"].as_str().unwrap_or_default();
+			if sync_status == "idle" || health == "degraded" {
+				return Ok(package);
+			}
+			if Instant::now() >= deadline {
+				panic!("timed out waiting for package {id} to finish syncing: {package}");
+			}
+			tokio::time::sleep(Duration::from_millis(100)).await;
+		}
 	}
 }
 

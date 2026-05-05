@@ -99,18 +99,11 @@ fn specifier_to_module_segments(specifier: &str) -> Vec<String> {
 		url
 			.path_segments()
 			.map(|segments| {
-				segments
-					.filter(|segment| !segment.is_empty())
-					.map(str::to_string)
-					.collect::<Vec<_>>()
+				segments.filter(|segment| !segment.is_empty()).map(str::to_string).collect::<Vec<_>>()
 			})
 			.unwrap_or_default()
 	} else {
-		clean
-			.split('/')
-			.filter(|segment| !segment.is_empty())
-			.map(str::to_string)
-			.collect::<Vec<_>>()
+		clean.split('/').filter(|segment| !segment.is_empty()).map(str::to_string).collect::<Vec<_>>()
 	};
 
 	if raw_segments.is_empty() {
@@ -122,11 +115,7 @@ fn specifier_to_module_segments(specifier: &str) -> Vec<String> {
 		.into_iter()
 		.enumerate()
 		.map(|(idx, segment)| {
-			if idx == last_index {
-				strip_typescript_like_suffix(&segment).to_string()
-			} else {
-				segment
-			}
+			if idx == last_index { strip_typescript_like_suffix(&segment).to_string() } else { segment }
 		})
 		.filter(|segment| !segment.is_empty() && segment != ".")
 		.collect()
@@ -610,8 +599,10 @@ impl TsDocParser {
 			}
 
 			DeclarationDef::Namespace(_) => {
-				let specifier =
-					self.ctx.specifier_for_module_name(module_name).unwrap_or_else(|| module_name.to_string());
+				let specifier = self
+					.ctx
+					.specifier_for_module_name(module_name)
+					.unwrap_or_else(|| module_name.to_string());
 
 				let elements: Vec<String> = self
 					.ctx
@@ -1532,9 +1523,9 @@ impl TsDocParser {
 						tp.iter()
 							.map(|t| self.parse_ts_type(t).map(|t| self.parse_type_to_expr(&t)))
 							.collect::<Result<Vec<_>>>()
-				})
-				.transpose()?
-				.unwrap_or_default();
+					})
+					.transpose()?
+					.unwrap_or_default();
 				Ok(TraitRef { name: type_ref.type_name.clone(), args })
 			}
 			_ => {

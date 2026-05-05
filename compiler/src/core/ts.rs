@@ -560,11 +560,7 @@ fn documentation_roots_for_entry_point(entry_point: &Path) -> Result<Vec<PathBuf
 		&package_root,
 		entry_point,
 	)?);
-	if roots.is_empty() {
-		Ok(vec![entry_point.to_path_buf()])
-	} else {
-		Ok(roots)
-	}
+	if roots.is_empty() { Ok(vec![entry_point.to_path_buf()]) } else { Ok(roots) }
 }
 
 fn find_package_root(entry_point: &Path) -> Option<PathBuf> {
@@ -612,11 +608,7 @@ fn resolve_package_documentation_roots(
 
 	let roots = if !preferred_declaration_roots.is_empty() && preferred_source_roots.is_empty() {
 		let declarations = expand_declaration_roots(package_root, &preferred_declaration_roots)?;
-		if declarations.is_empty() {
-			preferred_declaration_roots
-		} else {
-			declarations
-		}
+		if declarations.is_empty() { preferred_declaration_roots } else { declarations }
 	} else if !preferred_declaration_roots.is_empty() {
 		let declarations = expand_declaration_roots(package_root, &preferred_declaration_roots)?;
 		if declarations.is_empty() { preferred_declaration_roots } else { declarations }
@@ -628,11 +620,7 @@ fn resolve_package_documentation_roots(
 		if declarations.is_empty() {
 			let mut sources = BTreeSet::new();
 			collect_matching_files(package_root, &SOURCE_EXTENSIONS, &mut sources)?;
-			if sources.is_empty() {
-				explicit
-			} else {
-				sources
-			}
+			if sources.is_empty() { explicit } else { sources }
 		} else {
 			declarations
 		}
@@ -687,7 +675,11 @@ fn push_doc_root(package_root: &Path, value: &str, out: &mut BTreeSet<PathBuf>) 
 	}
 }
 
-fn collect_export_roots(package_root: &Path, value: &serde_json::Value, out: &mut BTreeSet<PathBuf>) {
+fn collect_export_roots(
+	package_root: &Path,
+	value: &serde_json::Value,
+	out: &mut BTreeSet<PathBuf>,
+) {
 	match value {
 		serde_json::Value::String(path) => push_doc_root(package_root, path, out),
 		serde_json::Value::Array(values) => {
@@ -780,7 +772,10 @@ fn expand_declaration_roots(
 		let base_dir = path.parent().unwrap_or(package_root);
 		for specifier in declaration_dependency_specifiers(&content) {
 			for candidate in resolve_declaration_specifier(base_dir, &specifier) {
-				if candidate.starts_with(package_root) && candidate.is_file() && !visited.contains(&candidate) {
+				if candidate.starts_with(package_root)
+					&& candidate.is_file()
+					&& !visited.contains(&candidate)
+				{
 					stack.push(candidate);
 				}
 			}
@@ -881,17 +876,7 @@ fn declaration_candidates_for_path(candidate: &Path) -> Vec<PathBuf> {
 
 fn strip_known_suffix(path: &str) -> Option<String> {
 	for suffix in [
-		".d.ts",
-		".d.tsx",
-		".d.mts",
-		".d.cts",
-		".ts",
-		".tsx",
-		".mts",
-		".cts",
-		".js",
-		".jsx",
-		".mjs",
+		".d.ts", ".d.tsx", ".d.mts", ".d.cts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs",
 		".cjs",
 	] {
 		if let Some(stripped) = path.strip_suffix(suffix) {
@@ -990,8 +975,7 @@ mod tests {
 	use deno_graph::{BuildOptions, GraphKind, ModuleGraph, ModuleSpecifier, ast::CapturingModuleAnalyzer};
 
 	use super::*;
-	use crate::core::ts_parser::TsDocParser;
-	use crate::traits::registry::Registry;
+	use crate::{core::ts_parser::TsDocParser, traits::registry::Registry};
 
 	#[tokio::test]
 	async fn npm_registry_results_snapshot() {
@@ -1013,22 +997,15 @@ mod tests {
 	#[test]
 	fn documentation_roots_follow_triple_slash_references_for_declaration_only_package() {
 		let workspace = tempfile::tempdir().unwrap();
-		fs::write(
-			workspace.path().join("package.json"),
-			r#"{"types":"./index.d.ts"}"#,
-		)
-		.unwrap();
+		fs::write(workspace.path().join("package.json"), r#"{"types":"./index.d.ts"}"#).unwrap();
 		fs::write(
 			workspace.path().join("index.d.ts"),
 			"/// <reference path=\"./nested/extra.d.ts\" />\nexport interface Root {}\n",
 		)
 		.unwrap();
 		fs::create_dir_all(workspace.path().join("nested")).unwrap();
-		fs::write(
-			workspace.path().join("nested").join("extra.d.ts"),
-			"export interface Extra {}\n",
-		)
-		.unwrap();
+		fs::write(workspace.path().join("nested").join("extra.d.ts"), "export interface Extra {}\n")
+			.unwrap();
 
 		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
 		assert_eq!(roots.len(), 2);
@@ -1039,11 +1016,7 @@ mod tests {
 	#[test]
 	fn documentation_roots_follow_triple_slash_paths_without_dot_prefix() {
 		let workspace = tempfile::tempdir().unwrap();
-		fs::write(
-			workspace.path().join("package.json"),
-			r#"{"types":"index.d.ts"}"#,
-		)
-		.unwrap();
+		fs::write(workspace.path().join("package.json"), r#"{"types":"index.d.ts"}"#).unwrap();
 		fs::create_dir_all(workspace.path().join("compatibility")).unwrap();
 		fs::write(
 			workspace.path().join("index.d.ts"),
@@ -1095,7 +1068,9 @@ mod tests {
 
 		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.cts")).unwrap();
 		assert_eq!(roots.len(), 2);
-		assert!(roots.iter().all(|path| path.extension().and_then(|value| value.to_str()) == Some("cts")));
+		assert!(
+			roots.iter().all(|path| path.extension().and_then(|value| value.to_str()) == Some("cts"))
+		);
 		assert!(roots.iter().any(|path| path.ends_with("index.d.cts")));
 		assert!(roots.iter().any(|path| path.ends_with("v3/index.d.cts")));
 		assert!(!roots.iter().any(|path| path.ends_with("src/index.ts")));
@@ -1105,22 +1080,12 @@ mod tests {
 	#[test]
 	fn documentation_roots_follow_declaration_export_chains() {
 		let workspace = tempfile::tempdir().unwrap();
-		fs::write(
-			workspace.path().join("package.json"),
-			r#"{"types":"./index.d.ts"}"#,
-		)
-		.unwrap();
+		fs::write(workspace.path().join("package.json"), r#"{"types":"./index.d.ts"}"#).unwrap();
 		fs::create_dir_all(workspace.path().join("v3")).unwrap();
-		fs::write(
-			workspace.path().join("index.d.ts"),
-			"export * from \"./v3/external.js\";\n",
-		)
-		.unwrap();
-		fs::write(
-			workspace.path().join("v3").join("external.d.ts"),
-			"export interface External {}\n",
-		)
-		.unwrap();
+		fs::write(workspace.path().join("index.d.ts"), "export * from \"./v3/external.js\";\n")
+			.unwrap();
+		fs::write(workspace.path().join("v3").join("external.d.ts"), "export interface External {}\n")
+			.unwrap();
 
 		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
 		assert_eq!(roots.len(), 2);
@@ -1169,16 +1134,13 @@ mod tests {
 	#[tokio::test]
 	#[ignore = "live TypeScript package diagnostics"]
 	async fn live_typescript_package_diagnostics() {
-		for (name, version) in [
-			("@types/node", "24.0.0"),
-			("zod", "3.25.76"),
-			("nanoid", "5.1.6"),
-		] {
+		for (name, version) in [("@types/node", "24.0.0"), ("zod", "3.25.76"), ("nanoid", "5.1.6")] {
 			let registry = Npm::default();
 			let version = Version::parse(version).unwrap();
 			let package = registry.resolve_package_version(name, &version).await.unwrap();
 			let workspace = tempfile::tempdir().unwrap();
-			let entry_point = registry.materialize_package_version(name, &version, workspace.path()).await.unwrap();
+			let entry_point =
+				registry.materialize_package_version(name, &version, workspace.path()).await.unwrap();
 			eprintln!("=== {name}@{version} ===");
 			eprintln!("entry point: {}", entry_point.display());
 			let doc_roots = documentation_roots_for_entry_point(&entry_point).unwrap();
@@ -1227,10 +1189,8 @@ mod tests {
 				Err(error) => panic!("failed to parse {name}@{version}: {error:?}"),
 			}
 
-			let local_package = TsPackage {
-				entry_point: entry_point.display().to_string(),
-				..package.clone()
-			};
+			let local_package =
+				TsPackage { entry_point: entry_point.display().to_string(), ..package.clone() };
 			match tokio::task::spawn_blocking(move || local_package.generate_ir()).await.unwrap() {
 				Ok(ir) => eprintln!("generate_ir index entries={}", ir.index().len()),
 				Err(error) => eprintln!("generate_ir failed: {error:?}"),
@@ -1245,11 +1205,9 @@ mod tests {
 		let version = Version::parse("3.25.76").unwrap();
 		let package = registry.resolve_package_version("zod", &version).await.unwrap();
 		let workspace = tempfile::tempdir().unwrap();
-		let entry_point = registry.materialize_package_version("zod", &version, workspace.path()).await.unwrap();
-		let local_package = TsPackage {
-			entry_point: entry_point.display().to_string(),
-			..package
-		};
+		let entry_point =
+			registry.materialize_package_version("zod", &version, workspace.path()).await.unwrap();
+		let local_package = TsPackage { entry_point: entry_point.display().to_string(), ..package };
 
 		let index = tokio::task::spawn_blocking(move || local_package.generate_ir().unwrap().index())
 			.await
@@ -1286,5 +1244,4 @@ mod tests {
 		assert!(path_strings.iter().any(|path| path.ends_with("::ZodError::format")));
 		assert!(path_strings.iter().any(|path| path.ends_with("::ZodString")));
 	}
-
 }

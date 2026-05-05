@@ -226,11 +226,12 @@ impl Registry for Crates {
 
 #[cfg(test)]
 mod tests {
-	use std::{time::Duration, path::PathBuf};
+	use std::{path::PathBuf, time::Duration};
+
+	use tempfile::TempDir;
 
 	use super::*;
 	use crate::{git::{clone_repository, find_commit_for_version, materialize_commit}, traits::registry::Registry};
-	use tempfile::TempDir;
 
 	fn live_registry() -> Crates {
 		Crates {
@@ -249,11 +250,7 @@ mod tests {
 	#[ignore = "manual live resolution check for repo-backed Rust crates"]
 	async fn rust_registry_specific_crates_resolve() {
 		let registry = live_registry();
-		let cases = [
-			("turbo-quant", "0.1.0"),
-			("turbovec", "0.1.3"),
-			("any-tts", "0.1.1"),
-		];
+		let cases = [("turbo-quant", "0.1.0"), ("turbovec", "0.1.3"), ("any-tts", "0.1.1")];
 
 		for (crate_name, version) in cases {
 			let package = registry

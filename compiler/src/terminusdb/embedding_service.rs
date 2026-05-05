@@ -85,8 +85,12 @@ use std::collections::HashMap;
 use async_openai::{Client, config::OpenAIConfig, types::embeddings::CreateEmbeddingRequestArgs};
 use async_trait::async_trait;
 use qdrant_client::{Payload, qdrant::{PointId, PointStruct, Value}};
+use tokio::task::JoinSet;
+use tracing::info;
 
 use crate::terminusdb::termdb::DocStore;
+
+const DEFAULT_EMBED_CONCURRENCY: usize = 16;
 /// Provider-agnostic embedding error.
 ///
 /// Keep this structured early so the pipeline can distinguish between:
@@ -392,6 +396,7 @@ pub trait EmbeddingProvider {
 /// - provider call
 /// - internal vector record construction This is the core boilerplate for
 ///   ingestion.
+#[derive(Clone)]
 pub struct EmbeddingService<P> {
 	provider: P,
 }
@@ -434,18 +439,51 @@ where
 
 	/// Embed multiple documents in order.
 	///
-	/// Keep this simple for now. You can add true API batching later.
+	/// This uses bounded concurrency because registry-backed package indexing
+	/// often has thousands of entry documents and one-at-a-time embeddings make
+	/// the pipeline look stuck for large packages.
 	pub async fn embed_documents(
 		&self,
 		docs: impl IntoIterator<Item = EmbeddingDocument>,
-	) -> Result<Vec<EmbeddedRecord>, EmbeddingError> {
-		let mut out = Vec::new();
-
-		for doc in docs {
-			out.push(self.embed_document(doc).await?);
+	) -> Result<Vec<EmbeddedRecord>, EmbeddingError>
+	where
+		P: Clone + Send + Sync + 'static,
+	{
+		let docs: Vec<EmbeddingDocument> = docs.into_iter().collect();
+		if docs.is_empty() {
+			return Ok(Vec::new());
 		}
 
-		Ok(out)
+		let total = docs.len();
+		let concurrency = DEFAULT_EMBED_CONCURRENCY.min(total);
+		info!(count = total, concurrency, "embedding documents");
+
+		let mut join_set = JoinSet::new();
+		let mut completed = 0usize;
+		let mut out: Vec<Option<EmbeddedRecord>> = vec![None; total];
+
+		for (index, doc) in docs.into_iter().enumerate() {
+			let service = self.clone();
+			join_set
+				.spawn(async move { service.embed_document(doc).await.map(|record| (index, record)) });
+
+			if join_set.len() >= concurrency {
+				collect_embedded_record(&mut join_set, &mut out, &mut completed, total).await?;
+			}
+		}
+
+		while !join_set.is_empty() {
+			collect_embedded_record(&mut join_set, &mut out, &mut completed, total).await?;
+		}
+
+		out
+			.into_iter()
+			.map(|record| {
+				record.ok_or_else(|| {
+					EmbeddingError::Provider("embedding worker completed without a record".to_owned())
+				})
+			})
+			.collect()
 	}
 }
 
@@ -454,6 +492,7 @@ where
 /// This uses the standard OpenAI API key flow. By default, `Client::new()`
 /// reads `OPENAI_API_KEY` from the environment. If you want to inject a key
 /// directly, use `new_with_api_key(...)` instead.
+#[derive(Clone)]
 pub struct OpenAIEmbeddingProvider {
 	client:     Client<OpenAIConfig>,
 	model_name: String,
@@ -533,6 +572,25 @@ impl QdrantPointFactory {
 
 		Ok(PointStruct::new(point_id, record.vector, payload))
 	}
+}
+
+async fn collect_embedded_record(
+	join_set: &mut JoinSet<Result<(usize, EmbeddedRecord), EmbeddingError>>,
+	out: &mut [Option<EmbeddedRecord>],
+	completed: &mut usize,
+	total: usize,
+) -> Result<(), EmbeddingError> {
+	let Some(result) = join_set.join_next().await else {
+		return Ok(());
+	};
+	let (index, record) = result
+		.map_err(|error| EmbeddingError::Provider(format!("embedding task join failed: {error}")))??;
+	out[index] = Some(record);
+	*completed += 1;
+	if *completed % 100 == 0 || *completed == total {
+		info!(completed = *completed, total, "embedding progress");
+	}
+	Ok(())
 }
 
 /// Utilities for point id policy.

@@ -9,5 +9,6 @@ pub mod pipeline;
 pub mod search;
 pub mod server;
 pub mod storage;
+pub mod sync_progress;
 pub mod terminusdb;
 pub mod traits;

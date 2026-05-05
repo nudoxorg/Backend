@@ -4,11 +4,11 @@ use jiff::Timestamp;
 use lang_types::Language;
 use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize};
-use tokio::{sync::{Mutex, RwLock}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
-use tracing::{info, instrument, warn};
+use tokio::{runtime::Handle, sync::{Mutex, RwLock}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
+use tracing::{error, info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, traits::{builder::get_registry, registry::Registry}};
+use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, traits::{builder::get_registry, registry::Registry}};
 
 fn deserialize_lenient_version<'de, D: Deserializer<'de>>(d: D) -> Result<Version, D::Error> {
 	let s = String::deserialize(d)?;
@@ -55,6 +55,9 @@ pub struct PackageSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct PackageStateSnapshot {
 	pub health:                  PackageHealth,
+	pub sync_status:             PackageSyncStatus,
+	pub sync_phase:              Option<PackageSyncPhase>,
+	pub sync_detail:             Option<String>,
 	pub last_checked_at:         Option<Timestamp>,
 	pub last_synced_at:          Option<Timestamp>,
 	pub tracked_version_commit:  Option<String>,
@@ -167,6 +170,12 @@ struct TrackedPackage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrackedPackageState {
 	health:                  PackageHealth,
+	#[serde(default)]
+	sync_status:             PackageSyncStatus,
+	#[serde(default)]
+	sync_phase:              Option<PackageSyncPhase>,
+	#[serde(default)]
+	sync_detail:             Option<String>,
 	last_checked_at:         Option<Timestamp>,
 	last_synced_at:          Option<Timestamp>,
 	tracked_version_commit:  Option<String>,
@@ -202,9 +211,8 @@ impl LocalRegistry {
 			.as_ref()
 			.map(|registry| registry.packages.iter().map(|package| package.id).max().unwrap_or(0) + 1)
 			.unwrap_or(1);
-		let (packages, keys) = persisted
-			.map(rehydrate_registry)
-			.unwrap_or_else(|| (HashMap::new(), HashMap::new()));
+		let (packages, keys) =
+			persisted.map(rehydrate_registry).unwrap_or_else(|| (HashMap::new(), HashMap::new()));
 
 		Self {
 			storage,
@@ -234,7 +242,10 @@ impl LocalRegistry {
 	}
 
 	#[instrument(skip_all, fields(language = ?request.language, package = %request.name, version = %request.version))]
-	pub async fn add_package(&self, request: NewPackageRequest) -> Result<PackageSnapshot, AppError> {
+	pub async fn add_package(
+		self: &Arc<Self>,
+		request: NewPackageRequest,
+	) -> Result<PackageSnapshot, AppError> {
 		let branch = request
 			.branch
 			.clone()
@@ -249,7 +260,7 @@ impl LocalRegistry {
 		if let Some(existing_id) = self.keys.read().await.get(&key).copied() {
 			let existing = self.get_tracked(existing_id).await?;
 			if request.sync_on_add {
-				return self.sync_existing(existing).await;
+				return self.enqueue_sync(existing).await;
 			}
 			return Ok(existing.snapshot().await);
 		}
@@ -271,15 +282,15 @@ impl LocalRegistry {
 		self.persist().await?;
 
 		if request.sync_on_add {
-			self.sync_existing(tracked).await
+			self.enqueue_sync(tracked).await
 		} else {
 			Ok(tracked.snapshot().await)
 		}
 	}
 
-	pub async fn sync_package(&self, id: u64) -> Result<PackageSnapshot, AppError> {
+	pub async fn sync_package(self: &Arc<Self>, id: u64) -> Result<PackageSnapshot, AppError> {
 		let tracked = self.get_tracked(PackageId::try_from(id)?).await?;
-		self.sync_existing(tracked).await
+		self.enqueue_sync(tracked).await
 	}
 
 	pub async fn run_monitor(self: Arc<Self>) {
@@ -299,14 +310,69 @@ impl LocalRegistry {
 		}
 	}
 
-	async fn sync_existing(&self, tracked: Arc<TrackedPackage>) -> Result<PackageSnapshot, AppError> {
+	async fn enqueue_sync(
+		self: &Arc<Self>,
+		tracked: Arc<TrackedPackage>,
+	) -> Result<PackageSnapshot, AppError> {
+		if tracked.is_sync_active().await {
+			return Ok(tracked.snapshot().await);
+		}
+
+		tracked.mark_sync_queued().await;
+		self.persist().await?;
+		let snapshot = tracked.snapshot().await;
+		self.spawn_sync_task(tracked);
+		Ok(snapshot)
+	}
+
+	fn spawn_sync_task(self: &Arc<Self>, tracked: Arc<TrackedPackage>) {
+		let registry = Arc::clone(self);
+		tokio::spawn(async move {
+			if let Err(error) = registry.sync_existing(tracked).await {
+				error!(error = %error, "background package sync failed");
+			}
+		});
+	}
+
+	async fn sync_existing(
+		self: &Arc<Self>,
+		tracked: Arc<TrackedPackage>,
+	) -> Result<PackageSnapshot, AppError> {
 		let _guard = tracked.sync_lock.lock().await;
 		let blocking_storage = self.storage.clone();
 		let blocking_pipeline = self.pipeline.clone();
 		let blocking_handle = tracked.handle.clone();
 		let blocking_spec = tracked.spec.clone();
 		let blocking_id = tracked.id;
+		let progress = {
+			let registry = Arc::clone(self);
+			let tracked = Arc::clone(&tracked);
+			let package = tracked.spec.name.clone();
+			let version = tracked.spec.version.clone();
+			ProgressReporter::new(move |phase, detail| {
+				let registry = Arc::clone(&registry);
+				let tracked = Arc::clone(&tracked);
+				let detail_for_log = detail.clone();
+				let package = package.clone();
+				let version = version.clone();
+				Handle::current().block_on(async move {
+					info!(
+						package = %package,
+						version = %version,
+						phase = ?phase,
+						detail = detail_for_log.as_deref().unwrap_or(""),
+						"package sync progress"
+					);
+					tracked.update_progress(phase, detail).await;
+					if let Err(error) = registry.persist().await {
+						warn!(error = %error, "failed to persist package progress");
+					}
+				});
+			})
+		};
 		let runtime = tokio::runtime::Handle::current();
+		tracked.mark_sync_running(PackageSyncPhase::Resolving, Some("starting sync".to_owned())).await;
+		self.persist().await?;
 
 		let result = spawn_blocking(move || {
 			run_sync(
@@ -316,6 +382,7 @@ impl LocalRegistry {
 				blocking_handle,
 				blocking_spec,
 				runtime,
+				progress,
 			)
 		})
 		.await
@@ -420,6 +487,9 @@ impl TrackedPackage {
 			branch:   self.spec.branch.clone(),
 			state:    PackageStateSnapshot {
 				health:                  state.health,
+				sync_status:             state.sync_status,
+				sync_phase:              state.sync_phase,
+				sync_detail:             state.sync_detail,
 				last_checked_at:         state.last_checked_at,
 				last_synced_at:          state.last_synced_at,
 				tracked_version_commit:  state.tracked_version_commit,
@@ -446,6 +516,9 @@ impl TrackedPackage {
 		let now = Timestamp::now();
 		let mut state = self.state.write().await;
 		state.health = PackageHealth::Healthy;
+		state.sync_status = PackageSyncStatus::Idle;
+		state.sync_phase = None;
+		state.sync_detail = None;
 		state.last_checked_at = Some(now);
 		state.last_synced_at = Some(now);
 		state.tracked_version_commit = Some(execution.tracked_version_commit);
@@ -471,8 +544,39 @@ impl TrackedPackage {
 	async fn record_failure(&self, message: String) {
 		let mut state = self.state.write().await;
 		state.health = PackageHealth::Degraded;
+		state.sync_status = PackageSyncStatus::Idle;
+		state.sync_phase = None;
+		state.sync_detail = None;
 		state.last_checked_at = Some(Timestamp::now());
 		state.last_error = Some(message);
+	}
+
+	async fn is_sync_active(&self) -> bool {
+		matches!(
+			self.state.read().await.sync_status,
+			PackageSyncStatus::Queued | PackageSyncStatus::Running
+		)
+	}
+
+	async fn mark_sync_queued(&self) {
+		let mut state = self.state.write().await;
+		state.sync_status = PackageSyncStatus::Queued;
+		state.sync_phase = Some(PackageSyncPhase::Resolving);
+		state.sync_detail = Some("queued".to_owned());
+	}
+
+	async fn mark_sync_running(&self, phase: PackageSyncPhase, detail: Option<String>) {
+		let mut state = self.state.write().await;
+		state.sync_status = PackageSyncStatus::Running;
+		state.sync_phase = Some(phase);
+		state.sync_detail = detail;
+	}
+
+	async fn update_progress(&self, phase: PackageSyncPhase, detail: Option<String>) {
+		let mut state = self.state.write().await;
+		state.sync_status = PackageSyncStatus::Running;
+		state.sync_phase = Some(phase);
+		state.sync_detail = detail;
 	}
 }
 
@@ -480,6 +584,9 @@ impl TrackedPackageState {
 	fn new() -> Self {
 		Self {
 			health:                  PackageHealth::Pending,
+			sync_status:             PackageSyncStatus::Idle,
+			sync_phase:              None,
+			sync_detail:             None,
 			last_checked_at:         None,
 			last_synced_at:          None,
 			tracked_version_commit:  None,
@@ -576,21 +683,9 @@ impl From<PersistedPackageHandle> for PackageHandle {
 					description,
 				})
 			}
-			PersistedPackageHandle::TypeScript {
-				name,
-				slug,
-				uuid,
-				source,
-				description,
-				entry_point,
-			} => PackageHandle::TypeScript(TsPackage {
-				slug,
-				name,
-				uuid,
-				source,
-				description,
-				entry_point,
-			}),
+			PersistedPackageHandle::TypeScript { name, slug, uuid, source, description, entry_point } => {
+				PackageHandle::TypeScript(TsPackage { slug, name, uuid, source, description, entry_point })
+			}
 		}
 	}
 }
@@ -635,12 +730,8 @@ fn rehydrate_registry(
 			version:  spec.version.clone(),
 			branch:   spec.branch.clone(),
 		};
-		let tracked = Arc::new(TrackedPackage::rehydrated(
-			id,
-			spec,
-			package.handle.into(),
-			package.state,
-		));
+		let tracked =
+			Arc::new(TrackedPackage::rehydrated(id, spec, package.handle.into(), package.state));
 		keys.insert(key, id);
 		packages.insert(id, tracked);
 	}
@@ -735,11 +826,18 @@ fn run_sync(
 	handle: PackageHandle,
 	spec: PackageSpec,
 	runtime: tokio::runtime::Handle,
+	progress: ProgressReporter,
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
+			progress.phase_with_detail(
+				PackageSyncPhase::Resolving,
+				Some(format!("opening repository for {}", package.name)),
+			);
 			let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
+			progress
+				.phase_with_detail(PackageSyncPhase::Fetching, Some(format!("fetching {}", spec.branch)));
 			git::fetch_remote_updates(&repository, Some("origin"))?;
 
 			let remote_head = git::remote_branch_commit(&repository, "origin", &spec.branch);
@@ -748,12 +846,24 @@ fn run_sync(
 				git::find_commit_for_version(&repository, &spec.version, &package.name, remote_head)
 					.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?;
 
+			progress.phase_with_detail(
+				PackageSyncPhase::Materializing,
+				Some(format!("materializing {}", target_commit.to_hex())),
+			);
 			let workspace = storage
 				.create_workspace()
 				.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
 			git::materialize_commit(&repository, target_commit, workspace.path())?;
-			let summary =
-				run_rust_pipeline(&package, &spec.version, workspace.path(), &pipeline, &runtime)?;
+			progress
+				.phase_with_detail(PackageSyncPhase::GeneratingIr, Some("generating Rust IR".to_owned()));
+			let summary = run_rust_pipeline(
+				&package,
+				&spec.version,
+				workspace.path(),
+				&pipeline,
+				&runtime,
+				Some(&progress),
+			)?;
 
 			Ok(SyncExecution {
 				tracked_version_commit: target_commit.to_hex().to_string(),
@@ -763,11 +873,21 @@ fn run_sync(
 		}
 		PackageHandle::TypeScript(package) => {
 			if typescript_package_uses_repository(&package) {
-				run_repository_backed_typescript_sync(storage, pipeline, package_id, package, spec, runtime)
+				run_repository_backed_typescript_sync(
+					storage, pipeline, package_id, package, spec, runtime, progress,
+				)
 			} else {
+				progress.phase_with_detail(
+					PackageSyncPhase::Resolving,
+					Some(format!("resolving npm package {}", package.name)),
+				);
 				let workspace = storage
 					.create_workspace()
 					.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
+				progress.phase_with_detail(
+					PackageSyncPhase::Materializing,
+					Some(format!("materializing npm package {}@{}", package.name, spec.version)),
+				);
 				let entry_point = runtime
 					.block_on(crate::core::ts::Npm::default().materialize_package_version(
 						&package.name,
@@ -782,8 +902,17 @@ fn run_sync(
 				let mut materialized_package = package.clone();
 				materialized_package.entry_point = entry_point.display().to_string();
 
-				let summary =
-					run_typescript_pipeline(&materialized_package, &spec.version, &pipeline, &runtime)?;
+				progress.phase_with_detail(
+					PackageSyncPhase::GeneratingIr,
+					Some("generating TypeScript IR".to_owned()),
+				);
+				let summary = run_typescript_pipeline(
+					&materialized_package,
+					&spec.version,
+					&pipeline,
+					&runtime,
+					Some(&progress),
+				)?;
 				Ok(SyncExecution {
 					tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
 					latest_remote_commit: None,
@@ -843,9 +972,15 @@ fn run_repository_backed_typescript_sync(
 	package: TsPackage,
 	spec: PackageSpec,
 	runtime: tokio::runtime::Handle,
+	progress: ProgressReporter,
 ) -> Result<SyncExecution, AppError> {
+	progress.phase_with_detail(
+		PackageSyncPhase::Resolving,
+		Some(format!("opening repository for {}", package.name)),
+	);
 	let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
+	progress.phase_with_detail(PackageSyncPhase::Fetching, Some(format!("fetching {}", spec.branch)));
 	git::fetch_remote_updates(&repository, Some("origin"))?;
 
 	let remote_head = git::remote_branch_commit(&repository, "origin", &spec.branch);
@@ -854,6 +989,10 @@ fn run_repository_backed_typescript_sync(
 		git::find_typescript_commit_for_version(&repository, &spec.version, &package.name, remote_head)
 			.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?;
 
+	progress.phase_with_detail(
+		PackageSyncPhase::Materializing,
+		Some(format!("materializing {}", target_commit.to_hex())),
+	);
 	let workspace = storage
 		.create_workspace()
 		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
@@ -866,7 +1005,15 @@ fn run_repository_backed_typescript_sync(
 	let mut materialized_package = package.clone();
 	materialized_package.entry_point = entry_point.display().to_string();
 
-	let summary = run_typescript_pipeline(&materialized_package, &spec.version, &pipeline, &runtime)?;
+	progress
+		.phase_with_detail(PackageSyncPhase::GeneratingIr, Some("generating TypeScript IR".to_owned()));
+	let summary = run_typescript_pipeline(
+		&materialized_package,
+		&spec.version,
+		&pipeline,
+		&runtime,
+		Some(&progress),
+	)?;
 
 	Ok(SyncExecution {
 		tracked_version_commit: target_commit.to_hex().to_string(),
