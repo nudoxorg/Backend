@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use gix::{Repository, bstr::ByteSlice, progress::Discard, remote};
 use semver::Version;
@@ -129,23 +129,28 @@ pub fn find_commit_for_version(
 	package_name: &str,
 	start: Option<gix::ObjectId>,
 ) -> Option<gix::ObjectId> {
-	let head_id = match start {
-		Some(id) => id,
-		None => repo.head().ok()?.peel_to_object().ok()?.id().into(),
-	};
-	let revwalk = repo.rev_walk([head_id]);
+	let mut visited = HashSet::new();
 
-	for commit_id in revwalk.all().ok()? {
-		let commit_id = commit_id.ok()?;
-		let commit = repo.find_commit(commit_id.id()).ok()?;
-		let tree = commit.tree().ok()?;
+	for start_id in version_search_start_points(repo, start).ok()? {
+		let revwalk = repo.rev_walk([start_id]);
 
-		match extract_package_version(repo, &tree, package_name) {
-			Ok(Some(v)) if &v == target_version => {
-				debug!(commit = %commit_id.id(), "found matching commit");
-				return Some(commit_id.id().detach());
+		for commit_id in revwalk.all().ok()? {
+			let commit_id = commit_id.ok()?;
+			let detached = commit_id.id().detach();
+			if !visited.insert(detached) {
+				continue;
 			}
-			_ => continue,
+
+			let commit = repo.find_commit(detached).ok()?;
+			let tree = commit.tree().ok()?;
+
+			match extract_package_version(repo, &tree, package_name) {
+				Ok(Some(v)) if &v == target_version => {
+					debug!(commit = %detached, "found matching commit");
+					return Some(detached);
+				}
+				_ => continue,
+			}
 		}
 	}
 
@@ -164,23 +169,28 @@ pub fn find_typescript_commit_for_version(
 	package_name: &str,
 	start: Option<gix::ObjectId>,
 ) -> Option<gix::ObjectId> {
-	let head_id = match start {
-		Some(id) => id,
-		None => repo.head().ok()?.peel_to_object().ok()?.id().into(),
-	};
-	let revwalk = repo.rev_walk([head_id]);
+	let mut visited = HashSet::new();
 
-	for commit_id in revwalk.all().ok()? {
-		let commit_id = commit_id.ok()?;
-		let commit = repo.find_commit(commit_id.id()).ok()?;
-		let tree = commit.tree().ok()?;
+	for start_id in version_search_start_points(repo, start).ok()? {
+		let revwalk = repo.rev_walk([start_id]);
 
-		match extract_typescript_package_version(repo, &tree, package_name) {
-			Some(version) if &version == target_version => {
-				debug!(commit = %commit_id.id(), "found matching TypeScript package version");
-				return Some(commit_id.id().detach());
+		for commit_id in revwalk.all().ok()? {
+			let commit_id = commit_id.ok()?;
+			let detached = commit_id.id().detach();
+			if !visited.insert(detached) {
+				continue;
 			}
-			_ => continue,
+
+			let commit = repo.find_commit(detached).ok()?;
+			let tree = commit.tree().ok()?;
+
+			match extract_typescript_package_version(repo, &tree, package_name) {
+				Some(version) if &version == target_version => {
+					debug!(commit = %detached, "found matching TypeScript package version");
+					return Some(detached);
+				}
+				_ => continue,
+			}
 		}
 	}
 
@@ -211,7 +221,7 @@ pub fn extract_package_version(
 
 	if let Some(workspace) = manifest.get("workspace") {
 		// A workspace root can also be a package itself ([workspace] + [package]).
-		if let Some(version) = check_package_version(&manifest, package_name, "Cargo.toml")? {
+		if let Some(version) = check_package_version(&manifest, Some(&manifest), package_name, "Cargo.toml")? {
 			return Ok(Some(version));
 		}
 
@@ -220,78 +230,84 @@ pub fn extract_package_version(
 			.and_then(|members| members.as_array())
 			.map(|members| members.iter().filter_map(|value| value.as_str().map(String::from)).collect())
 			.unwrap_or_default();
+		let excludes: Vec<String> = workspace
+			.get("exclude")
+			.and_then(|members| members.as_array())
+			.map(|members| members.iter().filter_map(|value| value.as_str().map(String::from)).collect())
+			.unwrap_or_default();
 
-		for member_path in resolve_workspace_members(repo, tree, &members)? {
+		for member_path in resolve_workspace_members(repo, tree, &members, &excludes)? {
 			let cargo_path = format!("{member_path}/Cargo.toml");
-			let Some(member_entry) = tree
-				.lookup_entry_by_path(&cargo_path)
-				.map_err(|source| GitError::TreeLookup {
-					path:   cargo_path.clone(),
-					source: source.into(),
-				})?
-				.filter(|entry| entry.mode().is_blob())
-			else {
-				continue;
-			};
+			let member_manifest = read_toml(repo, tree, &cargo_path)?;
 
-			let blob = repo.find_blob(member_entry.oid()).map_err(|source| GitError::TreeLookup {
-				path:   cargo_path.clone(),
-				source: source.into(),
-			})?;
-			let content = std::str::from_utf8(&blob.data)
-				.map_err(|source| GitError::BlobEncoding { path: cargo_path.clone(), source })?;
-			let member_manifest: toml::Value = toml::from_str(content)
-				.map_err(|source| GitError::TomlParse { path: cargo_path.clone(), source })?;
-
-			if let Some(version) = check_package_version(&member_manifest, package_name, &cargo_path)? {
+			if let Some(version) =
+				check_package_version(&member_manifest, Some(&manifest), package_name, &cargo_path)?
+			{
 				return Ok(Some(version));
 			}
 		}
 
 		Ok(None)
 	} else {
-		check_package_version(&manifest, package_name, "Cargo.toml")
+		check_package_version(&manifest, None, package_name, "Cargo.toml")
 	}
 }
 
-/// Resolve workspace member globs against the live tree.
-/// Handles the common `crates/*` pattern; warns on anything more exotic.
+fn read_toml(
+	repo: &gix::Repository,
+	tree: &gix::Tree,
+	path: &str,
+) -> Result<toml::Value, GitError> {
+	let Some(entry) = tree
+		.lookup_entry_by_path(path)
+		.map_err(|source| GitError::TreeLookup { path: path.into(), source: source.into() })?
+		.filter(|entry| entry.mode().is_blob())
+	else {
+		return Ok(toml::Value::Table(Default::default()));
+	};
+
+	let blob = repo
+		.find_blob(entry.oid())
+		.map_err(|source| GitError::TreeLookup { path: path.into(), source: source.into() })?;
+	let content =
+		std::str::from_utf8(&blob.data).map_err(|source| GitError::BlobEncoding { path: path.into(), source })?;
+
+	toml::from_str(content).map_err(|source| GitError::TomlParse { path: path.into(), source })
+}
+
 pub fn resolve_workspace_members(
 	repo: &gix::Repository,
 	tree: &gix::Tree,
 	members: &[String],
+	excludes: &[String],
 ) -> Result<Vec<String>, GitError> {
 	let mut resolved = Vec::new();
+	let mut seen = HashSet::new();
+	let candidates = collect_manifest_directories(repo, tree, "", &mut Vec::new())?;
 
 	for member in members {
-		if let Some(prefix) = member.strip_suffix("/*") {
-			let Some(dir_entry) = tree
-				.lookup_entry_by_path(prefix)
-				.map_err(|source| GitError::TreeLookup { path: prefix.into(), source: source.into() })?
-			else {
-				continue;
+		let is_glob = member.contains('*');
+		let mut matched = false;
+
+		for candidate in &candidates {
+			let is_match = if is_glob {
+				path_matches_pattern(candidate, member)
+			} else {
+				candidate == member
 			};
 
-			if !dir_entry.mode().is_tree() {
+			if !is_match || excludes.iter().any(|exclude| path_matches_pattern(candidate, exclude)) {
 				continue;
 			}
 
-			let subtree = repo
-				.find_tree(dir_entry.oid())
-				.map_err(|source| GitError::TreeLookup { path: prefix.into(), source: source.into() })?;
-			for child in subtree.iter() {
-				let child = child.map_err(|source| GitError::TreeLookup {
-					path:   prefix.into(),
-					source: source.into(),
-				})?;
-				if child.mode().is_tree() {
-					resolved.push(format!("{prefix}/{}", child.filename()));
-				}
+			matched = true;
+			if seen.insert(candidate.clone()) {
+				resolved.push(candidate.clone());
 			}
-		} else if member.contains('*') {
-			warn!(pattern = member, "skipping unsupported workspace glob; only `prefix/*` is resolved");
-		} else {
-			resolved.push(member.clone());
+		}
+
+		if is_glob && !matched {
+			warn!(pattern = member, "workspace member glob did not match any Cargo manifests");
 		}
 	}
 
@@ -300,6 +316,7 @@ pub fn resolve_workspace_members(
 
 pub fn check_package_version(
 	manifest: &toml::Value,
+	workspace_manifest: Option<&toml::Value>,
 	package_name: &str,
 	manifest_path: &str,
 ) -> Result<Option<Version>, GitError> {
@@ -312,7 +329,7 @@ pub fn check_package_version(
 		return Ok(None);
 	}
 
-	let Some(version_string) = pkg.get("version").and_then(|version| version.as_str()) else {
+	let Some(version_string) = resolve_package_version_string(manifest, workspace_manifest) else {
 		return Ok(None);
 	};
 
@@ -323,6 +340,160 @@ pub fn check_package_version(
 	})?;
 
 	Ok(Some(version))
+}
+
+fn resolve_package_version_string<'a>(
+	manifest: &'a toml::Value,
+	workspace_manifest: Option<&'a toml::Value>,
+) -> Option<&'a str> {
+	let pkg = manifest.get("package")?;
+	let version = pkg.get("version")?;
+
+	if let Some(version) = version.as_str() {
+		return Some(version);
+	}
+
+	let workspace_inherited = version
+		.as_table()
+		.and_then(|table| table.get("workspace"))
+		.and_then(|value| value.as_bool())
+		.unwrap_or(false);
+
+	if !workspace_inherited {
+		return None;
+	}
+
+	workspace_manifest
+		.and_then(|manifest| manifest.get("workspace"))
+		.and_then(|workspace| workspace.get("package"))
+		.and_then(|package| package.get("version"))
+		.and_then(|value| value.as_str())
+}
+
+fn collect_manifest_directories(
+	repo: &gix::Repository,
+	tree: &gix::Tree,
+	prefix: &str,
+	out: &mut Vec<String>,
+) -> Result<Vec<String>, GitError> {
+	for entry in tree.iter() {
+		let entry = entry.map_err(|source| GitError::TreeLookup {
+			path:   prefix.into(),
+			source: source.into(),
+		})?;
+		let name = entry.filename().to_string();
+		let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+
+		if entry.mode().is_tree() {
+			let subtree = repo
+				.find_tree(entry.oid())
+				.map_err(|source| GitError::TreeLookup { path: path.clone(), source: source.into() })?;
+			collect_manifest_directories(repo, &subtree, &path, out)?;
+			continue;
+		}
+
+		if entry.mode().is_blob() && name == "Cargo.toml" {
+			let parent = path.strip_suffix("/Cargo.toml").unwrap_or("").to_string();
+			if !parent.is_empty() {
+				out.push(parent);
+			}
+		}
+	}
+
+	Ok(out.clone())
+}
+
+fn path_matches_pattern(path: &str, pattern: &str) -> bool {
+	let path_segments = if path.is_empty() {
+		Vec::new()
+	} else {
+		path.split('/').collect::<Vec<_>>()
+	};
+	let pattern_segments = if pattern.is_empty() {
+		Vec::new()
+	} else {
+		pattern.split('/').collect::<Vec<_>>()
+	};
+
+	match_path_segments(&path_segments, &pattern_segments)
+}
+
+fn match_path_segments(path: &[&str], pattern: &[&str]) -> bool {
+	match pattern.split_first() {
+		None => path.is_empty(),
+		Some((&"**", rest)) => {
+			match_path_segments(path, rest)
+				|| (!path.is_empty() && match_path_segments(&path[1..], pattern))
+		}
+		Some((segment, rest)) => {
+			!path.is_empty() && segment_matches(path[0], segment) && match_path_segments(&path[1..], rest)
+		}
+	}
+}
+
+fn segment_matches(value: &str, pattern: &str) -> bool {
+	if pattern == "*" {
+		return true;
+	}
+
+	let value = value.as_bytes();
+	let pattern = pattern.as_bytes();
+	let (mut value_idx, mut pattern_idx) = (0usize, 0usize);
+	let (mut wildcard_idx, mut wildcard_value_idx) = (None, 0usize);
+
+	while value_idx < value.len() {
+		if pattern_idx < pattern.len() && (pattern[pattern_idx] == value[value_idx]) {
+			value_idx += 1;
+			pattern_idx += 1;
+		} else if pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+			wildcard_idx = Some(pattern_idx);
+			pattern_idx += 1;
+			wildcard_value_idx = value_idx;
+		} else if let Some(wildcard_idx) = wildcard_idx {
+			pattern_idx = wildcard_idx + 1;
+			wildcard_value_idx += 1;
+			value_idx = wildcard_value_idx;
+		} else {
+			return false;
+		}
+	}
+
+	while pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+		pattern_idx += 1;
+	}
+
+	pattern_idx == pattern.len()
+}
+
+fn version_search_start_points(
+	repo: &gix::Repository,
+	start: Option<gix::ObjectId>,
+) -> Result<Vec<gix::ObjectId>, Box<dyn std::error::Error + Send + Sync>> {
+	let mut starts = Vec::new();
+	let mut seen = HashSet::new();
+
+	if let Some(start) = start {
+		seen.insert(start);
+		starts.push(start);
+	} else {
+		let head = repo.head()?.peel_to_object()?.id().detach();
+		seen.insert(head);
+		starts.push(head);
+	}
+
+	let refs = repo.references()?;
+	for reference in refs.all()?.peeled()? {
+		let mut reference = reference?;
+		let Ok(id) = reference.peel_to_id() else {
+			continue;
+		};
+		let id = id.detach();
+		if seen.insert(id) {
+			starts.push(id);
+		}
+	}
+
+	Ok(starts)
 }
 
 fn extract_typescript_package_version(
@@ -345,4 +516,205 @@ fn extract_typescript_package_version(
 
 	let version = manifest.get("version").and_then(serde_json::Value::as_str)?;
 	Version::parse(version).ok()
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::Path, process::Command};
+
+	use color_eyre::eyre::WrapErr;
+	use tempfile::TempDir;
+
+	use super::*;
+
+	#[test]
+	fn check_package_version_uses_workspace_inherited_version() -> color_eyre::Result<()> {
+		let workspace_manifest: toml::Value = toml::from_str(
+			r#"
+[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.14.0"
+"#,
+		)?;
+		let member_manifest: toml::Value = toml::from_str(
+			r#"
+[package]
+name = "iced"
+version = { workspace = true }
+"#,
+		)?;
+
+		let version =
+			check_package_version(&member_manifest, Some(&workspace_manifest), "iced", "crates/iced/Cargo.toml")?;
+
+		assert_eq!(version, Some(Version::parse("0.14.0")?));
+		Ok(())
+	}
+
+	#[test]
+	fn resolve_workspace_members_supports_nested_globs_and_excludes() -> color_eyre::Result<()> {
+		let repo = git_fixture(
+			&[
+				("Cargo.toml", "[workspace]\nmembers = [\"packages/*/*\"]\nexclude = [\"packages/gui/internal\"]\n"),
+				("packages/gui/public/Cargo.toml", "[package]\nname = \"public\"\nversion = \"0.1.0\"\n"),
+				("packages/gui/internal/Cargo.toml", "[package]\nname = \"internal\"\nversion = \"0.1.0\"\n"),
+				("packages/core/model/Cargo.toml", "[package]\nname = \"model\"\nversion = \"0.1.0\"\n"),
+			],
+			&[],
+		)?;
+		let head = repo.head()?.peel_to_commit()?;
+		let tree = head.tree()?;
+
+		let members = resolve_workspace_members(
+			&repo,
+			&tree,
+			&["packages/*/*".to_string()],
+			&["packages/gui/internal".to_string()],
+		)?;
+
+		assert_eq!(
+			members,
+			vec!["packages/core/model".to_string(), "packages/gui/public".to_string()]
+		);
+		Ok(())
+	}
+
+	#[test]
+	fn extract_package_version_reads_workspace_member_version_from_manifest() -> color_eyre::Result<()> {
+		let repo = git_fixture(
+			&[
+				(
+					"Cargo.toml",
+					"[workspace]\nmembers = [\"crates/*\"]\n[workspace.package]\nversion = \"0.14.0\"\n",
+				),
+				(
+					"crates/iced/Cargo.toml",
+					"[package]\nname = \"iced\"\nversion = { workspace = true }\n",
+				),
+			],
+			&[],
+		)?;
+		let head = repo.head()?.peel_to_commit()?;
+		let tree = head.tree()?;
+
+		let version = extract_package_version(&repo, &tree, "iced")?;
+
+		assert_eq!(version, Some(Version::parse("0.14.0")?));
+		Ok(())
+	}
+
+	#[test]
+	fn find_commit_for_version_scans_all_refs_not_just_head_history() -> color_eyre::Result<()> {
+		let repo_dir = git_fixture_dir(
+			&[
+				("Cargo.toml", "[package]\nname = \"widget\"\nversion = \"0.1.0\"\n"),
+			],
+			&[],
+		)?;
+
+		run_git(repo_dir.path(), ["checkout", "-b", "release-0.2"])?;
+		fs::write(
+			repo_dir.path().join("Cargo.toml"),
+			"[package]\nname = \"widget\"\nversion = \"0.2.0\"\n",
+		)?;
+		run_git(repo_dir.path(), ["add", "."])?;
+		run_git(repo_dir.path(), [
+			"-c",
+			"user.name=Codex",
+			"-c",
+			"user.email=codex@example.com",
+			"commit",
+			"-m",
+			"release 0.2.0",
+		])?;
+
+		run_git(repo_dir.path(), ["checkout", "main"])?;
+		fs::write(
+			repo_dir.path().join("Cargo.toml"),
+			"[package]\nname = \"widget\"\nversion = \"0.1.1\"\n",
+		)?;
+		run_git(repo_dir.path(), ["add", "."])?;
+		run_git(repo_dir.path(), [
+			"-c",
+			"user.name=Codex",
+			"-c",
+			"user.email=codex@example.com",
+			"commit",
+			"-m",
+			"main 0.1.1",
+		])?;
+
+		let repo = gix::open(repo_dir.path())?;
+		let found = find_commit_for_version(&repo, &Version::parse("0.2.0")?, "widget", None);
+
+		assert!(found.is_some(), "expected to find version on non-head branch");
+		Ok(())
+	}
+
+	fn git_fixture(
+		files: &[(&str, &str)],
+		extra_commits: &[Vec<(&str, &str)>],
+	) -> color_eyre::Result<gix::Repository> {
+		let dir = git_fixture_dir(files, extra_commits)?;
+		let path = dir.keep();
+		Ok(gix::open(path)?)
+	}
+
+	fn git_fixture_dir(
+		files: &[(&str, &str)],
+		extra_commits: &[Vec<(&str, &str)>],
+	) -> color_eyre::Result<TempDir> {
+		let dir = tempfile::tempdir()?;
+		for (path, contents) in files {
+			write_file(dir.path(), path, contents)?;
+		}
+
+		run_git(dir.path(), ["init", "-b", "main"])?;
+		run_git(dir.path(), ["add", "."])?;
+		commit(dir.path(), "fixture")?;
+
+		for (idx, commit_files) in extra_commits.iter().enumerate() {
+			for (path, contents) in commit_files {
+				write_file(dir.path(), path, contents)?;
+			}
+			run_git(dir.path(), ["add", "."])?;
+			commit(dir.path(), &format!("fixture-{idx}"))?;
+		}
+
+		Ok(dir)
+	}
+
+	fn write_file(root: &Path, relative: &str, contents: &str) -> color_eyre::Result<()> {
+		let path = root.join(relative);
+		if let Some(parent) = path.parent() {
+			fs::create_dir_all(parent)?;
+		}
+		fs::write(path, contents)?;
+		Ok(())
+	}
+
+	fn commit(cwd: &Path, message: &str) -> color_eyre::Result<()> {
+		run_git(cwd, [
+			"-c",
+			"user.name=Codex",
+			"-c",
+			"user.email=codex@example.com",
+			"commit",
+			"-m",
+			message,
+		])
+	}
+
+	fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) -> color_eyre::Result<()> {
+		let status =
+			Command::new("git").args(args).current_dir(cwd).status().wrap_err("failed to spawn git")?;
+
+		if !status.success() {
+			color_eyre::eyre::bail!("git {:?} failed with status {}", args, status);
+		}
+
+		Ok(())
+	}
 }

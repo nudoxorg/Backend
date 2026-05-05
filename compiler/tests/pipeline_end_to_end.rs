@@ -118,7 +118,7 @@ fn rust_axum_089_entry_diagnostic() -> color_eyre::Result<()> {
 	let repository_dir = scratch.path().join("repository");
 	let workspace_dir = scratch.path().join("workspace");
 	let repository = clone_repository(&repository_dir, &package.source)?;
-	let target_oid = find_commit_for_version(&repository, &version, &package.name)
+	let target_oid = find_commit_for_version(&repository, &version, &package.name, None)
 		.ok_or_else(|| color_eyre::eyre::eyre!("failed to find commit for axum 0.8.9"))?;
 	materialize_commit(&repository, target_oid, &workspace_dir)?;
 

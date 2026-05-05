@@ -226,10 +226,11 @@ impl Registry for Crates {
 
 #[cfg(test)]
 mod tests {
-	use std::time::Duration;
+	use std::{time::Duration, path::PathBuf};
 
 	use super::*;
-	use crate::traits::registry::Registry;
+	use crate::{git::{clone_repository, find_commit_for_version, materialize_commit}, traits::registry::Registry};
+	use tempfile::TempDir;
 
 	fn live_registry() -> Crates {
 		Crates {
@@ -242,5 +243,79 @@ mod tests {
 		let registry = live_registry();
 		let packages = registry.get_packages_by_name("serde").await.unwrap();
 		insta::assert_debug_snapshot!(packages);
+	}
+
+	#[tokio::test]
+	#[ignore = "manual live resolution check for repo-backed Rust crates"]
+	async fn rust_registry_specific_crates_resolve() {
+		let registry = live_registry();
+		let cases = [
+			("turbo-quant", "0.1.0"),
+			("turbovec", "0.1.3"),
+			("any-tts", "0.1.1"),
+		];
+
+		for (crate_name, version) in cases {
+			let package = registry
+				.get_packages_by_name(crate_name)
+				.await
+				.unwrap_or_else(|error| panic!("failed to fetch crate metadata for {crate_name}: {error}"))
+				.into_iter()
+				.next()
+				.unwrap_or_else(|| panic!("crate registry returned no package named {crate_name}"));
+
+			let scratch = TempDir::new().unwrap();
+			let repository_dir = scratch.path().join("repository");
+			let workspace_dir = scratch.path().join("workspace");
+			let repository = clone_repository(&repository_dir, &package.source)
+				.unwrap_or_else(|error| panic!("failed to clone {}: {error}", package.source));
+			let target = find_commit_for_version(
+				&repository,
+				&Version::parse(version).unwrap(),
+				&package.name,
+				None,
+			)
+			.unwrap_or_else(|| panic!("failed to resolve {crate_name} {version} to a commit"));
+
+			materialize_commit(&repository, target, &workspace_dir)
+				.unwrap_or_else(|error| panic!("failed to materialize {crate_name} {version}: {error}"));
+
+			let cargo_manifest = locate_manifest_for_package(&workspace_dir, crate_name)
+				.unwrap_or_else(|| panic!("failed to locate materialized manifest for {crate_name}"));
+			let manifest = std::fs::read_to_string(&cargo_manifest)
+				.unwrap_or_else(|error| panic!("failed to read {}: {error}", cargo_manifest.display()));
+
+			assert!(
+				manifest.contains(&format!("name = \"{crate_name}\"")),
+				"manifest at {} did not contain package name {crate_name}",
+				cargo_manifest.display()
+			);
+		}
+	}
+
+	fn locate_manifest_for_package(root: &PathBuf, package_name: &str) -> Option<PathBuf> {
+		let mut stack = vec![root.clone()];
+		while let Some(dir) = stack.pop() {
+			let entries = std::fs::read_dir(&dir).ok()?;
+			for entry in entries {
+				let entry = entry.ok()?;
+				let path = entry.path();
+				if entry.file_type().ok()?.is_dir() {
+					stack.push(path);
+					continue;
+				}
+
+				if path.file_name().and_then(|name| name.to_str()) != Some("Cargo.toml") {
+					continue;
+				}
+
+				let manifest = std::fs::read_to_string(&path).ok()?;
+				if manifest.contains(&format!("name = \"{package_name}\"")) {
+					return Some(path);
+				}
+			}
+		}
+
+		None
 	}
 }
