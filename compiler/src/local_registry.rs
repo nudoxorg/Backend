@@ -600,6 +600,15 @@ impl TrackedPackageState {
 			last_error:              None,
 		}
 	}
+
+	fn normalize_rehydrated(mut self) -> Self {
+		if !matches!(self.sync_status, PackageSyncStatus::Idle) {
+			self.sync_status = PackageSyncStatus::Idle;
+			self.sync_phase = None;
+			self.sync_detail = None;
+		}
+		self
+	}
 }
 
 impl From<&PackageSpec> for PersistedPackageSpec {
@@ -732,8 +741,12 @@ fn rehydrate_registry(
 			version:  spec.version.clone(),
 			branch:   spec.branch.clone(),
 		};
-		let tracked =
-			Arc::new(TrackedPackage::rehydrated(id, spec, package.handle.into(), package.state));
+		let tracked = Arc::new(TrackedPackage::rehydrated(
+			id,
+			spec,
+			package.handle.into(),
+			package.state.normalize_rehydrated(),
+		));
 		keys.insert(key, id);
 		packages.insert(id, tracked);
 	}
@@ -1261,6 +1274,78 @@ mod tests {
 
 		let next_id = rehydrated.allocate_id().unwrap();
 		assert_eq!(next_id.get(), 8);
+	}
+
+	#[tokio::test]
+	async fn rehydrate_clears_transient_sync_progress() {
+		let tempdir = TempDir::new().unwrap();
+		let storage = StorageLayout::new(tempdir.path());
+		storage.ensure().unwrap();
+
+		let registry =
+			LocalRegistry::new(storage.clone(), Duration::from_secs(60), test_pipeline_config());
+		let package_id = PackageId(NonZeroU64::new(9).unwrap());
+		let version = Version::parse("5.1.6").unwrap();
+		let tracked = Arc::new(TrackedPackage::new(
+			package_id,
+			PackageSpec {
+				language: Language::TypeScript,
+				name:     "nanoid".to_owned(),
+				slug:     "nanoid".to_owned(),
+				version:  version.clone(),
+				branch:   "main".to_owned(),
+				source:   Url::parse("https://github.com/ai/nanoid.git").unwrap(),
+			},
+			PackageHandle::TypeScript(TsPackage {
+				slug:        "nanoid".to_owned(),
+				name:        "nanoid".to_owned(),
+				uuid:        9,
+				source:      Url::parse("https://github.com/ai/nanoid.git").unwrap(),
+				description: Some("fixture".to_owned()),
+				entry_point: "index.d.ts".to_owned(),
+			}),
+		));
+		tracked.record_sync_success(SyncExecution {
+			tracked_version_commit: "7071a42b0101e39d21111da72e13c46dc8ae596d".to_owned(),
+			latest_remote_commit:   Some("5423cf56499c1ea33ea4bd9fbaab1723083cb659".to_owned()),
+			summary:                IngestionSummary {
+				entry_count:    9,
+				document_count: 18,
+				vector_count:   9,
+			},
+		})
+		.await;
+		tracked
+			.update_progress(
+				PackageSyncPhase::GeneratingIr,
+				Some("generating TypeScript IR".to_owned()),
+			)
+			.await;
+
+		registry.packages.write().await.insert(package_id, Arc::clone(&tracked));
+		registry.keys.write().await.insert(
+			PackageKey {
+				language: Language::TypeScript,
+				name:     "nanoid".to_owned(),
+				version:  version.clone(),
+				branch:   "main".to_owned(),
+			},
+			package_id,
+		);
+		registry.persist().await.unwrap();
+
+		let rehydrated =
+			LocalRegistry::new(storage.clone(), Duration::from_secs(60), test_pipeline_config());
+		let packages = rehydrated.list_packages().await;
+
+		assert_eq!(packages.len(), 1);
+		assert!(matches!(packages[0].state.health, PackageHealth::Healthy));
+		assert!(matches!(packages[0].state.sync_status, PackageSyncStatus::Idle));
+		assert_eq!(packages[0].state.sync_phase, None);
+		assert_eq!(packages[0].state.sync_detail, None);
+		assert_eq!(packages[0].state.entry_count, 9);
+		assert_eq!(packages[0].state.document_count, 18);
+		assert_eq!(packages[0].state.vector_count, 9);
 	}
 
 	fn test_pipeline_config() -> PipelineConfig {
