@@ -629,7 +629,13 @@ impl Loader for SourceFileLoader {
 
 #[cfg(test)]
 mod tests {
+	use std::collections::HashMap;
+
+	use deno_doc::{DocParser, DocParserOptions};
+	use deno_graph::{BuildOptions, GraphKind, ModuleGraph, ModuleSpecifier, ast::CapturingModuleAnalyzer};
+
 	use super::*;
+	use crate::core::ts_parser::TsDocParser;
 	use crate::traits::registry::Registry;
 
 	#[tokio::test]
@@ -647,5 +653,66 @@ mod tests {
 			.await
 			.unwrap();
 		insta::assert_debug_snapshot!(package);
+	}
+
+	#[tokio::test]
+	#[ignore = "live TypeScript package diagnostics"]
+	async fn live_typescript_package_diagnostics() {
+		for (name, version) in [
+			("@types/node", "24.0.0"),
+			("zod", "3.25.76"),
+			("nanoid", "5.1.6"),
+		] {
+			let registry = Npm::default();
+			let version = Version::parse(version).unwrap();
+			let package = registry.resolve_package_version(name, &version).await.unwrap();
+			let workspace = tempfile::tempdir().unwrap();
+			let entry_point = registry.materialize_package_version(name, &version, workspace.path()).await.unwrap();
+			eprintln!("=== {name}@{version} ===");
+			eprintln!("entry point: {}", entry_point.display());
+
+			let root = ModuleSpecifier::from_file_path(&entry_point).unwrap();
+			let analyzer = CapturingModuleAnalyzer::default();
+			let mut graph = ModuleGraph::new(GraphKind::TypesOnly);
+			let loader = SourceFileLoader;
+			graph
+				.build(vec![root.clone()], Vec::new(), &loader, BuildOptions {
+					module_analyzer: &analyzer,
+					..Default::default()
+				})
+				.await;
+
+			let roots = [root.clone()];
+			let parser = DocParser::new(&graph, &analyzer, &roots, DocParserOptions {
+				diagnostics: false,
+				private:     true,
+			})
+			.unwrap();
+			let parse_output = parser.parse().unwrap();
+			eprintln!("doc modules: {}", parse_output.len());
+			for (specifier, document) in &parse_output {
+				eprintln!("  {} symbols={}", specifier, document.symbols.len());
+			}
+
+			let documents: HashMap<String, deno_doc::Document> = parse_output
+				.into_iter()
+				.map(|(specifier, document)| (specifier.to_string(), document))
+				.collect();
+			let mut ts_parser = TsDocParser::new(documents).unwrap();
+			match ts_parser.parse_documents() {
+				Ok(entries) => {
+					eprintln!("entries={}", entries.len());
+					for entry in entries.iter().take(10) {
+						eprintln!("  {} {}", entry.kind_tag(), entry.name());
+					}
+				}
+				Err(error) => panic!("failed to parse {name}@{version}: {error:?}"),
+			}
+
+			match package.generate_ir() {
+				Ok(ir) => eprintln!("generate_ir index entries={}", ir.index().len()),
+				Err(error) => eprintln!("generate_ir failed: {error:?}"),
+			}
+		}
 	}
 }

@@ -268,6 +268,7 @@ fn typescript_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 	let names = doc_names(&store);
 
 	assert!(names.contains("greet"));
+	assert!(names.contains("tag"));
 	assert!(names.contains("Greeter"));
 	assert!(names.contains("DEFAULT_GREETING"));
 	assert!(store.docs.len() >= 4);

@@ -1382,14 +1382,16 @@ impl TsDocParser {
 						tp.iter()
 							.map(|t| self.parse_ts_type(t).map(|t| self.parse_type_to_expr(&t)))
 							.collect::<Result<Vec<_>>>()
-					})
-					.transpose()?
-					.unwrap_or_default();
+				})
+				.transpose()?
+				.unwrap_or_default();
 				Ok(TraitRef { name: type_ref.type_name.clone(), args })
 			}
-			_ => Err(ParseError::GenericConstraintResolution {
-				reason: format!("unsupported trait-like constraint: {}", ty.repr),
-			}),
+			_ => {
+				let parsed = self.parse_ts_type(ty)?;
+				let expr = self.parse_type_to_expr(&parsed);
+				Ok(TraitRef { name: expr.name, args: expr.args })
+			}
 		}
 	}
 }
