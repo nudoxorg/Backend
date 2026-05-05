@@ -8,6 +8,7 @@ use semver::Version;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use url::Url;
 
 #[tokio::test]
@@ -77,8 +78,110 @@ async fn add_typescript_packages_via_api_supports_registry_and_explicit_git_sour
 	Ok(())
 }
 
+#[tokio::test]
+async fn package_registry_persists_across_server_restart() -> color_eyre::Result<()> {
+	let base_storage = tempfile::tempdir()?;
+	let first_server = TestServer::spawn_with_storage(base_storage.path()).await?;
+	let repo = git_typescript_fixture("persistent-toolkit", "2.0.0")?;
+
+	let package = first_server
+		.add_package(json!({
+			"language": Language::TypeScript,
+			"name": "persistent-toolkit",
+			"version": Version::parse("2.0.0")?,
+			"source": repo.path().display().to_string(),
+		}))
+		.await?;
+	assert_eq!(package["state"]["health"], "healthy");
+	drop(first_server);
+
+	let second_server = TestServer::spawn_with_storage(base_storage.path()).await?;
+	let packages = second_server.list_packages().await?;
+
+	assert_eq!(packages.as_array().map(|value| value.len()), Some(1));
+	assert_eq!(packages[0]["name"], "persistent-toolkit");
+	assert_eq!(packages[0]["version"], "2.0.0");
+	assert_eq!(packages[0]["state"]["health"], "healthy");
+	assert!(base_storage.path().join("packages.json").is_file());
+
+	let duplicate = second_server
+		.add_package(json!({
+			"language": Language::TypeScript,
+			"name": "persistent-toolkit",
+			"version": Version::parse("2.0.0")?,
+			"source": repo.path().display().to_string(),
+			"sync_on_add": false,
+		}))
+		.await?;
+	assert_eq!(duplicate["id"], package["id"]);
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn repository_backed_packages_ignore_legacy_numeric_cache_directories()
+-> color_eyre::Result<()> {
+	let base_storage = tempfile::tempdir()?;
+	let legacy_repo_dir = base_storage.path().join("repositories/1/.git");
+	fs::create_dir_all(&legacy_repo_dir)?;
+	fs::write(legacy_repo_dir.join("HEAD"), b"not a git repository")?;
+
+	let server = TestServer::spawn_with_storage(base_storage.path()).await?;
+	let repo = git_typescript_fixture("cache-safe-toolkit", "3.1.4")?;
+	let package = server
+		.add_package(json!({
+			"language": Language::TypeScript,
+			"name": "cache-safe-toolkit",
+			"version": Version::parse("3.1.4")?,
+			"source": repo.path().display().to_string(),
+		}))
+		.await?;
+
+	assert_eq!(package["state"]["health"], "healthy");
+	assert!(base_storage.path().join("repositories/1/.git/HEAD").is_file());
+	assert!(base_storage
+		.path()
+		.join("repositories/typescript")
+		.read_dir()?
+		.any(|entry| entry.is_ok()));
+
+	Ok(())
+}
+
+#[tokio::test]
+#[ignore = "live npm smoke test"]
+async fn add_live_typescript_registry_packages_smoke() -> color_eyre::Result<()> {
+	let server = TestServer::spawn().await?;
+
+	for (name, version) in [
+		("@types/node", "24.0.0"),
+		("zod", "3.25.76"),
+		("nanoid", "5.1.6"),
+	] {
+		let started = Instant::now();
+		let package = server
+			.add_package(json!({
+				"language": Language::TypeScript,
+				"name": name,
+				"version": Version::parse(version)?,
+			}))
+			.await?;
+		eprintln!(
+			"indexed {name}@{version} in {:?} entries={} docs={}",
+			started.elapsed(),
+			package["state"]["entry_count"].as_u64().unwrap_or_default(),
+			package["state"]["document_count"].as_u64().unwrap_or_default(),
+		);
+		assert_eq!(package["state"]["health"], "healthy");
+		assert!(package["state"]["entry_count"].as_u64().unwrap_or_default() > 0);
+		assert!(package["state"]["document_count"].as_u64().unwrap_or_default() > 0);
+	}
+
+	Ok(())
+}
+
 struct TestServer {
-	_base_storage: TempDir,
+	_base_storage: Option<TempDir>,
 	base_url:      String,
 	task:          JoinHandle<()>,
 }
@@ -86,7 +189,23 @@ struct TestServer {
 impl TestServer {
 	async fn spawn() -> color_eyre::Result<Self> {
 		let base_storage = tempfile::tempdir()?;
-		let storage = StorageLayout::new(base_storage.path());
+		Self::spawn_with_optional_storage(Some(base_storage), None).await
+	}
+
+	async fn spawn_with_storage(path: &Path) -> color_eyre::Result<Self> {
+		Self::spawn_with_optional_storage(None, Some(path)).await
+	}
+
+	async fn spawn_with_optional_storage(
+		base_storage: Option<TempDir>,
+		existing_root: Option<&Path>,
+	) -> color_eyre::Result<Self> {
+		let storage_root = base_storage
+			.as_ref()
+			.map(|tempdir| tempdir.path().to_path_buf())
+			.or_else(|| existing_root.map(Path::to_path_buf))
+			.expect("storage root should be available");
+		let storage = StorageLayout::new(&storage_root);
 		storage.ensure()?;
 
 		let registry =
@@ -122,6 +241,14 @@ impl TestServer {
 		let status = response.status();
 		let body = response.text().await?;
 		assert_eq!(status, StatusCode::CREATED, "unexpected response body: {body}");
+		Ok(serde_json::from_str(&body)?)
+	}
+
+	async fn list_packages(&self) -> color_eyre::Result<Value> {
+		let response = Client::new().get(format!("{}/api/packages", self.base_url)).send().await?;
+		let status = response.status();
+		let body = response.text().await?;
+		assert_eq!(status, StatusCode::OK, "unexpected response body: {body}");
 		Ok(serde_json::from_str(&body)?)
 	}
 }
