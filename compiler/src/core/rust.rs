@@ -180,7 +180,7 @@ impl Package for RustPackage {
 		let workspace_dir = scratch.path().join("workspace");
 		let repository = crate::git::clone_repository(&repository_dir, &self.source)?;
 
-		let target_oid = find_commit_for_version(&repository, &version, &self.name)
+		let target_oid = find_commit_for_version(&repository, &version, &self.name, None)
 			.ok_or_else(|| PackageError::VersionNotFound(version.clone()))?;
 		crate::git::materialize_commit(&repository, target_oid, &workspace_dir)?;
 		self.generate_ir(&workspace_dir)

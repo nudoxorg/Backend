@@ -3,17 +3,31 @@ use std::{collections::HashMap, fs, num::NonZeroU64, path::{Path, PathBuf}, sync
 use jiff::Timestamp;
 use lang_types::Language;
 use semver::Version;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::{sync::{Mutex, RwLock}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
 use tracing::{info, instrument, warn};
 use url::Url;
 
 use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, traits::{builder::get_registry, registry::Registry}};
 
+fn deserialize_lenient_version<'de, D: Deserializer<'de>>(d: D) -> Result<Version, D::Error> {
+	let s = String::deserialize(d)?;
+	if let Ok(v) = Version::parse(&s) {
+		return Ok(v);
+	}
+	let padded = match s.matches('.').count() {
+		0 => format!("{s}.0.0"),
+		1 => format!("{s}.0"),
+		_ => s.clone(),
+	};
+	Version::parse(&padded).map_err(|e| serde::de::Error::custom(format!("invalid version `{s}`: {e}")))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewPackageRequest {
 	pub language:    Language,
 	pub name:        String,
+	#[serde(deserialize_with = "deserialize_lenient_version")]
 	pub version:     Version,
 	#[serde(default)]
 	pub source:      Option<String>,
@@ -505,10 +519,11 @@ fn run_sync(
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 			git::fetch_remote_updates(&repository, Some("origin"))?;
 
-			let latest_remote_commit = git::remote_branch_commit(&repository, "origin", &spec.branch)
-				.map(|object_id| object_id.to_hex().to_string());
-			let target_commit = git::find_commit_for_version(&repository, &spec.version, &package.name)
-				.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?;
+			let remote_head = git::remote_branch_commit(&repository, "origin", &spec.branch);
+			let latest_remote_commit = remote_head.map(|id| id.to_hex().to_string());
+			let target_commit =
+				git::find_commit_for_version(&repository, &spec.version, &package.name, remote_head)
+					.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?;
 
 			let workspace = storage
 				.create_workspace()
@@ -568,12 +583,13 @@ fn run_monitor_refresh(
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 			git::fetch_remote_updates(&repository, Some("origin"))?;
 
-			let latest_remote_commit = git::remote_branch_commit(&repository, "origin", &spec.branch)
-				.map(|object_id| object_id.to_hex().to_string());
-			let tracked_commit = git::find_commit_for_version(&repository, &spec.version, &package.name)
-				.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?
-				.to_hex()
-				.to_string();
+			let remote_head = git::remote_branch_commit(&repository, "origin", &spec.branch);
+			let latest_remote_commit = remote_head.map(|id| id.to_hex().to_string());
+			let tracked_commit =
+				git::find_commit_for_version(&repository, &spec.version, &package.name, remote_head)
+					.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?
+					.to_hex()
+					.to_string();
 
 			Ok(MonitorExecution {
 				remote_update_available: latest_remote_commit.as_deref() != Some(tracked_commit.as_str()),
@@ -609,10 +625,10 @@ fn run_repository_backed_typescript_sync(
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 	git::fetch_remote_updates(&repository, Some("origin"))?;
 
-	let latest_remote_commit = git::remote_branch_commit(&repository, "origin", &spec.branch)
-		.map(|object_id| object_id.to_hex().to_string());
+	let remote_head = git::remote_branch_commit(&repository, "origin", &spec.branch);
+	let latest_remote_commit = remote_head.map(|id| id.to_hex().to_string());
 	let target_commit =
-		git::find_typescript_commit_for_version(&repository, &spec.version, &package.name)
+		git::find_typescript_commit_for_version(&repository, &spec.version, &package.name, remote_head)
 			.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?;
 
 	let workspace = storage
@@ -646,10 +662,10 @@ fn run_repository_backed_typescript_monitor(
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 	git::fetch_remote_updates(&repository, Some("origin"))?;
 
-	let latest_remote_commit = git::remote_branch_commit(&repository, "origin", &spec.branch)
-		.map(|object_id| object_id.to_hex().to_string());
+	let remote_head = git::remote_branch_commit(&repository, "origin", &spec.branch);
+	let latest_remote_commit = remote_head.map(|id| id.to_hex().to_string());
 	let tracked_commit =
-		git::find_typescript_commit_for_version(&repository, &spec.version, &package.name)
+		git::find_typescript_commit_for_version(&repository, &spec.version, &package.name, remote_head)
 			.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?
 			.to_hex()
 			.to_string();

@@ -119,13 +119,20 @@ pub fn materialize_commit(
 
 /// Walk newest→oldest. First commit whose Cargo.toml has `package_name` at
 /// `target_version` is the latest commit for that version.
+///
+/// `start` pins the walk to a specific commit (e.g. the remote tracking tip
+/// after a fetch). Falls back to local HEAD when `None`.
 #[instrument(skip(repo), fields(package = %package_name, version = %target_version))]
 pub fn find_commit_for_version(
 	repo: &gix::Repository,
 	target_version: &Version,
 	package_name: &str,
+	start: Option<gix::ObjectId>,
 ) -> Option<gix::ObjectId> {
-	let head_id = repo.head().ok()?.peel_to_object().ok()?.id();
+	let head_id = match start {
+		Some(id) => id,
+		None => repo.head().ok()?.peel_to_object().ok()?.id(),
+	};
 	let revwalk = repo.rev_walk([head_id]);
 
 	for commit_id in revwalk.all().ok()? {
@@ -147,13 +154,20 @@ pub fn find_commit_for_version(
 
 /// Walk newest→oldest. First commit whose package.json has `package_name` at
 /// `target_version` is the latest commit for that version.
+///
+/// `start` pins the walk to a specific commit (e.g. the remote tracking tip
+/// after a fetch). Falls back to local HEAD when `None`.
 #[instrument(skip(repo), fields(package = %package_name, version = %target_version))]
 pub fn find_typescript_commit_for_version(
 	repo: &gix::Repository,
 	target_version: &Version,
 	package_name: &str,
+	start: Option<gix::ObjectId>,
 ) -> Option<gix::ObjectId> {
-	let head_id = repo.head().ok()?.peel_to_object().ok()?.id();
+	let head_id = match start {
+		Some(id) => id,
+		None => repo.head().ok()?.peel_to_object().ok()?.id(),
+	};
 	let revwalk = repo.rev_walk([head_id]);
 
 	for commit_id in revwalk.all().ok()? {
@@ -196,6 +210,11 @@ pub fn extract_package_version(
 		.map_err(|source| GitError::TomlParse { path: "Cargo.toml".into(), source })?;
 
 	if let Some(workspace) = manifest.get("workspace") {
+		// A workspace root can also be a package itself ([workspace] + [package]).
+		if let Some(version) = check_package_version(&manifest, package_name, "Cargo.toml")? {
+			return Ok(Some(version));
+		}
+
 		let members: Vec<String> = workspace
 			.get("members")
 			.and_then(|members| members.as_array())
