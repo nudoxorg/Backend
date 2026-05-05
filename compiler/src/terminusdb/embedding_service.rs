@@ -91,6 +91,12 @@ use tracing::info;
 use crate::terminusdb::termdb::DocStore;
 
 const DEFAULT_EMBED_CONCURRENCY: usize = 16;
+
+#[derive(Debug, Clone, Copy)]
+pub struct EmbeddingProgress {
+	pub completed: usize,
+	pub total:     usize,
+}
 /// Provider-agnostic embedding error.
 ///
 /// Keep this structured early so the pipeline can distinguish between:
@@ -445,6 +451,7 @@ where
 	pub async fn embed_documents(
 		&self,
 		docs: impl IntoIterator<Item = EmbeddingDocument>,
+		mut on_progress: impl FnMut(EmbeddingProgress),
 	) -> Result<Vec<EmbeddedRecord>, EmbeddingError>
 	where
 		P: Clone + Send + Sync + 'static,
@@ -457,6 +464,7 @@ where
 		let total = docs.len();
 		let concurrency = DEFAULT_EMBED_CONCURRENCY.min(total);
 		info!(count = total, concurrency, "embedding documents");
+		on_progress(EmbeddingProgress { completed: 0, total });
 
 		let mut join_set = JoinSet::new();
 		let mut completed = 0usize;
@@ -468,12 +476,26 @@ where
 				.spawn(async move { service.embed_document(doc).await.map(|record| (index, record)) });
 
 			if join_set.len() >= concurrency {
-				collect_embedded_record(&mut join_set, &mut out, &mut completed, total).await?;
+				collect_embedded_record(
+					&mut join_set,
+					&mut out,
+					&mut completed,
+					total,
+					&mut on_progress,
+				)
+				.await?;
 			}
 		}
 
 		while !join_set.is_empty() {
-			collect_embedded_record(&mut join_set, &mut out, &mut completed, total).await?;
+			collect_embedded_record(
+				&mut join_set,
+				&mut out,
+				&mut completed,
+				total,
+				&mut on_progress,
+			)
+			.await?;
 		}
 
 		out
@@ -579,6 +601,7 @@ async fn collect_embedded_record(
 	out: &mut [Option<EmbeddedRecord>],
 	completed: &mut usize,
 	total: usize,
+	on_progress: &mut impl FnMut(EmbeddingProgress),
 ) -> Result<(), EmbeddingError> {
 	let Some(result) = join_set.join_next().await else {
 		return Ok(());
@@ -587,7 +610,8 @@ async fn collect_embedded_record(
 		.map_err(|error| EmbeddingError::Provider(format!("embedding task join failed: {error}")))??;
 	out[index] = Some(record);
 	*completed += 1;
-	if *completed % 100 == 0 || *completed == total {
+	if *completed == total || total <= 50 || *completed % 10 == 0 {
+		on_progress(EmbeddingProgress { completed: *completed, total });
 		info!(completed = *completed, total, "embedding progress");
 	}
 	Ok(())

@@ -6,7 +6,7 @@ use semver::Version;
 use tokio::runtime::Handle;
 use tracing::info;
 
-use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{upload_documents, upload_schema}}};
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -123,7 +123,21 @@ async fn upload_outputs(
 				Some(format!("uploading {} documents", store.docs.len())),
 			);
 		}
-		upload_documents(terminus, store).await?;
+		let progress_callback = |upload_progress: DocumentUploadProgress| {
+			if let Some(progress) = progress {
+				progress.phase_with_detail(
+					PackageSyncPhase::UploadingDocuments,
+					Some(format!(
+						"uploaded {}/{} documents (chunk {}/{})",
+						upload_progress.completed_docs,
+						upload_progress.total_docs,
+						upload_progress.completed_chunks,
+						upload_progress.total_chunks,
+					)),
+				);
+			}
+		};
+		upload_documents(terminus, store, progress_callback).await?;
 	}
 
 	match &config.qdrant {
@@ -172,7 +186,17 @@ async fn upload_embeddings(
 	let embedding_provider = OpenAIEmbeddingProvider::new(model_name);
 	let embedding_service = EmbeddingService::new(embedding_provider);
 	let embedded_records = embedding_service
-		.embed_documents(embedding_docs)
+		.embed_documents(embedding_docs, |embedding_progress: EmbeddingProgress| {
+			if let Some(progress) = progress {
+				progress.phase_with_detail(
+					PackageSyncPhase::Embedding,
+					Some(format!(
+						"embedded {}/{} symbols",
+						embedding_progress.completed, embedding_progress.total
+					)),
+				);
+			}
+		})
 		.await
 		.map_err(|source| AppError::Embedding(source.to_string()))?;
 

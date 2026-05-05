@@ -7,6 +7,14 @@ use super::termdb::DocStore;
 
 const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 1_000;
 
+#[derive(Debug, Clone, Copy)]
+pub struct DocumentUploadProgress {
+	pub completed_chunks: usize,
+	pub total_chunks:     usize,
+	pub completed_docs:   usize,
+	pub total_docs:       usize,
+}
+
 fn documents_in_dependency_order(store: &DocStore) -> Vec<Value> {
 	let mut kinds = Vec::new();
 	let mut entries = Vec::new();
@@ -52,7 +60,11 @@ pub struct TerminusConfig {
 /// `Runner`.
 
 #[instrument(skip_all, fields(org = %config.org, db = %config.db))]
-pub async fn upload_documents(config: &TerminusConfig, store: &DocStore) -> anyhow::Result<()> {
+pub async fn upload_documents(
+	config: &TerminusConfig,
+	store: &DocStore,
+	mut on_progress: impl FnMut(DocumentUploadProgress),
+) -> anyhow::Result<()> {
 	let client = TerminusDBHttpClient::new_with_database(
 		config.endpoint.clone(),
 		&config.user,
@@ -73,6 +85,13 @@ pub async fn upload_documents(config: &TerminusConfig, store: &DocStore) -> anyh
 	let mut inserted = 0usize;
 	let mut updated = 0usize;
 	let chunk_count = documents.len().div_ceil(DOCUMENT_UPLOAD_CHUNK_SIZE);
+	let total_docs = documents.len();
+	on_progress(DocumentUploadProgress {
+		completed_chunks: 0,
+		total_chunks: chunk_count,
+		completed_docs: 0,
+		total_docs,
+	});
 
 	for (chunk_index, chunk) in documents.chunks(DOCUMENT_UPLOAD_CHUNK_SIZE).enumerate() {
 		info!(
@@ -104,6 +123,12 @@ pub async fn upload_documents(config: &TerminusConfig, store: &DocStore) -> anyh
 				terminusdb_client::TDBInsertInstanceResult::AlreadyExists(_) => updated += 1,
 			}
 		}
+		on_progress(DocumentUploadProgress {
+			completed_chunks: chunk_index + 1,
+			total_chunks: chunk_count,
+			completed_docs: inserted + updated,
+			total_docs,
+		});
 	}
 	debug!(inserted, updated, "upload result");
 

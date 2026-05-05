@@ -259,10 +259,11 @@ impl LocalRegistry {
 
 		if let Some(existing_id) = self.keys.read().await.get(&key).copied() {
 			let existing = self.get_tracked(existing_id).await?;
-			if request.sync_on_add {
+			let snapshot = existing.snapshot().await;
+			if request.sync_on_add && should_enqueue_duplicate_sync(&snapshot.state) {
 				return self.enqueue_sync(existing).await;
 			}
-			return Ok(existing.snapshot().await);
+			return Ok(snapshot);
 		}
 
 		let handle = resolve_package_handle(&request).await?;
@@ -980,6 +981,17 @@ fn default_tracking_branch(language: Language) -> &'static str {
 	}
 }
 
+fn should_enqueue_duplicate_sync(state: &PackageStateSnapshot) -> bool {
+	if !matches!(state.sync_status, PackageSyncStatus::Idle) {
+		return false;
+	}
+
+	match state.health {
+		PackageHealth::Healthy => state.remote_update_available || state.tracked_version_commit.is_none(),
+		PackageHealth::Pending | PackageHealth::Degraded => true,
+	}
+}
+
 fn run_repository_backed_typescript_sync(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
@@ -1346,6 +1358,71 @@ mod tests {
 		assert_eq!(packages[0].state.entry_count, 9);
 		assert_eq!(packages[0].state.document_count, 18);
 		assert_eq!(packages[0].state.vector_count, 9);
+	}
+
+	#[test]
+	fn duplicate_add_does_not_resync_healthy_up_to_date_package() {
+		let state = PackageStateSnapshot {
+			health:                  PackageHealth::Healthy,
+			sync_status:             PackageSyncStatus::Idle,
+			sync_phase:              None,
+			sync_detail:             None,
+			last_checked_at:         None,
+			last_synced_at:          None,
+			tracked_version_commit:  Some("abc".to_owned()),
+			latest_remote_commit:    Some("abc".to_owned()),
+			remote_update_available: false,
+			entry_count:             161,
+			document_count:          322,
+			vector_count:            161,
+			last_error:              None,
+		};
+
+		assert!(!should_enqueue_duplicate_sync(&state));
+	}
+
+	#[test]
+	fn duplicate_add_ignores_in_flight_syncs() {
+		let state = PackageStateSnapshot {
+			health:                  PackageHealth::Healthy,
+			sync_status:             PackageSyncStatus::Running,
+			sync_phase:              Some(PackageSyncPhase::UploadingDocuments),
+			sync_detail:             Some("uploading 322 documents".to_owned()),
+			last_checked_at:         None,
+			last_synced_at:          None,
+			tracked_version_commit:  Some("abc".to_owned()),
+			latest_remote_commit:    Some("abc".to_owned()),
+			remote_update_available: false,
+			entry_count:             161,
+			document_count:          322,
+			vector_count:            161,
+			last_error:              None,
+		};
+
+		assert!(!should_enqueue_duplicate_sync(&state));
+	}
+
+	#[test]
+	fn duplicate_add_can_resync_stale_or_unhealthy_package() {
+		let stale = PackageStateSnapshot {
+			health:                  PackageHealth::Healthy,
+			sync_status:             PackageSyncStatus::Idle,
+			sync_phase:              None,
+			sync_detail:             None,
+			last_checked_at:         None,
+			last_synced_at:          None,
+			tracked_version_commit:  Some("old".to_owned()),
+			latest_remote_commit:    Some("new".to_owned()),
+			remote_update_available: true,
+			entry_count:             161,
+			document_count:          322,
+			vector_count:            161,
+			last_error:              None,
+		};
+		let degraded = PackageStateSnapshot { health: PackageHealth::Degraded, ..stale.clone() };
+
+		assert!(should_enqueue_duplicate_sync(&stale));
+		assert!(should_enqueue_duplicate_sync(&degraded));
 	}
 
 	fn test_pipeline_config() -> PipelineConfig {
