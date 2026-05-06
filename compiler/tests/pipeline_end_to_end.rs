@@ -38,6 +38,7 @@ fn rust_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 
 	assert!(names.contains("add"));
 	assert!(names.contains("Counter"));
+	assert!(names.contains("HiddenCounter"));
 	assert!(
 		implemented_protocols
 			.iter()
@@ -46,6 +47,8 @@ fn rust_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 	assert!(methods.len() > 3);
 	assert!(!has_entry_path_suffix(&store, "calculator::Counter::View"));
 	assert!(!has_entry_path_suffix(&store, "calculator::Counter::view"));
+	assert!(has_entry_path_suffix(&store, "calculator::internals"));
+	assert!(has_entry_path_suffix(&store, "calculator::internals::HiddenCounter"));
 	assert!(store.docs.contains_key("RecordType/rust/calculator/calculator::Counter"));
 	assert!(store.docs.len() >= 4);
 
@@ -271,6 +274,8 @@ fn typescript_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 	assert!(names.contains("tag"));
 	assert!(names.contains("Greeter"));
 	assert!(names.contains("DEFAULT_GREETING"));
+	assert!(names.contains("SECRET_GREETING"));
+	assert!(names.contains("WhisperGreeter"));
 	assert!(store.docs.len() >= 4);
 
 	Ok(())

@@ -2,6 +2,18 @@
 
 pub fn add(left: i32, right: i32) -> i32 { left + right }
 
+mod internals {
+	pub(crate) struct HiddenCounter {
+		value: i32,
+	}
+
+	impl HiddenCounter {
+		pub(crate) fn new(value: i32) -> Self { Self { value } }
+
+		pub(crate) fn value(&self) -> i32 { self.value }
+	}
+}
+
 pub trait BlanketView {
 	type View;
 

@@ -105,6 +105,7 @@ impl RustPackage {
 		}
 		command
 			.arg("--")
+			.arg("--document-private-items")
 			.arg("-Z")
 			.arg("unstable-options")
 			.arg("--output-format")
