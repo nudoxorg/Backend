@@ -476,26 +476,14 @@ where
 				.spawn(async move { service.embed_document(doc).await.map(|record| (index, record)) });
 
 			if join_set.len() >= concurrency {
-				collect_embedded_record(
-					&mut join_set,
-					&mut out,
-					&mut completed,
-					total,
-					&mut on_progress,
-				)
-				.await?;
+				collect_embedded_record(&mut join_set, &mut out, &mut completed, total, &mut on_progress)
+					.await?;
 			}
 		}
 
 		while !join_set.is_empty() {
-			collect_embedded_record(
-				&mut join_set,
-				&mut out,
-				&mut completed,
-				total,
-				&mut on_progress,
-			)
-			.await?;
+			collect_embedded_record(&mut join_set, &mut out, &mut completed, total, &mut on_progress)
+				.await?;
 		}
 
 		out
