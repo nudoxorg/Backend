@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde_json::Value;
 use terminusdb_client::{BranchSpec, DocumentInsertArgs, TerminusDBHttpClient};
 use tracing::{debug, info, instrument, warn};
@@ -5,7 +7,9 @@ use url::Url;
 
 use super::termdb::DocStore;
 
-const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 1_000;
+const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 100;
+const DOCUMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const DOCUMENT_UPLOAD_MAX_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DocumentUploadProgress {
@@ -108,10 +112,41 @@ pub async fn upload_documents(
 			message: "automated upload from compiler pipeline".to_string(),
 			skip_existence_check: true,
 			..Default::default()
-		};
+		}
+		.with_timeout(DOCUMENT_UPLOAD_TIMEOUT);
 
 		let doc_refs: Vec<&Value> = chunk.iter().collect();
-		let result = client.insert_documents(doc_refs, args).await?;
+		let mut attempt = 0usize;
+		let result = loop {
+			attempt += 1;
+			match client.insert_documents(doc_refs.clone(), args.clone()).await {
+				Ok(result) => break result,
+				Err(error) if attempt < DOCUMENT_UPLOAD_MAX_ATTEMPTS => {
+					warn!(
+						chunk_index = chunk_index + 1,
+						chunk_count,
+						chunk_size = chunk.len(),
+						attempt,
+						max_attempts = DOCUMENT_UPLOAD_MAX_ATTEMPTS,
+						%error,
+						"document upload chunk failed, retrying"
+					);
+					tokio::time::sleep(Duration::from_secs(attempt as u64 * 2)).await;
+				}
+				Err(error) => {
+					warn!(
+						chunk_index = chunk_index + 1,
+						chunk_count,
+						chunk_size = chunk.len(),
+						attempt,
+						max_attempts = DOCUMENT_UPLOAD_MAX_ATTEMPTS,
+						%error,
+						"document upload chunk failed permanently"
+					);
+					return Err(error);
+				}
+			}
+		};
 
 		if let Some(commit_id) = result.extract_commit_id() {
 			info!(commit = %commit_id, chunk_index = chunk_index + 1, "upload chunk committed");
