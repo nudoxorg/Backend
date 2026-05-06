@@ -90,13 +90,16 @@ impl Default for RustPackage {
 }
 
 impl RustPackage {
+	fn cargo_package_spec(&self, version: &Version) -> String { format!("{}@{}", self.name, version) }
+
 	fn run_cargo_rustdoc(
 		&self,
 		code: &PathBuf,
+		version: &Version,
 		lib_only: bool,
 	) -> Result<std::process::Output, PackageError> {
 		let mut command = Command::new("cargo");
-		command.arg("rustdoc").arg("--package").arg(&self.name);
+		command.arg("rustdoc").arg("--package").arg(self.cargo_package_spec(version));
 		if lib_only {
 			command.arg("--lib");
 		}
@@ -133,19 +136,23 @@ impl RustPackage {
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
 	/// Takes an input of `code` which is the location of the source code on disk
 	#[instrument(skip_all, fields(package = %self.name))]
-	pub(crate) fn generate_ir(&self, code: &PathBuf) -> Result<Ir<Collected>, PackageError> {
+	pub(crate) fn generate_ir(
+		&self,
+		code: &PathBuf,
+		version: &Version,
+	) -> Result<Ir<Collected>, PackageError> {
 		let target_dir = code.join("target").join("doc_json");
 
 		if !target_dir.exists() {
 			fs::create_dir_all(&target_dir)?;
 		}
 
-		match self.run_cargo_rustdoc(code, false) {
+		match self.run_cargo_rustdoc(code, version, false) {
 			Ok(_) => {}
 			Err(PackageError::Process { details, .. })
 				if details.contains("extra arguments to `rustdoc` can only be passed to one target") =>
 			{
-				self.run_cargo_rustdoc(code, true)?;
+				self.run_cargo_rustdoc(code, version, true)?;
 			}
 			Err(error) => return Err(error),
 		}
@@ -217,7 +224,7 @@ impl Package for RustPackage {
 		let target_oid = find_commit_for_version(&repository, &version, &self.name, None)
 			.ok_or_else(|| PackageError::VersionNotFound(version.clone()))?;
 		crate::git::materialize_commit(&repository, target_oid, &workspace_dir)?;
-		self.generate_ir(&workspace_dir)
+		self.generate_ir(&workspace_dir, &version)
 	}
 
 	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> { Err(PackageError::NotImplemented) }
@@ -262,7 +269,9 @@ impl Registry for Crates {
 mod tests {
 	use std::{path::PathBuf, time::Duration};
 
+	use lang_types::Language;
 	use tempfile::TempDir;
+	use url::Url;
 
 	use super::*;
 	use crate::{git::{clone_repository, find_commit_for_version, materialize_commit}, traits::registry::Registry};
@@ -278,6 +287,20 @@ mod tests {
 		let registry = live_registry();
 		let packages = registry.get_packages_by_name("serde").await.unwrap();
 		insta::assert_debug_snapshot!(packages);
+	}
+
+	#[test]
+	fn cargo_package_spec_is_version_qualified() {
+		let package = RustPackage {
+			slug:        "serde-json".into(),
+			name:        "serde_json".into(),
+			language:    Language::Rust,
+			uuid:        1,
+			source:      Url::parse("https://example.com/serde_json").unwrap(),
+			description: None,
+		};
+
+		assert_eq!(package.cargo_package_spec(&Version::parse("1.0.82").unwrap()), "serde_json@1.0.82");
 	}
 
 	#[tokio::test]
@@ -353,7 +376,7 @@ mod tests {
 	#[ignore = "manual live IR generation repro for Rust crates that failed in production"]
 	async fn rust_registry_ir_generation_repros() {
 		let registry = live_registry();
-		let cases = [("cpal", "0.16.0"), ("tunes", "0.16.0")];
+		let cases = [("cpal", "0.16.0"), ("tunes", "0.16.0"), ("serde_json", "1.0.82")];
 
 		for (crate_name, version) in cases {
 			let package = registry
