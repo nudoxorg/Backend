@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, path::Path, process::Command};
 
 use gix::{Repository, bstr::ByteSlice, progress::Discard, remote};
 use semver::Version;
@@ -64,19 +64,55 @@ pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Res
 		.find_fetch_remote(remote_name.map(|name| name.as_bytes().as_bstr()))
 		.map_err(|source| GitError::Fetch(source.into()))?;
 
-	let connection =
-		remote.connect(remote::Direction::Fetch).map_err(|source| GitError::Fetch(source.into()))?;
-	let prepare = connection
-		.prepare_fetch(Discard, remote::ref_map::Options::default())
+	let fetch_result: Result<(), GitError> = (|| {
+		let connection = remote
+			.connect(remote::Direction::Fetch)
+			.map_err(|source| GitError::Fetch(source.into()))?;
+		let prepare = connection
+			.prepare_fetch(Discard, remote::ref_map::Options::default())
+			.map_err(|source| GitError::Fetch(source.into()))?;
+
+		prepare
+			.with_write_packed_refs_only(true)
+			.with_reflog_message(gix::remote::fetch::RefLogMessage::Prefixed {
+				action: "fetch".to_owned(),
+			})
+			.receive(Discard, &gix::interrupt::IS_INTERRUPTED)
+			.map_err(|source| GitError::Fetch(source.into()))?;
+
+		Ok(())
+	})();
+
+	if fetch_result.is_ok() {
+		return Ok(());
+	}
+
+	let repo_dir = repo.workdir().unwrap_or_else(|| repo.path());
+	let remote_name = remote_name.unwrap_or("origin");
+	let output = Command::new("git")
+		.arg("-C")
+		.arg(repo_dir)
+		.arg("fetch")
+		.arg("--prune")
+		.arg(remote_name)
+		.output()
 		.map_err(|source| GitError::Fetch(source.into()))?;
 
-	prepare
-		.with_write_packed_refs_only(true)
-		.with_reflog_message(gix::remote::fetch::RefLogMessage::Prefixed { action: "fetch".to_owned() })
-		.receive(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(|source| GitError::Fetch(source.into()))?;
+	if output.status.success() {
+		return Ok(());
+	}
 
-	Ok(())
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	Err(GitError::Fetch(
+		std::io::Error::other(format!(
+			"gix fetch failed and git fetch fallback exited with status {}: stdout: {} stderr: {}",
+			output.status,
+			stdout.trim(),
+			stderr.trim()
+		))
+		.into(),
+	))
 }
 
 #[instrument(skip(repo), fields(remote = %remote_name, branch = %branch))]
