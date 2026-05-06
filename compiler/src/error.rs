@@ -146,6 +146,9 @@ pub enum PackageError {
 	#[error("registry error: {0}")]
 	Registry(#[from] RegistryError),
 
+	#[error("metadata error: {0}")]
+	Metadata(String),
+
 	#[error("version {0} not found")]
 	VersionNotFound(Version),
 

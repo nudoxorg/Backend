@@ -49,6 +49,9 @@ impl Ir<Collected> {
 	/// Wrap raw parser output into the IR pipeline.
 	pub fn from_entries(entries: Vec<Entry>) -> Self { Ir { data: entries } }
 
+	/// Consume the collected IR and return the underlying entries.
+	pub fn into_entries(self) -> Vec<Entry> { self.data }
+
 	/// Build the ID index, transitioning to the `Indexed` stage.
 	///
 	/// Root entries are those whose path has a single segment (the crate root).

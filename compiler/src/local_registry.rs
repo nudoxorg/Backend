@@ -121,6 +121,7 @@ enum PersistedPackageHandle {
 		name:        String,
 		slug:        String,
 		source:      Url,
+		direct_repo: bool,
 		description: Option<String>,
 	},
 	TypeScript {
@@ -734,6 +735,7 @@ impl From<&PackageHandle> for PersistedPackageHandle {
 				name:        package.name.clone(),
 				slug:        package.slug.clone(),
 				source:      package.source.clone(),
+				direct_repo: package.direct_repo,
 				description: package.description.clone(),
 			},
 			PackageHandle::TypeScript(package) => Self::TypeScript {
@@ -751,13 +753,14 @@ impl From<&PackageHandle> for PersistedPackageHandle {
 impl From<PersistedPackageHandle> for PackageHandle {
 	fn from(value: PersistedPackageHandle) -> Self {
 		match value {
-			PersistedPackageHandle::Rust { name, slug, source, description } => {
+			PersistedPackageHandle::Rust { name, slug, source, direct_repo, description } => {
 				PackageHandle::Rust(RustPackage {
 					slug,
 					name,
 					language: Language::Rust,
 					uuid: 0,
 					source,
+					direct_repo,
 					description,
 				})
 			}
@@ -865,6 +868,7 @@ fn resolve_explicit_rust_package_handle(
 		language:    Language::Rust,
 		uuid:        0,
 		source,
+		direct_repo: true,
 		description: None,
 	}))
 }
@@ -1396,6 +1400,7 @@ mod tests {
 				language:    Language::Rust,
 				uuid:        0,
 				source:      Url::parse("https://github.com/example/any-tts").unwrap(),
+				direct_repo: true,
 				description: Some("fixture".to_owned()),
 			}),
 		));

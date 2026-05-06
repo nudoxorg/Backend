@@ -1,5 +1,6 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{collections::{BTreeSet, HashMap, VecDeque}, fs, path::PathBuf, process::Command};
 
+use cargo_metadata::{Metadata, MetadataCommand, Package as CargoPackage, PackageId};
 use crates_io_api::{AsyncClient, Crate, CratesQuery};
 use lang_types::Language;
 use semver::Version;
@@ -7,7 +8,7 @@ use thiserror::Error;
 use tracing::{debug, info, instrument};
 use url::Url;
 
-use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError, summarize_command_output}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
+use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError, summarize_command_output}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package as PackageTrait, registry::Registry}};
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
@@ -73,6 +74,7 @@ pub struct RustPackage {
 	pub language:    Language,
 	pub uuid:        u64,
 	pub source:      Url,
+	pub direct_repo: bool,
 	pub description: Option<String>,
 }
 
@@ -84,28 +86,35 @@ impl Default for RustPackage {
 			language:    Language::Rust,
 			uuid:        0,
 			source:      Url::parse("https://example.com").unwrap(),
+			direct_repo: false,
 			description: None,
 		}
 	}
 }
 
 impl RustPackage {
-	fn cargo_package_spec(&self, version: &Version) -> String { format!("{}@{}", self.name, version) }
+	fn cargo_package_spec_for(package_name: &str, version: &Version) -> String {
+		format!("{package_name}@{version}")
+	}
 
 	fn run_cargo_rustdoc(
 		&self,
 		code: &PathBuf,
+		package_name: &str,
 		version: &Version,
 		lib_only: bool,
 	) -> Result<std::process::Output, PackageError> {
 		let mut command = Command::new("cargo");
-		command.arg("rustdoc").arg("--package").arg(self.cargo_package_spec(version));
+		command
+			.arg("rustdoc")
+			.arg("--package")
+			.arg(Self::cargo_package_spec_for(package_name, version));
 		if lib_only {
 			command.arg("--lib");
 		}
 		command
 			.arg("--")
-			.arg("--document-private-items")
+			.args(self.direct_repo.then_some("--document-private-items"))
 			.arg("-Z")
 			.arg("unstable-options")
 			.arg("--output-format")
@@ -137,9 +146,11 @@ impl RustPackage {
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
 	/// Takes an input of `code` which is the location of the source code on disk
 	#[instrument(skip_all, fields(package = %self.name))]
-	pub(crate) fn generate_ir(
+	fn generate_ir_for_package(
 		&self,
 		code: &PathBuf,
+		package_name: &str,
+		doc_target_name: &str,
 		version: &Version,
 	) -> Result<Ir<Collected>, PackageError> {
 		let target_dir = code.join("target").join("doc_json");
@@ -148,18 +159,20 @@ impl RustPackage {
 			fs::create_dir_all(&target_dir)?;
 		}
 
-		match self.run_cargo_rustdoc(code, version, false) {
+		match self.run_cargo_rustdoc(code, package_name, version, false) {
 			Ok(_) => {}
 			Err(PackageError::Process { details, .. })
 				if details.contains("extra arguments to `rustdoc` can only be passed to one target") =>
 			{
-				self.run_cargo_rustdoc(code, version, true)?;
+				self.run_cargo_rustdoc(code, package_name, version, true)?;
 			}
 			Err(error) => return Err(error),
 		}
 
-		let json_path =
-			code.join("target").join("doc").join(format!("{}.json", self.name.replace('-', "_")));
+		let json_path = code
+			.join("target")
+			.join("doc")
+			.join(format!("{}.json", doc_target_name.replace('-', "_")));
 
 		let json_content = fs::read_to_string(&json_path)?;
 
@@ -172,6 +185,30 @@ impl RustPackage {
 		info!(entries = parse_result.len(), "IR generation complete");
 
 		Ok(Ir::from_entries(parse_result))
+	}
+
+	pub(crate) fn generate_ir(
+		&self,
+		code: &PathBuf,
+		version: &Version,
+	) -> Result<Ir<Collected>, PackageError> {
+		let metadata = cargo_metadata(code)?;
+		let packages = documented_local_packages(&metadata, &self.name, self.direct_repo);
+		let mut entries = Vec::new();
+
+		for package_id in packages {
+			let package = metadata
+				.packages
+				.iter()
+				.find(|candidate| candidate.id == package_id)
+				.expect("documented package id should exist in metadata");
+			let doc_target_name =
+				package_doc_target_name(package).unwrap_or_else(|| package.name.to_string());
+			let package_ir = self.generate_ir_for_package(code, &package.name, &doc_target_name, version)?;
+			entries.extend(package_ir.into_entries());
+		}
+
+		Ok(Ir::from_entries(entries))
 	}
 
 	pub(crate) fn from_registry_crate(c: Crate) -> Self {
@@ -189,16 +226,92 @@ impl RustPackage {
 			language: Language::Rust,
 			uuid: c.id.parse::<u64>().unwrap_or(0),
 			source,
+			direct_repo: false,
 			description: c.description,
 		}
 	}
+}
+
+fn cargo_metadata(code: &PathBuf) -> Result<Metadata, PackageError> {
+	MetadataCommand::new().current_dir(code).exec().map_err(|source| PackageError::Metadata(source.to_string()))
+}
+
+fn documented_local_packages(
+	metadata: &Metadata,
+	root_package_name: &str,
+	direct_repo: bool,
+) -> Vec<PackageId> {
+	let Some(root_package) = metadata.packages.iter().find(|package| package.name == root_package_name)
+	else {
+		return Vec::new();
+	};
+	let mut documented = vec![root_package.id.clone()];
+	if !direct_repo || package_has_library(root_package) {
+		return documented;
+	}
+
+	let Some(resolve) = &metadata.resolve else {
+		return documented;
+	};
+	let package_map: HashMap<_, _> = metadata.packages.iter().map(|package| (&package.id, package)).collect();
+	let node_map: HashMap<_, _> = resolve.nodes.iter().map(|node| (&node.id, node)).collect();
+	let workspace_root = metadata.workspace_root.as_std_path();
+	let mut seen = BTreeSet::from([root_package.id.clone()]);
+	let mut queue = VecDeque::from([root_package.id.clone()]);
+
+	while let Some(package_id) = queue.pop_front() {
+		let Some(node) = node_map.get(&package_id) else {
+			continue;
+		};
+
+		for dependency in &node.deps {
+			let dependency_id = &dependency.pkg;
+			if !seen.insert(dependency_id.clone()) {
+				continue;
+			}
+			queue.push_back(dependency_id.clone());
+
+			let Some(package) = package_map.get(dependency_id) else {
+				continue;
+			};
+			if !package.manifest_path.as_std_path().starts_with(workspace_root) {
+				continue;
+			}
+			if package_has_library(package) {
+				documented.push(package.id.clone());
+			}
+		}
+	}
+
+	documented
+}
+
+fn package_has_library(package: &CargoPackage) -> bool {
+	package.targets.iter().any(|target| target.kind.iter().any(is_library_target_kind))
+}
+
+fn package_doc_target_name(package: &CargoPackage) -> Option<String> {
+	package
+		.targets
+		.iter()
+		.find(|target| target.kind.iter().any(is_library_target_kind))
+		.or_else(|| {
+			package.targets.iter().find(|target| {
+				!target.kind.iter().any(|kind| kind.to_string() == "custom-build")
+			})
+		})
+		.map(|target| target.name.clone())
+}
+
+fn is_library_target_kind(kind: &cargo_metadata::TargetKind) -> bool {
+	matches!(kind.to_string().as_str(), "lib" | "rlib" | "staticlib" | "cdylib" | "dylib")
 }
 
 impl From<Crate> for RustPackage {
 	fn from(c: Crate) -> Self { Self::from_registry_crate(c) }
 }
 
-impl Package for RustPackage {
+impl PackageTrait for RustPackage {
 	type Error = PackageError;
 
 	fn get_available_versions(&self) -> Result<Vec<Version>, Self::Error> {
@@ -261,6 +374,7 @@ impl Registry for Crates {
 			language:    Language::Rust,
 			uuid:        0,
 			source:      Url::parse("https://doc.rust-lang.org/reference/").unwrap(),
+			direct_repo: false,
 			description: Some("The official reference manual for the Rust language".into()),
 		}
 	}
@@ -292,16 +406,10 @@ mod tests {
 
 	#[test]
 	fn cargo_package_spec_is_version_qualified() {
-		let package = RustPackage {
-			slug:        "serde-json".into(),
-			name:        "serde_json".into(),
-			language:    Language::Rust,
-			uuid:        1,
-			source:      Url::parse("https://example.com/serde_json").unwrap(),
-			description: None,
-		};
-
-		assert_eq!(package.cargo_package_spec(&Version::parse("1.0.82").unwrap()), "serde_json@1.0.82");
+		assert_eq!(
+			RustPackage::cargo_package_spec_for("serde_json", &Version::parse("1.0.82").unwrap()),
+			"serde_json@1.0.82"
+		);
 	}
 
 	#[tokio::test]
@@ -414,6 +522,7 @@ mod tests {
 			language:    Language::Rust,
 			uuid:        0,
 			source:      Url::parse("https://github.com/inko-lang/inko").unwrap(),
+			direct_repo: true,
 			description: None,
 		};
 

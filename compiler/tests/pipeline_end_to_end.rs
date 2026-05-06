@@ -17,6 +17,7 @@ fn rust_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 		language:    lang_types::Language::Rust,
 		uuid:        1,
 		source:      file_url(repository.path())?,
+		direct_repo: true,
 		description: Some("regular rust fixture".into()),
 	};
 
@@ -64,6 +65,7 @@ fn rust_workspace_pipeline_end_to_end() -> color_eyre::Result<()> {
 		language:    lang_types::Language::Rust,
 		uuid:        2,
 		source:      file_url(repository.path())?,
+		direct_repo: true,
 		description: Some("workspace rust fixture".into()),
 	};
 
@@ -80,6 +82,31 @@ fn rust_workspace_pipeline_end_to_end() -> color_eyre::Result<()> {
 }
 
 #[test]
+fn rust_binary_workspace_pipeline_includes_local_library_deps() -> color_eyre::Result<()> {
+	let repository = git_fixture("rust/binary_workspace")?;
+	let package = RustPackage {
+		slug:        "app".into(),
+		name:        "app".into(),
+		language:    lang_types::Language::Rust,
+		uuid:        8,
+		source:      file_url(repository.path())?,
+		direct_repo: true,
+		description: Some("binary workspace rust fixture".into()),
+	};
+
+	let ir = package.retrieve(Version::parse("0.1.0")?, None)?;
+	let store = emit_store("rust", "app", Version::parse("0.1.0")?, ir)?;
+	let names = doc_names(&store);
+
+	assert!(names.contains("app"));
+	assert!(names.contains("CoreCounter"));
+	assert!(has_entry_path_suffix(&store, "corelib::CoreCounter"));
+	assert!(store.docs.len() >= 3);
+
+	Ok(())
+}
+
+#[test]
 #[ignore = "local repro for axum parser failures"]
 fn rust_axum_pipeline_repro() -> color_eyre::Result<()> {
 	let package = RustPackage {
@@ -88,6 +115,7 @@ fn rust_axum_pipeline_repro() -> color_eyre::Result<()> {
 		language:    lang_types::Language::Rust,
 		uuid:        5,
 		source:      Url::parse("https://github.com/tokio-rs/axum")?,
+		direct_repo: true,
 		description: Some("live axum repro".into()),
 	};
 
@@ -114,6 +142,7 @@ fn rust_axum_089_entry_diagnostic() -> color_eyre::Result<()> {
 		language:    lang_types::Language::Rust,
 		uuid:        7,
 		source:      Url::parse("https://github.com/tokio-rs/axum")?,
+		direct_repo: true,
 		description: Some("live axum 0.8.9 diagnostic".into()),
 	};
 	let version = Version::parse("0.8.9")?;
@@ -181,6 +210,7 @@ async fn rust_axum_terminus_upload_repro() -> color_eyre::Result<()> {
 		language:    lang_types::Language::Rust,
 		uuid:        6,
 		source:      Url::parse("https://github.com/tokio-rs/axum")?,
+		direct_repo: true,
 		description: Some("live axum terminus repro".into()),
 	};
 
