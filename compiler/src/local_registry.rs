@@ -36,8 +36,12 @@ pub struct NewPackageRequest {
 	pub entry_point: Option<String>,
 	#[serde(default)]
 	pub branch:      Option<String>,
-	#[serde(default = "default_sync_on_add")]
-	pub sync_on_add: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum AddPackageOutcome {
+	Created(PackageSnapshot),
+	Existing(PackageSnapshot),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -200,8 +204,6 @@ struct MonitorExecution {
 	remote_update_available: bool,
 }
 
-fn default_sync_on_add() -> bool { true }
-
 const TYPESCRIPT_REPOSITORY_ENTRY_PREFIX: &str = "repo:";
 
 impl LocalRegistry {
@@ -245,7 +247,7 @@ impl LocalRegistry {
 	pub async fn add_package(
 		self: &Arc<Self>,
 		request: NewPackageRequest,
-	) -> Result<PackageSnapshot, AppError> {
+	) -> Result<AddPackageOutcome, AppError> {
 		let branch = request
 			.branch
 			.clone()
@@ -259,11 +261,7 @@ impl LocalRegistry {
 
 		if let Some(existing_id) = self.keys.read().await.get(&key).copied() {
 			let existing = self.get_tracked(existing_id).await?;
-			let snapshot = existing.snapshot().await;
-			if request.sync_on_add && should_enqueue_duplicate_sync(&snapshot.state) {
-				return self.enqueue_sync(existing).await;
-			}
-			return Ok(snapshot);
+			return Ok(AddPackageOutcome::Existing(existing.snapshot().await));
 		}
 
 		let handle = resolve_package_handle(&request).await?;
@@ -282,11 +280,7 @@ impl LocalRegistry {
 		self.keys.write().await.insert(key, package_id);
 		self.persist().await?;
 
-		if request.sync_on_add {
-			self.enqueue_sync(tracked).await
-		} else {
-			Ok(tracked.snapshot().await)
-		}
+		Ok(AddPackageOutcome::Created(self.enqueue_sync(tracked).await?))
 	}
 
 	pub async fn sync_package(self: &Arc<Self>, id: u64) -> Result<PackageSnapshot, AppError> {
@@ -526,8 +520,10 @@ impl TrackedPackage {
 		state.last_synced_at = Some(now);
 		state.tracked_version_commit = Some(execution.tracked_version_commit);
 		state.latest_remote_commit = execution.latest_remote_commit;
-		state.remote_update_available =
-			state.latest_remote_commit.as_ref() != state.tracked_version_commit.as_ref();
+		state.remote_update_available = compute_remote_update_available(
+			state.latest_remote_commit.as_ref(),
+			state.tracked_version_commit.as_ref(),
+		);
 		state.entry_count = execution.summary.entry_count;
 		state.document_count = execution.summary.document_count;
 		state.vector_count = execution.summary.vector_count;
@@ -960,7 +956,10 @@ fn run_monitor_refresh(
 					.to_string();
 
 			Ok(MonitorExecution {
-				remote_update_available: latest_remote_commit.as_deref() != Some(tracked_commit.as_str()),
+				remote_update_available: compute_remote_update_available(
+					latest_remote_commit.as_ref(),
+					Some(&tracked_commit),
+				),
 				latest_remote_commit,
 			})
 		}
@@ -981,14 +980,14 @@ fn default_tracking_branch(language: Language) -> &'static str {
 	}
 }
 
-fn should_enqueue_duplicate_sync(state: &PackageStateSnapshot) -> bool {
-	if !matches!(state.sync_status, PackageSyncStatus::Idle) {
-		return false;
-	}
-
-	match state.health {
-		PackageHealth::Healthy => state.remote_update_available || state.tracked_version_commit.is_none(),
-		PackageHealth::Pending | PackageHealth::Degraded => true,
+fn compute_remote_update_available(
+	latest_remote_commit: Option<&String>,
+	tracked_version_commit: Option<&String>,
+) -> bool {
+	match (latest_remote_commit, tracked_version_commit) {
+		(Some(latest), Some(tracked)) => latest != tracked,
+		(Some(_), None) => true,
+		(None, _) => false,
 	}
 }
 
@@ -1068,7 +1067,10 @@ fn run_repository_backed_typescript_monitor(
 			.to_string();
 
 	Ok(MonitorExecution {
-		remote_update_available: latest_remote_commit.as_deref() != Some(tracked_commit.as_str()),
+		remote_update_available: compute_remote_update_available(
+			latest_remote_commit.as_ref(),
+			Some(&tracked_commit),
+		),
 		latest_remote_commit,
 	})
 }
@@ -1211,7 +1213,6 @@ mod tests {
 			source: None,
 			entry_point: None,
 			branch: None,
-			sync_on_add: false,
 		}
 	}
 
@@ -1361,68 +1362,16 @@ mod tests {
 	}
 
 	#[test]
-	fn duplicate_add_does_not_resync_healthy_up_to_date_package() {
-		let state = PackageStateSnapshot {
-			health:                  PackageHealth::Healthy,
-			sync_status:             PackageSyncStatus::Idle,
-			sync_phase:              None,
-			sync_detail:             None,
-			last_checked_at:         None,
-			last_synced_at:          None,
-			tracked_version_commit:  Some("abc".to_owned()),
-			latest_remote_commit:    Some("abc".to_owned()),
-			remote_update_available: false,
-			entry_count:             161,
-			document_count:          322,
-			vector_count:            161,
-			last_error:              None,
-		};
-
-		assert!(!should_enqueue_duplicate_sync(&state));
+	fn remote_update_is_false_when_remote_head_is_unknown() {
+		let tracked = "abc".to_owned();
+		assert!(!compute_remote_update_available(None, Some(&tracked)));
 	}
 
 	#[test]
-	fn duplicate_add_ignores_in_flight_syncs() {
-		let state = PackageStateSnapshot {
-			health:                  PackageHealth::Healthy,
-			sync_status:             PackageSyncStatus::Running,
-			sync_phase:              Some(PackageSyncPhase::UploadingDocuments),
-			sync_detail:             Some("uploading 322 documents".to_owned()),
-			last_checked_at:         None,
-			last_synced_at:          None,
-			tracked_version_commit:  Some("abc".to_owned()),
-			latest_remote_commit:    Some("abc".to_owned()),
-			remote_update_available: false,
-			entry_count:             161,
-			document_count:          322,
-			vector_count:            161,
-			last_error:              None,
-		};
-
-		assert!(!should_enqueue_duplicate_sync(&state));
-	}
-
-	#[test]
-	fn duplicate_add_can_resync_stale_or_unhealthy_package() {
-		let stale = PackageStateSnapshot {
-			health:                  PackageHealth::Healthy,
-			sync_status:             PackageSyncStatus::Idle,
-			sync_phase:              None,
-			sync_detail:             None,
-			last_checked_at:         None,
-			last_synced_at:          None,
-			tracked_version_commit:  Some("old".to_owned()),
-			latest_remote_commit:    Some("new".to_owned()),
-			remote_update_available: true,
-			entry_count:             161,
-			document_count:          322,
-			vector_count:            161,
-			last_error:              None,
-		};
-		let degraded = PackageStateSnapshot { health: PackageHealth::Degraded, ..stale.clone() };
-
-		assert!(should_enqueue_duplicate_sync(&stale));
-		assert!(should_enqueue_duplicate_sync(&degraded));
+	fn remote_update_is_true_when_remote_head_advances() {
+		let tracked = "old".to_owned();
+		let latest = "new".to_owned();
+		assert!(compute_remote_update_available(Some(&latest), Some(&tracked)));
 	}
 
 	fn test_pipeline_config() -> PipelineConfig {

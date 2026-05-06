@@ -136,10 +136,39 @@ async fn package_registry_persists_across_server_restart() -> color_eyre::Result
 			"name": "persistent-toolkit",
 			"version": Version::parse("2.0.0")?,
 			"source": repo.path().display().to_string(),
-			"sync_on_add": false,
 		}))
 		.await?;
 	assert_eq!(duplicate["id"], package["id"]);
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn duplicate_add_returns_existing_package_without_requeue() -> color_eyre::Result<()> {
+	let server = TestServer::spawn().await?;
+	let repo = git_typescript_fixture("idempotent-toolkit", "2.1.0")?;
+
+	let initial = server
+		.add_package(json!({
+			"language": Language::TypeScript,
+			"name": "idempotent-toolkit",
+			"version": Version::parse("2.1.0")?,
+			"source": repo.path().display().to_string(),
+		}))
+		.await?;
+	assert_eq!(initial["state"]["health"], "healthy");
+
+	let duplicate = server
+		.enqueue_package(json!({
+			"language": Language::TypeScript,
+			"name": "idempotent-toolkit",
+			"version": Version::parse("2.1.0")?,
+			"source": repo.path().display().to_string(),
+		}))
+		.await?;
+	assert_eq!(duplicate["id"], initial["id"]);
+	assert_eq!(duplicate["state"]["sync_status"], "idle");
+	assert_eq!(duplicate["state"]["health"], "healthy");
 
 	Ok(())
 }
@@ -267,7 +296,7 @@ impl TestServer {
 		let status = response.status();
 		let body = response.text().await?;
 		assert!(
-			matches!(status, StatusCode::CREATED | StatusCode::ACCEPTED),
+			matches!(status, StatusCode::OK | StatusCode::CREATED | StatusCode::ACCEPTED),
 			"unexpected response body: {body}"
 		);
 		Ok(serde_json::from_str(&body)?)

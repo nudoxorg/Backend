@@ -4,7 +4,7 @@ use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routin
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
-use crate::{config::PipelineConfig, error::AppError, local_registry::{LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}};
+use crate::{config::PipelineConfig, error::AppError, local_registry::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -52,9 +52,10 @@ async fn add_package(
 	State(state): State<AppState>,
 	Json(request): Json<NewPackageRequest>,
 ) -> Result<(StatusCode, Json<PackageSnapshot>), AppError> {
-	let status = if request.sync_on_add { StatusCode::ACCEPTED } else { StatusCode::CREATED };
-	let package = state.registry.add_package(request).await?;
-	Ok((status, Json(package)))
+	match state.registry.add_package(request).await? {
+		AddPackageOutcome::Created(package) => Ok((StatusCode::ACCEPTED, Json(package))),
+		AddPackageOutcome::Existing(package) => Ok((StatusCode::OK, Json(package))),
+	}
 }
 
 async fn sync_package(
