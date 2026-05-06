@@ -193,7 +193,7 @@ impl TsPackage {
 			};
 			return Err(TsPackageError::Process {
 				command: format!("deno run ts_doc_runner {}", self.entry_point),
-				status:  output.status,
+				status: output.status,
 				details,
 			});
 		}
@@ -545,7 +545,7 @@ fn unpack_npm_tarball(bytes: &[u8], destination: &Path) -> Result<(), TsPackageE
 
 fn resolve_materialized_entry_point(root: &Path) -> Result<PathBuf, TsPackageError> {
 	if let Some(candidate) = read_entry_point_from_package_json(root)? {
-		return ensure_materialized_entry_point(candidate);
+		return ensure_materialized_entry_point(root, candidate);
 	}
 
 	for candidate in ["mod.ts", "index.ts", "src/mod.ts", "src/index.ts", "index.d.ts"] {
@@ -896,15 +896,89 @@ fn strip_known_suffix(path: &str) -> Option<String> {
 	None
 }
 
-fn ensure_materialized_entry_point(candidate: PathBuf) -> Result<PathBuf, TsPackageError> {
+fn ensure_materialized_entry_point(
+	root: &Path,
+	candidate: PathBuf,
+) -> Result<PathBuf, TsPackageError> {
 	if candidate.is_file() {
 		return Ok(candidate);
+	}
+
+	for fallback in materialized_source_fallback_candidates(root, &candidate) {
+		if fallback.is_file() {
+			return Ok(fallback);
+		}
 	}
 
 	Err(TsPackageError::InvalidLocalEntryPoint(format!(
 		"TypeScript entry point `{}` does not exist",
 		candidate.display()
 	)))
+}
+
+fn materialized_source_fallback_candidates(
+	root: &Path,
+	candidate: &Path,
+) -> Vec<PathBuf> {
+	let Ok(relative) = candidate.strip_prefix(root) else {
+		return Vec::new();
+	};
+
+	let variants = relative_variants_without_build_prefixes(relative);
+	let mut fallbacks = BTreeSet::new();
+	for variant in variants {
+		for path in source_candidates_for_path(&root.join(&variant)) {
+			fallbacks.insert(path);
+		}
+	}
+	fallbacks.into_iter().collect()
+}
+
+fn relative_variants_without_build_prefixes(relative: &Path) -> Vec<PathBuf> {
+	let mut variants = vec![relative.to_path_buf()];
+	let components = relative.components().collect::<Vec<_>>();
+	if components.len() >= 2 {
+		let first = components[0].as_os_str().to_string_lossy();
+		let second = components[1].as_os_str().to_string_lossy();
+		if matches!(first.as_ref(), "lib" | "dist" | "build" | "esm" | "cjs")
+			&& second == "src"
+		{
+			let stripped = components[1..].iter().collect::<PathBuf>();
+			variants.push(stripped);
+		}
+	}
+	variants
+}
+
+fn source_candidates_for_path(candidate: &Path) -> Vec<PathBuf> {
+	let mut paths = BTreeSet::new();
+	let candidate_string = candidate.to_string_lossy();
+
+	if is_source_like(candidate) && candidate.is_file() {
+		paths.insert(candidate.to_path_buf());
+	}
+	if candidate.is_dir() {
+		for extension in SOURCE_EXTENSIONS {
+			paths.insert(candidate.join(format!("index{extension}")));
+		}
+	}
+
+	let mut stem_variants = Vec::new();
+	if let Some(stripped) = strip_known_suffix(&candidate_string) {
+		stem_variants.push(PathBuf::from(stripped));
+	}
+	stem_variants.push(candidate.to_path_buf());
+
+	for stem in stem_variants {
+		for extension in SOURCE_EXTENSIONS {
+			paths.insert(PathBuf::from(format!("{}{}", stem.to_string_lossy(), extension)));
+		}
+		for extension in SOURCE_EXTENSIONS {
+			paths.insert(stem.join(format!("index{extension}")));
+		}
+	}
+
+	paths.into_iter().collect()
 }
 
 fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, TsPackageError> {
@@ -1139,6 +1213,24 @@ mod tests {
 		push_doc_root(workspace.path(), "./non-secure/index.js", &mut roots);
 		assert_eq!(roots.len(), 1);
 		assert!(roots.iter().any(|path| path.ends_with("non-secure/index.d.ts")));
+	}
+
+	#[test]
+	fn resolve_materialized_entry_point_falls_back_to_source_for_old_repo_layouts() {
+		let workspace = tempfile::tempdir().unwrap();
+		fs::write(
+			workspace.path().join("package.json"),
+			r#"{
+				"main":"./lib/src/index.js",
+				"types":"./lib/src/index.d.ts"
+			}"#,
+		)
+		.unwrap();
+		fs::create_dir_all(workspace.path().join("src")).unwrap();
+		fs::write(workspace.path().join("src").join("index.ts"), "export const z = 1;\n").unwrap();
+
+		let resolved = resolve_materialized_entry_point(workspace.path()).unwrap();
+		assert_eq!(resolved, workspace.path().join("src").join("index.ts"));
 	}
 
 	#[tokio::test]
