@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, num::NonZeroU64, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicU64, Ordering}}};
+use std::{collections::{BTreeSet, HashMap}, fs, num::NonZeroU64, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
 use jiff::Timestamp;
 use lang_types::Language;
@@ -1236,11 +1236,11 @@ fn resolve_typescript_repository_entry_point(
 ) -> Result<PathBuf, AppError> {
 	if let Some(entry_hint) = entry_hint {
 		let candidate = repository_root.join(entry_hint);
-		return ensure_typescript_entry_point(candidate);
+		return ensure_typescript_entry_point(repository_root, candidate);
 	}
 
 	if let Some(candidate) = read_typescript_entry_point_from_package_json(repository_root)? {
-		return ensure_typescript_entry_point(candidate);
+		return ensure_typescript_entry_point(repository_root, candidate);
 	}
 
 	for candidate in ["mod.ts", "index.ts", "src/mod.ts", "src/index.ts"] {
@@ -1258,14 +1258,103 @@ fn resolve_typescript_repository_entry_point(
 	})
 }
 
-fn ensure_typescript_entry_point(candidate: PathBuf) -> Result<PathBuf, AppError> {
+fn ensure_typescript_entry_point(
+	repository_root: &Path,
+	candidate: PathBuf,
+) -> Result<PathBuf, AppError> {
 	if candidate.is_file() {
 		return Ok(candidate);
+	}
+
+	for fallback in typescript_source_fallback_candidates(repository_root, &candidate) {
+		if fallback.is_file() {
+			return Ok(fallback);
+		}
 	}
 
 	Err(AppError::Internal {
 		message: format!("TypeScript entry point `{}` does not exist", candidate.display()),
 	})
+}
+
+fn typescript_source_fallback_candidates(
+	repository_root: &Path,
+	candidate: &Path,
+) -> Vec<PathBuf> {
+	let Ok(relative) = candidate.strip_prefix(repository_root) else {
+		return Vec::new();
+	};
+
+	let variants = typescript_relative_variants_without_build_prefixes(relative);
+	let mut fallbacks = BTreeSet::new();
+	for variant in variants {
+		for path in typescript_source_candidates_for_path(&repository_root.join(&variant)) {
+			fallbacks.insert(path);
+		}
+	}
+	fallbacks.into_iter().collect()
+}
+
+fn typescript_relative_variants_without_build_prefixes(relative: &Path) -> Vec<PathBuf> {
+	let mut variants = vec![relative.to_path_buf()];
+	let components = relative.components().collect::<Vec<_>>();
+	if components.len() >= 2 {
+		let first = components[0].as_os_str().to_string_lossy();
+		let second = components[1].as_os_str().to_string_lossy();
+		if matches!(first.as_ref(), "lib" | "dist" | "build" | "esm" | "cjs")
+			&& second == "src"
+		{
+			variants.push(components[1..].iter().collect::<PathBuf>());
+		}
+	}
+	variants
+}
+
+fn typescript_source_candidates_for_path(candidate: &Path) -> Vec<PathBuf> {
+	const SOURCE_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".cts"];
+
+	let mut paths = BTreeSet::new();
+	let candidate_string = candidate.to_string_lossy();
+
+	if let Some(name) = candidate.file_name().and_then(|value| value.to_str())
+		&& SOURCE_EXTENSIONS.iter().any(|extension| name.ends_with(extension))
+	{
+		paths.insert(candidate.to_path_buf());
+	}
+	if candidate.is_dir() {
+		for extension in SOURCE_EXTENSIONS {
+			paths.insert(candidate.join(format!("index{extension}")));
+		}
+	}
+
+	let mut stem_variants = Vec::new();
+	if let Some(stripped) = strip_typescript_known_suffix(&candidate_string) {
+		stem_variants.push(PathBuf::from(stripped));
+	}
+	stem_variants.push(candidate.to_path_buf());
+
+	for stem in stem_variants {
+		for extension in SOURCE_EXTENSIONS {
+			paths.insert(PathBuf::from(format!("{}{}", stem.to_string_lossy(), extension)));
+		}
+		for extension in SOURCE_EXTENSIONS {
+			paths.insert(stem.join(format!("index{extension}")));
+		}
+	}
+
+	paths.into_iter().collect()
+}
+
+fn strip_typescript_known_suffix(path: &str) -> Option<String> {
+	for suffix in [
+		".d.ts", ".d.tsx", ".d.mts", ".d.cts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs",
+		".cjs",
+	] {
+		if let Some(stripped) = path.strip_suffix(suffix) {
+			return Some(stripped.to_string());
+		}
+	}
+	None
 }
 
 fn read_typescript_entry_point_from_package_json(
@@ -1362,6 +1451,28 @@ mod tests {
 		assert_eq!(package.name, "inko");
 		assert_eq!(package.slug, "inko");
 		assert_eq!(package.source.as_str(), "https://github.com/inko-lang/inko");
+	}
+
+	#[test]
+	fn resolve_typescript_repository_entry_point_falls_back_to_source_for_old_repo_layouts() {
+		let workspace = tempfile::tempdir().unwrap();
+		std::fs::write(
+			workspace.path().join("package.json"),
+			r#"{
+				"main":"./lib/src/index.js",
+				"types":"./lib/src/index.d.ts"
+			}"#,
+		)
+		.unwrap();
+		std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+		std::fs::write(
+			workspace.path().join("src").join("index.ts"),
+			"export const z = 1;\n",
+		)
+		.unwrap();
+
+		let resolved = resolve_typescript_repository_entry_point(workspace.path(), None).unwrap();
+		assert_eq!(resolved, workspace.path().join("src").join("index.ts"));
 	}
 
 	#[test]
