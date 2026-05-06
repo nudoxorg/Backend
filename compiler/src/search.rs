@@ -364,14 +364,29 @@ async fn resolve_symbol(
 	cache: &mut HashMap<String, Option<JsonValue>>,
 	uri: &str,
 ) -> Result<ResolvedSymbol, AppError> {
-	let document = fetch_document(client, spec, cache, uri).await?.ok_or_else(|| {
-		AppError::Internal { message: format!("symbol `{uri}` was not found in TerminusDB") }
+	let mut resolved_uri = None;
+	let mut document = None;
+	for candidate in candidate_symbol_uris(uri) {
+		if let Some(found) = fetch_document(client, spec, cache, &candidate).await? {
+			resolved_uri = Some(candidate);
+			document = Some(found);
+			break;
+		}
+	}
+
+	let resolved_uri = resolved_uri.unwrap_or_else(|| uri.to_owned());
+	let document = document.ok_or_else(|| AppError::Internal {
+		message: format!("symbol `{uri}` was not found in TerminusDB"),
 	})?;
 
 	let kind = match document.get("kind").and_then(JsonValue::as_str) {
 		Some(kind_uri) => fetch_document(client, spec, cache, kind_uri).await?,
 		None => None,
 	};
+
+	if resolved_uri != uri {
+		tracing::info!(requested_uri = uri, resolved_uri, "resolved symbol via canonical URI");
+	}
 
 	Ok(ResolvedSymbol { document, kind })
 }
@@ -488,6 +503,37 @@ fn relation_name(relation: &str) -> String {
 	if relation.is_empty() { "reference".to_owned() } else { relation.to_owned() }
 }
 
+fn candidate_symbol_uris(uri: &str) -> Vec<String> {
+	let mut candidates = vec![uri.to_owned()];
+	let Some((prefix, suffix)) = uri.strip_prefix("Entry/").and_then(|rest| rest.split_once('/'))
+	else {
+		return candidates;
+	};
+	if prefix != "rust" {
+		return candidates;
+	}
+	let Some((package_segment, fq_name)) = suffix.split_once('/') else {
+		return candidates;
+	};
+	let canonical_package = canonical_rust_package_segment(package_segment, fq_name);
+	if canonical_package != package_segment {
+		candidates.push(format!("Entry/{prefix}/{canonical_package}/{fq_name}"));
+	}
+	candidates
+}
+
+fn canonical_rust_package_segment(package_segment: &str, fq_name: &str) -> String {
+	let crate_root =
+		fq_name.split("::").next().filter(|segment| !segment.is_empty()).unwrap_or(package_segment);
+	let crate_slug = crate_root.replace('_', "-");
+	let normalized_package = package_segment.replace('_', "-");
+	if normalized_package.eq_ignore_ascii_case(&crate_slug) {
+		crate_slug
+	} else {
+		package_segment.to_owned()
+	}
+}
+
 fn require_non_empty<'a>(field: &'static str, value: &'a str) -> Result<&'a str, AppError> {
 	let trimmed = value.trim();
 	if trimmed.is_empty() {
@@ -534,4 +580,45 @@ async fn terminus_client(config: &TerminusConfig) -> Result<TerminusDBHttpClient
 		)
 		.await?,
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{candidate_symbol_uris, canonical_rust_package_segment};
+
+	#[test]
+	fn rust_lookup_accepts_underscored_package_segment() {
+		let candidates =
+			candidate_symbol_uris("Entry/rust/cranelift_object/cranelift_object::ObjectModule");
+		assert_eq!(candidates, vec![
+			"Entry/rust/cranelift_object/cranelift_object::ObjectModule".to_owned(),
+			"Entry/rust/cranelift-object/cranelift_object::ObjectModule".to_owned(),
+		]);
+	}
+
+	#[test]
+	fn rust_lookup_keeps_existing_hyphenated_package_segment() {
+		let candidates =
+			candidate_symbol_uris("Entry/rust/cranelift-object/cranelift_object::ObjectModule");
+		assert_eq!(candidates, vec![
+			"Entry/rust/cranelift-object/cranelift_object::ObjectModule".to_owned()
+		]);
+	}
+
+	#[test]
+	fn canonical_rust_package_segment_uses_crate_root() {
+		assert_eq!(
+			canonical_rust_package_segment(
+				"cranelift_module",
+				"cranelift_module::Module::define_function"
+			),
+			"cranelift-module"
+		);
+	}
+
+	#[test]
+	fn non_rust_uris_are_left_unchanged() {
+		let candidates = candidate_symbol_uris("Entry/typescript/zod/classic.external::ZodString");
+		assert_eq!(candidates, vec!["Entry/typescript/zod/classic.external::ZodString".to_owned()]);
+	}
 }
