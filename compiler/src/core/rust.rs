@@ -403,4 +403,28 @@ mod tests {
 			}
 		}
 	}
+
+	#[test]
+	#[ignore = "manual live IR generation repro for direct repository-backed Rust packages"]
+	fn rust_direct_repository_ir_generation_repro() {
+		let package = RustPackage {
+			slug:        "inko".into(),
+			name:        "inko".into(),
+			language:    Language::Rust,
+			uuid:        0,
+			source:      Url::parse("https://github.com/inko-lang/inko").unwrap(),
+			description: None,
+		};
+
+		let version = Version::parse("0.20.0").unwrap();
+		let result = package.retrieve(version.clone(), None);
+		match result {
+			Ok(ir) => {
+				println!("inko@{version} generated {} entries", ir.entries().len());
+			}
+			Err(error) => {
+				panic!("inko@{version} direct repository IR generation failed: {error:#}");
+			}
+		}
+	}
 }

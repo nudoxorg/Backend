@@ -833,6 +833,9 @@ impl TryFrom<u64> for PackageId {
 async fn resolve_package_handle(request: &NewPackageRequest) -> Result<PackageHandle, AppError> {
 	match request.language {
 		Language::Rust => {
+			if request.source.is_some() {
+				return resolve_explicit_rust_package_handle(request);
+			}
 			let registry = get_registry(Language::Rust);
 			let packages = registry.get_packages_by_name(&request.name).await.map_err(|source| {
 				AppError::RegistryLookup {
@@ -846,6 +849,24 @@ async fn resolve_package_handle(request: &NewPackageRequest) -> Result<PackageHa
 		Language::TypeScript => resolve_typescript_package_handle(request).await,
 		other => Err(AppError::UnsupportedLanguage { language: other }),
 	}
+}
+
+fn resolve_explicit_rust_package_handle(
+	request: &NewPackageRequest,
+) -> Result<PackageHandle, AppError> {
+	let source = request.source.as_deref().ok_or_else(|| AppError::Internal {
+		message: "missing explicit Rust source".to_owned(),
+	})?;
+	let source = parse_explicit_repository_source(request, source)?;
+
+	Ok(PackageHandle::Rust(RustPackage {
+		slug:        request.name.to_ascii_lowercase(),
+		name:        request.name.clone(),
+		language:    Language::Rust,
+		uuid:        0,
+		source,
+		description: None,
+	}))
 }
 
 fn resolve_rust_package_handle(
@@ -1160,6 +1181,13 @@ fn parse_explicit_typescript_source(
 	request: &NewPackageRequest,
 	source: &str,
 ) -> Result<Url, AppError> {
+	parse_explicit_repository_source(request, source)
+}
+
+fn parse_explicit_repository_source(
+	request: &NewPackageRequest,
+	source: &str,
+) -> Result<Url, AppError> {
 	if let Ok(url) = Url::parse(source) {
 		return Ok(url);
 	}
@@ -1299,6 +1327,21 @@ mod tests {
 		let handle =
 			resolve_package_handle(&request(Language::Rust, "serde", "1.0.228")).await.unwrap();
 		insta::assert_debug_snapshot!(handle);
+	}
+
+	#[tokio::test]
+	async fn resolves_explicit_rust_repository_handle() {
+		let mut req = request(Language::Rust, "inko", "0.18.1");
+		req.source = Some("https://github.com/inko-lang/inko".to_owned());
+
+		let handle = resolve_package_handle(&req).await.unwrap();
+		let PackageHandle::Rust(package) = handle else {
+			panic!("expected Rust package handle");
+		};
+
+		assert_eq!(package.name, "inko");
+		assert_eq!(package.slug, "inko");
+		assert_eq!(package.source.as_str(), "https://github.com/inko-lang/inko");
 	}
 
 	#[test]
