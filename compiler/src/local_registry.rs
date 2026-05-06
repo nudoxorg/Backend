@@ -937,7 +937,11 @@ fn run_sync(
 				PackageSyncPhase::Resolving,
 				Some(format!("opening repository for {}", package.name)),
 			);
-			let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
+			let repo_dir = storage.prepare_repository_dir(spec.language, &spec.slug, &package.source)
+				.map_err(|source| AppError::Storage {
+					path: storage.root().to_path_buf(),
+					source,
+				})?;
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 			progress
 				.phase_with_detail(PackageSyncPhase::Fetching, Some(format!("fetching {}", spec.branch)));
@@ -1034,7 +1038,11 @@ fn run_monitor_refresh(
 ) -> Result<MonitorExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
-			let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
+			let repo_dir = storage.prepare_repository_dir(spec.language, &spec.slug, &package.source)
+				.map_err(|source| AppError::Storage {
+					path: storage.root().to_path_buf(),
+					source,
+				})?;
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 			git::fetch_remote_updates(&repository, Some("origin"))?;
 
@@ -1095,7 +1103,11 @@ fn run_repository_backed_typescript_sync(
 		PackageSyncPhase::Resolving,
 		Some(format!("opening repository for {}", package.name)),
 	);
-	let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
+	let repo_dir = storage.prepare_repository_dir(spec.language, &spec.slug, &package.source)
+		.map_err(|source| AppError::Storage {
+			path: storage.root().to_path_buf(),
+			source,
+		})?;
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 	progress.phase_with_detail(PackageSyncPhase::Fetching, Some(format!("fetching {}", spec.branch)));
 	git::fetch_remote_updates(&repository, Some("origin"))?;
@@ -1145,7 +1157,11 @@ fn run_repository_backed_typescript_monitor(
 	package: TsPackage,
 	spec: PackageSpec,
 ) -> Result<MonitorExecution, AppError> {
-	let repo_dir = storage.repository_dir(spec.language, &spec.slug, &package.source);
+	let repo_dir = storage.prepare_repository_dir(spec.language, &spec.slug, &package.source)
+		.map_err(|source| AppError::Storage {
+			path: storage.root().to_path_buf(),
+			source,
+		})?;
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 	git::fetch_remote_updates(&repository, Some("origin"))?;
 
