@@ -12,7 +12,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use crate::{core::ts_parser::{ParseError, TsDocParser}, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
+use crate::{core::ts_parser::{ParseError, TsDocParser}, error::summarize_command_output, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
 
 // ============================================================================
 // Error types
@@ -50,8 +50,8 @@ pub enum TsPackageError {
 	#[error("IO error: {0}")]
 	Io(#[from] std::io::Error),
 
-	#[error("process `{command}` failed with {status}")]
-	Process { command: String, status: ExitStatus },
+	#[error("process `{command}` failed with {status}{details}")]
+	Process { command: String, status: ExitStatus, details: String },
 
 	#[error("parse error: {0}")]
 	Parse(#[from] ParseError),
@@ -182,9 +182,19 @@ impl TsPackage {
 			.output()?;
 
 		if !output.status.success() {
+			let stderr = summarize_command_output(&output.stderr);
+			let stdout = summarize_command_output(&output.stdout);
+			let details = if !stderr.is_empty() {
+				format!(": {stderr}")
+			} else if !stdout.is_empty() {
+				format!(": {stdout}")
+			} else {
+				String::new()
+			};
 			return Err(TsPackageError::Process {
 				command: format!("deno run ts_doc_runner {}", self.entry_point),
 				status:  output.status,
+				details,
 			});
 		}
 

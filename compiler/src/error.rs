@@ -9,6 +9,26 @@ use tokio::task::JoinError;
 
 use crate::core::rust::ParseError;
 
+pub(crate) fn summarize_command_output(bytes: &[u8]) -> String {
+	let text = String::from_utf8_lossy(bytes);
+	let trimmed = text.trim();
+	if trimmed.is_empty() {
+		return String::new();
+	}
+
+	const LIMIT: usize = 2_000;
+	if trimmed.len() <= LIMIT {
+		return trimmed.to_owned();
+	}
+
+	let mut end = LIMIT;
+	while !trimmed.is_char_boundary(end) {
+		end -= 1;
+	}
+
+	format!("{}...", &trimmed[..end])
+}
+
 #[derive(Debug, Error)]
 pub enum AppError {
 	#[error("{field}: {message}")]
@@ -111,8 +131,8 @@ pub enum PackageError {
 	#[error("IO error: {0}")]
 	Io(#[from] io::Error),
 
-	#[error("process `{command}` failed with {status}")]
-	Process { command: String, status: ExitStatus },
+	#[error("process `{command}` failed with {status}{details}")]
+	Process { command: String, status: ExitStatus, details: String },
 
 	#[error("parse error: {0}")]
 	Parse(#[from] ParseError),

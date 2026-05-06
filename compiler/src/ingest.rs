@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use color_eyre::eyre::WrapErr;
 use ir::entry::Index;
 use semver::Version;
 use tokio::runtime::Handle;
@@ -25,7 +24,9 @@ pub fn run_rust_pipeline(
 ) -> Result<IngestionSummary, AppError> {
 	let ir = package
 		.generate_ir(&workspace.to_path_buf())
-		.wrap_err_with(|| format!("IR generation failed for `{}`", package.name))?;
+		.map_err(|source| AppError::Internal {
+			message: format!("IR generation failed for `{}`: {source}", package.name),
+		})?;
 
 	finalize_pipeline(
 		"rust",
@@ -47,7 +48,9 @@ pub fn run_typescript_pipeline(
 ) -> Result<IngestionSummary, AppError> {
 	let ir = package
 		.generate_ir()
-		.wrap_err_with(|| format!("IR generation failed for `{}`", package.name))?;
+		.map_err(|source| AppError::Internal {
+			message: format!("IR generation failed for `{}`: {source}", package.name),
+		})?;
 
 	finalize_pipeline(
 		"typescript",

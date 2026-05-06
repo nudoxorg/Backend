@@ -7,7 +7,7 @@ use thiserror::Error;
 use tracing::{debug, info, instrument};
 use url::Url;
 
-use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
+use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError, summarize_command_output}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
@@ -90,6 +90,50 @@ impl Default for RustPackage {
 }
 
 impl RustPackage {
+	fn run_cargo_rustdoc(
+		&self,
+		code: &PathBuf,
+		lib_only: bool,
+	) -> Result<std::process::Output, PackageError> {
+		let mut command = Command::new("cargo");
+		command.arg("rustdoc").arg("--package").arg(&self.name);
+		if lib_only {
+			command.arg("--lib");
+		}
+		command
+			.arg("--")
+			.arg("-Z")
+			.arg("unstable-options")
+			.arg("--output-format")
+			.arg("json")
+			.current_dir(code);
+
+		let output = command.output()?;
+		if output.status.success() {
+			return Ok(output);
+		}
+
+		let stderr = summarize_command_output(&output.stderr);
+		let stdout = summarize_command_output(&output.stdout);
+		let details = if !stderr.is_empty() {
+			format!(": {stderr}")
+		} else if !stdout.is_empty() {
+			format!(": {stdout}")
+		} else {
+			String::new()
+		};
+
+		Err(PackageError::Process {
+			command: if lib_only {
+				"cargo rustdoc --lib".into()
+			} else {
+				"cargo rustdoc".into()
+			},
+			status: output.status,
+			details,
+		})
+	}
+
 	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
 	/// Takes an input of `code` which is the location of the source code on disk
 	#[instrument(skip_all, fields(package = %self.name))]
@@ -100,20 +144,14 @@ impl RustPackage {
 			fs::create_dir_all(&target_dir)?;
 		}
 
-		let status = Command::new("cargo")
-			.arg("rustdoc")
-			.arg("--package")
-			.arg(&self.name)
-			.arg("--")
-			.arg("-Z")
-			.arg("unstable-options")
-			.arg("--output-format")
-			.arg("json")
-			.current_dir(code)
-			.status()?;
-
-		if !status.success() {
-			return Err(PackageError::Process { command: "cargo rustdoc".into(), status });
+		match self.run_cargo_rustdoc(code, false) {
+			Ok(_) => {}
+			Err(PackageError::Process { details, .. })
+				if details.contains("extra arguments to `rustdoc` can only be passed to one target") =>
+			{
+				self.run_cargo_rustdoc(code, true)?;
+			}
+			Err(error) => return Err(error),
 		}
 
 		let json_path =
@@ -312,7 +350,38 @@ mod tests {
 				}
 			}
 		}
-
 		None
+	}
+
+	#[tokio::test]
+	#[ignore = "manual live IR generation repro for Rust crates that failed in production"]
+	async fn rust_registry_ir_generation_repros() {
+		let registry = live_registry();
+		let cases = [("cpal", "0.16.0"), ("tunes", "0.16.0")];
+
+		for (crate_name, version) in cases {
+			let package = registry
+				.get_packages_by_name(crate_name)
+				.await
+				.unwrap_or_else(|error| panic!("failed to fetch crate metadata for {crate_name}: {error}"))
+				.into_iter()
+				.next()
+				.unwrap_or_else(|| panic!("registry returned no package for {crate_name}"));
+
+			let version = Version::parse(version).unwrap();
+			let result = package.retrieve(version.clone(), None);
+			match result {
+				Ok(ir) => {
+					println!(
+						"{crate_name}@{version} generated {} entries from {}",
+						ir.entries().len(),
+						package.source
+					);
+				}
+				Err(error) => {
+					panic!("{crate_name}@{version} IR generation failed from {}: {error:#}", package.source);
+				}
+			}
+		}
 	}
 }
