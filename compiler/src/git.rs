@@ -268,6 +268,21 @@ pub fn extract_package_version(
 			}
 		}
 
+		// Some monorepos publish additional crates that are not listed as workspace
+		// members at the root (for example, archived or umbrella crates kept under
+		// nested subdirectories). Fall back to scanning every manifest in the tree so
+		// explicit repository sources can still resolve those versions.
+		for manifest_dir in collect_manifest_directories(repo, tree, "", &mut Vec::new())? {
+			let cargo_path = format!("{manifest_dir}/Cargo.toml");
+			let member_manifest = read_toml(repo, tree, &cargo_path)?;
+
+			if let Some(version) =
+				check_package_version(&member_manifest, Some(&manifest), package_name, &cargo_path)?
+			{
+				return Ok(Some(version));
+			}
+		}
+
 		Ok(None)
 	} else {
 		check_package_version(&manifest, None, package_name, "Cargo.toml")
@@ -614,6 +629,31 @@ version = { workspace = true }
 		let version = extract_package_version(&repo, &tree, "iced")?;
 
 		assert_eq!(version, Some(Version::parse("0.14.0")?));
+		Ok(())
+	}
+
+	#[test]
+	fn extract_package_version_falls_back_to_non_workspace_nested_crates() -> color_eyre::Result<()> {
+		let repo = git_fixture(
+			&[
+				(
+					"Cargo.toml",
+					"[workspace]\nmembers = [\"cranelift\"]\n[workspace.package]\nversion = \"46.0.0\"\n",
+				),
+				("cranelift/Cargo.toml", "[package]\nname = \"cranelift-tools\"\nversion = \"0.0.0\"\n"),
+				(
+					"cranelift/umbrella/Cargo.toml",
+					"[package]\nname = \"cranelift\"\nversion = \"0.131.1\"\n",
+				),
+			],
+			&[],
+		)?;
+		let head = repo.head()?.peel_to_commit()?;
+		let tree = head.tree()?;
+
+		let version = extract_package_version(&repo, &tree, "cranelift")?;
+
+		assert_eq!(version, Some(Version::parse("0.131.1")?));
 		Ok(())
 	}
 
