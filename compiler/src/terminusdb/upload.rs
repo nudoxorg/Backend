@@ -10,6 +10,8 @@ use super::termdb::DocStore;
 const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 100;
 const DOCUMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const DOCUMENT_UPLOAD_MAX_ATTEMPTS: usize = 3;
+const TERMINUS_CLIENT_MAX_ATTEMPTS: usize = 3;
+const TERMINUS_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy)]
 pub struct DocumentUploadProgress {
@@ -17,6 +19,51 @@ pub struct DocumentUploadProgress {
 	pub total_chunks:     usize,
 	pub completed_docs:   usize,
 	pub total_docs:       usize,
+}
+
+fn is_retryable_terminus_error_message(message: &str) -> bool {
+	let normalized = message.to_ascii_lowercase();
+	normalized.contains("backend db connection error")
+		|| normalized.contains("error sending request for url")
+		|| normalized.contains("connection reset")
+		|| normalized.contains("connection refused")
+		|| normalized.contains("timed out")
+		|| normalized.contains("timeout")
+		|| normalized.contains("temporarily unavailable")
+		|| normalized.contains("503 service unavailable")
+}
+
+async fn terminus_client_with_retry(
+	config: &TerminusConfig,
+) -> anyhow::Result<TerminusDBHttpClient> {
+	let mut attempt = 0usize;
+	loop {
+		attempt += 1;
+		match TerminusDBHttpClient::new_with_database(
+			config.endpoint.clone(),
+			&config.user,
+			&config.password,
+			&config.db,
+			&config.org,
+		)
+		.await
+		{
+			Ok(client) => return Ok(client),
+			Err(error)
+				if attempt < TERMINUS_CLIENT_MAX_ATTEMPTS
+					&& is_retryable_terminus_error_message(&error.to_string()) =>
+			{
+				warn!(
+					attempt,
+					max_attempts = TERMINUS_CLIENT_MAX_ATTEMPTS,
+					%error,
+					"failed to create TerminusDB client, retrying"
+				);
+				tokio::time::sleep(TERMINUS_RETRY_BASE_DELAY * attempt as u32).await;
+			}
+			Err(error) => return Err(error.into()),
+		}
+	}
 }
 
 fn documents_in_dependency_order(store: &DocStore) -> Vec<Value> {
@@ -69,14 +116,7 @@ pub async fn upload_documents(
 	store: &DocStore,
 	mut on_progress: impl FnMut(DocumentUploadProgress),
 ) -> anyhow::Result<()> {
-	let client = TerminusDBHttpClient::new_with_database(
-		config.endpoint.clone(),
-		&config.user,
-		&config.password,
-		&config.db,
-		&config.org,
-	)
-	.await?;
+	let client = terminus_client_with_retry(config).await?;
 
 	let documents = documents_in_dependency_order(store);
 	if documents.is_empty() {
@@ -175,14 +215,7 @@ pub async fn upload_documents(
 /// matching the TerminusDB schema format (e.g. from `schema.json`).
 #[instrument(skip_all, fields(org = %config.org, db = %config.db))]
 pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> anyhow::Result<()> {
-	let client = TerminusDBHttpClient::new_with_database(
-		config.endpoint.clone(),
-		&config.user,
-		&config.password,
-		&config.db,
-		&config.org,
-	)
-	.await?;
+	let client = terminus_client_with_retry(config).await?;
 
 	if schema_docs.is_empty() {
 		warn!("no schema documents to upload");
@@ -202,11 +235,45 @@ pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> 
 	.as_schema();
 
 	let doc_refs: Vec<&Value> = schema_docs.iter().collect();
-	let result = client.insert_documents(doc_refs, args).await?;
+	let mut attempt = 0usize;
+	let result = loop {
+		attempt += 1;
+		match client.insert_documents(doc_refs.clone(), args.clone()).await {
+			Ok(result) => break result,
+			Err(error)
+				if attempt < DOCUMENT_UPLOAD_MAX_ATTEMPTS
+					&& is_retryable_terminus_error_message(&error.to_string()) =>
+			{
+				warn!(
+					attempt,
+					max_attempts = DOCUMENT_UPLOAD_MAX_ATTEMPTS,
+					%error,
+					"schema upload failed, retrying"
+				);
+				tokio::time::sleep(Duration::from_secs(attempt as u64 * 2)).await;
+			}
+			Err(error) => return Err(error.into()),
+		}
+	};
 
 	if let Some(commit_id) = result.extract_commit_id() {
 		info!(commit = %commit_id, "schema upload committed");
 	}
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::is_retryable_terminus_error_message;
+
+	#[test]
+	fn retryable_terminus_errors_include_backend_connection_pressure() {
+		assert!(is_retryable_terminus_error_message("Backend DB connection error"));
+		assert!(is_retryable_terminus_error_message(
+			"error sending request for url (http://127.0.0.1:6363/api/document/admin/main)"
+		));
+		assert!(is_retryable_terminus_error_message("operation timed out"));
+		assert!(!is_retryable_terminus_error_message("version 1.2.3 not found"));
+	}
 }

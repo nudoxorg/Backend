@@ -4,7 +4,7 @@ use jiff::Timestamp;
 use lang_types::Language;
 use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize};
-use tokio::{sync::{Mutex, RwLock}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
+use tokio::{sync::{Mutex, RwLock, Semaphore}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
@@ -85,6 +85,7 @@ pub struct LocalRegistry {
 	storage:          StorageLayout,
 	monitor_interval: Duration,
 	pipeline:         PipelineConfig,
+	sync_slots:       Arc<Semaphore>,
 	next_id:          AtomicU64,
 	packages:         Arc<RwLock<HashMap<PackageId, Arc<TrackedPackage>>>>,
 	keys:             Arc<RwLock<HashMap<PackageKey, PackageId>>>,
@@ -205,6 +206,21 @@ struct MonitorExecution {
 }
 
 const TYPESCRIPT_REPOSITORY_ENTRY_PREFIX: &str = "repo:";
+const MAX_CONCURRENT_SYNCS: usize = 2;
+const SYNC_MAX_ATTEMPTS: usize = 3;
+const SYNC_RETRY_BASE_DELAY: Duration = Duration::from_secs(5);
+
+fn is_retryable_sync_error_message(message: &str) -> bool {
+	let normalized = message.to_ascii_lowercase();
+	normalized.contains("backend db connection error")
+		|| normalized.contains("error sending request for url")
+		|| normalized.contains("connection reset")
+		|| normalized.contains("connection refused")
+		|| normalized.contains("timed out")
+		|| normalized.contains("timeout")
+		|| normalized.contains("temporarily unavailable")
+		|| normalized.contains("503 service unavailable")
+}
 
 impl LocalRegistry {
 	pub fn new(storage: StorageLayout, monitor_interval: Duration, pipeline: PipelineConfig) -> Self {
@@ -220,6 +236,7 @@ impl LocalRegistry {
 			storage,
 			monitor_interval,
 			pipeline,
+			sync_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_SYNCS)),
 			next_id: AtomicU64::new(next_id),
 			packages: Arc::new(RwLock::new(packages)),
 			keys: Arc::new(RwLock::new(keys)),
@@ -334,6 +351,9 @@ impl LocalRegistry {
 		tracked: Arc<TrackedPackage>,
 	) -> Result<PackageSnapshot, AppError> {
 		let _guard = tracked.sync_lock.lock().await;
+		let _slot = self.sync_slots.clone().acquire_owned().await.map_err(|source| {
+			AppError::Internal { message: format!("sync scheduler shut down unexpectedly: {source}") }
+		})?;
 		let blocking_storage = self.storage.clone();
 		let blocking_pipeline = self.pipeline.clone();
 		let blocking_handle = tracked.handle.clone();
@@ -371,19 +391,69 @@ impl LocalRegistry {
 		tracked.mark_sync_running(PackageSyncPhase::Resolving, Some("starting sync".to_owned())).await;
 		self.persist().await?;
 
-		let result = spawn_blocking(move || {
-			run_sync(
-				blocking_storage,
-				blocking_pipeline,
-				blocking_id,
-				blocking_handle,
-				blocking_spec,
-				runtime,
-				progress,
-			)
-		})
-		.await
-		.map_err(|source| AppError::TaskJoin { action: "sync package", source })?;
+		let mut result = None;
+		for attempt in 1..=SYNC_MAX_ATTEMPTS {
+			let attempt_storage = blocking_storage.clone();
+			let attempt_pipeline = blocking_pipeline.clone();
+			let attempt_handle = blocking_handle.clone();
+			let attempt_spec = blocking_spec.clone();
+			let attempt_runtime = runtime.clone();
+			let attempt_progress = progress.clone();
+
+			let sync_result = spawn_blocking(move || {
+				run_sync(
+					attempt_storage,
+					attempt_pipeline,
+					blocking_id,
+					attempt_handle,
+					attempt_spec,
+					attempt_runtime,
+					attempt_progress,
+				)
+			})
+			.await
+			.map_err(|source| AppError::TaskJoin { action: "sync package", source })?;
+
+			match sync_result {
+				Ok(execution) => {
+					result = Some(Ok(execution));
+					break;
+				}
+				Err(error)
+					if attempt < SYNC_MAX_ATTEMPTS && is_retryable_sync_error_message(&error.to_string()) =>
+				{
+					let retry_delay = SYNC_RETRY_BASE_DELAY * attempt as u32;
+					warn!(
+						package = %tracked.spec.name,
+						version = %tracked.spec.version,
+						attempt,
+						max_attempts = SYNC_MAX_ATTEMPTS,
+						delay_seconds = retry_delay.as_secs(),
+						error = %error,
+						"transient package sync failure, retrying"
+					);
+					tracked
+						.update_progress(
+							PackageSyncPhase::Resolving,
+							Some(format!(
+								"transient backend error, retrying in {}s (attempt {}/{})",
+								retry_delay.as_secs(),
+								attempt + 1,
+								SYNC_MAX_ATTEMPTS
+							)),
+						)
+						.await;
+					self.persist().await?;
+					tokio::time::sleep(retry_delay).await;
+				}
+				Err(error) => {
+					result = Some(Err(error));
+					break;
+				}
+			}
+		}
+
+		let result = result.expect("sync attempt loop always yields a result");
 
 		match result {
 			Ok(execution) => {
@@ -1231,6 +1301,16 @@ mod tests {
 		insta::assert_debug_snapshot!(handle);
 	}
 
+	#[test]
+	fn retryable_sync_errors_include_backend_connection_pressure() {
+		assert!(is_retryable_sync_error_message("Backend DB connection error"));
+		assert!(is_retryable_sync_error_message(
+			"error sending request for url (http://127.0.0.1:6363/api/document/admin/main)"
+		));
+		assert!(is_retryable_sync_error_message("operation timed out"));
+		assert!(!is_retryable_sync_error_message("version 1.0.0 not found"));
+	}
+
 	#[tokio::test]
 	async fn persists_registry_across_restart() {
 		let tempdir = TempDir::new().unwrap();
@@ -1318,21 +1398,19 @@ mod tests {
 				entry_point: "index.d.ts".to_owned(),
 			}),
 		));
-		tracked.record_sync_success(SyncExecution {
-			tracked_version_commit: "7071a42b0101e39d21111da72e13c46dc8ae596d".to_owned(),
-			latest_remote_commit:   Some("5423cf56499c1ea33ea4bd9fbaab1723083cb659".to_owned()),
-			summary:                IngestionSummary {
-				entry_count:    9,
-				document_count: 18,
-				vector_count:   9,
-			},
-		})
-		.await;
 		tracked
-			.update_progress(
-				PackageSyncPhase::GeneratingIr,
-				Some("generating TypeScript IR".to_owned()),
-			)
+			.record_sync_success(SyncExecution {
+				tracked_version_commit: "7071a42b0101e39d21111da72e13c46dc8ae596d".to_owned(),
+				latest_remote_commit:   Some("5423cf56499c1ea33ea4bd9fbaab1723083cb659".to_owned()),
+				summary:                IngestionSummary {
+					entry_count:    9,
+					document_count: 18,
+					vector_count:   9,
+				},
+			})
+			.await;
+		tracked
+			.update_progress(PackageSyncPhase::GeneratingIr, Some("generating TypeScript IR".to_owned()))
 			.await;
 
 		registry.packages.write().await.insert(package_id, Arc::clone(&tracked));

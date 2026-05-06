@@ -124,11 +124,7 @@ impl RustPackage {
 		};
 
 		Err(PackageError::Process {
-			command: if lib_only {
-				"cargo rustdoc --lib".into()
-			} else {
-				"cargo rustdoc".into()
-			},
+			command: if lib_only { "cargo rustdoc --lib".into() } else { "cargo rustdoc".into() },
 			status: output.status,
 			details,
 		})

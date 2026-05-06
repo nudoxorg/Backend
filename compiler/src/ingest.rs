@@ -22,11 +22,9 @@ pub fn run_rust_pipeline(
 	runtime: &Handle,
 	progress: Option<&ProgressReporter>,
 ) -> Result<IngestionSummary, AppError> {
-	let ir = package
-		.generate_ir(&workspace.to_path_buf())
-		.map_err(|source| AppError::Internal {
-			message: format!("IR generation failed for `{}`: {source}", package.name),
-		})?;
+	let ir = package.generate_ir(&workspace.to_path_buf()).map_err(|source| AppError::Internal {
+		message: format!("IR generation failed for `{}`: {source}", package.name),
+	})?;
 
 	finalize_pipeline(
 		"rust",
@@ -46,11 +44,9 @@ pub fn run_typescript_pipeline(
 	runtime: &Handle,
 	progress: Option<&ProgressReporter>,
 ) -> Result<IngestionSummary, AppError> {
-	let ir = package
-		.generate_ir()
-		.map_err(|source| AppError::Internal {
-			message: format!("IR generation failed for `{}`: {source}", package.name),
-		})?;
+	let ir = package.generate_ir().map_err(|source| AppError::Internal {
+		message: format!("IR generation failed for `{}`: {source}", package.name),
+	})?;
 
 	finalize_pipeline(
 		"typescript",
