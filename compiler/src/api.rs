@@ -78,7 +78,26 @@ async fn lookup_symbol(
 	State(state): State<AppState>,
 	Query(params): Query<LookupQuery>,
 ) -> Result<Json<search::LookupResponse>, AppError> {
-	let response = search::lookup_symbol(&state.pipeline, &params.q).await?;
+	let response = match (&params.q, &params.symbol, &params.language) {
+		(Some(uri), ..) if !uri.trim().is_empty() => {
+			search::lookup_symbol(&state.pipeline, uri).await?
+		}
+		(None, Some(symbol), Some(language)) | (Some(_), Some(symbol), Some(language)) => {
+			search::lookup_symbol_with_context(
+				&state.pipeline,
+				symbol,
+				language,
+				params.package.as_deref(),
+			)
+			.await?
+		}
+		_ => return Err(AppError::Configuration {
+			field:   "q",
+			message:
+				"provide either q=<symbol-uri> or symbol=<fq_name>&language=<language>[&package=<package>]"
+					.to_owned(),
+		}),
+	};
 	Ok(Json(response))
 }
 
@@ -142,7 +161,10 @@ struct SearchQuery {
 
 #[derive(Deserialize)]
 struct LookupQuery {
-	q: String,
+	q:        Option<String>,
+	symbol:   Option<String>,
+	language: Option<String>,
+	package:  Option<String>,
 }
 
 #[derive(Deserialize)]

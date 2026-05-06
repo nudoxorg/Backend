@@ -223,6 +223,50 @@ pub async fn lookup_symbol(config: &PipelineConfig, uri: &str) -> Result<LookupR
 	})
 }
 
+pub async fn lookup_symbol_with_context(
+	config: &PipelineConfig,
+	symbol: &str,
+	language: &str,
+	package: Option<&str>,
+) -> Result<LookupResponse, AppError> {
+	let symbol = require_non_empty("symbol", symbol)?;
+	let language = require_non_empty("language", language)?;
+	let package = package.and_then(|value| {
+		let trimmed = value.trim();
+		if trimmed.is_empty() { None } else { Some(trimmed) }
+	});
+	let terminus = require_terminus(config)?;
+	let client = terminus_client(terminus).await?;
+	let spec = BranchSpec::new(&terminus.db);
+	let mut cache = HashMap::new();
+
+	let requested_uri = structured_symbol_uri(language, symbol, package);
+	let mut resolved_uri = None;
+	let mut document = None;
+	for candidate in candidate_symbol_uris(&requested_uri) {
+		if let Some(found) = fetch_document(&client, &spec, &mut cache, &candidate).await? {
+			resolved_uri = Some(candidate);
+			document = Some(found);
+			break;
+		}
+	}
+
+	let resolved_uri = resolved_uri.unwrap_or(requested_uri);
+	let document = document.ok_or_else(|| AppError::Internal {
+		message: format!(
+			"symbol `{symbol}` with language `{language}`{} was not found in TerminusDB",
+			package.map(|value| format!(" and package `{value}`")).unwrap_or_default()
+		),
+	})?;
+
+	let kind = match document.get("kind").and_then(JsonValue::as_str) {
+		Some(kind_uri) => fetch_document(&client, &spec, &mut cache, kind_uri).await?,
+		None => None,
+	};
+
+	Ok(LookupResponse { uri: resolved_uri, document, kind })
+}
+
 pub async fn run_search(
 	config: &PipelineConfig,
 	sessions: &SessionStore,
@@ -503,6 +547,14 @@ fn relation_name(relation: &str) -> String {
 	if relation.is_empty() { "reference".to_owned() } else { relation.to_owned() }
 }
 
+fn structured_symbol_uri(language: &str, symbol: &str, package: Option<&str>) -> String {
+	let normalized_language = language.trim().to_ascii_lowercase();
+	match package {
+		Some(package) => format!("Entry/{normalized_language}/{package}/{symbol}"),
+		None => format!("Entry/{normalized_language}/{symbol}"),
+	}
+}
+
 fn candidate_symbol_uris(uri: &str) -> Vec<String> {
 	let mut candidates = vec![uri.to_owned()];
 	let Some((prefix, suffix)) = uri.strip_prefix("Entry/").and_then(|rest| rest.split_once('/'))
@@ -584,7 +636,7 @@ async fn terminus_client(config: &TerminusConfig) -> Result<TerminusDBHttpClient
 
 #[cfg(test)]
 mod tests {
-	use super::{candidate_symbol_uris, canonical_rust_package_segment};
+	use super::{candidate_symbol_uris, canonical_rust_package_segment, structured_symbol_uri};
 
 	#[test]
 	fn rust_lookup_accepts_underscored_package_segment() {
@@ -620,5 +672,25 @@ mod tests {
 	fn non_rust_uris_are_left_unchanged() {
 		let candidates = candidate_symbol_uris("Entry/typescript/zod/classic.external::ZodString");
 		assert_eq!(candidates, vec!["Entry/typescript/zod/classic.external::ZodString".to_owned()]);
+	}
+
+	#[test]
+	fn structured_rust_lookup_uri_includes_package_segment() {
+		assert_eq!(
+			structured_symbol_uri(
+				"Rust",
+				"cranelift_module::Module::define_function",
+				Some("cranelift-module")
+			),
+			"Entry/rust/cranelift-module/cranelift_module::Module::define_function"
+		);
+	}
+
+	#[test]
+	fn structured_lookup_without_package_preserves_symbol_only_shape() {
+		assert_eq!(
+			structured_symbol_uri("typescript", "index::parse", None),
+			"Entry/typescript/index::parse"
+		);
 	}
 }
