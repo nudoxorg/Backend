@@ -9,6 +9,7 @@ pub enum Width {
 	W16,
 	W32,
 	W64,
+	W80,
 	W128,
 
 	/// Machine-dependent / pointer-sized (e.g., `usize`, `isize`).

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use clang::{Clang, CompilationDatabase, Entity, EntityKind, Index, TranslationUnit, Type as ClangType};
-use ir::{entry::Entry, function::Function, kind::Kind, parameter::Parameter, record::{Field, Record, RecordKind}, ty::Type};
+use ir::{entry::{Entry, NudoxPath}, function::Function, kind::{Symbol, Visibility}, parameter::{LiteralParameter, Parameter}, primitives::{Primitive, Width}, record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant}, ty::Type};
 
 use super::ClangError;
 use crate::error::PackageError;
@@ -47,11 +47,10 @@ impl ClangParser {
 
 struct IRBuilder {
 	entries: Vec<Entry>,
-	next_id: i64,
 }
 
 impl IRBuilder {
-	fn new() -> Self { IRBuilder { entries: Vec::new(), next_id: 0 } }
+	fn new() -> Self { IRBuilder { entries: Vec::new() } }
 
 	fn handle_translation_unit(&mut self, unit: TranslationUnit<'_>) -> Result<(), PackageError> {
 		let new_entries = TUHandler::new(self, &unit).handle()?;
@@ -62,24 +61,18 @@ impl IRBuilder {
 	}
 
 	fn finish(self) -> Vec<Entry> { self.entries }
-
-	fn new_id(&mut self) -> i64 {
-		let new_id = self.next_id;
-		self.next_id += 1;
-		new_id
-	}
 }
 
 struct TUHandler<'ir, 'tu> {
-	ir:      &'ir mut IRBuilder,
+	_ir:     &'ir mut IRBuilder,
 	tu:      &'tu TranslationUnit<'tu>,
 	entries: Vec<Entry>,
-	map:     HashMap<Entity<'tu>, i64>,
+	map:     HashMap<Entity<'tu>, NudoxPath>,
 }
 
 impl<'ir, 'tu> TUHandler<'ir, 'tu> {
-	fn new(ir: &'ir mut IRBuilder, tu: &'tu TranslationUnit<'tu>) -> Self {
-		TUHandler { ir, tu, entries: Vec::new(), map: HashMap::new() }
+	fn new(_ir: &'ir mut IRBuilder, tu: &'tu TranslationUnit<'tu>) -> Self {
+		TUHandler { _ir, tu, entries: Vec::new(), map: HashMap::new() }
 	}
 
 	fn handle(mut self) -> Result<Vec<Entry>, PackageError> {
@@ -114,7 +107,7 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 	fn handle_function(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
 		debug_assert_eq!(entity.get_kind(), EntityKind::FunctionDecl);
 
-		let (id, name) = self.basic_info(entity);
+		let name = self.entity_name(entity);
 
 		let (input_parameters, output_parameters) =
 			self.handle_function_params(entity.get_children())?;
@@ -123,25 +116,25 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 		let attributes = None;
 		let implemented = true;
 
-		let entry = Entry {
-			name: name.clone(),
-			id,
-			path: vec![],
-			aliases: None,
-			kind: Kind::Function(Function {
+		let entry = Entry::Function(Symbol {
+			name:          name.clone(),
+			path:          NudoxPath::Local(name.clone().into()),
+			aliases:       None,
+			visibility:    Visibility::Public,
+			documentation: None,
+			inner:         Function {
 				input_parameters,
 				output_parameters,
 				type_links: None,
 				attributes,
 				generics,
-				name,
+				receiver: None,
 				implemented,
-				visibility: None,
-			}),
-			visibility: None,
-			documentation: None,
-			members: None,
-		};
+				overloads: None,
+				members: None,
+				implemented_protocols: None,
+			},
+		});
 
 		self.insert_entry(entry, entity);
 
@@ -151,26 +144,29 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 	fn handle_struct(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
 		debug_assert_eq!(entity.get_kind(), EntityKind::StructDecl);
 
-		let (id, name) = self.basic_info(entity);
+		let name = self.entity_name(entity);
 
 		let fields = self.handle_struct_fields(entity.get_children())?;
 
-		let entry = Entry {
-			name: name.clone(),
-			id,
-			path: vec![],
-			aliases: None,
-			kind: Kind::RecordType(Record {
+		let entry = Entry::RecordType(Symbol {
+			name:          name.clone(),
+			path:          NudoxPath::Local(name.clone().into()),
+			aliases:       None,
+			visibility:    Visibility::Public,
+			documentation: None,
+			inner:         Record {
 				name: Some(name),
 				generics: None,
-				kind: RecordKind::Named,
 				fields,
-				visibility: None,
-			}),
-			visibility: None,
-			documentation: None,
-			members: None,
-		};
+				call_signatures: None,
+				methods: None,
+				constructors: None,
+				index_signatures: None,
+				super_types: None,
+				members: None,
+				implemented_protocols: None,
+			},
+		});
 
 		self.insert_entry(entry, entity);
 
@@ -180,26 +176,29 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 	fn handle_class(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
 		debug_assert_eq!(entity.get_kind(), EntityKind::ClassDecl);
 
-		let (id, name) = self.basic_info(entity);
+		let name = self.entity_name(entity);
 
 		let fields = self.handle_struct_fields(entity.get_children())?;
 
-		let entry = Entry {
-			name: name.clone(),
-			id,
-			path: vec![],
-			aliases: None,
-			kind: Kind::RecordType(Record {
+		let entry = Entry::RecordType(Symbol {
+			name:          name.clone(),
+			path:          NudoxPath::Local(name.clone().into()),
+			aliases:       None,
+			visibility:    Visibility::Public,
+			documentation: None,
+			inner:         Record {
 				name: Some(name),
 				generics: None,
-				kind: RecordKind::Named,
 				fields,
-				visibility: None,
-			}),
-			visibility: None,
-			documentation: None,
-			members: None,
-		};
+				call_signatures: None,
+				constructors: None,
+				methods: None,
+				index_signatures: None,
+				super_types: None,
+				members: None,
+				implemented_protocols: None,
+			},
+		});
 
 		self.insert_entry(entry, entity);
 
@@ -209,20 +208,18 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 	fn handle_enum(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
 		debug_assert_eq!(entity.get_kind(), EntityKind::EnumDecl);
 
-		let (id, name) = self.basic_info(entity);
+		let name = self.entity_name(entity);
 
 		let variants = self.handle_enum_variants(entity.get_children())?;
 
-		let entry = Entry {
-			name: name.clone(),
-			id,
-			path: vec![],
-			aliases: None,
-			kind: Kind::SumType(variants),
-			visibility: None,
+		let entry = Entry::SumType(Symbol {
+			name:          name.clone(),
+			path:          NudoxPath::Local(name.into()),
+			aliases:       None,
+			visibility:    Visibility::Public,
 			documentation: None,
-			members: None,
-		};
+			inner:         variants,
+		});
 
 		self.insert_entry(entry, entity);
 
@@ -235,18 +232,16 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 		// TODO: check things using entity child
 		// to avoid double-declaring structs
 
-		let (id, name) = self.basic_info(entity);
+		let name = self.entity_name(entity);
 
-		let entry = Entry {
-			name: name.clone(),
-			id,
-			path: vec![],
-			aliases: None,
-			kind: Kind::TypeAlias(Type::Infer), // TODO
-			visibility: None,
+		let entry = Entry::TypeAlias(Symbol {
+			name:          name.clone(),
+			path:          NudoxPath::Local(name.into()),
+			aliases:       None,
+			visibility:    Visibility::Public,
 			documentation: None,
-			members: None,
-		};
+			inner:         Type::Infer,
+		});
 
 		self.insert_entry(entry, entity);
 
@@ -256,7 +251,7 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 	fn handle_struct_fields(
 		&mut self,
 		children: Vec<Entity<'tu>>,
-	) -> Result<Option<Vec<Field>>, PackageError> {
+	) -> Result<Vec<Field>, PackageError> {
 		let mut fields = vec![];
 
 		for child in children {
@@ -264,34 +259,43 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 				EntityKind::FieldDecl => {
 					let field_name = child.get_name().unwrap_or_default();
 					let field_type = child.get_type().map(|t| self.resolve_type(t));
-					fields.push(Field {
-						name:          Some(field_name),
-						type_entry_id: None,
-						ty:            field_type.map(Box::new),
+					fields.push(Field::Known(KnownField {
+						key:           FieldKey::Ident(field_name),
+						r#type:        field_type.map(Box::new),
 						default_value: None,
-						attributes:    None,
+						attributes:    FieldAttributes {
+							decorators:  vec![],
+							is_mutable:  true,
+							is_optional: false,
+							is_static:   false,
+						},
 						visibility:    None,
-					});
+						documentation: None,
+					}));
 				}
 				EntityKind::CompoundStmt => {}
 				_ => {}
 			}
 		}
 
-		Ok(if fields.is_empty() { None } else { Some(fields) })
+		Ok(fields)
 	}
 
 	fn handle_enum_variants(
 		&mut self,
 		children: Vec<Entity<'tu>>,
-	) -> Result<Vec<ir::record::SumVariant>, PackageError> {
+	) -> Result<Vec<SumVariant>, PackageError> {
 		let mut variants = vec![];
 
 		for child in children {
 			match child.get_kind() {
 				EntityKind::EnumConstantDecl => {
 					let variant_name = child.get_name().unwrap_or_default();
-					variants.push(ir::record::SumVariant { name: variant_name, types: None });
+					variants.push(SumVariant {
+						name:          variant_name,
+						data:          None,
+						documentation: None,
+					});
 				}
 				_ => {}
 			}
@@ -304,34 +308,48 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 		let kind = ty.get_kind();
 
 		match kind {
-			clang::TypeKind::Void => return Type::Primitive(ir::primitives::Primitive::Null),
-			clang::TypeKind::Bool => return Type::Primitive(ir::primitives::Primitive::Bool(None)),
+			clang::TypeKind::Void => return Type::Void,
+			clang::TypeKind::Bool => return Type::Primitive(Primitive::Bool),
 			clang::TypeKind::CharS
 			| clang::TypeKind::CharU
 			| clang::TypeKind::SChar
 			| clang::TypeKind::UChar
-			| clang::TypeKind::WChar => return Type::Primitive(ir::primitives::Primitive::Char(None)),
-			clang::TypeKind::Short
-			| clang::TypeKind::UShort
-			| clang::TypeKind::Int
-			| clang::TypeKind::UInt
-			| clang::TypeKind::Long
-			| clang::TypeKind::ULong
-			| clang::TypeKind::LongLong
-			| clang::TypeKind::ULongLong
-			| clang::TypeKind::Int128
-			| clang::TypeKind::UInt128 => return Type::Primitive(ir::primitives::Primitive::Int(None)),
-			clang::TypeKind::Half | clang::TypeKind::Float | clang::TypeKind::Float128 => {
-				return Type::Primitive(ir::primitives::Primitive::Float(None));
-			}
-			clang::TypeKind::Double | clang::TypeKind::LongDouble => {
-				return Type::Primitive(ir::primitives::Primitive::Double(None));
-			}
+			| clang::TypeKind::WChar => return Type::Primitive(Primitive::Char),
+
+			clang::TypeKind::Short => return Type::Primitive(Primitive::Int(Width::W16)),
+
+			clang::TypeKind::UShort => return Type::Primitive(Primitive::UInt(Width::W16)),
+
+			clang::TypeKind::Int => return Type::Primitive(Primitive::Int(Width::W32)),
+
+			clang::TypeKind::UInt => return Type::Primitive(Primitive::UInt(Width::W32)),
+
+			clang::TypeKind::Long => return Type::Primitive(Primitive::Int(Width::W64)),
+
+			clang::TypeKind::ULong => return Type::Primitive(Primitive::UInt(Width::W64)),
+
+			clang::TypeKind::LongLong => return Type::Primitive(Primitive::Int(Width::W64)),
+
+			clang::TypeKind::ULongLong => return Type::Primitive(Primitive::UInt(Width::W64)),
+
+			clang::TypeKind::Int128 => return Type::Primitive(Primitive::Int(Width::W128)),
+
+			clang::TypeKind::UInt128 => return Type::Primitive(Primitive::UInt(Width::W128)),
+
+			clang::TypeKind::Half => return Type::Primitive(Primitive::Float(Width::W16)),
+			clang::TypeKind::Float => return Type::Primitive(Primitive::Float(Width::W32)),
+
+			clang::TypeKind::Float128 => return Type::Primitive(Primitive::Float(Width::W128)),
+
+			clang::TypeKind::Double => return Type::Primitive(Primitive::Float(Width::W64)),
+
+			clang::TypeKind::LongDouble => return Type::Primitive(Primitive::Float(Width::W80)),
+
 			clang::TypeKind::Pointer => {
 				if let Some(pointee) = ty.get_pointee_type() {
 					return Type::RawPointer {
 						is_mutable: false,
-						ty:         Box::new(self.resolve_type(pointee)),
+						r#type:     Box::new(self.resolve_type(pointee)),
 					};
 				}
 				return Type::Infer;
@@ -341,7 +359,7 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 					return Type::BorrowedRef {
 						lifetime:   None,
 						is_mutable: false,
-						ty:         Box::new(self.resolve_type(referent)),
+						r#type:     Box::new(self.resolve_type(referent)),
 					};
 				}
 				return Type::Infer;
@@ -351,19 +369,19 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 					return Type::BorrowedRef {
 						lifetime:   None,
 						is_mutable: true,
-						ty:         Box::new(self.resolve_type(referent)),
+						r#type:     Box::new(self.resolve_type(referent)),
 					};
 				}
 				return Type::Infer;
 			}
 			clang::TypeKind::ConstantArray => {
 				if let Some(element) = ty.get_element_type() {
-					return Type::Array { ty: Box::new(self.resolve_type(element)), length: 0 };
+					return Type::Array { r#type: Box::new(self.resolve_type(element)), length: 0 };
 				}
 				return Type::Infer;
 			}
 			clang::TypeKind::FunctionNoPrototype | clang::TypeKind::FunctionPrototype => {
-				return Type::Primitive(ir::primitives::Primitive::Data(None));
+				unimplemented!() // TODO
 			}
 			_ => return Type::Infer,
 		}
@@ -378,13 +396,13 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 		for child in children {
 			match child.get_kind() {
 				EntityKind::ParmDecl => {
-					input_params.push(Parameter {
+					input_params.push(Parameter::Literal(LiteralParameter {
 						name:          child.get_name().unwrap_or_default(),
-						ty:            None,
+						r#type:        None,
 						attributes:    None,
 						default_value: None,
 						description:   None,
-					});
+					}));
 				}
 				EntityKind::CompoundStmt => {}  // Ignore function bodies
 				EntityKind::UnexposedAttr => {} // Ignore attributes
@@ -397,12 +415,10 @@ impl<'ir, 'tu> TUHandler<'ir, 'tu> {
 		Ok((input_params, None))
 	}
 
-	fn basic_info(&mut self, entity: Entity<'tu>) -> (i64, String) {
-		(self.ir.new_id(), entity.get_name().unwrap_or_default())
-	}
+	fn entity_name(&mut self, entity: Entity<'tu>) -> String { entity.get_name().unwrap_or_default() }
 
 	fn insert_entry(&mut self, entry: Entry, entity: Entity<'tu>) {
-		self.map.insert(entity, entry.id);
+		self.map.insert(entity, entry.path().clone());
 		self.entries.push(entry);
 	}
 }

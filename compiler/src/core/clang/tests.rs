@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clang::Clang;
-use expect_test::{ExpectFile, expect_file};
 use ir::entry::Entry;
 
 use crate::core::clang::parser::ClangParser;
@@ -17,18 +16,18 @@ fn test_dir(name: &str) -> PathBuf {
 
 fn test_file(name: &str) -> PathBuf { test_dir(name).join(name).with_extension("c") }
 
-fn check(file: &str, expect: ExpectFile) {
+fn check(file: &str) {
 	let files = vec![test_file(file)];
 	let entries = parse_files(files);
 
-	expect.assert_debug_eq(&entries);
+	insta::assert_debug_snapshot!(file, &entries);
 }
 
 #[test]
-fn test_simple01_functions() { check("simple01", expect_file!["./tests/simple01/expected.ir"]); }
+fn test_simple01_functions() { check("simple01"); }
 
 #[test]
-fn test_simple02_struct() { check("simple02", expect_file!["./tests/simple02/expected.ir"]); }
+fn test_simple02_struct() { check("simple02"); }
 
 #[test]
-fn test_simple03_mixed() { check("simple03", expect_file!["./tests/simple03/expected.ir"]); }
+fn test_simple03_mixed() { check("simple03"); }
