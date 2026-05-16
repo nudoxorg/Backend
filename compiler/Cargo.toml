@@ -51,4 +51,4 @@ default = ["serde"]
 serde = ["dep:serde"]
 
 [dev-dependencies]
-insta = "1.43.2"
+insta = { version = "1.43.2", features = ["filters"] }

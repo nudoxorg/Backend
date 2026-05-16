@@ -33,6 +33,11 @@
 !/**/*.rs
 !/**/rustfmt.toml
 
+# C/C++ parser fixtures
+!/compiler/src/core/clang/tests/**/*.c
+!/compiler/src/core/clang/tests/**/*.cpp
+!/compiler/src/core/clang/tests/**/compile_commands.json
+
 # Nix
 !/flake.nix
 !/flake.lock

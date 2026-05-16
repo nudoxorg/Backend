@@ -40,7 +40,7 @@ impl ClangProject {
 		let db = CompilationDatabase::from_directory(dir)
 			.map_err(|_| ClangError::CompilationDatabaseLoadError(dir.to_path_buf()))?;
 
-		let parser = ClangParser::new(clang, db);
+		let parser = ClangParser::new(clang, db, dir.to_path_buf());
 
 		parser.parse().map(Ir::from_entries)
 	}

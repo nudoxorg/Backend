@@ -1,5 +1,6 @@
 ---
 source: compiler/src/core/clang/tests.rs
+assertion_line: 30
 expression: "&entries"
 ---
 [
@@ -12,13 +13,33 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple01/simple01.c",
+                        line: 1,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple01/simple01.c",
+                        line: 1,
+                        column: 40,
+                    },
+                },
+            ),
             inner: Function {
                 input_parameters: Some(
                     [
                         Literal(
                             LiteralParameter {
                                 name: "a",
-                                type: None,
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
                                 attributes: None,
                                 default_value: None,
                                 description: None,
@@ -27,7 +48,13 @@ expression: "&entries"
                         Literal(
                             LiteralParameter {
                                 name: "b",
-                                type: None,
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
                                 attributes: None,
                                 default_value: None,
                                 description: None,
@@ -35,7 +62,25 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                output_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
                 type_links: None,
                 attributes: None,
                 generics: None,
@@ -56,13 +101,33 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple01/simple01.c",
+                        line: 3,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple01/simple01.c",
+                        line: 3,
+                        column: 40,
+                    },
+                },
+            ),
             inner: Function {
                 input_parameters: Some(
                     [
                         Literal(
                             LiteralParameter {
                                 name: "a",
-                                type: None,
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
                                 attributes: None,
                                 default_value: None,
                                 description: None,
@@ -71,7 +136,13 @@ expression: "&entries"
                         Literal(
                             LiteralParameter {
                                 name: "b",
-                                type: None,
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
                                 attributes: None,
                                 default_value: None,
                                 description: None,
@@ -79,7 +150,25 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                output_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
                 type_links: None,
                 attributes: None,
                 generics: None,
@@ -100,13 +189,33 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple01/simple01.c",
+                        line: 5,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple01/simple01.c",
+                        line: 5,
+                        column: 40,
+                    },
+                },
+            ),
             inner: Function {
                 input_parameters: Some(
                     [
                         Literal(
                             LiteralParameter {
                                 name: "a",
-                                type: None,
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
                                 attributes: None,
                                 default_value: None,
                                 description: None,
@@ -115,7 +224,13 @@ expression: "&entries"
                         Literal(
                             LiteralParameter {
                                 name: "b",
-                                type: None,
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
                                 attributes: None,
                                 default_value: None,
                                 description: None,
@@ -123,7 +238,25 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                output_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
                 type_links: None,
                 attributes: None,
                 generics: None,
@@ -144,13 +277,33 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple01/simple01.c",
+                        line: 7,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple01/simple01.c",
+                        line: 7,
+                        column: 40,
+                    },
+                },
+            ),
             inner: Function {
                 input_parameters: Some(
                     [
                         Literal(
                             LiteralParameter {
                                 name: "a",
-                                type: None,
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
                                 attributes: None,
                                 default_value: None,
                                 description: None,
@@ -159,7 +312,13 @@ expression: "&entries"
                         Literal(
                             LiteralParameter {
                                 name: "b",
-                                type: None,
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
                                 attributes: None,
                                 default_value: None,
                                 description: None,
@@ -167,7 +326,25 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                output_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
                 type_links: None,
                 attributes: None,
                 generics: None,
