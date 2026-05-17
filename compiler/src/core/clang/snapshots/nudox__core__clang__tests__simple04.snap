@@ -1,0 +1,555 @@
+---
+source: compiler/src/core/clang/tests.rs
+assertion_line: 35
+expression: "&entries"
+---
+[
+    RecordType(
+        Symbol {
+            name: "Point",
+            path: Local(
+                "Point",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A documented point.",
+            ),
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 2,
+                        column: 9,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 7,
+                        column: 2,
+                    },
+                },
+            ),
+            inner: Record {
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "x",
+                            ),
+                            path: Some(
+                                Local(
+                                    "x",
+                                ),
+                            ),
+                            aliases: None,
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "horizontal coordinate",
+                            ),
+                            source: Some(
+                                SourceRange {
+                                    start: SourcePosition {
+                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                                        line: 4,
+                                        column: 3,
+                                    },
+                                    end: SourcePosition {
+                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                                        line: 4,
+                                        column: 8,
+                                    },
+                                },
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "y",
+                            ),
+                            path: Some(
+                                Local(
+                                    "y",
+                                ),
+                            ),
+                            aliases: None,
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "vertical coordinate",
+                            ),
+                            source: Some(
+                                SourceRange {
+                                    start: SourcePosition {
+                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                                        line: 6,
+                                        column: 3,
+                                    },
+                                    end: SourcePosition {
+                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                                        line: 6,
+                                        column: 8,
+                                    },
+                                },
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    TypeAlias(
+        Symbol {
+            name: "Scalar",
+            path: Local(
+                "Scalar",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Numeric scalar alias.",
+            ),
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 10,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 10,
+                        column: 22,
+                    },
+                },
+            ),
+            inner: Primitive(
+                Float(
+                    W64,
+                ),
+            ),
+        },
+    ),
+    UnionType(
+        Symbol {
+            name: "Number",
+            path: Local(
+                "Number",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 12,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 15,
+                        column: 2,
+                    },
+                },
+            ),
+            inner: [
+                Primitive(
+                    Int(
+                        W32,
+                    ),
+                ),
+                Primitive(
+                    Float(
+                        W64,
+                    ),
+                ),
+            ],
+        },
+    ),
+    Constant(
+        Symbol {
+            name: "answer",
+            path: Local(
+                "answer",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 17,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 17,
+                        column: 22,
+                    },
+                },
+            ),
+            inner: ValueBinding {
+                type: Some(
+                    Primitive(
+                        Int(
+                            W32,
+                        ),
+                    ),
+                ),
+                default_value: None,
+                attributes: ValueBindingAttributes {
+                    is_mutable: false,
+                    is_static: false,
+                    is_thread_local: false,
+                    is_constexpr: false,
+                    is_consteval: false,
+                    is_constinit: false,
+                    storage: Some(
+                        "None",
+                    ),
+                    linkage: None,
+                },
+            },
+        },
+    ),
+    Variable(
+        Symbol {
+            name: "mutable_counter",
+            path: Local(
+                "mutable_counter",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 18,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 18,
+                        column: 24,
+                    },
+                },
+            ),
+            inner: ValueBinding {
+                type: Some(
+                    Primitive(
+                        Int(
+                            W32,
+                        ),
+                    ),
+                ),
+                default_value: None,
+                attributes: ValueBindingAttributes {
+                    is_mutable: true,
+                    is_static: false,
+                    is_thread_local: false,
+                    is_constexpr: false,
+                    is_consteval: false,
+                    is_constinit: false,
+                    storage: Some(
+                        "None",
+                    ),
+                    linkage: None,
+                },
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "scale_point",
+            path: Local(
+                "scale_point",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Scale a point by a scalar.",
+            ),
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 21,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 21,
+                        column: 53,
+                    },
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "point",
+                                type: Some(
+                                    RawPointer {
+                                        is_mutable: false,
+                                        type: TypeReference(
+                                            TypeReference {
+                                                identifier: "Point",
+                                                display_name: Some(
+                                                    "const Point",
+                                                ),
+                                                canonical: Some(
+                                                    "const struct Point",
+                                                ),
+                                                resolved: Some(
+                                                    Local(
+                                                        "Point",
+                                                    ),
+                                                ),
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "factor",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Scalar",
+                                            display_name: Some(
+                                                "Scalar",
+                                            ),
+                                            canonical: Some(
+                                                "double",
+                                            ),
+                                            resolved: Some(
+                                                Local(
+                                                    "Scalar",
+                                                ),
+                                            ),
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Point",
+                                            display_name: Some(
+                                                "Point",
+                                            ),
+                                            canonical: Some(
+                                                "struct Point",
+                                            ),
+                                            resolved: Some(
+                                                Local(
+                                                    "Point",
+                                                ),
+                                            ),
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: Some(
+                    [
+                        TypeLink {
+                            position: Input {
+                                index: 0,
+                                name: Some(
+                                    "point",
+                                ),
+                            },
+                            target: Local(
+                                "Point",
+                            ),
+                            source: None,
+                        },
+                        TypeLink {
+                            position: Input {
+                                index: 1,
+                                name: Some(
+                                    "factor",
+                                ),
+                            },
+                            target: Local(
+                                "Scalar",
+                            ),
+                            source: None,
+                        },
+                        TypeLink {
+                            position: Output {
+                                index: 0,
+                                name: None,
+                            },
+                            target: Local(
+                                "Point",
+                            ),
+                            source: None,
+                        },
+                    ],
+                ),
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: false,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    TypeAlias(
+        Symbol {
+            name: "BinaryOp",
+            path: Local(
+                "BinaryOp",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            source: Some(
+                SourceRange {
+                    start: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 23,
+                        column: 1,
+                    },
+                    end: SourcePosition {
+                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple04/simple04.c",
+                        line: 23,
+                        column: 42,
+                    },
+                },
+            ),
+            inner: RawPointer {
+                is_mutable: true,
+                type: FunctionPointer(
+                    FunctionPointer {
+                        inputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "arg0",
+                                        type: Some(
+                                            Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: None,
+                                    },
+                                ),
+                                Literal(
+                                    LiteralParameter {
+                                        name: "arg1",
+                                        type: Some(
+                                            Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: None,
+                                    },
+                                ),
+                            ],
+                        ),
+                        outputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "",
+                                        type: Some(
+                                            Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: None,
+                                    },
+                                ),
+                            ],
+                        ),
+                        attributes: None,
+                    },
+                ),
+            },
+        },
+    ),
+]

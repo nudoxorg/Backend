@@ -274,11 +274,35 @@ impl<'tu> TUHandler<'tu> {
 	}
 
 	fn handle_root(&mut self, root: Entity<'tu>) -> Result<(), PackageError> {
-		for child in root.get_children() {
-			self.handle_entity(child)?;
+		let children = root.get_children();
+		let mut seen_functions = HashSet::new();
+
+		for child in &children {
+			if Self::is_free_function_kind(child.get_kind()) {
+				let name = child.get_name().unwrap_or_default();
+
+				if seen_functions.insert(name.clone()) {
+					let overloads = children
+						.iter()
+						.copied()
+						.filter(|candidate| {
+							Self::is_free_function_kind(candidate.get_kind())
+								&& candidate.get_name().is_some_and(|c| c == name)
+						})
+						.collect::<Vec<_>>();
+
+					self.handle_function_group(name, &overloads)?;
+				}
+			} else {
+				self.handle_entity(*child)?;
+			}
 		}
 
 		Ok(())
+	}
+
+	fn is_free_function_kind(kind: EntityKind) -> bool {
+		matches!(kind, EntityKind::FunctionDecl | EntityKind::FunctionTemplate)
 	}
 
 	fn handle_entity(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
@@ -308,38 +332,68 @@ impl<'tu> TUHandler<'tu> {
 
 	fn handle_function(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
 		let name = self.entity_name(entity);
-		let path = self.path_for_name(&name);
-
-		let (input_parameters, output_parameters) = self.handle_function_signature(entity)?;
-
-		let generics = self.handle_template_params(entity.get_children());
-		let attributes = self.handle_function_attributes(entity);
-		let implemented = entity.is_definition();
-
-		let entry = Entry::Function(Symbol {
-			name,
-			path,
-			aliases: None,
-			visibility: self.visibility(entity),
-			documentation: self.documentation(entity),
-			source: self.source_range(entity),
-			inner: Function {
-				input_parameters,
-				output_parameters,
-				type_links: None,
-				attributes,
-				generics,
-				receiver: None,
-				implemented,
-				overloads: None,
-				members: None,
-				implemented_protocols: None,
-			},
-		});
+		let entry = self.free_function_symbol(name, &[entity]).map(Entry::Function)?;
 
 		self.insert_entry(entry, entity);
 
 		Ok(())
+	}
+
+	fn handle_function_group(
+		&mut self,
+		name: String,
+		overloads: &[Entity<'tu>],
+	) -> Result<(), PackageError> {
+		if let Some(primary) = overloads.first().copied() {
+			let entry = self.free_function_symbol(name, overloads).map(Entry::Function)?;
+			self.insert_entry(entry, primary);
+		}
+
+		Ok(())
+	}
+
+	fn free_function_symbol(
+		&self,
+		name: String,
+		overloads: &[Entity<'tu>],
+	) -> Result<Symbol<Function>, PackageError> {
+		let path = self.path_for_name(&name);
+
+		let (primary_idx, primary) = overloads
+			.iter()
+			.copied()
+			.enumerate()
+			.rfind(|(_, candidate)| candidate.is_definition())
+			.unwrap_or_else(|| {
+				let idx = overloads.len().saturating_sub(1);
+				(idx, overloads[idx])
+			});
+
+		let mut function = self.function_from_entity(primary, None)?;
+
+		let extra_overloads = overloads
+			.iter()
+			.enumerate()
+			.filter(|(idx, _)| *idx != primary_idx)
+			.map(|(_, overload)| {
+				let overload_name =
+					overload.get_name().or_else(|| overload.get_display_name()).unwrap_or_default();
+
+				self.free_function_symbol(overload_name, &[*overload])
+			})
+			.collect::<Result<Vec<_>, _>>()?;
+
+		function.overloads = if !extra_overloads.is_empty() { Some(extra_overloads) } else { None };
+
+		Ok(Symbol {
+			name,
+			path,
+			aliases: None,
+			visibility: self.visibility(primary),
+			documentation: self.documentation(primary),
+			source: self.source_range(primary),
+			inner: function,
+		})
 	}
 
 	fn handle_struct(&mut self, entity: Entity<'tu>) -> Result<(), PackageError> {
@@ -626,17 +680,15 @@ impl<'tu> TUHandler<'tu> {
 		children: Vec<Entity<'tu>>,
 	) -> Result<Vec<SumVariant>, PackageError> {
 		let mut variants = vec![];
+		let mut seen_docs = HashSet::new();
 
 		for child in children {
 			match child.get_kind() {
 				EntityKind::EnumConstantDecl => {
 					let variant_name = child.get_name().unwrap_or_default();
+					let documentation = self.documentation(child).filter(|doc| seen_docs.insert(doc.clone()));
 
-					variants.push(SumVariant {
-						name:          variant_name,
-						data:          None,
-						documentation: self.documentation(child),
-					});
+					variants.push(SumVariant { name: variant_name, data: None, documentation });
 				}
 				_ => {}
 			}
@@ -687,7 +739,7 @@ impl<'tu> TUHandler<'tu> {
 				}
 			}
 			TypeKind::LValueReference => {
-				if let Some(referent) = ty.get_element_type() {
+				if let Some(referent) = ty.get_pointee_type().or_else(|| ty.get_element_type()) {
 					Type::BorrowedRef {
 						lifetime:   None,
 						is_mutable: !referent.is_const_qualified(),
@@ -698,7 +750,7 @@ impl<'tu> TUHandler<'tu> {
 				}
 			}
 			TypeKind::RValueReference => {
-				if let Some(referent) = ty.get_element_type() {
+				if let Some(referent) = ty.get_pointee_type().or_else(|| ty.get_element_type()) {
 					Type::BorrowedRef {
 						lifetime:   None,
 						is_mutable: true,
