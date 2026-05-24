@@ -80,6 +80,71 @@ dependencies = [
 ]
 
 [[package]]
+name = "arborium"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66464d43ce8ad5a81f59a9dac02d33dfe384e8fe9cd334fc607a0b81699d2594"
+dependencies = [
+ "arborium-highlight",
+ "arborium-rust",
+ "arborium-theme",
+ "arborium-tree-sitter",
+ "dlmalloc",
+]
+
+[[package]]
+name = "arborium-highlight"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3e19dccfe05568006e5919b0e157695fb4c90a6a4c07582b51454e0c85c4365"
+dependencies = [
+ "arborium-theme",
+ "arborium-tree-sitter",
+ "streaming-iterator",
+]
+
+[[package]]
+name = "arborium-rust"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36d8bebfd306acbb6ef64848c00601641eaef798a44c12a1ef73025a2f9f00f9"
+dependencies = [
+ "arborium-sysroot",
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "arborium-sysroot"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "260e0358abe4ede3af8b4df7a311bc9b6e4a60e4bd50af16deddfcd13759a908"
+dependencies = [
+ "cc",
+ "dlmalloc",
+]
+
+[[package]]
+name = "arborium-theme"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "747d16e6679f93cd84e7a9e8e47bec0055eb900fd3caaa3f3c2bbb31286e6c8d"
+
+[[package]]
+name = "arborium-tree-sitter"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4879b6a79798d45d29d54bf000fd4d1b88a8e654e0b0cb762ac402944129233b"
+dependencies = [
+ "arborium-sysroot",
+ "cc",
+ "regex",
+ "regex-syntax",
+ "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1233,6 +1298,17 @@ dependencies = [
  "proc-macro2 1.0.105",
  "quote 1.0.43",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "dlmalloc"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad5208a115eaba24916f7456929832e310a81518c641f93fee4f89aa93aa3675"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3229,8 +3305,11 @@ checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 name = "ir"
 version = "0.1.0"
 dependencies = [
+ "arborium",
+ "arborium-tree-sitter",
  "facet",
  "serde",
+ "yoke",
 ]
 
 [[package]]
@@ -3611,6 +3690,7 @@ name = "nudox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arborium",
  "async-openai",
  "async-trait",
  "axum 0.8.8",
@@ -5132,6 +5212,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b2231b7c3057d5e4ad0156fb3dc807d900806020c5ffa3ee6ff2c8c76fb8520"
+
+[[package]]
 name = "string_enum"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6271,6 +6357,12 @@ dependencies = [
  "tracing-core",
  "tracing-log",
 ]
+
+[[package]]
+name = "tree-sitter-language"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
 name = "triomphe"

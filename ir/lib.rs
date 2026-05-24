@@ -7,4 +7,5 @@ pub mod parameter;
 pub mod primitives;
 pub mod protocols;
 pub mod record;
+pub mod syntax;
 pub mod ty;

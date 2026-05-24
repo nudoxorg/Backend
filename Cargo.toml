@@ -1,4 +1,4 @@
-cargo-features = ["codegen-backend"]
+# cargo-features = ["codegen-backend"]
 
 [workspace]
 resolver = "3"
@@ -15,4 +15,7 @@ publish = false
 
 [workspace.dependencies]
 ir = { path = "./ir" }
+yoke = { version = "0.8", features = ["derive"] }
+arborium-tree-sitter = "2"
+arborium = { version = "2", default-features = false }
 
