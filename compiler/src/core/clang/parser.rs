@@ -1190,32 +1190,6 @@ impl<'tu> TUHandler<'tu> {
 		NudoxPath::Local(PathBuf::from(segments.join("::")))
 	}
 
-	fn entity_path(&self, entity: Entity<'tu>) -> Option<NudoxPath> {
-		let name = entity.get_name().or_else(|| entity.get_display_name())?;
-		let mut segments = Vec::new();
-		let mut cursor = entity.get_semantic_parent();
-
-		while let Some(parent) = cursor {
-			match parent.get_kind() {
-				EntityKind::Namespace
-				| EntityKind::StructDecl
-				| EntityKind::ClassDecl
-				| EntityKind::ClassTemplate => {
-					if let Some(parent_name) = parent.get_name() {
-						segments.push(parent_name);
-					}
-				}
-				_ => {}
-			}
-			cursor = parent.get_semantic_parent();
-		}
-
-		segments.reverse();
-		segments.push(name);
-
-		Some(NudoxPath::Local(PathBuf::from(segments.join("::"))))
-	}
-
 	fn entity_name(&mut self, entity: Entity<'tu>) -> String { entity.get_name().unwrap_or_default() }
 
 	fn insert_entry(&mut self, entry: Entry, entity: Entity<'tu>) {
