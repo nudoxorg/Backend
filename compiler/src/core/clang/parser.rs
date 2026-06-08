@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, path::PathBuf};
 
 use clang::{Accessibility, Clang, CompilationDatabase, Entity, EntityKind, Index, StorageClass, TranslationUnit, Type as ClangType, TypeKind};
-use ir::{entry::{Entry, NudoxPath}, function::{Attribute as FnAttribute, Function, TypeLink, TypeLinkPosition}, generics::{Generics, Kind, TypeExpr, Variance}, kind::{Symbol, ValueBinding, ValueBindingAttributes, Visibility}, module::Module, parameter::{ConstParam, LiteralParameter, Parameter, ParameterAttribute, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::ReceiverKind, record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant}, source::{SourcePosition, SourceRange}, ty::{FunctionPointer, Type, TypeReference}};
+use ir::{entry::{Entry, NudoxPath}, function::{Attribute as FnAttribute, Function}, generics::{Generics, Kind, TypeExpr, Variance}, kind::{Symbol, Visibility}, module::Module, parameter::{ConstParam, LiteralParameter, Parameter, ParameterAttribute, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::ReceiverKind, record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant}, ty::{FunctionPointer, Type, TypeReference}};
 
 use super::ClangError;
 use crate::error::PackageError;
@@ -115,14 +115,13 @@ impl IRBuilder {
 				Entry::RecordType(symbol) => {
 					if let Some(methods) = &mut symbol.inner.methods {
 						for method in methods {
-							method.inner.type_links =
-								build_type_links_for_function(&method.inner, &type_name_to_id);
+							method.type_links = build_type_links_for_function(&method, &type_name_to_id);
 						}
 					}
 					if let Some(constructors) = &mut symbol.inner.constructors {
 						for constructor in constructors {
-							constructor.inner.type_links =
-								build_type_links_for_function(&constructor.inner, &type_name_to_id);
+							constructor.type_links =
+								build_type_links_for_function(&constructor, &type_name_to_id);
 						}
 					}
 				}
@@ -156,8 +155,8 @@ fn build_type_name_index(entries: &[Entry]) -> HashMap<String, NudoxPath> {
 fn build_type_links_for_function(
 	function: &Function,
 	type_name_to_id: &HashMap<String, NudoxPath>,
-) -> Option<Vec<TypeLink>> {
-	let mut links = Vec::new();
+) -> Option<HashMap<String, i64>> {
+	let mut links = HashMap::new();
 
 	collect_parameter_type_links(
 		true,
@@ -175,29 +174,30 @@ fn build_type_links_for_function(
 	if !links.is_empty() { Some(links) } else { None }
 }
 
+// TODO: re-implement type link support
 fn collect_parameter_type_links(
-	is_input: bool,
+	_is_input: bool,
 	parameters: Option<&[Parameter]>,
 	type_name_to_id: &HashMap<String, NudoxPath>,
-	links: &mut Vec<TypeLink>,
+	_links: &mut HashMap<String, i64>,
 ) {
 	let Some(parameters) = parameters else { return };
 
-	for (idx, parameter) in parameters.iter().enumerate() {
+	for (_idx, parameter) in parameters.iter().enumerate() {
 		let Parameter::Literal(literal) = parameter else { continue };
 
 		let Some(ty) = &literal.r#type else { continue };
 
-		if let Some(target) = resolve_ir_type_to_entry_path(ty, type_name_to_id) {
-			let name = if !literal.name.is_empty() { Some(literal.name.clone()) } else { None };
+		if let Some(_target) = resolve_ir_type_to_entry_path(ty, type_name_to_id) {
+			let _name = if !literal.name.is_empty() { Some(literal.name.clone()) } else { None };
 
-			let position = if is_input {
-				TypeLinkPosition::Input { index: idx, name }
-			} else {
-				TypeLinkPosition::Output { index: idx, name }
-			};
+			// let position = if is_input {
+			// 	TypeLinkPosition::Input { index: idx, name }
+			// } else {
+			// 	TypeLinkPosition::Output { index: idx, name }
+			// };
 
-			links.push(TypeLink { position, target, source: None });
+			// links.push(TypeLink { position, target, source: None });
 		}
 	}
 }
@@ -379,7 +379,7 @@ impl<'tu> TUHandler<'tu> {
 				let overload_name =
 					overload.get_name().or_else(|| overload.get_display_name()).unwrap_or_default();
 
-				self.free_function_symbol(overload_name, &[*overload])
+				self.free_function_symbol(overload_name, &[*overload]).map(|sym| sym.inner)
 			})
 			.collect::<Result<Vec<_>, _>>()?;
 
@@ -391,7 +391,6 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(primary),
 			documentation: self.documentation(primary),
-			source: self.source_range(primary),
 			inner: function,
 		})
 	}
@@ -424,7 +423,6 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(entity),
 			documentation: self.documentation(entity),
-			source: self.source_range(entity),
 			inner: types,
 		});
 
@@ -470,8 +468,8 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(entity),
 			documentation: self.documentation(entity),
-			source: self.source_range(entity),
 			inner: Record {
+				name: Some(name.clone()),
 				generics,
 				fields,
 				call_signatures: None,
@@ -509,7 +507,6 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(entity),
 			documentation: self.documentation(entity),
-			source: self.source_range(entity),
 			inner: variants,
 		});
 
@@ -536,7 +533,6 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(entity),
 			documentation: self.documentation(entity),
-			source: self.source_range(entity),
 			inner,
 		});
 
@@ -561,8 +557,7 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(entity),
 			documentation: self.documentation(entity),
-			source: self.source_range(entity),
-			inner: Module { members: Some(members), imports: None, exports: None, aliases: None },
+			inner: Module { members: Some(members) },
 		});
 
 		self.insert_entry(entry, entity);
@@ -576,16 +571,17 @@ impl<'tu> TUHandler<'tu> {
 		let name = self.entity_name(entity);
 		let path = self.path_for_name(&name);
 
-		let binding = ValueBinding {
-			r#type:        entity.get_type().map(|ty| self.resolve_type(ty)),
-			default_value: None,
-			attributes:    ValueBindingAttributes {
-				is_mutable: !entity.get_type().is_some_and(|ty| ty.is_const_qualified()),
-				is_static: matches!(entity.get_storage_class(), Some(StorageClass::Static)),
-				storage: entity.get_storage_class().map(|storage| format!("{storage:?}")),
-				..ValueBindingAttributes::default()
-			},
-		};
+		// let binding = ValueBinding {
+		// 	r#type:        entity.get_type().map(|ty| self.resolve_type(ty)),
+		// 	default_value: None,
+		// 	attributes:    ValueBindingAttributes {
+		// 		is_mutable: !entity.get_type().is_some_and(|ty| ty.is_const_qualified()),
+		// 		is_static: matches!(entity.get_storage_class(),
+		// Some(StorageClass::Static)), 		storage:
+		// entity.get_storage_class().map(|storage| format!("{storage:?}")),
+		// 		..ValueBindingAttributes::default()
+		// 	},
+		// };
 
 		let symbol = Symbol {
 			name,
@@ -593,8 +589,7 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(entity),
 			documentation: self.documentation(entity),
-			source: self.source_range(entity),
-			inner: binding,
+			inner: (),
 		};
 
 		let entry = if entity.get_type().is_some_and(|ty| ty.is_const_qualified()) {
@@ -624,7 +619,6 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(entity),
 			documentation: self.documentation(entity),
-			source: self.source_range(entity),
 			inner: (),
 		});
 
@@ -643,7 +637,6 @@ impl<'tu> TUHandler<'tu> {
 			match child.get_kind() {
 				EntityKind::FieldDecl | EntityKind::VarDecl => {
 					let field_name = child.get_name().unwrap_or_default();
-					let path = self.path_for_name(&field_name);
 
 					let field_type = child.get_type().map(|t| self.resolve_type(t));
 
@@ -651,8 +644,6 @@ impl<'tu> TUHandler<'tu> {
 
 					fields.push(Field::Known(KnownField {
 						key:           FieldKey::Ident(field_name),
-						path:          Some(path),
-						aliases:       None,
 						r#type:        field_type.map(Box::new),
 						default_value: None,
 						attributes:    FieldAttributes {
@@ -664,7 +655,6 @@ impl<'tu> TUHandler<'tu> {
 						},
 						visibility:    Some(self.visibility(child)),
 						documentation: self.documentation(child),
-						source:        self.source_range(child),
 					}));
 				}
 				EntityKind::CompoundStmt => {}
@@ -791,7 +781,7 @@ impl<'tu> TUHandler<'tu> {
 			TypeKind::Typedef => {
 				let identifier = ty.get_typedef_name().unwrap_or_else(|| ty.get_display_name());
 
-				Type::TypeReference(self.type_reference(identifier, ty, None))
+				Type::TypeReference(self.type_reference(identifier, None))
 			}
 			TypeKind::Record | TypeKind::Enum => {
 				let identifier = ty
@@ -799,14 +789,11 @@ impl<'tu> TUHandler<'tu> {
 					.and_then(|entity| entity.get_display_name())
 					.unwrap_or_else(|| ty.get_display_name());
 
-				Type::TypeReference(self.type_reference(identifier, ty, self.generic_args_from_type(ty)))
+				Type::TypeReference(self.type_reference(identifier, self.generic_args_from_type(ty)))
 			}
 			TypeKind::Auto | TypeKind::Dependent => Type::Infer,
 			TypeKind::Nullptr => Type::TypeReference(TypeReference {
 				identifier:   "nullptr_t".to_owned(),
-				display_name: Some(ty.get_display_name()),
-				canonical:    None,
-				resolved:     None,
 				generic_args: None,
 			}),
 			TypeKind::Unexposed
@@ -818,7 +805,7 @@ impl<'tu> TUHandler<'tu> {
 			_ => {
 				let name = ty.get_display_name();
 				if !name.is_empty() {
-					Type::TypeReference(self.type_reference(name, ty, None))
+					Type::TypeReference(self.type_reference(name, None))
 				} else {
 					Type::Infer
 				}
@@ -829,18 +816,9 @@ impl<'tu> TUHandler<'tu> {
 	fn type_reference(
 		&self,
 		identifier: String,
-		ty: ClangType<'tu>,
 		generic_args: Option<Vec<ir::generics::GenericArg>>,
 	) -> TypeReference {
-		let canonical = ty.get_canonical_type();
-
-		TypeReference {
-			identifier,
-			display_name: Some(ty.get_display_name()),
-			canonical: (canonical != ty).then(|| canonical.get_display_name()),
-			resolved: ty.get_declaration().and_then(|entity| self.entity_path(entity)),
-			generic_args,
-		}
+		TypeReference { identifier, generic_args }
 	}
 
 	fn handle_function_signature(
@@ -883,7 +861,7 @@ impl<'tu> TUHandler<'tu> {
 	fn handle_methods(
 		&self,
 		children: Vec<Entity<'tu>>,
-	) -> Result<Option<Vec<Symbol<Function>>>, PackageError> {
+	) -> Result<Option<Vec<Function>>, PackageError> {
 		let methods: Vec<_> = children
 			.into_iter()
 			.filter(|child| {
@@ -892,7 +870,11 @@ impl<'tu> TUHandler<'tu> {
 					EntityKind::Method | EntityKind::ConversionFunction | EntityKind::FunctionTemplate
 				)
 			})
-			.map(|method| self.member_function_symbol(self.member_function_name(method), &[method]))
+			.map(|method| {
+				self
+					.member_function_symbol(self.member_function_name(method), &[method])
+					.map(|sym| sym.inner)
+			})
 			.collect::<Result<_, _>>()?;
 
 		if !methods.is_empty() { Ok(Some(methods)) } else { Ok(None) }
@@ -979,7 +961,7 @@ impl<'tu> TUHandler<'tu> {
 			.filter(|(idx, _)| *idx != primary_idx)
 			.map(|(_, overload)| {
 				let overload_name = self.member_function_name(*overload);
-				self.member_function_symbol(overload_name, &[*overload])
+				self.member_function_symbol(overload_name, &[*overload]).map(|sym| sym.inner)
 			})
 			.collect::<Result<Vec<_>, _>>()?;
 
@@ -991,7 +973,6 @@ impl<'tu> TUHandler<'tu> {
 			aliases: None,
 			visibility: self.visibility(primary),
 			documentation: self.documentation(primary),
-			source: self.source_range(primary),
 			inner: function,
 		})
 	}
@@ -1007,11 +988,13 @@ impl<'tu> TUHandler<'tu> {
 	fn handle_constructors(
 		&self,
 		children: Vec<Entity<'tu>>,
-	) -> Result<Option<Vec<Symbol<Function>>>, PackageError> {
+	) -> Result<Option<Vec<Function>>, PackageError> {
 		let constructors: Vec<_> = children
 			.into_iter()
 			.filter(|child| matches!(child.get_kind(), EntityKind::Constructor | EntityKind::Destructor))
-			.map(|ctor| self.member_function_symbol(self.member_function_name(ctor), &[ctor]))
+			.map(|ctor| {
+				self.member_function_symbol(self.member_function_name(ctor), &[ctor]).map(|sym| sym.inner)
+			})
 			.collect::<Result<_, _>>()?;
 
 		Ok((!constructors.is_empty()).then_some(constructors))
@@ -1053,6 +1036,7 @@ impl<'tu> TUHandler<'tu> {
 			overloads: None,
 			members: None,
 			implemented_protocols: None,
+			body: None, // TODO
 		})
 	}
 
@@ -1106,11 +1090,7 @@ impl<'tu> TUHandler<'tu> {
 			}
 		}
 
-		if !params.is_empty() {
-			Some(Generics { params, constraints: vec![], metadata: None })
-		} else {
-			None
-		}
+		if !params.is_empty() { Some(Generics { params, constraints: vec![] }) } else { None }
 	}
 
 	fn handle_function_attributes(&self, entity: Entity<'tu>) -> Option<Vec<FnAttribute>> {
@@ -1234,21 +1214,6 @@ impl<'tu> TUHandler<'tu> {
 		segments.push(name);
 
 		Some(NudoxPath::Local(PathBuf::from(segments.join("::"))))
-	}
-
-	fn source_range(&self, entity: Entity<'tu>) -> Option<SourceRange> {
-		let range = entity.get_range()?;
-
-		let start = range.get_start().get_spelling_location();
-		let end = range.get_end().get_spelling_location();
-
-		let start_file = start.file?.get_path().to_string_lossy().into_owned();
-		let end_file = end.file?.get_path().to_string_lossy().into_owned();
-
-		Some(SourceRange {
-			start: SourcePosition { file: start_file, line: start.line, column: start.column },
-			end:   SourcePosition { file: end_file, line: end.line, column: end.column },
-		})
 	}
 
 	fn entity_name(&mut self, entity: Entity<'tu>) -> String { entity.get_name().unwrap_or_default() }
