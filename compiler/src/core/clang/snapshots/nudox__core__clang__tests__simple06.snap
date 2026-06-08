@@ -1,6 +1,5 @@
 ---
 source: compiler/src/core/clang/tests.rs
-assertion_line: 35
 expression: "&entries"
 ---
 [
@@ -15,21 +14,10 @@ expression: "&entries"
             documentation: Some(
                 "Template storage wrapper.",
             ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 4,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 8,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Record {
+                name: Some(
+                    "Holder",
+                ),
                 generics: Some(
                     Generics {
                         params: [
@@ -47,7 +35,6 @@ expression: "&entries"
                             ),
                         ],
                         constraints: [],
-                        metadata: None,
                     },
                 ),
                 fields: [
@@ -56,21 +43,10 @@ expression: "&entries"
                             key: Ident(
                                 "value",
                             ),
-                            path: Some(
-                                Local(
-                                    "advanced::value",
-                                ),
-                            ),
-                            aliases: None,
                             type: Some(
                                 TypeReference(
                                     TypeReference {
                                         identifier: "type-parameter-0-0",
-                                        display_name: Some(
-                                            "type-parameter-0-0",
-                                        ),
-                                        canonical: None,
-                                        resolved: None,
                                         generic_args: None,
                                     },
                                 ),
@@ -86,20 +62,6 @@ expression: "&entries"
                                 Public,
                             ),
                             documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 7,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 7,
-                                        column: 10,
-                                    },
-                                },
-                            ),
                         },
                     ),
                 ],
@@ -122,20 +84,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 16,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 16,
-                        column: 44,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: Some(
                     [
@@ -146,11 +94,6 @@ expression: "&entries"
                                     TypeReference(
                                         TypeReference {
                                             identifier: "template-parameter-0-0<type-parameter-0-1>",
-                                            display_name: Some(
-                                                "template-parameter-0-0<type-parameter-0-1>",
-                                            ),
-                                            canonical: None,
-                                            resolved: None,
                                             generic_args: None,
                                         },
                                     ),
@@ -187,6 +130,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -199,20 +143,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 18,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 18,
-                        column: 38,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -224,11 +154,6 @@ expression: "&entries"
                                     TypeReference(
                                         TypeReference {
                                             identifier: "type-parameter-0-1",
-                                            display_name: Some(
-                                                "type-parameter-0-1",
-                                            ),
-                                            canonical: None,
-                                            resolved: None,
                                             generic_args: None,
                                         },
                                     ),
@@ -250,6 +175,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -262,20 +188,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 19,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 19,
-                        column: 33,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -307,6 +219,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -321,21 +234,10 @@ expression: "&entries"
             documentation: Some(
                 "Adapter with template-template, type, and value parameters.",
             ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 11,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 20,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Record {
+                name: Some(
+                    "Adapter",
+                ),
                 generics: Some(
                     Generics {
                         params: [
@@ -378,7 +280,6 @@ expression: "&entries"
                             ),
                         ],
                         constraints: [],
-                        metadata: None,
                     },
                 ),
                 fields: [
@@ -387,21 +288,10 @@ expression: "&entries"
                             key: Ident(
                                 "box",
                             ),
-                            path: Some(
-                                Local(
-                                    "advanced::box",
-                                ),
-                            ),
-                            aliases: None,
                             type: Some(
                                 TypeReference(
                                     TypeReference {
                                         identifier: "template-parameter-0-0<type-parameter-0-1>",
-                                        display_name: Some(
-                                            "template-parameter-0-0<type-parameter-0-1>",
-                                        ),
-                                        canonical: None,
-                                        resolved: None,
                                         generic_args: None,
                                     },
                                 ),
@@ -417,220 +307,130 @@ expression: "&entries"
                                 Public,
                             ),
                             documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 14,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 14,
-                                        column: 13,
-                                    },
-                                },
-                            ),
                         },
                     ),
                 ],
                 call_signatures: None,
                 constructors: Some(
                     [
-                        Symbol {
-                            name: "constructor",
-                            path: Local(
-                                "advanced::Adapter::constructor",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 16,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 16,
-                                        column: 44,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "initial",
-                                                type: Some(
-                                                    TypeReference(
-                                                        TypeReference {
-                                                            identifier: "template-parameter-0-0<type-parameter-0-1>",
-                                                            display_name: Some(
-                                                                "template-parameter-0-0<type-parameter-0-1>",
-                                                            ),
-                                                            canonical: None,
-                                                            resolved: None,
-                                                            generic_args: None,
-                                                        },
-                                                    ),
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "initial",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "template-parameter-0-0<type-parameter-0-1>",
+                                                        generic_args: None,
+                                                    },
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Void,
-                                                ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    Static,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Void,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                Static,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
                 methods: Some(
                     [
-                        Symbol {
-                            name: "get",
-                            path: Local(
-                                "advanced::Adapter::get",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 18,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 18,
-                                        column: 38,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    TypeReference(
-                                                        TypeReference {
-                                                            identifier: "type-parameter-0-1",
-                                                            display_name: Some(
-                                                                "type-parameter-0-1",
-                                                            ),
-                                                            canonical: None,
-                                                            resolved: None,
-                                                            generic_args: None,
-                                                        },
-                                                    ),
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "type-parameter-0-1",
+                                                        generic_args: None,
+                                                    },
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    SharedRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
-                        Symbol {
-                            name: "size",
-                            path: Local(
-                                "advanced::Adapter::size",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 19,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 19,
-                                        column: 33,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Primitive(
-                                                        Int(
-                                                            W32,
-                                                        ),
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Primitive(
+                                                    Int(
+                                                        W32,
                                                     ),
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    SharedRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
@@ -664,20 +464,6 @@ expression: "&entries"
             documentation: Some(
                 "Return the input unchanged.",
             ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 23,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 26,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -689,11 +475,6 @@ expression: "&entries"
                                     TypeReference(
                                         TypeReference {
                                             identifier: "type-parameter-0-0",
-                                            display_name: Some(
-                                                "type-parameter-0-0",
-                                            ),
-                                            canonical: None,
-                                            resolved: None,
                                             generic_args: None,
                                         },
                                     ),
@@ -724,7 +505,6 @@ expression: "&entries"
                             ),
                         ],
                         constraints: [],
-                        metadata: None,
                     },
                 ),
                 receiver: None,
@@ -732,6 +512,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -744,20 +525,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 33,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 36,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -769,11 +536,6 @@ expression: "&entries"
                                     TypeReference(
                                         TypeReference {
                                             identifier: "type-parameter-0-0",
-                                            display_name: Some(
-                                                "type-parameter-0-0",
-                                            ),
-                                            canonical: None,
-                                            resolved: None,
                                             generic_args: None,
                                         },
                                     ),
@@ -804,95 +566,67 @@ expression: "&entries"
                             ),
                         ],
                         constraints: [],
-                        metadata: None,
                     },
                 ),
                 receiver: None,
                 overloads: Some(
                     [
-                        Symbol {
-                            name: "choose",
-                            path: Local(
-                                "advanced::choose",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 28,
-                                        column: 1,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                                        line: 31,
-                                        column: 2,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    TypeReference(
-                                                        TypeReference {
-                                                            identifier: "type-parameter-0-0",
-                                                            display_name: Some(
-                                                                "type-parameter-0-0",
-                                                            ),
-                                                            canonical: None,
-                                                            resolved: None,
-                                                            generic_args: None,
-                                                        },
-                                                    ),
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "type-parameter-0-0",
+                                                        generic_args: None,
+                                                    },
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: Some(
+                                Generics {
+                                    params: [
+                                        Type(
+                                            TypeParam {
+                                                name: Some(
+                                                    "T",
+                                                ),
+                                                kind: Type,
+                                                variance: Invariant,
+                                                default_type: None,
+                                                params: None,
+                                                origin: Free,
                                             },
                                         ),
                                     ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: Some(
-                                    Generics {
-                                        params: [
-                                            Type(
-                                                TypeParam {
-                                                    name: Some(
-                                                        "T",
-                                                    ),
-                                                    kind: Type,
-                                                    variance: Invariant,
-                                                    default_type: None,
-                                                    params: None,
-                                                    origin: Free,
-                                                },
-                                            ),
-                                        ],
-                                        constraints: [],
-                                        metadata: None,
-                                    },
-                                ),
-                                receiver: None,
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                                    constraints: [],
+                                },
+                            ),
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -905,32 +639,9 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 38,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 38,
-                        column: 30,
-                    },
-                },
-            ),
             inner: TypeReference(
                 TypeReference {
                     identifier: "Holder<int>",
-                    display_name: Some(
-                        "advanced::Holder<int>",
-                    ),
-                    canonical: None,
-                    resolved: Some(
-                        Local(
-                            "advanced::Holder",
-                        ),
-                    ),
                     generic_args: Some(
                         [
                             Type(
@@ -955,20 +666,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 1,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple06/simple06.cpp",
-                        line: 40,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Module {
                 members: Some(
                     [
@@ -998,9 +695,6 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                imports: None,
-                exports: None,
-                aliases: None,
             },
         },
     ),

@@ -1,6 +1,5 @@
 ---
 source: compiler/src/core/clang/tests.rs
-assertion_line: 35
 expression: "&entries"
 ---
 [
@@ -13,20 +12,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 6,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 6,
-                        column: 39,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -58,6 +43,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -72,81 +58,48 @@ expression: "&entries"
             documentation: Some(
                 "Base class for values.",
             ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 4,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 7,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Record {
+                name: Some(
+                    "Base",
+                ),
                 generics: None,
                 fields: [],
                 call_signatures: None,
                 constructors: None,
                 methods: Some(
                     [
-                        Symbol {
-                            name: "id",
-                            path: Local(
-                                "math::Base::id",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 6,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 6,
-                                        column: 39,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Primitive(
-                                                        Int(
-                                                            W32,
-                                                        ),
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Primitive(
+                                                    Int(
+                                                        W32,
                                                     ),
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    SharedRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
@@ -172,20 +125,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 16,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 16,
-                        column: 37,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: Some(
                     [
@@ -196,11 +135,6 @@ expression: "&entries"
                                     TypeReference(
                                         TypeReference {
                                             identifier: "type-parameter-0-0",
-                                            display_name: Some(
-                                                "type-parameter-0-0",
-                                            ),
-                                            canonical: None,
-                                            resolved: None,
                                             generic_args: None,
                                         },
                                     ),
@@ -237,6 +171,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -251,20 +186,6 @@ expression: "&entries"
             documentation: Some(
                 "Return the stored value.",
             ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 19,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 19,
-                        column: 34,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -276,11 +197,6 @@ expression: "&entries"
                                     TypeReference(
                                         TypeReference {
                                             identifier: "type-parameter-0-0",
-                                            display_name: Some(
-                                                "type-parameter-0-0",
-                                            ),
-                                            canonical: None,
-                                            resolved: None,
                                             generic_args: None,
                                         },
                                     ),
@@ -302,6 +218,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -314,20 +231,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 22,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 22,
-                        column: 32,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -353,86 +256,60 @@ expression: "&entries"
                 ),
                 overloads: Some(
                     [
-                        Symbol {
-                            name: "reset",
-                            path: Local(
-                                "math::Box::reset",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 21,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 21,
-                                        column: 39,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "next",
-                                                type: Some(
-                                                    TypeReference(
-                                                        TypeReference {
-                                                            identifier: "type-parameter-0-0",
-                                                            display_name: Some(
-                                                                "type-parameter-0-0",
-                                                            ),
-                                                            canonical: None,
-                                                            resolved: None,
-                                                            generic_args: None,
-                                                        },
-                                                    ),
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "next",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "type-parameter-0-0",
+                                                        generic_args: None,
+                                                    },
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Void,
-                                                ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    MutRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Void,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                MutRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -445,20 +322,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 24,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 24,
-                        column: 40,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -490,6 +353,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -504,21 +368,10 @@ expression: "&entries"
             documentation: Some(
                 "Generic fixed-size box.",
             ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 10,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 28,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Record {
+                name: Some(
+                    "Box",
+                ),
                 generics: Some(
                     Generics {
                         params: [
@@ -546,7 +399,6 @@ expression: "&entries"
                             ),
                         ],
                         constraints: [],
-                        metadata: None,
                     },
                 ),
                 fields: [
@@ -555,21 +407,10 @@ expression: "&entries"
                             key: Ident(
                                 "value",
                             ),
-                            path: Some(
-                                Local(
-                                    "math::value",
-                                ),
-                            ),
-                            aliases: None,
                             type: Some(
                                 TypeReference(
                                     TypeReference {
                                         identifier: "type-parameter-0-0",
-                                        display_name: Some(
-                                            "type-parameter-0-0",
-                                        ),
-                                        canonical: None,
-                                        resolved: None,
                                         generic_args: None,
                                     },
                                 ),
@@ -585,20 +426,6 @@ expression: "&entries"
                                 Public,
                             ),
                             documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 13,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 13,
-                                        column: 10,
-                                    },
-                                },
-                            ),
                         },
                     ),
                     Known(
@@ -606,12 +433,6 @@ expression: "&entries"
                             key: Ident(
                                 "created",
                             ),
-                            path: Some(
-                                Local(
-                                    "math::created",
-                                ),
-                            ),
-                            aliases: None,
                             type: Some(
                                 Primitive(
                                     Int(
@@ -630,20 +451,6 @@ expression: "&entries"
                                 Public,
                             ),
                             documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 14,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 14,
-                                        column: 21,
-                                    },
-                                },
-                            ),
                         },
                     ),
                     Known(
@@ -651,12 +458,6 @@ expression: "&entries"
                             key: Ident(
                                 "hidden",
                             ),
-                            path: Some(
-                                Local(
-                                    "math::hidden",
-                                ),
-                            ),
-                            aliases: None,
                             type: Some(
                                 Primitive(
                                     Int(
@@ -675,348 +476,207 @@ expression: "&entries"
                                 Private,
                             ),
                             documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 27,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 27,
-                                        column: 13,
-                                    },
-                                },
-                            ),
                         },
                     ),
                 ],
                 call_signatures: None,
                 constructors: Some(
                     [
-                        Symbol {
-                            name: "constructor",
-                            path: Local(
-                                "math::Box::constructor",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 16,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 16,
-                                        column: 37,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "initial",
-                                                type: Some(
-                                                    TypeReference(
-                                                        TypeReference {
-                                                            identifier: "type-parameter-0-0",
-                                                            display_name: Some(
-                                                                "type-parameter-0-0",
-                                                            ),
-                                                            canonical: None,
-                                                            resolved: None,
-                                                            generic_args: None,
-                                                        },
-                                                    ),
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "initial",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "type-parameter-0-0",
+                                                        generic_args: None,
+                                                    },
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Void,
-                                                ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    Static,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Void,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                Static,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
                 methods: Some(
                     [
-                        Symbol {
-                            name: "get",
-                            path: Local(
-                                "math::Box::get",
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "type-parameter-0-0",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
                             ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: Some(
-                                "Return the stored value.",
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
                             ),
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 19,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 19,
-                                        column: 34,
-                                    },
-                                },
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "next",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "type-parameter-0-0",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
                             ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    TypeReference(
-                                                        TypeReference {
-                                                            identifier: "type-parameter-0-0",
-                                                            display_name: Some(
-                                                                "type-parameter-0-0",
-                                                            ),
-                                                            canonical: None,
-                                                            resolved: None,
-                                                            generic_args: None,
-                                                        },
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Void,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                MutRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Void,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                MutRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Primitive(
+                                                    Int(
+                                                        W32,
                                                     ),
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    SharedRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
-                        },
-                        Symbol {
-                            name: "reset",
-                            path: Local(
-                                "math::Box::reset",
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
                             ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 21,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 21,
-                                        column: 39,
-                                    },
-                                },
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
                             ),
-                            inner: Function {
-                                input_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "next",
-                                                type: Some(
-                                                    TypeReference(
-                                                        TypeReference {
-                                                            identifier: "type-parameter-0-0",
-                                                            display_name: Some(
-                                                                "type-parameter-0-0",
-                                                            ),
-                                                            canonical: None,
-                                                            resolved: None,
-                                                            generic_args: None,
-                                                        },
-                                                    ),
-                                                ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Void,
-                                                ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    MutRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
-                        },
-                        Symbol {
-                            name: "reset",
-                            path: Local(
-                                "math::Box::reset",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 22,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 22,
-                                        column: 32,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Void,
-                                                ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    MutRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
-                        },
-                        Symbol {
-                            name: "id",
-                            path: Local(
-                                "math::Box::id",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 24,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                                        line: 24,
-                                        column: 40,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Primitive(
-                                                        Int(
-                                                            W32,
-                                                        ),
-                                                    ),
-                                                ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    SharedRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
@@ -1026,17 +686,6 @@ expression: "&entries"
                         TypeReference(
                             TypeReference {
                                 identifier: "Base",
-                                display_name: Some(
-                                    "Base",
-                                ),
-                                canonical: Some(
-                                    "math::Base",
-                                ),
-                                resolved: Some(
-                                    Local(
-                                        "math::Base",
-                                    ),
-                                ),
                                 generic_args: None,
                             },
                         ),
@@ -1071,20 +720,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 30,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 30,
-                        column: 48,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: Some(
                     [
@@ -1147,6 +782,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -1159,20 +795,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 1,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple05/simple05.cpp",
-                        line: 32,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Module {
                 members: Some(
                     [
@@ -1202,9 +824,6 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                imports: None,
-                exports: None,
-                aliases: None,
             },
         },
     ),

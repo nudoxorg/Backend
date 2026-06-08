@@ -12,21 +12,10 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                        line: 1,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                        line: 4,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Record {
+                name: Some(
+                    "Point",
+                ),
                 generics: None,
                 fields: [
                     Known(
@@ -34,12 +23,6 @@ expression: "&entries"
                             key: Ident(
                                 "x",
                             ),
-                            path: Some(
-                                Local(
-                                    "x",
-                                ),
-                            ),
-                            aliases: None,
                             type: Some(
                                 Primitive(
                                     Int(
@@ -58,20 +41,6 @@ expression: "&entries"
                                 Public,
                             ),
                             documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                                        line: 2,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                                        line: 2,
-                                        column: 8,
-                                    },
-                                },
-                            ),
                         },
                     ),
                     Known(
@@ -79,12 +48,6 @@ expression: "&entries"
                             key: Ident(
                                 "y",
                             ),
-                            path: Some(
-                                Local(
-                                    "y",
-                                ),
-                            ),
-                            aliases: None,
                             type: Some(
                                 Primitive(
                                     Int(
@@ -103,20 +66,6 @@ expression: "&entries"
                                 Public,
                             ),
                             documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                                        line: 3,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                                        line: 3,
-                                        column: 8,
-                                    },
-                                },
-                            ),
                         },
                     ),
                 ],
@@ -139,20 +88,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                        line: 6,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                        line: 9,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: Some(
                     [
@@ -163,17 +98,6 @@ expression: "&entries"
                                     TypeReference(
                                         TypeReference {
                                             identifier: "Point",
-                                            display_name: Some(
-                                                "struct Point",
-                                            ),
-                                            canonical: Some(
-                                                "struct Point",
-                                            ),
-                                            resolved: Some(
-                                                Local(
-                                                    "Point",
-                                                ),
-                                            ),
                                             generic_args: None,
                                         },
                                     ),
@@ -200,22 +124,7 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                type_links: Some(
-                    [
-                        TypeLink {
-                            position: Input {
-                                index: 0,
-                                name: Some(
-                                    "p",
-                                ),
-                            },
-                            target: Local(
-                                "Point",
-                            ),
-                            source: None,
-                        },
-                    ],
-                ),
+                type_links: None,
                 attributes: None,
                 generics: None,
                 receiver: None,
@@ -223,6 +132,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -235,20 +145,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                        line: 11,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple02/simple02.c",
-                        line: 15,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -278,6 +174,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),

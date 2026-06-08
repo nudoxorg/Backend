@@ -1,6 +1,5 @@
 ---
 source: compiler/src/core/clang/tests.rs
-assertion_line: 35
 expression: "&entries"
 ---
 [
@@ -14,20 +13,6 @@ expression: "&entries"
             visibility: Public,
             documentation: Some(
                 "Runtime mode.",
-            ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 4,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 8,
-                        column: 2,
-                    },
-                },
             ),
             inner: [
                 SumVariant {
@@ -54,42 +39,7 @@ expression: "&entries"
             aliases: None,
             visibility: Internal,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 10,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 10,
-                        column: 32,
-                    },
-                },
-            ),
-            inner: ValueBinding {
-                type: Some(
-                    Primitive(
-                        Int(
-                            W32,
-                        ),
-                    ),
-                ),
-                default_value: None,
-                attributes: ValueBindingAttributes {
-                    is_mutable: true,
-                    is_static: true,
-                    is_thread_local: false,
-                    is_constexpr: false,
-                    is_consteval: false,
-                    is_constinit: false,
-                    storage: Some(
-                        "Static",
-                    ),
-                    linkage: None,
-                },
-            },
+            inner: (),
         },
     ),
     Constant(
@@ -101,42 +51,7 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 11,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 11,
-                        column: 25,
-                    },
-                },
-            ),
-            inner: ValueBinding {
-                type: Some(
-                    Primitive(
-                        Int(
-                            W32,
-                        ),
-                    ),
-                ),
-                default_value: None,
-                attributes: ValueBindingAttributes {
-                    is_mutable: false,
-                    is_static: false,
-                    is_thread_local: false,
-                    is_constexpr: false,
-                    is_consteval: false,
-                    is_constinit: false,
-                    storage: Some(
-                        "None",
-                    ),
-                    linkage: None,
-                },
-            },
+            inner: (),
         },
     ),
     Variable(
@@ -148,45 +63,7 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 12,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 12,
-                        column: 32,
-                    },
-                },
-            ),
-            inner: ValueBinding {
-                type: Some(
-                    Array {
-                        type: Primitive(
-                            Int(
-                                W32,
-                            ),
-                        ),
-                        length: 3,
-                    },
-                ),
-                default_value: None,
-                attributes: ValueBindingAttributes {
-                    is_mutable: true,
-                    is_static: false,
-                    is_thread_local: false,
-                    is_constexpr: false,
-                    is_consteval: false,
-                    is_constinit: false,
-                    storage: Some(
-                        "None",
-                    ),
-                    linkage: None,
-                },
-            },
+            inner: (),
         },
     ),
     TypeAlias(
@@ -198,20 +75,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 14,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 14,
-                        column: 43,
-                    },
-                },
-            ),
             inner: RawPointer {
                 is_mutable: true,
                 type: FunctionPointer(
@@ -286,20 +149,6 @@ expression: "&entries"
             documentation: Some(
                 "Exercise callable and reference type shapes.",
             ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 17,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 17,
-                        column: 66,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: Some(
                     [
@@ -310,17 +159,6 @@ expression: "&entries"
                                     TypeReference(
                                         TypeReference {
                                             identifier: "Callback",
-                                            display_name: Some(
-                                                "Callback",
-                                            ),
-                                            canonical: Some(
-                                                "int (*)(int, int)",
-                                            ),
-                                            resolved: Some(
-                                                Local(
-                                                    "coverage::Callback",
-                                                ),
-                                            ),
                                             generic_args: None,
                                         },
                                     ),
@@ -414,22 +252,7 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                type_links: Some(
-                    [
-                        TypeLink {
-                            position: Input {
-                                index: 0,
-                                name: Some(
-                                    "callback",
-                                ),
-                            },
-                            target: Local(
-                                "coverage::Callback",
-                            ),
-                            source: None,
-                        },
-                    ],
-                ),
+                type_links: None,
                 attributes: Some(
                     [
                         Variadic,
@@ -441,6 +264,7 @@ expression: "&entries"
                 implemented: false,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -454,20 +278,6 @@ expression: "&entries"
             visibility: Public,
             documentation: Some(
                 "Exercise pointer constness and nesting.",
-            ),
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 20,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 20,
-                        column: 109,
-                    },
-                },
             ),
             inner: Function {
                 input_parameters: Some(
@@ -576,6 +386,7 @@ expression: "&entries"
                 implemented: false,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -588,20 +399,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 27,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 27,
-                        column: 20,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -629,6 +426,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -641,20 +439,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 28,
-                        column: 3,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 28,
-                        column: 42,
-                    },
-                },
-            ),
             inner: Function {
                 input_parameters: None,
                 output_parameters: Some(
@@ -686,6 +470,7 @@ expression: "&entries"
                 implemented: true,
                 members: None,
                 implemented_protocols: None,
+                body: None,
             },
         },
     ),
@@ -698,21 +483,10 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 22,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 29,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Record {
+                name: Some(
+                    "Convertible",
+                ),
                 generics: None,
                 fields: [
                     Known(
@@ -720,12 +494,6 @@ expression: "&entries"
                             key: Ident(
                                 "secret",
                             ),
-                            path: Some(
-                                Local(
-                                    "coverage::secret",
-                                ),
-                            ),
-                            aliases: None,
                             type: Some(
                                 Primitive(
                                     Int(
@@ -744,135 +512,77 @@ expression: "&entries"
                                 Protected,
                             ),
                             documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                                        line: 24,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                                        line: 24,
-                                        column: 13,
-                                    },
-                                },
-                            ),
                         },
                     ),
                 ],
                 call_signatures: None,
                 constructors: Some(
                     [
-                        Symbol {
-                            name: "destructor",
-                            path: Local(
-                                "coverage::Convertible::destructor",
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Void,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
                             ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                                        line: 27,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                                        line: 27,
-                                        column: 20,
-                                    },
-                                },
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                Owned,
                             ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Void,
-                                                ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    Owned,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
                 methods: Some(
                     [
-                        Symbol {
-                            name: "operator int",
-                            path: Local(
-                                "coverage::Convertible::operator int",
-                            ),
-                            aliases: None,
-                            visibility: Public,
-                            documentation: None,
-                            source: Some(
-                                SourceRange {
-                                    start: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                                        line: 28,
-                                        column: 3,
-                                    },
-                                    end: SourcePosition {
-                                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                                        line: 28,
-                                        column: 42,
-                                    },
-                                },
-                            ),
-                            inner: Function {
-                                input_parameters: None,
-                                output_parameters: Some(
-                                    [
-                                        Literal(
-                                            LiteralParameter {
-                                                name: "",
-                                                type: Some(
-                                                    Primitive(
-                                                        Int(
-                                                            W32,
-                                                        ),
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Primitive(
+                                                    Int(
+                                                        W32,
                                                     ),
                                                 ),
-                                                attributes: None,
-                                                default_value: None,
-                                                description: None,
-                                            },
-                                        ),
-                                    ],
-                                ),
-                                type_links: None,
-                                attributes: None,
-                                generics: None,
-                                receiver: Some(
-                                    SharedRef,
-                                ),
-                                overloads: None,
-                                implemented: true,
-                                members: None,
-                                implemented_protocols: None,
-                            },
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
                         },
                     ],
                 ),
@@ -901,20 +611,6 @@ expression: "&entries"
             aliases: None,
             visibility: Public,
             documentation: None,
-            source: Some(
-                SourceRange {
-                    start: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 1,
-                        column: 1,
-                    },
-                    end: SourcePosition {
-                        file: "$CARGO_MANIFEST_DIR/src/core/clang/tests/simple07/simple07.cpp",
-                        line: 31,
-                        column: 2,
-                    },
-                },
-            ),
             inner: Module {
                 members: Some(
                     [
@@ -950,9 +646,6 @@ expression: "&entries"
                         ),
                     ],
                 ),
-                imports: None,
-                exports: None,
-                aliases: None,
             },
         },
     ),
