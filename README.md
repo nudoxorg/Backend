@@ -1,234 +1,284 @@
-The Development Environment (Nix & Lix)
----------------------------------------
+# nudox Backend
 
-We rely on **Nix** to ensure that things stay isolated, and that bugs don't
-become machine-specific. For this, use **Lix**, a modern, implementation of the
-Nix package manager, to manage these environments.
+A Rust workspace that indexes library APIs and symbol occurrences, and serves them over a REST API. The server ingests Rust and TypeScript packages, stores structured symbol data in TerminusDB and Qdrant, and exposes search endpoints for code intelligence tooling.
 
-#### 1. Installation
-
-We don't manually install compilers, runtimes, or libraries. We describe them
-in Nix and let Lix handle the isolation.
-
-1.  **Install Lix**: Follow the [Lix installation guide]. Run the installer script:
-
-    ~~~~ bash
-    curl -sSfL https://install.lix.systems/lix | sh -s -- install
-    ~~~~
-
-2.  **Enable Flakes**: During installation, you will be prompted to enable
-    **Flakes** and the **New CLI**. **Say yes.** Flakes provide pinning of our
-    dependencies so the tooling can be rebuilt at any point in time.
-
-3.  **Verify**: Ensure the binary is in your path by checking the version:
-
-    ~~~~ bash
-    nix --version
-    ~~~~
-
-#### 2. The Repository Entry Point: `nix shell`
-
-Each NuDox repository contains a `flake.nix` file. This is the blueprint for
-the project's environment. Instead of polluting your global system path with
-specific versions of Node, Go, or Rust, we use ephemeral shells.
-
-**To enter a development environment:**
-
-1.  Navigate to any NuDox repository.
-
-2.  Execute the entry command:
-
-    ~~~~ bash
-    nix shell
-    ~~~~
-
-This command pulls the exact dependencies defined in the flake, builds them (or
-fetches them from a cache), and drops you into a shell where all required
-tooling is available in your `$PATH`. When you exit the shell, your system
-remains clean.
-
-#### 3. Automation with `direnv`
-
-Running `nix shell` manually every time you `cd` into a directory is tedious
-and error-prone. We recommend using `direnv` to automate the loading of our Nix
-environments.
-
-1.  **Install direnv**: https://direnv.net/docs/installation.html.
-2.  **Hook it**: Add `eval "$(direnv hook bash)"` (or your preferred shell) to your
-    `~/.bashrc`.
-3.  **Allow it**: Run `direnv allow` inside a repository.
-
-From then on, the environment will load and unload automatically as you move in
-and out of project directories.
-
-#### 4. Troubleshooting: “The Pure Context”
-
- -  **Binary Blobs**: If a tool you installed via your OS package manager (like
-    `apt` or `brew`) is missing inside a `nix shell`, this is by design. Nix
-    environments are meant to be pure. If a tool is missing, add it to the
-    repository's `flake.nix` rather than installing it globally.
- -  **Permissions**: If Nix complains about `trusted-users`, you may need to add
-    your user to `/etc/nix/nix.conf`.
-
-[Lix installation guide]: https://lix.systems/install/
-
-
-Git
 ---
 
-### Commit Standards
+## What's in this workspace
 
-For consistency, every commit should follow the [conventional commit]
-standards. Read it if you like, but frankly it just means that your commit
-messages need to follow this format (Add it to your gitconfig if you'd like):
+```
+compiler/          Server binary + ingestion pipeline (axum, TerminusDB, Qdrant)
+crates/
+  nudox-core       Shared types, traits, error type — zero logic
+  nudox-embed      Embedder implementations (Mock, Placeholder, InProcess, Remote/OpenAI)
+  nudox-blobstore  BlobStore backends: local filesystem via object_store, in-memory
+  nudox-search     SearchIndex via Tantivy, VectorIndex via Qdrant, in-memory stubs
+  nudox-pipeline   Converts PipelineInput → BlobInfo with tree-sitter snippet extraction
+  nudox-orchestrator  Ingest routing, deferred queue management, index rebuild
+  nudox-store      SQLite-backed GlobalSymbolStore + FutureParseQueue
+  nudox-indexer    Demo binary wiring all crates end-to-end
+ir/                Tree-sitter IR: syntax walking, reference classification
+linkml/            Schema definitions
+terminusdb/        TerminusDB client and embedding service
+```
 
-~~~~ gitcommit
-<type>(<optional scope>): <subject>
+---
 
-<optional body>
+## Building
 
-# Types: build (deps/build), chore (maintenance), ci, docs, feat (new),
-#        fix (bug), perf, refactor (no behavior change), revert (undo),
-#        style (format/comments), test
-# Scope: from edited filenames.
-# Body: bullets for what + why.
-# Footer: Fixes: | BREAKING CHANGE: | Refs: | Co-authored-by:
-~~~~
+All build commands run inside the Nix flake — `Backend/.cargo/config.toml` requires `clang` as the linker, which is only in the flake environment:
 
-In your PR's and anything else, there's no expectation, it's just important for
-browsing the log or quickly finding out the history of a file. We also use it
-for changelog generation, so no one has to worry about presentation there.
+```bash
+# Enter the environment once (or use direnv — see below)
+nix develop /path/to/nudox/Backend
 
-[conventional commit]: https://www.conventionalcommits.org/en/v1.0.0/
+# Workspace check
+cargo check --workspace
 
-### Radicle
+# Run tests (no external services needed by default)
+cargo test --workspace
 
-We use [Radicle] for hosting our private repositories. Unlike centralized
-forges, Radicle is a peer-to-peer protocol where your identity is tied to
-cryptographic keys rather than an email address.
+# Qdrant integration tests (requires Qdrant on localhost:6334)
+cargo test --workspace --features nudox-search/qdrant-integration
 
-#### 1. Identity & Node Setup
+# Build the server binary
+cargo build --release -p nudox
 
-Before you can interact with the network, you must forge your identity.
+# Run the demo indexer
+NUDOX_QDRANT_URL=http://localhost:6334 cargo run -p nudox-indexer
+```
 
-1.  **Installation**: [Install Radicle] for your OS.
+### direnv (recommended)
 
-2.  **Authentication**: Run `rad auth` in your terminal. You will be prompted for
-    an alias and a passphrase.
-     -  **Note**: Your passphrase encrypts your private key. If you lose it, you lose
-        access to your identity and your ability to sign code. There is no
-        password reset :(.
+```bash
+# Install direnv, then in any nudox repo:
+direnv allow
+# The flake environment loads/unloads automatically on cd.
+```
 
-3.  **Identify your DID**: Upon completion, the CLI returns your **DID**
-    (Decentralized Identifier). You can view this at any time by running
-    `rad self --did`.
+---
 
-4.  **Start the Engine**: Radicle requires a local node to handle replication and
-    gossip. Start it as a background daemon:
+## Running the server
 
-    ~~~~ bash
-    rad node start
-    ~~~~
+```bash
+# Minimal — no TerminusDB, no Qdrant, text search only
+NUDOX_DATA_DIR=.nudox-data cargo run -p nudox
 
-#### 2. Connecting to the Seed Node
+# Full stack
+NUDOX_DATA_DIR=.nudox-data \
+NUDOX_TERMINUS_URL=http://localhost:6363 \
+NUDOX_TERMINUS_ORG=my_org \
+NUDOX_TERMINUS_DB=my_db \
+NUDOX_QDRANT_ENDPOINT=http://localhost:6334 \
+OPENAI_API_KEY=sk-... \
+cargo run -p nudox
+```
 
-To bridge into our private network, you need to connect to our primary seed
-node (the “leaf” node). This node acts as a 24/7 relay for our private
-repositories.
+Copy `.env.example` to `.env` and fill in values; the server reads it on startup.
 
-Connect to the remote peer:
+---
 
-~~~~ bash
+## Environment variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `NUDOX_DATA_DIR` | `.nudox-data` | Storage root for all on-disk state |
+| `NUDOX_BIND_ADDR` | `0.0.0.0:3000` | Server listen address |
+| `NUDOX_TERMINUS_URL` | — | TerminusDB HTTP endpoint |
+| `NUDOX_TERMINUS_ORG` | — | TerminusDB org name |
+| `NUDOX_TERMINUS_DB` | — | TerminusDB database name |
+| `NUDOX_QDRANT_ENDPOINT` | — | Qdrant gRPC endpoint |
+| `NUDOX_QDRANT_COLLECTION` | `nudox-embeddings` | Qdrant collection prefix |
+| `NUDOX_EMBEDDING_MODEL` | `text-embedding-3-small` | Model name passed to OpenAI-compat API |
+| `OPENAI_API_KEY` | — | Required when `NUDOX_QDRANT_ENDPOINT` is set |
+| `NUDOX_BLOB_STORE_ROOT` | `target/nudox-blobs` | Indexer demo blob directory |
+| `NUDOX_TANTIVY_DIR` | `target/nudox-tantivy` | Indexer demo Tantivy directory |
+| `RUST_LOG` | `info,nudox=debug` | Tracing filter |
+
+The SQLite occurrence store (`{NUDOX_DATA_DIR}/nudox-links.db`) and the Tantivy full-text index (`{NUDOX_DATA_DIR}/tantivy/`) are created automatically at startup; no manual setup is needed.
+
+---
+
+## API
+
+### Health
+
+```
+GET /healthz
+→ { "status": "ok", "tracked_packages": 3 }
+```
+
+### Full-text symbol search (Tantivy, no external services)
+
+```
+GET /text-search?q=<query>[&limit=<n>]
+```
+
+Searches symbol names, qualified names, and documentation text across all ingested packages. Returns up to `limit` (default 6) results ordered by relevance score.
+
+```bash
+curl 'http://localhost:3000/text-search?q=Serialize&limit=5'
+```
+
+```json
+{
+  "query": "Serialize",
+  "results": [
+    {
+      "uri": "Entry/rust/serde/Serialize",
+      "score": 4.2,
+      "fq_name": "serde::Serialize",
+      "language": "rust",
+      "package": "serde",
+      "version": "1.0.219",
+      "symbol_kind": "trait"
+    }
+  ]
+}
+```
+
+### Semantic search (requires Qdrant + embeddings)
+
+```
+GET /search?q=<query>[&limit=<n>]
+```
+
+### Symbol lookup
+
+```
+GET /terminus_search?q=<symbol-uri>
+GET /terminus_search?symbol=<fq_name>&language=<language>[&package=<pkg>]
+```
+
+### Code run search
+
+```
+GET /run?q=<query>[&session=<id>][&limit=<n>]
+```
+
+### Symbol expand
+
+```
+GET /expand?uri=<symbol-uri>[&depth=<n>][&breadth=<n>][&session=<id>]
+```
+
+### Package management
+
+```
+GET  /api/packages             → list all tracked packages
+POST /api/packages             → add a package (triggers background ingest)
+GET  /api/packages/{id}        → get package status + snapshot
+POST /api/packages/{id}/sync   → force re-sync
+```
+
+### Session
+
+```
+DELETE /session?session=<id>   → clear a search session
+```
+
+---
+
+## Crates overview
+
+See [`crates/README.md`](crates/README.md) for the full reference including type contracts, trait tables, SQLite schema, and integration notes.
+
+### Quick summary
+
+**`nudox-core`** — contract crate. `BlobInfo` is the central artifact; everything else (search entry, vector point, SQLite row) is a pointer or derived value. `BLOB_SCHEMA_VERSION = 2` is validated on every store/retrieve.
+
+**`nudox-pipeline`** — takes `PipelineInput` (raw code + symbol span + origin), runs tree-sitter to extract a snippet-bounded `SourceChunk`, runs every configured embedder, and returns `BlobInfo`. No network calls.
+
+**`nudox-orchestrator`** — routes `BlobInfo` to the backends. Repo-local symbols get a fresh UUID v4 `GlobalSymbolId` immediately. External-lib symbols either resolve against the global store or are deferred to a queue until `resolve_lib` is called after that library is parsed. `rebuild_indexes()` reconstructs all indexes from blob storage alone.
+
+**`nudox-store`** — production `GlobalSymbolStore` and `FutureParseQueue` backed by SQLite. `GlobalSymbolId` values are deterministic UUID v5 derived from `(terminus_instance, entry_uri)` — computable offline without a DB round-trip.
+
+**`nudox-search`** — `TantivySearchIndex` (upsert semantics, persists to disk) and `QdrantVectorIndex` (idempotent point IDs). Both have in-memory stubs for tests.
+
+**`nudox-blobstore`** — `ObjectStoreBlobStore` writes blobs as JSON files under `{root}/blobs/{uuid}.json`. `InMemoryBlobStore` for tests.
+
+---
+
+## On-disk layout
+
+After first run with `NUDOX_DATA_DIR=.nudox-data`:
+
+```
+.nudox-data/
+  packages.json              tracked package registry
+  nudox-links.db             SQLite: global symbols + deferred queue
+  tantivy/                   Tantivy full-text index (persists across restarts)
+  repositories/
+    rust/<source-slug>/      cloned/extracted Rust packages
+    typescript/<source-slug>/
+  sessions/                  search session state
+```
+
+---
+
+## Tests
+
+```bash
+# All tests (no external services required)
+cargo test --workspace
+
+# Verbose output
+cargo test --workspace -- --nocapture
+
+# A specific crate
+cargo test -p nudox-orchestrator
+```
+
+Test counts per crate (all passing, no warnings):
+
+| Crate | Count |
+|---|---|
+| nudox-core | 11 |
+| nudox-embed | 8 |
+| nudox-blobstore | 35 |
+| nudox-search | 19 |
+| nudox-pipeline | 9 |
+| nudox-orchestrator | 4 (2 disk persistence + 2 in-memory) |
+| nudox-store | 15 |
+| compiler | 5 (require network — expected to fail offline) |
+
+The `disk_backends_survive_reopen` and `disk_ingest_and_resolve_lib` tests in `nudox-orchestrator` verify that blob storage, SQLite, and the Tantivy index all survive process-restart simulation.
+
+---
+
+## Development
+
+### Nix environment
+
+We use **Lix** (a modern Nix implementation) for reproducible environments. Do not install compilers or runtimes globally — add them to `flake.nix`.
+
+```bash
+# Install Lix
+curl -sSfL https://install.lix.systems/lix | sh -s -- install
+# Enable Flakes + New CLI when prompted.
+
+# Enter the Backend dev shell
+nix develop /path/to/nudox/Backend
+```
+
+### Commit style
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
+
+```
+<type>(<scope>): <subject>
+
+# Types: feat fix refactor test docs build chore ci perf revert style
+```
+
+### Radicle (version control)
+
+We use [Radicle](https://radicle.xyz/) for hosting. After installing and running `rad auth`:
+
+```bash
 rad node connect z6MkmTC76GDv4H7YdZB9UvMhjxpxZXoNTeQaMqGsoiRpZsJf@100.114.38.65:8776
-~~~~
+rad clone <RID>      # clone a repo
+rad sync             # announce your changes to the network
+```
 
-#### 3. Provisioning Permissions
-
-Because we operate with private repositories, visibility is restricted to an
-explicit **allow list**. You must add your new DID to the repository’s identity
-on the server.
-
-1.  **Access the Server**: SSH into the hosting seed:
-
-    ~~~~ bash
-    ssh leaf@100.114.38.65
-    ~~~~
-
-2.  **Locate the Project**: Navigate to the specific repository directory in the
-    seed's storage.
-
-3.  **Update the Allow List**: Run the following to grant your identity access:
-
-    ~~~~ bash
-    rad id update --allow <YOUR_DID>
-    ~~~~
-
-    *This requires a delegate passphrase to confirm the change to the repository's
-    canonical state.*
-
-#### 4. Verification & Workflow
-
-Once permissions are set, verify that your local node has a healthy connection
-to the seed. Run `rad node` and look for the `100.114.38.65` record; a **green
-checkmark** indicates a successful gossip connection.
-
-**Collaboration via Desktop or CLI:**
-
- -  **GUI**: Use the [Radicle Desktop App]. It will automatically detect
-    repositories you have permission to seed.
- -  **CLI**: Use `rad clone <RID>` to pull a local working copy.
- -  **Social Artifacts**: We use **Patches** for code review (the Radicle
-    equivalent of a PR) and **Issues** for bug tracking.
- -  **Automation**: Check the `justfile` in each repository for common recipes
-    (e.g., viewing pending patches or running tests offline).
-
-Everything in Radicle is **local-first**. You can commit, open issues, and
-iterate on patches while offline; your node will automatically synchronize your
-changes with the rest of the network the moment you reconnect.
-
-#### Maintaining Synchronicity
-
-Radicle is local-first, meaning your node is its own source of truth. To ensure
-the hosting server (the leaf node) and your teammates see your work:
-
-1.  **Announce your changes**: After a `git push rad`, your work is only on your
-    machine. Force the network to notice by running:
-
-    ~~~~ bash
-    rad sync
-    ~~~~
-
-2.  **Verify replication**: If you aren't sure if the server has your latest
-    commit, check the sync status:
-
-    ~~~~ bash
-    rad sync status
-    ~~~~
-
-3.  **Watch the repository**: If you’ve just been added to a new private repo, you
-    must explicitly tell your node to start tracking it:
-
-    ~~~~ bash
-    rad seed rad:z3...your_repo_id_here
-    ~~~~
-
-[Radicle]: https://radicle.xyz/
-[Install Radicle]: https://radicle.xyz/download
-[Radicle Desktop App]: https://desktop.radicle.xyz/
-
-### Repository Hygiene: The `.gitignore` Allowlist
-
-To maintain a pure state across the repositories, we utilizes an **allowlist
-pattern** for Git tracking. Unlike standard repositories where you ignore
-specific “trash,” we ignore **everything** by default and explicitly allow only
-what is necessary. Hopefully, this forces us to be intentional about how we
-structure things, and the dependencies we bring in.
-
-For most files, it's nothing to think about, but for changes in structure (or
-the addition of anything top-level), you'll most likely have to change some
-entries.
-
-**Parent Directory Blobs**: If you find that an allowed file is still being
-ignored, ensure a parent directory isn't explicitly `deny`‘d in the script.
-Git's performance optimizations prevent it from looking inside a denied folder,
-even if a sub-file is “allowed.”
+Access to private repositories requires your DID to be added to the allow list on the seed node. Contact the project owner with your `rad self --did` output.
