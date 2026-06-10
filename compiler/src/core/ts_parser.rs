@@ -863,6 +863,7 @@ impl TsDocParser {
 			implemented: ctor.has_body,
 			members: None,
 			implemented_protocols: None,
+			body: None,
 		})
 	}
 
@@ -895,6 +896,7 @@ impl TsDocParser {
 			implemented: false,
 			members: None,
 			implemented_protocols: None,
+			body: None,
 		})
 	}
 
@@ -925,6 +927,7 @@ impl TsDocParser {
 			implemented: false,
 			members: None,
 			implemented_protocols: None,
+			body: None,
 		})
 	}
 
@@ -952,6 +955,7 @@ impl TsDocParser {
 			implemented: false,
 			members: None,
 			implemented_protocols: None,
+			body: None,
 		})
 	}
 
@@ -1324,6 +1328,7 @@ impl TsDocParser {
 			implemented: func.has_body,
 			members: None,
 			implemented_protocols: None,
+			body: None,
 		})
 	}
 

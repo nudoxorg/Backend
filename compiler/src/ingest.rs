@@ -1,17 +1,23 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use ir::entry::Index;
+use nudox_store::NudoxStore;
 use semver::Version;
 use tokio::runtime::Handle;
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}};
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
 	pub entry_count:    usize,
 	pub document_count: usize,
 	pub vector_count:   usize,
+	/// Symbols registered in the SQLite occurrence store (0 if no store is wired).
+	pub symbols_registered: usize,
+	/// Symbols indexed in the local text search index (0 if no index is wired).
+	pub symbols_text_indexed: usize,
 }
 
 pub fn run_rust_pipeline(
@@ -21,6 +27,8 @@ pub fn run_rust_pipeline(
 	config: &PipelineConfig,
 	runtime: &Handle,
 	progress: Option<&ProgressReporter>,
+	nudox_store: Option<&Arc<NudoxStore>>,
+	text_index: Option<&Arc<SymbolTextIndex>>,
 ) -> Result<IngestionSummary, AppError> {
 	let ir = package.generate_ir(&workspace.to_path_buf(), version).map_err(|source| {
 		AppError::Internal { message: format!("IR generation failed for `{}`: {source}", package.name) }
@@ -34,6 +42,8 @@ pub fn run_rust_pipeline(
 		config,
 		runtime,
 		progress,
+		nudox_store,
+		text_index,
 	)
 }
 
@@ -43,6 +53,8 @@ pub fn run_typescript_pipeline(
 	config: &PipelineConfig,
 	runtime: &Handle,
 	progress: Option<&ProgressReporter>,
+	nudox_store: Option<&Arc<NudoxStore>>,
+	text_index: Option<&Arc<SymbolTextIndex>>,
 ) -> Result<IngestionSummary, AppError> {
 	let ir = package.generate_ir().map_err(|source| AppError::Internal {
 		message: format!("IR generation failed for `{}`: {source}", package.name),
@@ -56,6 +68,8 @@ pub fn run_typescript_pipeline(
 		config,
 		runtime,
 		progress,
+		nudox_store,
+		text_index,
 	)
 }
 
@@ -67,14 +81,66 @@ fn finalize_pipeline(
 	config: &PipelineConfig,
 	runtime: &Handle,
 	progress: Option<&ProgressReporter>,
+	nudox_store: Option<&Arc<NudoxStore>>,
+	text_index: Option<&Arc<SymbolTextIndex>>,
 ) -> Result<IngestionSummary, AppError> {
 	let entry_count = index.entries_by_path.len();
-	let store = emit_store(language, package_name, version, index);
-	let document_count = store.docs.len();
-	let vector_count =
-		runtime.block_on(upload_outputs(config, language, package_name, version, &store, progress))?;
+	let doc_store = emit_store(language, package_name, version, index);
+	let document_count = doc_store.docs.len();
 
-	Ok(IngestionSummary { entry_count, document_count, vector_count })
+	// Register all Entry/* symbols in the SQLite occurrence store so that
+	// any deferred occurrence blobs waiting on this library can be resolved.
+	let symbols_registered = if let Some(store) = nudox_store {
+		let entry_uris: Vec<&str> = doc_store
+			.docs
+			.keys()
+			.filter(|k| k.starts_with("Entry/"))
+			.map(|k| k.as_str())
+			.collect();
+		match runtime.block_on(store.register_library(
+			language,
+			package_name,
+			&version.to_string(),
+			entry_uris.iter().copied(),
+		)) {
+			Ok(n) => n,
+			Err(e) => {
+				// Non-fatal: log and continue. The occurrence system will simply
+				// leave blobs deferred until the next successful ingestion.
+				warn!(error = %e, lib = package_name, "failed to register symbols in occurrence store");
+				0
+			}
+		}
+	} else {
+		0
+	};
+
+	// Index symbols into the local Tantivy text search index.
+	let symbols_text_indexed = if let Some(idx) = text_index {
+		match embedding_documents_from_docstore(&doc_store, language, package_name, Some(&version.to_string())) {
+			Ok(docs) => match idx.index_batch(&docs) {
+				Ok(n) => {
+					info!(lib = package_name, count = n, "symbols indexed in text search");
+					n
+				}
+				Err(e) => {
+					warn!(error = %e, lib = package_name, "failed to index symbols in text search");
+					0
+				}
+			},
+			Err(e) => {
+				warn!(error = %e, lib = package_name, "failed to extract docs for text search");
+				0
+			}
+		}
+	} else {
+		0
+	};
+
+	let vector_count =
+		runtime.block_on(upload_outputs(config, language, package_name, version, &doc_store, progress))?;
+
+	Ok(IngestionSummary { entry_count, document_count, vector_count, symbols_registered, symbols_text_indexed })
 }
 
 fn emit_store(language: &str, package_name: &str, version: &Version, index: Index) -> DocStore {

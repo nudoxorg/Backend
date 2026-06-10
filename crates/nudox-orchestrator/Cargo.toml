@@ -1,0 +1,25 @@
+[package]
+name = "nudox-orchestrator"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+test-stubs = []
+
+[dependencies]
+nudox-core = { path = "../nudox-core" }
+nudox-blobstore = { path = "../nudox-blobstore" }
+nudox-search = { path = "../nudox-search" }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+chrono = { workspace = true }
+nudox-embed = { path = "../nudox-embed" }
+nudox-pipeline = { path = "../nudox-pipeline" }
+nudox-store = { path = "../nudox-store" }
+tempfile = "3"

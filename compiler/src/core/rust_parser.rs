@@ -825,6 +825,7 @@ impl ParseContext {
 			type_links,
 			implemented_protocols: None,
 			members: None,
+			body: None,
 		})
 	}
 

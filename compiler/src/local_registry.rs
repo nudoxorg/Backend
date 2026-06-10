@@ -8,7 +8,7 @@ use tokio::{sync::{Mutex, RwLock, Semaphore}, task::spawn_blocking, time::{Durat
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, traits::{builder::get_registry, registry::Registry}};
+use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, text_index::SymbolTextIndex, traits::{builder::get_registry, registry::Registry}};
 
 fn deserialize_lenient_version<'de, D: Deserializer<'de>>(d: D) -> Result<Version, D::Error> {
 	let s = String::deserialize(d)?;
@@ -89,6 +89,12 @@ pub struct LocalRegistry {
 	next_id:          AtomicU64,
 	packages:         Arc<RwLock<HashMap<PackageId, Arc<TrackedPackage>>>>,
 	keys:             Arc<RwLock<HashMap<PackageKey, PackageId>>>,
+	/// SQLite occurrence store. When set, every successful library parse
+	/// registers symbols so deferred occurrence blobs can be resolved.
+	nudox_store:      Option<Arc<nudox_store::NudoxStore>>,
+	/// Local Tantivy text search index. When set, symbols are indexed after
+	/// every successful library parse for standalone full-text search.
+	text_index:       Option<Arc<SymbolTextIndex>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,7 +247,23 @@ impl LocalRegistry {
 			next_id: AtomicU64::new(next_id),
 			packages: Arc::new(RwLock::new(packages)),
 			keys: Arc::new(RwLock::new(keys)),
+			nudox_store: None,
+			text_index: None,
 		}
+	}
+
+	/// Attach an SQLite occurrence store. When set, every successful library
+	/// parse will register symbols so deferred occurrence blobs can be resolved.
+	pub fn with_nudox_store(mut self, store: Arc<nudox_store::NudoxStore>) -> Self {
+		self.nudox_store = Some(store);
+		self
+	}
+
+	/// Attach a local Tantivy text search index. When set, symbols are indexed
+	/// after every successful library parse so `/text-search` works standalone.
+	pub fn with_text_index(mut self, index: Arc<SymbolTextIndex>) -> Self {
+		self.text_index = Some(index);
+		self
 	}
 
 	pub async fn package_count(&self) -> usize { self.packages.read().await.len() }
@@ -360,6 +382,8 @@ impl LocalRegistry {
 		let blocking_handle = tracked.handle.clone();
 		let blocking_spec = tracked.spec.clone();
 		let blocking_id = tracked.id;
+		let blocking_nudox_store = self.nudox_store.clone();
+		let blocking_text_index = self.text_index.clone();
 		let runtime = tokio::runtime::Handle::current();
 		let progress_runtime = runtime.clone();
 		let progress = {
@@ -400,6 +424,8 @@ impl LocalRegistry {
 			let attempt_spec = blocking_spec.clone();
 			let attempt_runtime = runtime.clone();
 			let attempt_progress = progress.clone();
+			let attempt_nudox_store = blocking_nudox_store.clone();
+			let attempt_text_index = blocking_text_index.clone();
 
 			let sync_result = spawn_blocking(move || {
 				run_sync(
@@ -410,6 +436,8 @@ impl LocalRegistry {
 					attempt_spec,
 					attempt_runtime,
 					attempt_progress,
+					attempt_nudox_store,
+					attempt_text_index,
 				)
 			})
 			.await
@@ -934,6 +962,8 @@ fn run_sync(
 	spec: PackageSpec,
 	runtime: tokio::runtime::Handle,
 	progress: ProgressReporter,
+	nudox_store: Option<Arc<nudox_store::NudoxStore>>,
+	text_index: Option<Arc<SymbolTextIndex>>,
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
@@ -974,6 +1004,8 @@ fn run_sync(
 				&pipeline,
 				&runtime,
 				Some(&progress),
+				nudox_store.as_ref(),
+				text_index.as_ref(),
 			)?;
 
 			Ok(SyncExecution {
@@ -985,7 +1017,7 @@ fn run_sync(
 		PackageHandle::TypeScript(package) => {
 			if typescript_package_uses_repository(&package) {
 				run_repository_backed_typescript_sync(
-					storage, pipeline, package_id, package, spec, runtime, progress,
+					storage, pipeline, package_id, package, spec, runtime, progress, nudox_store, text_index,
 				)
 			} else {
 				progress.phase_with_detail(
@@ -1023,6 +1055,8 @@ fn run_sync(
 					&pipeline,
 					&runtime,
 					Some(&progress),
+					nudox_store.as_ref(),
+					text_index.as_ref(),
 				)?;
 				Ok(SyncExecution {
 					tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
@@ -1102,6 +1136,8 @@ fn run_repository_backed_typescript_sync(
 	spec: PackageSpec,
 	runtime: tokio::runtime::Handle,
 	progress: ProgressReporter,
+	nudox_store: Option<Arc<nudox_store::NudoxStore>>,
+	text_index: Option<Arc<SymbolTextIndex>>,
 ) -> Result<SyncExecution, AppError> {
 	progress.phase_with_detail(
 		PackageSyncPhase::Resolving,
@@ -1146,6 +1182,8 @@ fn run_repository_backed_typescript_sync(
 		&pipeline,
 		&runtime,
 		Some(&progress),
+		nudox_store.as_ref(),
+		text_index.as_ref(),
 	)?;
 
 	Ok(SyncExecution {
@@ -1578,9 +1616,11 @@ mod tests {
 				tracked_version_commit: "7071a42b0101e39d21111da72e13c46dc8ae596d".to_owned(),
 				latest_remote_commit:   Some("5423cf56499c1ea33ea4bd9fbaab1723083cb659".to_owned()),
 				summary:                IngestionSummary {
-					entry_count:    9,
-					document_count: 18,
-					vector_count:   9,
+					entry_count:          9,
+					document_count:       18,
+					vector_count:         9,
+					symbols_registered:   0,
+					symbols_text_indexed: 0,
 				},
 			})
 			.await;

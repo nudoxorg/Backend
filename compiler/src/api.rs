@@ -4,25 +4,27 @@ use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routin
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
-use crate::{config::PipelineConfig, error::AppError, local_registry::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}};
+use crate::{config::PipelineConfig, error::AppError, local_registry::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}, text_index::SymbolTextIndex};
 
 #[derive(Clone)]
 pub struct AppState {
-	pub registry: Arc<LocalRegistry>,
-	pub pipeline: PipelineConfig,
-	pub sessions: SessionStore,
+	pub registry:    Arc<LocalRegistry>,
+	pub pipeline:    PipelineConfig,
+	pub sessions:    SessionStore,
+	pub text_index:  Option<Arc<SymbolTextIndex>>,
 }
 
 pub fn router(state: AppState) -> Router {
 	Router::new()
-		.route("/healthz", get(health))
-		.route("/search", get(search_docs))
-		.route("/terminus_search", get(lookup_symbol))
-		.route("/run", get(run_search))
-		.route("/expand", get(expand_symbol))
-		.route("/session", delete(clear_session))
-		.route("/api/packages", get(list_packages).post(add_package))
-		.route("/api/packages/{id}", get(get_package))
+		.route("/healthz",        get(health))
+		.route("/text-search",    get(text_search))
+		.route("/search",         get(search_docs))
+		.route("/terminus_search",get(lookup_symbol))
+		.route("/run",            get(run_search))
+		.route("/expand",         get(expand_symbol))
+		.route("/session",        delete(clear_session))
+		.route("/api/packages",        get(list_packages).post(add_package))
+		.route("/api/packages/{id}",   get(get_package))
 		.route("/api/packages/{id}/sync", post(sync_package))
 		.layer(TraceLayer::new_for_http())
 		.with_state(state)
@@ -33,6 +35,31 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 		status:           "ok",
 		tracked_packages: state.registry.package_count().await,
 	})
+}
+
+async fn text_search(
+	State(state): State<AppState>,
+	Query(params): Query<SearchQuery>,
+) -> Result<Json<search::SearchResponse>, AppError> {
+	let index = state.text_index.as_ref().ok_or_else(|| AppError::Internal {
+		message: "text search index not available".to_owned(),
+	})?;
+	let limit = params.limit.unwrap_or(6);
+	let hits = index.search(&params.q, limit)?;
+	let results = hits
+		.into_iter()
+		.map(|h| search::SearchResult {
+			uri:         h.uri,
+			score:       h.score,
+			collection:  h.package.clone(),
+			fq_name:     h.fq_name,
+			language:    Some(h.language),
+			package:     Some(h.package),
+			version:     h.version,
+			symbol_kind: h.symbol_kind,
+		})
+		.collect();
+	Ok(Json(search::SearchResponse { query: params.q, results }))
 }
 
 async fn list_packages(

@@ -27,8 +27,10 @@ impl StorageLayout {
 		Ok(())
 	}
 
-	pub fn repository_dir(&self, source: &Url) -> PathBuf {
-		self.repositories_dir.join(sanitize_repository_source(source))
+	pub fn repository_dir(&self, language: Language, source: &Url) -> PathBuf {
+		self.repositories_dir
+			.join(language.to_string().to_ascii_lowercase())
+			.join(sanitize_repository_source(source))
 	}
 
 	pub fn prepare_repository_dir(
@@ -37,7 +39,7 @@ impl StorageLayout {
 		slug: &str,
 		source: &Url,
 	) -> io::Result<PathBuf> {
-		let shared = self.repository_dir(source);
+		let shared = self.repository_dir(language, source);
 		if shared.exists() {
 			return Ok(shared);
 		}
@@ -116,8 +118,8 @@ mod tests {
 		let layout = StorageLayout::new("/tmp/nudox-test");
 		let source = Url::parse("https://github.com/bytecodealliance/wasmtime").unwrap();
 
-		let one = layout.repository_dir(&source);
-		let two = layout.repository_dir(&source);
+		let one = layout.repository_dir(Language::Rust, &source);
+		let two = layout.repository_dir(Language::Rust, &source);
 
 		assert_eq!(one, two);
 		assert!(one.ends_with("github_com_bytecodealliance_wasmtime"));
@@ -138,7 +140,7 @@ mod tests {
 			.prepare_repository_dir(Language::Rust, "cranelift", &source)
 			.unwrap();
 
-		assert_eq!(shared, root.path().join("repositories/github_com_bytecodealliance_wasmtime"));
+		assert_eq!(shared, root.path().join("repositories/rust/github_com_bytecodealliance_wasmtime"));
 		assert!(shared.join("marker").is_file());
 		assert!(!legacy.exists());
 	}
