@@ -92,6 +92,22 @@ impl SearchQuery for InMemorySearchIndex {
 			.collect();
 		Ok(hits)
 	}
+
+	async fn list_all(&self, limit: usize) -> Result<Vec<SearchHit>> {
+		let map = self.entries.lock().unwrap();
+		let mut hits: Vec<SearchHit> = map
+			.values()
+			.take(limit)
+			.map(|e| SearchHit {
+				blob_ref:      e.blob_ref.clone(),
+				occurrence_id: e.occurrence_id,
+				symbol_name:   e.symbol_name.clone(),
+				score:         1.0,
+			})
+			.collect();
+		hits.sort_by(|a, b| a.symbol_name.cmp(&b.symbol_name));
+		Ok(hits)
+	}
 }
 
 /// In-memory vector index for use in tests.

@@ -90,6 +90,18 @@ impl SymbolSearch for SymbolSearcher {
 					score:     h.score,
 				});
 			}
+		} else if query.body_query.is_none() {
+			// No text or vector query — enumerate all blobs so kind/scope
+			// post-filters still have something to operate on.
+			let hits = self.text.list_all(fetch_limit).await?;
+			for h in hits {
+				let key = h.blob_ref.0.clone();
+				name_hits.entry(key).or_insert(ScoredRef {
+					blob_ref:  h.blob_ref,
+					global_id: None,
+					score:     h.score,
+				});
+			}
 		}
 
 		if let Some(body) = &query.body_query {
@@ -639,6 +651,48 @@ mod tests {
 		let results = searcher.search(&query).await.unwrap();
 		assert_eq!(results.len(), 1);
 		assert_eq!(results[0].blob.symbol_name, "fn_b");
+	}
+
+	#[tokio::test]
+	async fn kind_only_query_no_name_pattern() {
+		let si = Arc::new(InMemorySearchIndex::new());
+		let vi = Arc::new(InMemoryVectorIndex::new());
+		let bs = Arc::new(InMemoryBlobStore::new());
+		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
+
+		index_blob(
+			&make_blob("MyStruct", "repo1", Language::Rust, Some(SymbolKind::Struct), None),
+			&[1.0, 0.0, 0.0],
+			gid,
+			&si,
+			&vi,
+			&bs,
+		)
+		.await;
+		index_blob(
+			&make_blob("my_function", "repo1", Language::Rust, Some(SymbolKind::Function), None),
+			&[0.0, 1.0, 0.0],
+			gid,
+			&si,
+			&vi,
+			&bs,
+		)
+		.await;
+		index_blob(
+			&make_blob("MyEnum", "repo1", Language::Rust, Some(SymbolKind::Enum), None),
+			&[0.0, 0.0, 1.0],
+			gid,
+			&si,
+			&vi,
+			&bs,
+		)
+		.await;
+
+		let searcher = make_searcher(si, vi, bs, None);
+		let query = SymbolQuery { kind: Some(SymbolKind::Struct), limit: 10, ..Default::default() };
+		let results = searcher.search(&query).await.unwrap();
+		assert_eq!(results.len(), 1);
+		assert_eq!(results[0].blob.symbol_name, "MyStruct");
 	}
 
 	#[tokio::test]

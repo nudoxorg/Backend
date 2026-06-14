@@ -97,6 +97,12 @@ pub trait SearchQuery: Send + Sync {
 		global_id: GlobalSymbolId,
 		limit: usize,
 	) -> Result<Vec<SearchHit>>;
+
+	/// Return all indexed entries up to `limit`, in unspecified order.
+	///
+	/// Used when no query text or vector is provided but post-filters (kind,
+	/// scope) still need to be applied across the full index.
+	async fn list_all(&self, limit: usize) -> Result<Vec<SearchHit>>;
 }
 
 /// Read side of the vector similarity index.

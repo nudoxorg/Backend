@@ -276,3 +276,23 @@ async fn response_includes_snippet_field() {
 	let hit = &body.as_array().unwrap()[0];
 	assert_eq!(hit["snippet"].as_str().unwrap(), code);
 }
+
+#[tokio::test]
+async fn kind_only_returns_matching_kinds() {
+	let (state, _tmp) = build_state_with_orchestrator().await;
+
+	ingest_blob(&state, make_blob("mylib::Router", "mylib", SymbolKind::Struct, "pub struct Router {}"))
+		.await;
+	ingest_blob(&state, make_blob("mylib::handle", "mylib", SymbolKind::Function, "pub fn handle() {}"))
+		.await;
+	ingest_blob(&state, make_blob("mylib::Error", "mylib", SymbolKind::Enum, "pub enum Error {}"))
+		.await;
+
+	let (status, body) = post_symbol_search(state, json!({"kind": "Struct", "limit": 10})).await;
+
+	assert_eq!(status, StatusCode::OK);
+	let hits = body.as_array().unwrap();
+	assert_eq!(hits.len(), 1, "only the Struct should match");
+	assert_eq!(hits[0]["symbol_name"], "mylib::Router");
+	assert_eq!(hits[0]["kind"], "Struct");
+}

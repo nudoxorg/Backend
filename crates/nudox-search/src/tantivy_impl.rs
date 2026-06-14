@@ -173,6 +173,30 @@ impl SearchQuery for TantivySearchIndex {
 		}
 		Ok(hits)
 	}
+
+	async fn list_all(&self, limit: usize) -> Result<Vec<SearchHit>> {
+		let reader = self.index.reader().map_err(|e| Error::Search(e.to_string()))?;
+		let searcher = reader.searcher();
+		let top_docs = searcher
+			.search(&tantivy::query::AllQuery, &tantivy::collector::TopDocs::with_limit(limit))
+			.map_err(|e| Error::Search(e.to_string()))?;
+
+		let mut hits = Vec::with_capacity(top_docs.len());
+		for (score, addr) in top_docs {
+			let doc: tantivy::TantivyDocument =
+				searcher.doc(addr).map_err(|e| Error::Search(e.to_string()))?;
+			let blob_ref = BlobRef(
+				doc.get_first(self.fields.blob_ref).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+			);
+			let occ_str = doc.get_first(self.fields.occurrence_id).and_then(|v| v.as_str()).unwrap_or("");
+			let occurrence_id =
+				OccurrenceId(uuid::Uuid::parse_str(occ_str).unwrap_or_else(|_| uuid::Uuid::nil()));
+			let symbol_name =
+				doc.get_first(self.fields.symbol_name).and_then(|v| v.as_str()).unwrap_or("").to_string();
+			hits.push(SearchHit { blob_ref, occurrence_id, symbol_name, score });
+		}
+		Ok(hits)
+	}
 }
 
 #[cfg(test)]
