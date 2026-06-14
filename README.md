@@ -2,9 +2,12 @@ nudox Backend
 =============
 
 A Rust workspace that indexes library APIs and symbol occurrences, and serves
-them over a REST API. The server ingests Rust and TypeScript packages, stores
-structured symbol data in TerminusDB and Qdrant, and exposes search endpoints
-for code intelligence tooling.
+them over a REST API. The server ingests Rust and TypeScript packages and
+exposes search endpoints for code intelligence tooling.
+
+Symbol search (`/symbol-search`) works out of the box with no external
+services — it persists to local disk via Tantivy and an object store. TerminusDB
+and Qdrant are optional and only needed for the legacy semantic-search path.
 
    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -126,35 +129,46 @@ GET /healthz
 → { "status": "ok", "tracked_packages": 3 }
 ~~~~
 
-### Full-text symbol search (Tantivy, no external services)
+### Symbol search by name / kind / scope (no external services)
+
+~~~~
+POST /symbol-search
+Content-Type: application/json
+
+{
+  "name_pattern": "Router",      // partial match, optional
+  "kind": "Struct",              // optional — Function Struct Enum Trait Method Closure TypeAlias Const
+  "scope": { "repo_id": "lib:axum:0.8.8" },  // optional
+  "combine": "Or",               // Or (default) | And
+  "limit": 20                    // default 20
+}
+~~~~
+
+Returns an array of matches:
+
+~~~~ json
+[
+  {
+    "symbol_name": "axum::Router",
+    "occurrence_id": "...",
+    "kind": "Struct",
+    "repo_id": "lib:axum:0.8.8",
+    "lib_name": null,
+    "lib_version": null,
+    "score": 1.0,
+    "occurrence_count": 1,
+    "snippet": "pub struct Router<S = ()> { ... }"
+  }
+]
+~~~~
+
+Symbols are indexed automatically during package ingestion. `body_query`
+(semantic body search) returns `501` until embeddings are configured.
+
+### Full-text symbol search (legacy Tantivy endpoint)
 
 ~~~~
 GET /text-search?q=<query>[&limit=<n>]
-~~~~
-
-Searches symbol names, qualified names, and documentation text across all
-ingested packages. Returns up to `limit` (default 6) results ordered by
-relevance score.
-
-~~~~ bash
-curl 'http://localhost:3000/text-search?q=Serialize&limit=5'
-~~~~
-
-~~~~ json
-{
-  "query": "Serialize",
-  "results": [
-    {
-      "uri": "Entry/rust/serde/Serialize",
-      "score": 4.2,
-      "fq_name": "serde::Serialize",
-      "language": "rust",
-      "package": "serde",
-      "version": "1.0.219",
-      "symbol_kind": "trait"
-    }
-  ]
-}
 ~~~~
 
 ### Semantic search (requires Qdrant + embeddings)
@@ -245,8 +259,10 @@ After first run with `NUDOX_DATA_DIR=.nudox-data`:
 ~~~~
 .nudox-data/
   packages.json              tracked package registry
-  nudox-links.db             SQLite: global symbols + deferred queue
-  tantivy/                   Tantivy full-text index (persists across restarts)
+  nudox-links.db             SQLite: global symbols + deferred queue (optional, Terminus only)
+  tantivy/                   legacy text search index (/text-search endpoint)
+  nudox-symbol-index/        Tantivy index for /symbol-search (created automatically)
+  nudox-blobs/               JSON blob store for /symbol-search (created automatically)
   repositories/
     rust/<source-slug>/      cloned/extracted Rust packages
     typescript/<source-slug>/
@@ -281,7 +297,7 @@ Test counts per crate (all passing, no warnings):
 | nudox-pipeline     | 9                                              |
 | nudox-orchestrator | 4 (2 disk persistence + 2 in-memory)           |
 | nudox-store        | 15                                             |
-| compiler           | 5 (require network — expected to fail offline) |
+| compiler           | 5 network + 7 symbol-search integration (all pass offline) |
 
 The `disk_backends_survive_reopen` and `disk_ingest_and_resolve_lib` tests in
 `nudox-orchestrator` verify that blob storage, SQLite, and the Tantivy index
