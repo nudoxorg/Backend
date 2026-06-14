@@ -16,7 +16,8 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	let sessions = SessionStore::new(storage.sessions_dir())?;
 
 	// Open the SQLite occurrence store when a TerminusDB instance is configured.
-	// The terminus_instance key ("org/db") is used to derive stable GlobalSymbolIds.
+	// The terminus_instance key ("org/db") is used to derive stable
+	// GlobalSymbolIds.
 	let nudox_store = if let Some(ref terminus) = config.pipeline.terminus {
 		let db_path = config.storage_root.join("nudox-links.db");
 		let instance = format!("{}/{}", terminus.org, terminus.db);
@@ -48,12 +49,11 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 
 	// Build the symbol-search stack.
 	// TantivySearchIndex   → storage_root/nudox-symbol-index  (persisted)
-	// ObjectStoreBlobStore → storage_root/nudox-blobs          (persisted, local FS for now)
-	// Vector index         → in-memory (pending embedding decision)
+	// ObjectStoreBlobStore → storage_root/nudox-blobs          (persisted, local FS
+	// for now) Vector index         → in-memory (pending embedding decision)
 	let symbol_orchestrator = build_symbol_orchestrator(&config.storage_root);
 
-	let mut registry =
-		LocalRegistry::new(storage, config.monitor_interval, config.pipeline.clone());
+	let mut registry = LocalRegistry::new(storage, config.monitor_interval, config.pipeline.clone());
 	if let Some(store) = nudox_store {
 		registry = registry.with_nudox_store(store);
 	}
@@ -128,15 +128,15 @@ fn build_symbol_orchestrator(storage_root: &std::path::Path) -> Option<Arc<Orche
 			return None;
 		}
 	};
-	let vector   = Arc::new(InMemoryVectorIndex::new());
-	let global   = Arc::new(InMemoryGlobalSymbolStore::new());
-	let queue    = Arc::new(InMemoryFutureParseQueue::new());
+	let vector = Arc::new(InMemoryVectorIndex::new());
+	let global = Arc::new(InMemoryGlobalSymbolStore::new());
+	let queue = Arc::new(InMemoryFutureParseQueue::new());
 	let embedder = Arc::new(PlaceholderEmbedder::new("placeholder", 128));
 
 	let searcher = Arc::new(SymbolSearcher::new(
-		Arc::clone(&text)   as Arc<dyn SearchQuery>,
+		Arc::clone(&text) as Arc<dyn SearchQuery>,
 		Arc::clone(&vector) as Arc<dyn VectorQuery>,
-		Arc::clone(&blobs)  as Arc<dyn BlobStore>,
+		Arc::clone(&blobs) as Arc<dyn BlobStore>,
 		embedder,
 		None,
 	));
@@ -145,7 +145,7 @@ fn build_symbol_orchestrator(storage_root: &std::path::Path) -> Option<Arc<Orche
 		global,
 		blobs,
 		queue,
-		text   as Arc<dyn SearchIndex>,
+		text as Arc<dyn SearchIndex>,
 		vector as Arc<dyn VectorIndex>,
 	)
 	.with_symbol_search(searcher);

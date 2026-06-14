@@ -28,7 +28,8 @@ impl StorageLayout {
 	}
 
 	pub fn repository_dir(&self, language: Language, source: &Url) -> PathBuf {
-		self.repositories_dir
+		self
+			.repositories_dir
 			.join(language.to_string().to_ascii_lowercase())
 			.join(sanitize_repository_source(source))
 	}
@@ -132,13 +133,12 @@ mod tests {
 		layout.ensure().unwrap();
 		let source = Url::parse("https://github.com/bytecodealliance/wasmtime").unwrap();
 
-		let legacy = root.path().join("repositories/rust/cranelift-github_com_bytecodealliance_wasmtime");
+		let legacy =
+			root.path().join("repositories/rust/cranelift-github_com_bytecodealliance_wasmtime");
 		fs::create_dir_all(&legacy).unwrap();
 		fs::write(legacy.join("marker"), "ok").unwrap();
 
-		let shared = layout
-			.prepare_repository_dir(Language::Rust, "cranelift", &source)
-			.unwrap();
+		let shared = layout.prepare_repository_dir(Language::Rust, "cranelift", &source).unwrap();
 
 		assert_eq!(shared, root.path().join("repositories/rust/github_com_bytecodealliance_wasmtime"));
 		assert!(shared.join("marker").is_file());

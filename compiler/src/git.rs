@@ -65,9 +65,8 @@ pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Res
 		.map_err(|source| GitError::Fetch(source.into()))?;
 
 	let fetch_result: Result<(), GitError> = (|| {
-		let connection = remote
-			.connect(remote::Direction::Fetch)
-			.map_err(|source| GitError::Fetch(source.into()))?;
+		let connection =
+			remote.connect(remote::Direction::Fetch).map_err(|source| GitError::Fetch(source.into()))?;
 		let prepare = connection
 			.prepare_fetch(Discard, remote::ref_map::Options::default())
 			.map_err(|source| GitError::Fetch(source.into()))?;

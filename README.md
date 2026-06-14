@@ -288,15 +288,15 @@ cargo test -p nudox-orchestrator
 
 Test counts per crate (all passing, no warnings):
 
-| Crate              | Count                                          |
-| ------------------ | ---------------------------------------------- |
-| nudox-core         | 11                                             |
-| nudox-embed        | 8                                              |
-| nudox-blobstore    | 35                                             |
-| nudox-search       | 19                                             |
-| nudox-pipeline     | 9                                              |
-| nudox-orchestrator | 4 (2 disk persistence + 2 in-memory)           |
-| nudox-store        | 15                                             |
+| Crate              | Count                                                      |
+| ------------------ | ---------------------------------------------------------- |
+| nudox-core         | 11                                                         |
+| nudox-embed        | 8                                                          |
+| nudox-blobstore    | 35                                                         |
+| nudox-search       | 19                                                         |
+| nudox-pipeline     | 9                                                          |
+| nudox-orchestrator | 4 (2 disk persistence + 2 in-memory)                       |
+| nudox-store        | 15                                                         |
 | compiler           | 5 network + 7 symbol-search integration (all pass offline) |
 
 The `disk_backends_survive_reopen` and `disk_ingest_and_resolve_lib` tests in

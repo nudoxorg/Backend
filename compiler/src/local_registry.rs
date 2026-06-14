@@ -250,8 +250,8 @@ impl LocalRegistry {
 			next_id: AtomicU64::new(next_id),
 			packages: Arc::new(RwLock::new(packages)),
 			keys: Arc::new(RwLock::new(keys)),
-			nudox_store:  None,
-			text_index:   None,
+			nudox_store: None,
+			text_index: None,
 			orchestrator: None,
 		}
 	}
@@ -899,16 +899,17 @@ async fn resolve_package_handle(request: &NewPackageRequest) -> Result<PackageHa
 fn resolve_explicit_rust_package_handle(
 	request: &NewPackageRequest,
 ) -> Result<PackageHandle, AppError> {
-	let source = request.source.as_deref().ok_or_else(|| AppError::Internal {
-		message: "missing explicit Rust source".to_owned(),
-	})?;
+	let source = request
+		.source
+		.as_deref()
+		.ok_or_else(|| AppError::Internal { message: "missing explicit Rust source".to_owned() })?;
 	let source = parse_explicit_repository_source(request, source)?;
 
 	Ok(PackageHandle::Rust(RustPackage {
-		slug:        request.name.to_ascii_lowercase(),
-		name:        request.name.clone(),
-		language:    Language::Rust,
-		uuid:        0,
+		slug: request.name.to_ascii_lowercase(),
+		name: request.name.clone(),
+		language: Language::Rust,
+		uuid: 0,
 		source,
 		direct_repo: true,
 		description: None,
@@ -986,11 +987,9 @@ fn run_sync(
 				PackageSyncPhase::Resolving,
 				Some(format!("opening repository for {}", package.name)),
 			);
-			let repo_dir = storage.prepare_repository_dir(spec.language, &spec.slug, &package.source)
-				.map_err(|source| AppError::Storage {
-					path: storage.root().to_path_buf(),
-					source,
-				})?;
+			let repo_dir = storage
+				.prepare_repository_dir(spec.language, &spec.slug, &package.source)
+				.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 			progress
 				.phase_with_detail(PackageSyncPhase::Fetching, Some(format!("fetching {}", spec.branch)));
@@ -1033,8 +1032,16 @@ fn run_sync(
 		PackageHandle::TypeScript(package) => {
 			if typescript_package_uses_repository(&package) {
 				run_repository_backed_typescript_sync(
-					storage, pipeline, package_id, package, spec, runtime, progress, nudox_store,
-					text_index, orchestrator,
+					storage,
+					pipeline,
+					package_id,
+					package,
+					spec,
+					runtime,
+					progress,
+					nudox_store,
+					text_index,
+					orchestrator,
 				)
 			} else {
 				progress.phase_with_detail(
@@ -1094,11 +1101,9 @@ fn run_monitor_refresh(
 ) -> Result<MonitorExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
-			let repo_dir = storage.prepare_repository_dir(spec.language, &spec.slug, &package.source)
-				.map_err(|source| AppError::Storage {
-					path: storage.root().to_path_buf(),
-					source,
-				})?;
+			let repo_dir = storage
+				.prepare_repository_dir(spec.language, &spec.slug, &package.source)
+				.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
 			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 			git::fetch_remote_updates(&repository, Some("origin"))?;
 
@@ -1162,11 +1167,9 @@ fn run_repository_backed_typescript_sync(
 		PackageSyncPhase::Resolving,
 		Some(format!("opening repository for {}", package.name)),
 	);
-	let repo_dir = storage.prepare_repository_dir(spec.language, &spec.slug, &package.source)
-		.map_err(|source| AppError::Storage {
-			path: storage.root().to_path_buf(),
-			source,
-		})?;
+	let repo_dir = storage
+		.prepare_repository_dir(spec.language, &spec.slug, &package.source)
+		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 	progress.phase_with_detail(PackageSyncPhase::Fetching, Some(format!("fetching {}", spec.branch)));
 	git::fetch_remote_updates(&repository, Some("origin"))?;
@@ -1219,11 +1222,9 @@ fn run_repository_backed_typescript_monitor(
 	package: TsPackage,
 	spec: PackageSpec,
 ) -> Result<MonitorExecution, AppError> {
-	let repo_dir = storage.prepare_repository_dir(spec.language, &spec.slug, &package.source)
-		.map_err(|source| AppError::Storage {
-			path: storage.root().to_path_buf(),
-			source,
-		})?;
+	let repo_dir = storage
+		.prepare_repository_dir(spec.language, &spec.slug, &package.source)
+		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
 	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
 	git::fetch_remote_updates(&repository, Some("origin"))?;
 
@@ -1335,10 +1336,7 @@ fn ensure_typescript_entry_point(
 	})
 }
 
-fn typescript_source_fallback_candidates(
-	repository_root: &Path,
-	candidate: &Path,
-) -> Vec<PathBuf> {
+fn typescript_source_fallback_candidates(repository_root: &Path, candidate: &Path) -> Vec<PathBuf> {
 	let Ok(relative) = candidate.strip_prefix(repository_root) else {
 		return Vec::new();
 	};
@@ -1359,9 +1357,7 @@ fn typescript_relative_variants_without_build_prefixes(relative: &Path) -> Vec<P
 	if components.len() >= 2 {
 		let first = components[0].as_os_str().to_string_lossy();
 		let second = components[1].as_os_str().to_string_lossy();
-		if matches!(first.as_ref(), "lib" | "dist" | "build" | "esm" | "cjs")
-			&& second == "src"
-		{
+		if matches!(first.as_ref(), "lib" | "dist" | "build" | "esm" | "cjs") && second == "src" {
 			variants.push(components[1..].iter().collect::<PathBuf>());
 		}
 	}
@@ -1523,11 +1519,7 @@ mod tests {
 		)
 		.unwrap();
 		std::fs::create_dir_all(workspace.path().join("src")).unwrap();
-		std::fs::write(
-			workspace.path().join("src").join("index.ts"),
-			"export const z = 1;\n",
-		)
-		.unwrap();
+		std::fs::write(workspace.path().join("src").join("index.ts"), "export const z = 1;\n").unwrap();
 
 		let resolved = resolve_typescript_repository_entry_point(workspace.path(), None).unwrap();
 		assert_eq!(resolved, workspace.path().join("src").join("index.ts"));

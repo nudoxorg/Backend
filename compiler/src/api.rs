@@ -41,46 +41,46 @@ impl From<SymbolMatch> for SymbolMatchResponse {
 			SymbolOrigin::Repo { repo_id } => (None, None, Some(repo_id.0.clone())),
 		};
 		SymbolMatchResponse {
-			symbol_name:      m.blob.symbol_name.clone(),
-			occurrence_id:    m.blob.occurrence_id.to_string(),
-			kind:             m.blob.kind.map(kind_to_str),
+			symbol_name: m.blob.symbol_name.clone(),
+			occurrence_id: m.blob.occurrence_id.to_string(),
+			kind: m.blob.kind.map(kind_to_str),
 			lib_name,
 			lib_version,
 			repo_id,
-			score:            m.score,
+			score: m.score,
 			occurrence_count: m.occurrences.len(),
-			snippet:          m.blob.source.raw_code.clone(),
+			snippet: m.blob.source.raw_code.clone(),
 		}
 	}
 }
 
 fn kind_to_str(k: SymbolKind) -> String {
 	match k {
-		SymbolKind::Function  => "Function",
-		SymbolKind::Struct    => "Struct",
-		SymbolKind::Enum      => "Enum",
-		SymbolKind::Trait     => "Trait",
-		SymbolKind::Method    => "Method",
-		SymbolKind::Closure   => "Closure",
+		SymbolKind::Function => "Function",
+		SymbolKind::Struct => "Struct",
+		SymbolKind::Enum => "Enum",
+		SymbolKind::Trait => "Trait",
+		SymbolKind::Method => "Method",
+		SymbolKind::Closure => "Closure",
 		SymbolKind::TypeAlias => "TypeAlias",
-		SymbolKind::Const     => "Const",
-		SymbolKind::Other     => "Other",
+		SymbolKind::Const => "Const",
+		SymbolKind::Other => "Other",
 	}
 	.to_owned()
 }
 
 pub fn router(state: AppState) -> Router {
 	Router::new()
-		.route("/healthz",         get(health))
-		.route("/text-search",     get(text_search))
-		.route("/search",          get(search_docs))
+		.route("/healthz", get(health))
+		.route("/text-search", get(text_search))
+		.route("/search", get(search_docs))
 		.route("/terminus_search", get(lookup_symbol))
-		.route("/run",             get(run_search))
-		.route("/expand",          get(expand_symbol))
-		.route("/session",         delete(clear_session))
-		.route("/symbol-search",   post(symbol_search))
-		.route("/api/packages",           get(list_packages).post(add_package))
-		.route("/api/packages/{id}",      get(get_package))
+		.route("/run", get(run_search))
+		.route("/expand", get(expand_symbol))
+		.route("/session", delete(clear_session))
+		.route("/symbol-search", post(symbol_search))
+		.route("/api/packages", get(list_packages).post(add_package))
+		.route("/api/packages/{id}", get(get_package))
 		.route("/api/packages/{id}/sync", post(sync_package))
 		.layer(TraceLayer::new_for_http())
 		.with_state(state)
@@ -97,9 +97,10 @@ async fn text_search(
 	State(state): State<AppState>,
 	Query(params): Query<SearchQuery>,
 ) -> Result<Json<search::SearchResponse>, AppError> {
-	let index = state.text_index.as_ref().ok_or_else(|| AppError::Internal {
-		message: "text search index not available".to_owned(),
-	})?;
+	let index = state
+		.text_index
+		.as_ref()
+		.ok_or_else(|| AppError::Internal { message: "text search index not available".to_owned() })?;
 	let limit = params.limit.unwrap_or(6);
 	let hits = index.search(&params.q, limit)?;
 	let results = hits
@@ -244,10 +245,8 @@ async fn symbol_search(
 	let orch = state.symbol_orchestrator.as_ref().ok_or_else(|| AppError::Internal {
 		message: "symbol search not configured on this server".to_owned(),
 	})?;
-	let matches = orch
-		.search(&query)
-		.await
-		.map_err(|e| AppError::Internal { message: e.to_string() })?;
+	let matches =
+		orch.search(&query).await.map_err(|e| AppError::Internal { message: e.to_string() })?;
 	Ok(Json(matches.into_iter().map(SymbolMatchResponse::from).collect()))
 }
 

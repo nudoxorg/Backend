@@ -272,8 +272,8 @@ impl TestServer {
 				embedding_model: "text-embedding-3-small".to_owned(),
 				upload_schema:   false,
 			},
-			sessions:            SessionStore::default(),
-			text_index:          None,
+			sessions: SessionStore::default(),
+			text_index: None,
 			symbol_orchestrator: None,
 		});
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

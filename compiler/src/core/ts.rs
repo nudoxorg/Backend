@@ -916,10 +916,7 @@ fn ensure_materialized_entry_point(
 	)))
 }
 
-fn materialized_source_fallback_candidates(
-	root: &Path,
-	candidate: &Path,
-) -> Vec<PathBuf> {
+fn materialized_source_fallback_candidates(root: &Path, candidate: &Path) -> Vec<PathBuf> {
 	let Ok(relative) = candidate.strip_prefix(root) else {
 		return Vec::new();
 	};
@@ -940,9 +937,7 @@ fn relative_variants_without_build_prefixes(relative: &Path) -> Vec<PathBuf> {
 	if components.len() >= 2 {
 		let first = components[0].as_os_str().to_string_lossy();
 		let second = components[1].as_os_str().to_string_lossy();
-		if matches!(first.as_ref(), "lib" | "dist" | "build" | "esm" | "cjs")
-			&& second == "src"
-		{
+		if matches!(first.as_ref(), "lib" | "dist" | "build" | "esm" | "cjs") && second == "src" {
 			let stripped = components[1..].iter().collect::<PathBuf>();
 			variants.push(stripped);
 		}

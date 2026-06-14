@@ -169,10 +169,8 @@ impl RustPackage {
 			Err(error) => return Err(error),
 		}
 
-		let json_path = code
-			.join("target")
-			.join("doc")
-			.join(format!("{}.json", doc_target_name.replace('-', "_")));
+		let json_path =
+			code.join("target").join("doc").join(format!("{}.json", doc_target_name.replace('-', "_")));
 
 		let json_content = fs::read_to_string(&json_path)?;
 
@@ -204,7 +202,8 @@ impl RustPackage {
 				.expect("documented package id should exist in metadata");
 			let doc_target_name =
 				package_doc_target_name(package).unwrap_or_else(|| package.name.to_string());
-			let package_ir = self.generate_ir_for_package(code, &package.name, &doc_target_name, version)?;
+			let package_ir =
+				self.generate_ir_for_package(code, &package.name, &doc_target_name, version)?;
 			entries.extend(package_ir.into_entries());
 		}
 
@@ -233,7 +232,10 @@ impl RustPackage {
 }
 
 fn cargo_metadata(code: &PathBuf) -> Result<Metadata, PackageError> {
-	MetadataCommand::new().current_dir(code).exec().map_err(|source| PackageError::Metadata(source.to_string()))
+	MetadataCommand::new()
+		.current_dir(code)
+		.exec()
+		.map_err(|source| PackageError::Metadata(source.to_string()))
 }
 
 fn documented_local_packages(
@@ -241,7 +243,8 @@ fn documented_local_packages(
 	root_package_name: &str,
 	direct_repo: bool,
 ) -> Vec<PackageId> {
-	let Some(root_package) = metadata.packages.iter().find(|package| package.name == root_package_name)
+	let Some(root_package) =
+		metadata.packages.iter().find(|package| package.name == root_package_name)
 	else {
 		return Vec::new();
 	};
@@ -253,7 +256,8 @@ fn documented_local_packages(
 	let Some(resolve) = &metadata.resolve else {
 		return documented;
 	};
-	let package_map: HashMap<_, _> = metadata.packages.iter().map(|package| (&package.id, package)).collect();
+	let package_map: HashMap<_, _> =
+		metadata.packages.iter().map(|package| (&package.id, package)).collect();
 	let node_map: HashMap<_, _> = resolve.nodes.iter().map(|node| (&node.id, node)).collect();
 	let workspace_root = metadata.workspace_root.as_std_path();
 	let mut seen = BTreeSet::from([root_package.id.clone()]);
@@ -296,9 +300,10 @@ fn package_doc_target_name(package: &CargoPackage) -> Option<String> {
 		.iter()
 		.find(|target| target.kind.iter().any(is_library_target_kind))
 		.or_else(|| {
-			package.targets.iter().find(|target| {
-				!target.kind.iter().any(|kind| kind.to_string() == "custom-build")
-			})
+			package
+				.targets
+				.iter()
+				.find(|target| !target.kind.iter().any(|kind| kind.to_string() == "custom-build"))
 		})
 		.map(|target| target.name.clone())
 }

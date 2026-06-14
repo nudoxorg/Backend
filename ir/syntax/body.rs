@@ -3,8 +3,7 @@ use std::{ops::Range, sync::Arc};
 use arborium_tree_sitter as tree_sitter;
 use yoke::{Yoke, Yokeable};
 
-use crate::syntax::walker::walk_references;
-use crate::syntax::{ParseError, ResolvedReference};
+use crate::syntax::{ParseError, ResolvedReference, walker::walk_references};
 
 #[derive(Yokeable, Debug, Clone)]
 pub struct FunctionBody {

@@ -1,25 +1,22 @@
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use ir::entry::Index;
-use nudox_core::{
-    BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language as NudoxLanguage, LibRef,
-    OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr,
-};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language as NudoxLanguage, LibRef, OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use nudox_store::NudoxStore;
 use semver::Version;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
 
-use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingProgress, EmbeddingService, EmbeddingDocument, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingDocument, EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
-	pub entry_count:    usize,
-	pub document_count: usize,
-	pub vector_count:   usize,
-	/// Symbols registered in the SQLite occurrence store (0 if no store is wired).
-	pub symbols_registered: usize,
+	pub entry_count:          usize,
+	pub document_count:       usize,
+	pub vector_count:         usize,
+	/// Symbols registered in the SQLite occurrence store (0 if no store is
+	/// wired).
+	pub symbols_registered:   usize,
 	/// Symbols indexed in the local text search index (0 if no index is wired).
 	pub symbols_text_indexed: usize,
 	/// Symbols fed into the nudox symbol-search Orchestrator (0 if not wired).
@@ -102,12 +99,8 @@ fn finalize_pipeline(
 	// Register all Entry/* symbols in the SQLite occurrence store so that
 	// any deferred occurrence blobs waiting on this library can be resolved.
 	let symbols_registered = if let Some(store) = nudox_store {
-		let entry_uris: Vec<&str> = doc_store
-			.docs
-			.keys()
-			.filter(|k| k.starts_with("Entry/"))
-			.map(|k| k.as_str())
-			.collect();
+		let entry_uris: Vec<&str> =
+			doc_store.docs.keys().filter(|k| k.starts_with("Entry/")).map(|k| k.as_str()).collect();
 		match runtime.block_on(store.register_library(
 			language,
 			package_name,
@@ -128,7 +121,12 @@ fn finalize_pipeline(
 
 	// Index symbols into the local Tantivy text search index.
 	let symbols_text_indexed = if let Some(idx) = text_index {
-		match embedding_documents_from_docstore(&doc_store, language, package_name, Some(&version.to_string())) {
+		match embedding_documents_from_docstore(
+			&doc_store,
+			language,
+			package_name,
+			Some(&version.to_string()),
+		) {
 			Ok(docs) => match idx.index_batch(&docs) {
 				Ok(n) => {
 					info!(lib = package_name, count = n, "symbols indexed in text search");
@@ -189,8 +187,14 @@ fn finalize_pipeline(
 		0
 	};
 
-	let vector_count =
-		runtime.block_on(upload_outputs(config, language, package_name, version, &doc_store, progress))?;
+	let vector_count = runtime.block_on(upload_outputs(
+		config,
+		language,
+		package_name,
+		version,
+		&doc_store,
+		progress,
+	))?;
 
 	Ok(IngestionSummary {
 		entry_count,
@@ -382,10 +386,15 @@ fn sanitize_collection_segment(value: &str) -> String {
 		.collect()
 }
 
-/// Convert an `EmbeddingDocument` (extracted from the TerminusDB doc store) into
-/// a `BlobInfo` suitable for `Orchestrator::ingest`. No embeddings are stored here;
-/// body_query search returns 501 at the HTTP layer until embeddings are wired.
-fn embedding_doc_to_blob_info(doc: &EmbeddingDocument, package_name: &str, version: &Version) -> BlobInfo {
+/// Convert an `EmbeddingDocument` (extracted from the TerminusDB doc store)
+/// into a `BlobInfo` suitable for `Orchestrator::ingest`. No embeddings are
+/// stored here; body_query search returns 501 at the HTTP layer until
+/// embeddings are wired.
+fn embedding_doc_to_blob_info(
+	doc: &EmbeddingDocument,
+	package_name: &str,
+	version: &Version,
+) -> BlobInfo {
 	let symbol_name = doc
 		.fq_name
 		.clone()
@@ -395,39 +404,39 @@ fn embedding_doc_to_blob_info(doc: &EmbeddingDocument, package_name: &str, versi
 	// the library's own exported surface, not occurrences of external usage.
 	let repo_id = RepoId(format!("lib:{package_name}:{}", version));
 	BlobInfo {
-		occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
+		occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 		symbol_name,
-		symbol_origin:      SymbolOrigin::Repo { repo_id: repo_id.clone() },
+		symbol_origin: SymbolOrigin::Repo { repo_id: repo_id.clone() },
 		resolved_global_id: None,
 		kind,
 		source: SourceChunk {
-			raw_code:         doc.text.clone(),
-			treesitter_repr:  TreesitterRepr(vec![]),
-			symbol_span:      ByteSpan { start: 0, end: doc.text.len() },
+			raw_code:        doc.text.clone(),
+			treesitter_repr: TreesitterRepr(vec![]),
+			symbol_span:     ByteSpan { start: 0, end: doc.text.len() },
 		},
-		embeddings:         vec![],
-		metadata:           ChunkMetadata {
+		embeddings: vec![],
+		metadata: ChunkMetadata {
 			repo_id,
-			file_path:            std::path::PathBuf::from(&doc.uri),
-			file_span:            ByteSpan { start: 0, end: 0 },
-			parsed_at:            chrono::Utc::now(),
-			lang:                 NudoxLanguage::Rust,
-			lang_version:         None,
-			blob_schema_version:  BLOB_SCHEMA_VERSION,
+			file_path: std::path::PathBuf::from(&doc.uri),
+			file_span: ByteSpan { start: 0, end: 0 },
+			parsed_at: chrono::Utc::now(),
+			lang: NudoxLanguage::Rust,
+			lang_version: None,
+			blob_schema_version: BLOB_SCHEMA_VERSION,
 		},
 	}
 }
 
 fn str_to_symbol_kind(s: &str) -> SymbolKind {
 	match s.to_lowercase().as_str() {
-		"function" | "fn"   => SymbolKind::Function,
-		"struct"             => SymbolKind::Struct,
-		"enum"               => SymbolKind::Enum,
-		"trait"              => SymbolKind::Trait,
-		"method"             => SymbolKind::Method,
-		"closure"            => SymbolKind::Closure,
+		"function" | "fn" => SymbolKind::Function,
+		"struct" => SymbolKind::Struct,
+		"enum" => SymbolKind::Enum,
+		"trait" => SymbolKind::Trait,
+		"method" => SymbolKind::Method,
+		"closure" => SymbolKind::Closure,
 		"typealias" | "type" => SymbolKind::TypeAlias,
-		"const" | "static"   => SymbolKind::Const,
-		_                    => SymbolKind::Other,
+		"const" | "static" => SymbolKind::Const,
+		_ => SymbolKind::Other,
 	}
 }
