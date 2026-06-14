@@ -281,10 +281,16 @@ async fn response_includes_snippet_field() {
 async fn kind_only_returns_matching_kinds() {
 	let (state, _tmp) = build_state_with_orchestrator().await;
 
-	ingest_blob(&state, make_blob("mylib::Router", "mylib", SymbolKind::Struct, "pub struct Router {}"))
-		.await;
-	ingest_blob(&state, make_blob("mylib::handle", "mylib", SymbolKind::Function, "pub fn handle() {}"))
-		.await;
+	ingest_blob(
+		&state,
+		make_blob("mylib::Router", "mylib", SymbolKind::Struct, "pub struct Router {}"),
+	)
+	.await;
+	ingest_blob(
+		&state,
+		make_blob("mylib::handle", "mylib", SymbolKind::Function, "pub fn handle() {}"),
+	)
+	.await;
 	ingest_blob(&state, make_blob("mylib::Error", "mylib", SymbolKind::Enum, "pub enum Error {}"))
 		.await;
 

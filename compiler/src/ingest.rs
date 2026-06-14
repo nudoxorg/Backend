@@ -1,10 +1,7 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use ir::entry::Index;
-use nudox_core::{
-	BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language as NudoxLanguage, OccurrenceId,
-	RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr,
-};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language as NudoxLanguage, OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use nudox_pipeline::treesitter::parse_and_extract;
 use nudox_store::NudoxStore;
 use semver::Version;
@@ -32,10 +29,8 @@ pub struct IngestionSummary {
 /// `workspace/target/doc/{package}.json`. Only `Function` items with a valid
 /// `Span` are included; other item kinds don't benefit from tree-sitter.
 fn build_rust_source_map(workspace: &Path, package_name: &str) -> HashMap<String, String> {
-	let json_path = workspace
-		.join("target")
-		.join("doc")
-		.join(format!("{}.json", package_name.replace('-', "_")));
+	let json_path =
+		workspace.join("target").join("doc").join(format!("{}.json", package_name.replace('-', "_")));
 
 	let json_content = match std::fs::read_to_string(&json_path) {
 		Ok(c) => c,
@@ -476,18 +471,16 @@ fn embedding_doc_to_blob_info(
 
 	// When we have the actual Rust source for this symbol, run tree-sitter on it
 	// to populate treesitter_repr with the AST s-expression and references.
-	let (raw_code, treesitter_repr, symbol_span) =
-		if let Some(raw) = source_map.get(&symbol_name) {
-			let span = ByteSpan { start: 0, end: raw.len() };
-			let (snippet, snippet_span, ts_repr) =
-				parse_and_extract(raw, NudoxLanguage::Rust, span, 80);
-			let adjusted_span =
-				ByteSpan { start: 0, end: snippet.len().saturating_sub(snippet_span.start) };
-			(snippet, ts_repr, adjusted_span)
-		} else {
-			let len = doc.text.len();
-			(doc.text.clone(), TreesitterRepr(vec![]), ByteSpan { start: 0, end: len })
-		};
+	let (raw_code, treesitter_repr, symbol_span) = if let Some(raw) = source_map.get(&symbol_name) {
+		let span = ByteSpan { start: 0, end: raw.len() };
+		let (snippet, snippet_span, ts_repr) = parse_and_extract(raw, NudoxLanguage::Rust, span, 80);
+		let adjusted_span =
+			ByteSpan { start: 0, end: snippet.len().saturating_sub(snippet_span.start) };
+		(snippet, ts_repr, adjusted_span)
+	} else {
+		let len = doc.text.len();
+		(doc.text.clone(), TreesitterRepr(vec![]), ByteSpan { start: 0, end: len })
+	};
 
 	BlobInfo {
 		occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
