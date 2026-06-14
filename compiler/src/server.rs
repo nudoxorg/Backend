@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nudox_blobstore::InMemoryBlobStore;
+use nudox_blobstore::ObjectStoreBlobStore;
 use nudox_core::{BlobStore, SearchIndex, SearchQuery, VectorIndex, VectorQuery};
 use nudox_embed::PlaceholderEmbedder;
 use nudox_orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
@@ -46,9 +46,11 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 		}
 	};
 
-	// Build the symbol-search stack. Uses in-memory vector + blob stores for now;
-	// TantivySearchIndex is persisted at storage_root/nudox-symbol-index.
-	let symbol_orchestrator = build_symbol_orchestrator(&config.storage_root.join("nudox-symbol-index"));
+	// Build the symbol-search stack.
+	// TantivySearchIndex   → storage_root/nudox-symbol-index  (persisted)
+	// ObjectStoreBlobStore → storage_root/nudox-blobs          (persisted, local FS for now)
+	// Vector index         → in-memory (pending embedding decision)
+	let symbol_orchestrator = build_symbol_orchestrator(&config.storage_root);
 
 	let mut registry =
 		LocalRegistry::new(storage, config.monitor_interval, config.pipeline.clone());
@@ -93,11 +95,20 @@ async fn shutdown_signal() { let _ = signal::ctrl_c().await; }
 
 /// Build the nudox symbol-search stack.
 ///
-/// Uses TantivySearchIndex (persisted) for text search and in-memory backends
-/// for vector and blob storage. The PlaceholderEmbedder is a stand-in until the
-/// embedding strategy is decided; body_query search returns 501 at the HTTP layer.
-fn build_symbol_orchestrator(index_dir: &std::path::Path) -> Option<Arc<Orchestrator>> {
-	let text = match TantivySearchIndex::open_or_create(index_dir) {
+/// Persistent backends:
+///   - `storage_root/nudox-symbol-index`  — Tantivy full-text index
+///   - `storage_root/nudox-blobs`          — ObjectStore blob store (local FS)
+///
+/// Still in-memory (pending embedding decision):
+///   - vector index (InMemoryVectorIndex)
+///   - global symbol store + future-parse queue
+///
+/// body_query search returns 501 at the HTTP layer until embeddings are wired.
+fn build_symbol_orchestrator(storage_root: &std::path::Path) -> Option<Arc<Orchestrator>> {
+	let index_dir = storage_root.join("nudox-symbol-index");
+	let blobs_dir = storage_root.join("nudox-blobs");
+
+	let text = match TantivySearchIndex::open_or_create(&index_dir) {
 		Ok(idx) => {
 			info!(dir = %index_dir.display(), "nudox symbol text index opened");
 			Arc::new(idx)
@@ -107,8 +118,17 @@ fn build_symbol_orchestrator(index_dir: &std::path::Path) -> Option<Arc<Orchestr
 			return None;
 		}
 	};
+	let blobs = match ObjectStoreBlobStore::local(blobs_dir.clone()) {
+		Ok(store) => {
+			info!(dir = %blobs_dir.display(), "nudox blob store opened");
+			Arc::new(store)
+		}
+		Err(e) => {
+			warn!(error = %e, "nudox blob store unavailable; /symbol-search disabled");
+			return None;
+		}
+	};
 	let vector   = Arc::new(InMemoryVectorIndex::new());
-	let blobs    = Arc::new(InMemoryBlobStore::new());
 	let global   = Arc::new(InMemoryGlobalSymbolStore::new());
 	let queue    = Arc::new(InMemoryFutureParseQueue::new());
 	let embedder = Arc::new(PlaceholderEmbedder::new("placeholder", 128));
