@@ -77,6 +77,7 @@ mod tests {
                 repo_id: RepoId("test".into()),
             },
             resolved_global_id: None,
+            kind: None,
             source: SourceChunk {
                 raw_code: "fn foo() {}".to_string(),
                 treesitter_repr: TreesitterRepr(vec![]),

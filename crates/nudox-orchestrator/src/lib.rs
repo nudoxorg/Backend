@@ -1,6 +1,9 @@
 #[cfg(any(test, feature = "test-stubs"))]
 pub mod memory;
 
+#[cfg(test)]
+mod symbol_search_tests;
+
 use std::sync::Arc;
 
 use nudox_core::{
