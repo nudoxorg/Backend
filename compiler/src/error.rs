@@ -69,6 +69,9 @@ pub enum AppError {
 	#[error("internal error: {message}")]
 	Internal { message: String },
 
+	#[error("not implemented: {message}")]
+	NotImplemented { message: String },
+
 	#[error(transparent)]
 	Io(#[from] io::Error),
 
@@ -96,6 +99,7 @@ impl IntoResponse for AppError {
 			| AppError::RegistryLookup { .. } => StatusCode::BAD_REQUEST,
 			AppError::PackageNotTracked { .. } => StatusCode::NOT_FOUND,
 			AppError::Package(PackageError::VersionNotFound(_)) => StatusCode::NOT_FOUND,
+			AppError::NotImplemented { .. } => StatusCode::NOT_IMPLEMENTED,
 			_ => StatusCode::INTERNAL_SERVER_ERROR,
 		};
 

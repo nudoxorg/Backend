@@ -228,7 +228,7 @@ pub struct VectorHit {
 // ── Symbol search types ────────────────────────────────────────────────────
 
 /// The form of a body (implementation) query.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BodyQuery {
     /// Free-text description of what the symbol does; will be embedded and matched by vector search.
     NaturalLanguage(String),
@@ -237,7 +237,7 @@ pub enum BodyQuery {
 }
 
 /// Restricts search results to a specific language and/or repository.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScopeFilter {
     /// If set, only return results in this language.
     pub lang: Option<Language>,
@@ -246,7 +246,7 @@ pub struct ScopeFilter {
 }
 
 /// Filter results by the number of indexed occurrences of the resolved global symbol.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OccurrenceFilter {
     /// Minimum number of occurrences (inclusive).
     pub min_count: Option<usize>,
@@ -255,7 +255,7 @@ pub struct OccurrenceFilter {
 }
 
 /// How to combine name-pattern and body-query results when both are specified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CombineMode {
     /// Union: return anything matching either criterion (default).
     #[default]
@@ -265,7 +265,7 @@ pub enum CombineMode {
 }
 
 /// A compound query for symbol search.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolQuery {
     /// Optional name pattern (substring match; case-insensitive).
     pub name_pattern: Option<String>,
@@ -278,10 +278,14 @@ pub struct SymbolQuery {
     /// Optional filter on the number of known occurrences.
     pub occurrence_filter: Option<OccurrenceFilter>,
     /// How to combine `name_pattern` and `body_query` results.
+    #[serde(default)]
     pub combine: CombineMode,
     /// Maximum number of results to return.
+    #[serde(default = "default_limit")]
     pub limit: usize,
 }
+
+fn default_limit() -> usize { 20 }
 
 impl Default for SymbolQuery {
     fn default() -> Self {

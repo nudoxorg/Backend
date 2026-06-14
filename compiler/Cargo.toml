@@ -19,7 +19,14 @@ gix = { version = "0.74.1", features = [
   "worktree-mutation"
 ] }
 ir = { workspace = true, features = ["serde"] }
-nudox-store = { path = "../crates/nudox-store" }
+nudox-store     = { path = "../crates/nudox-store" }
+nudox-core      = { path = "../crates/nudox-core" }
+nudox-search    = { path = "../crates/nudox-search" }
+nudox-blobstore = { path = "../crates/nudox-blobstore" }
+nudox-embed     = { path = "../crates/nudox-embed" }
+nudox-orchestrator = { path = "../crates/nudox-orchestrator", features = ["memory-backends"] }
+uuid            = { workspace = true }
+chrono          = { workspace = true }
 arborium = { workspace = true, features = ["lang-rust"] }
 jiff = { version = "0.2.16", features = ["serde"] }
 lang-types = { version = "0.1.0", features = ["serde"] }
@@ -50,4 +57,13 @@ default = ["serde"]
 serde = ["dep:serde"]
 
 [dev-dependencies]
-insta = "1.43.2"
+insta            = "1.43.2"
+tower            = { version = "0.5", features = ["util"] }
+http-body-util   = "0.1"
+chrono           = { workspace = true }
+nudox-core       = { path = "../crates/nudox-core" }
+nudox-search     = { path = "../crates/nudox-search" }
+nudox-blobstore  = { path = "../crates/nudox-blobstore" }
+nudox-embed      = { path = "../crates/nudox-embed" }
+nudox-orchestrator = { path = "../crates/nudox-orchestrator", features = ["memory-backends"] }
+uuid             = { workspace = true }

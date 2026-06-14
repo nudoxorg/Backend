@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "test-stubs"))]
+#[cfg(any(test, feature = "memory-backends"))]
 pub mod memory;
 
 #[cfg(test)]

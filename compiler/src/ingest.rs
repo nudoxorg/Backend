@@ -2,12 +2,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ir::entry::Index;
+use nudox_core::{
+    BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language as NudoxLanguage, LibRef,
+    OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr,
+};
 use nudox_store::NudoxStore;
 use semver::Version;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
 
-use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingProgress, EmbeddingService, EmbeddingDocument, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -18,6 +22,8 @@ pub struct IngestionSummary {
 	pub symbols_registered: usize,
 	/// Symbols indexed in the local text search index (0 if no index is wired).
 	pub symbols_text_indexed: usize,
+	/// Symbols fed into the nudox symbol-search Orchestrator (0 if not wired).
+	pub symbols_orchestrated: usize,
 }
 
 pub fn run_rust_pipeline(
@@ -29,6 +35,7 @@ pub fn run_rust_pipeline(
 	progress: Option<&ProgressReporter>,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
+	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
 ) -> Result<IngestionSummary, AppError> {
 	let ir = package.generate_ir(&workspace.to_path_buf(), version).map_err(|source| {
 		AppError::Internal { message: format!("IR generation failed for `{}`: {source}", package.name) }
@@ -44,6 +51,7 @@ pub fn run_rust_pipeline(
 		progress,
 		nudox_store,
 		text_index,
+		orchestrator,
 	)
 }
 
@@ -55,6 +63,7 @@ pub fn run_typescript_pipeline(
 	progress: Option<&ProgressReporter>,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
+	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
 ) -> Result<IngestionSummary, AppError> {
 	let ir = package.generate_ir().map_err(|source| AppError::Internal {
 		message: format!("IR generation failed for `{}`: {source}", package.name),
@@ -70,6 +79,7 @@ pub fn run_typescript_pipeline(
 		progress,
 		nudox_store,
 		text_index,
+		orchestrator,
 	)
 }
 
@@ -83,6 +93,7 @@ fn finalize_pipeline(
 	progress: Option<&ProgressReporter>,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
+	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
 ) -> Result<IngestionSummary, AppError> {
 	let entry_count = index.entries_by_path.len();
 	let doc_store = emit_store(language, package_name, version, index);
@@ -137,10 +148,58 @@ fn finalize_pipeline(
 		0
 	};
 
+	// Feed each symbol into the nudox-search Orchestrator so /symbol-search works.
+	// Only Rust packages are bridged for now; nudox_core::Language only has Rust.
+	let symbols_orchestrated = if let Some(orch) = orchestrator {
+		if language == "rust" {
+			match embedding_documents_from_docstore(
+				&doc_store,
+				language,
+				package_name,
+				Some(&version.to_string()),
+			) {
+				Ok(docs) => {
+					let mut count = 0usize;
+					for doc in &docs {
+						let blob = embedding_doc_to_blob_info(doc, package_name, version);
+						match runtime.block_on(orch.ingest(blob)) {
+							Ok(_) => count += 1,
+							Err(e) => {
+								warn!(
+									error = %e,
+									lib = package_name,
+									symbol = %doc.fq_name.as_deref().unwrap_or(&doc.uri),
+									"orchestrator ingest failed for symbol"
+								);
+							}
+						}
+					}
+					info!(lib = package_name, count, "symbols fed to symbol-search orchestrator");
+					count
+				}
+				Err(e) => {
+					warn!(error = %e, lib = package_name, "failed to extract docs for orchestrator ingest");
+					0
+				}
+			}
+		} else {
+			0
+		}
+	} else {
+		0
+	};
+
 	let vector_count =
 		runtime.block_on(upload_outputs(config, language, package_name, version, &doc_store, progress))?;
 
-	Ok(IngestionSummary { entry_count, document_count, vector_count, symbols_registered, symbols_text_indexed })
+	Ok(IngestionSummary {
+		entry_count,
+		document_count,
+		vector_count,
+		symbols_registered,
+		symbols_text_indexed,
+		symbols_orchestrated,
+	})
 }
 
 fn emit_store(language: &str, package_name: &str, version: &Version, index: Index) -> DocStore {
@@ -321,4 +380,54 @@ fn sanitize_collection_segment(value: &str) -> String {
 			_ => '_',
 		})
 		.collect()
+}
+
+/// Convert an `EmbeddingDocument` (extracted from the TerminusDB doc store) into
+/// a `BlobInfo` suitable for `Orchestrator::ingest`. No embeddings are stored here;
+/// body_query search returns 501 at the HTTP layer until embeddings are wired.
+fn embedding_doc_to_blob_info(doc: &EmbeddingDocument, package_name: &str, version: &Version) -> BlobInfo {
+	let symbol_name = doc
+		.fq_name
+		.clone()
+		.unwrap_or_else(|| doc.uri.split('/').next_back().unwrap_or(&doc.uri).to_owned());
+	let kind = doc.symbol_kind.as_deref().map(str_to_symbol_kind);
+	// Use Repo origin so these symbols are indexed immediately — they represent
+	// the library's own exported surface, not occurrences of external usage.
+	let repo_id = RepoId(format!("lib:{package_name}:{}", version));
+	BlobInfo {
+		occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
+		symbol_name,
+		symbol_origin:      SymbolOrigin::Repo { repo_id: repo_id.clone() },
+		resolved_global_id: None,
+		kind,
+		source: SourceChunk {
+			raw_code:         doc.text.clone(),
+			treesitter_repr:  TreesitterRepr(vec![]),
+			symbol_span:      ByteSpan { start: 0, end: doc.text.len() },
+		},
+		embeddings:         vec![],
+		metadata:           ChunkMetadata {
+			repo_id,
+			file_path:            std::path::PathBuf::from(&doc.uri),
+			file_span:            ByteSpan { start: 0, end: 0 },
+			parsed_at:            chrono::Utc::now(),
+			lang:                 NudoxLanguage::Rust,
+			lang_version:         None,
+			blob_schema_version:  BLOB_SCHEMA_VERSION,
+		},
+	}
+}
+
+fn str_to_symbol_kind(s: &str) -> SymbolKind {
+	match s.to_lowercase().as_str() {
+		"function" | "fn"   => SymbolKind::Function,
+		"struct"             => SymbolKind::Struct,
+		"enum"               => SymbolKind::Enum,
+		"trait"              => SymbolKind::Trait,
+		"method"             => SymbolKind::Method,
+		"closure"            => SymbolKind::Closure,
+		"typealias" | "type" => SymbolKind::TypeAlias,
+		"const" | "static"   => SymbolKind::Const,
+		_                    => SymbolKind::Other,
+	}
 }

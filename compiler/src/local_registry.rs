@@ -95,6 +95,9 @@ pub struct LocalRegistry {
 	/// Local Tantivy text search index. When set, symbols are indexed after
 	/// every successful library parse for standalone full-text search.
 	text_index:       Option<Arc<SymbolTextIndex>>,
+	/// nudox-search Orchestrator. When set, every ingested symbol is fed
+	/// through `Orchestrator::ingest` so `/symbol-search` returns results.
+	orchestrator:     Option<Arc<nudox_orchestrator::Orchestrator>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,8 +250,9 @@ impl LocalRegistry {
 			next_id: AtomicU64::new(next_id),
 			packages: Arc::new(RwLock::new(packages)),
 			keys: Arc::new(RwLock::new(keys)),
-			nudox_store: None,
-			text_index: None,
+			nudox_store:  None,
+			text_index:   None,
+			orchestrator: None,
 		}
 	}
 
@@ -263,6 +267,13 @@ impl LocalRegistry {
 	/// after every successful library parse so `/text-search` works standalone.
 	pub fn with_text_index(mut self, index: Arc<SymbolTextIndex>) -> Self {
 		self.text_index = Some(index);
+		self
+	}
+
+	/// Attach the nudox-search Orchestrator. When set, every ingested symbol is
+	/// fed through `Orchestrator::ingest` so `/symbol-search` returns results.
+	pub fn with_orchestrator(mut self, orch: Arc<nudox_orchestrator::Orchestrator>) -> Self {
+		self.orchestrator = Some(orch);
 		self
 	}
 
@@ -384,6 +395,7 @@ impl LocalRegistry {
 		let blocking_id = tracked.id;
 		let blocking_nudox_store = self.nudox_store.clone();
 		let blocking_text_index = self.text_index.clone();
+		let blocking_orchestrator = self.orchestrator.clone();
 		let runtime = tokio::runtime::Handle::current();
 		let progress_runtime = runtime.clone();
 		let progress = {
@@ -426,6 +438,7 @@ impl LocalRegistry {
 			let attempt_progress = progress.clone();
 			let attempt_nudox_store = blocking_nudox_store.clone();
 			let attempt_text_index = blocking_text_index.clone();
+			let attempt_orchestrator = blocking_orchestrator.clone();
 
 			let sync_result = spawn_blocking(move || {
 				run_sync(
@@ -438,6 +451,7 @@ impl LocalRegistry {
 					attempt_progress,
 					attempt_nudox_store,
 					attempt_text_index,
+					attempt_orchestrator,
 				)
 			})
 			.await
@@ -964,6 +978,7 @@ fn run_sync(
 	progress: ProgressReporter,
 	nudox_store: Option<Arc<nudox_store::NudoxStore>>,
 	text_index: Option<Arc<SymbolTextIndex>>,
+	orchestrator: Option<Arc<nudox_orchestrator::Orchestrator>>,
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
@@ -1006,6 +1021,7 @@ fn run_sync(
 				Some(&progress),
 				nudox_store.as_ref(),
 				text_index.as_ref(),
+				orchestrator.as_ref(),
 			)?;
 
 			Ok(SyncExecution {
@@ -1017,7 +1033,8 @@ fn run_sync(
 		PackageHandle::TypeScript(package) => {
 			if typescript_package_uses_repository(&package) {
 				run_repository_backed_typescript_sync(
-					storage, pipeline, package_id, package, spec, runtime, progress, nudox_store, text_index,
+					storage, pipeline, package_id, package, spec, runtime, progress, nudox_store,
+					text_index, orchestrator,
 				)
 			} else {
 				progress.phase_with_detail(
@@ -1057,6 +1074,7 @@ fn run_sync(
 					Some(&progress),
 					nudox_store.as_ref(),
 					text_index.as_ref(),
+					orchestrator.as_ref(),
 				)?;
 				Ok(SyncExecution {
 					tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
@@ -1138,6 +1156,7 @@ fn run_repository_backed_typescript_sync(
 	progress: ProgressReporter,
 	nudox_store: Option<Arc<nudox_store::NudoxStore>>,
 	text_index: Option<Arc<SymbolTextIndex>>,
+	orchestrator: Option<Arc<nudox_orchestrator::Orchestrator>>,
 ) -> Result<SyncExecution, AppError> {
 	progress.phase_with_detail(
 		PackageSyncPhase::Resolving,
@@ -1184,6 +1203,7 @@ fn run_repository_backed_typescript_sync(
 		Some(&progress),
 		nudox_store.as_ref(),
 		text_index.as_ref(),
+		orchestrator.as_ref(),
 	)?;
 
 	Ok(SyncExecution {
@@ -1621,6 +1641,7 @@ mod tests {
 					vector_count:         9,
 					symbols_registered:   0,
 					symbols_text_indexed: 0,
+					symbols_orchestrated: 0,
 				},
 			})
 			.await;
