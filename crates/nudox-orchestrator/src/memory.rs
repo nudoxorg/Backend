@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use nudox_core::{BlobRef, FutureParseQueue, GlobalSymbolId, GlobalSymbolStore, LibRef, OccurrenceId, Result};
+use nudox_core::{BlobRef, FutureParseQueue, GlobalSymbolId, GlobalSymbolQuery, GlobalSymbolStore, LibRef, OccurrenceId, Result};
 
 /// In-memory implementation of [`GlobalSymbolStore`] for use in tests.
 #[derive(Clone)]
@@ -64,6 +64,13 @@ impl GlobalSymbolStore for InMemoryGlobalSymbolStore {
             .or_default()
             .push(occurrence);
         Ok(())
+    }
+}
+
+#[async_trait]
+impl GlobalSymbolQuery for InMemoryGlobalSymbolStore {
+    async fn get_occurrences(&self, global_id: GlobalSymbolId) -> Result<Vec<OccurrenceId>> {
+        Ok(self.occurrences_for(global_id))
     }
 }
 

@@ -19,6 +19,8 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tempfile = "3"
+nudox-embed = { path = "../nudox-embed" }
+nudox-blobstore = { path = "../nudox-blobstore" }
 
 [features]
 default = []
