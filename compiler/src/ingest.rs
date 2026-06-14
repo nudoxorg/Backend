@@ -1,7 +1,11 @@
-use std::{path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use ir::entry::Index;
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language as NudoxLanguage, LibRef, OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
+use nudox_core::{
+	BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language as NudoxLanguage, OccurrenceId,
+	RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr,
+};
+use nudox_pipeline::treesitter::parse_and_extract;
 use nudox_store::NudoxStore;
 use semver::Version;
 use tokio::runtime::Handle;
@@ -23,6 +27,65 @@ pub struct IngestionSummary {
 	pub symbols_orchestrated: usize,
 }
 
+/// Build a map from fully-qualified symbol name → raw Rust source lines by
+/// reading the rustdoc JSON that `generate_ir` writes to
+/// `workspace/target/doc/{package}.json`. Only `Function` items with a valid
+/// `Span` are included; other item kinds don't benefit from tree-sitter.
+fn build_rust_source_map(workspace: &Path, package_name: &str) -> HashMap<String, String> {
+	let json_path = workspace
+		.join("target")
+		.join("doc")
+		.join(format!("{}.json", package_name.replace('-', "_")));
+
+	let json_content = match std::fs::read_to_string(&json_path) {
+		Ok(c) => c,
+		Err(e) => {
+			warn!(error = %e, path = %json_path.display(), "cannot read rustdoc JSON for treesitter source map");
+			return HashMap::new();
+		}
+	};
+
+	let krate: rustdoc_types::Crate = match serde_json::from_str(&json_content) {
+		Ok(c) => c,
+		Err(e) => {
+			warn!(error = %e, "cannot parse rustdoc JSON for treesitter source map");
+			return HashMap::new();
+		}
+	};
+
+	let mut map = HashMap::new();
+	for (id, item) in &krate.index {
+		if !matches!(&item.inner, rustdoc_types::ItemEnum::Function(_)) {
+			continue;
+		}
+		let Some(span) = &item.span else { continue };
+		let Some(summary) = krate.paths.get(id) else { continue };
+		let fq_name = summary.path.join("::");
+
+		let source_file = workspace.join(&span.filename);
+		let source = match std::fs::read_to_string(&source_file) {
+			Ok(s) => s,
+			Err(_) => continue,
+		};
+
+		// span.begin / span.end are 1-indexed (line, col) tuples.
+		let raw: String = source
+			.lines()
+			.enumerate()
+			.filter(|(i, _)| *i + 1 >= span.begin.0 && *i + 1 <= span.end.0)
+			.map(|(_, line)| line)
+			.collect::<Vec<_>>()
+			.join("\n");
+
+		if !raw.is_empty() {
+			map.insert(fq_name, raw);
+		}
+	}
+
+	info!(package = package_name, count = map.len(), "built treesitter source map");
+	map
+}
+
 pub fn run_rust_pipeline(
 	package: &RustPackage,
 	version: &Version,
@@ -38,6 +101,11 @@ pub fn run_rust_pipeline(
 		AppError::Internal { message: format!("IR generation failed for `{}`: {source}", package.name) }
 	})?;
 
+	// Build a map of FQ symbol name → raw Rust source so the orchestrator
+	// ingest bridge can populate treesitter_repr. Done after generate_ir so the
+	// rustdoc JSON file is already on disk.
+	let source_map = build_rust_source_map(workspace, &package.name);
+
 	finalize_pipeline(
 		"rust",
 		&package.name,
@@ -49,6 +117,7 @@ pub fn run_rust_pipeline(
 		nudox_store,
 		text_index,
 		orchestrator,
+		&source_map,
 	)
 }
 
@@ -77,6 +146,7 @@ pub fn run_typescript_pipeline(
 		nudox_store,
 		text_index,
 		orchestrator,
+		&HashMap::new(),
 	)
 }
 
@@ -91,6 +161,7 @@ fn finalize_pipeline(
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
 	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
+	source_map: &HashMap<String, String>,
 ) -> Result<IngestionSummary, AppError> {
 	let entry_count = index.entries_by_path.len();
 	let doc_store = emit_store(language, package_name, version, index);
@@ -159,7 +230,7 @@ fn finalize_pipeline(
 				Ok(docs) => {
 					let mut count = 0usize;
 					for doc in &docs {
-						let blob = embedding_doc_to_blob_info(doc, package_name, version);
+						let blob = embedding_doc_to_blob_info(doc, package_name, version, source_map);
 						match runtime.block_on(orch.ingest(blob)) {
 							Ok(_) => count += 1,
 							Err(e) => {
@@ -394,26 +465,37 @@ fn embedding_doc_to_blob_info(
 	doc: &EmbeddingDocument,
 	package_name: &str,
 	version: &Version,
+	source_map: &HashMap<String, String>,
 ) -> BlobInfo {
 	let symbol_name = doc
 		.fq_name
 		.clone()
 		.unwrap_or_else(|| doc.uri.split('/').next_back().unwrap_or(&doc.uri).to_owned());
 	let kind = doc.symbol_kind.as_deref().map(str_to_symbol_kind);
-	// Use Repo origin so these symbols are indexed immediately — they represent
-	// the library's own exported surface, not occurrences of external usage.
 	let repo_id = RepoId(format!("lib:{package_name}:{}", version));
+
+	// When we have the actual Rust source for this symbol, run tree-sitter on it
+	// to populate treesitter_repr with the AST s-expression and references.
+	let (raw_code, treesitter_repr, symbol_span) =
+		if let Some(raw) = source_map.get(&symbol_name) {
+			let span = ByteSpan { start: 0, end: raw.len() };
+			let (snippet, snippet_span, ts_repr) =
+				parse_and_extract(raw, NudoxLanguage::Rust, span, 80);
+			let adjusted_span =
+				ByteSpan { start: 0, end: snippet.len().saturating_sub(snippet_span.start) };
+			(snippet, ts_repr, adjusted_span)
+		} else {
+			let len = doc.text.len();
+			(doc.text.clone(), TreesitterRepr(vec![]), ByteSpan { start: 0, end: len })
+		};
+
 	BlobInfo {
 		occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 		symbol_name,
 		symbol_origin: SymbolOrigin::Repo { repo_id: repo_id.clone() },
 		resolved_global_id: None,
 		kind,
-		source: SourceChunk {
-			raw_code:        doc.text.clone(),
-			treesitter_repr: TreesitterRepr(vec![]),
-			symbol_span:     ByteSpan { start: 0, end: doc.text.len() },
-		},
+		source: SourceChunk { raw_code, treesitter_repr, symbol_span },
 		embeddings: vec![],
 		metadata: ChunkMetadata {
 			repo_id,

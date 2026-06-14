@@ -1,4 +1,4 @@
-mod treesitter;
+pub mod treesitter;
 
 use nudox_core::{BlobInfo, ByteSpan, ChunkMetadata, Embedder, EmbeddingPurpose, EmbeddingRecord, OccurrenceId, Result, SourceChunk, SymbolOrigin, TreesitterRepr};
 use uuid::Uuid;

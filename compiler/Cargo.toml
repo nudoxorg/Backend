@@ -25,6 +25,7 @@ nudox-search    = { path = "../crates/nudox-search" }
 nudox-blobstore = { path = "../crates/nudox-blobstore" }
 nudox-embed     = { path = "../crates/nudox-embed" }
 nudox-orchestrator = { path = "../crates/nudox-orchestrator", features = ["memory-backends"] }
+nudox-pipeline  = { path = "../crates/nudox-pipeline" }
 uuid            = { workspace = true }
 chrono          = { workspace = true }
 arborium = { workspace = true, features = ["lang-rust"] }

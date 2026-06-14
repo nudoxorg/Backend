@@ -4043,6 +4043,7 @@ dependencies = [
  "nudox-core",
  "nudox-embed",
  "nudox-orchestrator",
+ "nudox-pipeline",
  "nudox-search",
  "nudox-store",
  "qdrant-client",
