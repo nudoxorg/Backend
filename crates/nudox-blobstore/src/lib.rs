@@ -138,6 +138,7 @@ mod object_store_tests {
                 repo_id: RepoId("test-repo".into()),
             },
             resolved_global_id: None,
+            kind: None,
             source: SourceChunk {
                 raw_code: "fn x() {}".into(),
                 treesitter_repr: TreesitterRepr(vec![]),

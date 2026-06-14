@@ -1,5 +1,10 @@
 use std::sync::Arc;
 
+use nudox_blobstore::ObjectStoreBlobStore;
+use nudox_core::{BlobStore, SearchIndex, SearchQuery, VectorIndex, VectorQuery};
+use nudox_embed::PlaceholderEmbedder;
+use nudox_orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
+use nudox_search::{InMemoryVectorIndex, SymbolSearcher, TantivySearchIndex};
 use tokio::signal;
 use tracing::{info, warn};
 
@@ -41,6 +46,12 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 		}
 	};
 
+	// Build the symbol-search stack.
+	// TantivySearchIndex   → storage_root/nudox-symbol-index  (persisted)
+	// ObjectStoreBlobStore → storage_root/nudox-blobs          (persisted, local FS for now)
+	// Vector index         → in-memory (pending embedding decision)
+	let symbol_orchestrator = build_symbol_orchestrator(&config.storage_root);
+
 	let mut registry =
 		LocalRegistry::new(storage, config.monitor_interval, config.pipeline.clone());
 	if let Some(store) = nudox_store {
@@ -49,6 +60,9 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	if let Some(idx) = text_index.clone() {
 		registry = registry.with_text_index(idx);
 	}
+	if let Some(ref orch) = symbol_orchestrator {
+		registry = registry.with_orchestrator(Arc::clone(orch));
+	}
 	let registry = Arc::new(registry);
 
 	let monitor_registry = Arc::clone(&registry);
@@ -56,7 +70,13 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 		monitor_registry.run_monitor().await;
 	});
 
-	let state = AppState { registry, pipeline: config.pipeline.clone(), sessions, text_index };
+	let state = AppState {
+		registry,
+		pipeline: config.pipeline.clone(),
+		sessions,
+		text_index,
+		symbol_orchestrator,
+	};
 	let app = api::router(state);
 	let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
 
@@ -72,3 +92,63 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 }
 
 async fn shutdown_signal() { let _ = signal::ctrl_c().await; }
+
+/// Build the nudox symbol-search stack.
+///
+/// Persistent backends:
+///   - `storage_root/nudox-symbol-index`  — Tantivy full-text index
+///   - `storage_root/nudox-blobs`          — ObjectStore blob store (local FS)
+///
+/// Still in-memory (pending embedding decision):
+///   - vector index (InMemoryVectorIndex)
+///   - global symbol store + future-parse queue
+///
+/// body_query search returns 501 at the HTTP layer until embeddings are wired.
+fn build_symbol_orchestrator(storage_root: &std::path::Path) -> Option<Arc<Orchestrator>> {
+	let index_dir = storage_root.join("nudox-symbol-index");
+	let blobs_dir = storage_root.join("nudox-blobs");
+
+	let text = match TantivySearchIndex::open_or_create(&index_dir) {
+		Ok(idx) => {
+			info!(dir = %index_dir.display(), "nudox symbol text index opened");
+			Arc::new(idx)
+		}
+		Err(e) => {
+			warn!(error = %e, "nudox symbol text index unavailable; /symbol-search disabled");
+			return None;
+		}
+	};
+	let blobs = match ObjectStoreBlobStore::local(blobs_dir.clone()) {
+		Ok(store) => {
+			info!(dir = %blobs_dir.display(), "nudox blob store opened");
+			Arc::new(store)
+		}
+		Err(e) => {
+			warn!(error = %e, "nudox blob store unavailable; /symbol-search disabled");
+			return None;
+		}
+	};
+	let vector   = Arc::new(InMemoryVectorIndex::new());
+	let global   = Arc::new(InMemoryGlobalSymbolStore::new());
+	let queue    = Arc::new(InMemoryFutureParseQueue::new());
+	let embedder = Arc::new(PlaceholderEmbedder::new("placeholder", 128));
+
+	let searcher = Arc::new(SymbolSearcher::new(
+		Arc::clone(&text)   as Arc<dyn SearchQuery>,
+		Arc::clone(&vector) as Arc<dyn VectorQuery>,
+		Arc::clone(&blobs)  as Arc<dyn BlobStore>,
+		embedder,
+		None,
+	));
+
+	let orchestrator = Orchestrator::new(
+		global,
+		blobs,
+		queue,
+		text   as Arc<dyn SearchIndex>,
+		vector as Arc<dyn VectorIndex>,
+	)
+	.with_symbol_search(searcher);
+
+	Some(Arc::new(orchestrator))
+}

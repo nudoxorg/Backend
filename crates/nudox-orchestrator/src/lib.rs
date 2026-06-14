@@ -1,11 +1,15 @@
-#[cfg(any(test, feature = "test-stubs"))]
+#[cfg(any(test, feature = "memory-backends"))]
 pub mod memory;
+
+#[cfg(test)]
+mod symbol_search_tests;
 
 use std::sync::Arc;
 
 use nudox_core::{
     BlobInfo, BlobStore, FutureParseQueue, GlobalSymbolId, GlobalSymbolStore, LibRef,
-    ResolutionOutcome, ResolveLibReport, Result, SearchIndex, SymbolOrigin, VectorIndex,
+    ResolutionOutcome, ResolveLibReport, Result, SearchIndex, SymbolMatch, SymbolOrigin,
+    SymbolQuery, SymbolSearch, VectorIndex,
 };
 use tracing::instrument;
 
@@ -16,6 +20,7 @@ pub struct Orchestrator {
     queue: Arc<dyn FutureParseQueue>,
     search: Arc<dyn SearchIndex>,
     vector: Arc<dyn VectorIndex>,
+    symbol_searcher: Option<Arc<dyn SymbolSearch>>,
 }
 
 impl Orchestrator {
@@ -33,6 +38,23 @@ impl Orchestrator {
             queue,
             search,
             vector,
+            symbol_searcher: None,
+        }
+    }
+
+    /// Attach a symbol-search backend. Once set, `search()` is available.
+    pub fn with_symbol_search(mut self, searcher: Arc<dyn SymbolSearch>) -> Self {
+        self.symbol_searcher = Some(searcher);
+        self
+    }
+
+    /// Execute a compound symbol search.
+    ///
+    /// Returns an error if no symbol-search backend has been attached via `with_symbol_search`.
+    pub async fn search(&self, query: &SymbolQuery) -> Result<Vec<SymbolMatch>> {
+        match &self.symbol_searcher {
+            Some(s) => s.search(query).await,
+            None => Err(anyhow::anyhow!("no symbol searcher attached").into()),
         }
     }
 
@@ -172,6 +194,7 @@ mod disk_integration_tests {
             symbol_name: symbol_name.to_string(),
             symbol_origin: origin,
             resolved_global_id: None,
+            kind: None,
             source: SourceChunk {
                 raw_code: "fn placeholder() {}".to_string(),
                 treesitter_repr: TreesitterRepr(vec![]),
@@ -346,10 +369,95 @@ mod tests {
     use crate::memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore};
     use nudox_blobstore::InMemoryBlobStore;
     use nudox_core::{
-        BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, SourceChunk,
-        SymbolOrigin, TreesitterRepr,
+        BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, GlobalSymbolQuery, Language, OccurrenceId,
+        RepoId, SourceChunk, SymbolOrigin, TreesitterRepr,
     };
     use nudox_search::{InMemorySearchIndex, InMemoryVectorIndex};
+
+    struct MockSearcher(Vec<SymbolMatch>);
+
+    #[async_trait::async_trait]
+    impl nudox_core::SymbolSearch for MockSearcher {
+        async fn search(
+            &self,
+            _q: &nudox_core::SymbolQuery,
+        ) -> nudox_core::Result<Vec<nudox_core::SymbolMatch>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn make_orchestrator() -> Orchestrator {
+        Orchestrator::new(
+            Arc::new(InMemoryGlobalSymbolStore::new()),
+            Arc::new(InMemoryBlobStore::new()),
+            Arc::new(InMemoryFutureParseQueue::new()),
+            Arc::new(InMemorySearchIndex::new()),
+            Arc::new(InMemoryVectorIndex::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn search_delegates_to_symbol_searcher() {
+        use nudox_core::{BlobInfo, OccurrenceId, SymbolMatch, SymbolOrigin, RepoId};
+
+        let dummy_blob = BlobInfo {
+            occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+            symbol_name: "dummy".to_string(),
+            symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("r".into()) },
+            resolved_global_id: None,
+            kind: None,
+            source: SourceChunk {
+                raw_code: "fn dummy() {}".to_string(),
+                treesitter_repr: TreesitterRepr(vec![]),
+                symbol_span: ByteSpan { start: 3, end: 8 },
+            },
+            embeddings: vec![],
+            metadata: ChunkMetadata {
+                repo_id: RepoId("r".into()),
+                file_path: std::path::PathBuf::from("src/lib.rs"),
+                file_span: ByteSpan { start: 0, end: 13 },
+                parsed_at: chrono::Utc::now(),
+                lang: Language::Rust,
+                lang_version: None,
+                blob_schema_version: BLOB_SCHEMA_VERSION,
+            },
+        };
+        let expected = vec![SymbolMatch { blob: dummy_blob, score: 1.0, occurrences: vec![] }];
+
+        let orchestrator = make_orchestrator()
+            .with_symbol_search(Arc::new(MockSearcher(expected.clone())));
+
+        let results = orchestrator.search(&SymbolQuery::default()).await.unwrap();
+        assert_eq!(results.len(), expected.len());
+        assert_eq!(results[0].blob.symbol_name, expected[0].blob.symbol_name);
+    }
+
+    #[tokio::test]
+    async fn search_without_searcher_returns_error() {
+        let orchestrator = make_orchestrator();
+        let result = orchestrator.search(&SymbolQuery::default()).await;
+        assert!(result.is_err(), "expected Err when no searcher is attached");
+    }
+
+    #[tokio::test]
+    async fn in_memory_global_symbol_query_returns_occurrences() {
+        use nudox_core::LibRef;
+
+        let store = InMemoryGlobalSymbolStore::new();
+        let lib = LibRef { name: "mylib".into(), version: "1.0".into() };
+        let global_id = GlobalSymbolId(uuid::Uuid::new_v4());
+        store.insert(&lib, "MySymbol", global_id);
+
+        let occ1 = OccurrenceId(uuid::Uuid::new_v4());
+        let occ2 = OccurrenceId(uuid::Uuid::new_v4());
+        store.associate(global_id, occ1).await.unwrap();
+        store.associate(global_id, occ2).await.unwrap();
+
+        let occurrences = store.get_occurrences(global_id).await.unwrap();
+        assert_eq!(occurrences.len(), 2);
+        assert!(occurrences.contains(&occ1));
+        assert!(occurrences.contains(&occ2));
+    }
 
     fn make_blob_info(symbol_name: &str, origin: SymbolOrigin) -> BlobInfo {
         BlobInfo {
@@ -357,6 +465,7 @@ mod tests {
             symbol_name: symbol_name.to_string(),
             symbol_origin: origin,
             resolved_global_id: None,
+            kind: None,
             source: SourceChunk {
                 raw_code: "fn placeholder() {}".to_string(),
                 treesitter_repr: TreesitterRepr(vec![]),

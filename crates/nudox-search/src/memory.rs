@@ -208,6 +208,7 @@ mod tests {
                 repo_id: RepoId("repo-abc".to_string()),
             },
             resolved_global_id: None,
+            kind: None,
             source: SourceChunk {
                 raw_code: "struct MyStruct {}".to_string(),
                 treesitter_repr: TreesitterRepr(vec![]),
