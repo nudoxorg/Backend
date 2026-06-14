@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::{
     BlobInfo, BlobRef, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, LibRef, ModelType,
-    OccurrenceId, Result, SearchHit, SourceChunk, VectorHit,
+    OccurrenceId, Result, SearchHit, SourceChunk, SymbolMatch, SymbolQuery, VectorHit,
 };
 
 /// Computes embedding vectors for source chunks.
@@ -106,4 +106,24 @@ pub trait VectorQuery: Send + Sync {
     ///
     /// Scores are cosine similarities in `[-1.0, 1.0]`.
     async fn search(&self, vector: &[f32], limit: usize) -> Result<Vec<VectorHit>>;
+}
+
+/// Read side of the global symbol store: enumerate occurrences of a resolved symbol.
+///
+/// Kept separate from [`GlobalSymbolStore`] (the write/lookup side) so that the
+/// search path can take only a read handle.
+#[async_trait]
+pub trait GlobalSymbolQuery: Send + Sync {
+    /// Return all [`OccurrenceId`]s associated with the given [`GlobalSymbolId`].
+    async fn get_occurrences(&self, global_id: GlobalSymbolId) -> Result<Vec<OccurrenceId>>;
+}
+
+/// Combined high-level symbol search across name, body, scope, and kind.
+///
+/// Implementations are responsible for querying the appropriate indexes, merging
+/// results, applying filters, and fetching [`BlobInfo`] for each hit.
+#[async_trait]
+pub trait SymbolSearch: Send + Sync {
+    /// Execute the given [`SymbolQuery`] and return ranked [`SymbolMatch`] results.
+    async fn search(&self, query: &SymbolQuery) -> Result<Vec<SymbolMatch>>;
 }

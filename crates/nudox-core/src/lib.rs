@@ -9,11 +9,15 @@ mod types;
 
 pub use error::{Error, Result};
 pub use ids::{BlobRef, GlobalSymbolId, OccurrenceId, RepoId};
-pub use traits::{BlobStore, Embedder, FutureParseQueue, GlobalSymbolStore, SearchIndex, SearchQuery, VectorIndex, VectorQuery};
+pub use traits::{
+    BlobStore, Embedder, FutureParseQueue, GlobalSymbolQuery, GlobalSymbolStore, SearchIndex,
+    SearchQuery, SymbolSearch, VectorIndex, VectorQuery,
+};
 pub use types::{
-    BlobInfo, ByteSpan, ChunkMetadata, EmbeddingPurpose, EmbeddingRecord, Language,
-    LibRef, ModelType, ResolutionOutcome, ResolveLibReport, SearchHit, SourceChunk, SymbolOrigin,
-    TreesitterRepr, VectorHit,
+    BlobInfo, BodyQuery, ByteSpan, ChunkMetadata, CombineMode, EmbeddingPurpose, EmbeddingRecord,
+    Language, LibRef, ModelType, OccurrenceFilter, ResolutionOutcome, ResolveLibReport, ScopeFilter,
+    SearchHit, SourceChunk, SymbolKind, SymbolMatch, SymbolOrigin, SymbolQuery, TreesitterRepr,
+    VectorHit,
 };
 
 /// Current BlobInfo schema version. Bump on any change to BlobInfo fields.

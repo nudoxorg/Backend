@@ -137,6 +137,7 @@ impl Pipeline {
             symbol_name: input.symbol_name,
             symbol_origin: input.symbol_origin,
             resolved_global_id: None,
+            kind: None,
             source,
             embeddings,
             metadata: input.metadata,
