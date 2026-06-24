@@ -24,8 +24,14 @@ fn deserialize_lenient_version<'de, D: Deserializer<'de>>(d: D) -> Result<Versio
 		.map_err(|e| serde::de::Error::custom(format!("invalid version `{s}`: {e}")))
 }
 
+fn deserialize_language<'de, D: Deserializer<'de>>(d: D) -> Result<Language, D::Error> {
+	let s = String::deserialize(d)?;
+	s.parse::<Language>().map_err(serde::de::Error::custom)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewPackageRequest {
+	#[serde(deserialize_with = "deserialize_language")]
 	pub language:    Language,
 	pub name:        String,
 	#[serde(deserialize_with = "deserialize_lenient_version")]
