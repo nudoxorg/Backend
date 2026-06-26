@@ -2,6 +2,8 @@ use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, PointStr
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
+use crate::config::VectorDistance;
+
 /// Configuration for connecting to a Qdrant instance.
 ///
 /// For local development, `endpoint` will usually be:
@@ -13,7 +15,7 @@ pub struct QdrantConfig {
 	pub endpoint:        Url,
 	pub collection_name: String,
 	pub vector_size:     u64,
-	pub distance:        Distance,
+	pub distance:        VectorDistance,
 }
 
 /// Ensure the target collection exists before upload.
@@ -36,10 +38,16 @@ pub async fn ensure_collection(config: &QdrantConfig) -> anyhow::Result<()> {
 		"creating qdrant collection"
 	);
 
+	let qdrant_distance = match config.distance {
+		VectorDistance::Cosine => Distance::Cosine,
+		VectorDistance::Dot => Distance::Dot,
+		VectorDistance::Euclid => Distance::Euclid,
+		VectorDistance::Manhattan => Distance::Manhattan,
+	};
 	client
 		.create_collection(
 			CreateCollectionBuilder::new(&config.collection_name)
-				.vectors_config(VectorParamsBuilder::new(config.vector_size, config.distance)),
+				.vectors_config(VectorParamsBuilder::new(config.vector_size, qdrant_distance)),
 		)
 		.await?;
 

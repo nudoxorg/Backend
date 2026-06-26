@@ -248,10 +248,7 @@ impl LocalRegistry {
 		self: &Arc<Self>,
 		request: NewPackageRequest,
 	) -> Result<AddPackageOutcome, AppError> {
-		let branch = request
-			.branch
-			.clone()
-			.unwrap_or_else(|| default_tracking_branch(request.language).to_owned());
+		let branch = request.branch.clone().unwrap_or_else(|| "main".to_owned());
 		let key = PackageKey {
 			language: request.language,
 			name:     request.name.clone(),
@@ -337,29 +334,17 @@ impl LocalRegistry {
 		let _slot = self.sync_slots.clone().acquire_owned().await.map_err(|source| {
 			AppError::Internal { message: format!("sync scheduler shut down unexpectedly: {source}") }
 		})?;
-		let blocking_storage = self.storage.clone();
-		let blocking_pipeline = self.pipeline.clone();
-		let blocking_handle = tracked.handle.clone();
-		let blocking_spec = tracked.spec.clone();
-		let blocking_id = tracked.id;
-		let blocking_nudox_store = self.nudox_store.clone();
-		let blocking_text_index = self.text_index.clone();
-		let blocking_orchestrator = self.orchestrator.clone();
-		let runtime = tokio::runtime::Handle::current();
-		let progress_runtime = runtime.clone();
+
 		let progress = {
-			let registry = Arc::clone(self);
 			let tracked = Arc::clone(&tracked);
 			let package = tracked.spec.name.clone();
 			let version = tracked.spec.version.clone();
 			ProgressReporter::new(move |phase, detail| {
-				let registry = Arc::clone(&registry);
 				let tracked = Arc::clone(&tracked);
 				let detail_for_log = detail.clone();
 				let package = package.clone();
 				let version = version.clone();
-				let runtime = progress_runtime.clone();
-				runtime.spawn(async move {
+				tokio::spawn(async move {
 					info!(
 						package = %package,
 						version = %version,
@@ -368,9 +353,6 @@ impl LocalRegistry {
 						"package sync progress"
 					);
 					tracked.update_progress(phase, detail).await;
-					if let Err(error) = registry.persist().await {
-						warn!(error = %error, "failed to persist package progress");
-					}
 				});
 			})
 		};
@@ -379,41 +361,25 @@ impl LocalRegistry {
 
 		let mut result = None;
 		for attempt in 1..=SYNC_MAX_ATTEMPTS {
-			let attempt_storage = blocking_storage.clone();
-			let attempt_pipeline = blocking_pipeline.clone();
-			let attempt_handle = blocking_handle.clone();
-			let attempt_spec = blocking_spec.clone();
-			let attempt_runtime = runtime.clone();
-			let attempt_progress = progress.clone();
-			let attempt_nudox_store = blocking_nudox_store.clone();
-			let attempt_text_index = blocking_text_index.clone();
-			let attempt_orchestrator = blocking_orchestrator.clone();
-
-			let sync_result = spawn_blocking(move || {
-				run_sync(
-					attempt_storage,
-					attempt_pipeline,
-					blocking_id,
-					attempt_handle,
-					attempt_spec,
-					attempt_runtime,
-					attempt_progress,
-					attempt_nudox_store,
-					attempt_text_index,
-					attempt_orchestrator,
-				)
-			})
-			.await
-			.map_err(|source| AppError::TaskJoin { action: "sync package", source })?;
+			let sync_result = run_sync(
+				self.storage.clone(),
+				self.pipeline.clone(),
+				tracked.id,
+				tracked.handle.clone(),
+				tracked.spec.clone(),
+				progress.clone(),
+				self.nudox_store.clone(),
+				self.text_index.clone(),
+				self.orchestrator.clone(),
+			)
+			.await;
 
 			match sync_result {
 				Ok(execution) => {
 					result = Some(Ok(execution));
 					break;
 				}
-				Err(error)
-					if attempt < SYNC_MAX_ATTEMPTS && error.is_transient() =>
-				{
+				Err(error) if attempt < SYNC_MAX_ATTEMPTS && error.is_transient() => {
 					let retry_delay = SYNC_RETRY_BASE_DELAY * attempt as u32;
 					warn!(
 						package = %tracked.spec.name,
@@ -435,7 +401,6 @@ impl LocalRegistry {
 							)),
 						)
 						.await;
-					self.persist().await?;
 					tokio::time::sleep(retry_delay).await;
 				}
 				Err(error) => {
@@ -835,13 +800,12 @@ fn resolve_explicit_typescript_package_handle(
 	}))
 }
 
-fn run_sync(
+async fn run_sync(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
 	package_id: PackageId,
 	handle: PackageHandle,
 	spec: PackageSpec,
-	runtime: tokio::runtime::Handle,
 	progress: ProgressReporter,
 	nudox_store: Option<Arc<nudox_store::NudoxStore>>,
 	text_index: Option<Arc<SymbolTextIndex>>,
@@ -849,51 +813,79 @@ fn run_sync(
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
-			progress.phase_with_detail(
-				PackageSyncPhase::Resolving,
-				Some(format!("opening repository for {}", package.name)),
-			);
-			let repo_dir = storage
-				.prepare_repository_dir(spec.language, &spec.slug, &package.source)
-				.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
-			let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
-			progress
-				.phase_with_detail(PackageSyncPhase::Fetching, Some(format!("fetching {}", spec.branch)));
-			git::fetch_remote_updates(&repository, Some("origin"))?;
+			let git_storage = storage.clone();
+			let git_spec = spec.clone();
+			let git_package = package.clone();
+			let git_progress = progress.clone();
 
-			let remote_head = git::remote_branch_commit(&repository, "origin", &spec.branch);
-			let latest_remote_commit = remote_head.map(|id| id.to_hex().to_string());
-			let target_commit =
-				git::find_commit_for_version(&repository, &spec.version, &package.name, remote_head)
-					.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?;
+			let (target_commit_hex, latest_remote_commit, workspace) = spawn_blocking(move || {
+				git_progress.phase_with_detail(
+					PackageSyncPhase::Resolving,
+					Some(format!("opening repository for {}", git_package.name)),
+				);
+				let repo_dir = git_storage
+					.prepare_repository_dir(
+						git_spec.language,
+						&git_spec.slug,
+						&git_package.source,
+					)
+					.map_err(|source| AppError::Storage {
+						path: git_storage.root().to_path_buf(),
+						source,
+					})?;
+				let repository =
+					git::open_or_clone_repository(&repo_dir, &git_package.source)?;
+				git_progress.phase_with_detail(
+					PackageSyncPhase::Fetching,
+					Some(format!("fetching {}", git_spec.branch)),
+				);
+				git::fetch_remote_updates(&repository, Some("origin"))?;
 
-			progress.phase_with_detail(
-				PackageSyncPhase::Materializing,
-				Some(format!("materializing {}", target_commit.to_hex())),
-			);
-			let workspace = storage
-				.create_workspace()
-				.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
-			git::materialize_commit(&repository, target_commit, workspace.path())?;
-			progress
-				.phase_with_detail(PackageSyncPhase::GeneratingIr, Some("generating Rust IR".to_owned()));
+				let remote_head =
+					git::remote_branch_commit(&repository, "origin", &git_spec.branch);
+				let latest_remote_commit = remote_head.map(|id| id.to_hex().to_string());
+				let target_commit = git::find_commit_for_version(
+					&repository,
+					&git_spec.version,
+					&git_package.name,
+					remote_head,
+				)
+				.ok_or_else(|| PackageError::VersionNotFound(git_spec.version.clone()))?;
+
+				git_progress.phase_with_detail(
+					PackageSyncPhase::Materializing,
+					Some(format!("materializing {}", target_commit.to_hex())),
+				);
+				let workspace = git_storage
+					.create_workspace()
+					.map_err(|source| AppError::Storage {
+						path: git_storage.root().to_path_buf(),
+						source,
+					})?;
+				git::materialize_commit(&repository, target_commit, workspace.path())?;
+
+				Ok::<_, AppError>((
+					target_commit.to_hex().to_string(),
+					latest_remote_commit,
+					workspace,
+				))
+			})
+			.await
+			.map_err(|source| AppError::TaskJoin { action: "git operations", source })??;
+
 			let summary = run_rust_pipeline(
 				&package,
 				&spec.version,
 				workspace.path(),
 				&pipeline,
-				&runtime,
 				Some(&progress),
 				nudox_store.as_ref(),
 				text_index.as_ref(),
 				orchestrator.as_ref(),
-			)?;
+			)
+			.await?;
 
-			Ok(SyncExecution {
-				tracked_version_commit: target_commit.to_hex().to_string(),
-				latest_remote_commit,
-				summary,
-			})
+			Ok(SyncExecution { tracked_version_commit: target_commit_hex, latest_remote_commit, summary })
 		}
 		PackageHandle::TypeScript(package) => {
 			if typescript_package_uses_repository(&package) {
@@ -903,12 +895,12 @@ fn run_sync(
 					package_id,
 					package,
 					spec,
-					runtime,
 					progress,
 					nudox_store,
 					text_index,
 					orchestrator,
 				)
+				.await
 			} else {
 				progress.phase_with_detail(
 					PackageSyncPhase::Resolving,
@@ -916,17 +908,17 @@ fn run_sync(
 				);
 				let workspace = storage
 					.create_workspace()
-					.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
+					.map_err(|source| AppError::Storage {
+						path: storage.root().to_path_buf(),
+						source,
+					})?;
 				progress.phase_with_detail(
 					PackageSyncPhase::Materializing,
 					Some(format!("materializing npm package {}@{}", package.name, spec.version)),
 				);
-				let entry_point = runtime
-					.block_on(crate::core::ts::Npm::default().materialize_package_version(
-						&package.name,
-						&spec.version,
-						workspace.path(),
-					))
+				let entry_point = crate::core::ts::Npm::default()
+					.materialize_package_version(&package.name, &spec.version, workspace.path())
+					.await
 					.map_err(|source| AppError::RegistryLookup {
 						language: spec.language,
 						package:  package.name.clone(),
@@ -943,12 +935,13 @@ fn run_sync(
 					&materialized_package,
 					&spec.version,
 					&pipeline,
-					&runtime,
 					Some(&progress),
 					nudox_store.as_ref(),
 					text_index.as_ref(),
 					orchestrator.as_ref(),
-				)?;
+				)
+				.await?;
+				drop(workspace);
 				Ok(SyncExecution {
 					tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
 					latest_remote_commit: None,
@@ -999,13 +992,6 @@ fn run_monitor_refresh(
 	}
 }
 
-fn default_tracking_branch(language: Language) -> &'static str {
-	match language {
-		Language::Rust | Language::TypeScript => "main",
-		_ => "main",
-	}
-}
-
 fn compute_remote_update_available(
 	latest_remote_commit: Option<&String>,
 	tracked_version_commit: Option<&String>,
@@ -1017,50 +1003,81 @@ fn compute_remote_update_available(
 	}
 }
 
-fn run_repository_backed_typescript_sync(
+async fn run_repository_backed_typescript_sync(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
 	_package_id: PackageId,
 	package: TsPackage,
 	spec: PackageSpec,
-	runtime: tokio::runtime::Handle,
 	progress: ProgressReporter,
 	nudox_store: Option<Arc<nudox_store::NudoxStore>>,
 	text_index: Option<Arc<SymbolTextIndex>>,
 	orchestrator: Option<Arc<nudox_orchestrator::Orchestrator>>,
 ) -> Result<SyncExecution, AppError> {
-	progress.phase_with_detail(
-		PackageSyncPhase::Resolving,
-		Some(format!("opening repository for {}", package.name)),
-	);
-	let repo_dir = storage
-		.prepare_repository_dir(spec.language, &spec.slug, &package.source)
-		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
-	let repository = git::open_or_clone_repository(&repo_dir, &package.source)?;
-	progress.phase_with_detail(PackageSyncPhase::Fetching, Some(format!("fetching {}", spec.branch)));
-	git::fetch_remote_updates(&repository, Some("origin"))?;
+	let git_storage = storage.clone();
+	let git_spec = spec.clone();
+	let git_package = package.clone();
+	let git_progress = progress.clone();
 
-	let remote_head = git::remote_branch_commit(&repository, "origin", &spec.branch);
-	let latest_remote_commit = remote_head.map(|id| id.to_hex().to_string());
-	let target_commit =
-		git::find_typescript_commit_for_version(&repository, &spec.version, &package.name, remote_head)
-			.ok_or_else(|| PackageError::VersionNotFound(spec.version.clone()))?;
+	let (target_commit_hex, latest_remote_commit, workspace, entry_point_str) =
+		spawn_blocking(move || {
+			git_progress.phase_with_detail(
+				PackageSyncPhase::Resolving,
+				Some(format!("opening repository for {}", git_package.name)),
+			);
+			let repo_dir = git_storage
+				.prepare_repository_dir(git_spec.language, &git_spec.slug, &git_package.source)
+				.map_err(|source| AppError::Storage {
+					path: git_storage.root().to_path_buf(),
+					source,
+				})?;
+			let repository = git::open_or_clone_repository(&repo_dir, &git_package.source)?;
+			git_progress.phase_with_detail(
+				PackageSyncPhase::Fetching,
+				Some(format!("fetching {}", git_spec.branch)),
+			);
+			git::fetch_remote_updates(&repository, Some("origin"))?;
 
-	progress.phase_with_detail(
-		PackageSyncPhase::Materializing,
-		Some(format!("materializing {}", target_commit.to_hex())),
-	);
-	let workspace = storage
-		.create_workspace()
-		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
-	git::materialize_commit(&repository, target_commit, workspace.path())?;
+			let remote_head =
+				git::remote_branch_commit(&repository, "origin", &git_spec.branch);
+			let latest_remote_commit = remote_head.map(|id| id.to_hex().to_string());
+			let target_commit = git::find_typescript_commit_for_version(
+				&repository,
+				&git_spec.version,
+				&git_package.name,
+				remote_head,
+			)
+			.ok_or_else(|| PackageError::VersionNotFound(git_spec.version.clone()))?;
 
-	let entry_point = resolve_typescript_repository_entry_point(
-		workspace.path(),
-		typescript_repository_entry_hint(&package),
-	)?;
+			git_progress.phase_with_detail(
+				PackageSyncPhase::Materializing,
+				Some(format!("materializing {}", target_commit.to_hex())),
+			);
+			let workspace = git_storage
+				.create_workspace()
+				.map_err(|source| AppError::Storage {
+					path: git_storage.root().to_path_buf(),
+					source,
+				})?;
+			git::materialize_commit(&repository, target_commit, workspace.path())?;
+
+			let entry_point = resolve_typescript_repository_entry_point(
+				workspace.path(),
+				typescript_repository_entry_hint(&git_package),
+			)?;
+
+			Ok::<_, AppError>((
+				target_commit.to_hex().to_string(),
+				latest_remote_commit,
+				workspace,
+				entry_point.display().to_string(),
+			))
+		})
+		.await
+		.map_err(|source| AppError::TaskJoin { action: "git operations", source })??;
+
 	let mut materialized_package = package.clone();
-	materialized_package.entry_point = entry_point.display().to_string();
+	materialized_package.entry_point = entry_point_str;
 
 	progress
 		.phase_with_detail(PackageSyncPhase::GeneratingIr, Some("generating TypeScript IR".to_owned()));
@@ -1068,18 +1085,15 @@ fn run_repository_backed_typescript_sync(
 		&materialized_package,
 		&spec.version,
 		&pipeline,
-		&runtime,
 		Some(&progress),
 		nudox_store.as_ref(),
 		text_index.as_ref(),
 		orchestrator.as_ref(),
-	)?;
+	)
+	.await?;
+	drop(workspace);
 
-	Ok(SyncExecution {
-		tracked_version_commit: target_commit.to_hex().to_string(),
-		latest_remote_commit,
-		summary,
-	})
+	Ok(SyncExecution { tracked_version_commit: target_commit_hex, latest_remote_commit, summary })
 }
 
 fn run_repository_backed_typescript_monitor(
@@ -1220,12 +1234,14 @@ fn typescript_source_fallback_candidates(repository_root: &Path, candidate: &Pat
 fn typescript_relative_variants_without_build_prefixes(relative: &Path) -> Vec<PathBuf> {
 	let mut variants = vec![relative.to_path_buf()];
 	let components = relative.components().collect::<Vec<_>>();
-	if components.len() >= 2 {
-		let first = components[0].as_os_str().to_string_lossy();
-		let second = components[1].as_os_str().to_string_lossy();
-		if matches!(first.as_ref(), "lib" | "dist" | "build" | "esm" | "cjs") && second == "src" {
-			variants.push(components[1..].iter().collect::<PathBuf>());
-		}
+	if let [first, second, ..] = components.as_slice()
+		&& matches!(
+			first.as_os_str().to_str().unwrap_or(""),
+			"lib" | "dist" | "build" | "esm" | "cjs"
+		)
+		&& second.as_os_str() == "src"
+	{
+		variants.push(components[1..].iter().collect::<PathBuf>());
 	}
 	variants
 }

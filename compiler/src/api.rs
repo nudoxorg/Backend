@@ -144,29 +144,40 @@ async fn search_docs(
 	Ok(Json(response))
 }
 
+enum LookupMode<'a> {
+	ByUri(&'a str),
+	ByContext { symbol: &'a str, language: &'a str, package: Option<&'a str> },
+}
+
+impl<'a> LookupMode<'a> {
+	fn from_params(params: &'a LookupQuery) -> Result<Self, AppError> {
+		if let Some(uri) = params.q.as_deref().filter(|q| !q.trim().is_empty()) {
+			return Ok(Self::ByUri(uri));
+		}
+		match (params.symbol.as_deref(), params.language.as_deref()) {
+			(Some(symbol), Some(language)) => Ok(Self::ByContext {
+				symbol,
+				language,
+				package: params.package.as_deref(),
+			}),
+			_ => Err(AppError::Configuration {
+				field:   "q",
+				message: "provide either q=<symbol-uri> or symbol=<fq_name>&language=<language>[&package=<package>]"
+					.to_owned(),
+			}),
+		}
+	}
+}
+
 async fn lookup_symbol(
 	State(state): State<AppState>,
 	Query(params): Query<LookupQuery>,
 ) -> Result<Json<search::LookupResponse>, AppError> {
-	let response = match (&params.q, &params.symbol, &params.language) {
-		(Some(uri), ..) if !uri.trim().is_empty() => {
-			search::lookup_symbol(&state.pipeline, uri).await?
+	let response = match LookupMode::from_params(&params)? {
+		LookupMode::ByUri(uri) => search::lookup_symbol(&state.pipeline, uri).await?,
+		LookupMode::ByContext { symbol, language, package } => {
+			search::lookup_symbol_with_context(&state.pipeline, symbol, language, package).await?
 		}
-		(None, Some(symbol), Some(language)) | (Some(_), Some(symbol), Some(language)) => {
-			search::lookup_symbol_with_context(
-				&state.pipeline,
-				symbol,
-				language,
-				params.package.as_deref(),
-			)
-			.await?
-		}
-		_ => return Err(AppError::Configuration {
-			field:   "q",
-			message:
-				"provide either q=<symbol-uri> or symbol=<fq_name>&language=<language>[&package=<package>]"
-					.to_owned(),
-		}),
 	};
 	Ok(Json(response))
 }

@@ -167,25 +167,20 @@ impl SymbolSearch for SymbolSearcher {
 
 			// Scope filter
 			if let Some(scope) = &query.scope {
-				if let Some(lang) = scope.lang {
-					if blob.metadata.lang != lang {
-						continue;
-					}
+				if let Some(lang) = scope.lang && blob.metadata.lang != lang {
+					continue;
 				}
-				if let Some(repo_id) = &scope.repo_id {
-					if blob.metadata.repo_id != *repo_id {
-						continue;
-					}
+				if let Some(repo_id) = &scope.repo_id && blob.metadata.repo_id != *repo_id {
+					continue;
 				}
 			}
 
 			// Kind filter — treat None kind as "unknown, passes all filters"
-			if let Some(required_kind) = query.kind {
-				if let Some(blob_kind) = blob.kind {
-					if blob_kind != required_kind {
-						continue;
-					}
-				}
+			if let Some(required_kind) = query.kind
+				&& let Some(blob_kind) = blob.kind
+				&& blob_kind != required_kind
+			{
+				continue;
 			}
 
 			// Occurrence filter (requires global_query)
@@ -194,10 +189,10 @@ impl SymbolSearch for SymbolSearcher {
 					None => {
 						// No global id — treat as 0 occurrences for the purpose
 						// of the filter; still include if no min_count is set.
-						if let Some(occ_filter) = &query.occurrence_filter {
-							if occ_filter.min_count.is_some() {
-								continue;
-							}
+						if let Some(occ_filter) = &query.occurrence_filter
+							&& occ_filter.min_count.is_some()
+						{
+							continue;
 						}
 						vec![]
 					}
@@ -205,15 +200,11 @@ impl SymbolSearch for SymbolSearcher {
 						let occs = gq.get_occurrences(global_id).await?;
 						if let Some(occ_filter) = &query.occurrence_filter {
 							let count = occs.len();
-							if let Some(min) = occ_filter.min_count {
-								if count < min {
-									continue;
-								}
+							if let Some(min) = occ_filter.min_count && count < min {
+								continue;
 							}
-							if let Some(max) = occ_filter.max_count {
-								if count > max {
-									continue;
-								}
+							if let Some(max) = occ_filter.max_count && count > max {
+								continue;
 							}
 						}
 						occs

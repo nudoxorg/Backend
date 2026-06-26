@@ -5,6 +5,8 @@
 //! them through one uniform trait gives a single [`IngestReport`] describing
 //! what every store did, and one place to decide whether a failure is fatal.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nudox_store::NudoxStore;
 use serde_json::Value;
@@ -36,7 +38,7 @@ impl IngestReport {
 
 /// A destination that consumes the parse-once projection.
 #[async_trait]
-pub trait SymbolSink {
+pub trait SymbolSink: Send + Sync {
 	fn name(&self) -> &'static str;
 
 	/// Whether a failure should abort the whole ingestion (Terminus / vectors)
@@ -55,7 +57,7 @@ pub trait SymbolSink {
 /// Run every sink in order, honoring `fatal()`: a fatal sink's error aborts the
 /// run; a non-fatal sink's error is recorded and the run continues.
 pub async fn run_sinks(
-	sinks: &[Box<dyn SymbolSink + '_>],
+	sinks: &[Box<dyn SymbolSink>],
 	symbols: &[ParsedSymbol],
 	coord: &PackageCoord,
 	progress: Option<&ProgressReporter>,
@@ -84,12 +86,12 @@ pub async fn run_sinks(
 
 /// Registers every `Entry/*` URI so deferred occurrence blobs waiting on this
 /// library can resolve.
-pub struct SqliteRegisterSink<'a> {
-	pub store: &'a NudoxStore,
+pub struct SqliteRegisterSink {
+	pub store: Arc<NudoxStore>,
 }
 
 #[async_trait]
-impl SymbolSink for SqliteRegisterSink<'_> {
+impl SymbolSink for SqliteRegisterSink {
 	fn name(&self) -> &'static str { "sqlite" }
 
 	async fn accept(
@@ -113,12 +115,12 @@ impl SymbolSink for SqliteRegisterSink<'_> {
 
 // ── Full-text index (/text-search) ──────────────────────────────────────────
 
-pub struct TextIndexSink<'a> {
-	pub index: &'a SymbolTextIndex,
+pub struct TextIndexSink {
+	pub index: Arc<SymbolTextIndex>,
 }
 
 #[async_trait]
-impl SymbolSink for TextIndexSink<'_> {
+impl SymbolSink for TextIndexSink {
 	fn name(&self) -> &'static str { "text" }
 
 	async fn accept(
@@ -135,12 +137,12 @@ impl SymbolSink for TextIndexSink<'_> {
 
 // ── Symbol-search orchestrator (/symbol-search) ─────────────────────────────
 
-pub struct OrchestratorSink<'a> {
-	pub orchestrator: &'a nudox_orchestrator::Orchestrator,
+pub struct OrchestratorSink {
+	pub orchestrator: Arc<nudox_orchestrator::Orchestrator>,
 }
 
 #[async_trait]
-impl SymbolSink for OrchestratorSink<'_> {
+impl SymbolSink for OrchestratorSink {
 	fn name(&self) -> &'static str { "orchestrator" }
 
 	async fn accept(
@@ -174,14 +176,14 @@ impl SymbolSink for OrchestratorSink<'_> {
 
 /// The graph sink. Fed the `DocStore` projected from the same parse; uploads
 /// schema (when requested) then the JSON-LD documents.
-pub struct TerminusSink<'a> {
-	pub config:        &'a TerminusConfig,
+pub struct TerminusSink {
+	pub config:        TerminusConfig,
 	pub schema:        Option<Vec<Value>>,
 	pub store:         DocStore,
 }
 
 #[async_trait]
-impl SymbolSink for TerminusSink<'_> {
+impl SymbolSink for TerminusSink {
 	fn name(&self) -> &'static str { "terminus" }
 
 	fn fatal(&self) -> bool { true }
@@ -199,7 +201,7 @@ impl SymbolSink for TerminusSink<'_> {
 					Some("uploading TerminusDB schema".to_owned()),
 				);
 			}
-			upload_schema(self.config, schema.clone()).await?;
+			upload_schema(&self.config, schema.clone()).await?;
 		}
 
 		let total = self.store.docs.len();
@@ -209,7 +211,7 @@ impl SymbolSink for TerminusSink<'_> {
 				Some(format!("uploading {total} documents")),
 			);
 		}
-		upload_documents(self.config, &self.store, |p: DocumentUploadProgress| {
+		upload_documents(&self.config, &self.store, |p: DocumentUploadProgress| {
 			if let Some(progress) = progress {
 				progress.phase_with_detail(
 					PackageSyncPhase::UploadingDocuments,
@@ -229,14 +231,14 @@ impl SymbolSink for TerminusSink<'_> {
 
 /// Embeds every symbol and upserts the vectors into Qdrant with deterministic,
 /// idempotent point ids.
-pub struct VectorSink<'a> {
-	pub settings:    &'a QdrantSettings,
-	pub model:       &'a str,
+pub struct VectorSink {
+	pub settings:    QdrantSettings,
+	pub model:       String,
 	pub collection:  String,
 }
 
 #[async_trait]
-impl SymbolSink for VectorSink<'_> {
+impl SymbolSink for VectorSink {
 	fn name(&self) -> &'static str { "qdrant" }
 
 	fn fatal(&self) -> bool { true }
@@ -255,7 +257,7 @@ impl SymbolSink for VectorSink<'_> {
 			);
 		}
 
-		let service = EmbeddingService::new(OpenAIEmbeddingProvider::new(self.model));
+		let service = EmbeddingService::new(OpenAIEmbeddingProvider::new(&self.model));
 		let records = service
 			.embed_documents(docs, |p: EmbeddingProgress| {
 				if let Some(progress) = progress {

@@ -1,9 +1,16 @@
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 
-use qdrant_client::qdrant::Distance;
 use url::Url;
 
 use crate::{error::AppError, terminusdb::upload::TerminusConfig};
+
+#[derive(Clone, Copy, Debug)]
+pub enum VectorDistance {
+    Cosine,
+    Dot,
+    Euclid,
+    Manhattan,
+}
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -27,7 +34,7 @@ pub struct QdrantSettings {
 	pub endpoint:          Url,
 	pub collection_prefix: String,
 	pub vector_size:       u64,
-	pub distance:          Distance,
+	pub distance:          VectorDistance,
 }
 
 impl AppConfig {
@@ -150,12 +157,12 @@ fn parse_env_bool(field: &'static str, default: bool) -> Result<bool, AppError> 
 	}
 }
 
-fn parse_distance(value: &str) -> Result<Distance, AppError> {
+fn parse_distance(value: &str) -> Result<VectorDistance, AppError> {
 	match value.trim().to_ascii_lowercase().as_str() {
-		"cosine" => Ok(Distance::Cosine),
-		"dot" => Ok(Distance::Dot),
-		"euclid" | "euclidean" => Ok(Distance::Euclid),
-		"manhattan" => Ok(Distance::Manhattan),
+		"cosine" => Ok(VectorDistance::Cosine),
+		"dot" => Ok(VectorDistance::Dot),
+		"euclid" | "euclidean" => Ok(VectorDistance::Euclid),
+		"manhattan" => Ok(VectorDistance::Manhattan),
 		other => Err(AppError::Configuration {
 			field:   "NUDOX_QDRANT_DISTANCE",
 			message: format!("unsupported distance `{other}`"),

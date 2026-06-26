@@ -14,7 +14,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use ir::entry::Index;
 use nudox_store::NudoxStore;
 use semver::Version;
-use tokio::runtime::Handle;
+use tokio::task::spawn_blocking;
 use tracing::{info, warn};
 
 use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, ingest::{parsed_symbol::{PackageCoord, project}, sink::{IngestReport, OrchestratorSink, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::ProgressReporter, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
@@ -90,24 +90,29 @@ fn build_rust_source_map(workspace: &Path, package_name: &str) -> HashMap<String
 	map
 }
 
-pub fn run_rust_pipeline(
+pub async fn run_rust_pipeline(
 	package: &RustPackage,
 	version: &Version,
 	workspace: &Path,
 	config: &PipelineConfig,
-	runtime: &Handle,
 	progress: Option<&ProgressReporter>,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
 	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
 ) -> Result<IngestionSummary, AppError> {
-	let ir = package.generate_ir(&workspace.to_path_buf(), version).map_err(|source| {
-		AppError::Internal { message: format!("IR generation failed for `{}`: {source}", package.name) }
-	})?;
-
-	// Build a map of FQ symbol name → raw Rust source so blobs can carry
-	// tree-sitter output. Done after generate_ir so the rustdoc JSON is on disk.
-	let source_map = build_rust_source_map(workspace, &package.name);
+	let pkg = package.clone();
+	let ws = workspace.to_path_buf();
+	let ver = version.clone();
+	// IR generation and rustdoc JSON parsing are CPU/blocking-I/O; run off the async executor.
+	let (ir, source_map) = spawn_blocking(move || -> Result<_, AppError> {
+		let ir = pkg.generate_ir(&ws, &ver).map_err(|source| AppError::Internal {
+			message: format!("IR generation failed for `{}`: {source}", pkg.name),
+		})?;
+		let source_map = build_rust_source_map(&ws, &pkg.name);
+		Ok((ir, source_map))
+	})
+	.await
+	.map_err(|source| AppError::TaskJoin { action: "Rust IR generation", source })??;
 
 	finalize_pipeline(
 		"rust",
@@ -115,28 +120,32 @@ pub fn run_rust_pipeline(
 		version,
 		ir.index().into_index(),
 		config,
-		runtime,
 		progress,
 		nudox_store,
 		text_index,
 		orchestrator,
 		&source_map,
 	)
+	.await
 }
 
-pub fn run_typescript_pipeline(
+pub async fn run_typescript_pipeline(
 	package: &TsPackage,
 	version: &Version,
 	config: &PipelineConfig,
-	runtime: &Handle,
 	progress: Option<&ProgressReporter>,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
 	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
 ) -> Result<IngestionSummary, AppError> {
-	let ir = package.generate_ir().map_err(|source| AppError::Internal {
-		message: format!("IR generation failed for `{}`: {source}", package.name),
-	})?;
+	let pkg = package.clone();
+	let ir = spawn_blocking(move || -> Result<_, AppError> {
+		pkg.generate_ir().map_err(|source| AppError::Internal {
+			message: format!("IR generation failed for `{}`: {source}", pkg.name),
+		})
+	})
+	.await
+	.map_err(|source| AppError::TaskJoin { action: "TypeScript IR generation", source })??;
 
 	finalize_pipeline(
 		"typescript",
@@ -144,23 +153,22 @@ pub fn run_typescript_pipeline(
 		version,
 		ir.index().into_index(),
 		config,
-		runtime,
 		progress,
 		nudox_store,
 		text_index,
 		orchestrator,
 		&HashMap::new(),
 	)
+	.await
 }
 
 #[allow(clippy::too_many_arguments)]
-fn finalize_pipeline(
+async fn finalize_pipeline(
 	language: &str,
 	package_name: &str,
 	version: &Version,
 	index: Index,
 	config: &PipelineConfig,
-	runtime: &Handle,
 	progress: Option<&ProgressReporter>,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
@@ -179,15 +187,15 @@ fn finalize_pipeline(
 	let document_count = doc_store.docs.len();
 
 	// Assemble the sink set from whatever backends are configured.
-	let mut sinks: Vec<Box<dyn SymbolSink + '_>> = Vec::new();
+	let mut sinks: Vec<Box<dyn SymbolSink>> = Vec::new();
 	if let Some(store) = nudox_store {
-		sinks.push(Box::new(SqliteRegisterSink { store: &**store }));
+		sinks.push(Box::new(SqliteRegisterSink { store: Arc::clone(store) }));
 	}
 	if let Some(idx) = text_index {
-		sinks.push(Box::new(TextIndexSink { index: &**idx }));
+		sinks.push(Box::new(TextIndexSink { index: Arc::clone(idx) }));
 	}
 	if let Some(orch) = orchestrator {
-		sinks.push(Box::new(OrchestratorSink { orchestrator: &**orch }));
+		sinks.push(Box::new(OrchestratorSink { orchestrator: Arc::clone(orch) }));
 	}
 	if let Some(terminus) = &config.terminus {
 		let schema = if config.upload_schema {
@@ -195,18 +203,18 @@ fn finalize_pipeline(
 		} else {
 			None
 		};
-		sinks.push(Box::new(TerminusSink { config: terminus, schema, store: doc_store }));
+		sinks.push(Box::new(TerminusSink { config: terminus.clone(), schema, store: doc_store }));
 	}
 	if let Some(qdrant) = &config.qdrant {
 		let collection = collection_name(qdrant, language, package_name, version);
 		sinks.push(Box::new(VectorSink {
-			settings: qdrant,
-			model: config.embedding_model.as_str(),
+			settings: qdrant.clone(),
+			model: config.embedding_model.clone(),
 			collection,
 		}));
 	}
 
-	let report: IngestReport = runtime.block_on(run_sinks(&sinks, &symbols, &coord, progress))?;
+	let report = run_sinks(&sinks, &symbols, &coord, progress).await?;
 
 	Ok(IngestionSummary {
 		entry_count,

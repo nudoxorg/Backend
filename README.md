@@ -80,7 +80,7 @@ NUDOX_DATA_DIR=.nudox-data cargo run -p nudox
 
 # Full stack
 NUDOX_DATA_DIR=.nudox-data \
-NUDOX_TERMINUS_URL=http://localhost:6363 \
+NUDOX_TERMINUS_ENDPOINT=http://localhost:6363 \
 NUDOX_TERMINUS_ORG=my_org \
 NUDOX_TERMINUS_DB=my_db \
 NUDOX_QDRANT_ENDPOINT=http://localhost:6334 \
@@ -101,7 +101,7 @@ Environment variables
 | ------------------------- | ------------------------ | -------------------------------------------- |
 | `NUDOX_DATA_DIR`          | `.nudox-data`            | Storage root for all on-disk state           |
 | `NUDOX_BIND_ADDR`         | `0.0.0.0:3000`           | Server listen address                        |
-| `NUDOX_TERMINUS_URL`      | —                        | TerminusDB HTTP endpoint                     |
+| `NUDOX_TERMINUS_ENDPOINT` | —                        | TerminusDB HTTP endpoint                     |
 | `NUDOX_TERMINUS_ORG`      | —                        | TerminusDB org name                          |
 | `NUDOX_TERMINUS_DB`       | —                        | TerminusDB database name                     |
 | `NUDOX_QDRANT_ENDPOINT`   | —                        | Qdrant gRPC endpoint                         |
