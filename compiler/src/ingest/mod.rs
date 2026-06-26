@@ -1,0 +1,264 @@
+//! Parse-once ingestion fan-out.
+//!
+//! A package is parsed to one [`Index`], projected **once** into a
+//! `Vec<ParsedSymbol>` (and one Terminus `DocStore`), and that single
+//! projection feeds every sink — the occurrence store, full-text index,
+//! symbol-search orchestrator, TerminusDB graph, and the vector index. No sink
+//! re-parses another store's output.
+
+pub mod parsed_symbol;
+pub mod sink;
+
+use std::{collections::HashMap, path::Path, sync::Arc};
+
+use ir::entry::Index;
+use nudox_store::NudoxStore;
+use semver::Version;
+use tokio::runtime::Handle;
+use tracing::{info, warn};
+
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, ingest::{parsed_symbol::{PackageCoord, project}, sink::{IngestReport, OrchestratorSink, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::ProgressReporter, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
+
+#[derive(Debug, Clone)]
+pub struct IngestionSummary {
+	pub entry_count:          usize,
+	pub document_count:       usize,
+	pub vector_count:         usize,
+	/// Symbols registered in the SQLite occurrence store (0 if no store is
+	/// wired).
+	pub symbols_registered:   usize,
+	/// Symbols indexed in the local text search index (0 if no index is wired).
+	pub symbols_text_indexed: usize,
+	/// Symbols fed into the nudox symbol-search Orchestrator (0 if not wired).
+	pub symbols_orchestrated: usize,
+}
+
+/// Build a map from fully-qualified symbol name → raw Rust source lines by
+/// reading the rustdoc JSON that `generate_ir` writes to
+/// `workspace/target/doc/{package}.json`. Only `Function` items with a valid
+/// `Span` are included; other item kinds don't benefit from tree-sitter.
+fn build_rust_source_map(workspace: &Path, package_name: &str) -> HashMap<String, String> {
+	let json_path =
+		workspace.join("target").join("doc").join(format!("{}.json", package_name.replace('-', "_")));
+
+	let json_content = match std::fs::read_to_string(&json_path) {
+		Ok(c) => c,
+		Err(e) => {
+			warn!(error = %e, path = %json_path.display(), "cannot read rustdoc JSON for treesitter source map");
+			return HashMap::new();
+		}
+	};
+
+	let krate: rustdoc_types::Crate = match serde_json::from_str(&json_content) {
+		Ok(c) => c,
+		Err(e) => {
+			warn!(error = %e, "cannot parse rustdoc JSON for treesitter source map");
+			return HashMap::new();
+		}
+	};
+
+	let mut map = HashMap::new();
+	for (id, item) in &krate.index {
+		if !matches!(&item.inner, rustdoc_types::ItemEnum::Function(_)) {
+			continue;
+		}
+		let Some(span) = &item.span else { continue };
+		let Some(summary) = krate.paths.get(id) else { continue };
+		let fq_name = summary.path.join("::");
+
+		let source_file = workspace.join(&span.filename);
+		let source = match std::fs::read_to_string(&source_file) {
+			Ok(s) => s,
+			Err(_) => continue,
+		};
+
+		// span.begin / span.end are 1-indexed (line, col) tuples.
+		let raw: String = source
+			.lines()
+			.enumerate()
+			.filter(|(i, _)| *i + 1 >= span.begin.0 && *i + 1 <= span.end.0)
+			.map(|(_, line)| line)
+			.collect::<Vec<_>>()
+			.join("\n");
+
+		if !raw.is_empty() {
+			map.insert(fq_name, raw);
+		}
+	}
+
+	info!(package = package_name, count = map.len(), "built treesitter source map");
+	map
+}
+
+pub fn run_rust_pipeline(
+	package: &RustPackage,
+	version: &Version,
+	workspace: &Path,
+	config: &PipelineConfig,
+	runtime: &Handle,
+	progress: Option<&ProgressReporter>,
+	nudox_store: Option<&Arc<NudoxStore>>,
+	text_index: Option<&Arc<SymbolTextIndex>>,
+	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
+) -> Result<IngestionSummary, AppError> {
+	let ir = package.generate_ir(&workspace.to_path_buf(), version).map_err(|source| {
+		AppError::Internal { message: format!("IR generation failed for `{}`: {source}", package.name) }
+	})?;
+
+	// Build a map of FQ symbol name → raw Rust source so blobs can carry
+	// tree-sitter output. Done after generate_ir so the rustdoc JSON is on disk.
+	let source_map = build_rust_source_map(workspace, &package.name);
+
+	finalize_pipeline(
+		"rust",
+		&package.name,
+		version,
+		ir.index().into_index(),
+		config,
+		runtime,
+		progress,
+		nudox_store,
+		text_index,
+		orchestrator,
+		&source_map,
+	)
+}
+
+pub fn run_typescript_pipeline(
+	package: &TsPackage,
+	version: &Version,
+	config: &PipelineConfig,
+	runtime: &Handle,
+	progress: Option<&ProgressReporter>,
+	nudox_store: Option<&Arc<NudoxStore>>,
+	text_index: Option<&Arc<SymbolTextIndex>>,
+	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
+) -> Result<IngestionSummary, AppError> {
+	let ir = package.generate_ir().map_err(|source| AppError::Internal {
+		message: format!("IR generation failed for `{}`: {source}", package.name),
+	})?;
+
+	finalize_pipeline(
+		"typescript",
+		&package.name,
+		version,
+		ir.index().into_index(),
+		config,
+		runtime,
+		progress,
+		nudox_store,
+		text_index,
+		orchestrator,
+		&HashMap::new(),
+	)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_pipeline(
+	language: &str,
+	package_name: &str,
+	version: &Version,
+	index: Index,
+	config: &PipelineConfig,
+	runtime: &Handle,
+	progress: Option<&ProgressReporter>,
+	nudox_store: Option<&Arc<NudoxStore>>,
+	text_index: Option<&Arc<SymbolTextIndex>>,
+	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
+	source_map: &HashMap<String, String>,
+) -> Result<IngestionSummary, AppError> {
+	let coord = PackageCoord::new(language, package_name, &version.to_string());
+	let terminus_instance = config.terminus.as_ref().map(|t| format!("{}/{}", t.org, t.db));
+	let entry_count = index.entries_by_path.len();
+
+	// The single parse-once projection. `project` borrows the index; the graph
+	// emission then consumes it. Both walk the same in-memory IR — neither
+	// re-parses the other's output.
+	let symbols = project(&coord, &index, source_map, terminus_instance.as_deref());
+	let doc_store = emit_store(language, package_name, version, index);
+	let document_count = doc_store.docs.len();
+
+	// Assemble the sink set from whatever backends are configured.
+	let mut sinks: Vec<Box<dyn SymbolSink + '_>> = Vec::new();
+	if let Some(store) = nudox_store {
+		sinks.push(Box::new(SqliteRegisterSink { store: &**store }));
+	}
+	if let Some(idx) = text_index {
+		sinks.push(Box::new(TextIndexSink { index: &**idx }));
+	}
+	if let Some(orch) = orchestrator {
+		sinks.push(Box::new(OrchestratorSink { orchestrator: &**orch }));
+	}
+	if let Some(terminus) = &config.terminus {
+		let schema = if config.upload_schema {
+			Some(serde_json::from_str::<Vec<serde_json::Value>>(include_str!("../../schema.json"))?)
+		} else {
+			None
+		};
+		sinks.push(Box::new(TerminusSink { config: terminus, schema, store: doc_store }));
+	}
+	if let Some(qdrant) = &config.qdrant {
+		let collection = collection_name(qdrant, language, package_name, version);
+		sinks.push(Box::new(VectorSink {
+			settings: qdrant,
+			model: config.embedding_model.as_str(),
+			collection,
+		}));
+	}
+
+	let report: IngestReport = runtime.block_on(run_sinks(&sinks, &symbols, &coord, progress))?;
+
+	Ok(IngestionSummary {
+		entry_count,
+		document_count,
+		vector_count: report.indexed_by("qdrant"),
+		symbols_registered: report.indexed_by("sqlite"),
+		symbols_text_indexed: report.indexed_by("text"),
+		symbols_orchestrated: report.indexed_by("orchestrator"),
+	})
+}
+
+fn emit_store(language: &str, package_name: &str, version: &Version, index: Index) -> DocStore {
+	let context_object = serde_json::json!({
+		"@type": "@context",
+		"@schema": "terminusdb:///schema#",
+		"@base": "terminusdb:///data/",
+		"xsd": "http://www.w3.org/2001/XMLSchema#",
+		"sys": "http://terminusdb.com/schema/sys#"
+	});
+
+	let mut runner = Runner::new(DocCtx::init(
+		CrateInfo::new(language.to_owned(), package_name.to_owned()),
+		context_object,
+	));
+	runner.run(index.entries_by_path.into_values());
+	let store = runner.into_docs();
+	info!(documents = store.docs.len(), package = package_name, version = %version, "emission complete");
+	store
+}
+
+fn collection_name(
+	settings: &QdrantSettings,
+	language: &str,
+	package_name: &str,
+	version: &Version,
+) -> String {
+	format!(
+		"{}_{}_{}_{}",
+		sanitize_collection_segment(&settings.collection_prefix),
+		sanitize_collection_segment(language),
+		sanitize_collection_segment(package_name),
+		sanitize_collection_segment(&version.to_string()),
+	)
+}
+
+fn sanitize_collection_segment(value: &str) -> String {
+	value
+		.chars()
+		.map(|ch| match ch {
+			'a'..='z' | '0'..='9' => ch,
+			'A'..='Z' => ch.to_ascii_lowercase(),
+			_ => '_',
+		})
+		.collect()
+}

@@ -77,7 +77,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::warn;
 
-use crate::identity::EntryUri;
+use crate::identity::{EntryUri, path::nudox_path_to_str};
 
 pub type URI = String;
 
@@ -197,15 +197,6 @@ pub trait UriOps {
 	fn uri_path(&self, path: &ir::entry::NudoxPath) -> URI;
 	// This returns a JsonLd Edge - {"@id": "<URI>"}
 	fn build_edge(uri: &URI) -> Value;
-}
-
-fn nudox_path_to_str(path: &ir::entry::NudoxPath) -> String {
-	match path {
-		ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
-		ir::entry::NudoxPath::External { path, dependency } => {
-			format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
-		}
-	}
 }
 
 /// Responsible for URI construction

@@ -87,8 +87,6 @@ use qdrant_client::{Payload, qdrant::{PointId, PointStruct, Value}};
 use tokio::task::JoinSet;
 use tracing::info;
 
-use crate::terminusdb::termdb::DocStore;
-
 const DEFAULT_EMBED_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
@@ -617,21 +615,16 @@ impl PointIdFactory {
 	/// Use a u64 when you already have one from a deterministic id scheme.
 	pub fn from_u64(id: u64) -> PointId { PointId::from(id) }
 
-	/// Temporary non-stable point id generation for sprint usage.
+	/// Deterministic, idempotent point id derived from a record key.
 	///
-	/// This ignores the record key and generates a pseudo-random-ish u64 from the
-	/// current time. This is NOT suitable for long-term idempotent upserts.
-	/// Replace this later with a deterministic hash of `record_key`.
-	pub fn from_record_key(_record_key: &str) -> Result<PointId, EmbeddingError> {
-		use std::time::{SystemTime, UNIX_EPOCH};
-
-		let nanos = SystemTime::now()
-			.duration_since(UNIX_EPOCH)
-			.map_err(|e| EmbeddingError::InvalidPointId(format!("system clock error: {e}")))?
-			.as_nanos();
-
-		let id = (nanos & u64::MAX as u128) as u64;
-		Ok(PointId::from(id))
+	/// Uses `UUIDv5(NUDOX_SYMBOL_NS, record_key)` so re-ingesting the same symbol
+	/// upserts the same point instead of allocating a fresh id — this is what
+	/// keeps one package's vectors from overwriting another's. The record key is
+	/// the canonical Terminus entry URI, tying the vector point to the same
+	/// identity spine as the blob / SQLite / graph stores.
+	pub fn deterministic(record_key: &str) -> PointId {
+		let uuid = uuid::Uuid::new_v5(&nudox_store::NUDOX_SYMBOL_NS, record_key.as_bytes());
+		PointId::from(uuid.to_string())
 	}
 }
 /// Small helper for future ingestion code.
@@ -655,75 +648,12 @@ where
 	QdrantPointFactory::build_point(point_id, record)
 }
 
-/// Helper functions
-fn get_object(
-	value: &serde_json::Value,
-) -> Result<&serde_json::Map<String, serde_json::Value>, EmbeddingError> {
-	value.as_object().ok_or(EmbeddingError::InvalidDocumentShape("expected top-level JSON object"))
-}
-
-fn get_required_str<'a>(
-	obj: &'a serde_json::Map<String, serde_json::Value>,
-	field: &'static str,
-) -> Result<&'a str, EmbeddingError> {
-	let value = obj.get(field).ok_or(EmbeddingError::MissingField(field))?;
-	value.as_str().ok_or(EmbeddingError::InvalidFieldType(field))
-}
-
-fn get_optional_str<'a>(
-	obj: &'a serde_json::Map<String, serde_json::Value>,
-	field: &'static str,
-) -> Result<Option<&'a str>, EmbeddingError> {
-	match obj.get(field) {
-		Some(value) => value.as_str().map(Some).ok_or(EmbeddingError::InvalidFieldType(field)),
-		None => Ok(None),
-	}
-}
-
-fn get_optional_string_array(
-	obj: &serde_json::Map<String, serde_json::Value>,
-	field: &'static str,
-) -> Result<Vec<String>, EmbeddingError> {
-	match obj.get(field) {
-		Some(value) => {
-			let arr = value.as_array().ok_or(EmbeddingError::InvalidFieldType(field))?;
-
-			let mut out = Vec::with_capacity(arr.len());
-			for item in arr {
-				let s = item.as_str().ok_or(EmbeddingError::InvalidFieldType(field))?;
-				out.push(s.to_owned());
-			}
-			Ok(out)
-		}
-		None => Ok(Vec::new()),
-	}
-}
-
-/// Extract the symbol kind prefix from the `kind` field stored on Entry docs.
+/// Build the embedding text body for a symbol.
 ///
-/// Current `Entry.emit(...)` stores:
-/// - `kind = prefix + ctx.uri_path(...)`
-///
-/// For a first pass, use the leading alpha prefix as the kind label.
-/// If this cannot be derived, return `None` rather than failing the whole
-/// record.
-fn extract_symbol_kind(kind_ref: &str) -> Option<String> {
-	let prefix: String =
-		kind_ref.chars().take_while(|c| c.is_ascii_alphabetic() || *c == '_').collect();
-
-	if prefix.is_empty() { None } else { Some(prefix.to_lowercase()) }
-}
-
-/// Build the text body to send to the embedding provider.
-///
-/// First-pass policy:
-/// - always include fq_name and name
-/// - include symbol kind if available
-/// - include aliases if present
-/// - include documentation if present
-///
-/// Do not inline members/context yet. Keep the first semantic view focused.
-fn build_entry_embedding_text(
+/// Policy: always include `fq_name` and `name`; include the symbol kind,
+/// aliases, and documentation when present. This is the single place the
+/// embedding text is shaped, fed directly from the parse-once projection.
+pub fn build_entry_embedding_text(
 	name: &str,
 	fq_name: &str,
 	symbol_kind: Option<&str>,
@@ -751,75 +681,4 @@ fn build_entry_embedding_text(
 	}
 
 	parts.join("\n")
-}
-
-/// Extracts document from an Entry as a serde_json::VAlue
-pub fn embedding_document_from_entry_value(
-	value: &serde_json::Value,
-	language: &str,
-	package: &str,
-	version: Option<&str>,
-) -> Result<EmbeddingDocument, EmbeddingError> {
-	let obj = get_object(value)?;
-
-	let doc_type = get_required_str(obj, "@type")?;
-	if doc_type != "Entry" {
-		return Err(EmbeddingError::UnsupportedDocumentType(doc_type.to_owned()));
-	}
-
-	let uri = get_required_str(obj, "@id")?.to_owned();
-	let name = get_required_str(obj, "name")?;
-	let fq_name = get_required_str(obj, "fq_name")?.to_owned();
-	let kind_ref = get_required_str(obj, "kind")?;
-	let documentation = get_optional_str(obj, "documentation")?;
-	let aliases = get_optional_string_array(obj, "aliases")?;
-
-	let symbol_kind = extract_symbol_kind(kind_ref);
-	let text =
-		build_entry_embedding_text(name, &fq_name, symbol_kind.as_deref(), &aliases, documentation);
-
-	Ok(EmbeddingDocument {
-		record_key: uri.clone(),
-		uri,
-		text,
-		fq_name: Some(fq_name),
-		language: language.to_owned(),
-		package: package.to_owned(),
-		version: version.map(str::to_owned),
-		symbol_kind,
-		record_kind: RecordKind::SemanticNode,
-		representation_kind: RepresentationKind::Docs,
-		chunk_index: None,
-		chunk_count: None,
-	})
-}
-
-pub fn embedding_documents_from_docstore(
-	store: &DocStore,
-	language: &str,
-	package: &str,
-	version: Option<&str>,
-) -> Result<Vec<EmbeddingDocument>, EmbeddingError> {
-	let mut out = Vec::new();
-
-	for (_uri, value) in store.documents_sorted() {
-		let obj = match value.as_object() {
-			Some(obj) => obj,
-			None => continue,
-		};
-
-		let doc_type = match obj.get("@type").and_then(serde_json::Value::as_str) {
-			Some(t) => t,
-			None => continue,
-		};
-
-		if doc_type != "Entry" {
-			continue;
-		}
-
-		let doc = embedding_document_from_entry_value(value, language, package, version)?;
-		out.push(doc);
-	}
-
-	Ok(out)
 }

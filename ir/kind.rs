@@ -167,6 +167,48 @@ impl Entry {
 		}
 	}
 
+	/// The attached documentation string, if any.
+	pub fn documentation(&self) -> Option<&str> {
+		match self {
+			Entry::Module(s) => s.documentation.as_deref(),
+			Entry::RecordType(s) => s.documentation.as_deref(),
+			Entry::Info(s) => s.documentation.as_deref(),
+			Entry::UnionType(s) => s.documentation.as_deref(),
+			Entry::TraitDef(s) => s.documentation.as_deref(),
+			Entry::TraitImpl(s) => s.documentation.as_deref(),
+			Entry::SumType(s) => s.documentation.as_deref(),
+			Entry::Function(s) => s.documentation.as_deref(),
+			Entry::TypeAlias(s) => s.documentation.as_deref(),
+			Entry::Constant(s) => s.documentation.as_deref(),
+			Entry::Variable(s) => s.documentation.as_deref(),
+			Entry::Macro(s) => s.documentation.as_deref(),
+			Entry::PrimitiveType(s) => s.documentation.as_deref(),
+			Entry::Field(s) => s.documentation.as_deref(),
+			Entry::Event(s) => s.documentation.as_deref(),
+		}
+	}
+
+	/// The set of alias paths for this entry, if any.
+	pub fn aliases(&self) -> Option<&HashSet<Vec<String>>> {
+		match self {
+			Entry::Module(s) => s.aliases.as_ref(),
+			Entry::RecordType(s) => s.aliases.as_ref(),
+			Entry::Info(s) => s.aliases.as_ref(),
+			Entry::UnionType(s) => s.aliases.as_ref(),
+			Entry::TraitDef(s) => s.aliases.as_ref(),
+			Entry::TraitImpl(s) => s.aliases.as_ref(),
+			Entry::SumType(s) => s.aliases.as_ref(),
+			Entry::Function(s) => s.aliases.as_ref(),
+			Entry::TypeAlias(s) => s.aliases.as_ref(),
+			Entry::Constant(s) => s.aliases.as_ref(),
+			Entry::Variable(s) => s.aliases.as_ref(),
+			Entry::Macro(s) => s.aliases.as_ref(),
+			Entry::PrimitiveType(s) => s.aliases.as_ref(),
+			Entry::Field(s) => s.aliases.as_ref(),
+			Entry::Event(s) => s.aliases.as_ref(),
+		}
+	}
+
 	pub fn schema_class(&self) -> &'static str {
 		match self {
 			Entry::Module(_) => "Module",

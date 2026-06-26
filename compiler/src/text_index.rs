@@ -1,14 +1,14 @@
 //! Tantivy-backed full-text symbol search.
 //!
-//! Fed by [`EmbeddingDocument`]s already produced by the ingestion pipeline —
-//! no embeddings or external services required.  Persists across restarts.
-//! Re-indexing a URI replaces the previous entry (upsert semantics).
+//! Fed directly by the parse-once [`ParsedSymbol`] projection — no embeddings
+//! or external services required. Persists across restarts. Re-indexing a URI
+//! replaces the previous entry (upsert semantics).
 
 use std::{path::Path, sync::{Arc, Mutex}};
 
 use tantivy::{Index, IndexWriter, TantivyDocument, Term, collector::TopDocs, directory::MmapDirectory, query::QueryParser, schema::{Field, STORED, STRING, Schema, TEXT, Value as TantivyValue}};
 
-use crate::{error::AppError, terminusdb::embedding_service::EmbeddingDocument};
+use crate::{error::AppError, ingest::parsed_symbol::{PackageCoord, ParsedSymbol}};
 
 /// A single result from [`SymbolTextIndex::search`].
 #[derive(Debug)]
@@ -68,33 +68,32 @@ impl SymbolTextIndex {
 		Ok(Self { index, writer: Arc::new(Mutex::new(writer)), fields })
 	}
 
-	/// Index a batch of `EmbeddingDocument`s in a single commit.
+	/// Index a batch of [`ParsedSymbol`]s in a single commit.
 	///
-	/// Each document's `uri` is used as the deduplication key: any previous
+	/// Each symbol's canonical entry URI is the deduplication key: any previous
 	/// entry for the same URI is deleted before the new one is added.
-	pub fn index_batch(&self, docs: &[EmbeddingDocument]) -> Result<usize, AppError> {
+	pub fn index_batch(
+		&self,
+		coord: &PackageCoord,
+		symbols: &[ParsedSymbol],
+	) -> Result<usize, AppError> {
 		let mut writer = self
 			.writer
 			.lock()
 			.map_err(|e| AppError::Internal { message: format!("tantivy writer lock poisoned: {e}") })?;
 
-		for doc in docs {
-			writer.delete_term(Term::from_field_text(self.fields.uri, &doc.uri));
+		for symbol in symbols {
+			let uri = symbol.entry_uri.to_string();
+			writer.delete_term(Term::from_field_text(self.fields.uri, &uri));
 
 			let mut td = TantivyDocument::new();
-			td.add_text(self.fields.uri, &doc.uri);
-			if let Some(fq) = &doc.fq_name {
-				td.add_text(self.fields.fq_name, fq);
-			}
-			td.add_text(self.fields.text, &doc.text);
-			td.add_text(self.fields.language, &doc.language);
-			td.add_text(self.fields.package, &doc.package);
-			if let Some(v) = &doc.version {
-				td.add_text(self.fields.version, v);
-			}
-			if let Some(k) = &doc.symbol_kind {
-				td.add_text(self.fields.symbol_kind, k);
-			}
+			td.add_text(self.fields.uri, &uri);
+			td.add_text(self.fields.fq_name, &symbol.fq_name);
+			td.add_text(self.fields.text, &symbol.embedding_text);
+			td.add_text(self.fields.language, &coord.language);
+			td.add_text(self.fields.package, &coord.package);
+			td.add_text(self.fields.version, &coord.version);
+			td.add_text(self.fields.symbol_kind, &symbol.kind_label);
 
 			writer
 				.add_document(td)
@@ -102,7 +101,7 @@ impl SymbolTextIndex {
 		}
 
 		writer.commit().map_err(|e| AppError::Internal { message: format!("tantivy commit: {e}") })?;
-		Ok(docs.len())
+		Ok(symbols.len())
 	}
 
 	/// Full-text search over symbol names, qualified names, and documentation.

@@ -9,20 +9,7 @@ use serde_json::{Map, Value, json};
 use termdb::{DocCtx, DocStore, EmitJsonLD, URI};
 use tracing::{debug, instrument, warn};
 
-use crate::terminusdb::{ld::LDKind, termdb::UriOps};
-
-fn path_segments(path: &ir::entry::NudoxPath) -> Vec<String> {
-	match path {
-		ir::entry::NudoxPath::Local(local_path) => {
-			local_path.iter().map(|segment| segment.to_string_lossy().into_owned()).collect()
-		}
-		ir::entry::NudoxPath::External { path, dependency } => std::iter::once(dependency.clone())
-			.chain(path.iter().map(|segment| segment.to_string_lossy().into_owned()))
-			.collect(),
-	}
-}
-
-fn fq_name(path: &ir::entry::NudoxPath) -> String { path_segments(path).join("::") }
+use crate::{identity::path::{fq_name, path_segments}, terminusdb::{ld::LDKind, termdb::UriOps}};
 
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {

@@ -74,6 +74,15 @@ impl Orchestrator {
 	pub async fn ingest(&self, info: BlobInfo) -> Result<ResolutionOutcome> {
 		let blob_ref = self.blob_store.put(&info).await?;
 
+		// Honor a precomputed deterministic GlobalSymbolId (the cross-store
+		// identity spine: UUIDv5 of the Terminus entry URI). When set, it is the
+		// authoritative id for every store — never overwrite it with a fresh v4.
+		if let Some(global_id) = info.resolved_global_id {
+			self.global_store.associate(global_id, info.occurrence_id).await?;
+			self.index_resolved(&blob_ref, &info, global_id).await?;
+			return Ok(ResolutionOutcome::Resolved { global_id, blob_ref });
+		}
+
 		match &info.symbol_origin {
 			SymbolOrigin::Repo { .. } => {
 				// Repo-local symbols are resolved immediately with a fresh global id.
