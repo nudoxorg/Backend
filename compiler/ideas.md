@@ -1,0 +1,12 @@
+- Composting full system
+	- Micro composter
+	- City wide program
+	- Research onto sustainability practices city wide
+- Veritcal farming
+	- How it's failed
+	- What systems for it look like in success
+	- Maybe we take a building
+	- Small scale vertical farming?
+	- Super super small scale, low effort, low maintenance
+	- Social infrastructure where people plant and harvest for volunteer hours
+

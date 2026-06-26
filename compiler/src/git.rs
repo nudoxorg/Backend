@@ -705,15 +705,7 @@ version = { workspace = true }
 			"[package]\nname = \"widget\"\nversion = \"0.2.0\"\n",
 		)?;
 		run_git(repo_dir.path(), ["add", "."])?;
-		run_git(repo_dir.path(), [
-			"-c",
-			"user.name=Codex",
-			"-c",
-			"user.email=codex@example.com",
-			"commit",
-			"-m",
-			"release 0.2.0",
-		])?;
+		commit(repo_dir.path(), "release 0.2.0")?;
 
 		run_git(repo_dir.path(), ["checkout", "main"])?;
 		fs::write(
@@ -721,15 +713,7 @@ version = { workspace = true }
 			"[package]\nname = \"widget\"\nversion = \"0.1.1\"\n",
 		)?;
 		run_git(repo_dir.path(), ["add", "."])?;
-		run_git(repo_dir.path(), [
-			"-c",
-			"user.name=Codex",
-			"-c",
-			"user.email=codex@example.com",
-			"commit",
-			"-m",
-			"main 0.1.1",
-		])?;
+		commit(repo_dir.path(), "main 0.1.1")?;
 
 		let repo = gix::open(repo_dir.path())?;
 		let found = find_commit_for_version(&repo, &Version::parse("0.2.0")?, "widget", None);
@@ -813,6 +797,10 @@ version = { workspace = true }
 			"user.name=Codex",
 			"-c",
 			"user.email=codex@example.com",
+			"-c",
+			"commit.gpgsign=false",
+			"-c",
+			"tag.gpgsign=false",
 			"commit",
 			"-m",
 			message,
