@@ -8,7 +8,7 @@ use std::{collections::{BTreeSet, HashMap}, fs, io::Cursor, path::{Path, PathBuf
 use deno_doc::{DocParser, DocParserOptions};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph, ModuleSpecifier, ast::CapturingModuleAnalyzer, source::{LoadFuture, LoadOptions, LoadResponse, Loader}};
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
@@ -88,7 +88,7 @@ pub enum TsPackageError {
 /// A TypeScript/JavaScript package that can be documented via `jsr:@deno/doc`.
 ///
 /// Mirrors `RustPackage` in `rust.rs`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TsPackage {
 	pub slug:        String,
 	pub name:        String,

@@ -62,11 +62,14 @@ pub struct PackageSnapshot {
 	pub state:    PackageStateSnapshot,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageStateSnapshot {
 	pub health:                  PackageHealth,
+	#[serde(default)]
 	pub sync_status:             PackageSyncStatus,
+	#[serde(default)]
 	pub sync_phase:              Option<PackageSyncPhase>,
+	#[serde(default)]
 	pub sync_detail:             Option<String>,
 	pub last_checked_at:         Option<Timestamp>,
 	pub last_synced_at:          Option<Timestamp>,
@@ -114,39 +117,9 @@ struct PersistedRegistry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedPackage {
 	id:     u64,
-	spec:   PersistedPackageSpec,
-	handle: PersistedPackageHandle,
-	state:  TrackedPackageState,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedPackageSpec {
-	language: Language,
-	name:     String,
-	slug:     String,
-	version:  Version,
-	branch:   String,
-	source:   Url,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum PersistedPackageHandle {
-	Rust {
-		name:        String,
-		slug:        String,
-		source:      Url,
-		direct_repo: bool,
-		description: Option<String>,
-	},
-	TypeScript {
-		name:        String,
-		slug:        String,
-		uuid:        u64,
-		source:      Url,
-		description: Option<String>,
-		entry_point: String,
-	},
+	spec:   PackageSpec,
+	handle: PackageHandle,
+	state:  PackageStateSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -164,7 +137,7 @@ struct PackageKey {
 	branch:   String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PackageSpec {
 	language: Language,
 	name:     String,
@@ -174,7 +147,8 @@ struct PackageSpec {
 	source:   Url,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 enum PackageHandle {
 	Rust(RustPackage),
 	TypeScript(TsPackage),
@@ -184,28 +158,8 @@ struct TrackedPackage {
 	id:        PackageId,
 	spec:      PackageSpec,
 	handle:    PackageHandle,
-	state:     RwLock<TrackedPackageState>,
+	state:     RwLock<PackageStateSnapshot>,
 	sync_lock: Mutex<()>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TrackedPackageState {
-	health:                  PackageHealth,
-	#[serde(default)]
-	sync_status:             PackageSyncStatus,
-	#[serde(default)]
-	sync_phase:              Option<PackageSyncPhase>,
-	#[serde(default)]
-	sync_detail:             Option<String>,
-	last_checked_at:         Option<Timestamp>,
-	last_synced_at:          Option<Timestamp>,
-	tracked_version_commit:  Option<String>,
-	latest_remote_commit:    Option<String>,
-	remote_update_available: bool,
-	entry_count:             usize,
-	document_count:          usize,
-	vector_count:            usize,
-	last_error:              Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -566,7 +520,7 @@ impl TrackedPackage {
 			id,
 			spec,
 			handle,
-			state: RwLock::new(TrackedPackageState::new()),
+			state: RwLock::new(PackageStateSnapshot::new()),
 			sync_lock: Mutex::new(()),
 		}
 	}
@@ -575,13 +529,12 @@ impl TrackedPackage {
 		id: PackageId,
 		spec: PackageSpec,
 		handle: PackageHandle,
-		state: TrackedPackageState,
+		state: PackageStateSnapshot,
 	) -> Self {
 		Self { id, spec, handle, state: RwLock::new(state), sync_lock: Mutex::new(()) }
 	}
 
 	async fn snapshot(&self) -> PackageSnapshot {
-		let state = self.state.read().await.clone();
 		PackageSnapshot {
 			id:       self.id.get(),
 			language: self.spec.language,
@@ -590,29 +543,15 @@ impl TrackedPackage {
 			source:   self.spec.source.clone(),
 			version:  self.spec.version.clone(),
 			branch:   self.spec.branch.clone(),
-			state:    PackageStateSnapshot {
-				health:                  state.health,
-				sync_status:             state.sync_status,
-				sync_phase:              state.sync_phase,
-				sync_detail:             state.sync_detail,
-				last_checked_at:         state.last_checked_at,
-				last_synced_at:          state.last_synced_at,
-				tracked_version_commit:  state.tracked_version_commit,
-				latest_remote_commit:    state.latest_remote_commit,
-				remote_update_available: state.remote_update_available,
-				entry_count:             state.entry_count,
-				document_count:          state.document_count,
-				vector_count:            state.vector_count,
-				last_error:              state.last_error,
-			},
+			state:    self.state.read().await.clone(),
 		}
 	}
 
 	async fn persisted(&self) -> PersistedPackage {
 		PersistedPackage {
 			id:     self.id.get(),
-			spec:   PersistedPackageSpec::from(&self.spec),
-			handle: PersistedPackageHandle::from(&self.handle),
+			spec:   self.spec.clone(),
+			handle: self.handle.clone(),
 			state:  self.state.read().await.clone(),
 		}
 	}
@@ -687,7 +626,7 @@ impl TrackedPackage {
 	}
 }
 
-impl TrackedPackageState {
+impl PackageStateSnapshot {
 	fn new() -> Self {
 		Self {
 			health:                  PackageHealth::Pending,
@@ -716,31 +655,6 @@ impl TrackedPackageState {
 	}
 }
 
-impl From<&PackageSpec> for PersistedPackageSpec {
-	fn from(value: &PackageSpec) -> Self {
-		Self {
-			language: value.language,
-			name:     value.name.clone(),
-			slug:     value.slug.clone(),
-			version:  value.version.clone(),
-			branch:   value.branch.clone(),
-			source:   value.source.clone(),
-		}
-	}
-}
-
-impl From<&PersistedPackageSpec> for PackageSpec {
-	fn from(value: &PersistedPackageSpec) -> Self {
-		Self {
-			language: value.language,
-			name:     value.name.clone(),
-			slug:     value.slug.clone(),
-			version:  value.version.clone(),
-			branch:   value.branch.clone(),
-			source:   value.source.clone(),
-		}
-	}
-}
 
 impl PackageHandle {
 	fn name(&self) -> &str {
@@ -765,48 +679,6 @@ impl PackageHandle {
 	}
 }
 
-impl From<&PackageHandle> for PersistedPackageHandle {
-	fn from(value: &PackageHandle) -> Self {
-		match value {
-			PackageHandle::Rust(package) => Self::Rust {
-				name:        package.name.clone(),
-				slug:        package.slug.clone(),
-				source:      package.source.clone(),
-				direct_repo: package.direct_repo,
-				description: package.description.clone(),
-			},
-			PackageHandle::TypeScript(package) => Self::TypeScript {
-				name:        package.name.clone(),
-				slug:        package.slug.clone(),
-				uuid:        package.uuid,
-				source:      package.source.clone(),
-				description: package.description.clone(),
-				entry_point: package.entry_point.clone(),
-			},
-		}
-	}
-}
-
-impl From<PersistedPackageHandle> for PackageHandle {
-	fn from(value: PersistedPackageHandle) -> Self {
-		match value {
-			PersistedPackageHandle::Rust { name, slug, source, direct_repo, description } => {
-				PackageHandle::Rust(RustPackage {
-					slug,
-					name,
-					language: Language::Rust,
-					uuid: 0,
-					source,
-					direct_repo,
-					description,
-				})
-			}
-			PersistedPackageHandle::TypeScript { name, slug, uuid, source, description, entry_point } => {
-				PackageHandle::TypeScript(TsPackage { slug, name, uuid, source, description, entry_point })
-			}
-		}
-	}
-}
 
 fn load_persisted_registry(storage: &StorageLayout) -> Option<PersistedRegistry> {
 	let path = storage.packages_file();
@@ -841,17 +713,16 @@ fn rehydrate_registry(
 		let Some(id) = NonZeroU64::new(package.id).map(PackageId) else {
 			continue;
 		};
-		let spec = PackageSpec::from(&package.spec);
 		let key = PackageKey {
-			language: spec.language,
-			name:     spec.name.clone(),
-			version:  spec.version.clone(),
-			branch:   spec.branch.clone(),
+			language: package.spec.language,
+			name:     package.spec.name.clone(),
+			version:  package.spec.version.clone(),
+			branch:   package.spec.branch.clone(),
 		};
 		let tracked = Arc::new(TrackedPackage::rehydrated(
 			id,
-			spec,
-			package.handle.into(),
+			package.spec,
+			package.handle,
 			package.state.normalize_rehydrated(),
 		));
 		keys.insert(key, id);

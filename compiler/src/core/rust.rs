@@ -4,6 +4,7 @@ use cargo_metadata::{Metadata, MetadataCommand, Package as CargoPackage, Package
 use crates_io_api::{AsyncClient, Crate, CratesQuery};
 use lang_types::Language;
 use semver::Version;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info, instrument};
 use url::Url;
@@ -67,11 +68,15 @@ pub struct Crates {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug)]
+fn default_rust_language() -> Language { Language::Rust }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RustPackage {
 	pub slug:        String,
 	pub name:        String,
+	#[serde(skip, default = "default_rust_language")]
 	pub language:    Language,
+	#[serde(default)]
 	pub uuid:        u64,
 	pub source:      Url,
 	pub direct_repo: bool,
