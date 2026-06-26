@@ -77,6 +77,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::warn;
 
+use crate::identity::EntryUri;
+
 pub type URI = String;
 
 /// Store Mapping of URI -> Documents in JsonLD form, ready for insertion
@@ -197,39 +199,40 @@ pub trait UriOps {
 	fn build_edge(uri: &URI) -> Value;
 }
 
+fn nudox_path_to_str(path: &ir::entry::NudoxPath) -> String {
+	match path {
+		ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
+		ir::entry::NudoxPath::External { path, dependency } => {
+			format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
+		}
+	}
+}
+
 /// Responsible for URI construction
 impl UriOps for DocCtx {
 	fn entry_uri(&self, path: &ir::entry::NudoxPath) -> URI {
-		let path_str = match path {
-			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
-			ir::entry::NudoxPath::External { path, dependency } => {
-				format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
-			}
-		};
-		format!("Entry/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path_str)
+		EntryUri::new(
+			self.crate_info.lang(),
+			self.crate_info.crate_name(),
+			&nudox_path_to_str(path),
+		)
+		.to_string()
 	}
 
 	fn kind_uri(&self, kind: &ir::kind::Entry, path: &ir::entry::NudoxPath) -> URI {
-		let path_str = match path {
-			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
-			ir::entry::NudoxPath::External { path, dependency } => {
-				format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
-			}
-		};
+		let path_str = nudox_path_to_str(path);
 		let prefix = kind.schema_class();
 		format!("{}/{}/{}/{}", prefix, self.crate_info.lang(), self.crate_info.crate_name(), path_str)
 	}
 
-	/// Builds the path + concat with / between
-	/// Used for new kind_tag
+	/// Builds the path + concat with / between; used for kind_tag.
 	fn uri_path(&self, path: &ir::entry::NudoxPath) -> URI {
-		let path_str = match path {
-			ir::entry::NudoxPath::Local(p) => p.to_string_lossy().replace("\\", "/"),
-			ir::entry::NudoxPath::External { path, dependency } => {
-				format!("{}/{}", dependency, path.to_string_lossy().replace("\\", "/"))
-			}
-		};
-		format!("/{}/{}/{}", self.crate_info.lang(), self.crate_info.crate_name(), path_str)
+		format!(
+			"/{}/{}/{}",
+			self.crate_info.lang(),
+			self.crate_info.crate_name(),
+			nudox_path_to_str(path),
+		)
 	}
 
 	fn build_edge(uri: &URI) -> Value { json!({"@id": uri}) }

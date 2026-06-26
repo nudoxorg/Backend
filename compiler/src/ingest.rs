@@ -8,7 +8,7 @@ use semver::Version;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
 
-use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingDocument, EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, identity::{EntryUri, compute_symbol_id}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, embedding_service::{EmbeddingDocument, EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory, embedding_documents_from_docstore}, qdrant_upload::{QdrantConfig, upload_points}, termdb::{CrateInfo, DocCtx, DocStore}, upload::{DocumentUploadProgress, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -223,9 +223,17 @@ fn finalize_pipeline(
 				Some(&version.to_string()),
 			) {
 				Ok(docs) => {
+					let terminus_instance =
+						config.terminus.as_ref().map(|t| format!("{}/{}", t.org, t.db));
 					let mut count = 0usize;
 					for doc in &docs {
-						let blob = embedding_doc_to_blob_info(doc, package_name, version, source_map);
+						let blob = embedding_doc_to_blob_info(
+							doc,
+							package_name,
+							version,
+							source_map,
+							terminus_instance.as_deref(),
+						);
 						match runtime.block_on(orch.ingest(blob)) {
 							Ok(_) => count += 1,
 							Err(e) => {
@@ -452,15 +460,18 @@ fn sanitize_collection_segment(value: &str) -> String {
 		.collect()
 }
 
-/// Convert an `EmbeddingDocument` (extracted from the TerminusDB doc store)
-/// into a `BlobInfo` suitable for `Orchestrator::ingest`. No embeddings are
-/// stored here; body_query search returns 501 at the HTTP layer until
-/// embeddings are wired.
+/// Convert an `EmbeddingDocument` into a `BlobInfo` for `Orchestrator::ingest`.
+///
+/// `terminus_instance` is `"{org}/{db}"` from the TerminusDB config. When
+/// provided, `resolved_global_id` is set to the deterministic v5 UUID derived
+/// from the entry URI — making the blob ID stable and consistent with
+/// the Terminus / SQLite / Qdrant identity.
 fn embedding_doc_to_blob_info(
 	doc: &EmbeddingDocument,
 	package_name: &str,
 	version: &Version,
 	source_map: &HashMap<String, String>,
+	terminus_instance: Option<&str>,
 ) -> BlobInfo {
 	let symbol_name = doc
 		.fq_name
@@ -468,6 +479,10 @@ fn embedding_doc_to_blob_info(
 		.unwrap_or_else(|| doc.uri.split('/').next_back().unwrap_or(&doc.uri).to_owned());
 	let kind = doc.symbol_kind.as_deref().map(str_to_symbol_kind);
 	let repo_id = RepoId(format!("lib:{package_name}:{}", version));
+
+	let resolved_global_id = terminus_instance
+		.zip(EntryUri::parse(&doc.uri).as_ref())
+		.map(|(inst, uri)| compute_symbol_id(inst, uri));
 
 	// When we have the actual Rust source for this symbol, run tree-sitter on it
 	// to populate treesitter_repr with the AST s-expression and references.
@@ -486,7 +501,7 @@ fn embedding_doc_to_blob_info(
 		occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 		symbol_name,
 		symbol_origin: SymbolOrigin::Repo { repo_id: repo_id.clone() },
-		resolved_global_id: None,
+		resolved_global_id,
 		kind,
 		source: SourceChunk { raw_code, treesitter_repr, symbol_span },
 		embeddings: vec![],

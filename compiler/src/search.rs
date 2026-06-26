@@ -6,7 +6,7 @@ use serde_json::Value as JsonValue;
 use terminusdb_client::{BranchSpec, GetOpts, TerminusDBHttpClient};
 use tokio::sync::Mutex;
 
-use crate::{config::{PipelineConfig, QdrantSettings}, error::AppError, terminusdb::{embedding_service::{EmbeddingProvider, OpenAIEmbeddingProvider}, upload::TerminusConfig}};
+use crate::{config::{PipelineConfig, QdrantSettings}, error::AppError, identity::EntryUri, terminusdb::{embedding_service::{EmbeddingProvider, OpenAIEmbeddingProvider}, upload::TerminusConfig}};
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -548,28 +548,22 @@ fn relation_name(relation: &str) -> String {
 }
 
 fn structured_symbol_uri(language: &str, symbol: &str, package: Option<&str>) -> String {
-	let normalized_language = language.trim().to_ascii_lowercase();
 	match package {
-		Some(package) => format!("Entry/{normalized_language}/{package}/{symbol}"),
-		None => format!("Entry/{normalized_language}/{symbol}"),
+		Some(pkg) => EntryUri::new(language, pkg, symbol).to_string(),
+		// No package: 2-segment heuristic form used only for lookup, not as canonical identity.
+		None => format!("Entry/{}/{}", language.trim().to_ascii_lowercase(), symbol),
 	}
 }
 
 fn candidate_symbol_uris(uri: &str) -> Vec<String> {
 	let mut candidates = vec![uri.to_owned()];
-	let Some((prefix, suffix)) = uri.strip_prefix("Entry/").and_then(|rest| rest.split_once('/'))
-	else {
-		return candidates;
-	};
-	if prefix != "rust" {
+	let Some(parsed) = EntryUri::parse(uri) else { return candidates };
+	if parsed.lang() != "rust" {
 		return candidates;
 	}
-	let Some((package_segment, fq_name)) = suffix.split_once('/') else {
-		return candidates;
-	};
-	let canonical_package = canonical_rust_package_segment(package_segment, fq_name);
-	if canonical_package != package_segment {
-		candidates.push(format!("Entry/{prefix}/{canonical_package}/{fq_name}"));
+	let canonical_package = canonical_rust_package_segment(parsed.package(), parsed.path());
+	if canonical_package != parsed.package() {
+		candidates.push(EntryUri::new(parsed.lang(), &canonical_package, parsed.path()).to_string());
 	}
 	candidates
 }
