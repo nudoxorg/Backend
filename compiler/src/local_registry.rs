@@ -8,7 +8,7 @@ use tokio::{sync::{Mutex, RwLock, Semaphore}, task::spawn_blocking, time::{Durat
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, text_index::SymbolTextIndex, traits::{builder::get_registry, registry::Registry}, util::retry::Transient};
+use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError, RegistryLookupError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, text_index::SymbolTextIndex, traits::{builder::get_registry, registry::Registry}, util::retry::Transient};
 
 fn deserialize_lenient_version<'de, D: Deserializer<'de>>(d: D) -> Result<Version, D::Error> {
 	let s = String::deserialize(d)?;
@@ -332,7 +332,7 @@ impl LocalRegistry {
 	) -> Result<PackageSnapshot, AppError> {
 		let _guard = tracked.sync_lock.lock().await;
 		let _slot = self.sync_slots.clone().acquire_owned().await.map_err(|source| {
-			AppError::Internal { message: format!("sync scheduler shut down unexpectedly: {source}") }
+			AppError::SyncShutdown { source }
 		})?;
 
 		let progress = {
@@ -452,8 +452,8 @@ impl LocalRegistry {
 
 	fn allocate_id(&self) -> Result<PackageId, AppError> {
 		let next = self.next_id.fetch_add(1, Ordering::Relaxed);
-		let next = NonZeroU64::new(next)
-			.ok_or_else(|| AppError::Internal { message: "package id counter overflowed".to_owned() })?;
+	let next = NonZeroU64::new(next)
+		.ok_or_else(|| AppError::IdExhausted)?;
 		Ok(PackageId(next))
 	}
 
@@ -714,11 +714,11 @@ async fn resolve_package_handle(request: &NewPackageRequest) -> Result<PackageHa
 			}
 			let registry = get_registry(Language::Rust);
 			let packages = registry.get_packages_by_name(&request.name).await.map_err(|source| {
-				AppError::RegistryLookup {
+				AppError::RegistryLookup(RegistryLookupError::CratesIo {
 					language: request.language,
 					package:  request.name.clone(),
-					message:  source.to_string(),
-				}
+					source,
+				})
 			})?;
 			resolve_rust_package_handle(request, packages)
 		}
@@ -733,7 +733,7 @@ fn resolve_explicit_rust_package_handle(
 	let source = request
 		.source
 		.as_deref()
-		.ok_or_else(|| AppError::Internal { message: "missing explicit Rust source".to_owned() })?;
+		.ok_or_else(|| AppError::MissingSource { kind: "Rust" })?;
 	let source = parse_explicit_repository_source(request, source)?;
 
 	Ok(PackageHandle::Rust(RustPackage {
@@ -751,10 +751,11 @@ fn resolve_rust_package_handle(
 	request: &NewPackageRequest,
 	packages: Vec<RustPackage>,
 ) -> Result<PackageHandle, AppError> {
-	let package = packages.into_iter().next().ok_or_else(|| AppError::RegistryLookup {
-		language: request.language,
-		package:  request.name.clone(),
-		message:  "package not found".to_owned(),
+	let package = packages.into_iter().next().ok_or_else(|| {
+		AppError::RegistryLookup(RegistryLookupError::NotFound {
+			language: request.language,
+			package:  request.name.clone(),
+		})
 	})?;
 	Ok(PackageHandle::Rust(package))
 }
@@ -769,11 +770,11 @@ async fn resolve_typescript_package_handle(
 	let registry = crate::core::ts::Npm::default();
 	let package =
 		registry.resolve_package_version(&request.name, &request.version).await.map_err(|source| {
-			AppError::RegistryLookup {
+			AppError::RegistryLookup(RegistryLookupError::Npm {
 				language: request.language,
 				package:  request.name.clone(),
-				message:  source.to_string(),
-			}
+				source,
+			})
 		})?;
 	Ok(PackageHandle::TypeScript(package))
 }
@@ -781,9 +782,7 @@ async fn resolve_typescript_package_handle(
 fn resolve_explicit_typescript_package_handle(
 	request: &NewPackageRequest,
 ) -> Result<PackageHandle, AppError> {
-	let source = request.source.as_deref().ok_or_else(|| AppError::Internal {
-		message: "missing explicit TypeScript source".to_owned(),
-	})?;
+	let source = request.source.as_deref().ok_or_else(|| AppError::MissingSource { kind: "TypeScript" })?;
 	let source = parse_explicit_typescript_source(request, source)?;
 	let entry_point = format!(
 		"{TYPESCRIPT_REPOSITORY_ENTRY_PREFIX}{}",
@@ -919,11 +918,11 @@ async fn run_sync(
 				let entry_point = crate::core::ts::Npm::default()
 					.materialize_package_version(&package.name, &spec.version, workspace.path())
 					.await
-					.map_err(|source| AppError::RegistryLookup {
+					.map_err(|source| AppError::RegistryLookup(RegistryLookupError::Npm {
 						language: spec.language,
 						package:  package.name.clone(),
-						message:  source.to_string(),
-					})?;
+						source,
+					}))?;
 				let mut materialized_package = package.clone();
 				materialized_package.entry_point = entry_point.display().to_string();
 
@@ -1152,18 +1151,21 @@ fn parse_explicit_repository_source(
 	}
 
 	let path = PathBuf::from(source);
-	let canonical = path.canonicalize().map_err(|error| AppError::RegistryLookup {
-		language: request.language,
-		package:  request.name.clone(),
-		message:  format!("failed to resolve `{source}` as a local path: {error}"),
-	})?;
-
-	Url::from_directory_path(&canonical).or_else(|()| Url::from_file_path(&canonical)).map_err(|()| {
-		AppError::RegistryLookup {
+	let canonical = path.canonicalize().map_err(|error| AppError::RegistryLookup(
+		RegistryLookupError::PathResolution {
 			language: request.language,
 			package:  request.name.clone(),
-			message:  format!("`{}` is not a valid repository path or URL", canonical.display()),
-		}
+			path:     source.to_owned(),
+			source:   error,
+		},
+	))?;
+
+	Url::from_directory_path(&canonical).or_else(|()| Url::from_file_path(&canonical)).map_err(|()| {
+		AppError::RegistryLookup(RegistryLookupError::InvalidRepositoryPath {
+			language: request.language,
+			package:  request.name.clone(),
+			path:     canonical.display().to_string(),
+		})
 	})
 }
 
@@ -1189,12 +1191,7 @@ fn resolve_typescript_repository_entry_point(
 		}
 	}
 
-	Err(AppError::Internal {
-		message: format!(
-			"could not determine a TypeScript entry point in `{}`",
-			repository_root.display()
-		),
-	})
+	Err(AppError::TypescriptEntryPointDiscovery { path: repository_root.to_string_lossy().into_owned() })
 }
 
 fn ensure_typescript_entry_point(
@@ -1211,9 +1208,7 @@ fn ensure_typescript_entry_point(
 		}
 	}
 
-	Err(AppError::Internal {
-		message: format!("TypeScript entry point `{}` does not exist", candidate.display()),
-	})
+	Err(AppError::TypescriptEntryPointMissing { path: candidate.to_string_lossy().into_owned() })
 }
 
 fn typescript_source_fallback_candidates(repository_root: &Path, candidate: &Path) -> Vec<PathBuf> {

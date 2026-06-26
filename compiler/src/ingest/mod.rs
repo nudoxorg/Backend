@@ -17,7 +17,7 @@ use semver::Version;
 use tokio::task::spawn_blocking;
 use tracing::{info, warn};
 
-use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::AppError, ingest::{parsed_symbol::{PackageCoord, project}, sink::{IngestReport, OrchestratorSink, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::ProgressReporter, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, IngestError}, ingest::{parsed_symbol::{PackageCoord, project}, sink::{IngestReport, OrchestratorSink, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::ProgressReporter, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -105,9 +105,10 @@ pub async fn run_rust_pipeline(
 	let ver = version.clone();
 	// IR generation and rustdoc JSON parsing are CPU/blocking-I/O; run off the async executor.
 	let (ir, source_map) = spawn_blocking(move || -> Result<_, AppError> {
-		let ir = pkg.generate_ir(&ws, &ver).map_err(|source| AppError::Internal {
-			message: format!("IR generation failed for `{}`: {source}", pkg.name),
-		})?;
+		let ir = pkg.generate_ir(&ws, &ver).map_err(|source| AppError::Ingest(IngestError::IrGeneration {
+			package: pkg.name.clone(),
+			source,
+		}))?;
 		let source_map = build_rust_source_map(&ws, &pkg.name);
 		Ok((ir, source_map))
 	})
@@ -115,7 +116,7 @@ pub async fn run_rust_pipeline(
 	.map_err(|source| AppError::TaskJoin { action: "Rust IR generation", source })??;
 
 	finalize_pipeline(
-		"rust",
+		nudox_core::Language::Rust,
 		&package.name,
 		version,
 		ir.index().into_index(),
@@ -140,15 +141,16 @@ pub async fn run_typescript_pipeline(
 ) -> Result<IngestionSummary, AppError> {
 	let pkg = package.clone();
 	let ir = spawn_blocking(move || -> Result<_, AppError> {
-		pkg.generate_ir().map_err(|source| AppError::Internal {
-			message: format!("IR generation failed for `{}`: {source}", pkg.name),
-		})
+		pkg.generate_ir().map_err(|source| AppError::Ingest(IngestError::TsIrGeneration {
+			package: pkg.name.clone(),
+			source,
+		}))
 	})
 	.await
 	.map_err(|source| AppError::TaskJoin { action: "TypeScript IR generation", source })??;
 
 	finalize_pipeline(
-		"typescript",
+		nudox_core::Language::TypeScript,
 		&package.name,
 		version,
 		ir.index().into_index(),
@@ -164,7 +166,7 @@ pub async fn run_typescript_pipeline(
 
 #[allow(clippy::too_many_arguments)]
 async fn finalize_pipeline(
-	language: &str,
+	language: nudox_core::Language,
 	package_name: &str,
 	version: &Version,
 	index: Index,
@@ -183,7 +185,7 @@ async fn finalize_pipeline(
 	// emission then consumes it. Both walk the same in-memory IR — neither
 	// re-parses the other's output.
 	let symbols = project(&coord, &index, source_map, terminus_instance.as_deref());
-	let doc_store = emit_store(language, package_name, version, index);
+	let doc_store = emit_store(language.as_str(), package_name, version, index);
 	let document_count = doc_store.docs.len();
 
 	// Assemble the sink set from whatever backends are configured.
@@ -206,7 +208,7 @@ async fn finalize_pipeline(
 		sinks.push(Box::new(TerminusSink { config: terminus.clone(), schema, store: doc_store }));
 	}
 	if let Some(qdrant) = &config.qdrant {
-		let collection = collection_name(qdrant, language, package_name, version);
+		let collection = collection_name(qdrant, language.as_str(), package_name, version);
 		sinks.push(Box::new(VectorSink {
 			settings: qdrant.clone(),
 			model: config.embedding_model.clone(),

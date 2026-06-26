@@ -11,14 +11,14 @@ use crate::error::GitError;
 pub fn open_or_clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, GitError> {
 	if out_path.exists() {
 		let repo = gix::open(out_path)
-			.map_err(|source| GitError::Open { path: out_path.to_path_buf(), source: source.into() })?;
+			.map_err(|source| GitError::Open { path: out_path.to_path_buf(), source })?;
 
 		if repository_matches_remote(&repo, remote)? {
 			return Ok(repo);
 		}
 
 		fs::remove_dir_all(out_path)
-			.map_err(|source| GitError::Open { path: out_path.to_path_buf(), source: source.into() })?;
+			.map_err(|source| GitError::Io { path: out_path.to_path_buf(), source })?;
 	}
 
 	clone_repository(out_path, remote)
@@ -28,20 +28,20 @@ pub fn open_or_clone_repository(out_path: &Path, remote: &Url) -> Result<Reposit
 pub fn clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, GitError> {
 	if let Some(parent) = out_path.parent() {
 		std::fs::create_dir_all(parent)
-			.map_err(|source| GitError::Open { path: parent.to_path_buf(), source: source.into() })?;
+			.map_err(|source| GitError::Io { path: parent.to_path_buf(), source })?;
 	}
 
 	let mut fetch_handle = gix::prepare_clone(remote.to_string(), out_path)
-		.map_err(|source| GitError::Clone(source.into()))?
+		.map_err(|source| GitError::Clone { url: remote.to_string(), source })?
 		.with_fetch_options(remote::ref_map::Options::default());
 
 	let (mut checkout_handle, _) = fetch_handle
 		.fetch_then_checkout(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(|source| GitError::Checkout(source.into()))?;
+		.map_err(|source| GitError::FetchCheckout { source })?;
 
 	let (repo, _) = checkout_handle
 		.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(|source| GitError::Checkout(source.into()))?;
+		.map_err(|source| GitError::WorktreeCheckout { source })?;
 
 	Ok(repo)
 }
@@ -50,7 +50,7 @@ fn repository_matches_remote(repo: &Repository, remote: &Url) -> Result<bool, Gi
 	let fetch_remote = repo
 		.find_fetch_remote(Some("origin".as_bytes().as_bstr()))
 		.or_else(|_| repo.find_fetch_remote(None))
-		.map_err(|source| GitError::Fetch(source.into()))?;
+		.map_err(|source| GitError::FindRemote { source })?;
 	let Some(configured_url) = fetch_remote.url(remote::Direction::Fetch) else {
 		return Ok(false);
 	};
@@ -62,14 +62,14 @@ fn repository_matches_remote(repo: &Repository, remote: &Url) -> Result<bool, Gi
 pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Result<(), GitError> {
 	let remote = repo
 		.find_fetch_remote(remote_name.map(|name| name.as_bytes().as_bstr()))
-		.map_err(|source| GitError::Fetch(source.into()))?;
+		.map_err(|source| GitError::FindRemote { source })?;
 
 	let fetch_result: Result<(), GitError> = (|| {
 		let connection =
-			remote.connect(remote::Direction::Fetch).map_err(|source| GitError::Fetch(source.into()))?;
+			remote.connect(remote::Direction::Fetch).map_err(|source| GitError::Connect { source })?;
 		let prepare = connection
 			.prepare_fetch(Discard, remote::ref_map::Options::default())
-			.map_err(|source| GitError::Fetch(source.into()))?;
+			.map_err(|source| GitError::PrepareFetch { source })?;
 
 		prepare
 			.with_write_packed_refs_only(true)
@@ -77,7 +77,7 @@ pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Res
 				action: "fetch".to_owned(),
 			})
 			.receive(Discard, &gix::interrupt::IS_INTERRUPTED)
-			.map_err(|source| GitError::Fetch(source.into()))?;
+			.map_err(|source| GitError::ReceiveFetch { source })?;
 
 		Ok(())
 	})();
@@ -95,7 +95,7 @@ pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Res
 		.arg("--prune")
 		.arg(remote_name)
 		.output()
-		.map_err(|source| GitError::Fetch(source.into()))?;
+		.map_err(|source| GitError::Io { path: repo_dir.to_path_buf(), source })?;
 
 	if output.status.success() {
 		return Ok(());
@@ -103,15 +103,15 @@ pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Res
 
 	let stderr = String::from_utf8_lossy(&output.stderr);
 	let stdout = String::from_utf8_lossy(&output.stdout);
-	Err(GitError::Fetch(
-		std::io::Error::other(format!(
+	Err(GitError::Io {
+		path:   repo_dir.to_path_buf(),
+		source: std::io::Error::other(format!(
 			"gix fetch failed and git fetch fallback exited with status {}: stdout: {} stderr: {}",
 			output.status,
 			stdout.trim(),
 			stderr.trim()
-		))
-		.into(),
-	))
+		)),
+	})
 }
 
 #[instrument(skip(repo), fields(remote = %remote_name, branch = %branch))]
@@ -130,30 +130,30 @@ pub fn materialize_commit(
 	commit: gix::ObjectId,
 	destination: &Path,
 ) -> Result<(), GitError> {
-	std::fs::create_dir_all(destination).map_err(|source| GitError::Open {
+	std::fs::create_dir_all(destination).map_err(|source| GitError::Io {
 		path:   destination.to_path_buf(),
-		source: source.into(),
+		source,
 	})?;
 
 	let tree_id = repo
 		.find_commit(commit)
 		.map_err(|source| GitError::Reference {
 			name:   commit.to_hex().to_string(),
-			source: source.into(),
+			source,
 		})?
 		.tree_id()
 		.map_err(|source| GitError::Reference {
 			name:   commit.to_hex().to_string(),
-			source: source.into(),
+			source,
 		})?;
 
 	let mut index = repo.index_from_tree(&tree_id).map_err(|source| GitError::IndexFromTree {
 		tree:   tree_id.to_string(),
-		source: source.into(),
+		source,
 	})?;
 	let mut options = repo
 		.checkout_options(gix_worktree::stack::state::attributes::Source::IdMapping)
-		.map_err(|source| GitError::CheckoutOptions(source.into()))?;
+		.map_err(|source| GitError::CheckoutOptions(source))?;
 	options.destination_is_initially_empty = true;
 	options.overwrite_existing = true;
 
@@ -166,7 +166,7 @@ pub fn materialize_commit(
 		&gix::interrupt::IS_INTERRUPTED,
 		options,
 	)
-	.map_err(|source| GitError::Materialize(source.into()))?;
+	.map_err(|source| GitError::Materialize(source))?;
 
 	Ok(())
 }
@@ -258,15 +258,15 @@ pub fn extract_package_version(
 ) -> Result<Option<Version>, GitError> {
 	let Some(entry) = tree
 		.lookup_entry_by_path("Cargo.toml")
-		.map_err(|source| GitError::TreeLookup { path: "Cargo.toml".into(), source: source.into() })?
+		.map_err(|source| GitError::TreeLookupEntry { path: "Cargo.toml".into(), source })?
 		.filter(|entry| entry.mode().is_blob())
 	else {
 		return Ok(None);
 	};
 
-	let blob = repo.find_blob(entry.oid()).map_err(|source| GitError::TreeLookup {
+	let blob = repo.find_blob(entry.oid()).map_err(|source| GitError::FindBlob {
 		path:   "Cargo.toml".into(),
-		source: source.into(),
+		source,
 	})?;
 	let content = std::str::from_utf8(&blob.data)
 		.map_err(|source| GitError::BlobEncoding { path: "Cargo.toml".into(), source })?;
@@ -331,7 +331,7 @@ fn read_toml(
 ) -> Result<toml::Value, GitError> {
 	let Some(entry) = tree
 		.lookup_entry_by_path(path)
-		.map_err(|source| GitError::TreeLookup { path: path.into(), source: source.into() })?
+		.map_err(|source| GitError::TreeLookupEntry { path: path.into(), source })?
 		.filter(|entry| entry.mode().is_blob())
 	else {
 		return Ok(toml::Value::Table(Default::default()));
@@ -339,7 +339,7 @@ fn read_toml(
 
 	let blob = repo
 		.find_blob(entry.oid())
-		.map_err(|source| GitError::TreeLookup { path: path.into(), source: source.into() })?;
+		.map_err(|source| GitError::FindBlob { path: path.into(), source })?;
 	let content = std::str::from_utf8(&blob.data)
 		.map_err(|source| GitError::BlobEncoding { path: path.into(), source })?;
 
@@ -446,14 +446,14 @@ fn collect_manifest_directories(
 ) -> Result<Vec<String>, GitError> {
 	for entry in tree.iter() {
 		let entry = entry
-			.map_err(|source| GitError::TreeLookup { path: prefix.into(), source: source.into() })?;
+			.map_err(|source| GitError::TreeTraverse { source })?;
 		let name = entry.filename().to_string();
 		let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
 
 		if entry.mode().is_tree() {
 			let subtree = repo
 				.find_tree(entry.oid())
-				.map_err(|source| GitError::TreeLookup { path: path.clone(), source: source.into() })?;
+				.map_err(|source| GitError::FindTree { path: path.clone(), source })?;
 			collect_manifest_directories(repo, &subtree, &path, out)?;
 			continue;
 		}
@@ -528,7 +528,7 @@ fn segment_matches(value: &str, pattern: &str) -> bool {
 fn version_search_start_points(
 	repo: &gix::Repository,
 	start: Option<gix::ObjectId>,
-) -> Result<Vec<gix::ObjectId>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<gix::ObjectId>, GitError> {
 	let mut starts = Vec::new();
 	let mut seen = HashSet::new();
 
@@ -536,14 +536,27 @@ fn version_search_start_points(
 		seen.insert(start);
 		starts.push(start);
 	} else {
-		let head = repo.head()?.peel_to_object()?.id().detach();
+		let head = repo
+			.head()
+			.map_err(|source| GitError::Head { source })?
+			.peel_to_object()
+			.map_err(|source| GitError::ObjectLookup { source })?
+			.id()
+			.detach();
 		seen.insert(head);
 		starts.push(head);
 	}
 
-	let refs = repo.references()?;
-	for reference in refs.all()?.peeled()? {
-		let mut reference = reference?;
+	let refs = repo
+		.references()
+		.map_err(|source| GitError::ReferencesOpen { source })?;
+	for reference in refs
+		.all()
+		.map_err(|source| GitError::ReferencesAll { source })?
+		.peeled()
+		.map_err(|source| GitError::ReferencesAll { source })?
+	{
+		let mut reference = reference.map_err(|source| GitError::ReferencesAll { source })?;
 		let Ok(id) = reference.peel_to_id() else {
 			continue;
 		};
@@ -582,13 +595,12 @@ fn extract_typescript_package_version(
 mod tests {
 	use std::{fs, path::Path, process::Command};
 
-	use color_eyre::eyre::WrapErr;
 	use tempfile::TempDir;
 
 	use super::*;
 
 	#[test]
-	fn check_package_version_uses_workspace_inherited_version() -> color_eyre::Result<()> {
+	fn check_package_version_uses_workspace_inherited_version() -> Result<(), Box<dyn std::error::Error>> {
 		let workspace_manifest: toml::Value = toml::from_str(
 			r#"
 [workspace]
@@ -618,7 +630,7 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn resolve_workspace_members_supports_nested_globs_and_excludes() -> color_eyre::Result<()> {
+	fn resolve_workspace_members_supports_nested_globs_and_excludes() -> Result<(), Box<dyn std::error::Error>> {
 		let repo = git_fixture(
 			&[
 				(
@@ -646,7 +658,7 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn extract_package_version_reads_workspace_member_version_from_manifest() -> color_eyre::Result<()>
+	fn extract_package_version_reads_workspace_member_version_from_manifest() -> 	Result<T, Box<dyn std::error::Error>><()>
 	{
 		let repo = git_fixture(
 			&[
@@ -668,7 +680,7 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn extract_package_version_falls_back_to_non_workspace_nested_crates() -> color_eyre::Result<()> {
+	fn extract_package_version_falls_back_to_non_workspace_nested_crates() -> 	Result<T, Box<dyn std::error::Error>><()> {
 		let repo = git_fixture(
 			&[
 				(
@@ -693,7 +705,7 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn find_commit_for_version_scans_all_refs_not_just_head_history() -> color_eyre::Result<()> {
+	fn find_commit_for_version_scans_all_refs_not_just_head_history() -> 	Result<T, Box<dyn std::error::Error>><()> {
 		let repo_dir = git_fixture_dir(
 			&[("Cargo.toml", "[package]\nname = \"widget\"\nversion = \"0.1.0\"\n")],
 			&[],
@@ -723,7 +735,7 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn open_or_clone_repository_reclones_when_cached_remote_differs() -> color_eyre::Result<()> {
+	fn open_or_clone_repository_reclones_when_cached_remote_differs() -> 	Result<T, Box<dyn std::error::Error>><()> {
 		let first_remote =
 			git_fixture_dir(&[("Cargo.toml", "[package]\nname = \"first\"\nversion = \"0.1.0\"\n")], &[
 			])?;
@@ -752,7 +764,7 @@ version = { workspace = true }
 	fn git_fixture(
 		files: &[(&str, &str)],
 		extra_commits: &[Vec<(&str, &str)>],
-	) -> color_eyre::Result<gix::Repository> {
+	) -> 	Result<T, Box<dyn std::error::Error>><gix::Repository> {
 		let dir = git_fixture_dir(files, extra_commits)?;
 		let path = dir.keep();
 		Ok(gix::open(path)?)
@@ -761,7 +773,7 @@ version = { workspace = true }
 	fn git_fixture_dir(
 		files: &[(&str, &str)],
 		extra_commits: &[Vec<(&str, &str)>],
-	) -> color_eyre::Result<TempDir> {
+	) -> 	Result<T, Box<dyn std::error::Error>><TempDir> {
 		let dir = tempfile::tempdir()?;
 		for (path, contents) in files {
 			write_file(dir.path(), path, contents)?;
@@ -782,7 +794,7 @@ version = { workspace = true }
 		Ok(dir)
 	}
 
-	fn write_file(root: &Path, relative: &str, contents: &str) -> color_eyre::Result<()> {
+	fn write_file(root: &Path, relative: &str, contents: &str) -> 	Result<T, Box<dyn std::error::Error>><()> {
 		let path = root.join(relative);
 		if let Some(parent) = path.parent() {
 			fs::create_dir_all(parent)?;
@@ -791,7 +803,7 @@ version = { workspace = true }
 		Ok(())
 	}
 
-	fn commit(cwd: &Path, message: &str) -> color_eyre::Result<()> {
+	fn commit(cwd: &Path, message: &str) -> 	Result<T, Box<dyn std::error::Error>><()> {
 		run_git(cwd, [
 			"-c",
 			"user.name=Codex",
@@ -807,12 +819,12 @@ version = { workspace = true }
 		])
 	}
 
-	fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) -> color_eyre::Result<()> {
+	fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) -> 	Result<T, Box<dyn std::error::Error>><()> {
 		let status =
 			Command::new("git").args(args).current_dir(cwd).status().wrap_err("failed to spawn git")?;
 
 		if !status.success() {
-			color_eyre::eyre::bail!("git {:?} failed with status {}", args, status);
+			return Err(format!("git {:?} failed with status {}", args, status).into());
 		}
 
 		Ok(())

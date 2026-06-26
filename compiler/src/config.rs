@@ -2,7 +2,8 @@ use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 
 use url::Url;
 
-use crate::{error::AppError, terminusdb::upload::TerminusConfig};
+use crate::error::{AppError, ConfigError};
+use crate::terminusdb::upload::TerminusConfig;
 
 #[derive(Clone, Copy, Debug)]
 pub enum VectorDistance {
@@ -42,10 +43,10 @@ impl AppConfig {
 		let bind_addr = env::var("NUDOX_BIND_ADDR")
 			.unwrap_or_else(|_| "0.0.0.0:3000".to_owned())
 			.parse()
-			.map_err(|source| AppError::Configuration {
-				field:   "NUDOX_BIND_ADDR",
-				message: format!("invalid socket address: {source}"),
-			})?;
+			.map_err(|source| AppError::Config(ConfigError::AddrParse {
+				name: "NUDOX_BIND_ADDR",
+				source,
+			}))?;
 
 		let storage_root = match env::var_os("NUDOX_DATA_DIR") {
 			Some(path) => PathBuf::from(path),
@@ -121,38 +122,35 @@ fn build_qdrant_settings() -> Result<Option<QdrantSettings>, AppError> {
 fn parse_url(field: &'static str, value: Option<String>) -> Result<Url, AppError> {
 	let value = require_env(field, value)?;
 	Url::parse(&value)
-		.map_err(|source| AppError::Configuration { field, message: format!("invalid url: {source}") })
+		.map_err(|source| AppError::Config(ConfigError::InvalidUrl { name: field, source }))
 }
 
 fn require_env(field: &'static str, value: Option<String>) -> Result<String, AppError> {
-	value.ok_or(AppError::Configuration {
-		field,
-		message: "missing required environment variable".to_owned(),
-	})
+	value.ok_or(AppError::Config(ConfigError::MissingEnv { name: field }))
 }
 
 fn parse_env_u64(field: &'static str, default: u64) -> Result<u64, AppError> {
 	match env::var(field) {
-		Ok(value) => value.parse::<u64>().map_err(|source| AppError::Configuration {
-			field,
-			message: format!("invalid integer: {source}"),
-		}),
+		Ok(value) => value.parse::<u64>().map_err(|source| AppError::Config(ConfigError::ParseInt {
+			name: field,
+			source,
+		})),
 		Err(env::VarError::NotPresent) => Ok(default),
 		Err(env::VarError::NotUnicode(_)) => {
-			Err(AppError::Configuration { field, message: "value is not valid UTF-8".to_owned() })
+			Err(AppError::Config(ConfigError::NotUnicode { name: field }))
 		}
 	}
 }
 
 fn parse_env_bool(field: &'static str, default: bool) -> Result<bool, AppError> {
 	match env::var(field) {
-		Ok(value) => bool::from_str(&value).map_err(|source| AppError::Configuration {
-			field,
-			message: format!("invalid bool: {source}"),
-		}),
+		Ok(value) => bool::from_str(&value).map_err(|source| AppError::Config(ConfigError::ParseBool {
+			name: field,
+			source,
+		})),
 		Err(env::VarError::NotPresent) => Ok(default),
 		Err(env::VarError::NotUnicode(_)) => {
-			Err(AppError::Configuration { field, message: "value is not valid UTF-8".to_owned() })
+			Err(AppError::Config(ConfigError::NotUnicode { name: field }))
 		}
 	}
 }
@@ -163,9 +161,9 @@ fn parse_distance(value: &str) -> Result<VectorDistance, AppError> {
 		"dot" => Ok(VectorDistance::Dot),
 		"euclid" | "euclidean" => Ok(VectorDistance::Euclid),
 		"manhattan" => Ok(VectorDistance::Manhattan),
-		other => Err(AppError::Configuration {
-			field:   "NUDOX_QDRANT_DISTANCE",
-			message: format!("unsupported distance `{other}`"),
-		}),
+		other => Err(AppError::Config(ConfigError::InvalidValue {
+			name:  "NUDOX_QDRANT_DISTANCE",
+			value: other.to_owned(),
+		})),
 	}
 }

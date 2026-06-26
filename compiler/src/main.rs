@@ -1,10 +1,8 @@
-use color_eyre::eyre;
 use nudox::{config::AppConfig, server};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() -> eyre::Result<()> {
-	color_eyre::install()?;
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let config = AppConfig::from_env()?;
 
 	tracing_subscriber::fmt()

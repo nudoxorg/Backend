@@ -87,6 +87,8 @@ use qdrant_client::{Payload, qdrant::{PointId, PointStruct, Value}};
 use tokio::task::JoinSet;
 use tracing::info;
 
+use crate::error::EmbeddingError;
+
 const DEFAULT_EMBED_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
@@ -94,46 +96,8 @@ pub struct EmbeddingProgress {
 	pub completed: usize,
 	pub total:     usize,
 }
-/// Provider-agnostic embedding error.
-///
-/// Keep this structured early so the pipeline can distinguish between:
-/// - source data issues
-/// - provider failures
-/// - upload/encoding failures
-
-#[derive(Debug)]
-pub enum EmbeddingError {
-	MissingText,
-	MissingVector,
-
-	MissingField(&'static str),
-	InvalidFieldType(&'static str),
-	InvalidDocumentShape(&'static str),
-	UnsupportedDocumentType(String),
-
-	InvalidPointId(String),
-	Provider(String),
-	Conversion(String),
-}
-
-impl std::fmt::Display for EmbeddingError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::MissingText => write!(f, "missing text for embedding"),
-			Self::MissingVector => write!(f, "missing generated vector"),
-			Self::MissingField(field) => write!(f, "missing required field: {field}"),
-			Self::InvalidFieldType(field) => write!(f, "invalid field type for: {field}"),
-			Self::InvalidDocumentShape(msg) => write!(f, "invalid document shape: {msg}"),
-			Self::UnsupportedDocumentType(doc_type) => {
-				write!(f, "unsupported document type for embedding extraction: {doc_type}")
-			}
-			Self::InvalidPointId(msg) => write!(f, "invalid point id: {msg}"),
-			Self::Provider(msg) => write!(f, "embedding provider error: {msg}"),
-			Self::Conversion(msg) => write!(f, "conversion error: {msg}"),
-		}
-	}
-}
-impl std::error::Error for EmbeddingError {}
+// EmbeddingError is defined in crate::error and re-used here.
+// See compiler/src/error.rs for the full enum definition.
 
 /// The high-level semantic type of the vectorized record.
 ///
@@ -487,7 +451,7 @@ where
 			.into_iter()
 			.map(|record| {
 				record.ok_or_else(|| {
-					EmbeddingError::Provider("embedding worker completed without a record".to_owned())
+					EmbeddingError::EmptyResponse
 				})
 			})
 			.collect()
@@ -535,14 +499,14 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
 			.model(self.model_name.clone())
 			.input(text)
 			.build()
-			.map_err(|e| EmbeddingError::Provider(format!("failed to build embedding request: {e}")))?;
+			.map_err(|source| EmbeddingError::RequestBuild { source })?;
 
 		let response = self
 			.client
 			.embeddings()
 			.create(request)
 			.await
-			.map_err(|e| EmbeddingError::Provider(format!("openai embeddings request failed: {e}")))?;
+			.map_err(|source| EmbeddingError::ApiRequest { source })?;
 
 		let embedding =
 			response.data.into_iter().next().ok_or(EmbeddingError::MissingVector)?.embedding;
@@ -592,7 +556,7 @@ async fn collect_embedded_record(
 		return Ok(());
 	};
 	let (index, record) = result
-		.map_err(|error| EmbeddingError::Provider(format!("embedding task join failed: {error}")))??;
+		.map_err(|source| EmbeddingError::TaskJoin { source })??;
 	out[index] = Some(record);
 	*completed += 1;
 	if *completed == total || total <= 50 || *completed % 10 == 0 {

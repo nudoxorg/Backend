@@ -6,7 +6,7 @@ use nudox_orchestrator::Orchestrator;
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
-use crate::{config::PipelineConfig, error::AppError, local_registry::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}, text_index::SymbolTextIndex};
+use crate::{config::PipelineConfig, error::{AppError, ConfigError, IngestError}, local_registry::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}, text_index::SymbolTextIndex};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -86,7 +86,7 @@ async fn text_search(
 	let index = state
 		.text_index
 		.as_ref()
-		.ok_or_else(|| AppError::Internal { message: "text search index not available".to_owned() })?;
+		.ok_or_else(|| AppError::TextSearchNotConfigured)?;
 	let limit = params.limit.unwrap_or(6);
 	let hits = index.search(&params.q, limit)?;
 	let results = hits
@@ -160,11 +160,7 @@ impl<'a> LookupMode<'a> {
 				language,
 				package: params.package.as_deref(),
 			}),
-			_ => Err(AppError::Configuration {
-				field:   "q",
-				message: "provide either q=<symbol-uri> or symbol=<fq_name>&language=<language>[&package=<package>]"
-					.to_owned(),
-			}),
+		_ => Err(AppError::Config(ConfigError::MissingQueryParams)),
 		}
 	}
 }
@@ -219,10 +215,7 @@ async fn clear_session(
 ) -> Result<StatusCode, AppError> {
 	let session = params.session.trim();
 	if session.is_empty() {
-		return Err(AppError::Configuration {
-			field:   "session",
-			message: "value must not be empty".to_owned(),
-		});
+		return Err(AppError::Config(ConfigError::EmptySession));
 	}
 	state.sessions.clear(session).await;
 	Ok(StatusCode::NO_CONTENT)
@@ -239,11 +232,10 @@ async fn symbol_search(
 				.to_owned(),
 		});
 	}
-	let orch = state.symbol_orchestrator.as_ref().ok_or_else(|| AppError::Internal {
-		message: "symbol search not configured on this server".to_owned(),
-	})?;
-	let matches =
-		orch.search(&query).await.map_err(|e| AppError::Internal { message: e.to_string() })?;
+	let orch = state.symbol_orchestrator.as_ref().ok_or_else(|| AppError::SymbolSearchNotConfigured)?;
+	let matches = orch.search(&query).await.map_err(|e| AppError::Ingest(IngestError::Pipeline {
+		details: format!("orchestrator search failed: {}", e),
+	}))?;
 	Ok(Json(matches.into_iter().map(SymbolMatchResponse::from).collect()))
 }
 

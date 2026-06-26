@@ -6,7 +6,7 @@ use serde_json::Value as JsonValue;
 use terminusdb_client::{BranchSpec, GetOpts, TerminusDBHttpClient};
 use tokio::sync::Mutex;
 
-use crate::{config::{PipelineConfig, QdrantSettings}, error::AppError, identity::EntryUri, terminusdb::{embedding_service::{EmbeddingProvider, OpenAIEmbeddingProvider}, upload::TerminusConfig}};
+use crate::{config::{PipelineConfig, QdrantSettings}, error::{AppError, ConfigError, EmbeddingError, QdrantError, TerminusError}, identity::EntryUri, terminusdb::{embedding_service::{EmbeddingProvider, OpenAIEmbeddingProvider}, upload::TerminusConfig}};
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -252,11 +252,8 @@ pub async fn lookup_symbol_with_context(
 	}
 
 	let resolved_uri = resolved_uri.unwrap_or(requested_uri);
-	let document = document.ok_or_else(|| AppError::Internal {
-		message: format!(
-			"symbol `{symbol}` with language `{language}`{} was not found in TerminusDB",
-			package.map(|value| format!(" and package `{value}`")).unwrap_or_default()
-		),
+	let document = document.ok_or_else(|| AppError::SymbolNotFound {
+		uri: requested_uri.clone(),
 	})?;
 
 	let kind = match document.get("kind").and_then(JsonValue::as_str) {
@@ -340,10 +337,14 @@ async fn search_results(
 	let qdrant = require_qdrant(config)?;
 	let query = require_non_empty("q", query)?;
 	let provider = OpenAIEmbeddingProvider::new(config.embedding_model.clone());
-	let embedding =
-		provider.embed_text(query).await.map_err(|source| AppError::Embedding(source.to_string()))?;
+	let embedding = provider.embed_text(query).await?;
 
-	let client = Qdrant::from_url(qdrant.endpoint.as_str()).build().map_err(anyhow::Error::from)?;
+	let client = Qdrant::from_url(qdrant.endpoint.as_str())
+		.build()
+		.map_err(|source| AppError::Qdrant(QdrantError::ConnectionFailed {
+			endpoint: qdrant.endpoint.to_string(),
+			source,
+		}))?;
 	let collections = backend_collections(&client, qdrant).await?;
 
 	let mut results = Vec::new();
@@ -356,7 +357,10 @@ async fn search_results(
 					.with_payload(true),
 			)
 			.await
-			.map_err(anyhow::Error::from)?;
+			.map_err(|source| AppError::Qdrant(QdrantError::QueryFailed {
+				collection: collection.clone(),
+				source,
+			}))?;
 
 		results.extend(
 			response.result.into_iter().filter_map(|point| parse_search_result(point, &collection)),
@@ -419,9 +423,7 @@ async fn resolve_symbol(
 	}
 
 	let resolved_uri = resolved_uri.unwrap_or_else(|| uri.to_owned());
-	let document = document.ok_or_else(|| AppError::Internal {
-		message: format!("symbol `{uri}` was not found in TerminusDB"),
-	})?;
+	let document = document.ok_or_else(|| AppError::SymbolNotFound { uri: uri.to_owned() })?;
 
 	let kind = match document.get("kind").and_then(JsonValue::as_str) {
 		Some(kind_uri) => fetch_document(client, spec, cache, kind_uri).await?,
@@ -456,7 +458,10 @@ async fn backend_collections(
 	settings: &QdrantSettings,
 ) -> Result<Vec<String>, AppError> {
 	let ListCollectionsResponse { collections, .. } =
-		client.list_collections().await.map_err(anyhow::Error::from)?;
+		client.list_collections().await.map_err(|source| AppError::Qdrant(QdrantError::ListCollectionsFailed {
+			prefix: settings.collection_prefix.clone(),
+			source,
+		}))?;
 	let prefix = format!("{}_", settings.collection_prefix);
 
 	let mut names: Vec<String> = collections
@@ -583,23 +588,17 @@ fn canonical_rust_package_segment(package_segment: &str, fq_name: &str) -> Strin
 fn require_non_empty<'a>(field: &'static str, value: &'a str) -> Result<&'a str, AppError> {
 	let trimmed = value.trim();
 	if trimmed.is_empty() {
-		return Err(AppError::Configuration { field, message: "value must not be empty".to_owned() });
+		return Err(AppError::Config(ConfigError::EmptyValue { name: field }));
 	}
 	Ok(trimmed)
 }
 
 fn require_qdrant(config: &PipelineConfig) -> Result<&QdrantSettings, AppError> {
-	config.qdrant.as_ref().ok_or_else(|| AppError::Configuration {
-		field:   "NUDOX_QDRANT_ENDPOINT",
-		message: "search requires Qdrant to be configured".to_owned(),
-	})
+	config.qdrant.as_ref().ok_or_else(|| AppError::Config(ConfigError::MissingQdrant))
 }
 
 fn require_terminus(config: &PipelineConfig) -> Result<&TerminusConfig, AppError> {
-	config.terminus.as_ref().ok_or_else(|| AppError::Configuration {
-		field:   "NUDOX_TERMINUS_ENDPOINT",
-		message: "symbol lookup requires TerminusDB to be configured".to_owned(),
-	})
+	config.terminus.as_ref().ok_or_else(|| AppError::Config(ConfigError::MissingTerminus))
 }
 
 fn normalize_session(session: Option<&str>) -> Option<String> {
