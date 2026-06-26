@@ -229,14 +229,7 @@ impl SymbolSearch for SymbolSearcher {
 		// ── Sort by score descending ──────────────────────────────────────
 		matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-		// ── Automatic reranking / truncation ─────────────────────────────
-		let rerank_threshold = query.limit.saturating_mul(3);
-		if matches.len() > rerank_threshold {
-			// Score-based cutoff: keep top `limit` by score.
-			matches.truncate(query.limit);
-		} else {
-			matches.truncate(query.limit);
-		}
+		matches.truncate(query.limit);
 
 		Ok(matches)
 	}

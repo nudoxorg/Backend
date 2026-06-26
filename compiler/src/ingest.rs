@@ -282,7 +282,7 @@ fn emit_store(language: &str, package_name: &str, version: &Version, index: Inde
 	});
 
 	let mut runner = Runner::new(DocCtx::init(
-		CrateInfo::new(language.to_owned(), package_name.to_owned(), version.to_string()),
+		CrateInfo::new(language.to_owned(), package_name.to_owned()),
 		context_object,
 	));
 	runner.run(index.entries_by_path.into_values());

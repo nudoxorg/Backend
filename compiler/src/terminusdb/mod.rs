@@ -225,11 +225,5 @@ impl Runner {
 		}
 	}
 
-	#[allow(dead_code)]
-	pub fn docs(&self) -> &DocStore { &self.docs }
-
-	#[allow(dead_code)]
-	pub fn docs_mut(&mut self) -> &mut DocStore { &mut self.docs }
-
 	pub fn into_docs(self) -> DocStore { self.docs }
 }

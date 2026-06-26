@@ -7,7 +7,6 @@
 //! of data needed for semantic indexing, generating vector-ready records, and
 //! converting those records into Qdrant upload types. It does not implement
 //! retrieval, ranking, graph traversal, or search-time expansion logic.
-//! :contentReference[oaicite:0]{index=0}
 //!
 //! ## Scope
 //!
@@ -23,7 +22,7 @@
 //! The `DocStore` remains the canonical in-memory staging area for emitted
 //! JSON-LD documents. This module treats that store as an input source and
 //! derives vector-index records from it without changing its role as the
-//! TerminusDB-oriented representation. :contentReference[oaicite:1]{index=1}
+//! TerminusDB-oriented representation.
 //!
 //! ## Current indexing policy
 //!

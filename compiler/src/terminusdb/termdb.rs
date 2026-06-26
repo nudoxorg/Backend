@@ -131,15 +131,6 @@ impl DocStore {
 		keys.into_iter().map(|k| self.docs[k].clone()).collect()
 	}
 
-	#[allow(dead_code)]
-	pub fn into_json_ld_insert(self) -> Result<String, serde_json::Error> {
-		let mut keys: Vec<&URI> = self.docs.keys().collect();
-		keys.sort();
-
-		let docs: Vec<Value> = keys.into_iter().map(|k| self.docs[k].clone()).collect();
-		serde_json::to_string(&docs)
-	}
-
 	/// Consume the store and return all documents as a sorted `Vec<Value>`,
 	/// suitable for bulk upload via the TerminusDB client.
 	pub fn into_documents(self) -> Vec<Value> {
@@ -151,24 +142,17 @@ impl DocStore {
 /// Stores Global Info about the Crate
 // this will live for the duration of the program, need cheap copies for
 // insertion
-#[allow(dead_code)]
 pub struct CrateInfo {
 	lang:       Cow<'static, str>,
 	crate_name: Cow<'static, str>,
-	crate_ver:  Cow<'static, str>,
 }
 
 impl CrateInfo {
 	pub fn new(
 		lang: impl Into<Cow<'static, str>>,
 		crate_name: impl Into<Cow<'static, str>>,
-		crate_ver: impl Into<Cow<'static, str>>,
 	) -> Self {
-		CrateInfo {
-			lang:       lang.into(),
-			crate_name: crate_name.into(),
-			crate_ver:  crate_ver.into(),
-		}
+		CrateInfo { lang: lang.into(), crate_name: crate_name.into() }
 	}
 
 	// Getters
@@ -176,8 +160,6 @@ impl CrateInfo {
 
 	pub fn crate_name(&self) -> &str { self.crate_name.as_ref() }
 
-	#[allow(dead_code)]
-	pub fn crate_ver(&self) -> &str { self.crate_ver.as_ref() }
 }
 
 /// Context to be used including lib/crate info, schema context, uri rules, etc.
@@ -203,12 +185,9 @@ impl DocCtx {
 
 	pub fn context(&self) -> &Value { &self.context_obj }
 
-	#[allow(dead_code)]
-	pub fn context_cloned(&self) -> Value { self.context_obj.clone() }
 }
 
 /// Trait for edges and URI construction
-#[allow(dead_code)]
 pub trait UriOps {
 	fn entry_uri(&self, path: &ir::entry::NudoxPath) -> URI;
 	fn kind_uri(&self, kind: &ir::kind::Entry, path: &ir::entry::NudoxPath) -> URI;

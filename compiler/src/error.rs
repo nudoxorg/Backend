@@ -113,24 +113,13 @@ impl IntoResponse for AppError {
 
 /// Errors arising from package registry interactions (network, lookup, API).
 #[derive(Debug, Error)]
-#[allow(dead_code)]
 pub enum RegistryError {
-	#[error("network error: {0}")]
-	Network(String),
-
-	#[error("package not found: {0}")]
-	NotFound(String),
-
 	#[error("crates.io API error: {0}")]
 	CratesIo(#[from] crates_io_api::Error),
-
-	#[error("invalid configuration")]
-	InvalidConfiguration,
 }
 
 /// Errors arising from package-level operations (doc generation, parsing, IO).
 #[derive(Debug, Error)]
-#[allow(dead_code)]
 pub enum PackageError {
 	#[error("IO error: {0}")]
 	Io(#[from] io::Error),
@@ -162,7 +151,6 @@ pub enum PackageError {
 
 /// Errors arising from git operations (clone, checkout, version lookup).
 #[derive(Debug, Error)]
-#[allow(dead_code)]
 pub enum GitError {
 	#[error("clone failed: {0}")]
 	Clone(#[source] Box<dyn std::error::Error + Send + Sync>),
@@ -235,6 +223,4 @@ pub enum GitError {
 		source:  semver::Error,
 	},
 
-	#[error("unsupported workspace glob pattern: {pattern}")]
-	UnsupportedGlob { pattern: String },
 }

@@ -1,15 +1,10 @@
 use std::collections::HashMap;
 
-use gix::ObjectId;
 use ir::{entry::{Index, NudoxPath}, kind::Entry};
-use semver::Version;
 
 /// Entries freshly collected from a language parser — unindexed and
 /// unversioned.
 pub struct Collected;
-
-/// Entries with that conform to a standard of versioning
-pub struct Versioned;
 
 /// Entries indexed by ID, cross-referenceable, ready for emission.
 pub struct Indexed;
@@ -23,19 +18,6 @@ impl Stage for Collected {
 	type Data = Vec<Entry>;
 }
 
-/// A trait for grounding an external object to the git model
-#[allow(dead_code)]
-struct GroundedEntry {
-	commit:  ObjectId,
-	branch:  String,
-	version: Version,
-	object:  Entry,
-}
-
-impl Stage for Versioned {
-	type Data = Index;
-}
-
 impl Stage for Indexed {
 	type Data = Index;
 }
@@ -44,7 +26,6 @@ pub struct Ir<S: Stage> {
 	data: S::Data,
 }
 
-#[allow(dead_code)]
 impl Ir<Collected> {
 	/// Wrap raw parser output into the IR pipeline.
 	pub fn from_entries(entries: Vec<Entry>) -> Self { Ir { data: entries } }
@@ -80,7 +61,6 @@ impl Ir<Collected> {
 	pub fn entries(&self) -> &[Entry] { &self.data }
 }
 
-#[allow(dead_code)]
 impl Ir<Indexed> {
 	/// Look up an entry by its ID.
 	pub fn get(&self, id: &NudoxPath) -> Option<&Entry> { self.data.entries_by_path.get(id) }
@@ -109,31 +89,3 @@ impl IntoIterator for Ir<Indexed> {
 	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_path.into_values() }
 }
 
-#[allow(dead_code)]
-impl Ir<Versioned> {
-	/// Look up an entry by its ID.
-	pub fn get(&self, id: &NudoxPath) -> Option<&Entry> { self.data.entries_by_path.get(id) }
-
-	/// The root entry IDs.
-	pub fn root_ids(&self) -> &[NudoxPath] { &self.data.root_ids }
-
-	/// Iterate over all versioned entries (by reference).
-	pub fn iter(&self) -> impl Iterator<Item = &Entry> { self.data.entries_by_path.values() }
-
-	/// Number of versioned entries.
-	pub fn len(&self) -> usize { self.data.entries_by_path.len() }
-
-	pub fn is_empty(&self) -> bool { self.data.entries_by_path.is_empty() }
-
-	/// Consume the IR and return the underlying `Index`.
-	pub fn into_index(self) -> Index { self.data }
-}
-
-/// Allows `Ir<Versioned>` to be fed directly to anything accepting
-/// `IntoIterator<Item = Entry>` (e.g. `Runner::run`).
-impl IntoIterator for Ir<Versioned> {
-	type IntoIter = std::collections::hash_map::IntoValues<NudoxPath, Entry>;
-	type Item = Entry;
-
-	fn into_iter(self) -> Self::IntoIter { self.data.entries_by_path.into_values() }
-}

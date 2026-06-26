@@ -338,7 +338,7 @@ fn typescript_unique_pipeline_end_to_end() -> color_eyre::Result<()> {
 fn emit_store(
 	language: &str,
 	package_name: &str,
-	version: Version,
+	_version: Version,
 	ir: nudox::pipeline::Ir<nudox::pipeline::Collected>,
 ) -> color_eyre::Result<DocStore> {
 	let context = serde_json::json!({
@@ -349,7 +349,7 @@ fn emit_store(
 		"sys": "http://terminusdb.com/schema/sys#"
 	});
 	let mut runner = Runner::new(DocCtx::init(
-		CrateInfo::new(language.to_owned(), package_name.to_owned(), version.to_string()),
+		CrateInfo::new(language.to_owned(), package_name.to_owned()),
 		context,
 	));
 	let index = ir.index().into_index();
