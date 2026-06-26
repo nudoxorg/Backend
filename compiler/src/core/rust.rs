@@ -8,7 +8,7 @@ use thiserror::Error;
 use tracing::{debug, info, instrument};
 use url::Url;
 
-use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError, summarize_command_output}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package as PackageTrait, registry::Registry}};
+use crate::{core::{parse_common::LanguageParser, rust_parser::RustdocParser}, error::{PackageError, RegistryError, summarize_command_output}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package as PackageTrait, registry::Registry}};
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
@@ -177,9 +177,9 @@ impl RustPackage {
 		let rustdoc_crate: rustdoc_types::Crate = serde_json::from_str(&json_content)?;
 		debug!("rustdoc JSON parsed");
 
-		let mut parser = RustdocParser::new(rustdoc_crate)?;
+		let mut parser = RustdocParser::from_doc(rustdoc_crate)?;
 
-		let parse_result = parser.parse_crate()?;
+		let parse_result = parser.parse()?;
 		info!(entries = parse_result.len(), "IR generation complete");
 
 		Ok(Ir::from_entries(parse_result))

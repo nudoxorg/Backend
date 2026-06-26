@@ -152,6 +152,60 @@ pub enum SymbolKind {
 	Other,
 }
 
+impl SymbolKind {
+	/// The canonical PascalCase name, matching the serde representation.
+	pub fn as_str(&self) -> &'static str {
+		match self {
+			SymbolKind::Function => "Function",
+			SymbolKind::Struct => "Struct",
+			SymbolKind::Enum => "Enum",
+			SymbolKind::Trait => "Trait",
+			SymbolKind::Method => "Method",
+			SymbolKind::Closure => "Closure",
+			SymbolKind::TypeAlias => "TypeAlias",
+			SymbolKind::Const => "Const",
+			SymbolKind::Other => "Other",
+		}
+	}
+}
+
+impl std::fmt::Display for SymbolKind {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(self.as_str())
+	}
+}
+
+/// Error returned when a string cannot be parsed into a [`SymbolKind`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseSymbolKindError(pub String);
+
+impl std::fmt::Display for ParseSymbolKindError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "unknown symbol kind: {}", self.0)
+	}
+}
+
+impl std::error::Error for ParseSymbolKindError {}
+
+impl std::str::FromStr for SymbolKind {
+	type Err = ParseSymbolKindError;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		Ok(match s.trim().to_ascii_lowercase().as_str() {
+			"function" | "fn" => SymbolKind::Function,
+			"struct" => SymbolKind::Struct,
+			"enum" => SymbolKind::Enum,
+			"trait" => SymbolKind::Trait,
+			"method" => SymbolKind::Method,
+			"closure" => SymbolKind::Closure,
+			"typealias" | "type" | "type_alias" => SymbolKind::TypeAlias,
+			"const" | "static" => SymbolKind::Const,
+			"other" => SymbolKind::Other,
+			_ => return Err(ParseSymbolKindError(s.to_owned())),
+		})
+	}
+}
+
 /// The primary record stored per occurrence: all data about one symbol
 /// occurrence.
 #[derive(Debug, Clone, Serialize, Deserialize)]

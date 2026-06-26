@@ -12,7 +12,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use crate::{core::ts_parser::{ParseError, TsDocParser}, error::summarize_command_output, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
+use crate::{core::{parse_common::LanguageParser, ts_parser::{ParseError, TsDocParser}}, error::summarize_command_output, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
 
 // ============================================================================
 // Error types
@@ -165,8 +165,8 @@ impl TsPackage {
 			.map(|(specifier, document)| (specifier.to_string(), document))
 			.collect();
 
-		let mut parser = TsDocParser::new(documents)?;
-		let entries = parser.parse_documents()?;
+		let mut parser = TsDocParser::from_doc(documents)?;
+		let entries = parser.parse()?;
 
 		Ok(Ir::from_entries(entries))
 	}
@@ -201,8 +201,8 @@ impl TsPackage {
 		let json = String::from_utf8(output.stdout)?;
 		let documents: HashMap<String, deno_doc::Document> = serde_json::from_str(&json)?;
 
-		let mut parser = TsDocParser::new(documents)?;
-		let entries = parser.parse_documents()?;
+		let mut parser = TsDocParser::from_doc(documents)?;
+		let entries = parser.parse()?;
 
 		Ok(Ir::from_entries(entries))
 	}

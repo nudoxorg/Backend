@@ -13,7 +13,7 @@ pub use error::{
 };
 pub use ids::{BlobRef, GlobalSymbolId, OccurrenceId, RepoId};
 pub use traits::{BlobStore, Embedder, FutureParseQueue, GlobalSymbolQuery, GlobalSymbolStore, SearchIndex, SearchQuery, SymbolSearch, VectorIndex, VectorQuery};
-pub use types::{BlobInfo, BodyQuery, ByteSpan, ChunkMetadata, CombineMode, EmbeddingPurpose, EmbeddingRecord, Language, LibRef, ModelType, OccurrenceFilter, ResolutionOutcome, ResolveLibReport, ScopeFilter, SearchHit, SourceChunk, SymbolKind, SymbolMatch, SymbolOrigin, SymbolQuery, TreesitterRepr, VectorHit};
+pub use types::{BlobInfo, BodyQuery, ByteSpan, ChunkMetadata, CombineMode, EmbeddingPurpose, EmbeddingRecord, Language, LibRef, ModelType, OccurrenceFilter, ParseSymbolKindError, ResolutionOutcome, ResolveLibReport, ScopeFilter, SearchHit, SourceChunk, SymbolKind, SymbolMatch, SymbolOrigin, SymbolQuery, TreesitterRepr, VectorHit};
 
 /// Current BlobInfo schema version. Bump on any change to BlobInfo fields.
 ///

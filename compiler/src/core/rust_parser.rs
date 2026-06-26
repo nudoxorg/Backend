@@ -6,7 +6,9 @@ pub type Result<T> = std::result::Result<T, ParseError>;
 
 use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{Entry, Visibility}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{DynTrait, FunctionPointer, PolyTrait, QualifiedPath, Type, TypeReference}};
 
-use crate::core::rust::ParseError;
+use lang_types::Language;
+
+use crate::core::{parse_common::{LanguageParser, output_parameters_from_type, parameter_link_key}, rust::ParseError};
 
 /// Immutable context.
 pub struct ParseContext {
@@ -32,26 +34,6 @@ pub struct ParseState {
 pub struct RustdocParser {
 	ctx:   ParseContext,
 	state: ParseState,
-}
-
-fn output_parameters_from_type(ty: Type) -> Option<Vec<Parameter>> {
-	Some(vec![Parameter::Literal(ir::parameter::LiteralParameter {
-		name:          String::new(),
-		r#type:        Some(ty),
-		attributes:    None,
-		default_value: None,
-		description:   None,
-	})])
-}
-
-fn parameter_link_key(prefix: &str, idx: usize, total: usize, name: &str) -> String {
-	if !name.is_empty() {
-		format!("{prefix}.{name}")
-	} else if total == 1 {
-		prefix.to_string()
-	} else {
-		format!("{prefix}.{idx}")
-	}
 }
 
 fn add_path(id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>, id: &Id, path: Vec<String>) {
@@ -91,6 +73,17 @@ fn queue_impls(
 	_impls: &[Id],
 	_parent_path: &[String],
 ) {
+}
+
+impl LanguageParser for RustdocParser {
+	type Error = ParseError;
+	type Input = Crate;
+
+	const LANGUAGE: Language = Language::Rust;
+
+	fn from_doc(input: Self::Input) -> Result<Self> { Self::new(input) }
+
+	fn parse(&mut self) -> Result<Vec<Entry>> { self.parse_crate() }
 }
 
 impl RustdocParser {

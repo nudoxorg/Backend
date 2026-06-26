@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routing::{delete, get, post}};
-use nudox_core::{SymbolKind, SymbolMatch, SymbolOrigin, SymbolQuery};
+use nudox_core::{SymbolMatch, SymbolOrigin, SymbolQuery};
 use nudox_orchestrator::Orchestrator;
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
@@ -43,7 +43,7 @@ impl From<SymbolMatch> for SymbolMatchResponse {
 		SymbolMatchResponse {
 			symbol_name: m.blob.symbol_name.clone(),
 			occurrence_id: m.blob.occurrence_id.to_string(),
-			kind: m.blob.kind.map(kind_to_str),
+			kind: m.blob.kind.map(|k| k.to_string()),
 			lib_name,
 			lib_version,
 			repo_id,
@@ -54,20 +54,6 @@ impl From<SymbolMatch> for SymbolMatchResponse {
 	}
 }
 
-fn kind_to_str(k: SymbolKind) -> String {
-	match k {
-		SymbolKind::Function => "Function",
-		SymbolKind::Struct => "Struct",
-		SymbolKind::Enum => "Enum",
-		SymbolKind::Trait => "Trait",
-		SymbolKind::Method => "Method",
-		SymbolKind::Closure => "Closure",
-		SymbolKind::TypeAlias => "TypeAlias",
-		SymbolKind::Const => "Const",
-		SymbolKind::Other => "Other",
-	}
-	.to_owned()
-}
 
 pub fn router(state: AppState) -> Router {
 	Router::new()

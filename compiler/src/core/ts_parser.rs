@@ -4,6 +4,10 @@ use deno_ast::swc::ast::{Accessibility, TruePlusMinus, VarDeclKind};
 use deno_doc::{Declaration, DeclarationDef, Document, class::{ClassConstructorDef, ClassDef, ClassMethodDef}, r#enum::EnumDef, function::FunctionDef, interface::InterfaceDef, js_doc::JsDoc, node::{DeclarationKind, NamespaceDef, Symbol}, params::{ParamDef, ParamPatternDef}, ts_type::{CallSignatureDef, IndexSignatureDef, LiteralDef, LiteralDefKind, MethodDef, ThisOrIdent, TsTypeDef, TsTypeDefKind}, ts_type_param::TsTypeParamDef};
 use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::*, kind::{Entry, Visibility}, parameter::{Parameter, ParameterAttribute, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{ConditionalType, FunctionPointer, MappedType, ModifierPrefix, PredicateSubject, QualifiedPath, Type, TypeOperator, TypePredicate, TypeReference}};
 
+use lang_types::Language;
+
+use crate::core::parse_common::{LanguageParser, output_parameters_from_type, parameter_link_key};
+
 pub type Result<T> = std::result::Result<T, ParseError>;
 
 #[derive(thiserror::Error, Debug)]
@@ -213,26 +217,6 @@ fn is_function_declaration(decl: &Declaration) -> bool {
 	matches!(decl.def, DeclarationDef::Function(_))
 }
 
-fn output_parameters_from_type(ty: Type) -> Option<Vec<Parameter>> {
-	Some(vec![Parameter::Literal(ir::parameter::LiteralParameter {
-		name:          String::new(),
-		r#type:        Some(ty),
-		attributes:    None,
-		default_value: None,
-		description:   None,
-	})])
-}
-
-fn parameter_link_key(prefix: &str, idx: usize, total: usize, name: &str) -> String {
-	if !name.is_empty() {
-		format!("{prefix}.{name}")
-	} else if total == 1 {
-		prefix.to_string()
-	} else {
-		format!("{prefix}.{idx}")
-	}
-}
-
 fn modifier_prefix(value: Option<TruePlusMinus>) -> Option<ModifierPrefix> {
 	match value {
 		Some(TruePlusMinus::True) => Some(ModifierPrefix::Preserve),
@@ -256,6 +240,17 @@ fn accessibility_to_visibility(acc: Option<Accessibility>) -> Visibility {
 		Some(Accessibility::Protected) => Visibility::Protected,
 		Some(Accessibility::Private) => Visibility::Private,
 	}
+}
+
+impl LanguageParser for TsDocParser {
+	type Error = ParseError;
+	type Input = HashMap<String, Document>;
+
+	const LANGUAGE: Language = Language::TypeScript;
+
+	fn from_doc(input: Self::Input) -> Result<Self> { Self::new(input) }
+
+	fn parse(&mut self) -> Result<Vec<Entry>> { self.parse_documents() }
 }
 
 impl TsDocParser {
