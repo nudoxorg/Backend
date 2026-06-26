@@ -4088,7 +4088,6 @@ dependencies = [
 name = "nudox-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "chrono",
  "serde",
@@ -4115,7 +4114,6 @@ dependencies = [
 name = "nudox-indexer"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "dotenvy",
  "nudox-blobstore",
@@ -4135,7 +4133,6 @@ dependencies = [
 name = "nudox-orchestrator"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "chrono",
  "nudox-blobstore",

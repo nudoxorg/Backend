@@ -6,7 +6,7 @@
 use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, path::Path};
 
 use async_trait::async_trait;
-use nudox_core::{Embedder, EmbeddingPurpose, Error, ModelType, Result, SourceChunk};
+use nudox_core::{Embedder, EmbedderError, EmbeddingPurpose, ModelType, Result, SourceChunk};
 
 use crate::hash_utils;
 
@@ -24,7 +24,7 @@ impl InProcessEmbedder {
 	/// the final path component; real model loading is deferred.
 	pub fn load(model_path: &Path) -> Result<Self> {
 		if model_path.as_os_str().is_empty() {
-			return Err(Error::Embedder("model path must not be empty".into()));
+			return Err(EmbedderError::EmptyPath.into());
 		}
 
 		let model_id = model_path
@@ -78,7 +78,7 @@ mod tests {
 	#[test]
 	fn in_process_load_rejects_empty_path() {
 		let result = InProcessEmbedder::load(Path::new(""));
-		assert!(matches!(result, Err(Error::Embedder(_))));
+		assert!(matches!(result, Err(nudox_core::Error::Embedder(_))));
 	}
 
 	#[tokio::test]

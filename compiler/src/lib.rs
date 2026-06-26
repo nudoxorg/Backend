@@ -1,6 +1,7 @@
 pub mod api;
 pub mod config;
 pub mod identity;
+pub mod util;
 pub mod core;
 pub mod error;
 pub mod git;

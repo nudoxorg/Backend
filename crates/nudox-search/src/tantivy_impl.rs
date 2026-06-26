@@ -4,7 +4,7 @@
 use std::{path::Path, sync::{Arc, Mutex}};
 
 use async_trait::async_trait;
-use nudox_core::{BlobInfo, BlobRef, Error, GlobalSymbolId, OccurrenceId, Result, SearchHit, SearchIndex, SearchQuery, SymbolOrigin};
+use nudox_core::{BlobInfo, BlobRef, GlobalSymbolId, OccurrenceId, Result, SearchError, SearchHit, SearchIndex, SearchQuery, SymbolOrigin};
 use tantivy::{Index, IndexWriter, TantivyDocument, Term, directory::MmapDirectory, schema::{Field, STORED, STRING, Schema, TEXT, Value as TantivyValue}};
 
 /// Tantivy-backed full-text / exact search index.
@@ -56,14 +56,13 @@ fn build_schema() -> (Schema, Fields) {
 impl TantivySearchIndex {
 	/// Open an existing tantivy index at `index_dir` or create one if absent.
 	pub fn open_or_create(index_dir: &Path) -> Result<Self> {
-		std::fs::create_dir_all(index_dir)
-			.map_err(|e| Error::Search(format!("create_dir_all({}): {e}", index_dir.display())))?;
+		std::fs::create_dir_all(index_dir).map_err(|e| SearchError::CreateDir(Box::new(e)))?;
 		let (schema, fields) = build_schema();
 		let dir =
-			MmapDirectory::open(index_dir).map_err(|e| Error::Search(format!("MmapDirectory: {e}")))?;
+			MmapDirectory::open(index_dir).map_err(|e| SearchError::OpenDirectory(Box::new(e)))?;
 		let index = Index::open_or_create(dir, schema)
-			.map_err(|e| Error::Search(format!("open_or_create: {e}")))?;
-		let writer = index.writer(50_000_000).map_err(|e| Error::Search(format!("writer: {e}")))?;
+			.map_err(|e| SearchError::OpenIndex(Box::new(e)))?;
+		let writer = index.writer(50_000_000).map_err(|e| SearchError::CreateWriter(Box::new(e)))?;
 		Ok(Self { index, writer: Arc::new(Mutex::new(writer)), fields })
 	}
 
@@ -98,15 +97,15 @@ impl SearchIndex for TantivySearchIndex {
 		doc.add_text(self.fields.blob_ref, &blob_ref.0);
 
 		let mut writer =
-			self.writer.lock().map_err(|e| Error::Search(format!("lock poisoned: {e}")))?;
+			self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
 
 		// Delete any previous entry for this occurrence so re-indexing after
 		// deferred resolution doesn't produce duplicate documents.
 		let prev = Term::from_field_text(self.fields.occurrence_id, &info.occurrence_id.to_string());
 		writer.delete_term(prev);
 
-		writer.add_document(doc).map_err(|e| Error::Search(format!("add_document: {e}")))?;
-		writer.commit().map_err(|e| Error::Search(format!("commit: {e}")))?;
+		writer.add_document(doc).map_err(|e| SearchError::AddDocument(Box::new(e)))?;
+		writer.commit().map_err(|e| SearchError::Commit(Box::new(e)))?;
 		Ok(())
 	}
 }
@@ -114,7 +113,7 @@ impl SearchIndex for TantivySearchIndex {
 #[async_trait]
 impl SearchQuery for TantivySearchIndex {
 	async fn search(&self, query_str: &str, limit: usize) -> Result<Vec<SearchHit>> {
-		let reader = self.index.reader().map_err(|e| Error::Search(e.to_string()))?;
+		let reader = self.index.reader().map_err(|e| SearchError::OpenReader(Box::new(e)))?;
 		let searcher = reader.searcher();
 		let qp = tantivy::query::QueryParser::for_index(&self.index, vec![
 			self.fields.symbol_name,
@@ -122,15 +121,15 @@ impl SearchQuery for TantivySearchIndex {
 			self.fields.repo_id,
 		]);
 		let query =
-			qp.parse_query(query_str).map_err(|e| Error::Search(format!("parse_query: {e}")))?;
+			qp.parse_query(query_str).map_err(|e| SearchError::ParseQuery(Box::new(e)))?;
 		let top_docs = searcher
 			.search(&query, &tantivy::collector::TopDocs::with_limit(limit))
-			.map_err(|e| Error::Search(e.to_string()))?;
+			.map_err(|e| SearchError::Search(Box::new(e)))?;
 
 		let mut hits = Vec::with_capacity(top_docs.len());
 		for (score, addr) in top_docs {
 			let doc: tantivy::TantivyDocument =
-				searcher.doc(addr).map_err(|e| Error::Search(e.to_string()))?;
+				searcher.doc(addr).map_err(|e| SearchError::FetchDocument(Box::new(e)))?;
 			let blob_ref = BlobRef(
 				doc.get_first(self.fields.blob_ref).and_then(|v| v.as_str()).unwrap_or("").to_string(),
 			);
@@ -149,18 +148,18 @@ impl SearchQuery for TantivySearchIndex {
 		global_id: GlobalSymbolId,
 		limit: usize,
 	) -> Result<Vec<SearchHit>> {
-		let reader = self.index.reader().map_err(|e| Error::Search(e.to_string()))?;
+		let reader = self.index.reader().map_err(|e| SearchError::OpenReader(Box::new(e)))?;
 		let searcher = reader.searcher();
 		let term = tantivy::Term::from_field_text(self.fields.global_id, &global_id.to_string());
 		let query = tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
 		let top_docs = searcher
 			.search(&query, &tantivy::collector::TopDocs::with_limit(limit))
-			.map_err(|e| Error::Search(e.to_string()))?;
+			.map_err(|e| SearchError::Search(Box::new(e)))?;
 
 		let mut hits = Vec::with_capacity(top_docs.len());
 		for (score, addr) in top_docs {
 			let doc: tantivy::TantivyDocument =
-				searcher.doc(addr).map_err(|e| Error::Search(e.to_string()))?;
+				searcher.doc(addr).map_err(|e| SearchError::FetchDocument(Box::new(e)))?;
 			let blob_ref = BlobRef(
 				doc.get_first(self.fields.blob_ref).and_then(|v| v.as_str()).unwrap_or("").to_string(),
 			);
@@ -175,16 +174,16 @@ impl SearchQuery for TantivySearchIndex {
 	}
 
 	async fn list_all(&self, limit: usize) -> Result<Vec<SearchHit>> {
-		let reader = self.index.reader().map_err(|e| Error::Search(e.to_string()))?;
+		let reader = self.index.reader().map_err(|e| SearchError::OpenReader(Box::new(e)))?;
 		let searcher = reader.searcher();
 		let top_docs = searcher
 			.search(&tantivy::query::AllQuery, &tantivy::collector::TopDocs::with_limit(limit))
-			.map_err(|e| Error::Search(e.to_string()))?;
+			.map_err(|e| SearchError::Search(Box::new(e)))?;
 
 		let mut hits = Vec::with_capacity(top_docs.len());
 		for (score, addr) in top_docs {
 			let doc: tantivy::TantivyDocument =
-				searcher.doc(addr).map_err(|e| Error::Search(e.to_string()))?;
+				searcher.doc(addr).map_err(|e| SearchError::FetchDocument(Box::new(e)))?;
 			let blob_ref = BlobRef(
 				doc.get_first(self.fields.blob_ref).and_then(|v| v.as_str()).unwrap_or("").to_string(),
 			);

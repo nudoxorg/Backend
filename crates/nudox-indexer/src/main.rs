@@ -119,17 +119,12 @@ async fn main() -> Result<()> {
 	let blob_store = ObjectStoreBlobStore::local(config.blob_store_root.clone())?;
 	let blob_store_handle = blob_store.clone();
 
-	let tantivy = Arc::new(
-		TantivySearchIndex::open_or_create(&config.tantivy_dir)
-			.map_err(|e| nudox_core::Error::Other(anyhow::anyhow!("tantivy open_or_create: {e}")))?,
-	);
+	let tantivy = Arc::new(TantivySearchIndex::open_or_create(&config.tantivy_dir)?);
 	let tantivy_query = Arc::clone(&tantivy);
 	let search: Arc<dyn SearchIndex> = tantivy;
 
 	let vector: Arc<dyn VectorIndex> = if let Some(ref url) = config.qdrant_url {
-		let idx = QdrantVectorIndex::connect(url, config.qdrant_collection.clone())
-			.await
-			.map_err(|e| nudox_core::Error::Other(anyhow::anyhow!("qdrant connect: {e}")))?;
+		let idx = QdrantVectorIndex::connect(url, config.qdrant_collection.clone()).await?;
 		idx.ensure_collection(config.qdrant_dim).await?;
 		Arc::new(idx)
 	} else {

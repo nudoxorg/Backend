@@ -4,7 +4,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 pub use memory::InMemoryBlobStore;
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, Error, GlobalSymbolId, Result};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, BlobStoreError, GlobalSymbolId, Result};
 use object_store::{ObjectStore, local::LocalFileSystem, path::Path as ObjPath};
 
 /// Blob store backed by `object_store`. v1 serializes `BlobInfo` as JSON.
@@ -21,9 +21,9 @@ impl ObjectStoreBlobStore {
 	/// Creates the directory if it does not already exist.
 	pub fn local(root: PathBuf) -> Result<Self> {
 		std::fs::create_dir_all(&root)
-			.map_err(|e| Error::BlobStore(format!("create_dir_all({}): {e}", root.display())))?;
+			.map_err(|e| BlobStoreError::CreateDir(Box::new(e)))?;
 		let fs = LocalFileSystem::new_with_prefix(&root)
-			.map_err(|e| Error::BlobStore(format!("LocalFileSystem: {e}")))?;
+			.map_err(|e| BlobStoreError::Filesystem(Box::new(e)))?;
 		Ok(Self { store: Arc::new(fs) })
 	}
 }
@@ -35,17 +35,18 @@ impl BlobStore for ObjectStoreBlobStore {
 	#[tracing::instrument(skip(self, info), fields(occurrence_id = %info.occurrence_id))]
 	async fn put(&self, info: &BlobInfo) -> Result<BlobRef> {
 		if info.metadata.blob_schema_version != BLOB_SCHEMA_VERSION {
-			return Err(Error::BlobStore(format!(
-				"schema version mismatch: expected {}, got {}",
-				BLOB_SCHEMA_VERSION, info.metadata.blob_schema_version
-			)));
+			return Err(BlobStoreError::SchemaVersionMismatch {
+				expected: BLOB_SCHEMA_VERSION,
+				got:      info.metadata.blob_schema_version,
+			}
+			.into());
 		}
 		let id = uuid::Uuid::new_v4().to_string();
 		let blob_ref = BlobRef(id);
 		let path = path_for(&blob_ref);
 		let bytes =
-			serde_json::to_vec(info).map_err(|e| Error::BlobStore(format!("serialize: {e}")))?;
-		self.store.put(&path, bytes.into()).await.map_err(|e| Error::BlobStore(format!("put: {e}")))?;
+			serde_json::to_vec(info).map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
+		self.store.put(&path, bytes.into()).await.map_err(|e| BlobStoreError::Put(Box::new(e)))?;
 		Ok(blob_ref)
 	}
 
@@ -53,15 +54,16 @@ impl BlobStore for ObjectStoreBlobStore {
 	async fn get(&self, blob_ref: &BlobRef) -> Result<BlobInfo> {
 		let path = path_for(blob_ref);
 		let get_result =
-			self.store.get(&path).await.map_err(|e| Error::BlobStore(format!("get: {e}")))?;
-		let bytes = get_result.bytes().await.map_err(|e| Error::BlobStore(format!("bytes: {e}")))?;
+			self.store.get(&path).await.map_err(|e| BlobStoreError::Get(Box::new(e)))?;
+		let bytes = get_result.bytes().await.map_err(|e| BlobStoreError::Get(Box::new(e)))?;
 		let info: BlobInfo =
-			serde_json::from_slice(&bytes).map_err(|e| Error::BlobStore(format!("deserialize: {e}")))?;
+			serde_json::from_slice(&bytes).map_err(|e| BlobStoreError::Deserialize(Box::new(e)))?;
 		if info.metadata.blob_schema_version != BLOB_SCHEMA_VERSION {
-			return Err(Error::BlobStore(format!(
-				"schema version mismatch on read: expected {}, got {}",
-				BLOB_SCHEMA_VERSION, info.metadata.blob_schema_version
-			)));
+			return Err(BlobStoreError::SchemaVersionMismatch {
+				expected: BLOB_SCHEMA_VERSION,
+				got:      info.metadata.blob_schema_version,
+			}
+			.into());
 		}
 		Ok(info)
 	}
@@ -72,12 +74,12 @@ impl BlobStore for ObjectStoreBlobStore {
 		info.resolved_global_id = Some(global_id);
 		let path = path_for(blob_ref);
 		let bytes =
-			serde_json::to_vec(&info).map_err(|e| Error::BlobStore(format!("reserialize: {e}")))?;
+			serde_json::to_vec(&info).map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
 		self
 			.store
 			.put(&path, bytes.into())
 			.await
-			.map_err(|e| Error::BlobStore(format!("put (update): {e}")))?;
+			.map_err(|e| BlobStoreError::Put(Box::new(e)))?;
 		Ok(())
 	}
 
@@ -87,7 +89,7 @@ impl BlobStore for ObjectStoreBlobStore {
 			.store
 			.list_with_delimiter(Some(&prefix))
 			.await
-			.map_err(|e| Error::BlobStore(format!("list: {e}")))?;
+			.map_err(|e| BlobStoreError::List(Box::new(e)))?;
 		let refs = result
 			.objects
 			.into_iter()

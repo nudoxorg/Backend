@@ -21,7 +21,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use nudox_core::{BlobRef, EmbeddingPurpose, EmbeddingRecord, Error, GlobalSymbolId, ModelType, Result, VectorHit, VectorIndex, VectorQuery};
+use nudox_core::{BlobRef, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, ModelType, Result, VectorError, VectorHit, VectorIndex, VectorQuery};
 use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, vectors_config::Config}};
 
 /// Qdrant-backed vector index. Connects via gRPC (default port 6334).
@@ -30,7 +30,6 @@ pub struct QdrantVectorIndex {
 	collection: String,
 }
 
-fn map_err<E: std::fmt::Display>(e: E) -> Error { Error::Vector(e.to_string()) }
 
 fn model_type_label(mt: &ModelType) -> String {
 	match mt {
@@ -65,27 +64,27 @@ impl QdrantVectorIndex {
 	/// call [`Self::ensure_collection`] for that.
 	pub async fn connect(url: impl Into<String>, collection: String) -> Result<Self> {
 		let url = url.into();
-		let client = Qdrant::from_url(&url).build().map_err(map_err)?;
+		let client = Qdrant::from_url(&url).build().map_err(|e| VectorError::Connect(Box::new(e)))?;
 		Ok(Self { client: Arc::new(client), collection })
 	}
 
 	/// Create the collection if it does not exist. Uses cosine distance and
 	/// the given vector dimension.
 	pub async fn ensure_collection(&self, vector_dim: u64) -> Result<()> {
-		let exists = self.client.collection_exists(&self.collection).await.map_err(map_err)?;
+		let exists = self.client.collection_exists(&self.collection).await.map_err(|e| VectorError::CollectionExists(Box::new(e)))?;
 		if exists {
 			return Ok(());
 		}
 		let req = CreateCollectionBuilder::new(&self.collection).vectors_config(Config::Params(
 			VectorParamsBuilder::new(vector_dim, Distance::Cosine).build(),
 		));
-		self.client.create_collection(req).await.map_err(map_err)?;
+		self.client.create_collection(req).await.map_err(|e| VectorError::CreateCollection(Box::new(e)))?;
 		Ok(())
 	}
 
 	/// Delete the bound collection. Useful for test teardown.
 	pub async fn delete_collection(&self) -> Result<()> {
-		self.client.delete_collection(&self.collection).await.map_err(map_err)?;
+		self.client.delete_collection(&self.collection).await.map_err(|e| VectorError::DeleteCollection(Box::new(e)))?;
 		Ok(())
 	}
 
@@ -95,7 +94,7 @@ impl QdrantVectorIndex {
 			.client
 			.count(qdrant_client::qdrant::CountPointsBuilder::new(&self.collection).exact(true))
 			.await
-			.map_err(map_err)?;
+			.map_err(|e| VectorError::Count(Box::new(e)))?;
 		Ok(resp.result.map(|r| r.count).unwrap_or(0))
 	}
 }
@@ -128,7 +127,7 @@ impl VectorIndex for QdrantVectorIndex {
 			.client
 			.upsert_points(UpsertPointsBuilder::new(&self.collection, points).wait(true))
 			.await
-			.map_err(map_err)?;
+			.map_err(|e| VectorError::Upsert(Box::new(e)))?;
 		Ok(())
 	}
 }
@@ -140,7 +139,7 @@ impl VectorQuery for QdrantVectorIndex {
 		let req =
 			SearchPointsBuilder::new(&self.collection, vector.to_vec(), limit as u64).with_payload(true);
 
-		let resp = self.client.search_points(req).await.map_err(map_err)?;
+		let resp = self.client.search_points(req).await.map_err(|e| VectorError::Search(Box::new(e)))?;
 
 		let hits = resp
 			.result

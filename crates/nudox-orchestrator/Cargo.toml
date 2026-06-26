@@ -14,7 +14,6 @@ nudox-blobstore = { path = "../nudox-blobstore" }
 nudox-search = { path = "../nudox-search" }
 async-trait = { workspace = true }
 tracing = { workspace = true }
-anyhow = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

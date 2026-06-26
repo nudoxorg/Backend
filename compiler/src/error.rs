@@ -91,6 +91,12 @@ pub enum AppError {
 	Git(#[from] GitError),
 }
 
+impl crate::util::retry::Transient for AppError {
+	fn is_transient(&self) -> bool {
+		crate::util::retry::is_transient_message(&self.to_string())
+	}
+}
+
 impl IntoResponse for AppError {
 	fn into_response(self) -> Response {
 		let status = match self {

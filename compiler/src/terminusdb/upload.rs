@@ -6,6 +6,7 @@ use tracing::{debug, info, instrument, warn};
 use url::Url;
 
 use super::termdb::DocStore;
+use crate::util::retry;
 
 const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 100;
 const DOCUMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -21,25 +22,11 @@ pub struct DocumentUploadProgress {
 	pub total_docs:       usize,
 }
 
-fn is_retryable_terminus_error_message(message: &str) -> bool {
-	let normalized = message.to_ascii_lowercase();
-	normalized.contains("backend db connection error")
-		|| normalized.contains("error sending request for url")
-		|| normalized.contains("connection reset")
-		|| normalized.contains("connection refused")
-		|| normalized.contains("timed out")
-		|| normalized.contains("timeout")
-		|| normalized.contains("temporarily unavailable")
-		|| normalized.contains("503 service unavailable")
-}
-
 async fn terminus_client_with_retry(
 	config: &TerminusConfig,
 ) -> anyhow::Result<TerminusDBHttpClient> {
-	let mut attempt = 0usize;
-	loop {
-		attempt += 1;
-		match TerminusDBHttpClient::new_with_database(
+	retry::with_backoff(TERMINUS_CLIENT_MAX_ATTEMPTS, TERMINUS_RETRY_BASE_DELAY, |_| async {
+		TerminusDBHttpClient::new_with_database(
 			config.endpoint.clone(),
 			&config.user,
 			&config.password,
@@ -47,23 +34,8 @@ async fn terminus_client_with_retry(
 			&config.org,
 		)
 		.await
-		{
-			Ok(client) => return Ok(client),
-			Err(error)
-				if attempt < TERMINUS_CLIENT_MAX_ATTEMPTS
-					&& is_retryable_terminus_error_message(&error.to_string()) =>
-			{
-				warn!(
-					attempt,
-					max_attempts = TERMINUS_CLIENT_MAX_ATTEMPTS,
-					%error,
-					"failed to create TerminusDB client, retrying"
-				);
-				tokio::time::sleep(TERMINUS_RETRY_BASE_DELAY * attempt as u32).await;
-			}
-			Err(error) => return Err(error.into()),
-		}
-	}
+	})
+	.await
 }
 
 fn documents_in_dependency_order(store: &DocStore) -> Vec<Value> {
@@ -156,37 +128,21 @@ pub async fn upload_documents(
 		.with_timeout(DOCUMENT_UPLOAD_TIMEOUT);
 
 		let doc_refs: Vec<&Value> = chunk.iter().collect();
-		let mut attempt = 0usize;
-		let result = loop {
-			attempt += 1;
-			match client.insert_documents(doc_refs.clone(), args.clone()).await {
-				Ok(result) => break result,
-				Err(error) if attempt < DOCUMENT_UPLOAD_MAX_ATTEMPTS => {
-					warn!(
-						chunk_index = chunk_index + 1,
-						chunk_count,
-						chunk_size = chunk.len(),
-						attempt,
-						max_attempts = DOCUMENT_UPLOAD_MAX_ATTEMPTS,
-						%error,
-						"document upload chunk failed, retrying"
-					);
-					tokio::time::sleep(Duration::from_secs(attempt as u64 * 2)).await;
-				}
-				Err(error) => {
-					warn!(
-						chunk_index = chunk_index + 1,
-						chunk_count,
-						chunk_size = chunk.len(),
-						attempt,
-						max_attempts = DOCUMENT_UPLOAD_MAX_ATTEMPTS,
-						%error,
-						"document upload chunk failed permanently"
-					);
-					return Err(error);
-				}
-			}
-		};
+		let result = retry::with_backoff(
+			DOCUMENT_UPLOAD_MAX_ATTEMPTS,
+			Duration::from_secs(2),
+			|_| async { client.insert_documents(doc_refs.clone(), args.clone()).await },
+		)
+		.await
+		.inspect_err(|e| {
+			warn!(
+				chunk_index = chunk_index + 1,
+				chunk_count,
+				chunk_size = chunk.len(),
+				error = %e,
+				"document upload chunk failed permanently"
+			);
+		})?;
 
 		if let Some(commit_id) = result.extract_commit_id() {
 			info!(commit = %commit_id, chunk_index = chunk_index + 1, "upload chunk committed");
@@ -235,26 +191,12 @@ pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> 
 	.as_schema();
 
 	let doc_refs: Vec<&Value> = schema_docs.iter().collect();
-	let mut attempt = 0usize;
-	let result = loop {
-		attempt += 1;
-		match client.insert_documents(doc_refs.clone(), args.clone()).await {
-			Ok(result) => break result,
-			Err(error)
-				if attempt < DOCUMENT_UPLOAD_MAX_ATTEMPTS
-					&& is_retryable_terminus_error_message(&error.to_string()) =>
-			{
-				warn!(
-					attempt,
-					max_attempts = DOCUMENT_UPLOAD_MAX_ATTEMPTS,
-					%error,
-					"schema upload failed, retrying"
-				);
-				tokio::time::sleep(Duration::from_secs(attempt as u64 * 2)).await;
-			}
-			Err(error) => return Err(error.into()),
-		}
-	};
+	let result = retry::with_backoff(
+		DOCUMENT_UPLOAD_MAX_ATTEMPTS,
+		Duration::from_secs(2),
+		|_| async { client.insert_documents(doc_refs.clone(), args.clone()).await },
+	)
+	.await?;
 
 	if let Some(commit_id) = result.extract_commit_id() {
 		info!(commit = %commit_id, "schema upload committed");
@@ -263,17 +205,3 @@ pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> 
 	Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-	use super::is_retryable_terminus_error_message;
-
-	#[test]
-	fn retryable_terminus_errors_include_backend_connection_pressure() {
-		assert!(is_retryable_terminus_error_message("Backend DB connection error"));
-		assert!(is_retryable_terminus_error_message(
-			"error sending request for url (http://127.0.0.1:6363/api/document/admin/main)"
-		));
-		assert!(is_retryable_terminus_error_message("operation timed out"));
-		assert!(!is_retryable_terminus_error_message("version 1.2.3 not found"));
-	}
-}

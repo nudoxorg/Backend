@@ -8,7 +8,7 @@ use tokio::{sync::{Mutex, RwLock, Semaphore}, task::spawn_blocking, time::{Durat
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, text_index::SymbolTextIndex, traits::{builder::get_registry, registry::Registry}};
+use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, PackageError}, git, ingest::{IngestionSummary, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, text_index::SymbolTextIndex, traits::{builder::get_registry, registry::Registry}, util::retry::Transient};
 
 fn deserialize_lenient_version<'de, D: Deserializer<'de>>(d: D) -> Result<Version, D::Error> {
 	let s = String::deserialize(d)?;
@@ -226,17 +226,6 @@ const MAX_CONCURRENT_SYNCS: usize = 2;
 const SYNC_MAX_ATTEMPTS: usize = 3;
 const SYNC_RETRY_BASE_DELAY: Duration = Duration::from_secs(5);
 
-fn is_retryable_sync_error_message(message: &str) -> bool {
-	let normalized = message.to_ascii_lowercase();
-	normalized.contains("backend db connection error")
-		|| normalized.contains("error sending request for url")
-		|| normalized.contains("connection reset")
-		|| normalized.contains("connection refused")
-		|| normalized.contains("timed out")
-		|| normalized.contains("timeout")
-		|| normalized.contains("temporarily unavailable")
-		|| normalized.contains("503 service unavailable")
-}
 
 impl LocalRegistry {
 	pub fn new(storage: StorageLayout, monitor_interval: Duration, pipeline: PipelineConfig) -> Self {
@@ -469,7 +458,7 @@ impl LocalRegistry {
 					break;
 				}
 				Err(error)
-					if attempt < SYNC_MAX_ATTEMPTS && is_retryable_sync_error_message(&error.to_string()) =>
+					if attempt < SYNC_MAX_ATTEMPTS && error.is_transient() =>
 				{
 					let retry_delay = SYNC_RETRY_BASE_DELAY * attempt as u32;
 					warn!(
@@ -1533,12 +1522,13 @@ mod tests {
 
 	#[test]
 	fn retryable_sync_errors_include_backend_connection_pressure() {
-		assert!(is_retryable_sync_error_message("Backend DB connection error"));
-		assert!(is_retryable_sync_error_message(
+		use crate::util::retry::is_transient_message;
+		assert!(is_transient_message("Backend DB connection error"));
+		assert!(is_transient_message(
 			"error sending request for url (http://127.0.0.1:6363/api/document/admin/main)"
 		));
-		assert!(is_retryable_sync_error_message("operation timed out"));
-		assert!(!is_retryable_sync_error_message("version 1.0.0 not found"));
+		assert!(is_transient_message("operation timed out"));
+		assert!(!is_transient_message("version 1.0.0 not found"));
 	}
 
 	#[tokio::test]

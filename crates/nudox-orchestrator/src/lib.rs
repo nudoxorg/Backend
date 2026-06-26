@@ -45,7 +45,12 @@ impl Orchestrator {
 	pub async fn search(&self, query: &SymbolQuery) -> Result<Vec<SymbolMatch>> {
 		match &self.symbol_searcher {
 			Some(s) => s.search(query).await,
-			None => Err(anyhow::anyhow!("no symbol searcher attached").into()),
+			None => Err(nudox_core::PipelineError::Stage(
+				Box::<dyn std::error::Error + Send + Sync + 'static>::from(
+					"no symbol searcher attached",
+				),
+			)
+			.into()),
 		}
 	}
 

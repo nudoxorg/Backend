@@ -19,7 +19,7 @@
 //! ```
 
 use async_trait::async_trait;
-use nudox_core::{Embedder, EmbeddingPurpose, Error, ModelType, Result, SourceChunk};
+use nudox_core::{Embedder, EmbedderError, EmbeddingPurpose, ModelType, Result, SourceChunk};
 use url::Url;
 
 /// Embedder that calls an OpenAI-compatible `/v1/embeddings` endpoint.
@@ -105,20 +105,20 @@ impl Embedder for RemoteEmbedder {
 			req = req.bearer_auth(key);
 		}
 
-		let resp = req.send().await.map_err(|e| Error::Embedder(format!("HTTP send: {e}")))?;
+		let resp = req.send().await.map_err(|e| EmbedderError::Send(Box::new(e)))?;
 
 		if !resp.status().is_success() {
-			let status = resp.status();
-			let text = resp.text().await.unwrap_or_default();
-			return Err(Error::Embedder(format!("HTTP {status}: {text}")));
+			let status = resp.status().as_u16();
+			let body = resp.text().await.unwrap_or_default();
+			return Err(EmbedderError::Http { status, body }.into());
 		}
 
 		let json: serde_json::Value =
-			resp.json().await.map_err(|e| Error::Embedder(format!("response JSON: {e}")))?;
+			resp.json().await.map_err(|e| EmbedderError::Decode(Box::new(e)))?;
 
 		let vector = json["data"][0]["embedding"]
 			.as_array()
-			.ok_or_else(|| Error::Embedder("response missing data[0].embedding".into()))?
+			.ok_or(EmbedderError::InvalidResponse { field: "data[0].embedding" })?
 			.iter()
 			.map(|v| v.as_f64().unwrap_or(0.0) as f32)
 			.collect();

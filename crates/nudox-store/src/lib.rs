@@ -48,7 +48,7 @@
 use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
-use nudox_core::{BlobRef, Error, FutureParseQueue, GlobalSymbolId, GlobalSymbolStore, LibRef, OccurrenceId, Result};
+use nudox_core::{BlobRef, FutureParseQueue, GlobalStoreError, GlobalSymbolId, GlobalSymbolStore, LibRef, OccurrenceId, QueueError, Result};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use tracing::instrument;
 use uuid::Uuid;
@@ -104,7 +104,7 @@ impl NudoxStore {
 
 		let pool = SqlitePool::connect_with(opts)
 			.await
-			.map_err(|e| Error::GlobalStore(format!("sqlite open {}: {e}", db_path.display())))?;
+			.map_err(|e| GlobalStoreError::Connect(Box::new(e)))?;
 
 		Self::ensure_schema(&pool).await?;
 
@@ -153,7 +153,7 @@ impl NudoxStore {
 			sqlx::query(stmt)
 				.execute(pool)
 				.await
-				.map_err(|e| Error::GlobalStore(format!("schema init: {e}")))?;
+				.map_err(|e| GlobalStoreError::Schema(Box::new(e)))?;
 		}
 		Ok(())
 	}
@@ -187,7 +187,7 @@ impl NudoxStore {
 		entry_uris: impl IntoIterator<Item = &'a str>,
 	) -> Result<usize> {
 		let mut tx =
-			self.pool.begin().await.map_err(|e| Error::GlobalStore(format!("begin tx: {e}")))?;
+			self.pool.begin().await.map_err(|e| GlobalStoreError::Transaction(Box::new(e)))?;
 
 		let mut inserted = 0usize;
 
@@ -210,13 +210,13 @@ impl NudoxStore {
 			.bind(lib_version)
 			.execute(&mut *tx)
 			.await
-			.map_err(|e| Error::GlobalStore(format!("insert symbol: {e}")))?
+			.map_err(|e| GlobalStoreError::Register(Box::new(e)))?
 			.rows_affected();
 
 			inserted += rows as usize;
 		}
 
-		tx.commit().await.map_err(|e| Error::GlobalStore(format!("commit: {e}")))?;
+		tx.commit().await.map_err(|e| GlobalStoreError::Transaction(Box::new(e)))?;
 
 		tracing::info!(lib_name, lib_version, inserted, "library symbols registered");
 
@@ -243,17 +243,17 @@ impl NudoxStore {
 		.bind(symbol_name)
 		.fetch_optional(&self.pool)
 		.await
-		.map_err(|e| Error::GlobalStore(format!("resolve_symbol: {e}")))?;
+		.map_err(|e| GlobalStoreError::Query(Box::new(e)))?;
 
 		match row {
 			None => Ok(None),
 			Some(r) => {
 				use sqlx::Row;
-				let id_str: &str = r.try_get("id").map_err(|e| Error::GlobalStore(e.to_string()))?;
+				let id_str: &str = r.try_get("id").map_err(|e| GlobalStoreError::RowAccess(Box::new(e)))?;
 				let entry_uri: String =
-					r.try_get("entry_uri").map_err(|e| Error::GlobalStore(e.to_string()))?;
-				let uuid = Uuid::parse_str(id_str)
-					.map_err(|e| Error::GlobalStore(format!("bad uuid in db: {e}")))?;
+					r.try_get("entry_uri").map_err(|e| GlobalStoreError::RowAccess(Box::new(e)))?;
+				let uuid =
+					Uuid::parse_str(id_str).map_err(GlobalStoreError::InvalidId)?;
 				Ok(Some((GlobalSymbolId(uuid), entry_uri)))
 			}
 		}
@@ -269,9 +269,9 @@ impl NudoxStore {
 		.bind(lib_version)
 		.fetch_one(&self.pool)
 		.await
-		.map_err(|e| Error::GlobalStore(e.to_string()))?;
+		.map_err(|e| GlobalStoreError::Count(Box::new(e)))?;
 
-		let n: i64 = row.try_get("n").map_err(|e| Error::GlobalStore(e.to_string()))?;
+		let n: i64 = row.try_get("n").map_err(|e| GlobalStoreError::RowAccess(Box::new(e)))?;
 		Ok(n as u64)
 	}
 
@@ -285,9 +285,9 @@ impl NudoxStore {
 		.bind(lib_version)
 		.fetch_one(&self.pool)
 		.await
-		.map_err(|e| Error::Queue(e.to_string()))?;
+		.map_err(|e| QueueError::Count(Box::new(e)))?;
 
-		let n: i64 = row.try_get("n").map_err(|e| Error::Queue(e.to_string()))?;
+		let n: i64 = row.try_get("n").map_err(|e| QueueError::RowAccess(Box::new(e)))?;
 		Ok(n as u64)
 	}
 }
@@ -310,14 +310,13 @@ impl GlobalSymbolStore for NudoxStore {
 		.bind(symbol_name)
 		.fetch_optional(&self.pool)
 		.await
-		.map_err(|e| Error::GlobalStore(format!("lookup: {e}")))?;
+		.map_err(|e| GlobalStoreError::Query(Box::new(e)))?;
 
 		match row {
 			None => Ok(None),
 			Some(r) => {
-				let id_str: &str = r.try_get("id").map_err(|e| Error::GlobalStore(e.to_string()))?;
-				let uuid = Uuid::parse_str(id_str)
-					.map_err(|e| Error::GlobalStore(format!("bad uuid in db: {e}")))?;
+				let id_str: &str = r.try_get("id").map_err(|e| GlobalStoreError::RowAccess(Box::new(e)))?;
+				let uuid = Uuid::parse_str(id_str).map_err(GlobalStoreError::InvalidId)?;
 				Ok(Some(GlobalSymbolId(uuid)))
 			}
 		}
@@ -333,7 +332,7 @@ impl GlobalSymbolStore for NudoxStore {
 		.bind(occurrence.to_string())
 		.execute(&self.pool)
 		.await
-		.map_err(|e| Error::GlobalStore(format!("associate: {e}")))?;
+		.map_err(|e| GlobalStoreError::Associate(Box::new(e)))?;
 		Ok(())
 	}
 }
@@ -354,7 +353,7 @@ impl FutureParseQueue for NudoxStore {
 		.bind(&lib.version)
 		.execute(&self.pool)
 		.await
-		.map_err(|e| Error::Queue(format!("enqueue: {e}")))?;
+		.map_err(|e| QueueError::Enqueue(Box::new(e)))?;
 		Ok(())
 	}
 
@@ -363,7 +362,7 @@ impl FutureParseQueue for NudoxStore {
 		use sqlx::Row;
 
 		// Atomic drain: select then delete in one transaction.
-		let mut tx = self.pool.begin().await.map_err(|e| Error::Queue(format!("begin tx: {e}")))?;
+		let mut tx = self.pool.begin().await.map_err(|e| QueueError::Transaction(Box::new(e)))?;
 
 		let rows = sqlx::query(
 			"SELECT blob_ref FROM deferred_queue \
@@ -373,21 +372,21 @@ impl FutureParseQueue for NudoxStore {
 		.bind(&lib.version)
 		.fetch_all(&mut *tx)
 		.await
-		.map_err(|e| Error::Queue(format!("drain select: {e}")))?;
+		.map_err(|e| QueueError::Drain(Box::new(e)))?;
 
 		sqlx::query("DELETE FROM deferred_queue WHERE lib_name = ? AND lib_version = ?")
 			.bind(&lib.name)
 			.bind(&lib.version)
 			.execute(&mut *tx)
 			.await
-			.map_err(|e| Error::Queue(format!("drain delete: {e}")))?;
+			.map_err(|e| QueueError::Drain(Box::new(e)))?;
 
-		tx.commit().await.map_err(|e| Error::Queue(format!("commit: {e}")))?;
+		tx.commit().await.map_err(|e| QueueError::Transaction(Box::new(e)))?;
 
 		rows
 			.into_iter()
 			.map(|r| {
-				let s: String = r.try_get("blob_ref").map_err(|e| Error::Queue(e.to_string()))?;
+				let s: String = r.try_get("blob_ref").map_err(|e| QueueError::RowAccess(Box::new(e)))?;
 				Ok(BlobRef(s))
 			})
 			.collect()

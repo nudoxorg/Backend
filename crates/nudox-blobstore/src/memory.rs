@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 
 use async_trait::async_trait;
-use nudox_core::{BlobInfo, BlobRef, BlobStore, GlobalSymbolId, Result};
+use nudox_core::{BlobInfo, BlobRef, BlobStore, BlobStoreError, GlobalSymbolId, Result};
 
 /// In-memory blob store for use in tests.
 #[derive(Clone)]
@@ -29,13 +29,13 @@ impl BlobStore for InMemoryBlobStore {
 
 	async fn get(&self, blob_ref: &BlobRef) -> Result<BlobInfo> {
 		let map = self.inner.lock().expect("mutex poisoned");
-		map.get(blob_ref).cloned().ok_or_else(|| nudox_core::Error::BlobStore("not found".into()))
+		map.get(blob_ref).cloned().ok_or(nudox_core::Error::BlobStore(BlobStoreError::NotFound))
 	}
 
 	async fn update_resolution(&self, blob_ref: &BlobRef, global_id: GlobalSymbolId) -> Result<()> {
 		let mut map = self.inner.lock().expect("mutex poisoned");
 		let info =
-			map.get_mut(blob_ref).ok_or_else(|| nudox_core::Error::BlobStore("not found".into()))?;
+			map.get_mut(blob_ref).ok_or(nudox_core::Error::BlobStore(BlobStoreError::NotFound))?;
 		info.resolved_global_id = Some(global_id);
 		Ok(())
 	}
@@ -111,7 +111,8 @@ mod tests {
 		let result = store.get(&missing_ref).await;
 		assert!(result.is_err());
 		match result.unwrap_err() {
-			nudox_core::Error::BlobStore(msg) => assert_eq!(msg, "not found"),
+			nudox_core::Error::BlobStore(nudox_core::BlobStoreError::NotFound) => {}
+			nudox_core::Error::BlobStore(_) => panic!("expected NotFound"),
 			other => panic!("unexpected error variant: {:?}", other),
 		}
 	}
