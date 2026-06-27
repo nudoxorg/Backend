@@ -32,7 +32,7 @@ fn make_blob(symbol_name: &str, lib: &str, kind: SymbolKind, raw_code: &str) -> 
 		kind:               Some(kind),
 		source:             SourceChunk {
 			raw_code:        raw_code.to_owned(),
-			treesitter_repr: TreesitterRepr(vec![]),
+            treesitter_repr: Some(TreesitterRepr(vec![])),
 			symbol_span:     ByteSpan { start: 0, end: raw_code.len() },
 		},
 		embeddings:         vec![],

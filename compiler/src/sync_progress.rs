@@ -37,6 +37,11 @@ impl ProgressReporter {
 		Self { callback: Arc::new(callback) }
 	}
 
+	/// A reporter that discards every update. Lets call sites take
+	/// `&ProgressReporter` unconditionally instead of threading
+	/// `Option<&ProgressReporter>` and guarding each emission with `if let Some`.
+	pub fn silent() -> Self { Self { callback: Arc::new(|_, _| {}) } }
+
 	pub fn phase(&self, phase: PackageSyncPhase) { self.phase_with_detail(phase, None); }
 
 	pub fn phase_with_detail(&self, phase: PackageSyncPhase, detail: impl Into<Option<String>>) {

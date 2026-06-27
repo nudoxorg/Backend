@@ -77,7 +77,7 @@ pub trait SymbolSink: Send + Sync {
 		&self,
 		symbols: &[ParsedSymbol],
 		coord: &PackageCoord,
-		progress: Option<&ProgressReporter>,
+		progress: &ProgressReporter,
 	) -> Result<usize, crate::error::AppError>;
 }
 
@@ -87,7 +87,7 @@ pub async fn run_sinks(
 	sinks: &[Box<dyn SymbolSink>],
 	symbols: &[ParsedSymbol],
 	coord: &PackageCoord,
-	progress: Option<&ProgressReporter>,
+	progress: &ProgressReporter,
 ) -> Result<IngestReport, crate::error::AppError> {
 	let mut report = IngestReport::default();
 	for sink in sinks {
@@ -125,7 +125,7 @@ impl SymbolSink for SqliteRegisterSink {
 		&self,
 		symbols: &[ParsedSymbol],
 		coord: &PackageCoord,
-		_progress: Option<&ProgressReporter>,
+		_progress: &ProgressReporter,
 	) -> Result<usize, crate::error::AppError> {
 		let uris: Vec<String> = symbols.iter().map(|s| s.entry_uri.to_string()).collect();
 		let n = self
@@ -152,7 +152,7 @@ impl SymbolSink for TextIndexSink {
 		&self,
 		symbols: &[ParsedSymbol],
 		coord: &PackageCoord,
-		_progress: Option<&ProgressReporter>,
+		_progress: &ProgressReporter,
 	) -> Result<usize, crate::error::AppError> {
 		let n = self.index.index_batch(coord, symbols)?;
 		info!(lib = %coord.package, count = n, "symbols indexed in text search");
@@ -176,7 +176,7 @@ impl SymbolSink for OrchestratorSink {
 		&self,
 		symbols: &[ParsedSymbol],
 		coord: &PackageCoord,
-		_progress: Option<&ProgressReporter>,
+		_progress: &ProgressReporter,
 	) -> Result<usize, crate::error::AppError> {
 		if !matches!(coord.language, nudox_core::Language::Rust) {
 			return Ok(0);
@@ -222,35 +222,29 @@ impl SymbolSink for TerminusSink {
 		&self,
 		_symbols: &[ParsedSymbol],
 		_coord: &PackageCoord,
-		progress: Option<&ProgressReporter>,
+		progress: &ProgressReporter,
 	) -> Result<usize, crate::error::AppError> {
 		if let Some(schema) = &self.schema {
-			if let Some(progress) = progress {
-				progress.phase_with_detail(
-					PackageSyncPhase::UploadingSchema,
-					Some("uploading TerminusDB schema".to_owned()),
-				);
-			}
+			progress.phase_with_detail(
+				PackageSyncPhase::UploadingSchema,
+				Some("uploading TerminusDB schema".to_owned()),
+			);
 			upload_schema(&self.config, schema.clone()).await?;
 		}
 
 		let total = self.store.docs.len();
-		if let Some(progress) = progress {
+		progress.phase_with_detail(
+			PackageSyncPhase::UploadingDocuments,
+			Some(format!("uploading {total} documents")),
+		);
+		upload_documents(&self.config, &self.store, |p: DocumentUploadProgress| {
 			progress.phase_with_detail(
 				PackageSyncPhase::UploadingDocuments,
-				Some(format!("uploading {total} documents")),
+				Some(format!(
+					"uploaded {}/{} documents (chunk {}/{})",
+					p.completed_docs, p.total_docs, p.completed_chunks, p.total_chunks,
+				)),
 			);
-		}
-		upload_documents(&self.config, &self.store, |p: DocumentUploadProgress| {
-			if let Some(progress) = progress {
-				progress.phase_with_detail(
-					PackageSyncPhase::UploadingDocuments,
-					Some(format!(
-						"uploaded {}/{} documents (chunk {}/{})",
-						p.completed_docs, p.total_docs, p.completed_chunks, p.total_chunks,
-					)),
-				);
-			}
 		})
 		.await?;
 		Ok(total)
@@ -274,36 +268,30 @@ impl VectorSink {
 		&self,
 		symbols: Vec<ParsedSymbol>,
 		coord: &PackageCoord,
-		progress: Option<&ProgressReporter>,
+		progress: &ProgressReporter,
 	) -> Result<usize, crate::error::AppError> {
 		let docs: Vec<_> =
 			symbols.into_iter().map(|s| s.into_embedding_document(coord)).collect();
-		if let Some(progress) = progress {
-			progress.phase_with_detail(
-				PackageSyncPhase::Embedding,
-				Some(format!("embedding {} symbols", docs.len())),
-			);
-		}
+		progress.phase_with_detail(
+			PackageSyncPhase::Embedding,
+			Some(format!("embedding {} symbols", docs.len())),
+		);
 
 		let service = EmbeddingService::new(OpenAIEmbeddingProvider::new(&self.model));
 		let records = service
 			.embed_documents(docs, |p: EmbeddingProgress| {
-				if let Some(progress) = progress {
-					progress.phase_with_detail(
-						PackageSyncPhase::Embedding,
-						Some(format!("embedded {}/{} symbols", p.completed, p.total)),
-					);
-				}
+				progress.phase_with_detail(
+					PackageSyncPhase::Embedding,
+					Some(format!("embedded {}/{} symbols", p.completed, p.total)),
+				);
 			})
 			.await?;
 
 		let count = records.len();
-		if let Some(progress) = progress {
-			progress.phase_with_detail(
-				PackageSyncPhase::UploadingVectors,
-				Some(format!("uploading {count} vectors")),
-			);
-		}
+		progress.phase_with_detail(
+			PackageSyncPhase::UploadingVectors,
+			Some(format!("uploading {count} vectors")),
+		);
 
 		let mut points = Vec::with_capacity(count);
 		for record in records {

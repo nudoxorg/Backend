@@ -15,7 +15,7 @@ use ir::entry::Index;
 use nudox_store::NudoxStore;
 use semver::Version;
 use tokio::task::spawn_blocking;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, IngestError}, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::ProgressReporter, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
 
@@ -33,69 +33,12 @@ pub struct IngestionSummary {
 	pub symbols_orchestrated: usize,
 }
 
-/// Build a map from fully-qualified symbol name → raw Rust source lines by
-/// reading the rustdoc JSON that `generate_ir` writes to
-/// `workspace/target/doc/{package}.json`. Only `Function` items with a valid
-/// `Span` are included; other item kinds don't benefit from tree-sitter.
-fn build_rust_source_map(workspace: &Path, package_name: &str) -> HashMap<String, String> {
-	let json_path =
-		workspace.join("target").join("doc").join(format!("{}.json", package_name.replace('-', "_")));
-
-	let json_content = match std::fs::read_to_string(&json_path) {
-		Ok(c) => c,
-		Err(e) => {
-			warn!(error = %e, path = %json_path.display(), "cannot read rustdoc JSON for treesitter source map");
-			return HashMap::new();
-		}
-	};
-
-	let krate: rustdoc_types::Crate = match serde_json::from_str(&json_content) {
-		Ok(c) => c,
-		Err(e) => {
-			warn!(error = %e, "cannot parse rustdoc JSON for treesitter source map");
-			return HashMap::new();
-		}
-	};
-
-	let mut map = HashMap::new();
-	for (id, item) in &krate.index {
-		if !matches!(&item.inner, rustdoc_types::ItemEnum::Function(_)) {
-			continue;
-		}
-		let Some(span) = &item.span else { continue };
-		let Some(summary) = krate.paths.get(id) else { continue };
-		let fq_name = summary.path.join("::");
-
-		let source_file = workspace.join(&span.filename);
-		let source = match std::fs::read_to_string(&source_file) {
-			Ok(s) => s,
-			Err(_) => continue,
-		};
-
-		// span.begin / span.end are 1-indexed (line, col) tuples.
-		let raw: String = source
-			.lines()
-			.enumerate()
-			.filter(|(i, _)| *i + 1 >= span.begin.0 && *i + 1 <= span.end.0)
-			.map(|(_, line)| line)
-			.collect::<Vec<_>>()
-			.join("\n");
-
-		if !raw.is_empty() {
-			map.insert(fq_name, raw);
-		}
-	}
-
-	info!(package = package_name, count = map.len(), "built treesitter source map");
-	map
-}
-
 pub async fn run_rust_pipeline(
 	package: &RustPackage,
 	version: &Version,
 	workspace: &Path,
 	config: &PipelineConfig,
-	progress: Option<&ProgressReporter>,
+	progress: &ProgressReporter,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
 	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
@@ -103,14 +46,12 @@ pub async fn run_rust_pipeline(
 	let pkg = package.clone();
 	let ws = workspace.to_path_buf();
 	let ver = version.clone();
-	// IR generation and rustdoc JSON parsing are CPU/blocking-I/O; run off the async executor.
+	// IR generation and rustdoc JSON parsing are CPU/blocking-I/O; run off the async
+	// executor. The source map for tree-sitter is built from the same parsed crate.
 	let (ir, source_map) = spawn_blocking(move || -> Result<_, AppError> {
-		let ir = pkg.generate_ir(&ws, &ver).map_err(|source| AppError::Ingest(IngestError::IrGeneration {
-			package: pkg.name.clone(),
-			source,
-		}))?;
-		let source_map = build_rust_source_map(&ws, &pkg.name);
-		Ok((ir, source_map))
+		pkg.generate_ir_with_sources(&ws, &ver).map_err(|source| {
+			AppError::Ingest(IngestError::IrGeneration { package: pkg.name.clone(), source })
+		})
 	})
 	.await
 	.map_err(|source| AppError::TaskJoin { action: "Rust IR generation", source })??;
@@ -134,7 +75,7 @@ pub async fn run_typescript_pipeline(
 	package: &TsPackage,
 	version: &Version,
 	config: &PipelineConfig,
-	progress: Option<&ProgressReporter>,
+	progress: &ProgressReporter,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
 	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
@@ -171,7 +112,7 @@ async fn finalize_pipeline(
 	version: &Version,
 	index: Index,
 	config: &PipelineConfig,
-	progress: Option<&ProgressReporter>,
+	progress: &ProgressReporter,
 	nudox_store: Option<&Arc<NudoxStore>>,
 	text_index: Option<&Arc<SymbolTextIndex>>,
 	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
@@ -276,13 +217,4 @@ fn collection_name(
 	)
 }
 
-fn sanitize_collection_segment(value: &str) -> String {
-	value
-		.chars()
-		.map(|ch| match ch {
-			'a'..='z' | '0'..='9' => ch,
-			'A'..='Z' => ch.to_ascii_lowercase(),
-			_ => '_',
-		})
-		.collect()
-}
+fn sanitize_collection_segment(value: &str) -> String { crate::util::slug::ascii_segment(value) }

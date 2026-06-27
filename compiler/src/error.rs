@@ -115,16 +115,10 @@ pub enum EmbeddingError {
 		source: JoinError,
 	},
 
-	#[error("failed to build embedding request")]
-	RequestBuild {
+	#[error("embedding provider request failed")]
+	Provider {
 		#[source]
-		source: async_openai::error::OpenAIError,
-	},
-
-	#[error("openai embeddings request failed")]
-	ApiRequest {
-		#[source]
-		source: async_openai::error::OpenAIError,
+		source: nudox_core::Error,
 	},
 
 	#[error("embedding provider returned an empty response")]
@@ -153,7 +147,7 @@ pub enum IngestError {
 	StoreRegister {
 		package: String,
 		#[source]
-		source:  nudox_core::error::Error,
+		source:  nudox_core::Error,
 	},
 
 	#[error("TsPackage resolution failed")]
@@ -225,32 +219,32 @@ pub enum TerminusError {
 		org:    String,
 		db:     String,
 		#[source]
-		source: terminusdb_client::TerminusDBAdapterError,
+		source: anyhow::Error,
 	},
 
 	#[error("failed to upload schema to TerminusDB")]
 	SchemaUpload {
 		#[source]
-		source: terminusdb_client::TerminusDBAdapterError,
+		source: anyhow::Error,
 	},
 
 	#[error("failed to upload documents to TerminusDB")]
 	DocumentUpload {
 		#[source]
-		source: terminusdb_client::TerminusDBAdapterError,
+		source: anyhow::Error,
 	},
 
 	#[error("failed to fetch document `{uri}` from TerminusDB")]
 	DocumentFetch {
 		uri:    String,
 		#[source]
-		source: terminusdb_client::TerminusDBAdapterError,
+		source: anyhow::Error,
 	},
 
 	#[error("failed to build TerminusDB HTTP client")]
 	HttpClient {
 		#[source]
-		source: terminusdb_client::TerminusDBAdapterError,
+		source: anyhow::Error,
 	},
 }
 
@@ -307,7 +301,7 @@ pub enum ConfigError {
 	#[error("provide either ?uri=<symbol-uri> or ?symbol=<fq_name>&language=<lang>")]
 	MissingQueryParams,
 
-	#[error("`{name}` must not be empty")]
+	#[error("session value must not be empty")]
 	EmptySession,
 }
 
@@ -573,7 +567,7 @@ pub enum GitError {
 	#[error("failed to find git remote: {source}")]
 	FindRemote {
 		#[source]
-		source: gix::remote::find::Error,
+		source: gix::remote::find::for_fetch::Error,
 	},
 
 	#[error("failed to connect to remote: {source}")]
@@ -591,7 +585,7 @@ pub enum GitError {
 	#[error("failed to receive fetch: {source}")]
 	ReceiveFetch {
 		#[source]
-		source: gix::remote::fetch::receive::Error,
+		source: gix::remote::fetch::Error,
 	},
 
 	#[error("fetch/checkout failed: {source}")]
@@ -603,27 +597,34 @@ pub enum GitError {
 	#[error("worktree checkout failed: {source}")]
 	WorktreeCheckout {
 		#[source]
-		source: gix::clone::checkout::Error,
+		source: gix::clone::checkout::main_worktree::Error,
 	},
 
 	#[error("failed to resolve git reference `{name}`: {source}")]
 	Reference {
 		name:   String,
 		#[source]
-		source: gix::object::commit::Error,
+		source: gix::object::find::existing::with_conversion::Error,
+	},
+
+	#[error("failed to decode commit tree id for `{name}`: {source}")]
+	CommitDecode {
+		name:   String,
+		#[source]
+		source: gix_object::decode::Error,
 	},
 
 	#[error("failed to build index from tree `{tree}`: {source}")]
 	IndexFromTree {
 		tree:   String,
 		#[source]
-		source: gix::index::init::Error,
+		source: gix::repository::index_from_tree::Error,
 	},
 
-	#[error("failed to obtain checkout options: {source}")]
-	CheckoutOptions(#[source] gix_worktree::checkout_options::Error),
+	#[error("failed to obtain checkout options: {0}")]
+	CheckoutOptions(#[source] gix::config::checkout_options::Error),
 
-	#[error("failed to materialize worktree: {source}")]
+	#[error("failed to materialize worktree: {0}")]
 	Materialize(#[source] gix_worktree_state::checkout::Error),
 
 	#[error("failed to open Arc-backed object database: {source}")]
@@ -636,51 +637,57 @@ pub enum GitError {
 	TreeLookupEntry {
 		path:   String,
 		#[source]
-		source: gix::object::tree::find_entry::Error,
+		source: gix::object::find::existing::Error,
 	},
 
 	#[error("failed to find blob at `{path}`: {source}")]
 	FindBlob {
 		path:   String,
 		#[source]
-		source: gix::object::blob::find::Error,
+		source: gix::object::find::existing::with_conversion::Error,
 	},
 
 	#[error("failed to find tree at `{path}`: {source}")]
 	FindTree {
 		path:   String,
 		#[source]
-		source: gix::object::tree::find::Error,
+		source: gix::object::find::existing::with_conversion::Error,
 	},
 
 	#[error("failed to traverse tree: {source}")]
 	TreeTraverse {
 		#[source]
-		source: gix::object::tree::traverse::Error,
+		source: gix::diff::object::decode::Error,
 	},
 
 	#[error("failed to lookup git HEAD: {source}")]
 	Head {
 		#[source]
-		source: gix::refs::head::Error,
+		source: gix::reference::find::existing::Error,
 	},
 
 	#[error("failed to find git object: {source}")]
 	ObjectLookup {
 		#[source]
-		source: gix::object::find::existing::Error,
+		source: gix::head::peel::to_object::Error,
 	},
 
 	#[error("failed to enumerate git references: {source}")]
 	ReferencesOpen {
 		#[source]
-		source: gix::refs::file::find::Error,
+		source: gix::reference::iter::Error,
 	},
 
 	#[error("failed to iterate all git references: {source}")]
 	ReferencesAll {
 		#[source]
-		source: gix::refs::file::all::Error,
+		source: gix::reference::iter::init::Error,
+	},
+
+	#[error("failed to peel git references: {source}")]
+	ReferencesPeeled {
+		#[source]
+		source: gix_ref::packed::buffer::open::Error,
 	},
 
 	#[error("invalid utf-8 in blob at `{path}`: {source}")]

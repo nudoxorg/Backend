@@ -142,7 +142,7 @@ pub fn materialize_commit(
 			source,
 		})?
 		.tree_id()
-		.map_err(|source| GitError::Reference {
+		.map_err(|source| GitError::CommitDecode {
 			name:   commit.to_hex().to_string(),
 			source,
 		})?;
@@ -554,9 +554,9 @@ fn version_search_start_points(
 		.all()
 		.map_err(|source| GitError::ReferencesAll { source })?
 		.peeled()
-		.map_err(|source| GitError::ReferencesAll { source })?
+		.map_err(|source| GitError::ReferencesPeeled { source })?
 	{
-		let mut reference = reference.map_err(|source| GitError::ReferencesAll { source })?;
+		let Ok(mut reference) = reference else { continue; };
 		let Ok(id) = reference.peel_to_id() else {
 			continue;
 		};
@@ -658,8 +658,8 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn extract_package_version_reads_workspace_member_version_from_manifest() -> 	Result<T, Box<dyn std::error::Error>><()>
-	{
+	fn extract_package_version_reads_workspace_member_version_from_manifest()
+	-> Result<(), Box<dyn std::error::Error>> {
 		let repo = git_fixture(
 			&[
 				(
@@ -680,7 +680,7 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn extract_package_version_falls_back_to_non_workspace_nested_crates() -> 	Result<T, Box<dyn std::error::Error>><()> {
+	fn extract_package_version_falls_back_to_non_workspace_nested_crates() -> Result<(), Box<dyn std::error::Error>> {
 		let repo = git_fixture(
 			&[
 				(
@@ -705,7 +705,7 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn find_commit_for_version_scans_all_refs_not_just_head_history() -> 	Result<T, Box<dyn std::error::Error>><()> {
+	fn find_commit_for_version_scans_all_refs_not_just_head_history() -> Result<(), Box<dyn std::error::Error>> {
 		let repo_dir = git_fixture_dir(
 			&[("Cargo.toml", "[package]\nname = \"widget\"\nversion = \"0.1.0\"\n")],
 			&[],
@@ -735,7 +735,7 @@ version = { workspace = true }
 	}
 
 	#[test]
-	fn open_or_clone_repository_reclones_when_cached_remote_differs() -> 	Result<T, Box<dyn std::error::Error>><()> {
+	fn open_or_clone_repository_reclones_when_cached_remote_differs() -> Result<(), Box<dyn std::error::Error>> {
 		let first_remote =
 			git_fixture_dir(&[("Cargo.toml", "[package]\nname = \"first\"\nversion = \"0.1.0\"\n")], &[
 			])?;
@@ -764,7 +764,7 @@ version = { workspace = true }
 	fn git_fixture(
 		files: &[(&str, &str)],
 		extra_commits: &[Vec<(&str, &str)>],
-	) -> 	Result<T, Box<dyn std::error::Error>><gix::Repository> {
+	) -> Result<gix::Repository, Box<dyn std::error::Error>> {
 		let dir = git_fixture_dir(files, extra_commits)?;
 		let path = dir.keep();
 		Ok(gix::open(path)?)
@@ -773,7 +773,7 @@ version = { workspace = true }
 	fn git_fixture_dir(
 		files: &[(&str, &str)],
 		extra_commits: &[Vec<(&str, &str)>],
-	) -> 	Result<T, Box<dyn std::error::Error>><TempDir> {
+	) -> Result<TempDir, Box<dyn std::error::Error>> {
 		let dir = tempfile::tempdir()?;
 		for (path, contents) in files {
 			write_file(dir.path(), path, contents)?;
@@ -794,7 +794,7 @@ version = { workspace = true }
 		Ok(dir)
 	}
 
-	fn write_file(root: &Path, relative: &str, contents: &str) -> 	Result<T, Box<dyn std::error::Error>><()> {
+	fn write_file(root: &Path, relative: &str, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
 		let path = root.join(relative);
 		if let Some(parent) = path.parent() {
 			fs::create_dir_all(parent)?;
@@ -803,7 +803,7 @@ version = { workspace = true }
 		Ok(())
 	}
 
-	fn commit(cwd: &Path, message: &str) -> 	Result<T, Box<dyn std::error::Error>><()> {
+	fn commit(cwd: &Path, message: &str) -> Result<(), Box<dyn std::error::Error>> {
 		run_git(cwd, [
 			"-c",
 			"user.name=Codex",
@@ -819,9 +819,8 @@ version = { workspace = true }
 		])
 	}
 
-	fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) -> 	Result<T, Box<dyn std::error::Error>><()> {
-		let status =
-			Command::new("git").args(args).current_dir(cwd).status().wrap_err("failed to spawn git")?;
+	fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<(), Box<dyn std::error::Error>> {
+		let status = Command::new("git").args(args).current_dir(cwd).status()?;
 
 		if !status.success() {
 			return Err(format!("git {:?} failed with status {}", args, status).into());

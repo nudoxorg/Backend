@@ -157,7 +157,7 @@ impl RustPackage {
 		package_name: &str,
 		doc_target_name: &str,
 		version: &Version,
-	) -> Result<Ir<Collected>, PackageError> {
+	) -> Result<(Ir<Collected>, HashMap<String, String>), PackageError> {
 		let target_dir = code.join("target").join("doc_json");
 
 		if !target_dir.exists() {
@@ -182,22 +182,30 @@ impl RustPackage {
 		let rustdoc_crate: rustdoc_types::Crate = serde_json::from_str(&json_content)?;
 		debug!("rustdoc JSON parsed");
 
+		// Build the tree-sitter source map from the *same* parsed crate, before it
+		// is moved into the parser — the JSON is parsed exactly once per package.
+		let source_map = source_map_from_crate(&rustdoc_crate, code);
+
 		let mut parser = RustdocParser::from_doc(rustdoc_crate)?;
 
 		let parse_result = parser.parse()?;
 		info!(entries = parse_result.len(), "IR generation complete");
 
-		Ok(Ir::from_entries(parse_result))
+		Ok((Ir::from_entries(parse_result), source_map))
 	}
 
-	pub(crate) fn generate_ir(
+	/// Generate the IR and the raw-source map in one pass. The source map keys
+	/// fully-qualified function names to their raw source so the ingest pipeline
+	/// can run tree-sitter without re-parsing the rustdoc JSON.
+	pub(crate) fn generate_ir_with_sources(
 		&self,
 		code: &PathBuf,
 		version: &Version,
-	) -> Result<Ir<Collected>, PackageError> {
+	) -> Result<(Ir<Collected>, HashMap<String, String>), PackageError> {
 		let metadata = cargo_metadata(code)?;
 		let packages = documented_local_packages(&metadata, &self.name, self.direct_repo);
 		let mut entries = Vec::new();
+		let mut source_map = HashMap::new();
 
 		for package_id in packages {
 			let package = metadata
@@ -207,12 +215,21 @@ impl RustPackage {
 				.expect("documented package id should exist in metadata");
 			let doc_target_name =
 				package_doc_target_name(package).unwrap_or_else(|| package.name.to_string());
-			let package_ir =
+			let (package_ir, package_sources) =
 				self.generate_ir_for_package(code, &package.name, &doc_target_name, version)?;
 			entries.extend(package_ir.into_entries());
+			source_map.extend(package_sources);
 		}
 
-		Ok(Ir::from_entries(entries))
+		Ok((Ir::from_entries(entries), source_map))
+	}
+
+	pub(crate) fn generate_ir(
+		&self,
+		code: &PathBuf,
+		version: &Version,
+	) -> Result<Ir<Collected>, PackageError> {
+		self.generate_ir_with_sources(code, version).map(|(ir, _)| ir)
 	}
 
 	pub(crate) fn from_registry_crate(c: Crate) -> Self {
@@ -241,6 +258,39 @@ fn cargo_metadata(code: &PathBuf) -> Result<Metadata, PackageError> {
 		.current_dir(code)
 		.exec()
 		.map_err(|source| PackageError::Metadata(source.to_string()))
+}
+
+/// Build a map from fully-qualified symbol name → raw Rust source for every
+/// `Function` item that carries a span, reading the source files referenced by
+/// the already-parsed rustdoc `Crate`. Reusing the parsed crate avoids a second
+/// deserialization of the (large) rustdoc JSON in the ingest pipeline.
+fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &PathBuf) -> HashMap<String, String> {
+	let mut map = HashMap::new();
+	for (id, item) in &krate.index {
+		if !matches!(&item.inner, rustdoc_types::ItemEnum::Function(_)) {
+			continue;
+		}
+		let Some(span) = &item.span else { continue };
+		let Some(summary) = krate.paths.get(id) else { continue };
+		let fq_name = summary.path.join("::");
+
+		let source_file = workspace.join(&span.filename);
+		let Ok(source) = fs::read_to_string(&source_file) else { continue };
+
+		// span.begin / span.end are 1-indexed (line, col) tuples.
+		let raw: String = source
+			.lines()
+			.enumerate()
+			.filter(|(i, _)| *i + 1 >= span.begin.0 && *i + 1 <= span.end.0)
+			.map(|(_, line)| line)
+			.collect::<Vec<_>>()
+			.join("\n");
+
+		if !raw.is_empty() {
+			map.insert(fq_name, raw);
+		}
+	}
+	map
 }
 
 fn documented_local_packages(

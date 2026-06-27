@@ -81,8 +81,12 @@
 //! Those concerns belong in separate runtime or retrieval-facing components.
 use std::collections::HashMap;
 
-use async_openai::{Client, config::OpenAIConfig, types::embeddings::CreateEmbeddingRequestArgs};
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use nudox_core::{ByteSpan, EmbeddingPurpose, ModelType, SourceChunk};
+use nudox_embed::RemoteEmbedder;
+use url::Url;
 use qdrant_client::{Payload, qdrant::{PointId, PointStruct, Value}};
 use tokio::task::JoinSet;
 use tracing::info;
@@ -458,31 +462,51 @@ where
 	}
 }
 
-/// OpenAI-backed embedding provider.
+/// Default OpenAI-compatible embeddings endpoint, used when
+/// `NUDOX_EMBEDDING_ENDPOINT` is not set.
+const DEFAULT_EMBEDDING_ENDPOINT: &str = "https://api.openai.com/v1/embeddings";
+
+/// OpenAI-compatible embedding provider.
 ///
-/// This uses the standard OpenAI API key flow. By default, `Client::new()`
-/// reads `OPENAI_API_KEY` from the environment. If you want to inject a key
-/// directly, use `new_with_api_key(...)` instead.
+/// Backed by the shared [`nudox_embed::RemoteEmbedder`] so there is a single
+/// HTTP embedding client across the workspace. The endpoint defaults to OpenAI
+/// (`NUDOX_EMBEDDING_ENDPOINT` overrides it) and the API key is read from
+/// `OPENAI_API_KEY` unless injected via [`Self::new_with_api_key`].
 #[derive(Clone)]
 pub struct OpenAIEmbeddingProvider {
-	client:     Client<OpenAIConfig>,
+	embedder:   Arc<RemoteEmbedder>,
 	model_name: String,
 }
 
 impl OpenAIEmbeddingProvider {
 	/// Construct from environment configuration.
 	///
-	/// Expects `OPENAI_API_KEY` to be set.
+	/// Reads `OPENAI_API_KEY` (optional) and `NUDOX_EMBEDDING_ENDPOINT` (optional,
+	/// defaults to the OpenAI embeddings API).
 	pub fn new(model_name: impl Into<String>) -> Self {
-		Self { client: Client::new(), model_name: model_name.into() }
+		let api_key = std::env::var("OPENAI_API_KEY").ok();
+		Self::build(api_key, model_name)
 	}
 
 	/// Construct with an explicit API key.
 	pub fn new_with_api_key(api_key: impl Into<String>, model_name: impl Into<String>) -> Self {
-		let config = OpenAIConfig::new().with_api_key(api_key.into());
-		let client = Client::with_config(config);
+		Self::build(Some(api_key.into()), model_name)
+	}
 
-		Self { client, model_name: model_name.into() }
+	fn build(api_key: Option<String>, model_name: impl Into<String>) -> Self {
+		let model_name = model_name.into();
+		let endpoint = std::env::var("NUDOX_EMBEDDING_ENDPOINT")
+			.ok()
+			.and_then(|value| Url::parse(&value).ok())
+			.unwrap_or_else(|| Url::parse(DEFAULT_EMBEDDING_ENDPOINT).expect("valid default endpoint"));
+
+		let mut builder =
+			RemoteEmbedder::builder(endpoint, model_name.clone()).model_type(ModelType::Openai);
+		if let Some(key) = api_key {
+			builder = builder.api_key(key);
+		}
+
+		Self { embedder: Arc::new(builder.build()), model_name }
 	}
 }
 
@@ -495,21 +519,17 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
 			return Err(EmbeddingError::MissingText);
 		}
 
-		let request = CreateEmbeddingRequestArgs::default()
-			.model(self.model_name.clone())
-			.input(text)
-			.build()
-			.map_err(|source| EmbeddingError::RequestBuild { source })?;
+		// `RemoteEmbedder` embeds a `SourceChunk`; the text-centric pipeline wraps
+		// its string as the chunk's raw code.
+		let chunk = SourceChunk {
+			raw_code:        text.to_owned(),
+			treesitter_repr: None,
+			symbol_span:     ByteSpan { start: 0, end: text.len() },
+		};
 
-		let response = self
-			.client
-			.embeddings()
-			.create(request)
+		let embedding = nudox_core::Embedder::embed(&*self.embedder, &chunk, EmbeddingPurpose::Code)
 			.await
-			.map_err(|source| EmbeddingError::ApiRequest { source })?;
-
-		let embedding =
-			response.data.into_iter().next().ok_or(EmbeddingError::MissingVector)?.embedding;
+			.map_err(|source| EmbeddingError::Provider { source })?;
 
 		if embedding.is_empty() {
 			return Err(EmbeddingError::MissingVector);

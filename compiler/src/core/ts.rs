@@ -118,7 +118,7 @@ impl TsPackage {
 		self.generate_ir_with_deno()
 	}
 
-	fn npm_slug(name: &str) -> String { name.to_ascii_lowercase().replace('/', "__") }
+	fn npm_slug(name: &str) -> String { crate::util::slug::npm(name) }
 
 	fn generate_ir_from_local_path(
 		&self,

@@ -6,7 +6,7 @@ use serde_json::Value as JsonValue;
 use terminusdb_client::{BranchSpec, GetOpts, TerminusDBHttpClient};
 use tokio::sync::Mutex;
 
-use crate::{config::{PipelineConfig, QdrantSettings}, error::{AppError, ConfigError, EmbeddingError, QdrantError, TerminusError}, identity::EntryUri, terminusdb::{embedding_service::{EmbeddingProvider, OpenAIEmbeddingProvider}, upload::TerminusConfig}};
+use crate::{config::{PipelineConfig, QdrantSettings}, error::{AppError, ConfigError, QdrantError, TerminusError}, identity::EntryUri, terminusdb::{embedding_service::{EmbeddingProvider, OpenAIEmbeddingProvider}, upload::TerminusConfig}};
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -240,28 +240,19 @@ pub async fn lookup_symbol_with_context(
 	let spec = BranchSpec::new(&terminus.db);
 	let mut cache = HashMap::new();
 
+	// The package segment is canonicalized inside `EntryUri::new`, so the URI is
+	// already in its single stored spelling — one fetch, no candidate guessing.
 	let requested_uri = structured_symbol_uri(language, symbol, package);
-	let mut resolved_uri = None;
-	let mut document = None;
-	for candidate in candidate_symbol_uris(&requested_uri) {
-		if let Some(found) = fetch_document(&client, &spec, &mut cache, &candidate).await? {
-			resolved_uri = Some(candidate);
-			document = Some(found);
-			break;
-		}
-	}
-
-	let resolved_uri = resolved_uri.unwrap_or(requested_uri);
-	let document = document.ok_or_else(|| AppError::SymbolNotFound {
-		uri: requested_uri.clone(),
-	})?;
+	let document = fetch_document(&client, &spec, &mut cache, &requested_uri)
+		.await?
+		.ok_or_else(|| AppError::SymbolNotFound { uri: requested_uri.clone() })?;
 
 	let kind = match document.get("kind").and_then(JsonValue::as_str) {
 		Some(kind_uri) => fetch_document(&client, &spec, &mut cache, kind_uri).await?,
 		None => None,
 	};
 
-	Ok(LookupResponse { uri: resolved_uri, document, kind })
+	Ok(LookupResponse { uri: requested_uri, document, kind })
 }
 
 pub async fn run_search(
@@ -412,18 +403,12 @@ async fn resolve_symbol(
 	cache: &mut HashMap<String, Option<JsonValue>>,
 	uri: &str,
 ) -> Result<ResolvedSymbol, AppError> {
-	let mut resolved_uri = None;
-	let mut document = None;
-	for candidate in candidate_symbol_uris(uri) {
-		if let Some(found) = fetch_document(client, spec, cache, &candidate).await? {
-			resolved_uri = Some(candidate);
-			document = Some(found);
-			break;
-		}
-	}
-
-	let resolved_uri = resolved_uri.unwrap_or_else(|| uri.to_owned());
-	let document = document.ok_or_else(|| AppError::SymbolNotFound { uri: uri.to_owned() })?;
+	// Canonicalize the incoming URI through `EntryUri` so a raw, underscored Rust
+	// package spelling maps to its single stored form before the lookup.
+	let resolved_uri = EntryUri::parse(uri).map_or_else(|| uri.to_owned(), |u| u.to_string());
+	let document = fetch_document(client, spec, cache, &resolved_uri)
+		.await?
+		.ok_or_else(|| AppError::SymbolNotFound { uri: uri.to_owned() })?;
 
 	let kind = match document.get("kind").and_then(JsonValue::as_str) {
 		Some(kind_uri) => fetch_document(client, spec, cache, kind_uri).await?,
@@ -447,8 +432,13 @@ async fn fetch_document(
 		return Ok(document.clone());
 	}
 
-	let document =
-		client.get_document_if_exists(uri, spec, GetOpts::default().with_unfold(true)).await?;
+	let document = client
+		.get_document_if_exists(uri, spec, GetOpts::default().with_unfold(true))
+		.await
+		.map_err(|source| AppError::Terminus(TerminusError::DocumentFetch {
+			uri: uri.to_owned(),
+			source,
+		}))?;
 	cache.insert(uri.to_owned(), document.clone());
 	Ok(document)
 }
@@ -560,31 +550,6 @@ fn structured_symbol_uri(language: &str, symbol: &str, package: Option<&str>) ->
 	}
 }
 
-fn candidate_symbol_uris(uri: &str) -> Vec<String> {
-	let mut candidates = vec![uri.to_owned()];
-	let Some(parsed) = EntryUri::parse(uri) else { return candidates };
-	if parsed.lang() != "rust" {
-		return candidates;
-	}
-	let canonical_package = canonical_rust_package_segment(parsed.package(), parsed.path());
-	if canonical_package != parsed.package() {
-		candidates.push(EntryUri::new(parsed.lang(), &canonical_package, parsed.path()).to_string());
-	}
-	candidates
-}
-
-fn canonical_rust_package_segment(package_segment: &str, fq_name: &str) -> String {
-	let crate_root =
-		fq_name.split("::").next().filter(|segment| !segment.is_empty()).unwrap_or(package_segment);
-	let crate_slug = crate_root.replace('_', "-");
-	let normalized_package = package_segment.replace('_', "-");
-	if normalized_package.eq_ignore_ascii_case(&crate_slug) {
-		crate_slug
-	} else {
-		package_segment.to_owned()
-	}
-}
-
 fn require_non_empty<'a>(field: &'static str, value: &'a str) -> Result<&'a str, AppError> {
 	let trimmed = value.trim();
 	if trimmed.is_empty() {
@@ -615,57 +580,24 @@ fn session_file(dir: &Path, session: &str) -> PathBuf {
 }
 
 async fn terminus_client(config: &TerminusConfig) -> Result<TerminusDBHttpClient, AppError> {
-	Ok(
-		TerminusDBHttpClient::new_with_database(
-			config.endpoint.clone(),
-			&config.user,
-			&config.password,
-			&config.db,
-			&config.org,
-		)
-		.await?,
+	TerminusDBHttpClient::new_with_database(
+		config.endpoint.clone(),
+		&config.user,
+		&config.password,
+		&config.db,
+		&config.org,
 	)
+	.await
+	.map_err(|source| AppError::Terminus(TerminusError::ClientCreation {
+		org: config.org.clone(),
+		db: config.db.clone(),
+		source,
+	}))
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{candidate_symbol_uris, canonical_rust_package_segment, structured_symbol_uri};
-
-	#[test]
-	fn rust_lookup_accepts_underscored_package_segment() {
-		let candidates =
-			candidate_symbol_uris("Entry/rust/cranelift_object/cranelift_object::ObjectModule");
-		assert_eq!(candidates, vec![
-			"Entry/rust/cranelift_object/cranelift_object::ObjectModule".to_owned(),
-			"Entry/rust/cranelift-object/cranelift_object::ObjectModule".to_owned(),
-		]);
-	}
-
-	#[test]
-	fn rust_lookup_keeps_existing_hyphenated_package_segment() {
-		let candidates =
-			candidate_symbol_uris("Entry/rust/cranelift-object/cranelift_object::ObjectModule");
-		assert_eq!(candidates, vec![
-			"Entry/rust/cranelift-object/cranelift_object::ObjectModule".to_owned()
-		]);
-	}
-
-	#[test]
-	fn canonical_rust_package_segment_uses_crate_root() {
-		assert_eq!(
-			canonical_rust_package_segment(
-				"cranelift_module",
-				"cranelift_module::Module::define_function"
-			),
-			"cranelift-module"
-		);
-	}
-
-	#[test]
-	fn non_rust_uris_are_left_unchanged() {
-		let candidates = candidate_symbol_uris("Entry/typescript/zod/classic.external::ZodString");
-		assert_eq!(candidates, vec!["Entry/typescript/zod/classic.external::ZodString".to_owned()]);
-	}
+	use super::structured_symbol_uri;
 
 	#[test]
 	fn structured_rust_lookup_uri_includes_package_segment() {
@@ -676,6 +608,16 @@ mod tests {
 				Some("cranelift-module")
 			),
 			"Entry/rust/cranelift-module/cranelift_module::Module::define_function"
+		);
+	}
+
+	#[test]
+	fn structured_rust_lookup_uri_canonicalizes_underscored_package() {
+		// An underscored Rust package spelling resolves to the same canonical URI
+		// as the hyphenated one — this is what makes candidate-guessing obsolete.
+		assert_eq!(
+			structured_symbol_uri("rust", "cranelift_object::ObjectModule", Some("cranelift_object")),
+			"Entry/rust/cranelift-object/cranelift_object::ObjectModule"
 		);
 	}
 

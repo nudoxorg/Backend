@@ -77,11 +77,7 @@ impl StorageLayout {
 }
 
 fn sanitize_repository_slug(slug: &str) -> String {
-	let sanitized = slug
-		.chars()
-		.map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
-		.collect::<String>();
-
+	let sanitized = crate::util::slug::ascii_segment(slug);
 	if sanitized.is_empty() { "package".to_owned() } else { sanitized }
 }
 
