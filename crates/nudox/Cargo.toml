@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 deno_ast = "0.53.0"
-deno_doc = { path = "../deno_doc" }
+deno_doc = { path = "../../deno_doc" }
 deno_graph = "0.107.1"
 axum = "0.8.8"
 cargo_metadata = "0.23.1"
@@ -19,13 +19,13 @@ gix = { version = "0.74.1", features = [
 gix-object = "0.51.1"
 gix-ref = "0.54.1"
 ir = { workspace = true, features = ["serde"] }
-nudox-store     = { path = "../crates/nudox-store" }
-nudox-core      = { path = "../crates/nudox-core" }
-nudox-search    = { path = "../crates/nudox-search" }
-nudox-blobstore = { path = "../crates/nudox-blobstore" }
-nudox-embed     = { path = "../crates/nudox-embed" }
-nudox-orchestrator = { path = "../crates/nudox-orchestrator", features = ["memory-backends"] }
-nudox-pipeline  = { path = "../crates/nudox-pipeline" }
+nudox-store     = { path = "../nudox-store" }
+nudox-core      = { path = "../nudox-core" }
+nudox-search    = { path = "../nudox-search" }
+nudox-blobstore = { path = "../nudox-blobstore" }
+nudox-embed     = { path = "../nudox-embed" }
+nudox-orchestrator = { path = "../nudox-orchestrator", features = ["memory-backends"] }
+nudox-pipeline  = { path = "../nudox-pipeline" }
 uuid            = { workspace = true }
 chrono          = { workspace = true }
 arborium = { workspace = true, features = ["lang-rust"] }
@@ -63,9 +63,9 @@ insta            = "1.43.2"
 tower            = { version = "0.5", features = ["util"] }
 http-body-util   = "0.1"
 chrono           = { workspace = true }
-nudox-core       = { path = "../crates/nudox-core" }
-nudox-search     = { path = "../crates/nudox-search" }
-nudox-blobstore  = { path = "../crates/nudox-blobstore" }
-nudox-embed      = { path = "../crates/nudox-embed" }
-nudox-orchestrator = { path = "../crates/nudox-orchestrator", features = ["memory-backends"] }
+nudox-core       = { path = "../nudox-core" }
+nudox-search     = { path = "../nudox-search" }
+nudox-blobstore  = { path = "../nudox-blobstore" }
+nudox-embed      = { path = "../nudox-embed" }
+nudox-orchestrator = { path = "../nudox-orchestrator", features = ["memory-backends"] }
 uuid             = { workspace = true }

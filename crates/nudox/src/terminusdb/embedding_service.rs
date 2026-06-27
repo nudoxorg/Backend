@@ -91,7 +91,8 @@ use qdrant_client::{Payload, qdrant::{PointId, PointStruct, Value}};
 use tokio::task::JoinSet;
 use tracing::info;
 
-use crate::error::EmbeddingError;
+use crate::{error::EmbeddingError, ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind}};
+pub use crate::ingest::embedding_types::build_entry_embedding_text;
 
 const DEFAULT_EMBED_CONCURRENCY: usize = 16;
 
@@ -103,55 +104,6 @@ pub struct EmbeddingProgress {
 // EmbeddingError is defined in crate::error and re-used here.
 // See compiler/src/error.rs for the full enum definition.
 
-/// The high-level semantic type of the vectorized record.
-///
-/// This is for storage / filtering / future retrieval mode distinctions.
-/// Keep this compact and stable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordKind {
-	/// Main semantic view of a node for feature-oriented retrieval.
-	SemanticNode,
-
-	/// Future: shape/field/layout-oriented similarity.
-	StructuralNode,
-}
-
-impl RecordKind {
-	pub fn as_str(&self) -> &'static str {
-		match self {
-			Self::SemanticNode => "semantic_node",
-			Self::StructuralNode => "structural_node",
-		}
-	}
-}
-
-/// The content view represented by this vector.
-///
-/// One graph node may emit multiple records later:
-/// - docs
-/// - signature
-/// - context
-/// - structural summary
-///
-/// This enum is intentionally small for now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RepresentationKind {
-	Docs,
-	Signature,
-	Context,
-	Structural,
-}
-
-impl RepresentationKind {
-	pub fn as_str(&self) -> &'static str {
-		match self {
-			Self::Docs => "docs",
-			Self::Signature => "signature",
-			Self::Context => "context",
-			Self::Structural => "structural",
-		}
-	}
-}
 
 /// Metadata stored in Qdrant payload.
 ///
@@ -240,53 +192,6 @@ impl From<VectorPayload> for Payload {
 	}
 }
 
-/// The source-side store-agnostic input unit for embedding.
-///
-/// This is the object the ingestion pipeline constructs before embedding.
-/// It is intentionally not tied to Qdrant.
-///
-/// Later, your DocStore or emitter can produce one or more of these per node.
-#[derive(Debug, Clone)]
-pub struct EmbeddingDocument {
-	/// Stable logical key for this embedding record.
-	///
-	/// Example:
-	/// - same as URI for 1:1 storage
-	/// - "<uri>#docs"
-	/// - "<uri>#context"
-	pub record_key: String,
-
-	/// Canonical URI shared with TerminusDB.
-	pub uri: String,
-
-	/// Text that will be sent to the embedding provider.
-	pub text: String,
-
-	/// Metadata that will be preserved into the vector payload.
-	pub fq_name:     Option<String>,
-	pub language:    String,
-	pub package:     String,
-	pub version:     Option<String>,
-	pub symbol_kind: Option<String>,
-
-	/// What category of vector record this is.
-	pub record_kind:         RecordKind,
-	pub representation_kind: RepresentationKind,
-
-	/// Optional future-proofing for chunked documents.
-	pub chunk_index: Option<u32>,
-	pub chunk_count: Option<u32>,
-}
-
-impl EmbeddingDocument {
-	/// Basic validation before hitting the provider.
-	pub fn validate(&self) -> Result<(), EmbeddingError> {
-		if self.text.trim().is_empty() {
-			return Err(EmbeddingError::MissingText);
-		}
-		Ok(())
-	}
-}
 
 /// The store-agnostic result after embedding generation.
 ///
@@ -632,37 +537,3 @@ where
 	QdrantPointFactory::build_point(point_id, record)
 }
 
-/// Build the embedding text body for a symbol.
-///
-/// Policy: always include `fq_name` and `name`; include the symbol kind,
-/// aliases, and documentation when present. This is the single place the
-/// embedding text is shaped, fed directly from the parse-once projection.
-pub fn build_entry_embedding_text(
-	name: &str,
-	fq_name: &str,
-	symbol_kind: Option<&str>,
-	aliases: &[String],
-	documentation: Option<&str>,
-) -> String {
-	let mut parts: Vec<String> = Vec::new();
-
-	parts.push(format!("fq_name: {fq_name}"));
-	parts.push(format!("name: {name}"));
-
-	if let Some(kind) = symbol_kind {
-		parts.push(format!("kind: {kind}"));
-	}
-
-	if !aliases.is_empty() {
-		parts.push(format!("aliases: {}", aliases.join(", ")));
-	}
-
-	if let Some(doc) = documentation {
-		let trimmed = doc.trim();
-		if !trimmed.is_empty() {
-			parts.push(format!("documentation: {trimmed}"));
-		}
-	}
-
-	parts.join("\n")
-}
