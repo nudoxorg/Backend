@@ -471,27 +471,7 @@ impl IntoResponse for AppError {
 			AppError::NotImplemented { .. } => StatusCode::NOT_IMPLEMENTED,
 
 			// ── Everything else → 500 Internal Server Error ────────────────
-			AppError::StorageRootDiscovery { .. }
-			| AppError::Storage { .. }
-			| AppError::TaskJoin { .. }
-			| AppError::Io(_)
-			| AppError::Json(_)
-			| AppError::Package(_)
-			| AppError::Git(_)
-			| AppError::Ingest(_)
-			| AppError::TsPackage(_)
-			| AppError::TextIndex(_)
-			| AppError::Embedding(_)
-			| AppError::Qdrant(_)
-			| AppError::Terminus(_)
-			| AppError::TextSearchNotConfigured
-			| AppError::SymbolSearchNotConfigured
-			| AppError::SyncShutdown { .. }
-			| AppError::IdExhausted
-			| AppError::MissingSource { .. }
-			| AppError::TypescriptEntryPointDiscovery { .. }
-			| AppError::TypescriptEntryPointMissing { .. }
-			| AppError::VersionNotFoundForPackage { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+			_ => StatusCode::INTERNAL_SERVER_ERROR,
 		};
 
 		let body = Json(json!({
