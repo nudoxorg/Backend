@@ -1,7 +1,7 @@
-use std::{collections::{BTreeSet, HashMap, VecDeque}, fs, path::PathBuf, process::Command};
+use std::{collections::{BTreeSet, HashMap, VecDeque}, fs, path::PathBuf, process::Command, time::Duration};
 
 use cargo_metadata::{Metadata, MetadataCommand, Package as CargoPackage, PackageId};
-use crates_io_api::{AsyncClient, Crate, CratesQuery};
+use crates_io_api::{AsyncClient, Crate};
 use lang_types::Language;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use thiserror::Error;
 use tracing::{debug, info, instrument};
 use url::Url;
 
-use crate::{core::{parse_common::LanguageParser, rust_parser::RustdocParser}, error::{PackageError, RegistryError, summarize_command_output}, git::find_commit_for_version, pipeline::{Collected, Ir}, traits::{package::Package as PackageTrait, registry::Registry}};
+use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError, summarize_command_output}, git::find_commit_for_version, pipeline::{Collected, Ir}};
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
@@ -371,25 +371,18 @@ impl From<Crate> for RustPackage {
 	fn from(c: Crate) -> Self { Self::from_registry_crate(c) }
 }
 
-impl PackageTrait for RustPackage {
-	type Error = PackageError;
-
-	fn get_available_versions(&self) -> Result<Vec<Version>, Self::Error> {
-		Err(PackageError::NotImplemented)
-	}
-
-	fn flags(&self) -> Result<Option<Vec<String>>, Self::Error> {
-		Ok(Some(vec!["default".into(), "std".into(), "alloc".into()]))
-	}
-
-	fn description(&self) -> Result<Option<String>, Self::Error> { Ok(self.description.clone()) }
-
+impl RustPackage {
+	/// Clone the source, materialize the commit for `version`, and generate IR.
+	///
+	/// Used by the live integration tests; the server's sync path drives
+	/// [`generate_ir_with_sources`](Self::generate_ir_with_sources) directly so it
+	/// can reuse an already-checked-out workspace.
 	#[instrument(skip(self, _flags), fields(package = %self.name, version = %version))]
-	fn retrieve(
+	pub fn retrieve(
 		&self,
 		version: Version,
 		_flags: Option<Vec<String>>,
-	) -> Result<Ir<Collected>, Self::Error> {
+	) -> Result<Ir<Collected>, PackageError> {
 		let scratch = tempfile::tempdir()?;
 		let repository_dir = scratch.path().join("repository");
 		let workspace_dir = scratch.path().join("workspace");
@@ -400,44 +393,25 @@ impl PackageTrait for RustPackage {
 		crate::git::materialize_commit(&repository, target_oid, &workspace_dir)?;
 		self.generate_ir(&workspace_dir, &version)
 	}
-
-	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> { Err(PackageError::NotImplemented) }
-
-	fn dependents(&self) -> Result<Vec<Self>, Self::Error> { Err(PackageError::NotImplemented) }
 }
 
-impl Registry for Crates {
-	type Error = RegistryError;
-	type Pkg = RustPackage;
-
-	async fn search_packages(&self, query: &str) -> Result<Vec<RustPackage>, RegistryError> {
-		let q = CratesQuery::builder().search(query).build();
-		let result = self.client.crates(q).await?;
-
-		Ok(result.crates.into_iter().map(RustPackage::from).collect())
+impl Crates {
+	/// Construct a crates.io registry client.
+	pub fn new() -> Self {
+		Self {
+			client: AsyncClient::new("my_bot (help@my_bot.com)", Duration::from_secs(1)).unwrap(),
+		}
 	}
 
-	async fn get_package_by_id(&self, id: u64) -> Result<RustPackage, RegistryError> {
-		let c = self.client.get_crate(&id.to_string()).await?;
-		Ok(RustPackage::from(c.crate_data))
-	}
-
-	async fn get_packages_by_name(&self, name: &str) -> Result<Vec<RustPackage>, RegistryError> {
+	/// Look up the crate metadata for `name`.
+	pub async fn get_packages_by_name(&self, name: &str) -> Result<Vec<RustPackage>, RegistryError> {
 		let c = self.client.get_crate(name).await?;
 		Ok(vec![RustPackage::from(c.crate_data)])
 	}
+}
 
-	async fn get_reference(&self) -> RustPackage {
-		RustPackage {
-			slug:        "rust-reference".into(),
-			name:        "The Rust Reference".into(),
-			language:    Language::Rust,
-			uuid:        0,
-			source:      Url::parse("https://doc.rust-lang.org/reference/").unwrap(),
-			direct_repo: false,
-			description: Some("The official reference manual for the Rust language".into()),
-		}
-	}
+impl Default for Crates {
+	fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
@@ -449,7 +423,7 @@ mod tests {
 	use url::Url;
 
 	use super::*;
-	use crate::{git::{clone_repository, find_commit_for_version, materialize_commit}, traits::registry::Registry};
+	use crate::git::{clone_repository, find_commit_for_version, materialize_commit};
 
 	fn live_registry() -> Crates {
 		Crates {

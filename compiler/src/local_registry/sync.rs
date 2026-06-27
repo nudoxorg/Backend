@@ -2,15 +2,12 @@
 //! package version, run the ingest pipeline, and (for monitoring) detect whether
 //! the remote has advanced past the tracked commit.
 
-use std::sync::Arc;
-
 use tokio::task::spawn_blocking;
 
-use crate::{config::PipelineConfig, core::ts::TsPackage, error::{AppError, PackageError, RegistryLookupError}, git, ingest::{run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, ProgressReporter}, text_index::SymbolTextIndex};
+use crate::{config::PipelineConfig, core::ts::TsPackage, error::{AppError, PackageError, RegistryLookupError}, git, ingest::{IngestTargets, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, ProgressReporter}};
 
 use super::{MonitorExecution, PackageHandle, PackageId, PackageSpec, SyncExecution, ts_entry_point::{resolve_typescript_repository_entry_point, typescript_package_uses_repository, typescript_repository_entry_hint}};
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_sync(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
@@ -18,9 +15,7 @@ pub(crate) async fn run_sync(
 	handle: PackageHandle,
 	spec: PackageSpec,
 	progress: ProgressReporter,
-	nudox_store: Option<Arc<nudox_store::NudoxStore>>,
-	text_index: Option<Arc<SymbolTextIndex>>,
-	orchestrator: Option<Arc<nudox_orchestrator::Orchestrator>>,
+	targets: &IngestTargets,
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
@@ -90,9 +85,7 @@ pub(crate) async fn run_sync(
 				workspace.path(),
 				&pipeline,
 				&progress,
-				nudox_store.as_ref(),
-				text_index.as_ref(),
-				orchestrator.as_ref(),
+				targets,
 			)
 			.await?;
 
@@ -107,9 +100,7 @@ pub(crate) async fn run_sync(
 					package,
 					spec,
 					progress,
-					nudox_store,
-					text_index,
-					orchestrator,
+					targets,
 				)
 				.await
 			} else {
@@ -147,9 +138,7 @@ pub(crate) async fn run_sync(
 					&spec.version,
 					&pipeline,
 					&progress,
-					nudox_store.as_ref(),
-					text_index.as_ref(),
-					orchestrator.as_ref(),
+					targets,
 				)
 				.await?;
 				drop(workspace);
@@ -214,7 +203,6 @@ pub(crate) fn compute_remote_update_available(
 	}
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_repository_backed_typescript_sync(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
@@ -222,9 +210,7 @@ async fn run_repository_backed_typescript_sync(
 	package: TsPackage,
 	spec: PackageSpec,
 	progress: ProgressReporter,
-	nudox_store: Option<Arc<nudox_store::NudoxStore>>,
-	text_index: Option<Arc<SymbolTextIndex>>,
-	orchestrator: Option<Arc<nudox_orchestrator::Orchestrator>>,
+	targets: &IngestTargets,
 ) -> Result<SyncExecution, AppError> {
 	let git_storage = storage.clone();
 	let git_spec = spec.clone();
@@ -298,9 +284,7 @@ async fn run_repository_backed_typescript_sync(
 		&spec.version,
 		&pipeline,
 		&progress,
-		nudox_store.as_ref(),
-		text_index.as_ref(),
-		orchestrator.as_ref(),
+		targets,
 	)
 	.await?;
 	drop(workspace);

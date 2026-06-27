@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use crate::{core::{parse_common::LanguageParser, ts_parser::{ParseError, TsDocParser}}, error::summarize_command_output, pipeline::{Collected, Ir}, traits::{package::Package, registry::Registry}};
+use crate::{core::ts_parser::{ParseError, TsDocParser}, error::summarize_command_output, pipeline::{Collected, Ir}};
 
 // ============================================================================
 // Error types
@@ -108,6 +108,19 @@ impl TsPackage {
 	/// the working directory at runtime.
 	const RUNNER_SCRIPT: &'static str =
 		concat!(env!("CARGO_MANIFEST_DIR"), "/src/core/ts_doc_runner.ts");
+
+	/// Generate IR for `version`. The npm/deno resolution happens inside
+	/// [`generate_ir`](Self::generate_ir); `version` is currently advisory.
+	///
+	/// Used by the end-to-end integration tests; the server's sync path drives
+	/// [`generate_ir`](Self::generate_ir) directly after materializing a checkout.
+	pub fn retrieve(
+		&self,
+		_version: Version,
+		_flags: Option<Vec<String>>,
+	) -> Result<Ir<Collected>, TsPackageError> {
+		self.generate_ir()
+	}
 
 	/// Generate the collected IR for this package.
 	pub(crate) fn generate_ir(&self) -> Result<Ir<Collected>, TsPackageError> {
@@ -237,30 +250,6 @@ impl TsPackage {
 	}
 }
 
-impl Package for TsPackage {
-	type Error = TsPackageError;
-
-	fn get_available_versions(&self) -> Result<Vec<Version>, Self::Error> {
-		Err(TsPackageError::NotImplemented)
-	}
-
-	fn flags(&self) -> Result<Option<Vec<String>>, Self::Error> { Ok(None) }
-
-	fn description(&self) -> Result<Option<String>, Self::Error> { Ok(self.description.clone()) }
-
-	fn retrieve(
-		&self,
-		_version: Version,
-		_flags: Option<Vec<String>>,
-	) -> Result<Ir<Collected>, Self::Error> {
-		self.generate_ir()
-	}
-
-	fn dependencies(&self) -> Result<Vec<Self>, Self::Error> { Err(TsPackageError::NotImplemented) }
-
-	fn dependents(&self) -> Result<Vec<Self>, Self::Error> { Err(TsPackageError::NotImplemented) }
-}
-
 /// npm registry client for discovering and fetching TypeScript packages.
 ///
 /// Mirrors `Crates` in `rust.rs`.
@@ -330,47 +319,17 @@ impl Npm {
 		unpack_npm_tarball(bytes.as_ref(), destination)?;
 		resolve_materialized_entry_point(destination)
 	}
-}
 
-impl Registry for Npm {
-	type Error = TsPackageError;
-	type Pkg = TsPackage;
-
-	async fn search_packages(&self, query: &str) -> Result<Vec<TsPackage>, TsPackageError> {
-		let response = reqwest::Client::new()
-			.get(
-				self
-					.registry_url
-					.join("-/v1/search")
-					.map_err(|source| TsPackageError::InvalidUrl(source.to_string()))?,
-			)
-			.query(&[("text", query), ("size", "5")])
-			.send()
-			.await?
-			.error_for_status()?;
-		let payload: NpmSearchResponse = response.json().await?;
-		Ok(payload.objects.into_iter().map(|object| object.package.into_package()).collect())
-	}
-
-	async fn get_package_by_id(&self, id: u64) -> Result<TsPackage, TsPackageError> {
-		let _ = id;
-		Err(TsPackageError::NotImplemented)
-	}
-
-	async fn get_packages_by_name(&self, name: &str) -> Result<Vec<TsPackage>, TsPackageError> {
+	/// Look up the npm package metadata for `name`. Exercised by the registry
+	/// snapshot test; the production resolve path uses
+	/// [`resolve_package_version`](Self::resolve_package_version).
+	#[cfg(test)]
+	pub(crate) async fn get_packages_by_name(
+		&self,
+		name: &str,
+	) -> Result<Vec<TsPackage>, TsPackageError> {
 		let metadata = self.fetch_package_metadata(name).await?;
 		Ok(vec![metadata.to_package(name)])
-	}
-
-	async fn get_reference(&self) -> TsPackage {
-		TsPackage {
-			slug:        "typescript-reference".into(),
-			name:        "TypeScript Reference".into(),
-			uuid:        0,
-			source:      Url::parse("https://www.typescriptlang.org/docs/").unwrap(),
-			description: Some("The official TypeScript language reference documentation".into()),
-			entry_point: "npm:typescript".into(),
-		}
 	}
 }
 
@@ -385,6 +344,7 @@ struct NpmPackageMetadata {
 }
 
 impl NpmPackageMetadata {
+	#[cfg(test)]
 	fn to_package(&self, requested_name: &str) -> TsPackage {
 		TsPackage {
 			slug:        TsPackage::npm_slug(&self.name),
@@ -443,51 +403,6 @@ enum NpmRepository {
 	Object { url: String },
 }
 
-#[derive(Debug, Deserialize)]
-struct NpmSearchResponse {
-	objects: Vec<NpmSearchObject>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NpmSearchObject {
-	package: NpmSearchPackage,
-}
-
-#[derive(Debug, Deserialize)]
-struct NpmSearchPackage {
-	name:        String,
-	description: Option<String>,
-	links:       NpmSearchLinks,
-}
-
-impl NpmSearchPackage {
-	fn into_package(self) -> TsPackage {
-		let source = self
-			.links
-			.repository
-			.as_deref()
-			.and_then(normalize_package_url)
-			.or_else(|| self.links.homepage.as_deref().and_then(normalize_package_url))
-			.or_else(|| self.links.npm.as_deref().and_then(normalize_package_url))
-			.unwrap_or_else(|| npm_package_page_url(&self.name));
-
-		TsPackage {
-			slug: TsPackage::npm_slug(&self.name),
-			name: self.name.clone(),
-			uuid: 0,
-			source,
-			description: self.description,
-			entry_point: format!("npm:{}", self.name),
-		}
-	}
-}
-
-#[derive(Debug, Deserialize)]
-struct NpmSearchLinks {
-	npm:        Option<String>,
-	homepage:   Option<String>,
-	repository: Option<String>,
-}
 
 fn package_source_url(
 	package_name: &str,
@@ -1054,7 +969,7 @@ mod tests {
 	use deno_graph::{BuildOptions, GraphKind, ModuleGraph, ModuleSpecifier, ast::CapturingModuleAnalyzer};
 
 	use super::*;
-	use crate::{core::ts_parser::TsDocParser, traits::registry::Registry};
+	use crate::core::ts_parser::TsDocParser;
 
 	#[tokio::test]
 	async fn npm_registry_results_snapshot() {

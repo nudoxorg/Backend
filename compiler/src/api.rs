@@ -2,19 +2,19 @@ use std::sync::Arc;
 
 use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routing::{delete, get, post}};
 use nudox_core::{SymbolMatch, SymbolOrigin, SymbolQuery};
-use nudox_orchestrator::Orchestrator;
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
-use crate::{config::PipelineConfig, error::{AppError, ConfigError, IngestError}, local_registry::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}, text_index::SymbolTextIndex};
+use crate::{config::PipelineConfig, error::{AppError, ConfigError, IngestError}, ingest::IngestTargets, local_registry::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}};
 
 #[derive(Clone)]
 pub struct AppState {
-	pub registry:            Arc<LocalRegistry>,
-	pub pipeline:            PipelineConfig,
-	pub sessions:            SessionStore,
-	pub text_index:          Option<Arc<SymbolTextIndex>>,
-	pub symbol_orchestrator: Option<Arc<Orchestrator>>,
+	pub registry: Arc<LocalRegistry>,
+	pub pipeline: PipelineConfig,
+	pub sessions: SessionStore,
+	/// Configured fan-out destinations, shared with the registry. The API reads
+	/// `text_index` (`/text-search`) and `orchestrator` (`/symbol-search`).
+	pub targets:  IngestTargets,
 }
 
 /// HTTP response shape for a single symbol search result.
@@ -84,6 +84,7 @@ async fn text_search(
 	Query(params): Query<SearchQuery>,
 ) -> Result<Json<search::SearchResponse>, AppError> {
 	let index = state
+		.targets
 		.text_index
 		.as_ref()
 		.ok_or_else(|| AppError::TextSearchNotConfigured)?;
@@ -232,7 +233,7 @@ async fn symbol_search(
 				.to_owned(),
 		});
 	}
-	let orch = state.symbol_orchestrator.as_ref().ok_or_else(|| AppError::SymbolSearchNotConfigured)?;
+	let orch = state.targets.orchestrator.as_ref().ok_or_else(|| AppError::SymbolSearchNotConfigured)?;
 	let matches = orch.search(&query).await.map_err(|e| AppError::Ingest(IngestError::Pipeline {
 		details: format!("orchestrator search failed: {}", e),
 	}))?;

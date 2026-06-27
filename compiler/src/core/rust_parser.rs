@@ -6,9 +6,8 @@ pub type Result<T> = std::result::Result<T, ParseError>;
 
 use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{Entry, Visibility}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{DynTrait, FunctionPointer, PolyTrait, QualifiedPath, Type, TypeReference}};
 
-use lang_types::Language;
 
-use crate::core::{parse_common::{LanguageParser, output_parameters_from_type, parameter_link_key}, rust::ParseError};
+use crate::core::{parse_common::{output_parameters_from_type, parameter_link_key}, rust::ParseError};
 
 /// Immutable context.
 pub struct ParseContext {
@@ -75,15 +74,12 @@ fn queue_impls(
 ) {
 }
 
-impl LanguageParser for RustdocParser {
-	type Error = ParseError;
-	type Input = Crate;
+impl RustdocParser {
+	/// Build a parser from a rustdoc `Crate`.
+	pub fn from_doc(input: Crate) -> Result<Self> { Self::new(input) }
 
-	const LANGUAGE: Language = Language::Rust;
-
-	fn from_doc(input: Self::Input) -> Result<Self> { Self::new(input) }
-
-	fn parse(&mut self) -> Result<Vec<Entry>> { self.parse_crate() }
+	/// Lower the loaded crate into a flat list of IR entries.
+	pub fn parse(&mut self) -> Result<Vec<Entry>> { self.parse_crate() }
 }
 
 impl RustdocParser {

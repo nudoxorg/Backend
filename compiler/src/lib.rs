@@ -14,4 +14,3 @@ pub mod storage;
 pub mod sync_progress;
 pub mod terminusdb;
 pub mod text_index;
-pub mod traits;

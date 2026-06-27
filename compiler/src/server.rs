@@ -8,7 +8,7 @@ use nudox_search::{InMemoryVectorIndex, SymbolSearcher, TantivySearchIndex};
 use tokio::signal;
 use tracing::{info, warn};
 
-use crate::{api::{self, AppState}, config::AppConfig, error::AppError, local_registry::LocalRegistry, search::SessionStore, storage::StorageLayout, text_index::SymbolTextIndex};
+use crate::{api::{self, AppState}, config::AppConfig, error::AppError, ingest::IngestTargets, local_registry::LocalRegistry, search::SessionStore, storage::StorageLayout, text_index::SymbolTextIndex};
 
 pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	let storage = StorageLayout::new(config.storage_root.clone());
@@ -53,30 +53,26 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	// for now) Vector index         → in-memory (pending embedding decision)
 	let symbol_orchestrator = build_symbol_orchestrator(&config.storage_root);
 
-	let mut registry = LocalRegistry::new(storage, config.monitor_interval, config.pipeline.clone());
-	if let Some(store) = nudox_store {
-		registry = registry.with_nudox_store(store);
-	}
-	if let Some(idx) = text_index.clone() {
-		registry = registry.with_text_index(idx);
-	}
-	if let Some(ref orch) = symbol_orchestrator {
-		registry = registry.with_orchestrator(Arc::clone(orch));
-	}
-	let registry = Arc::new(registry);
+	// All configured fan-out destinations, assembled once. The registry writes to
+	// them during ingestion; the API layer reads `text_index`/`orchestrator` from
+	// the same handles. No per-backend threading or builder triplet.
+	let targets = IngestTargets {
+		nudox_store,
+		text_index:   text_index.clone(),
+		orchestrator: symbol_orchestrator.clone(),
+	};
+
+	let registry = Arc::new(
+		LocalRegistry::new(storage, config.monitor_interval, config.pipeline.clone())
+			.with_targets(targets.clone()),
+	);
 
 	let monitor_registry = Arc::clone(&registry);
 	tokio::spawn(async move {
 		monitor_registry.run_monitor().await;
 	});
 
-	let state = AppState {
-		registry,
-		pipeline: config.pipeline.clone(),
-		sessions,
-		text_index,
-		symbol_orchestrator,
-	};
+	let state = AppState { registry, pipeline: config.pipeline.clone(), sessions, targets };
 	let app = api::router(state);
 	let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
 

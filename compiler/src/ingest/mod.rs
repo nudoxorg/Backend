@@ -33,15 +33,33 @@ pub struct IngestionSummary {
 	pub symbols_orchestrated: usize,
 }
 
+/// The configured ingestion fan-out destinations.
+///
+/// Built once at startup and shared (as cloned `Arc`s) by the registry — which
+/// writes to them during ingestion — and the API layer, which reads from
+/// `text_index` and `orchestrator` to serve `/text-search` and `/symbol-search`.
+///
+/// This replaces the three `Option<Arc<_>>` handles that were previously
+/// threaded by hand through `LocalRegistry` → sync → pipeline → sink assembly
+/// (and the matching `with_*` builder triplet). A configured backend is `Some`;
+/// an unconfigured one is `None` and contributes no sink.
+#[derive(Clone, Default)]
+pub struct IngestTargets {
+	/// SQLite occurrence store; enables deferred occurrence resolution.
+	pub nudox_store:  Option<Arc<NudoxStore>>,
+	/// Local Tantivy full-text index backing `/text-search`.
+	pub text_index:   Option<Arc<SymbolTextIndex>>,
+	/// nudox-search orchestrator backing `/symbol-search`.
+	pub orchestrator: Option<Arc<nudox_orchestrator::Orchestrator>>,
+}
+
 pub async fn run_rust_pipeline(
 	package: &RustPackage,
 	version: &Version,
 	workspace: &Path,
 	config: &PipelineConfig,
 	progress: &ProgressReporter,
-	nudox_store: Option<&Arc<NudoxStore>>,
-	text_index: Option<&Arc<SymbolTextIndex>>,
-	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
+	targets: &IngestTargets,
 ) -> Result<IngestionSummary, AppError> {
 	let pkg = package.clone();
 	let ws = workspace.to_path_buf();
@@ -56,19 +74,8 @@ pub async fn run_rust_pipeline(
 	.await
 	.map_err(|source| AppError::TaskJoin { action: "Rust IR generation", source })??;
 
-	finalize_pipeline(
-		nudox_core::Language::Rust,
-		&package.name,
-		version,
-		ir.index().into_index(),
-		config,
-		progress,
-		nudox_store,
-		text_index,
-		orchestrator,
-		&source_map,
-	)
-	.await
+	let coord = PackageCoord::new(nudox_core::Language::Rust, &package.name, &version.to_string());
+	finalize_pipeline(coord, ir.index().into_index(), config, progress, targets, &source_map).await
 }
 
 pub async fn run_typescript_pipeline(
@@ -76,9 +83,7 @@ pub async fn run_typescript_pipeline(
 	version: &Version,
 	config: &PipelineConfig,
 	progress: &ProgressReporter,
-	nudox_store: Option<&Arc<NudoxStore>>,
-	text_index: Option<&Arc<SymbolTextIndex>>,
-	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
+	targets: &IngestTargets,
 ) -> Result<IngestionSummary, AppError> {
 	let pkg = package.clone();
 	let ir = spawn_blocking(move || -> Result<_, AppError> {
@@ -90,35 +95,19 @@ pub async fn run_typescript_pipeline(
 	.await
 	.map_err(|source| AppError::TaskJoin { action: "TypeScript IR generation", source })??;
 
-	finalize_pipeline(
-		nudox_core::Language::TypeScript,
-		&package.name,
-		version,
-		ir.index().into_index(),
-		config,
-		progress,
-		nudox_store,
-		text_index,
-		orchestrator,
-		&HashMap::new(),
-	)
-	.await
+	let coord =
+		PackageCoord::new(nudox_core::Language::TypeScript, &package.name, &version.to_string());
+	finalize_pipeline(coord, ir.index().into_index(), config, progress, targets, &HashMap::new()).await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn finalize_pipeline(
-	language: nudox_core::Language,
-	package_name: &str,
-	version: &Version,
+	coord: PackageCoord,
 	index: Index,
 	config: &PipelineConfig,
 	progress: &ProgressReporter,
-	nudox_store: Option<&Arc<NudoxStore>>,
-	text_index: Option<&Arc<SymbolTextIndex>>,
-	orchestrator: Option<&Arc<nudox_orchestrator::Orchestrator>>,
+	targets: &IngestTargets,
 	source_map: &HashMap<String, String>,
 ) -> Result<IngestionSummary, AppError> {
-	let coord = PackageCoord::new(language, package_name, &version.to_string());
 	let terminus_instance = config.terminus.as_ref().map(|t| format!("{}/{}", t.org, t.db));
 	let identity = match terminus_instance.as_deref() {
 		Some(instance) => Identity::Deterministic { instance },
@@ -130,18 +119,19 @@ async fn finalize_pipeline(
 	// emission then consumes it. Both walk the same in-memory IR — neither
 	// re-parses the other's output.
 	let symbols = project(&coord, &index, source_map, &identity);
-	let doc_store = emit_store(language.as_str(), package_name, version, index);
+	let doc_store =
+		emit_store(coord.language.as_str(), coord.package.as_ref(), coord.version.as_ref(), index);
 	let document_count = doc_store.docs.len();
 
 	// Assemble non-consuming sinks (these borrow `&[ParsedSymbol]`).
 	let mut sinks: Vec<Box<dyn SymbolSink>> = Vec::new();
-	if let Some(store) = nudox_store {
+	if let Some(store) = &targets.nudox_store {
 		sinks.push(Box::new(SqliteRegisterSink { store: Arc::clone(store) }));
 	}
-	if let Some(idx) = text_index {
+	if let Some(idx) = &targets.text_index {
 		sinks.push(Box::new(TextIndexSink { index: Arc::clone(idx) }));
 	}
-	if let Some(orch) = orchestrator {
+	if let Some(orch) = &targets.orchestrator {
 		sinks.push(Box::new(OrchestratorSink {
 			orchestrator:      Arc::clone(orch),
 			terminus_instance: terminus_instance.clone(),
@@ -160,7 +150,12 @@ async fn finalize_pipeline(
 	// non-consuming sinks are done, moving `embedding_text`/`fq_name` instead of
 	// cloning them.
 	let vector_sink = config.qdrant.as_ref().map(|qdrant| {
-		let collection = collection_name(qdrant, language.as_str(), package_name, version);
+		let collection = collection_name(
+			qdrant,
+			coord.language.as_str(),
+			coord.package.as_ref(),
+			coord.version.as_ref(),
+		);
 		VectorSink { settings: qdrant.clone(), model: config.embedding_model.clone(), collection }
 	});
 
@@ -183,7 +178,7 @@ async fn finalize_pipeline(
 	})
 }
 
-fn emit_store(language: &str, package_name: &str, version: &Version, index: Index) -> DocStore {
+fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -> DocStore {
 	let context_object = serde_json::json!({
 		"@type": "@context",
 		"@schema": "terminusdb:///schema#",
@@ -206,14 +201,14 @@ fn collection_name(
 	settings: &QdrantSettings,
 	language: &str,
 	package_name: &str,
-	version: &Version,
+	version: &str,
 ) -> String {
 	format!(
 		"{}_{}_{}_{}",
 		sanitize_collection_segment(&settings.collection_prefix),
 		sanitize_collection_segment(language),
 		sanitize_collection_segment(package_name),
-		sanitize_collection_segment(&version.to_string()),
+		sanitize_collection_segment(version),
 	)
 }
 

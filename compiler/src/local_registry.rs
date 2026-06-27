@@ -8,7 +8,7 @@ use tokio::{sync::{Mutex, RwLock, Semaphore}, task::spawn_blocking, time::{Durat
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::AppError, ingest::IngestionSummary, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, text_index::SymbolTextIndex, util::retry::Transient};
+use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::AppError, ingest::{IngestTargets, IngestionSummary}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, util::retry::Transient};
 
 mod resolve;
 mod sync;
@@ -105,15 +105,11 @@ pub struct LocalRegistry {
 	next_id:          AtomicU64,
 	packages:         Arc<RwLock<HashMap<PackageId, Arc<TrackedPackage>>>>,
 	keys:             Arc<RwLock<HashMap<PackageKey, PackageId>>>,
-	/// SQLite occurrence store. When set, every successful library parse
-	/// registers symbols so deferred occurrence blobs can be resolved.
-	nudox_store:      Option<Arc<nudox_store::NudoxStore>>,
-	/// Local Tantivy text search index. When set, symbols are indexed after
-	/// every successful library parse for standalone full-text search.
-	text_index:       Option<Arc<SymbolTextIndex>>,
-	/// nudox-search Orchestrator. When set, every ingested symbol is fed
-	/// through `Orchestrator::ingest` so `/symbol-search` returns results.
-	orchestrator:     Option<Arc<nudox_orchestrator::Orchestrator>>,
+	/// The configured ingestion fan-out destinations (SQLite occurrence store,
+	/// Tantivy text index, symbol-search orchestrator). Every successful library
+	/// parse writes to whichever backends are present; the API layer reads from
+	/// the same handles to serve `/text-search` and `/symbol-search`.
+	targets:          IngestTargets,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,30 +202,16 @@ impl LocalRegistry {
 			next_id: AtomicU64::new(next_id),
 			packages: Arc::new(RwLock::new(packages)),
 			keys: Arc::new(RwLock::new(keys)),
-			nudox_store: None,
-			text_index: None,
-			orchestrator: None,
+			targets: IngestTargets::default(),
 		}
 	}
 
-	/// Attach an SQLite occurrence store. When set, every successful library
-	/// parse will register symbols so deferred occurrence blobs can be resolved.
-	pub fn with_nudox_store(mut self, store: Arc<nudox_store::NudoxStore>) -> Self {
-		self.nudox_store = Some(store);
-		self
-	}
-
-	/// Attach a local Tantivy text search index. When set, symbols are indexed
-	/// after every successful library parse so `/text-search` works standalone.
-	pub fn with_text_index(mut self, index: Arc<SymbolTextIndex>) -> Self {
-		self.text_index = Some(index);
-		self
-	}
-
-	/// Attach the nudox-search Orchestrator. When set, every ingested symbol is
-	/// fed through `Orchestrator::ingest` so `/symbol-search` returns results.
-	pub fn with_orchestrator(mut self, orch: Arc<nudox_orchestrator::Orchestrator>) -> Self {
-		self.orchestrator = Some(orch);
+	/// Attach the ingestion fan-out destinations. Each configured backend is fed
+	/// by the parse-once pipeline on every successful library parse; the API
+	/// layer reads `text_index` and `orchestrator` from the same `IngestTargets`
+	/// to serve `/text-search` and `/symbol-search`.
+	pub fn with_targets(mut self, targets: IngestTargets) -> Self {
+		self.targets = targets;
 		self
 	}
 
@@ -375,9 +357,7 @@ impl LocalRegistry {
 				tracked.handle.clone(),
 				tracked.spec.clone(),
 				progress.clone(),
-				self.nudox_store.clone(),
-				self.text_index.clone(),
-				self.orchestrator.clone(),
+				&self.targets,
 			)
 			.await;
 

@@ -4,9 +4,8 @@ use deno_ast::swc::ast::{Accessibility, TruePlusMinus, VarDeclKind};
 use deno_doc::{Declaration, DeclarationDef, Document, class::{ClassConstructorDef, ClassDef, ClassMethodDef}, r#enum::EnumDef, function::FunctionDef, interface::InterfaceDef, js_doc::JsDoc, node::{DeclarationKind, NamespaceDef, Symbol}, params::{ParamDef, ParamPatternDef}, ts_type::{CallSignatureDef, IndexSignatureDef, LiteralDef, LiteralDefKind, MethodDef, ThisOrIdent, TsTypeDef, TsTypeDefKind}, ts_type_param::TsTypeParamDef};
 use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::*, kind::{Entry, Visibility}, parameter::{Parameter, ParameterAttribute, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{ConditionalType, FunctionPointer, MappedType, ModifierPrefix, PredicateSubject, QualifiedPath, Type, TypeOperator, TypePredicate, TypeReference}};
 
-use lang_types::Language;
 
-use crate::core::parse_common::{LanguageParser, output_parameters_from_type, parameter_link_key};
+use crate::core::parse_common::{output_parameters_from_type, parameter_link_key};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
@@ -242,15 +241,12 @@ fn accessibility_to_visibility(acc: Option<Accessibility>) -> Visibility {
 	}
 }
 
-impl LanguageParser for TsDocParser {
-	type Error = ParseError;
-	type Input = HashMap<String, Document>;
+impl TsDocParser {
+	/// Build a parser from the deno-doc document set.
+	pub fn from_doc(input: HashMap<String, Document>) -> Result<Self> { Self::new(input) }
 
-	const LANGUAGE: Language = Language::TypeScript;
-
-	fn from_doc(input: Self::Input) -> Result<Self> { Self::new(input) }
-
-	fn parse(&mut self) -> Result<Vec<Entry>> { self.parse_documents() }
+	/// Lower the loaded documents into a flat list of IR entries.
+	pub fn parse(&mut self) -> Result<Vec<Entry>> { self.parse_documents() }
 }
 
 impl TsDocParser {

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use lang_types::Language;
 use url::Url;
 
-use crate::{core::{rust::RustPackage, ts::TsPackage}, error::{AppError, RegistryLookupError}, traits::{builder::get_registry, registry::Registry}};
+use crate::{core::{rust::{Crates, RustPackage}, ts::TsPackage}, error::{AppError, RegistryLookupError}};
 
 use super::{NewPackageRequest, PackageHandle, TYPESCRIPT_REPOSITORY_ENTRY_PREFIX, ts_entry_point::typescript_slug};
 
@@ -18,7 +18,7 @@ pub(crate) async fn resolve_package_handle(
 			if request.source.is_some() {
 				return resolve_explicit_rust_package_handle(request);
 			}
-			let registry = get_registry(Language::Rust);
+			let registry = Crates::new();
 			let packages = registry.get_packages_by_name(&request.name).await.map_err(|err| {
 				let crate::error::RegistryError::CratesIo(source) = err;
 				AppError::RegistryLookup(RegistryLookupError::CratesIo {

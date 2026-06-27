@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::{body::Body, http::{Request, StatusCode}};
 use http_body_util::BodyExt;
-use nudox::{api::AppState, config::PipelineConfig, local_registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
+use nudox::{api::AppState, config::PipelineConfig, ingest::IngestTargets, local_registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
 use nudox_blobstore::InMemoryBlobStore;
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, SearchIndex, SearchQuery, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr, VectorIndex, VectorQuery};
 use nudox_embed::PlaceholderEmbedder;
@@ -97,15 +97,14 @@ async fn build_state_with_orchestrator() -> (AppState, TempDir) {
 		registry,
 		pipeline,
 		sessions: SessionStore::default(),
-		text_index: None,
-		symbol_orchestrator: Some(orchestrator),
+		targets: IngestTargets { orchestrator: Some(orchestrator), ..Default::default() },
 	};
 	(state, tmp)
 }
 
 /// Feed a `BlobInfo` directly into the orchestrator inside `AppState`.
 async fn ingest_blob(state: &AppState, blob: BlobInfo) {
-	let orch = state.symbol_orchestrator.as_ref().unwrap();
+	let orch = state.targets.orchestrator.as_ref().unwrap();
 	orch.ingest(blob).await.expect("orchestrator ingest failed");
 }
 
@@ -231,8 +230,7 @@ async fn missing_orchestrator_returns_500() {
 		registry,
 		pipeline,
 		sessions: SessionStore::default(),
-		text_index: None,
-		symbol_orchestrator: None, // not configured
+		targets: IngestTargets::default(), // not configured
 	};
 
 	let (status, _) = post_symbol_search(state, json!({"name_pattern": "x"})).await;
