@@ -12,12 +12,40 @@ use nudox_store::NudoxStore;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::{config::QdrantSettings, ingest::parsed_symbol::{PackageCoord, ParsedSymbol}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{embedding_service::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory}, qdrant_upload::{QdrantConfig, upload_points}, termdb::DocStore, upload::{DocumentUploadProgress, TerminusConfig, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
+use crate::{config::QdrantSettings, error::{AppError, IngestError}, ingest::parsed_symbol::{Identity, PackageCoord, ParsedSymbol}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{embedding_service::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory}, qdrant_upload::{QdrantConfig, upload_points}, termdb::DocStore, upload::{DocumentUploadProgress, TerminusConfig, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
+
+/// Identifies one sink in the fan-out pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkId {
+	Sqlite,
+	Text,
+	Orchestrator,
+	Terminus,
+	Qdrant,
+}
+
+impl SinkId {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			SinkId::Sqlite => "sqlite",
+			SinkId::Text => "text",
+			SinkId::Orchestrator => "orchestrator",
+			SinkId::Terminus => "terminus",
+			SinkId::Qdrant => "qdrant",
+		}
+	}
+}
+
+impl std::fmt::Display for SinkId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(self.as_str())
+	}
+}
 
 /// A single store's contribution to one ingestion.
 #[derive(Debug, Clone)]
 pub struct SinkOutcome {
-	pub name:    &'static str,
+	pub name:    SinkId,
 	pub indexed: usize,
 	pub error:   Option<String>,
 }
@@ -29,17 +57,16 @@ pub struct IngestReport {
 }
 
 impl IngestReport {
-	/// Number of records indexed by the sink with the given name (0 if absent or
-	/// failed).
-	pub fn indexed_by(&self, name: &str) -> usize {
-		self.outcomes.iter().find(|o| o.name == name).map_or(0, |o| o.indexed)
+	/// Number of records indexed by the named sink (0 if absent or failed).
+	pub fn indexed_by(&self, id: SinkId) -> usize {
+		self.outcomes.iter().find(|o| o.name == id).map_or(0, |o| o.indexed)
 	}
 }
 
 /// A destination that consumes the parse-once projection.
 #[async_trait]
 pub trait SymbolSink: Send + Sync {
-	fn name(&self) -> &'static str;
+	fn name(&self) -> SinkId;
 
 	/// Whether a failure should abort the whole ingestion (Terminus / vectors)
 	/// rather than being recorded and skipped (occurrence store, text, symbol
@@ -70,7 +97,7 @@ pub async fn run_sinks(
 			}
 			Err(e) if sink.fatal() => return Err(e),
 			Err(e) => {
-				warn!(sink = sink.name(), error = %e, "non-fatal sink failed");
+				warn!(sink = %sink.name(), error = %e, "non-fatal sink failed");
 				report.outcomes.push(SinkOutcome {
 					name:    sink.name(),
 					indexed: 0,
@@ -92,7 +119,7 @@ pub struct SqliteRegisterSink {
 
 #[async_trait]
 impl SymbolSink for SqliteRegisterSink {
-	fn name(&self) -> &'static str { "sqlite" }
+	fn name(&self) -> SinkId { SinkId::Sqlite }
 
 	async fn accept(
 		&self,
@@ -103,12 +130,10 @@ impl SymbolSink for SqliteRegisterSink {
 		let uris: Vec<String> = symbols.iter().map(|s| s.entry_uri.to_string()).collect();
 		let n = self
 			.store
-			.register_library(&coord.language, &coord.package, &coord.version, uris.iter().map(String::as_str))
+			.register_library(coord.language.as_str(), &coord.package, &coord.version, uris.iter().map(String::as_str))
 			.await
-			.map_err(|e| crate::error::AppError::Internal {
-				message: format!("occurrence store register_library failed: {e}"),
-			})?;
-		info!(lib = coord.package, count = n, "symbols registered in occurrence store");
+			.map_err(|source| AppError::Ingest(IngestError::StoreRegister { package: coord.package.to_string(), source }))?;
+		info!(lib = %coord.package, count = n, "symbols registered in occurrence store");
 		Ok(n)
 	}
 }
@@ -121,7 +146,7 @@ pub struct TextIndexSink {
 
 #[async_trait]
 impl SymbolSink for TextIndexSink {
-	fn name(&self) -> &'static str { "text" }
+	fn name(&self) -> SinkId { SinkId::Text }
 
 	async fn accept(
 		&self,
@@ -130,7 +155,7 @@ impl SymbolSink for TextIndexSink {
 		_progress: Option<&ProgressReporter>,
 	) -> Result<usize, crate::error::AppError> {
 		let n = self.index.index_batch(coord, symbols)?;
-		info!(lib = coord.package, count = n, "symbols indexed in text search");
+		info!(lib = %coord.package, count = n, "symbols indexed in text search");
 		Ok(n)
 	}
 }
@@ -138,12 +163,14 @@ impl SymbolSink for TextIndexSink {
 // ── Symbol-search orchestrator (/symbol-search) ─────────────────────────────
 
 pub struct OrchestratorSink {
-	pub orchestrator: Arc<nudox_orchestrator::Orchestrator>,
+	pub orchestrator:       Arc<nudox_orchestrator::Orchestrator>,
+	/// `"{org}/{db}"` when Terminus is configured; `None` → `Identity::Local`.
+	pub terminus_instance:  Option<String>,
 }
 
 #[async_trait]
 impl SymbolSink for OrchestratorSink {
-	fn name(&self) -> &'static str { "orchestrator" }
+	fn name(&self) -> SinkId { SinkId::Orchestrator }
 
 	async fn accept(
 		&self,
@@ -151,23 +178,26 @@ impl SymbolSink for OrchestratorSink {
 		coord: &PackageCoord,
 		_progress: Option<&ProgressReporter>,
 	) -> Result<usize, crate::error::AppError> {
-		// nudox_core::Language only models Rust today.
-		if coord.language != "rust" {
+		if !matches!(coord.language, nudox_core::Language::Rust) {
 			return Ok(0);
 		}
+		let identity = match self.terminus_instance.as_deref() {
+			Some(instance) => Identity::Deterministic { instance },
+			None => Identity::Local,
+		};
 		let mut count = 0usize;
 		for symbol in symbols {
-			match self.orchestrator.ingest(symbol.to_blob_info(coord)).await {
+			match self.orchestrator.ingest(symbol.to_blob_info(coord, &identity)).await {
 				Ok(_) => count += 1,
 				Err(e) => warn!(
-					lib = coord.package,
+					lib = %coord.package,
 					symbol = %symbol.fq_name,
 					error = %e,
 					"orchestrator ingest failed for symbol"
 				),
 			}
 		}
-		info!(lib = coord.package, count, "symbols fed to symbol-search orchestrator");
+		info!(lib = %coord.package, count, "symbols fed to symbol-search orchestrator");
 		Ok(count)
 	}
 }
@@ -184,7 +214,7 @@ pub struct TerminusSink {
 
 #[async_trait]
 impl SymbolSink for TerminusSink {
-	fn name(&self) -> &'static str { "terminus" }
+	fn name(&self) -> SinkId { SinkId::Terminus }
 
 	fn fatal(&self) -> bool { true }
 
@@ -232,24 +262,22 @@ impl SymbolSink for TerminusSink {
 /// Embeds every symbol and upserts the vectors into Qdrant with deterministic,
 /// idempotent point ids.
 pub struct VectorSink {
-	pub settings:    QdrantSettings,
-	pub model:       String,
-	pub collection:  String,
+	pub settings:   QdrantSettings,
+	pub model:      String,
+	pub collection: String,
 }
 
-#[async_trait]
-impl SymbolSink for VectorSink {
-	fn name(&self) -> &'static str { "qdrant" }
-
-	fn fatal(&self) -> bool { true }
-
-	async fn accept(
+impl VectorSink {
+	/// Embed and upload `symbols`, consuming them. Each symbol's `embedding_text`
+	/// and `fq_name` are moved into the embedding document — no clone needed.
+	pub async fn accept_owned(
 		&self,
-		symbols: &[ParsedSymbol],
+		symbols: Vec<ParsedSymbol>,
 		coord: &PackageCoord,
 		progress: Option<&ProgressReporter>,
 	) -> Result<usize, crate::error::AppError> {
-		let docs: Vec<_> = symbols.iter().map(|s| s.to_embedding_document(coord)).collect();
+		let docs: Vec<_> =
+			symbols.into_iter().map(|s| s.into_embedding_document(coord)).collect();
 		if let Some(progress) = progress {
 			progress.phase_with_detail(
 				PackageSyncPhase::Embedding,
@@ -267,8 +295,7 @@ impl SymbolSink for VectorSink {
 					);
 				}
 			})
-			.await
-			.map_err(|e| crate::error::AppError::Embedding(e.to_string()))?;
+			.await?;
 
 		let count = records.len();
 		if let Some(progress) = progress {
@@ -281,10 +308,7 @@ impl SymbolSink for VectorSink {
 		let mut points = Vec::with_capacity(count);
 		for record in records {
 			let point_id = PointIdFactory::deterministic(&record.record_key);
-			points.push(
-				QdrantPointFactory::build_point(point_id, record)
-					.map_err(|e| crate::error::AppError::Embedding(e.to_string()))?,
-			);
+			points.push(QdrantPointFactory::build_point(point_id, record)?);
 		}
 
 		let qdrant_config = QdrantConfig {

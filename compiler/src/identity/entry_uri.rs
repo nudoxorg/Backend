@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 /// Canonical `Entry/{lang}/{package}/{path}` URI used as the TerminusDB
 /// document `@id` and cross-store primary key.
@@ -8,8 +8,8 @@ use std::fmt;
 /// agree on the identity of a symbol.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EntryUri {
-	lang:    String,
-	package: String,
+	lang:    Arc<str>,
+	package: Arc<str>,
 	path:    String,
 }
 
@@ -18,8 +18,8 @@ impl EntryUri {
 	/// `package` and `path` are taken as-is.
 	pub fn new(lang: &str, package: &str, path: &str) -> Self {
 		Self {
-			lang:    lang.trim().to_ascii_lowercase(),
-			package: package.to_owned(),
+			lang:    Arc::from(lang.trim().to_ascii_lowercase().as_str()),
+			package: Arc::from(package),
 			path:    path.to_owned(),
 		}
 	}

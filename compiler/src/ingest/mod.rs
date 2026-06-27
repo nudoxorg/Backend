@@ -17,7 +17,7 @@ use semver::Version;
 use tokio::task::spawn_blocking;
 use tracing::{info, warn};
 
-use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, IngestError}, ingest::{parsed_symbol::{PackageCoord, project}, sink::{IngestReport, OrchestratorSink, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::ProgressReporter, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
+use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, IngestError}, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::ProgressReporter, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -179,16 +179,20 @@ async fn finalize_pipeline(
 ) -> Result<IngestionSummary, AppError> {
 	let coord = PackageCoord::new(language, package_name, &version.to_string());
 	let terminus_instance = config.terminus.as_ref().map(|t| format!("{}/{}", t.org, t.db));
+	let identity = match terminus_instance.as_deref() {
+		Some(instance) => Identity::Deterministic { instance },
+		None => Identity::Local,
+	};
 	let entry_count = index.entries_by_path.len();
 
 	// The single parse-once projection. `project` borrows the index; the graph
 	// emission then consumes it. Both walk the same in-memory IR — neither
 	// re-parses the other's output.
-	let symbols = project(&coord, &index, source_map, terminus_instance.as_deref());
+	let symbols = project(&coord, &index, source_map, &identity);
 	let doc_store = emit_store(language.as_str(), package_name, version, index);
 	let document_count = doc_store.docs.len();
 
-	// Assemble the sink set from whatever backends are configured.
+	// Assemble non-consuming sinks (these borrow `&[ParsedSymbol]`).
 	let mut sinks: Vec<Box<dyn SymbolSink>> = Vec::new();
 	if let Some(store) = nudox_store {
 		sinks.push(Box::new(SqliteRegisterSink { store: Arc::clone(store) }));
@@ -197,7 +201,10 @@ async fn finalize_pipeline(
 		sinks.push(Box::new(TextIndexSink { index: Arc::clone(idx) }));
 	}
 	if let Some(orch) = orchestrator {
-		sinks.push(Box::new(OrchestratorSink { orchestrator: Arc::clone(orch) }));
+		sinks.push(Box::new(OrchestratorSink {
+			orchestrator:      Arc::clone(orch),
+			terminus_instance: terminus_instance.clone(),
+		}));
 	}
 	if let Some(terminus) = &config.terminus {
 		let schema = if config.upload_schema {
@@ -207,24 +214,31 @@ async fn finalize_pipeline(
 		};
 		sinks.push(Box::new(TerminusSink { config: terminus.clone(), schema, store: doc_store }));
 	}
-	if let Some(qdrant) = &config.qdrant {
+
+	// Build the consuming vector sink separately — it drains `symbols` after all
+	// non-consuming sinks are done, moving `embedding_text`/`fq_name` instead of
+	// cloning them.
+	let vector_sink = config.qdrant.as_ref().map(|qdrant| {
 		let collection = collection_name(qdrant, language.as_str(), package_name, version);
-		sinks.push(Box::new(VectorSink {
-			settings: qdrant.clone(),
-			model: config.embedding_model.clone(),
-			collection,
-		}));
-	}
+		VectorSink { settings: qdrant.clone(), model: config.embedding_model.clone(), collection }
+	});
 
 	let report = run_sinks(&sinks, &symbols, &coord, progress).await?;
+
+	// VectorSink runs last and consumes symbols (into_embedding_document moves data).
+	let vector_count = if let Some(vs) = vector_sink {
+		vs.accept_owned(symbols, &coord, progress).await?
+	} else {
+		0
+	};
 
 	Ok(IngestionSummary {
 		entry_count,
 		document_count,
-		vector_count: report.indexed_by("qdrant"),
-		symbols_registered: report.indexed_by("sqlite"),
-		symbols_text_indexed: report.indexed_by("text"),
-		symbols_orchestrated: report.indexed_by("orchestrator"),
+		vector_count,
+		symbols_registered:   report.indexed_by(SinkId::Sqlite),
+		symbols_text_indexed: report.indexed_by(SinkId::Text),
+		symbols_orchestrated: report.indexed_by(SinkId::Orchestrator),
 	})
 }
 

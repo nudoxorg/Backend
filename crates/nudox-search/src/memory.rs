@@ -182,7 +182,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, ByteSpan, ChunkMetadata, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, Language, OccurrenceId, RepoId, SearchIndex, SourceChunk, SymbolOrigin, TreesitterRepr, VectorIndex};
+	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, ByteSpan, ChunkMetadata, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, Language, OccurrenceId, RepoId, SearchIndex, SourceChunk, SymbolOrigin, VectorIndex};
 	use uuid::Uuid;
 
 	use super::*;
@@ -197,7 +197,7 @@ mod tests {
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "struct MyStruct {}".to_string(),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 0, end: 18 },
 			},
 			embeddings:         vec![],

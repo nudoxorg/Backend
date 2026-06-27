@@ -47,14 +47,14 @@ impl Embedder for PlaceholderEmbedder {
 
 #[cfg(test)]
 mod tests {
-	use nudox_core::{ByteSpan, TreesitterRepr};
+	use nudox_core::{ByteSpan};
 
 	use super::*;
 
 	fn chunk(code: &str) -> SourceChunk {
 		SourceChunk {
 			raw_code:        code.into(),
-			treesitter_repr: TreesitterRepr(vec![]),
+			treesitter_repr: None,
 			symbol_span:     ByteSpan { start: 0, end: code.len() },
 		}
 	}

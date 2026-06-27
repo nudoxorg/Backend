@@ -7,13 +7,26 @@ use nudox_orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemo
 use nudox_pipeline::{Pipeline, PipelineConfig, PipelineInput};
 use nudox_search::{InMemoryVectorIndex, QdrantVectorIndex, TantivySearchIndex};
 
+struct EmbeddingModel {
+	name: String,
+	dim:  usize,
+}
+
+impl EmbeddingModel {
+	fn from_env() -> Self {
+		EmbeddingModel {
+			name: std::env::var("NUDOX_EMBED_MODEL").unwrap_or_else(|_| "placeholder-v1".to_string()),
+			dim:  std::env::var("NUDOX_EMBED_DIM").ok().and_then(|s| s.parse().ok()).unwrap_or(256),
+		}
+	}
+}
+
 struct Config {
 	blob_store_root:   PathBuf,
 	tantivy_dir:       PathBuf,
 	qdrant_url:        Option<String>,
 	qdrant_collection: String,
-	qdrant_dim:        u64,
-	embed_dim:         usize,
+	model:             EmbeddingModel,
 }
 
 impl Config {
@@ -27,11 +40,7 @@ impl Config {
 		let qdrant_url = std::env::var("NUDOX_QDRANT_URL").ok();
 		let qdrant_collection =
 			std::env::var("NUDOX_QDRANT_COLLECTION").unwrap_or_else(|_| "nudox-embeddings".to_string());
-		let qdrant_dim =
-			std::env::var("NUDOX_QDRANT_DIM").ok().and_then(|s| s.parse().ok()).unwrap_or(256u64);
-		let embed_dim =
-			std::env::var("NUDOX_EMBED_DIM").ok().and_then(|s| s.parse().ok()).unwrap_or(256usize);
-		Config { blob_store_root, tantivy_dir, qdrant_url, qdrant_collection, qdrant_dim, embed_dim }
+		Config { blob_store_root, tantivy_dir, qdrant_url, qdrant_collection, model: EmbeddingModel::from_env() }
 	}
 }
 
@@ -112,7 +121,7 @@ async fn main() -> Result<()> {
 	let tokio_lib = LibRef { name: "tokio".into(), version: "1.0".into() };
 
 	let pipeline = Pipeline::new(
-		vec![Box::new(PlaceholderEmbedder::new("placeholder-v1", config.embed_dim))],
+		vec![Box::new(PlaceholderEmbedder::new(&config.model.name, config.model.dim))],
 		PipelineConfig::default(),
 	);
 
@@ -125,7 +134,7 @@ async fn main() -> Result<()> {
 
 	let vector: Arc<dyn VectorIndex> = if let Some(ref url) = config.qdrant_url {
 		let idx = QdrantVectorIndex::connect(url, config.qdrant_collection.clone()).await?;
-		idx.ensure_collection(config.qdrant_dim).await?;
+		idx.ensure_collection(config.model.dim as u64).await?;
 		Arc::new(idx)
 	} else {
 		Arc::new(InMemoryVectorIndex::new())

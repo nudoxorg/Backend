@@ -6,6 +6,7 @@ use tracing::{debug, info, instrument, warn};
 use url::Url;
 
 use super::termdb::DocStore;
+use crate::error::{AppError, TerminusError};
 use crate::util::retry;
 
 const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 100;
@@ -24,7 +25,7 @@ pub struct DocumentUploadProgress {
 
 async fn terminus_client_with_retry(
 	config: &TerminusConfig,
-) -> anyhow::Result<TerminusDBHttpClient> {
+) -> Result<TerminusDBHttpClient, AppError> {
 	retry::with_backoff(TERMINUS_CLIENT_MAX_ATTEMPTS, TERMINUS_RETRY_BASE_DELAY, |_| async {
 		TerminusDBHttpClient::new_with_database(
 			config.endpoint.clone(),
@@ -34,6 +35,11 @@ async fn terminus_client_with_retry(
 			&config.org,
 		)
 		.await
+		.map_err(|source| AppError::Terminus(TerminusError::ClientCreation {
+			org: config.org.clone(),
+			db: config.db.clone(),
+			source,
+		}))
 	})
 	.await
 }
@@ -87,7 +93,7 @@ pub async fn upload_documents(
 	config: &TerminusConfig,
 	store: &DocStore,
 	mut on_progress: impl FnMut(DocumentUploadProgress),
-) -> anyhow::Result<()> {
+) -> Result<(), AppError> {
 	let client = terminus_client_with_retry(config).await?;
 
 	let documents = documents_in_dependency_order(store);
@@ -131,7 +137,12 @@ pub async fn upload_documents(
 		let result = retry::with_backoff(
 			DOCUMENT_UPLOAD_MAX_ATTEMPTS,
 			Duration::from_secs(2),
-			|_| async { client.insert_documents(doc_refs.clone(), args.clone()).await },
+			|_| async {
+				client
+					.insert_documents(doc_refs.clone(), args.clone())
+					.await
+					.map_err(|source| AppError::Terminus(TerminusError::DocumentUpload { source }))
+			},
 		)
 		.await
 		.inspect_err(|e| {
@@ -170,7 +181,7 @@ pub async fn upload_documents(
 /// The schema JSON is expected to be the array of class/context definitions
 /// matching the TerminusDB schema format (e.g. from `schema.json`).
 #[instrument(skip_all, fields(org = %config.org, db = %config.db))]
-pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> anyhow::Result<()> {
+pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> Result<(), AppError> {
 	let client = terminus_client_with_retry(config).await?;
 
 	if schema_docs.is_empty() {
@@ -194,7 +205,12 @@ pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> 
 	let result = retry::with_backoff(
 		DOCUMENT_UPLOAD_MAX_ATTEMPTS,
 		Duration::from_secs(2),
-		|_| async { client.insert_documents(doc_refs.clone(), args.clone()).await },
+		|_| async {
+			client
+				.insert_documents(doc_refs.clone(), args.clone())
+				.await
+				.map_err(|source| AppError::Terminus(TerminusError::SchemaUpload { source }))
+		},
 	)
 	.await?;
 

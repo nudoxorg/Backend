@@ -22,7 +22,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use nudox_core::{BlobRef, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, ModelType, Result, VectorError, VectorHit, VectorIndex, VectorQuery};
-use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, vectors_config::Config}};
+use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, vectors_config::Config as VectorsConfig}};
 
 /// Qdrant-backed vector index. Connects via gRPC (default port 6334).
 pub struct QdrantVectorIndex {
@@ -68,14 +68,32 @@ impl QdrantVectorIndex {
 		Ok(Self { client: Arc::new(client), collection })
 	}
 
-	/// Create the collection if it does not exist. Uses cosine distance and
-	/// the given vector dimension.
+	/// Create the collection if it does not exist. Uses cosine distance and the
+	/// given vector dimension. If the collection already exists, verifies that
+	/// its dimension matches `vector_dim` so callers fail fast at startup
+	/// rather than receiving a silent 400 on the first upsert.
 	pub async fn ensure_collection(&self, vector_dim: u64) -> Result<()> {
 		let exists = self.client.collection_exists(&self.collection).await.map_err(|e| VectorError::CollectionExists(Box::new(e)))?;
 		if exists {
+			let info = self.client.collection_info(&self.collection).await.map_err(|e| VectorError::CollectionExists(Box::new(e)))?;
+			let actual_dim = info.result
+				.and_then(|r| r.config)
+				.and_then(|c| c.params)
+				.and_then(|p| p.vectors_config)
+				.and_then(|vc| match vc.config? {
+					VectorsConfig::Params(vp) => Some(vp.size),
+					_ => None,
+				});
+			if let Some(actual) = actual_dim {
+				if actual != vector_dim {
+					return Err(VectorError::CreateCollection(
+						format!("dimension mismatch: embedder={vector_dim} collection={actual}; recreate the collection or change NUDOX_EMBED_DIM").into()
+					).into());
+				}
+			}
 			return Ok(());
 		}
-		let req = CreateCollectionBuilder::new(&self.collection).vectors_config(Config::Params(
+		let req = CreateCollectionBuilder::new(&self.collection).vectors_config(VectorsConfig::Params(
 			VectorParamsBuilder::new(vector_dim, Distance::Cosine).build(),
 		));
 		self.client.create_collection(req).await.map_err(|e| VectorError::CreateCollection(Box::new(e)))?;

@@ -42,6 +42,13 @@ pub struct ByteSpan {
 	pub end:   usize,
 }
 
+impl ByteSpan {
+	/// Returns `None` when `start > end` — an inverted span is unrepresentable.
+	pub fn new(start: usize, end: usize) -> Option<Self> {
+		if start <= end { Some(Self { start, end }) } else { None }
+	}
+}
+
 /// A chunk of source code together with its tree-sitter representation and the
 /// span of the primary symbol.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +56,7 @@ pub struct SourceChunk {
 	/// The raw source code text of this chunk.
 	pub raw_code:        String,
 	/// The tree-sitter representation of this chunk.
-	pub treesitter_repr: TreesitterRepr,
+	pub treesitter_repr: Option<TreesitterRepr>,
 	/// The byte span of the primary symbol within `raw_code`.
 	pub symbol_span:     ByteSpan,
 }
@@ -107,6 +114,36 @@ pub struct EmbeddingRecord {
 pub enum Language {
 	/// The Rust programming language.
 	Rust,
+	/// The TypeScript programming language.
+	TypeScript,
+}
+
+impl Language {
+	/// The canonical lower-case identifier string (e.g. `"rust"`, `"typescript"`).
+	pub fn as_str(&self) -> &'static str {
+		match self {
+			Language::Rust => "rust",
+			Language::TypeScript => "typescript",
+		}
+	}
+}
+
+impl std::fmt::Display for Language {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(self.as_str())
+	}
+}
+
+impl std::str::FromStr for Language {
+	type Err = String;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		match s.trim().to_ascii_lowercase().as_str() {
+			"rust" | "rs" => Ok(Language::Rust),
+			"typescript" | "ts" => Ok(Language::TypeScript),
+			other => Err(format!("unknown language: {other}")),
+		}
+	}
 }
 
 /// Metadata that describes the context in which a source chunk was extracted.
@@ -165,6 +202,21 @@ impl SymbolKind {
 			SymbolKind::TypeAlias => "TypeAlias",
 			SymbolKind::Const => "Const",
 			SymbolKind::Other => "Other",
+		}
+	}
+
+	/// Lower-case label for payloads and embedding text (e.g. `"function"`).
+	pub fn label(&self) -> &'static str {
+		match self {
+			SymbolKind::Function => "function",
+			SymbolKind::Struct => "struct",
+			SymbolKind::Enum => "enum",
+			SymbolKind::Trait => "trait",
+			SymbolKind::Method => "method",
+			SymbolKind::Closure => "closure",
+			SymbolKind::TypeAlias => "typealias",
+			SymbolKind::Const => "const",
+			SymbolKind::Other => "other",
 		}
 	}
 }

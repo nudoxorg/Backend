@@ -1,6 +1,6 @@
 pub mod treesitter;
 
-use nudox_core::{BlobInfo, ByteSpan, ChunkMetadata, Embedder, EmbeddingPurpose, EmbeddingRecord, OccurrenceId, Result, SourceChunk, SymbolOrigin, TreesitterRepr};
+use nudox_core::{BlobInfo, ByteSpan, ChunkMetadata, Embedder, EmbeddingPurpose, EmbeddingRecord, OccurrenceId, Result, SourceChunk, SymbolOrigin};
 use uuid::Uuid;
 
 /// Raw input accepted by the pipeline before BlobInfo is assembled.
@@ -107,7 +107,7 @@ impl Pipeline {
 				if let Some(doc) = &input.docstring {
 					let doc_chunk = SourceChunk {
 						raw_code:        doc.clone(),
-						treesitter_repr: TreesitterRepr(Vec::new()),
+						treesitter_repr: None,
 						symbol_span:     ByteSpan { start: 0, end: doc.len() },
 					};
 					let doc_vec = embedder.embed(&doc_chunk, EmbeddingPurpose::Docstring).await?;
@@ -263,7 +263,7 @@ mod tests {
 		};
 		let pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(4))], PipelineConfig::default());
 		let info = pipeline.process(input).await.unwrap();
-		assert!(!info.source.treesitter_repr.0.is_empty());
+		assert!(info.source.treesitter_repr.is_some());
 		assert!(info.source.raw_code.contains("fn bar"));
 	}
 
@@ -288,7 +288,7 @@ mod tests {
 		let pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(4))], PipelineConfig::default());
 		let info = pipeline.process(input).await.unwrap();
 		let payload: serde_json::Value =
-			serde_json::from_slice(&info.source.treesitter_repr.0).unwrap();
+			serde_json::from_slice(&info.source.treesitter_repr.as_ref().unwrap().0).unwrap();
 		// The sexp is for the extracted snippet (the function node), which is
 		// parsed as its own source_file fragment.
 		assert!(payload["sexp"].as_str().unwrap().contains("source_file"));

@@ -11,7 +11,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use nudox_core::{BlobInfo, BlobRef, BlobStore, BodyQuery, ByteSpan, CombineMode, Embedder, EmbeddingPurpose, GlobalSymbolId, GlobalSymbolQuery, OccurrenceId, Result, SearchQuery, SourceChunk, SymbolMatch, SymbolQuery, SymbolSearch, TreesitterRepr, VectorQuery};
+use nudox_core::{BlobInfo, BlobRef, BlobStore, BodyQuery, ByteSpan, CombineMode, Embedder, EmbeddingPurpose, GlobalSymbolId, GlobalSymbolQuery, OccurrenceId, Result, SearchQuery, SourceChunk, SymbolMatch, SymbolQuery, SymbolSearch, VectorQuery};
 
 /// Compound symbol-search engine that combines full-text name search with
 /// vector similarity search, then applies scope, kind, and occurrence-count
@@ -56,7 +56,7 @@ impl SymbolSearcher {
 		};
 		let chunk = SourceChunk {
 			raw_code:        text.clone(),
-			treesitter_repr: TreesitterRepr(vec![]),
+			treesitter_repr: None,
 			symbol_span:     ByteSpan { start: 0, end: text.len() },
 		};
 		self.embedder.embed(&chunk, EmbeddingPurpose::Code).await
@@ -233,7 +233,7 @@ mod tests {
 	use std::{collections::HashMap, sync::Mutex};
 
 	use nudox_blobstore::InMemoryBlobStore;
-	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, ByteSpan, ChunkMetadata, CombineMode, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, GlobalSymbolQuery, Language, ModelType, OccurrenceFilter, OccurrenceId, RepoId, Result, ScopeFilter, SearchIndex, SourceChunk, SymbolKind, SymbolOrigin, SymbolQuery, SymbolSearch, TreesitterRepr, VectorIndex};
+	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, ByteSpan, ChunkMetadata, CombineMode, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, GlobalSymbolQuery, Language, ModelType, OccurrenceFilter, OccurrenceId, RepoId, Result, ScopeFilter, SearchIndex, SourceChunk, SymbolKind, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
 	use nudox_embed::MockEmbedder;
 
 	use super::*;
@@ -278,7 +278,7 @@ mod tests {
 			kind,
 			source: SourceChunk {
 				raw_code:        format!("fn {}() {{}}", symbol_name),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: symbol_name.len() + 3 },
 			},
 			embeddings: vec![],

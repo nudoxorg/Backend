@@ -200,7 +200,7 @@ impl SearchQuery for TantivySearchIndex {
 
 #[cfg(test)]
 mod tests {
-	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, OccurrenceId, RepoId, SourceChunk, TreesitterRepr};
+	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, OccurrenceId, RepoId, SourceChunk};
 	use tantivy::{collector::TopDocs, query::QueryParser, schema::Value};
 	use tempfile::TempDir;
 
@@ -215,7 +215,7 @@ mod tests {
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "fn x() {}".into(),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 0, end: 1 },
 			},
 			embeddings:         vec![],
@@ -242,7 +242,7 @@ mod tests {
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        format!("use {name}::{symbol};"),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 0, end: 1 },
 			},
 			embeddings:         vec![],

@@ -107,7 +107,7 @@ impl BlobStore for ObjectStoreBlobStore {
 
 #[cfg(test)]
 mod object_store_tests {
-	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, SourceChunk, SymbolOrigin, TreesitterRepr};
+	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, SourceChunk, SymbolOrigin};
 	use tempfile::TempDir;
 
 	use super::*;
@@ -121,7 +121,7 @@ mod object_store_tests {
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "fn x() {}".into(),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 4 },
 			},
 			embeddings:         vec![],

@@ -25,9 +25,9 @@ pub trait Transient {
 	fn is_transient(&self) -> bool;
 }
 
-impl Transient for anyhow::Error {
+impl Transient for String {
 	fn is_transient(&self) -> bool {
-		self.chain().any(|e| is_transient_message(&e.to_string()))
+		is_transient_message(self)
 	}
 }
 
@@ -96,7 +96,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn with_backoff_succeeds_on_first_try() {
-		let result: Result<u32, anyhow::Error> =
+		let result: Result<u32, String> =
 			with_backoff(3, Duration::from_millis(1), |_| async { Ok(42u32) }).await;
 		assert_eq!(result.unwrap(), 42);
 	}
@@ -105,12 +105,12 @@ mod tests {
 	async fn with_backoff_retries_transient_and_succeeds() {
 		let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 		let count2 = count.clone();
-		let result: Result<u32, anyhow::Error> = with_backoff(3, Duration::from_millis(1), move |_| {
+		let result: Result<u32, String> = with_backoff(3, Duration::from_millis(1), move |_| {
 			let c = count2.clone();
 			async move {
 				let n = c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 				if n < 2 {
-					Err(anyhow::anyhow!("connection reset"))
+					Err("connection reset".to_string())
 				} else {
 					Ok(n as u32)
 				}
@@ -125,11 +125,11 @@ mod tests {
 	async fn with_backoff_does_not_retry_permanent() {
 		let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 		let count2 = count.clone();
-		let result: Result<u32, anyhow::Error> = with_backoff(3, Duration::from_millis(1), move |_| {
+		let result: Result<u32, String> = with_backoff(3, Duration::from_millis(1), move |_| {
 			let c = count2.clone();
 			async move {
 				c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-				Err(anyhow::anyhow!("version 1.0.0 not found"))
+				Err("version 1.0.0 not found".to_string())
 			}
 		})
 		.await;

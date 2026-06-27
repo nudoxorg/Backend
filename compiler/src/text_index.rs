@@ -8,7 +8,8 @@ use std::{path::Path, sync::{Arc, Mutex}};
 
 use tantivy::{Index, IndexWriter, TantivyDocument, Term, collector::TopDocs, directory::MmapDirectory, query::QueryParser, schema::{Field, STORED, STRING, Schema, TEXT, Value as TantivyValue}};
 
-use crate::{error::AppError, ingest::parsed_symbol::{PackageCoord, ParsedSymbol}};
+use crate::error::{AppError, TextIndexError};
+use crate::ingest::parsed_symbol::{PackageCoord, ParsedSymbol};
 
 /// A single result from [`SymbolTextIndex::search`].
 #[derive(Debug)]
@@ -58,13 +59,13 @@ impl SymbolTextIndex {
 		std::fs::create_dir_all(dir)
 			.map_err(|e| AppError::Storage { path: dir.to_path_buf(), source: e })?;
 		let (schema, fields) = build_schema();
-		let mmap = MmapDirectory::open(dir)
-			.map_err(|e| AppError::Internal { message: format!("tantivy MmapDirectory: {e}") })?;
-		let index = Index::open_or_create(mmap, schema)
-			.map_err(|e| AppError::Internal { message: format!("tantivy open_or_create: {e}") })?;
-		let writer = index
-			.writer(50_000_000)
-			.map_err(|e| AppError::Internal { message: format!("tantivy writer: {e}") })?;
+	let mmap = MmapDirectory::open(dir)
+		.map_err(|e| AppError::TextIndex(TextIndexError::MmapDirectory { path: dir.to_path_buf(), source: e }))?;
+	let index = Index::open_or_create(mmap, schema)
+		.map_err(|e| AppError::TextIndex(TextIndexError::OpenOrCreate { source: e }))?;
+	let writer = index
+		.writer(50_000_000)
+		.map_err(|e| AppError::TextIndex(TextIndexError::Writer { source: e }))?;
 		Ok(Self { index, writer: Arc::new(Mutex::new(writer)), fields })
 	}
 
@@ -80,7 +81,7 @@ impl SymbolTextIndex {
 		let mut writer = self
 			.writer
 			.lock()
-			.map_err(|e| AppError::Internal { message: format!("tantivy writer lock poisoned: {e}") })?;
+			.map_err(|_| AppError::TextIndex(TextIndexError::LockPoisoned))?;
 
 		for symbol in symbols {
 			let uri = symbol.entry_uri.to_string();
@@ -90,17 +91,17 @@ impl SymbolTextIndex {
 			td.add_text(self.fields.uri, &uri);
 			td.add_text(self.fields.fq_name, &symbol.fq_name);
 			td.add_text(self.fields.text, &symbol.embedding_text);
-			td.add_text(self.fields.language, &coord.language);
+			td.add_text(self.fields.language, coord.language.as_str());
 			td.add_text(self.fields.package, &coord.package);
 			td.add_text(self.fields.version, &coord.version);
-			td.add_text(self.fields.symbol_kind, &symbol.kind_label);
+			td.add_text(self.fields.symbol_kind, symbol.kind.label());
 
 			writer
 				.add_document(td)
-				.map_err(|e| AppError::Internal { message: format!("tantivy add_document: {e}") })?;
+				.map_err(|e| AppError::TextIndex(TextIndexError::AddDocument { source: e }))?;
 		}
 
-		writer.commit().map_err(|e| AppError::Internal { message: format!("tantivy commit: {e}") })?;
+		writer.commit().map_err(|e| AppError::TextIndex(TextIndexError::Commit { source: e }))?;
 		Ok(symbols.len())
 	}
 
@@ -110,24 +111,24 @@ impl SymbolTextIndex {
 		let reader = self
 			.index
 			.reader()
-			.map_err(|e| AppError::Internal { message: format!("tantivy reader: {e}") })?;
+			.map_err(|e| AppError::TextIndex(TextIndexError::Reader { source: e }))?;
 		let searcher = reader.searcher();
 		let qp = QueryParser::for_index(&self.index, vec![
 			self.fields.fq_name,
 			self.fields.text,
 			self.fields.package,
 		]);
-		let query = qp.parse_query(query_str).map_err(|e| AppError::Internal {
-			message: format!("tantivy parse_query `{query_str}`: {e}"),
+		let query = qp.parse_query(query_str).map_err(|e| {
+			AppError::TextIndex(TextIndexError::ParseQuery { query: query_str.to_owned(), source: e })
 		})?;
 		let top_docs = searcher
 			.search(&query, &TopDocs::with_limit(limit.max(1)))
-			.map_err(|e| AppError::Internal { message: format!("tantivy search: {e}") })?;
+			.map_err(|e| AppError::TextIndex(TextIndexError::Search { source: e }))?;
 
 		let mut hits = Vec::with_capacity(top_docs.len());
 		for (score, addr) in top_docs {
 			let doc: TantivyDocument =
-				searcher.doc(addr).map_err(|e| AppError::Internal { message: e.to_string() })?;
+				searcher.doc(addr).map_err(|e| AppError::TextIndex(TextIndexError::DocFetch { source: e }))?;
 			let get = |f: Field| doc.get_first(f).and_then(|v| v.as_str()).unwrap_or("").to_owned();
 			let get_opt = |f: Field| {
 				let s = get(f);

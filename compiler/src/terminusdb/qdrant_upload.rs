@@ -2,7 +2,7 @@ use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, PointStr
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
-use crate::config::VectorDistance;
+use crate::{config::VectorDistance, error::{AppError, QdrantError}};
 
 /// Configuration for connecting to a Qdrant instance.
 ///
@@ -23,10 +23,23 @@ pub struct QdrantConfig {
 /// If the collection does not exist, create it with the configured vector size
 /// and distance metric. If it already exists, leave it as-is.
 #[instrument(skip_all, fields(collection = %config.collection_name))]
-pub async fn ensure_collection(config: &QdrantConfig) -> anyhow::Result<()> {
-	let client = Qdrant::from_url(config.endpoint.as_str()).build()?;
+pub async fn ensure_collection(config: &QdrantConfig) -> Result<(), AppError> {
+	let client = Qdrant::from_url(config.endpoint.as_str())
+		.build()
+		.map_err(|source| AppError::Qdrant(QdrantError::ConnectionFailed {
+			endpoint: config.endpoint.to_string(),
+			source,
+		}))?;
 
-	if client.collection_exists(&config.collection_name).await? {
+	let exists = client
+		.collection_exists(&config.collection_name)
+		.await
+		.map_err(|source| AppError::Qdrant(QdrantError::CollectionExistenceCheck {
+			collection: config.collection_name.clone(),
+			source,
+		}))?;
+
+	if exists {
 		debug!(collection = %config.collection_name, "qdrant collection already exists");
 		return Ok(());
 	}
@@ -49,7 +62,11 @@ pub async fn ensure_collection(config: &QdrantConfig) -> anyhow::Result<()> {
 			CreateCollectionBuilder::new(&config.collection_name)
 				.vectors_config(VectorParamsBuilder::new(config.vector_size, qdrant_distance)),
 		)
-		.await?;
+		.await
+		.map_err(|source| AppError::Qdrant(QdrantError::CollectionCreation {
+			collection: config.collection_name.clone(),
+			source,
+		}))?;
 
 	info!(collection = %config.collection_name, "qdrant collection created");
 	Ok(())
@@ -59,7 +76,7 @@ pub async fn ensure_collection(config: &QdrantConfig) -> anyhow::Result<()> {
 ///
 /// The collection is created first if it does not already exist.
 #[instrument(skip_all, fields(collection = %config.collection_name))]
-pub async fn upload_points(config: &QdrantConfig, points: Vec<PointStruct>) -> anyhow::Result<()> {
+pub async fn upload_points(config: &QdrantConfig, points: Vec<PointStruct>) -> Result<(), AppError> {
 	if points.is_empty() {
 		warn!("no qdrant points to upload");
 		return Ok(());
@@ -67,7 +84,12 @@ pub async fn upload_points(config: &QdrantConfig, points: Vec<PointStruct>) -> a
 
 	ensure_collection(config).await?;
 
-	let client = Qdrant::from_url(config.endpoint.as_str()).build()?;
+	let client = Qdrant::from_url(config.endpoint.as_str())
+		.build()
+		.map_err(|source| AppError::Qdrant(QdrantError::ConnectionFailed {
+			endpoint: config.endpoint.to_string(),
+			source,
+		}))?;
 
 	info!(
 		collection = %config.collection_name,
@@ -75,8 +97,13 @@ pub async fn upload_points(config: &QdrantConfig, points: Vec<PointStruct>) -> a
 		"uploading qdrant points"
 	);
 
-	let response =
-		client.upsert_points(UpsertPointsBuilder::new(&config.collection_name, points)).await?;
+	let response = client
+		.upsert_points(UpsertPointsBuilder::new(&config.collection_name, points))
+		.await
+		.map_err(|source| AppError::Qdrant(QdrantError::UpsertFailed {
+			collection: config.collection_name.clone(),
+			source,
+		}))?;
 
 	debug!(status = ?response.result, "qdrant upsert completed");
 

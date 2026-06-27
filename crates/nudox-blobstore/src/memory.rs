@@ -48,7 +48,7 @@ impl BlobStore for InMemoryBlobStore {
 
 #[cfg(test)]
 mod tests {
-	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, OccurrenceId, RepoId, SourceChunk, SymbolOrigin, TreesitterRepr};
+	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, OccurrenceId, RepoId, SourceChunk, SymbolOrigin};
 
 	use super::*;
 
@@ -61,7 +61,7 @@ mod tests {
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "fn foo() {}".to_string(),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 6 },
 			},
 			embeddings:         vec![],

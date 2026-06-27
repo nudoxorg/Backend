@@ -7,7 +7,7 @@
 //! deterministic [`GlobalSymbolId`] are computed **once**, here, and threaded
 //! into every store so they all agree on a symbol's identity.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use ir::entry::{Entry, Index};
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
@@ -18,19 +18,36 @@ use crate::{identity::{EntryUri, compute_symbol_id, path::{fq_name, nudox_path_t
 /// Per-package coordinates shared by every symbol in one ingestion.
 #[derive(Debug, Clone)]
 pub struct PackageCoord {
-	pub language: String,
-	pub package:  String,
-	pub version:  String,
+	pub language: Language,
+	pub package:  Arc<str>,
+	pub version:  Arc<str>,
 }
 
 impl PackageCoord {
-	pub fn new(language: &str, package: &str, version: &str) -> Self {
-		Self { language: language.to_owned(), package: package.to_owned(), version: version.to_owned() }
+	pub fn new(language: Language, package: &str, version: &str) -> Self {
+		Self { language, package: Arc::from(package), version: Arc::from(version) }
 	}
 
-	fn lib_ref(&self) -> LibRef { LibRef { name: self.package.clone(), version: self.version.clone() } }
+	fn lib_ref(&self) -> LibRef { LibRef { name: self.package.to_string(), version: self.version.to_string() } }
 
 	fn repo_id(&self) -> RepoId { RepoId(format!("lib:{}:{}", self.package, self.version)) }
+}
+
+/// Batch-level identity witness: known once before projection, shared by all symbols.
+///
+/// `Deterministic` means a Terminus instance is configured and every symbol
+/// will receive a stable, content-addressed [`GlobalSymbolId`]. `Local` means
+/// no global spine is present — symbols fall back to `Repo` origin so the
+/// no-Terminus `/symbol-search` path still works.
+///
+/// Carrying this as an enum (rather than `Option<&str>`) makes the invariant
+/// that *either all symbols or no symbols have a global id* unrepresentable to
+/// violate: there is no per-symbol `Option` that could disagree with the batch.
+pub enum Identity<'a> {
+	/// Terminus is configured; `instance` is `"{org}/{db}"`.
+	Deterministic { instance: &'a str },
+	/// No global spine; symbols fall back to `Repo` origin.
+	Local,
 }
 
 /// One symbol, projected once from the IR and ready for every sink.
@@ -38,56 +55,50 @@ impl PackageCoord {
 pub struct ParsedSymbol {
 	/// Canonical cross-store identity.
 	pub entry_uri:       EntryUri,
-	/// Deterministic global id, present when a Terminus instance is configured.
-	pub global_id:       Option<GlobalSymbolId>,
 	pub name:            String,
 	pub fq_name:         String,
 	pub kind:            SymbolKind,
-	/// Lower-case kind label (e.g. `"function"`) for payloads / embedding text.
-	pub kind_label:      String,
 	pub aliases:         Vec<String>,
 	pub documentation:   Option<String>,
 	/// Text fed to the embedding provider and the full-text index.
 	pub embedding_text:  String,
 	/// Source for blob storage / tree-sitter (best-effort; empty when no source).
 	pub raw_code:        String,
-	pub treesitter_repr: TreesitterRepr,
+	pub treesitter_repr: Option<TreesitterRepr>,
 	pub symbol_span:     ByteSpan,
 }
 
 /// Project every entry in `index` into a [`ParsedSymbol`], computing the
-/// canonical URI and deterministic id exactly once per symbol.
+/// canonical URI exactly once per symbol.
 ///
 /// `source_map` maps fully-qualified name → raw source (Rust only; empty
-/// otherwise). `terminus_instance` is `"{org}/{db}"` when Terminus is
-/// configured — its presence is what makes ids deterministic.
-pub fn project(
+/// otherwise). `identity` encodes whether a Terminus instance is configured —
+/// it is a batch-level fact decided before projection starts.
+pub fn project<'id>(
 	coord: &PackageCoord,
 	index: &Index,
 	source_map: &HashMap<String, String>,
-	terminus_instance: Option<&str>,
+	identity: &'id Identity<'id>,
 ) -> Vec<ParsedSymbol> {
 	index
 		.entries_by_path
 		.values()
-		.map(|entry| project_entry(coord, entry, source_map, terminus_instance))
+		.map(|entry| project_entry(coord, entry, source_map, identity))
 		.collect()
 }
 
-fn project_entry(
+fn project_entry<'id>(
 	coord: &PackageCoord,
 	entry: &Entry,
 	source_map: &HashMap<String, String>,
-	terminus_instance: Option<&str>,
+	_identity: &'id Identity<'id>,
 ) -> ParsedSymbol {
 	let path = entry.path();
-	let entry_uri = EntryUri::new(&coord.language, &coord.package, &nudox_path_to_str(path));
-	let global_id = terminus_instance.map(|instance| compute_symbol_id(instance, &entry_uri));
+	let entry_uri = EntryUri::new(coord.language.as_str(), &coord.package, &nudox_path_to_str(path));
 
 	let fq = fq_name(path);
 	let name = entry.name().to_owned();
 	let kind = symbol_kind_of(entry);
-	let kind_label = entry.kind_tag().to_owned();
 	let aliases: Vec<String> = entry
 		.aliases()
 		.map(|set| set.iter().map(|segments| segments.join("::")).collect())
@@ -97,20 +108,19 @@ fn project_entry(
 	let embedding_text = build_entry_embedding_text(
 		&name,
 		&fq,
-		Some(&kind_label),
+		Some(kind.label()),
 		&aliases,
 		documentation.as_deref(),
 	);
 
-	let (raw_code, treesitter_repr, symbol_span) = extract_source(&fq, &embedding_text, source_map);
+	let SourceChunk { raw_code, treesitter_repr, symbol_span } =
+		extract_source(&fq, &embedding_text, source_map);
 
 	ParsedSymbol {
 		entry_uri,
-		global_id,
 		name,
 		fq_name: fq,
 		kind,
-		kind_label,
 		aliases,
 		documentation,
 		embedding_text,
@@ -141,18 +151,23 @@ fn extract_source(
 	fq: &str,
 	embedding_text: &str,
 	source_map: &HashMap<String, String>,
-) -> (String, TreesitterRepr, ByteSpan) {
+) -> SourceChunk {
 	match source_map.get(fq) {
 		Some(raw) => {
 			let span = ByteSpan { start: 0, end: raw.len() };
-			let (snippet, snippet_span, ts_repr) = parse_and_extract(raw, Language::Rust, span, 80);
-			let adjusted =
+			let (snippet, snippet_span, treesitter_repr) =
+				parse_and_extract(raw, Language::Rust, span, 80);
+			let symbol_span =
 				ByteSpan { start: 0, end: snippet.len().saturating_sub(snippet_span.start) };
-			(snippet, ts_repr, adjusted)
+			SourceChunk { raw_code: snippet, treesitter_repr, symbol_span }
 		}
 		None => {
 			let len = embedding_text.len();
-			(embedding_text.to_owned(), TreesitterRepr(vec![]), ByteSpan { start: 0, end: len })
+			SourceChunk {
+				raw_code:        embedding_text.to_owned(),
+				treesitter_repr: None,
+				symbol_span:     ByteSpan { start: 0, end: len },
+			}
 		}
 	}
 }
@@ -160,15 +175,19 @@ fn extract_source(
 impl ParsedSymbol {
 	/// Project to a [`BlobInfo`] for `Orchestrator::ingest`.
 	///
-	/// When a deterministic [`GlobalSymbolId`] is available the symbol is an
-	/// `ExternalLib` carrying that id (the orchestrator honors it); otherwise it
-	/// falls back to a `Repo` origin so the no-Terminus `/symbol-search` path
-	/// still resolves and indexes immediately.
-	pub fn to_blob_info(&self, coord: &PackageCoord) -> BlobInfo {
-		let (symbol_origin, resolved_global_id) = match self.global_id {
-			Some(global_id) => (SymbolOrigin::ExternalLib { lib: coord.lib_ref() }, Some(global_id)),
-			None => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, None),
-		};
+	/// When `identity` is `Deterministic` the symbol is an `ExternalLib` carrying
+	/// a content-addressed [`GlobalSymbolId`] (the orchestrator honors it);
+	/// `Local` falls back to a `Repo` origin so the no-Terminus `/symbol-search`
+	/// path still resolves and indexes immediately.
+	pub fn to_blob_info(&self, coord: &PackageCoord, identity: &Identity<'_>) -> BlobInfo {
+		let (symbol_origin, resolved_global_id): (SymbolOrigin, Option<GlobalSymbolId>) =
+			match identity {
+				Identity::Deterministic { instance } => (
+					SymbolOrigin::ExternalLib { lib: coord.lib_ref() },
+					Some(compute_symbol_id(instance, &self.entry_uri)),
+				),
+				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, None),
+			};
 
 		BlobInfo {
 			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
@@ -187,27 +206,31 @@ impl ParsedSymbol {
 				file_path:           PathBuf::from(self.entry_uri.to_string()),
 				file_span:           ByteSpan { start: 0, end: 0 },
 				parsed_at:           chrono::Utc::now(),
-				lang:                Language::Rust,
+				lang:                coord.language,
 				lang_version:        None,
 				blob_schema_version: BLOB_SCHEMA_VERSION,
 			},
 		}
 	}
 
-	/// Project to an [`EmbeddingDocument`] for the vector pipeline. The record
-	/// key is the canonical entry URI, tying the eventual Qdrant point to the
-	/// same identity spine as every other store.
-	pub fn to_embedding_document(&self, coord: &PackageCoord) -> EmbeddingDocument {
+	/// Project to an [`EmbeddingDocument`] for the vector pipeline, consuming
+	/// the symbol. The record key is the canonical entry URI, tying the eventual
+	/// Qdrant point to the same identity spine as every other store.
+	///
+	/// Takes `self` so `embedding_text` and `fq_name` are moved rather than
+	/// cloned — callers in the vector pipeline process each symbol exactly once.
+	pub fn into_embedding_document(self, coord: &PackageCoord) -> EmbeddingDocument {
 		let uri = self.entry_uri.to_string();
+		let record_key = uri.clone();
 		EmbeddingDocument {
-			record_key: uri.clone(),
+			record_key,
 			uri,
-			text: self.embedding_text.clone(),
-			fq_name: Some(self.fq_name.clone()),
-			language: coord.language.clone(),
-			package: coord.package.clone(),
-			version: Some(coord.version.clone()),
-			symbol_kind: Some(self.kind_label.clone()),
+			text: self.embedding_text,
+			fq_name: Some(self.fq_name),
+			language: coord.language.as_str().to_owned(),
+			package: coord.package.to_string(),
+			version: Some(coord.version.to_string()),
+			symbol_kind: Some(self.kind.label().to_owned()),
 			record_kind: RecordKind::SemanticNode,
 			representation_kind: RepresentationKind::Docs,
 			chunk_index: None,

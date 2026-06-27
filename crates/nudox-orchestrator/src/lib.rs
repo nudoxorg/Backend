@@ -183,7 +183,7 @@ mod disk_integration_tests {
 	use std::sync::Arc;
 
 	use nudox_blobstore::ObjectStoreBlobStore;
-	use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, ByteSpan, ChunkMetadata, FutureParseQueue, GlobalSymbolStore, Language, LibRef, OccurrenceId, RepoId, ResolutionOutcome, SearchIndex, SearchQuery, SourceChunk, SymbolOrigin, TreesitterRepr, VectorIndex};
+	use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, ByteSpan, ChunkMetadata, FutureParseQueue, GlobalSymbolStore, Language, LibRef, OccurrenceId, RepoId, ResolutionOutcome, SearchIndex, SearchQuery, SourceChunk, SymbolOrigin, VectorIndex};
 	use nudox_search::{InMemoryVectorIndex, TantivySearchIndex};
 	use nudox_store::NudoxStore;
 	use tempfile::TempDir;
@@ -199,7 +199,7 @@ mod disk_integration_tests {
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "fn placeholder() {}".to_string(),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 14 },
 			},
 			embeddings:         vec![],
@@ -361,7 +361,7 @@ mod tests {
 	use std::sync::Arc;
 
 	use nudox_blobstore::InMemoryBlobStore;
-	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, GlobalSymbolQuery, Language, OccurrenceId, RepoId, SourceChunk, SymbolOrigin, TreesitterRepr};
+	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, GlobalSymbolQuery, Language, OccurrenceId, RepoId, SourceChunk, SymbolOrigin};
 	use nudox_search::{InMemorySearchIndex, InMemoryVectorIndex};
 
 	use super::*;
@@ -401,7 +401,7 @@ mod tests {
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "fn dummy() {}".to_string(),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 8 },
 			},
 			embeddings:         vec![],
@@ -462,7 +462,7 @@ mod tests {
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "fn placeholder() {}".to_string(),
-				treesitter_repr: TreesitterRepr(vec![]),
+				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 14 },
 			},
 			embeddings:         vec![],

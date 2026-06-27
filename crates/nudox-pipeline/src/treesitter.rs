@@ -30,6 +30,7 @@ struct ReferenceEntry {
 fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
 	match lang {
 		Language::Rust => arborium::get_language("rust"),
+		Language::TypeScript => None,
 	}
 }
 
@@ -161,15 +162,14 @@ fn ref_to_entry(r: ResolvedReference) -> ReferenceEntry {
 ///   s-expression, the snippet span, and the collected references.
 ///
 /// On any parse failure the function falls back gracefully to the full
-/// `raw_code` with an empty `TreesitterRepr`.
+/// `raw_code` with `treesitter_repr: None`.
 pub fn parse_and_extract(
 	raw_code: &str,
 	lang: Language,
 	symbol_span: ByteSpan,
 	max_context_lines: usize,
-) -> (String, ByteSpan, TreesitterRepr) {
-	let fallback =
-		|| (raw_code.to_string(), ByteSpan { start: 0, end: raw_code.len() }, TreesitterRepr(vec![]));
+) -> (String, ByteSpan, Option<TreesitterRepr>) {
+	let fallback = || (raw_code.to_string(), ByteSpan { start: 0, end: raw_code.len() }, None);
 
 	let Some(ts_lang) = ts_language(lang) else {
 		return fallback();
@@ -227,5 +227,5 @@ pub fn parse_and_extract(
 		TreesitterPayload { sexp, snippet_span: [snippet_span.start, snippet_span.end], references };
 
 	let repr_bytes = serde_json::to_vec(&payload).unwrap_or_default();
-	(snippet, snippet_span, TreesitterRepr(repr_bytes))
+	(snippet, snippet_span, Some(TreesitterRepr(repr_bytes)))
 }

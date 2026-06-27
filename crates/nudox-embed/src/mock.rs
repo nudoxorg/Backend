@@ -25,7 +25,7 @@ impl Embedder for MockEmbedder {
 
 #[cfg(test)]
 mod tests {
-	use nudox_core::{ByteSpan, SourceChunk, TreesitterRepr};
+	use nudox_core::{ByteSpan, SourceChunk};
 
 	use super::*;
 
@@ -34,7 +34,7 @@ mod tests {
 		let embedder = MockEmbedder::new(128);
 		let chunk = SourceChunk {
 			raw_code:        "fn foo() {}".to_string(),
-			treesitter_repr: TreesitterRepr(vec![]),
+			treesitter_repr: None,
 			symbol_span:     ByteSpan { start: 0, end: 1 },
 		};
 		let result = embedder.embed(&chunk, EmbeddingPurpose::Code).await.unwrap();
