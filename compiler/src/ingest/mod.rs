@@ -17,7 +17,7 @@ use semver::Version;
 use tokio::task::spawn_blocking;
 use tracing::info;
 
-use crate::{config::{PipelineConfig, QdrantSettings}, core::{rust::RustPackage, ts::TsPackage}, error::{AppError, IngestError}, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::ProgressReporter, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
+use crate::{backend::LanguageBackend, config::{PipelineConfig, QdrantSettings}, error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -53,51 +53,37 @@ pub struct IngestTargets {
 	pub orchestrator: Option<Arc<nudox_orchestrator::Orchestrator>>,
 }
 
-pub async fn run_rust_pipeline(
-	package: &RustPackage,
+/// Generate IR for `package` off the async executor, project it once, and fan
+/// it out to every configured sink.
+///
+/// This is the single, language-agnostic pipeline entry. `B` supplies IR
+/// generation and the neutral language tag; everything downstream of
+/// [`finalize_pipeline`] is language-neutral and never matches on a concrete
+/// frontend.
+pub async fn run_pipeline<B: LanguageBackend>(
+	package: &B::Package,
 	version: &Version,
 	workspace: &Path,
 	config: &PipelineConfig,
 	progress: &ProgressReporter,
 	targets: &IngestTargets,
 ) -> Result<IngestionSummary, AppError> {
+	progress.phase_with_detail(
+		PackageSyncPhase::GeneratingIr,
+		Some(format!("generating {} IR", B::LANGUAGE.as_str())),
+	);
+
 	let pkg = package.clone();
 	let ws = workspace.to_path_buf();
 	let ver = version.clone();
-	// IR generation and rustdoc JSON parsing are CPU/blocking-I/O; run off the async
-	// executor. The source map for tree-sitter is built from the same parsed crate.
-	let (ir, source_map) = spawn_blocking(move || -> Result<_, AppError> {
-		pkg.generate_ir_with_sources(&ws, &ver).map_err(|source| {
-			AppError::Ingest(IngestError::IrGeneration { package: pkg.name.clone(), source })
-		})
-	})
-	.await
-	.map_err(|source| AppError::TaskJoin { action: "Rust IR generation", source })??;
+	// IR generation (rustdoc / deno-doc) is CPU/blocking-I/O; run it off the async
+	// executor. The source map for tree-sitter comes back from the same parse.
+	let (index, source_map) = spawn_blocking(move || B::generate_ir(&pkg, &ws, &ver))
+		.await
+		.map_err(|source| AppError::TaskJoin { action: "IR generation", source })??;
 
-	let coord = PackageCoord::new(nudox_core::Language::Rust, &package.name, &version.to_string());
-	finalize_pipeline(coord, ir.index().into_index(), config, progress, targets, &source_map).await
-}
-
-pub async fn run_typescript_pipeline(
-	package: &TsPackage,
-	version: &Version,
-	config: &PipelineConfig,
-	progress: &ProgressReporter,
-	targets: &IngestTargets,
-) -> Result<IngestionSummary, AppError> {
-	let pkg = package.clone();
-	let ir = spawn_blocking(move || -> Result<_, AppError> {
-		pkg.generate_ir().map_err(|source| AppError::Ingest(IngestError::TsIrGeneration {
-			package: pkg.name.clone(),
-			source,
-		}))
-	})
-	.await
-	.map_err(|source| AppError::TaskJoin { action: "TypeScript IR generation", source })??;
-
-	let coord =
-		PackageCoord::new(nudox_core::Language::TypeScript, &package.name, &version.to_string());
-	finalize_pipeline(coord, ir.index().into_index(), config, progress, targets, &HashMap::new()).await
+	let coord = PackageCoord::new(B::LANGUAGE, B::package_name(package), &version.to_string());
+	finalize_pipeline(coord, index, config, progress, targets, &source_map).await
 }
 
 async fn finalize_pipeline(

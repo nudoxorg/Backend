@@ -12,7 +12,7 @@ use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, er
 
 mod resolve;
 mod sync;
-mod ts_entry_point;
+pub(crate) mod ts_entry_point;
 
 use resolve::resolve_package_handle;
 use sync::{compute_remote_update_available, run_monitor_refresh, run_sync};

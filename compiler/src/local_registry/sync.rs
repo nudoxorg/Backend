@@ -4,64 +4,18 @@
 //!
 //! The git dance — open/clone the cached repo, fetch origin, resolve the remote
 //! head, find the commit for the tracked version, and (for sync) materialize a
-//! workspace — is identical across languages. The *only* per-language
-//! difference is how a semver version maps to a commit (crates.io vs npm/JSR tag
-//! conventions), so that is the single thing a [`LanguageBackend`] supplies;
-//! [`materialize_git_checkout`] and [`resolve_git_head`] are shared by both
-//! languages and by the repository-backed and registry-backed paths.
+//! workspace — is identical across languages and is captured once here, generic
+//! over [`LanguageBackend`]. Everything that genuinely differs between languages
+//! (the tag scheme, workspace prep, IR generation) lives in [`crate::backend`],
+//! so `run_sync` is three thin arms: git-backed (Rust or TS) and npm-backed.
 
-use gix::{ObjectId, Repository};
-use semver::Version;
 use tempfile::TempDir;
 use tokio::task::spawn_blocking;
 use url::Url;
 
-use crate::{config::PipelineConfig, error::{AppError, PackageError, RegistryLookupError}, git, ingest::{IngestTargets, run_rust_pipeline, run_typescript_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, ProgressReporter}};
+use crate::{backend::{LanguageBackend, RustBackend, TypeScriptBackend}, config::PipelineConfig, core::ts::TsPackage, error::{AppError, PackageError, RegistryLookupError}, git, ingest::{IngestTargets, run_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, ProgressReporter}};
 
-use super::{MonitorExecution, PackageHandle, PackageId, PackageSpec, SyncExecution, ts_entry_point::{resolve_typescript_repository_entry_point, typescript_package_uses_repository, typescript_repository_entry_hint}};
-
-/// Per-language strategy for the git-backed sync/monitor engine.
-///
-/// Everything on the git path — fetch, remote-head resolution, materialize — is
-/// shared; the only thing that differs between languages is how a tracked semver
-/// `version` resolves to a commit. A backend supplies exactly that.
-trait LanguageBackend {
-	/// Resolve `version` to a commit using this language's tag conventions.
-	fn find_commit(
-		repository: &Repository,
-		version: &Version,
-		name: &str,
-		remote_head: Option<ObjectId>,
-	) -> Option<ObjectId>;
-}
-
-/// Rust packages: crates.io / cargo tag conventions.
-struct RustBackend;
-
-impl LanguageBackend for RustBackend {
-	fn find_commit(
-		repository: &Repository,
-		version: &Version,
-		name: &str,
-		remote_head: Option<ObjectId>,
-	) -> Option<ObjectId> {
-		git::find_commit_for_version(repository, version, name, remote_head)
-	}
-}
-
-/// TypeScript packages: npm / JSR tag conventions.
-struct TypeScriptBackend;
-
-impl LanguageBackend for TypeScriptBackend {
-	fn find_commit(
-		repository: &Repository,
-		version: &Version,
-		name: &str,
-		remote_head: Option<ObjectId>,
-	) -> Option<ObjectId> {
-		git::find_typescript_commit_for_version(repository, version, name, remote_head)
-	}
-}
+use super::{MonitorExecution, PackageHandle, PackageId, PackageSpec, SyncExecution, ts_entry_point::typescript_package_uses_repository};
 
 /// A materialized git checkout: the resolved commit, the latest remote head for
 /// the tracked branch, and the workspace it was checked out into.
@@ -145,7 +99,7 @@ fn resolve_git_head<B: LanguageBackend>(
 }
 
 /// Run a git checkout off the async executor, mapping the join error.
-async fn spawn_git_checkout<B: LanguageBackend + Send + 'static>(
+async fn spawn_git_checkout<B: LanguageBackend>(
 	storage: StorageLayout,
 	spec: PackageSpec,
 	source: Url,
@@ -168,113 +122,104 @@ pub(crate) async fn run_sync(
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
-			let checkout = spawn_git_checkout::<RustBackend>(
-				storage.clone(),
-				spec.clone(),
-				package.source.clone(),
-				package.name.clone(),
-				progress.clone(),
-			)
-			.await?;
-
-			let summary = run_rust_pipeline(
-				&package,
-				&spec.version,
-				checkout.workspace.path(),
-				&pipeline,
-				&progress,
-				targets,
-			)
-			.await?;
-
-			Ok(SyncExecution {
-				tracked_version_commit: checkout.commit_hex,
-				latest_remote_commit:   checkout.latest_remote_commit,
-				summary,
-			})
+			run_git_backed_sync::<RustBackend>(storage, pipeline, spec, package, progress, targets).await
 		}
 		PackageHandle::TypeScript(package) if typescript_package_uses_repository(&package) => {
-			let checkout = spawn_git_checkout::<TypeScriptBackend>(
-				storage.clone(),
-				spec.clone(),
-				package.source.clone(),
-				package.name.clone(),
-				progress.clone(),
-			)
-			.await?;
-
-			let entry_point = resolve_typescript_repository_entry_point(
-				checkout.workspace.path(),
-				typescript_repository_entry_hint(&package),
-			)?;
-			let mut materialized_package = package.clone();
-			materialized_package.entry_point = entry_point.display().to_string();
-
-			progress.phase_with_detail(
-				PackageSyncPhase::GeneratingIr,
-				Some("generating TypeScript IR".to_owned()),
-			);
-			let summary = run_typescript_pipeline(
-				&materialized_package,
-				&spec.version,
-				&pipeline,
-				&progress,
-				targets,
-			)
-			.await?;
-			drop(checkout.workspace);
-
-			Ok(SyncExecution {
-				tracked_version_commit: checkout.commit_hex,
-				latest_remote_commit:   checkout.latest_remote_commit,
-				summary,
-			})
-		}
-		// npm registry-backed TypeScript: no git, materialize the published tarball.
-		PackageHandle::TypeScript(package) => {
-			progress.phase_with_detail(
-				PackageSyncPhase::Resolving,
-				Some(format!("resolving npm package {}", package.name)),
-			);
-			let workspace = storage
-				.create_workspace()
-				.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
-			progress.phase_with_detail(
-				PackageSyncPhase::Materializing,
-				Some(format!("materializing npm package {}@{}", package.name, spec.version)),
-			);
-			let entry_point = crate::core::ts::Npm::default()
-				.materialize_package_version(&package.name, &spec.version, workspace.path())
+			run_git_backed_sync::<TypeScriptBackend>(storage, pipeline, spec, package, progress, targets)
 				.await
-				.map_err(|source| AppError::RegistryLookup(RegistryLookupError::Npm {
-					language: spec.language,
-					package:  package.name.clone(),
-					source,
-				}))?;
-			let mut materialized_package = package.clone();
-			materialized_package.entry_point = entry_point.display().to_string();
-
-			progress.phase_with_detail(
-				PackageSyncPhase::GeneratingIr,
-				Some("generating TypeScript IR".to_owned()),
-			);
-			let summary = run_typescript_pipeline(
-				&materialized_package,
-				&spec.version,
-				&pipeline,
-				&progress,
-				targets,
-			)
-			.await?;
-			drop(workspace);
-
-			Ok(SyncExecution {
-				tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
-				latest_remote_commit:   None,
-				summary,
-			})
+		}
+		PackageHandle::TypeScript(package) => {
+			run_npm_backed_sync(storage, pipeline, spec, package, progress, targets).await
 		}
 	}
+}
+
+/// Git-backed sync, generic over language: materialize the checkout, let the
+/// backend prepare the workspace, then run the one shared ingest pipeline.
+async fn run_git_backed_sync<B: LanguageBackend>(
+	storage: StorageLayout,
+	pipeline: PipelineConfig,
+	spec: PackageSpec,
+	package: B::Package,
+	progress: ProgressReporter,
+	targets: &IngestTargets,
+) -> Result<SyncExecution, AppError> {
+	let checkout = spawn_git_checkout::<B>(
+		storage,
+		spec.clone(),
+		B::package_source(&package).clone(),
+		B::package_name(&package).to_owned(),
+		progress.clone(),
+	)
+	.await?;
+
+	let package = B::prepare_workspace(package, checkout.workspace.path())?;
+	let summary = run_pipeline::<B>(
+		&package,
+		&spec.version,
+		checkout.workspace.path(),
+		&pipeline,
+		&progress,
+		targets,
+	)
+	.await?;
+	drop(checkout.workspace);
+
+	Ok(SyncExecution {
+		tracked_version_commit: checkout.commit_hex,
+		latest_remote_commit:   checkout.latest_remote_commit,
+		summary,
+	})
+}
+
+/// npm registry-backed TypeScript: no git, materialize the published tarball and
+/// run the same shared ingest pipeline.
+async fn run_npm_backed_sync(
+	storage: StorageLayout,
+	pipeline: PipelineConfig,
+	spec: PackageSpec,
+	package: TsPackage,
+	progress: ProgressReporter,
+	targets: &IngestTargets,
+) -> Result<SyncExecution, AppError> {
+	progress.phase_with_detail(
+		PackageSyncPhase::Resolving,
+		Some(format!("resolving npm package {}", package.name)),
+	);
+	let workspace = storage
+		.create_workspace()
+		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
+	progress.phase_with_detail(
+		PackageSyncPhase::Materializing,
+		Some(format!("materializing npm package {}@{}", package.name, spec.version)),
+	);
+	let entry_point = crate::core::ts::Npm::default()
+		.materialize_package_version(&package.name, &spec.version, workspace.path())
+		.await
+		.map_err(|source| AppError::RegistryLookup(RegistryLookupError::Npm {
+			language: spec.language,
+			package:  package.name.clone(),
+			source,
+		}))?;
+	let mut materialized_package = package.clone();
+	materialized_package.entry_point = entry_point.display().to_string();
+
+	let summary = run_pipeline::<TypeScriptBackend>(
+		&materialized_package,
+		&spec.version,
+		workspace.path(),
+		&pipeline,
+		&progress,
+		targets,
+	)
+	.await?;
+	drop(workspace);
+
+	Ok(SyncExecution {
+		tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
+		latest_remote_commit:   None,
+		summary,
+	})
 }
 
 pub(crate) fn run_monitor_refresh(
