@@ -41,7 +41,8 @@ impl<T: EntryKind> std::ops::Index<EntryIdx<T>> for EntryArena {
 	type Output = TypedEntry<T>;
 
 	fn index(&self, index: EntryIdx<T>) -> &Self::Output {
-		// Safety: creating a EntryIdx uphold that
+		// Safety: creating a EntryIdx<T> upholds that it points to an entry of the
+		// correct type (T)
 		unsafe { TypedEntry::new(&self.entries[index.index()]) }
 	}
 }
