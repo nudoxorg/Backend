@@ -8,11 +8,14 @@ use self::typed::TypedEntry;
 pub use self::{entry::Entry, idx::EntryIdx};
 use crate::{kind::EntryKind, symbol::Symbol};
 
+#[derive(Default)]
 pub struct EntryArena {
 	entries: Vec<Entry>,
 }
 
 impl EntryArena {
+	pub const fn new() -> Self { EntryArena { entries: Vec::new() } }
+
 	pub fn insert<K: EntryKind>(&mut self, sym: Symbol, kind: K) -> EntryIdx<K> {
 		let entry = Entry { sym, kind: EntryKind::into_kind(kind) };
 
