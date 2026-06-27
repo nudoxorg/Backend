@@ -18,7 +18,6 @@ newline_style = "Unix"
 normalize_comments = true
 normalize_doc_attributes = false
 overflow_delimited_expr = true
-reorder_impl_items = true
 group_imports = "StdExternalCrate"
 reorder_modules = true
 struct_field_align_threshold = 99

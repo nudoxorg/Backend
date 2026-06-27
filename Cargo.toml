@@ -7,7 +7,8 @@ members = [
   "./ir",
   "./crates/*",
 ]
-default-members = ["./compiler"]
+# default-members = ["./compiler"]
+default-members = ["./crates/nudox-ir"] # FIXME: development only
 exclude = ["deno_doc"]
 
 [workspace.package]
@@ -20,6 +21,9 @@ ir = { path = "./ir" }
 yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
+
+ecow = "0.3"
+nonmax = "0.5"
 
 # nudox-occurrences shared deps
 async-trait = "0.1"

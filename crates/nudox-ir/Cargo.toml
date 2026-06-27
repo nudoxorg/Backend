@@ -1,0 +1,11 @@
+[package]
+name = "nudox-ir"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ecow = { workspace = true }
+nonmax = { workspace = true }
+
+[features]
