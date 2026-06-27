@@ -9,9 +9,9 @@ memory-backends = []
 test-stubs = ["memory-backends"]
 
 [dependencies]
-nudox-core = { path = "../nudox-core" }
-nudox-blobstore = { path = "../nudox-blobstore" }
-nudox-search = { path = "../nudox-search" }
+nudox-core = { path = "../core" }
+nudox-blobstore = { path = "../blobstore" }
+nudox-search = { path = "../search" }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
@@ -19,7 +19,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 chrono = { workspace = true }
-nudox-embed = { path = "../nudox-embed" }
-nudox-pipeline = { path = "../nudox-pipeline" }
-nudox-store = { path = "../nudox-store" }
+nudox-embed = { path = "../embed" }
+nudox-pipeline = { path = "../pipeline" }
+nudox-store = { path = "../store" }
 tempfile = "3"

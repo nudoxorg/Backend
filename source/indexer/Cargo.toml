@@ -5,12 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nudox-core = { path = "../nudox-core" }
-nudox-blobstore = { path = "../nudox-blobstore" }
-nudox-embed = { path = "../nudox-embed" }
-nudox-orchestrator = { path = "../nudox-orchestrator", features = ["test-stubs"] }
-nudox-pipeline = { path = "../nudox-pipeline" }
-nudox-search = { path = "../nudox-search" }
+nudox-core = { path = "../core" }
+nudox-blobstore = { path = "../blobstore" }
+nudox-embed = { path = "../embed" }
+nudox-orchestrator = { path = "../orchestrator", features = ["test-stubs"] }
+nudox-pipeline = { path = "../pipeline" }
+nudox-search = { path = "../search" }
 chrono = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

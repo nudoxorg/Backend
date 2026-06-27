@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nudox-core = { path = "../nudox-core" }
+nudox-core = { path = "../core" }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
@@ -19,8 +19,8 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tempfile = "3"
-nudox-embed = { path = "../nudox-embed" }
-nudox-blobstore = { path = "../nudox-blobstore" }
+nudox-embed = { path = "../embed" }
+nudox-blobstore = { path = "../blobstore" }
 
 [features]
 default = []

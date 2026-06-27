@@ -2,10 +2,9 @@
 [workspace]
 resolver = "3"
 members = [
-  "./ir",
-  "./crates/*",
+  "./source/*",
 ]
-default-members = ["./crates/nudox"]
+default-members = ["./source/server"]
 exclude = ["deno_doc"]
 
 [workspace.package]
@@ -14,7 +13,7 @@ publish = false
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-ir = { path = "./ir" }
+ir = { path = "./source/intermediate-representation" }
 yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }

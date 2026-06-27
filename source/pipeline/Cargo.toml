@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nudox-core = { path = "../nudox-core" }
-nudox-embed = { path = "../nudox-embed" }
+nudox-core = { path = "../core" }
+nudox-embed = { path = "../embed" }
 ir = { workspace = true }
 arborium = { workspace = true, features = ["lang-rust"] }
 arborium-tree-sitter = { workspace = true }
@@ -20,4 +20,4 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-nudox-embed = { path = "../nudox-embed" }
+nudox-embed = { path = "../embed" }
