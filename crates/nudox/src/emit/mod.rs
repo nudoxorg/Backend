@@ -1,15 +1,14 @@
-pub mod embedding_service;
 pub mod ld;
-pub mod qdrant_upload;
-pub mod termdb;
-pub mod upload;
 
 use ir::entry::Entry;
 use serde_json::{Map, Value, json};
-use termdb::{DocCtx, DocStore, EmitJsonLD, URI};
 use tracing::{debug, instrument, warn};
 
-use crate::{identity::path::{fq_name, path_segments}, terminusdb::{ld::LDKind, termdb::UriOps}};
+use crate::{
+	identity::path::{fq_name, path_segments},
+	terminus::schema::{DocCtx, DocStore, EmitJsonLD, URI, UriOps},
+};
+use self::ld::LDKind;
 
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {

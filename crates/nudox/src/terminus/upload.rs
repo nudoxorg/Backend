@@ -5,8 +5,8 @@ use terminusdb_client::{BranchSpec, DocumentInsertArgs, TerminusDBHttpClient};
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
-use super::termdb::DocStore;
-use crate::error::{AppError, TerminusError};
+use super::schema::DocStore;
+use crate::http::error::{AppError, TerminusError};
 use crate::util::retry;
 
 const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 100;
@@ -23,7 +23,7 @@ pub struct DocumentUploadProgress {
 	pub total_docs:       usize,
 }
 
-async fn terminus_client_with_retry(
+pub async fn terminus_client_with_retry(
 	config: &TerminusConfig,
 ) -> Result<TerminusDBHttpClient, AppError> {
 	retry::with_backoff(TERMINUS_CLIENT_MAX_ATTEMPTS, TERMINUS_RETRY_BASE_DELAY, |_| async {
@@ -81,12 +81,6 @@ pub struct TerminusConfig {
 	pub org:      String,
 	pub db:       String,
 }
-
-/// Upload all documents from a `DocStore` to a TerminusDB instance.
-///
-/// This inserts the raw JSON-LD values directly using PUT with `create=true`
-/// (upsert semantics), matching the existing JSON-LD format produced by the
-/// `Runner`.
 
 #[instrument(skip_all, fields(org = %config.org, db = %config.db))]
 pub async fn upload_documents(
@@ -176,10 +170,7 @@ pub async fn upload_documents(
 
 	Ok(())
 }
-/// Upload schema documents to the TerminusDB instance schema graph.
-///
-/// The schema JSON is expected to be the array of class/context definitions
-/// matching the TerminusDB schema format (e.g. from `schema.json`).
+
 #[instrument(skip_all, fields(org = %config.org, db = %config.db))]
 pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> Result<(), AppError> {
 	let client = terminus_client_with_retry(config).await?;
@@ -220,4 +211,3 @@ pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> 
 
 	Ok(())
 }
-

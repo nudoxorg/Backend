@@ -6,7 +6,9 @@ use serde_json::Value as JsonValue;
 use terminusdb_client::{BranchSpec, GetOpts, TerminusDBHttpClient};
 use tokio::sync::Mutex;
 
-use crate::{config::{PipelineConfig, QdrantSettings}, error::{AppError, ConfigError, QdrantError, TerminusError}, identity::EntryUri, terminusdb::{embedding_service::{EmbeddingProvider, OpenAIEmbeddingProvider}, upload::TerminusConfig}};
+use crate::{config::{PipelineConfig, QdrantSettings}, http::error::{AppError, ConfigError, QdrantError, TerminusError}, identity::EntryUri, ingest::embedding::{EmbeddingProvider, OpenAIEmbeddingProvider}, terminus::upload::TerminusConfig};
+
+pub mod text;
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -240,8 +242,6 @@ pub async fn lookup_symbol_with_context(
 	let spec = BranchSpec::new(&terminus.db);
 	let mut cache = HashMap::new();
 
-	// The package segment is canonicalized inside `EntryUri::new`, so the URI is
-	// already in its single stored spelling — one fetch, no candidate guessing.
 	let requested_uri = structured_symbol_uri(language, symbol, package);
 	let document = fetch_document(&client, &spec, &mut cache, &requested_uri)
 		.await?
@@ -403,8 +403,6 @@ async fn resolve_symbol(
 	cache: &mut HashMap<String, Option<JsonValue>>,
 	uri: &str,
 ) -> Result<ResolvedSymbol, AppError> {
-	// Canonicalize the incoming URI through `EntryUri` so a raw, underscored Rust
-	// package spelling maps to its single stored form before the lookup.
 	let resolved_uri = EntryUri::parse(uri).map_or_else(|| uri.to_owned(), |u| u.to_string());
 	let document = fetch_document(client, spec, cache, &resolved_uri)
 		.await?
@@ -545,7 +543,6 @@ fn relation_name(relation: &str) -> String {
 fn structured_symbol_uri(language: &str, symbol: &str, package: Option<&str>) -> String {
 	match package {
 		Some(pkg) => EntryUri::new(language, pkg, symbol).to_string(),
-		// No package: 2-segment heuristic form used only for lookup, not as canonical identity.
 		None => format!("Entry/{}/{}", language.trim().to_ascii_lowercase(), symbol),
 	}
 }
@@ -613,8 +610,6 @@ mod tests {
 
 	#[test]
 	fn structured_rust_lookup_uri_canonicalizes_underscored_package() {
-		// An underscored Rust package spelling resolves to the same canonical URI
-		// as the hyphenated one — this is what makes candidate-guessing obsolete.
 		assert_eq!(
 			structured_symbol_uri("rust", "cranelift_object::ObjectModule", Some("cranelift_object")),
 			"Entry/rust/cranelift-object/cranelift_object::ObjectModule"

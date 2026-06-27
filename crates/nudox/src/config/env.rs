@@ -1,42 +1,8 @@
-use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
+use std::{env, str::FromStr};
 
-use url::Url;
-
-use crate::error::{AppError, ConfigError};
-use crate::terminusdb::upload::TerminusConfig;
-
-#[derive(Clone, Copy, Debug)]
-pub enum VectorDistance {
-    Cosine,
-    Dot,
-    Euclid,
-    Manhattan,
-}
-
-#[derive(Clone, Debug)]
-pub struct AppConfig {
-	pub bind_addr:        SocketAddr,
-	pub storage_root:     PathBuf,
-	pub monitor_interval: Duration,
-	pub tracing_filter:   String,
-	pub pipeline:         PipelineConfig,
-}
-
-#[derive(Clone, Debug)]
-pub struct PipelineConfig {
-	pub terminus:        Option<TerminusConfig>,
-	pub qdrant:          Option<QdrantSettings>,
-	pub embedding_model: String,
-	pub upload_schema:   bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct QdrantSettings {
-	pub endpoint:          Url,
-	pub collection_prefix: String,
-	pub vector_size:       u64,
-	pub distance:          VectorDistance,
-}
+use crate::http::error::{AppError, ConfigError};
+use crate::terminus::upload::TerminusConfig;
+use super::app::{AppConfig, PipelineConfig, QdrantSettings, VectorDistance};
 
 impl AppConfig {
 	pub fn from_env() -> Result<Self, AppError> {
@@ -49,13 +15,14 @@ impl AppConfig {
 			}))?;
 
 		let storage_root = match env::var_os("NUDOX_DATA_DIR") {
-			Some(path) => PathBuf::from(path),
+			Some(path) => std::path::PathBuf::from(path),
 			None => env::current_dir()
 				.map_err(|source| AppError::StorageRootDiscovery { source })?
 				.join(".nudox-data"),
 		};
 
-		let monitor_interval = Duration::from_secs(parse_env_u64("NUDOX_MONITOR_INTERVAL_SECS", 300)?);
+		let monitor_interval =
+			std::time::Duration::from_secs(parse_env_u64("NUDOX_MONITOR_INTERVAL_SECS", 300)?);
 
 		let tracing_filter = env::var("RUST_LOG").unwrap_or_else(|_| "info,nudox=debug".to_owned());
 
@@ -70,7 +37,7 @@ impl AppConfig {
 }
 
 impl PipelineConfig {
-	fn from_env() -> Result<Self, AppError> {
+	pub(super) fn from_env() -> Result<Self, AppError> {
 		Ok(Self {
 			terminus:        build_terminus_config()?,
 			qdrant:          build_qdrant_settings()?,
@@ -119,9 +86,9 @@ fn build_qdrant_settings() -> Result<Option<QdrantSettings>, AppError> {
 	Ok(Some(QdrantSettings { endpoint, collection_prefix, vector_size, distance }))
 }
 
-fn parse_url(field: &'static str, value: Option<String>) -> Result<Url, AppError> {
+fn parse_url(field: &'static str, value: Option<String>) -> Result<url::Url, AppError> {
 	let value = require_env(field, value)?;
-	Url::parse(&value)
+	url::Url::parse(&value)
 		.map_err(|source| AppError::Config(ConfigError::InvalidUrl { name: field, source }))
 }
 
@@ -129,12 +96,11 @@ fn require_env(field: &'static str, value: Option<String>) -> Result<String, App
 	value.ok_or(AppError::Config(ConfigError::MissingEnv { name: field }))
 }
 
-fn parse_env_u64(field: &'static str, default: u64) -> Result<u64, AppError> {
+pub(crate) fn parse_env_u64(field: &'static str, default: u64) -> Result<u64, AppError> {
 	match env::var(field) {
-		Ok(value) => value.parse::<u64>().map_err(|source| AppError::Config(ConfigError::ParseInt {
-			name: field,
-			source,
-		})),
+		Ok(value) => value
+			.parse::<u64>()
+			.map_err(|source| AppError::Config(ConfigError::ParseInt { name: field, source })),
 		Err(env::VarError::NotPresent) => Ok(default),
 		Err(env::VarError::NotUnicode(_)) => {
 			Err(AppError::Config(ConfigError::NotUnicode { name: field }))
@@ -144,10 +110,8 @@ fn parse_env_u64(field: &'static str, default: u64) -> Result<u64, AppError> {
 
 fn parse_env_bool(field: &'static str, default: bool) -> Result<bool, AppError> {
 	match env::var(field) {
-		Ok(value) => bool::from_str(&value).map_err(|source| AppError::Config(ConfigError::ParseBool {
-			name: field,
-			source,
-		})),
+		Ok(value) => bool::from_str(&value)
+			.map_err(|source| AppError::Config(ConfigError::ParseBool { name: field, source })),
 		Err(env::VarError::NotPresent) => Ok(default),
 		Err(env::VarError::NotUnicode(_)) => {
 			Err(AppError::Config(ConfigError::NotUnicode { name: field }))

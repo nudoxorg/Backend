@@ -29,8 +29,6 @@ pub(crate) fn summarize_command_output(bytes: &[u8]) -> String {
 	format!("{}...", &trimmed[..end])
 }
 
-// ── Tantivy text-index errors ────────────────────────────────────────────────
-
 #[derive(Debug, Error)]
 pub enum TextIndexError {
 	#[error("mmap directory at `{path}`")]
@@ -93,8 +91,6 @@ pub enum TextIndexError {
 	},
 }
 
-// ── Embedding pipeline errors ────────────────────────────────────────────────
-
 #[derive(Debug, Error)]
 pub enum EmbeddingError {
 	#[error("missing text for embedding")]
@@ -124,8 +120,6 @@ pub enum EmbeddingError {
 	#[error("embedding provider returned an empty response")]
 	EmptyResponse,
 }
-
-// ── Ingest-pipeline errors ───────────────────────────────────────────────────
 
 #[derive(Debug, Error)]
 pub enum IngestError {
@@ -159,8 +153,6 @@ pub enum IngestError {
 	#[error("pipeline error: {details}")]
 	Pipeline { details: String },
 }
-
-// ── Qdrant errors ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Error)]
 pub enum QdrantError {
@@ -210,8 +202,6 @@ pub enum QdrantError {
 	PointIdGeneration { details: String },
 }
 
-// ── TerminusDB errors ────────────────────────────────────────────────────────
-
 #[derive(Debug, Error)]
 pub enum TerminusError {
 	#[error("failed to create TerminusDB client for `{org}/{db}`")]
@@ -247,8 +237,6 @@ pub enum TerminusError {
 		source: anyhow::Error,
 	},
 }
-
-// ── Configuration errors (→ 400 BAD_REQUEST) ─────────────────────────────────
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -305,8 +293,6 @@ pub enum ConfigError {
 	EmptySession,
 }
 
-// ── Registry-lookup errors (→ 400 BAD_REQUEST) ────────────────────────────────
-
 #[derive(Debug, Error)]
 pub enum RegistryLookupError {
 	#[error("crates.io API error for `{package}`: {source}")]
@@ -341,11 +327,8 @@ pub enum RegistryLookupError {
 	InvalidRepositoryPath { language: Language, package: String, path: String },
 }
 
-// ── Top-level application error ──────────────────────────────────────────────
-
 #[derive(Debug, Error)]
 pub enum AppError {
-	// === Configuration (→ 400 BAD_REQUEST) ===
 	#[error(transparent)]
 	Config(#[from] ConfigError),
 
@@ -355,7 +338,6 @@ pub enum AppError {
 	#[error(transparent)]
 	RegistryLookup(#[from] RegistryLookupError),
 
-	// === Storage (→ 500) ===
 	#[error("failed to determine storage root")]
 	StorageRootDiscovery {
 		#[source]
@@ -369,11 +351,9 @@ pub enum AppError {
 		source: io::Error,
 	},
 
-	// === Package tracking (→ 404) ===
 	#[error("package `{id}` is not tracked")]
 	PackageNotTracked { id: u64 },
 
-	// === Concurrency (→ 500) ===
 	#[error("blocking task join failed during `{action}`")]
 	TaskJoin {
 		action: &'static str,
@@ -381,11 +361,9 @@ pub enum AppError {
 		source: JoinError,
 	},
 
-	// === Not implemented (→ 501) ===
 	#[error("not implemented: {message}")]
 	NotImplemented { message: String },
 
-	// === Transparent wrappers ===
 	#[error(transparent)]
 	Io(#[from] io::Error),
 
@@ -398,7 +376,6 @@ pub enum AppError {
 	#[error(transparent)]
 	Git(#[from] GitError),
 
-	// === Domain errors ===
 	#[error(transparent)]
 	Ingest(#[from] IngestError),
 
@@ -417,7 +394,6 @@ pub enum AppError {
 	#[error(transparent)]
 	Terminus(#[from] TerminusError),
 
-	// === Search / API errors ===
 	#[error("text search index is not available on this server")]
 	TextSearchNotConfigured,
 
@@ -427,7 +403,6 @@ pub enum AppError {
 	#[error("symbol `{uri}` was not found in TerminusDB")]
 	SymbolNotFound { uri: String },
 
-	// === Scheduler / registry errors ===
 	#[error("sync scheduler shut down unexpectedly")]
 	SyncShutdown {
 		#[source]
@@ -457,20 +432,13 @@ impl crate::util::retry::Transient for AppError {
 impl IntoResponse for AppError {
 	fn into_response(self) -> Response {
 		let status = match self {
-			// ── 400 Bad Request ─────────────────────────────────────────────
 			AppError::Config(_) | AppError::UnsupportedLanguage { .. } | AppError::RegistryLookup(_) => {
 				StatusCode::BAD_REQUEST
 			}
-
-			// ── 404 Not Found ──────────────────────────────────────────────
 			AppError::PackageNotTracked { .. } => StatusCode::NOT_FOUND,
 			AppError::Package(PackageError::VersionNotFound(_)) => StatusCode::NOT_FOUND,
 			AppError::SymbolNotFound { .. } => StatusCode::NOT_FOUND,
-
-			// ── 501 Not Implemented ────────────────────────────────────────
 			AppError::NotImplemented { .. } => StatusCode::NOT_IMPLEMENTED,
-
-			// ── Everything else → 500 Internal Server Error ────────────────
 			_ => StatusCode::INTERNAL_SERVER_ERROR,
 		};
 
@@ -482,14 +450,12 @@ impl IntoResponse for AppError {
 	}
 }
 
-/// Errors arising from package registry interactions (network, lookup, API).
 #[derive(Debug, Error)]
 pub enum RegistryError {
 	#[error("crates.io API error: {0}")]
 	CratesIo(#[from] crates_io_api::Error),
 }
 
-/// Errors arising from package-level operations (doc generation, parsing, IO).
 #[derive(Debug, Error)]
 pub enum PackageError {
 	#[error("IO error: {0}")]
@@ -520,7 +486,6 @@ pub enum PackageError {
 	Git(#[from] GitError),
 }
 
-/// Errors arising from git operations (clone, checkout, version lookup).
 #[derive(Debug, Error)]
 pub enum GitError {
 	#[error("clone from `{url}` failed: {source}")]

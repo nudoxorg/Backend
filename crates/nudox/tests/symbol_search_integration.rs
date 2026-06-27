@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::{body::Body, http::{Request, StatusCode}};
 use http_body_util::BodyExt;
-use nudox::{api::AppState, config::PipelineConfig, ingest::IngestTargets, local_registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
+use nudox::{http::AppState, config::PipelineConfig, ingest::IngestTargets, registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
 use nudox_blobstore::InMemoryBlobStore;
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, SearchIndex, SearchQuery, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr, VectorIndex, VectorQuery};
 use nudox_embed::PlaceholderEmbedder;
@@ -110,7 +110,7 @@ async fn ingest_blob(state: &AppState, blob: BlobInfo) {
 
 /// POST /symbol-search and return (status, parsed JSON body).
 async fn post_symbol_search(state: AppState, body: Value) -> (StatusCode, Value) {
-	let app = nudox::api::router(state);
+	let app = nudox::http::router::router(state);
 	let req = Request::builder()
 		.method("POST")
 		.uri("/symbol-search")

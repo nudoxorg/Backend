@@ -9,7 +9,10 @@ use thiserror::Error;
 use tracing::{debug, info, instrument};
 use url::Url;
 
-use crate::{core::rust_parser::RustdocParser, error::{PackageError, RegistryError, summarize_command_output}, git::find_commit_for_version, pipeline::{Collected, Ir}};
+use crate::{core::pipeline::{Collected, Ir}, git::find_commit_for_version, http::error::{PackageError, RegistryError, summarize_command_output}};
+
+pub mod parse;
+use self::parse::RustdocParser;
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
@@ -148,8 +151,6 @@ impl RustPackage {
 		})
 	}
 
-	/// Internal helper to run cargo rustdoc and return the parsed Entry IR.
-	/// Takes an input of `code` which is the location of the source code on disk
 	#[instrument(skip_all, fields(package = %self.name))]
 	fn generate_ir_for_package(
 		&self,
@@ -182,8 +183,6 @@ impl RustPackage {
 		let rustdoc_crate: rustdoc_types::Crate = serde_json::from_str(&json_content)?;
 		debug!("rustdoc JSON parsed");
 
-		// Build the tree-sitter source map from the *same* parsed crate, before it
-		// is moved into the parser — the JSON is parsed exactly once per package.
 		let source_map = source_map_from_crate(&rustdoc_crate, code);
 
 		let mut parser = RustdocParser::from_doc(rustdoc_crate)?;
@@ -194,9 +193,6 @@ impl RustPackage {
 		Ok((Ir::from_entries(parse_result), source_map))
 	}
 
-	/// Generate the IR and the raw-source map in one pass. The source map keys
-	/// fully-qualified function names to their raw source so the ingest pipeline
-	/// can run tree-sitter without re-parsing the rustdoc JSON.
 	pub(crate) fn generate_ir_with_sources(
 		&self,
 		code: &PathBuf,
@@ -260,10 +256,6 @@ fn cargo_metadata(code: &PathBuf) -> Result<Metadata, PackageError> {
 		.map_err(|source| PackageError::Metadata(source.to_string()))
 }
 
-/// Build a map from fully-qualified symbol name → raw Rust source for every
-/// `Function` item that carries a span, reading the source files referenced by
-/// the already-parsed rustdoc `Crate`. Reusing the parsed crate avoids a second
-/// deserialization of the (large) rustdoc JSON in the ingest pipeline.
 fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &PathBuf) -> HashMap<String, String> {
 	let mut map = HashMap::new();
 	for (id, item) in &krate.index {
@@ -277,7 +269,6 @@ fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &PathBuf) -> H
 		let source_file = workspace.join(&span.filename);
 		let Ok(source) = fs::read_to_string(&source_file) else { continue };
 
-		// span.begin / span.end are 1-indexed (line, col) tuples.
 		let raw: String = source
 			.lines()
 			.enumerate()
@@ -372,11 +363,6 @@ impl From<Crate> for RustPackage {
 }
 
 impl RustPackage {
-	/// Clone the source, materialize the commit for `version`, and generate IR.
-	///
-	/// Used by the live integration tests; the server's sync path drives
-	/// [`generate_ir_with_sources`](Self::generate_ir_with_sources) directly so it
-	/// can reuse an already-checked-out workspace.
 	#[instrument(skip(self, _flags), fields(package = %self.name, version = %version))]
 	pub fn retrieve(
 		&self,
@@ -396,14 +382,12 @@ impl RustPackage {
 }
 
 impl Crates {
-	/// Construct a crates.io registry client.
 	pub fn new() -> Self {
 		Self {
 			client: AsyncClient::new("my_bot (help@my_bot.com)", Duration::from_secs(1)).unwrap(),
 		}
 	}
 
-	/// Look up the crate metadata for `name`.
 	pub async fn get_packages_by_name(&self, name: &str) -> Result<Vec<RustPackage>, RegistryError> {
 		let c = self.client.get_crate(name).await?;
 		Ok(vec![RustPackage::from(c.crate_data)])
@@ -543,31 +527,6 @@ mod tests {
 				Err(error) => {
 					panic!("{crate_name}@{version} IR generation failed from {}: {error:#}", package.source);
 				}
-			}
-		}
-	}
-
-	#[test]
-	#[ignore = "manual live IR generation repro for direct repository-backed Rust packages"]
-	fn rust_direct_repository_ir_generation_repro() {
-		let package = RustPackage {
-			slug:        "inko".into(),
-			name:        "inko".into(),
-			language:    Language::Rust,
-			uuid:        0,
-			source:      Url::parse("https://github.com/inko-lang/inko").unwrap(),
-			direct_repo: true,
-			description: None,
-		};
-
-		let version = Version::parse("0.20.0").unwrap();
-		let result = package.retrieve(version.clone(), None);
-		match result {
-			Ok(ir) => {
-				println!("inko@{version} generated {} entries", ir.entries().len());
-			}
-			Err(error) => {
-				panic!("inko@{version} direct repository IR generation failed: {error:#}");
 			}
 		}
 	}

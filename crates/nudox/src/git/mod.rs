@@ -5,7 +5,7 @@ use semver::Version;
 use tracing::{debug, instrument, warn};
 use url::Url;
 
-use crate::error::GitError;
+use crate::http::error::GitError;
 
 #[instrument(skip_all, fields(remote = %remote, path = %out_path.display()))]
 pub fn open_or_clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, GitError> {

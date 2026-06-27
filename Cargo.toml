@@ -2,11 +2,10 @@
 [workspace]
 resolver = "3"
 members = [
-  "./compiler",
   "./ir",
   "./crates/*",
 ]
-default-members = ["./compiler"]
+default-members = ["./crates/nudox"]
 exclude = ["deno_doc"]
 
 [workspace.package]

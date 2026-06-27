@@ -2,14 +2,8 @@ use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, PointStr
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
-use crate::{config::VectorDistance, error::{AppError, QdrantError}};
+use crate::{config::VectorDistance, http::error::{AppError, QdrantError}};
 
-/// Configuration for connecting to a Qdrant instance.
-///
-/// For local development, `endpoint` will usually be:
-/// - http://localhost:6334
-///
-/// The Rust client uses the gRPC endpoint for its main operations.
 #[derive(Clone, Debug)]
 pub struct QdrantConfig {
 	pub endpoint:        Url,
@@ -18,10 +12,6 @@ pub struct QdrantConfig {
 	pub distance:        VectorDistance,
 }
 
-/// Ensure the target collection exists before upload.
-///
-/// If the collection does not exist, create it with the configured vector size
-/// and distance metric. If it already exists, leave it as-is.
 #[instrument(skip_all, fields(collection = %config.collection_name))]
 pub async fn ensure_collection(config: &QdrantConfig) -> Result<(), AppError> {
 	let client = Qdrant::from_url(config.endpoint.as_str())
@@ -72,9 +62,6 @@ pub async fn ensure_collection(config: &QdrantConfig) -> Result<(), AppError> {
 	Ok(())
 }
 
-/// Upload points to a Qdrant collection using upsert semantics.
-///
-/// The collection is created first if it does not already exist.
 #[instrument(skip_all, fields(collection = %config.collection_name))]
 pub async fn upload_points(config: &QdrantConfig, points: Vec<PointStruct>) -> Result<(), AppError> {
 	if points.is_empty() {

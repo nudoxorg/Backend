@@ -2,7 +2,7 @@ use std::{fs, path::{Path, PathBuf}, process::Command, sync::Arc, time::Duration
 
 use color_eyre::eyre::WrapErr;
 use lang_types::Language;
-use nudox::{api::{self, AppState}, config::PipelineConfig, ingest::IngestTargets, local_registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
+use nudox::{http::{AppState, router::router}, config::PipelineConfig, ingest::IngestTargets, registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
 use reqwest::{Client, StatusCode};
 use semver::Version;
 use serde_json::{Value, json};
@@ -264,7 +264,7 @@ impl TestServer {
 				embedding_model: "text-embedding-3-small".to_owned(),
 				upload_schema:   false,
 			}));
-		let app = api::router(AppState {
+		let app = router(AppState {
 			registry,
 			pipeline: PipelineConfig {
 				terminus:        None,

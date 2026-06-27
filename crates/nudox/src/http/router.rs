@@ -1,59 +1,9 @@
-use std::sync::Arc;
-
 use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routing::{delete, get, post}};
-use nudox_core::{SymbolMatch, SymbolOrigin, SymbolQuery};
-use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
-use crate::{config::PipelineConfig, error::{AppError, ConfigError, IngestError}, ingest::IngestTargets, local_registry::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot}, search::{self, SessionStore}};
-
-#[derive(Clone)]
-pub struct AppState {
-	pub registry: Arc<LocalRegistry>,
-	pub pipeline: PipelineConfig,
-	pub sessions: SessionStore,
-	/// Configured fan-out destinations, shared with the registry. The API reads
-	/// `text_index` (`/text-search`) and `orchestrator` (`/symbol-search`).
-	pub targets:  IngestTargets,
-}
-
-/// HTTP response shape for a single symbol search result.
-/// Flattened from `SymbolMatch` — no internal repr types over the wire.
-#[derive(Serialize)]
-pub struct SymbolMatchResponse {
-	pub symbol_name:      String,
-	pub occurrence_id:    String,
-	pub kind:             Option<String>,
-	pub lib_name:         Option<String>,
-	pub lib_version:      Option<String>,
-	pub repo_id:          Option<String>,
-	pub score:            f32,
-	pub occurrence_count: usize,
-	pub snippet:          String,
-}
-
-impl From<SymbolMatch> for SymbolMatchResponse {
-	fn from(m: SymbolMatch) -> Self {
-		let (lib_name, lib_version, repo_id) = match &m.blob.symbol_origin {
-			SymbolOrigin::ExternalLib { lib } => {
-				(Some(lib.name.clone()), Some(lib.version.clone()), None)
-			}
-			SymbolOrigin::Repo { repo_id } => (None, None, Some(repo_id.0.clone())),
-		};
-		SymbolMatchResponse {
-			symbol_name: m.blob.symbol_name.clone(),
-			occurrence_id: m.blob.occurrence_id.to_string(),
-			kind: m.blob.kind.map(|k| k.to_string()),
-			lib_name,
-			lib_version,
-			repo_id,
-			score: m.score,
-			occurrence_count: m.occurrences.len(),
-			snippet: m.blob.source.raw_code.clone(),
-		}
-	}
-}
-
+use super::{AppState, error::{AppError, ConfigError, IngestError}};
+use super::dto::{ExpandQuery, HealthResponse, LookupQuery, RunSearchQuery, SearchQuery, SessionQuery, SymbolMatchResponse};
+use crate::{registry::{AddPackageOutcome, NewPackageRequest, PackageSnapshot}, search};
 
 pub fn router(state: AppState) -> Router {
 	Router::new()
@@ -161,7 +111,7 @@ impl<'a> LookupMode<'a> {
 				language,
 				package: params.package.as_deref(),
 			}),
-		_ => Err(AppError::Config(ConfigError::MissingQueryParams)),
+			_ => Err(AppError::Config(ConfigError::MissingQueryParams)),
 		}
 	}
 }
@@ -224,7 +174,7 @@ async fn clear_session(
 
 async fn symbol_search(
 	State(state): State<AppState>,
-	Json(query): Json<SymbolQuery>,
+	Json(query): Json<nudox_core::SymbolQuery>,
 ) -> Result<Json<Vec<SymbolMatchResponse>>, AppError> {
 	if query.body_query.is_some() {
 		return Err(AppError::NotImplemented {
@@ -233,49 +183,12 @@ async fn symbol_search(
 				.to_owned(),
 		});
 	}
-	let orch = state.targets.orchestrator.as_ref().ok_or_else(|| AppError::SymbolSearchNotConfigured)?;
-	let matches = orch.search(&query).await.map_err(|e| AppError::Ingest(IngestError::Pipeline {
-		details: format!("orchestrator search failed: {}", e),
-	}))?;
+	let orch =
+		state.targets.orchestrator.as_ref().ok_or_else(|| AppError::SymbolSearchNotConfigured)?;
+	let matches = orch.search(&query).await.map_err(|e| {
+		AppError::Ingest(IngestError::Pipeline {
+			details: format!("orchestrator search failed: {}", e),
+		})
+	})?;
 	Ok(Json(matches.into_iter().map(SymbolMatchResponse::from).collect()))
-}
-
-#[derive(Serialize)]
-struct HealthResponse {
-	status:           &'static str,
-	tracked_packages: usize,
-}
-
-#[derive(Deserialize)]
-struct SearchQuery {
-	q:     String,
-	limit: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct LookupQuery {
-	q:        Option<String>,
-	symbol:   Option<String>,
-	language: Option<String>,
-	package:  Option<String>,
-}
-
-#[derive(Deserialize)]
-struct RunSearchQuery {
-	q:       String,
-	session: Option<String>,
-	limit:   Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct ExpandQuery {
-	uri:     String,
-	session: Option<String>,
-	depth:   Option<usize>,
-	breadth: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct SessionQuery {
-	session: String,
 }

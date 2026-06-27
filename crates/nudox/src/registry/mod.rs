@@ -3,98 +3,80 @@ use std::{collections::HashMap, fs, num::NonZeroU64, sync::{Arc, atomic::{Atomic
 use jiff::Timestamp;
 use lang_types::Language;
 use semver::Version;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use tokio::{sync::{Mutex, RwLock, Semaphore}, task::spawn_blocking, time::{Duration, MissedTickBehavior}};
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, error::AppError, ingest::{IngestTargets, IngestionSummary}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, util::retry::Transient};
+use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, http::error::AppError, ingest::{IngestTargets, IngestionSummary}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, util::retry::Transient};
 
+mod persist;
 mod resolve;
 mod sync;
-pub(crate) mod ts_entry_point;
+pub mod package;
 
+use persist::{load_persisted_registry, rehydrate_registry};
 use resolve::resolve_package_handle;
 use sync::{compute_remote_update_available, run_monitor_refresh, run_sync};
 
-fn deserialize_lenient_version<'de, D: Deserializer<'de>>(d: D) -> Result<Version, D::Error> {
-	let s = String::deserialize(d)?;
-	if let Ok(v) = Version::parse(&s) {
-		return Ok(v);
-	}
-	let padded = match s.matches('.').count() {
-		0 => format!("{s}.0.0"),
-		1 => format!("{s}.0"),
-		_ => s.clone(),
-	};
-	Version::parse(&padded)
-		.map_err(|e| serde::de::Error::custom(format!("invalid version `{s}`: {e}")))
+pub use package::{AddPackageOutcome, NewPackageRequest, PackageHealth, PackageSnapshot, PackageStateSnapshot};
+
+pub const TYPESCRIPT_REPOSITORY_ENTRY_PREFIX: &str = "repo:";
+const MAX_CONCURRENT_SYNCS: usize = 2;
+const SYNC_MAX_ATTEMPTS: usize = 3;
+const SYNC_RETRY_BASE_DELAY: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PackageId(NonZeroU64);
+
+impl PackageId {
+	pub(crate) fn get(self) -> u64 { self.0.get() }
 }
 
-fn deserialize_language<'de, D: Deserializer<'de>>(d: D) -> Result<Language, D::Error> {
-	let s = String::deserialize(d)?;
-	s.parse::<Language>().map_err(serde::de::Error::custom)
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NewPackageRequest {
-	#[serde(deserialize_with = "deserialize_language")]
-	pub language:    Language,
-	pub name:        String,
-	#[serde(deserialize_with = "deserialize_lenient_version")]
-	pub version:     Version,
-	#[serde(default)]
-	pub source:      Option<String>,
-	#[serde(default)]
-	pub entry_point: Option<String>,
-	#[serde(default)]
-	pub branch:      Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum AddPackageOutcome {
-	Created(PackageSnapshot),
-	Existing(PackageSnapshot),
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PackageSnapshot {
-	pub id:       u64,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PackageKey {
 	pub language: Language,
 	pub name:     String,
-	pub slug:     String,
-	pub source:   Url,
 	pub version:  Version,
 	pub branch:   String,
-	pub state:    PackageStateSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PackageStateSnapshot {
-	pub health:                  PackageHealth,
-	#[serde(default)]
-	pub sync_status:             PackageSyncStatus,
-	#[serde(default)]
-	pub sync_phase:              Option<PackageSyncPhase>,
-	#[serde(default)]
-	pub sync_detail:             Option<String>,
-	pub last_checked_at:         Option<Timestamp>,
-	pub last_synced_at:          Option<Timestamp>,
-	pub tracked_version_commit:  Option<String>,
-	pub latest_remote_commit:    Option<String>,
-	pub remote_update_available: bool,
-	pub entry_count:             usize,
-	pub document_count:          usize,
-	pub vector_count:            usize,
-	pub last_error:              Option<String>,
+pub(crate) struct PackageSpec {
+	pub language: Language,
+	pub name:     String,
+	pub slug:     String,
+	pub version:  Version,
+	pub branch:   String,
+	pub source:   Url,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PackageHealth {
-	Pending,
-	Healthy,
-	Degraded,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum PackageHandle {
+	Rust(RustPackage),
+	TypeScript(TsPackage),
+}
+
+pub(crate) struct TrackedPackage {
+	pub id:        PackageId,
+	pub spec:      PackageSpec,
+	pub handle:    PackageHandle,
+	pub state:     RwLock<PackageStateSnapshot>,
+	pub sync_lock: Mutex<()>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SyncExecution {
+	pub tracked_version_commit: String,
+	pub latest_remote_commit:   Option<String>,
+	pub summary:                IngestionSummary,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MonitorExecution {
+	pub latest_remote_commit:    Option<String>,
+	pub remote_update_available: bool,
 }
 
 pub struct LocalRegistry {
@@ -105,84 +87,8 @@ pub struct LocalRegistry {
 	next_id:          AtomicU64,
 	packages:         Arc<RwLock<HashMap<PackageId, Arc<TrackedPackage>>>>,
 	keys:             Arc<RwLock<HashMap<PackageKey, PackageId>>>,
-	/// The configured ingestion fan-out destinations (SQLite occurrence store,
-	/// Tantivy text index, symbol-search orchestrator). Every successful library
-	/// parse writes to whichever backends are present; the API layer reads from
-	/// the same handles to serve `/text-search` and `/symbol-search`.
 	targets:          IngestTargets,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedRegistry {
-	packages: Vec<PersistedPackage>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedPackage {
-	id:     u64,
-	spec:   PackageSpec,
-	handle: PackageHandle,
-	state:  PackageStateSnapshot,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct PackageId(NonZeroU64);
-
-impl PackageId {
-	fn get(self) -> u64 { self.0.get() }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct PackageKey {
-	language: Language,
-	name:     String,
-	version:  Version,
-	branch:   String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackageSpec {
-	language: Language,
-	name:     String,
-	slug:     String,
-	version:  Version,
-	branch:   String,
-	source:   Url,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum PackageHandle {
-	Rust(RustPackage),
-	TypeScript(TsPackage),
-}
-
-struct TrackedPackage {
-	id:        PackageId,
-	spec:      PackageSpec,
-	handle:    PackageHandle,
-	state:     RwLock<PackageStateSnapshot>,
-	sync_lock: Mutex<()>,
-}
-
-#[derive(Debug, Clone)]
-struct SyncExecution {
-	tracked_version_commit: String,
-	latest_remote_commit:   Option<String>,
-	summary:                IngestionSummary,
-}
-
-#[derive(Debug, Clone)]
-struct MonitorExecution {
-	latest_remote_commit:    Option<String>,
-	remote_update_available: bool,
-}
-
-const TYPESCRIPT_REPOSITORY_ENTRY_PREFIX: &str = "repo:";
-const MAX_CONCURRENT_SYNCS: usize = 2;
-const SYNC_MAX_ATTEMPTS: usize = 3;
-const SYNC_RETRY_BASE_DELAY: Duration = Duration::from_secs(5);
-
 
 impl LocalRegistry {
 	pub fn new(storage: StorageLayout, monitor_interval: Duration, pipeline: PipelineConfig) -> Self {
@@ -206,10 +112,6 @@ impl LocalRegistry {
 		}
 	}
 
-	/// Attach the ingestion fan-out destinations. Each configured backend is fed
-	/// by the parse-once pipeline on every successful library parse; the API
-	/// layer reads `text_index` and `orchestrator` from the same `IngestTargets`
-	/// to serve `/text-search` and `/symbol-search`.
 	pub fn with_targets(mut self, targets: IngestTargets) -> Self {
 		self.targets = targets;
 		self
@@ -439,8 +341,8 @@ impl LocalRegistry {
 
 	fn allocate_id(&self) -> Result<PackageId, AppError> {
 		let next = self.next_id.fetch_add(1, Ordering::Relaxed);
-	let next = NonZeroU64::new(next)
-		.ok_or_else(|| AppError::IdExhausted)?;
+		let next = NonZeroU64::new(next)
+			.ok_or_else(|| AppError::IdExhausted)?;
 		Ok(PackageId(next))
 	}
 
@@ -451,12 +353,17 @@ impl LocalRegistry {
 	async fn persist(&self) -> Result<(), AppError> {
 		let packages: Vec<Arc<TrackedPackage>> = self.packages.read().await.values().cloned().collect();
 		let mut persisted = Vec::with_capacity(packages.len());
-		for package in packages {
-			persisted.push(package.persisted().await);
+		for package in &packages {
+			persisted.push(persist::PersistedPackage {
+				id:     package.id.get(),
+				spec:   package.spec.clone(),
+				handle: package.handle.clone(),
+				state:  package.state.read().await.clone(),
+			});
 		}
 		persisted.sort_by_key(|package| package.id);
 
-		let payload = PersistedRegistry { packages: persisted };
+		let payload = persist::PersistedRegistry { packages: persisted };
 		let bytes = serde_json::to_vec_pretty(&payload)?;
 		fs::write(self.storage.packages_file(), bytes).map_err(|source| AppError::Storage {
 			path: self.storage.packages_file().to_path_buf(),
@@ -467,7 +374,7 @@ impl LocalRegistry {
 }
 
 impl TrackedPackage {
-	fn new(id: PackageId, spec: PackageSpec, handle: PackageHandle) -> Self {
+	pub(crate) fn new(id: PackageId, spec: PackageSpec, handle: PackageHandle) -> Self {
 		Self {
 			id,
 			spec,
@@ -477,7 +384,7 @@ impl TrackedPackage {
 		}
 	}
 
-	fn rehydrated(
+	pub(crate) fn rehydrated(
 		id: PackageId,
 		spec: PackageSpec,
 		handle: PackageHandle,
@@ -496,15 +403,6 @@ impl TrackedPackage {
 			version:  self.spec.version.clone(),
 			branch:   self.spec.branch.clone(),
 			state:    self.state.read().await.clone(),
-		}
-	}
-
-	async fn persisted(&self) -> PersistedPackage {
-		PersistedPackage {
-			id:     self.id.get(),
-			spec:   self.spec.clone(),
-			handle: self.handle.clone(),
-			state:  self.state.read().await.clone(),
 		}
 	}
 
@@ -570,43 +468,13 @@ impl TrackedPackage {
 		state.sync_detail = detail;
 	}
 
-	async fn update_progress(&self, phase: PackageSyncPhase, detail: Option<String>) {
+	pub(crate) async fn update_progress(&self, phase: PackageSyncPhase, detail: Option<String>) {
 		let mut state = self.state.write().await;
 		state.sync_status = PackageSyncStatus::Running;
 		state.sync_phase = Some(phase);
 		state.sync_detail = detail;
 	}
 }
-
-impl PackageStateSnapshot {
-	fn new() -> Self {
-		Self {
-			health:                  PackageHealth::Pending,
-			sync_status:             PackageSyncStatus::Idle,
-			sync_phase:              None,
-			sync_detail:             None,
-			last_checked_at:         None,
-			last_synced_at:          None,
-			tracked_version_commit:  None,
-			latest_remote_commit:    None,
-			remote_update_available: false,
-			entry_count:             0,
-			document_count:          0,
-			vector_count:            0,
-			last_error:              None,
-		}
-	}
-
-	fn normalize_rehydrated(mut self) -> Self {
-		if !matches!(self.sync_status, PackageSyncStatus::Idle) {
-			self.sync_status = PackageSyncStatus::Idle;
-			self.sync_phase = None;
-			self.sync_detail = None;
-		}
-		self
-	}
-}
-
 
 impl PackageHandle {
 	fn name(&self) -> &str {
@@ -631,59 +499,6 @@ impl PackageHandle {
 	}
 }
 
-
-fn load_persisted_registry(storage: &StorageLayout) -> Option<PersistedRegistry> {
-	let path = storage.packages_file();
-	if !path.is_file() {
-		return None;
-	}
-
-	let bytes = match fs::read(path) {
-		Ok(bytes) => bytes,
-		Err(error) => {
-			warn!(path = %path.display(), error = %error, "failed to read persisted package registry");
-			return None;
-		}
-	};
-
-	match serde_json::from_slice::<PersistedRegistry>(&bytes) {
-		Ok(registry) => Some(registry),
-		Err(error) => {
-			warn!(path = %path.display(), error = %error, "failed to parse persisted package registry");
-			None
-		}
-	}
-}
-
-fn rehydrate_registry(
-	registry: PersistedRegistry,
-) -> (HashMap<PackageId, Arc<TrackedPackage>>, HashMap<PackageKey, PackageId>) {
-	let mut packages = HashMap::new();
-	let mut keys = HashMap::new();
-
-	for package in registry.packages {
-		let Some(id) = NonZeroU64::new(package.id).map(PackageId) else {
-			continue;
-		};
-		let key = PackageKey {
-			language: package.spec.language,
-			name:     package.spec.name.clone(),
-			version:  package.spec.version.clone(),
-			branch:   package.spec.branch.clone(),
-		};
-		let tracked = Arc::new(TrackedPackage::rehydrated(
-			id,
-			package.spec,
-			package.handle,
-			package.state.normalize_rehydrated(),
-		));
-		keys.insert(key, id);
-		packages.insert(id, tracked);
-	}
-
-	(packages, keys)
-}
-
 impl TryFrom<u64> for PackageId {
 	type Error = AppError;
 
@@ -703,7 +518,6 @@ mod tests {
 	use url::Url;
 
 	use super::*;
-	use super::ts_entry_point::resolve_typescript_repository_entry_point;
 	use crate::config::PipelineConfig;
 
 	fn request(language: Language, name: &str, version: &str) -> NewPackageRequest {
@@ -761,7 +575,7 @@ mod tests {
 		std::fs::create_dir_all(workspace.path().join("src")).unwrap();
 		std::fs::write(workspace.path().join("src").join("index.ts"), "export const z = 1;\n").unwrap();
 
-		let resolved = resolve_typescript_repository_entry_point(workspace.path(), None).unwrap();
+		let resolved = crate::core::ts::entry_point::resolve_typescript_repository_entry_point(workspace.path(), None).unwrap();
 		assert_eq!(resolved, workspace.path().join("src").join("index.ts"));
 	}
 

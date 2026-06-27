@@ -6,7 +6,10 @@
 //! symbol-search orchestrator, TerminusDB graph, and the vector index. No sink
 //! re-parses another store's output.
 
+pub mod embedding;
+pub mod embedding_types;
 pub mod parsed_symbol;
+pub mod qdrant;
 pub mod sink;
 
 use std::{collections::HashMap, path::Path, sync::Arc};
@@ -17,7 +20,7 @@ use semver::Version;
 use tokio::task::spawn_blocking;
 use tracing::info;
 
-use crate::{backend::LanguageBackend, config::{PipelineConfig, QdrantSettings}, error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}}, text_index::SymbolTextIndex};
+use crate::{core::backend::LanguageBackend, config::{PipelineConfig, QdrantSettings}, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, emit::Runner, terminus::schema::{CrateInfo, DocCtx, DocStore}, search::text::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -94,9 +97,8 @@ async fn finalize_pipeline(
 	targets: &IngestTargets,
 	source_map: &HashMap<String, String>,
 ) -> Result<IngestionSummary, AppError> {
-	let terminus_instance = config.terminus.as_ref().map(|t| format!("{}/{}", t.org, t.db));
-	let identity = match terminus_instance.as_deref() {
-		Some(instance) => Identity::Deterministic { instance },
+	let identity = match config.terminus.as_ref() {
+		Some(t) => Identity::Deterministic { instance: format!("{}/{}", t.org, t.db).into() },
 		None => Identity::Local,
 	};
 	let entry_count = index.entries_by_path.len();
@@ -117,11 +119,15 @@ async fn finalize_pipeline(
 	if let Some(idx) = &targets.text_index {
 		sinks.push(Box::new(TextIndexSink { index: Arc::clone(idx) }));
 	}
+	// Language policy lives here, not in the sink: the orchestrator is
+	// Rust-only for now because only the Rust parser produces blob-level source.
 	if let Some(orch) = &targets.orchestrator {
-		sinks.push(Box::new(OrchestratorSink {
-			orchestrator:      Arc::clone(orch),
-			terminus_instance: terminus_instance.clone(),
-		}));
+		if matches!(coord.language, nudox_core::Language::Rust) {
+			sinks.push(Box::new(OrchestratorSink {
+				orchestrator: Arc::clone(orch),
+				identity:     identity.clone(),
+			}));
+		}
 	}
 	if let Some(terminus) = &config.terminus {
 		let schema = if config.upload_schema {

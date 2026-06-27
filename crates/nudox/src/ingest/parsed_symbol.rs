@@ -13,7 +13,7 @@ use ir::entry::{Entry, Index};
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use nudox_pipeline::treesitter::parse_and_extract;
 
-use crate::{identity::{EntryUri, compute_symbol_id, path::{fq_name, nudox_path_to_str}}, terminusdb::embedding_service::{EmbeddingDocument, RecordKind, RepresentationKind, build_entry_embedding_text}};
+use crate::{identity::{EntryUri, compute_symbol_id, path::{fq_name, nudox_path_to_str}}, ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind, build_entry_embedding_text}};
 
 /// Per-package coordinates shared by every symbol in one ingestion.
 #[derive(Debug, Clone)]
@@ -43,9 +43,13 @@ impl PackageCoord {
 /// Carrying this as an enum (rather than `Option<&str>`) makes the invariant
 /// that *either all symbols or no symbols have a global id* unrepresentable to
 /// violate: there is no per-symbol `Option` that could disagree with the batch.
-pub enum Identity<'a> {
+/// Owning `Arc<str>` (not `&str`) lets the same `Identity` be carried by the
+/// pre-assembled `OrchestratorSink` without a lifetime coupling between the sink
+/// and the batch.
+#[derive(Clone)]
+pub enum Identity {
 	/// Terminus is configured; `instance` is `"{org}/{db}"`.
-	Deterministic { instance: &'a str },
+	Deterministic { instance: Arc<str> },
 	/// No global spine; symbols fall back to `Repo` origin.
 	Local,
 }
@@ -74,11 +78,11 @@ pub struct ParsedSymbol {
 /// `source_map` maps fully-qualified name → raw source (Rust only; empty
 /// otherwise). `identity` encodes whether a Terminus instance is configured —
 /// it is a batch-level fact decided before projection starts.
-pub fn project<'id>(
+pub fn project(
 	coord: &PackageCoord,
 	index: &Index,
 	source_map: &HashMap<String, String>,
-	identity: &'id Identity<'id>,
+	identity: &Identity,
 ) -> Vec<ParsedSymbol> {
 	index
 		.entries_by_path
@@ -87,11 +91,11 @@ pub fn project<'id>(
 		.collect()
 }
 
-fn project_entry<'id>(
+fn project_entry(
 	coord: &PackageCoord,
 	entry: &Entry,
 	source_map: &HashMap<String, String>,
-	_identity: &'id Identity<'id>,
+	_identity: &Identity,
 ) -> ParsedSymbol {
 	let path = entry.path();
 	let entry_uri = EntryUri::new(coord.language.as_str(), &coord.package, &nudox_path_to_str(path));
@@ -179,12 +183,12 @@ impl ParsedSymbol {
 	/// a content-addressed [`GlobalSymbolId`] (the orchestrator honors it);
 	/// `Local` falls back to a `Repo` origin so the no-Terminus `/symbol-search`
 	/// path still resolves and indexes immediately.
-	pub fn to_blob_info(&self, coord: &PackageCoord, identity: &Identity<'_>) -> BlobInfo {
+	pub fn to_blob_info(&self, coord: &PackageCoord, identity: &Identity) -> BlobInfo {
 		let (symbol_origin, resolved_global_id): (SymbolOrigin, Option<GlobalSymbolId>) =
 			match identity {
 				Identity::Deterministic { instance } => (
 					SymbolOrigin::ExternalLib { lib: coord.lib_ref() },
-					Some(compute_symbol_id(instance, &self.entry_uri)),
+					Some(compute_symbol_id(&**instance, &self.entry_uri)),
 				),
 				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, None),
 			};

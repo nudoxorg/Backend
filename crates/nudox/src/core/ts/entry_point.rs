@@ -1,12 +1,8 @@
-//! TypeScript entry-point resolution: locate the source entry file for a
-//! repository-backed TypeScript package, with fallbacks for published build
-//! layouts (`lib/`, `dist/`, …) that point at compiled `.js`/`.d.ts` outputs.
-
 use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
 
-use crate::{core::ts::TsPackage, error::AppError};
+use crate::{core::ts::TsPackage, http::error::AppError};
 
-use super::TYPESCRIPT_REPOSITORY_ENTRY_PREFIX;
+use crate::registry::TYPESCRIPT_REPOSITORY_ENTRY_PREFIX;
 
 pub(crate) fn typescript_package_uses_repository(package: &TsPackage) -> bool {
 	package.entry_point.starts_with(TYPESCRIPT_REPOSITORY_ENTRY_PREFIX)

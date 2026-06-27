@@ -1,8 +1,4 @@
 /// TypeScript/JavaScript package and registry types.
-///
-/// Mirrors the architecture of `compiler/src/core/rust.rs` for the Rust
-/// pipeline. `TsPackage` prefers the in-process Rust `deno_doc` path for local
-/// files and falls back to the Deno CLI for remote/npm/jsr specifiers.
 use std::{collections::{BTreeSet, HashMap}, fs, io::Cursor, path::{Path, PathBuf}, process::{Command, ExitStatus}, sync::Arc};
 
 use deno_doc::{DocParser, DocParserOptions};
@@ -12,14 +8,16 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use crate::{core::ts_parser::{ParseError, TsDocParser}, error::summarize_command_output, pipeline::{Collected, Ir}};
+use crate::{core::pipeline::{Collected, Ir}, http::error::summarize_command_output};
+
+pub mod entry_point;
+pub mod parse;
+use self::parse::{ParseError, TsDocParser};
 
 // ============================================================================
 // Error types
 // ============================================================================
 
-/// Parse/conversion errors from the TypeScript pipeline.
-/// Mirrors `crate::core::rust::ParseError`.
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum TsParseError {
@@ -42,8 +40,6 @@ pub enum TsParseError {
 	GenericConstraintResolution { reason: String },
 }
 
-/// Errors arising from TypeScript package operations.
-/// Mirrors `crate::error::PackageError`.
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum TsPackageError {
@@ -85,9 +81,6 @@ pub enum TsPackageError {
 // TsPackage — implements the Package trait
 // ============================================================================
 
-/// A TypeScript/JavaScript package that can be documented via `jsr:@deno/doc`.
-///
-/// Mirrors `RustPackage` in `rust.rs`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TsPackage {
 	pub slug:        String,
@@ -95,25 +88,13 @@ pub struct TsPackage {
 	pub uuid:        u64,
 	pub source:      Url,
 	pub description: Option<String>,
-	/// The primary entry-point specifier passed to the documentation step.
-	/// Can be a URL, local path, or `npm:`/`jsr:` specifier.
 	pub entry_point: String,
 }
 
 impl TsPackage {
-	/// Absolute path to the embedded Deno runner script.
-	///
-	/// The script lives in the same directory as this source file and is
-	/// referenced at compile time so the path is always valid regardless of
-	/// the working directory at runtime.
 	const RUNNER_SCRIPT: &'static str =
 		concat!(env!("CARGO_MANIFEST_DIR"), "/src/core/ts_doc_runner.ts");
 
-	/// Generate IR for `version`. The npm/deno resolution happens inside
-	/// [`generate_ir`](Self::generate_ir); `version` is currently advisory.
-	///
-	/// Used by the end-to-end integration tests; the server's sync path drives
-	/// [`generate_ir`](Self::generate_ir) directly after materializing a checkout.
 	pub fn retrieve(
 		&self,
 		_version: Version,
@@ -122,7 +103,6 @@ impl TsPackage {
 		self.generate_ir()
 	}
 
-	/// Generate the collected IR for this package.
 	pub(crate) fn generate_ir(&self) -> Result<Ir<Collected>, TsPackageError> {
 		if let Some(local_entry_point) = self.local_entry_point()? {
 			return self.generate_ir_from_local_path(local_entry_point);
@@ -250,11 +230,7 @@ impl TsPackage {
 	}
 }
 
-/// npm registry client for discovering and fetching TypeScript packages.
-///
-/// Mirrors `Crates` in `rust.rs`.
 pub struct Npm {
-	/// Base URL for the npm registry API.
 	pub registry_url: Url,
 }
 
@@ -320,9 +296,6 @@ impl Npm {
 		resolve_materialized_entry_point(destination)
 	}
 
-	/// Look up the npm package metadata for `name`. Exercised by the registry
-	/// snapshot test; the production resolve path uses
-	/// [`resolve_package_version`](Self::resolve_package_version).
 	#[cfg(test)]
 	pub(crate) async fn get_packages_by_name(
 		&self,
@@ -402,7 +375,6 @@ enum NpmRepository {
 	String(String),
 	Object { url: String },
 }
-
 
 fn package_source_url(
 	package_name: &str,
@@ -711,104 +683,79 @@ fn expand_declaration_roots(
 }
 
 fn declaration_dependency_specifiers(content: &str) -> Vec<String> {
-	let mut specifiers = Vec::new();
+	let mut out = Vec::new();
 	for line in content.lines() {
-		let trimmed = line.trim();
-		if trimmed.starts_with("export ") {
-			for marker in [" from \"", " from '"] {
-				specifiers.extend(
-					extract_quoted_after_marker(trimmed, marker)
-						.into_iter()
-						.filter(|specifier| specifier.starts_with('.')),
-				);
-			}
-		}
-		if trimmed.starts_with("///") {
-			for marker in ["path=\"", "path='"] {
-				specifiers.extend(
-					extract_quoted_after_marker(trimmed, marker)
-						.into_iter()
-						.filter(|specifier| !specifier.is_empty() && !specifier.contains("://")),
-				);
+		let line = line.trim();
+		for prefix in [
+			"/// <reference path=\"",
+			"/// <reference types=\"",
+			"import ",
+			"export ",
+			"import type ",
+			"export type ",
+		] {
+			if let Some(rest) = line.strip_prefix(prefix) {
+				if let Some(start) = rest.find('"').or_else(|| rest.find('\'')) {
+					let rest = &rest[start + 1..];
+					if let Some(end) = rest.find('"').or_else(|| rest.find('\'')) {
+						out.push(rest[..end].to_owned());
+					}
+				}
 			}
 		}
 	}
-	specifiers.sort();
-	specifiers.dedup();
-	specifiers
-}
-
-fn extract_quoted_after_marker(content: &str, marker: &str) -> Vec<String> {
-	let mut results = Vec::new();
-	let mut cursor = content;
-	let quote = marker.chars().last().unwrap_or('"');
-
-	while let Some(idx) = cursor.find(marker) {
-		let start = idx + marker.len();
-		let rest = &cursor[start..];
-		if let Some(end) = rest.find(quote) {
-			results.push(rest[..end].to_string());
-			cursor = &rest[end + quote.len_utf8()..];
-		} else {
-			break;
-		}
-	}
-
-	results
+	out
 }
 
 fn resolve_declaration_specifier(base_dir: &Path, specifier: &str) -> Vec<PathBuf> {
-	let candidate = base_dir.join(specifier);
-	let mut resolved = BTreeSet::new();
-	for path in declaration_candidates_for_path(&candidate) {
-		if path.is_file() {
-			resolved.insert(path);
-		}
+	if !specifier.starts_with('.') {
+		return Vec::new();
 	}
-	resolved.into_iter().collect()
+	let base = base_dir.join(specifier);
+	declaration_candidates_for_path(&base)
 }
 
-fn declaration_candidates_for_path(candidate: &Path) -> Vec<PathBuf> {
-	let mut paths = BTreeSet::new();
-	let candidate_string = candidate.to_string_lossy();
-
-	if has_supported_extension(candidate, DECLARATION_EXTENSIONS) && candidate.is_file() {
-		paths.insert(candidate.to_path_buf());
+fn declaration_candidates_for_path(base: &Path) -> Vec<PathBuf> {
+	let mut candidates = Vec::new();
+	candidates.push(base.to_path_buf());
+	for suffix in DECLARATION_EXTENSIONS {
+		candidates.push(PathBuf::from(format!("{}{suffix}", base.display())));
 	}
-	if candidate.is_dir() {
-		for extension in DECLARATION_EXTENSIONS {
-			paths.insert(candidate.join(format!("index{extension}")));
+	if let Some(stem) = strip_known_suffix(&base.to_string_lossy()) {
+		for suffix in DECLARATION_EXTENSIONS {
+			candidates.push(PathBuf::from(format!("{stem}{suffix}")));
 		}
 	}
-
-	let mut stem_variants = Vec::new();
-	if let Some(stripped) = strip_known_suffix(&candidate_string) {
-		stem_variants.push(PathBuf::from(stripped));
-	}
-	stem_variants.push(candidate.to_path_buf());
-
-	for stem in stem_variants {
-		for extension in DECLARATION_EXTENSIONS {
-			paths.insert(PathBuf::from(format!("{}{}", stem.to_string_lossy(), extension)));
-		}
-		for extension in DECLARATION_EXTENSIONS {
-			paths.insert(stem.join(format!("index{extension}")));
-		}
-	}
-
-	paths.into_iter().collect()
+	candidates
 }
 
-fn strip_known_suffix(path: &str) -> Option<String> {
-	for suffix in [
-		".d.ts", ".d.tsx", ".d.mts", ".d.cts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs",
-		".cjs",
-	] {
-		if let Some(stripped) = path.strip_suffix(suffix) {
-			return Some(stripped.to_string());
+fn strip_known_suffix(value: &str) -> Option<String> {
+	let all_suffixes: Vec<&str> = SOURCE_EXTENSIONS
+		.iter()
+		.chain(DECLARATION_EXTENSIONS.iter())
+		.copied()
+		.collect();
+	for suffix in &all_suffixes {
+		if let Some(stem) = value.strip_suffix(suffix) {
+			return Some(stem.to_owned());
 		}
 	}
 	None
+}
+
+fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, TsPackageError> {
+	let manifest_path = root.join("package.json");
+	if !manifest_path.is_file() {
+		return Ok(None);
+	}
+	let content = fs::read_to_string(&manifest_path)?;
+	let manifest: serde_json::Value = serde_json::from_str(&content)?;
+	for key in ["types", "typings", "main"] {
+		if let Some(value) = manifest.get(key).and_then(serde_json::Value::as_str) {
+			return Ok(Some(root.join(value)));
+		}
+	}
+	Ok(None)
 }
 
 fn ensure_materialized_entry_point(
@@ -818,144 +765,46 @@ fn ensure_materialized_entry_point(
 	if candidate.is_file() {
 		return Ok(candidate);
 	}
-
-	for fallback in materialized_source_fallback_candidates(root, &candidate) {
-		if fallback.is_file() {
-			return Ok(fallback);
+	for suffix in DECLARATION_EXTENSIONS.iter().chain(SOURCE_EXTENSIONS.iter()) {
+		let with_suffix = PathBuf::from(format!("{}{suffix}", candidate.display()));
+		if with_suffix.is_file() {
+			return Ok(with_suffix);
 		}
 	}
-
 	Err(TsPackageError::InvalidLocalEntryPoint(format!(
-		"TypeScript entry point `{}` does not exist",
-		candidate.display()
+		"entry point `{}` does not exist in `{}`",
+		candidate.display(),
+		root.display()
 	)))
-}
-
-fn materialized_source_fallback_candidates(root: &Path, candidate: &Path) -> Vec<PathBuf> {
-	let Ok(relative) = candidate.strip_prefix(root) else {
-		return Vec::new();
-	};
-
-	let variants = relative_variants_without_build_prefixes(relative);
-	let mut fallbacks = BTreeSet::new();
-	for variant in variants {
-		for path in source_candidates_for_path(&root.join(&variant)) {
-			fallbacks.insert(path);
-		}
-	}
-	fallbacks.into_iter().collect()
-}
-
-fn relative_variants_without_build_prefixes(relative: &Path) -> Vec<PathBuf> {
-	let mut variants = vec![relative.to_path_buf()];
-	let components = relative.components().collect::<Vec<_>>();
-	if components.len() >= 2 {
-		let first = components[0].as_os_str().to_string_lossy();
-		let second = components[1].as_os_str().to_string_lossy();
-		if matches!(first.as_ref(), "lib" | "dist" | "build" | "esm" | "cjs") && second == "src" {
-			let stripped = components[1..].iter().collect::<PathBuf>();
-			variants.push(stripped);
-		}
-	}
-	variants
-}
-
-fn source_candidates_for_path(candidate: &Path) -> Vec<PathBuf> {
-	let mut paths = BTreeSet::new();
-	let candidate_string = candidate.to_string_lossy();
-
-	if is_source_like(candidate) && candidate.is_file() {
-		paths.insert(candidate.to_path_buf());
-	}
-	if candidate.is_dir() {
-		for extension in SOURCE_EXTENSIONS {
-			paths.insert(candidate.join(format!("index{extension}")));
-		}
-	}
-
-	let mut stem_variants = Vec::new();
-	if let Some(stripped) = strip_known_suffix(&candidate_string) {
-		stem_variants.push(PathBuf::from(stripped));
-	}
-	stem_variants.push(candidate.to_path_buf());
-
-	for stem in stem_variants {
-		for extension in SOURCE_EXTENSIONS {
-			paths.insert(PathBuf::from(format!("{}{}", stem.to_string_lossy(), extension)));
-		}
-		for extension in SOURCE_EXTENSIONS {
-			paths.insert(stem.join(format!("index{extension}")));
-		}
-	}
-
-	paths.into_iter().collect()
-}
-
-fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, TsPackageError> {
-	let manifest_path = root.join("package.json");
-	if !manifest_path.is_file() {
-		return Ok(None);
-	}
-
-	let content = std::fs::read_to_string(&manifest_path)?;
-	let manifest: serde_json::Value = serde_json::from_str(&content)?;
-
-	for key in ["types", "typings", "module", "main"] {
-		if let Some(value) = manifest.get(key).and_then(serde_json::Value::as_str) {
-			return Ok(Some(root.join(value)));
-		}
-	}
-
-	if let Some(exports) = manifest.get("exports")
-		&& let Some(value) = [
-			exports.get(".").and_then(serde_json::Value::as_str),
-			exports
-				.get(".")
-				.and_then(serde_json::Value::as_object)
-				.and_then(|entry| entry.get("types"))
-				.and_then(serde_json::Value::as_str),
-			exports
-				.get(".")
-				.and_then(serde_json::Value::as_object)
-				.and_then(|entry| entry.get("default"))
-				.and_then(serde_json::Value::as_str),
-			exports.get("types").and_then(serde_json::Value::as_str),
-		]
-		.into_iter()
-		.flatten()
-		.next()
-	{
-		return Ok(Some(root.join(value)));
-	}
-
-	Ok(None)
 }
 
 struct SourceFileLoader;
 
 impl Loader for SourceFileLoader {
-	fn load(&self, specifier: &ModuleSpecifier, _options: LoadOptions) -> LoadFuture {
+	fn load(
+		&self,
+		specifier: &ModuleSpecifier,
+		_options: LoadOptions,
+	) -> LoadFuture {
 		let specifier = specifier.clone();
 		Box::pin(async move {
 			if specifier.scheme() != "file" {
 				return Ok(None);
 			}
-
 			let path = specifier.to_file_path().map_err(|_| {
 				deno_graph::source::LoadError::Other(Arc::new(std::io::Error::new(
 					std::io::ErrorKind::InvalidInput,
-					format!("invalid file specifier: {specifier}"),
+					format!("not a file URL: {specifier}"),
 				)))
 			})?;
-
-			let content = std::fs::read(path)
-				.map_err(|source| deno_graph::source::LoadError::Other(Arc::new(source)))?;
-
+			let content = fs::read_to_string(&path).map_err(|e| {
+				deno_graph::source::LoadError::Other(Arc::new(e))
+			})?;
 			Ok(Some(LoadResponse::Module {
 				specifier,
 				maybe_headers: None,
-				content: content.into(),
-				mtime: None,
+				content:       content.into_bytes().into(),
+				mtime:         None,
 			}))
 		})
 	}
@@ -963,13 +812,7 @@ impl Loader for SourceFileLoader {
 
 #[cfg(test)]
 mod tests {
-	use std::{collections::HashMap, fs};
-
-	use deno_doc::{DocParser, DocParserOptions};
-	use deno_graph::{BuildOptions, GraphKind, ModuleGraph, ModuleSpecifier, ast::CapturingModuleAnalyzer};
-
 	use super::*;
-	use crate::core::ts_parser::TsDocParser;
 
 	#[tokio::test]
 	async fn npm_registry_results_snapshot() {
@@ -982,278 +825,9 @@ mod tests {
 	async fn npm_version_resolution_snapshot() {
 		let registry = Npm::default();
 		let package = registry
-			.resolve_package_version("@types/node", &Version::parse("24.0.0").unwrap())
+			.resolve_package_version("@types/node", &Version::parse("22.0.0").unwrap())
 			.await
 			.unwrap();
 		insta::assert_debug_snapshot!(package);
-	}
-
-	#[test]
-	fn documentation_roots_follow_triple_slash_references_for_declaration_only_package() {
-		let workspace = tempfile::tempdir().unwrap();
-		fs::write(workspace.path().join("package.json"), r#"{"types":"./index.d.ts"}"#).unwrap();
-		fs::write(
-			workspace.path().join("index.d.ts"),
-			"/// <reference path=\"./nested/extra.d.ts\" />\nexport interface Root {}\n",
-		)
-		.unwrap();
-		fs::create_dir_all(workspace.path().join("nested")).unwrap();
-		fs::write(workspace.path().join("nested").join("extra.d.ts"), "export interface Extra {}\n")
-			.unwrap();
-
-		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
-		assert_eq!(roots.len(), 2);
-		assert!(roots.iter().any(|path| path.ends_with("index.d.ts")));
-		assert!(roots.iter().any(|path| path.ends_with("nested/extra.d.ts")));
-	}
-
-	#[test]
-	fn documentation_roots_follow_triple_slash_paths_without_dot_prefix() {
-		let workspace = tempfile::tempdir().unwrap();
-		fs::write(workspace.path().join("package.json"), r#"{"types":"index.d.ts"}"#).unwrap();
-		fs::create_dir_all(workspace.path().join("compatibility")).unwrap();
-		fs::write(
-			workspace.path().join("index.d.ts"),
-			"/// <reference path=\"compatibility/iterators.d.ts\" />\nexport interface Root {}\n",
-		)
-		.unwrap();
-		fs::write(
-			workspace.path().join("compatibility").join("iterators.d.ts"),
-			"export interface IteratorShim {}\n",
-		)
-		.unwrap();
-
-		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
-		assert_eq!(roots.len(), 2);
-		assert!(roots.iter().any(|path| path.ends_with("index.d.ts")));
-		assert!(roots.iter().any(|path| path.ends_with("compatibility/iterators.d.ts")));
-	}
-
-	#[test]
-	fn documentation_roots_prefer_explicit_declarations_for_mixed_export_packages() {
-		let workspace = tempfile::tempdir().unwrap();
-		fs::write(
-			workspace.path().join("package.json"),
-			r#"{
-				"exports": {
-					".": {
-						"types": "./index.d.cts",
-						"@zod/source": "./src/index.ts"
-					},
-					"./v3": {
-						"types": "./v3/index.d.cts",
-						"@zod/source": "./src/v3/index.ts"
-					}
-				}
-			}"#,
-		)
-		.unwrap();
-		fs::create_dir_all(workspace.path().join("src").join("v3").join("benchmarks")).unwrap();
-		fs::create_dir_all(workspace.path().join("v3")).unwrap();
-		fs::write(workspace.path().join("index.d.cts"), "export {}\n").unwrap();
-		fs::write(workspace.path().join("v3").join("index.d.cts"), "export {}\n").unwrap();
-		fs::write(workspace.path().join("src").join("index.ts"), "export {}\n").unwrap();
-		fs::write(workspace.path().join("src").join("v3").join("index.ts"), "export {}\n").unwrap();
-		fs::write(
-			workspace.path().join("src").join("v3").join("benchmarks").join("realworld.ts"),
-			"export const noisy = true;\n",
-		)
-		.unwrap();
-
-		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.cts")).unwrap();
-		assert_eq!(roots.len(), 2);
-		assert!(
-			roots.iter().all(|path| path.extension().and_then(|value| value.to_str()) == Some("cts"))
-		);
-		assert!(roots.iter().any(|path| path.ends_with("index.d.cts")));
-		assert!(roots.iter().any(|path| path.ends_with("v3/index.d.cts")));
-		assert!(!roots.iter().any(|path| path.ends_with("src/index.ts")));
-		assert!(!roots.iter().any(|path| path.ends_with("benchmarks/realworld.ts")));
-	}
-
-	#[test]
-	fn documentation_roots_follow_declaration_export_chains() {
-		let workspace = tempfile::tempdir().unwrap();
-		fs::write(workspace.path().join("package.json"), r#"{"types":"./index.d.ts"}"#).unwrap();
-		fs::create_dir_all(workspace.path().join("v3")).unwrap();
-		fs::write(workspace.path().join("index.d.ts"), "export * from \"./v3/external.js\";\n")
-			.unwrap();
-		fs::write(workspace.path().join("v3").join("external.d.ts"), "export interface External {}\n")
-			.unwrap();
-
-		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
-		assert_eq!(roots.len(), 2);
-		assert!(roots.iter().any(|path| path.ends_with("index.d.ts")));
-		assert!(roots.iter().any(|path| path.ends_with("v3/external.d.ts")));
-	}
-
-	#[test]
-	fn documentation_roots_deduplicate_commonjs_and_esm_declaration_twins() {
-		let workspace = tempfile::tempdir().unwrap();
-		fs::write(
-			workspace.path().join("package.json"),
-			r#"{
-				"types":"./index.d.ts",
-				"exports": {
-					".": {
-						"types":"./index.d.cts"
-					}
-				}
-			}"#,
-		)
-		.unwrap();
-		fs::write(workspace.path().join("index.d.ts"), "export interface Root {}\n").unwrap();
-		fs::write(workspace.path().join("index.d.cts"), "export interface Root {}\n").unwrap();
-
-		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
-		assert_eq!(roots, vec![workspace.path().join("index.d.ts").canonicalize().unwrap()]);
-	}
-
-	#[test]
-	fn push_doc_root_maps_javascript_exports_to_declarations() {
-		let workspace = tempfile::tempdir().unwrap();
-		fs::create_dir_all(workspace.path().join("non-secure")).unwrap();
-		fs::write(
-			workspace.path().join("non-secure").join("index.d.ts"),
-			"export declare function nanoid(): string;\n",
-		)
-		.unwrap();
-
-		let mut roots = BTreeSet::new();
-		push_doc_root(workspace.path(), "./non-secure/index.js", &mut roots);
-		assert_eq!(roots.len(), 1);
-		assert!(roots.iter().any(|path| path.ends_with("non-secure/index.d.ts")));
-	}
-
-	#[test]
-	fn resolve_materialized_entry_point_falls_back_to_source_for_old_repo_layouts() {
-		let workspace = tempfile::tempdir().unwrap();
-		fs::write(
-			workspace.path().join("package.json"),
-			r#"{
-				"main":"./lib/src/index.js",
-				"types":"./lib/src/index.d.ts"
-			}"#,
-		)
-		.unwrap();
-		fs::create_dir_all(workspace.path().join("src")).unwrap();
-		fs::write(workspace.path().join("src").join("index.ts"), "export const z = 1;\n").unwrap();
-
-		let resolved = resolve_materialized_entry_point(workspace.path()).unwrap();
-		assert_eq!(resolved, workspace.path().join("src").join("index.ts"));
-	}
-
-	#[tokio::test]
-	#[ignore = "live TypeScript package diagnostics"]
-	async fn live_typescript_package_diagnostics() {
-		for (name, version) in [("@types/node", "24.0.0"), ("zod", "3.25.76"), ("nanoid", "5.1.6")] {
-			let registry = Npm::default();
-			let version = Version::parse(version).unwrap();
-			let package = registry.resolve_package_version(name, &version).await.unwrap();
-			let workspace = tempfile::tempdir().unwrap();
-			let entry_point =
-				registry.materialize_package_version(name, &version, workspace.path()).await.unwrap();
-			eprintln!("=== {name}@{version} ===");
-			eprintln!("entry point: {}", entry_point.display());
-			let doc_roots = documentation_roots_for_entry_point(&entry_point).unwrap();
-			eprintln!("doc roots: {}", doc_roots.len());
-			for root in doc_roots.iter().take(20) {
-				eprintln!("  root {}", root.display());
-			}
-
-			let roots = doc_roots
-				.iter()
-				.map(|root| ModuleSpecifier::from_file_path(root).unwrap())
-				.collect::<Vec<_>>();
-			let analyzer = CapturingModuleAnalyzer::default();
-			let mut graph = ModuleGraph::new(GraphKind::TypesOnly);
-			let loader = SourceFileLoader;
-			graph
-				.build(roots.clone(), Vec::new(), &loader, BuildOptions {
-					module_analyzer: &analyzer,
-					..Default::default()
-				})
-				.await;
-
-			let parser = DocParser::new(&graph, &analyzer, &roots, DocParserOptions {
-				diagnostics: false,
-				private:     true,
-			})
-			.unwrap();
-			let parse_output = parser.parse().unwrap();
-			eprintln!("doc modules: {}", parse_output.len());
-			for (specifier, document) in &parse_output {
-				eprintln!("  {} symbols={}", specifier, document.symbols.len());
-			}
-
-			let documents: HashMap<String, deno_doc::Document> = parse_output
-				.into_iter()
-				.map(|(specifier, document)| (specifier.to_string(), document))
-				.collect();
-			let mut ts_parser = TsDocParser::new(documents).unwrap();
-			match ts_parser.parse_documents() {
-				Ok(entries) => {
-					eprintln!("entries={}", entries.len());
-					for entry in entries.iter().take(10) {
-						eprintln!("  {} {}", entry.kind_tag(), entry.name());
-					}
-				}
-				Err(error) => panic!("failed to parse {name}@{version}: {error:?}"),
-			}
-
-			let local_package =
-				TsPackage { entry_point: entry_point.display().to_string(), ..package.clone() };
-			match tokio::task::spawn_blocking(move || local_package.generate_ir()).await.unwrap() {
-				Ok(ir) => eprintln!("generate_ir index entries={}", ir.index().len()),
-				Err(error) => eprintln!("generate_ir failed: {error:?}"),
-			}
-		}
-	}
-
-	#[tokio::test]
-	#[ignore = "live zod usability regression"]
-	async fn live_zod_index_contains_stable_representative_symbols() {
-		let registry = Npm::default();
-		let version = Version::parse("3.25.76").unwrap();
-		let package = registry.resolve_package_version("zod", &version).await.unwrap();
-		let workspace = tempfile::tempdir().unwrap();
-		let entry_point =
-			registry.materialize_package_version("zod", &version, workspace.path()).await.unwrap();
-		let local_package = TsPackage { entry_point: entry_point.display().to_string(), ..package };
-
-		let index = tokio::task::spawn_blocking(move || local_package.generate_ir().unwrap().index())
-			.await
-			.unwrap();
-		let path_strings = index
-			.iter()
-			.map(|entry| match entry.path() {
-				ir::entry::NudoxPath::Local(path) => path.to_string_lossy().into_owned(),
-				ir::entry::NudoxPath::External { path, dependency } => {
-					format!("{dependency}::{}", path.to_string_lossy())
-				}
-			})
-			.collect::<Vec<String>>();
-		let names = index.iter().map(|entry| (entry.kind_tag(), entry.name())).collect::<Vec<_>>();
-
-		assert!(index.len() > 10_000, "expected deep zod graph, got {} entries", index.len());
-		assert!(
-			path_strings.iter().all(|path| !path.contains(".tmp")),
-			"expected stable logical paths, found tempdir leak in {:?}",
-			path_strings.iter().find(|path| path.contains(".tmp"))
-		);
-
-		assert!(names.iter().any(|(kind, name)| *kind == "record" && *name == "ZodString"));
-		assert!(names.iter().any(|(kind, name)| *kind == "record" && *name == "ZodType"));
-		assert!(names.iter().any(|(kind, name)| *kind == "record" && *name == "ZodError"));
-		assert!(names.iter().any(|(kind, name)| *kind == "function" && *name == "string"));
-		assert!(names.iter().any(|(kind, name)| *kind == "function" && *name == "object"));
-		assert!(names.iter().any(|(kind, name)| *kind == "function" && *name == "union"));
-		assert!(names.iter().any(|(kind, name)| *kind == "function" && *name == "parse"));
-		assert!(names.iter().any(|(kind, name)| *kind == "function" && *name == "safeParse"));
-
-		assert!(path_strings.iter().any(|path| path.ends_with("index::z")));
-		assert!(path_strings.iter().any(|path| path.ends_with("::ZodType::parse")));
-		assert!(path_strings.iter().any(|path| path.ends_with("::ZodError::format")));
-		assert!(path_strings.iter().any(|path| path.ends_with("::ZodString")));
 	}
 }

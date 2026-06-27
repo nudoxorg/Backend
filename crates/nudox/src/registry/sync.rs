@@ -1,34 +1,26 @@
-//! The sync and monitor engine: check out the right commit for a tracked
-//! package version, run the ingest pipeline, and (for monitoring) detect whether
-//! the remote has advanced past the tracked commit.
-//!
-//! The git dance — open/clone the cached repo, fetch origin, resolve the remote
-//! head, find the commit for the tracked version, and (for sync) materialize a
-//! workspace — is identical across languages and is captured once here, generic
-//! over [`LanguageBackend`]. Everything that genuinely differs between languages
-//! (the tag scheme, workspace prep, IR generation) lives in [`crate::backend`],
-//! so `run_sync` is three thin arms: git-backed (Rust or TS) and npm-backed.
-
 use tempfile::TempDir;
 use tokio::task::spawn_blocking;
 use url::Url;
 
-use crate::{backend::{LanguageBackend, RustBackend, TypeScriptBackend}, config::PipelineConfig, core::ts::TsPackage, error::{AppError, PackageError, RegistryLookupError}, git, ingest::{IngestTargets, run_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, ProgressReporter}};
+use crate::{
+	config::PipelineConfig,
+	core::{backend::{LanguageBackend, RustBackend, TypeScriptBackend}, ts::TsPackage},
+	git,
+	http::error::{AppError, PackageError, RegistryLookupError},
+	ingest::{IngestTargets, run_pipeline},
+	storage::StorageLayout,
+	sync_progress::{PackageSyncPhase, ProgressReporter},
+};
 
-use super::{MonitorExecution, PackageHandle, PackageId, PackageSpec, SyncExecution, ts_entry_point::typescript_package_uses_repository};
+use super::{MonitorExecution, PackageHandle, PackageId, PackageSpec, SyncExecution};
+use crate::core::ts::entry_point::typescript_package_uses_repository;
 
-/// A materialized git checkout: the resolved commit, the latest remote head for
-/// the tracked branch, and the workspace it was checked out into.
 struct GitCheckout {
 	commit_hex:           String,
 	latest_remote_commit: Option<String>,
 	workspace:            TempDir,
 }
 
-/// Open (or clone) the cached repo, fetch origin, resolve the commit for the
-/// tracked version via `B`, and materialize it into a fresh workspace.
-///
-/// Blocking (git + filesystem I/O); callers run it under `spawn_blocking`.
 fn materialize_git_checkout<B: LanguageBackend>(
 	storage: &StorageLayout,
 	spec: &PackageSpec,
@@ -62,14 +54,13 @@ fn materialize_git_checkout<B: LanguageBackend>(
 		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
 	git::materialize_commit(&repository, target_commit, workspace.path())?;
 
-	Ok(GitCheckout { commit_hex: target_commit.to_hex().to_string(), latest_remote_commit, workspace })
+	Ok(GitCheckout {
+		commit_hex: target_commit.to_hex().to_string(),
+		latest_remote_commit,
+		workspace,
+	})
 }
 
-/// The monitor variant: resolve the tracked commit and the latest remote head
-/// *without* materializing a workspace, and report whether the remote advanced.
-///
-/// Blocking; the caller ([`run_monitor_refresh`]) already runs under
-/// `spawn_blocking`.
 fn resolve_git_head<B: LanguageBackend>(
 	storage: &StorageLayout,
 	spec: &PackageSpec,
@@ -98,7 +89,6 @@ fn resolve_git_head<B: LanguageBackend>(
 	})
 }
 
-/// Run a git checkout off the async executor, mapping the join error.
 async fn spawn_git_checkout<B: LanguageBackend>(
 	storage: StorageLayout,
 	spec: PackageSpec,
@@ -122,11 +112,14 @@ pub(crate) async fn run_sync(
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
-			run_git_backed_sync::<RustBackend>(storage, pipeline, spec, package, progress, targets).await
+			run_git_backed_sync::<RustBackend>(storage, pipeline, spec, package, progress, targets)
+				.await
 		}
 		PackageHandle::TypeScript(package) if typescript_package_uses_repository(&package) => {
-			run_git_backed_sync::<TypeScriptBackend>(storage, pipeline, spec, package, progress, targets)
-				.await
+			run_git_backed_sync::<TypeScriptBackend>(
+				storage, pipeline, spec, package, progress, targets,
+			)
+			.await
 		}
 		PackageHandle::TypeScript(package) => {
 			run_npm_backed_sync(storage, pipeline, spec, package, progress, targets).await
@@ -134,8 +127,6 @@ pub(crate) async fn run_sync(
 	}
 }
 
-/// Git-backed sync, generic over language: materialize the checkout, let the
-/// backend prepare the workspace, then run the one shared ingest pipeline.
 async fn run_git_backed_sync<B: LanguageBackend>(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
@@ -172,8 +163,6 @@ async fn run_git_backed_sync<B: LanguageBackend>(
 	})
 }
 
-/// npm registry-backed TypeScript: no git, materialize the published tarball and
-/// run the same shared ingest pipeline.
 async fn run_npm_backed_sync(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
@@ -235,7 +224,6 @@ pub(crate) fn run_monitor_refresh(
 		PackageHandle::TypeScript(package) if typescript_package_uses_repository(&package) => {
 			resolve_git_head::<TypeScriptBackend>(&storage, &spec, &package.source, &package.name)
 		}
-		// Registry-backed TypeScript has no upstream branch to monitor.
 		PackageHandle::TypeScript(_) => {
 			Ok(MonitorExecution { latest_remote_commit: None, remote_update_available: false })
 		}

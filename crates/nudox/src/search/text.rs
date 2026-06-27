@@ -1,17 +1,10 @@
-//! Tantivy-backed full-text symbol search.
-//!
-//! Fed directly by the parse-once [`ParsedSymbol`] projection — no embeddings
-//! or external services required. Persists across restarts. Re-indexing a URI
-//! replaces the previous entry (upsert semantics).
-
 use std::{path::Path, sync::{Arc, Mutex}};
 
 use tantivy::{Index, IndexWriter, TantivyDocument, Term, collector::TopDocs, directory::MmapDirectory, query::QueryParser, schema::{Field, STORED, STRING, Schema, TEXT, Value as TantivyValue}};
 
-use crate::error::{AppError, TextIndexError};
+use crate::http::error::{AppError, TextIndexError};
 use crate::ingest::parsed_symbol::{PackageCoord, ParsedSymbol};
 
-/// A single result from [`SymbolTextIndex::search`].
 #[derive(Debug)]
 pub struct TextSearchHit {
 	pub uri:         String,
@@ -46,7 +39,6 @@ fn build_schema() -> (Schema, Fields) {
 	(schema, Fields { uri, fq_name, text, language, package, version, symbol_kind })
 }
 
-/// Tantivy-backed full-text index over symbol documentation.
 pub struct SymbolTextIndex {
 	index:  Index,
 	writer: Arc<Mutex<IndexWriter>>,
@@ -54,25 +46,21 @@ pub struct SymbolTextIndex {
 }
 
 impl SymbolTextIndex {
-	/// Open (or create) the on-disk index at `dir`.
 	pub fn open_or_create(dir: &Path) -> Result<Self, AppError> {
 		std::fs::create_dir_all(dir)
 			.map_err(|e| AppError::Storage { path: dir.to_path_buf(), source: e })?;
 		let (schema, fields) = build_schema();
-	let mmap = MmapDirectory::open(dir)
-		.map_err(|e| AppError::TextIndex(TextIndexError::MmapDirectory { path: dir.to_path_buf(), source: e }))?;
-	let index = Index::open_or_create(mmap, schema)
-		.map_err(|e| AppError::TextIndex(TextIndexError::OpenOrCreate { source: e }))?;
-	let writer = index
-		.writer(50_000_000)
-		.map_err(|e| AppError::TextIndex(TextIndexError::Writer { source: e }))?;
+		let mmap = MmapDirectory::open(dir).map_err(|e| {
+			AppError::TextIndex(TextIndexError::MmapDirectory { path: dir.to_path_buf(), source: e })
+		})?;
+		let index = Index::open_or_create(mmap, schema)
+			.map_err(|e| AppError::TextIndex(TextIndexError::OpenOrCreate { source: e }))?;
+		let writer = index
+			.writer(50_000_000)
+			.map_err(|e| AppError::TextIndex(TextIndexError::Writer { source: e }))?;
 		Ok(Self { index, writer: Arc::new(Mutex::new(writer)), fields })
 	}
 
-	/// Index a batch of [`ParsedSymbol`]s in a single commit.
-	///
-	/// Each symbol's canonical entry URI is the deduplication key: any previous
-	/// entry for the same URI is deleted before the new one is added.
 	pub fn index_batch(
 		&self,
 		coord: &PackageCoord,
@@ -105,8 +93,6 @@ impl SymbolTextIndex {
 		Ok(symbols.len())
 	}
 
-	/// Full-text search over symbol names, qualified names, and documentation.
-	/// Returns up to `limit` results ordered by relevance score.
 	pub fn search(&self, query_str: &str, limit: usize) -> Result<Vec<TextSearchHit>, AppError> {
 		let reader = self
 			.index
@@ -127,8 +113,9 @@ impl SymbolTextIndex {
 
 		let mut hits = Vec::with_capacity(top_docs.len());
 		for (score, addr) in top_docs {
-			let doc: TantivyDocument =
-				searcher.doc(addr).map_err(|e| AppError::TextIndex(TextIndexError::DocFetch { source: e }))?;
+			let doc: TantivyDocument = searcher
+				.doc(addr)
+				.map_err(|e| AppError::TextIndex(TextIndexError::DocFetch { source: e }))?;
 			let get = |f: Field| doc.get_first(f).and_then(|v| v.as_str()).unwrap_or("").to_owned();
 			let get_opt = |f: Field| {
 				let s = get(f);

@@ -7,7 +7,8 @@ pub type Result<T> = std::result::Result<T, ParseError>;
 use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{Entry, Visibility}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{DynTrait, FunctionPointer, PolyTrait, QualifiedPath, Type, TypeReference}};
 
 
-use crate::core::{parse_common::{output_parameters_from_type, parameter_link_key}, rust::ParseError};
+use crate::core::parse_common::{output_parameters_from_type, parameter_link_key};
+use super::ParseError;
 
 /// Immutable context.
 pub struct ParseContext {

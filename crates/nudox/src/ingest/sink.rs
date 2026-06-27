@@ -12,7 +12,7 @@ use nudox_store::NudoxStore;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::{config::QdrantSettings, error::{AppError, IngestError}, ingest::parsed_symbol::{Identity, PackageCoord, ParsedSymbol}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminusdb::{embedding_service::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory}, qdrant_upload::{QdrantConfig, upload_points}, termdb::DocStore, upload::{DocumentUploadProgress, TerminusConfig, upload_documents, upload_schema}}, text_index::SymbolTextIndex};
+use crate::{config::QdrantSettings, http::error::{AppError, IngestError}, ingest::{embedding::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory}, qdrant::{QdrantConfig, upload_points}, parsed_symbol::{Identity, PackageCoord, ParsedSymbol}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::{schema::DocStore, upload::{DocumentUploadProgress, TerminusConfig, upload_documents, upload_schema}}, search::text::SymbolTextIndex};
 
 /// Identifies one sink in the fan-out pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +78,7 @@ pub trait SymbolSink: Send + Sync {
 		symbols: &[ParsedSymbol],
 		coord: &PackageCoord,
 		progress: &ProgressReporter,
-	) -> Result<usize, crate::error::AppError>;
+	) -> Result<usize, crate::http::error::AppError>;
 }
 
 /// Run every sink in order, honoring `fatal()`: a fatal sink's error aborts the
@@ -88,7 +88,7 @@ pub async fn run_sinks(
 	symbols: &[ParsedSymbol],
 	coord: &PackageCoord,
 	progress: &ProgressReporter,
-) -> Result<IngestReport, crate::error::AppError> {
+) -> Result<IngestReport, crate::http::error::AppError> {
 	let mut report = IngestReport::default();
 	for sink in sinks {
 		match sink.accept(symbols, coord, progress).await {
@@ -126,7 +126,7 @@ impl SymbolSink for SqliteRegisterSink {
 		symbols: &[ParsedSymbol],
 		coord: &PackageCoord,
 		_progress: &ProgressReporter,
-	) -> Result<usize, crate::error::AppError> {
+	) -> Result<usize, crate::http::error::AppError> {
 		let uris: Vec<String> = symbols.iter().map(|s| s.entry_uri.to_string()).collect();
 		let n = self
 			.store
@@ -153,7 +153,7 @@ impl SymbolSink for TextIndexSink {
 		symbols: &[ParsedSymbol],
 		coord: &PackageCoord,
 		_progress: &ProgressReporter,
-	) -> Result<usize, crate::error::AppError> {
+	) -> Result<usize, crate::http::error::AppError> {
 		let n = self.index.index_batch(coord, symbols)?;
 		info!(lib = %coord.package, count = n, "symbols indexed in text search");
 		Ok(n)
@@ -163,9 +163,10 @@ impl SymbolSink for TextIndexSink {
 // ── Symbol-search orchestrator (/symbol-search) ─────────────────────────────
 
 pub struct OrchestratorSink {
-	pub orchestrator:       Arc<nudox_orchestrator::Orchestrator>,
-	/// `"{org}/{db}"` when Terminus is configured; `None` → `Identity::Local`.
-	pub terminus_instance:  Option<String>,
+	pub orchestrator: Arc<nudox_orchestrator::Orchestrator>,
+	/// Pre-computed once in `finalize_pipeline`; carried here so `accept` is
+	/// pure I/O with no identity re-derivation.
+	pub identity:     Identity,
 }
 
 #[async_trait]
@@ -177,17 +178,10 @@ impl SymbolSink for OrchestratorSink {
 		symbols: &[ParsedSymbol],
 		coord: &PackageCoord,
 		_progress: &ProgressReporter,
-	) -> Result<usize, crate::error::AppError> {
-		if !matches!(coord.language, nudox_core::Language::Rust) {
-			return Ok(0);
-		}
-		let identity = match self.terminus_instance.as_deref() {
-			Some(instance) => Identity::Deterministic { instance },
-			None => Identity::Local,
-		};
+	) -> Result<usize, crate::http::error::AppError> {
 		let mut count = 0usize;
 		for symbol in symbols {
-			match self.orchestrator.ingest(symbol.to_blob_info(coord, &identity)).await {
+			match self.orchestrator.ingest(symbol.to_blob_info(coord, &self.identity)).await {
 				Ok(_) => count += 1,
 				Err(e) => warn!(
 					lib = %coord.package,
@@ -223,7 +217,7 @@ impl SymbolSink for TerminusSink {
 		_symbols: &[ParsedSymbol],
 		_coord: &PackageCoord,
 		progress: &ProgressReporter,
-	) -> Result<usize, crate::error::AppError> {
+	) -> Result<usize, crate::http::error::AppError> {
 		if let Some(schema) = &self.schema {
 			progress.phase_with_detail(
 				PackageSyncPhase::UploadingSchema,
@@ -269,7 +263,7 @@ impl VectorSink {
 		symbols: Vec<ParsedSymbol>,
 		coord: &PackageCoord,
 		progress: &ProgressReporter,
-	) -> Result<usize, crate::error::AppError> {
+	) -> Result<usize, crate::http::error::AppError> {
 		let docs: Vec<_> =
 			symbols.into_iter().map(|s| s.into_embedding_document(coord)).collect();
 		progress.phase_with_detail(

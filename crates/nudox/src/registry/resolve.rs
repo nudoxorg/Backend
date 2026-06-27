@@ -1,14 +1,15 @@
-//! Resolving a [`NewPackageRequest`] into a concrete [`PackageHandle`] — via the
-//! crates.io / npm registries, or directly from an explicit repository source.
-
 use std::path::PathBuf;
 
 use lang_types::Language;
 use url::Url;
 
-use crate::{core::{rust::{Crates, RustPackage}, ts::TsPackage}, error::{AppError, RegistryLookupError}};
+use crate::{
+	core::{rust::{Crates, RustPackage}, ts::TsPackage},
+	http::error::{AppError, RegistryLookupError},
+};
 
-use super::{NewPackageRequest, PackageHandle, TYPESCRIPT_REPOSITORY_ENTRY_PREFIX, ts_entry_point::typescript_slug};
+use super::{NewPackageRequest, PackageHandle, TYPESCRIPT_REPOSITORY_ENTRY_PREFIX};
+use crate::core::ts::entry_point::typescript_slug;
 
 pub(crate) async fn resolve_package_handle(
 	request: &NewPackageRequest,
@@ -20,7 +21,7 @@ pub(crate) async fn resolve_package_handle(
 			}
 			let registry = Crates::new();
 			let packages = registry.get_packages_by_name(&request.name).await.map_err(|err| {
-				let crate::error::RegistryError::CratesIo(source) = err;
+				let crate::http::error::RegistryError::CratesIo(source) = err;
 				AppError::RegistryLookup(RegistryLookupError::CratesIo {
 					language: request.language,
 					package:  request.name.clone(),
@@ -89,8 +90,9 @@ async fn resolve_typescript_package_handle(
 fn resolve_explicit_typescript_package_handle(
 	request: &NewPackageRequest,
 ) -> Result<PackageHandle, AppError> {
-	let source = request.source.as_deref().ok_or_else(|| AppError::MissingSource { kind: "TypeScript" })?;
-	let source = parse_explicit_typescript_source(request, source)?;
+	let source =
+		request.source.as_deref().ok_or_else(|| AppError::MissingSource { kind: "TypeScript" })?;
+	let source = parse_explicit_repository_source(request, source)?;
 	let entry_point = format!(
 		"{TYPESCRIPT_REPOSITORY_ENTRY_PREFIX}{}",
 		request.entry_point.as_deref().unwrap_or_default()
@@ -106,13 +108,6 @@ fn resolve_explicit_typescript_package_handle(
 	}))
 }
 
-fn parse_explicit_typescript_source(
-	request: &NewPackageRequest,
-	source: &str,
-) -> Result<Url, AppError> {
-	parse_explicit_repository_source(request, source)
-}
-
 fn parse_explicit_repository_source(
 	request: &NewPackageRequest,
 	source: &str,
@@ -122,20 +117,22 @@ fn parse_explicit_repository_source(
 	}
 
 	let path = PathBuf::from(source);
-	let canonical = path.canonicalize().map_err(|error| AppError::RegistryLookup(
-		RegistryLookupError::PathResolution {
+	let canonical = path.canonicalize().map_err(|error| {
+		AppError::RegistryLookup(RegistryLookupError::PathResolution {
 			language: request.language,
 			package:  request.name.clone(),
 			path:     source.to_owned(),
 			source:   error,
-		},
-	))?;
-
-	Url::from_directory_path(&canonical).or_else(|()| Url::from_file_path(&canonical)).map_err(|()| {
-		AppError::RegistryLookup(RegistryLookupError::InvalidRepositoryPath {
-			language: request.language,
-			package:  request.name.clone(),
-			path:     canonical.display().to_string(),
 		})
-	})
+	})?;
+
+	Url::from_directory_path(&canonical)
+		.or_else(|()| Url::from_file_path(&canonical))
+		.map_err(|()| {
+			AppError::RegistryLookup(RegistryLookupError::InvalidRepositoryPath {
+				language: request.language,
+				package:  request.name.clone(),
+				path:     canonical.display().to_string(),
+			})
+		})
 }

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
 
-use crate::terminusdb::termdb::{DocCtx, URI, UriOps};
+use crate::terminus::schema::{DocCtx, URI, UriOps};
 
 /// Represents the abstract class Kind in JsonLD format
 /// this is what will be serialized with serde

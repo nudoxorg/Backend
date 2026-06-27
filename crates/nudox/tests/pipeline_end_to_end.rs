@@ -1,7 +1,7 @@
 use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}, process::Command};
 
 use color_eyre::eyre::WrapErr;
-use nudox::{core::{rust::RustPackage, ts::TsPackage}, git::{clone_repository, find_commit_for_version, materialize_commit}, terminusdb::{Runner, termdb::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}};
+use nudox::{core::{rust::RustPackage, ts::TsPackage}, git::{clone_repository, find_commit_for_version, materialize_commit}, emit::Runner, terminus::{schema::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}};
 use rustdoc_types::{Crate as RustdocCrate, ItemEnum};
 use semver::Version;
 use tempfile::TempDir;
@@ -339,7 +339,7 @@ fn emit_store(
 	language: &str,
 	package_name: &str,
 	_version: Version,
-	ir: nudox::pipeline::Ir<nudox::pipeline::Collected>,
+	ir: nudox::core::pipeline::Ir<nudox::core::pipeline::Collected>,
 ) -> color_eyre::Result<DocStore> {
 	let context = serde_json::json!({
 		"@type": "@context",
