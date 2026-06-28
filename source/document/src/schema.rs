@@ -163,6 +163,29 @@ impl DocStore {
 
 	pub fn documents_sorted(&self) -> Vec<(&URI, &Value)> { self.docs.iter().collect() }
 }
+
+/// A destination for emitted JSON-LD documents.
+///
+/// Decouples document *production* (the `emit` walk over the IR) from
+/// *materialization*. Tests collect into a [`DocStore`] (a `BTreeMap<URI, Value>`
+/// they can inspect), while production streams each finished document into a
+/// compact, upload-ready buffer — so the whole corpus never lives as
+/// `serde_json::Value` trees at once.
+pub trait DocSink {
+	/// Accept one finished document by value: its `@id`/URI and the JSON-LD
+	/// `Value`. The sink takes ownership; nothing downstream reads it again.
+	///
+	/// Returns [`EmitError::DuplicateUri`] if the same URI is offered twice with
+	/// differing content (the `DocStore` collision semantics); streaming sinks
+	/// that dedup silently may always return `Ok`.
+	fn accept(&mut self, uri: URI, doc: Value) -> Result<(), EmitError>;
+}
+
+impl DocSink for DocStore {
+	fn accept(&mut self, uri: URI, doc: Value) -> Result<(), EmitError> {
+		self.insert(uri, doc).map(|_| ()).map_err(|uri| EmitError::DuplicateUri { uri })
+	}
+}
 /// Stores Global Info about the Crate
 // this will live for the duration of the program, need cheap copies for
 // insertion
@@ -238,5 +261,9 @@ impl UriOps for DocCtx {
 }
 
 pub trait EmitJsonLD {
-	fn emit(self, ctx: &mut DocCtx, doc_store: &mut DocStore) -> Result<DocumentUri, EmitError>;
+	/// Emit `self` as one or more JSON-LD documents into `sink`, returning the
+	/// primary entry URI. The sink decides how each document is materialized
+	/// (collected into a [`DocStore`] for tests, streamed to compact bytes for
+	/// production).
+	fn emit(self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> Result<DocumentUri, EmitError>;
 }

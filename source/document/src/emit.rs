@@ -6,13 +6,13 @@ use serde_json::{Map, Value, json};
 use tracing::{debug, instrument};
 
 use crate::{
-	schema::{DocCtx, DocStore, DocumentUri, EmitError, EmitJsonLD, UriOps},
+	schema::{DocCtx, DocSink, DocStore, DocumentUri, EmitError, EmitJsonLD, UriOps},
 	ld::LDKind,
 };
 use identity::path::{fq_name, path_segments};
 
 impl EmitJsonLD for Entry {
-	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> Result<DocumentUri, EmitError> {
+	fn emit(self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> Result<DocumentUri, EmitError> {
 		let path = self.path().clone();
 		let entry_uri: DocumentUri = ctx.entry_uri(&path);
 
@@ -165,34 +165,49 @@ impl EmitJsonLD for Entry {
 
 		let value = Value::Object(obj);
 
-		match docs.insert(entry_uri.clone(), value) {
-			Ok(_) => {}
-			Err(uri) => return Err(EmitError::DuplicateUri { uri }),
-		}
+		sink.accept(entry_uri.clone(), value)?;
 		ctx.update_path(&path);
-		self.emit_kind(ctx, docs)?;
+		self.emit_kind(ctx, sink)?;
 
 		Ok(entry_uri)
 	}
 }
 
 trait EntryOps {
-	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> Result<DocumentUri, EmitError>;
+	fn emit_kind(&self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> Result<DocumentUri, EmitError>;
 }
 
 impl EntryOps for Entry {
-	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> Result<DocumentUri, EmitError> {
+	fn emit_kind(&self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> Result<DocumentUri, EmitError> {
 		let to_emit = LDKind::try_new(ctx.current_path.as_ref().unwrap(), self, ctx)?;
 		let emitted_uri = to_emit.uri.clone();
 		let mut emitted_value = serde_json::to_value(to_emit)
 			.map_err(|_| EmitError::SerializationFailed { uri: emitted_uri.clone() })?;
 		let obj = emitted_value.as_object_mut().expect("serde_json::to_value produced a non-object");
 		obj.insert("@context".into(), ctx.context().clone());
-		match docs.insert(emitted_uri.clone(), emitted_value) {
-			Ok(_) => Ok(emitted_uri),
-			Err(uri) => Err(EmitError::DuplicateUri { uri }),
+		sink.accept(emitted_uri.clone(), emitted_value)?;
+		Ok(emitted_uri)
+	}
+}
+
+/// Emit every entry in `items` into `sink`, in iteration order, collecting any
+/// per-entry [`EmitError`]s (mirroring [`Runner::run`]).
+///
+/// This is the production driver: pair it with a streaming [`DocSink`] to emit a
+/// whole crate without ever materializing the full corpus as `Value` trees.
+/// [`Runner`] is the equivalent for the in-memory [`DocStore`] collection path.
+pub fn emit_all<I>(ctx: &mut DocCtx, items: I, sink: &mut dyn DocSink) -> Vec<EmitError>
+where
+	I: IntoIterator<Item = Entry>,
+{
+	let mut errors = Vec::new();
+	for entry in items {
+		debug!(name = %entry.name(), "emitting entry");
+		if let Err(e) = entry.emit(ctx, sink) {
+			errors.push(e);
 		}
 	}
+	errors
 }
 
 pub struct Runner {

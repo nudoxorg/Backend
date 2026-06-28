@@ -20,8 +20,7 @@ impl ObjectStoreBlobStore {
 	/// Create a local-filesystem-backed blob store rooted at `root`.
 	/// Creates the directory if it does not already exist.
 	pub fn local(root: PathBuf) -> Result<Self> {
-		std::fs::create_dir_all(&root)
-			.map_err(|e| BlobStoreError::CreateDir(Box::new(e)))?;
+		std::fs::create_dir_all(&root).map_err(|e| BlobStoreError::CreateDir(Box::new(e)))?;
 		let fs = LocalFileSystem::new_with_prefix(&root)
 			.map_err(|e| BlobStoreError::Filesystem(Box::new(e)))?;
 		Ok(Self { store: Arc::new(fs) })
@@ -29,7 +28,9 @@ impl ObjectStoreBlobStore {
 }
 
 /// Path of the immutable, content-addressed blob body (binary `bincode`).
-fn blob_path(blob_ref: &BlobRef) -> ObjPath { ObjPath::from(format!("blobs/{}.blob", blob_ref.as_str())) }
+fn blob_path(blob_ref: &BlobRef) -> ObjPath {
+	ObjPath::from(format!("blobs/{}.blob", blob_ref.as_str()))
+}
 
 /// Path of the small mutable resolution sidecar holding the `GlobalSymbolId`.
 /// Kept separate so the blob body itself is write-once.
@@ -40,8 +41,8 @@ fn resolution_path(blob_ref: &BlobRef) -> ObjPath {
 impl ObjectStoreBlobStore {
 	/// Write (or overwrite) the tiny resolution sidecar for a blob.
 	async fn write_resolution(&self, blob_ref: &BlobRef, global_id: GlobalSymbolId) -> Result<()> {
-		let bytes = bincode::serialize(&global_id)
-			.map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
+		let bytes =
+			bincode::serialize(&global_id).map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
 		self
 			.store
 			.put(&resolution_path(blob_ref), bytes.into())
@@ -55,8 +56,8 @@ impl ObjectStoreBlobStore {
 		match self.store.get(&resolution_path(blob_ref)).await {
 			Ok(result) => {
 				let bytes = result.bytes().await.map_err(|e| BlobStoreError::Get(Box::new(e)))?;
-				let global_id = bincode::deserialize(&bytes)
-					.map_err(|e| BlobStoreError::Deserialize(Box::new(e)))?;
+				let global_id =
+					bincode::deserialize(&bytes).map_err(|e| BlobStoreError::Deserialize(Box::new(e)))?;
 				Ok(Some(global_id))
 			}
 			Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -70,11 +71,13 @@ impl BlobStore for ObjectStoreBlobStore {
 	#[tracing::instrument(skip(self, info), fields(occurrence_id = %info.occurrence_id))]
 	async fn put(&self, info: &BlobInfo) -> Result<BlobRef> {
 		if info.metadata.blob_schema_version != BLOB_SCHEMA_VERSION {
-			return Err(BlobStoreError::SchemaVersionMismatch {
-				expected: BLOB_SCHEMA_VERSION,
-				got:      info.metadata.blob_schema_version,
-			}
-			.into());
+			return Err(
+				BlobStoreError::SchemaVersionMismatch {
+					expected: BLOB_SCHEMA_VERSION,
+					got:      info.metadata.blob_schema_version,
+				}
+				.into(),
+			);
 		}
 
 		// The blob body is the *immutable* content. `Resolved` state is mutable
@@ -90,8 +93,8 @@ impl BlobStore for ObjectStoreBlobStore {
 			None
 		};
 
-		let bytes = bincode::serialize(&canonical)
-			.map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
+		let bytes =
+			bincode::serialize(&canonical).map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
 
 		// Content address: identical content yields the same ref, so puts are
 		// idempotent and the ref doubles as an integrity check.
@@ -121,11 +124,13 @@ impl BlobStore for ObjectStoreBlobStore {
 		let mut info: BlobInfo =
 			bincode::deserialize(&bytes).map_err(|e| BlobStoreError::Deserialize(Box::new(e)))?;
 		if info.metadata.blob_schema_version != BLOB_SCHEMA_VERSION {
-			return Err(BlobStoreError::SchemaVersionMismatch {
-				expected: BLOB_SCHEMA_VERSION,
-				got:      info.metadata.blob_schema_version,
-			}
-			.into());
+			return Err(
+				BlobStoreError::SchemaVersionMismatch {
+					expected: BLOB_SCHEMA_VERSION,
+					got:      info.metadata.blob_schema_version,
+				}
+				.into(),
+			);
 		}
 
 		// Overlay the mutable resolution sidecar: if present, the blob is Resolved
@@ -313,8 +318,7 @@ mod object_store_tests {
 		let store = ObjectStoreBlobStore::local(tmp.path().to_path_buf()).unwrap();
 		let blob_ref = store.put(&make_blob("body", BLOB_SCHEMA_VERSION)).await.unwrap();
 
-		let body_before =
-			store.store.get(&blob_path(&blob_ref)).await.unwrap().bytes().await.unwrap();
+		let body_before = store.store.get(&blob_path(&blob_ref)).await.unwrap().bytes().await.unwrap();
 		assert!(
 			store.store.get(&resolution_path(&blob_ref)).await.is_err(),
 			"no sidecar before resolution"
@@ -323,8 +327,7 @@ mod object_store_tests {
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		store.update_resolution(&blob_ref, gid).await.unwrap();
 
-		let body_after =
-			store.store.get(&blob_path(&blob_ref)).await.unwrap().bytes().await.unwrap();
+		let body_after = store.store.get(&blob_path(&blob_ref)).await.unwrap().bytes().await.unwrap();
 		assert_eq!(body_before, body_after, "the blob body must not be rewritten");
 		let got = store.get(&blob_ref).await.unwrap();
 		assert_eq!(got.resolution.resolved_id().map(|g| g.0), Some(gid.0));
