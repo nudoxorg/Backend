@@ -1,6 +1,6 @@
 pub mod treesitter;
 
-use nudox_core::{BlobInfo, ByteSpan, ChunkMetadata, Embedder, EmbeddingPurpose, EmbeddingRecord, OccurrenceId, Result, SourceChunk, SymbolOrigin};
+use nudox_core::{BlobInfo, ByteSpan, ChunkMetadata, Embedder, EmbeddingPurpose, EmbeddingRecord, OccurrenceId, ResolutionState, Result, SourceChunk, SymbolOrigin};
 use uuid::Uuid;
 
 /// Raw input accepted by the pipeline before BlobInfo is assembled.
@@ -124,7 +124,7 @@ impl Pipeline {
 			occurrence_id,
 			symbol_name: input.symbol_name,
 			symbol_origin: input.symbol_origin,
-			resolved_global_id: None,
+			resolution: ResolutionState::Unresolved,
 			kind: None,
 			source,
 			embeddings,
@@ -176,7 +176,7 @@ mod tests {
 		let pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(8))], PipelineConfig::default());
 		let info = pipeline.process(make_input(None)).await.unwrap();
 		assert_eq!(info.symbol_name, "foo");
-		assert!(info.resolved_global_id.is_none());
+		assert_eq!(info.resolution, nudox_core::ResolutionState::Unresolved);
 		assert_eq!(info.embeddings.len(), 1);
 		let rec = &info.embeddings[0];
 		assert_eq!(rec.vector.len(), 8);

@@ -99,7 +99,7 @@ fn print_blob_summary(blob_ref: &nudox_core::BlobRef, info: &BlobInfo) {
 		"blob_ref={} symbol={} resolved_global_id={} embeddings={}",
 		blob_ref,
 		info.symbol_name,
-		info.resolved_global_id.map(|id| id.to_string()).unwrap_or_else(|| "<none>".into()),
+		info.resolution.resolved_id().map(|id| id.to_string()).unwrap_or_else(|| "<none>".into()),
 		info.embeddings.len()
 	);
 }

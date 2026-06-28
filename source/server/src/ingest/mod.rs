@@ -53,7 +53,7 @@ pub struct IngestTargets {
 	/// Local Tantivy full-text index backing `/text-search`.
 	pub text_index:   Option<Arc<SymbolTextIndex>>,
 	/// nudox-search orchestrator backing `/symbol-search`.
-	pub orchestrator: Option<Arc<orchestrator::Orchestrator>>,
+	pub orchestrator: Option<Arc<orchestrator::Orchestrator<orchestrator::WithSearcher>>>,
 }
 
 /// Generate IR for `package` off the async executor, project it once, and fan

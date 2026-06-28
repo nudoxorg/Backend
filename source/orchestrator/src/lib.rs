@@ -4,23 +4,34 @@ pub mod memory;
 #[cfg(test)]
 mod symbol_search_tests;
 
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
-use nudox_core::{BlobInfo, BlobStore, FutureParseQueue, GlobalSymbolId, GlobalSymbolStore, LibRef, ResolutionOutcome, ResolveLibReport, Result, SearchIndex, SymbolMatch, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
+use nudox_core::{BlobInfo, BlobStore, FutureParseQueue, GlobalSymbolId, GlobalSymbolStore, LibRef, ResolutionOutcome, ResolutionState, ResolveLibReport, Result, SearchIndex, SymbolMatch, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
 use tracing::instrument;
+
+/// Typestate marker: no symbol searcher has been attached.
+pub struct NoSearcher;
+/// Typestate marker: a symbol searcher has been attached; `search()` is available.
+pub struct WithSearcher;
 
 /// Routes ingested blobs to the appropriate backends and manages deferred
 /// symbol resolution.
-pub struct Orchestrator {
+///
+/// The type parameter `S` is a typestate marker. Use [`Orchestrator::new`] to
+/// get an `Orchestrator<NoSearcher>`, then call
+/// [`with_symbol_search`][Orchestrator::with_symbol_search] to obtain an
+/// `Orchestrator<WithSearcher>` on which `search()` is available.
+pub struct Orchestrator<S = NoSearcher> {
 	global_store:    Arc<dyn GlobalSymbolStore>,
 	blob_store:      Arc<dyn BlobStore>,
 	queue:           Arc<dyn FutureParseQueue>,
 	search:          Arc<dyn SearchIndex>,
 	vector:          Arc<dyn VectorIndex>,
 	symbol_searcher: Option<Arc<dyn SymbolSearch>>,
+	_state:          PhantomData<S>,
 }
 
-impl Orchestrator {
+impl Orchestrator<NoSearcher> {
 	/// Create a new orchestrator wiring all backends together.
 	pub fn new(
 		global_store: Arc<dyn GlobalSymbolStore>,
@@ -29,43 +40,52 @@ impl Orchestrator {
 		search: Arc<dyn SearchIndex>,
 		vector: Arc<dyn VectorIndex>,
 	) -> Self {
-		Self { global_store, blob_store, queue, search, vector, symbol_searcher: None }
-	}
-
-	/// Attach a symbol-search backend. Once set, `search()` is available.
-	pub fn with_symbol_search(mut self, searcher: Arc<dyn SymbolSearch>) -> Self {
-		self.symbol_searcher = Some(searcher);
-		self
-	}
-
-	/// Execute a compound symbol search.
-	///
-	/// Returns an error if no symbol-search backend has been attached via
-	/// `with_symbol_search`.
-	pub async fn search(&self, query: &SymbolQuery) -> Result<Vec<SymbolMatch>> {
-		match &self.symbol_searcher {
-			Some(s) => s.search(query).await,
-			None => Err(nudox_core::PipelineError::Stage(
-				Box::<dyn std::error::Error + Send + Sync + 'static>::from(
-					"no symbol searcher attached",
-				),
-			)
-			.into()),
+		Self {
+			global_store,
+			blob_store,
+			queue,
+			search,
+			vector,
+			symbol_searcher: None,
+			_state: PhantomData,
 		}
 	}
 
-	/// Index a blob whose `resolved_global_id` is already set. Callers mutate the
-	/// owned `BlobInfo` in place before calling, so this no longer deep-clones the
-	/// whole record (source text + embedding vectors) just to stamp one field.
+	/// Attach a symbol-search backend, returning an `Orchestrator<WithSearcher>`
+	/// on which `search()` is now callable.
+	pub fn with_symbol_search(self, searcher: Arc<dyn SymbolSearch>) -> Orchestrator<WithSearcher> {
+		Orchestrator {
+			global_store:    self.global_store,
+			blob_store:      self.blob_store,
+			queue:           self.queue,
+			search:          self.search,
+			vector:          self.vector,
+			symbol_searcher: Some(searcher),
+			_state:          PhantomData,
+		}
+	}
+}
+
+impl Orchestrator<WithSearcher> {
+	/// Execute a compound symbol search.
+	pub async fn search(&self, query: &SymbolQuery) -> Result<Vec<SymbolMatch>> {
+		// Safety: type invariant guarantees symbol_searcher is Some.
+		self.symbol_searcher.as_ref().unwrap().search(query).await
+	}
+}
+
+impl<S> Orchestrator<S> {
+	/// Index a blob whose resolution is `Resolved`. Callers set the resolution
+	/// in place before calling so this never deep-clones the whole record.
 	async fn index_resolved(
 		&self,
 		blob_ref: &nudox_core::BlobRef,
 		info: &BlobInfo,
 	) -> Result<()> {
-		let global_id = info
-			.resolved_global_id
-			.expect("index_resolved requires a blob with resolved_global_id set");
-
+		let global_id = match info.resolution {
+			ResolutionState::Resolved(gid) => gid,
+			_ => panic!("index_resolved called on a blob that is not Resolved"),
+		};
 		self.search.index(blob_ref, info).await?;
 		self.vector.upsert(blob_ref, global_id, &info.embeddings).await?;
 		Ok(())
@@ -75,38 +95,41 @@ impl Orchestrator {
 	/// outcome.
 	#[instrument(skip(self, info), fields(symbol = %info.symbol_name, occurrence_id = %info.occurrence_id))]
 	pub async fn ingest(&self, mut info: BlobInfo) -> Result<ResolutionOutcome> {
-		let blob_ref = self.blob_store.put(&info).await?;
-
 		// Honor a precomputed deterministic GlobalSymbolId (the cross-store
-		// identity spine: UUIDv5 of the Terminus entry URI). When set, it is the
-		// authoritative id for every store — never overwrite it with a fresh v4.
-		if let Some(global_id) = info.resolved_global_id {
+		// identity spine: UUIDv5 of the Terminus entry URI). When already Resolved
+		// it is the authoritative id — never overwrite with a fresh v4.
+		if let ResolutionState::Resolved(global_id) = info.resolution {
+			let blob_ref = self.blob_store.put(&info).await?;
 			self.global_store.associate(global_id, info.occurrence_id).await?;
 			self.index_resolved(&blob_ref, &info).await?;
 			return Ok(ResolutionOutcome::Resolved { global_id, blob_ref });
 		}
 
-		match &info.symbol_origin {
+		match info.symbol_origin.clone() {
 			SymbolOrigin::Repo { .. } => {
-				// Repo-local symbols are resolved immediately with a fresh global id.
+				let blob_ref = self.blob_store.put(&info).await?;
 				let global_id = GlobalSymbolId(uuid::Uuid::new_v4());
 				self.blob_store.update_resolution(&blob_ref, global_id).await?;
 				self.global_store.associate(global_id, info.occurrence_id).await?;
-				info.resolved_global_id = Some(global_id);
+				info.resolution = ResolutionState::Resolved(global_id);
 				self.index_resolved(&blob_ref, &info).await?;
 				Ok(ResolutionOutcome::Resolved { global_id, blob_ref })
 			}
 			SymbolOrigin::ExternalLib { lib } => {
-				let lib = lib.clone();
 				match self.global_store.lookup(&lib, &info.symbol_name).await? {
 					Some(global_id) => {
+						let blob_ref = self.blob_store.put(&info).await?;
 						self.blob_store.update_resolution(&blob_ref, global_id).await?;
 						self.global_store.associate(global_id, info.occurrence_id).await?;
-						info.resolved_global_id = Some(global_id);
+						info.resolution = ResolutionState::Resolved(global_id);
 						self.index_resolved(&blob_ref, &info).await?;
 						Ok(ResolutionOutcome::Resolved { global_id, blob_ref })
 					}
 					None => {
+						// Store the Deferred state in the blob body before putting so
+						// the persisted record knows which lib it is waiting for.
+						info.resolution = ResolutionState::Deferred(lib.clone());
+						let blob_ref = self.blob_store.put(&info).await?;
 						self.queue.enqueue(lib.clone(), blob_ref.clone()).await?;
 						Ok(ResolutionOutcome::Deferred { lib, blob_ref })
 					}
@@ -139,25 +162,22 @@ impl Orchestrator {
 
 		for blob_ref in &blob_refs {
 			let mut info = self.blob_store.get(blob_ref).await?;
-			match info.resolved_global_id {
-				Some(global_id) => {
-					// Tantivy never indexes the vectors, so move them out of the
-					// BlobInfo to avoid holding two copies of the embeddings.
-					let embeddings = std::mem::take(&mut info.embeddings);
-					vectors.push((blob_ref.clone(), global_id, embeddings));
-					docs.push((blob_ref.clone(), info));
-					blobs_resolved += 1;
+			if let ResolutionState::Resolved(global_id) = info.resolution {
+				// Tantivy never indexes the vectors, so move them out of the
+				// BlobInfo to avoid holding two copies of the embeddings.
+				let embeddings = std::mem::take(&mut info.embeddings);
+				vectors.push((blob_ref.clone(), global_id, embeddings));
+				docs.push((blob_ref.clone(), info));
+				blobs_resolved += 1;
 
-					if docs.len() >= REBUILD_BATCH {
-						self.search.index_many(&docs).await?;
-						self.vector.upsert_many(&vectors).await?;
-						docs.clear();
-						vectors.clear();
-					}
+				if docs.len() >= REBUILD_BATCH {
+					self.search.index_many(&docs).await?;
+					self.vector.upsert_many(&vectors).await?;
+					docs.clear();
+					vectors.clear();
 				}
-				None => {
-					blobs_skipped += 1;
-				}
+			} else {
+				blobs_skipped += 1;
 			}
 		}
 
@@ -180,8 +200,10 @@ impl Orchestrator {
 		for blob_ref in &blob_refs {
 			let mut info = self.blob_store.get(blob_ref).await?;
 
-			let lib_ref = match &info.symbol_origin {
-				SymbolOrigin::ExternalLib { lib } => lib.clone(),
+			// Use the stored ResolutionState to get the lib — more precise than
+			// inspecting symbol_origin, which can't distinguish deferred from unresolved.
+			let lib_ref = match &info.resolution {
+				ResolutionState::Deferred(lib) => lib.clone(),
 				_ => {
 					blobs_skipped += 1;
 					continue;
@@ -192,7 +214,7 @@ impl Orchestrator {
 				Some(global_id) => {
 					self.blob_store.update_resolution(blob_ref, global_id).await?;
 					self.global_store.associate(global_id, info.occurrence_id).await?;
-					info.resolved_global_id = Some(global_id);
+					info.resolution = ResolutionState::Resolved(global_id);
 					self.index_resolved(blob_ref, &info).await?;
 					blobs_resolved += 1;
 				}
@@ -221,18 +243,18 @@ mod disk_integration_tests {
 
 	fn make_blob(symbol_name: &str, origin: SymbolOrigin) -> BlobInfo {
 		BlobInfo {
-			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-			symbol_name:        symbol_name.to_string(),
-			symbol_origin:      origin,
-			resolved_global_id: None,
-			kind:               None,
-			source:             SourceChunk {
+			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+			symbol_name:   symbol_name.to_string(),
+			symbol_origin: origin,
+			resolution:    nudox_core::ResolutionState::Unresolved,
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        "fn placeholder() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 14 },
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
 				repo_id:             RepoId("test-repo".into()),
 				file_path:           std::path::PathBuf::from("src/lib.rs"),
 				file_span:           ByteSpan { start: 0, end: 19 },
@@ -273,7 +295,7 @@ mod disk_integration_tests {
 		{
 			ResolutionOutcome::Resolved { blob_ref, global_id } => {
 				let stored = blob_store.get(&blob_ref).await.unwrap();
-				assert_eq!(stored.resolved_global_id, Some(global_id));
+				assert_eq!(stored.resolution, nudox_core::ResolutionState::Resolved(global_id));
 				blob_ref
 			}
 			other => panic!("expected Resolved, got {other:?}"),
@@ -289,13 +311,13 @@ mod disk_integration_tests {
 			ResolutionOutcome::Deferred { blob_ref, .. } => blob_ref,
 			other => panic!("expected Deferred, got {other:?}"),
 		};
-		assert!(blob_store.get(&tokio_blob_ref).await.unwrap().resolved_global_id.is_none());
+		assert!(blob_store.get(&tokio_blob_ref).await.unwrap().resolution.resolved_id().is_none());
 
 		// Register tokio and resolve the deferred queue.
 		store.register_library("rust", "tokio", "1.0.0", ["Entry/rust/tokio/spawn"]).await.unwrap();
 		let report = orchestrator.resolve_lib(&tokio_lib).await.unwrap();
 		assert_eq!(report.blobs_resolved, 1);
-		assert!(blob_store.get(&tokio_blob_ref).await.unwrap().resolved_global_id.is_some());
+		assert!(blob_store.get(&tokio_blob_ref).await.unwrap().resolution.resolved_id().is_some());
 
 		// rebuild_indexes should re-index both resolved blobs from disk.
 		let report2 = orchestrator.rebuild_indexes().await.unwrap();
@@ -367,7 +389,7 @@ mod disk_integration_tests {
 		// Blob file is still readable.
 		let got = blob_store.get(&serde_blob_ref).await.unwrap();
 		assert_eq!(got.symbol_name, "Serialize");
-		assert!(got.resolved_global_id.is_some());
+		assert!(got.resolution.resolved_id().is_some());
 
 		// SQLite symbol registration persisted.
 		let lib = LibRef { name: "serde".into(), version: "1.0.0".into() };
@@ -387,10 +409,10 @@ mod disk_integration_tests {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Arc;
+	use std::{num::NonZeroUsize, sync::Arc};
 
 	use blobstore::InMemoryBlobStore;
-	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, GlobalSymbolQuery, Language, OccurrenceId, RepoId, SourceChunk, SymbolOrigin};
+	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, Criteria, GlobalSymbolQuery, Language, NamePattern, OccurrenceId, RepoId, ResolutionState, SourceChunk, SymbolOrigin};
 	use search::{InMemorySearchIndex, InMemoryVectorIndex};
 
 	use super::*;
@@ -408,7 +430,7 @@ mod tests {
 		}
 	}
 
-	fn make_orchestrator() -> Orchestrator {
+	fn make_orchestrator() -> Orchestrator<NoSearcher> {
 		Orchestrator::new(
 			Arc::new(InMemoryGlobalSymbolStore::new()),
 			Arc::new(InMemoryBlobStore::new()),
@@ -423,18 +445,18 @@ mod tests {
 		use nudox_core::{BlobInfo, OccurrenceId, RepoId, SymbolMatch, SymbolOrigin};
 
 		let dummy_blob = BlobInfo {
-			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-			symbol_name:        "dummy".to_string(),
-			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId("r".into()) },
-			resolved_global_id: None,
-			kind:               None,
-			source:             SourceChunk {
+			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+			symbol_name:   "dummy".to_string(),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("r".into()) },
+			resolution:    ResolutionState::Unresolved,
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        "fn dummy() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 8 },
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
 				repo_id:             RepoId("r".into()),
 				file_path:           std::path::PathBuf::from("src/lib.rs"),
 				file_span:           ByteSpan { start: 0, end: 13 },
@@ -450,17 +472,20 @@ mod tests {
 		let orchestrator =
 			make_orchestrator().with_symbol_search(Arc::new(MockSearcher(expected.clone())));
 
-		let results = orchestrator.search(&SymbolQuery::default()).await.unwrap();
+		let query = SymbolQuery {
+			criteria:          Criteria::Name(NamePattern("dummy".to_string())),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
+			limit:             NonZeroUsize::new(20).unwrap(),
+		};
+		let results = orchestrator.search(&query).await.unwrap();
 		assert_eq!(results.len(), expected.len());
 		assert_eq!(results[0].blob.symbol_name, expected[0].blob.symbol_name);
 	}
 
-	#[tokio::test]
-	async fn search_without_searcher_returns_error() {
-		let orchestrator = make_orchestrator();
-		let result = orchestrator.search(&SymbolQuery::default()).await;
-		assert!(result.is_err(), "expected Err when no searcher is attached");
-	}
+	// Note: search_without_searcher_returns_error is removed — the typestate
+	// makes calling search() on Orchestrator<NoSearcher> a compile error.
 
 	#[tokio::test]
 	async fn in_memory_global_symbol_query_returns_occurrences() {
@@ -484,18 +509,18 @@ mod tests {
 
 	fn make_blob_info(symbol_name: &str, origin: SymbolOrigin) -> BlobInfo {
 		BlobInfo {
-			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-			symbol_name:        symbol_name.to_string(),
-			symbol_origin:      origin,
-			resolved_global_id: None,
-			kind:               None,
-			source:             SourceChunk {
+			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+			symbol_name:   symbol_name.to_string(),
+			symbol_origin: origin,
+			resolution:    ResolutionState::Unresolved,
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        "fn placeholder() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 14 },
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
 				repo_id:             RepoId("test-repo".into()),
 				file_path:           std::path::PathBuf::from("src/lib.rs"),
 				file_span:           ByteSpan { start: 0, end: 19 },
@@ -548,8 +573,8 @@ mod tests {
 			other => panic!("expected Resolved, got {:?}", other),
 		};
 		assert_eq!(
-			blob_store_handle.get(&serde_blob_ref).await.unwrap().resolved_global_id,
-			Some(serde_global_id)
+			blob_store_handle.get(&serde_blob_ref).await.unwrap().resolution,
+			ResolutionState::Resolved(serde_global_id)
 		);
 		let serde_entry = search_handle
 			.entries()
@@ -580,8 +605,8 @@ mod tests {
 		assert_eq!(report.blobs_resolved, 1);
 		assert_eq!(report.blobs_skipped, 0);
 		assert_eq!(
-			blob_store_handle.get(&tokio_blob_ref).await.unwrap().resolved_global_id,
-			Some(tokio_global_id)
+			blob_store_handle.get(&tokio_blob_ref).await.unwrap().resolution,
+			ResolutionState::Resolved(tokio_global_id)
 		);
 		let tokio_entry = search_handle
 			.entries()

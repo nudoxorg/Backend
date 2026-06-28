@@ -37,7 +37,7 @@ impl BlobStore for InMemoryBlobStore {
 		let mut map = self.inner.lock().expect("mutex poisoned");
 		let info =
 			map.get_mut(blob_ref).ok_or(nudox_core::Error::BlobStore(BlobStoreError::NotFound))?;
-		info.resolved_global_id = Some(global_id);
+		info.resolution = nudox_core::ResolutionState::Resolved(global_id);
 		Ok(())
 	}
 
@@ -55,18 +55,18 @@ mod tests {
 
 	fn make_blob_info(symbol_name: &str) -> BlobInfo {
 		BlobInfo {
-			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-			symbol_name:        symbol_name.to_string(),
-			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId("test".into()) },
-			resolved_global_id: None,
-			kind:               None,
-			source:             SourceChunk {
+			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+			symbol_name:   symbol_name.to_string(),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("test".into()) },
+			resolution:    nudox_core::ResolutionState::Unresolved,
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        "fn foo() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 6 },
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
 				repo_id:             RepoId("test".into()),
 				file_path:           std::path::PathBuf::from("src/lib.rs"),
 				file_span:           ByteSpan { start: 0, end: 11 },
@@ -95,13 +95,13 @@ mod tests {
 		let info = make_blob_info("another_symbol");
 
 		let blob_ref = store.put(&info).await.expect("put failed");
-		assert!(store.get(&blob_ref).await.unwrap().resolved_global_id.is_none());
+		assert!(store.get(&blob_ref).await.unwrap().resolution.resolved_id().is_none());
 
 		let global_id = GlobalSymbolId(uuid::Uuid::new_v4());
 		store.update_resolution(&blob_ref, global_id).await.expect("update_resolution failed");
 
 		let updated = store.get(&blob_ref).await.expect("get after update failed");
-		assert_eq!(updated.resolved_global_id, Some(global_id));
+		assert_eq!(updated.resolution, nudox_core::ResolutionState::Resolved(global_id));
 	}
 
 	#[tokio::test]

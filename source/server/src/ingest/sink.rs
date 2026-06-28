@@ -163,7 +163,7 @@ impl SymbolSink for TextIndexSink {
 // ── Symbol-search orchestrator (/symbol-search) ─────────────────────────────
 
 pub struct OrchestratorSink {
-	pub orchestrator: Arc<orchestrator::Orchestrator>,
+	pub orchestrator: Arc<orchestrator::Orchestrator<orchestrator::WithSearcher>>,
 	/// Pre-computed once in `finalize_pipeline`; carried here so `accept` is
 	/// pure I/O with no identity re-derivation.
 	pub identity:     Identity,

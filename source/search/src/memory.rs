@@ -46,7 +46,7 @@ impl SearchIndex for InMemorySearchIndex {
 			blob_ref:           blob_ref.clone(),
 			symbol_name:        info.symbol_name.clone(),
 			occurrence_id:      info.occurrence_id,
-			resolved_global_id: info.resolved_global_id,
+			resolved_global_id: info.resolution.resolved_id(),
 		};
 		self.entries.lock().unwrap().insert(info.occurrence_id, entry);
 		Ok(())
@@ -191,18 +191,18 @@ mod tests {
 	fn make_blob_info() -> (BlobRef, BlobInfo) {
 		let blob_ref = BlobRef("test-blob-1".to_string());
 		let info = BlobInfo {
-			occurrence_id:      OccurrenceId(Uuid::new_v4()),
-			symbol_name:        "my_crate::MyStruct".to_string(),
-			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId("repo-abc".to_string()) },
-			resolved_global_id: None,
-			kind:               None,
-			source:             SourceChunk {
+			occurrence_id: OccurrenceId(Uuid::new_v4()),
+			symbol_name:   "my_crate::MyStruct".to_string(),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("repo-abc".to_string()) },
+			resolution:    nudox_core::ResolutionState::Unresolved,
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        "struct MyStruct {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 0, end: 18 },
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
 				repo_id:             RepoId("repo-abc".to_string()),
 				file_path:           "src/lib.rs".into(),
 				file_span:           ByteSpan { start: 0, end: 18 },
@@ -267,7 +267,7 @@ mod tests {
 
 		let index = InMemorySearchIndex::new();
 		let (blob_ref, mut info) = make_blob_info();
-		info.resolved_global_id = Some(GlobalSymbolId(Uuid::new_v4()));
+		info.resolution = nudox_core::ResolutionState::Resolved(GlobalSymbolId(Uuid::new_v4()));
 		index.index(&blob_ref, &info).await.unwrap();
 
 		let hits = index.search("MyStruct", 10).await.unwrap();
@@ -283,7 +283,7 @@ mod tests {
 		let index = InMemorySearchIndex::new();
 		let (blob_ref, mut info) = make_blob_info();
 		let gid = GlobalSymbolId(Uuid::new_v4());
-		info.resolved_global_id = Some(gid);
+		info.resolution = nudox_core::ResolutionState::Resolved(gid);
 		index.index(&blob_ref, &info).await.unwrap();
 
 		let hits = index.find_by_global_id(gid, 10).await.unwrap();

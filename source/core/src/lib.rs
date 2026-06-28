@@ -18,4 +18,6 @@ pub use types::*;
 /// Current BlobInfo schema version. Bump on any change to BlobInfo fields.
 ///
 /// v2: `EmbeddingRecord` gained `model_type: ModelType`.
-pub const BLOB_SCHEMA_VERSION: u32 = 2;
+/// v3: `resolved_global_id: Option<GlobalSymbolId>` replaced by `resolution: ResolutionState`;
+///     `SymbolQuery` gained `Criteria` + `NonZeroUsize` limit.
+pub const BLOB_SCHEMA_VERSION: u32 = 3;

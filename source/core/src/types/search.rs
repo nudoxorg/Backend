@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use serde::{Deserialize, Serialize};
 use crate::{BlobRef, GlobalSymbolId, OccurrenceId, RepoId};
 use super::primitives::{Language, SymbolKind};
@@ -69,41 +71,46 @@ pub enum CombineMode {
 	And,
 }
 
+/// A case-insensitive name-substring criterion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct NamePattern(pub String);
+
+/// The search criteria for a symbol query. An empty query (no criteria) is
+/// unrepresentable — every query must declare at least one criterion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Criteria {
+	/// Match by name-substring only.
+	Name(NamePattern),
+	/// Match by semantic body query only (natural language or code snippet).
+	Body(BodyQuery),
+	/// Match by both name and body, combined by `combine`.
+	Both {
+		/// The name-substring criterion.
+		name:    NamePattern,
+		/// The semantic body criterion.
+		body:    BodyQuery,
+		/// How to combine the two sets of hits.
+		combine: CombineMode,
+	},
+}
+
+fn default_limit() -> NonZeroUsize { NonZeroUsize::new(20).unwrap() }
+
 /// A compound query for symbol search.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolQuery {
-	/// Optional name pattern (substring match; case-insensitive).
-	pub name_pattern:      Option<String>,
-	/// Optional semantic body query (natural language or code snippet).
-	pub body_query:        Option<BodyQuery>,
+	/// The active search criterion or criteria.
+	pub criteria:          Criteria,
 	/// Optional scope filter restricting by language or repository.
 	pub scope:             Option<ScopeFilter>,
 	/// Optional kind filter restricting the symbol type.
 	pub kind:              Option<SymbolKind>,
 	/// Optional filter on the number of known occurrences.
 	pub occurrence_filter: Option<OccurrenceFilter>,
-	/// How to combine `name_pattern` and `body_query` results.
-	#[serde(default)]
-	pub combine:           CombineMode,
-	/// Maximum number of results to return.
+	/// Maximum number of results to return (must be non-zero; defaults to 20).
 	#[serde(default = "default_limit")]
-	pub limit:             usize,
-}
-
-fn default_limit() -> usize { 20 }
-
-impl Default for SymbolQuery {
-	fn default() -> Self {
-		Self {
-			name_pattern:      None,
-			body_query:        None,
-			scope:             None,
-			kind:              None,
-			occurrence_filter: None,
-			combine:           CombineMode::Or,
-			limit:             20,
-		}
-	}
+	pub limit:             NonZeroUsize,
 }
 
 /// A single result returned by symbol search.

@@ -192,7 +192,7 @@ async fn symbol_search(
 	State(state): State<QueryState>,
 	Json(query): Json<nudox_core::SymbolQuery>,
 ) -> Result<Json<Vec<SymbolMatchResponse>>, AppError> {
-	if query.body_query.is_some() {
+	if matches!(query.criteria, nudox_core::Criteria::Body(_) | nudox_core::Criteria::Both { .. }) {
 		return Err(AppError::NotImplemented {
 			message: "body_query requires embeddings which are not yet configured; \
 			          omit body_query and use name_pattern, scope, or kind instead"

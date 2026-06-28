@@ -77,11 +77,18 @@ impl BlobStore for ObjectStoreBlobStore {
 			.into());
 		}
 
-		// The blob body is the *immutable* content. Resolution is mutable and lives
-		// in the sidecar, so it is excluded from both the stored bytes and the
-		// content hash — re-resolving a blob never rewrites or re-keys it.
+		// The blob body is the *immutable* content. `Resolved` state is mutable
+		// and lives in the sidecar; strip it to `Unresolved` before hashing so
+		// re-resolving never rewrites or re-keys the blob.  `Deferred(lib)` IS
+		// part of the immutable content (it is set before put() and identifies
+		// which library this occurrence is waiting for).
 		let mut canonical = info.clone();
-		let resolution = canonical.resolved_global_id.take();
+		let global_id = if let nudox_core::ResolutionState::Resolved(gid) = canonical.resolution {
+			canonical.resolution = nudox_core::ResolutionState::Unresolved;
+			Some(gid)
+		} else {
+			None
+		};
 
 		let bytes = bincode::serialize(&canonical)
 			.map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
@@ -96,8 +103,8 @@ impl BlobStore for ObjectStoreBlobStore {
 			.await
 			.map_err(|e| BlobStoreError::Put(Box::new(e)))?;
 
-		if let Some(global_id) = resolution {
-			self.write_resolution(&blob_ref, global_id).await?;
+		if let Some(gid) = global_id {
+			self.write_resolution(&blob_ref, gid).await?;
 		}
 
 		Ok(blob_ref)
@@ -121,9 +128,10 @@ impl BlobStore for ObjectStoreBlobStore {
 			.into());
 		}
 
-		// Overlay the mutable resolution sidecar, if one has been written.
+		// Overlay the mutable resolution sidecar: if present, the blob is Resolved
+		// regardless of what the body says (Deferred/Unresolved gets upgraded here).
 		if let Some(global_id) = self.read_resolution(blob_ref).await? {
-			info.resolved_global_id = Some(global_id);
+			info.resolution = nudox_core::ResolutionState::Resolved(global_id);
 		}
 
 		Ok(info)
@@ -166,18 +174,18 @@ mod object_store_tests {
 
 	fn make_blob(symbol_name: &str, schema_version: u32) -> BlobInfo {
 		BlobInfo {
-			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-			symbol_name:        symbol_name.into(),
-			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId("test-repo".into()) },
-			resolved_global_id: None,
-			kind:               None,
-			source:             SourceChunk {
+			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+			symbol_name:   symbol_name.into(),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("test-repo".into()) },
+			resolution:    nudox_core::ResolutionState::Unresolved,
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        "fn x() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 4 },
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
 				repo_id:             RepoId("test-repo".into()),
 				file_path:           "src/lib.rs".into(),
 				file_span:           ByteSpan { start: 0, end: 9 },
@@ -210,7 +218,7 @@ mod object_store_tests {
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		store.update_resolution(&blob_ref, gid).await.unwrap();
 		let got = store.get(&blob_ref).await.unwrap();
-		assert_eq!(got.resolved_global_id.map(|g| g.0), Some(gid.0));
+		assert_eq!(got.resolution.resolved_id().map(|g| g.0), Some(gid.0));
 	}
 
 	#[tokio::test]
@@ -263,7 +271,7 @@ mod object_store_tests {
 		let got = store2.get(&blob_ref).await.unwrap();
 		assert_eq!(got.symbol_name, "persistent_fn");
 		assert_eq!(got.occurrence_id.0, occurrence_id.0);
-		assert_eq!(got.resolved_global_id.map(|g| g.0), Some(gid.0));
+		assert_eq!(got.resolution.resolved_id().map(|g| g.0), Some(gid.0));
 		let refs = store2.list().await.unwrap();
 		assert_eq!(refs.len(), 1);
 		assert_eq!(refs[0], blob_ref);
@@ -293,7 +301,7 @@ mod object_store_tests {
 		let mut info = make_blob("res", BLOB_SCHEMA_VERSION);
 
 		let unresolved = store.put(&info).await.unwrap();
-		info.resolved_global_id = Some(GlobalSymbolId(uuid::Uuid::new_v4()));
+		info.resolution = nudox_core::ResolutionState::Resolved(GlobalSymbolId(uuid::Uuid::new_v4()));
 		let resolved = store.put(&info).await.unwrap();
 
 		assert_eq!(unresolved, resolved);
@@ -319,7 +327,7 @@ mod object_store_tests {
 			store.store.get(&blob_path(&blob_ref)).await.unwrap().bytes().await.unwrap();
 		assert_eq!(body_before, body_after, "the blob body must not be rewritten");
 		let got = store.get(&blob_ref).await.unwrap();
-		assert_eq!(got.resolved_global_id.map(|g| g.0), Some(gid.0));
+		assert_eq!(got.resolution.resolved_id().map(|g| g.0), Some(gid.0));
 	}
 
 	#[tokio::test]

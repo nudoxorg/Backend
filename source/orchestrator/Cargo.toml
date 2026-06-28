@@ -24,3 +24,7 @@ embed = { path = "../embed" }
 pipeline = { path = "../pipeline" }
 store = { path = "../store" }
 tempfile = "3"
+
+[[test]]
+name = "symbol_search"
+required-features = ["memory-backends"]

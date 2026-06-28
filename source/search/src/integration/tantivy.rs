@@ -85,7 +85,7 @@ impl SearchIndex for TantivySearchIndex {
 			SymbolOrigin::Repo { repo_id } => (String::new(), String::new(), repo_id.0.clone()),
 			SymbolOrigin::ExternalLib { lib } => (lib.name.clone(), lib.version.clone(), String::new()),
 		};
-		let global_id_str = info.resolved_global_id.map(|g| g.to_string()).unwrap_or_default();
+		let global_id_str = info.resolution.resolved_id().map(|g| g.to_string()).unwrap_or_default();
 
 		let mut doc = TantivyDocument::new();
 		doc.add_text(self.fields.occurrence_id, info.occurrence_id.to_string());
@@ -125,7 +125,7 @@ impl SearchIndex for TantivySearchIndex {
 				SymbolOrigin::Repo { repo_id } => (String::new(), String::new(), repo_id.0.clone()),
 				SymbolOrigin::ExternalLib { lib } => (lib.name.clone(), lib.version.clone(), String::new()),
 			};
-			let global_id_str = info.resolved_global_id.map(|g| g.to_string()).unwrap_or_default();
+			let global_id_str = info.resolution.resolved_id().map(|g| g.to_string()).unwrap_or_default();
 			let occurrence_id = info.occurrence_id.to_string();
 
 			let mut doc = TantivyDocument::new();
@@ -248,7 +248,7 @@ mod tests {
 			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
 			symbol_name:        symbol.into(),
 			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId(repo.into()) },
-			resolved_global_id: None,
+			resolution:    nudox_core::ResolutionState::Unresolved,
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "fn x() {}".into(),
@@ -275,7 +275,7 @@ mod tests {
 			symbol_origin:      SymbolOrigin::ExternalLib {
 				lib: LibRef { name: name.into(), version: "1.0.0".into() },
 			},
-			resolved_global_id: None,
+			resolution:    nudox_core::ResolutionState::Unresolved,
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        format!("use {name}::{symbol};").into(),
@@ -358,7 +358,7 @@ mod tests {
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
 		let mut info = blob_for_lib("serde", "Serialize");
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
-		info.resolved_global_id = Some(gid);
+		info.resolution = nudox_core::ResolutionState::Resolved(gid);
 		ix.index(&BlobRef("r".into()), &info).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
@@ -408,7 +408,7 @@ mod tests {
 		let tmp = TempDir::new().unwrap();
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
 		let info = blob_for_lib("serde", "Serialize");
-		assert!(info.resolved_global_id.is_none());
+		assert_eq!(info.resolution, nudox_core::ResolutionState::Unresolved);
 		ix.index(&BlobRef("r".into()), &info).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
@@ -429,7 +429,7 @@ mod tests {
 		// First index with no global_id (deferred).
 		ix.index(&BlobRef("r".into()), &info).await.unwrap();
 		// Re-index after resolution with a global_id.
-		info.resolved_global_id = Some(GlobalSymbolId(uuid::Uuid::new_v4()));
+		info.resolution = nudox_core::ResolutionState::Resolved(GlobalSymbolId(uuid::Uuid::new_v4()));
 		ix.index(&BlobRef("r".into()), &info).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
@@ -500,7 +500,7 @@ mod tests {
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		let mut info = blob_for_lib("serde", "Serialize");
-		info.resolved_global_id = Some(gid);
+		info.resolution = nudox_core::ResolutionState::Resolved(gid);
 		ix.index(&BlobRef("r1".into()), &info).await.unwrap();
 
 		// Different symbol, no global_id.

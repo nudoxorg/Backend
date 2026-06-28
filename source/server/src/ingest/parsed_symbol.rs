@@ -10,7 +10,7 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use ir::entry::{Entry, Index};
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language, LibRef, OccurrenceId, RepoId, ResolutionState, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use pipeline::treesitter::parse_and_extract;
 
 use identity::{EntryUri, compute_symbol_id, path::{fq_name, nudox_path_to_str}};
@@ -185,20 +185,20 @@ impl ParsedSymbol {
 	/// `Local` falls back to a `Repo` origin so the no-Terminus `/symbol-search`
 	/// path still resolves and indexes immediately.
 	pub fn to_blob_info(&self, coord: &PackageCoord, identity: &Identity) -> BlobInfo {
-		let (symbol_origin, resolved_global_id): (SymbolOrigin, Option<GlobalSymbolId>) =
+		let (symbol_origin, resolution): (SymbolOrigin, ResolutionState) =
 			match identity {
 				Identity::Deterministic { instance } => (
 					SymbolOrigin::ExternalLib { lib: coord.lib_ref() },
-					Some(compute_symbol_id(instance, &self.entry_uri)),
+					ResolutionState::Resolved(compute_symbol_id(instance, &self.entry_uri)),
 				),
-				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, None),
+				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, ResolutionState::Unresolved),
 			};
 
 		BlobInfo {
 			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 			symbol_name: self.fq_name.clone(),
 			symbol_origin,
-			resolved_global_id,
+			resolution,
 			kind: Some(self.kind),
 			source: SourceChunk {
 				raw_code:        self.raw_code.clone(),
