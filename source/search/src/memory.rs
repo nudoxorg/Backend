@@ -112,6 +112,7 @@ impl SearchQuery for InMemorySearchIndex {
 
 /// In-memory vector index for use in tests.
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct InMemoryVectorIndex {
 	points: Arc<Mutex<HashMap<String, (GlobalSymbolId, Vec<EmbeddingRecord>)>>>,
 }

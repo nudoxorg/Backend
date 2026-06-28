@@ -114,8 +114,7 @@ impl RustdocParser {
 				}
 				Err(e) => {
 					if let ParseError::CircularDependency { .. } = e {
-					} else {
-					}
+					} 
 				}
 			}
 		}
@@ -383,7 +382,7 @@ impl ParseContext {
 				hs.remove(&path);
 				hs
 			})
-			.and_then(|hs| if hs.is_empty() { None } else { Some(hs) });
+			.filter(|hs| !hs.is_empty());
 		let visibility = self.parse_visibility(&item.visibility);
 		let documentation = item.docs.clone();
 		let kind = self.parse_item_kind(state, id, &item.inner)?;
@@ -1217,7 +1216,7 @@ impl ParseContext {
 					.as_ref()
 					.map(|ga| self.parse_generic_args(ga))
 					.transpose()?
-					.and_then(|v| if v.is_empty() { None } else { Some(v) });
+					.filter(|v| !v.is_empty());
 
 				Ok(Type::QualifiedPath(QualifiedPath {
 					name:              name.clone(),
@@ -1236,7 +1235,7 @@ impl ParseContext {
 			.as_ref()
 			.map(|ga| self.parse_generic_args(ga))
 			.transpose()?
-			.and_then(|v| if v.is_empty() { None } else { Some(v) });
+			.filter(|v| !v.is_empty());
 
 		Ok(TypeReference { identifier: path_str.clone(), generic_args })
 	}

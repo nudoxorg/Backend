@@ -30,6 +30,7 @@ orchestrator = { path = "../orchestrator", features = ["memory-backends"] }
 pipeline      = { path = "../pipeline" }
 rust-parser   = { path = "../parsers/rust" }
 ts-parser = { path = "../parsers/typescript" }
+ir-types = { workspace = true }
 uuid            = { workspace = true }
 chrono          = { workspace = true }
 arborium = { workspace = true, features = ["lang-rust"] }

@@ -152,7 +152,7 @@ pub fn materialize_commit(
 	})?;
 	let mut options = repo
 		.checkout_options(gix_worktree::stack::state::attributes::Source::IdMapping)
-		.map_err(|source| GitError::CheckoutOptions(source))?;
+		.map_err(GitError::CheckoutOptions)?;
 	options.destination_is_initially_empty = true;
 	options.overwrite_existing = true;
 
@@ -165,7 +165,7 @@ pub fn materialize_commit(
 		&gix::interrupt::IS_INTERRUPTED,
 		options,
 	)
-	.map_err(|source| GitError::Materialize(source))?;
+	.map_err(GitError::Materialize)?;
 
 	Ok(())
 }

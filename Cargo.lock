@@ -4046,6 +4046,7 @@ dependencies = [
  "identity",
  "insta",
  "ir",
+ "ir-types",
  "jiff",
  "lang-types",
  "nudox-core",

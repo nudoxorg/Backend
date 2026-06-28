@@ -16,11 +16,10 @@ pub fn walk_references(
 		let node = cursor.node();
 		let parent_kind = node.parent().map(|p| p.kind());
 		let span = node.byte_range();
-		if let Ok(name) = node.utf8_text(source.as_bytes()) {
-			if let Some(rr) = classify(name, node.kind(), parent_kind, span.clone()) {
+		if let Ok(name) = node.utf8_text(source.as_bytes())
+			&& let Some(rr) = classify(name, node.kind(), parent_kind, span.clone()) {
 				references.push(rr);
 			}
-		}
 
 		if cursor.goto_first_child() {
 			continue;

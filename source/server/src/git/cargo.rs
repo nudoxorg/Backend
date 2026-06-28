@@ -326,8 +326,10 @@ mod tests {
 	use std::{fs, path::Path, process::Command};
 
 	use tempfile::TempDir;
+	use url::Url;
 
 	use super::*;
+	use crate::git::open_or_clone_repository;
 
 	#[test]
 	fn check_package_version_uses_workspace_inherited_version() -> Result<(), Box<dyn std::error::Error>> {

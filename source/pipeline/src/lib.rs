@@ -103,8 +103,8 @@ impl Pipeline {
 				vector:     code_vec,
 			});
 
-			if self.config.embed_docstrings {
-				if let Some(doc) = &input.docstring {
+			if self.config.embed_docstrings
+				&& let Some(doc) = &input.docstring {
 					let doc_chunk = SourceChunk {
 						raw_code:        doc.clone(),
 						treesitter_repr: None,
@@ -118,7 +118,6 @@ impl Pipeline {
 						vector:     doc_vec,
 					});
 				}
-			}
 		}
 
 		Ok(BlobInfo {

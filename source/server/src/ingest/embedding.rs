@@ -301,7 +301,7 @@ async fn collect_embedded_record(
 		.map_err(|source| EmbeddingError::TaskJoin { source })??;
 	out[index] = Some(record);
 	*completed += 1;
-	if *completed == total || total <= 50 || *completed % 10 == 0 {
+	if *completed == total || total <= 50 || (*completed).is_multiple_of(10) {
 		on_progress(EmbeddingProgress { completed: *completed, total });
 		info!(completed = *completed, total, "embedding progress");
 	}

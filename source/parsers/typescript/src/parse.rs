@@ -1549,7 +1549,7 @@ impl TsDocParser {
 							.collect::<Result<Vec<_>>>()
 					})
 					.transpose()?
-					.and_then(|v| if v.is_empty() { None } else { Some(v) });
+					.filter(|v| !v.is_empty());
 
 				Ok(Type::TypeReference(TypeReference { identifier: value.type_name.clone(), generic_args }))
 			}
@@ -1658,7 +1658,7 @@ impl TsDocParser {
 							.collect::<Result<Vec<_>>>()
 					})
 					.transpose()?
-					.and_then(|v| if v.is_empty() { None } else { Some(v) });
+					.filter(|v| !v.is_empty());
 
 				Ok(Type::TypeReference(TypeReference { identifier: name, generic_args }))
 			}

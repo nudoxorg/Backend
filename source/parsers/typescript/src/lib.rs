@@ -513,20 +513,17 @@ fn resolve_package_documentation_roots(
 		}
 	}
 
-	let roots = if !preferred_declaration_roots.is_empty() && preferred_source_roots.is_empty() {
-		let declarations = expand_declaration_roots(package_root, &preferred_declaration_roots)?;
-		if declarations.is_empty() { preferred_declaration_roots } else { declarations }
-	} else if !preferred_declaration_roots.is_empty() {
+	let roots = if !preferred_declaration_roots.is_empty() {
 		let declarations = expand_declaration_roots(package_root, &preferred_declaration_roots)?;
 		if declarations.is_empty() { preferred_declaration_roots } else { declarations }
 	} else if !preferred_source_roots.is_empty() {
 		preferred_source_roots
 	} else {
 		let mut declarations = BTreeSet::new();
-		collect_matching_files(package_root, &DECLARATION_EXTENSIONS, &mut declarations)?;
+		collect_matching_files(package_root, DECLARATION_EXTENSIONS, &mut declarations)?;
 		if declarations.is_empty() {
 			let mut sources = BTreeSet::new();
-			collect_matching_files(package_root, &SOURCE_EXTENSIONS, &mut sources)?;
+			collect_matching_files(package_root, SOURCE_EXTENSIONS, &mut sources)?;
 			if sources.is_empty() { explicit } else { sources }
 		} else {
 			declarations
@@ -704,14 +701,13 @@ fn declaration_dependency_specifiers(content: &str) -> Vec<String> {
 			"import type ",
 			"export type ",
 		] {
-			if let Some(rest) = line.strip_prefix(prefix) {
-				if let Some(start) = rest.find('"').or_else(|| rest.find('\'')) {
+			if let Some(rest) = line.strip_prefix(prefix)
+				&& let Some(start) = rest.find('"').or_else(|| rest.find('\'')) {
 					let rest = &rest[start + 1..];
 					if let Some(end) = rest.find('"').or_else(|| rest.find('\'')) {
 						out.push(rest[..end].to_owned());
 					}
 				}
-			}
 		}
 	}
 	out

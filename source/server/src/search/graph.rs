@@ -91,11 +91,10 @@ fn collect_links(value: &JsonValue, relation: &str, out: &mut BTreeSet<(String, 
 				collect_links(nested, relation, out);
 			}
 		}
-		JsonValue::String(text) => {
-			if looks_like_internal_uri(text) {
+		JsonValue::String(text)
+			if looks_like_internal_uri(text) => {
 				out.insert((relation_name(relation), text.to_owned()));
 			}
-		}
 		_ => {}
 	}
 }

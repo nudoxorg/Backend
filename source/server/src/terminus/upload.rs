@@ -153,7 +153,7 @@ pub async fn upload_documents(
 			info!(commit = %commit_id, chunk_index = chunk_index + 1, "upload chunk committed");
 		}
 
-		for (_id, res) in result.iter() {
+		for res in result.values() {
 			match res {
 				terminusdb_client::TDBInsertInstanceResult::Inserted(_) => inserted += 1,
 				terminusdb_client::TDBInsertInstanceResult::AlreadyExists(_) => updated += 1,

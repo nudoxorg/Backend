@@ -84,13 +84,12 @@ impl QdrantVectorIndex {
 					VectorsConfig::Params(vp) => Some(vp.size),
 					_ => None,
 				});
-			if let Some(actual) = actual_dim {
-				if actual != vector_dim {
+			if let Some(actual) = actual_dim
+				&& actual != vector_dim {
 					return Err(VectorError::CreateCollection(
 						format!("dimension mismatch: embedder={vector_dim} collection={actual}; recreate the collection or change NUDOX_EMBED_DIM").into()
 					).into());
 				}
-			}
 			return Ok(());
 		}
 		let req = CreateCollectionBuilder::new(&self.collection).vectors_config(VectorsConfig::Params(

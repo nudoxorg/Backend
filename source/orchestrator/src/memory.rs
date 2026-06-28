@@ -5,6 +5,7 @@ use nudox_core::{BlobRef, FutureParseQueue, GlobalSymbolId, GlobalSymbolQuery, G
 
 /// In-memory implementation of [`GlobalSymbolStore`] for use in tests.
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct InMemoryGlobalSymbolStore {
 	/// `(lib_name, lib_version, symbol_name)` → [`GlobalSymbolId`]
 	symbols:      Arc<Mutex<HashMap<(String, String, String), GlobalSymbolId>>>,
@@ -67,6 +68,7 @@ impl GlobalSymbolQuery for InMemoryGlobalSymbolStore {
 
 /// In-memory implementation of [`FutureParseQueue`] for use in tests.
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct InMemoryFutureParseQueue {
 	// key: (lib_name, lib_version) → vec of BlobRefs
 	inner: Arc<Mutex<HashMap<(String, String), Vec<BlobRef>>>>,

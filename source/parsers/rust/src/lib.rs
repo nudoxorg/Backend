@@ -1,4 +1,4 @@
-use std::{collections::{BTreeSet, HashMap, VecDeque}, fs, io, path::PathBuf, process::{Command, ExitStatus}, time::Duration};
+use std::{collections::{BTreeSet, HashMap, VecDeque}, fs, io, path::{Path, PathBuf}, process::{Command, ExitStatus}, time::Duration};
 
 use cargo_metadata::{Metadata, MetadataCommand, Package as CargoPackage, PackageId};
 use crates_io_api::{AsyncClient, Crate};
@@ -283,7 +283,7 @@ fn cargo_metadata(code: &PathBuf) -> Result<Metadata, PackageError> {
 		.map_err(|source| PackageError::Metadata(source.to_string()))
 }
 
-fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &PathBuf) -> HashMap<String, String> {
+fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &Path) -> HashMap<String, String> {
 	let mut map = HashMap::new();
 	for (id, item) in &krate.index {
 		if !matches!(&item.inner, rustdoc_types::ItemEnum::Function(_)) {
@@ -299,7 +299,7 @@ fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &PathBuf) -> H
 		let raw: String = source
 			.lines()
 			.enumerate()
-			.filter(|(i, _)| *i + 1 >= span.begin.0 && *i + 1 <= span.end.0)
+			.filter(|(i, _)| *i + 1 >= span.begin.0 && *i < span.end.0)
 			.map(|(_, line)| line)
 			.collect::<Vec<_>>()
 			.join("\n");

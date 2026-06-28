@@ -189,7 +189,7 @@ impl ParsedSymbol {
 			match identity {
 				Identity::Deterministic { instance } => (
 					SymbolOrigin::ExternalLib { lib: coord.lib_ref() },
-					Some(compute_symbol_id(&**instance, &self.entry_uri)),
+					Some(compute_symbol_id(instance, &self.entry_uri)),
 				),
 				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, None),
 			};

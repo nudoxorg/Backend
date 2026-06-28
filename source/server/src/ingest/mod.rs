@@ -121,14 +121,13 @@ async fn finalize_pipeline(
 	}
 	// Language policy lives here, not in the sink: the orchestrator is
 	// Rust-only for now because only the Rust parser produces blob-level source.
-	if let Some(orch) = &targets.orchestrator {
-		if matches!(coord.language, nudox_core::Language::Rust) {
+	if let Some(orch) = &targets.orchestrator
+		&& matches!(coord.language, nudox_core::Language::Rust) {
 			sinks.push(Box::new(OrchestratorSink {
 				orchestrator: Arc::clone(orch),
 				identity:     identity.clone(),
 			}));
 		}
-	}
 	if let Some(terminus) = &config.terminus {
 		let schema = if config.upload_schema {
 			Some(serde_json::from_str::<Vec<serde_json::Value>>(include_str!("../../schema.json"))?)
