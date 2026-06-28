@@ -197,7 +197,7 @@ mod tests {
 			resolved_global_id: None,
 			kind:               None,
 			source:             SourceChunk {
-				raw_code:        "struct MyStruct {}".to_string(),
+				raw_code:        "struct MyStruct {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 0, end: 18 },
 			},

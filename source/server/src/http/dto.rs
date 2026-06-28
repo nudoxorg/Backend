@@ -31,7 +31,7 @@ impl From<SymbolMatch> for SymbolMatchResponse {
 			repo_id,
 			score: m.score,
 			occurrence_count: m.occurrences.len(),
-			snippet: m.blob.source.raw_code.clone(),
+			snippet: m.blob.source.raw_code.to_string(),
 		}
 	}
 }

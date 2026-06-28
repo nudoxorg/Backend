@@ -278,7 +278,7 @@ mod tests {
 			resolved_global_id: None,
 			kind:               None,
 			source:             SourceChunk {
-				raw_code:        format!("use {name}::{symbol};"),
+				raw_code:        format!("use {name}::{symbol};").into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 0, end: 1 },
 			},

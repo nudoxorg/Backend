@@ -1,7 +1,7 @@
 use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routing::{delete, get, post}};
 use tower_http::trace::TraceLayer;
 
-use super::{AppState, error::{AppError, ConfigError, IngestError}};
+use super::{AdminState, AppState, QueryState, error::{AppError, ConfigError, IngestError}};
 use super::dto::{ExpandQuery, HealthResponse, LookupQuery, RunSearchQuery, SearchQuery, SessionQuery, SymbolMatchResponse};
 use crate::{registry::{AddPackageOutcome, NewPackageRequest, PackageSnapshot}, search};
 
@@ -22,7 +22,7 @@ pub fn router(state: AppState) -> Router {
 		.with_state(state)
 }
 
-async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+async fn health(State(state): State<AdminState>) -> Json<HealthResponse> {
 	Json(HealthResponse {
 		status:           "ok",
 		tracked_packages: state.registry.package_count().await,
@@ -30,7 +30,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 }
 
 async fn text_search(
-	State(state): State<AppState>,
+	State(state): State<QueryState>,
 	Query(params): Query<SearchQuery>,
 ) -> Result<Json<search::SearchResponse>, AppError> {
 	let index = state
@@ -57,20 +57,20 @@ async fn text_search(
 }
 
 async fn list_packages(
-	State(state): State<AppState>,
+	State(state): State<AdminState>,
 ) -> Result<Json<Vec<PackageSnapshot>>, AppError> {
 	Ok(Json(state.registry.list_packages().await))
 }
 
 async fn get_package(
-	State(state): State<AppState>,
+	State(state): State<AdminState>,
 	Path(id): Path<u64>,
 ) -> Result<Json<PackageSnapshot>, AppError> {
 	Ok(Json(state.registry.get_package(id).await?))
 }
 
 async fn add_package(
-	State(state): State<AppState>,
+	State(state): State<AdminState>,
 	Json(request): Json<NewPackageRequest>,
 ) -> Result<(StatusCode, Json<PackageSnapshot>), AppError> {
 	match state.registry.add_package(request).await? {
@@ -80,14 +80,14 @@ async fn add_package(
 }
 
 async fn sync_package(
-	State(state): State<AppState>,
+	State(state): State<AdminState>,
 	Path(id): Path<u64>,
 ) -> Result<(StatusCode, Json<PackageSnapshot>), AppError> {
 	Ok((StatusCode::ACCEPTED, Json(state.registry.sync_package(id).await?)))
 }
 
 async fn search_docs(
-	State(state): State<AppState>,
+	State(state): State<QueryState>,
 	Query(params): Query<SearchQuery>,
 ) -> Result<Json<search::SearchResponse>, AppError> {
 	let client = state
@@ -127,7 +127,7 @@ impl<'a> LookupMode<'a> {
 }
 
 async fn lookup_symbol(
-	State(state): State<AppState>,
+	State(state): State<QueryState>,
 	Query(params): Query<LookupQuery>,
 ) -> Result<Json<search::LookupResponse>, AppError> {
 	let response = match LookupMode::from_params(&params)? {
@@ -140,7 +140,7 @@ async fn lookup_symbol(
 }
 
 async fn run_search(
-	State(state): State<AppState>,
+	State(state): State<QueryState>,
 	Query(params): Query<RunSearchQuery>,
 ) -> Result<Json<search::RunSearchResponse>, AppError> {
 	let client = state
@@ -161,7 +161,7 @@ async fn run_search(
 }
 
 async fn expand_symbol(
-	State(state): State<AppState>,
+	State(state): State<QueryState>,
 	Query(params): Query<ExpandQuery>,
 ) -> Result<Json<search::ExpandResponse>, AppError> {
 	let response = search::expand_symbol(
@@ -177,7 +177,7 @@ async fn expand_symbol(
 }
 
 async fn clear_session(
-	State(state): State<AppState>,
+	State(state): State<QueryState>,
 	Query(params): Query<SessionQuery>,
 ) -> Result<StatusCode, AppError> {
 	let session = params.session.trim();
@@ -189,7 +189,7 @@ async fn clear_session(
 }
 
 async fn symbol_search(
-	State(state): State<AppState>,
+	State(state): State<QueryState>,
 	Json(query): Json<nudox_core::SymbolQuery>,
 ) -> Result<Json<Vec<SymbolMatchResponse>>, AppError> {
 	if query.body_query.is_some() {

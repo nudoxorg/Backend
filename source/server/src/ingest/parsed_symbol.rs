@@ -68,7 +68,7 @@ pub struct ParsedSymbol {
 	/// Text fed to the embedding provider and the full-text index.
 	pub embedding_text:  String,
 	/// Source for blob storage / tree-sitter (best-effort; empty when no source).
-	pub raw_code:        String,
+	pub raw_code:        Arc<str>,
 	pub treesitter_repr: Option<TreesitterRepr>,
 	pub symbol_span:     ByteSpan,
 }
@@ -164,12 +164,12 @@ fn extract_source(
 				parse_and_extract(raw, Language::Rust, span, 80);
 			let symbol_span =
 				ByteSpan { start: 0, end: snippet.len().saturating_sub(snippet_span.start) };
-			SourceChunk { raw_code: snippet, treesitter_repr, symbol_span }
+			SourceChunk { raw_code: snippet.into(), treesitter_repr, symbol_span }
 		}
 		None => {
 			let len = embedding_text.len();
 			SourceChunk {
-				raw_code:        embedding_text.to_owned(),
+				raw_code:        embedding_text.into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 0, end: len },
 			}

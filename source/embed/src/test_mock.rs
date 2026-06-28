@@ -33,7 +33,7 @@ mod tests {
 	async fn mock_embedder_returns_correct_dimension() {
 		let embedder = MockEmbedder::new(128);
 		let chunk = SourceChunk {
-			raw_code:        "fn foo() {}".to_string(),
+			raw_code:        "fn foo() {}".into(),
 			treesitter_repr: None,
 			symbol_span:     ByteSpan { start: 0, end: 1 },
 		};

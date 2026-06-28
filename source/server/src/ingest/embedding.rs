@@ -242,7 +242,7 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
 		}
 
 		let chunk = SourceChunk {
-			raw_code:        text.to_owned(),
+			raw_code:        text.into(),
 			treesitter_repr: None,
 			symbol_span:     ByteSpan { start: 0, end: text.len() },
 		};

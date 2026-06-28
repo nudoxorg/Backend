@@ -378,7 +378,9 @@ fn unpack_npm_tarball(bytes: &[u8], destination: &Path) -> Result<(), PackageErr
 
 fn resolve_materialized_entry_point(root: &Path) -> Result<PathBuf, PackageError> {
 	if let Some(candidate) = read_entry_point_from_package_json(root)? {
-		return ensure_materialized_entry_point(root, candidate);
+		if let Ok(path) = ensure_materialized_entry_point(root, candidate) {
+			return Ok(path);
+		}
 	}
 
 	for candidate in ["mod.ts", "index.ts", "src/mod.ts", "src/index.ts", "index.d.ts"] {
@@ -472,6 +474,7 @@ fn resolve_package_documentation_roots(
 
 const SOURCE_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".cts"];
 const DECLARATION_EXTENSIONS: &[&str] = &[".d.ts", ".d.tsx", ".d.mts", ".d.cts"];
+const JS_EXTENSIONS: &[&str] = &[".js", ".jsx", ".mjs", ".cjs"];
 
 fn canonicalize_documentation_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
 	let mut by_stem: HashMap<String, PathBuf> = HashMap::default();
@@ -630,8 +633,8 @@ fn declaration_dependency_specifiers(content: &str) -> Vec<String> {
 	for line in content.lines() {
 		let line = line.trim();
 		for prefix in [
-			"/// <reference path=\"",
-			"/// <reference types=\"",
+			"/// <reference path=",
+			"/// <reference types=",
 			"import ",
 			"export ",
 			"import type ",
@@ -650,7 +653,7 @@ fn declaration_dependency_specifiers(content: &str) -> Vec<String> {
 }
 
 fn resolve_declaration_specifier(base_dir: &Path, specifier: &str) -> Vec<PathBuf> {
-	if !specifier.starts_with('.') {
+	if specifier.starts_with('/') {
 		return Vec::new();
 	}
 	let base = base_dir.join(specifier);
@@ -660,12 +663,20 @@ fn resolve_declaration_specifier(base_dir: &Path, specifier: &str) -> Vec<PathBu
 fn declaration_candidates_for_path(base: &Path) -> Vec<PathBuf> {
 	let mut candidates = Vec::new();
 	candidates.push(base.to_path_buf());
+	let base_str = base.to_string_lossy();
 	for suffix in DECLARATION_EXTENSIONS {
-		candidates.push(PathBuf::from(format!("{}{suffix}", base.display())));
+		candidates.push(PathBuf::from(format!("{base_str}{suffix}")));
 	}
-	if let Some(stem) = strip_known_suffix(&base.to_string_lossy()) {
+	if let Some(stem) = strip_known_suffix(&base_str) {
 		for suffix in DECLARATION_EXTENSIONS {
 			candidates.push(PathBuf::from(format!("{stem}{suffix}")));
+		}
+	}
+	for js_ext in JS_EXTENSIONS {
+		if let Some(stem) = base_str.strip_suffix(js_ext) {
+			for decl_ext in DECLARATION_EXTENSIONS {
+				candidates.push(PathBuf::from(format!("{stem}{decl_ext}")));
+			}
 		}
 	}
 	candidates

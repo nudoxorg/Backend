@@ -55,7 +55,7 @@ impl SymbolSearcher {
 			BodyQuery::NaturalLanguage(t) | BodyQuery::CodeSnippet(t) => t,
 		};
 		let chunk = SourceChunk {
-			raw_code:        text.clone(),
+			raw_code:        text.as_str().into(),
 			treesitter_repr: None,
 			symbol_span:     ByteSpan { start: 0, end: text.len() },
 		};
@@ -277,7 +277,7 @@ mod tests {
 			resolved_global_id: global_id,
 			kind,
 			source: SourceChunk {
-				raw_code:        format!("fn {}() {{}}", symbol_name),
+				raw_code:        format!("fn {}() {{}}", symbol_name).into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: symbol_name.len() + 3 },
 			},

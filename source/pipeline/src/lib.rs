@@ -87,7 +87,7 @@ impl Pipeline {
 		};
 
 		let source = SourceChunk {
-			raw_code: snippet.clone(),
+			raw_code: snippet.into(),
 			treesitter_repr,
 			symbol_span: symbol_span_in_snippet,
 		};
@@ -106,7 +106,7 @@ impl Pipeline {
 			if self.config.embed_docstrings
 				&& let Some(doc) = &input.docstring {
 					let doc_chunk = SourceChunk {
-						raw_code:        doc.clone(),
+						raw_code:        doc.as_str().into(),
 						treesitter_repr: None,
 						symbol_span:     ByteSpan { start: 0, end: doc.len() },
 					};

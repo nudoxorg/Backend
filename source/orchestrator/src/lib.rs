@@ -227,7 +227,7 @@ mod disk_integration_tests {
 			resolved_global_id: None,
 			kind:               None,
 			source:             SourceChunk {
-				raw_code:        "fn placeholder() {}".to_string(),
+				raw_code:        "fn placeholder() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 14 },
 			},
@@ -429,7 +429,7 @@ mod tests {
 			resolved_global_id: None,
 			kind:               None,
 			source:             SourceChunk {
-				raw_code:        "fn dummy() {}".to_string(),
+				raw_code:        "fn dummy() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 8 },
 			},
@@ -490,7 +490,7 @@ mod tests {
 			resolved_global_id: None,
 			kind:               None,
 			source:             SourceChunk {
-				raw_code:        "fn placeholder() {}".to_string(),
+				raw_code:        "fn placeholder() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan { start: 3, end: 14 },
 			},

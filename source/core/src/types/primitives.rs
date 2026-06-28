@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use crate::RepoId;
 
@@ -53,7 +54,7 @@ impl ByteSpan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceChunk {
 	/// The raw source code text of this chunk.
-	pub raw_code:        String,
+	pub raw_code:        Arc<str>,
 	/// The tree-sitter representation of this chunk.
 	pub treesitter_repr: Option<TreesitterRepr>,
 	/// The byte span of the primary symbol within `raw_code`.
