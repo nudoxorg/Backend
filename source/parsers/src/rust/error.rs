@@ -75,6 +75,9 @@ pub enum Package {
 	#[error("serialization error: {0}")]
 	Serialization(#[from] serde_json::Error),
 
+	#[error("simd-json error: {0}")]
+	SimdJson(#[from] simd_json::Error),
+
 	#[error("metadata error: {0}")]
 	Metadata(String),
 
