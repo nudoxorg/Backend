@@ -1,8 +1,9 @@
 use std::{collections::HashSet, fs, path::Path, process::Command};
 
+use semver::Version;
 use gix::{Repository, bstr::ByteSlice, progress::Discard, remote};
 use url::Url;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::http::error::GitError;
 
@@ -212,4 +213,44 @@ pub(crate) fn version_search_start_points(
 	}
 
 	Ok(starts)
+}
+
+/// Shared commit-walk loop used by both Cargo and TypeScript commit finders.
+/// Walks newest→oldest across all ref tips; returns the first commit for which
+/// `extract_version` returns `Some(v)` where `v == target_version`.
+pub(super) fn find_commit_with_extractor<F>(
+	repo: &gix::Repository,
+	target_version: &Version,
+	package_name: &str,
+	start: Option<gix::ObjectId>,
+	extract_version: F,
+) -> Option<gix::ObjectId>
+where
+	F: Fn(&gix::Repository, &gix::Tree<'_>, &str) -> Option<Version>,
+{
+	let mut visited = HashSet::new();
+
+	for start_id in version_search_start_points(repo, start).ok()? {
+		let revwalk = repo.rev_walk([start_id]);
+
+		for commit_id in revwalk.all().ok()? {
+			let commit_id = commit_id.ok()?;
+			let detached = commit_id.id().detach();
+			if !visited.insert(detached) {
+				continue;
+			}
+
+			let commit = repo.find_commit(detached).ok()?;
+			let tree = commit.tree().ok()?;
+
+			if let Some(v) = extract_version(repo, &tree, package_name) {
+				if &v == target_version {
+					debug!(commit = %detached, "found matching commit");
+					return Some(detached);
+				}
+			}
+		}
+	}
+
+	None
 }

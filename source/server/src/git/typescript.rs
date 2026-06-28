@@ -1,9 +1,7 @@
-use std::collections::HashSet;
-
 use semver::Version;
-use tracing::{debug, instrument};
+use tracing::instrument;
 
-use super::core::version_search_start_points;
+use super::core::find_commit_with_extractor;
 
 /// Walk newest→oldest. First commit whose package.json has `package_name` at
 /// `target_version` is the latest commit for that version.
@@ -17,32 +15,8 @@ pub fn find_typescript_commit_for_version(
 	package_name: &str,
 	start: Option<gix::ObjectId>,
 ) -> Option<gix::ObjectId> {
-	let mut visited = HashSet::new();
-
-	for start_id in version_search_start_points(repo, start).ok()? {
-		let revwalk = repo.rev_walk([start_id]);
-
-		for commit_id in revwalk.all().ok()? {
-			let commit_id = commit_id.ok()?;
-			let detached = commit_id.id().detach();
-			if !visited.insert(detached) {
-				continue;
-			}
-
-			let commit = repo.find_commit(detached).ok()?;
-			let tree = commit.tree().ok()?;
-
-			match extract_typescript_package_version(repo, &tree, package_name) {
-				Some(version) if &version == target_version => {
-					debug!(commit = %detached, "found matching TypeScript package version");
-					return Some(detached);
-				}
-				_ => continue,
-			}
-		}
-	}
-
-	None
+	find_commit_with_extractor(repo, target_version, package_name, start,
+		extract_typescript_package_version)
 }
 
 fn extract_typescript_package_version(

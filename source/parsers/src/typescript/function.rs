@@ -14,7 +14,7 @@ use ir::pipeline::{output_parameters_from_type, parameter_link_key};
 use super::{ParseError, Result, TsDocParser, TsParseContext, TsParseState};
 
 impl TsDocParser {
-	pub(super) fn parse_function_overloads(
+	pub(super) fn function_overloads(
 		&mut self,
 		declarations: &[Declaration],
 		primary_decl: &Declaration,
@@ -26,14 +26,14 @@ impl TsDocParser {
 			.iter()
 			.filter(|decl| is_function_declaration(decl) && !std::ptr::eq(*decl, primary_decl))
 			.map(|decl| match &decl.def {
-				DeclarationDef::Function(function_def) => self.parse_function_def("", function_def, &[]),
+				DeclarationDef::Function(function_def) => self.function_def("", function_def, &[]),
 				_ => unreachable!(),
 			})
 			.collect::<Result<Vec<_>>>()?;
 		Ok(if overloads.is_empty() { None } else { Some(overloads) })
 	}
 
-	pub(super) fn parse_params_with_receiver(
+	pub(super) fn params_with_receiver(
 		&mut self,
 		params: &[&ParamDef],
 		default_receiver: Option<ReceiverKind>,
@@ -48,15 +48,15 @@ impl TsDocParser {
 				receiver = Some(ReceiverKind::SharedRef);
 				continue;
 			}
-			parsed.push(self.parse_param(param)?);
+			parsed.push(self.param(param)?);
 		}
 
 		let parsed = if parsed.is_empty() { None } else { Some(parsed) };
 		Ok((receiver, parsed))
 	}
 
-	pub(super) fn parse_constructor_signature(&mut self, ctor: &ClassConstructorDef) -> Result<Function> {
-		let (_, input_parameters) = self.parse_params_with_receiver(
+	pub(super) fn constructor_signature(&mut self, ctor: &ClassConstructorDef) -> Result<Function> {
+		let (_, input_parameters) = self.params_with_receiver(
 			&ctor.params.iter().map(|param| &param.param).collect::<Vec<_>>(),
 			Some(ReceiverKind::Static),
 		)?;
@@ -76,24 +76,24 @@ impl TsDocParser {
 		})
 	}
 
-	pub(super) fn parse_constructor_signature_from_type_literal(
+	pub(super) fn constructor_signature_from_type_literal(
 		&mut self,
 		ctor: &deno_doc::ts_type::ConstructorDef,
 	) -> Result<Function> {
-		let (_, input_parameters) = self.parse_params_with_receiver(
+		let (_, input_parameters) = self.params_with_receiver(
 			&ctor.params.iter().collect::<Vec<_>>(),
 			Some(ReceiverKind::Static),
 		)?;
 		let output_parameters = ctor
 			.return_type
 			.as_ref()
-			.map(|return_type| self.parse_ts_type(return_type))
+			.map(|return_type| self.ts_type(return_type))
 			.transpose()?
 			.and_then(output_parameters_from_type);
 		let type_links =
 			self.build_type_links_for_params(input_parameters.as_deref(), output_parameters.as_deref());
 		let generics =
-			if ctor.type_params.is_empty() { None } else { self.parse_type_params(&ctor.type_params)? };
+			if ctor.type_params.is_empty() { None } else { self.type_params(&ctor.type_params)? };
 		Ok(Function {
 			input_parameters,
 			output_parameters,
@@ -109,13 +109,13 @@ impl TsDocParser {
 		})
 	}
 
-	pub(super) fn parse_method_signature_function(&mut self, method: &MethodDef) -> Result<Function> {
+	pub(super) fn method_signature_function(&mut self, method: &MethodDef) -> Result<Function> {
 		let params = method.params.iter().collect::<Vec<_>>();
-		let (receiver, input_parameters) = self.parse_params_with_receiver(&params, None)?;
+		let (receiver, input_parameters) = self.params_with_receiver(&params, None)?;
 		let output_parameters = method
 			.return_type
 			.as_ref()
-			.map(|return_type| self.parse_ts_type(return_type))
+			.map(|return_type| self.ts_type(return_type))
 			.transpose()?
 			.and_then(output_parameters_from_type);
 		let type_links =
@@ -123,7 +123,7 @@ impl TsDocParser {
 		let generics = if method.type_params.is_empty() {
 			None
 		} else {
-			self.parse_type_params(&method.type_params)?
+			self.type_params(&method.type_params)?
 		};
 		Ok(Function {
 			input_parameters,
@@ -140,19 +140,19 @@ impl TsDocParser {
 		})
 	}
 
-	pub(super) fn parse_call_signature_function(&mut self, sig: &CallSignatureDef) -> Result<Function> {
+	pub(super) fn call_signature_function(&mut self, sig: &CallSignatureDef) -> Result<Function> {
 		let params = sig.params.iter().collect::<Vec<_>>();
-		let (receiver, input_parameters) = self.parse_params_with_receiver(&params, None)?;
+		let (receiver, input_parameters) = self.params_with_receiver(&params, None)?;
 		let output_parameters = sig
 			.ts_type
 			.as_ref()
-			.map(|return_type| self.parse_ts_type(return_type))
+			.map(|return_type| self.ts_type(return_type))
 			.transpose()?
 			.and_then(output_parameters_from_type);
 		let type_links =
 			self.build_type_links_for_params(input_parameters.as_deref(), output_parameters.as_deref());
 		let generics =
-			if sig.type_params.is_empty() { None } else { self.parse_type_params(&sig.type_params)? };
+			if sig.type_params.is_empty() { None } else { self.type_params(&sig.type_params)? };
 		Ok(Function {
 			input_parameters,
 			output_parameters,
@@ -167,28 +167,28 @@ impl TsDocParser {
 			body: None,
 		})
 	}
-	pub(super) fn parse_function_def(
+	pub(super) fn function_def(
 		&mut self,
 		_name: &str,
 		func: &FunctionDef,
 		_path: &[String],
 	) -> Result<Function> {
 		let params = func.params.iter().collect::<Vec<_>>();
-		let (receiver, input_parameters) = self.parse_params_with_receiver(&params, None)?;
+		let (receiver, input_parameters) = self.params_with_receiver(&params, None)?;
 		let output_parameters = func
 			.return_type
 			.as_ref()
-			.map(|rt| self.parse_ts_type(rt))
+			.map(|rt| self.ts_type(rt))
 			.transpose()?
 			.and_then(output_parameters_from_type);
 
 		let type_links =
 			self.build_type_links_for_params(input_parameters.as_deref(), output_parameters.as_deref());
 
-		let attributes = self.parse_function_attributes(func);
+		let attributes = self.function_attributes(func);
 
 		let generics =
-			if func.type_params.is_empty() { None } else { self.parse_type_params(&func.type_params)? };
+			if func.type_params.is_empty() { None } else { self.type_params(&func.type_params)? };
 
 		Ok(Function {
 			input_parameters,
@@ -205,13 +205,13 @@ impl TsDocParser {
 		})
 	}
 
-	pub(super) fn parse_function_attributes(&self, func: &FunctionDef) -> Option<Vec<FnAttribute>> {
+	pub(super) fn function_attributes(&self, func: &FunctionDef) -> Option<Vec<Attribute>> {
 		let mut attrs = Vec::new();
 		if func.is_async {
-			attrs.push(FnAttribute::Async);
+			attrs.push(Attribute::Async);
 		}
 		if func.is_generator {
-			attrs.push(FnAttribute::Generator);
+			attrs.push(Attribute::Generator);
 		}
 		if attrs.is_empty() { None } else { Some(attrs) }
 	}
@@ -247,10 +247,10 @@ impl TsDocParser {
 
 		if links.is_empty() { None } else { Some(links) }
 	}
-	pub(super) fn parse_param(&mut self, param: &ParamDef) -> Result<Parameter> {
+	pub(super) fn param(&mut self, param: &ParamDef) -> Result<Parameter> {
 		match &param.pattern {
 			ParamPatternDef::Identifier { name, optional } => {
-				let ty = param.ts_type.as_ref().map(|t| self.parse_ts_type(t)).transpose()?;
+				let ty = param.ts_type.as_ref().map(|t| self.ts_type(t)).transpose()?;
 				let attributes = if *optional { Some(vec![ParameterAttribute::Optional]) } else { None };
 				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
 					name: name.clone(),
@@ -265,9 +265,9 @@ impl TsDocParser {
 				let ty = param
 					.ts_type
 					.as_ref()
-					.map(|t| self.parse_ts_type(t))
+					.map(|t| self.ts_type(t))
 					.transpose()?
-					.or(arg.ts_type.as_ref().map(|t| self.parse_ts_type(t)).transpose()?);
+					.or(arg.ts_type.as_ref().map(|t| self.ts_type(t)).transpose()?);
 				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
 					name:          param.to_string(),
 					r#type:        ty,
@@ -278,10 +278,10 @@ impl TsDocParser {
 			}
 
 			ParamPatternDef::Assign { left, right } => {
-				let mut inner = self.parse_param(left)?;
+				let mut inner = self.param(left)?;
 				if let Parameter::Literal(ref mut l) = inner {
 					if l.r#type.is_none() {
-						l.r#type = param.ts_type.as_ref().map(|t| self.parse_ts_type(t)).transpose()?;
+						l.r#type = param.ts_type.as_ref().map(|t| self.ts_type(t)).transpose()?;
 					}
 					l.default_value = Some(ConstExpr::Var(right.clone()));
 				}
@@ -289,7 +289,7 @@ impl TsDocParser {
 			}
 
 			ParamPatternDef::Array { optional, .. } => {
-				let ty = param.ts_type.as_ref().map(|t| self.parse_ts_type(t)).transpose()?;
+				let ty = param.ts_type.as_ref().map(|t| self.ts_type(t)).transpose()?;
 				let attributes = if *optional { Some(vec![ParameterAttribute::Optional]) } else { None };
 				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
 					name: param.to_string(),
@@ -301,7 +301,7 @@ impl TsDocParser {
 			}
 
 			ParamPatternDef::Object { optional, .. } => {
-				let ty = param.ts_type.as_ref().map(|t| self.parse_ts_type(t)).transpose()?;
+				let ty = param.ts_type.as_ref().map(|t| self.ts_type(t)).transpose()?;
 				let attributes = if *optional { Some(vec![ParameterAttribute::Optional]) } else { None };
 				Ok(Parameter::Literal(ir::parameter::LiteralParameter {
 					name: param.to_string(),

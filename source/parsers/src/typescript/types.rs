@@ -13,13 +13,13 @@ use ir::ty::{ConditionalType, FunctionPointer, GenericArg, MappedType, ModifierP
 use super::{ParseError, PropertyFieldMetadata, Result, TsDocParser, TsParseContext, TsParseState};
 
 impl TsDocParser {
-	pub(super) fn parse_property_field(
+	pub(super) fn property_field(
 		&mut self,
 		name: &str,
 		ts_type: Option<&TsTypeDef>,
 		metadata: PropertyFieldMetadata<'_>,
 	) -> Result<Field> {
-		let ty = ts_type.map(|t| self.parse_ts_type(t).map(Box::new)).transpose()?;
+		let ty = ts_type.map(|t| self.ts_type(t).map(Box::new)).transpose()?;
 		Ok(Field::Known(ir::record::KnownField {
 			key:           ir::record::FieldKey::Ident(name.to_string()),
 			r#type:        ty,
@@ -35,7 +35,7 @@ impl TsDocParser {
 		}))
 	}
 
-	pub(super) fn parse_index_signature(&mut self, sig: &IndexSignatureDef) -> Result<IndexSignature> {
+	pub(super) fn index_signature(&mut self, sig: &IndexSignatureDef) -> Result<IndexSignature> {
 		let key_param = sig.params.first().ok_or_else(|| ParseError::TypeResolution {
 			type_name: "index_signature".to_string(),
 			reason:    "missing key parameter".to_string(),
@@ -49,12 +49,12 @@ impl TsDocParser {
 			reason:    "missing value type".to_string(),
 		})?;
 		Ok(IndexSignature {
-			key_type:   Box::new(self.parse_ts_type(key_type)?),
-			value_type: Box::new(self.parse_ts_type(value_type)?),
+			key_type:   Box::new(self.ts_type(key_type)?),
+			value_type: Box::new(self.ts_type(value_type)?),
 		})
 	}
 
-	pub(super) fn parse_type_literal_record(
+	pub(super) fn type_literal_record(
 		&mut self,
 		name: Option<String>,
 		literal: &deno_doc::ts_type::TsTypeLiteralDef,
@@ -63,7 +63,7 @@ impl TsDocParser {
 			.properties
 			.iter()
 			.map(|prop| {
-				self.parse_property_field(&prop.name, prop.ts_type.as_ref(), PropertyFieldMetadata {
+				self.property_field(&prop.name, prop.ts_type.as_ref(), PropertyFieldMetadata {
 					optional:      prop.optional,
 					readonly:      prop.readonly,
 					is_static:     false,
@@ -76,22 +76,22 @@ impl TsDocParser {
 		let index_signatures = literal
 			.index_signatures
 			.iter()
-			.map(|sig| self.parse_index_signature(sig))
+			.map(|sig| self.index_signature(sig))
 			.collect::<Result<Vec<_>>>()?;
 		let methods = literal
 			.methods
 			.iter()
-			.map(|method| self.parse_method_signature_function(method))
+			.map(|method| self.method_signature_function(method))
 			.collect::<Result<Vec<_>>>()?;
 		let constructors = literal
 			.constructors
 			.iter()
-			.map(|ctor| self.parse_constructor_signature_from_type_literal(ctor))
+			.map(|ctor| self.constructor_signature_from_type_literal(ctor))
 			.collect::<Result<Vec<_>>>()?;
 		let call_signatures = literal
 			.call_signatures
 			.iter()
-			.map(|sig| self.parse_call_signature_function(sig))
+			.map(|sig| self.call_signature_function(sig))
 			.collect::<Result<Vec<_>>>()?;
 
 		Ok(Record {
@@ -107,7 +107,7 @@ impl TsDocParser {
 			implemented_protocols: None,
 		})
 	}
-	pub(super) fn parse_type_params(&mut self, params: &[TsTypeParamDef]) -> Result<Option<Generics>> {
+	pub(super) fn type_params(&mut self, params: &[TsTypeParamDef]) -> Result<Option<Generics>> {
 		if params.is_empty() {
 			return Ok(None);
 		}
@@ -119,9 +119,9 @@ impl TsDocParser {
 			let default_type = p
 				.default
 				.as_ref()
-				.map(|t| self.parse_ts_type(t))
+				.map(|t| self.ts_type(t))
 				.transpose()?
-				.map(|ty| self.parse_type_to_expr(&ty));
+				.map(|ty| self.type_to_expr(&ty));
 
 			type_params.push(Parameter::Type(TypeParam {
 				name: Some(p.name.clone()),
@@ -141,7 +141,7 @@ impl TsDocParser {
 		Ok(Some(Generics { params: type_params, constraints }))
 	}
 
-	pub(super) fn parse_type_to_expr(&self, ty: &Type) -> TypeExpr {
+	pub(super) fn type_to_expr(&self, ty: &Type) -> TypeExpr {
 		match ty {
 			Type::TypeReference(tr) => {
 				let args = tr
@@ -151,7 +151,7 @@ impl TsDocParser {
 						args
 							.iter()
 							.filter_map(|arg| {
-								if let GenericArg::Type(t) = arg { Some(self.parse_type_to_expr(t)) } else { None }
+								if let GenericArg::Type(t) = arg { Some(self.type_to_expr(t)) } else { None }
 							})
 							.collect()
 					})
@@ -171,7 +171,7 @@ impl TsDocParser {
 					.as_ref()
 					.map(|tp| {
 						tp.iter()
-							.map(|t| self.parse_ts_type(t).map(|t| self.parse_type_to_expr(&t)))
+							.map(|t| self.ts_type(t).map(|t| self.type_to_expr(&t)))
 							.collect::<Result<Vec<_>>>()
 					})
 					.transpose()?
@@ -179,17 +179,17 @@ impl TsDocParser {
 				Ok(TraitRef { name: type_ref.type_name.clone(), args })
 			}
 			_ => {
-				let parsed = self.parse_ts_type(ty)?;
-				let expr = self.parse_type_to_expr(&parsed);
+				let parsed = self.ts_type(ty)?;
+				let expr = self.type_to_expr(&parsed);
 				Ok(TraitRef { name: expr.name, args: expr.args })
 			}
 		}
 	}
-	pub(super) fn parse_ts_type(&mut self, ts_type: &TsTypeDef) -> Result<Type> {
+	pub(super) fn ts_type(&mut self, ts_type: &TsTypeDef) -> Result<Type> {
 		match &ts_type.kind {
-			TsTypeDefKind::Keyword(value) => Ok(self.parse_keyword_type(value)),
+			TsTypeDefKind::Keyword(value) => Ok(self.keyword_type(value)),
 
-			TsTypeDefKind::Literal(value) => Ok(self.parse_literal_type(value)),
+			TsTypeDefKind::Literal(value) => Ok(self.literal_type(value)),
 
 			TsTypeDefKind::TypeRef(value) => {
 				let generic_args = value
@@ -197,7 +197,7 @@ impl TsDocParser {
 					.as_ref()
 					.map(|tp| {
 						tp.iter()
-							.map(|t| self.parse_ts_type(t).map(GenericArg::Type))
+							.map(|t| self.ts_type(t).map(GenericArg::Type))
 							.collect::<Result<Vec<_>>>()
 					})
 					.transpose()?
@@ -207,27 +207,27 @@ impl TsDocParser {
 			}
 
 			TsTypeDefKind::Union(value) => {
-				let types: Result<Vec<Type>> = value.iter().map(|t| self.parse_ts_type(t)).collect();
+				let types: Result<Vec<Type>> = value.iter().map(|t| self.ts_type(t)).collect();
 				Ok(Type::Union(types?))
 			}
 
 			TsTypeDefKind::Intersection(value) => {
-				let types: Result<Vec<Type>> = value.iter().map(|t| self.parse_ts_type(t)).collect();
+				let types: Result<Vec<Type>> = value.iter().map(|t| self.ts_type(t)).collect();
 				Ok(Type::Intersection(types?))
 			}
 
-			TsTypeDefKind::Array(value) => Ok(Type::Slice(Box::new(self.parse_ts_type(value)?))),
+			TsTypeDefKind::Array(value) => Ok(Type::Slice(Box::new(self.ts_type(value)?))),
 
 			TsTypeDefKind::Tuple(value) => {
-				let types: Result<Vec<Type>> = value.iter().map(|t| self.parse_ts_type(t)).collect();
+				let types: Result<Vec<Type>> = value.iter().map(|t| self.ts_type(t)).collect();
 				Ok(Type::Tuple(types?))
 			}
 
 			TsTypeDefKind::FnOrConstructor(value) => {
 				let inputs: Result<Vec<Parameter>> =
-					value.params.iter().map(|p| self.parse_param_type_only(p)).collect();
+					value.params.iter().map(|p| self.param_type_only(p)).collect();
 
-				let outputs = output_parameters_from_type(self.parse_ts_type(&value.ts_type)?);
+				let outputs = output_parameters_from_type(self.ts_type(&value.ts_type)?);
 
 				Ok(Type::FunctionPointer(FunctionPointer {
 					inputs: Some(inputs?),
@@ -236,11 +236,11 @@ impl TsDocParser {
 				}))
 			}
 
-			TsTypeDefKind::Parenthesized(value) => self.parse_ts_type(value),
+			TsTypeDefKind::Parenthesized(value) => self.ts_type(value),
 
-			TsTypeDefKind::Rest(value) => Ok(Type::Variadic(Box::new(self.parse_ts_type(value)?))),
+			TsTypeDefKind::Rest(value) => Ok(Type::Variadic(Box::new(self.ts_type(value)?))),
 
-			TsTypeDefKind::Optional(value) => self.parse_ts_type(value),
+			TsTypeDefKind::Optional(value) => self.ts_type(value),
 
 			TsTypeDefKind::TypeQuery(value) => {
 				Ok(Type::TypeReference(TypeReference { identifier: value.clone(), generic_args: None }))
@@ -249,17 +249,17 @@ impl TsDocParser {
 			TsTypeDefKind::This => Ok(Type::SelfType),
 
 			TsTypeDefKind::Conditional(value) => Ok(Type::Conditional(ConditionalType {
-				check_type:   Box::new(self.parse_ts_type(&value.check_type)?),
-				extends_type: Box::new(self.parse_ts_type(&value.extends_type)?),
-				true_type:    Box::new(self.parse_ts_type(&value.true_type)?),
-				false_type:   Box::new(self.parse_ts_type(&value.false_type)?),
+				check_type:   Box::new(self.ts_type(&value.check_type)?),
+				extends_type: Box::new(self.ts_type(&value.extends_type)?),
+				true_type:    Box::new(self.ts_type(&value.true_type)?),
+				false_type:   Box::new(self.ts_type(&value.false_type)?),
 			})),
 
 			TsTypeDefKind::Infer(_) => Ok(Type::Infer),
 
 			TsTypeDefKind::IndexedAccess(value) => {
-				let self_type = Box::new(self.parse_ts_type(&value.obj_type)?);
-				let index_repr = format!("{:?}", self.parse_ts_type(&value.index_type)?);
+				let self_type = Box::new(self.ts_type(&value.obj_type)?);
+				let index_repr = format!("{:?}", self.ts_type(&value.index_type)?);
 				Ok(Type::QualifiedPath(QualifiedPath {
 					name: index_repr,
 					generic_arguments: None,
@@ -270,18 +270,18 @@ impl TsDocParser {
 
 			TsTypeDefKind::TypeOperator(value) => Ok(Type::TypeOperator(TypeOperator {
 				operator: value.operator.clone(),
-				r#type:   Box::new(self.parse_ts_type(&value.ts_type)?),
+				r#type:   Box::new(self.ts_type(&value.ts_type)?),
 			})),
 
 			TsTypeDefKind::TypeLiteral(value) => {
-				Ok(Type::RecordLiteral(Box::new(self.parse_type_literal_record(None, value)?)))
+				Ok(Type::RecordLiteral(Box::new(self.type_literal_record(None, value)?)))
 			}
 
 			TsTypeDefKind::Mapped(value) => Ok(Type::Mapped(MappedType {
 				readonly:    modifier_prefix(value.readonly),
 				optional:    modifier_prefix(value.optional),
 				parameter:   value.type_param.name.clone(),
-				source_type: Box::new(self.parse_ts_type(
+				source_type: Box::new(self.ts_type(
 					value.type_param.constraint.as_ref().ok_or_else(|| ParseError::TypeResolution {
 						type_name: "mapped_type".to_string(),
 						reason:    "missing mapped type source constraint".to_string(),
@@ -290,12 +290,12 @@ impl TsDocParser {
 				name_type:   value
 					.name_type
 					.as_ref()
-					.map(|ty| self.parse_ts_type(ty).map(Box::new))
+					.map(|ty| self.ts_type(ty).map(Box::new))
 					.transpose()?,
 				value_type:  value
 					.ts_type
 					.as_ref()
-					.map(|ty| self.parse_ts_type(ty).map(Box::new))
+					.map(|ty| self.ts_type(ty).map(Box::new))
 					.transpose()?,
 			})),
 
@@ -306,7 +306,7 @@ impl TsDocParser {
 					.as_ref()
 					.map(|tp| {
 						tp.iter()
-							.map(|t| self.parse_ts_type(t).map(GenericArg::Type))
+							.map(|t| self.ts_type(t).map(GenericArg::Type))
 							.collect::<Result<Vec<_>>>()
 					})
 					.transpose()?
@@ -324,7 +324,7 @@ impl TsDocParser {
 				r#type:  value
 					.r#type
 					.as_ref()
-					.map(|ty| self.parse_ts_type(ty).map(Box::new))
+					.map(|ty| self.ts_type(ty).map(Box::new))
 					.transpose()?,
 			})),
 
@@ -332,7 +332,7 @@ impl TsDocParser {
 		}
 	}
 
-	pub(super) fn parse_keyword_type(&self, keyword: &str) -> Type {
+	pub(super) fn keyword_type(&self, keyword: &str) -> Type {
 		match keyword {
 			"string" => Type::Primitive(Primitive::String),
 			"number" => Type::Primitive(Primitive::Float(Width::W64)),
@@ -356,7 +356,7 @@ impl TsDocParser {
 		}
 	}
 
-	pub(super) fn parse_literal_type(&self, lit: &LiteralDef) -> Type {
+	pub(super) fn literal_type(&self, lit: &LiteralDef) -> Type {
 		match lit.kind {
 			LiteralDefKind::String => Type::Primitive(Primitive::String),
 			LiteralDefKind::Number => Type::Primitive(Primitive::Float(Width::W64)),
@@ -366,7 +366,7 @@ impl TsDocParser {
 		}
 	}
 
-	pub(super) fn parse_param_type_only(&mut self, param: &ParamDef) -> Result<Parameter> {
+	pub(super) fn param_type_only(&mut self, param: &ParamDef) -> Result<Parameter> {
 		let (name, attrs) = match &param.pattern {
 			ParamPatternDef::Identifier { name, optional } => {
 				let attrs = if *optional { Some(vec![ParameterAttribute::Optional]) } else { None };
@@ -390,7 +390,7 @@ impl TsDocParser {
 			}
 		};
 
-		let ty = param.ts_type.as_ref().map(|t| self.parse_ts_type(t)).transpose()?;
+		let ty = param.ts_type.as_ref().map(|t| self.ts_type(t)).transpose()?;
 		Ok(Parameter::Literal(ir::parameter::LiteralParameter {
 			name,
 			r#type: ty,

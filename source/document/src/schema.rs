@@ -77,7 +77,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::warn;
 
-use identity::{EntryUri, path::nudox_path_to_str};
+use identity::{EntryUri, KindUri, path::nudox_path_to_str};
 
 pub type URI = String;
 
@@ -111,35 +111,7 @@ impl DocStore {
 		}
 	}
 
-	/// Return all documents as sorted borrowed references.
-	///
-	/// This is the non-consuming projection path for:
-	/// - embedding preparation
-	/// - inspection/logging
-	/// - future parallel upload prep
-	pub fn documents_sorted(&self) -> Vec<(&URI, &Value)> {
-		let mut keys: Vec<&URI> = self.docs.keys().collect();
-		keys.sort();
-		keys.into_iter().map(|k| (k, &self.docs[k])).collect()
-	}
-
-	/// Return all documents cloned into a sorted Vec<Value>.
-	///
-	/// This keeps the original store intact while matching the same ordering
-	/// semantics as `into_documents`.
-	pub fn documents_cloned(&self) -> Vec<Value> {
-		let mut keys: Vec<&URI> = self.docs.keys().collect();
-		keys.sort();
-		keys.into_iter().map(|k| self.docs[k].clone()).collect()
-	}
-
-	/// Consume the store and return all documents as a sorted `Vec<Value>`,
-	/// suitable for bulk upload via the TerminusDB client.
-	pub fn into_documents(self) -> Vec<Value> {
-		let mut keys: Vec<&URI> = self.docs.keys().collect();
-		keys.sort();
-		keys.into_iter().map(|k| self.docs[k].clone()).collect()
-	}
+	pub fn documents_sorted(&self) -> Vec<(&URI, &Value)> { self.docs.iter().collect() }
 }
 /// Stores Global Info about the Crate
 // this will live for the duration of the program, need cheap copies for
@@ -211,9 +183,13 @@ impl UriOps for DocCtx {
 	}
 
 	fn kind_uri(&self, kind: &ir::kind::Entry, path: &ir::entry::NudoxPath) -> URI {
-		let path_str = nudox_path_to_str(path);
-		let prefix = kind.schema_class();
-		format!("{}/{}/{}/{}", prefix, self.crate_info.lang(), self.crate_info.crate_name(), path_str)
+		KindUri::new(
+			kind.schema_class(),
+			self.crate_info.lang(),
+			self.crate_info.crate_name(),
+			&nudox_path_to_str(path),
+		)
+		.to_string()
 	}
 
 	/// Builds the path + concat with / between; used for kind_tag.

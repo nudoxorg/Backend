@@ -24,7 +24,7 @@ use ir::pipeline::output_parameters_from_type;
 use super::{ParseError, PropertyFieldMetadata, Result, TsDocParser, TsParseContext, TsParseState};
 
 impl TsDocParser {
-	pub(super) fn parse_item_at_path(&mut self, path: &[String]) -> Result<Vec<Entry>> {
+	pub(super) fn item_at_path(&mut self, path: &[String]) -> Result<Vec<Entry>> {
 		if let Some(cached) = self.state.entry_cache.get(path) {
 			return Ok(vec![cached.clone()]);
 		}
@@ -50,14 +50,14 @@ impl TsDocParser {
 	pub(super) fn dispatch_path(&mut self, path: &[String]) -> Result<Vec<Entry>> {
 		match path.len() {
 			0 => Ok(vec![]),
-			1 => self.parse_module_entry(&path[0]).map(|e| vec![e]),
-			2 => self.parse_symbol_at_path(&path[0], &path[1]),
-			3 => self.parse_member_at_path(&path[0], &path[1], &path[2]),
+			1 => self.module_entry(&path[0]).map(|e| vec![e]),
+			2 => self.symbol_at_path(&path[0], &path[1]),
+			3 => self.member_at_path(&path[0], &path[1], &path[2]),
 			_ => Ok(vec![]),
 		}
 	}
 
-	pub(super) fn parse_module_entry(&mut self, module_name: &str) -> Result<Entry> {
+	pub(super) fn module_entry(&mut self, module_name: &str) -> Result<Entry> {
 		let specifier = self.ctx.specifier_for_module_name(module_name);
 
 		let specifier = specifier.unwrap_or_else(|| module_name.to_string());
@@ -86,7 +86,7 @@ impl TsDocParser {
 		}))
 	}
 
-	pub(super) fn parse_symbol_at_path(&mut self, module_name: &str, symbol_name: &str) -> Result<Vec<Entry>> {
+	pub(super) fn symbol_at_path(&mut self, module_name: &str, symbol_name: &str) -> Result<Vec<Entry>> {
 		let specifier =
 			self.ctx.specifier_for_module_name(module_name).unwrap_or_else(|| module_name.to_string());
 
@@ -99,24 +99,24 @@ impl TsDocParser {
 		let symbol =
 			symbol.ok_or_else(|| ParseError::SymbolNotFound(format!("{module_name}::{symbol_name}")))?;
 
-		self.parse_symbol(module_name, &symbol)
+		self.symbol(module_name, &symbol)
 	}
 
-	pub(super) fn parse_symbol(&mut self, module_name: &str, symbol: &Symbol) -> Result<Vec<Entry>> {
+	pub(super) fn symbol(&mut self, module_name: &str, symbol: &Symbol) -> Result<Vec<Entry>> {
 		let path = [module_name.to_string(), symbol.name.to_string()];
 		let decl = pick_primary_declaration(&symbol.declarations);
 		let visibility = declaration_kind_to_visibility(decl.declaration_kind);
 		let documentation = extract_doc(&decl.js_doc);
 
 		let (kind, mut extra_entries, mut members) =
-			self.parse_declaration(module_name, symbol.name.as_ref(), decl)?;
-		let overloads = self.parse_function_overloads(&symbol.declarations, decl)?;
+			self.declaration(module_name, symbol.name.as_ref(), decl)?;
+		let overloads = self.function_overloads(&symbol.declarations, decl)?;
 
 		for extra_decl in symbol.declarations.iter().filter(|candidate| !std::ptr::eq(*candidate, decl))
 		{
 			if matches!(extra_decl.def, DeclarationDef::Namespace(_)) {
 				let (_, mut ns_entries, mut ns_members) =
-					self.parse_declaration(module_name, symbol.name.as_ref(), extra_decl)?;
+					self.declaration(module_name, symbol.name.as_ref(), extra_decl)?;
 				extra_entries.append(&mut ns_entries);
 				members.append(&mut ns_members);
 			}
@@ -192,7 +192,7 @@ impl TsDocParser {
 		Ok(extra_entries)
 	}
 
-	pub(super) fn parse_declaration(
+	pub(super) fn declaration(
 		&mut self,
 		module_name: &str,
 		symbol_name: &str,
@@ -201,7 +201,7 @@ impl TsDocParser {
 		match &decl.def {
 			DeclarationDef::Function(f) => {
 				let path = vec![module_name.to_string(), symbol_name.to_string()];
-				let func = self.parse_function_def(symbol_name, f, &path)?;
+				let func = self.function_def(symbol_name, f, &path)?;
 				Ok((Entry::Function(ir::kind::Symbol::placeholder(func)), vec![], vec![]))
 			}
 
@@ -215,17 +215,17 @@ impl TsDocParser {
 			}
 
 			DeclarationDef::Enum(e) => {
-				let variants = self.parse_enum_def(e)?;
+				let variants = self.enum_def(e)?;
 				Ok((Entry::SumType(ir::kind::Symbol::placeholder(variants)), vec![], vec![]))
 			}
 
 			DeclarationDef::Class(cls) => {
-				let (record, extra, member_refs) = self.parse_class_def(module_name, symbol_name, cls)?;
+				let (record, extra, member_refs) = self.class_def(module_name, symbol_name, cls)?;
 				Ok((Entry::RecordType(ir::kind::Symbol::placeholder(record)), extra, member_refs))
 			}
 
 			DeclarationDef::TypeAlias(ta) => {
-				let ty = self.parse_ts_type(&ta.ts_type)?;
+				let ty = self.ts_type(&ta.ts_type)?;
 				Ok((Entry::TypeAlias(ir::kind::Symbol::placeholder(ty)), vec![], vec![]))
 			}
 
@@ -277,7 +277,7 @@ impl TsDocParser {
 
 				for elem in &ns_elements {
 					let ns_module = format!("{}.{}", module_name, symbol_name);
-					let mut batch = self.parse_symbol(&ns_module, elem)?;
+					let mut batch = self.symbol(&ns_module, elem)?;
 					extra_entries.append(&mut batch);
 				}
 
@@ -289,7 +289,7 @@ impl TsDocParser {
 			}
 
 			DeclarationDef::Interface(iface) => {
-				let trait_def = self.parse_interface_def(symbol_name, iface)?;
+				let trait_def = self.interface_def(symbol_name, iface)?;
 				Ok((trait_def, vec![], vec![]))
 			}
 
@@ -299,7 +299,7 @@ impl TsDocParser {
 		}
 	}
 
-	pub(super) fn parse_member_at_path(
+	pub(super) fn member_at_path(
 		&mut self,
 		module_name: &str,
 		parent_name: &str,
@@ -322,14 +322,14 @@ impl TsDocParser {
 				if member_name == "constructor" && !cls.constructors.is_empty() {
 					let constructors: Vec<&ClassConstructorDef> = cls.constructors.iter().collect();
 					return self
-						.parse_constructor_group_entry(module_name, parent_name, &constructors)
+						.constructor_group_entry(module_name, parent_name, &constructors)
 						.map(|entry| vec![entry]);
 				}
 				let methods: Vec<&ClassMethodDef> =
 					cls.methods.iter().filter(|m| m.name.as_ref() == member_name).collect();
 				if !methods.is_empty() {
 					return self
-						.parse_method_group_entry(module_name, parent_name, &methods)
+						.method_group_entry(module_name, parent_name, &methods)
 						.map(|entry| vec![entry]);
 				}
 			}
@@ -339,21 +339,21 @@ impl TsDocParser {
 					ns.elements.iter().find(|element| element.name.as_ref() == member_name)
 			{
 				let nested_module_name = format!("{module_name}::{parent_name}");
-				return self.parse_symbol(&nested_module_name, element);
+				return self.symbol(&nested_module_name, element);
 			}
 		}
 
 		Err(ParseError::SymbolNotFound(format!("{module_name}::{parent_name}::{member_name}")))
 	}
 
-	pub(super) fn parse_method_entry(
+	pub(super) fn method_entry(
 		&mut self,
 		module_name: &str,
 		class_name: &str,
 		method: &ClassMethodDef,
 	) -> Result<Entry> {
 		let path = vec![module_name.to_string(), class_name.to_string(), method.name.to_string()];
-		let func = self.parse_function_def(method.name.as_ref(), &method.function_def, &path)?;
+		let func = self.function_def(method.name.as_ref(), &method.function_def, &path)?;
 		let visibility = accessibility_to_visibility(method.accessibility);
 		let documentation = extract_doc(&method.js_doc);
 
@@ -367,7 +367,7 @@ impl TsDocParser {
 		}))
 	}
 
-	pub(super) fn parse_method_group_entry(
+	pub(super) fn method_group_entry(
 		&mut self,
 		module_name: &str,
 		class_name: &str,
@@ -378,12 +378,12 @@ impl TsDocParser {
 			.rposition(|method| method.function_def.has_body)
 			.unwrap_or(methods.len().saturating_sub(1));
 		let primary = methods[primary_idx];
-		let mut entry = self.parse_method_entry(module_name, class_name, primary)?;
+		let mut entry = self.method_entry(module_name, class_name, primary)?;
 		let overloads = methods
 			.iter()
 			.enumerate()
 			.filter(|(idx, _)| *idx != primary_idx)
-			.map(|(_, method)| self.parse_function_def(method.name.as_ref(), &method.function_def, &[]))
+			.map(|(_, method)| self.function_def(method.name.as_ref(), &method.function_def, &[]))
 			.collect::<Result<Vec<_>>>()?;
 		if let Entry::Function(symbol) = &mut entry {
 			symbol.inner.overloads = if overloads.is_empty() { None } else { Some(overloads) };
@@ -391,14 +391,14 @@ impl TsDocParser {
 		Ok(entry)
 	}
 
-	pub(super) fn parse_constructor_entry(
+	pub(super) fn constructor_entry(
 		&mut self,
 		module_name: &str,
 		class_name: &str,
 		ctor: &ClassConstructorDef,
 	) -> Result<Entry> {
 		let path = [module_name.to_string(), class_name.to_string(), "constructor".to_string()];
-		let func = self.parse_constructor_signature(ctor)?;
+		let func = self.constructor_signature(ctor)?;
 
 		Ok(Entry::Function(ir::kind::Symbol {
 			name:          "constructor".to_string(),
@@ -410,7 +410,7 @@ impl TsDocParser {
 		}))
 	}
 
-	pub(super) fn parse_constructor_group_entry(
+	pub(super) fn constructor_group_entry(
 		&mut self,
 		module_name: &str,
 		class_name: &str,
@@ -421,19 +421,19 @@ impl TsDocParser {
 			.rposition(|ctor| ctor.has_body)
 			.unwrap_or(constructors.len().saturating_sub(1));
 		let primary = constructors[primary_idx];
-		let mut entry = self.parse_constructor_entry(module_name, class_name, primary)?;
+		let mut entry = self.constructor_entry(module_name, class_name, primary)?;
 		let overloads = constructors
 			.iter()
 			.enumerate()
 			.filter(|(idx, _)| *idx != primary_idx)
-			.map(|(_, ctor)| self.parse_constructor_signature(ctor))
+			.map(|(_, ctor)| self.constructor_signature(ctor))
 			.collect::<Result<Vec<_>>>()?;
 		if let Entry::Function(symbol) = &mut entry {
 			symbol.inner.overloads = if overloads.is_empty() { None } else { Some(overloads) };
 		}
 		Ok(entry)
 	}
-	pub(super) fn parse_class_def(
+	pub(super) fn class_def(
 		&mut self,
 		module_name: &str,
 		class_name: &str,
@@ -451,7 +451,7 @@ impl TsDocParser {
 				if prop.is_override {
 					decorators.push("override".to_string());
 				}
-				self.parse_property_field(
+				self.property_field(
 					prop.name.as_ref(),
 					prop.ts_type.as_ref(),
 					PropertyFieldMetadata {
@@ -468,7 +468,7 @@ impl TsDocParser {
 		let index_signatures = cls
 			.index_signatures
 			.iter()
-			.map(|sig| self.parse_index_signature(sig))
+			.map(|sig| self.index_signature(sig))
 			.collect::<Result<Vec<_>>>()?;
 		let mut super_types = Vec::new();
 		if let Some(extends) = &cls.extends {
@@ -481,18 +481,18 @@ impl TsDocParser {
 						cls
 							.super_type_params
 							.iter()
-							.map(|ty| self.parse_ts_type(ty).map(GenericArg::Type))
+							.map(|ty| self.ts_type(ty).map(GenericArg::Type))
 							.collect::<Result<Vec<_>>>()?,
 					)
 				},
 			}));
 		}
 		for implemented in &cls.implements {
-			super_types.push(self.parse_ts_type(implemented)?);
+			super_types.push(self.ts_type(implemented)?);
 		}
 
 		let generics =
-			if cls.type_params.is_empty() { None } else { self.parse_type_params(&cls.type_params)? };
+			if cls.type_params.is_empty() { None } else { self.type_params(&cls.type_params)? };
 
 		let record = Record {
 			name: Some(class_name.to_string()),
@@ -513,7 +513,7 @@ impl TsDocParser {
 		if !cls.constructors.is_empty() {
 			let constructors: Vec<&ClassConstructorDef> = cls.constructors.iter().collect();
 			let ctor_entry =
-				self.parse_constructor_group_entry(module_name, class_name, &constructors)?;
+				self.constructor_group_entry(module_name, class_name, &constructors)?;
 			member_refs.push(ctor_entry.path().clone());
 			extra_entries.push(ctor_entry);
 		}
@@ -522,18 +522,18 @@ impl TsDocParser {
 		for method in cls.methods.iter().filter(|method| seen_methods.insert(method.name.to_string())) {
 			let methods: Vec<&ClassMethodDef> =
 				cls.methods.iter().filter(|candidate| candidate.name == method.name).collect();
-			let method_entry = self.parse_method_group_entry(module_name, class_name, &methods)?;
+			let method_entry = self.method_group_entry(module_name, class_name, &methods)?;
 			member_refs.push(method_entry.path().clone());
 			extra_entries.push(method_entry);
 		}
 
 		Ok((record, extra_entries, member_refs))
 	}
-	pub(super) fn parse_interface_def(&mut self, name: &str, iface: &InterfaceDef) -> Result<Entry> {
+	pub(super) fn interface_def(&mut self, name: &str, iface: &InterfaceDef) -> Result<Entry> {
 		let generics = if iface.type_params.is_empty() {
 			None
 		} else {
-			self.parse_type_params(&iface.type_params)?
+			self.type_params(&iface.type_params)?
 		};
 
 		let super_traits: Option<Vec<TraitRef>> = {
@@ -545,13 +545,13 @@ impl TsDocParser {
 		let mut required_methods: Vec<TraitMethod> = Vec::new();
 
 		for m in &iface.methods {
-			required_methods.push(self.parse_interface_method(m)?);
+			required_methods.push(self.interface_method(m)?);
 		}
 		for (i, sig) in iface.call_signatures.iter().enumerate() {
-			required_methods.push(self.parse_call_signature_as_method(sig, i)?);
+			required_methods.push(self.call_signature_as_method(sig, i)?);
 		}
 		for (i, sig) in iface.index_signatures.iter().enumerate() {
-			required_methods.push(self.parse_index_signature_as_method(sig, i)?);
+			required_methods.push(self.index_signature_as_method(sig, i)?);
 		}
 
 		let properties = iface
@@ -562,7 +562,7 @@ impl TsDocParser {
 				if prop.readonly {
 					decorators.push("readonly".to_string());
 				}
-				self.parse_property_field(&prop.name, prop.ts_type.as_ref(), PropertyFieldMetadata {
+				self.property_field(&prop.name, prop.ts_type.as_ref(), PropertyFieldMetadata {
 					optional:      prop.optional,
 					readonly:      prop.readonly,
 					is_static:     false,
@@ -593,15 +593,15 @@ impl TsDocParser {
 		}))
 	}
 
-	pub(super) fn parse_interface_method(&mut self, m: &MethodDef) -> Result<TraitMethod> {
+	pub(super) fn interface_method(&mut self, m: &MethodDef) -> Result<TraitMethod> {
 		let params = m.params.iter().collect::<Vec<_>>();
 		let (receiver, parameters) =
-			self.parse_params_with_receiver(&params, Some(ReceiverKind::SharedRef))?;
+			self.params_with_receiver(&params, Some(ReceiverKind::SharedRef))?;
 		let return_type =
-			m.return_type.as_ref().map(|t| self.parse_ts_type(t).map(Box::new)).transpose()?;
+			m.return_type.as_ref().map(|t| self.ts_type(t).map(Box::new)).transpose()?;
 
 		let generics =
-			if m.type_params.is_empty() { None } else { self.parse_type_params(&m.type_params)? };
+			if m.type_params.is_empty() { None } else { self.type_params(&m.type_params)? };
 
 		Ok(TraitMethod {
 			name: m.name.clone(),
@@ -615,7 +615,7 @@ impl TsDocParser {
 		})
 	}
 
-	pub(super) fn parse_call_signature_as_method(
+	pub(super) fn call_signature_as_method(
 		&mut self,
 		sig: &CallSignatureDef,
 		idx: usize,
@@ -624,12 +624,12 @@ impl TsDocParser {
 
 		let params = sig.params.iter().collect::<Vec<_>>();
 		let (receiver, parameters) =
-			self.parse_params_with_receiver(&params, Some(ReceiverKind::SharedRef))?;
+			self.params_with_receiver(&params, Some(ReceiverKind::SharedRef))?;
 		let return_type =
-			sig.ts_type.as_ref().map(|t| self.parse_ts_type(t).map(Box::new)).transpose()?;
+			sig.ts_type.as_ref().map(|t| self.ts_type(t).map(Box::new)).transpose()?;
 
 		let generics =
-			if sig.type_params.is_empty() { None } else { self.parse_type_params(&sig.type_params)? };
+			if sig.type_params.is_empty() { None } else { self.type_params(&sig.type_params)? };
 
 		Ok(TraitMethod {
 			name,
@@ -643,7 +643,7 @@ impl TsDocParser {
 		})
 	}
 
-	pub(super) fn parse_index_signature_as_method(
+	pub(super) fn index_signature_as_method(
 		&mut self,
 		sig: &IndexSignatureDef,
 		idx: usize,
@@ -652,9 +652,9 @@ impl TsDocParser {
 
 		let params = sig.params.iter().collect::<Vec<_>>();
 		let (receiver, parameters) =
-			self.parse_params_with_receiver(&params, Some(ReceiverKind::SharedRef))?;
+			self.params_with_receiver(&params, Some(ReceiverKind::SharedRef))?;
 		let return_type =
-			sig.ts_type.as_ref().map(|t| self.parse_ts_type(t).map(Box::new)).transpose()?;
+			sig.ts_type.as_ref().map(|t| self.ts_type(t).map(Box::new)).transpose()?;
 
 		Ok(TraitMethod {
 			name,
@@ -667,7 +667,7 @@ impl TsDocParser {
 			has_default_implementation: false,
 		})
 	}
-	pub(super) fn parse_enum_def(&self, enum_def: &EnumDef) -> Result<Vec<SumVariant>> {
+	pub(super) fn enum_def(&self, enum_def: &EnumDef) -> Result<Vec<SumVariant>> {
 		Ok(
 			enum_def
 				.members

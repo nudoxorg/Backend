@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
 use semver::Version;
-use tracing::{debug, instrument, warn};
+use tracing::{instrument, warn};
 
 use crate::http::error::GitError;
 
-use super::core::version_search_start_points;
+use super::core::find_commit_with_extractor;
 
 /// Walk newest→oldest. First commit whose Cargo.toml has `package_name` at
 /// `target_version` is the latest commit for that version.
@@ -19,32 +19,9 @@ pub fn find_commit_for_version(
 	package_name: &str,
 	start: Option<gix::ObjectId>,
 ) -> Option<gix::ObjectId> {
-	let mut visited = HashSet::new();
-
-	for start_id in version_search_start_points(repo, start).ok()? {
-		let revwalk = repo.rev_walk([start_id]);
-
-		for commit_id in revwalk.all().ok()? {
-			let commit_id = commit_id.ok()?;
-			let detached = commit_id.id().detach();
-			if !visited.insert(detached) {
-				continue;
-			}
-
-			let commit = repo.find_commit(detached).ok()?;
-			let tree = commit.tree().ok()?;
-
-			match extract_package_version(repo, &tree, package_name) {
-				Ok(Some(v)) if &v == target_version => {
-					debug!(commit = %detached, "found matching commit");
-					return Some(detached);
-				}
-				_ => continue,
-			}
-		}
-	}
-
-	None
+	find_commit_with_extractor(repo, target_version, package_name, start, |r, t, n| {
+		extract_package_version(r, t, n).ok().flatten()
+	})
 }
 
 pub fn extract_package_version(
