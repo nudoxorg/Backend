@@ -8,9 +8,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use ir_types::{Collected, Ir};
+use ir::pipeline::{Collected, Ir};
 
 pub mod parse;
+pub mod types;
+pub mod function;
+pub mod item;
 use self::parse::{ParseError, TsDocParser};
 
 fn summarize_command_output(bytes: &[u8]) -> String {
@@ -105,7 +108,7 @@ pub struct TsPackage {
 
 impl TsPackage {
 	const RUNNER_SCRIPT: &'static str =
-		concat!(env!("CARGO_MANIFEST_DIR"), "/../../server/src/core/ts_doc_runner.ts");
+		concat!(env!("CARGO_MANIFEST_DIR"), "/../server/src/core/ts_doc_runner.ts");
 
 	pub fn retrieve(
 		&self,

@@ -21,7 +21,7 @@ pub(crate) async fn resolve_package_handle(
 			}
 			let registry = Crates::new();
 			let packages = registry.get_packages_by_name(&request.name).await.map_err(|err| {
-				let rust_parser::RegistryError::CratesIo(source) = err;
+				let parsers::rust::RegistryError::CratesIo(source) = err;
 				AppError::RegistryLookup(RegistryLookupError::CratesIo {
 					language: request.language,
 					package:  request.name.clone(),

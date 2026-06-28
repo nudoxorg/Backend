@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ir::{entry::{Index, NudoxPath}, kind::Entry};
+use crate::{entry::{Index, NudoxPath}, kind::Entry};
 
 pub struct Collected;
 pub struct Indexed;

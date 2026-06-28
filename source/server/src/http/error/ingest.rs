@@ -8,7 +8,7 @@ pub enum IngestError {
 	IrGeneration {
 		package: String,
 		#[source]
-		source:  rust_parser::PackageError,
+		source:  parsers::rust::PackageError,
 	},
 
 	#[error("IR generation failed for `{package}`")]

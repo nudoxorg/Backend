@@ -9,3 +9,4 @@ pub mod protocols;
 pub mod record;
 pub mod syntax;
 pub mod ty;
+pub mod pipeline;

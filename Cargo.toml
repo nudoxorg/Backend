@@ -13,9 +13,7 @@ members = [
   "./source/orchestrator",
   "./source/pipeline",
   "./source/intermediate-representation",
-  "./source/intermediate-representation/pipeline",
-  "./source/parsers/rust",
-  "./source/parsers/typescript",
+  "./source/parsers",
 ]
 default-members = ["./source/server"]
 exclude = ["deno_doc"]
@@ -29,7 +27,6 @@ license = "MIT OR Apache-2.0"
 document = { path = "./source/document" }
 identity = { path = "./source/identity" }
 ir = { path = "./source/intermediate-representation" }
-ir-types = { path = "./source/intermediate-representation/pipeline" }
 yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }

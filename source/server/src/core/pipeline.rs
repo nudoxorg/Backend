@@ -1,1 +1,1 @@
-pub use ir_types::{Collected, Indexed, Ir, Stage};
+pub use ir::pipeline::{Collected, Indexed, Ir, Stage};

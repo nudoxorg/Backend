@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
 
-use ts_parser::TsPackage;
+use parsers::typescript::TsPackage;
 
 use crate::http::error::AppError;
 

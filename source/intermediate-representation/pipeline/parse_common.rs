@@ -1,4 +1,4 @@
-use ir::{parameter::{LiteralParameter, Parameter}, ty::Type};
+use crate::{parameter::{LiteralParameter, Parameter}, ty::Type};
 
 pub fn output_parameters_from_type(ty: Type) -> Option<Vec<Parameter>> {
 	Some(vec![Parameter::Literal(LiteralParameter {
