@@ -12,7 +12,7 @@ use store::NudoxStore;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::{config::QdrantSettings, http::error::{AppError, IngestError}, ingest::{embedding::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory}, qdrant::{QdrantConfig, upload_points}, parsed_symbol::{Identity, PackageCoord, ParsedSymbol}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::{schema::DocStore, upload::{DocumentUploadProgress, TerminusConfig, upload_documents, upload_schema}}, search::text::SymbolTextIndex};
+use crate::{config::QdrantSettings, http::error::{AppError, IngestError}, ingest::{embedding::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory}, qdrant::{QdrantConfig, upload_points}, parsed_symbol::{Identity, PackageCoord, ParsedSymbol}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::upload::{DocumentUploadProgress, PreparedCorpus, TerminusConfig, upload_prepared_documents, upload_schema}, search::text::SymbolTextIndex};
 
 /// Identifies one sink in the fan-out pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,12 +208,13 @@ impl SymbolSink for OrchestratorSink {
 
 // ── TerminusDB graph (/terminus_search, /expand, /run) ──────────────────────
 
-/// The graph sink. Fed the `DocStore` projected from the same parse; uploads
-/// schema (when requested) then the JSON-LD documents.
+/// The graph sink. Fed the dependency-ordered [`PreparedCorpus`] emitted from
+/// the same parse; uploads schema (when requested) then streams the JSON-LD
+/// documents up in bounded chunks.
 pub struct TerminusSink {
 	pub config:        TerminusConfig,
 	pub schema:        Option<Vec<Value>>,
-	pub store:         DocStore,
+	pub corpus:        PreparedCorpus,
 }
 
 #[async_trait]
@@ -236,12 +237,12 @@ impl SymbolSink for TerminusSink {
 			upload_schema(&self.config, schema.clone()).await?;
 		}
 
-		let total = self.store.docs.len();
+		let total = self.corpus.len();
 		progress.phase_with_detail(
 			PackageSyncPhase::UploadingDocuments,
 			Some(format!("uploading {total} documents")),
 		);
-		upload_documents(&self.config, &self.store, |p: DocumentUploadProgress| {
+		upload_prepared_documents(&self.config, &self.corpus, |p: DocumentUploadProgress| {
 			progress.phase_with_detail(
 				PackageSyncPhase::UploadingDocuments,
 				Some(format!(

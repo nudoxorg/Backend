@@ -20,7 +20,7 @@ use semver::Version;
 use tokio::task::spawn_blocking;
 use tracing::info;
 
-use crate::{core::backend::LanguageBackend, config::PipelineConfig, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, emit::Runner, terminus::schema::{CrateInfo, DocCtx, DocStore}, search::text::SymbolTextIndex};
+use crate::{core::backend::LanguageBackend, config::PipelineConfig, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::{schema::{CrateInfo, DocCtx}, upload::{PreparedCorpus, StreamingDocSink}}, search::text::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -113,14 +113,14 @@ async fn finalize_pipeline(
 	let lang = coord.language.as_str().to_owned();
 	let pkg = coord.package.to_string();
 	let ver = coord.version.to_string();
-	let (symbols, doc_store) = spawn_blocking(move || {
+	let (symbols, corpus) = spawn_blocking(move || {
 		let symbols = project(&coord_blocking, &index, &source_map, &identity_blocking);
-		let doc_store = emit_store(&lang, &pkg, &ver, index);
-		(symbols, doc_store)
+		let corpus = emit_store(&lang, &pkg, &ver, index);
+		(symbols, corpus)
 	})
 	.await
 	.map_err(|source| AppError::TaskJoin { action: "projection", source })?;
-	let document_count = doc_store.docs.len();
+	let document_count = corpus.len();
 
 	// Assemble non-consuming sinks (these borrow `&[ParsedSymbol]`).
 	let mut sinks: Vec<Box<dyn SymbolSink>> = Vec::new();
@@ -145,7 +145,7 @@ async fn finalize_pipeline(
 		} else {
 			None
 		};
-		sinks.push(Box::new(TerminusSink { config: terminus.clone(), schema, store: doc_store }));
+		sinks.push(Box::new(TerminusSink { config: terminus.clone(), schema, corpus }));
 	}
 
 	// Build the consuming vector sink separately — it drains `symbols` after all
@@ -175,7 +175,11 @@ async fn finalize_pipeline(
 	})
 }
 
-fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -> DocStore {
+/// Emit the crate's IR straight into a streaming [`StreamingDocSink`], producing
+/// a dependency-ordered [`PreparedCorpus`] of serialized documents — without
+/// ever materializing the whole corpus as live `serde_json::Value` trees (the
+/// former `DocStore` path, still used by tests, did exactly that).
+fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -> PreparedCorpus {
 	let context_object = serde_json::json!({
 		"@type": "@context",
 		"@schema": "terminusdb:///schema#",
@@ -184,14 +188,15 @@ fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -
 		"sys": "http://terminusdb.com/schema/sys#"
 	});
 
-	let mut runner = Runner::new(DocCtx::init(
+	let mut ctx = DocCtx::init(
 		CrateInfo::new(language.to_owned(), package_name.to_owned()),
 		context_object,
-	));
-	runner.run(index.entries_by_path.into_values());
-	let store = runner.into_docs();
-	info!(documents = store.docs.len(), package = package_name, version = %version, "emission complete");
-	store
+	);
+	let mut sink = StreamingDocSink::new();
+	document::emit::emit_all(&mut ctx, index.entries_by_path.into_values(), &mut sink);
+	let corpus = sink.into_corpus();
+	info!(documents = corpus.len(), package = package_name, version = %version, "emission complete");
+	corpus
 }
 
 /// The single Qdrant collection that holds every package-version's vectors.

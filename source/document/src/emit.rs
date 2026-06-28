@@ -6,13 +6,13 @@ use serde_json::{Map, Value, json};
 use tracing::{debug, instrument, warn};
 
 use crate::{
-	schema::{DocCtx, DocStore, EmitJsonLD, URI, UriOps},
+	schema::{DocCtx, DocSink, DocStore, EmitJsonLD, URI, UriOps},
 	ld::LDKind,
 };
 use identity::path::{fq_name, path_segments};
 
 impl EmitJsonLD for Entry {
-	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
+	fn emit(self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> URI {
 		let path = self.path().clone();
 		let entry_uri: URI = ctx.entry_uri(&path);
 
@@ -165,42 +165,47 @@ impl EmitJsonLD for Entry {
 
 		let value = Value::Object(obj);
 
-		match docs.insert(entry_uri.clone(), value) {
-			Ok(_uri) => {}
-			Err(uri) => {
-				warn!(uri = %uri, "duplicate entry insertion with differing value");
-			}
-		}
+		sink.accept(entry_uri.clone(), value);
 		ctx.update_path(&path);
-		self.emit_kind(ctx, docs);
+		self.emit_kind(ctx, sink);
 
 		entry_uri
 	}
 }
 
 trait EntryOps {
-	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI;
+	fn emit_kind(&self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> URI;
 }
 
 impl EntryOps for Entry {
-	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
+	fn emit_kind(&self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> URI {
 		let to_emit = LDKind::new(ctx.current_path.as_ref().unwrap(), self, ctx);
 		let emitted_uri = to_emit.uri.clone();
 		if let Ok(mut emitted_value) = serde_json::to_value(to_emit) {
 			let obj = emitted_value.as_object_mut().expect("serde_json::to_value produced a non-object");
 			obj.insert("@context".into(), ctx.context().clone());
 
-			match docs.insert(emitted_uri.clone(), emitted_value) {
-				Ok(_uri) => {}
-				Err(uri) => {
-					warn!(uri = %uri, "duplicate kind insertion with differing value");
-				}
-			}
+			sink.accept(emitted_uri.clone(), emitted_value);
 		} else {
 			warn!(uri = %emitted_uri, "failed to serialize kind");
 		}
 
 		emitted_uri
+	}
+}
+
+/// Emit every entry in `items` into `sink`, in iteration order.
+///
+/// This is the production driver: pair it with a streaming [`DocSink`] to emit a
+/// whole crate without ever materializing the full corpus as `Value` trees.
+/// [`Runner`] is the equivalent for the in-memory [`DocStore`] collection path.
+pub fn emit_all<I>(ctx: &mut DocCtx, items: I, sink: &mut dyn DocSink)
+where
+	I: IntoIterator<Item = Entry>,
+{
+	for entry in items {
+		debug!(name = %entry.name(), "emitting entry");
+		let _ = entry.emit(ctx, sink);
 	}
 }
 

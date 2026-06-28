@@ -121,6 +121,27 @@ impl DocStore {
 
 	pub fn documents_sorted(&self) -> Vec<(&URI, &Value)> { self.docs.iter().collect() }
 }
+
+/// A destination for emitted JSON-LD documents.
+///
+/// Decouples document *production* (the `emit` walk over the IR) from
+/// *materialization*. Tests collect into a [`DocStore`] (a `BTreeMap<URI, Value>`
+/// they can inspect), while production streams each finished document into a
+/// compact, upload-ready buffer — so the whole corpus never lives as
+/// `serde_json::Value` trees at once.
+pub trait DocSink {
+	/// Accept one finished document by value: its `@id`/URI and the JSON-LD
+	/// `Value`. The sink takes ownership; nothing downstream reads it again.
+	fn accept(&mut self, uri: URI, doc: Value);
+}
+
+impl DocSink for DocStore {
+	fn accept(&mut self, uri: URI, doc: Value) {
+		// `insert` already warns on a same-URI/different-value collision and keeps
+		// the first write; the return value is unused here.
+		let _ = self.insert(uri, doc);
+	}
+}
 /// Stores Global Info about the Crate
 // this will live for the duration of the program, need cheap copies for
 // insertion
@@ -214,10 +235,8 @@ impl UriOps for DocCtx {
 }
 
 pub trait EmitJsonLD {
-	/// Takes some type, context, and document store. Returns a URI if succesfull,
-	/// or some String for now if unsuccesfull.
-	// TODO -> Look at Legitamate Error Handling, for now just return URI inserted
-	// into HashMap of entry If already exists should not throw an error, but maybe
-	// if the URI exists and points to a value that does NOT match, throw an error
-	fn emit(self, ctx: &mut DocCtx, doc_store: &mut DocStore) -> URI;
+	/// Emit `self` as one or more JSON-LD documents into `sink`, returning the
+	/// primary entry URI. The sink decides how each document is materialized
+	/// (collected for tests, streamed to bytes for production).
+	fn emit(self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> URI;
 }
