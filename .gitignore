@@ -68,3 +68,4 @@
 !/deno_doc/**/*
 
 
+.claude/worktrees/
