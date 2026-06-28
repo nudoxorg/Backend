@@ -19,6 +19,7 @@ pub struct RepoId(String);
 impl RepoId {
 	/// Return the inner string as a `&str`.
 	pub fn as_str(&self) -> &str { &self.0 }
+
 	/// Consume `self` and return the inner `String`.
 	pub fn into_string(self) -> String { self.0 }
 }
@@ -39,6 +40,7 @@ pub struct BlobRef(String);
 impl BlobRef {
 	/// Return the inner string as a `&str`.
 	pub fn as_str(&self) -> &str { &self.0 }
+
 	/// Consume `self` and return the inner `String`.
 	pub fn into_string(self) -> String { self.0 }
 }

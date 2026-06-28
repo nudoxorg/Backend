@@ -103,9 +103,8 @@ impl NudoxStore {
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .foreign_keys(true);
 
-		let pool = SqlitePool::connect_with(opts)
-			.await
-			.map_err(|e| GlobalStoreError::Connect(Box::new(e)))?;
+		let pool =
+			SqlitePool::connect_with(opts).await.map_err(|e| GlobalStoreError::Connect(Box::new(e)))?;
 
 		Self::ensure_schema(&pool).await?;
 
@@ -147,10 +146,7 @@ impl NudoxStore {
 		];
 
 		for stmt in &stmts {
-			sqlx::query(stmt)
-				.execute(pool)
-				.await
-				.map_err(|e| GlobalStoreError::Schema(Box::new(e)))?;
+			sqlx::query(stmt).execute(pool).await.map_err(|e| GlobalStoreError::Schema(Box::new(e)))?;
 		}
 		Ok(())
 	}
@@ -179,8 +175,7 @@ impl NudoxStore {
 		lib: &LibRef,
 		entry_uris: impl IntoIterator<Item = &'a str>,
 	) -> Result<u64> {
-		let mut tx =
-			self.pool.begin().await.map_err(|e| GlobalStoreError::Transaction(Box::new(e)))?;
+		let mut tx = self.pool.begin().await.map_err(|e| GlobalStoreError::Transaction(Box::new(e)))?;
 
 		let mut inserted = 0u64;
 
@@ -244,8 +239,7 @@ impl NudoxStore {
 				let id_str: &str = r.try_get("id").map_err(|e| GlobalStoreError::RowAccess(Box::new(e)))?;
 				let entry_uri: String =
 					r.try_get("entry_uri").map_err(|e| GlobalStoreError::RowAccess(Box::new(e)))?;
-				let uuid =
-					Uuid::parse_str(id_str).map_err(GlobalStoreError::InvalidId)?;
+				let uuid = Uuid::parse_str(id_str).map_err(GlobalStoreError::InvalidId)?;
 				Ok(Some((GlobalSymbolId(uuid), entry_uri)))
 			}
 		}
@@ -441,10 +435,17 @@ mod tests {
 	#[tokio::test]
 	async fn register_library_is_idempotent() {
 		let store = open_test_store().await;
-		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
+				"Entry/rust/serde/Serialize",
+			])
+			.await
+			.unwrap();
 		// Second call with same URI should be ignored.
 		let n2 = store
-			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"])
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
+				"Entry/rust/serde/Serialize",
+			])
 			.await
 			.unwrap();
 		assert_eq!(n2, 0, "duplicate registration should be ignored");
@@ -455,7 +456,9 @@ mod tests {
 	async fn register_library_extracts_symbol_name() {
 		let store = open_test_store().await;
 		store
-			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/ser/Serialize"])
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
+				"Entry/rust/serde/ser/Serialize",
+			])
 			.await
 			.unwrap();
 		// Lookup must work using just the bare name "Serialize"
@@ -477,7 +480,12 @@ mod tests {
 	#[tokio::test]
 	async fn lookup_returns_stable_id_after_registration() {
 		let store = open_test_store().await;
-		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
+				"Entry/rust/serde/Serialize",
+			])
+			.await
+			.unwrap();
 
 		let lib = LibRef { name: "serde".into(), version: "1.0.0".into() };
 		let gid = store.lookup(&lib, "Serialize").await.unwrap().unwrap();
@@ -490,7 +498,12 @@ mod tests {
 	#[tokio::test]
 	async fn lookup_is_version_scoped() {
 		let store = open_test_store().await;
-		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
+				"Entry/rust/serde/Serialize",
+			])
+			.await
+			.unwrap();
 
 		let lib_v1 = LibRef { name: "serde".into(), version: "1.0.0".into() };
 		let lib_v2 = LibRef { name: "serde".into(), version: "2.0.0".into() };
@@ -502,7 +515,12 @@ mod tests {
 	#[tokio::test]
 	async fn associate_records_occurrence() {
 		let store = open_test_store().await;
-		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
+				"Entry/rust/serde/Serialize",
+			])
+			.await
+			.unwrap();
 
 		let lib = LibRef { name: "serde".into(), version: "1.0.0".into() };
 		let gid = store.lookup(&lib, "Serialize").await.unwrap().unwrap();
@@ -554,7 +572,12 @@ mod tests {
 	#[tokio::test]
 	async fn resolve_symbol_returns_entry_uri() {
 		let store = open_test_store().await;
-		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
+				"Entry/rust/serde/Serialize",
+			])
+			.await
+			.unwrap();
 
 		let (gid, uri) = store.resolve_symbol("serde", "1.0.0", "Serialize").await.unwrap().unwrap();
 

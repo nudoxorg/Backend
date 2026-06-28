@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
-use rustc_hash::FxHashMap as HashMap;
 
 use async_trait::async_trait;
 use nudox_core::{BlobInfo, BlobRef, BlobStore, BlobStoreError, GlobalSymbolId, Result};
+use rustc_hash::FxHashMap as HashMap;
 
 /// In-memory blob store for use in tests.
 #[derive(Clone)]

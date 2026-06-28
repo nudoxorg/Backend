@@ -3,9 +3,8 @@ use std::{io, process::ExitStatus};
 use semver::Version;
 use thiserror::Error;
 
-use super::git::GitError;
-use super::registry::RegistryError;
-use crate::core::rust::Parse;
+use super::{git::GitError, registry::RegistryError};
+use producers::backends::rust::Parse;
 
 #[derive(Debug, Error)]
 pub enum PackageError {

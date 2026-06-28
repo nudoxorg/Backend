@@ -55,7 +55,7 @@ impl Embedder for InProcessEmbedder {
 
 #[cfg(test)]
 mod tests {
-	use nudox_core::{ByteSpan};
+	use nudox_core::ByteSpan;
 
 	use super::*;
 

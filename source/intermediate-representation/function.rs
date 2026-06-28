@@ -1,5 +1,4 @@
 use rustc_hash::FxHashMap as HashMap;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 

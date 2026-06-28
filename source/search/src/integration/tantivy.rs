@@ -14,12 +14,12 @@ use tokio::sync::{mpsc, oneshot};
 /// extraction; there is no other place where these strings appear.
 mod schema {
 	pub const OCCURRENCE_ID: &str = "occurrence_id";
-	pub const GLOBAL_ID:     &str = "global_id";
-	pub const SYMBOL_NAME:   &str = "symbol_name";
-	pub const LIB_NAME:      &str = "lib_name";
-	pub const LIB_VERSION:   &str = "lib_version";
-	pub const REPO_ID:       &str = "repo_id";
-	pub const BLOB_REF:      &str = "blob_ref";
+	pub const GLOBAL_ID: &str = "global_id";
+	pub const SYMBOL_NAME: &str = "symbol_name";
+	pub const LIB_NAME: &str = "lib_name";
+	pub const LIB_VERSION: &str = "lib_version";
+	pub const REPO_ID: &str = "repo_id";
+	pub const BLOB_REF: &str = "blob_ref";
 }
 
 /// How many queued writes are coalesced into a single `commit()` at most.
@@ -93,8 +93,8 @@ impl TantivySearchIndex {
 		let (schema, fields) = build_schema();
 		let dir =
 			MmapDirectory::open(index_dir).map_err(|e| SearchError::OpenDirectory(Box::new(e)))?;
-		let index = Index::open_or_create(dir, schema)
-			.map_err(|e| SearchError::OpenIndex(Box::new(e)))?;
+		let index =
+			Index::open_or_create(dir, schema).map_err(|e| SearchError::OpenIndex(Box::new(e)))?;
 		let writer = index.writer(50_000_000).map_err(|e| SearchError::CreateWriter(Box::new(e)))?;
 
 		// Build the reader once. We drive reloads explicitly from the owner loop
@@ -130,17 +130,13 @@ impl TantivySearchIndex {
 		let docs = blobs
 			.iter()
 			.map(|(blob_ref, info)| {
-				let prev = Term::from_field_text(
-					self.fields.occurrence_id,
-					&info.occurrence_id.to_string(),
-				);
+				let prev =
+					Term::from_field_text(self.fields.occurrence_id, &info.occurrence_id.to_string());
 				(prev, self.build_doc(blob_ref, info))
 			})
 			.collect();
 		let (ack, ack_rx) = oneshot::channel();
-		self.tx
-			.send(WriterCmd::IndexMany { docs, ack })
-			.map_err(|_| SearchError::LockPoisoned)?;
+		self.tx.send(WriterCmd::IndexMany { docs, ack }).map_err(|_| SearchError::LockPoisoned)?;
 		ack_rx.await.map_err(|_| SearchError::LockPoisoned)?
 	}
 
@@ -179,11 +175,14 @@ impl TantivySearchIndex {
 /// Each iteration pops one command (blocking), then drains everything else
 /// currently pending so a burst of writes coalesces into one `commit()`. After
 /// committing it reloads the shared reader, then acks every waiter.
-fn run_writer(mut writer: IndexWriter, reader: IndexReader, mut rx: mpsc::UnboundedReceiver<WriterCmd>) {
+fn run_writer(
+	mut writer: IndexWriter,
+	reader: IndexReader,
+	mut rx: mpsc::UnboundedReceiver<WriterCmd>,
+) {
 	while let Some(first) = rx.blocking_recv() {
 		// Per-waiter ack channel paired with the result of *adding* its docs.
-		let mut acks: Vec<(oneshot::Sender<Result<()>>, std::result::Result<(), String>)> =
-			Vec::new();
+		let mut acks: Vec<(oneshot::Sender<Result<()>>, std::result::Result<(), String>)> = Vec::new();
 		let mut pending = 0usize;
 
 		let mut cmd = Some(first);
@@ -220,15 +219,12 @@ fn run_writer(mut writer: IndexWriter, reader: IndexReader, mut rx: mpsc::Unboun
 		}
 
 		let commit_res = writer.commit().map(|_| ()).map_err(|e| e.to_string());
-		let reload_res = if commit_res.is_ok() {
-			reader.reload().map_err(|e| e.to_string())
-		} else {
-			Ok(())
-		};
+		let reload_res =
+			if commit_res.is_ok() { reader.reload().map_err(|e| e.to_string()) } else { Ok(()) };
 
 		for (ack, add_res) in acks {
 			let final_res: Result<()> = match (add_res, &commit_res, &reload_res) {
-				(Err(e), _, _) => Err(SearchError::AddDocument(e.into()).into()),
+				(Err(e), ..) => Err(SearchError::AddDocument(e.into()).into()),
 				(_, Err(e), _) => Err(SearchError::Commit(e.clone().into()).into()),
 				(_, _, Err(e)) => Err(SearchError::OpenReader(e.clone().into()).into()),
 				_ => Ok(()),
@@ -248,15 +244,14 @@ impl SearchIndex for TantivySearchIndex {
 		let doc = Box::new(self.build_doc(blob_ref, info));
 
 		let (ack, ack_rx) = oneshot::channel();
-		self.tx
-			.send(WriterCmd::Index { doc, prev, ack })
-			.map_err(|_| SearchError::LockPoisoned)?;
+		self.tx.send(WriterCmd::Index { doc, prev, ack }).map_err(|_| SearchError::LockPoisoned)?;
 		ack_rx.await.map_err(|_| SearchError::LockPoisoned)?
 	}
 
 	/// Batch-index many blobs with a single `commit()` for the whole batch,
 	/// instead of one fsync+segment-seal per document. The writer lock is taken
-	/// once. Upsert semantics are preserved per item (delete-by-occurrence first).
+	/// once. Upsert semantics are preserved per item (delete-by-occurrence
+	/// first).
 	#[tracing::instrument(skip(self, items), fields(count = items.len()))]
 	async fn index_many(&self, items: &[(BlobRef, BlobInfo)]) -> Result<()> {
 		if items.is_empty() {
@@ -275,9 +270,7 @@ impl SearchIndex for TantivySearchIndex {
 			.collect();
 
 		let (ack, ack_rx) = oneshot::channel();
-		self.tx
-			.send(WriterCmd::IndexMany { docs, ack })
-			.map_err(|_| SearchError::LockPoisoned)?;
+		self.tx.send(WriterCmd::IndexMany { docs, ack }).map_err(|_| SearchError::LockPoisoned)?;
 		ack_rx.await.map_err(|_| SearchError::LockPoisoned)?
 	}
 }
@@ -296,7 +289,12 @@ fn extract_hit(doc: &TantivyDocument, score: f32, fields: &Fields) -> Option<Sea
 	let occurrence_id = OccurrenceId(uuid::Uuid::parse_str(occ_str).ok()?);
 	let symbol_name =
 		doc.get_first(fields.symbol_name).and_then(|v| v.as_str()).unwrap_or("").to_string();
-	Some(SearchHit { blob_ref: BlobRef::from(blob_ref_str.to_string()), occurrence_id, symbol_name, score: Score::new(score) })
+	Some(SearchHit {
+		blob_ref: BlobRef::from(blob_ref_str.to_string()),
+		occurrence_id,
+		symbol_name,
+		score: Score::new(score),
+	})
 }
 
 #[async_trait]
@@ -308,8 +306,7 @@ impl SearchQuery for TantivySearchIndex {
 			self.fields.lib_name,
 			self.fields.repo_id,
 		]);
-		let query =
-			qp.parse_query(query_str).map_err(|e| SearchError::ParseQuery(Box::new(e)))?;
+		let query = qp.parse_query(query_str).map_err(|e| SearchError::ParseQuery(Box::new(e)))?;
 		let top_docs = searcher
 			.search(&query, &tantivy::collector::TopDocs::with_limit(limit.get()))
 			.map_err(|e| SearchError::Search(Box::new(e)))?;
@@ -379,18 +376,18 @@ mod tests {
 
 	fn blob_repo_local(repo: &str, symbol: &str) -> BlobInfo {
 		BlobInfo {
-			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-			symbol_name:        symbol.into(),
-			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId::from(repo) },
+			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+			symbol_name:   symbol.into(),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from(repo) },
 			resolution:    nudox_core::ResolutionState::Unresolved,
-			kind:               None,
-			source:             SourceChunk {
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        "fn x() {}".into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan::covering(0, 1),
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
 				repo_id:             RepoId::from(repo),
 				file_path:           "src/lib.rs".into(),
 				file_span:           ByteSpan::covering(0, 1),
@@ -404,20 +401,20 @@ mod tests {
 
 	fn blob_for_lib(name: &str, symbol: &str) -> BlobInfo {
 		BlobInfo {
-			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-			symbol_name:        symbol.into(),
-			symbol_origin:      SymbolOrigin::ExternalLib {
+			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+			symbol_name:   symbol.into(),
+			symbol_origin: SymbolOrigin::ExternalLib {
 				lib: LibRef { name: name.into(), version: "1.0.0".into() },
 			},
 			resolution:    nudox_core::ResolutionState::Unresolved,
-			kind:               None,
-			source:             SourceChunk {
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        format!("use {name}::{symbol};").into(),
 				treesitter_repr: None,
 				symbol_span:     ByteSpan::covering(0, 1),
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
 				repo_id:             RepoId::from("r"),
 				file_path:           "src/lib.rs".into(),
 				file_span:           ByteSpan::covering(0, 1),
@@ -644,7 +641,10 @@ mod tests {
 		assert_eq!(hits.len(), 1);
 		assert_eq!(hits[0].blob_ref, BlobRef::from("r1"));
 
-		let none = ix.find_by_global_id(GlobalSymbolId(uuid::Uuid::new_v4()), NonZeroUsize::new(10).unwrap()).await.unwrap();
+		let none = ix
+			.find_by_global_id(GlobalSymbolId(uuid::Uuid::new_v4()), NonZeroUsize::new(10).unwrap())
+			.await
+			.unwrap();
 		assert!(none.is_empty());
 	}
 }

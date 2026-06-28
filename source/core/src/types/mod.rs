@@ -1,7 +1,7 @@
-mod primitives;
 mod pipeline;
+mod primitives;
 mod search;
 
-pub use primitives::*;
 pub use pipeline::*;
+pub use primitives::*;
 pub use search::*;

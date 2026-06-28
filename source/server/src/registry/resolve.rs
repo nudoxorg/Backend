@@ -3,13 +3,9 @@ use std::path::PathBuf;
 use lang_types::Language;
 use url::Url;
 
-use crate::{
-	core::{rust::{Crates, RustPackage}, ts::Package},
-	http::error::{AppError, RegistryLookupError},
-};
-
 use super::{NewPackageRequest, PackageHandle, TYPESCRIPT_REPOSITORY_ENTRY_PREFIX};
-use crate::core::ts::entry_point::typescript_slug;
+use producers::{backends::rust::{Crates, RustPackage}, backends::ts::{Package, entry_point::typescript_slug}, parse::typescript::Npm};
+use crate::http::error::{AppError, RegistryLookupError};
 
 pub(crate) async fn resolve_package_handle(
 	request: &NewPackageRequest,
@@ -20,11 +16,10 @@ pub(crate) async fn resolve_package_handle(
 				return resolve_explicit_rust_package_handle(request);
 			}
 			let registry = Crates::new();
-			let packages = registry.get_packages_by_name(&request.name).await.map_err(|err| {
-				let parsers::rust::Registry::CratesIo(source) = err;
+			let packages = registry.get_packages_by_name(&request.name).await.map_err(|source| {
 				AppError::RegistryLookup(RegistryLookupError::CratesIo {
 					language: request.language,
-					package:  request.name.clone(),
+					package: request.name.clone(),
 					source,
 				})
 			})?;
@@ -38,10 +33,7 @@ pub(crate) async fn resolve_package_handle(
 fn resolve_explicit_rust_package_handle(
 	request: &NewPackageRequest,
 ) -> Result<PackageHandle, AppError> {
-	let source = request
-		.source
-		.as_deref()
-		.ok_or_else(|| AppError::MissingSource { kind: "Rust" })?;
+	let source = request.source.as_deref().ok_or_else(|| AppError::MissingSource { kind: "Rust" })?;
 	let source = parse_explicit_repository_source(request, source)?;
 
 	Ok(PackageHandle::Rust(RustPackage {
@@ -75,12 +67,12 @@ async fn resolve_typescript_package_handle(
 		return resolve_explicit_typescript_package_handle(request);
 	}
 
-	let registry = crate::core::ts::Npm::default();
+	let registry = Npm::default();
 	let package =
 		registry.resolve_package_version(&request.name, &request.version).await.map_err(|source| {
 			AppError::RegistryLookup(RegistryLookupError::Npm {
 				language: request.language,
-				package:  request.name.clone(),
+				package: request.name.clone(),
 				source,
 			})
 		})?;
@@ -126,13 +118,11 @@ fn parse_explicit_repository_source(
 		})
 	})?;
 
-	Url::from_directory_path(&canonical)
-		.or_else(|()| Url::from_file_path(&canonical))
-		.map_err(|()| {
-			AppError::RegistryLookup(RegistryLookupError::InvalidRepositoryPath {
-				language: request.language,
-				package:  request.name.clone(),
-				path:     canonical.display().to_string(),
-			})
+	Url::from_directory_path(&canonical).or_else(|()| Url::from_file_path(&canonical)).map_err(|()| {
+		AppError::RegistryLookup(RegistryLookupError::InvalidRepositoryPath {
+			language: request.language,
+			package:  request.name.clone(),
+			path:     canonical.display().to_string(),
 		})
+	})
 }

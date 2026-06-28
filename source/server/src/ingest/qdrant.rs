@@ -14,13 +14,12 @@ pub struct QdrantConfig {
 
 #[instrument(skip_all, fields(collection = %config.collection_name))]
 pub async fn ensure_collection(client: &Qdrant, config: &QdrantConfig) -> Result<(), AppError> {
-	let exists = client
-		.collection_exists(&config.collection_name)
-		.await
-		.map_err(|source| AppError::Qdrant(QdrantError::CollectionExistenceCheck {
+	let exists = client.collection_exists(&config.collection_name).await.map_err(|source| {
+		AppError::Qdrant(QdrantError::CollectionExistenceCheck {
 			collection: config.collection_name.clone(),
 			source,
-		}))?;
+		})
+	})?;
 
 	if exists {
 		debug!(collection = %config.collection_name, "qdrant collection already exists");
@@ -46,28 +45,33 @@ pub async fn ensure_collection(client: &Qdrant, config: &QdrantConfig) -> Result
 				.vectors_config(VectorParamsBuilder::new(config.vector_size, qdrant_distance)),
 		)
 		.await
-		.map_err(|source| AppError::Qdrant(QdrantError::CollectionCreation {
-			collection: config.collection_name.clone(),
-			source,
-		}))?;
+		.map_err(|source| {
+			AppError::Qdrant(QdrantError::CollectionCreation {
+				collection: config.collection_name.clone(),
+				source,
+			})
+		})?;
 
 	info!(collection = %config.collection_name, "qdrant collection created");
 	Ok(())
 }
 
 #[instrument(skip_all, fields(collection = %config.collection_name))]
-pub async fn upload_points(config: &QdrantConfig, points: Vec<PointStruct>) -> Result<(), AppError> {
+pub async fn upload_points(
+	config: &QdrantConfig,
+	points: Vec<PointStruct>,
+) -> Result<(), AppError> {
 	if points.is_empty() {
 		warn!("no qdrant points to upload");
 		return Ok(());
 	}
 
-	let client = Qdrant::from_url(config.endpoint.as_str())
-		.build()
-		.map_err(|source| AppError::Qdrant(QdrantError::ConnectionFailed {
+	let client = Qdrant::from_url(config.endpoint.as_str()).build().map_err(|source| {
+		AppError::Qdrant(QdrantError::ConnectionFailed {
 			endpoint: config.endpoint.to_string(),
 			source,
-		}))?;
+		})
+	})?;
 
 	ensure_collection(&client, config).await?;
 
@@ -80,10 +84,12 @@ pub async fn upload_points(config: &QdrantConfig, points: Vec<PointStruct>) -> R
 	let response = client
 		.upsert_points(UpsertPointsBuilder::new(&config.collection_name, points))
 		.await
-		.map_err(|source| AppError::Qdrant(QdrantError::UpsertFailed {
-			collection: config.collection_name.clone(),
-			source,
-		}))?;
+		.map_err(|source| {
+			AppError::Qdrant(QdrantError::UpsertFailed {
+				collection: config.collection_name.clone(),
+				source,
+			})
+		})?;
 
 	debug!(status = ?response.result, "qdrant upsert completed");
 

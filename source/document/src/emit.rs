@@ -1,15 +1,11 @@
 use std::collections::HashSet;
 
-use ir::entry::{Entry, NudoxPath};
-use ir::kind::Visibility;
+use identity::path::{fq_name, path_segments};
+use ir::{entry::{Entry, NudoxPath}, kind::Visibility};
 use serde_json::{Map, Value, json};
 use tracing::{debug, instrument};
 
-use crate::{
-	schema::{DocCtx, DocSink, DocStore, DocumentUri, EmitError, EmitJsonLD, UriOps},
-	ld::LDKind,
-};
-use identity::path::{fq_name, path_segments};
+use crate::{ld::LDKind, schema::{DocCtx, DocSink, DocStore, DocumentUri, EmitError, EmitJsonLD, UriOps}};
 
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, sink: &mut dyn DocSink) -> Result<DocumentUri, EmitError> {
@@ -80,52 +76,25 @@ impl EmitJsonLD for Entry {
 			| Entry::Macro(s)
 			| Entry::PrimitiveType(s)
 			| Entry::Field(s)
-			| Entry::Event(s) => (
-				None,
-				None,
-				Some(&s.visibility),
-				s.documentation.as_deref(),
-				s.aliases.as_ref(),
-				&s.name,
-			),
-			Entry::Info(s) => (
-				None,
-				None,
-				Some(&s.visibility),
-				s.documentation.as_deref(),
-				s.aliases.as_ref(),
-				&s.name,
-			),
-			Entry::UnionType(s) => (
-				None,
-				None,
-				Some(&s.visibility),
-				s.documentation.as_deref(),
-				s.aliases.as_ref(),
-				&s.name,
-			),
-			Entry::TypeAlias(s) => (
-				None,
-				None,
-				Some(&s.visibility),
-				s.documentation.as_deref(),
-				s.aliases.as_ref(),
-				&s.name,
-			),
-			Entry::SumType(s) => (
-				None,
-				None,
-				Some(&s.visibility),
-				s.documentation.as_deref(),
-				s.aliases.as_ref(),
-				&s.name,
-			),
+			| Entry::Event(s) => {
+				(None, None, Some(&s.visibility), s.documentation.as_deref(), s.aliases.as_ref(), &s.name)
+			}
+			Entry::Info(s) => {
+				(None, None, Some(&s.visibility), s.documentation.as_deref(), s.aliases.as_ref(), &s.name)
+			}
+			Entry::UnionType(s) => {
+				(None, None, Some(&s.visibility), s.documentation.as_deref(), s.aliases.as_ref(), &s.name)
+			}
+			Entry::TypeAlias(s) => {
+				(None, None, Some(&s.visibility), s.documentation.as_deref(), s.aliases.as_ref(), &s.name)
+			}
+			Entry::SumType(s) => {
+				(None, None, Some(&s.visibility), s.documentation.as_deref(), s.aliases.as_ref(), &s.name)
+			}
 		};
 
 		let members: Vec<String> = match entry_members {
-			Some(members) => {
-				members.iter().map(|member| ctx.entry_uri(member).to_string()).collect()
-			}
+			Some(members) => members.iter().map(|member| ctx.entry_uri(member).to_string()).collect(),
 			None => Vec::default(),
 		};
 		let implemented_protocols: Vec<String> = match implemented_protocols {
@@ -193,8 +162,8 @@ impl EntryOps for Entry {
 /// Emit every entry in `items` into `sink`, in iteration order, collecting any
 /// per-entry [`EmitError`]s (mirroring [`Runner::run`]).
 ///
-/// This is the production driver: pair it with a streaming [`DocSink`] to emit a
-/// whole crate without ever materializing the full corpus as `Value` trees.
+/// This is the production driver: pair it with a streaming [`DocSink`] to emit
+/// a whole crate without ever materializing the full corpus as `Value` trees.
 /// [`Runner`] is the equivalent for the in-memory [`DocStore`] collection path.
 pub fn emit_all<I>(ctx: &mut DocCtx, items: I, sink: &mut dyn DocSink) -> Vec<EmitError>
 where

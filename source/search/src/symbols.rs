@@ -136,18 +136,16 @@ impl SymbolSearch for SymbolSearcher {
 				}
 				union.into_values().collect()
 			}
-			CombineMode::And => {
-				name_hits
-					.into_iter()
-					.filter_map(|(key, name_hit)| {
-						body_hits.get(&key).map(|body_hit| ScoredRef {
-							blob_ref:  name_hit.blob_ref.clone(),
-							global_id: body_hit.global_id.or(name_hit.global_id),
-							score:     Score::new((name_hit.score.get() + body_hit.score.get()) / 2.0),
-						})
+			CombineMode::And => name_hits
+				.into_iter()
+				.filter_map(|(key, name_hit)| {
+					body_hits.get(&key).map(|body_hit| ScoredRef {
+						blob_ref:  name_hit.blob_ref.clone(),
+						global_id: body_hit.global_id.or(name_hit.global_id),
+						score:     Score::new((name_hit.score.get() + body_hit.score.get()) / 2.0),
 					})
-					.collect()
-			}
+				})
+				.collect(),
 		};
 
 		// ── Score → truncate → fetch ──────────────────────────────────────
@@ -174,10 +172,14 @@ impl SymbolSearch for SymbolSearcher {
 
 			// Scope filter
 			if let Some(scope) = &query.scope {
-				if let Some(lang) = scope.lang && blob.metadata.lang != lang {
+				if let Some(lang) = scope.lang
+					&& blob.metadata.lang != lang
+				{
 					continue;
 				}
-				if let Some(repo_id) = &scope.repo_id && blob.metadata.repo_id != *repo_id {
+				if let Some(repo_id) = &scope.repo_id
+					&& blob.metadata.repo_id != *repo_id
+				{
 					continue;
 				}
 			}
@@ -207,10 +209,14 @@ impl SymbolSearch for SymbolSearcher {
 						let occs = gq.get_occurrences(global_id).await?;
 						if let Some(occ_filter) = &query.occurrence_filter {
 							let count = occs.len();
-							if let Some(min) = occ_filter.min_count && count < min.get() {
+							if let Some(min) = occ_filter.min_count
+								&& count < min.get()
+							{
 								continue;
 							}
-							if let Some(max) = occ_filter.max_count && count > max {
+							if let Some(max) = occ_filter.max_count
+								&& count > max
+							{
 								continue;
 							}
 						}
@@ -235,8 +241,8 @@ mod tests {
 	use std::{collections::HashMap, num::NonZeroUsize, sync::Mutex};
 
 	use blobstore::InMemoryBlobStore;
-	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, ByteSpan, ChunkMetadata, CombineMode, Criteria, Embedding, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, GlobalSymbolQuery, Language, ModelId, ModelType, NamePattern, OccurrenceFilter, OccurrenceId, RepoId, Result, ScopeFilter, SearchIndex, SourceChunk, SymbolKind, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
 	use embed::MockEmbedder;
+	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, ByteSpan, ChunkMetadata, CombineMode, Criteria, Embedding, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, GlobalSymbolQuery, Language, ModelId, ModelType, NamePattern, OccurrenceFilter, OccurrenceId, RepoId, Result, ScopeFilter, SearchIndex, SourceChunk, SymbolKind, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
 
 	use super::*;
 	use crate::memory::{InMemorySearchIndex, InMemoryVectorIndex};
@@ -653,7 +659,10 @@ mod tests {
 		let searcher = make_searcher(si, vi, bs, Some(gq as Arc<dyn GlobalSymbolQuery>));
 		let query = SymbolQuery {
 			criteria:          Criteria::Name(NamePattern("fn_".to_string())),
-			occurrence_filter: Some(OccurrenceFilter { min_count: Some(NonZeroUsize::new(2).unwrap()), max_count: None }),
+			occurrence_filter: Some(OccurrenceFilter {
+				min_count: Some(NonZeroUsize::new(2).unwrap()),
+				max_count: None,
+			}),
 			limit:             NonZeroUsize::new(10).unwrap(),
 			scope:             None,
 			kind:              None,

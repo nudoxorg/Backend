@@ -1,5 +1,7 @@
 use std::sync::Arc;
+
 use serde::{Deserialize, Deserializer, Serialize};
+
 use crate::RepoId;
 
 /// Identifies an external library by name and version.
@@ -35,7 +37,8 @@ pub struct TreesitterRepr(pub Vec<u8>);
 
 /// A byte range within a source file or buffer.
 ///
-/// Invariant: `start <= end`. Enforced on construction and during deserialization.
+/// Invariant: `start <= end`. Enforced on construction and during
+/// deserialization.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ByteSpan {
 	start: usize,
@@ -82,9 +85,8 @@ impl<'de> Deserialize<'de> for ByteSpan {
 			end:   usize,
 		}
 		let Raw { start, end } = Raw::deserialize(d)?;
-		Self::new(start, end).ok_or_else(|| {
-			serde::de::Error::custom(format!("ByteSpan: start ({start}) > end ({end})"))
-		})
+		Self::new(start, end)
+			.ok_or_else(|| serde::de::Error::custom(format!("ByteSpan: start ({start}) > end ({end})")))
 	}
 }
 
@@ -147,9 +149,7 @@ pub struct Embedding(Vec<f32>);
 
 impl Embedding {
 	/// Returns `None` if `v` is empty.
-	pub fn new(v: Vec<f32>) -> Option<Self> {
-		(!v.is_empty()).then_some(Self(v))
-	}
+	pub fn new(v: Vec<f32>) -> Option<Self> { (!v.is_empty()).then_some(Self(v)) }
 
 	/// The number of dimensions (always ≥ 1 for well-formed instances).
 	pub fn len(&self) -> usize { self.0.len() }
@@ -163,6 +163,7 @@ impl Embedding {
 
 impl std::ops::Deref for Embedding {
 	type Target = [f32];
+
 	fn deref(&self) -> &[f32] { &self.0 }
 }
 
@@ -170,7 +171,8 @@ impl PartialEq<Vec<f32>> for Embedding {
 	fn eq(&self, other: &Vec<f32>) -> bool { self.0 == *other }
 }
 
-/// Canonical identifier for an embedding model (e.g. `"text-embedding-3-small"`).
+/// Canonical identifier for an embedding model (e.g.
+/// `"text-embedding-3-small"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ModelId(pub String);
@@ -200,9 +202,7 @@ impl PartialEq<str> for ModelId {
 }
 
 impl std::fmt::Display for ModelId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(&self.0)
-	}
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }
 }
 
 /// A single embedding vector produced by a specific model for a specific
@@ -229,7 +229,8 @@ pub enum Language {
 }
 
 impl Language {
-	/// The canonical lower-case identifier string (e.g. `"rust"`, `"typescript"`).
+	/// The canonical lower-case identifier string (e.g. `"rust"`,
+	/// `"typescript"`).
 	pub fn as_str(&self) -> &'static str {
 		match self {
 			Language::Rust => "rust",
@@ -239,9 +240,7 @@ impl Language {
 }
 
 impl std::fmt::Display for Language {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.as_str())
-	}
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.as_str()) }
 }
 
 impl std::str::FromStr for Language {
@@ -332,9 +331,7 @@ impl SymbolKind {
 }
 
 impl std::fmt::Display for SymbolKind {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.as_str())
-	}
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.as_str()) }
 }
 
 /// Error returned when a string cannot be parsed into a [`SymbolKind`].

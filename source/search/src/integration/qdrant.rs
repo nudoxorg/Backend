@@ -30,7 +30,6 @@ pub struct QdrantVectorIndex {
 	collection: String,
 }
 
-
 fn model_type_label(mt: &ModelType) -> String {
 	match mt {
 		ModelType::Placeholder => "placeholder".into(),
@@ -75,10 +74,19 @@ impl QdrantVectorIndex {
 	/// its dimension matches `vector_dim` so callers fail fast at startup
 	/// rather than receiving a silent 400 on the first upsert.
 	pub async fn ensure_collection(&self, vector_dim: u64) -> Result<()> {
-		let exists = self.client.collection_exists(&self.collection).await.map_err(|e| VectorError::CollectionExists(Box::new(e)))?;
+		let exists = self
+			.client
+			.collection_exists(&self.collection)
+			.await
+			.map_err(|e| VectorError::CollectionExists(Box::new(e)))?;
 		if exists {
-			let info = self.client.collection_info(&self.collection).await.map_err(|e| VectorError::CollectionExists(Box::new(e)))?;
-			let actual_dim = info.result
+			let info = self
+				.client
+				.collection_info(&self.collection)
+				.await
+				.map_err(|e| VectorError::CollectionExists(Box::new(e)))?;
+			let actual_dim = info
+				.result
 				.and_then(|r| r.config)
 				.and_then(|c| c.params)
 				.and_then(|p| p.vectors_config)
@@ -87,23 +95,32 @@ impl QdrantVectorIndex {
 					_ => None,
 				});
 			if let Some(actual) = actual_dim
-				&& actual != vector_dim {
-					return Err(VectorError::CreateCollection(
+				&& actual != vector_dim
+			{
+				return Err(VectorError::CreateCollection(
 						format!("dimension mismatch: embedder={vector_dim} collection={actual}; recreate the collection or change NUDOX_EMBED_DIM").into()
 					).into());
-				}
+			}
 			return Ok(());
 		}
 		let req = CreateCollectionBuilder::new(&self.collection).vectors_config(VectorsConfig::Params(
 			VectorParamsBuilder::new(vector_dim, Distance::Cosine).build(),
 		));
-		self.client.create_collection(req).await.map_err(|e| VectorError::CreateCollection(Box::new(e)))?;
+		self
+			.client
+			.create_collection(req)
+			.await
+			.map_err(|e| VectorError::CreateCollection(Box::new(e)))?;
 		Ok(())
 	}
 
 	/// Delete the bound collection. Useful for test teardown.
 	pub async fn delete_collection(&self) -> Result<()> {
-		self.client.delete_collection(&self.collection).await.map_err(|e| VectorError::DeleteCollection(Box::new(e)))?;
+		self
+			.client
+			.delete_collection(&self.collection)
+			.await
+			.map_err(|e| VectorError::DeleteCollection(Box::new(e)))?;
 		Ok(())
 	}
 
@@ -155,20 +172,29 @@ impl VectorIndex for QdrantVectorIndex {
 impl VectorQuery for QdrantVectorIndex {
 	#[tracing::instrument(skip(self, vector), fields(collection = %self.collection, limit))]
 	async fn search(&self, vector: &[f32], limit: NonZeroUsize) -> Result<Vec<VectorHit>> {
-		let req =
-			SearchPointsBuilder::new(&self.collection, vector.to_vec(), limit.get() as u64).with_payload(true);
+		let req = SearchPointsBuilder::new(&self.collection, vector.to_vec(), limit.get() as u64)
+			.with_payload(true);
 
-		let resp = self.client.search_points(req).await.map_err(|e| VectorError::Search(Box::new(e)))?;
+		let resp =
+			self.client.search_points(req).await.map_err(|e| VectorError::Search(Box::new(e)))?;
 
-		let hits = resp.result.into_iter().filter_map(|point| {
-			let blob_ref_str = point.payload.get("blob_ref").and_then(|v| v.as_str())?.to_owned();
-			if blob_ref_str.is_empty() {
-				return None;
-			}
-			let gid_str = point.payload.get("global_id").and_then(|v| v.as_str())?;
-			let global_id = GlobalSymbolId(uuid::Uuid::parse_str(gid_str).ok()?);
-			Some(VectorHit { blob_ref: BlobRef::from(blob_ref_str), global_id, score: Score::new(point.score) })
-		}).collect();
+		let hits = resp
+			.result
+			.into_iter()
+			.filter_map(|point| {
+				let blob_ref_str = point.payload.get("blob_ref").and_then(|v| v.as_str())?.to_owned();
+				if blob_ref_str.is_empty() {
+					return None;
+				}
+				let gid_str = point.payload.get("global_id").and_then(|v| v.as_str())?;
+				let global_id = GlobalSymbolId(uuid::Uuid::parse_str(gid_str).ok()?);
+				Some(VectorHit {
+					blob_ref: BlobRef::from(blob_ref_str),
+					global_id,
+					score: Score::new(point.score),
+				})
+			})
+			.collect();
 
 		Ok(hits)
 	}
@@ -200,9 +226,9 @@ mod tests {
 	fn record(model_type: ModelType, model: &str, dim: usize, val: f32) -> EmbeddingRecord {
 		EmbeddingRecord {
 			model_type,
-			model:   ModelId::new(model),
+			model: ModelId::new(model),
 			purpose: EmbeddingPurpose::Code,
-			vector:  Embedding::new(vec![val; dim]).expect("dim must be > 0"),
+			vector: Embedding::new(vec![val; dim]).expect("dim must be > 0"),
 		}
 	}
 

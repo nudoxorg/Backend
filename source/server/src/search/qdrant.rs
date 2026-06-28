@@ -1,18 +1,10 @@
 use std::collections::HashMap;
 
-use qdrant_client::{
-	Qdrant,
-	qdrant::{QueryPointsBuilder, ScoredPoint, Value, value::Kind},
-};
-
-use crate::config::PipelineConfig;
-use crate::http::error::{AppError, QdrantError};
-use crate::ingest::embedding::{EmbeddingProvider, OpenAIEmbeddingProvider};
-
 use nudox_core::Score;
+use qdrant_client::{Qdrant, qdrant::{QueryPointsBuilder, ScoredPoint, Value, value::Kind}};
 
-use super::{SearchResponse, SearchResult};
-use super::{require_non_empty, require_qdrant};
+use super::{SearchResponse, SearchResult, require_non_empty, require_qdrant};
+use crate::{config::PipelineConfig, http::error::{AppError, QdrantError}, ingest::embedding::{EmbeddingProvider, OpenAIEmbeddingProvider}};
 
 pub async fn semantic_search(
 	config: &PipelineConfig,
@@ -49,10 +41,9 @@ pub(crate) async fn search_results(
 				.with_payload(true),
 		)
 		.await
-		.map_err(|source| AppError::Qdrant(QdrantError::QueryFailed {
-			collection: collection.clone(),
-			source,
-		}))?;
+		.map_err(|source| {
+			AppError::Qdrant(QdrantError::QueryFailed { collection: collection.clone(), source })
+		})?;
 
 	let mut results: Vec<SearchResult> = response
 		.result
@@ -90,5 +81,3 @@ fn take_string(payload: &mut HashMap<String, Value>, key: &str) -> Option<String
 		_ => None,
 	}
 }
-
-

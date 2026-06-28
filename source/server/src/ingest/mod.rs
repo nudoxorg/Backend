@@ -15,12 +15,13 @@ pub mod sink;
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use ir::entry::Index;
-use store::NudoxStore;
 use semver::Version;
+use store::NudoxStore;
 use tokio::task::spawn_blocking;
 use tracing::info;
 
-use crate::{core::backend::LanguageBackend, config::PipelineConfig, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::{schema::{CrateInfo, DocCtx}, upload::{PreparedCorpus, StreamingDocSink}}, search::text::SymbolTextIndex};
+use producers::backends::LanguageBackend;
+use crate::{config::PipelineConfig, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, search::text::SymbolTextIndex, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::{schema::{CrateInfo, DocCtx}, upload::{PreparedCorpus, StreamingDocSink}}};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -40,7 +41,8 @@ pub struct IngestionSummary {
 ///
 /// Built once at startup and shared (as cloned `Arc`s) by the registry — which
 /// writes to them during ingestion — and the API layer, which reads from
-/// `text_index` and `orchestrator` to serve `/text-search` and `/symbol-search`.
+/// `text_index` and `orchestrator` to serve `/text-search` and
+/// `/symbol-search`.
 ///
 /// This replaces the three `Option<Arc<_>>` handles that were previously
 /// threaded by hand through `LocalRegistry` → sync → pipeline → sink assembly
@@ -49,7 +51,7 @@ pub struct IngestionSummary {
 #[derive(Clone, Default)]
 pub struct IngestTargets {
 	/// SQLite occurrence store; enables deferred occurrence resolution.
-	pub store:  Option<Arc<NudoxStore>>,
+	pub store:        Option<Arc<NudoxStore>>,
 	/// Local Tantivy full-text index backing `/text-search`.
 	pub text_index:   Option<Arc<SymbolTextIndex>>,
 	/// nudox-search orchestrator backing `/symbol-search`.
@@ -133,12 +135,13 @@ async fn finalize_pipeline(
 	// Language policy lives here, not in the sink: the orchestrator is
 	// Rust-only for now because only the Rust parser produces blob-level source.
 	if let Some(orch) = &targets.orchestrator
-		&& matches!(coord.language, nudox_core::Language::Rust) {
-			sinks.push(Box::new(OrchestratorSink {
-				orchestrator: Arc::clone(orch),
-				identity:     identity.clone(),
-			}));
-		}
+		&& matches!(coord.language, nudox_core::Language::Rust)
+	{
+		sinks.push(Box::new(OrchestratorSink {
+			orchestrator: Arc::clone(orch),
+			identity:     identity.clone(),
+		}));
+	}
 	if let Some(terminus) = &config.terminus {
 		let schema = if config.upload_schema {
 			Some(serde_json::from_str::<Vec<serde_json::Value>>(include_str!("../../schema.json"))?)
@@ -158,27 +161,25 @@ async fn finalize_pipeline(
 
 	let report = run_sinks(&sinks, &symbols, &coord, progress).await?;
 
-	// VectorSink runs last and consumes symbols (into_embedding_document moves data).
-	let vector_count = if let Some(vs) = vector_sink {
-		vs.accept_owned(symbols, &coord, progress).await?
-	} else {
-		0
-	};
+	// VectorSink runs last and consumes symbols (into_embedding_document moves
+	// data).
+	let vector_count =
+		if let Some(vs) = vector_sink { vs.accept_owned(symbols, &coord, progress).await? } else { 0 };
 
 	Ok(IngestionSummary {
 		entry_count,
 		document_count,
 		vector_count,
-		symbols_registered:   report.indexed_by(SinkId::Sqlite),
+		symbols_registered: report.indexed_by(SinkId::Sqlite),
 		symbols_text_indexed: report.indexed_by(SinkId::Text),
 		symbols_orchestrated: report.indexed_by(SinkId::Orchestrator),
 	})
 }
 
-/// Emit the crate's IR straight into a streaming [`StreamingDocSink`], producing
-/// a dependency-ordered [`PreparedCorpus`] of serialized documents — without
-/// ever materializing the whole corpus as live `serde_json::Value` trees (the
-/// former `DocStore` path, still used by tests, did exactly that).
+/// Emit the crate's IR straight into a streaming [`StreamingDocSink`],
+/// producing a dependency-ordered [`PreparedCorpus`] of serialized documents —
+/// without ever materializing the whole corpus as live `serde_json::Value`
+/// trees (the former `DocStore` path, still used by tests, did exactly that).
 fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -> PreparedCorpus {
 	let context_object = serde_json::json!({
 		"@type": "@context",
@@ -188,10 +189,8 @@ fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -
 		"sys": "http://terminusdb.com/schema/sys#"
 	});
 
-	let mut ctx = DocCtx::init(
-		CrateInfo::new(language.to_owned(), package_name.to_owned()),
-		context_object,
-	);
+	let mut ctx =
+		DocCtx::init(CrateInfo::new(language.to_owned(), package_name.to_owned()), context_object);
 	let mut sink = StreamingDocSink::new();
 	let errors = document::emit::emit_all(&mut ctx, index.entries_by_path.into_values(), &mut sink);
 	if !errors.is_empty() {

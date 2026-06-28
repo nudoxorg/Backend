@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use blobstore::ObjectStoreBlobStore;
-use nudox_core::{BlobStore, Embedder, FutureParseQueue, GlobalSymbolStore, ModelType, SearchIndex, SearchQuery, VectorIndex, VectorQuery};
 use embed::{PlaceholderEmbedder, RemoteEmbedder};
+use nudox_core::{BlobStore, Embedder, FutureParseQueue, GlobalSymbolStore, ModelType, SearchIndex, SearchQuery, VectorIndex, VectorQuery};
 use orchestrator::{Orchestrator, WithSearcher, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
-use search::{InMemoryVectorIndex, QdrantVectorIndex, SymbolSearcher, TantivySearchIndex};
 use qdrant_client::Qdrant;
+use search::{InMemoryVectorIndex, QdrantVectorIndex, SymbolSearcher, TantivySearchIndex};
 use store::NudoxStore;
 use tokio::signal;
 use tracing::{info, warn};
@@ -53,15 +53,14 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	// Build the symbol-search stack (now async: wires QdrantVectorIndex and
 	// NudoxStore when configured). Clone the store handle so it can also flow
 	// into IngestTargets below.
-	let symbol_orchestrator =
-		build_symbol_orchestrator(&config, store.clone()).await;
+	let symbol_orchestrator = build_symbol_orchestrator(&config, store.clone()).await;
 
 	// All configured fan-out destinations, assembled once. The registry writes to
 	// them during ingestion; the API layer reads `text_index`/`orchestrator` from
 	// the same handles. No per-backend threading or builder triplet.
 	let targets = IngestTargets {
 		store,
-		text_index:   text_index.clone(),
+		text_index: text_index.clone(),
 		orchestrator: symbol_orchestrator.clone(),
 	};
 
@@ -122,9 +121,12 @@ async fn shutdown_signal() { let _ = signal::ctrl_c().await; }
 ///   - `storage_root/nudox-blobs`          — ObjectStore blob store (local FS)
 ///
 /// Conditional backends (wired when the relevant config is present):
-///   - `NUDOX_QDRANT_ENDPOINT`            → `QdrantVectorIndex` (otherwise in-memory)
-///   - `store` arg                  → SQLite `GlobalSymbolStore` + `FutureParseQueue`
-///   - `OPENAI_API_KEY` / `NUDOX_EMBEDDING_ENDPOINT` → `RemoteEmbedder` (otherwise placeholder)
+///   - `NUDOX_QDRANT_ENDPOINT`            → `QdrantVectorIndex` (otherwise
+///     in-memory)
+///   - `store` arg                  → SQLite `GlobalSymbolStore` +
+///     `FutureParseQueue`
+///   - `OPENAI_API_KEY` / `NUDOX_EMBEDDING_ENDPOINT` → `RemoteEmbedder`
+///     (otherwise placeholder)
 async fn build_symbol_orchestrator(
 	config: &AppConfig,
 	store: Option<Arc<NudoxStore>>,
@@ -196,9 +198,7 @@ async fn build_symbol_orchestrator(
 	let vector_dim = config.pipeline.qdrant.as_ref().map_or(128, |q| q.vector_size as usize);
 	let embedder: Arc<dyn Embedder> = {
 		let api_key = std::env::var("OPENAI_API_KEY").ok();
-		let endpoint = std::env::var("NUDOX_EMBEDDING_ENDPOINT")
-			.ok()
-			.and_then(|v| Url::parse(&v).ok());
+		let endpoint = std::env::var("NUDOX_EMBEDDING_ENDPOINT").ok().and_then(|v| Url::parse(&v).ok());
 		if api_key.is_some() || endpoint.is_some() {
 			let ep = endpoint.unwrap_or_else(|| {
 				Url::parse("https://api.openai.com/v1/embeddings").expect("valid default URL")
@@ -223,14 +223,9 @@ async fn build_symbol_orchestrator(
 		None,
 	));
 
-	let orchestrator = Orchestrator::new(
-		global,
-		blobs,
-		queue,
-		text as Arc<dyn SearchIndex>,
-		vector_index,
-	)
-	.with_symbol_search(searcher);
+	let orchestrator =
+		Orchestrator::new(global, blobs, queue, text as Arc<dyn SearchIndex>, vector_index)
+			.with_symbol_search(searcher);
 
 	Some(Arc::new(orchestrator))
 }

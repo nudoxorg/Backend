@@ -2,18 +2,9 @@ use tempfile::TempDir;
 use tokio::task::spawn_blocking;
 use url::Url;
 
-use crate::{
-	config::PipelineConfig,
-	core::{backend::{LanguageBackend, RustBackend, TypeScriptBackend}, ts::Package},
-	git,
-	http::error::{AppError, PackageError, RegistryLookupError},
-	ingest::{IngestTargets, run_pipeline},
-	storage::StorageLayout,
-	sync_progress::{PackageSyncPhase, ProgressReporter},
-};
-
 use super::{MonitorExecution, PackageHandle, PackageId, PackageSpec, SyncExecution};
-use crate::core::ts::entry_point::typescript_package_uses_repository;
+use producers::{backends::{LanguageBackend, RustBackend, TypeScriptBackend}, backends::ts::{Package, entry_point::typescript_package_uses_repository}, parse::typescript::Npm, vcs as git};
+use crate::{config::PipelineConfig, http::error::{AppError, PackageError, RegistryLookupError}, ingest::{IngestTargets, run_pipeline}, storage::StorageLayout, sync_progress::{PackageSyncPhase, ProgressReporter}};
 
 struct GitCheckout {
 	commit_hex:           String,
@@ -28,10 +19,8 @@ fn materialize_git_checkout<B: LanguageBackend>(
 	name: &str,
 	progress: &ProgressReporter,
 ) -> Result<GitCheckout, AppError> {
-	progress.phase_with_detail(
-		PackageSyncPhase::Resolving,
-		Some(format!("opening repository for {name}")),
-	);
+	progress
+		.phase_with_detail(PackageSyncPhase::Resolving, Some(format!("opening repository for {name}")));
 	let repo_dir = storage
 		.prepare_repository_dir(spec.language, &spec.slug, source)
 		.map_err(|source| AppError::Storage { path: storage.root().to_path_buf(), source })?;
@@ -112,14 +101,11 @@ pub(crate) async fn run_sync(
 ) -> Result<SyncExecution, AppError> {
 	match handle {
 		PackageHandle::Rust(package) => {
-			run_git_backed_sync::<RustBackend>(storage, pipeline, spec, package, progress, targets)
-				.await
+			run_git_backed_sync::<RustBackend>(storage, pipeline, spec, package, progress, targets).await
 		}
 		PackageHandle::TypeScript(package) if typescript_package_uses_repository(&package) => {
-			run_git_backed_sync::<TypeScriptBackend>(
-				storage, pipeline, spec, package, progress, targets,
-			)
-			.await
+			run_git_backed_sync::<TypeScriptBackend>(storage, pipeline, spec, package, progress, targets)
+				.await
 		}
 		PackageHandle::TypeScript(package) => {
 			run_npm_backed_sync(storage, pipeline, spec, package, progress, targets).await
@@ -158,7 +144,7 @@ async fn run_git_backed_sync<B: LanguageBackend>(
 
 	Ok(SyncExecution {
 		tracked_version_commit: checkout.commit_hex,
-		latest_remote_commit:   checkout.latest_remote_commit,
+		latest_remote_commit: checkout.latest_remote_commit,
 		summary,
 	})
 }
@@ -182,14 +168,16 @@ async fn run_npm_backed_sync(
 		PackageSyncPhase::Materializing,
 		Some(format!("materializing npm package {}@{}", package.name, spec.version)),
 	);
-	let entry_point = crate::core::ts::Npm::default()
+	let entry_point = Npm::default()
 		.materialize_package_version(&package.name, &spec.version, workspace.path())
 		.await
-		.map_err(|source| AppError::RegistryLookup(RegistryLookupError::Npm {
-			language: spec.language,
-			package:  package.name.clone(),
-			source,
-		}))?;
+		.map_err(|source| {
+			AppError::RegistryLookup(RegistryLookupError::Npm {
+				language: spec.language,
+				package: package.name.clone(),
+				source,
+			})
+		})?;
 	let mut materialized_package = package.clone();
 	materialized_package.entry_point = entry_point.display().to_string();
 
@@ -206,7 +194,7 @@ async fn run_npm_backed_sync(
 
 	Ok(SyncExecution {
 		tracked_version_commit: format!("npm:{}@{}", package.name, spec.version),
-		latest_remote_commit:   None,
+		latest_remote_commit: None,
 		summary,
 	})
 }

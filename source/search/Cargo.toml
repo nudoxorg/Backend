@@ -14,6 +14,11 @@ tokio = { workspace = true }
 qdrant-client = { workspace = true }
 uuid = { workspace = true }
 wide = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dashmap = "6"
+im = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

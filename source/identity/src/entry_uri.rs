@@ -21,8 +21,13 @@ impl EntryUri {
 	/// languages `package` is taken as-is.
 	pub fn new(lang: &str, package: &str, path: &str) -> Self {
 		let lang = lang.trim().to_ascii_lowercase();
-		let package = if lang == "rust" { canonical_rust_package(package, path) } else { package.to_owned() };
-		Self { lang: Arc::from(lang.as_str()), package: Arc::from(package.as_str()), path: path.to_owned() }
+		let package =
+			if lang == "rust" { canonical_rust_package(package, path) } else { package.to_owned() };
+		Self {
+			lang:    Arc::from(lang.as_str()),
+			package: Arc::from(package.as_str()),
+			path:    path.to_owned(),
+		}
 	}
 
 	/// Parse `"Entry/{lang}/{package}/{path}"`. Returns `None` if the string

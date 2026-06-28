@@ -1,18 +1,22 @@
 use std::sync::Arc;
 
-use crate::{http::error::AppError, ingest::IngestTargets};
-
 use super::{AddPackageOutcome, LocalRegistry, NewPackageRequest, PackageSnapshot};
+use crate::{http::error::AppError, ingest::IngestTargets};
 
 #[allow(async_fn_in_trait)]
 pub trait Registry: Send + Sync + 'static {
 	async fn package_count(&self) -> usize;
 	async fn list_packages(&self) -> Vec<PackageSnapshot>;
 	async fn get_package(&self, id: u64) -> Result<PackageSnapshot, AppError>;
-	async fn add_package(self: &Arc<Self>, request: NewPackageRequest) -> Result<AddPackageOutcome, AppError>;
+	async fn add_package(
+		self: &Arc<Self>,
+		request: NewPackageRequest,
+	) -> Result<AddPackageOutcome, AppError>;
 	async fn sync_package(self: &Arc<Self>, id: u64) -> Result<PackageSnapshot, AppError>;
 	async fn run_monitor(self: Arc<Self>);
-	fn with_targets(self, targets: IngestTargets) -> Self where Self: Sized;
+	fn with_targets(self, targets: IngestTargets) -> Self
+	where
+		Self: Sized;
 }
 
 impl Registry for LocalRegistry {

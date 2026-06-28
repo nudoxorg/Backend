@@ -26,9 +26,7 @@ pub trait Transient {
 }
 
 impl Transient for String {
-	fn is_transient(&self) -> bool {
-		is_transient_message(self)
-	}
+	fn is_transient(&self) -> bool { is_transient_message(self) }
 }
 
 /// Retry `f` with linear back-off, stopping when it succeeds or the error is
@@ -109,11 +107,7 @@ mod tests {
 			let c = count2.clone();
 			async move {
 				let n = c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-				if n < 2 {
-					Err("connection reset".to_string())
-				} else {
-					Ok(n as u32)
-				}
+				if n < 2 { Err("connection reset".to_string()) } else { Ok(n as u32) }
 			}
 		})
 		.await;

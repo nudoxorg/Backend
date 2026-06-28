@@ -27,7 +27,8 @@ impl Ir<Collected> {
 	pub fn into_entries(self) -> Vec<Entry> { self.data }
 
 	pub fn index(self) -> Ir<Indexed> {
-		let mut entries_by_path = HashMap::with_capacity_and_hasher(self.data.len(), Default::default());
+		let mut entries_by_path =
+			HashMap::with_capacity_and_hasher(self.data.len(), Default::default());
 		let mut root_ids = Vec::new();
 
 		for entry in self.data {

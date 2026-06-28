@@ -1,18 +1,14 @@
 use std::{env, str::FromStr};
 
-use crate::http::error::{AppError, ConfigError};
-use crate::terminus::upload::TerminusConfig;
 use super::app::{AppConfig, PipelineConfig, QdrantSettings, VectorDistance};
+use crate::{http::error::{AppError, ConfigError}, terminus::upload::TerminusConfig};
 
 impl AppConfig {
 	pub fn from_env() -> Result<Self, AppError> {
-		let bind_addr = env::var("NUDOX_BIND_ADDR")
-			.unwrap_or_else(|_| "0.0.0.0:3000".to_owned())
-			.parse()
-			.map_err(|source| AppError::Config(ConfigError::AddrParse {
-				name: "NUDOX_BIND_ADDR",
-				source,
-			}))?;
+		let bind_addr =
+			env::var("NUDOX_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_owned()).parse().map_err(
+				|source| AppError::Config(ConfigError::AddrParse { name: "NUDOX_BIND_ADDR", source }),
+			)?;
 
 		let storage_root = match env::var_os("NUDOX_DATA_DIR") {
 			Some(path) => std::path::PathBuf::from(path),

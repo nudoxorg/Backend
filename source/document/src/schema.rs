@@ -73,14 +73,14 @@
 //! variants for Kind.
 use std::{borrow::{Borrow, Cow}, collections::{BTreeMap, btree_map::Entry as BTreeEntry}, fmt, ops::Deref};
 
+use identity::{EntryUri, KindPrefix, KindUri, path::nudox_path_to_str};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tracing::warn;
 
-use identity::{EntryUri, KindPrefix, KindUri, path::nudox_path_to_str};
-
-/// A well-formed JSON-LD document URI built only from [`EntryUri`] or [`KindUri`].
+/// A well-formed JSON-LD document URI built only from [`EntryUri`] or
+/// [`KindUri`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct DocumentUri(String);
@@ -99,6 +99,7 @@ impl From<KindUri> for DocumentUri {
 
 impl Deref for DocumentUri {
 	type Target = str;
+
 	fn deref(&self) -> &str { &self.0 }
 }
 
@@ -167,9 +168,9 @@ impl DocStore {
 /// A destination for emitted JSON-LD documents.
 ///
 /// Decouples document *production* (the `emit` walk over the IR) from
-/// *materialization*. Tests collect into a [`DocStore`] (a `BTreeMap<URI, Value>`
-/// they can inspect), while production streams each finished document into a
-/// compact, upload-ready buffer — so the whole corpus never lives as
+/// *materialization*. Tests collect into a [`DocStore`] (a `BTreeMap<URI,
+/// Value>` they can inspect), while production streams each finished document
+/// into a compact, upload-ready buffer — so the whole corpus never lives as
 /// `serde_json::Value` trees at once.
 pub trait DocSink {
 	/// Accept one finished document by value: its `@id`/URI and the JSON-LD
@@ -195,10 +196,7 @@ pub struct CrateInfo {
 }
 
 impl CrateInfo {
-	pub fn new(
-		lang: impl Into<Cow<'static, str>>,
-		crate_name: impl Into<Cow<'static, str>>,
-	) -> Self {
+	pub fn new(lang: impl Into<Cow<'static, str>>, crate_name: impl Into<Cow<'static, str>>) -> Self {
 		CrateInfo { lang: lang.into(), crate_name: crate_name.into() }
 	}
 
@@ -206,7 +204,6 @@ impl CrateInfo {
 	pub fn lang(&self) -> &str { self.lang.as_ref() }
 
 	pub fn crate_name(&self) -> &str { self.crate_name.as_ref() }
-
 }
 
 /// Context to be used including lib/crate info, schema context, uri rules, etc.
@@ -231,7 +228,6 @@ impl DocCtx {
 	}
 
 	pub fn context(&self) -> &Value { &self.context_obj }
-
 }
 
 /// Trait for URI construction from path/kind.

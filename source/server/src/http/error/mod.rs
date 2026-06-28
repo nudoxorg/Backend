@@ -1,36 +1,32 @@
-mod text_index;
-mod embedding;
-mod ingest;
-mod qdrant;
-mod terminus;
 mod config;
-mod registry_lookup;
-mod registry;
-mod package;
+mod embedding;
 mod git;
+mod ingest;
+mod package;
+mod qdrant;
+mod registry;
+mod registry_lookup;
+mod terminus;
+mod text_index;
 
-pub use text_index::TextIndexError;
-pub use embedding::EmbeddingError;
-pub use ingest::IngestError;
-pub use qdrant::QdrantError;
-pub use terminus::TerminusError;
-pub use config::ConfigError;
-pub use registry_lookup::RegistryLookupError;
-pub use registry::RegistryError;
-pub use package::PackageError;
-pub use git::GitError;
-
-use std::io;
-use std::path::PathBuf;
+use std::{io, path::PathBuf};
 
 use axum::{Json, http::StatusCode, response::{IntoResponse, Response}};
+pub use config::ConfigError;
+pub use embedding::EmbeddingError;
+pub use git::GitError;
+pub use ingest::IngestError;
 use lang_types::Language;
+pub use package::PackageError;
+pub use qdrant::QdrantError;
+pub use registry::RegistryError;
+pub use registry_lookup::RegistryLookupError;
 use semver::Version;
 use serde_json::json;
+pub use terminus::TerminusError;
+pub use text_index::TextIndexError;
 use thiserror::Error;
 use tokio::task::JoinError;
-
-use parsers::typescript::error::Package as TsPackageError;
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -85,7 +81,7 @@ pub enum AppError {
 	Ingest(#[from] IngestError),
 
 	#[error(transparent)]
-	TsPackage(#[from] TsPackageError),
+	Backends(#[from] producers::backends::Error),
 
 	#[error(transparent)]
 	TextIndex(#[from] TextIndexError),
@@ -119,12 +115,6 @@ pub enum AppError {
 
 	#[error("{kind} source is required but was not provided")]
 	MissingSource { kind: &'static str },
-
-	#[error("could not determine a TypeScript entry point in `{path}`")]
-	TypescriptEntryPointDiscovery { path: String },
-
-	#[error("TypeScript entry point `{path}` does not exist")]
-	TypescriptEntryPointMissing { path: String },
 
 	#[error("version {version} not found for package `{package}`")]
 	VersionNotFoundForPackage { package: String, version: Version },

@@ -1,9 +1,6 @@
 #![allow(clippy::result_large_err)]
 #![feature(arbitrary_self_types)]
 pub mod config;
-pub mod core;
-pub mod emit;
-pub mod git;
 pub mod http;
 pub mod ingest;
 pub mod registry;

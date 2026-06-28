@@ -7,17 +7,14 @@
 //! produces meaningful results without an external embedding service: same
 //! source text → same hash → same vector → cosine similarity = 1.0.
 
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use blobstore::InMemoryBlobStore;
-use std::num::NonZeroUsize;
-
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, BodyQuery, ByteSpan, ChunkMetadata, Criteria, EmbedderSet, GlobalSymbolId, GlobalSymbolQuery, Language, LibRef, NamePattern, OccurrenceFilter, RepoId, ResolutionOutcome, ScopeFilter, SearchIndex, SearchQuery, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex, VectorQuery};
 use embed::PlaceholderEmbedder;
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, BodyQuery, ByteSpan, ChunkMetadata, Criteria, EmbedderSet, GlobalSymbolId, GlobalSymbolQuery, Language, LibRef, NamePattern, OccurrenceFilter, RepoId, ResolutionOutcome, ScopeFilter, SearchIndex, SearchQuery, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex, VectorQuery};
+use orchestrator::{NoSearcher, Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 use pipeline::{Pipeline, PipelineConfig, PipelineInput};
 use search::{InMemorySearchIndex, InMemoryVectorIndex, SymbolSearcher};
-
-use orchestrator::{NoSearcher, Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 
 const EMBED_DIM: usize = 64;
 
@@ -203,7 +200,11 @@ async fn vector_search_exact_code_match() {
 
 	assert!(!hits.is_empty(), "vector search should return at least one hit");
 	assert_eq!(hits[0].blob.symbol_name, "add_numbers", "top hit should be the target function");
-	assert!(hits[0].score.get() > 0.9, "score for exact code match should be > 0.9, got {}", hits[0].score);
+	assert!(
+		hits[0].score.get() > 0.9,
+		"score for exact code match should be > 0.9, got {}",
+		hits[0].score
+	);
 }
 
 // ── Test 3: occurrence counting through full ingest + GlobalSymbolQuery
@@ -254,7 +255,10 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	let hits = searcher
 		.search(&SymbolQuery {
 			criteria:          Criteria::Name(NamePattern("Serialize".into())),
-			occurrence_filter: Some(OccurrenceFilter { min_count: Some(NonZeroUsize::new(3).unwrap()), max_count: None }),
+			occurrence_filter: Some(OccurrenceFilter {
+				min_count: Some(NonZeroUsize::new(3).unwrap()),
+				max_count: None,
+			}),
 			limit:             NonZeroUsize::new(10).unwrap(),
 			scope:             None,
 			kind:              None,
@@ -267,7 +271,10 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	let hits = searcher
 		.search(&SymbolQuery {
 			criteria:          Criteria::Name(NamePattern("Serialize".into())),
-			occurrence_filter: Some(OccurrenceFilter { min_count: Some(NonZeroUsize::new(4).unwrap()), max_count: None }),
+			occurrence_filter: Some(OccurrenceFilter {
+				min_count: Some(NonZeroUsize::new(4).unwrap()),
+				max_count: None,
+			}),
 			limit:             NonZeroUsize::new(10).unwrap(),
 			scope:             None,
 			kind:              None,

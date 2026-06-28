@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 /// ! We store our data as a nested tree structure to ensure maximum
 /// composability for building the structure, and the ease of Serde and so on
 /// and so forth. We're able to store references to other objects using absolute
@@ -5,8 +7,6 @@
 /// structure should be considered in the future to avoid this reconstruction
 /// between backends.
 use rustc_hash::FxHashMap as HashMap;
-use std::path::PathBuf;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 

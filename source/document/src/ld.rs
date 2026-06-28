@@ -188,15 +188,24 @@ impl TryFrom<&ir::kind::Symbol<ir::protocols::TraitDef>> for LDTraitDef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Polarity { Positive, Negative }
+pub enum Polarity {
+	Positive,
+	Negative,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ImplScope { Specific, Blanket }
+pub enum ImplScope {
+	Specific,
+	Blanket,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Safety { Safe, Unsafe }
+pub enum Safety {
+	Safe,
+	Unsafe,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LDTraitImpl {
@@ -228,9 +237,17 @@ impl TryFrom<&ir::kind::Symbol<ir::protocols::TraitImpl>> for LDTraitImpl {
 			methods:              s.inner.methods.as_ref().map(|m| json!(m)),
 			associated_types:     s.inner.associated_types.as_ref().map(|a| json!(a)),
 			associated_constants: s.inner.associated_constants.as_ref().map(|c| json!(c)),
-			polarity:             if s.inner.is_negative { Polarity::Negative } else { Polarity::Positive },
-			scope:                if s.inner.is_blanket  { ImplScope::Blanket  } else { ImplScope::Specific },
-			safety:               if s.inner.is_unsafe   { Safety::Unsafe      } else { Safety::Safe },
+			polarity:             if s.inner.is_negative {
+				Polarity::Negative
+			} else {
+				Polarity::Positive
+			},
+			scope:                if s.inner.is_blanket {
+				ImplScope::Blanket
+			} else {
+				ImplScope::Specific
+			},
+			safety:               if s.inner.is_unsafe { Safety::Unsafe } else { Safety::Safe },
 		})
 	}
 }

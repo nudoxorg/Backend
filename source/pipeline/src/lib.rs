@@ -104,20 +104,21 @@ impl Pipeline {
 			});
 
 			if self.config.embed_docstrings
-				&& let Some(doc) = &input.docstring {
-					let doc_chunk = SourceChunk {
-						raw_code:        doc.as_str().into(),
-						treesitter_repr: None,
-						symbol_span:     ByteSpan::covering(0, doc.len()),
-					};
-					let doc_vec = embedder.embed(&doc_chunk, EmbeddingPurpose::Docstring).await?;
-					embeddings.push(EmbeddingRecord {
-						model_type: embedder.model_type(),
-						model:      embedder.model_id().clone(),
-						purpose:    EmbeddingPurpose::Docstring,
-						vector:     doc_vec,
-					});
-				}
+				&& let Some(doc) = &input.docstring
+			{
+				let doc_chunk = SourceChunk {
+					raw_code:        doc.as_str().into(),
+					treesitter_repr: None,
+					symbol_span:     ByteSpan::covering(0, doc.len()),
+				};
+				let doc_vec = embedder.embed(&doc_chunk, EmbeddingPurpose::Docstring).await?;
+				embeddings.push(EmbeddingRecord {
+					model_type: embedder.model_type(),
+					model:      embedder.model_id().clone(),
+					purpose:    EmbeddingPurpose::Docstring,
+					vector:     doc_vec,
+				});
+			}
 		}
 
 		Ok(BlobInfo {
@@ -135,8 +136,8 @@ impl Pipeline {
 
 #[cfg(test)]
 mod tests {
-	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, Language, ModelType, RepoId, SymbolOrigin};
 	use embed::{MockEmbedder, PlaceholderEmbedder};
+	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, Language, ModelType, RepoId, SymbolOrigin};
 
 	use super::*;
 
@@ -149,7 +150,10 @@ mod tests {
 
 	#[test]
 	fn pipeline_new_constructs_without_panic() {
-		let _pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(16))]), PipelineConfig::default());
+		let _pipeline = Pipeline::new(
+			EmbedderSet::new(vec![Box::new(MockEmbedder::new(16))]),
+			PipelineConfig::default(),
+		);
 	}
 
 	fn make_input(docstring: Option<&str>) -> PipelineInput {
@@ -173,7 +177,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn process_with_single_embedder_produces_code_record() {
-		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(8))]), PipelineConfig::default());
+		let pipeline = Pipeline::new(
+			EmbedderSet::new(vec![Box::new(MockEmbedder::new(8))]),
+			PipelineConfig::default(),
+		);
 		let info = pipeline.process(make_input(None)).await.unwrap();
 		assert_eq!(info.symbol_name, "foo");
 		assert_eq!(info.resolution, nudox_core::ResolutionState::Unresolved);
@@ -187,7 +194,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn process_with_docstring_produces_two_records_per_embedder() {
-		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(8))]), PipelineConfig::default());
+		let pipeline = Pipeline::new(
+			EmbedderSet::new(vec![Box::new(MockEmbedder::new(8))]),
+			PipelineConfig::default(),
+		);
 		let info = pipeline.process(make_input(Some("/// docs here"))).await.unwrap();
 		assert_eq!(info.embeddings.len(), 2);
 		assert!(matches!(info.embeddings[1].purpose, EmbeddingPurpose::Docstring));
@@ -260,7 +270,10 @@ mod tests {
 			},
 			docstring:     None,
 		};
-		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(4))]), PipelineConfig::default());
+		let pipeline = Pipeline::new(
+			EmbedderSet::new(vec![Box::new(MockEmbedder::new(4))]),
+			PipelineConfig::default(),
+		);
 		let info = pipeline.process(input).await.unwrap();
 		assert!(info.source.treesitter_repr.is_some());
 		assert!(info.source.raw_code.contains("fn bar"));
@@ -284,7 +297,10 @@ mod tests {
 			},
 			docstring:     None,
 		};
-		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(4))]), PipelineConfig::default());
+		let pipeline = Pipeline::new(
+			EmbedderSet::new(vec![Box::new(MockEmbedder::new(4))]),
+			PipelineConfig::default(),
+		);
 		let info = pipeline.process(input).await.unwrap();
 		let payload: serde_json::Value =
 			serde_json::from_slice(&info.source.treesitter_repr.as_ref().unwrap().0).unwrap();

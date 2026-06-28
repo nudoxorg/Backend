@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
-use crate::{BlobRef, GlobalSymbolId, OccurrenceId};
+
 use super::primitives::{ChunkMetadata, EmbeddingRecord, LibRef, SourceChunk, SymbolKind, SymbolOrigin};
+use crate::{BlobRef, GlobalSymbolId, OccurrenceId};
 
 /// The resolution state of a symbol occurrence — distinguishes the three
 /// possible lifecycle positions so callers never need to infer state from
@@ -16,7 +17,8 @@ pub enum ResolutionState {
 }
 
 impl ResolutionState {
-	/// Returns the `GlobalSymbolId` if this state is `Resolved`, otherwise `None`.
+	/// Returns the `GlobalSymbolId` if this state is `Resolved`, otherwise
+	/// `None`.
 	pub fn resolved_id(&self) -> Option<GlobalSymbolId> {
 		if let Self::Resolved(id) = self { Some(*id) } else { None }
 	}

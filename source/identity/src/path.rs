@@ -20,7 +20,8 @@ pub fn nudox_path_to_str(path: &NudoxPath) -> String {
 	}
 }
 
-/// Split a path into its individual segments (dependency-prefixed for externals).
+/// Split a path into its individual segments (dependency-prefixed for
+/// externals).
 pub fn path_segments(path: &NudoxPath) -> Vec<String> {
 	match path {
 		NudoxPath::Local(local_path) => {

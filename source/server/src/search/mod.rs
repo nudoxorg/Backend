@@ -1,21 +1,18 @@
-mod session;
 mod graph;
 mod qdrant;
-
-pub use session::SessionStore;
-pub use qdrant::semantic_search;
+mod session;
 
 use std::collections::HashMap;
 
+use identity::EntryUri;
 use nudox_core::Score;
+pub use qdrant::semantic_search;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+pub use session::SessionStore;
 use terminusdb_client::{BranchSpec, GetOpts, TerminusDBHttpClient};
 
-use crate::config::{PipelineConfig, QdrantSettings};
-use crate::http::error::{AppError, ConfigError, TerminusError};
-use identity::EntryUri;
-use crate::terminus::upload::TerminusConfig;
+use crate::{config::{PipelineConfig, QdrantSettings}, http::error::{AppError, ConfigError, TerminusError}, terminus::upload::TerminusConfig};
 
 pub mod text;
 
@@ -95,14 +92,6 @@ fn normalize_session(session: Option<&str>) -> Option<String> {
 	})
 }
 
-fn session_file(dir: &std::path::Path, session: &str) -> std::path::PathBuf {
-	use std::hash::{Hash, Hasher, DefaultHasher};
-
-	let mut hasher = DefaultHasher::new();
-	session.hash(&mut hasher);
-	dir.join(format!("{:016x}.json", hasher.finish()))
-}
-
 fn structured_symbol_uri(language: &str, symbol: &str, package: Option<&str>) -> String {
 	match package {
 		Some(pkg) => EntryUri::new(language, pkg, symbol).to_string(),
@@ -121,11 +110,13 @@ async fn terminus_client(config: &TerminusConfig) -> Result<TerminusDBHttpClient
 		&config.org,
 	)
 	.await
-	.map_err(|source| AppError::Terminus(TerminusError::ClientCreation {
-		org: config.org.clone(),
-		db: config.db.clone(),
-		source,
-	}))
+	.map_err(|source| {
+		AppError::Terminus(TerminusError::ClientCreation {
+			org: config.org.clone(),
+			db: config.db.clone(),
+			source,
+		})
+	})
 }
 
 // ── Public API functions ───────────────────────────────
@@ -282,13 +273,10 @@ async fn fetch_document(
 		return Ok(document.clone());
 	}
 
-	let document = client
-		.get_document_if_exists(uri, spec, GetOpts::default().with_unfold(true))
-		.await
-		.map_err(|source| AppError::Terminus(TerminusError::DocumentFetch {
-			uri: uri.to_owned(),
-			source,
-		}))?;
+	let document =
+		client.get_document_if_exists(uri, spec, GetOpts::default().with_unfold(true)).await.map_err(
+			|source| AppError::Terminus(TerminusError::DocumentFetch { uri: uri.to_owned(), source }),
+		)?;
 	cache.insert(uri.to_owned(), document.clone());
 	Ok(document)
 }

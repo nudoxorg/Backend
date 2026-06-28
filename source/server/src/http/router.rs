@@ -1,8 +1,7 @@
 use axum::{Json, Router, extract::{Path, Query, State}, http::StatusCode, routing::{delete, get, post}};
 use tower_http::trace::TraceLayer;
 
-use super::{AdminState, AppState, QueryState, error::{AppError, ConfigError, IngestError}};
-use super::dto::{ExpandQuery, HealthResponse, LookupQuery, RunSearchQuery, SearchQuery, SessionQuery, SymbolMatchResponse};
+use super::{AdminState, AppState, QueryState, dto::{ExpandQuery, HealthResponse, LookupQuery, RunSearchQuery, SearchQuery, SessionQuery, SymbolMatchResponse}, error::{AppError, ConfigError, IngestError}};
 use crate::{registry::{AddPackageOutcome, NewPackageRequest, PackageSnapshot}, search};
 
 const DEFAULT_SEARCH_LIMIT: usize = 6;
@@ -37,11 +36,7 @@ async fn text_search(
 	State(state): State<QueryState>,
 	Query(params): Query<SearchQuery>,
 ) -> Result<Json<search::SearchResponse>, AppError> {
-	let index = state
-		.targets
-		.text_index
-		.as_ref()
-		.ok_or_else(|| AppError::TextSearchNotConfigured)?;
+	let index = state.targets.text_index.as_ref().ok_or_else(|| AppError::TextSearchNotConfigured)?;
 	let limit = params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
 	let hits = index.search(&params.q, limit)?;
 	let results = hits
@@ -94,10 +89,7 @@ async fn search_docs(
 	State(state): State<QueryState>,
 	Query(params): Query<SearchQuery>,
 ) -> Result<Json<search::SearchResponse>, AppError> {
-	let client = state
-		.search_qdrant
-		.as_ref()
-		.ok_or(AppError::Config(ConfigError::MissingQdrant))?;
+	let client = state.search_qdrant.as_ref().ok_or(AppError::Config(ConfigError::MissingQdrant))?;
 	let response = search::semantic_search(
 		&state.pipeline,
 		client,
@@ -120,11 +112,9 @@ impl<'a> LookupMode<'a> {
 			return Ok(Self::ByUri(uri));
 		}
 		match (params.symbol.as_deref(), params.language.as_deref()) {
-			(Some(symbol), Some(language)) => Ok(Self::ByContext {
-				symbol,
-				language,
-				package: params.package.as_deref(),
-			}),
+			(Some(symbol), Some(language)) => {
+				Ok(Self::ByContext { symbol, language, package: params.package.as_deref() })
+			}
 			_ => Err(AppError::Config(ConfigError::MissingQueryParams)),
 		}
 	}
@@ -147,10 +137,7 @@ async fn run_search(
 	State(state): State<QueryState>,
 	Query(params): Query<RunSearchQuery>,
 ) -> Result<Json<search::RunSearchResponse>, AppError> {
-	let client = state
-		.search_qdrant
-		.as_ref()
-		.ok_or(AppError::Config(ConfigError::MissingQdrant))?;
+	let client = state.search_qdrant.as_ref().ok_or(AppError::Config(ConfigError::MissingQdrant))?;
 	let response = search::run_search(
 		&state.pipeline,
 		client,

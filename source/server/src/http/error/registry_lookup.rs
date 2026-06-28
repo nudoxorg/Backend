@@ -1,9 +1,8 @@
 use std::io;
 
 use lang_types::Language;
+use producers::parse::typescript::error::Package as TsPackageError;
 use thiserror::Error;
-
-use parsers::typescript::error::Package as TsPackageError;
 
 #[derive(Debug, Error)]
 pub enum RegistryLookupError {
@@ -12,7 +11,7 @@ pub enum RegistryLookupError {
 		language: Language,
 		package:  String,
 		#[source]
-		source:   crates_io_api::Error,
+		source:   producers::parse::rust::Registry,
 	},
 
 	#[error("npm registry error for `{package}`: {source}")]

@@ -41,7 +41,12 @@ pub struct RemoteEmbedderBuilder {
 
 impl RemoteEmbedderBuilder {
 	fn new(endpoint: Url, model_id: impl Into<String>) -> Self {
-		Self { endpoint, model_id: ModelId::new(model_id), api_key: None, model_type: ModelType::SelfHosted }
+		Self {
+			endpoint,
+			model_id: ModelId::new(model_id),
+			api_key: None,
+			model_type: ModelType::SelfHosted,
+		}
 	}
 
 	/// Set a Bearer API key sent in the `Authorization` header.
@@ -129,9 +134,8 @@ impl Embedder for RemoteEmbedder {
 			floats.push(f);
 		}
 
-		Embedding::new(floats).ok_or_else(|| EmbedderError::InvalidResponse {
-			field: "data[0].embedding is empty",
-		}.into())
+		Embedding::new(floats)
+			.ok_or_else(|| EmbedderError::InvalidResponse { field: "data[0].embedding is empty" }.into())
 	}
 }
 

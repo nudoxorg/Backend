@@ -1,8 +1,6 @@
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{collections::HashMap, num::NonZeroUsize, sync::{Arc, Mutex}};
 
 use async_trait::async_trait;
-use std::num::NonZeroUsize;
-
 use nudox_core::{BlobInfo, BlobRef, Embedding, EmbeddingRecord, GlobalSymbolId, ModelId, OccurrenceId, Result, Score, SearchHit, SearchIndex, SearchQuery, VectorHit, VectorIndex, VectorQuery};
 
 /// Indexed entry stored in the in-memory search index.
@@ -169,7 +167,11 @@ impl VectorQuery for InMemoryVectorIndex {
 			scored
 				.into_iter()
 				.take(limit.get())
-				.map(|(score, blob_ref, global_id)| VectorHit { blob_ref, global_id, score: Score::new(score) })
+				.map(|(score, blob_ref, global_id)| VectorHit {
+					blob_ref,
+					global_id,
+					score: Score::new(score),
+				})
 				.collect(),
 		)
 	}
@@ -341,7 +343,10 @@ mod tests {
 		assert_eq!(hits.len(), 1);
 		assert_eq!(hits[0].blob_ref, blob_ref);
 
-		let not_found = index.find_by_global_id(GlobalSymbolId(Uuid::new_v4()), NonZeroUsize::new(10).unwrap()).await.unwrap();
+		let not_found = index
+			.find_by_global_id(GlobalSymbolId(Uuid::new_v4()), NonZeroUsize::new(10).unwrap())
+			.await
+			.unwrap();
 		assert!(not_found.is_empty());
 	}
 
@@ -366,10 +371,7 @@ mod tests {
 			let qn = norm(&a);
 			let simd = cosine_with_query_norm(&a, qn, &b);
 			let scalar = scalar_cosine(&a, &b);
-			assert!(
-				(simd - scalar).abs() <= 1e-5,
-				"len {len}: simd {simd} vs scalar {scalar}"
-			);
+			assert!((simd - scalar).abs() <= 1e-5, "len {len}: simd {simd} vs scalar {scalar}");
 		}
 	}
 

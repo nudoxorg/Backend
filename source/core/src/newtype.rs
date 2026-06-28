@@ -2,7 +2,8 @@
 ///
 /// Generated type has:
 /// - Private `String` field (sealed; use `as_str()` / `From` impls).
-/// - `From<String>` and `From<&str>` constructors (unvalidated, for internal use).
+/// - `From<String>` and `From<&str>` constructors (unvalidated, for internal
+///   use).
 /// - `new()` that rejects blank strings.
 /// - `as_str()`, `into_string()`, `Display`, `FromStr`, `AsRef<str>`.
 /// - `Hash + Eq + Ord` so it can be used directly as a `HashMap` key.
@@ -59,9 +60,9 @@ macro_rules! str_newtype {
 pub struct EmptyValue;
 
 impl std::fmt::Display for EmptyValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("value must be non-empty")
-    }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("value must be non-empty")
+	}
 }
 
 impl std::error::Error for EmptyValue {}

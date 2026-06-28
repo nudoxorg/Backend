@@ -1,7 +1,7 @@
 use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}, process::Command};
 
 use color_eyre::eyre::WrapErr;
-use nudox::{core::{rust::RustPackage, ts::Package}, git::{clone_repository, find_commit_for_version, materialize_commit}, emit::Runner, terminus::{schema::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}};
+use nudox::{core::{rust::RustPackage, ts::Package}, emit::Runner, git::{clone_repository, find_commit_for_version, materialize_commit}, terminus::{schema::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}};
 use rustdoc_types::{Crate as RustdocCrate, ItemEnum};
 use semver::Version;
 use tempfile::TempDir;
@@ -21,7 +21,9 @@ fn rust_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 		description: Some("regular rust fixture".into()),
 	};
 
-	let ir = package.generate_ir_with_sources(&repository.path().to_path_buf(), &Version::parse("0.1.0")?)?.0;
+	let ir = package
+		.generate_ir_with_sources(&repository.path().to_path_buf(), &Version::parse("0.1.0")?)?
+		.0;
 	let store = emit_store("rust", "calculator", Version::parse("0.1.0")?, ir)?;
 	let names = doc_names(&store);
 	let counter_entry = entry_with_path_suffix(&store, "calculator::Counter")
@@ -69,7 +71,9 @@ fn rust_workspace_pipeline_end_to_end() -> color_eyre::Result<()> {
 		description: Some("workspace rust fixture".into()),
 	};
 
-	let ir = package.generate_ir_with_sources(&repository.path().to_path_buf(), &Version::parse("0.3.1")?)?.0;
+	let ir = package
+		.generate_ir_with_sources(&repository.path().to_path_buf(), &Version::parse("0.3.1")?)?
+		.0;
 	let store = emit_store("rust", "odd-duck", Version::parse("0.3.1")?, ir)?;
 	let names = doc_names(&store);
 
@@ -94,7 +98,9 @@ fn rust_binary_workspace_pipeline_includes_local_library_deps() -> color_eyre::R
 		description: Some("binary workspace rust fixture".into()),
 	};
 
-	let ir = package.generate_ir_with_sources(&repository.path().to_path_buf(), &Version::parse("0.1.0")?)?.0;
+	let ir = package
+		.generate_ir_with_sources(&repository.path().to_path_buf(), &Version::parse("0.1.0")?)?
+		.0;
 	let store = emit_store("rust", "app", Version::parse("0.1.0")?, ir)?;
 	let names = doc_names(&store);
 
@@ -123,10 +129,12 @@ fn rust_axum_pipeline_repro() -> color_eyre::Result<()> {
 	let repository_dir = scratch.path().join("repository");
 	let workspace_dir = scratch.path().join("workspace");
 	let repository = clone_repository(&repository_dir, &package.source)?;
-	let target_oid = find_commit_for_version(&repository, &Version::parse("0.8.8")?, &package.name, None)
-		.ok_or_else(|| color_eyre::eyre::eyre!("failed to find commit for axum 0.8.8"))?;
+	let target_oid =
+		find_commit_for_version(&repository, &Version::parse("0.8.8")?, &package.name, None)
+			.ok_or_else(|| color_eyre::eyre::eyre!("failed to find commit for axum 0.8.8"))?;
 	materialize_commit(&repository, target_oid, &workspace_dir)?;
-	let ir = package.generate_ir_with_sources(&workspace_dir.to_path_buf(), &Version::parse("0.8.8")?)?.0;
+	let ir =
+		package.generate_ir_with_sources(&workspace_dir.to_path_buf(), &Version::parse("0.8.8")?)?.0;
 	let store = emit_store("rust", "axum", Version::parse("0.8.8")?, ir)?;
 	eprintln!("axum emitted document count: {}", store.docs.len());
 	assert!(!store.docs.is_empty(), "expected axum docs to be emitted");
@@ -221,10 +229,12 @@ async fn rust_axum_terminus_upload_repro() -> color_eyre::Result<()> {
 	let repository_dir = scratch.path().join("repository");
 	let workspace_dir = scratch.path().join("workspace");
 	let repository = clone_repository(&repository_dir, &package.source)?;
-	let target_oid = find_commit_for_version(&repository, &Version::parse("0.8.8")?, &package.name, None)
-		.ok_or_else(|| color_eyre::eyre::eyre!("failed to find commit for axum 0.8.8"))?;
+	let target_oid =
+		find_commit_for_version(&repository, &Version::parse("0.8.8")?, &package.name, None)
+			.ok_or_else(|| color_eyre::eyre::eyre!("failed to find commit for axum 0.8.8"))?;
 	materialize_commit(&repository, target_oid, &workspace_dir)?;
-	let ir = package.generate_ir_with_sources(&workspace_dir.to_path_buf(), &Version::parse("0.8.8")?)?.0;
+	let ir =
+		package.generate_ir_with_sources(&workspace_dir.to_path_buf(), &Version::parse("0.8.8")?)?.0;
 	let store = emit_store("rust", "axum", Version::parse("0.8.8")?, ir)?;
 	if let Some(module_doc) = store.docs.get("Module/rust/axum/axum") {
 		eprintln!(

@@ -1,17 +1,15 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use nudox_core::{ByteSpan, EmbeddingPurpose, ModelType, SourceChunk};
 use embed::RemoteEmbedder;
-use url::Url;
+use nudox_core::{ByteSpan, EmbeddingPurpose, ModelType, SourceChunk};
 use qdrant_client::{Payload, qdrant::{PointId, PointStruct, Value}};
 use tokio::task::JoinSet;
 use tracing::info;
+use url::Url;
 
-use crate::http::error::EmbeddingError;
-use crate::ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind};
 pub use crate::ingest::embedding_types::build_entry_embedding_text;
+use crate::{http::error::EmbeddingError, ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind}};
 
 const DEFAULT_EMBED_CONCURRENCY: usize = 16;
 
@@ -135,20 +133,20 @@ where
 		}
 
 		Ok(EmbeddedRecord {
-			record_key:          doc.record_key,
-			uri:                 doc.uri,
-			text:                doc.text,
+			record_key: doc.record_key,
+			uri: doc.uri,
+			text: doc.text,
 			vector,
-			embedding_model:     self.provider.model_name().to_string(),
-			fq_name:             doc.fq_name,
-			language:            doc.language,
-			package:             doc.package,
-			version:             doc.version,
-			symbol_kind:         doc.symbol_kind,
-			record_kind:         doc.record_kind,
+			embedding_model: self.provider.model_name().to_string(),
+			fq_name: doc.fq_name,
+			language: doc.language,
+			package: doc.package,
+			version: doc.version,
+			symbol_kind: doc.symbol_kind,
+			record_kind: doc.record_kind,
 			representation_kind: doc.representation_kind,
-			chunk_index:         doc.chunk_index,
-			chunk_count:         doc.chunk_count,
+			chunk_index: doc.chunk_index,
+			chunk_count: doc.chunk_count,
 		})
 	}
 
@@ -190,10 +188,7 @@ where
 				.await?;
 		}
 
-		out
-			.into_iter()
-			.map(|record| record.ok_or(EmbeddingError::EmptyResponse))
-			.collect()
+		out.into_iter().map(|record| record.ok_or(EmbeddingError::EmptyResponse)).collect()
 	}
 }
 
@@ -293,8 +288,7 @@ async fn collect_embedded_record(
 	let Some(result) = join_set.join_next().await else {
 		return Ok(());
 	};
-	let (index, record) = result
-		.map_err(|source| EmbeddingError::TaskJoin { source })??;
+	let (index, record) = result.map_err(|source| EmbeddingError::TaskJoin { source })??;
 	out[index] = Some(record);
 	*completed += 1;
 	if *completed == total || total <= 50 || (*completed).is_multiple_of(10) {

@@ -1,40 +1,13 @@
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::{collections::{HashMap, HashSet, VecDeque}, sync::Arc};
 
-use serde::Serialize;
 use serde_json::Value as JsonValue;
 use terminusdb_client::{BranchSpec, TerminusDBHttpClient};
 
-use crate::http::error::AppError;
+pub use search::GraphResponse;
+use search::SessionGraphState;
 
 use super::fetch_document;
-use super::session::SessionGraphState;
-
-/// A node in the session graph.
-///
-/// `uri` is interned as `Arc<str>` and `document` is shared as
-/// `Arc<JsonValue>`, so building a response and merging sessions only bump
-/// reference counts instead of deep-copying the (often large) JSON-LD document.
-#[derive(Debug, Clone, Serialize)]
-pub struct GraphNode {
-	pub uri:      Arc<str>,
-	pub document: Arc<JsonValue>,
-}
-
-/// An edge in the session graph. URIs and the relation are interned as
-/// `Arc<str>` so clone-for-response is a handful of refcount bumps.
-#[derive(Debug, Clone, Serialize)]
-pub struct GraphEdge {
-	pub source:   Arc<str>,
-	pub target:   Arc<str>,
-	pub relation: Arc<str>,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct GraphResponse {
-	pub nodes: Vec<GraphNode>,
-	pub edges: Vec<GraphEdge>,
-}
+use crate::http::error::AppError;
 
 pub(crate) async fn build_graph(
 	client: &TerminusDBHttpClient,
@@ -75,12 +48,17 @@ pub(crate) async fn build_graph(
 }
 
 fn extract_links(document: &JsonValue, breadth: usize) -> Vec<(String, String)> {
+	use std::collections::BTreeSet;
 	let mut seen = BTreeSet::<(String, String)>::new();
 	collect_links(document, "", &mut seen);
 	seen.into_iter().take(breadth).collect()
 }
 
-fn collect_links(value: &JsonValue, relation: &str, out: &mut BTreeSet<(String, String)>) {
+fn collect_links(
+	value: &JsonValue,
+	relation: &str,
+	out: &mut std::collections::BTreeSet<(String, String)>,
+) {
 	match value {
 		JsonValue::Object(map) => {
 			if let Some(id) = map.get("@id").and_then(JsonValue::as_str)
@@ -102,10 +80,9 @@ fn collect_links(value: &JsonValue, relation: &str, out: &mut BTreeSet<(String, 
 				collect_links(nested, relation, out);
 			}
 		}
-		JsonValue::String(text)
-			if looks_like_internal_uri(text) => {
-				out.insert((relation_name(relation), text.to_owned()));
-			}
+		JsonValue::String(text) if looks_like_internal_uri(text) => {
+			out.insert((relation_name(relation), text.to_owned()));
+		}
 		_ => {}
 	}
 }

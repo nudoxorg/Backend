@@ -9,21 +9,20 @@ use tokio::{sync::{Mutex, RwLock, Semaphore}, task::spawn_blocking, time::{Durat
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::Package}, http::error::AppError, ingest::{IngestTargets, IngestionSummary}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, util::retry::Transient};
+use producers::{backends::rust::RustPackage, parse::typescript::Package};
+use crate::{config::PipelineConfig, http::error::AppError, ingest::{IngestTargets, IngestionSummary}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, util::retry::Transient};
 
+pub mod package;
 mod persist;
 mod resolve;
 mod sync;
 mod traits;
-pub mod package;
 
-pub use traits::Registry;
-
+pub use package::{AddPackageOutcome, NewPackageRequest, PackageHealth, PackageSnapshot, PackageStateSnapshot};
 use persist::{load_persisted_registry, rehydrate_registry};
 use resolve::resolve_package_handle;
 use sync::{compute_remote_update_available, run_monitor_refresh, run_sync};
-
-pub use package::{AddPackageOutcome, NewPackageRequest, PackageHealth, PackageSnapshot, PackageStateSnapshot};
+pub use traits::Registry;
 
 pub const TYPESCRIPT_REPOSITORY_ENTRY_PREFIX: &str = "repo:";
 const MAX_CONCURRENT_SYNCS: usize = 2;
@@ -190,8 +189,7 @@ impl LocalRegistry {
 
 		loop {
 			interval.tick().await;
-			let packages: Vec<Arc<TrackedPackage>> =
-				self.packages.load().values().cloned().collect();
+			let packages: Vec<Arc<TrackedPackage>> = self.packages.load().values().cloned().collect();
 
 			for package in packages {
 				if let Err(error) = self.refresh_existing(package).await {
@@ -230,9 +228,12 @@ impl LocalRegistry {
 		tracked: Arc<TrackedPackage>,
 	) -> Result<PackageSnapshot, AppError> {
 		let _guard = tracked.sync_lock.lock().await;
-		let _slot = self.sync_slots.clone().acquire_owned().await.map_err(|source| {
-			AppError::SyncShutdown { source }
-		})?;
+		let _slot = self
+			.sync_slots
+			.clone()
+			.acquire_owned()
+			.await
+			.map_err(|source| AppError::SyncShutdown { source })?;
 
 		let progress = {
 			let tracked = Arc::clone(&tracked);
@@ -349,8 +350,7 @@ impl LocalRegistry {
 
 	fn allocate_id(&self) -> Result<PackageId, AppError> {
 		let next = self.next_id.fetch_add(1, Ordering::Relaxed);
-		let next = NonZeroU64::new(next)
-			.ok_or_else(|| AppError::IdExhausted)?;
+		let next = NonZeroU64::new(next).ok_or_else(|| AppError::IdExhausted)?;
 		Ok(PackageId(next))
 	}
 
@@ -599,7 +599,11 @@ mod tests {
 		std::fs::create_dir_all(workspace.path().join("src")).unwrap();
 		std::fs::write(workspace.path().join("src").join("index.ts"), "export const z = 1;\n").unwrap();
 
-		let resolved = crate::core::ts::entry_point::resolve_typescript_repository_entry_point(workspace.path(), None).unwrap();
+		let resolved = producers::backends::ts::entry_point::resolve_typescript_repository_entry_point(
+			workspace.path(),
+			None,
+		)
+		.unwrap();
 		assert_eq!(resolved, workspace.path().join("src").join("index.ts"));
 	}
 

@@ -1,14 +1,12 @@
-use std::collections::HashSet;
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
+use document::schema::{DocSink, EmitError, URI};
 use serde_json::Value;
 use terminusdb_client::{BranchSpec, DocumentInsertArgs, TerminusDBHttpClient};
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
-use document::schema::{DocSink, EmitError, URI};
-use crate::http::error::{AppError, TerminusError};
-use crate::util::retry;
+use crate::{http::error::{AppError, TerminusError}, util::retry};
 
 const DOCUMENT_UPLOAD_CHUNK_SIZE: usize = 100;
 const DOCUMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -36,11 +34,13 @@ pub async fn terminus_client_with_retry(
 			&config.org,
 		)
 		.await
-		.map_err(|source| AppError::Terminus(TerminusError::ClientCreation {
-			org: config.org.clone(),
-			db: config.db.clone(),
-			source,
-		}))
+		.map_err(|source| {
+			AppError::Terminus(TerminusError::ClientCreation {
+				org: config.org.clone(),
+				db: config.db.clone(),
+				source,
+			})
+		})
 	})
 	.await
 }
@@ -65,8 +65,8 @@ struct PreparedDoc {
 
 /// A streaming [`DocSink`]: serializes each finished document to compact bytes
 /// and drops the `Value`, deduplicating by URI (first write wins, matching
-/// [`DocStore`](document::schema::DocStore)). The whole corpus is therefore held
-/// as bytes, never as live `Value` trees.
+/// [`DocStore`](document::schema::DocStore)). The whole corpus is therefore
+/// held as bytes, never as live `Value` trees.
 #[derive(Default)]
 pub struct StreamingDocSink {
 	docs: Vec<PreparedDoc>,
@@ -82,10 +82,7 @@ impl StreamingDocSink {
 		// all Kinds first, then Entries deepest-path-first; `@id` ascending breaks
 		// ties (and is the total order among Kinds).
 		self.docs.sort_by(|a, b| {
-			a.is_entry
-				.cmp(&b.is_entry)
-				.then_with(|| b.depth.cmp(&a.depth))
-				.then_with(|| a.id.cmp(&b.id))
+			a.is_entry.cmp(&b.is_entry).then_with(|| b.depth.cmp(&a.depth)).then_with(|| a.id.cmp(&b.id))
 		});
 		PreparedCorpus { docs: self.docs }
 	}
@@ -101,8 +98,8 @@ impl DocSink for StreamingDocSink {
 		let is_entry = doc.get("@type").and_then(|ty| ty.as_str()) == Some("Entry");
 		let depth =
 			doc.get("path").and_then(|value| value.as_array()).map_or(0, |segments| segments.len());
-		let bytes = serde_json::to_vec(&doc)
-			.map_err(|_| EmitError::SerializationFailed { uri: uri.clone() })?;
+		let bytes =
+			serde_json::to_vec(&doc).map_err(|_| EmitError::SerializationFailed { uri: uri.clone() })?;
 		self.docs.push(PreparedDoc { is_entry, depth, id: uri, bytes: bytes.into_boxed_slice() });
 		Ok(())
 	}
@@ -188,26 +185,23 @@ pub async fn upload_prepared_documents(
 		.with_timeout(DOCUMENT_UPLOAD_TIMEOUT);
 
 		let doc_refs: Vec<&Value> = chunk_values.iter().collect();
-		let result = retry::with_backoff(
-			DOCUMENT_UPLOAD_MAX_ATTEMPTS,
-			Duration::from_secs(2),
-			|_| async {
+		let result =
+			retry::with_backoff(DOCUMENT_UPLOAD_MAX_ATTEMPTS, Duration::from_secs(2), |_| async {
 				client
 					.insert_documents(doc_refs.clone(), args.clone())
 					.await
 					.map_err(|source| AppError::Terminus(TerminusError::DocumentUpload { source }))
-			},
-		)
-		.await
-		.inspect_err(|e| {
-			warn!(
-				chunk_index = chunk_index + 1,
-				chunk_count,
-				chunk_size = chunk.len(),
-				error = %e,
-				"document upload chunk failed permanently"
-			);
-		})?;
+			})
+			.await
+			.inspect_err(|e| {
+				warn!(
+					chunk_index = chunk_index + 1,
+					chunk_count,
+					chunk_size = chunk.len(),
+					error = %e,
+					"document upload chunk failed permanently"
+				);
+			})?;
 
 		if let Some(commit_id) = result.extract_commit_id() {
 			info!(commit = %commit_id, chunk_index = chunk_index + 1, "upload chunk committed");
@@ -232,7 +226,10 @@ pub async fn upload_prepared_documents(
 }
 
 #[instrument(skip_all, fields(org = %config.org, db = %config.db))]
-pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> Result<(), AppError> {
+pub async fn upload_schema(
+	config: &TerminusConfig,
+	schema_docs: Vec<Value>,
+) -> Result<(), AppError> {
 	let client = terminus_client_with_retry(config).await?;
 
 	if schema_docs.is_empty() {
@@ -253,17 +250,14 @@ pub async fn upload_schema(config: &TerminusConfig, schema_docs: Vec<Value>) -> 
 	.as_schema();
 
 	let doc_refs: Vec<&Value> = schema_docs.iter().collect();
-	let result = retry::with_backoff(
-		DOCUMENT_UPLOAD_MAX_ATTEMPTS,
-		Duration::from_secs(2),
-		|_| async {
+	let result =
+		retry::with_backoff(DOCUMENT_UPLOAD_MAX_ATTEMPTS, Duration::from_secs(2), |_| async {
 			client
 				.insert_documents(doc_refs.clone(), args.clone())
 				.await
 				.map_err(|source| AppError::Terminus(TerminusError::SchemaUpload { source }))
-		},
-	)
-	.await?;
+		})
+		.await?;
 
 	if let Some(commit_id) = result.extract_commit_id() {
 		info!(commit = %commit_id, "schema upload committed");
@@ -284,9 +278,7 @@ mod tests {
 
 	/// Build a `DocumentUri` from an arbitrary string via its transparent serde
 	/// repr (its only public constructors are `From<EntryUri>`/`From<KindUri>`).
-	fn uri(s: &str) -> URI {
-		serde_json::from_value(Value::String(s.to_owned())).unwrap()
-	}
+	fn uri(s: &str) -> URI { serde_json::from_value(Value::String(s.to_owned())).unwrap() }
 
 	/// The streamed corpus must reproduce the exact upload order the former
 	/// `documents_in_dependency_order` produced from a `DocStore`: all Kinds

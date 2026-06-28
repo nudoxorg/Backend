@@ -1,9 +1,9 @@
 use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
+
+use super::{pipeline::BlobInfo, primitives::{Language, SymbolKind}};
 use crate::{BlobRef, GlobalSymbolId, OccurrenceId, RepoId};
-use super::primitives::{Language, SymbolKind};
-use super::pipeline::BlobInfo;
 
 /// NaN-free, totally ordered relevance / similarity value.
 ///

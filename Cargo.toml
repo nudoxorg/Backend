@@ -13,7 +13,7 @@ members = [
   "./source/orchestrator",
   "./source/pipeline",
   "./source/intermediate-representation",
-  "./source/parsers",
+  "./source/producers",
 ]
 default-members = ["./source/server"]
 exclude = ["deno_doc"]

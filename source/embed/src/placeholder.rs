@@ -47,7 +47,7 @@ impl Embedder for PlaceholderEmbedder {
 
 #[cfg(test)]
 mod tests {
-	use nudox_core::{ByteSpan};
+	use nudox_core::ByteSpan;
 
 	use super::*;
 

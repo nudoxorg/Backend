@@ -49,18 +49,19 @@ impl RepresentationKind {
 
 /// The store-agnostic input unit for embedding.
 ///
-/// Produced by [`crate::ingest::parsed_symbol::ParsedSymbol::into_embedding_document`]
+/// Produced by
+/// [`crate::ingest::parsed_symbol::ParsedSymbol::into_embedding_document`]
 /// during the parse-once projection; consumed by `EmbeddingService` in the
 /// terminus module. Keeping this type here ensures the neutral projection layer
 /// has no dependency on terminus-specific modules.
 #[derive(Debug, Clone)]
 pub struct EmbeddingDocument {
 	/// Stable logical key for this embedding record (usually the entry URI).
-	pub record_key: String,
+	pub record_key:          String,
 	/// Canonical URI shared with TerminusDB.
-	pub uri: String,
+	pub uri:                 String,
 	/// Text that will be sent to the embedding provider.
-	pub text: String,
+	pub text:                String,
 	pub fq_name:             Option<String>,
 	pub language:            String,
 	pub package:             String,
@@ -85,8 +86,8 @@ impl EmbeddingDocument {
 ///
 /// Single owner of the identity→text mapping: always includes `fq_name` and
 /// `name`; appends kind, aliases, and documentation when present. Fed directly
-/// from the parse-once projection so neither the full-text nor vector sink needs
-/// to reconstruct it.
+/// from the parse-once projection so neither the full-text nor vector sink
+/// needs to reconstruct it.
 pub fn build_entry_embedding_text(
 	name: &str,
 	fq_name: &str,

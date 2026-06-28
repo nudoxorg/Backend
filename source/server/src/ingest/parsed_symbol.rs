@@ -1,21 +1,21 @@
 //! The parse-once projection.
 //!
 //! [`ParsedSymbol`] is the single neutral record derived from the IR
-//! [`Index`](ir::entry::Index). Every non-graph sink (blobs, full-text, vectors,
-//! the SQLite occurrence store) projects from a `Vec<ParsedSymbol>` rather than
-//! re-parsing the Terminus JSON-LD `DocStore`. The canonical [`EntryUri`] and
-//! deterministic [`GlobalSymbolId`] are computed **once**, here, and threaded
-//! into every store so they all agree on a symbol's identity.
+//! [`Index`](ir::entry::Index). Every non-graph sink (blobs, full-text,
+//! vectors, the SQLite occurrence store) projects from a `Vec<ParsedSymbol>`
+//! rather than re-parsing the Terminus JSON-LD `DocStore`. The canonical
+//! [`EntryUri`] and deterministic [`GlobalSymbolId`] are computed **once**,
+//! here, and threaded into every store so they all agree on a symbol's
+//! identity.
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use rayon::prelude::*;
-
+use identity::{EntryUri, TerminusInstance, compute_symbol_id, path::{fq_name, nudox_path_to_str}};
 use ir::entry::{Entry, Index};
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language, LibRef, OccurrenceId, RepoId, ResolutionState, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use pipeline::treesitter::parse_and_extract;
+use rayon::prelude::*;
 
-use identity::{EntryUri, TerminusInstance, compute_symbol_id, path::{fq_name, nudox_path_to_str}};
 use crate::ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind, build_entry_embedding_text};
 
 /// Per-package coordinates shared by every symbol in one ingestion.
@@ -31,12 +31,15 @@ impl PackageCoord {
 		Self { language, package: Arc::from(package), version: Arc::from(version) }
 	}
 
-	fn lib_ref(&self) -> LibRef { LibRef { name: self.package.to_string(), version: self.version.to_string() } }
+	fn lib_ref(&self) -> LibRef {
+		LibRef { name: self.package.to_string(), version: self.version.to_string() }
+	}
 
 	fn repo_id(&self) -> RepoId { RepoId::from(format!("lib:{}:{}", self.package, self.version)) }
 }
 
-/// Batch-level identity witness: known once before projection, shared by all symbols.
+/// Batch-level identity witness: known once before projection, shared by all
+/// symbols.
 ///
 /// `Deterministic` means a Terminus instance is configured and every symbol
 /// will receive a stable, content-addressed [`GlobalSymbolId`]. `Local` means
@@ -47,8 +50,8 @@ impl PackageCoord {
 /// that *either all symbols or no symbols have a global id* unrepresentable to
 /// violate: there is no per-symbol `Option` that could disagree with the batch.
 /// Owning `Arc<str>` (not `&str`) lets the same `Identity` be carried by the
-/// pre-assembled `OrchestratorSink` without a lifetime coupling between the sink
-/// and the batch.
+/// pre-assembled `OrchestratorSink` without a lifetime coupling between the
+/// sink and the batch.
 #[derive(Clone)]
 pub enum Identity {
 	/// Terminus is configured; `instance` is `"{org}/{db}"`.
@@ -131,13 +134,8 @@ fn project_entry(
 		.unwrap_or_default();
 	let documentation = entry.documentation().map(str::to_owned);
 
-	let embedding_text = build_entry_embedding_text(
-		&name,
-		&fq,
-		Some(kind.label()),
-		&aliases,
-		documentation.as_deref(),
-	);
+	let embedding_text =
+		build_entry_embedding_text(&name, &fq, Some(kind.label()), &aliases, documentation.as_deref());
 
 	let SourceChunk { raw_code, treesitter_repr, symbol_span } =
 		extract_source(&fq, &embedding_text, source_map);
@@ -183,8 +181,7 @@ fn extract_source(
 			let span = ByteSpan::covering(0, raw.len());
 			let (snippet, snippet_span, treesitter_repr) =
 				parse_and_extract(raw, Language::Rust, span, 80);
-			let symbol_span =
-				ByteSpan::covering(0, snippet.len().saturating_sub(snippet_span.start()));
+			let symbol_span = ByteSpan::covering(0, snippet.len().saturating_sub(snippet_span.start()));
 			SourceChunk { raw_code: snippet.into(), treesitter_repr, symbol_span }
 		}
 		None => {
@@ -206,14 +203,18 @@ impl ParsedSymbol {
 	/// `Local` falls back to a `Repo` origin so the no-Terminus `/symbol-search`
 	/// path still resolves and indexes immediately.
 	pub fn to_blob_info(&self, coord: &PackageCoord, identity: &Identity) -> BlobInfo {
-		let (symbol_origin, resolution): (SymbolOrigin, ResolutionState) =
-			match identity {
-				Identity::Deterministic { instance } => (
-					SymbolOrigin::ExternalLib { lib: coord.lib_ref() },
-					ResolutionState::Resolved(compute_symbol_id(&TerminusInstance::new(instance.as_ref()), &self.entry_uri)),
-				),
-				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, ResolutionState::Unresolved),
-			};
+		let (symbol_origin, resolution): (SymbolOrigin, ResolutionState) = match identity {
+			Identity::Deterministic { instance } => (
+				SymbolOrigin::ExternalLib { lib: coord.lib_ref() },
+				ResolutionState::Resolved(compute_symbol_id(
+					&TerminusInstance::new(instance.as_ref()),
+					&self.entry_uri,
+				)),
+			),
+			Identity::Local => {
+				(SymbolOrigin::Repo { repo_id: coord.repo_id() }, ResolutionState::Unresolved)
+			}
+		};
 
 		BlobInfo {
 			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),

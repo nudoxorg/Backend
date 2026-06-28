@@ -2,10 +2,8 @@ use std::{collections::HashMap, num::NonZeroU64, sync::Arc};
 
 use tracing::warn;
 
+use super::{PackageHandle, PackageId, PackageKey, PackageSpec, TrackedPackage, package::PackageStateSnapshot};
 use crate::{storage::StorageLayout, sync_progress::PackageSyncStatus};
-
-use super::{PackageHandle, PackageId, PackageKey, PackageSpec, TrackedPackage};
-use super::package::PackageStateSnapshot;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct PersistedRegistry {

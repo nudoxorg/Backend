@@ -6,11 +6,11 @@
 use std::sync::Arc;
 
 use axum::{body::Body, http::{Request, StatusCode}};
-use http_body_util::BodyExt;
-use nudox::{http::AppState, config::PipelineConfig, ingest::IngestTargets, registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
 use blobstore::InMemoryBlobStore;
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, ResolutionState, SearchIndex, SearchQuery, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr, VectorIndex, VectorQuery};
 use embed::PlaceholderEmbedder;
+use http_body_util::BodyExt;
+use nudox::{config::PipelineConfig, http::AppState, ingest::IngestTargets, registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, ResolutionState, SearchIndex, SearchQuery, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr, VectorIndex, VectorQuery};
 use orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 use search::{InMemoryVectorIndex, SymbolSearcher, TantivySearchIndex};
 use serde_json::{Value, json};
@@ -25,18 +25,18 @@ fn make_blob(symbol_name: &str, lib: &str, kind: SymbolKind, raw_code: &str) -> 
 	// ExternalLib blobs are deferred until the library's global IDs are registered.
 	let repo_id = RepoId::from(format!("lib:{lib}"));
 	BlobInfo {
-		occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-		symbol_name:        symbol_name.to_owned(),
-		symbol_origin:      SymbolOrigin::Repo { repo_id: repo_id.clone() },
-		resolution:         ResolutionState::Unresolved,
-		kind:               Some(kind),
-		source:             SourceChunk {
+		occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+		symbol_name:   symbol_name.to_owned(),
+		symbol_origin: SymbolOrigin::Repo { repo_id: repo_id.clone() },
+		resolution:    ResolutionState::Unresolved,
+		kind:          Some(kind),
+		source:        SourceChunk {
 			raw_code:        raw_code.into(),
-            treesitter_repr: Some(TreesitterRepr(vec![])),
+			treesitter_repr: Some(TreesitterRepr(vec![])),
 			symbol_span:     ByteSpan::covering(0, raw_code.len()),
 		},
-		embeddings:         vec![],
-		metadata:           ChunkMetadata {
+		embeddings:    vec![],
+		metadata:      ChunkMetadata {
 			repo_id,
 			file_path: "src/lib.rs".into(),
 			file_span: ByteSpan::covering(0, 0),
@@ -99,9 +99,9 @@ async fn build_state_with_orchestrator() -> (AppState, TempDir) {
 		sessions: SessionStore::default(),
 		targets: IngestTargets { orchestrator: Some(orchestrator), ..Default::default() },
 		search_qdrant: None,
-		search_embedder: Arc::new(
-			nudox::ingest::embedding::OpenAIEmbeddingProvider::new("text-embedding-3-small"),
-		),
+		search_embedder: Arc::new(nudox::ingest::embedding::OpenAIEmbeddingProvider::new(
+			"text-embedding-3-small",
+		)),
 	};
 	(state, tmp)
 }
@@ -236,9 +236,9 @@ async fn missing_orchestrator_returns_500() {
 		sessions: SessionStore::default(),
 		targets: IngestTargets::default(), // not configured
 		search_qdrant: None,
-		search_embedder: Arc::new(
-			nudox::ingest::embedding::OpenAIEmbeddingProvider::new("text-embedding-3-small"),
-		),
+		search_embedder: Arc::new(nudox::ingest::embedding::OpenAIEmbeddingProvider::new(
+			"text-embedding-3-small",
+		)),
 	};
 
 	let (status, _) = post_symbol_search(state, json!({"criteria": {"Name": "x"}})).await;
@@ -302,7 +302,8 @@ async fn kind_only_returns_matching_kinds() {
 		.await;
 
 	let (status, body) =
-		post_symbol_search(state, json!({"criteria": {"Name": ""}, "kind": "Struct", "limit": 10})).await;
+		post_symbol_search(state, json!({"criteria": {"Name": ""}, "kind": "Struct", "limit": 10}))
+			.await;
 
 	assert_eq!(status, StatusCode::OK);
 	let hits = body.as_array().unwrap();

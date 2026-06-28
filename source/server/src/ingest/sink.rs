@@ -9,11 +9,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nudox_core::LibRef;
-use store::NudoxStore;
 use serde_json::Value;
+use store::NudoxStore;
 use tracing::{info, warn};
 
-use crate::{config::QdrantSettings, http::error::{AppError, IngestError}, ingest::{embedding::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory}, qdrant::{QdrantConfig, upload_points}, parsed_symbol::{Identity, PackageCoord, ParsedSymbol}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::upload::{DocumentUploadProgress, PreparedCorpus, TerminusConfig, upload_prepared_documents, upload_schema}, search::text::SymbolTextIndex};
+use search::{SymbolTextIndex, TextIndexEntry};
+
+use crate::{config::QdrantSettings, http::error::{AppError, IngestError}, ingest::{embedding::{EmbeddingProgress, EmbeddingService, OpenAIEmbeddingProvider, PointIdFactory, QdrantPointFactory}, parsed_symbol::{Identity, PackageCoord, ParsedSymbol}, qdrant::{QdrantConfig, upload_points}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::upload::{DocumentUploadProgress, PreparedCorpus, TerminusConfig, upload_prepared_documents, upload_schema}};
 
 /// Identifies one sink in the fan-out pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,9 +40,7 @@ impl SinkId {
 }
 
 impl std::fmt::Display for SinkId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.as_str())
-	}
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.as_str()) }
 }
 
 /// A single store's contribution to one ingestion.
@@ -91,7 +91,8 @@ pub trait SymbolSink: Send + Sync {
 /// Error aggregation is preserved: outcomes are collected in sink order, the
 /// first fatal failure is returned, and non-fatal failures are logged and
 /// recorded with `indexed: 0`. (Concurrency means later sinks may have already
-/// done work when a fatal sink fails; they ran in parallel rather than after it.)
+/// done work when a fatal sink fails; they ran in parallel rather than after
+/// it.)
 pub async fn run_sinks(
 	sinks: &[Box<dyn SymbolSink>],
 	symbols: &[ParsedSymbol],
@@ -140,11 +141,11 @@ impl SymbolSink for SqliteRegisterSink {
 	) -> Result<usize, crate::http::error::AppError> {
 		let uris: Vec<String> = symbols.iter().map(|s| s.entry_uri.to_string()).collect();
 		let lib = LibRef { name: coord.package.to_string(), version: coord.version.to_string() };
-		let n = self
-			.store
-			.register_library(&lib, uris.iter().map(String::as_str))
-			.await
-			.map_err(|source| AppError::Ingest(IngestError::StoreRegister { package: coord.package.to_string(), source }))?;
+		let n = self.store.register_library(&lib, uris.iter().map(String::as_str)).await.map_err(
+			|source| {
+				AppError::Ingest(IngestError::StoreRegister { package: coord.package.to_string(), source })
+			},
+		)?;
 		info!(lib = %coord.package, count = n, "symbols registered in occurrence store");
 		Ok(n as usize)
 	}
@@ -166,7 +167,21 @@ impl SymbolSink for TextIndexSink {
 		coord: &PackageCoord,
 		_progress: &ProgressReporter,
 	) -> Result<usize, crate::http::error::AppError> {
-		let n = self.index.index_batch(coord, symbols)?;
+		let uris: Vec<String> = symbols.iter().map(|s| s.entry_uri.to_string()).collect();
+		let entries: Vec<TextIndexEntry<'_>> = symbols
+			.iter()
+			.zip(uris.iter())
+			.map(|(s, uri)| TextIndexEntry {
+				uri,
+				fq_name: &s.fq_name,
+				text: &s.embedding_text,
+				language: coord.language.as_str(),
+				package: &coord.package,
+				version: &coord.version,
+				symbol_kind: s.kind.label(),
+			})
+			.collect();
+		let n = self.index.index_batch(&entries)?;
 		info!(lib = %coord.package, count = n, "symbols indexed in text search");
 		Ok(n)
 	}
@@ -214,9 +229,9 @@ impl SymbolSink for OrchestratorSink {
 /// the same parse; uploads schema (when requested) then streams the JSON-LD
 /// documents up in bounded chunks.
 pub struct TerminusSink {
-	pub config:        TerminusConfig,
-	pub schema:        Option<Vec<Value>>,
-	pub corpus:        PreparedCorpus,
+	pub config: TerminusConfig,
+	pub schema: Option<Vec<Value>>,
+	pub corpus: PreparedCorpus,
 }
 
 #[async_trait]
@@ -269,7 +284,8 @@ pub struct VectorSink {
 }
 
 /// How many symbols are embedded + upserted as one unit. Caps peak memory at
-/// `BATCH × MAX_INFLIGHT_BATCHES` embedded records/points rather than O(corpus).
+/// `BATCH × MAX_INFLIGHT_BATCHES` embedded records/points rather than
+/// O(corpus).
 const VECTOR_UPLOAD_BATCH: usize = 256;
 /// How many batches may be embedding/uploading concurrently.
 const VECTOR_MAX_INFLIGHT_BATCHES: usize = 2;
@@ -292,13 +308,10 @@ impl VectorSink {
 	) -> Result<usize, crate::http::error::AppError> {
 		use futures::stream::StreamExt;
 
-		let docs: Vec<_> =
-			symbols.into_iter().map(|s| s.into_embedding_document(coord)).collect();
+		let docs: Vec<_> = symbols.into_iter().map(|s| s.into_embedding_document(coord)).collect();
 		let total = docs.len();
-		progress.phase_with_detail(
-			PackageSyncPhase::Embedding,
-			Some(format!("embedding {total} symbols")),
-		);
+		progress
+			.phase_with_detail(PackageSyncPhase::Embedding, Some(format!("embedding {total} symbols")));
 
 		let service = EmbeddingService::new(OpenAIEmbeddingProvider::new(&self.model));
 		let qdrant_config = QdrantConfig {

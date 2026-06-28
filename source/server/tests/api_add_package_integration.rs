@@ -2,7 +2,7 @@ use std::{fs, path::{Path, PathBuf}, process::Command, sync::Arc, time::Duration
 
 use color_eyre::eyre::WrapErr;
 use lang_types::Language;
-use nudox::{http::{AppState, router::router}, config::PipelineConfig, ingest::IngestTargets, registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
+use nudox::{config::PipelineConfig, http::{AppState, router::router}, ingest::IngestTargets, registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
 use reqwest::{Client, StatusCode};
 use semver::Version;
 use serde_json::{Value, json};
@@ -276,9 +276,9 @@ impl TestServer {
 			sessions: SessionStore::default(),
 			targets: IngestTargets::default(),
 			search_qdrant: None,
-			search_embedder: Arc::new(
-				nudox::ingest::embedding::OpenAIEmbeddingProvider::new("text-embedding-3-small"),
-			),
+			search_embedder: Arc::new(nudox::ingest::embedding::OpenAIEmbeddingProvider::new(
+				"text-embedding-3-small",
+			)),
 		});
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
 		let address = listener.local_addr()?;
