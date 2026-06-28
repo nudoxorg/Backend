@@ -156,10 +156,23 @@ impl SymbolSearch for SymbolSearcher {
 			}
 		};
 
-		// ── Fetch BlobInfo and apply post-filters ─────────────────────────
-		let mut matches: Vec<SymbolMatch> = Vec::with_capacity(merged.len());
+		// ── Score → truncate → fetch ──────────────────────────────────────
+		// Sort candidates by score first, then fetch full BlobInfo (source text +
+		// vectors) only until `limit` of them survive the post-filters. The old
+		// path fetched *every* merged candidate up front and truncated afterward,
+		// so O(merged) heavy blob reads were deserialized and discarded per query.
+		// Processing in score order means the first `limit` survivors are exactly
+		// the top `limit` — identical results, an order of magnitude fewer fetches.
+		let mut merged = merged;
+		merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+		let mut matches: Vec<SymbolMatch> = Vec::with_capacity(query.limit.min(merged.len()));
 
 		for scored in merged {
+			if matches.len() >= query.limit {
+				break;
+			}
+
 			let blob: BlobInfo = match self.blobs.get(&scored.blob_ref).await {
 				Ok(b) => b,
 				Err(_) => continue, // blob was deleted or unavailable; skip
@@ -216,11 +229,6 @@ impl SymbolSearch for SymbolSearcher {
 
 			matches.push(SymbolMatch { blob, score: scored.score, occurrences });
 		}
-
-		// ── Sort by score descending ──────────────────────────────────────
-		matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-
-		matches.truncate(query.limit);
 
 		Ok(matches)
 	}
