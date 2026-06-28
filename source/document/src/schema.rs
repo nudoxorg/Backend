@@ -71,15 +71,57 @@
 //! symbol/kind/etc URI and the corresponding values. Some context will be
 //! passed to contain URIs, metadata, etc. to include on various types/enum
 //! variants for Kind.
-use std::{borrow::Cow, collections::{BTreeMap, btree_map::Entry as BTreeEntry}};
+use std::{borrow::{Borrow, Cow}, collections::{BTreeMap, btree_map::Entry as BTreeEntry}, fmt, ops::Deref};
 
-use serde::Serialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use thiserror::Error;
 use tracing::warn;
 
-use identity::{EntryUri, KindUri, path::nudox_path_to_str};
+use identity::{EntryUri, KindPrefix, KindUri, path::nudox_path_to_str};
 
-pub type URI = String;
+/// A well-formed JSON-LD document URI built only from [`EntryUri`] or [`KindUri`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DocumentUri(String);
+
+impl DocumentUri {
+	pub fn as_str(&self) -> &str { &self.0 }
+}
+
+impl From<EntryUri> for DocumentUri {
+	fn from(u: EntryUri) -> Self { Self(u.to_string()) }
+}
+
+impl From<KindUri> for DocumentUri {
+	fn from(u: KindUri) -> Self { Self(u.to_string()) }
+}
+
+impl Deref for DocumentUri {
+	type Target = str;
+	fn deref(&self) -> &str { &self.0 }
+}
+
+impl Borrow<str> for DocumentUri {
+	fn borrow(&self) -> &str { &self.0 }
+}
+
+impl fmt::Display for DocumentUri {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+}
+
+/// Errors that can occur during JSON-LD emission.
+#[derive(Debug, Error)]
+pub enum EmitError {
+	#[error("kind conversion failed for {uri}: {error}")]
+	KindConversionFailed { uri: DocumentUri, error: String },
+	#[error("serialization failed for {uri}")]
+	SerializationFailed { uri: DocumentUri },
+	#[error("duplicate URI with differing content: {uri}")]
+	DuplicateUri { uri: DocumentUri },
+}
+
+pub type URI = DocumentUri;
 
 /// Store Mapping of URI -> Documents in JsonLD form, ready for insertion
 #[derive(Serialize)]
@@ -169,55 +211,32 @@ impl DocCtx {
 
 }
 
-/// Trait for edges and URI construction
+/// Trait for URI construction from path/kind.
 pub trait UriOps {
 	fn entry_uri(&self, path: &ir::entry::NudoxPath) -> URI;
 	fn kind_uri(&self, kind: &ir::kind::Entry, path: &ir::entry::NudoxPath) -> URI;
-
-	fn uri_path(&self, path: &ir::entry::NudoxPath) -> URI;
-	// This returns a JsonLd Edge - {"@id": "<URI>"}
-	fn build_edge(uri: &URI) -> Value;
 }
 
 /// Responsible for URI construction
 impl UriOps for DocCtx {
 	fn entry_uri(&self, path: &ir::entry::NudoxPath) -> URI {
-		EntryUri::new(
+		DocumentUri::from(EntryUri::new(
 			self.crate_info.lang(),
 			self.crate_info.crate_name(),
 			&nudox_path_to_str(path),
-		)
-		.to_string()
+		))
 	}
 
 	fn kind_uri(&self, kind: &ir::kind::Entry, path: &ir::entry::NudoxPath) -> URI {
-		KindUri::new(
-			kind.schema_class(),
+		DocumentUri::from(KindUri::new(
+			KindPrefix::from(kind.schema_class()),
 			self.crate_info.lang(),
 			self.crate_info.crate_name(),
 			&nudox_path_to_str(path),
-		)
-		.to_string()
+		))
 	}
-
-	/// Builds the path + concat with / between; used for kind_tag.
-	fn uri_path(&self, path: &ir::entry::NudoxPath) -> URI {
-		format!(
-			"/{}/{}/{}",
-			self.crate_info.lang(),
-			self.crate_info.crate_name(),
-			nudox_path_to_str(path),
-		)
-	}
-
-	fn build_edge(uri: &URI) -> Value { json!({"@id": uri}) }
 }
 
 pub trait EmitJsonLD {
-	/// Takes some type, context, and document store. Returns a URI if succesfull,
-	/// or some String for now if unsuccesfull.
-	// TODO -> Look at Legitamate Error Handling, for now just return URI inserted
-	// into HashMap of entry If already exists should not throw an error, but maybe
-	// if the URI exists and points to a value that does NOT match, throw an error
-	fn emit(self, ctx: &mut DocCtx, doc_store: &mut DocStore) -> URI;
+	fn emit(self, ctx: &mut DocCtx, doc_store: &mut DocStore) -> Result<DocumentUri, EmitError>;
 }

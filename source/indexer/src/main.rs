@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use blobstore::ObjectStoreBlobStore;
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, RepoId, ResolutionOutcome, Result, SearchIndex, SearchQuery, SymbolOrigin, VectorIndex};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, EmbedderSet, GlobalSymbolId, Language, LibRef, RepoId, ResolutionOutcome, Result, SearchIndex, SearchQuery, SymbolOrigin, VectorIndex};
 use embed::PlaceholderEmbedder;
 use orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 use pipeline::{Pipeline, PipelineConfig, PipelineInput};
@@ -46,14 +46,14 @@ impl Config {
 
 fn span_for(raw_code: &str, needle: &str) -> ByteSpan {
 	let start = raw_code.find(needle).unwrap_or(0);
-	ByteSpan { start, end: start + needle.len() }
+	ByteSpan::covering(start, start + needle.len())
 }
 
 fn metadata(repo_id: &RepoId, file_path: impl Into<PathBuf>, raw_code: &str) -> ChunkMetadata {
 	ChunkMetadata {
 		repo_id:             repo_id.clone(),
 		file_path:           file_path.into(),
-		file_span:           ByteSpan { start: 0, end: raw_code.len() },
+		file_span:           ByteSpan::covering(0, raw_code.len()),
 		parsed_at:           chrono::Utc::now(),
 		lang:                Language::Rust,
 		lang_version:        None,
@@ -116,12 +116,12 @@ async fn main() -> Result<()> {
 	println!("tantivy_dir: {}", config.tantivy_dir.display());
 	println!("qdrant_url: {}", config.qdrant_url.as_deref().unwrap_or("in-memory"));
 
-	let repo_id = RepoId("demo-repo".into());
+	let repo_id = RepoId::from("demo-repo");
 	let serde_lib = LibRef { name: "serde".into(), version: "1.0".into() };
 	let tokio_lib = LibRef { name: "tokio".into(), version: "1.0".into() };
 
 	let pipeline = Pipeline::new(
-		vec![Box::new(PlaceholderEmbedder::new(&config.model.name, config.model.dim))],
+		EmbedderSet::new(vec![Box::new(PlaceholderEmbedder::new(&config.model.name, config.model.dim))]),
 		PipelineConfig::default(),
 	);
 
@@ -220,7 +220,7 @@ async fn main() -> Result<()> {
 	let queued_before = queue_handle.peek_for_lib(&tokio_lib);
 	println!("queued for tokio {}: {} blob(s)", tokio_lib.version, queued_before.len());
 	for blob_ref in &queued_before {
-		println!("queued blob_ref={}", blob_ref.0);
+		println!("queued blob_ref={}", blob_ref);
 	}
 
 	print_section("Back-fill resolve_lib(tokio)");
@@ -229,7 +229,7 @@ async fn main() -> Result<()> {
 	let report = orchestrator.resolve_lib(&tokio_lib).await?;
 	println!(
 		"seen={} resolved={} skipped={}",
-		report.blobs_seen, report.blobs_resolved, report.blobs_skipped
+		report.blobs_seen, report.blobs_resolved, report.blobs_skipped()
 	);
 
 	print_section("Blob files on disk");

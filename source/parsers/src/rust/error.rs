@@ -5,6 +5,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
+#[non_exhaustive]
 pub enum Parse {
 	#[error("Item not found: {0}")]
 	ItemNotFound(u32),

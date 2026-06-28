@@ -5,6 +5,45 @@ use crate::{BlobRef, GlobalSymbolId, OccurrenceId, RepoId};
 use super::primitives::{Language, SymbolKind};
 use super::pipeline::BlobInfo;
 
+/// NaN-free, totally ordered relevance / similarity value.
+///
+/// Invariant: the inner `f32` is always non-NaN (may be infinite or zero).
+/// `Eq` and `Ord` are therefore safe to implement.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Score(f32);
+
+impl Score {
+	/// Construct from any finite value. Panics if `v` is NaN.
+	#[inline]
+	pub fn new(v: f32) -> Self {
+		assert!(!v.is_nan(), "Score: NaN is not a valid score");
+		Self(v)
+	}
+
+	/// Get the inner `f32`.
+	#[inline]
+	pub fn get(self) -> f32 { self.0 }
+}
+
+impl PartialEq for Score {
+	fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+}
+
+impl Eq for Score {}
+
+impl PartialOrd for Score {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+
+impl Ord for Score {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.total_cmp(&other.0) }
+}
+
+impl std::fmt::Display for Score {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{:.3}", self.0) }
+}
+
 /// A single hit returned from the full-text search index.
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -15,7 +54,7 @@ pub struct SearchHit {
 	/// Fully-qualified symbol name of the matching record.
 	pub symbol_name:   String,
 	/// Relevance score (higher is more relevant; scale is index-dependent).
-	pub score:         f32,
+	pub score:         Score,
 }
 
 /// A single hit returned from the vector similarity index.
@@ -26,7 +65,7 @@ pub struct VectorHit {
 	/// Global symbol identifier associated with this vector point.
 	pub global_id: GlobalSymbolId,
 	/// Cosine similarity score in `[-1.0, 1.0]` (higher is more similar).
-	pub score:     f32,
+	pub score:     Score,
 }
 
 // ── Symbol search types ────────────────────────────────────────────────────
@@ -55,8 +94,9 @@ pub struct ScopeFilter {
 /// symbol.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OccurrenceFilter {
-	/// Minimum number of occurrences (inclusive).
-	pub min_count: Option<usize>,
+	/// Minimum number of occurrences (inclusive). Must be at least 1 when set;
+	/// `min_count: 0` is unrepresentable (at-least-zero is vacuously true).
+	pub min_count: Option<NonZeroUsize>,
 	/// Maximum number of occurrences (inclusive).
 	pub max_count: Option<usize>,
 }
@@ -120,7 +160,7 @@ pub struct SymbolMatch {
 	pub blob:        BlobInfo,
 	/// Relevance score (higher is more relevant; scale depends on the search path
 	/// taken).
-	pub score:       f32,
+	pub score:       Score,
 	/// All known occurrence identifiers for the resolved global symbol.
 	/// Empty if the symbol has not been resolved or no global-symbol query is
 	/// available.

@@ -244,18 +244,14 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
 		let chunk = SourceChunk {
 			raw_code:        text.into(),
 			treesitter_repr: None,
-			symbol_span:     ByteSpan { start: 0, end: text.len() },
+			symbol_span:     ByteSpan::covering(0, text.len()),
 		};
 
 		let embedding = nudox_core::Embedder::embed(&*self.embedder, &chunk, EmbeddingPurpose::Code)
 			.await
 			.map_err(|source| EmbeddingError::Provider { source })?;
 
-		if embedding.is_empty() {
-			return Err(EmbeddingError::MissingVector);
-		}
-
-		Ok(embedding)
+		Ok(embedding.into_vec())
 	}
 }
 

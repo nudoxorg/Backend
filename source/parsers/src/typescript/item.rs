@@ -21,6 +21,7 @@ use ir::ty::{Type, TypeReference};
 
 use super::{error::Parse, PropertyFieldMetadata, Result, TsDocParser};
 use super::{accessibility_to_visibility, declaration_kind_to_visibility, extract_doc, path_to_id, pick_primary_declaration};
+use crate::empty_to_none;
 
 impl TsDocParser {
 	pub(super) fn item_at_path(&mut self, path: &[String]) -> Result<Vec<Entry>> {
@@ -81,7 +82,7 @@ impl TsDocParser {
 			aliases: None,
 			visibility: Visibility::Public,
 			documentation,
-			inner: ir::module::Module { members: if members.is_empty() { None } else { Some(members) } },
+			inner: ir::module::Module { members: empty_to_none(members) },
 		}))
 	}
 
@@ -133,28 +134,28 @@ impl TsDocParser {
 		let entry = match kind {
 			Entry::Module(s) => {
 				let mut inner = s.inner;
-				inner.members = if members.is_empty() { None } else { Some(members) };
+				inner.members = empty_to_none(members);
 				Entry::Module(symbol_template.clone_with(inner))
 			}
 			Entry::RecordType(s) => {
 				let mut inner = s.inner;
-				inner.members = if members.is_empty() { None } else { Some(members) };
+				inner.members = empty_to_none(members);
 				Entry::RecordType(symbol_template.clone_with(inner))
 			}
 			Entry::Function(s) => {
 				let mut inner = s.inner;
-				inner.members = if members.is_empty() { None } else { Some(members) };
+				inner.members = empty_to_none(members);
 				inner.overloads = overloads;
 				Entry::Function(symbol_template.clone_with(inner))
 			}
 			Entry::TraitDef(s) => {
 				let mut inner = s.inner;
-				inner.members = if members.is_empty() { None } else { Some(members) };
+				inner.members = empty_to_none(members);
 				Entry::TraitDef(symbol_template.clone_with(inner))
 			}
 			Entry::TraitImpl(s) => {
 				let mut inner = s.inner;
-				inner.members = if members.is_empty() { None } else { Some(members) };
+				inner.members = empty_to_none(members);
 				Entry::TraitImpl(symbol_template.clone_with(inner))
 			}
 			Entry::Constant(s) => Entry::Constant({
@@ -385,7 +386,7 @@ impl TsDocParser {
 			.map(|(_, method)| self.function_def(method.name.as_ref(), &method.function_def, &[]))
 			.collect::<Result<Vec<_>>>()?;
 		if let Entry::Function(symbol) = &mut entry {
-			symbol.inner.overloads = if overloads.is_empty() { None } else { Some(overloads) };
+			symbol.inner.overloads = empty_to_none(overloads);
 		}
 		Ok(entry)
 	}
@@ -428,7 +429,7 @@ impl TsDocParser {
 			.map(|(_, ctor)| self.constructor_signature(ctor))
 			.collect::<Result<Vec<_>>>()?;
 		if let Entry::Function(symbol) = &mut entry {
-			symbol.inner.overloads = if overloads.is_empty() { None } else { Some(overloads) };
+			symbol.inner.overloads = empty_to_none(overloads);
 		}
 		Ok(entry)
 	}
@@ -500,8 +501,8 @@ impl TsDocParser {
 			call_signatures: None,
 			constructors: None,
 			methods: None,
-			index_signatures: if index_signatures.is_empty() { None } else { Some(index_signatures) },
-			super_types: if super_types.is_empty() { None } else { Some(super_types) },
+			index_signatures: empty_to_none(index_signatures),
+			super_types: empty_to_none(super_types),
 			implemented_protocols: None,
 			members: None,
 		};
@@ -582,8 +583,8 @@ impl TsDocParser {
 				generics,
 				super_traits,
 				associated_types: None,
-				properties: if properties.is_empty() { None } else { Some(properties) },
-				required_methods: if required_methods.is_empty() { None } else { Some(required_methods) },
+				properties: empty_to_none(properties),
+				required_methods: empty_to_none(required_methods),
 				provided_methods: None,
 				required_constants: None,
 				attributes: None,

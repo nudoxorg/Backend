@@ -15,7 +15,7 @@ use ir::entry::{Entry, Index};
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language, LibRef, OccurrenceId, RepoId, ResolutionState, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use pipeline::treesitter::parse_and_extract;
 
-use identity::{EntryUri, compute_symbol_id, path::{fq_name, nudox_path_to_str}};
+use identity::{EntryUri, TerminusInstance, compute_symbol_id, path::{fq_name, nudox_path_to_str}};
 use crate::ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind, build_entry_embedding_text};
 
 /// Per-package coordinates shared by every symbol in one ingestion.
@@ -33,7 +33,7 @@ impl PackageCoord {
 
 	fn lib_ref(&self) -> LibRef { LibRef { name: self.package.to_string(), version: self.version.to_string() } }
 
-	fn repo_id(&self) -> RepoId { RepoId(format!("lib:{}:{}", self.package, self.version)) }
+	fn repo_id(&self) -> RepoId { RepoId::from(format!("lib:{}:{}", self.package, self.version)) }
 }
 
 /// Batch-level identity witness: known once before projection, shared by all symbols.
@@ -180,11 +180,11 @@ fn extract_source(
 ) -> SourceChunk {
 	match source_map.get(fq) {
 		Some(raw) => {
-			let span = ByteSpan { start: 0, end: raw.len() };
+			let span = ByteSpan::covering(0, raw.len());
 			let (snippet, snippet_span, treesitter_repr) =
 				parse_and_extract(raw, Language::Rust, span, 80);
 			let symbol_span =
-				ByteSpan { start: 0, end: snippet.len().saturating_sub(snippet_span.start) };
+				ByteSpan::covering(0, snippet.len().saturating_sub(snippet_span.start()));
 			SourceChunk { raw_code: snippet.into(), treesitter_repr, symbol_span }
 		}
 		None => {
@@ -192,7 +192,7 @@ fn extract_source(
 			SourceChunk {
 				raw_code:        embedding_text.into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 0, end: len },
+				symbol_span:     ByteSpan::covering(0, len),
 			}
 		}
 	}
@@ -210,7 +210,7 @@ impl ParsedSymbol {
 			match identity {
 				Identity::Deterministic { instance } => (
 					SymbolOrigin::ExternalLib { lib: coord.lib_ref() },
-					ResolutionState::Resolved(compute_symbol_id(instance, &self.entry_uri)),
+					ResolutionState::Resolved(compute_symbol_id(&TerminusInstance::new(instance.as_ref()), &self.entry_uri)),
 				),
 				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, ResolutionState::Unresolved),
 			};
@@ -230,7 +230,7 @@ impl ParsedSymbol {
 			metadata: ChunkMetadata {
 				repo_id:             coord.repo_id(),
 				file_path:           PathBuf::from(self.entry_uri.to_string()),
-				file_span:           ByteSpan { start: 0, end: 0 },
+				file_span:           ByteSpan::covering(0, 0),
 				parsed_at:           chrono::Utc::now(),
 				lang:                coord.language,
 				lang_version:        None,

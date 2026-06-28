@@ -23,7 +23,7 @@ use tower::ServiceExt;
 fn make_blob(symbol_name: &str, lib: &str, kind: SymbolKind, raw_code: &str) -> BlobInfo {
 	// Use Repo origin so the orchestrator indexes the blob immediately.
 	// ExternalLib blobs are deferred until the library's global IDs are registered.
-	let repo_id = RepoId(format!("lib:{lib}"));
+	let repo_id = RepoId::from(format!("lib:{lib}"));
 	BlobInfo {
 		occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
 		symbol_name:        symbol_name.to_owned(),
@@ -33,13 +33,13 @@ fn make_blob(symbol_name: &str, lib: &str, kind: SymbolKind, raw_code: &str) -> 
 		source:             SourceChunk {
 			raw_code:        raw_code.into(),
             treesitter_repr: Some(TreesitterRepr(vec![])),
-			symbol_span:     ByteSpan { start: 0, end: raw_code.len() },
+			symbol_span:     ByteSpan::covering(0, raw_code.len()),
 		},
 		embeddings:         vec![],
 		metadata:           ChunkMetadata {
 			repo_id,
 			file_path: "src/lib.rs".into(),
-			file_span: ByteSpan { start: 0, end: 0 },
+			file_span: ByteSpan::covering(0, 0),
 			parsed_at: chrono::Utc::now(),
 			lang: Language::Rust,
 			lang_version: None,
@@ -58,7 +58,7 @@ async fn build_state_with_orchestrator() -> (AppState, TempDir) {
 	let pipeline = PipelineConfig {
 		terminus:        None,
 		qdrant:          None,
-		embedding_model: "text-embedding-3-small".to_owned(),
+		embedding_model: nudox_core::ModelId::new("text-embedding-3-small"),
 		upload_schema:   false,
 	};
 
@@ -224,7 +224,7 @@ async fn missing_orchestrator_returns_500() {
 	let pipeline = PipelineConfig {
 		terminus:        None,
 		qdrant:          None,
-		embedding_model: "text-embedding-3-small".to_owned(),
+		embedding_model: nudox_core::ModelId::new("text-embedding-3-small"),
 		upload_schema:   false,
 	};
 	let registry =

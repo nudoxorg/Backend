@@ -1,9 +1,8 @@
 use ir::{entry::Entry, kind::Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::warn;
 
-use crate::schema::{DocCtx, URI, UriOps};
+use crate::schema::{DocCtx, EmitError, URI, UriOps};
 
 /// Represents the abstract class Kind in JsonLD format
 /// this is what will be serialized with serde
@@ -11,37 +10,20 @@ use crate::schema::{DocCtx, URI, UriOps};
 pub struct LDKind {
 	#[serde(rename = "@id")]
 	pub uri:       URI,
-	#[serde(rename = "kind_tag")]
-	pub kind_tag:  &'static str,
-	// add serde_flatten
 	#[serde(flatten)]
 	pub inheritor: LDInheritor,
 }
 
-/// Generates Tags for different fields
-pub trait TagGen {
-	fn tag(&self) -> &'static str;
-}
-
-/// snake_case tags for kind
-impl TagGen for Entry {
-	fn tag(&self) -> &'static str { self.kind_tag() }
-}
-
 impl LDKind {
-	/// Should never fail, but using try_from, so handle errors here
-	pub fn new(path: &ir::entry::NudoxPath, kind: &Entry, ctx: &DocCtx) -> Self {
-		LDKind {
-			uri:       ctx.kind_uri(kind, path),
-			kind_tag:  kind.tag(),
-			inheritor: match LDInheritor::try_from(kind) {
-				Ok(i) => i,
-				Err(e) => {
-					warn!(error = ?e, "kind→LDInheritor conversion failed, defaulting to None");
-					LDInheritor::None
-				}
-			},
-		}
+	pub fn try_new(
+		path: &ir::entry::NudoxPath,
+		kind: &Entry,
+		ctx: &DocCtx,
+	) -> Result<Self, EmitError> {
+		let uri = ctx.kind_uri(kind, path);
+		let inheritor = LDInheritor::try_from(kind)
+			.map_err(|e| EmitError::KindConversionFailed { uri: uri.clone(), error: e.to_string() })?;
+		Ok(LDKind { uri, inheritor })
 	}
 }
 
@@ -204,6 +186,18 @@ impl TryFrom<&ir::kind::Symbol<ir::protocols::TraitDef>> for LDTraitDef {
 
 // MARK: - LDTraitImpl
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Polarity { Positive, Negative }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImplScope { Specific, Blanket }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Safety { Safe, Unsafe }
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LDTraitImpl {
 	pub trait_ref:            Value,
@@ -217,9 +211,9 @@ pub struct LDTraitImpl {
 	pub associated_types:     Option<Value>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub associated_constants: Option<Value>,
-	pub is_negative:          bool,
-	pub is_blanket:           bool,
-	pub is_unsafe:            bool,
+	pub polarity:             Polarity,
+	pub scope:                ImplScope,
+	pub safety:               Safety,
 }
 
 impl TryFrom<&ir::kind::Symbol<ir::protocols::TraitImpl>> for LDTraitImpl {
@@ -234,9 +228,9 @@ impl TryFrom<&ir::kind::Symbol<ir::protocols::TraitImpl>> for LDTraitImpl {
 			methods:              s.inner.methods.as_ref().map(|m| json!(m)),
 			associated_types:     s.inner.associated_types.as_ref().map(|a| json!(a)),
 			associated_constants: s.inner.associated_constants.as_ref().map(|c| json!(c)),
-			is_negative:          s.inner.is_negative,
-			is_blanket:           s.inner.is_blanket,
-			is_unsafe:            s.inner.is_unsafe,
+			polarity:             if s.inner.is_negative { Polarity::Negative } else { Polarity::Positive },
+			scope:                if s.inner.is_blanket  { ImplScope::Blanket  } else { ImplScope::Specific },
+			safety:               if s.inner.is_unsafe   { Safety::Unsafe      } else { Safety::Safe },
 		})
 	}
 }

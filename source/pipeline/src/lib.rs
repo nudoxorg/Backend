@@ -1,6 +1,6 @@
 pub mod treesitter;
 
-use nudox_core::{BlobInfo, ByteSpan, ChunkMetadata, Embedder, EmbeddingPurpose, EmbeddingRecord, OccurrenceId, ResolutionState, Result, SourceChunk, SymbolOrigin};
+use nudox_core::{BlobInfo, ByteSpan, ChunkMetadata, EmbedderSet, EmbeddingPurpose, EmbeddingRecord, OccurrenceId, ResolutionState, Result, SourceChunk, SymbolOrigin};
 use uuid::Uuid;
 
 /// Raw input accepted by the pipeline before BlobInfo is assembled.
@@ -42,7 +42,7 @@ impl Default for PipelineConfig {
 /// `resolved_global_id` is always `None` here; resolution is the orchestrator's
 /// job.
 pub struct Pipeline {
-	embedders: Vec<Box<dyn Embedder>>,
+	embedders: EmbedderSet,
 	config:    PipelineConfig,
 }
 
@@ -51,7 +51,7 @@ impl Pipeline {
 	///
 	/// Each input chunk will be embedded by every embedder in order, producing
 	/// one [`EmbeddingRecord`] per embedder per purpose.
-	pub fn new(embedders: Vec<Box<dyn Embedder>>, config: PipelineConfig) -> Self {
+	pub fn new(embedders: EmbedderSet, config: PipelineConfig) -> Self {
 		Pipeline { embedders, config }
 	}
 
@@ -81,10 +81,10 @@ impl Pipeline {
 		);
 
 		// Adjust symbol span to be relative to the extracted snippet.
-		let symbol_span_in_snippet = ByteSpan {
-			start: input.symbol_span.start.saturating_sub(snippet_span.start),
-			end:   input.symbol_span.end.saturating_sub(snippet_span.start),
-		};
+		let symbol_span_in_snippet = ByteSpan::covering(
+			input.symbol_span.start().saturating_sub(snippet_span.start()),
+			input.symbol_span.end().saturating_sub(snippet_span.start()),
+		);
 
 		let source = SourceChunk {
 			raw_code: snippet.into(),
@@ -94,11 +94,11 @@ impl Pipeline {
 
 		let mut embeddings = Vec::with_capacity(self.embedders.len() * 2);
 
-		for embedder in &self.embedders {
+		for embedder in self.embedders.iter() {
 			let code_vec = embedder.embed(&source, EmbeddingPurpose::Code).await?;
 			embeddings.push(EmbeddingRecord {
 				model_type: embedder.model_type(),
-				model:      embedder.model_id().to_string(),
+				model:      embedder.model_id().clone(),
 				purpose:    EmbeddingPurpose::Code,
 				vector:     code_vec,
 			});
@@ -108,12 +108,12 @@ impl Pipeline {
 					let doc_chunk = SourceChunk {
 						raw_code:        doc.as_str().into(),
 						treesitter_repr: None,
-						symbol_span:     ByteSpan { start: 0, end: doc.len() },
+						symbol_span:     ByteSpan::covering(0, doc.len()),
 					};
 					let doc_vec = embedder.embed(&doc_chunk, EmbeddingPurpose::Docstring).await?;
 					embeddings.push(EmbeddingRecord {
 						model_type: embedder.model_type(),
-						model:      embedder.model_id().to_string(),
+						model:      embedder.model_id().clone(),
 						purpose:    EmbeddingPurpose::Docstring,
 						vector:     doc_vec,
 					});
@@ -149,19 +149,19 @@ mod tests {
 
 	#[test]
 	fn pipeline_new_constructs_without_panic() {
-		let _pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(16))], PipelineConfig::default());
+		let _pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(16))]), PipelineConfig::default());
 	}
 
 	fn make_input(docstring: Option<&str>) -> PipelineInput {
 		PipelineInput {
 			raw_code:      "fn foo() {}".into(),
 			symbol_name:   "foo".into(),
-			symbol_span:   ByteSpan { start: 3, end: 6 },
-			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("r1".into()) },
+			symbol_span:   ByteSpan::covering(3, 6),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from("r1") },
 			metadata:      ChunkMetadata {
-				repo_id:             RepoId("r1".into()),
+				repo_id:             RepoId::from("r1"),
 				file_path:           "src/lib.rs".into(),
-				file_span:           ByteSpan { start: 0, end: 11 },
+				file_span:           ByteSpan::covering(0, 11),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -173,7 +173,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn process_with_single_embedder_produces_code_record() {
-		let pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(8))], PipelineConfig::default());
+		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(8))]), PipelineConfig::default());
 		let info = pipeline.process(make_input(None)).await.unwrap();
 		assert_eq!(info.symbol_name, "foo");
 		assert_eq!(info.resolution, nudox_core::ResolutionState::Unresolved);
@@ -187,7 +187,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn process_with_docstring_produces_two_records_per_embedder() {
-		let pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(8))], PipelineConfig::default());
+		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(8))]), PipelineConfig::default());
 		let info = pipeline.process(make_input(Some("/// docs here"))).await.unwrap();
 		assert_eq!(info.embeddings.len(), 2);
 		assert!(matches!(info.embeddings[1].purpose, EmbeddingPurpose::Docstring));
@@ -196,7 +196,7 @@ mod tests {
 	#[tokio::test]
 	async fn process_with_docstring_disabled_skips_docstring() {
 		let cfg = PipelineConfig { max_context_lines: 80, embed_docstrings: false };
-		let pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(8))], cfg);
+		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(8))]), cfg);
 		let info = pipeline.process(make_input(Some("/// docs"))).await.unwrap();
 		assert_eq!(info.embeddings.len(), 1);
 	}
@@ -204,10 +204,10 @@ mod tests {
 	#[tokio::test]
 	async fn process_with_two_embedders_produces_record_per_embedder() {
 		let pipeline = Pipeline::new(
-			vec![
+			EmbedderSet::new(vec![
 				Box::new(MockEmbedder::new(8)),
 				Box::new(PlaceholderEmbedder::new("placeholder-v1", 16)),
-			],
+			]),
 			PipelineConfig::default(),
 		);
 		let info = pipeline.process(make_input(None)).await.unwrap();
@@ -228,10 +228,10 @@ mod tests {
 	#[tokio::test]
 	async fn process_with_two_embedders_and_docstring_produces_four_records() {
 		let pipeline = Pipeline::new(
-			vec![
+			EmbedderSet::new(vec![
 				Box::new(MockEmbedder::new(8)),
 				Box::new(PlaceholderEmbedder::new("placeholder-v1", 16)),
-			],
+			]),
 			PipelineConfig::default(),
 		);
 		let info = pipeline.process(make_input(Some("/// docs"))).await.unwrap();
@@ -247,12 +247,12 @@ mod tests {
 		let input = PipelineInput {
 			raw_code:      "fn bar() { let x = 1; }".into(),
 			symbol_name:   "bar".into(),
-			symbol_span:   ByteSpan { start: 3, end: 6 },
-			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("r1".into()) },
+			symbol_span:   ByteSpan::covering(3, 6),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from("r1") },
 			metadata:      ChunkMetadata {
-				repo_id:             RepoId("r1".into()),
+				repo_id:             RepoId::from("r1"),
 				file_path:           "src/lib.rs".into(),
-				file_span:           ByteSpan { start: 0, end: 23 },
+				file_span:           ByteSpan::covering(0, 23),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -260,7 +260,7 @@ mod tests {
 			},
 			docstring:     None,
 		};
-		let pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(4))], PipelineConfig::default());
+		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(4))]), PipelineConfig::default());
 		let info = pipeline.process(input).await.unwrap();
 		assert!(info.source.treesitter_repr.is_some());
 		assert!(info.source.raw_code.contains("fn bar"));
@@ -271,12 +271,12 @@ mod tests {
 		let input = PipelineInput {
 			raw_code:      "fn greet() { println!(\"hello\"); }".into(),
 			symbol_name:   "greet".into(),
-			symbol_span:   ByteSpan { start: 3, end: 8 },
-			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("r1".into()) },
+			symbol_span:   ByteSpan::covering(3, 8),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from("r1") },
 			metadata:      ChunkMetadata {
-				repo_id:             RepoId("r1".into()),
+				repo_id:             RepoId::from("r1"),
 				file_path:           "src/main.rs".into(),
-				file_span:           ByteSpan { start: 0, end: 33 },
+				file_span:           ByteSpan::covering(0, 33),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -284,7 +284,7 @@ mod tests {
 			},
 			docstring:     None,
 		};
-		let pipeline = Pipeline::new(vec![Box::new(MockEmbedder::new(4))], PipelineConfig::default());
+		let pipeline = Pipeline::new(EmbedderSet::new(vec![Box::new(MockEmbedder::new(4))]), PipelineConfig::default());
 		let info = pipeline.process(input).await.unwrap();
 		let payload: serde_json::Value =
 			serde_json::from_slice(&info.source.treesitter_repr.as_ref().unwrap().0).unwrap();

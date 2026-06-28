@@ -11,7 +11,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use nudox_core::{BlobInfo, BlobRef, BlobStore, BodyQuery, ByteSpan, CombineMode, Criteria, Embedder, EmbeddingPurpose, GlobalSymbolId, GlobalSymbolQuery, NamePattern, OccurrenceId, Result, SearchQuery, SourceChunk, SymbolMatch, SymbolQuery, SymbolSearch, VectorQuery};
+use nudox_core::{BlobInfo, BlobRef, BlobStore, BodyQuery, ByteSpan, CombineMode, Criteria, Embedder, Embedding, EmbeddingPurpose, GlobalSymbolId, GlobalSymbolQuery, NamePattern, OccurrenceId, Result, Score, SearchQuery, SourceChunk, SymbolMatch, SymbolQuery, SymbolSearch, VectorQuery};
 
 /// Compound symbol-search engine that combines full-text name search with
 /// vector similarity search, then applies scope, kind, and occurrence-count
@@ -50,14 +50,14 @@ impl SymbolSearcher {
 	}
 
 	/// Embed a [`BodyQuery`] into a raw vector using the configured embedder.
-	async fn embed_body_query(&self, body: &BodyQuery) -> Result<Vec<f32>> {
+	async fn embed_body_query(&self, body: &BodyQuery) -> Result<Embedding> {
 		let text = match body {
 			BodyQuery::NaturalLanguage(t) | BodyQuery::CodeSnippet(t) => t,
 		};
 		let chunk = SourceChunk {
 			raw_code:        text.as_str().into(),
 			treesitter_repr: None,
-			symbol_span:     ByteSpan { start: 0, end: text.len() },
+			symbol_span:     ByteSpan::covering(0, text.len()),
 		};
 		self.embedder.embed(&chunk, EmbeddingPurpose::Code).await
 	}
@@ -68,17 +68,17 @@ impl SymbolSearcher {
 struct ScoredRef {
 	blob_ref:  BlobRef,
 	global_id: Option<GlobalSymbolId>,
-	score:     f32,
+	score:     Score,
 }
 
 #[async_trait]
 impl SymbolSearch for SymbolSearcher {
 	async fn search(&self, query: &SymbolQuery) -> Result<Vec<SymbolMatch>> {
-		let fetch_limit = query.limit.get().saturating_mul(2);
+		let fetch_limit = query.limit.saturating_add(query.limit.get());
 
 		// ── Collect hits from each active search arm ──────────────────────
-		let mut name_hits: HashMap<String, ScoredRef> = HashMap::new();
-		let mut body_hits: HashMap<String, ScoredRef> = HashMap::new();
+		let mut name_hits: HashMap<BlobRef, ScoredRef> = HashMap::new();
+		let mut body_hits: HashMap<BlobRef, ScoredRef> = HashMap::new();
 
 		let (opt_name, opt_body, combine) = match &query.criteria {
 			Criteria::Name(n) => (Some(n), None, CombineMode::Or),
@@ -93,7 +93,7 @@ impl SymbolSearch for SymbolSearcher {
 				self.text.search(pattern, fetch_limit).await?
 			};
 			for h in raw_hits {
-				let key = h.blob_ref.0.clone();
+				let key = h.blob_ref.clone();
 				name_hits.entry(key).or_insert(ScoredRef {
 					blob_ref:  h.blob_ref,
 					global_id: None,
@@ -106,7 +106,7 @@ impl SymbolSearch for SymbolSearcher {
 			let vec = self.embed_body_query(body).await?;
 			let hits = self.vector.search(&vec, fetch_limit).await?;
 			for h in hits {
-				let key = h.blob_ref.0.clone();
+				let key = h.blob_ref.clone();
 				let entry = body_hits.entry(key).or_insert(ScoredRef {
 					blob_ref:  h.blob_ref.clone(),
 					global_id: Some(h.global_id),
@@ -124,7 +124,7 @@ impl SymbolSearch for SymbolSearcher {
 		// ── Merge according to CombineMode ────────────────────────────────
 		let merged: Vec<ScoredRef> = match combine {
 			CombineMode::Or => {
-				let mut union: HashMap<String, ScoredRef> = name_hits;
+				let mut union: HashMap<BlobRef, ScoredRef> = name_hits;
 				for (key, body_hit) in body_hits {
 					let entry = union.entry(key).or_insert(body_hit.clone());
 					if body_hit.score > entry.score {
@@ -143,7 +143,7 @@ impl SymbolSearch for SymbolSearcher {
 						body_hits.get(&key).map(|body_hit| ScoredRef {
 							blob_ref:  name_hit.blob_ref.clone(),
 							global_id: body_hit.global_id.or(name_hit.global_id),
-							score:     (name_hit.score + body_hit.score) / 2.0,
+							score:     Score::new((name_hit.score.get() + body_hit.score.get()) / 2.0),
 						})
 					})
 					.collect()
@@ -158,7 +158,7 @@ impl SymbolSearch for SymbolSearcher {
 		// Processing in score order means the first `limit` survivors are exactly
 		// the top `limit` — identical results, an order of magnitude fewer fetches.
 		let mut merged = merged;
-		merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+		merged.sort_by(|a, b| b.score.cmp(&a.score));
 
 		let mut matches: Vec<SymbolMatch> = Vec::with_capacity(query.limit.get().min(merged.len()));
 
@@ -207,7 +207,7 @@ impl SymbolSearch for SymbolSearcher {
 						let occs = gq.get_occurrences(global_id).await?;
 						if let Some(occ_filter) = &query.occurrence_filter {
 							let count = occs.len();
-							if let Some(min) = occ_filter.min_count && count < min {
+							if let Some(min) = occ_filter.min_count && count < min.get() {
 								continue;
 							}
 							if let Some(max) = occ_filter.max_count && count > max {
@@ -235,7 +235,7 @@ mod tests {
 	use std::{collections::HashMap, num::NonZeroUsize, sync::Mutex};
 
 	use blobstore::InMemoryBlobStore;
-	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, ByteSpan, ChunkMetadata, CombineMode, Criteria, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, GlobalSymbolQuery, Language, ModelType, NamePattern, OccurrenceFilter, OccurrenceId, RepoId, Result, ScopeFilter, SearchIndex, SourceChunk, SymbolKind, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
+	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, ByteSpan, ChunkMetadata, CombineMode, Criteria, Embedding, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, GlobalSymbolQuery, Language, ModelId, ModelType, NamePattern, OccurrenceFilter, OccurrenceId, RepoId, Result, ScopeFilter, SearchIndex, SourceChunk, SymbolKind, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
 	use embed::MockEmbedder;
 
 	use super::*;
@@ -276,7 +276,7 @@ mod tests {
 		BlobInfo {
 			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 			symbol_name: symbol_name.to_string(),
-			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId(repo_id.to_string()) },
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from(repo_id.to_string()) },
 			resolution: match global_id {
 				Some(gid) => ResolutionState::Resolved(gid),
 				None => ResolutionState::Unresolved,
@@ -285,13 +285,13 @@ mod tests {
 			source: SourceChunk {
 				raw_code:        format!("fn {}() {{}}", symbol_name).into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 3, end: symbol_name.len() + 3 },
+				symbol_span:     ByteSpan::covering(3, symbol_name.len() + 3),
 			},
 			embeddings: vec![],
 			metadata: ChunkMetadata {
-				repo_id: RepoId(repo_id.to_string()),
+				repo_id: RepoId::from(repo_id.to_string()),
 				file_path: "src/lib.rs".into(),
-				file_span: ByteSpan { start: 0, end: 20 },
+				file_span: ByteSpan::covering(0, 20),
 				parsed_at: chrono::Utc::now(),
 				lang,
 				lang_version: None,
@@ -315,9 +315,9 @@ mod tests {
 		vector_idx
 			.upsert(&blob_ref, global_id, &[EmbeddingRecord {
 				model_type: ModelType::Mock,
-				model:      "mock".into(),
+				model:      ModelId::new("mock"),
 				purpose:    EmbeddingPurpose::Code,
-				vector:     vector.to_vec(),
+				vector:     Embedding::new(vector.to_vec()).unwrap(),
 			}])
 			.await
 			.unwrap();
@@ -577,14 +577,14 @@ mod tests {
 		let searcher = make_searcher(si, vi, bs, None);
 		let query = SymbolQuery {
 			criteria:          Criteria::Name(NamePattern("fn_in".to_string())),
-			scope:             Some(ScopeFilter { repo_id: Some(RepoId("repo_a".to_string())), lang: None }),
+			scope:             Some(ScopeFilter { repo_id: Some(RepoId::from("repo_a")), lang: None }),
 			limit:             NonZeroUsize::new(10).unwrap(),
 			kind:              None,
 			occurrence_filter: None,
 		};
 		let results = searcher.search(&query).await.unwrap();
 		assert_eq!(results.len(), 1);
-		assert_eq!(results[0].blob.metadata.repo_id, RepoId("repo_a".to_string()));
+		assert_eq!(results[0].blob.metadata.repo_id, RepoId::from("repo_a"));
 	}
 
 	#[tokio::test]
@@ -653,7 +653,7 @@ mod tests {
 		let searcher = make_searcher(si, vi, bs, Some(gq as Arc<dyn GlobalSymbolQuery>));
 		let query = SymbolQuery {
 			criteria:          Criteria::Name(NamePattern("fn_".to_string())),
-			occurrence_filter: Some(OccurrenceFilter { min_count: Some(2), max_count: None }),
+			occurrence_filter: Some(OccurrenceFilter { min_count: Some(NonZeroUsize::new(2).unwrap()), max_count: None }),
 			limit:             NonZeroUsize::new(10).unwrap(),
 			scope:             None,
 			kind:              None,

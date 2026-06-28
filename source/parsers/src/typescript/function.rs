@@ -14,6 +14,7 @@ use ir::pipeline::{output_parameters_from_type, parameter_link_key};
 
 use super::{error::Parse, Result, TsDocParser, TsParseContext, TsParseState};
 use super::{is_function_declaration, pick_primary_declaration};
+use crate::empty_to_none;
 
 impl TsDocParser {
 	pub(super) fn function_overloads(
@@ -32,7 +33,7 @@ impl TsDocParser {
 				_ => unreachable!(),
 			})
 			.collect::<Result<Vec<_>>>()?;
-		Ok(if overloads.is_empty() { None } else { Some(overloads) })
+		Ok(empty_to_none(overloads))
 	}
 
 	pub(super) fn params_with_receiver(

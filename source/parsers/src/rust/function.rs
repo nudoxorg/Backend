@@ -9,6 +9,31 @@ use ir::protocols::{ReceiverKind, TraitMethod};
 use ir::ty::{FunctionPointer, Type};
 use rustdoc_types::Id;
 
+use crate::{ReceiverExtract, VisibilityMap, empty_to_none};
+
+impl ReceiverExtract for ParseContext {
+	type Param = (String, rustdoc_types::Type);
+
+	fn receiver(&self, first_param: Option<&(String, rustdoc_types::Type)>) -> Option<ReceiverKind> {
+		let Some((name, ty)) = first_param else {
+			return Some(ReceiverKind::Static);
+		};
+		if name != "self" {
+			return Some(ReceiverKind::Static);
+		}
+		match ty {
+			rustdoc_types::Type::BorrowedRef { is_mutable, .. } => {
+				if *is_mutable { Some(ReceiverKind::MutRef) } else { Some(ReceiverKind::SharedRef) }
+			}
+			rustdoc_types::Type::Generic(n) if n == "Self" => Some(ReceiverKind::Owned),
+			rustdoc_types::Type::ResolvedPath(path) if path.path == "Self" => {
+				Some(ReceiverKind::Owned)
+			}
+			_ => Some(ReceiverKind::Arbitrary),
+		}
+	}
+}
+
 impl ParseContext {
 	pub(super) fn function(&self, id: &Id, f: &rustdoc_types::Function) -> Result<Function> {
 		let item = self.krate.index.get(id).ok_or(Parse::ItemNotFound(id.0))?;
@@ -80,7 +105,7 @@ impl ParseContext {
 		&self,
 		inputs: &[(String, rustdoc_types::Type)],
 	) -> Result<(Option<ReceiverKind>, Option<Vec<Parameter>>)> {
-		let receiver = Self::determine_receiver(inputs);
+		let receiver = self.receiver(inputs.first());
 		let params = inputs
 			.iter()
 			.enumerate()
@@ -96,7 +121,7 @@ impl ParseContext {
 				}))
 			})
 			.collect::<Result<Vec<_>>>()?;
-		Ok((receiver, if params.is_empty() { None } else { Some(params) }))
+		Ok((receiver, empty_to_none(params)))
 	}
 
 	pub(super) fn function_attributes(&self, f: &rustdoc_types::Function) -> Option<Vec<FnAttribute>> {
@@ -113,7 +138,7 @@ impl ParseContext {
 			attrs.push(FnAttribute::Async);
 		}
 
-		if attrs.is_empty() { None } else { Some(attrs) }
+		empty_to_none(attrs)
 	}
 
 	pub(super) fn trait_method(&self, id: &Id, f: &rustdoc_types::Function) -> Result<TraitMethod> {
@@ -139,28 +164,6 @@ impl ParseContext {
 			receiver,
 			has_default_implementation: f.has_body,
 		})
-	}
-
-	pub(super) fn determine_receiver(inputs: &[(String, rustdoc_types::Type)]) -> Option<ReceiverKind> {
-		if let Some((name, ty)) = inputs.first() {
-			if name != "self" {
-				return Some(ReceiverKind::Static);
-			}
-			match ty {
-				rustdoc_types::Type::BorrowedRef { is_mutable, .. } => {
-					if *is_mutable {
-						Some(ReceiverKind::MutRef)
-					} else {
-						Some(ReceiverKind::SharedRef)
-					}
-				}
-				rustdoc_types::Type::Generic(name) if name == "Self" => Some(ReceiverKind::Owned),
-				rustdoc_types::Type::ResolvedPath(path) if path.path == "Self" => Some(ReceiverKind::Owned),
-				_ => Some(ReceiverKind::Arbitrary),
-			}
-		} else {
-			Some(ReceiverKind::Static)
-		}
 	}
 
 	pub(super) fn function_pointer(&self, fp: &rustdoc_types::FunctionPointer) -> Result<FunctionPointer> {

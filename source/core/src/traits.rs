@@ -1,19 +1,42 @@
+use std::num::NonZeroUsize;
+
 use async_trait::async_trait;
 
-use crate::{BlobInfo, BlobRef, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, LibRef, ModelType, OccurrenceId, Result, SearchHit, SourceChunk, SymbolMatch, SymbolQuery, VectorHit};
+use crate::{BlobInfo, BlobRef, Embedding, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, LibRef, ModelId, ModelType, OccurrenceId, Result, SearchHit, SourceChunk, SymbolMatch, SymbolQuery, VectorHit};
 
 /// Computes embedding vectors for source chunks.
 #[async_trait]
 pub trait Embedder: Send + Sync {
-	/// Returns the canonical model identifier string for this embedder.
-	fn model_id(&self) -> &str;
+	/// Returns the canonical model identifier for this embedder.
+	fn model_id(&self) -> &ModelId;
 
 	/// Returns the [`ModelType`] family / provider this embedder belongs to.
 	fn model_type(&self) -> ModelType;
 
-	/// Embeds the given source chunk for the specified purpose, returning the raw
-	/// vector.
-	async fn embed(&self, chunk: &SourceChunk, purpose: EmbeddingPurpose) -> Result<Vec<f32>>;
+	/// Embeds the given source chunk for the specified purpose, returning a
+	/// non-empty vector.
+	async fn embed(&self, chunk: &SourceChunk, purpose: EmbeddingPurpose) -> Result<Embedding>;
+}
+
+/// A non-empty, ordered set of [`Embedder`]s.
+///
+/// A [`Pipeline`](crate::Pipeline) with zero embedders would silently produce
+/// blobs with no vectors — `EmbedderSet` makes that state unrepresentable by
+/// panicking at construction time.
+pub struct EmbedderSet(Vec<Box<dyn Embedder>>);
+
+impl EmbedderSet {
+	/// Wrap `embedders`, panicking if the list is empty.
+	pub fn new(embedders: Vec<Box<dyn Embedder>>) -> Self {
+		assert!(!embedders.is_empty(), "EmbedderSet requires at least one embedder");
+		Self(embedders)
+	}
+
+	/// Iterate over the contained embedders in order.
+	pub fn iter(&self) -> std::slice::Iter<'_, Box<dyn Embedder>> { self.0.iter() }
+
+	/// Number of embedders in the set (always ≥ 1).
+	pub fn len(&self) -> usize { self.0.len() }
 }
 
 /// Persistent store for [`BlobInfo`] records.
@@ -116,20 +139,20 @@ pub trait SearchQuery: Send + Sync {
 	/// Free-text search across symbol names, library names, and repo ids.
 	///
 	/// Returns at most `limit` hits ordered by descending relevance score.
-	async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
+	async fn search(&self, query: &str, limit: NonZeroUsize) -> Result<Vec<SearchHit>>;
 
 	/// Enumerate all index entries for a specific resolved global symbol.
 	async fn find_by_global_id(
 		&self,
 		global_id: GlobalSymbolId,
-		limit: usize,
+		limit: NonZeroUsize,
 	) -> Result<Vec<SearchHit>>;
 
 	/// Return all indexed entries up to `limit`, in unspecified order.
 	///
 	/// Used when no query text or vector is provided but post-filters (kind,
 	/// scope) still need to be applied across the full index.
-	async fn list_all(&self, limit: usize) -> Result<Vec<SearchHit>>;
+	async fn list_all(&self, limit: NonZeroUsize) -> Result<Vec<SearchHit>>;
 }
 
 /// Read side of the vector similarity index.
@@ -140,7 +163,7 @@ pub trait VectorQuery: Send + Sync {
 	/// Return the `limit` most similar stored vectors to the given query vector.
 	///
 	/// Scores are cosine similarities in `[-1.0, 1.0]`.
-	async fn search(&self, vector: &[f32], limit: usize) -> Result<Vec<VectorHit>>;
+	async fn search(&self, vector: &[f32], limit: NonZeroUsize) -> Result<Vec<VectorHit>>;
 }
 
 /// Read side of the global symbol store: enumerate occurrences of a resolved

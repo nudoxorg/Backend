@@ -37,7 +37,8 @@
 //! // )
 //!
 //! // Called by compiler after a library parse:
-//! store.register_library("rust", "serde", "1.0.0", [
+//! let serde = LibRef { name: "serde".into(), version: "1.0.0".into() };
+//! store.register_library(&serde, [
 //!     "Entry/rust/serde/Serialize",
 //!     "Entry/rust/serde/Deserialize",
 //! ]).await?;
@@ -117,19 +118,15 @@ impl NudoxStore {
 		let stmts = [
 			"CREATE TABLE IF NOT EXISTS global_symbols (
                 id                  TEXT NOT NULL PRIMARY KEY,
-                terminus_instance   TEXT NOT NULL,
-                entry_uri           TEXT NOT NULL,
+                entry_uri           TEXT NOT NULL UNIQUE,
                 symbol_name         TEXT NOT NULL,
                 lang                TEXT NOT NULL,
                 lib_name            TEXT NOT NULL,
                 lib_version         TEXT NOT NULL,
-                registered_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                UNIQUE (terminus_instance, entry_uri)
+                registered_at       INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             )",
 			"CREATE INDEX IF NOT EXISTS idx_gs_lookup
                 ON global_symbols (lib_name, lib_version, symbol_name)",
-			"CREATE INDEX IF NOT EXISTS idx_gs_library
-                ON global_symbols (terminus_instance, lib_name, lib_version)",
 			"CREATE TABLE IF NOT EXISTS occurrence_associations (
                 global_symbol_id    TEXT NOT NULL REFERENCES global_symbols(id) ON DELETE CASCADE,
                 occurrence_id       TEXT NOT NULL,
@@ -171,54 +168,49 @@ impl NudoxStore {
 	/// Returns the number of newly-inserted rows (existing rows are skipped
 	/// via `INSERT OR IGNORE`).
 	///
-	/// # Entry URI → symbol_name extraction
+	/// # Entry URI → symbol_name / lang extraction
 	///
-	/// `entry_uri` is `"Entry/{lang}/{crate_name}/{symbol_path}"`.  The
-	/// `symbol_name` stored is the **last** path component after the crate
-	/// name, e.g. `"Serialize"` from `"Entry/rust/serde/Serialize"`, or
-	/// `"Serialize"` from `"Entry/rust/serde/ser/Serialize"`.  This matches
-	/// what occurrence callers pass as `symbol_name` in [`LibRef`] lookups.
-	#[instrument(skip(self, entry_uris), fields(terminus = %self.terminus_instance, lib_name, lib_version))]
+	/// `entry_uri` is `"Entry/{lang}/{crate_name}/{symbol_path}"`.
+	/// `symbol_name` is the last `/`-delimited component (always derivable
+	/// from the URI).  `lang` is the second component (`Entry/`**rust**`/…`).
+	#[instrument(skip(self, entry_uris), fields(terminus = %self.terminus_instance, lib = %lib.name))]
 	pub async fn register_library<'a>(
 		&self,
-		lang: &str,
-		lib_name: &str,
-		lib_version: &str,
+		lib: &LibRef,
 		entry_uris: impl IntoIterator<Item = &'a str>,
-	) -> Result<usize> {
+	) -> Result<u64> {
 		let mut tx =
 			self.pool.begin().await.map_err(|e| GlobalStoreError::Transaction(Box::new(e)))?;
 
-		let mut inserted = 0usize;
+		let mut inserted = 0u64;
 
 		for uri in entry_uris {
-			// Extract last path component as symbol_name.
 			let symbol_name = uri.rsplit('/').next().unwrap_or(uri);
+			let lang = uri.split('/').nth(1).unwrap_or("");
 			let id = symbol_id(&self.terminus_instance, uri).to_string();
 
 			let rows = sqlx::query(
 				"INSERT OR IGNORE INTO global_symbols \
-                 (id, terminus_instance, entry_uri, symbol_name, lang, lib_name, lib_version) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (id, entry_uri, symbol_name, lang, lib_name, lib_version) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
 			)
 			.bind(&id)
-			.bind(&self.terminus_instance)
 			.bind(uri)
 			.bind(symbol_name)
 			.bind(lang)
-			.bind(lib_name)
-			.bind(lib_version)
+			.bind(&lib.name)
+			.bind(&lib.version)
 			.execute(&mut *tx)
 			.await
 			.map_err(|e| GlobalStoreError::Register(Box::new(e)))?
 			.rows_affected();
 
-			inserted += rows as usize;
+			inserted += rows;
 		}
 
 		tx.commit().await.map_err(|e| GlobalStoreError::Transaction(Box::new(e)))?;
 
-		tracing::info!(lib_name, lib_version, inserted, "library symbols registered");
+		tracing::info!(lib_name = %lib.name, lib_version = %lib.version, inserted, "library symbols registered");
 
 		Ok(inserted)
 	}
@@ -348,7 +340,7 @@ impl FutureParseQueue for NudoxStore {
 			"INSERT OR IGNORE INTO deferred_queue \
              (blob_ref, lib_name, lib_version) VALUES (?, ?, ?)",
 		)
-		.bind(&blob_ref.0)
+		.bind(blob_ref.as_str())
 		.bind(&lib.name)
 		.bind(&lib.version)
 		.execute(&self.pool)
@@ -387,7 +379,7 @@ impl FutureParseQueue for NudoxStore {
 			.into_iter()
 			.map(|r| {
 				let s: String = r.try_get("blob_ref").map_err(|e| QueueError::RowAccess(Box::new(e)))?;
-				Ok(BlobRef(s))
+				Ok(BlobRef::from(s))
 			})
 			.collect()
 	}
@@ -436,7 +428,7 @@ mod tests {
 	async fn register_library_inserts_symbols() {
 		let store = open_test_store().await;
 		let n = store
-			.register_library("rust", "serde", "1.0.0", [
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
 				"Entry/rust/serde/Serialize",
 				"Entry/rust/serde/Deserialize",
 			])
@@ -449,10 +441,10 @@ mod tests {
 	#[tokio::test]
 	async fn register_library_is_idempotent() {
 		let store = open_test_store().await;
-		store.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
 		// Second call with same URI should be ignored.
 		let n2 = store
-			.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/Serialize"])
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"])
 			.await
 			.unwrap();
 		assert_eq!(n2, 0, "duplicate registration should be ignored");
@@ -463,7 +455,7 @@ mod tests {
 	async fn register_library_extracts_symbol_name() {
 		let store = open_test_store().await;
 		store
-			.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/ser/Serialize"])
+			.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/ser/Serialize"])
 			.await
 			.unwrap();
 		// Lookup must work using just the bare name "Serialize"
@@ -485,7 +477,7 @@ mod tests {
 	#[tokio::test]
 	async fn lookup_returns_stable_id_after_registration() {
 		let store = open_test_store().await;
-		store.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
 
 		let lib = LibRef { name: "serde".into(), version: "1.0.0".into() };
 		let gid = store.lookup(&lib, "Serialize").await.unwrap().unwrap();
@@ -498,7 +490,7 @@ mod tests {
 	#[tokio::test]
 	async fn lookup_is_version_scoped() {
 		let store = open_test_store().await;
-		store.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
 
 		let lib_v1 = LibRef { name: "serde".into(), version: "1.0.0".into() };
 		let lib_v2 = LibRef { name: "serde".into(), version: "2.0.0".into() };
@@ -510,7 +502,7 @@ mod tests {
 	#[tokio::test]
 	async fn associate_records_occurrence() {
 		let store = open_test_store().await;
-		store.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
 
 		let lib = LibRef { name: "serde".into(), version: "1.0.0".into() };
 		let gid = store.lookup(&lib, "Serialize").await.unwrap().unwrap();
@@ -528,16 +520,16 @@ mod tests {
 		let store = open_test_store().await;
 		let lib = LibRef { name: "tokio".into(), version: "1.0.0".into() };
 
-		store.enqueue(lib.clone(), BlobRef("blob-a".into())).await.unwrap();
-		store.enqueue(lib.clone(), BlobRef("blob-b".into())).await.unwrap();
+		store.enqueue(lib.clone(), BlobRef::from("blob-a")).await.unwrap();
+		store.enqueue(lib.clone(), BlobRef::from("blob-b")).await.unwrap();
 		// Duplicate is ignored.
-		store.enqueue(lib.clone(), BlobRef("blob-a".into())).await.unwrap();
+		store.enqueue(lib.clone(), BlobRef::from("blob-a")).await.unwrap();
 
 		assert_eq!(store.deferred_count("tokio", "1.0.0").await.unwrap(), 2);
 
 		let mut drained = store.drain_for_lib(&lib).await.unwrap();
-		drained.sort_by_key(|r| r.0.clone());
-		assert_eq!(drained, vec![BlobRef("blob-a".into()), BlobRef("blob-b".into())]);
+		drained.sort();
+		assert_eq!(drained, vec![BlobRef::from("blob-a"), BlobRef::from("blob-b")]);
 
 		// Queue is now empty.
 		assert_eq!(store.deferred_count("tokio", "1.0.0").await.unwrap(), 0);
@@ -550,11 +542,11 @@ mod tests {
 		let lib_v1 = LibRef { name: "tokio".into(), version: "1.0.0".into() };
 		let lib_v2 = LibRef { name: "tokio".into(), version: "2.0.0".into() };
 
-		store.enqueue(lib_v1.clone(), BlobRef("for-v1".into())).await.unwrap();
-		store.enqueue(lib_v2.clone(), BlobRef("for-v2".into())).await.unwrap();
+		store.enqueue(lib_v1.clone(), BlobRef::from("for-v1")).await.unwrap();
+		store.enqueue(lib_v2.clone(), BlobRef::from("for-v2")).await.unwrap();
 
 		let drained_v1 = store.drain_for_lib(&lib_v1).await.unwrap();
-		assert_eq!(drained_v1, vec![BlobRef("for-v1".into())]);
+		assert_eq!(drained_v1, vec![BlobRef::from("for-v1")]);
 		// v2 queue is untouched.
 		assert_eq!(store.deferred_count("tokio", "2.0.0").await.unwrap(), 1);
 	}
@@ -562,7 +554,7 @@ mod tests {
 	#[tokio::test]
 	async fn resolve_symbol_returns_entry_uri() {
 		let store = open_test_store().await;
-		store.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
 
 		let (gid, uri) = store.resolve_symbol("serde", "1.0.0", "Serialize").await.unwrap().unwrap();
 
@@ -581,14 +573,14 @@ mod tests {
 		{
 			let store = NudoxStore::open(&db_path, "test_org/test_db").await.unwrap();
 			store
-				.register_library("rust", "serde", "1.0.0", [
+				.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, [
 					"Entry/rust/serde/Serialize",
 					"Entry/rust/serde/Deserialize",
 				])
 				.await
 				.unwrap();
 			let lib = LibRef { name: "serde".into(), version: "1.0.0".into() };
-			store.enqueue(lib, BlobRef("deferred-blob".into())).await.unwrap();
+			store.enqueue(lib, BlobRef::from("deferred-blob")).await.unwrap();
 		}
 
 		// `tmp` keeps the file alive; re-open at the same path.
@@ -599,6 +591,6 @@ mod tests {
 		assert!(store2.lookup(&lib, "Deserialize").await.unwrap().is_some());
 		assert_eq!(store2.deferred_count("serde", "1.0.0").await.unwrap(), 1);
 		let drained = store2.drain_for_lib(&lib).await.unwrap();
-		assert_eq!(drained, vec![BlobRef("deferred-blob".into())]);
+		assert_eq!(drained, vec![BlobRef::from("deferred-blob")]);
 	}
 }

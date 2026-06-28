@@ -2,6 +2,7 @@ use std::process::ExitStatus;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Parse {
 	#[error("symbol not found: {0}")]
 	SymbolNotFound(String),

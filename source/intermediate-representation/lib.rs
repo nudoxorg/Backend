@@ -1,3 +1,6 @@
+// Convention: fields typed `Option<Vec<T>>` distinguish *absent* (`null` in JSON)
+// from *empty* (`[]`). Callers must double-unwrap; this is intentional because
+// the distinction carries semantic meaning (e.g. "no parameters" vs "zero parameters").
 pub mod entry;
 pub mod function;
 pub mod generics;

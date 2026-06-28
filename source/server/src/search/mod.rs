@@ -7,6 +7,7 @@ pub use qdrant::semantic_search;
 
 use std::collections::HashMap;
 
+use nudox_core::Score;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use terminusdb_client::{BranchSpec, GetOpts, TerminusDBHttpClient};
@@ -29,7 +30,7 @@ pub struct SearchResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
 	pub uri:         String,
-	pub score:       f32,
+	pub score:       Score,
 	pub collection:  String,
 	pub fq_name:     Option<String>,
 	pub language:    Option<String>,

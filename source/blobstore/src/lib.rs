@@ -29,12 +29,12 @@ impl ObjectStoreBlobStore {
 }
 
 /// Path of the immutable, content-addressed blob body (binary `bincode`).
-fn blob_path(blob_ref: &BlobRef) -> ObjPath { ObjPath::from(format!("blobs/{}.blob", blob_ref.0)) }
+fn blob_path(blob_ref: &BlobRef) -> ObjPath { ObjPath::from(format!("blobs/{}.blob", blob_ref.as_str())) }
 
 /// Path of the small mutable resolution sidecar holding the `GlobalSymbolId`.
 /// Kept separate so the blob body itself is write-once.
 fn resolution_path(blob_ref: &BlobRef) -> ObjPath {
-	ObjPath::from(format!("blobs/{}.res", blob_ref.0))
+	ObjPath::from(format!("blobs/{}.res", blob_ref.as_str()))
 }
 
 impl ObjectStoreBlobStore {
@@ -95,7 +95,7 @@ impl BlobStore for ObjectStoreBlobStore {
 
 		// Content address: identical content yields the same ref, so puts are
 		// idempotent and the ref doubles as an integrity check.
-		let blob_ref = BlobRef(blake3::hash(&bytes).to_hex().to_string());
+		let blob_ref = BlobRef::from(blake3::hash(&bytes).to_hex().to_string());
 
 		self
 			.store
@@ -158,7 +158,7 @@ impl BlobStore for ObjectStoreBlobStore {
 					.location
 					.filename()
 					.and_then(|name| name.strip_suffix(".blob"))
-					.map(|hash| BlobRef(hash.to_string()))
+					.map(|hash| BlobRef::from(hash.to_string()))
 			})
 			.collect();
 		Ok(refs)
@@ -176,19 +176,19 @@ mod object_store_tests {
 		BlobInfo {
 			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 			symbol_name:   symbol_name.into(),
-			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("test-repo".into()) },
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from("test-repo") },
 			resolution:    nudox_core::ResolutionState::Unresolved,
 			kind:          None,
 			source:        SourceChunk {
 				raw_code:        "fn x() {}".into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 3, end: 4 },
+				symbol_span:     ByteSpan::covering(3, 4),
 			},
 			embeddings:    vec![],
 			metadata:      ChunkMetadata {
-				repo_id:             RepoId("test-repo".into()),
+				repo_id:             RepoId::from("test-repo"),
 				file_path:           "src/lib.rs".into(),
-				file_span:           ByteSpan { start: 0, end: 9 },
+				file_span:           ByteSpan::covering(0, 9),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -225,7 +225,7 @@ mod object_store_tests {
 	async fn get_missing_returns_err() {
 		let tmp = TempDir::new().unwrap();
 		let store = ObjectStoreBlobStore::local(tmp.path().to_path_buf()).unwrap();
-		let result = store.get(&BlobRef("nonexistent".into())).await;
+		let result = store.get(&BlobRef::from("nonexistent")).await;
 		assert!(result.is_err());
 	}
 
@@ -247,9 +247,9 @@ mod object_store_tests {
 		let r1 = store.put(&make_blob("a", BLOB_SCHEMA_VERSION)).await.unwrap();
 		let r2 = store.put(&make_blob("b", BLOB_SCHEMA_VERSION)).await.unwrap();
 		let mut refs = store.list().await.unwrap();
-		refs.sort_by_key(|r| r.0.clone());
+		refs.sort();
 		let mut expected = vec![r1, r2];
-		expected.sort_by_key(|r| r.0.clone());
+		expected.sort();
 		assert_eq!(refs, expected);
 	}
 
@@ -287,8 +287,8 @@ mod object_store_tests {
 		let r2 = store.put(&info).await.unwrap();
 
 		assert_eq!(r1, r2, "identical content must yield the same blob ref");
-		assert_eq!(r1.0.len(), 64, "ref is a blake3 hex digest");
-		assert!(r1.0.bytes().all(|b| b.is_ascii_hexdigit()));
+		assert_eq!(r1.as_str().len(), 64, "ref is a blake3 hex digest");
+		assert!(r1.as_str().bytes().all(|b| b.is_ascii_hexdigit()));
 		assert_eq!(store.list().await.unwrap().len(), 1, "idempotent put must not duplicate");
 	}
 
@@ -332,16 +332,16 @@ mod object_store_tests {
 
 	#[tokio::test]
 	async fn round_trips_a_blob_with_embeddings() {
-		use nudox_core::{EmbeddingPurpose, EmbeddingRecord, ModelType};
+		use nudox_core::{Embedding, EmbeddingPurpose, EmbeddingRecord, ModelId, ModelType};
 
 		let tmp = TempDir::new().unwrap();
 		let store = ObjectStoreBlobStore::local(tmp.path().to_path_buf()).unwrap();
 		let mut info = make_blob("vecsym", BLOB_SCHEMA_VERSION);
 		info.embeddings = vec![EmbeddingRecord {
 			model_type: ModelType::Openai,
-			model:      "text-embedding-3-small".to_owned(),
+			model:      ModelId::new("text-embedding-3-small"),
 			purpose:    EmbeddingPurpose::Code,
-			vector:     vec![0.1, -0.2, 0.333, 4.0],
+			vector:     Embedding::new(vec![0.1, -0.2, 0.333, 4.0]).unwrap(),
 		}];
 
 		let blob_ref = store.put(&info).await.unwrap();

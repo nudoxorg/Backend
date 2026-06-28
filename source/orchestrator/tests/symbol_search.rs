@@ -12,7 +12,7 @@ use std::sync::Arc;
 use blobstore::InMemoryBlobStore;
 use std::num::NonZeroUsize;
 
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, BodyQuery, ByteSpan, ChunkMetadata, Criteria, GlobalSymbolId, GlobalSymbolQuery, Language, LibRef, NamePattern, OccurrenceFilter, RepoId, ResolutionOutcome, ScopeFilter, SearchIndex, SearchQuery, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex, VectorQuery};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, BodyQuery, ByteSpan, ChunkMetadata, Criteria, EmbedderSet, GlobalSymbolId, GlobalSymbolQuery, Language, LibRef, NamePattern, OccurrenceFilter, RepoId, ResolutionOutcome, ScopeFilter, SearchIndex, SearchQuery, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex, VectorQuery};
 use embed::PlaceholderEmbedder;
 use pipeline::{Pipeline, PipelineConfig, PipelineInput};
 use search::{InMemorySearchIndex, InMemoryVectorIndex, SymbolSearcher};
@@ -43,7 +43,7 @@ impl TestStack {
 		let queue = Arc::new(InMemoryFutureParseQueue::new());
 
 		let pipeline = Pipeline::new(
-			vec![Box::new(PlaceholderEmbedder::new("placeholder-v1", EMBED_DIM))],
+			EmbedderSet::new(vec![Box::new(PlaceholderEmbedder::new("placeholder-v1", EMBED_DIM))]),
 			PipelineConfig::default(),
 		);
 
@@ -94,12 +94,12 @@ fn make_input(
 	PipelineInput {
 		raw_code:      raw_code.to_string(),
 		symbol_name:   symbol_name.to_string(),
-		symbol_span:   ByteSpan { start, end: start + symbol_name.len() },
+		symbol_span:   ByteSpan::covering(start, start + symbol_name.len()),
 		symbol_origin: origin,
 		metadata:      ChunkMetadata {
 			repo_id:             repo_id.clone(),
 			file_path:           file.into(),
-			file_span:           ByteSpan { start: 0, end: raw_code.len() },
+			file_span:           ByteSpan::covering(0, raw_code.len()),
 			parsed_at:           chrono::Utc::now(),
 			lang:                Language::Rust,
 			lang_version:        None,
@@ -115,7 +115,7 @@ fn make_input(
 #[tokio::test]
 async fn name_search_roundtrip() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-a".into());
+	let repo = RepoId::from("repo-a");
 
 	// Three Rust functions with distinct names.
 	let symbols = [
@@ -181,7 +181,7 @@ async fn vector_search_exact_code_match() {
 	// self-contained function equals the full raw_code text.  So pipeline
 	// embedding and query embedding use identical inputs → perfect match.
 	let s = TestStack::new();
-	let repo = RepoId("repo-vec".into());
+	let repo = RepoId::from("repo-vec");
 
 	let target = "fn add_numbers(a: i32, b: i32) -> i32 { a + b }";
 	let noise = "fn completely_unrelated_xyzabc(q: u64) -> bool { q == 0 }";
@@ -203,7 +203,7 @@ async fn vector_search_exact_code_match() {
 
 	assert!(!hits.is_empty(), "vector search should return at least one hit");
 	assert_eq!(hits[0].blob.symbol_name, "add_numbers", "top hit should be the target function");
-	assert!(hits[0].score > 0.9, "score for exact code match should be > 0.9, got {}", hits[0].score);
+	assert!(hits[0].score.get() > 0.9, "score for exact code match should be > 0.9, got {}", hits[0].score);
 }
 
 // ── Test 3: occurrence counting through full ingest + GlobalSymbolQuery
@@ -212,7 +212,7 @@ async fn vector_search_exact_code_match() {
 #[tokio::test]
 async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-occ".into());
+	let repo = RepoId::from("repo-occ");
 	let serde_lib = LibRef { name: "serde".into(), version: "1.0".into() };
 
 	// Pre-register serde::Serialize so all 3 ingests resolve immediately.
@@ -254,7 +254,7 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	let hits = searcher
 		.search(&SymbolQuery {
 			criteria:          Criteria::Name(NamePattern("Serialize".into())),
-			occurrence_filter: Some(OccurrenceFilter { min_count: Some(3), max_count: None }),
+			occurrence_filter: Some(OccurrenceFilter { min_count: Some(NonZeroUsize::new(3).unwrap()), max_count: None }),
 			limit:             NonZeroUsize::new(10).unwrap(),
 			scope:             None,
 			kind:              None,
@@ -267,7 +267,7 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	let hits = searcher
 		.search(&SymbolQuery {
 			criteria:          Criteria::Name(NamePattern("Serialize".into())),
-			occurrence_filter: Some(OccurrenceFilter { min_count: Some(4), max_count: None }),
+			occurrence_filter: Some(OccurrenceFilter { min_count: Some(NonZeroUsize::new(4).unwrap()), max_count: None }),
 			limit:             NonZeroUsize::new(10).unwrap(),
 			scope:             None,
 			kind:              None,
@@ -283,7 +283,7 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 #[tokio::test]
 async fn deferred_lib_becomes_searchable_after_resolve() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-defer".into());
+	let repo = RepoId::from("repo-defer");
 	let tokio_lib = LibRef { name: "tokio".into(), version: "1.0".into() };
 
 	// Ingest tokio::spawn before registering the library → deferred.
@@ -337,8 +337,8 @@ async fn deferred_lib_becomes_searchable_after_resolve() {
 #[tokio::test]
 async fn scope_filter_by_repo_isolates_results() {
 	let s = TestStack::new();
-	let repo_ui = RepoId("repo-ui".into());
-	let repo_api = RepoId("repo-api".into());
+	let repo_ui = RepoId::from("repo-ui");
+	let repo_api = RepoId::from("repo-api");
 
 	s.ingest_repo(
 		&repo_ui,
@@ -414,7 +414,7 @@ async fn combine_or_and_with_pipeline_data() {
 	// cosine sim = 1.0 for the intended blob, near-zero for others.
 
 	let s = TestStack::new();
-	let repo = RepoId("repo-combine".into());
+	let repo = RepoId::from("repo-combine");
 
 	let snippet_b = "fn high_similarity_target(x: f64) -> f64 { x * 2.0 }";
 	let snippet_c = "fn alpha_and_similar(x: f64) -> f64 { x + 1.0 }";
@@ -474,7 +474,7 @@ async fn combine_or_and_with_pipeline_data() {
 #[tokio::test]
 async fn limit_enforced_with_pipeline_data() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-limit".into());
+	let repo = RepoId::from("repo-limit");
 
 	for i in 0..8 {
 		let code = format!("fn target_fn_{i:02}(x: u32) -> u32 {{ x + {i} }}");
@@ -502,7 +502,7 @@ async fn limit_enforced_with_pipeline_data() {
 #[tokio::test]
 async fn orchestrator_search_delegates_to_symbol_searcher() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-orch".into());
+	let repo = RepoId::from("repo-orch");
 
 	s.ingest_repo(
 		&repo,

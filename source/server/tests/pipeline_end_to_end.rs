@@ -265,7 +265,7 @@ async fn rust_axum_terminus_upload_repro() -> color_eyre::Result<()> {
 		..Default::default()
 	};
 
-	let mut docs: Vec<(&String, &serde_json::Value)> = store.docs.iter().collect();
+	let mut docs: Vec<_> = store.docs.iter().collect();
 	docs.sort_by(|(left_uri, left_doc), (right_uri, right_doc)| {
 		let left_is_entry = left_doc.get("@type").and_then(|value| value.as_str()) == Some("Entry");
 		let right_is_entry = right_doc.get("@type").and_then(|value| value.as_str()) == Some("Entry");

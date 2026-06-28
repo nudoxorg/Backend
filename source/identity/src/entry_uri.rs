@@ -50,7 +50,7 @@ impl EntryUri {
 /// slug. Only applied when the package and the crate root agree modulo `-`/`_`;
 /// otherwise the package (a re-exported or differently-named crate) is left
 /// untouched.
-fn canonical_rust_package(package: &str, path: &str) -> String {
+pub(crate) fn canonical_rust_package(package: &str, path: &str) -> String {
 	let crate_root = path.split("::").next().filter(|segment| !segment.is_empty()).unwrap_or(package);
 	let crate_slug = crate_root.replace('_', "-");
 	if package.replace('_', "-").eq_ignore_ascii_case(&crate_slug) {

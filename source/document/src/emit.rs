@@ -3,18 +3,18 @@ use std::collections::HashSet;
 use ir::entry::{Entry, NudoxPath};
 use ir::kind::Visibility;
 use serde_json::{Map, Value, json};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument};
 
 use crate::{
-	schema::{DocCtx, DocStore, EmitJsonLD, URI, UriOps},
+	schema::{DocCtx, DocStore, DocumentUri, EmitError, EmitJsonLD, UriOps},
 	ld::LDKind,
 };
 use identity::path::{fq_name, path_segments};
 
 impl EmitJsonLD for Entry {
-	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
+	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> Result<DocumentUri, EmitError> {
 		let path = self.path().clone();
-		let entry_uri: URI = ctx.entry_uri(&path);
+		let entry_uri: DocumentUri = ctx.entry_uri(&path);
 
 		// Borrow every field straight out of `&self`; the only owning copies are
 		// the `Value`s actually placed in the document below. Nothing is cloned
@@ -124,13 +124,13 @@ impl EmitJsonLD for Entry {
 
 		let members: Vec<String> = match entry_members {
 			Some(members) => {
-				members.iter().map(|member| ctx.entry_uri(member).as_str().to_owned()).collect()
+				members.iter().map(|member| ctx.entry_uri(member).to_string()).collect()
 			}
 			None => Vec::default(),
 		};
 		let implemented_protocols: Vec<String> = match implemented_protocols {
 			Some(protocols) => {
-				protocols.iter().map(|protocol| ctx.entry_uri(protocol).as_str().to_owned()).collect()
+				protocols.iter().map(|protocol| ctx.entry_uri(protocol).to_string()).collect()
 			}
 			None => Vec::default(),
 		};
@@ -166,41 +166,32 @@ impl EmitJsonLD for Entry {
 		let value = Value::Object(obj);
 
 		match docs.insert(entry_uri.clone(), value) {
-			Ok(_uri) => {}
-			Err(uri) => {
-				warn!(uri = %uri, "duplicate entry insertion with differing value");
-			}
+			Ok(_) => {}
+			Err(uri) => return Err(EmitError::DuplicateUri { uri }),
 		}
 		ctx.update_path(&path);
-		self.emit_kind(ctx, docs);
+		self.emit_kind(ctx, docs)?;
 
-		entry_uri
+		Ok(entry_uri)
 	}
 }
 
 trait EntryOps {
-	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI;
+	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> Result<DocumentUri, EmitError>;
 }
 
 impl EntryOps for Entry {
-	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {
-		let to_emit = LDKind::new(ctx.current_path.as_ref().unwrap(), self, ctx);
+	fn emit_kind(&self, ctx: &mut DocCtx, docs: &mut DocStore) -> Result<DocumentUri, EmitError> {
+		let to_emit = LDKind::try_new(ctx.current_path.as_ref().unwrap(), self, ctx)?;
 		let emitted_uri = to_emit.uri.clone();
-		if let Ok(mut emitted_value) = serde_json::to_value(to_emit) {
-			let obj = emitted_value.as_object_mut().expect("serde_json::to_value produced a non-object");
-			obj.insert("@context".into(), ctx.context().clone());
-
-			match docs.insert(emitted_uri.clone(), emitted_value) {
-				Ok(_uri) => {}
-				Err(uri) => {
-					warn!(uri = %uri, "duplicate kind insertion with differing value");
-				}
-			}
-		} else {
-			warn!(uri = %emitted_uri, "failed to serialize kind");
+		let mut emitted_value = serde_json::to_value(to_emit)
+			.map_err(|_| EmitError::SerializationFailed { uri: emitted_uri.clone() })?;
+		let obj = emitted_value.as_object_mut().expect("serde_json::to_value produced a non-object");
+		obj.insert("@context".into(), ctx.context().clone());
+		match docs.insert(emitted_uri.clone(), emitted_value) {
+			Ok(_) => Ok(emitted_uri),
+			Err(uri) => Err(EmitError::DuplicateUri { uri }),
 		}
-
-		emitted_uri
 	}
 }
 
@@ -213,14 +204,18 @@ impl Runner {
 	pub fn new(ctx: DocCtx) -> Self { Self { ctx, docs: DocStore::new() } }
 
 	#[instrument(skip_all, name = "runner")]
-	pub fn run<I>(&mut self, items: I)
+	pub fn run<I>(&mut self, items: I) -> Vec<EmitError>
 	where
 		I: IntoIterator<Item = Entry>,
 	{
+		let mut errors = Vec::new();
 		for entry in items {
 			debug!(name = %entry.name(), "emitting entry");
-			let _ = entry.emit(&mut self.ctx, &mut self.docs);
+			if let Err(e) = entry.emit(&mut self.ctx, &mut self.docs) {
+				errors.push(e);
+			}
 		}
+		errors
 	}
 
 	pub fn into_docs(self) -> DocStore { self.docs }

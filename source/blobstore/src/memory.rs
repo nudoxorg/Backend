@@ -22,7 +22,7 @@ impl Default for InMemoryBlobStore {
 #[async_trait]
 impl BlobStore for InMemoryBlobStore {
 	async fn put(&self, info: &BlobInfo) -> Result<BlobRef> {
-		let blob_ref = BlobRef(uuid::Uuid::new_v4().to_string());
+		let blob_ref = BlobRef::from(uuid::Uuid::new_v4().to_string());
 		let mut map = self.inner.lock().expect("mutex poisoned");
 		map.insert(blob_ref.clone(), info.clone());
 		Ok(blob_ref)
@@ -57,19 +57,19 @@ mod tests {
 		BlobInfo {
 			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 			symbol_name:   symbol_name.to_string(),
-			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("test".into()) },
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from("test") },
 			resolution:    nudox_core::ResolutionState::Unresolved,
 			kind:          None,
 			source:        SourceChunk {
 				raw_code:        "fn foo() {}".into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 3, end: 6 },
+				symbol_span:     ByteSpan::covering(3, 6),
 			},
 			embeddings:    vec![],
 			metadata:      ChunkMetadata {
-				repo_id:             RepoId("test".into()),
+				repo_id:             RepoId::from("test"),
 				file_path:           std::path::PathBuf::from("src/lib.rs"),
-				file_span:           ByteSpan { start: 0, end: 11 },
+				file_span:           ByteSpan::covering(0, 11),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -107,7 +107,7 @@ mod tests {
 	#[tokio::test]
 	async fn test_get_missing_ref_returns_err() {
 		let store = InMemoryBlobStore::new();
-		let missing_ref = BlobRef("does-not-exist".into());
+		let missing_ref = BlobRef::from("does-not-exist");
 
 		let result = store.get(&missing_ref).await;
 		assert!(result.is_err());

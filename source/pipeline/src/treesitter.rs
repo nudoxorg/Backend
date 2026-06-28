@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 struct TreesitterPayload {
 	/// S-expression of the full parsed tree.
 	sexp:         String,
-	/// Byte span [start, end] of the extracted snippet within raw_code.
-	snippet_span: [usize; 2],
+	/// Byte span of the extracted snippet within raw_code.
+	snippet_span: ByteSpan,
 	/// Symbol references found in the snippet.
 	references:   Vec<ReferenceEntry>,
 }
@@ -21,7 +21,7 @@ struct TreesitterPayload {
 struct ReferenceEntry {
 	name: String,
 	kind: String,
-	span: [usize; 2],
+	span: ByteSpan,
 }
 
 // ─── Language selection
@@ -131,7 +131,7 @@ fn centered_window(raw_code: &str, sym_start: usize, max_lines: usize) -> (Strin
 	let snippet = lines[start_line..=end_line].join("\n");
 	let end_byte = start_byte + snippet.len();
 
-	(snippet, ByteSpan { start: start_byte, end: end_byte })
+	(snippet, ByteSpan::covering(start_byte, end_byte))
 }
 
 // ─── Reference entry conversion
@@ -145,7 +145,7 @@ fn ref_to_entry(r: ResolvedReference) -> ReferenceEntry {
 			if p.is_empty() { dependency.clone() } else { format!("{dependency}::{p}") }
 		}
 	};
-	ReferenceEntry { name, kind: format!("{:?}", r.kind), span: [r.span.start, r.span.end] }
+	ReferenceEntry { name, kind: format!("{:?}", r.kind), span: ByteSpan::covering(r.span.start, r.span.end) }
 }
 
 // ─── Public entry point
@@ -169,7 +169,7 @@ pub fn parse_and_extract(
 	symbol_span: ByteSpan,
 	max_context_lines: usize,
 ) -> (String, ByteSpan, Option<TreesitterRepr>) {
-	let fallback = || (raw_code.to_string(), ByteSpan { start: 0, end: raw_code.len() }, None);
+	let fallback = || (raw_code.to_string(), ByteSpan::covering(0, raw_code.len()), None);
 
 	let Some(ts_lang) = ts_language(lang) else {
 		return fallback();
@@ -186,17 +186,17 @@ pub fn parse_and_extract(
 
 	// ── Snippet extraction ────────────────────────────────────────────────────
 	let (snippet, snippet_span) =
-		if let Some(fn_range) = find_enclosing_fn_range(&tree, symbol_span.start, symbol_span.end) {
+		if let Some(fn_range) = find_enclosing_fn_range(&tree, symbol_span.start(), symbol_span.end()) {
 			let fn_text = &raw_code[fn_range.clone()];
 			if count_lines(fn_text) <= max_context_lines {
-				(fn_text.to_string(), ByteSpan { start: fn_range.start, end: fn_range.end })
+				(fn_text.to_string(), ByteSpan::covering(fn_range.start, fn_range.end))
 			} else {
-				centered_window(raw_code, symbol_span.start, max_context_lines)
+				centered_window(raw_code, symbol_span.start(), max_context_lines)
 			}
 		} else if count_lines(raw_code) <= max_context_lines {
-			(raw_code.to_string(), ByteSpan { start: 0, end: raw_code.len() })
+			(raw_code.to_string(), ByteSpan::covering(0, raw_code.len()))
 		} else {
-			centered_window(raw_code, symbol_span.start, max_context_lines)
+			centered_window(raw_code, symbol_span.start(), max_context_lines)
 		};
 
 	// ── Parse snippet, walk references, and capture its sexp ─────────────────
@@ -224,7 +224,7 @@ pub fn parse_and_extract(
 
 	// ── Serialize payload ─────────────────────────────────────────────────────
 	let payload =
-		TreesitterPayload { sexp, snippet_span: [snippet_span.start, snippet_span.end], references };
+		TreesitterPayload { sexp, snippet_span, references };
 
 	let repr_bytes = serde_json::to_vec(&payload).unwrap_or_default();
 	(snippet, snippet_span, Some(TreesitterRepr(repr_bytes)))

@@ -9,6 +9,8 @@ use crate::config::PipelineConfig;
 use crate::http::error::{AppError, QdrantError};
 use crate::ingest::embedding::{EmbeddingProvider, OpenAIEmbeddingProvider};
 
+use nudox_core::Score;
+
 use super::{SearchResponse, SearchResult};
 use super::{require_non_empty, require_qdrant};
 
@@ -58,7 +60,7 @@ pub(crate) async fn search_results(
 		.filter_map(|point| parse_search_result(point, &collection))
 		.collect();
 
-	results.sort_by(|left, right| right.score.total_cmp(&left.score));
+	results.sort_by(|left, right| right.score.cmp(&left.score));
 	results.truncate(limit.max(1));
 	Ok(results)
 }
@@ -69,7 +71,7 @@ fn parse_search_result(point: ScoredPoint, collection: &str) -> Option<SearchRes
 
 	Some(SearchResult {
 		uri,
-		score: point.score,
+		score: Score::new(point.score),
 		collection: collection.to_owned(),
 		fq_name: take_string(&mut payload, "fq_name"),
 		language: take_string(&mut payload, "language"),

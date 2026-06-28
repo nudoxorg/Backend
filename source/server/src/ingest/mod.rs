@@ -153,7 +153,7 @@ async fn finalize_pipeline(
 	// cloning them.
 	let vector_sink = config.qdrant.as_ref().map(|qdrant| {
 		let collection = symbols_collection_name(&qdrant.collection_prefix);
-		VectorSink { settings: qdrant.clone(), model: config.embedding_model.clone(), collection }
+		VectorSink { settings: qdrant.clone(), model: config.embedding_model.to_string(), collection }
 	});
 
 	let report = run_sinks(&sinks, &symbols, &coord, progress).await?;

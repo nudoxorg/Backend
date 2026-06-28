@@ -6,6 +6,21 @@ use ir::primitives::{Primitive, Width};
 use ir::ty::{DynTrait, FunctionPointer, PolyTrait, QualifiedPath, Type, TypeReference};
 use rustdoc_types::{Id, ItemEnum};
 
+use crate::VisibilityMap;
+
+impl VisibilityMap for ParseContext {
+	type RawVis = rustdoc_types::Visibility;
+
+	fn visibility(&self, raw: &rustdoc_types::Visibility) -> Visibility {
+		match raw {
+			rustdoc_types::Visibility::Public => Visibility::Public,
+			rustdoc_types::Visibility::Default => Visibility::Private,
+			rustdoc_types::Visibility::Crate => Visibility::Internal,
+			rustdoc_types::Visibility::Restricted { .. } => Visibility::Package,
+		}
+	}
+}
+
 impl ParseContext {
 	pub(super) fn union_fields(&self, u: &rustdoc_types::Union) -> Result<Vec<Type>> {
 		u.fields
@@ -76,15 +91,6 @@ impl ParseContext {
 		let mut hasher = DefaultHasher::new();
 		id.0.hash(&mut hasher);
 		hasher.finish() as i64
-	}
-
-	pub(super) fn visibility(&self, vis: &rustdoc_types::Visibility) -> Visibility {
-		match vis {
-			rustdoc_types::Visibility::Public => Visibility::Public,
-			rustdoc_types::Visibility::Default => Visibility::Private,
-			rustdoc_types::Visibility::Crate => Visibility::Internal,
-			rustdoc_types::Visibility::Restricted { .. } => Visibility::Package,
-		}
 	}
 
 	pub(super) fn type_(&self, ty: &rustdoc_types::Type) -> Result<Type> {

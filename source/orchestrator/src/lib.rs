@@ -6,7 +6,25 @@ mod symbol_search_tests;
 
 use std::{marker::PhantomData, sync::Arc};
 
-use nudox_core::{BlobInfo, BlobStore, FutureParseQueue, GlobalSymbolId, GlobalSymbolStore, LibRef, ResolutionOutcome, ResolutionState, ResolveLibReport, Result, SearchIndex, SymbolMatch, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
+use nudox_core::{BlobInfo, BlobRef, BlobStore, EmbeddingRecord, FutureParseQueue, GlobalSymbolId, GlobalSymbolStore, LibRef, ResolutionOutcome, ResolutionState, ResolveLibReport, Result, Score, SearchIndex, SymbolMatch, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
+
+struct IndexWriteBatch {
+	docs:    Vec<(BlobRef, BlobInfo)>,
+	vectors: Vec<(BlobRef, GlobalSymbolId, Vec<EmbeddingRecord>)>,
+}
+
+impl IndexWriteBatch {
+	fn new() -> Self { Self { docs: Vec::new(), vectors: Vec::new() } }
+
+	fn push(&mut self, blob_ref: BlobRef, info: BlobInfo, global_id: GlobalSymbolId, embeddings: Vec<EmbeddingRecord>) {
+		self.docs.push((blob_ref.clone(), info));
+		self.vectors.push((blob_ref, global_id, embeddings));
+	}
+
+	fn len(&self) -> usize { self.docs.len() }
+	fn is_empty(&self) -> bool { self.docs.is_empty() }
+	fn clear(&mut self) { self.docs.clear(); self.vectors.clear(); }
+}
 use tracing::instrument;
 
 /// Typestate marker: no symbol searcher has been attached.
@@ -154,11 +172,7 @@ impl<S> Orchestrator<S> {
 		let blob_refs = self.blob_store.list().await?;
 		let blobs_seen = blob_refs.len();
 		let mut blobs_resolved = 0usize;
-		let mut blobs_skipped = 0usize;
-
-		let mut docs: Vec<(nudox_core::BlobRef, BlobInfo)> = Vec::new();
-		let mut vectors: Vec<(nudox_core::BlobRef, GlobalSymbolId, Vec<nudox_core::EmbeddingRecord>)> =
-			Vec::new();
+		let mut batch = IndexWriteBatch::new();
 
 		for blob_ref in &blob_refs {
 			let mut info = self.blob_store.get(blob_ref).await?;
@@ -166,27 +180,23 @@ impl<S> Orchestrator<S> {
 				// Tantivy never indexes the vectors, so move them out of the
 				// BlobInfo to avoid holding two copies of the embeddings.
 				let embeddings = std::mem::take(&mut info.embeddings);
-				vectors.push((blob_ref.clone(), global_id, embeddings));
-				docs.push((blob_ref.clone(), info));
+				batch.push(blob_ref.clone(), info, global_id, embeddings);
 				blobs_resolved += 1;
 
-				if docs.len() >= REBUILD_BATCH {
-					self.search.index_many(&docs).await?;
-					self.vector.upsert_many(&vectors).await?;
-					docs.clear();
-					vectors.clear();
+				if batch.len() >= REBUILD_BATCH {
+					self.search.index_many(&batch.docs).await?;
+					self.vector.upsert_many(&batch.vectors).await?;
+					batch.clear();
 				}
-			} else {
-				blobs_skipped += 1;
 			}
 		}
 
-		if !docs.is_empty() {
-			self.search.index_many(&docs).await?;
-			self.vector.upsert_many(&vectors).await?;
+		if !batch.is_empty() {
+			self.search.index_many(&batch.docs).await?;
+			self.vector.upsert_many(&batch.vectors).await?;
 		}
 
-		Ok(ResolveLibReport { blobs_seen, blobs_resolved, blobs_skipped })
+		Ok(ResolveLibReport { blobs_seen, blobs_resolved })
 	}
 
 	/// Drain the deferred queue for a library and resolve all pending blobs.
@@ -195,7 +205,6 @@ impl<S> Orchestrator<S> {
 		let blob_refs = self.queue.drain_for_lib(lib).await?;
 		let blobs_seen = blob_refs.len();
 		let mut blobs_resolved = 0usize;
-		let mut blobs_skipped = 0usize;
 
 		for blob_ref in &blob_refs {
 			let mut info = self.blob_store.get(blob_ref).await?;
@@ -204,10 +213,7 @@ impl<S> Orchestrator<S> {
 			// inspecting symbol_origin, which can't distinguish deferred from unresolved.
 			let lib_ref = match &info.resolution {
 				ResolutionState::Deferred(lib) => lib.clone(),
-				_ => {
-					blobs_skipped += 1;
-					continue;
-				}
+				_ => continue,
 			};
 
 			match self.global_store.lookup(&lib_ref, &info.symbol_name).await? {
@@ -218,13 +224,11 @@ impl<S> Orchestrator<S> {
 					self.index_resolved(blob_ref, &info).await?;
 					blobs_resolved += 1;
 				}
-				None => {
-					blobs_skipped += 1;
-				}
+				None => {}
 			}
 		}
 
-		Ok(ResolveLibReport { blobs_seen, blobs_resolved, blobs_skipped })
+		Ok(ResolveLibReport { blobs_seen, blobs_resolved })
 	}
 }
 
@@ -251,13 +255,13 @@ mod disk_integration_tests {
 			source:        SourceChunk {
 				raw_code:        "fn placeholder() {}".into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 3, end: 14 },
+				symbol_span:     ByteSpan::covering(3, 14),
 			},
 			embeddings:    vec![],
 			metadata:      ChunkMetadata {
-				repo_id:             RepoId("test-repo".into()),
+				repo_id:             RepoId::from("test-repo"),
 				file_path:           std::path::PathBuf::from("src/lib.rs"),
-				file_span:           ByteSpan { start: 0, end: 19 },
+				file_span:           ByteSpan::covering(0, 19),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -276,7 +280,7 @@ mod disk_integration_tests {
 		let store = NudoxStore::open(&tmp.path().join("nudox.db"), "test_org/test_db").await.unwrap();
 		let vector: Arc<dyn VectorIndex> = Arc::new(InMemoryVectorIndex::new());
 
-		store.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/Serialize"]).await.unwrap();
+		store.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"]).await.unwrap();
 
 		let orchestrator = Orchestrator::new(
 			store.clone() as Arc<dyn GlobalSymbolStore>,
@@ -314,7 +318,7 @@ mod disk_integration_tests {
 		assert!(blob_store.get(&tokio_blob_ref).await.unwrap().resolution.resolved_id().is_none());
 
 		// Register tokio and resolve the deferred queue.
-		store.register_library("rust", "tokio", "1.0.0", ["Entry/rust/tokio/spawn"]).await.unwrap();
+		store.register_library(&LibRef { name: "tokio".into(), version: "1.0.0".into() }, ["Entry/rust/tokio/spawn"]).await.unwrap();
 		let report = orchestrator.resolve_lib(&tokio_lib).await.unwrap();
 		assert_eq!(report.blobs_resolved, 1);
 		assert!(blob_store.get(&tokio_blob_ref).await.unwrap().resolution.resolved_id().is_some());
@@ -323,12 +327,12 @@ mod disk_integration_tests {
 		let report2 = orchestrator.rebuild_indexes().await.unwrap();
 		assert_eq!(report2.blobs_seen, 2);
 		assert_eq!(report2.blobs_resolved, 2);
-		assert_eq!(report2.blobs_skipped, 0);
+		assert_eq!(report2.blobs_skipped(), 0);
 
 		// Both blobs are findable in the search index.
-		let hits = search.search("Serialize", 10).await.unwrap();
+		let hits = search.search("Serialize", std::num::NonZeroUsize::new(10).unwrap()).await.unwrap();
 		assert!(hits.iter().any(|h| h.blob_ref == serde_blob_ref), "Serialize not found in search");
-		let hits2 = search.search("spawn", 10).await.unwrap();
+		let hits2 = search.search("spawn", std::num::NonZeroUsize::new(10).unwrap()).await.unwrap();
 		assert!(hits2.iter().any(|h| h.blob_ref == tokio_blob_ref), "spawn not found in search");
 	}
 
@@ -348,7 +352,7 @@ mod disk_integration_tests {
 		{
 			let store = NudoxStore::open(&db_path, "test_org/test_db").await.unwrap();
 			store
-				.register_library("rust", "serde", "1.0.0", ["Entry/rust/serde/Serialize"])
+				.register_library(&LibRef { name: "serde".into(), version: "1.0.0".into() }, ["Entry/rust/serde/Serialize"])
 				.await
 				.unwrap();
 			let search: Arc<dyn SearchIndex> =
@@ -396,14 +400,14 @@ mod disk_integration_tests {
 		assert!(store2.lookup(&lib, "Serialize").await.unwrap().is_some());
 
 		// Tantivy index already has the document (committed before the drop).
-		let hits = search2.search("Serialize", 10).await.unwrap();
+		let hits = search2.search("Serialize", std::num::NonZeroUsize::new(10).unwrap()).await.unwrap();
 		assert!(!hits.is_empty(), "Serialize not in search index after reopen");
 
 		// rebuild_indexes works cleanly from the on-disk blob store.
 		let report = orchestrator2.rebuild_indexes().await.unwrap();
 		assert_eq!(report.blobs_seen, 1);
 		assert_eq!(report.blobs_resolved, 1);
-		assert_eq!(report.blobs_skipped, 0);
+		assert_eq!(report.blobs_skipped(), 0);
 	}
 }
 
@@ -447,19 +451,19 @@ mod tests {
 		let dummy_blob = BlobInfo {
 			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 			symbol_name:   "dummy".to_string(),
-			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId("r".into()) },
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from("r") },
 			resolution:    ResolutionState::Unresolved,
 			kind:          None,
 			source:        SourceChunk {
 				raw_code:        "fn dummy() {}".into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 3, end: 8 },
+				symbol_span:     ByteSpan::covering(3, 8),
 			},
 			embeddings:    vec![],
 			metadata:      ChunkMetadata {
-				repo_id:             RepoId("r".into()),
+				repo_id:             RepoId::from("r"),
 				file_path:           std::path::PathBuf::from("src/lib.rs"),
-				file_span:           ByteSpan { start: 0, end: 13 },
+				file_span:           ByteSpan::covering(0, 13),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -467,7 +471,7 @@ mod tests {
 			},
 		};
 		let expected =
-			vec![SymbolMatch { blob: dummy_blob, score: 1.0, occurrences: vec![] }];
+			vec![SymbolMatch { blob: dummy_blob, score: Score::new(1.0), occurrences: vec![] }];
 
 		let orchestrator =
 			make_orchestrator().with_symbol_search(Arc::new(MockSearcher(expected.clone())));
@@ -517,13 +521,13 @@ mod tests {
 			source:        SourceChunk {
 				raw_code:        "fn placeholder() {}".into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 3, end: 14 },
+				symbol_span:     ByteSpan::covering(3, 14),
 			},
 			embeddings:    vec![],
 			metadata:      ChunkMetadata {
-				repo_id:             RepoId("test-repo".into()),
+				repo_id:             RepoId::from("test-repo"),
 				file_path:           std::path::PathBuf::from("src/lib.rs"),
-				file_span:           ByteSpan { start: 0, end: 19 },
+				file_span:           ByteSpan::covering(0, 19),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -603,7 +607,7 @@ mod tests {
 		let report = orchestrator.resolve_lib(&tokio_lib).await.unwrap();
 		assert_eq!(report.blobs_seen, 1);
 		assert_eq!(report.blobs_resolved, 1);
-		assert_eq!(report.blobs_skipped, 0);
+		assert_eq!(report.blobs_skipped(), 0);
 		assert_eq!(
 			blob_store_handle.get(&tokio_blob_ref).await.unwrap().resolution,
 			ResolutionState::Resolved(tokio_global_id)
@@ -617,7 +621,7 @@ mod tests {
 
 		// 8. Ingest a repo-local symbol.
 		let repo_info =
-			make_blob_info("my_fn", SymbolOrigin::Repo { repo_id: RepoId("my-repo".into()) });
+			make_blob_info("my_fn", SymbolOrigin::Repo { repo_id: RepoId::from("my-repo") });
 		let outcome3 = orchestrator.ingest(repo_info).await.unwrap();
 		let repo_global_id = match outcome3 {
 			ResolutionOutcome::Resolved { global_id, .. } => global_id,
@@ -668,7 +672,7 @@ mod tests {
 		let report = orchestrator.rebuild_indexes().await.unwrap();
 		assert_eq!(report.blobs_seen, 1);
 		assert_eq!(report.blobs_resolved, 1);
-		assert_eq!(report.blobs_skipped, 0);
+		assert_eq!(report.blobs_skipped(), 0);
 		assert_eq!(search_handle.entries().len(), 1);
 	}
 }

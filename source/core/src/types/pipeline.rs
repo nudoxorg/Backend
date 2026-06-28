@@ -73,6 +73,9 @@ pub struct ResolveLibReport {
 	pub blobs_seen:     usize,
 	/// Number of blobs successfully resolved.
 	pub blobs_resolved: usize,
-	/// Number of blobs skipped (e.g. already resolved or unresolvable).
-	pub blobs_skipped:  usize,
+}
+
+impl ResolveLibReport {
+	/// Number of blobs that were not resolved (`blobs_seen - blobs_resolved`).
+	pub fn blobs_skipped(&self) -> usize { self.blobs_seen - self.blobs_resolved }
 }

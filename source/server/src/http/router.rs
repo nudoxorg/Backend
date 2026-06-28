@@ -5,6 +5,10 @@ use super::{AdminState, AppState, QueryState, error::{AppError, ConfigError, Ing
 use super::dto::{ExpandQuery, HealthResponse, LookupQuery, RunSearchQuery, SearchQuery, SessionQuery, SymbolMatchResponse};
 use crate::{registry::{AddPackageOutcome, NewPackageRequest, PackageSnapshot}, search};
 
+const DEFAULT_SEARCH_LIMIT: usize = 6;
+const DEFAULT_EXPAND_DEPTH: usize = 2;
+const DEFAULT_EXPAND_BREADTH: usize = 10;
+
 pub fn router(state: AppState) -> Router {
 	Router::new()
 		.route("/healthz", get(health))
@@ -38,7 +42,7 @@ async fn text_search(
 		.text_index
 		.as_ref()
 		.ok_or_else(|| AppError::TextSearchNotConfigured)?;
-	let limit = params.limit.unwrap_or(6);
+	let limit = params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
 	let hits = index.search(&params.q, limit)?;
 	let results = hits
 		.into_iter()
@@ -99,7 +103,7 @@ async fn search_docs(
 		client,
 		&state.search_embedder,
 		&params.q,
-		params.limit.unwrap_or(6),
+		params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
 	)
 	.await?;
 	Ok(Json(response))
@@ -153,7 +157,7 @@ async fn run_search(
 		&state.search_embedder,
 		&state.sessions,
 		&params.q,
-		params.limit.unwrap_or(6),
+		params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
 		params.session.as_deref(),
 	)
 	.await?;
@@ -168,8 +172,8 @@ async fn expand_symbol(
 		&state.pipeline,
 		&state.sessions,
 		&params.uri,
-		params.depth.unwrap_or(2),
-		params.breadth.unwrap_or(10),
+		params.depth.unwrap_or(DEFAULT_EXPAND_DEPTH),
+		params.breadth.unwrap_or(DEFAULT_EXPAND_BREADTH),
 		params.session.as_deref(),
 	)
 	.await?;

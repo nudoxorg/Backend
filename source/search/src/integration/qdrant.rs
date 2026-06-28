@@ -18,10 +18,10 @@
 //! Point IDs are UUIDs derived deterministically from `(blob_ref, model_name,
 //! purpose)` so re-upserting the same record overwrites in place.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
 use async_trait::async_trait;
-use nudox_core::{BlobRef, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, ModelType, Result, VectorError, VectorHit, VectorIndex, VectorQuery};
+use nudox_core::{BlobRef, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, ModelType, Result, Score, VectorError, VectorHit, VectorIndex, VectorQuery};
 use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, vectors_config::Config as VectorsConfig}};
 
 /// Qdrant-backed vector index. Connects via gRPC (default port 6334).
@@ -39,6 +39,7 @@ fn model_type_label(mt: &ModelType) -> String {
 		ModelType::Openai => "openai".into(),
 		ModelType::SelfHosted => "self-hosted".into(),
 		ModelType::Other(s) => format!("other:{s}"),
+		_ => "unknown".into(),
 	}
 }
 
@@ -48,13 +49,14 @@ fn purpose_label(p: &EmbeddingPurpose) -> String {
 		EmbeddingPurpose::Docstring => "docstring".into(),
 		EmbeddingPurpose::Comment => "comment".into(),
 		EmbeddingPurpose::Other(s) => format!("other:{s}"),
+		_ => "unknown".into(),
 	}
 }
 
 /// Deterministic point ID built from `(blob_ref, model, purpose)` so repeated
 /// upserts overwrite in place rather than accumulating duplicates.
 fn point_id(blob_ref: &BlobRef, model: &str, purpose: &EmbeddingPurpose) -> String {
-	let key = format!("{}|{}|{}", blob_ref.0, model, purpose_label(purpose));
+	let key = format!("{}|{}|{}", blob_ref.as_str(), model, purpose_label(purpose));
 	uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, key.as_bytes()).to_string()
 }
 
@@ -118,7 +120,7 @@ impl QdrantVectorIndex {
 
 #[async_trait]
 impl VectorIndex for QdrantVectorIndex {
-	#[tracing::instrument(skip(self, embeddings), fields(blob_ref = %blob_ref.0, global_id = %global_id.0, count = embeddings.len()))]
+	#[tracing::instrument(skip(self, embeddings), fields(blob_ref = %blob_ref, global_id = %global_id, count = embeddings.len()))]
 	async fn upsert(
 		&self,
 		blob_ref: &BlobRef,
@@ -131,14 +133,14 @@ impl VectorIndex for QdrantVectorIndex {
 		let mut points = Vec::with_capacity(embeddings.len());
 		for rec in embeddings {
 			let mut payload: HashMap<String, Value> = HashMap::new();
-			payload.insert("blob_ref".into(), Value::from(blob_ref.0.clone()));
+			payload.insert("blob_ref".into(), Value::from(blob_ref.as_str().to_owned()));
 			payload.insert("global_id".into(), Value::from(global_id.0.to_string()));
 			payload.insert("model_type".into(), Value::from(model_type_label(&rec.model_type)));
-			payload.insert("model_name".into(), Value::from(rec.model.clone()));
+			payload.insert("model_name".into(), Value::from(rec.model.as_str().to_owned()));
 			payload.insert("purpose".into(), Value::from(purpose_label(&rec.purpose)));
 
-			let pid = point_id(blob_ref, &rec.model, &rec.purpose);
-			points.push(PointStruct::new(pid, rec.vector.clone(), payload));
+			let pid = point_id(blob_ref, rec.model.as_str(), &rec.purpose);
+			points.push(PointStruct::new(pid, rec.vector.as_slice().to_vec(), payload));
 		}
 		self
 			.client
@@ -152,26 +154,21 @@ impl VectorIndex for QdrantVectorIndex {
 #[async_trait]
 impl VectorQuery for QdrantVectorIndex {
 	#[tracing::instrument(skip(self, vector), fields(collection = %self.collection, limit))]
-	async fn search(&self, vector: &[f32], limit: usize) -> Result<Vec<VectorHit>> {
+	async fn search(&self, vector: &[f32], limit: NonZeroUsize) -> Result<Vec<VectorHit>> {
 		let req =
-			SearchPointsBuilder::new(&self.collection, vector.to_vec(), limit as u64).with_payload(true);
+			SearchPointsBuilder::new(&self.collection, vector.to_vec(), limit.get() as u64).with_payload(true);
 
 		let resp = self.client.search_points(req).await.map_err(|e| VectorError::Search(Box::new(e)))?;
 
-		let hits = resp
-			.result
-			.into_iter()
-			.map(|point| {
-				let blob_ref = BlobRef(
-					point.payload.get("blob_ref").and_then(|v| v.as_str()).cloned().unwrap_or_default(),
-				);
-				let gid_str =
-					point.payload.get("global_id").and_then(|v| v.as_str()).cloned().unwrap_or_default();
-				let global_id =
-					GlobalSymbolId(uuid::Uuid::parse_str(&gid_str).unwrap_or_else(|_| uuid::Uuid::nil()));
-				VectorHit { blob_ref, global_id, score: point.score }
-			})
-			.collect();
+		let hits = resp.result.into_iter().filter_map(|point| {
+			let blob_ref_str = point.payload.get("blob_ref").and_then(|v| v.as_str())?.to_owned();
+			if blob_ref_str.is_empty() {
+				return None;
+			}
+			let gid_str = point.payload.get("global_id").and_then(|v| v.as_str())?;
+			let global_id = GlobalSymbolId(uuid::Uuid::parse_str(gid_str).ok()?);
+			Some(VectorHit { blob_ref: BlobRef::from(blob_ref_str), global_id, score: Score::new(point.score) })
+		}).collect();
 
 		Ok(hits)
 	}
@@ -181,7 +178,7 @@ impl VectorQuery for QdrantVectorIndex {
 mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
-	use nudox_core::{EmbeddingPurpose, EmbeddingRecord, ModelType};
+	use nudox_core::{Embedding, EmbeddingPurpose, EmbeddingRecord, ModelId, ModelType};
 
 	use super::*;
 
@@ -203,9 +200,9 @@ mod tests {
 	fn record(model_type: ModelType, model: &str, dim: usize, val: f32) -> EmbeddingRecord {
 		EmbeddingRecord {
 			model_type,
-			model: model.into(),
+			model:   ModelId::new(model),
 			purpose: EmbeddingPurpose::Code,
-			vector: vec![val; dim],
+			vector:  Embedding::new(vec![val; dim]).expect("dim must be > 0"),
 		}
 	}
 
@@ -221,7 +218,7 @@ mod tests {
 	async fn upsert_inserts_one_point_per_record() {
 		let c = unique_collection("upsert");
 		let ix = fresh_index(&c, 8).await;
-		let blob_ref = BlobRef(uuid::Uuid::new_v4().to_string());
+		let blob_ref = BlobRef::from(uuid::Uuid::new_v4().to_string());
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		let recs = vec![
 			record(ModelType::Mock, "mock", 8, 0.1),
@@ -237,7 +234,7 @@ mod tests {
 	async fn upsert_is_idempotent_per_model_purpose() {
 		let c = unique_collection("idempotent");
 		let ix = fresh_index(&c, 8).await;
-		let blob_ref = BlobRef(uuid::Uuid::new_v4().to_string());
+		let blob_ref = BlobRef::from(uuid::Uuid::new_v4().to_string());
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		let recs = vec![record(ModelType::Mock, "mock", 8, 0.1)];
 		ix.upsert(&blob_ref, gid, &recs).await.unwrap();
@@ -253,8 +250,8 @@ mod tests {
 		let ix = fresh_index(&c, 8).await;
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		let rec = vec![record(ModelType::Mock, "mock", 8, 0.1)];
-		ix.upsert(&BlobRef("blob-a".into()), gid, &rec).await.unwrap();
-		ix.upsert(&BlobRef("blob-b".into()), gid, &rec).await.unwrap();
+		ix.upsert(&BlobRef::from("blob-a"), gid, &rec).await.unwrap();
+		ix.upsert(&BlobRef::from("blob-b"), gid, &rec).await.unwrap();
 		assert_eq!(ix.count_points().await.unwrap(), 2);
 		ix.delete_collection().await.unwrap();
 	}
@@ -263,7 +260,7 @@ mod tests {
 	async fn upsert_with_empty_embeddings_is_noop() {
 		let c = unique_collection("empty");
 		let ix = fresh_index(&c, 8).await;
-		ix.upsert(&BlobRef("nope".into()), GlobalSymbolId(uuid::Uuid::new_v4()), &[]).await.unwrap();
+		ix.upsert(&BlobRef::from("nope"), GlobalSymbolId(uuid::Uuid::new_v4()), &[]).await.unwrap();
 		assert_eq!(ix.count_points().await.unwrap(), 0);
 		ix.delete_collection().await.unwrap();
 	}

@@ -20,7 +20,7 @@ impl From<SymbolMatch> for SymbolMatchResponse {
 			SymbolOrigin::ExternalLib { lib } => {
 				(Some(lib.name.clone()), Some(lib.version.clone()), None)
 			}
-			SymbolOrigin::Repo { repo_id } => (None, None, Some(repo_id.0.clone())),
+			SymbolOrigin::Repo { repo_id } => (None, None, Some(repo_id.as_str().to_owned())),
 		};
 		SymbolMatchResponse {
 			symbol_name: m.blob.symbol_name.clone(),
@@ -29,7 +29,7 @@ impl From<SymbolMatch> for SymbolMatchResponse {
 			lib_name,
 			lib_version,
 			repo_id,
-			score: m.score,
+			score: m.score.get(),
 			occurrence_count: m.occurrences.len(),
 			snippet: m.blob.source.raw_code.to_string(),
 		}

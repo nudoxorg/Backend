@@ -2,6 +2,8 @@ use std::{path::Path, sync::mpsc};
 
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term, collector::TopDocs, directory::MmapDirectory, query::QueryParser, schema::{Field, STORED, STRING, Schema, TEXT, Value as TantivyValue}};
 
+use nudox_core::Score;
+
 use crate::http::error::{AppError, TextIndexError};
 use crate::ingest::parsed_symbol::{PackageCoord, ParsedSymbol};
 
@@ -21,7 +23,7 @@ enum TextWriterCmd {
 #[derive(Debug)]
 pub struct TextSearchHit {
 	pub uri:         String,
-	pub score:       f32,
+	pub score:       Score,
 	pub fq_name:     Option<String>,
 	pub language:    String,
 	pub package:     String,
@@ -156,7 +158,7 @@ impl SymbolTextIndex {
 			};
 			hits.push(TextSearchHit {
 				uri: get(self.fields.uri),
-				score,
+				score: Score::new(score),
 				fq_name: get_opt(self.fields.fq_name),
 				language: get(self.fields.language),
 				package: get(self.fields.package),

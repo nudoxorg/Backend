@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nudox_core::LibRef;
 use store::NudoxStore;
 use serde_json::Value;
 use tracing::{info, warn};
@@ -138,13 +139,14 @@ impl SymbolSink for SqliteRegisterSink {
 		_progress: &ProgressReporter,
 	) -> Result<usize, crate::http::error::AppError> {
 		let uris: Vec<String> = symbols.iter().map(|s| s.entry_uri.to_string()).collect();
+		let lib = LibRef { name: coord.package.to_string(), version: coord.version.to_string() };
 		let n = self
 			.store
-			.register_library(coord.language.as_str(), &coord.package, &coord.version, uris.iter().map(String::as_str))
+			.register_library(&lib, uris.iter().map(String::as_str))
 			.await
 			.map_err(|source| AppError::Ingest(IngestError::StoreRegister { package: coord.package.to_string(), source }))?;
 		info!(lib = %coord.package, count = n, "symbols registered in occurrence store");
-		Ok(n)
+		Ok(n as usize)
 	}
 }
 

@@ -1,12 +1,26 @@
 //! Real tantivy-backed search index. Implements the v1 schema from the design
 //! doc.
 
-use std::path::Path;
+use std::{num::NonZeroUsize, path::Path};
 
 use async_trait::async_trait;
-use nudox_core::{BlobInfo, BlobRef, GlobalSymbolId, OccurrenceId, Result, SearchError, SearchHit, SearchIndex, SearchQuery, SymbolOrigin};
+use nudox_core::{BlobInfo, BlobRef, GlobalSymbolId, OccurrenceId, Result, Score, SearchError, SearchHit, SearchIndex, SearchQuery, SymbolOrigin};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term, directory::MmapDirectory, schema::{Field, STORED, STRING, Schema, TEXT, Value as TantivyValue}};
 use tokio::sync::{mpsc, oneshot};
+
+/// Single source of truth for tantivy field-name strings.
+///
+/// Changing a name here automatically updates schema construction, queries, and
+/// extraction; there is no other place where these strings appear.
+mod schema {
+	pub const OCCURRENCE_ID: &str = "occurrence_id";
+	pub const GLOBAL_ID:     &str = "global_id";
+	pub const SYMBOL_NAME:   &str = "symbol_name";
+	pub const LIB_NAME:      &str = "lib_name";
+	pub const LIB_VERSION:   &str = "lib_version";
+	pub const REPO_ID:       &str = "repo_id";
+	pub const BLOB_REF:      &str = "blob_ref";
+}
 
 /// How many queued writes are coalesced into a single `commit()` at most.
 ///
@@ -53,13 +67,13 @@ pub(crate) struct Fields {
 
 fn build_schema() -> (Schema, Fields) {
 	let mut b = Schema::builder();
-	let occurrence_id = b.add_text_field("occurrence_id", STRING | STORED);
-	let global_id = b.add_text_field("global_id", STRING | STORED);
-	let symbol_name = b.add_text_field("symbol_name", TEXT | STORED);
-	let lib_name = b.add_text_field("lib_name", TEXT | STORED);
-	let lib_version = b.add_text_field("lib_version", STORED);
-	let repo_id = b.add_text_field("repo_id", STRING | STORED);
-	let blob_ref = b.add_text_field("blob_ref", STORED);
+	let occurrence_id = b.add_text_field(schema::OCCURRENCE_ID, STRING | STORED);
+	let global_id = b.add_text_field(schema::GLOBAL_ID, STRING | STORED);
+	let symbol_name = b.add_text_field(schema::SYMBOL_NAME, TEXT | STORED);
+	let lib_name = b.add_text_field(schema::LIB_NAME, TEXT | STORED);
+	let lib_version = b.add_text_field(schema::LIB_VERSION, STORED);
+	let repo_id = b.add_text_field(schema::REPO_ID, STRING | STORED);
+	let blob_ref = b.add_text_field(schema::BLOB_REF, STORED);
 	let schema = b.build();
 	(schema, Fields {
 		occurrence_id,
@@ -133,7 +147,7 @@ impl TantivySearchIndex {
 	/// Build the tantivy document for one blob (shared by `index`/`index_many`).
 	fn build_doc(&self, blob_ref: &BlobRef, info: &BlobInfo) -> TantivyDocument {
 		let (lib_name, lib_version, repo_id) = match &info.symbol_origin {
-			SymbolOrigin::Repo { repo_id } => (String::new(), String::new(), repo_id.0.clone()),
+			SymbolOrigin::Repo { repo_id } => (String::new(), String::new(), repo_id.as_str().to_owned()),
 			SymbolOrigin::ExternalLib { lib } => (lib.name.clone(), lib.version.clone(), String::new()),
 		};
 		let global_id_str = info.resolution.resolved_id().map(|g| g.to_string()).unwrap_or_default();
@@ -145,7 +159,7 @@ impl TantivySearchIndex {
 		doc.add_text(self.fields.lib_name, lib_name);
 		doc.add_text(self.fields.lib_version, lib_version);
 		doc.add_text(self.fields.repo_id, repo_id);
-		doc.add_text(self.fields.blob_ref, &blob_ref.0);
+		doc.add_text(self.fields.blob_ref, blob_ref.as_str());
 		doc
 	}
 
@@ -268,9 +282,26 @@ impl SearchIndex for TantivySearchIndex {
 	}
 }
 
+/// Extract a [`SearchHit`] from a tantivy document, returning `None` if either
+/// the `blob_ref` or `occurrence_id` field is missing or malformed.
+///
+/// Callers log-and-skip `None` results rather than fabricating empty `BlobRef`s
+/// or nil UUIDs, which would silently corrupt query results.
+fn extract_hit(doc: &TantivyDocument, score: f32, fields: &Fields) -> Option<SearchHit> {
+	let blob_ref_str = doc.get_first(fields.blob_ref).and_then(|v| v.as_str())?;
+	if blob_ref_str.is_empty() {
+		return None;
+	}
+	let occ_str = doc.get_first(fields.occurrence_id).and_then(|v| v.as_str())?;
+	let occurrence_id = OccurrenceId(uuid::Uuid::parse_str(occ_str).ok()?);
+	let symbol_name =
+		doc.get_first(fields.symbol_name).and_then(|v| v.as_str()).unwrap_or("").to_string();
+	Some(SearchHit { blob_ref: BlobRef::from(blob_ref_str.to_string()), occurrence_id, symbol_name, score: Score::new(score) })
+}
+
 #[async_trait]
 impl SearchQuery for TantivySearchIndex {
-	async fn search(&self, query_str: &str, limit: usize) -> Result<Vec<SearchHit>> {
+	async fn search(&self, query_str: &str, limit: NonZeroUsize) -> Result<Vec<SearchHit>> {
 		let searcher = self.reader.searcher();
 		let qp = tantivy::query::QueryParser::for_index(&self.index, vec![
 			self.fields.symbol_name,
@@ -280,22 +311,17 @@ impl SearchQuery for TantivySearchIndex {
 		let query =
 			qp.parse_query(query_str).map_err(|e| SearchError::ParseQuery(Box::new(e)))?;
 		let top_docs = searcher
-			.search(&query, &tantivy::collector::TopDocs::with_limit(limit))
+			.search(&query, &tantivy::collector::TopDocs::with_limit(limit.get()))
 			.map_err(|e| SearchError::Search(Box::new(e)))?;
 
 		let mut hits = Vec::with_capacity(top_docs.len());
 		for (score, addr) in top_docs {
 			let doc: tantivy::TantivyDocument =
 				searcher.doc(addr).map_err(|e| SearchError::FetchDocument(Box::new(e)))?;
-			let blob_ref = BlobRef(
-				doc.get_first(self.fields.blob_ref).and_then(|v| v.as_str()).unwrap_or("").to_string(),
-			);
-			let occ_str = doc.get_first(self.fields.occurrence_id).and_then(|v| v.as_str()).unwrap_or("");
-			let occurrence_id =
-				OccurrenceId(uuid::Uuid::parse_str(occ_str).unwrap_or_else(|_| uuid::Uuid::nil()));
-			let symbol_name =
-				doc.get_first(self.fields.symbol_name).and_then(|v| v.as_str()).unwrap_or("").to_string();
-			hits.push(SearchHit { blob_ref, occurrence_id, symbol_name, score });
+			match extract_hit(&doc, score, &self.fields) {
+				Some(hit) => hits.push(hit),
+				None => tracing::warn!("dropping tantivy doc with missing/malformed fields"),
+			}
 		}
 		Ok(hits)
 	}
@@ -303,51 +329,41 @@ impl SearchQuery for TantivySearchIndex {
 	async fn find_by_global_id(
 		&self,
 		global_id: GlobalSymbolId,
-		limit: usize,
+		limit: NonZeroUsize,
 	) -> Result<Vec<SearchHit>> {
 		let searcher = self.reader.searcher();
 		let term = tantivy::Term::from_field_text(self.fields.global_id, &global_id.to_string());
 		let query = tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
 		let top_docs = searcher
-			.search(&query, &tantivy::collector::TopDocs::with_limit(limit))
+			.search(&query, &tantivy::collector::TopDocs::with_limit(limit.get()))
 			.map_err(|e| SearchError::Search(Box::new(e)))?;
 
 		let mut hits = Vec::with_capacity(top_docs.len());
 		for (score, addr) in top_docs {
 			let doc: tantivy::TantivyDocument =
 				searcher.doc(addr).map_err(|e| SearchError::FetchDocument(Box::new(e)))?;
-			let blob_ref = BlobRef(
-				doc.get_first(self.fields.blob_ref).and_then(|v| v.as_str()).unwrap_or("").to_string(),
-			);
-			let occ_str = doc.get_first(self.fields.occurrence_id).and_then(|v| v.as_str()).unwrap_or("");
-			let occurrence_id =
-				OccurrenceId(uuid::Uuid::parse_str(occ_str).unwrap_or_else(|_| uuid::Uuid::nil()));
-			let symbol_name =
-				doc.get_first(self.fields.symbol_name).and_then(|v| v.as_str()).unwrap_or("").to_string();
-			hits.push(SearchHit { blob_ref, occurrence_id, symbol_name, score });
+			match extract_hit(&doc, score, &self.fields) {
+				Some(hit) => hits.push(hit),
+				None => tracing::warn!("dropping tantivy doc with missing/malformed fields"),
+			}
 		}
 		Ok(hits)
 	}
 
-	async fn list_all(&self, limit: usize) -> Result<Vec<SearchHit>> {
+	async fn list_all(&self, limit: NonZeroUsize) -> Result<Vec<SearchHit>> {
 		let searcher = self.reader.searcher();
 		let top_docs = searcher
-			.search(&tantivy::query::AllQuery, &tantivy::collector::TopDocs::with_limit(limit))
+			.search(&tantivy::query::AllQuery, &tantivy::collector::TopDocs::with_limit(limit.get()))
 			.map_err(|e| SearchError::Search(Box::new(e)))?;
 
 		let mut hits = Vec::with_capacity(top_docs.len());
 		for (score, addr) in top_docs {
 			let doc: tantivy::TantivyDocument =
 				searcher.doc(addr).map_err(|e| SearchError::FetchDocument(Box::new(e)))?;
-			let blob_ref = BlobRef(
-				doc.get_first(self.fields.blob_ref).and_then(|v| v.as_str()).unwrap_or("").to_string(),
-			);
-			let occ_str = doc.get_first(self.fields.occurrence_id).and_then(|v| v.as_str()).unwrap_or("");
-			let occurrence_id =
-				OccurrenceId(uuid::Uuid::parse_str(occ_str).unwrap_or_else(|_| uuid::Uuid::nil()));
-			let symbol_name =
-				doc.get_first(self.fields.symbol_name).and_then(|v| v.as_str()).unwrap_or("").to_string();
-			hits.push(SearchHit { blob_ref, occurrence_id, symbol_name, score });
+			match extract_hit(&doc, score, &self.fields) {
+				Some(hit) => hits.push(hit),
+				None => tracing::warn!("dropping tantivy doc with missing/malformed fields"),
+			}
 		}
 		Ok(hits)
 	}
@@ -365,19 +381,19 @@ mod tests {
 		BlobInfo {
 			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
 			symbol_name:        symbol.into(),
-			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId(repo.into()) },
+			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId::from(repo) },
 			resolution:    nudox_core::ResolutionState::Unresolved,
 			kind:               None,
 			source:             SourceChunk {
 				raw_code:        "fn x() {}".into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 0, end: 1 },
+				symbol_span:     ByteSpan::covering(0, 1),
 			},
 			embeddings:         vec![],
 			metadata:           ChunkMetadata {
-				repo_id:             RepoId(repo.into()),
+				repo_id:             RepoId::from(repo),
 				file_path:           "src/lib.rs".into(),
-				file_span:           ByteSpan { start: 0, end: 1 },
+				file_span:           ByteSpan::covering(0, 1),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -398,13 +414,13 @@ mod tests {
 			source:             SourceChunk {
 				raw_code:        format!("use {name}::{symbol};").into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 0, end: 1 },
+				symbol_span:     ByteSpan::covering(0, 1),
 			},
 			embeddings:         vec![],
 			metadata:           ChunkMetadata {
-				repo_id:             RepoId("r".into()),
+				repo_id:             RepoId::from("r"),
 				file_path:           "src/lib.rs".into(),
-				file_span:           ByteSpan { start: 0, end: 1 },
+				file_span:           ByteSpan::covering(0, 1),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -423,7 +439,7 @@ mod tests {
 	async fn index_and_search_round_trip() {
 		let tmp = TempDir::new().unwrap();
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
-		let blob_ref = BlobRef("ref-1".into());
+		let blob_ref = BlobRef::from("ref-1");
 		let info = blob_for_lib("serde", "Serialize");
 		ix.index(&blob_ref, &info).await.unwrap();
 
@@ -443,8 +459,8 @@ mod tests {
 	async fn search_filters_by_lib_name() {
 		let tmp = TempDir::new().unwrap();
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
-		ix.index(&BlobRef("a".into()), &blob_for_lib("serde", "X")).await.unwrap();
-		ix.index(&BlobRef("b".into()), &blob_for_lib("tokio", "X")).await.unwrap();
+		ix.index(&BlobRef::from("a"), &blob_for_lib("serde", "X")).await.unwrap();
+		ix.index(&BlobRef::from("b"), &blob_for_lib("tokio", "X")).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
 		let searcher = reader.searcher();
@@ -460,7 +476,7 @@ mod tests {
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
 		let info = blob_for_lib("serde", "Serialize");
 		let occ_id = info.occurrence_id.0.to_string();
-		ix.index(&BlobRef("r".into()), &info).await.unwrap();
+		ix.index(&BlobRef::from("r"), &info).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
 		let searcher = reader.searcher();
@@ -477,7 +493,7 @@ mod tests {
 		let mut info = blob_for_lib("serde", "Serialize");
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		info.resolution = nudox_core::ResolutionState::Resolved(gid);
-		ix.index(&BlobRef("r".into()), &info).await.unwrap();
+		ix.index(&BlobRef::from("r"), &info).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
 		let searcher = reader.searcher();
@@ -491,8 +507,8 @@ mod tests {
 	async fn search_by_repo_id_for_repo_local_symbol() {
 		let tmp = TempDir::new().unwrap();
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
-		ix.index(&BlobRef("a".into()), &blob_repo_local("my-repo", "foo")).await.unwrap();
-		ix.index(&BlobRef("b".into()), &blob_repo_local("other-repo", "bar")).await.unwrap();
+		ix.index(&BlobRef::from("a"), &blob_repo_local("my-repo", "foo")).await.unwrap();
+		ix.index(&BlobRef::from("b"), &blob_repo_local("other-repo", "bar")).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
 		let searcher = reader.searcher();
@@ -509,9 +525,9 @@ mod tests {
 	async fn multiple_symbols_in_same_lib_all_indexed() {
 		let tmp = TempDir::new().unwrap();
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
-		ix.index(&BlobRef("a".into()), &blob_for_lib("serde", "Serialize")).await.unwrap();
-		ix.index(&BlobRef("b".into()), &blob_for_lib("serde", "Deserialize")).await.unwrap();
-		ix.index(&BlobRef("c".into()), &blob_for_lib("serde", "Serializer")).await.unwrap();
+		ix.index(&BlobRef::from("a"), &blob_for_lib("serde", "Serialize")).await.unwrap();
+		ix.index(&BlobRef::from("b"), &blob_for_lib("serde", "Deserialize")).await.unwrap();
+		ix.index(&BlobRef::from("c"), &blob_for_lib("serde", "Serializer")).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
 		let searcher = reader.searcher();
@@ -527,7 +543,7 @@ mod tests {
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
 		let info = blob_for_lib("serde", "Serialize");
 		assert_eq!(info.resolution, nudox_core::ResolutionState::Unresolved);
-		ix.index(&BlobRef("r".into()), &info).await.unwrap();
+		ix.index(&BlobRef::from("r"), &info).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
 		let searcher = reader.searcher();
@@ -545,10 +561,10 @@ mod tests {
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
 		let mut info = blob_for_lib("serde", "Serialize");
 		// First index with no global_id (deferred).
-		ix.index(&BlobRef("r".into()), &info).await.unwrap();
+		ix.index(&BlobRef::from("r"), &info).await.unwrap();
 		// Re-index after resolution with a global_id.
 		info.resolution = nudox_core::ResolutionState::Resolved(GlobalSymbolId(uuid::Uuid::new_v4()));
-		ix.index(&BlobRef("r".into()), &info).await.unwrap();
+		ix.index(&BlobRef::from("r"), &info).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
 		let searcher = reader.searcher();
@@ -565,7 +581,7 @@ mod tests {
 	async fn search_returns_zero_for_unknown_term() {
 		let tmp = TempDir::new().unwrap();
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
-		ix.index(&BlobRef("a".into()), &blob_for_lib("serde", "Serialize")).await.unwrap();
+		ix.index(&BlobRef::from("a"), &blob_for_lib("serde", "Serialize")).await.unwrap();
 
 		let reader = ix.index_handle().reader().unwrap();
 		let searcher = reader.searcher();
@@ -580,7 +596,7 @@ mod tests {
 		let tmp = TempDir::new().unwrap();
 		{
 			let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
-			ix.index(&BlobRef("ref-x".into()), &blob_for_lib("serde", "Serialize")).await.unwrap();
+			ix.index(&BlobRef::from("ref-x"), &blob_for_lib("serde", "Serialize")).await.unwrap();
 		}
 		// Re-open the same directory and confirm the indexed doc is still there.
 		let ix2 = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
@@ -601,12 +617,12 @@ mod tests {
 
 		let tmp = TempDir::new().unwrap();
 		let ix = TantivySearchIndex::open_or_create(tmp.path()).unwrap();
-		ix.index(&BlobRef("r1".into()), &blob_for_lib("serde", "Serialize")).await.unwrap();
-		ix.index(&BlobRef("r2".into()), &blob_for_lib("tokio", "spawn")).await.unwrap();
+		ix.index(&BlobRef::from("r1"), &blob_for_lib("serde", "Serialize")).await.unwrap();
+		ix.index(&BlobRef::from("r2"), &blob_for_lib("tokio", "spawn")).await.unwrap();
 
-		let hits = ix.search("Serialize", 10).await.unwrap();
+		let hits = ix.search("Serialize", NonZeroUsize::new(10).unwrap()).await.unwrap();
 		assert_eq!(hits.len(), 1);
-		assert_eq!(hits[0].blob_ref, BlobRef("r1".into()));
+		assert_eq!(hits[0].blob_ref, BlobRef::from("r1"));
 		assert_eq!(hits[0].symbol_name, "Serialize");
 	}
 
@@ -619,16 +635,16 @@ mod tests {
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		let mut info = blob_for_lib("serde", "Serialize");
 		info.resolution = nudox_core::ResolutionState::Resolved(gid);
-		ix.index(&BlobRef("r1".into()), &info).await.unwrap();
+		ix.index(&BlobRef::from("r1"), &info).await.unwrap();
 
 		// Different symbol, no global_id.
-		ix.index(&BlobRef("r2".into()), &blob_for_lib("tokio", "spawn")).await.unwrap();
+		ix.index(&BlobRef::from("r2"), &blob_for_lib("tokio", "spawn")).await.unwrap();
 
-		let hits = ix.find_by_global_id(gid, 10).await.unwrap();
+		let hits = ix.find_by_global_id(gid, NonZeroUsize::new(10).unwrap()).await.unwrap();
 		assert_eq!(hits.len(), 1);
-		assert_eq!(hits[0].blob_ref, BlobRef("r1".into()));
+		assert_eq!(hits[0].blob_ref, BlobRef::from("r1"));
 
-		let none = ix.find_by_global_id(GlobalSymbolId(uuid::Uuid::new_v4()), 10).await.unwrap();
+		let none = ix.find_by_global_id(GlobalSymbolId(uuid::Uuid::new_v4()), NonZeroUsize::new(10).unwrap()).await.unwrap();
 		assert!(none.is_empty());
 	}
 }
