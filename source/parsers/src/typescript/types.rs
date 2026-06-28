@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use deno_doc::params::{ParamDef, ParamPatternDef};
 use deno_doc::ts_type::{IndexSignatureDef, LiteralDef, LiteralDefKind, ThisOrIdent, TsTypeDef, TsTypeDefKind};

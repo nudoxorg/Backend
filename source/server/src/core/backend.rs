@@ -73,7 +73,7 @@ impl LanguageBackend for RustBackend {
 			package.generate_ir_with_sources(&workspace.to_path_buf(), version).map_err(|source| {
 				AppError::Ingest(IngestError::IrGeneration { package: package.name.clone(), source })
 			})?;
-		Ok((ir.index().into_index(), source_map))
+		Ok((ir.index().into_index(), source_map.into_iter().collect()))
 	}
 }
 

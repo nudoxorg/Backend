@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
 
 use rustdoc_types::{Crate, Id, Item, ItemEnum};
 
@@ -7,6 +9,7 @@ use ir::kind::Entry;
 
 use super::error::Parse;
 use super::Result;
+use crate::DocParser;
 
 pub(super) struct ParseContext {
 	pub(super) krate:          Crate,
@@ -40,7 +43,7 @@ fn add_path(id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>, id: &Id, path: 
 }
 
 fn queue_child(
-	index: &HashMap<Id, Item>,
+	index: &std::collections::HashMap<Id, Item>,
 	id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>,
 	queue: &mut VecDeque<(Id, Vec<String>)>,
 	id: &Id,
@@ -57,7 +60,7 @@ fn queue_child(
 }
 
 fn queue_impls(
-	_index: &HashMap<Id, Item>,
+	_index: &std::collections::HashMap<Id, Item>,
 	_id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>,
 	_queue: &mut VecDeque<(Id, Vec<String>)>,
 	_impls: &[Id],
@@ -68,7 +71,28 @@ fn queue_impls(
 impl RustdocParser {
 	pub fn from_doc(input: Crate) -> Result<Self> { Self::new(input) }
 
-	pub fn parse(&mut self) -> Result<Vec<Entry>> {
+	pub fn parse(&mut self) -> Result<Vec<Entry>> { <Self as DocParser>::parse(self) }
+
+	fn new(krate: Crate) -> Result<Self> {
+		let mut ctx = ParseContext {
+			krate,
+			id_to_paths: HashMap::default(),
+			primitive_map: HashMap::default(),
+			path_to_id: HashMap::default(),
+		};
+		ctx.scan_primitives();
+		ctx.build_path_map()?;
+		Ok(Self { ctx, state: ParseState::default() })
+	}
+}
+
+impl DocParser for RustdocParser {
+	type Doc = Crate;
+	type Error = Parse;
+
+	fn from_doc(input: Crate) -> Result<Self> { Self::new(input) }
+
+	fn parse(&mut self) -> Result<Vec<Entry>> {
 		let mut all_ids: Vec<_> = self.ctx.id_to_paths.keys().cloned().collect();
 
 		all_ids.sort_by(|a, b| {
@@ -81,29 +105,13 @@ impl RustdocParser {
 
 		for id in all_ids {
 			match self.ctx.item(&mut self.state, &id) {
-				Ok(entry) => {
-					entries.push(entry);
-				}
-				Err(e) => {
-					if let Parse::CircularDependency { .. } = e {
-					}
-				}
+				Ok(entry) => entries.push(entry),
+				Err(Parse::CircularDependency { .. }) => {}
+				Err(_) => {}
 			}
 		}
 
 		Ok(entries)
-	}
-
-	fn new(krate: Crate) -> Result<Self> {
-		let mut ctx = ParseContext {
-			krate,
-			id_to_paths: HashMap::new(),
-			primitive_map: HashMap::new(),
-			path_to_id: HashMap::new(),
-		};
-		ctx.scan_primitives();
-		ctx.build_path_map()?;
-		Ok(Self { ctx, state: ParseState::default() })
 	}
 }
 
@@ -121,7 +129,7 @@ impl ParseContext {
 		let root_id = self.krate.root;
 
 		let mut queue = VecDeque::new();
-		let mut visited = HashSet::new();
+		let mut visited = HashSet::default();
 
 		if let Some(root_item) = self.krate.index.get(&root_id) {
 			let root_name = root_item.name.clone().unwrap_or_else(|| "crate".to_string());

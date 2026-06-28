@@ -13,14 +13,7 @@ pub struct QdrantConfig {
 }
 
 #[instrument(skip_all, fields(collection = %config.collection_name))]
-pub async fn ensure_collection(config: &QdrantConfig) -> Result<(), AppError> {
-	let client = Qdrant::from_url(config.endpoint.as_str())
-		.build()
-		.map_err(|source| AppError::Qdrant(QdrantError::ConnectionFailed {
-			endpoint: config.endpoint.to_string(),
-			source,
-		}))?;
-
+pub async fn ensure_collection(client: &Qdrant, config: &QdrantConfig) -> Result<(), AppError> {
 	let exists = client
 		.collection_exists(&config.collection_name)
 		.await
@@ -69,14 +62,14 @@ pub async fn upload_points(config: &QdrantConfig, points: Vec<PointStruct>) -> R
 		return Ok(());
 	}
 
-	ensure_collection(config).await?;
-
 	let client = Qdrant::from_url(config.endpoint.as_str())
 		.build()
 		.map_err(|source| AppError::Qdrant(QdrantError::ConnectionFailed {
 			endpoint: config.endpoint.to_string(),
 			source,
 		}))?;
+
+	ensure_collection(&client, config).await?;
 
 	info!(
 		collection = %config.collection_name,

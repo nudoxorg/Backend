@@ -1,4 +1,5 @@
 #![allow(clippy::result_large_err)]
+#![feature(arbitrary_self_types)]
 pub mod config;
 pub mod core;
 pub mod emit;

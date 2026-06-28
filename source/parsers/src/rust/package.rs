@@ -1,4 +1,5 @@
-use std::{collections::{BTreeSet, HashMap, VecDeque}, fs, io, path::{Path, PathBuf}, process::Command, time::Duration};
+use std::{collections::{BTreeSet, VecDeque}, fs, io, path::{Path, PathBuf}, process::Command, time::Duration};
+use rustc_hash::FxHashMap as HashMap;
 
 use cargo_metadata::{Metadata, MetadataCommand, Package as CargoPackage, PackageId};
 use crates_io_api::{AsyncClient, Crate};
@@ -149,7 +150,7 @@ impl RustPackage {
 		let metadata = cargo_metadata(code)?;
 		let packages = documented_local_packages(&metadata, &self.name, self.direct_repo);
 		let mut entries = Vec::new();
-		let mut source_map = HashMap::new();
+		let mut source_map = HashMap::default();
 
 		for package_id in packages {
 			let package = metadata
@@ -205,7 +206,7 @@ fn cargo_metadata(code: &PathBuf) -> std::result::Result<Metadata, Package> {
 }
 
 fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &Path) -> HashMap<String, String> {
-	let mut map = HashMap::new();
+	let mut map = HashMap::default();
 	for (id, item) in &krate.index {
 		if !matches!(&item.inner, rustdoc_types::ItemEnum::Function(_)) {
 			continue;
@@ -345,4 +346,19 @@ fn summarize_command_output(bytes: &[u8]) -> String {
 	}
 
 	format!("{}...", &trimmed[..end])
+}
+
+#[cfg(test)]
+mod tests {
+	use semver::Version;
+
+	use super::RustPackage;
+
+	#[test]
+	fn cargo_package_spec_is_version_qualified() {
+		assert_eq!(
+			RustPackage::cargo_package_spec_for("serde_json", &Version::parse("1.0.82").unwrap()),
+			"serde_json@1.0.82"
+		);
+	}
 }

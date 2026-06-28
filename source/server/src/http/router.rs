@@ -90,8 +90,18 @@ async fn search_docs(
 	State(state): State<AppState>,
 	Query(params): Query<SearchQuery>,
 ) -> Result<Json<search::SearchResponse>, AppError> {
-	let response =
-		search::semantic_search(&state.pipeline, &params.q, params.limit.unwrap_or(6)).await?;
+	let client = state
+		.search_qdrant
+		.as_ref()
+		.ok_or(AppError::Config(ConfigError::MissingQdrant))?;
+	let response = search::semantic_search(
+		&state.pipeline,
+		client,
+		&state.search_embedder,
+		&params.q,
+		params.limit.unwrap_or(6),
+	)
+	.await?;
 	Ok(Json(response))
 }
 
@@ -133,8 +143,14 @@ async fn run_search(
 	State(state): State<AppState>,
 	Query(params): Query<RunSearchQuery>,
 ) -> Result<Json<search::RunSearchResponse>, AppError> {
+	let client = state
+		.search_qdrant
+		.as_ref()
+		.ok_or(AppError::Config(ConfigError::MissingQdrant))?;
 	let response = search::run_search(
 		&state.pipeline,
+		client,
+		&state.search_embedder,
 		&state.sessions,
 		&params.q,
 		params.limit.unwrap_or(6),

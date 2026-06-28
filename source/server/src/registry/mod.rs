@@ -1,5 +1,6 @@
-use std::{collections::HashMap, fs, num::NonZeroU64, sync::{Arc, atomic::{AtomicU64, Ordering}}};
+use std::{collections::HashMap, fs, num::NonZeroU64, sync::{Arc, Mutex as StdMutex, atomic::{AtomicU64, Ordering}}};
 
+use arc_swap::ArcSwap;
 use jiff::Timestamp;
 use lang_types::Language;
 use semver::Version;
@@ -13,7 +14,10 @@ use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::Package}, http
 mod persist;
 mod resolve;
 mod sync;
+mod traits;
 pub mod package;
+
+pub use traits::Registry;
 
 use persist::{load_persisted_registry, rehydrate_registry};
 use resolve::resolve_package_handle;
@@ -85,8 +89,12 @@ pub struct LocalRegistry {
 	pipeline:         PipelineConfig,
 	sync_slots:       Arc<Semaphore>,
 	next_id:          AtomicU64,
-	packages:         Arc<RwLock<HashMap<PackageId, Arc<TrackedPackage>>>>,
-	keys:             Arc<RwLock<HashMap<PackageKey, PackageId>>>,
+	// Read-mostly snapshots: every reader does load()+clone-out, so RCU via ArcSwap
+	// gives wait-free reads. `write_lock` serializes the rare copy-on-write writers
+	// so two concurrent inserts can't clobber each other's snapshot.
+	packages:         ArcSwap<HashMap<PackageId, Arc<TrackedPackage>>>,
+	keys:             ArcSwap<HashMap<PackageKey, PackageId>>,
+	write_lock:       StdMutex<()>,
 	targets:          IngestTargets,
 }
 
@@ -106,8 +114,9 @@ impl LocalRegistry {
 			pipeline,
 			sync_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_SYNCS)),
 			next_id: AtomicU64::new(next_id),
-			packages: Arc::new(RwLock::new(packages)),
-			keys: Arc::new(RwLock::new(keys)),
+			packages: ArcSwap::from_pointee(packages),
+			keys: ArcSwap::from_pointee(keys),
+			write_lock: StdMutex::new(()),
 			targets: IngestTargets::default(),
 		}
 	}
@@ -117,10 +126,10 @@ impl LocalRegistry {
 		self
 	}
 
-	pub async fn package_count(&self) -> usize { self.packages.read().await.len() }
+	pub async fn package_count(&self) -> usize { self.packages.load().len() }
 
 	pub async fn list_packages(&self) -> Vec<PackageSnapshot> {
-		let packages: Vec<Arc<TrackedPackage>> = self.packages.read().await.values().cloned().collect();
+		let packages: Vec<Arc<TrackedPackage>> = self.packages.load().values().cloned().collect();
 		let mut snapshots = Vec::with_capacity(packages.len());
 		for package in packages {
 			snapshots.push(package.snapshot().await);
@@ -147,7 +156,7 @@ impl LocalRegistry {
 			branch:   branch.clone(),
 		};
 
-		if let Some(existing_id) = self.keys.read().await.get(&key).copied() {
+		if let Some(existing_id) = self.keys.load().get(&key).copied() {
 			let existing = self.get_tracked(existing_id).await?;
 			return Ok(AddPackageOutcome::Existing(existing.snapshot().await));
 		}
@@ -164,8 +173,7 @@ impl LocalRegistry {
 		};
 
 		let tracked = Arc::new(TrackedPackage::new(package_id, spec, handle));
-		self.packages.write().await.insert(package_id, Arc::clone(&tracked));
-		self.keys.write().await.insert(key, package_id);
+		self.insert_tracked(key, Arc::clone(&tracked));
 		self.persist().await?;
 
 		Ok(AddPackageOutcome::Created(self.enqueue_sync(tracked).await?))
@@ -183,7 +191,7 @@ impl LocalRegistry {
 		loop {
 			interval.tick().await;
 			let packages: Vec<Arc<TrackedPackage>> =
-				self.packages.read().await.values().cloned().collect();
+				self.packages.load().values().cloned().collect();
 
 			for package in packages {
 				if let Err(error) = self.refresh_existing(package).await {
@@ -347,11 +355,27 @@ impl LocalRegistry {
 	}
 
 	async fn get_tracked(&self, id: PackageId) -> Result<Arc<TrackedPackage>, AppError> {
-		self.packages.read().await.get(&id).cloned().ok_or(AppError::PackageNotTracked { id: id.get() })
+		self.packages.load().get(&id).cloned().ok_or(AppError::PackageNotTracked { id: id.get() })
+	}
+
+	/// Copy-on-write insert into both read-mostly snapshots. The `write_lock`
+	/// serializes writers so a concurrent insert can't be lost between the
+	/// load-clone-store of the two maps.
+	fn insert_tracked(&self, key: PackageKey, tracked: Arc<TrackedPackage>) {
+		let _guard = self.write_lock.lock().expect("registry write lock poisoned");
+		let id = tracked.id;
+
+		let mut packages = (*self.packages.load_full()).clone();
+		packages.insert(id, tracked);
+		self.packages.store(Arc::new(packages));
+
+		let mut keys = (*self.keys.load_full()).clone();
+		keys.insert(key, id);
+		self.keys.store(Arc::new(keys));
 	}
 
 	async fn persist(&self) -> Result<(), AppError> {
-		let packages: Vec<Arc<TrackedPackage>> = self.packages.read().await.values().cloned().collect();
+		let packages: Vec<Arc<TrackedPackage>> = self.packages.load().values().cloned().collect();
 		let mut persisted = Vec::with_capacity(packages.len());
 		for package in &packages {
 			persisted.push(persist::PersistedPackage {
@@ -622,15 +646,14 @@ mod tests {
 		));
 		tracked.record_failure("fixture failure".to_owned()).await;
 
-		registry.packages.write().await.insert(package_id, Arc::clone(&tracked));
-		registry.keys.write().await.insert(
+		registry.insert_tracked(
 			PackageKey {
 				language: Language::Rust,
 				name:     "any-tts".to_owned(),
 				version:  version.clone(),
 				branch:   "main".to_owned(),
 			},
-			package_id,
+			Arc::clone(&tracked),
 		);
 		registry.persist().await.unwrap();
 
@@ -696,15 +719,14 @@ mod tests {
 			.update_progress(PackageSyncPhase::GeneratingIr, Some("generating TypeScript IR".to_owned()))
 			.await;
 
-		registry.packages.write().await.insert(package_id, Arc::clone(&tracked));
-		registry.keys.write().await.insert(
+		registry.insert_tracked(
 			PackageKey {
 				language: Language::TypeScript,
 				name:     "nanoid".to_owned(),
 				version:  version.clone(),
 				branch:   "main".to_owned(),
 			},
-			package_id,
+			Arc::clone(&tracked),
 		);
 		registry.persist().await.unwrap();
 

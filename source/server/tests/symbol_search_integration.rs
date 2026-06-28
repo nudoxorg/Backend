@@ -95,9 +95,13 @@ async fn build_state_with_orchestrator() -> (AppState, TempDir) {
 
 	let state = AppState {
 		registry,
-		pipeline,
+		pipeline: pipeline.into(),
 		sessions: SessionStore::default(),
 		targets: IngestTargets { orchestrator: Some(orchestrator), ..Default::default() },
+		search_qdrant: None,
+		search_embedder: Arc::new(
+			nudox::ingest::embedding::OpenAIEmbeddingProvider::new("text-embedding-3-small"),
+		),
 	};
 	(state, tmp)
 }
@@ -228,9 +232,13 @@ async fn missing_orchestrator_returns_500() {
 
 	let state = AppState {
 		registry,
-		pipeline,
+		pipeline: pipeline.into(),
 		sessions: SessionStore::default(),
 		targets: IngestTargets::default(), // not configured
+		search_qdrant: None,
+		search_embedder: Arc::new(
+			nudox::ingest::embedding::OpenAIEmbeddingProvider::new("text-embedding-3-small"),
+		),
 	};
 
 	let (status, _) = post_symbol_search(state, json!({"name_pattern": "x"})).await;

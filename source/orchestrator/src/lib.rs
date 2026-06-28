@@ -54,24 +54,27 @@ impl Orchestrator {
 		}
 	}
 
+	/// Index a blob whose `resolved_global_id` is already set. Callers mutate the
+	/// owned `BlobInfo` in place before calling, so this no longer deep-clones the
+	/// whole record (source text + embedding vectors) just to stamp one field.
 	async fn index_resolved(
 		&self,
 		blob_ref: &nudox_core::BlobRef,
 		info: &BlobInfo,
-		global_id: GlobalSymbolId,
 	) -> Result<()> {
-		let mut resolved_info = info.clone();
-		resolved_info.resolved_global_id = Some(global_id);
+		let global_id = info
+			.resolved_global_id
+			.expect("index_resolved requires a blob with resolved_global_id set");
 
-		self.search.index(blob_ref, &resolved_info).await?;
-		self.vector.upsert(blob_ref, global_id, &resolved_info.embeddings).await?;
+		self.search.index(blob_ref, info).await?;
+		self.vector.upsert(blob_ref, global_id, &info.embeddings).await?;
 		Ok(())
 	}
 
 	/// Ingest a blob, resolve its symbol if possible, and return the resolution
 	/// outcome.
 	#[instrument(skip(self, info), fields(symbol = %info.symbol_name, occurrence_id = %info.occurrence_id))]
-	pub async fn ingest(&self, info: BlobInfo) -> Result<ResolutionOutcome> {
+	pub async fn ingest(&self, mut info: BlobInfo) -> Result<ResolutionOutcome> {
 		let blob_ref = self.blob_store.put(&info).await?;
 
 		// Honor a precomputed deterministic GlobalSymbolId (the cross-store
@@ -79,7 +82,7 @@ impl Orchestrator {
 		// authoritative id for every store — never overwrite it with a fresh v4.
 		if let Some(global_id) = info.resolved_global_id {
 			self.global_store.associate(global_id, info.occurrence_id).await?;
-			self.index_resolved(&blob_ref, &info, global_id).await?;
+			self.index_resolved(&blob_ref, &info).await?;
 			return Ok(ResolutionOutcome::Resolved { global_id, blob_ref });
 		}
 
@@ -89,7 +92,8 @@ impl Orchestrator {
 				let global_id = GlobalSymbolId(uuid::Uuid::new_v4());
 				self.blob_store.update_resolution(&blob_ref, global_id).await?;
 				self.global_store.associate(global_id, info.occurrence_id).await?;
-				self.index_resolved(&blob_ref, &info, global_id).await?;
+				info.resolved_global_id = Some(global_id);
+				self.index_resolved(&blob_ref, &info).await?;
 				Ok(ResolutionOutcome::Resolved { global_id, blob_ref })
 			}
 			SymbolOrigin::ExternalLib { lib } => {
@@ -98,7 +102,8 @@ impl Orchestrator {
 					Some(global_id) => {
 						self.blob_store.update_resolution(&blob_ref, global_id).await?;
 						self.global_store.associate(global_id, info.occurrence_id).await?;
-						self.index_resolved(&blob_ref, &info, global_id).await?;
+						info.resolved_global_id = Some(global_id);
+						self.index_resolved(&blob_ref, &info).await?;
 						Ok(ResolutionOutcome::Resolved { global_id, blob_ref })
 					}
 					None => {
@@ -128,8 +133,8 @@ impl Orchestrator {
 		for blob_ref in &blob_refs {
 			let info = self.blob_store.get(blob_ref).await?;
 			match info.resolved_global_id {
-				Some(global_id) => {
-					self.index_resolved(blob_ref, &info, global_id).await?;
+				Some(_) => {
+					self.index_resolved(blob_ref, &info).await?;
 					blobs_resolved += 1;
 				}
 				None => {
@@ -150,7 +155,7 @@ impl Orchestrator {
 		let mut blobs_skipped = 0usize;
 
 		for blob_ref in &blob_refs {
-			let info = self.blob_store.get(blob_ref).await?;
+			let mut info = self.blob_store.get(blob_ref).await?;
 
 			let lib_ref = match &info.symbol_origin {
 				SymbolOrigin::ExternalLib { lib } => lib.clone(),
@@ -164,7 +169,8 @@ impl Orchestrator {
 				Some(global_id) => {
 					self.blob_store.update_resolution(blob_ref, global_id).await?;
 					self.global_store.associate(global_id, info.occurrence_id).await?;
-					self.index_resolved(blob_ref, &info, global_id).await?;
+					info.resolved_global_id = Some(global_id);
+					self.index_resolved(blob_ref, &info).await?;
 					blobs_resolved += 1;
 				}
 				None => {

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,5 @@
-use std::{collections::{BTreeSet, HashMap}, fs, io::Cursor, path::{Path, PathBuf}, process::{Command, ExitStatus}, sync::Arc};
+use std::{collections::BTreeSet, fs, io::Cursor, path::{Path, PathBuf}, process::{Command, ExitStatus}, sync::Arc};
+use rustc_hash::FxHashMap as HashMap;
 
 use deno_doc::{DocParser, DocParserOptions};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph, ModuleSpecifier, ast::CapturingModuleAnalyzer, source::{LoadFuture, LoadOptions, LoadResponse, Loader}};
@@ -473,7 +474,7 @@ const SOURCE_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".cts"];
 const DECLARATION_EXTENSIONS: &[&str] = &[".d.ts", ".d.tsx", ".d.mts", ".d.cts"];
 
 fn canonicalize_documentation_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
-	let mut by_stem: HashMap<String, PathBuf> = HashMap::new();
+	let mut by_stem: HashMap<String, PathBuf> = HashMap::default();
 
 	for root in roots {
 		let canonical = root.canonicalize().unwrap_or(root);
@@ -748,5 +749,167 @@ impl Loader for SourceFileLoader {
 				mtime:         None,
 			}))
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{collections::BTreeSet, fs};
+
+	use super::{documentation_roots_for_entry_point, push_doc_root, resolve_materialized_entry_point};
+
+	#[test]
+	fn documentation_roots_follow_triple_slash_references_for_declaration_only_package() {
+		let workspace = tempfile::tempdir().unwrap();
+		fs::write(workspace.path().join("package.json"), r#"{"types":"./index.d.ts"}"#).unwrap();
+		fs::write(
+			workspace.path().join("index.d.ts"),
+			"/// <reference path=\"./nested/extra.d.ts\" />\nexport interface Root {}\n",
+		)
+		.unwrap();
+		fs::create_dir_all(workspace.path().join("nested")).unwrap();
+		fs::write(workspace.path().join("nested").join("extra.d.ts"), "export interface Extra {}\n")
+			.unwrap();
+
+		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
+		assert_eq!(roots.len(), 2);
+		assert!(roots.iter().any(|path| path.ends_with("index.d.ts")));
+		assert!(roots.iter().any(|path| path.ends_with("nested/extra.d.ts")));
+	}
+
+	#[test]
+	fn documentation_roots_follow_triple_slash_paths_without_dot_prefix() {
+		let workspace = tempfile::tempdir().unwrap();
+		fs::write(workspace.path().join("package.json"), r#"{"types":"index.d.ts"}"#).unwrap();
+		fs::create_dir_all(workspace.path().join("compatibility")).unwrap();
+		fs::write(
+			workspace.path().join("index.d.ts"),
+			"/// <reference path=\"compatibility/iterators.d.ts\" />\nexport interface Root {}\n",
+		)
+		.unwrap();
+		fs::write(
+			workspace.path().join("compatibility").join("iterators.d.ts"),
+			"export interface IteratorShim {}\n",
+		)
+		.unwrap();
+
+		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
+		assert_eq!(roots.len(), 2);
+		assert!(roots.iter().any(|path| path.ends_with("index.d.ts")));
+		assert!(roots.iter().any(|path| path.ends_with("compatibility/iterators.d.ts")));
+	}
+
+	#[test]
+	fn documentation_roots_prefer_explicit_declarations_for_mixed_export_packages() {
+		let workspace = tempfile::tempdir().unwrap();
+		fs::write(
+			workspace.path().join("package.json"),
+			r#"{
+				"exports": {
+					".": {
+						"types": "./index.d.cts",
+						"@zod/source": "./src/index.ts"
+					},
+					"./v3": {
+						"types": "./v3/index.d.cts",
+						"@zod/source": "./src/v3/index.ts"
+					}
+				}
+			}"#,
+		)
+		.unwrap();
+		fs::create_dir_all(workspace.path().join("src").join("v3").join("benchmarks")).unwrap();
+		fs::create_dir_all(workspace.path().join("v3")).unwrap();
+		fs::write(workspace.path().join("index.d.cts"), "export {}\n").unwrap();
+		fs::write(workspace.path().join("v3").join("index.d.cts"), "export {}\n").unwrap();
+		fs::write(workspace.path().join("src").join("index.ts"), "export {}\n").unwrap();
+		fs::write(workspace.path().join("src").join("v3").join("index.ts"), "export {}\n").unwrap();
+		fs::write(
+			workspace.path().join("src").join("v3").join("benchmarks").join("realworld.ts"),
+			"export const noisy = true;\n",
+		)
+		.unwrap();
+
+		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.cts")).unwrap();
+		assert_eq!(roots.len(), 2);
+		assert!(
+			roots.iter().all(|path| path.extension().and_then(|value| value.to_str()) == Some("cts"))
+		);
+		assert!(roots.iter().any(|path| path.ends_with("index.d.cts")));
+		assert!(roots.iter().any(|path| path.ends_with("v3/index.d.cts")));
+		assert!(!roots.iter().any(|path| path.ends_with("src/index.ts")));
+		assert!(!roots.iter().any(|path| path.ends_with("benchmarks/realworld.ts")));
+	}
+
+	#[test]
+	fn documentation_roots_follow_declaration_export_chains() {
+		let workspace = tempfile::tempdir().unwrap();
+		fs::write(workspace.path().join("package.json"), r#"{"types":"./index.d.ts"}"#).unwrap();
+		fs::create_dir_all(workspace.path().join("v3")).unwrap();
+		fs::write(workspace.path().join("index.d.ts"), "export * from \"./v3/external.js\";\n")
+			.unwrap();
+		fs::write(workspace.path().join("v3").join("external.d.ts"), "export interface External {}\n")
+			.unwrap();
+
+		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
+		assert_eq!(roots.len(), 2);
+		assert!(roots.iter().any(|path| path.ends_with("index.d.ts")));
+		assert!(roots.iter().any(|path| path.ends_with("v3/external.d.ts")));
+	}
+
+	#[test]
+	fn documentation_roots_deduplicate_commonjs_and_esm_declaration_twins() {
+		let workspace = tempfile::tempdir().unwrap();
+		fs::write(
+			workspace.path().join("package.json"),
+			r#"{
+				"types":"./index.d.ts",
+				"exports": {
+					".": {
+						"types":"./index.d.cts"
+					}
+				}
+			}"#,
+		)
+		.unwrap();
+		fs::write(workspace.path().join("index.d.ts"), "export interface Root {}\n").unwrap();
+		fs::write(workspace.path().join("index.d.cts"), "export interface Root {}\n").unwrap();
+
+		let roots = documentation_roots_for_entry_point(&workspace.path().join("index.d.ts")).unwrap();
+		assert_eq!(roots, vec![workspace.path().join("index.d.ts").canonicalize().unwrap()]);
+	}
+
+	#[test]
+	fn push_doc_root_maps_javascript_exports_to_declarations() {
+		let workspace = tempfile::tempdir().unwrap();
+		fs::create_dir_all(workspace.path().join("non-secure")).unwrap();
+		fs::write(
+			workspace.path().join("non-secure").join("index.d.ts"),
+			"export declare function nanoid(): string;\n",
+		)
+		.unwrap();
+
+		let mut roots = BTreeSet::new();
+		push_doc_root(workspace.path(), "./non-secure/index.js", &mut roots);
+		assert_eq!(roots.len(), 1);
+		assert!(roots.iter().any(|path| path.ends_with("non-secure/index.d.ts")));
+	}
+
+	#[test]
+	fn resolve_materialized_entry_point_falls_back_to_source_for_old_repo_layouts() {
+		let workspace = tempfile::tempdir().unwrap();
+		fs::write(
+			workspace.path().join("package.json"),
+			r#"{
+				"main":"./lib/src/index.js",
+				"types":"./lib/src/index.d.ts"
+			}"#,
+		)
+		.unwrap();
+		fs::create_dir_all(workspace.path().join("src")).unwrap();
+		fs::write(workspace.path().join("src").join("index.ts"), "export const z = 1;\n").unwrap();
+
+		let resolved = resolve_materialized_entry_point(workspace.path()).unwrap();
+		assert_eq!(resolved, workspace.path().join("src").join("index.ts"));
 	}
 }

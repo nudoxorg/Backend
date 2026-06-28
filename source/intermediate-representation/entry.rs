@@ -4,7 +4,7 @@
 /// paths, and during upload time, a graph is composed once. A (highly) unsafe
 /// structure should be considered in the future to avoid this reconstruction
 /// between backends.
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
 
 #[cfg(feature = "serde")]

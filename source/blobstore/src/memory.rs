@@ -1,4 +1,5 @@
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::sync::{Arc, Mutex};
+use rustc_hash::FxHashMap as HashMap;
 
 use async_trait::async_trait;
 use nudox_core::{BlobInfo, BlobRef, BlobStore, BlobStoreError, GlobalSymbolId, Result};
@@ -11,7 +12,7 @@ pub struct InMemoryBlobStore {
 
 impl InMemoryBlobStore {
 	/// Create an empty in-memory blob store.
-	pub fn new() -> Self { Self { inner: Arc::new(Mutex::new(HashMap::new())) } }
+	pub fn new() -> Self { Self { inner: Arc::new(Mutex::new(HashMap::default())) } }
 }
 
 impl Default for InMemoryBlobStore {

@@ -12,6 +12,7 @@ facet = "0.42.0"
 serde = { version = "1.0.228", features = ["derive"] }
 yoke.workspace = true
 arborium-tree-sitter.workspace = true
+rustc-hash = { workspace = true }
 
 [dev-dependencies]
 arborium = { workspace = true, features = ["lang-rust"] }

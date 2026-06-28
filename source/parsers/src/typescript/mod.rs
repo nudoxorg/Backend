@@ -1,4 +1,6 @@
-use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
+use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
 
 use deno_ast::swc::ast::{Accessibility, TruePlusMinus, VarDeclKind};
 use deno_doc::{Declaration, DeclarationDef, Document, class::{ClassConstructorDef, ClassDef, ClassMethodDef}, r#enum::EnumDef, function::FunctionDef, interface::InterfaceDef, js_doc::JsDoc, node::{DeclarationKind, NamespaceDef, Symbol}, params::{ParamDef, ParamPatternDef}, ts_type::{CallSignatureDef, IndexSignatureDef, LiteralDef, LiteralDefKind, MethodDef, ThisOrIdent, TsTypeDef, TsTypeDefKind}, ts_type_param::TsTypeParamDef};
@@ -138,7 +140,7 @@ fn assign_unique_module_names(specifiers: &[String]) -> HashMap<String, String> 
 		}
 	}
 
-	let mut assignments = HashMap::with_capacity(segment_map.len());
+	let mut assignments = HashMap::with_capacity_and_hasher(segment_map.len(), Default::default());
 
 	for (specifier, segments) in &segment_map {
 		let mut chosen = segments.join(".");
@@ -246,14 +248,23 @@ impl TsDocParser {
 	pub fn parse(&mut self) -> Result<Vec<Entry>> { self.documents() }
 }
 
+impl crate::DocParser for TsDocParser {
+	type Doc = HashMap<String, Document>;
+	type Error = Parse;
+
+	fn from_doc(input: Self::Doc) -> std::result::Result<Self, Self::Error> { Self::new(input) }
+
+	fn parse(&mut self) -> std::result::Result<Vec<Entry>, Self::Error> { self.documents() }
+}
+
 impl TsDocParser {
 	pub fn new(documents: HashMap<String, Document>) -> Result<Self> {
 		let mut ctx = TsParseContext {
 			documents,
-			path_to_id: HashMap::new(),
-			type_name_to_id: HashMap::new(),
-			module_name_to_specifier: HashMap::new(),
-			specifier_to_module_name: HashMap::new(),
+			path_to_id: HashMap::default(),
+			type_name_to_id: HashMap::default(),
+			module_name_to_specifier: HashMap::default(),
+			specifier_to_module_name: HashMap::default(),
 		};
 		ctx.build_path_map();
 		ctx.build_type_name_map();

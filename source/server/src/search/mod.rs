@@ -176,13 +176,15 @@ pub async fn lookup_symbol_with_context(
 
 pub async fn run_search(
 	config: &PipelineConfig,
+	client: &qdrant_client::Qdrant,
+	provider: &crate::ingest::embedding::OpenAIEmbeddingProvider,
 	sessions: &SessionStore,
 	query: &str,
 	limit: usize,
 	session: Option<&str>,
 ) -> Result<RunSearchResponse, AppError> {
 	let normalized_session = normalize_session(session);
-	let results = qdrant::search_results(config, query, limit).await?;
+	let results = qdrant::search_results(config, client, provider, query, limit).await?;
 	let terminus = require_terminus(config)?;
 	let client = terminus_client(terminus).await?;
 	let spec = BranchSpec::new(&terminus.db);

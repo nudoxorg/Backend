@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use deno_doc::class::ClassConstructorDef;
 use deno_doc::ts_type::{CallSignatureDef, IndexSignatureDef, MethodDef};
@@ -223,7 +223,7 @@ impl TsDocParser {
 		inputs: Option<&[Parameter]>,
 		outputs: Option<&[Parameter]>,
 	) -> Option<HashMap<String, i64>> {
-		let mut links = HashMap::new();
+		let mut links = HashMap::default();
 
 		if let Some(params) = inputs {
 			for (idx, param) in params.iter().enumerate() {

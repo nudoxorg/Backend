@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 use super::context::{ParseContext, ParseState};
 use super::{error::Parse, Result};
@@ -14,7 +14,7 @@ use rustdoc_types::{Id, ItemEnum};
 impl ParseContext {
 	pub(super) fn collect_implemented_protocols(&self, impl_ids: &[Id]) -> Vec<NudoxPath> {
 		let mut implemented_protocols = Vec::new();
-		let mut seen = HashSet::new();
+		let mut seen = HashSet::default();
 
 		for impl_id in impl_ids {
 			let Some(impl_item) = self.krate.index.get(impl_id) else {

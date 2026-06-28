@@ -5,12 +5,13 @@ use nudox_core::{BlobStore, Embedder, FutureParseQueue, GlobalSymbolStore, Model
 use embed::{PlaceholderEmbedder, RemoteEmbedder};
 use orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 use search::{InMemoryVectorIndex, QdrantVectorIndex, SymbolSearcher, TantivySearchIndex};
+use qdrant_client::Qdrant;
 use store::NudoxStore;
 use tokio::signal;
 use tracing::{info, warn};
 use url::Url;
 
-use crate::{config::AppConfig, http::{AppState, error::AppError, router::router}, ingest::IngestTargets, registry::LocalRegistry, search::{SessionStore, text::SymbolTextIndex}, storage::StorageLayout};
+use crate::{config::AppConfig, http::{AppState, error::AppError, router::router}, ingest::{IngestTargets, embedding::OpenAIEmbeddingProvider}, registry::LocalRegistry, search::{SessionStore, text::SymbolTextIndex}, storage::StorageLayout};
 
 pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	let storage = StorageLayout::new(config.storage_root.clone());
@@ -74,7 +75,30 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 		monitor_registry.run_monitor().await;
 	});
 
-	let state = AppState { registry, pipeline: config.pipeline.clone(), sessions, targets };
+	// Shared legacy-search handles, built once at startup instead of per `/search`
+	// request: one Qdrant gRPC client (reused connection pool) and one embedding
+	// provider (reused reqwest::Client). Both feed the `/search` and `/run` paths.
+	let search_embedder =
+		Arc::new(OpenAIEmbeddingProvider::new(config.pipeline.embedding_model.clone()));
+	let search_qdrant = match config.pipeline.qdrant {
+		Some(ref qdrant) => match Qdrant::from_url(qdrant.endpoint.as_str()).build() {
+			Ok(client) => Some(Arc::new(client)),
+			Err(error) => {
+				warn!(error = %error, "failed to build shared qdrant client; /search will be unavailable");
+				None
+			}
+		},
+		None => None,
+	};
+
+	let state = AppState {
+		registry,
+		pipeline: Arc::new(config.pipeline.clone()),
+		sessions,
+		targets,
+		search_qdrant,
+		search_embedder,
+	};
 	let app = router(state);
 	let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
 

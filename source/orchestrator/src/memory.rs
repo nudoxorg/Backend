@@ -1,4 +1,5 @@
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::sync::{Arc, Mutex};
+use rustc_hash::FxHashMap as HashMap;
 
 use async_trait::async_trait;
 use nudox_core::{BlobRef, FutureParseQueue, GlobalSymbolId, GlobalSymbolQuery, GlobalSymbolStore, LibRef, OccurrenceId, Result};
@@ -17,8 +18,8 @@ impl InMemoryGlobalSymbolStore {
 	/// Create an empty store.
 	pub fn new() -> Self {
 		Self {
-			symbols:      Arc::new(Mutex::new(HashMap::new())),
-			associations: Arc::new(Mutex::new(HashMap::new())),
+			symbols:      Arc::new(Mutex::new(HashMap::default())),
+			associations: Arc::new(Mutex::new(HashMap::default())),
 		}
 	}
 
@@ -76,7 +77,7 @@ pub struct InMemoryFutureParseQueue {
 
 impl InMemoryFutureParseQueue {
 	/// Create an empty queue.
-	pub fn new() -> Self { Self { inner: Arc::new(Mutex::new(HashMap::new())) } }
+	pub fn new() -> Self { Self { inner: Arc::new(Mutex::new(HashMap::default())) } }
 
 	/// Return all queued blob refs for a lib (without draining, for assertions).
 	pub fn peek_for_lib(&self, lib: &LibRef) -> Vec<BlobRef> {

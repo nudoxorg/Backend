@@ -16,30 +16,27 @@ use super::{require_non_empty, require_qdrant};
 
 pub async fn semantic_search(
 	config: &PipelineConfig,
+	client: &Qdrant,
+	provider: &OpenAIEmbeddingProvider,
 	query: &str,
 	limit: usize,
 ) -> Result<SearchResponse, AppError> {
-	let results = search_results(config, query, limit).await?;
+	let results = search_results(config, client, provider, query, limit).await?;
 	Ok(SearchResponse { query: query.trim().to_owned(), results })
 }
 
 pub(crate) async fn search_results(
 	config: &PipelineConfig,
+	client: &Qdrant,
+	provider: &OpenAIEmbeddingProvider,
 	query: &str,
 	limit: usize,
 ) -> Result<Vec<SearchResult>, AppError> {
 	let qdrant = require_qdrant(config)?;
 	let query = require_non_empty("q", query)?;
-	let provider = OpenAIEmbeddingProvider::new(config.embedding_model.clone());
 	let embedding = provider.embed_text(query).await?;
 
-	let client = Qdrant::from_url(qdrant.endpoint.as_str())
-		.build()
-		.map_err(|source| AppError::Qdrant(QdrantError::ConnectionFailed {
-			endpoint: qdrant.endpoint.to_string(),
-			source,
-		}))?;
-	let collections = backend_collections(&client, qdrant).await?;
+	let collections = backend_collections(client, qdrant).await?;
 
 	let mut results = Vec::new();
 	for collection in collections {

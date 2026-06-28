@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use super::context::{ParseContext, ParseState};
 use super::{error::Parse, Result};
@@ -31,7 +31,7 @@ impl ParseContext {
 		let _visibility = Some(self.visibility(&vis));
 
 		let type_links = {
-			let mut links = HashMap::new();
+			let mut links = HashMap::default();
 
 			if let Some(ref params) = input_parameters {
 				for (idx, param) in params.iter().enumerate() {

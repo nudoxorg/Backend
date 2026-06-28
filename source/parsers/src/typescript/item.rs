@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -517,7 +517,7 @@ impl TsDocParser {
 			extra_entries.push(ctor_entry);
 		}
 
-		let mut seen_methods = HashSet::new();
+		let mut seen_methods = HashSet::default();
 		for method in cls.methods.iter().filter(|method| seen_methods.insert(method.name.to_string())) {
 			let methods: Vec<&ClassMethodDef> =
 				cls.methods.iter().filter(|candidate| candidate.name == method.name).collect();
