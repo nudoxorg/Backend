@@ -81,28 +81,38 @@ pub trait SymbolSink: Send + Sync {
 	) -> Result<usize, crate::http::error::AppError>;
 }
 
-/// Run every sink in order, honoring `fatal()`: a fatal sink's error aborts the
-/// run; a non-fatal sink's error is recorded and the run continues.
+/// Run every sink concurrently, honoring `fatal()`: a fatal sink's error aborts
+/// the run; a non-fatal sink's error is recorded and the run continues.
+///
+/// The sinks are independent (each writes to its own store), so they are fanned
+/// out with [`join_all`] and polled concurrently on this task — no spawning, so
+/// the borrowed `symbols`/`coord`/`progress` need no `'static`/`Send` bound.
+/// Error aggregation is preserved: outcomes are collected in sink order, the
+/// first fatal failure is returned, and non-fatal failures are logged and
+/// recorded with `indexed: 0`. (Concurrency means later sinks may have already
+/// done work when a fatal sink fails; they ran in parallel rather than after it.)
 pub async fn run_sinks(
 	sinks: &[Box<dyn SymbolSink>],
 	symbols: &[ParsedSymbol],
 	coord: &PackageCoord,
 	progress: &ProgressReporter,
 ) -> Result<IngestReport, crate::http::error::AppError> {
+	let results = futures::future::join_all(sinks.iter().map(|sink| async move {
+		let outcome = sink.accept(symbols, coord, progress).await;
+		(sink.name(), sink.fatal(), outcome)
+	}))
+	.await;
+
 	let mut report = IngestReport::default();
-	for sink in sinks {
-		match sink.accept(symbols, coord, progress).await {
+	for (name, fatal, outcome) in results {
+		match outcome {
 			Ok(indexed) => {
-				report.outcomes.push(SinkOutcome { name: sink.name(), indexed, error: None });
+				report.outcomes.push(SinkOutcome { name, indexed, error: None });
 			}
-			Err(e) if sink.fatal() => return Err(e),
+			Err(e) if fatal => return Err(e),
 			Err(e) => {
-				warn!(sink = %sink.name(), error = %e, "non-fatal sink failed");
-				report.outcomes.push(SinkOutcome {
-					name:    sink.name(),
-					indexed: 0,
-					error:   Some(e.to_string()),
-				});
+				warn!(sink = %name, error = %e, "non-fatal sink failed");
+				report.outcomes.push(SinkOutcome { name, indexed: 0, error: Some(e.to_string()) });
 			}
 		}
 	}
@@ -255,51 +265,81 @@ pub struct VectorSink {
 	pub collection: String,
 }
 
+/// How many symbols are embedded + upserted as one unit. Caps peak memory at
+/// `BATCH × MAX_INFLIGHT_BATCHES` embedded records/points rather than O(corpus).
+const VECTOR_UPLOAD_BATCH: usize = 256;
+/// How many batches may be embedding/uploading concurrently.
+const VECTOR_MAX_INFLIGHT_BATCHES: usize = 2;
+
 impl VectorSink {
 	/// Embed and upload `symbols`, consuming them. Each symbol's `embedding_text`
 	/// and `fq_name` are moved into the embedding document — no clone needed.
+	///
+	/// Records are streamed through bounded batches: instead of embedding the
+	/// whole corpus, collecting every [`EmbeddedRecord`], then building every
+	/// point and uploading once (peak memory O(corpus)), the documents are split
+	/// into [`VECTOR_UPLOAD_BATCH`]-sized chunks and each chunk is embedded →
+	/// built into points → upserted, with up to [`VECTOR_MAX_INFLIGHT_BATCHES`]
+	/// chunks in flight. Peak memory is therefore O(batch × concurrency).
 	pub async fn accept_owned(
 		&self,
 		symbols: Vec<ParsedSymbol>,
 		coord: &PackageCoord,
 		progress: &ProgressReporter,
 	) -> Result<usize, crate::http::error::AppError> {
+		use futures::stream::StreamExt;
+
 		let docs: Vec<_> =
 			symbols.into_iter().map(|s| s.into_embedding_document(coord)).collect();
+		let total = docs.len();
 		progress.phase_with_detail(
 			PackageSyncPhase::Embedding,
-			Some(format!("embedding {} symbols", docs.len())),
+			Some(format!("embedding {total} symbols")),
 		);
 
 		let service = EmbeddingService::new(OpenAIEmbeddingProvider::new(&self.model));
-		let records = service
-			.embed_documents(docs, |p: EmbeddingProgress| {
-				progress.phase_with_detail(
-					PackageSyncPhase::Embedding,
-					Some(format!("embedded {}/{} symbols", p.completed, p.total)),
-				);
-			})
-			.await?;
-
-		let count = records.len();
-		progress.phase_with_detail(
-			PackageSyncPhase::UploadingVectors,
-			Some(format!("uploading {count} vectors")),
-		);
-
-		let mut points = Vec::with_capacity(count);
-		for record in records {
-			let point_id = PointIdFactory::deterministic(&record.record_key);
-			points.push(QdrantPointFactory::build_point(point_id, record)?);
-		}
-
 		let qdrant_config = QdrantConfig {
 			endpoint:        self.settings.endpoint.clone(),
 			collection_name: self.collection.clone(),
 			vector_size:     self.settings.vector_size,
 			distance:        self.settings.distance,
 		};
-		upload_points(&qdrant_config, points).await?;
+
+		// Split the owned documents into bounded batches without cloning.
+		let mut batches: Vec<Vec<_>> = Vec::new();
+		let mut iter = docs.into_iter();
+		loop {
+			let batch: Vec<_> = iter.by_ref().take(VECTOR_UPLOAD_BATCH).collect();
+			if batch.is_empty() {
+				break;
+			}
+			batches.push(batch);
+		}
+
+		let service_ref = &service;
+		let config_ref = &qdrant_config;
+		let mut stream = futures::stream::iter(batches.into_iter().map(move |batch| async move {
+			let records = service_ref.embed_documents(batch, |_p: EmbeddingProgress| {}).await?;
+			let mut points = Vec::with_capacity(records.len());
+			for record in records {
+				let point_id = PointIdFactory::deterministic(&record.record_key);
+				points.push(QdrantPointFactory::build_point(point_id, record)?);
+			}
+			let n = points.len();
+			upload_points(config_ref, points).await?;
+			Ok::<usize, crate::http::error::AppError>(n)
+		}))
+		.buffer_unordered(VECTOR_MAX_INFLIGHT_BATCHES);
+
+		let mut count = 0usize;
+		while let Some(result) = stream.next().await {
+			count += result?;
+			progress.phase_with_detail(
+				PackageSyncPhase::UploadingVectors,
+				Some(format!("uploaded {count}/{total} vectors")),
+			);
+		}
+
 		info!(collection = self.collection, count, "vector upload complete");
 		Ok(count)
 	}

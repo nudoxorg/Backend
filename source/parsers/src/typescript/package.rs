@@ -137,8 +137,11 @@ impl Package {
 			});
 		}
 
-		let json = String::from_utf8(output.stdout)?;
-		let documents: HashMap<String, deno_doc::Document> = serde_json::from_str(&json)?;
+		// `output.stdout` is already an owned, mutable byte buffer — exactly what
+		// simd-json wants. Parse it in place (simd-json validates UTF-8 itself),
+		// skipping the intermediate `String` copy from `from_utf8`.
+		let mut json = output.stdout;
+		let documents: HashMap<String, deno_doc::Document> = simd_json::from_slice(&mut json)?;
 
 		let mut parser = TsDocParser::from_doc(documents)?;
 		let entries = parser.parse()?;

@@ -9,6 +9,8 @@
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+use rayon::prelude::*;
+
 use ir::entry::{Entry, Index};
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language, LibRef, OccurrenceId, RepoId, ResolutionState, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use pipeline::treesitter::parse_and_extract;
@@ -85,10 +87,29 @@ pub fn project(
 	source_map: &HashMap<String, String>,
 	identity: &Identity,
 ) -> Vec<ParsedSymbol> {
+	// Compile-time witness that the parallel projection below is sound.
+	//
+	// rayon shares each `&Entry` across worker threads (requires `Entry: Sync`)
+	// and sends each produced `ParsedSymbol` back to the collector (requires
+	// `ParsedSymbol: Send`). The tree-sitter `Parser`/`Tree` never cross this
+	// boundary: `pipeline::treesitter::parse_and_extract` constructs and drops
+	// its parser(s) entirely inside one synchronous call on the worker thread, so
+	// their (lack of) `Send`/`Sync` is irrelevant to the fan-out — the
+	// `buffer_unordered`-of-`spawn_blocking` fallback the audit describes is
+	// therefore unnecessary.
+	fn assert_send<T: Send>() {}
+	fn assert_sync<T: Sync>() {}
+	assert_send::<ParsedSymbol>();
+	assert_sync::<Entry>();
+
+	// One Parser per rayon worker would require `parse_and_extract` to accept a
+	// `&mut Parser`; that lives in the out-of-scope `pipeline` crate, so each call
+	// still allocates its own. The parallelism (one rayon worker per core, each
+	// projecting a disjoint slice of entries) is the win captured here.
 	index
 		.entries_by_path
-		.values()
-		.map(|entry| project_entry(coord, entry, source_map, identity))
+		.par_iter()
+		.map(|(_path, entry)| project_entry(coord, entry, source_map, identity))
 		.collect()
 }
 

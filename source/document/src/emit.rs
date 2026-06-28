@@ -1,4 +1,7 @@
-use ir::entry::Entry;
+use std::collections::HashSet;
+
+use ir::entry::{Entry, NudoxPath};
+use ir::kind::Visibility;
 use serde_json::{Map, Value, json};
 use tracing::{debug, instrument, warn};
 
@@ -13,6 +16,17 @@ impl EmitJsonLD for Entry {
 		let path = self.path().clone();
 		let entry_uri: URI = ctx.entry_uri(&path);
 
+		// Borrow every field straight out of `&self`; the only owning copies are
+		// the `Value`s actually placed in the document below. Nothing is cloned
+		// into an intermediate tuple.
+		type Fields<'a> = (
+			Option<&'a Vec<NudoxPath>>,
+			Option<&'a Vec<NudoxPath>>,
+			Option<&'a Visibility>,
+			Option<&'a str>,
+			Option<&'a HashSet<Vec<String>, rustc_hash::FxBuildHasher>>,
+			&'a str,
+		);
 		let (
 			entry_members,
 			implemented_protocols,
@@ -20,46 +34,46 @@ impl EmitJsonLD for Entry {
 			entry_documentation,
 			aliases,
 			name,
-		) = match &self {
+		): Fields = match &self {
 			Entry::Module(s) => (
-				s.inner.members.clone(),
+				s.inner.members.as_ref(),
 				None,
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::RecordType(s) => (
-				s.inner.members.clone(),
-				s.inner.implemented_protocols.clone(),
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				s.inner.members.as_ref(),
+				s.inner.implemented_protocols.as_ref(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::Function(s) => (
-				s.inner.members.clone(),
-				s.inner.implemented_protocols.clone(),
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				s.inner.members.as_ref(),
+				s.inner.implemented_protocols.as_ref(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::TraitDef(s) => (
-				s.inner.members.clone(),
+				s.inner.members.as_ref(),
 				None,
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::TraitImpl(s) => (
-				s.inner.members.clone(),
+				s.inner.members.as_ref(),
 				None,
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::Constant(s)
 			| Entry::Variable(s)
@@ -69,59 +83,59 @@ impl EmitJsonLD for Entry {
 			| Entry::Event(s) => (
 				None,
 				None,
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::Info(s) => (
 				None,
 				None,
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::UnionType(s) => (
 				None,
 				None,
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::TypeAlias(s) => (
 				None,
 				None,
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 			Entry::SumType(s) => (
 				None,
 				None,
-				Some(s.visibility.clone()),
-				s.documentation.clone(),
-				s.aliases.clone(),
-				s.name.clone(),
+				Some(&s.visibility),
+				s.documentation.as_deref(),
+				s.aliases.as_ref(),
+				&s.name,
 			),
 		};
 
-		let members: Vec<String> = match entry_members.as_ref() {
+		let members: Vec<String> = match entry_members {
 			Some(members) => {
 				members.iter().map(|member| ctx.entry_uri(member).as_str().to_owned()).collect()
 			}
 			None => Vec::default(),
 		};
-		let implemented_protocols: Vec<String> = match implemented_protocols.as_ref() {
+		let implemented_protocols: Vec<String> = match implemented_protocols {
 			Some(protocols) => {
 				protocols.iter().map(|protocol| ctx.entry_uri(protocol).as_str().to_owned()).collect()
 			}
 			None => Vec::default(),
 		};
 
-		let aliases_fq: Vec<String> = match aliases.as_ref() {
+		let aliases_fq: Vec<String> = match aliases {
 			Some(aliaie) => aliaie.iter().map(|p| p.join("::")).collect(),
 			None => vec![],
 		};
@@ -137,15 +151,15 @@ impl EmitJsonLD for Entry {
 		obj.insert("path".into(), json!(path_segments(&path)));
 		obj.insert("fq_name".into(), Value::String(fq_name(&path)));
 		obj.insert("aliases".into(), json!(aliases_fq));
-		obj.insert("name".into(), Value::String(name));
+		obj.insert("name".into(), Value::String(name.to_owned()));
 		obj.insert("members".into(), json!(members));
 		obj.insert("implemented_protocols".into(), json!(implemented_protocols));
 
-		if let Some(vis) = entry_visibility.as_ref() {
+		if let Some(vis) = entry_visibility {
 			obj.insert("visibility".into(), json!(vis));
 		}
 
-		if let Some(doc) = entry_documentation.as_deref() {
+		if let Some(doc) = entry_documentation {
 			obj.insert("documentation".into(), Value::String(doc.to_owned()));
 		}
 

@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use terminusdb_client::{BranchSpec, TerminusDBHttpClient};
 
@@ -9,17 +10,24 @@ use crate::http::error::AppError;
 use super::fetch_document;
 use super::session::SessionGraphState;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A node in the session graph.
+///
+/// `uri` is interned as `Arc<str>` and `document` is shared as
+/// `Arc<JsonValue>`, so building a response and merging sessions only bump
+/// reference counts instead of deep-copying the (often large) JSON-LD document.
+#[derive(Debug, Clone, Serialize)]
 pub struct GraphNode {
-	pub uri:      String,
-	pub document: JsonValue,
+	pub uri:      Arc<str>,
+	pub document: Arc<JsonValue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// An edge in the session graph. URIs and the relation are interned as
+/// `Arc<str>` so clone-for-response is a handful of refcount bumps.
+#[derive(Debug, Clone, Serialize)]
 pub struct GraphEdge {
-	pub source:   String,
-	pub target:   String,
-	pub relation: String,
+	pub source:   Arc<str>,
+	pub target:   Arc<str>,
+	pub relation: Arc<str>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -37,9 +45,9 @@ pub(crate) async fn build_graph(
 ) -> Result<SessionGraphState, AppError> {
 	let mut graph = SessionGraphState::default();
 	let mut cache = HashMap::<String, Option<JsonValue>>::new();
-	let mut visited = HashSet::<String>::new();
-	let mut queue: VecDeque<(String, usize)> =
-		roots.into_iter().map(|uri| (uri, depth)).collect();
+	let mut visited = HashSet::<Arc<str>>::new();
+	let mut queue: VecDeque<(Arc<str>, usize)> =
+		roots.into_iter().map(|uri| (Arc::<str>::from(uri), depth)).collect();
 
 	while let Some((uri, remaining_depth)) = queue.pop_front() {
 		if !visited.insert(uri.clone()) {
@@ -49,11 +57,14 @@ pub(crate) async fn build_graph(
 		let Some(document) = fetch_document(client, spec, &mut cache, &uri).await? else {
 			continue;
 		};
+		// Wrap the fetched document once; every later clone is an Arc bump.
+		let document = Arc::new(document);
 		graph.add_node(uri.clone(), document.clone());
 
 		let links = extract_links(&document, breadth);
 		for (relation, target) in links {
-			graph.add_edge(uri.clone(), target.clone(), relation);
+			let target: Arc<str> = Arc::from(target);
+			graph.add_edge(uri.clone(), target.clone(), Arc::from(relation));
 			if remaining_depth > 0 {
 				queue.push_back((target, remaining_depth - 1));
 			}

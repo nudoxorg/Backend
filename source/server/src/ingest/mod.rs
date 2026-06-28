@@ -86,7 +86,7 @@ pub async fn run_pipeline<B: LanguageBackend>(
 		.map_err(|source| AppError::TaskJoin { action: "IR generation", source })??;
 
 	let coord = PackageCoord::new(B::LANGUAGE, B::package_name(package), &version.to_string());
-	finalize_pipeline(coord, index, config, progress, targets, &source_map).await
+	finalize_pipeline(coord, index, config, progress, targets, source_map).await
 }
 
 async fn finalize_pipeline(
@@ -95,7 +95,7 @@ async fn finalize_pipeline(
 	config: &PipelineConfig,
 	progress: &ProgressReporter,
 	targets: &IngestTargets,
-	source_map: &HashMap<String, String>,
+	source_map: HashMap<String, String>,
 ) -> Result<IngestionSummary, AppError> {
 	let identity = match config.terminus.as_ref() {
 		Some(t) => Identity::Deterministic { instance: format!("{}/{}", t.org, t.db).into() },
@@ -103,12 +103,23 @@ async fn finalize_pipeline(
 	};
 	let entry_count = index.entries_by_path.len();
 
-	// The single parse-once projection. `project` borrows the index; the graph
-	// emission then consumes it. Both walk the same in-memory IR — neither
-	// re-parses the other's output.
-	let symbols = project(&coord, &index, source_map, &identity);
-	let doc_store =
-		emit_store(coord.language.as_str(), coord.package.as_ref(), coord.version.as_ref(), index);
+	// The single parse-once projection, run off the async reactor. `project`
+	// fans the IR out across a rayon worker pool (one core each); the graph
+	// emission then consumes the same in-memory `Index`. Both are CPU-bound and
+	// must not block the tokio reactor, so the whole projection+emission runs
+	// inside one `spawn_blocking`. Neither re-parses the other's output.
+	let coord_blocking = coord.clone();
+	let identity_blocking = identity.clone();
+	let lang = coord.language.as_str().to_owned();
+	let pkg = coord.package.to_string();
+	let ver = coord.version.to_string();
+	let (symbols, doc_store) = spawn_blocking(move || {
+		let symbols = project(&coord_blocking, &index, &source_map, &identity_blocking);
+		let doc_store = emit_store(&lang, &pkg, &ver, index);
+		(symbols, doc_store)
+	})
+	.await
+	.map_err(|source| AppError::TaskJoin { action: "projection", source })?;
 	let document_count = doc_store.docs.len();
 
 	// Assemble non-consuming sinks (these borrow `&[ParsedSymbol]`).

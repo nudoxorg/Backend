@@ -71,7 +71,7 @@
 //! symbol/kind/etc URI and the corresponding values. Some context will be
 //! passed to contain URIs, metadata, etc. to include on various types/enum
 //! variants for Kind.
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{borrow::Cow, collections::{BTreeMap, btree_map::Entry as BTreeEntry}};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -96,18 +96,26 @@ impl DocStore {
 	pub fn new() -> Self { DocStore { docs: BTreeMap::default() } }
 
 	pub fn insert(&mut self, uri: URI, value: Value) -> Result<URI, URI> {
-		if let Some(v) = self.docs.insert(uri.clone(), value.clone()) {
-			if v == value {
+		// Insert-by-move on the common (vacant) path: the value is never cloned,
+		// and an existing slot is compared by reference. Only the (small) URI key
+		// is cloned for the return value.
+		match self.docs.entry(uri) {
+			BTreeEntry::Vacant(slot) => {
+				let uri = slot.key().clone();
+				slot.insert(value);
 				Ok(uri)
-			} else {
-				warn!(uri = %uri, "non-identical values inserted at same URI");
-				// Collision! One value overwrites the other.
-				// todo!("Handle URI collision for {}: decide if we should merge or
-				// disambiguate.", uri);
-				Err(uri)
 			}
-		} else {
-			Ok(uri)
+			BTreeEntry::Occupied(slot) => {
+				if *slot.get() == value {
+					Ok(slot.key().clone())
+				} else {
+					warn!(uri = %slot.key(), "non-identical values inserted at same URI");
+					// Collision! Keep the existing value; report the conflict.
+					// todo!("Handle URI collision: decide if we should merge or
+					// disambiguate.")
+					Err(slot.key().clone())
+				}
+			}
 		}
 	}
 

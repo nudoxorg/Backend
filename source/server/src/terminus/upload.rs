@@ -44,14 +44,16 @@ pub async fn terminus_client_with_retry(
 	.await
 }
 
-fn documents_in_dependency_order(store: &DocStore) -> Vec<Value> {
-	let mut kinds = Vec::new();
-	let mut entries = Vec::new();
+fn documents_in_dependency_order(store: &DocStore) -> Vec<&Value> {
+	let mut kinds: Vec<&Value> = Vec::new();
+	let mut entries: Vec<&Value> = Vec::new();
 
+	// Borrow each document straight out of the store; the uploader hands
+	// `&Value`s to the terminus client, so there is no need to clone the JSON.
 	for (_uri, value) in store.documents_sorted() {
 		match value.get("@type").and_then(|ty| ty.as_str()) {
-			Some("Entry") => entries.push(value.clone()),
-			_ => kinds.push(value.clone()),
+			Some("Entry") => entries.push(value),
+			_ => kinds.push(value),
 		}
 	}
 
@@ -127,7 +129,7 @@ pub async fn upload_documents(
 		}
 		.with_timeout(DOCUMENT_UPLOAD_TIMEOUT);
 
-		let doc_refs: Vec<&Value> = chunk.iter().collect();
+		let doc_refs: Vec<&Value> = chunk.to_vec();
 		let result = retry::with_backoff(
 			DOCUMENT_UPLOAD_MAX_ATTEMPTS,
 			Duration::from_secs(2),

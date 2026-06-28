@@ -147,12 +147,14 @@ impl VectorIndex for InMemoryVectorIndex {
 #[async_trait]
 impl VectorQuery for InMemoryVectorIndex {
 	async fn search(&self, vector: &[f32], limit: usize) -> Result<Vec<VectorHit>> {
+		// Precompute the query norm once rather than per stored record.
+		let query_norm = norm(vector);
 		let map = self.points.lock().unwrap();
 		let mut scored: Vec<(f32, BlobRef, GlobalSymbolId)> = map
 			.iter()
 			.flat_map(|(blob_ref_str, (global_id, records))| {
 				records.iter().map(move |rec| {
-					let score = cosine_similarity(vector, &rec.vector);
+					let score = cosine_with_query_norm(vector, query_norm, &rec.vector);
 					(score, BlobRef(blob_ref_str.clone()), *global_id)
 				})
 			})
@@ -171,14 +173,61 @@ impl VectorQuery for InMemoryVectorIndex {
 	}
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+/// Cosine similarity using a SIMD inner loop and a precomputed query norm.
+///
+/// `query_norm` must be `norm(a)`. For each candidate `b` this computes
+/// `dot(a, b)` and `‖b‖` in a single 8-lane pass; numerically equivalent to the
+/// scalar formulation up to float rounding.
+fn cosine_with_query_norm(a: &[f32], query_norm: f32, b: &[f32]) -> f32 {
 	if a.len() != b.len() || a.is_empty() {
 		return 0.0;
 	}
-	let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-	let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-	let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-	if norm_a == 0.0 || norm_b == 0.0 { 0.0 } else { dot / (norm_a * norm_b) }
+	let (dot, norm_b_sq) = dot_and_norm_sq(a, b);
+	let norm_b = norm_b_sq.sqrt();
+	if query_norm == 0.0 || norm_b == 0.0 { 0.0 } else { dot / (query_norm * norm_b) }
+}
+
+/// Euclidean norm `‖v‖` using an 8-lane SIMD reduction plus scalar remainder.
+fn norm(v: &[f32]) -> f32 {
+	use wide::f32x8;
+
+	let chunks = v.len() / 8;
+	let mut acc = f32x8::ZERO;
+	for i in 0..chunks {
+		let off = i * 8;
+		let x = f32x8::new(v[off..off + 8].try_into().unwrap());
+		acc += x * x;
+	}
+	let mut sum = acc.reduce_add();
+	for &x in &v[chunks * 8..] {
+		sum += x * x;
+	}
+	sum.sqrt()
+}
+
+/// Returns `(dot(a, b), Σ b_i²)` over equal-length slices, processed 8 lanes at
+/// a time with a scalar tail for the remainder.
+fn dot_and_norm_sq(a: &[f32], b: &[f32]) -> (f32, f32) {
+	use wide::f32x8;
+
+	let n = a.len();
+	let chunks = n / 8;
+	let mut dot_acc = f32x8::ZERO;
+	let mut nb_acc = f32x8::ZERO;
+	for i in 0..chunks {
+		let off = i * 8;
+		let va = f32x8::new(a[off..off + 8].try_into().unwrap());
+		let vb = f32x8::new(b[off..off + 8].try_into().unwrap());
+		dot_acc += va * vb;
+		nb_acc += vb * vb;
+	}
+	let mut dot = dot_acc.reduce_add();
+	let mut nb = nb_acc.reduce_add();
+	for i in chunks * 8..n {
+		dot += a[i] * b[i];
+		nb += b[i] * b[i];
+	}
+	(dot, nb)
 }
 
 #[cfg(test)]
@@ -292,6 +341,34 @@ mod tests {
 
 		let not_found = index.find_by_global_id(GlobalSymbolId(Uuid::new_v4()), 10).await.unwrap();
 		assert!(not_found.is_empty());
+	}
+
+	#[test]
+	fn simd_cosine_matches_scalar_reference() {
+		// Reference scalar cosine, matching the pre-SIMD implementation.
+		fn scalar_cosine(a: &[f32], b: &[f32]) -> f32 {
+			if a.len() != b.len() || a.is_empty() {
+				return 0.0;
+			}
+			let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+			let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+			let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+			if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+		}
+
+		// Lengths that exercise the 8-lane chunk plus a scalar remainder, an
+		// exact multiple of 8, and the empty/short edge cases.
+		for len in [0usize, 1, 7, 8, 13, 16, 33] {
+			let a: Vec<f32> = (0..len).map(|i| (i as f32 * 0.37).sin()).collect();
+			let b: Vec<f32> = (0..len).map(|i| (i as f32 * 0.91 + 1.0).cos()).collect();
+			let qn = norm(&a);
+			let simd = cosine_with_query_norm(&a, qn, &b);
+			let scalar = scalar_cosine(&a, &b);
+			assert!(
+				(simd - scalar).abs() <= 1e-5,
+				"len {len}: simd {simd} vs scalar {scalar}"
+			);
+		}
 	}
 
 	#[tokio::test]
