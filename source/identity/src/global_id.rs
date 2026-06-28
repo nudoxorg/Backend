@@ -1,7 +1,7 @@
 use nudox_core::GlobalSymbolId;
 pub use nudox_store::{NUDOX_SYMBOL_NS, symbol_id};
 
-use super::entry_uri::EntryUri;
+use crate::entry_uri::EntryUri;
 
 /// Compute the deterministic [`GlobalSymbolId`] for an [`EntryUri`].
 ///

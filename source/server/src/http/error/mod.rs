@@ -32,26 +32,6 @@ use tokio::task::JoinError;
 
 use crate::core::ts::TsPackageError;
 
-pub(crate) fn summarize_command_output(bytes: &[u8]) -> String {
-	let text = String::from_utf8_lossy(bytes);
-	let trimmed = text.trim();
-	if trimmed.is_empty() {
-		return String::new();
-	}
-
-	const LIMIT: usize = 2_000;
-	if trimmed.len() <= LIMIT {
-		return trimmed.to_owned();
-	}
-
-	let mut end = LIMIT;
-	while !trimmed.is_char_boundary(end) {
-		end -= 1;
-	}
-
-	format!("{}...", &trimmed[..end])
-}
-
 #[derive(Debug, Error)]
 pub enum AppError {
 	#[error(transparent)]

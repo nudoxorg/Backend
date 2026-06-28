@@ -13,7 +13,7 @@ use terminusdb_client::{BranchSpec, GetOpts, TerminusDBHttpClient};
 
 use crate::config::{PipelineConfig, QdrantSettings};
 use crate::http::error::{AppError, ConfigError, TerminusError};
-use crate::identity::EntryUri;
+use nudox_identity::EntryUri;
 use crate::terminus::upload::TerminusConfig;
 
 pub mod text;
@@ -95,7 +95,7 @@ fn normalize_session(session: Option<&str>) -> Option<String> {
 }
 
 fn session_file(dir: &std::path::Path, session: &str) -> std::path::PathBuf {
-	use std::hash::{Hash, Hasher, hash::DefaultHasher};
+	use std::hash::{Hash, Hasher, DefaultHasher};
 
 	let mut hasher = DefaultHasher::new();
 	session.hash(&mut hasher);

@@ -4,8 +4,7 @@ use deno_ast::swc::ast::{Accessibility, TruePlusMinus, VarDeclKind};
 use deno_doc::{Declaration, DeclarationDef, Document, class::{ClassConstructorDef, ClassDef, ClassMethodDef}, r#enum::EnumDef, function::FunctionDef, interface::InterfaceDef, js_doc::JsDoc, node::{DeclarationKind, NamespaceDef, Symbol}, params::{ParamDef, ParamPatternDef}, ts_type::{CallSignatureDef, IndexSignatureDef, LiteralDef, LiteralDefKind, MethodDef, ThisOrIdent, TsTypeDef, TsTypeDefKind}, ts_type_param::TsTypeParamDef};
 use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::*, kind::{Entry, Visibility}, parameter::{Parameter, ParameterAttribute, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{ConditionalType, FunctionPointer, MappedType, ModifierPrefix, PredicateSubject, QualifiedPath, Type, TypeOperator, TypePredicate, TypeReference}};
 
-
-use crate::core::parse_common::{output_parameters_from_type, parameter_link_key};
+use nudox_ir_types::{output_parameters_from_type, parameter_link_key};
 
 pub type Result<T> = std::result::Result<T, ParseError>;
 
@@ -1660,6 +1659,7 @@ impl TsDocParser {
 					})
 					.transpose()?
 					.and_then(|v| if v.is_empty() { None } else { Some(v) });
+
 				Ok(Type::TypeReference(TypeReference { identifier: name, generic_args }))
 			}
 

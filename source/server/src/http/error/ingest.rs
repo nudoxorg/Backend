@@ -1,6 +1,5 @@
 use thiserror::Error;
 
-use super::package::PackageError;
 use crate::core::ts::TsPackageError;
 
 #[derive(Debug, Error)]
@@ -9,7 +8,7 @@ pub enum IngestError {
 	IrGeneration {
 		package: String,
 		#[source]
-		source:  PackageError,
+		source:  nudox_rust_parser::PackageError,
 	},
 
 	#[error("IR generation failed for `{package}`")]

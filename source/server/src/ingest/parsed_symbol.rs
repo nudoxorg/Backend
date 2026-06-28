@@ -13,7 +13,8 @@ use ir::entry::{Entry, Index};
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use nudox_pipeline::treesitter::parse_and_extract;
 
-use crate::{identity::{EntryUri, compute_symbol_id, path::{fq_name, nudox_path_to_str}}, ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind, build_entry_embedding_text}};
+use nudox_identity::{EntryUri, compute_symbol_id, path::{fq_name, nudox_path_to_str}};
+use crate::ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind, build_entry_embedding_text};
 
 /// Per-package coordinates shared by every symbol in one ingestion.
 #[derive(Debug, Clone)]

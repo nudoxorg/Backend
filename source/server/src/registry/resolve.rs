@@ -21,7 +21,7 @@ pub(crate) async fn resolve_package_handle(
 			}
 			let registry = Crates::new();
 			let packages = registry.get_packages_by_name(&request.name).await.map_err(|err| {
-				let crate::http::error::RegistryError::CratesIo(source) = err;
+				let source = match err { nudox_rust_parser::RegistryError::CratesIo(source) => source };
 				AppError::RegistryLookup(RegistryLookupError::CratesIo {
 					language: request.language,
 					package:  request.name.clone(),

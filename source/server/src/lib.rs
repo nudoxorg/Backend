@@ -3,7 +3,6 @@ pub mod core;
 pub mod emit;
 pub mod git;
 pub mod http;
-pub mod identity;
 pub mod ingest;
 pub mod registry;
 pub mod search;

@@ -1,6 +1,8 @@
 use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
 
-use crate::{core::ts::TsPackage, http::error::AppError};
+use nudox_ts_parser::TsPackage;
+
+use crate::http::error::AppError;
 
 use crate::registry::TYPESCRIPT_REPOSITORY_ENTRY_PREFIX;
 

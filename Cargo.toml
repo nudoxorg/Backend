@@ -2,7 +2,20 @@
 [workspace]
 resolver = "3"
 members = [
-  "./source/*",
+  "./source/server",
+  "./source/core",
+  "./source/store",
+  "./source/search",
+  "./source/blobstore",
+  "./source/embed",
+  "./source/identity",
+  "./source/document",
+  "./source/orchestrator",
+  "./source/pipeline",
+  "./source/intermediate-representation",
+  "./source/intermediate-representation/pipeline",
+  "./source/parsers/rust",
+  "./source/parsers/typescript",
 ]
 default-members = ["./source/server"]
 exclude = ["deno_doc"]
@@ -13,7 +26,10 @@ publish = false
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+nudox-document = { path = "./source/document" }
+nudox-identity = { path = "./source/identity" }
 ir = { path = "./source/intermediate-representation" }
+nudox-ir-types = { path = "./source/intermediate-representation/pipeline" }
 yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }

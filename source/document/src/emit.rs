@@ -1,12 +1,12 @@
-pub mod ld;
-
 use ir::entry::Entry;
 use serde_json::{Map, Value, json};
 use tracing::{debug, instrument, warn};
 
+use crate::{
+	schema::{DocCtx, DocStore, EmitJsonLD, URI, UriOps},
+	ld::LDKind,
+};
 use nudox_identity::path::{fq_name, path_segments};
-use crate::terminus::schema::{DocCtx, DocStore, EmitJsonLD, URI, UriOps};
-use self::ld::LDKind;
 
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {

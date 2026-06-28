@@ -1,7 +1,6 @@
 use std::{
 	collections::{BTreeMap, HashMap},
-	fs, hash::{DefaultHasher, Hash, Hasher},
-	io, path::{Path, PathBuf},
+	fs, io, path::{Path, PathBuf},
 	sync::Arc,
 };
 

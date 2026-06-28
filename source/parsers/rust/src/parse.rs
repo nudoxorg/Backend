@@ -7,8 +7,8 @@ pub type Result<T> = std::result::Result<T, ParseError>;
 use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{Entry, Visibility}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{DynTrait, FunctionPointer, PolyTrait, QualifiedPath, Type, TypeReference}};
 
 
-use crate::core::parse_common::{output_parameters_from_type, parameter_link_key};
-use super::ParseError;
+use nudox_ir_types::{output_parameters_from_type, parameter_link_key};
+use crate::ParseError;
 
 /// Immutable context.
 pub struct ParseContext {
@@ -113,16 +113,8 @@ impl RustdocParser {
 					entries.push(entry);
 				}
 				Err(e) => {
-					// We should probably decide if we want to fail hard here or just skip and log.
-					// For now, let's at least log it if it's not a circular dependency (which is
-					// handled).
 					if let ParseError::CircularDependency { .. } = e {
-						// Circular dependencies are expected in some cases and handled by
-						// returning Err.
 					} else {
-						// This is a silent failure point that we should probably address.
-						// todo!("Failed to parse item {}: {}. Decide on error handling
-						// policy.", id.0, e);
 					}
 				}
 			}
@@ -201,11 +193,8 @@ impl ParseContext {
 							queue.push_back((*target_id, new_path));
 						}
 					} else if import.is_glob {
-						// Glob imports: requires resolving the path string to an ID
 						todo!("Glob imports resolution not yet implemented");
 					} else {
-						// This can happen for some re-exports of items from other crates
-						// that are not inlined.
 						todo!("Import with no target ID and not a glob: {:?}", import);
 					}
 				}
@@ -256,8 +245,6 @@ impl ParseContext {
 				| ItemEnum::AssocType { .. }
 				| ItemEnum::AssocConst { .. }
 				| ItemEnum::ExternCrate { .. } => {
-
-					// These are terminal items in the path map traversal (for now)
 				}
 				_ => {
 					todo!("Unhandled item type in build_path_map: {:?}", item.inner);

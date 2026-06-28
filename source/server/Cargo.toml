@@ -21,11 +21,15 @@ gix-ref = "0.54.1"
 ir = { workspace = true, features = ["serde"] }
 nudox-store     = { path = "../store" }
 nudox-core      = { path = "../core" }
+nudox-identity  = { workspace = true }
 nudox-search    = { path = "../search" }
 nudox-blobstore = { path = "../blobstore" }
+nudox-document  = { path = "../document" }
 nudox-embed     = { path = "../embed" }
 nudox-orchestrator = { path = "../orchestrator", features = ["memory-backends"] }
-nudox-pipeline  = { path = "../pipeline" }
+nudox-pipeline      = { path = "../pipeline" }
+nudox-rust-parser   = { path = "../parsers/rust" }
+nudox-ts-parser = { path = "../parsers/typescript" }
 uuid            = { workspace = true }
 chrono          = { workspace = true }
 arborium = { workspace = true, features = ["lang-rust"] }
