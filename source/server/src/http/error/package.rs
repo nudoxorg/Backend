@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use super::git::GitError;
 use super::registry::RegistryError;
-use crate::core::rust::ParseError;
+use crate::core::rust::Parse;
 
 #[derive(Debug, Error)]
 pub enum PackageError {
@@ -16,7 +16,7 @@ pub enum PackageError {
 	Process { command: String, status: ExitStatus, details: String },
 
 	#[error("parse error: {0}")]
-	Parse(#[from] ParseError),
+	Parse(#[from] Parse),
 
 	#[error("serialization error: {0}")]
 	Serialization(#[from] serde_json::Error),

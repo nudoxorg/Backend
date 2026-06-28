@@ -30,7 +30,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::task::JoinError;
 
-use crate::core::ts::TsPackageError;
+use parsers::typescript::error::Package as TsPackageError;
 
 #[derive(Debug, Error)]
 pub enum AppError {

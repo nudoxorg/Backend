@@ -7,7 +7,7 @@ use semver::Version;
 use url::Url;
 
 use crate::{
-	core::{rust::RustPackage, ts::TsPackage, ts::entry_point::{resolve_typescript_repository_entry_point, typescript_repository_entry_hint}},
+	core::{rust::RustPackage, ts::Package, ts::entry_point::{resolve_typescript_repository_entry_point, typescript_repository_entry_hint}},
 	git,
 	http::error::{AppError, IngestError},
 };
@@ -80,13 +80,13 @@ impl LanguageBackend for RustBackend {
 pub struct TypeScriptBackend;
 
 impl LanguageBackend for TypeScriptBackend {
-	type Package = TsPackage;
+	type Package = Package;
 
 	const LANGUAGE: Language = Language::TypeScript;
 
-	fn package_name(package: &TsPackage) -> &str { &package.name }
+	fn package_name(package: &Package) -> &str { &package.name }
 
-	fn package_source(package: &TsPackage) -> &Url { &package.source }
+	fn package_source(package: &Package) -> &Url { &package.source }
 
 	fn find_commit(
 		repository: &Repository,
@@ -98,9 +98,9 @@ impl LanguageBackend for TypeScriptBackend {
 	}
 
 	fn prepare_workspace(
-		mut package: TsPackage,
+		mut package: Package,
 		workspace: &Path,
-	) -> Result<TsPackage, AppError> {
+	) -> Result<Package, AppError> {
 		let entry_point = resolve_typescript_repository_entry_point(
 			workspace,
 			typescript_repository_entry_hint(&package),
@@ -110,7 +110,7 @@ impl LanguageBackend for TypeScriptBackend {
 	}
 
 	fn generate_ir(
-		package: &TsPackage,
+		package: &Package,
 		_workspace: &Path,
 		_version: &Version,
 	) -> Result<(Index, HashMap<String, String>), AppError> {

@@ -1,7 +1,7 @@
 use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}, process::Command};
 
 use color_eyre::eyre::WrapErr;
-use nudox::{core::{rust::RustPackage, ts::TsPackage}, git::{clone_repository, find_commit_for_version, materialize_commit}, emit::Runner, terminus::{schema::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}};
+use nudox::{core::{rust::RustPackage, ts::Package}, git::{clone_repository, find_commit_for_version, materialize_commit}, emit::Runner, terminus::{schema::{CrateInfo, DocCtx, DocStore}, upload::{TerminusConfig, upload_schema}}};
 use rustdoc_types::{Crate as RustdocCrate, ItemEnum};
 use semver::Version;
 use tempfile::TempDir;
@@ -297,7 +297,7 @@ async fn rust_axum_terminus_upload_repro() -> color_eyre::Result<()> {
 #[test]
 fn typescript_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 	let entry_point = fixture_root().join("ts/regular/greeter.ts");
-	let package = TsPackage {
+	let package = Package {
 		slug:        "greeter".into(),
 		name:        "greeter".into(),
 		uuid:        3,
@@ -324,7 +324,7 @@ fn typescript_regular_pipeline_end_to_end() -> color_eyre::Result<()> {
 #[test]
 fn typescript_unique_pipeline_end_to_end() -> color_eyre::Result<()> {
 	let entry_point = fixture_root().join("ts/unique/toolkit.ts");
-	let package = TsPackage {
+	let package = Package {
 		slug:        "toolkit".into(),
 		name:        "toolkit".into(),
 		uuid:        4,

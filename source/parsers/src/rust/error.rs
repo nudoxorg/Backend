@@ -5,7 +5,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
-pub enum ParseError {
+pub enum Parse {
 	#[error("Item not found: {0}")]
 	ItemNotFound(u32),
 
@@ -30,8 +30,8 @@ pub enum ParseError {
 	#[error("Path parsing error: {0}")]
 	PathParsing(String),
 
-	#[error("Unsupported item type: {0}")]
-	UnsupportedItemType(String),
+	#[error("Unsupported item type")]
+	UnsupportedItemType,
 
 	#[error("Circular dependency detected: {path}")]
 	CircularDependency { path: String },
@@ -56,13 +56,13 @@ pub enum ParseError {
 }
 
 #[derive(Debug, Error)]
-pub enum RegistryError {
+pub enum Registry {
 	#[error("crates.io API error: {0}")]
 	CratesIo(#[from] crates_io_api::Error),
 }
 
 #[derive(Debug, Error)]
-pub enum PackageError {
+pub enum Package {
 	#[error("IO error: {0}")]
 	Io(#[from] io::Error),
 
@@ -70,7 +70,7 @@ pub enum PackageError {
 	Process { command: String, status: ExitStatus, details: String },
 
 	#[error("parse error: {0}")]
-	Parse(#[from] ParseError),
+	Parse(#[from] Parse),
 
 	#[error("serialization error: {0}")]
 	Serialization(#[from] serde_json::Error),

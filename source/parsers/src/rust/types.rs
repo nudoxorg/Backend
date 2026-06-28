@@ -1,5 +1,5 @@
-use super::parse::{ParseContext, ParseState};
-use super::{ParseError, Result};
+use super::context::{ParseContext, ParseState};
+use super::{error::Parse, Result};
 use ir::generics::{Constraint, ConstExpr, GenericArg, Term, TraitRef, TypeExpr};
 use ir::kind::Visibility;
 use ir::primitives::{Primitive, Width};
@@ -7,15 +7,15 @@ use ir::ty::{DynTrait, FunctionPointer, PolyTrait, QualifiedPath, Type, TypeRefe
 use rustdoc_types::{Id, ItemEnum};
 
 impl ParseContext {
-	pub(super) fn parse_union_fields(&self, u: &rustdoc_types::Union) -> Result<Vec<Type>> {
+	pub(super) fn union_fields(&self, u: &rustdoc_types::Union) -> Result<Vec<Type>> {
 		u.fields
 			.iter()
 			.map(|id| {
-				let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
+				let item = self.krate.index.get(id).ok_or(Parse::ItemNotFound(id.0))?;
 				if let ItemEnum::StructField(ty) = &item.inner {
-					self.parse_type(&ty)
+					self.type_(&ty)
 				} else {
-					Err(ParseError::InvalidItemKind {
+					Err(Parse::InvalidItemKind {
 						id:       id.0.to_string(),
 						expected: "StructField".to_string(),
 						actual:   format!("{:?}", item.inner),
@@ -78,7 +78,7 @@ impl ParseContext {
 		hasher.finish() as i64
 	}
 
-	pub(super) fn parse_visibility(&self, vis: &rustdoc_types::Visibility) -> Visibility {
+	pub(super) fn visibility(&self, vis: &rustdoc_types::Visibility) -> Visibility {
 		match vis {
 			rustdoc_types::Visibility::Public => Visibility::Public,
 			rustdoc_types::Visibility::Default => Visibility::Private,
@@ -87,13 +87,13 @@ impl ParseContext {
 		}
 	}
 
-	pub(super) fn parse_type(&self, ty: &rustdoc_types::Type) -> Result<Type> {
+	pub(super) fn type_(&self, ty: &rustdoc_types::Type) -> Result<Type> {
 		match ty {
 			rustdoc_types::Type::ResolvedPath(path) => {
 				if path.path == "Self" {
 					return Ok(Type::SelfType);
 				}
-				let ir_path = self.parse_resolved_path(path)?;
+				let ir_path = self.resolved_path(path)?;
 				Ok(Type::TypeReference(ir_path))
 			}
 
@@ -101,7 +101,7 @@ impl ParseContext {
 				let traits = dyn_trait
 					.traits
 					.iter()
-					.map(|pt| self.parse_poly_trait(pt))
+					.map(|pt| self.poly_trait(pt))
 					.collect::<Result<Vec<_>>>()?;
 
 				Ok(Type::DynTrait(DynTrait { traits, lifetime: dyn_trait.lifetime.clone() }))
@@ -119,28 +119,28 @@ impl ParseContext {
 				if prim == "never" || prim == "!" {
 					Ok(Type::Never)
 				} else {
-					Ok(Type::Primitive(self.parse_primitive(prim)?))
+					Ok(Type::Primitive(self.primitive(prim)?))
 				}
 			}
 
 			rustdoc_types::Type::FunctionPointer(fp) => {
-				let function_pointer = self.parse_function_pointer(fp)?;
+				let function_pointer = self.function_pointer(fp)?;
 				Ok(Type::FunctionPointer(function_pointer))
 			}
 
 			rustdoc_types::Type::Tuple(types) => {
-				let parsed_types = types.iter().map(|t| self.parse_type(t)).collect::<Result<Vec<_>>>()?;
+				let parsed_types = types.iter().map(|t| self.type_(t)).collect::<Result<Vec<_>>>()?;
 				Ok(Type::Tuple(parsed_types))
 			}
 
 			rustdoc_types::Type::Slice(inner) => {
-				let parsed_inner = Box::new(self.parse_type(inner)?);
+				let parsed_inner = Box::new(self.type_(inner)?);
 				Ok(Type::Slice(parsed_inner))
 			}
 
 			rustdoc_types::Type::Array { type_, len } => {
-				let parsed_ty = Box::new(self.parse_type(&type_)?);
-				let length = len.parse::<usize>().map_err(|_| ParseError::TypeResolution {
+				let parsed_ty = Box::new(self.type_(&type_)?);
+				let length = len.parse::<usize>().map_err(|_| Parse::TypeResolution {
 					type_name: "array".to_string(),
 					reason:    format!("Invalid array length: {}", len),
 				})?;
@@ -150,19 +150,19 @@ impl ParseContext {
 			rustdoc_types::Type::Pat { .. } => Ok(Type::Infer),
 
 			rustdoc_types::Type::ImplTrait(bounds) => {
-				let generic_bounds = self.parse_generic_bounds(bounds)?;
+				let generic_bounds = self.generic_bounds(bounds)?;
 				Ok(Type::ImplTrait(generic_bounds))
 			}
 
 			rustdoc_types::Type::Infer => Ok(Type::Infer),
 
 			rustdoc_types::Type::RawPointer { is_mutable, type_ } => {
-				let parsed_ty = Box::new(self.parse_type(&type_)?);
+				let parsed_ty = Box::new(self.type_(&type_)?);
 				Ok(Type::RawPointer { is_mutable: *is_mutable, r#type: parsed_ty })
 			}
 
 			rustdoc_types::Type::BorrowedRef { lifetime, is_mutable, type_ } => {
-				let parsed_ty = Box::new(self.parse_type(&type_)?);
+				let parsed_ty = Box::new(self.type_(&type_)?);
 				Ok(Type::BorrowedRef {
 					lifetime:   lifetime.clone(),
 					is_mutable: *is_mutable,
@@ -171,12 +171,12 @@ impl ParseContext {
 			}
 
 			rustdoc_types::Type::QualifiedPath { name, args, self_type, trait_ } => {
-				let parsed_self_type = Box::new(self.parse_type(self_type)?);
+				let parsed_self_type = Box::new(self.type_(self_type)?);
 				let parsed_trait =
-					trait_.as_ref().map(|path| self.parse_resolved_path(path)).transpose()?;
+					trait_.as_ref().map(|path| self.resolved_path(path)).transpose()?;
 				let generic_args = args
 					.as_ref()
-					.map(|ga| self.parse_generic_args(ga))
+					.map(|ga| self.generic_args(ga))
 					.transpose()?
 					.filter(|v| !v.is_empty());
 
@@ -190,32 +190,32 @@ impl ParseContext {
 		}
 	}
 
-	pub(super) fn parse_resolved_path(&self, path: &rustdoc_types::Path) -> Result<TypeReference> {
+	pub(super) fn resolved_path(&self, path: &rustdoc_types::Path) -> Result<TypeReference> {
 		let path_str = &path.path;
 		let generic_args = path
 			.args
 			.as_ref()
-			.map(|ga| self.parse_generic_args(ga))
+			.map(|ga| self.generic_args(ga))
 			.transpose()?
 			.filter(|v| !v.is_empty());
 
 		Ok(TypeReference { identifier: path_str.clone(), generic_args })
 	}
 
-	pub(super) fn parse_poly_trait(&self, pt: &rustdoc_types::PolyTrait) -> Result<PolyTrait> {
-		let trait_ref = self.parse_path_to_trait_ref(&pt.trait_)?;
+	pub(super) fn poly_trait(&self, pt: &rustdoc_types::PolyTrait) -> Result<PolyTrait> {
+		let trait_ref = self.path_to_trait_ref(&pt.trait_)?;
 		Ok(PolyTrait {
 			trait_ref,
 			lifetimes: pt.generic_params.iter().map(|gp| gp.name.clone()).collect(),
 		})
 	}
 
-	pub(super) fn parse_path_to_trait_ref(&self, path: &rustdoc_types::Path) -> Result<TraitRef> {
+	pub(super) fn path_to_trait_ref(&self, path: &rustdoc_types::Path) -> Result<TraitRef> {
 		let args = path
 			.args
 			.as_ref()
 			.map(|ga| {
-				self.parse_generic_args(ga).and_then(|args| {
+				self.generic_args(ga).and_then(|args| {
 					args
 						.into_iter()
 						.map(|arg| match arg {
@@ -234,7 +234,7 @@ impl ParseContext {
 		Ok(TraitRef { name: path.path.clone(), args })
 	}
 
-	pub(super) fn parse_primitive(&self, prim: &str) -> Result<Primitive> {
+	pub(super) fn primitive(&self, prim: &str) -> Result<Primitive> {
 		match prim {
 			"i8" => Ok(Primitive::Int(Width::W8)),
 			"i16" => Ok(Primitive::Int(Width::W16)),
@@ -252,14 +252,14 @@ impl ParseContext {
 			"bool" => Ok(Primitive::Bool),
 			"str" => Ok(Primitive::String),
 			"char" => Ok(Primitive::Char),
-			_ => Err(ParseError::InvalidPrimitive(prim.to_string())),
+			_ => Err(Parse::InvalidPrimitive(prim.to_string())),
 		}
 	}
 
 	pub(super) fn map_rustdoc_term(&self, term: rustdoc_types::Term) -> Term {
 		match term {
 			rustdoc_types::Term::Type(typer) => {
-				Term::Equality(Box::new(self.parse_type(&typer).unwrap()))
+				Term::Equality(Box::new(self.type_(&typer).unwrap()))
 			}
 			rustdoc_types::Term::Constant(_constant) => Term::Bound(vec![]),
 		}

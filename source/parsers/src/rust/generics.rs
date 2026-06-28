@@ -1,12 +1,12 @@
-use super::parse::{ParseContext, ParseState};
-use super::{ParseError, Result};
-use ir::generics::{Constraint, ConstExpr, GenericArg, Generics, TraitRef, TypeExpr, Variance};
+use super::context::{ParseContext, ParseState};
+use super::{error::Parse, Result};
+use ir::generics::{Constraint, ConstExpr, GenericArg, Generics, Term, TraitRef, TypeExpr, Variance};
 use ir::parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin};
 use ir::protocols::GenericBound;
 use ir::ty::Type;
 
 impl ParseContext {
-	pub(super) fn parse_generic_params(&self, generics: &rustdoc_types::Generics) -> Option<Generics> {
+	pub(super) fn generic_params(&self, generics: &rustdoc_types::Generics) -> Option<Generics> {
 		if generics.params.is_empty() && generics.where_predicates.is_empty() {
 			return None;
 		}
@@ -23,7 +23,7 @@ impl ParseContext {
 							variance:     Variance::Invariant,
 							default_type: default
 								.as_ref()
-								.and_then(|ty| self.parse_type(&ty).ok())
+								.and_then(|ty| self.type_(&ty).ok())
 								.map(|ty| TypeExpr { name: format!("{:?}", ty), args: vec![] }),
 							params:       None,
 							origin:       TypeParamOrigin::Free,
@@ -31,7 +31,7 @@ impl ParseContext {
 					}
 				}
 				rustdoc_types::GenericParamDefKind::Const { type_, default } => {
-					if let Ok(ty) = self.parse_type(type_) {
+					if let Ok(ty) = self.type_(type_) {
 						params.push(Parameter::Const(ConstParam {
 							name:          param.name.clone(),
 							r#type:        TypeExpr { name: format!("{:?}", ty), args: vec![] },
@@ -48,12 +48,12 @@ impl ParseContext {
 			}
 		}
 
-		let constraints = self.parse_where_predicates(&generics.where_predicates).unwrap_or_default();
+		let constraints = self.where_predicates(&generics.where_predicates).unwrap_or_default();
 
 		Some(Generics { params, constraints })
 	}
 
-	pub(super) fn parse_where_predicates(
+	pub(super) fn where_predicates(
 		&self,
 		predicates: &[rustdoc_types::WherePredicate],
 	) -> Result<Vec<Constraint>> {
@@ -68,7 +68,7 @@ impl ParseContext {
 
 					bounds
 						.iter()
-						.map(|bound| self.parse_generic_bound_to_constraint(&param_name, bound))
+						.map(|bound| self.generic_bound_to_constraint(&param_name, bound))
 						.collect::<Result<Vec<_>>>()
 				}
 				rustdoc_types::WherePredicate::EqPredicate { lhs, rhs } => {
@@ -90,14 +90,14 @@ impl ParseContext {
 			.map(|v| v.into_iter().flatten().collect())
 	}
 
-	pub(super) fn parse_generic_bound_to_constraint(
+	pub(super) fn generic_bound_to_constraint(
 		&self,
 		param: &str,
 		bound: &rustdoc_types::GenericBound,
 	) -> Result<Constraint> {
 		match bound {
 			rustdoc_types::GenericBound::TraitBound { trait_, generic_params: _, modifier: _ } => {
-				let trait_ref = self.parse_path_to_trait_ref(trait_)?;
+				let trait_ref = self.path_to_trait_ref(trait_)?;
 				Ok(Constraint::TraitBound { param: param.to_string(), trait_ref })
 			}
 			rustdoc_types::GenericBound::Use(_) => Ok(Constraint::TraitBound {
@@ -110,19 +110,19 @@ impl ParseContext {
 		}
 	}
 
-	pub(super) fn parse_trait_bounds(&self, bounds: &[rustdoc_types::GenericBound]) -> Result<Vec<TraitRef>> {
+	pub(super) fn trait_bounds(&self, bounds: &[rustdoc_types::GenericBound]) -> Result<Vec<TraitRef>> {
 		bounds
 			.iter()
 			.filter_map(|bound| match bound {
 				rustdoc_types::GenericBound::TraitBound { trait_, .. } => {
-					Some(self.parse_path_to_trait_ref(trait_))
+					Some(self.path_to_trait_ref(trait_))
 				}
 				_ => None,
 			})
 			.collect()
 	}
 
-	pub(super) fn parse_generic_bounds(
+	pub(super) fn generic_bounds(
 		&self,
 		bounds: &[rustdoc_types::GenericBound],
 	) -> Result<Vec<GenericBound>> {
@@ -130,7 +130,7 @@ impl ParseContext {
 			.iter()
 			.map(|bound| match bound {
 				rustdoc_types::GenericBound::TraitBound { trait_, .. } => {
-					let trait_ref = self.parse_path_to_trait_ref(trait_)?;
+					let trait_ref = self.path_to_trait_ref(trait_)?;
 					Ok(GenericBound::Trait(trait_ref))
 				}
 				rustdoc_types::GenericBound::Outlives(lifetime) => {
@@ -143,7 +143,7 @@ impl ParseContext {
 			.collect()
 	}
 
-	pub(super) fn parse_generic_args(&self, args: &rustdoc_types::GenericArgs) -> Result<Vec<GenericArg>> {
+	pub(super) fn generic_args(&self, args: &rustdoc_types::GenericArgs) -> Result<Vec<GenericArg>> {
 		match args {
 			rustdoc_types::GenericArgs::AngleBracketed { args, constraints } => {
 				let mut result = Vec::new();
@@ -151,7 +151,7 @@ impl ParseContext {
 				for constraint in constraints {
 					result.push(GenericArg::Constraint(Constraint::AssociatedItem {
 						name: constraint.name.clone(),
-						args: constraint.args.as_ref().map(|a| self.parse_generic_args(&a.clone()).unwrap()),
+						args: constraint.args.as_ref().map(|a| self.generic_args(&a.clone()).unwrap()),
 						term: match &constraint.binding {
 							rustdoc_types::AssocItemConstraintKind::Equality(term) => {
 								self.map_rustdoc_term(term.clone())
@@ -160,7 +160,7 @@ impl ParseContext {
 								bounds
 									.iter()
 									.flat_map(|t| {
-										let parsed = self.parse_generic_bounds(std::slice::from_ref(t)).unwrap();
+										let parsed = self.generic_bounds(std::slice::from_ref(t)).unwrap();
 										parsed
 											.into_iter()
 											.map(|b| match b {
@@ -185,7 +185,7 @@ impl ParseContext {
 							result.push(GenericArg::Lifetime(lt.clone()));
 						}
 						rustdoc_types::GenericArg::Type(ty) => {
-let parsed_ty = self.parse_type(&ty)?;
+let parsed_ty = self.type_(&ty)?;
 							result.push(GenericArg::Type(parsed_ty));
 						}
 						rustdoc_types::GenericArg::Const(c) => {
@@ -203,12 +203,12 @@ let parsed_ty = self.parse_type(&ty)?;
 				let mut result = Vec::new();
 
 				for input in inputs {
-					let parsed_ty = self.parse_type(input)?;
+					let parsed_ty = self.type_(input)?;
 					result.push(GenericArg::Type(parsed_ty));
 				}
 
 				if let Some(output) = output {
-					let parsed_output = self.parse_type(output)?;
+					let parsed_output = self.type_(output)?;
 					result.push(GenericArg::Type(parsed_output));
 				}
 

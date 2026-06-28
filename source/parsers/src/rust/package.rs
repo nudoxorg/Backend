@@ -10,8 +10,8 @@ use url::Url;
 
 use ir::pipeline::{Collected, Ir};
 
-use super::error::{PackageError, RegistryError};
-use super::parse::RustdocParser;
+use super::error::{Package, Registry};
+use super::context::RustdocParser;
 use super::Result;
 
 pub struct Crates {
@@ -59,7 +59,7 @@ impl RustPackage {
 		package_name: &str,
 		version: &Version,
 		lib_only: bool,
-	) -> std::result::Result<std::process::Output, PackageError> {
+	) -> std::result::Result<std::process::Output, Package> {
 		let mut command = Command::new("cargo");
 		command
 			.arg("rustdoc")
@@ -92,7 +92,7 @@ impl RustPackage {
 			String::new()
 		};
 
-		Err(PackageError::Process {
+		Err(Package::Process {
 			command: if lib_only { "cargo rustdoc --lib".into() } else { "cargo rustdoc".into() },
 			status: output.status,
 			details,
@@ -106,7 +106,7 @@ impl RustPackage {
 		package_name: &str,
 		doc_target_name: &str,
 		version: &Version,
-	) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), PackageError> {
+	) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
 		let target_dir = code.join("target").join("doc_json");
 
 		if !target_dir.exists() {
@@ -115,7 +115,7 @@ impl RustPackage {
 
 		match self.run_cargo_rustdoc(code, package_name, version, false) {
 			Ok(_) => {}
-			Err(PackageError::Process { details, .. })
+			Err(Package::Process { details, .. })
 				if details.contains("extra arguments to `rustdoc` can only be passed to one target") =>
 			{
 				self.run_cargo_rustdoc(code, package_name, version, true)?;
@@ -145,7 +145,7 @@ impl RustPackage {
 		&self,
 		code: &PathBuf,
 		version: &Version,
-	) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), PackageError> {
+	) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
 		let metadata = cargo_metadata(code)?;
 		let packages = documented_local_packages(&metadata, &self.name, self.direct_repo);
 		let mut entries = Vec::new();
@@ -172,7 +172,7 @@ impl RustPackage {
 		&self,
 		code: &PathBuf,
 		version: &Version,
-	) -> std::result::Result<Ir<Collected>, PackageError> {
+	) -> std::result::Result<Ir<Collected>, Package> {
 		self.generate_ir_with_sources(code, version).map(|(ir, _)| ir)
 	}
 
@@ -197,11 +197,11 @@ impl RustPackage {
 	}
 }
 
-fn cargo_metadata(code: &PathBuf) -> std::result::Result<Metadata, PackageError> {
+fn cargo_metadata(code: &PathBuf) -> std::result::Result<Metadata, Package> {
 	MetadataCommand::new()
 		.current_dir(code)
 		.exec()
-		.map_err(|source| PackageError::Metadata(source.to_string()))
+		.map_err(|source| Package::Metadata(source.to_string()))
 }
 
 fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &Path) -> HashMap<String, String> {
@@ -317,7 +317,7 @@ impl Crates {
 		}
 	}
 
-	pub async fn get_packages_by_name(&self, name: &str) -> std::result::Result<Vec<RustPackage>, RegistryError> {
+	pub async fn get_packages_by_name(&self, name: &str) -> std::result::Result<Vec<RustPackage>, Registry> {
 		let c = self.client.get_crate(name).await?;
 		Ok(vec![RustPackage::from(c.crate_data)])
 	}

@@ -8,7 +8,7 @@ use tokio::{sync::{Mutex, RwLock, Semaphore}, task::spawn_blocking, time::{Durat
 use tracing::{error, info, instrument, warn};
 use url::Url;
 
-use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::TsPackage}, http::error::AppError, ingest::{IngestTargets, IngestionSummary}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, util::retry::Transient};
+use crate::{config::PipelineConfig, core::{rust::RustPackage, ts::Package}, http::error::AppError, ingest::{IngestTargets, IngestionSummary}, storage::StorageLayout, sync_progress::{PackageSyncPhase, PackageSyncStatus, ProgressReporter}, util::retry::Transient};
 
 mod persist;
 mod resolve;
@@ -55,7 +55,7 @@ pub(crate) struct PackageSpec {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum PackageHandle {
 	Rust(RustPackage),
-	TypeScript(TsPackage),
+	TypeScript(Package),
 }
 
 pub(crate) struct TrackedPackage {
@@ -669,7 +669,7 @@ mod tests {
 				branch:   "main".to_owned(),
 				source:   Url::parse("https://github.com/ai/nanoid.git").unwrap(),
 			},
-			PackageHandle::TypeScript(TsPackage {
+			PackageHandle::TypeScript(Package {
 				slug:        "nanoid".to_owned(),
 				name:        "nanoid".to_owned(),
 				uuid:        9,

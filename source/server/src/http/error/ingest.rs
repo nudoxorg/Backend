@@ -1,6 +1,7 @@
 use thiserror::Error;
 
-use crate::core::ts::TsPackageError;
+use parsers::rust::error;
+use parsers::typescript::error::Package as TsPackageError;
 
 #[derive(Debug, Error)]
 pub enum IngestError {
@@ -8,7 +9,7 @@ pub enum IngestError {
 	IrGeneration {
 		package: String,
 		#[source]
-		source:  parsers::rust::PackageError,
+		source:  error::Package,
 	},
 
 	#[error("IR generation failed for `{package}`")]
@@ -25,8 +26,8 @@ pub enum IngestError {
 		source:  nudox_core::Error,
 	},
 
-	#[error("TsPackage resolution failed")]
-	TsPackageResolution {
+	#[error("Package resolution failed")]
+	PackageResolution {
 		#[source]
 		source: reqwest::Error,
 	},

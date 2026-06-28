@@ -12,9 +12,10 @@ pub mod types;
 pub mod function;
 pub mod item;
 
-pub use error::{ParseError, TsParseError, TsPackageError};
+pub use error::Parse;
+pub use self::package::{Npm, Package};
 
-pub type Result<T> = std::result::Result<T, ParseError>;
+pub type Result<T> = std::result::Result<T, Parse>;
 
 // ============================================================================
 // Core parse types

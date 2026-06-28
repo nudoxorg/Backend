@@ -3,7 +3,7 @@ use std::io;
 use lang_types::Language;
 use thiserror::Error;
 
-use crate::core::ts::TsPackageError;
+use parsers::typescript::error::Package as TsPackageError;
 
 #[derive(Debug, Error)]
 pub enum RegistryLookupError {

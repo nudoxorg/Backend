@@ -1,3 +1,3 @@
-pub use parsers::typescript::{TsPackage, TsPackageError, TsParseError, Npm};
+pub use parsers::typescript::{Package, Npm};
 
 pub mod entry_point;

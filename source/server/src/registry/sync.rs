@@ -4,7 +4,7 @@ use url::Url;
 
 use crate::{
 	config::PipelineConfig,
-	core::{backend::{LanguageBackend, RustBackend, TypeScriptBackend}, ts::TsPackage},
+	core::{backend::{LanguageBackend, RustBackend, TypeScriptBackend}, ts::Package},
 	git,
 	http::error::{AppError, PackageError, RegistryLookupError},
 	ingest::{IngestTargets, run_pipeline},
@@ -167,7 +167,7 @@ async fn run_npm_backed_sync(
 	storage: StorageLayout,
 	pipeline: PipelineConfig,
 	spec: PackageSpec,
-	package: TsPackage,
+	package: Package,
 	progress: ProgressReporter,
 	targets: &IngestTargets,
 ) -> Result<SyncExecution, AppError> {

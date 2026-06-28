@@ -2,7 +2,7 @@ use std::process::ExitStatus;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum ParseError {
+pub enum Parse {
 	#[error("symbol not found: {0}")]
 	SymbolNotFound(String),
 
@@ -28,31 +28,8 @@ pub enum ParseError {
 	CircularDependency { path: String },
 }
 
-#[derive(Error, Debug)]
-#[allow(dead_code)]
-pub enum TsParseError {
-	#[error("symbol not found: {0}")]
-	SymbolNotFound(String),
-
-	#[error("type resolution failed for `{type_name}`: {reason}")]
-	TypeResolution { type_name: String, reason: String },
-
-	#[error("invalid declaration: {0}")]
-	InvalidDeclaration(String),
-
-	#[error("unsupported declaration kind: {0}")]
-	UnsupportedDeclarationKind(String),
-
-	#[error("circular dependency at path: {path}")]
-	CircularDependency { path: String },
-
-	#[error("generic constraint resolution failed: {reason}")]
-	GenericConstraintResolution { reason: String },
-}
-
-#[derive(Error, Debug)]
-#[allow(dead_code)]
-pub enum TsPackageError {
+#[derive(Debug, Error)]
+pub enum Package {
 	#[error("IO error: {0}")]
 	Io(#[from] std::io::Error),
 
@@ -60,7 +37,7 @@ pub enum TsPackageError {
 	Process { command: String, status: ExitStatus, details: String },
 
 	#[error("parse error: {0}")]
-	Parse(#[from] ParseError),
+	Parse(#[from] Parse),
 
 	#[error("serialization error: {0}")]
 	Serialization(#[from] serde_json::Error),

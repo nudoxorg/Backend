@@ -8,7 +8,7 @@ use url::Url;
 
 use ir::pipeline::{Collected, Ir};
 
-use super::error::{ParseError, TsPackageError};
+use super::error::{Parse, Package as PackageError};
 use super::TsDocParser;
 
 fn summarize_command_output(bytes: &[u8]) -> String {
@@ -25,11 +25,11 @@ fn summarize_command_output(bytes: &[u8]) -> String {
 fn npm_slug(name: &str) -> String { name.to_ascii_lowercase().replace('/', "__") }
 
 // ============================================================================
-// TsPackage — implements the Package trait
+// Package — implements the Package trait
 // ============================================================================
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TsPackage {
+pub struct Package {
 	pub slug:        String,
 	pub name:        String,
 	pub uuid:        u64,
@@ -38,7 +38,7 @@ pub struct TsPackage {
 	pub entry_point: String,
 }
 
-impl TsPackage {
+impl Package {
 	const RUNNER_SCRIPT: &'static str =
 		concat!(env!("CARGO_MANIFEST_DIR"), "/../server/src/core/ts_doc_runner.ts");
 
@@ -46,11 +46,11 @@ impl TsPackage {
 		&self,
 		_version: Version,
 		_flags: Option<Vec<String>>,
-	) -> Result<Ir<Collected>, TsPackageError> {
+	) -> Result<Ir<Collected>, PackageError> {
 		self.generate_ir()
 	}
 
-	pub fn generate_ir(&self) -> Result<Ir<Collected>, TsPackageError> {
+	pub fn generate_ir(&self) -> Result<Ir<Collected>, PackageError> {
 		if let Some(local_entry_point) = self.local_entry_point()? {
 			return self.generate_ir_from_local_path(local_entry_point);
 		}
@@ -61,13 +61,13 @@ impl TsPackage {
 	fn generate_ir_from_local_path(
 		&self,
 		entry_point: PathBuf,
-	) -> Result<Ir<Collected>, TsPackageError> {
+	) -> Result<Ir<Collected>, PackageError> {
 		let doc_roots = documentation_roots_for_entry_point(&entry_point)?;
 		let roots = doc_roots
 			.iter()
 			.map(|root| {
 				ModuleSpecifier::from_file_path(root).map_err(|_| {
-					TsPackageError::InvalidLocalEntryPoint(format!(
+					PackageError::InvalidLocalEntryPoint(format!(
 						"could not convert `{}` into a file module specifier",
 						root.display()
 					))
@@ -81,7 +81,7 @@ impl TsPackage {
 		let runtime = tokio::runtime::Builder::new_current_thread()
 			.enable_all()
 			.build()
-			.map_err(TsPackageError::Io)?;
+			.map_err(PackageError::Io)?;
 		runtime.block_on(async {
 			graph
 				.build(roots.clone(), Vec::new(), &loader, BuildOptions {
@@ -95,9 +95,9 @@ impl TsPackage {
 			diagnostics: false,
 			private:     true,
 		})
-		.map_err(|source| TsPackageError::Graph(source.to_string()))?;
+		.map_err(|source| PackageError::Graph(source.to_string()))?;
 		let parse_output =
-			parser.parse().map_err(|source| TsPackageError::Graph(source.to_string()))?;
+			parser.parse().map_err(|source| PackageError::Graph(source.to_string()))?;
 		let documents: HashMap<String, deno_doc::Document> = parse_output
 			.into_iter()
 			.map(|(specifier, document)| (specifier.to_string(), document))
@@ -109,7 +109,7 @@ impl TsPackage {
 		Ok(Ir::from_entries(entries))
 	}
 
-	fn generate_ir_with_deno(&self) -> Result<Ir<Collected>, TsPackageError> {
+	fn generate_ir_with_deno(&self) -> Result<Ir<Collected>, PackageError> {
 		let output = Command::new("deno")
 			.arg("run")
 			.arg("--allow-read")
@@ -129,7 +129,7 @@ impl TsPackage {
 			} else {
 				String::new()
 			};
-			return Err(TsPackageError::Process {
+			return Err(PackageError::Process {
 				command: format!("deno run ts_doc_runner {}", self.entry_point),
 				status: output.status,
 				details,
@@ -145,7 +145,7 @@ impl TsPackage {
 		Ok(Ir::from_entries(entries))
 	}
 
-	fn local_entry_point(&self) -> Result<Option<PathBuf>, TsPackageError> {
+	fn local_entry_point(&self) -> Result<Option<PathBuf>, PackageError> {
 		if self.entry_point.starts_with("npm:")
 			|| self.entry_point.starts_with("jsr:")
 			|| self.entry_point.starts_with("http://")
@@ -156,9 +156,9 @@ impl TsPackage {
 
 		if self.entry_point.starts_with("file://") {
 			let url = Url::parse(&self.entry_point)
-				.map_err(|source| TsPackageError::InvalidUrl(source.to_string()))?;
+				.map_err(|source| PackageError::InvalidUrl(source.to_string()))?;
 			let path = url.to_file_path().map_err(|_| {
-				TsPackageError::InvalidLocalEntryPoint(format!(
+				PackageError::InvalidLocalEntryPoint(format!(
 					"`{}` is not a valid file URL",
 					self.entry_point
 				))
@@ -184,7 +184,7 @@ impl Default for Npm {
 }
 
 impl Npm {
-	async fn fetch_package_metadata(&self, name: &str) -> Result<NpmPackageMetadata, TsPackageError> {
+	async fn fetch_package_metadata(&self, name: &str) -> Result<NpmPackageMetadata, PackageError> {
 		let response = reqwest::Client::new()
 			.get(self.package_metadata_url(name)?)
 			.send()
@@ -193,11 +193,11 @@ impl Npm {
 		Ok(response.json().await?)
 	}
 
-	fn package_metadata_url(&self, name: &str) -> Result<Url, TsPackageError> {
+	fn package_metadata_url(&self, name: &str) -> Result<Url, PackageError> {
 		let mut url = self.registry_url.clone();
 		url
 			.path_segments_mut()
-			.map_err(|_| TsPackageError::InvalidUrl(self.registry_url.to_string()))?
+			.map_err(|_| PackageError::InvalidUrl(self.registry_url.to_string()))?
 			.pop_if_empty()
 			.push(name);
 		Ok(url)
@@ -207,13 +207,13 @@ impl Npm {
 		&self,
 		name: &str,
 		version: &Version,
-	) -> Result<TsPackage, TsPackageError> {
+	) -> Result<Package, PackageError> {
 		let metadata = self.fetch_package_metadata(name).await?;
 		let version_key = version.to_string();
 		let package_version = metadata
 			.versions
 			.get(&version_key)
-			.ok_or_else(|| TsPackageError::NotFound(format!("{name}@{version}")))?;
+			.ok_or_else(|| PackageError::NotFound(format!("{name}@{version}")))?;
 		Ok(metadata.to_versioned_package(name, version, package_version))
 	}
 
@@ -222,18 +222,18 @@ impl Npm {
 		name: &str,
 		version: &Version,
 		destination: &Path,
-	) -> Result<PathBuf, TsPackageError> {
+	) -> Result<PathBuf, PackageError> {
 		let metadata = self.fetch_package_metadata(name).await?;
 		let version_key = version.to_string();
 		let package_version = metadata
 			.versions
 			.get(&version_key)
-			.ok_or_else(|| TsPackageError::NotFound(format!("{name}@{version}")))?;
+			.ok_or_else(|| PackageError::NotFound(format!("{name}@{version}")))?;
 		let tarball = package_version
 			.dist
 			.as_ref()
 			.map(|distribution| distribution.tarball.clone())
-			.ok_or_else(|| TsPackageError::NotFound(format!("missing tarball for {name}@{version}")))?;
+			.ok_or_else(|| PackageError::NotFound(format!("missing tarball for {name}@{version}")))?;
 
 		let bytes =
 			reqwest::Client::new().get(tarball).send().await?.error_for_status()?.bytes().await?;
@@ -245,7 +245,7 @@ impl Npm {
 	pub(crate) async fn get_packages_by_name(
 		&self,
 		name: &str,
-	) -> Result<Vec<TsPackage>, TsPackageError> {
+	) -> Result<Vec<Package>, PackageError> {
 		let metadata = self.fetch_package_metadata(name).await?;
 		Ok(vec![metadata.to_package(name)])
 	}
@@ -263,8 +263,8 @@ struct NpmPackageMetadata {
 
 impl NpmPackageMetadata {
 	#[cfg(test)]
-	fn to_package(&self, requested_name: &str) -> TsPackage {
-		TsPackage {
+	fn to_package(&self, requested_name: &str) -> Package {
+		Package {
 			slug:        npm_slug(&self.name),
 			name:        self.name.clone(),
 			uuid:        0,
@@ -283,9 +283,9 @@ impl NpmPackageMetadata {
 		requested_name: &str,
 		version: &Version,
 		package_version: &NpmPackageVersion,
-	) -> TsPackage {
+	) -> Package {
 		let version_name = package_version.name.as_deref().unwrap_or(&self.name);
-		TsPackage {
+		Package {
 			slug:        npm_slug(version_name),
 			name:        version_name.to_owned(),
 			uuid:        0,
@@ -348,7 +348,7 @@ fn npm_package_page_url(name: &str) -> Url {
 	registry_url.join(&format!("package/{name}")).unwrap_or(registry_url)
 }
 
-fn unpack_npm_tarball(bytes: &[u8], destination: &Path) -> Result<(), TsPackageError> {
+fn unpack_npm_tarball(bytes: &[u8], destination: &Path) -> Result<(), PackageError> {
 	let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
 	let mut archive = tar::Archive::new(decoder);
 
@@ -375,7 +375,7 @@ fn unpack_npm_tarball(bytes: &[u8], destination: &Path) -> Result<(), TsPackageE
 	Ok(())
 }
 
-fn resolve_materialized_entry_point(root: &Path) -> Result<PathBuf, TsPackageError> {
+fn resolve_materialized_entry_point(root: &Path) -> Result<PathBuf, PackageError> {
 	if let Some(candidate) = read_entry_point_from_package_json(root)? {
 		return ensure_materialized_entry_point(root, candidate);
 	}
@@ -387,13 +387,13 @@ fn resolve_materialized_entry_point(root: &Path) -> Result<PathBuf, TsPackageErr
 		}
 	}
 
-	Err(TsPackageError::InvalidLocalEntryPoint(format!(
+	Err(PackageError::InvalidLocalEntryPoint(format!(
 		"could not determine a TypeScript entry point in `{}`",
 		root.display()
 	)))
 }
 
-fn documentation_roots_for_entry_point(entry_point: &Path) -> Result<Vec<PathBuf>, TsPackageError> {
+fn documentation_roots_for_entry_point(entry_point: &Path) -> Result<Vec<PathBuf>, PackageError> {
 	let Some(package_root) = find_package_root(entry_point) else {
 		return Ok(vec![entry_point.to_path_buf()]);
 	};
@@ -418,7 +418,7 @@ fn find_package_root(entry_point: &Path) -> Option<PathBuf> {
 fn resolve_package_documentation_roots(
 	package_root: &Path,
 	entry_point: &Path,
-) -> Result<Vec<PathBuf>, TsPackageError> {
+) -> Result<Vec<PathBuf>, PackageError> {
 	let manifest_path = package_root.join("package.json");
 	if !manifest_path.is_file() {
 		return Ok(vec![entry_point.to_path_buf()]);
@@ -543,7 +543,7 @@ fn collect_matching_files(
 	root: &Path,
 	extensions: &[&str],
 	out: &mut BTreeSet<PathBuf>,
-) -> Result<(), TsPackageError> {
+) -> Result<(), PackageError> {
 	if !root.exists() {
 		return Ok(());
 	}
@@ -599,7 +599,7 @@ fn resolve_doc_root_candidates(package_root: &Path, value: &str) -> Vec<PathBuf>
 fn expand_declaration_roots(
 	package_root: &Path,
 	seeds: &BTreeSet<PathBuf>,
-) -> Result<BTreeSet<PathBuf>, TsPackageError> {
+) -> Result<BTreeSet<PathBuf>, PackageError> {
 	let mut visited = BTreeSet::new();
 	let mut stack = seeds.iter().cloned().collect::<Vec<_>>();
 
@@ -684,7 +684,7 @@ fn strip_known_suffix(value: &str) -> Option<String> {
 	None
 }
 
-fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, TsPackageError> {
+fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, PackageError> {
 	let manifest_path = root.join("package.json");
 	if !manifest_path.is_file() {
 		return Ok(None);
@@ -702,7 +702,7 @@ fn read_entry_point_from_package_json(root: &Path) -> Result<Option<PathBuf>, Ts
 fn ensure_materialized_entry_point(
 	root: &Path,
 	candidate: PathBuf,
-) -> Result<PathBuf, TsPackageError> {
+) -> Result<PathBuf, PackageError> {
 	if candidate.is_file() {
 		return Ok(candidate);
 	}
@@ -712,7 +712,7 @@ fn ensure_materialized_entry_point(
 			return Ok(with_suffix);
 		}
 	}
-	Err(TsPackageError::InvalidLocalEntryPoint(format!(
+	Err(PackageError::InvalidLocalEntryPoint(format!(
 		"entry point `{}` does not exist in `{}`",
 		candidate.display(),
 		root.display()

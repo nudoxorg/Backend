@@ -4,7 +4,7 @@ use lang_types::Language;
 use url::Url;
 
 use crate::{
-	core::{rust::{Crates, RustPackage}, ts::TsPackage},
+	core::{rust::{Crates, RustPackage}, ts::Package},
 	http::error::{AppError, RegistryLookupError},
 };
 
@@ -21,7 +21,7 @@ pub(crate) async fn resolve_package_handle(
 			}
 			let registry = Crates::new();
 			let packages = registry.get_packages_by_name(&request.name).await.map_err(|err| {
-				let parsers::rust::RegistryError::CratesIo(source) = err;
+				let parsers::rust::Registry::CratesIo(source) = err;
 				AppError::RegistryLookup(RegistryLookupError::CratesIo {
 					language: request.language,
 					package:  request.name.clone(),
@@ -98,7 +98,7 @@ fn resolve_explicit_typescript_package_handle(
 		request.entry_point.as_deref().unwrap_or_default()
 	);
 
-	Ok(PackageHandle::TypeScript(TsPackage {
+	Ok(PackageHandle::TypeScript(Package {
 		slug: typescript_slug(&request.name),
 		name: request.name.clone(),
 		uuid: 0,

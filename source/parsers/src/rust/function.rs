@@ -1,5 +1,7 @@
-use super::parse::{ParseContext, ParseState};
-use super::{ParseError, Result};
+use std::collections::HashMap;
+
+use super::context::{ParseContext, ParseState};
+use super::{error::Parse, Result};
 use ir::function::{Attribute as FnAttribute, Function};
 use ir::parameter::{LiteralParameter, Parameter};
 use ir::pipeline::{output_parameters_from_type, parameter_link_key};
@@ -8,25 +10,25 @@ use ir::ty::{FunctionPointer, Type};
 use rustdoc_types::Id;
 
 impl ParseContext {
-	pub(super) fn parse_function(&self, id: &Id, f: &rustdoc_types::Function) -> Result<Function> {
-		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
+	pub(super) fn function(&self, id: &Id, f: &rustdoc_types::Function) -> Result<Function> {
+		let item = self.krate.index.get(id).ok_or(Parse::ItemNotFound(id.0))?;
 		let vis = item.visibility.clone();
-		let (receiver, input_parameters) = self.parse_function_inputs(&f.sig.inputs)?;
+		let (receiver, input_parameters) = self.function_inputs(&f.sig.inputs)?;
 
 		let output_parameters = f
 			.sig
 			.output
 			.as_ref()
-			.map(|output_ty| self.parse_type(output_ty))
+			.map(|output_ty| self.type_(output_ty))
 			.transpose()?
 			.and_then(output_parameters_from_type);
 
-		let attributes = self.parse_function_attributes(f);
+		let attributes = self.function_attributes(f);
 
 		let generics =
-			if f.generics.params.is_empty() { None } else { self.parse_generic_params(&f.generics) };
+			if f.generics.params.is_empty() { None } else { self.generic_params(&f.generics) };
 
-		let _visibility = Some(self.parse_visibility(&vis));
+		let _visibility = Some(self.visibility(&vis));
 
 		let type_links = {
 			let mut links = HashMap::new();
@@ -74,7 +76,7 @@ impl ParseContext {
 		})
 	}
 
-	pub(super) fn parse_function_inputs(
+	pub(super) fn function_inputs(
 		&self,
 		inputs: &[(String, rustdoc_types::Type)],
 	) -> Result<(Option<ReceiverKind>, Option<Vec<Parameter>>)> {
@@ -84,7 +86,7 @@ impl ParseContext {
 			.enumerate()
 			.filter(|(idx, (name, _))| !(*idx == 0 && name == "self"))
 			.map(|(_, (name, ty))| {
-				let parsed_ty = self.parse_type(&ty)?;
+				let parsed_ty = self.type_(&ty)?;
 				Ok(Parameter::Literal(LiteralParameter {
 					name:          name.clone(),
 					r#type:        Some(parsed_ty),
@@ -97,7 +99,7 @@ impl ParseContext {
 		Ok((receiver, if params.is_empty() { None } else { Some(params) }))
 	}
 
-	pub(super) fn parse_function_attributes(&self, f: &rustdoc_types::Function) -> Option<Vec<FnAttribute>> {
+	pub(super) fn function_attributes(&self, f: &rustdoc_types::Function) -> Option<Vec<FnAttribute>> {
 		let mut attrs = Vec::new();
 
 		let header = &f.header;
@@ -114,18 +116,18 @@ impl ParseContext {
 		if attrs.is_empty() { None } else { Some(attrs) }
 	}
 
-	pub(super) fn parse_trait_method(&self, id: &Id, f: &rustdoc_types::Function) -> Result<TraitMethod> {
-		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
+	pub(super) fn trait_method(&self, id: &Id, f: &rustdoc_types::Function) -> Result<TraitMethod> {
+		let item = self.krate.index.get(id).ok_or(Parse::ItemNotFound(id.0))?;
 
-		let (receiver, parameters) = self.parse_function_inputs(&f.sig.inputs)?;
+		let (receiver, parameters) = self.function_inputs(&f.sig.inputs)?;
 
 		let return_type =
-			f.sig.output.as_ref().map(|ty| self.parse_type(&ty).map(Box::new)).transpose()?;
+			f.sig.output.as_ref().map(|ty| self.type_(&ty).map(Box::new)).transpose()?;
 
 		let generics =
-			if f.generics.params.is_empty() { None } else { self.parse_generic_params(&f.generics) };
+			if f.generics.params.is_empty() { None } else { self.generic_params(&f.generics) };
 
-		let attributes = self.parse_function_attributes(f);
+		let attributes = self.function_attributes(f);
 
 		Ok(TraitMethod {
 			name: item.name.clone().unwrap_or_default(),
@@ -161,10 +163,10 @@ impl ParseContext {
 		}
 	}
 
-	pub(super) fn parse_function_pointer(&self, fp: &rustdoc_types::FunctionPointer) -> Result<FunctionPointer> {
-		let (_, inputs) = self.parse_function_inputs(&fp.sig.inputs)?;
+	pub(super) fn function_pointer(&self, fp: &rustdoc_types::FunctionPointer) -> Result<FunctionPointer> {
+		let (_, inputs) = self.function_inputs(&fp.sig.inputs)?;
 
-		let outputs = fp.sig.output.as_ref().map(|ty| self.parse_type(&ty)).transpose()?;
+		let outputs = fp.sig.output.as_ref().map(|ty| self.type_(&ty)).transpose()?;
 
 		let mut attributes = Vec::new();
 		if fp.header.is_const {

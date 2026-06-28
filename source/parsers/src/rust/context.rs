@@ -8,22 +8,22 @@ use ir::kind::Entry;
 use super::error::Parse;
 use super::Result;
 
-pub struct ParseContext {
-	pub krate:       Crate,
-	pub id_to_paths: HashMap<Id, HashSet<Vec<String>>>,
-	pub primitive_map: HashMap<String, Id>,
-	pub path_to_id:    HashMap<String, Id>,
+pub(super) struct ParseContext {
+	pub(super) krate:          Crate,
+	pub(super) id_to_paths:    HashMap<Id, HashSet<Vec<String>>>,
+	pub(super) primitive_map:  HashMap<String, Id>,
+	pub(super) path_to_id:     HashMap<String, Id>,
 }
 
 #[derive(Default)]
-pub struct ParseState {
-	pub visiting: HashSet<Id>,
-	pub entry_cache: HashMap<Id, Entry>,
+pub(super) struct ParseState {
+	pub(super) visiting:     HashSet<Id>,
+	pub(super) entry_cache:  HashMap<Id, Entry>,
 }
 
 pub struct RustdocParser {
-	pub ctx:   ParseContext,
-	pub state: ParseState,
+	pub(super) ctx:   ParseContext,
+	pub(super) state: ParseState,
 }
 
 fn add_path(id_to_paths: &mut HashMap<Id, HashSet<Vec<String>>>, id: &Id, path: Vec<String>) {
@@ -68,23 +68,7 @@ fn queue_impls(
 impl RustdocParser {
 	pub fn from_doc(input: Crate) -> Result<Self> { Self::new(input) }
 
-	pub fn parse(&mut self) -> Result<Vec<Entry>> { self.parse_crate() }
-}
-
-impl RustdocParser {
-	pub fn new(krate: Crate) -> Result<Self> {
-		let mut ctx = ParseContext {
-			krate,
-			id_to_paths: HashMap::new(),
-			primitive_map: HashMap::new(),
-			path_to_id: HashMap::new(),
-		};
-		ctx.scan_primitives();
-		ctx.build_path_map()?;
-		Ok(Self { ctx, state: ParseState::default() })
-	}
-
-	pub fn parse_crate(&mut self) -> Result<Vec<Entry>> {
+	pub fn parse(&mut self) -> Result<Vec<Entry>> {
 		let mut all_ids: Vec<_> = self.ctx.id_to_paths.keys().cloned().collect();
 
 		all_ids.sort_by(|a, b| {
@@ -109,10 +93,22 @@ impl RustdocParser {
 
 		Ok(entries)
 	}
+
+	fn new(krate: Crate) -> Result<Self> {
+		let mut ctx = ParseContext {
+			krate,
+			id_to_paths: HashMap::new(),
+			primitive_map: HashMap::new(),
+			path_to_id: HashMap::new(),
+		};
+		ctx.scan_primitives();
+		ctx.build_path_map()?;
+		Ok(Self { ctx, state: ParseState::default() })
+	}
 }
 
 impl ParseContext {
-	pub fn scan_primitives(&mut self) {
+	fn scan_primitives(&mut self) {
 		for (id, item) in &self.krate.index {
 			if let ItemEnum::Primitive(p) = &item.inner {
 				self.primitive_map.insert(p.name.clone(), *id);
@@ -121,7 +117,7 @@ impl ParseContext {
 		}
 	}
 
-	pub fn build_path_map(&mut self) -> Result<()> {
+	fn build_path_map(&mut self) -> Result<()> {
 		let root_id = self.krate.root;
 
 		let mut queue = VecDeque::new();
@@ -241,7 +237,7 @@ impl ParseContext {
 		Ok(())
 	}
 
-	pub fn item(&self, state: &mut ParseState, id: &Id) -> Result<Entry> {
+	pub(super) fn item(&self, state: &mut ParseState, id: &Id) -> Result<Entry> {
 		if let Some(cached) = state.entry_cache.get(id) {
 			return Ok(cached.clone());
 		}
@@ -262,9 +258,11 @@ impl ParseContext {
 		Ok(entry)
 	}
 
-	pub fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> { self.id_to_paths.get(id) }
+	pub(super) fn get_paths(&self, id: &Id) -> Option<&HashSet<Vec<String>>> {
+		self.id_to_paths.get(id)
+	}
 
-	pub fn get_primary_path(&self, id: &Id) -> Result<Vec<String>> {
+	pub(super) fn get_primary_path(&self, id: &Id) -> Result<Vec<String>> {
 		self
 			.get_paths(id)
 			.and_then(|paths| paths.iter().min_by(|a, b| a.cmp(b)))
@@ -272,9 +270,9 @@ impl ParseContext {
 			.ok_or_else(|| Parse::PathParsing(format!("No path found for ID: {}", id.0)))
 	}
 
-	pub fn get_path(&self, id: &Id) -> Result<Vec<String>> { self.get_primary_path(id) }
+	pub(super) fn get_path(&self, id: &Id) -> Result<Vec<String>> { self.get_primary_path(id) }
 
-	pub fn nudox_path_for_rustdoc_path(&self, path: &rustdoc_types::Path) -> NudoxPath {
+	pub(super) fn nudox_path_for_rustdoc_path(&self, path: &rustdoc_types::Path) -> NudoxPath {
 		if let Ok(local_path) = self.get_primary_path(&path.id) {
 			return NudoxPath::Local(std::path::PathBuf::from(local_path.join("::")));
 		}
@@ -291,7 +289,7 @@ impl ParseContext {
 		}
 	}
 
-	pub fn convert_item(&self, state: &mut ParseState, id: &Id, item: &Item) -> Result<Entry> {
+	pub(super) fn convert_item(&self, state: &mut ParseState, id: &Id, item: &Item) -> Result<Entry> {
 		let name = item.name.clone().unwrap_or_default();
 		let path = self.get_primary_path(id).unwrap_or_else(|_| vec![name.clone()]);
 		let aliases = self
@@ -369,7 +367,9 @@ impl ParseContext {
 				};
 				inner.methods = if methods.is_empty() { None } else { Some(methods) };
 				let implemented_protocols = match &item.inner {
-					ItemEnum::Struct(struct_item) => self.collect_implemented_protocols(&struct_item.impls),
+					ItemEnum::Struct(struct_item) => {
+						self.collect_implemented_protocols(&struct_item.impls)
+					}
 					_ => Vec::new(),
 				};
 				inner.implemented_protocols =

@@ -1,4 +1,4 @@
 pub use parsers::rust::{
-    Crates, PackageError, ParseError, RegistryError, RustPackage,
+    Crates, Package, Registry, RustPackage, Parse,
 };
-pub use parsers::rust::parse::RustdocParser;
+pub use parsers::rust::context::RustdocParser;

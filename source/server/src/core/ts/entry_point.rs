@@ -1,16 +1,16 @@
 use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
 
-use parsers::typescript::TsPackage;
+use parsers::typescript::Package;
 
 use crate::http::error::AppError;
 
 use crate::registry::TYPESCRIPT_REPOSITORY_ENTRY_PREFIX;
 
-pub(crate) fn typescript_package_uses_repository(package: &TsPackage) -> bool {
+pub(crate) fn typescript_package_uses_repository(package: &Package) -> bool {
 	package.entry_point.starts_with(TYPESCRIPT_REPOSITORY_ENTRY_PREFIX)
 }
 
-pub(crate) fn typescript_repository_entry_hint(package: &TsPackage) -> Option<&str> {
+pub(crate) fn typescript_repository_entry_hint(package: &Package) -> Option<&str> {
 	package
 		.entry_point
 		.strip_prefix(TYPESCRIPT_REPOSITORY_ENTRY_PREFIX)

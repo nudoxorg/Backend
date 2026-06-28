@@ -12,16 +12,15 @@ use deno_doc::ts_type::{CallSignatureDef, IndexSignatureDef, MethodDef};
 use deno_doc::{Declaration, DeclarationDef, Document};
 use ir::entry::NudoxPath;
 use ir::function::Function;
-use ir::generics::*;
+use ir::generics::{GenericArg, *};
 use ir::kind::Entry;
 use ir::kind::Visibility;
-use ir::module::Module;
-use ir::protocols::*;
-use ir::record::*;
-use ir::ty::{GenericArg, Type, TypeReference};
-use ir::pipeline::output_parameters_from_type;
+use ir::protocols::{ReceiverKind, TraitDef, TraitMethod};
+use ir::record::{Record, SumVariant};
+use ir::ty::{Type, TypeReference};
 
-use super::{ParseError, PropertyFieldMetadata, Result, TsDocParser, TsParseContext, TsParseState};
+use super::{error::Parse, PropertyFieldMetadata, Result, TsDocParser};
+use super::{accessibility_to_visibility, declaration_kind_to_visibility, extract_doc, path_to_id, pick_primary_declaration};
 
 impl TsDocParser {
 	pub(super) fn item_at_path(&mut self, path: &[String]) -> Result<Vec<Entry>> {
@@ -30,7 +29,7 @@ impl TsDocParser {
 		}
 
 		if self.state.visiting.contains(path) {
-			return Err(ParseError::CircularDependency { path: path.join("::") });
+			return Err(Parse::CircularDependency { path: path.join("::") });
 		}
 		self.state.visiting.insert(path.to_vec());
 
@@ -97,7 +96,7 @@ impl TsDocParser {
 			.and_then(|doc| doc.symbols.iter().find(|s| s.name.as_ref() == symbol_name).cloned());
 
 		let symbol =
-			symbol.ok_or_else(|| ParseError::SymbolNotFound(format!("{module_name}::{symbol_name}")))?;
+			symbol.ok_or_else(|| Parse::SymbolNotFound(format!("{module_name}::{symbol_name}")))?;
 
 		self.symbol(module_name, &symbol)
 	}
@@ -315,7 +314,7 @@ impl TsDocParser {
 			.and_then(|doc| doc.symbols.iter().find(|s| s.name.as_ref() == parent_name).cloned());
 
 		let parent_symbol = parent_symbol
-			.ok_or_else(|| ParseError::SymbolNotFound(format!("{module_name}::{parent_name}")))?;
+			.ok_or_else(|| Parse::SymbolNotFound(format!("{module_name}::{parent_name}")))?;
 
 		for decl in &parent_symbol.declarations {
 			if let DeclarationDef::Class(cls) = &decl.def {
@@ -343,7 +342,7 @@ impl TsDocParser {
 			}
 		}
 
-		Err(ParseError::SymbolNotFound(format!("{module_name}::{parent_name}::{member_name}")))
+		Err(Parse::SymbolNotFound(format!("{module_name}::{parent_name}::{member_name}")))
 	}
 
 	pub(super) fn method_entry(

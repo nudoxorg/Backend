@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 
 use deno_doc::params::{ParamDef, ParamPatternDef};
-use deno_doc::ts_type::{LiteralDef, LiteralDefKind, TsTypeDef, TsTypeDefKind};
+use deno_doc::ts_type::{IndexSignatureDef, LiteralDef, LiteralDefKind, ThisOrIdent, TsTypeDef, TsTypeDefKind};
 use deno_doc::ts_type_param::TsTypeParamDef;
-use ir::function::Function;
-use ir::generics::*;
+use ir::generics::{GenericArg, *};
 use ir::parameter::{Parameter, ParameterAttribute, TypeParam, TypeParamOrigin};
 use ir::primitives::{Primitive, Width};
 use ir::record::*;
-use ir::ty::{ConditionalType, FunctionPointer, GenericArg, MappedType, ModifierPrefix, PredicateSubject, QualifiedPath, Type, TypeOperator, TypePredicate, TypeReference};
+use ir::pipeline::output_parameters_from_type;
+use ir::ty::{ConditionalType, FunctionPointer, MappedType, ModifierPrefix, PredicateSubject, QualifiedPath, Type, TypeOperator, TypePredicate, TypeReference};
 
-use super::{ParseError, PropertyFieldMetadata, Result, TsDocParser, TsParseContext, TsParseState};
+use super::{error::Parse, PropertyFieldMetadata, Result, TsDocParser};
+use super::{extract_doc, modifier_prefix};
 
 impl TsDocParser {
 	pub(super) fn property_field(
@@ -36,15 +37,15 @@ impl TsDocParser {
 	}
 
 	pub(super) fn index_signature(&mut self, sig: &IndexSignatureDef) -> Result<IndexSignature> {
-		let key_param = sig.params.first().ok_or_else(|| ParseError::TypeResolution {
+		let key_param = sig.params.first().ok_or_else(|| Parse::TypeResolution {
 			type_name: "index_signature".to_string(),
 			reason:    "missing key parameter".to_string(),
 		})?;
-		let key_type = key_param.ts_type.as_ref().ok_or_else(|| ParseError::TypeResolution {
+		let key_type = key_param.ts_type.as_ref().ok_or_else(|| Parse::TypeResolution {
 			type_name: "index_signature".to_string(),
 			reason:    "missing key type".to_string(),
 		})?;
-		let value_type = sig.ts_type.as_ref().ok_or_else(|| ParseError::TypeResolution {
+		let value_type = sig.ts_type.as_ref().ok_or_else(|| Parse::TypeResolution {
 			type_name: "index_signature".to_string(),
 			reason:    "missing value type".to_string(),
 		})?;
@@ -282,7 +283,7 @@ impl TsDocParser {
 				optional:    modifier_prefix(value.optional),
 				parameter:   value.type_param.name.clone(),
 				source_type: Box::new(self.ts_type(
-					value.type_param.constraint.as_ref().ok_or_else(|| ParseError::TypeResolution {
+					value.type_param.constraint.as_ref().ok_or_else(|| Parse::TypeResolution {
 						type_name: "mapped_type".to_string(),
 						reason:    "missing mapped type source constraint".to_string(),
 					})?,

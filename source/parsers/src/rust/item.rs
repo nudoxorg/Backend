@@ -1,7 +1,10 @@
-use super::parse::{ParseContext, ParseState};
-use super::{ParseError, Result};
+use std::collections::HashSet;
+
+use super::context::{ParseContext, ParseState};
+use super::{error::Parse, Result};
 use ir::entry::NudoxPath;
 use ir::function::Function;
+use ir::generics::ConstExpr;
 use ir::kind::Entry;
 use ir::protocols::{AssociatedType, AssociatedTypeImpl, TraitAttribute, TraitConstant, TraitDef, TraitImpl};
 use ir::record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant};
@@ -67,7 +70,7 @@ impl ParseContext {
 					continue;
 				};
 
-				let mut function = self.parse_function(assoc_item_id, function_item)?;
+				let mut function = self.function(assoc_item_id, function_item)?;
 				function.implemented_protocols = implemented_protocol.clone().map(|path| vec![path]);
 				methods.push(function);
 			}
@@ -76,39 +79,39 @@ impl ParseContext {
 		Ok(methods)
 	}
 
-	pub(super) fn parse_item_kind(&self, state: &mut ParseState, id: &Id, inner: &ItemEnum) -> Result<Entry> {
+	pub(super) fn item_kind(&self, state: &mut ParseState, id: &Id, inner: &ItemEnum) -> Result<Entry> {
 		match inner {
 			ItemEnum::Module(_) => {
 				Ok(Entry::Module(ir::kind::Symbol::placeholder(ir::module::Module { members: None })))
 			}
 
 			ItemEnum::Struct(s) => {
-				let record = self.parse_struct(id, s)?;
+				let record = self.struct_(id, s)?;
 				Ok(Entry::RecordType(ir::kind::Symbol::placeholder(record)))
 			}
 
 			ItemEnum::Enum(e) => {
-				let variants = self.parse_enum_variants(e)?;
+				let variants = self.enum_variants(e)?;
 				Ok(Entry::SumType(ir::kind::Symbol::placeholder(variants)))
 			}
 
 			ItemEnum::Function(f) => {
-				let function = self.parse_function(id, f)?;
+				let function = self.function(id, f)?;
 				Ok(Entry::Function(ir::kind::Symbol::placeholder(function)))
 			}
 
 			ItemEnum::Trait(t) => {
-				let trait_def = self.parse_trait(state, id, t)?;
+				let trait_def = self.trait_(state, id, t)?;
 				Ok(Entry::TraitDef(ir::kind::Symbol::placeholder(trait_def)))
 			}
 
 			ItemEnum::Impl(i) => {
-				let trait_impl = self.parse_impl(state, id, i)?;
+				let trait_impl = self.impl_(state, id, i)?;
 				Ok(Entry::TraitImpl(ir::kind::Symbol::placeholder(trait_impl)))
 			}
 
 			ItemEnum::TypeAlias(alias) => {
-				Ok(Entry::TypeAlias(ir::kind::Symbol::placeholder(self.parse_type(&alias.type_)?)))
+				Ok(Entry::TypeAlias(ir::kind::Symbol::placeholder(self.type_(&alias.type_)?)))
 			}
 
 			ItemEnum::Constant { .. } => Ok(Entry::Constant(ir::kind::Symbol::placeholder(()))),
@@ -120,7 +123,7 @@ impl ParseContext {
 			ItemEnum::ProcMacro(_) => Ok(Entry::Macro(ir::kind::Symbol::placeholder(()))),
 
 			ItemEnum::Union(u) => {
-				let types = self.parse_union_fields(u)?;
+				let types = self.union_fields(u)?;
 				Ok(Entry::UnionType(ir::kind::Symbol::placeholder(types)))
 			}
 
@@ -128,26 +131,26 @@ impl ParseContext {
 			| ItemEnum::AssocType { .. }
 			| ItemEnum::AssocConst { .. }
 			| ItemEnum::Variant(_)
-			| ItemEnum::ExternCrate { .. } => Err(ParseError::UnsupportedItemType(format!("{inner:?}"))),
+			| ItemEnum::ExternCrate { .. } => Err(Parse::UnsupportedItemType),
 
-			_ => Err(ParseError::UnsupportedItemType(format!("{inner:?}"))),
+			_ => Err(Parse::UnsupportedItemType),
 		}
 	}
 
-	pub(super) fn parse_struct(&self, id: &Id, s: &rustdoc_types::Struct) -> Result<Record> {
-		let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
+	pub(super) fn struct_(&self, id: &Id, s: &rustdoc_types::Struct) -> Result<Record> {
+		let item = self.krate.index.get(id).ok_or(Parse::ItemNotFound(id.0))?;
 		let generics =
-			s.generics.params.is_empty().then(|| self.parse_generic_params(&s.generics)).flatten();
+			s.generics.params.is_empty().then(|| self.generic_params(&s.generics)).flatten();
 
 		let fields = match &s.kind {
 			rustdoc_types::StructKind::Unit => vec![],
-			rustdoc_types::StructKind::Tuple(field_ids) => self.parse_tuple_fields(field_ids)?,
+			rustdoc_types::StructKind::Tuple(field_ids) => self.tuple_fields(field_ids)?,
 			rustdoc_types::StructKind::Plain { fields: field_ids, .. } => {
-				self.parse_named_fields(field_ids)?
+				self.named_fields(field_ids)?
 			}
 		};
 
-		let _visibility = self.parse_visibility(&item.visibility);
+		let _visibility = self.visibility(&item.visibility);
 
 		Ok(Record {
 			name: item.name.clone(),
@@ -163,7 +166,7 @@ impl ParseContext {
 		})
 	}
 
-	pub(super) fn parse_tuple_fields(&self, field_ids: &[Option<Id>]) -> Result<Vec<Field>> {
+	pub(super) fn tuple_fields(&self, field_ids: &[Option<Id>]) -> Result<Vec<Field>> {
 		field_ids
 			.iter()
 			.enumerate()
@@ -171,7 +174,7 @@ impl ParseContext {
 				opt_id.as_ref().map(|id| {
 					let item = self.krate.index.get(id)?;
 					if let ItemEnum::StructField(ty) = &item.inner {
-						let parsed_ty = self.parse_type(&ty).ok()?;
+						let parsed_ty = self.type_(&ty).ok()?;
 
 						Some(Field::Known(KnownField {
 							key:           FieldKey::Index(idx),
@@ -183,7 +186,7 @@ impl ParseContext {
 								is_optional: false,
 								is_static:   false,
 							},
-							visibility:    Some(self.parse_visibility(&item.visibility)),
+							visibility:    Some(self.visibility(&item.visibility)),
 							documentation: item.docs.clone(),
 						}))
 					} else {
@@ -192,20 +195,20 @@ impl ParseContext {
 				})
 			})
 			.collect::<Option<Vec<_>>>()
-			.ok_or_else(|| ParseError::MissingField {
+			.ok_or_else(|| Parse::MissingField {
 				field:   "tuple fields".to_string(),
 				context: "struct".to_string(),
 			})
 	}
 
-	pub(super) fn parse_named_fields(&self, field_ids: &[Id]) -> Result<Vec<Field>> {
+	pub(super) fn named_fields(&self, field_ids: &[Id]) -> Result<Vec<Field>> {
 		field_ids
 			.iter()
 			.map(|id| {
-				let item = self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
+				let item = self.krate.index.get(id).ok_or(Parse::ItemNotFound(id.0))?;
 
 				if let ItemEnum::StructField(ty) = &item.inner {
-					let parsed_ty = self.parse_type(&ty)?;
+					let parsed_ty = self.type_(&ty)?;
 
 					Ok(Field::Known(KnownField {
 						key:           FieldKey::Ident(item.name.clone().unwrap_or_default()),
@@ -217,11 +220,11 @@ impl ParseContext {
 							is_optional: false,
 							is_static:   false,
 						},
-						visibility:    Some(self.parse_visibility(&item.visibility)),
+						visibility:    Some(self.visibility(&item.visibility)),
 						documentation: item.docs.clone(),
 					}))
 				} else {
-					Err(ParseError::InvalidItemKind {
+					Err(Parse::InvalidItemKind {
 						id:       id.0.to_string(),
 						expected: "StructField".to_string(),
 						actual:   format!("{:?}", item.inner),
@@ -231,12 +234,12 @@ impl ParseContext {
 			.collect()
 	}
 
-	pub(super) fn parse_enum_variants(&self, e: &rustdoc_types::Enum) -> Result<Vec<SumVariant>> {
+	pub(super) fn enum_variants(&self, e: &rustdoc_types::Enum) -> Result<Vec<SumVariant>> {
 		e.variants
 			.iter()
 			.map(|variant_id| {
 				let item =
-					self.krate.index.get(variant_id).ok_or(ParseError::ItemNotFound(variant_id.0))?;
+					self.krate.index.get(variant_id).ok_or(Parse::ItemNotFound(variant_id.0))?;
 
 				let name = item.name.clone().unwrap_or_default();
 
@@ -249,11 +252,11 @@ impl ParseContext {
 								.filter_map(|opt_id| opt_id.as_ref())
 								.map(|id| {
 									let field_item =
-										self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
+										self.krate.index.get(id).ok_or(Parse::ItemNotFound(id.0))?;
 									if let ItemEnum::StructField(ty) = &field_item.inner {
-										self.parse_type(&ty)
+										self.type_(&ty)
 									} else {
-										Err(ParseError::InvalidItemKind {
+										Err(Parse::InvalidItemKind {
 											id:       id.0.to_string(),
 											expected: "StructField".to_string(),
 											actual:   format!("{:?}", field_item.inner),
@@ -268,13 +271,13 @@ impl ParseContext {
 								.iter()
 								.map(|id| {
 									let field_item =
-										self.krate.index.get(id).ok_or(ParseError::ItemNotFound(id.0))?;
+										self.krate.index.get(id).ok_or(Parse::ItemNotFound(id.0))?;
 									if let ItemEnum::StructField(ty) = &field_item.inner {
 										Ok(Field::Known(ir::record::KnownField {
 											key:           ir::record::FieldKey::Ident(
 												field_item.name.clone().unwrap_or_default(),
 											),
-											r#type:        Some(Box::new(self.parse_type(&ty)?)),
+											r#type:        Some(Box::new(self.type_(&ty)?)),
 											default_value: None,
 											attributes:    ir::record::FieldAttributes {
 												is_mutable:  false,
@@ -282,11 +285,11 @@ impl ParseContext {
 												decorators:  vec![],
 												is_static:   false,
 											},
-											visibility:    Some(self.parse_visibility(&field_item.visibility)),
+											visibility:    Some(self.visibility(&field_item.visibility)),
 											documentation: field_item.docs.clone(),
 										}))
 									} else {
-										Err(ParseError::InvalidItemKind {
+										Err(Parse::InvalidItemKind {
 											id:       id.0.to_string(),
 											expected: "StructField".to_string(),
 											actual:   format!("{:?}", field_item.inner),
@@ -300,7 +303,7 @@ impl ParseContext {
 
 					Ok(SumVariant { name, data, documentation: item.docs.clone() })
 				} else {
-					Err(ParseError::InvalidItemKind {
+					Err(Parse::InvalidItemKind {
 						id:       variant_id.0.to_string(),
 						expected: "Variant".to_string(),
 						actual:   format!("{:?}", item.inner),
@@ -310,17 +313,17 @@ impl ParseContext {
 			.collect()
 	}
 
-	pub(super) fn parse_trait(
+	pub(super) fn trait_(
 		&self,
 		_state: &mut ParseState,
 		_id: &Id,
 		t: &rustdoc_types::Trait,
 	) -> Result<TraitDef> {
 		let generics =
-			if t.generics.params.is_empty() { None } else { self.parse_generic_params(&t.generics) };
+			if t.generics.params.is_empty() { None } else { self.generic_params(&t.generics) };
 
 		let super_traits =
-			if t.bounds.is_empty() { None } else { Some(self.parse_trait_bounds(&t.bounds)?) };
+			if t.bounds.is_empty() { None } else { Some(self.trait_bounds(&t.bounds)?) };
 
 		let mut required_methods = Vec::new();
 		let mut provided_methods = Vec::new();
@@ -328,11 +331,11 @@ impl ParseContext {
 		let mut required_constants = Vec::new();
 
 		for item_id in &t.items {
-			let trait_item = self.krate.index.get(item_id).ok_or(ParseError::ItemNotFound(item_id.0))?;
+			let trait_item = self.krate.index.get(item_id).ok_or(Parse::ItemNotFound(item_id.0))?;
 
 			match &trait_item.inner {
 				ItemEnum::Function(f) => {
-					let method = self.parse_trait_method(item_id, &f)?;
+					let method = self.trait_method(item_id, &f)?;
 					if f.has_body {
 						provided_methods.push(method);
 					} else {
@@ -345,16 +348,16 @@ impl ParseContext {
 						bounds:       if bounds.is_empty() {
 							None
 						} else {
-							Some(self.parse_generic_bounds(&bounds)?)
+							Some(self.generic_bounds(&bounds)?)
 						},
-						default_type: if let Some(ty) = type_ { Some(self.parse_type(&ty)?) } else { None },
+						default_type: if let Some(ty) = type_ { Some(self.type_(&ty)?) } else { None },
 					};
 					associated_types.push(assoc_type);
 				}
 				ItemEnum::AssocConst { type_, value } => {
 					let constant = TraitConstant {
 						name:          trait_item.name.clone().unwrap_or_default(),
-						r#type:        Box::new(self.parse_type(&type_)?),
+						r#type:        Box::new(self.type_(&type_)?),
 						default_value: value.as_ref().map(|d| ConstExpr::Var(d.clone())),
 					};
 					required_constants.push(constant);
@@ -388,28 +391,28 @@ impl ParseContext {
 		})
 	}
 
-	pub(super) fn parse_impl(
+	pub(super) fn impl_(
 		&self,
 		_state: &mut ParseState,
 		_id: &Id,
 		i: &rustdoc_types::Impl,
 	) -> Result<TraitImpl> {
 		let tr =
-			i.trait_.as_ref().map(|path| self.parse_path_to_trait_ref(path)).transpose()?.ok_or_else(
-				|| ParseError::ImplBlockParsing {
+			i.trait_.as_ref().map(|path| self.path_to_trait_ref(path)).transpose()?.ok_or_else(
+				|| Parse::ImplBlockParsing {
 					reason: "Inherent impl blocks not supported as TraitImpl".to_string(),
 				},
 			)?;
 
-		let for_type = Box::new(self.parse_type(&i.for_)?);
+		let for_type = Box::new(self.type_(&i.for_)?);
 
 		let generics =
-			if i.generics.params.is_empty() { None } else { self.parse_generic_params(&i.generics) };
+			if i.generics.params.is_empty() { None } else { self.generic_params(&i.generics) };
 
 		let where_constraints = if i.generics.where_predicates.is_empty() {
 			None
 		} else {
-			Some(self.parse_where_predicates(&i.generics.where_predicates)?)
+			Some(self.where_predicates(&i.generics.where_predicates)?)
 		};
 
 		let mut methods = Vec::new();
@@ -417,17 +420,17 @@ impl ParseContext {
 		let mut associated_constants = Vec::new();
 
 		for item_id in &i.items {
-			let impl_item = self.krate.index.get(item_id).ok_or(ParseError::ItemNotFound(item_id.0))?;
+			let impl_item = self.krate.index.get(item_id).ok_or(Parse::ItemNotFound(item_id.0))?;
 
 			match &impl_item.inner {
 				ItemEnum::Function(f) => {
-					let function = self.parse_function(item_id, &f)?;
+					let function = self.function(item_id, &f)?;
 					methods.push(function);
 				}
 				ItemEnum::AssocType { type_: Some(ty), .. } => {
 					let assoc_type_impl = AssociatedTypeImpl {
 						name:   impl_item.name.clone().unwrap_or_default(),
-						r#type: Box::new(self.parse_type(&ty)?),
+						r#type: Box::new(self.type_(&ty)?),
 					};
 					associated_types.push(assoc_type_impl);
 				}
@@ -435,7 +438,7 @@ impl ParseContext {
 				ItemEnum::AssocConst { type_, value } => {
 					let constant = TraitConstant {
 						name:          impl_item.name.clone().unwrap_or_default(),
-						r#type:        Box::new(self.parse_type(&type_)?),
+						r#type:        Box::new(self.type_(&type_)?),
 						default_value: value.as_ref().map(|d| ConstExpr::Var(d.clone())),
 					};
 					associated_constants.push(constant);

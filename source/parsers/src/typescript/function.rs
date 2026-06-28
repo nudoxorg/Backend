@@ -7,11 +7,13 @@ use deno_doc::function::FunctionDef;
 use ir::entry::NudoxPath;
 use ir::function::{Attribute, Function};
 use ir::kind::Entry;
-use ir::parameter::{Parameter, ParameterAttribute, ConstExpr};
+use ir::parameter::{Parameter, ParameterAttribute};
+use ir::generics::ConstExpr;
 use ir::protocols::ReceiverKind;
 use ir::pipeline::{output_parameters_from_type, parameter_link_key};
 
-use super::{ParseError, Result, TsDocParser, TsParseContext, TsParseState};
+use super::{error::Parse, Result, TsDocParser, TsParseContext, TsParseState};
+use super::{is_function_declaration, pick_primary_declaration};
 
 impl TsDocParser {
 	pub(super) fn function_overloads(
