@@ -1,11 +1,26 @@
 //! Real tantivy-backed search index. Implements the v1 schema from the design
 //! doc.
 
-use std::{path::Path, sync::{Arc, Mutex}};
+use std::path::Path;
 
 use async_trait::async_trait;
 use nudox_core::{BlobInfo, BlobRef, GlobalSymbolId, OccurrenceId, Result, SearchError, SearchHit, SearchIndex, SearchQuery, SymbolOrigin};
-use tantivy::{Index, IndexWriter, TantivyDocument, Term, directory::MmapDirectory, schema::{Field, STORED, STRING, Schema, TEXT, Value as TantivyValue}};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term, directory::MmapDirectory, schema::{Field, STORED, STRING, Schema, TEXT, Value as TantivyValue}};
+use tokio::sync::{mpsc, oneshot};
+
+/// How many queued writes are coalesced into a single `commit()` at most.
+///
+/// The owner loop always drains everything currently pending (so bursts batch
+/// naturally) but caps a single commit at this many documents to bound latency.
+const MAX_BATCH: usize = 512;
+
+/// A unit of work sent to the single-owner writer task.
+enum WriterCmd {
+	/// Upsert one document (delete the previous occurrence, then add).
+	Index { doc: Box<TantivyDocument>, prev: Term, ack: oneshot::Sender<Result<()>> },
+	/// Upsert many documents under a single commit.
+	IndexMany { docs: Vec<(Term, TantivyDocument)>, ack: oneshot::Sender<Result<()>> },
+}
 
 /// Tantivy-backed full-text / exact search index.
 ///
@@ -13,11 +28,15 @@ use tantivy::{Index, IndexWriter, TantivyDocument, Term, directory::MmapDirector
 /// same `occurrence_id` before adding the new one, so re-indexing a blob after
 /// deferred resolution doesn't produce duplicate entries.
 ///
-/// Each call commits immediately. Batched commits and background merge policy
-/// are deferred.
+/// The `IndexWriter` is owned by a single background thread fed over an mpsc
+/// channel. Writes are coalesced and committed in batches off the async
+/// reactor; after each commit the shared [`IndexReader`] is reloaded so queries
+/// observe the new documents. The reader is built once at open and reused for
+/// every query.
 pub struct TantivySearchIndex {
 	index:  Index,
-	writer: Arc<Mutex<IndexWriter>>,
+	reader: IndexReader,
+	tx:     mpsc::UnboundedSender<WriterCmd>,
 	fields: Fields,
 }
 
@@ -63,24 +82,56 @@ impl TantivySearchIndex {
 		let index = Index::open_or_create(dir, schema)
 			.map_err(|e| SearchError::OpenIndex(Box::new(e)))?;
 		let writer = index.writer(50_000_000).map_err(|e| SearchError::CreateWriter(Box::new(e)))?;
-		Ok(Self { index, writer: Arc::new(Mutex::new(writer)), fields })
+
+		// Build the reader once. We drive reloads explicitly from the owner loop
+		// after each commit, so use the manual reload policy.
+		let reader = index
+			.reader_builder()
+			.reload_policy(ReloadPolicy::Manual)
+			.try_into()
+			.map_err(|e| SearchError::OpenReader(Box::new(e)))?;
+
+		// Single-owner writer task: the only place `IndexWriter` is touched. It
+		// runs the blocking add/commit off the async reactor on a dedicated
+		// thread and reloads the shared reader after each commit.
+		let (tx, rx) = mpsc::unbounded_channel::<WriterCmd>();
+		let reader_for_owner = reader.clone();
+		std::thread::Builder::new()
+			.name("tantivy-writer".to_owned())
+			.spawn(move || run_writer(writer, reader_for_owner, rx))
+			.map_err(|e| SearchError::CreateWriter(Box::new(e)))?;
+
+		Ok(Self { index, reader, tx, fields })
 	}
 
-	/// Open a reader for querying. Callers do not normally need this directly —
-	/// use [`SearchQuery`] instead.
-	pub fn reader(&self) -> tantivy::Result<tantivy::IndexReader> { self.index.reader() }
+	/// Index many blobs under a single commit.
+	///
+	/// Equivalent to calling [`SearchIndex::index`] once per blob but with one
+	/// coalesced commit and a single reader reload, so it is far cheaper for
+	/// bulk ingestion.
+	pub async fn index_many(&self, blobs: &[(BlobRef, BlobInfo)]) -> Result<()> {
+		if blobs.is_empty() {
+			return Ok(());
+		}
+		let docs = blobs
+			.iter()
+			.map(|(blob_ref, info)| {
+				let prev = Term::from_field_text(
+					self.fields.occurrence_id,
+					&info.occurrence_id.to_string(),
+				);
+				(prev, self.build_doc(blob_ref, info))
+			})
+			.collect();
+		let (ack, ack_rx) = oneshot::channel();
+		self.tx
+			.send(WriterCmd::IndexMany { docs, ack })
+			.map_err(|_| SearchError::LockPoisoned)?;
+		ack_rx.await.map_err(|_| SearchError::LockPoisoned)?
+	}
 
-	#[cfg(test)]
-	pub(crate) fn index_handle(&self) -> &Index { &self.index }
-
-	#[cfg(test)]
-	pub(crate) fn fields(&self) -> &Fields { &self.fields }
-}
-
-#[async_trait]
-impl SearchIndex for TantivySearchIndex {
-	#[tracing::instrument(skip(self, info), fields(blob_ref = %blob_ref, occurrence_id = %info.occurrence_id))]
-	async fn index(&self, blob_ref: &BlobRef, info: &BlobInfo) -> Result<()> {
+	/// Build the tantivy document for one blob (shared by `index`/`index_many`).
+	fn build_doc(&self, blob_ref: &BlobRef, info: &BlobInfo) -> TantivyDocument {
 		let (lib_name, lib_version, repo_id) = match &info.symbol_origin {
 			SymbolOrigin::Repo { repo_id } => (String::new(), String::new(), repo_id.0.clone()),
 			SymbolOrigin::ExternalLib { lib } => (lib.name.clone(), lib.version.clone(), String::new()),
@@ -95,18 +146,98 @@ impl SearchIndex for TantivySearchIndex {
 		doc.add_text(self.fields.lib_version, lib_version);
 		doc.add_text(self.fields.repo_id, repo_id);
 		doc.add_text(self.fields.blob_ref, &blob_ref.0);
+		doc
+	}
 
-		let mut writer =
-			self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+	/// Open a reader for querying. Callers do not normally need this directly —
+	/// use [`SearchQuery`] instead.
+	pub fn reader(&self) -> tantivy::Result<tantivy::IndexReader> { self.index.reader() }
 
+	#[cfg(test)]
+	pub(crate) fn index_handle(&self) -> &Index { &self.index }
+
+	#[cfg(test)]
+	pub(crate) fn fields(&self) -> &Fields { &self.fields }
+}
+
+/// Owner loop for the single `IndexWriter`. Runs on a dedicated OS thread.
+///
+/// Each iteration pops one command (blocking), then drains everything else
+/// currently pending so a burst of writes coalesces into one `commit()`. After
+/// committing it reloads the shared reader, then acks every waiter.
+fn run_writer(mut writer: IndexWriter, reader: IndexReader, mut rx: mpsc::UnboundedReceiver<WriterCmd>) {
+	while let Some(first) = rx.blocking_recv() {
+		// Per-waiter ack channel paired with the result of *adding* its docs.
+		let mut acks: Vec<(oneshot::Sender<Result<()>>, std::result::Result<(), String>)> =
+			Vec::new();
+		let mut pending = 0usize;
+
+		let mut cmd = Some(first);
+		loop {
+			match cmd.take() {
+				Some(WriterCmd::Index { doc, prev, ack }) => {
+					writer.delete_term(prev);
+					let r = writer.add_document(*doc).map(|_| ()).map_err(|e| e.to_string());
+					pending += 1;
+					acks.push((ack, r));
+				}
+				Some(WriterCmd::IndexMany { docs, ack }) => {
+					let mut r = Ok(());
+					for (prev, doc) in docs {
+						writer.delete_term(prev);
+						pending += 1;
+						if let Err(e) = writer.add_document(doc) {
+							r = Err(e.to_string());
+							break;
+						}
+					}
+					acks.push((ack, r));
+				}
+				None => {}
+			}
+
+			if pending >= MAX_BATCH {
+				break;
+			}
+			match rx.try_recv() {
+				Ok(next) => cmd = Some(next),
+				Err(_) => break,
+			}
+		}
+
+		let commit_res = writer.commit().map(|_| ()).map_err(|e| e.to_string());
+		let reload_res = if commit_res.is_ok() {
+			reader.reload().map_err(|e| e.to_string())
+		} else {
+			Ok(())
+		};
+
+		for (ack, add_res) in acks {
+			let final_res: Result<()> = match (add_res, &commit_res, &reload_res) {
+				(Err(e), _, _) => Err(SearchError::AddDocument(e.into()).into()),
+				(_, Err(e), _) => Err(SearchError::Commit(e.clone().into()).into()),
+				(_, _, Err(e)) => Err(SearchError::OpenReader(e.clone().into()).into()),
+				_ => Ok(()),
+			};
+			let _ = ack.send(final_res);
+		}
+	}
+}
+
+#[async_trait]
+impl SearchIndex for TantivySearchIndex {
+	#[tracing::instrument(skip(self, info), fields(blob_ref = %blob_ref, occurrence_id = %info.occurrence_id))]
+	async fn index(&self, blob_ref: &BlobRef, info: &BlobInfo) -> Result<()> {
 		// Delete any previous entry for this occurrence so re-indexing after
 		// deferred resolution doesn't produce duplicate documents.
 		let prev = Term::from_field_text(self.fields.occurrence_id, &info.occurrence_id.to_string());
-		writer.delete_term(prev);
+		let doc = Box::new(self.build_doc(blob_ref, info));
 
-		writer.add_document(doc).map_err(|e| SearchError::AddDocument(Box::new(e)))?;
-		writer.commit().map_err(|e| SearchError::Commit(Box::new(e)))?;
-		Ok(())
+		let (ack, ack_rx) = oneshot::channel();
+		self.tx
+			.send(WriterCmd::Index { doc, prev, ack })
+			.map_err(|_| SearchError::LockPoisoned)?;
+		ack_rx.await.map_err(|_| SearchError::LockPoisoned)?
 	}
 
 	/// Batch-index many blobs with a single `commit()` for the whole batch,
@@ -118,40 +249,29 @@ impl SearchIndex for TantivySearchIndex {
 			return Ok(());
 		}
 
-		let mut writer = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+		// Build every document up front, then hand the whole batch to the single
+		// writer task for one coalesced `commit()` (no fsync+segment-seal per doc).
+		let docs: Vec<(Term, TantivyDocument)> = items
+			.iter()
+			.map(|(blob_ref, info)| {
+				let prev =
+					Term::from_field_text(self.fields.occurrence_id, &info.occurrence_id.to_string());
+				(prev, self.build_doc(blob_ref, info))
+			})
+			.collect();
 
-		for (blob_ref, info) in items {
-			let (lib_name, lib_version, repo_id) = match &info.symbol_origin {
-				SymbolOrigin::Repo { repo_id } => (String::new(), String::new(), repo_id.0.clone()),
-				SymbolOrigin::ExternalLib { lib } => (lib.name.clone(), lib.version.clone(), String::new()),
-			};
-			let global_id_str = info.resolved_global_id.map(|g| g.to_string()).unwrap_or_default();
-			let occurrence_id = info.occurrence_id.to_string();
-
-			let mut doc = TantivyDocument::new();
-			doc.add_text(self.fields.occurrence_id, &occurrence_id);
-			doc.add_text(self.fields.global_id, global_id_str);
-			doc.add_text(self.fields.symbol_name, &info.symbol_name);
-			doc.add_text(self.fields.lib_name, lib_name);
-			doc.add_text(self.fields.lib_version, lib_version);
-			doc.add_text(self.fields.repo_id, repo_id);
-			doc.add_text(self.fields.blob_ref, &blob_ref.0);
-
-			let prev = Term::from_field_text(self.fields.occurrence_id, &occurrence_id);
-			writer.delete_term(prev);
-			writer.add_document(doc).map_err(|e| SearchError::AddDocument(Box::new(e)))?;
-		}
-
-		writer.commit().map_err(|e| SearchError::Commit(Box::new(e)))?;
-		Ok(())
+		let (ack, ack_rx) = oneshot::channel();
+		self.tx
+			.send(WriterCmd::IndexMany { docs, ack })
+			.map_err(|_| SearchError::LockPoisoned)?;
+		ack_rx.await.map_err(|_| SearchError::LockPoisoned)?
 	}
 }
 
 #[async_trait]
 impl SearchQuery for TantivySearchIndex {
 	async fn search(&self, query_str: &str, limit: usize) -> Result<Vec<SearchHit>> {
-		let reader = self.index.reader().map_err(|e| SearchError::OpenReader(Box::new(e)))?;
-		let searcher = reader.searcher();
+		let searcher = self.reader.searcher();
 		let qp = tantivy::query::QueryParser::for_index(&self.index, vec![
 			self.fields.symbol_name,
 			self.fields.lib_name,
@@ -185,8 +305,7 @@ impl SearchQuery for TantivySearchIndex {
 		global_id: GlobalSymbolId,
 		limit: usize,
 	) -> Result<Vec<SearchHit>> {
-		let reader = self.index.reader().map_err(|e| SearchError::OpenReader(Box::new(e)))?;
-		let searcher = reader.searcher();
+		let searcher = self.reader.searcher();
 		let term = tantivy::Term::from_field_text(self.fields.global_id, &global_id.to_string());
 		let query = tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
 		let top_docs = searcher
@@ -211,8 +330,7 @@ impl SearchQuery for TantivySearchIndex {
 	}
 
 	async fn list_all(&self, limit: usize) -> Result<Vec<SearchHit>> {
-		let reader = self.index.reader().map_err(|e| SearchError::OpenReader(Box::new(e)))?;
-		let searcher = reader.searcher();
+		let searcher = self.reader.searcher();
 		let top_docs = searcher
 			.search(&tantivy::query::AllQuery, &tantivy::collector::TopDocs::with_limit(limit))
 			.map_err(|e| SearchError::Search(Box::new(e)))?;

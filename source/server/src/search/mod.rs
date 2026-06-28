@@ -232,7 +232,7 @@ pub async fn expand_symbol(
 	let breadth = if breadth == 0 { 10 } else { breadth };
 
 	let addition = graph::build_graph(&client, &spec, vec![uri.to_owned()], depth, breadth).await?;
-	let expanded = addition.nodes.keys().cloned().collect();
+	let expanded = addition.node_uris().map(|uri| uri.to_string()).collect();
 	let graph = match normalized_session.as_deref() {
 		Some(session_id) => sessions.merge(session_id, addition).await,
 		None => addition.to_response(),
