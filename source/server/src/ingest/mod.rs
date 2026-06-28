@@ -20,7 +20,7 @@ use semver::Version;
 use tokio::task::spawn_blocking;
 use tracing::info;
 
-use crate::{core::backend::LanguageBackend, config::{PipelineConfig, QdrantSettings}, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, emit::Runner, terminus::schema::{CrateInfo, DocCtx, DocStore}, search::text::SymbolTextIndex};
+use crate::{core::backend::LanguageBackend, config::PipelineConfig, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, emit::Runner, terminus::schema::{CrateInfo, DocCtx, DocStore}, search::text::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -141,12 +141,7 @@ async fn finalize_pipeline(
 	// non-consuming sinks are done, moving `embedding_text`/`fq_name` instead of
 	// cloning them.
 	let vector_sink = config.qdrant.as_ref().map(|qdrant| {
-		let collection = collection_name(
-			qdrant,
-			coord.language.as_str(),
-			coord.package.as_ref(),
-			coord.version.as_ref(),
-		);
+		let collection = symbols_collection_name(&qdrant.collection_prefix);
 		VectorSink { settings: qdrant.clone(), model: config.embedding_model.clone(), collection }
 	});
 
@@ -188,19 +183,14 @@ fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -
 	store
 }
 
-fn collection_name(
-	settings: &QdrantSettings,
-	language: &str,
-	package_name: &str,
-	version: &str,
-) -> String {
-	format!(
-		"{}_{}_{}_{}",
-		sanitize_collection_segment(&settings.collection_prefix),
-		sanitize_collection_segment(language),
-		sanitize_collection_segment(package_name),
-		sanitize_collection_segment(version),
-	)
+/// The single Qdrant collection that holds every package-version's vectors.
+///
+/// Replaces the former collection-per-`{lang}_{pkg}_{ver}` scheme: scoping now
+/// lives in each point's payload (`language`/`package`/`version`), so search is
+/// one query against one global HNSW graph instead of an N-collection fan-out.
+/// Both the ingest vector sink and the `/search` read path must agree on this.
+pub(crate) fn symbols_collection_name(prefix: &str) -> String {
+	format!("{}_symbols", sanitize_collection_segment(prefix))
 }
 
 fn sanitize_collection_segment(value: &str) -> String { crate::util::slug::ascii_segment(value) }
