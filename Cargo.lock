@@ -427,6 +427,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "blobstore"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "nudox-core",
+ "object_store",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1352,6 +1369,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "document"
+version = "0.1.0"
+dependencies = [
+ "identity",
+ "ir",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1401,6 +1430,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "embed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "nudox-core",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -3359,6 +3402,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
+name = "identity"
+version = "0.1.0"
+dependencies = [
+ "ir",
+ "nudox-core",
+ "store",
+]
+
+[[package]]
 name = "idna"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3483,6 +3535,13 @@ dependencies = [
  "facet",
  "serde",
  "yoke",
+]
+
+[[package]]
+name = "ir-types"
+version = "0.1.0"
+dependencies = [
+ "ir",
 ]
 
 [[package]]
@@ -3967,6 +4026,7 @@ dependencies = [
  "arborium",
  "async-trait",
  "axum 0.8.8",
+ "blobstore",
  "cargo_metadata",
  "chrono",
  "color-eyre",
@@ -3974,6 +4034,8 @@ dependencies = [
  "deno_ast",
  "deno_doc",
  "deno_graph",
+ "document",
+ "embed",
  "flate2",
  "gix",
  "gix-object",
@@ -3981,27 +4043,23 @@ dependencies = [
  "gix-worktree",
  "gix-worktree-state",
  "http-body-util",
+ "identity",
  "insta",
  "ir",
  "jiff",
  "lang-types",
- "nudox-blobstore",
  "nudox-core",
- "nudox-document",
- "nudox-embed",
- "nudox-identity",
- "nudox-orchestrator",
- "nudox-pipeline",
- "nudox-rust-parser",
- "nudox-search",
- "nudox-store",
- "nudox-ts-parser",
+ "orchestrator",
+ "pipeline",
  "qdrant-client",
  "reqwest",
+ "rust-parser",
  "rustdoc-types",
+ "search",
  "semver",
  "serde",
  "serde_json",
+ "store",
  "tantivy",
  "tar",
  "tempfile",
@@ -4013,24 +4071,8 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "ts-parser",
  "url",
- "uuid",
-]
-
-[[package]]
-name = "nudox-blobstore"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "nudox-core",
- "object_store",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -4044,163 +4086,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "nudox-document"
-version = "0.1.0"
-dependencies = [
- "ir",
- "nudox-identity",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "nudox-embed"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "nudox-core",
- "reqwest",
- "serde_json",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "nudox-identity"
-version = "0.1.0"
-dependencies = [
- "ir",
- "nudox-core",
- "nudox-store",
-]
-
-[[package]]
-name = "nudox-ir-types"
-version = "0.1.0"
-dependencies = [
- "ir",
-]
-
-[[package]]
-name = "nudox-orchestrator"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "nudox-blobstore",
- "nudox-core",
- "nudox-embed",
- "nudox-pipeline",
- "nudox-search",
- "nudox-store",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "nudox-pipeline"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arborium",
- "arborium-tree-sitter",
- "async-trait",
- "chrono",
- "ir",
- "nudox-core",
- "nudox-embed",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "nudox-rust-parser"
-version = "0.1.0"
-dependencies = [
- "cargo_metadata",
- "crates_io_api",
- "gix",
- "gix-object",
- "gix-ref",
- "gix-worktree",
- "gix-worktree-state",
- "ir",
- "lang-types",
- "nudox-ir-types",
- "rustdoc-types",
- "semver",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "nudox-search"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "nudox-blobstore",
- "nudox-core",
- "nudox-embed",
- "qdrant-client",
- "tantivy",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "nudox-store"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "nudox-core",
- "sqlx",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "nudox-ts-parser"
-version = "0.1.0"
-dependencies = [
- "deno_ast",
- "deno_doc",
- "deno_graph",
- "flate2",
- "ir",
- "nudox-ir-types",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "tar",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -4381,6 +4266,24 @@ dependencies = [
  "libc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "orchestrator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blobstore",
+ "chrono",
+ "embed",
+ "nudox-core",
+ "pipeline",
+ "search",
+ "store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4602,6 +4505,25 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "pipeline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arborium",
+ "arborium-tree-sitter",
+ "async-trait",
+ "chrono",
+ "embed",
+ "ir",
+ "nudox-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "pkcs1"
@@ -5287,6 +5209,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-parser"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "crates_io_api",
+ "gix",
+ "gix-object",
+ "gix-ref",
+ "gix-worktree",
+ "gix-worktree-state",
+ "ir",
+ "ir-types",
+ "lang-types",
+ "rustdoc-types",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "rust-stemmers"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5454,6 +5401,24 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blobstore",
+ "chrono",
+ "embed",
+ "nudox-core",
+ "qdrant-client",
+ "tantivy",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "security-framework"
@@ -6089,6 +6054,20 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "nudox-core",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "streaming-iterator"
@@ -7410,6 +7389,27 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "ts-parser"
+version = "0.1.0"
+dependencies = [
+ "deno_ast",
+ "deno_doc",
+ "deno_graph",
+ "flate2",
+ "ir",
+ "ir-types",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "tar",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+]
 
 [[package]]
 name = "twox-hash"

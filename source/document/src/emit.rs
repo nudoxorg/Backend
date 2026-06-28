@@ -6,7 +6,7 @@ use crate::{
 	schema::{DocCtx, DocStore, EmitJsonLD, URI, UriOps},
 	ld::LDKind,
 };
-use nudox_identity::path::{fq_name, path_segments};
+use identity::path::{fq_name, path_segments};
 
 impl EmitJsonLD for Entry {
 	fn emit(self, ctx: &mut DocCtx, docs: &mut DocStore) -> URI {

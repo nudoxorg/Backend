@@ -137,7 +137,7 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
 	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, Language, ModelType, RepoId, SymbolOrigin};
-	use nudox_embed::{MockEmbedder, PlaceholderEmbedder};
+	use embed::{MockEmbedder, PlaceholderEmbedder};
 
 	use super::*;
 

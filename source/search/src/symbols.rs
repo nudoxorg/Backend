@@ -232,9 +232,9 @@ impl SymbolSearch for SymbolSearcher {
 mod tests {
 	use std::{collections::HashMap, sync::Mutex};
 
-	use nudox_blobstore::InMemoryBlobStore;
+	use blobstore::InMemoryBlobStore;
 	use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobRef, BlobStore, ByteSpan, ChunkMetadata, CombineMode, EmbeddingPurpose, EmbeddingRecord, GlobalSymbolId, GlobalSymbolQuery, Language, ModelType, OccurrenceFilter, OccurrenceId, RepoId, Result, ScopeFilter, SearchIndex, SourceChunk, SymbolKind, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex};
-	use nudox_embed::MockEmbedder;
+	use embed::MockEmbedder;
 
 	use super::*;
 	use crate::memory::{InMemorySearchIndex, InMemoryVectorIndex};

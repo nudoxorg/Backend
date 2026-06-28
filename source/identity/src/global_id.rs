@@ -1,5 +1,5 @@
 use nudox_core::GlobalSymbolId;
-pub use nudox_store::{NUDOX_SYMBOL_NS, symbol_id};
+pub use store::{NUDOX_SYMBOL_NS, symbol_id};
 
 use crate::entry_uri::EntryUri;
 
@@ -40,9 +40,9 @@ mod tests {
 	}
 
 	#[test]
-	fn matches_nudox_store_formula() {
+	fn matches_store_formula() {
 		let instance = "nudox_org/nudox_lib";
 		let uri = EntryUri::new("rust", "serde", "serde::Serialize");
-		assert_eq!(compute(instance, &uri), nudox_store::symbol_id(instance, &uri.to_string()));
+		assert_eq!(compute(instance, &uri), store::symbol_id(instance, &uri.to_string()));
 	}
 }

@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
 
-use nudox_ts_parser::TsPackage;
+use ts_parser::TsPackage;
 
 use crate::http::error::AppError;
 

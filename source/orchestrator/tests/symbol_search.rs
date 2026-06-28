@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
-use nudox_blobstore::InMemoryBlobStore;
+use blobstore::InMemoryBlobStore;
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, BodyQuery, ByteSpan, ChunkMetadata, GlobalSymbolId, GlobalSymbolQuery, Language, LibRef, OccurrenceFilter, RepoId, ResolutionOutcome, ScopeFilter, SearchIndex, SearchQuery, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex, VectorQuery};
-use nudox_embed::PlaceholderEmbedder;
-use nudox_pipeline::{Pipeline, PipelineConfig, PipelineInput};
-use nudox_search::{InMemorySearchIndex, InMemoryVectorIndex, SymbolSearcher};
+use embed::PlaceholderEmbedder;
+use pipeline::{Pipeline, PipelineConfig, PipelineInput};
+use search::{InMemorySearchIndex, InMemoryVectorIndex, SymbolSearcher};
 
 use crate::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 

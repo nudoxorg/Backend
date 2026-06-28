@@ -1,7 +1,7 @@
 //! Shared slug / segment sanitizers.
 //!
 //! One home for the string-normalization rules that were previously copy-pasted
-//! across `storage`, `ingest`, `core::ts`, and `local_registry`.
+//! across `storage`, `ingest`, `nudox_core::ts`, and `local_registry`.
 
 /// Normalize a string into a lowercase ASCII identifier segment: ASCII
 /// alphanumerics are kept (lowercased), every other character becomes `_`.

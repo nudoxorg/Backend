@@ -1,4 +1,4 @@
-pub use nudox_rust_parser::{
+pub use rust_parser::{
     Crates, PackageError, ParseError, RegistryError, RustPackage,
 };
-pub use nudox_rust_parser::parse::RustdocParser;
+pub use rust_parser::parse::RustdocParser;

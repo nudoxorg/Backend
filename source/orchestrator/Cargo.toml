@@ -1,5 +1,5 @@
 [package]
-name = "nudox-orchestrator"
+name = "orchestrator"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -10,8 +10,8 @@ test-stubs = ["memory-backends"]
 
 [dependencies]
 nudox-core = { path = "../core" }
-nudox-blobstore = { path = "../blobstore" }
-nudox-search = { path = "../search" }
+blobstore = { path = "../blobstore" }
+search = { path = "../search" }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
@@ -19,7 +19,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 chrono = { workspace = true }
-nudox-embed = { path = "../embed" }
-nudox-pipeline = { path = "../pipeline" }
-nudox-store = { path = "../store" }
+embed = { path = "../embed" }
+pipeline = { path = "../pipeline" }
+store = { path = "../store" }
 tempfile = "3"

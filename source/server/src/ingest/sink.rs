@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nudox_store::NudoxStore;
+use store::NudoxStore;
 use serde_json::Value;
 use tracing::{info, warn};
 
@@ -163,7 +163,7 @@ impl SymbolSink for TextIndexSink {
 // ── Symbol-search orchestrator (/symbol-search) ─────────────────────────────
 
 pub struct OrchestratorSink {
-	pub orchestrator: Arc<nudox_orchestrator::Orchestrator>,
+	pub orchestrator: Arc<orchestrator::Orchestrator>,
 	/// Pre-computed once in `finalize_pipeline`; carried here so `accept` is
 	/// pure I/O with no identity re-derivation.
 	pub identity:     Identity,

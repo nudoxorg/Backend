@@ -77,7 +77,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::warn;
 
-use nudox_identity::{EntryUri, path::nudox_path_to_str};
+use identity::{EntryUri, path::nudox_path_to_str};
 
 pub type URI = String;
 

@@ -15,7 +15,7 @@ pub mod sink;
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use ir::entry::Index;
-use nudox_store::NudoxStore;
+use store::NudoxStore;
 use semver::Version;
 use tokio::task::spawn_blocking;
 use tracing::info;
@@ -49,11 +49,11 @@ pub struct IngestionSummary {
 #[derive(Clone, Default)]
 pub struct IngestTargets {
 	/// SQLite occurrence store; enables deferred occurrence resolution.
-	pub nudox_store:  Option<Arc<NudoxStore>>,
+	pub store:  Option<Arc<NudoxStore>>,
 	/// Local Tantivy full-text index backing `/text-search`.
 	pub text_index:   Option<Arc<SymbolTextIndex>>,
 	/// nudox-search orchestrator backing `/symbol-search`.
-	pub orchestrator: Option<Arc<nudox_orchestrator::Orchestrator>>,
+	pub orchestrator: Option<Arc<orchestrator::Orchestrator>>,
 }
 
 /// Generate IR for `package` off the async executor, project it once, and fan
@@ -113,7 +113,7 @@ async fn finalize_pipeline(
 
 	// Assemble non-consuming sinks (these borrow `&[ParsedSymbol]`).
 	let mut sinks: Vec<Box<dyn SymbolSink>> = Vec::new();
-	if let Some(store) = &targets.nudox_store {
+	if let Some(store) = &targets.store {
 		sinks.push(Box::new(SqliteRegisterSink { store: Arc::clone(store) }));
 	}
 	if let Some(idx) = &targets.text_index {

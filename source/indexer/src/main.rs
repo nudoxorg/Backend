@@ -1,11 +1,11 @@
 use std::{path::PathBuf, sync::Arc};
 
-use nudox_blobstore::ObjectStoreBlobStore;
+use blobstore::ObjectStoreBlobStore;
 use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, RepoId, ResolutionOutcome, Result, SearchIndex, SearchQuery, SymbolOrigin, VectorIndex};
-use nudox_embed::PlaceholderEmbedder;
-use nudox_orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
-use nudox_pipeline::{Pipeline, PipelineConfig, PipelineInput};
-use nudox_search::{InMemoryVectorIndex, QdrantVectorIndex, TantivySearchIndex};
+use embed::PlaceholderEmbedder;
+use orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
+use pipeline::{Pipeline, PipelineConfig, PipelineInput};
+use search::{InMemoryVectorIndex, QdrantVectorIndex, TantivySearchIndex};
 
 struct EmbeddingModel {
 	name: String,

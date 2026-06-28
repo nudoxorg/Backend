@@ -1,5 +1,5 @@
 [package]
-name = "nudox-ts-parser"
+name = "ts-parser"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ deno_doc = { path = "../../../deno_doc" }
 deno_graph = "0.107.1"
 flate2 = "1.1.5"
 ir = { workspace = true }
-nudox-ir-types = { workspace = true }
+ir-types = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

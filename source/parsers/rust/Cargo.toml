@@ -1,12 +1,12 @@
 [package]
-name = "nudox-rust-parser"
+name = "rust-parser"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 ir = { workspace = true }
-nudox-ir-types = { workspace = true }
+ir-types = { workspace = true }
 cargo_metadata = "0.23.1"
 crates_io_api = "0.12.0"
 lang-types = { version = "0.1.0", features = ["serde"] }

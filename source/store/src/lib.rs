@@ -20,7 +20,7 @@
 //! # Usage
 //!
 //! ```no_run
-//! use nudox_store::NudoxStore;
+//! use store::NudoxStore;
 //! use std::path::Path;
 //! use std::sync::Arc;
 //!
@@ -65,7 +65,7 @@ pub const NUDOX_SYMBOL_NS: Uuid = uuid::uuid!("6e756478-2073-796d-626f-6c2d6e730
 /// Compute the deterministic [`GlobalSymbolId`] for a TerminusDB entry.
 ///
 /// ```
-/// use nudox_store::symbol_id;
+/// use store::symbol_id;
 /// let id = symbol_id("nudox_org/nudox_lib", "Entry/rust/serde/Serialize");
 /// ```
 pub fn symbol_id(terminus_instance: &str, entry_uri: &str) -> GlobalSymbolId {

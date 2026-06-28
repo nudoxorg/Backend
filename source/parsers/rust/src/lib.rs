@@ -9,7 +9,7 @@ use thiserror::Error;
 use tracing::{debug, info, instrument};
 use url::Url;
 
-use nudox_ir_types::{Collected, Ir};
+use ir_types::{Collected, Ir};
 
 pub mod parse;
 use self::parse::RustdocParser;

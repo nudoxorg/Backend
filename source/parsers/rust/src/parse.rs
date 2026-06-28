@@ -7,7 +7,7 @@ pub type Result<T> = std::result::Result<T, ParseError>;
 use ir::{entry::NudoxPath, function::{Attribute as FnAttribute, Function}, generics::{Term, *}, kind::{Entry, Visibility}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, primitives::{Primitive, Width}, protocols::*, record::*, ty::{DynTrait, FunctionPointer, PolyTrait, QualifiedPath, Type, TypeReference}};
 
 
-use nudox_ir_types::{output_parameters_from_type, parameter_link_key};
+use ir_types::{output_parameters_from_type, parameter_link_key};
 use crate::ParseError;
 
 /// Immutable context.

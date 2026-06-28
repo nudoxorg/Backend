@@ -26,10 +26,10 @@ publish = false
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-nudox-document = { path = "./source/document" }
-nudox-identity = { path = "./source/identity" }
+document = { path = "./source/document" }
+identity = { path = "./source/identity" }
 ir = { path = "./source/intermediate-representation" }
-nudox-ir-types = { path = "./source/intermediate-representation/pipeline" }
+ir-types = { path = "./source/intermediate-representation/pipeline" }
 yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }

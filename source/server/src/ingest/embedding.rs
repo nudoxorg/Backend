@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nudox_core::{ByteSpan, EmbeddingPurpose, ModelType, SourceChunk};
-use nudox_embed::RemoteEmbedder;
+use embed::RemoteEmbedder;
 use url::Url;
 use qdrant_client::{Payload, qdrant::{PointId, PointStruct, Value}};
 use tokio::task::JoinSet;
@@ -282,7 +282,7 @@ impl PointIdFactory {
 	pub fn from_u64(id: u64) -> PointId { PointId::from(id) }
 
 	pub fn deterministic(record_key: &str) -> PointId {
-		let uuid = uuid::Uuid::new_v5(&nudox_store::NUDOX_SYMBOL_NS, record_key.as_bytes());
+		let uuid = uuid::Uuid::new_v5(&store::NUDOX_SYMBOL_NS, record_key.as_bytes());
 		PointId::from(uuid.to_string())
 	}
 }

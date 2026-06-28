@@ -1,5 +1,5 @@
 [package]
-name = "nudox-identity"
+name = "identity"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,4 +7,4 @@ license.workspace = true
 [dependencies]
 ir = { workspace = true }
 nudox-core = { path = "../core" }
-nudox-store = { path = "../store" }
+store = { path = "../store" }

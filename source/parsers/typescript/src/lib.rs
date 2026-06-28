@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use nudox_ir_types::{Collected, Ir};
+use ir_types::{Collected, Ir};
 
 pub mod parse;
 use self::parse::{ParseError, TsDocParser};

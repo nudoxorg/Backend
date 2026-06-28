@@ -4,7 +4,7 @@ use ir::entry::Entry;
 use serde_json::{Map, Value, json};
 use tracing::{debug, instrument, warn};
 
-use nudox_identity::path::{fq_name, path_segments};
+use identity::path::{fq_name, path_segments};
 use crate::terminus::schema::{DocCtx, DocStore, EmitJsonLD, URI, UriOps};
 use self::ld::LDKind;
 

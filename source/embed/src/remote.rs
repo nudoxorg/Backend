@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```no_run
-//! use nudox_embed::RemoteEmbedder;
+//! use embed::RemoteEmbedder;
 //! use url::Url;
 //!
 //! let embedder = RemoteEmbedder::builder(

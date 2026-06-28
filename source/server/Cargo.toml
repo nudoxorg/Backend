@@ -19,17 +19,17 @@ gix = { version = "0.74.1", features = [
 gix-object = "0.51.1"
 gix-ref = "0.54.1"
 ir = { workspace = true, features = ["serde"] }
-nudox-store     = { path = "../store" }
+store     = { path = "../store" }
 nudox-core      = { path = "../core" }
-nudox-identity  = { workspace = true }
-nudox-search    = { path = "../search" }
-nudox-blobstore = { path = "../blobstore" }
-nudox-document  = { path = "../document" }
-nudox-embed     = { path = "../embed" }
-nudox-orchestrator = { path = "../orchestrator", features = ["memory-backends"] }
-nudox-pipeline      = { path = "../pipeline" }
-nudox-rust-parser   = { path = "../parsers/rust" }
-nudox-ts-parser = { path = "../parsers/typescript" }
+identity  = { workspace = true }
+search    = { path = "../search" }
+blobstore = { path = "../blobstore" }
+document  = { path = "../document" }
+embed     = { path = "../embed" }
+orchestrator = { path = "../orchestrator", features = ["memory-backends"] }
+pipeline      = { path = "../pipeline" }
+rust-parser   = { path = "../parsers/rust" }
+ts-parser = { path = "../parsers/typescript" }
 uuid            = { workspace = true }
 chrono          = { workspace = true }
 arborium = { workspace = true, features = ["lang-rust"] }
@@ -68,8 +68,8 @@ tower            = { version = "0.5", features = ["util"] }
 http-body-util   = "0.1"
 chrono           = { workspace = true }
 nudox-core       = { path = "../core" }
-nudox-search     = { path = "../search" }
-nudox-blobstore  = { path = "../blobstore" }
-nudox-embed      = { path = "../embed" }
-nudox-orchestrator = { path = "../orchestrator", features = ["memory-backends"] }
+search     = { path = "../search" }
+blobstore  = { path = "../blobstore" }
+embed      = { path = "../embed" }
+orchestrator = { path = "../orchestrator", features = ["memory-backends"] }
 uuid             = { workspace = true }

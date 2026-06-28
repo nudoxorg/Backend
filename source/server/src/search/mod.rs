@@ -13,7 +13,7 @@ use terminusdb_client::{BranchSpec, GetOpts, TerminusDBHttpClient};
 
 use crate::config::{PipelineConfig, QdrantSettings};
 use crate::http::error::{AppError, ConfigError, TerminusError};
-use nudox_identity::EntryUri;
+use identity::EntryUri;
 use crate::terminus::upload::TerminusConfig;
 
 pub mod text;

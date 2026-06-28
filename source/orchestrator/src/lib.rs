@@ -182,10 +182,10 @@ impl Orchestrator {
 mod disk_integration_tests {
 	use std::sync::Arc;
 
-	use nudox_blobstore::ObjectStoreBlobStore;
+	use blobstore::ObjectStoreBlobStore;
 	use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, ByteSpan, ChunkMetadata, FutureParseQueue, GlobalSymbolStore, Language, LibRef, OccurrenceId, RepoId, ResolutionOutcome, SearchIndex, SearchQuery, SourceChunk, SymbolOrigin, VectorIndex};
-	use nudox_search::{InMemoryVectorIndex, TantivySearchIndex};
-	use nudox_store::NudoxStore;
+	use search::{InMemoryVectorIndex, TantivySearchIndex};
+	use store::NudoxStore;
 	use tempfile::TempDir;
 
 	use super::*;
@@ -360,9 +360,9 @@ mod disk_integration_tests {
 mod tests {
 	use std::sync::Arc;
 
-	use nudox_blobstore::InMemoryBlobStore;
+	use blobstore::InMemoryBlobStore;
 	use nudox_core::{BLOB_SCHEMA_VERSION, ByteSpan, ChunkMetadata, GlobalSymbolQuery, Language, OccurrenceId, RepoId, SourceChunk, SymbolOrigin};
-	use nudox_search::{InMemorySearchIndex, InMemoryVectorIndex};
+	use search::{InMemorySearchIndex, InMemoryVectorIndex};
 
 	use super::*;
 	use crate::memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore};

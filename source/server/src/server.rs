@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use nudox_blobstore::ObjectStoreBlobStore;
+use blobstore::ObjectStoreBlobStore;
 use nudox_core::{BlobStore, Embedder, FutureParseQueue, GlobalSymbolStore, ModelType, SearchIndex, SearchQuery, VectorIndex, VectorQuery};
-use nudox_embed::{PlaceholderEmbedder, RemoteEmbedder};
-use nudox_orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
-use nudox_search::{InMemoryVectorIndex, QdrantVectorIndex, SymbolSearcher, TantivySearchIndex};
-use nudox_store::NudoxStore;
+use embed::{PlaceholderEmbedder, RemoteEmbedder};
+use orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
+use search::{InMemoryVectorIndex, QdrantVectorIndex, SymbolSearcher, TantivySearchIndex};
+use store::NudoxStore;
 use tokio::signal;
 use tracing::{info, warn};
 use url::Url;
@@ -20,10 +20,10 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	// Open the SQLite occurrence store when a TerminusDB instance is configured.
 	// The terminus_instance key ("org/db") is used to derive stable
 	// GlobalSymbolIds.
-	let nudox_store = if let Some(ref terminus) = config.pipeline.terminus {
+	let store = if let Some(ref terminus) = config.pipeline.terminus {
 		let db_path = config.storage_root.join("nudox-links.db");
 		let instance = format!("{}/{}", terminus.org, terminus.db);
-		match nudox_store::NudoxStore::open(&db_path, instance).await {
+		match store::NudoxStore::open(&db_path, instance).await {
 			Ok(store) => {
 				info!(db = %db_path.display(), "nudox-store SQLite opened");
 				Some(store)
@@ -53,13 +53,13 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
 	// NudoxStore when configured). Clone the store handle so it can also flow
 	// into IngestTargets below.
 	let symbol_orchestrator =
-		build_symbol_orchestrator(&config, nudox_store.clone()).await;
+		build_symbol_orchestrator(&config, store.clone()).await;
 
 	// All configured fan-out destinations, assembled once. The registry writes to
 	// them during ingestion; the API layer reads `text_index`/`orchestrator` from
 	// the same handles. No per-backend threading or builder triplet.
 	let targets = IngestTargets {
-		nudox_store,
+		store,
 		text_index:   text_index.clone(),
 		orchestrator: symbol_orchestrator.clone(),
 	};
@@ -99,11 +99,11 @@ async fn shutdown_signal() { let _ = signal::ctrl_c().await; }
 ///
 /// Conditional backends (wired when the relevant config is present):
 ///   - `NUDOX_QDRANT_ENDPOINT`            → `QdrantVectorIndex` (otherwise in-memory)
-///   - `nudox_store` arg                  → SQLite `GlobalSymbolStore` + `FutureParseQueue`
+///   - `store` arg                  → SQLite `GlobalSymbolStore` + `FutureParseQueue`
 ///   - `OPENAI_API_KEY` / `NUDOX_EMBEDDING_ENDPOINT` → `RemoteEmbedder` (otherwise placeholder)
 async fn build_symbol_orchestrator(
 	config: &AppConfig,
-	nudox_store: Option<Arc<NudoxStore>>,
+	store: Option<Arc<NudoxStore>>,
 ) -> Option<Arc<Orchestrator>> {
 	let index_dir = config.storage_root.join("nudox-symbol-index");
 	let blobs_dir = config.storage_root.join("nudox-blobs");
@@ -161,7 +161,7 @@ async fn build_symbol_orchestrator(
 
 	// GlobalSymbolStore + FutureParseQueue: reuse the SQLite store when available.
 	let (global, queue): (Arc<dyn GlobalSymbolStore>, Arc<dyn FutureParseQueue>) =
-		if let Some(ref store) = nudox_store {
+		if let Some(ref store) = store {
 			info!("wiring NudoxStore as global symbol store and future-parse queue");
 			(Arc::clone(store) as _, Arc::clone(store) as _)
 		} else {
