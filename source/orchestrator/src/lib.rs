@@ -125,22 +125,45 @@ impl Orchestrator {
 	/// state is derivable from it.
 	#[instrument(skip(self))]
 	pub async fn rebuild_indexes(&self) -> Result<ResolveLibReport> {
+		// Batch the index/vector writes so the whole rebuild commits in chunks
+		// rather than one fsync/flush per blob (tantivy commit + qdrant wait).
+		const REBUILD_BATCH: usize = 256;
 		let blob_refs = self.blob_store.list().await?;
 		let blobs_seen = blob_refs.len();
 		let mut blobs_resolved = 0usize;
 		let mut blobs_skipped = 0usize;
 
+		let mut docs: Vec<(nudox_core::BlobRef, BlobInfo)> = Vec::new();
+		let mut vectors: Vec<(nudox_core::BlobRef, GlobalSymbolId, Vec<nudox_core::EmbeddingRecord>)> =
+			Vec::new();
+
 		for blob_ref in &blob_refs {
-			let info = self.blob_store.get(blob_ref).await?;
+			let mut info = self.blob_store.get(blob_ref).await?;
 			match info.resolved_global_id {
-				Some(_) => {
-					self.index_resolved(blob_ref, &info).await?;
+				Some(global_id) => {
+					// Tantivy never indexes the vectors, so move them out of the
+					// BlobInfo to avoid holding two copies of the embeddings.
+					let embeddings = std::mem::take(&mut info.embeddings);
+					vectors.push((blob_ref.clone(), global_id, embeddings));
+					docs.push((blob_ref.clone(), info));
 					blobs_resolved += 1;
+
+					if docs.len() >= REBUILD_BATCH {
+						self.search.index_many(&docs).await?;
+						self.vector.upsert_many(&vectors).await?;
+						docs.clear();
+						vectors.clear();
+					}
 				}
 				None => {
 					blobs_skipped += 1;
 				}
 			}
+		}
+
+		if !docs.is_empty() {
+			self.search.index_many(&docs).await?;
+			self.vector.upsert_many(&vectors).await?;
 		}
 
 		Ok(ResolveLibReport { blobs_seen, blobs_resolved, blobs_skipped })

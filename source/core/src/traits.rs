@@ -64,6 +64,18 @@ pub trait FutureParseQueue: Send + Sync {
 pub trait SearchIndex: Send + Sync {
 	/// Indexes the given [`BlobInfo`] so it is discoverable by full-text search.
 	async fn index(&self, blob_ref: &BlobRef, info: &BlobInfo) -> Result<()>;
+
+	/// Indexes a whole batch of blobs.
+	///
+	/// The default implementation simply loops over [`index`]. Backends with an
+	/// expensive per-call seal/commit (e.g. tantivy `commit()`) should override
+	/// this to perform a single commit for the whole batch.
+	async fn index_many(&self, items: &[(BlobRef, BlobInfo)]) -> Result<()> {
+		for (blob_ref, info) in items {
+			self.index(blob_ref, info).await?;
+		}
+		Ok(())
+	}
 }
 
 /// Vector similarity index over embedding records.
@@ -77,6 +89,21 @@ pub trait VectorIndex: Send + Sync {
 		global_id: GlobalSymbolId,
 		embeddings: &[EmbeddingRecord],
 	) -> Result<()>;
+
+	/// Upserts embeddings for a whole batch of blobs.
+	///
+	/// The default implementation loops over [`upsert`]. Backends that flush per
+	/// call (e.g. a Qdrant `wait(true)` per upsert) should override this to batch
+	/// all points into one request with a single flush.
+	async fn upsert_many(
+		&self,
+		items: &[(BlobRef, GlobalSymbolId, Vec<EmbeddingRecord>)],
+	) -> Result<()> {
+		for (blob_ref, global_id, embeddings) in items {
+			self.upsert(blob_ref, *global_id, embeddings).await?;
+		}
+		Ok(())
+	}
 }
 
 /// Read side of the full-text search index.

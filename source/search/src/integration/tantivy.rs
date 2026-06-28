@@ -108,6 +108,43 @@ impl SearchIndex for TantivySearchIndex {
 		writer.commit().map_err(|e| SearchError::Commit(Box::new(e)))?;
 		Ok(())
 	}
+
+	/// Batch-index many blobs with a single `commit()` for the whole batch,
+	/// instead of one fsync+segment-seal per document. The writer lock is taken
+	/// once. Upsert semantics are preserved per item (delete-by-occurrence first).
+	#[tracing::instrument(skip(self, items), fields(count = items.len()))]
+	async fn index_many(&self, items: &[(BlobRef, BlobInfo)]) -> Result<()> {
+		if items.is_empty() {
+			return Ok(());
+		}
+
+		let mut writer = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+
+		for (blob_ref, info) in items {
+			let (lib_name, lib_version, repo_id) = match &info.symbol_origin {
+				SymbolOrigin::Repo { repo_id } => (String::new(), String::new(), repo_id.0.clone()),
+				SymbolOrigin::ExternalLib { lib } => (lib.name.clone(), lib.version.clone(), String::new()),
+			};
+			let global_id_str = info.resolved_global_id.map(|g| g.to_string()).unwrap_or_default();
+			let occurrence_id = info.occurrence_id.to_string();
+
+			let mut doc = TantivyDocument::new();
+			doc.add_text(self.fields.occurrence_id, &occurrence_id);
+			doc.add_text(self.fields.global_id, global_id_str);
+			doc.add_text(self.fields.symbol_name, &info.symbol_name);
+			doc.add_text(self.fields.lib_name, lib_name);
+			doc.add_text(self.fields.lib_version, lib_version);
+			doc.add_text(self.fields.repo_id, repo_id);
+			doc.add_text(self.fields.blob_ref, &blob_ref.0);
+
+			let prev = Term::from_field_text(self.fields.occurrence_id, &occurrence_id);
+			writer.delete_term(prev);
+			writer.add_document(doc).map_err(|e| SearchError::AddDocument(Box::new(e)))?;
+		}
+
+		writer.commit().map_err(|e| SearchError::Commit(Box::new(e)))?;
+		Ok(())
+	}
 }
 
 #[async_trait]
