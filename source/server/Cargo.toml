@@ -58,6 +58,10 @@ tantivy = "0.22"
 mimalloc = "0.1"
 dashmap = "6"
 arc-swap = "1"
+rayon = { workspace = true }
+futures = { workspace = true }
+im = { workspace = true }
+wide = { workspace = true }
 
 [features]
 default = ["serde"]

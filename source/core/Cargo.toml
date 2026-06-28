@@ -13,3 +13,5 @@ chrono = { workspace = true }
 # the workspace otherwise only satisfies via transitive feature unification.
 serde = { workspace = true, features = ["rc"] }
 tracing = { workspace = true }
+triomphe = { workspace = true }
+smol_str = { workspace = true }

@@ -11,6 +11,7 @@ ir = { workspace = true }
 arborium = { workspace = true, features = ["lang-rust"] }
 arborium-tree-sitter = { workspace = true }
 async-trait = { workspace = true }
+rayon = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
