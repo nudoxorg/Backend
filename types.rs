@@ -19,6 +19,12 @@ pub enum EmbeddingPurpose {
 	Documentation,
 }
 
+/// A hit for a search result or otherwise
+pub struct Hit<T> {
+	pub value: T,
+	pub score: Option<f32>
+}
+
 //! I figure we don't need a special embedding type -- it seems a nonempty vec would do all of the heavy lifting we need it to do.
 
 
