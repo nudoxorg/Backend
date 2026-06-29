@@ -342,6 +342,20 @@ pub struct Blob {
 
 /// A versioned representation of a particular object
 pub struct Versioned<T> {
+	// TODO: Support different kinds of versioning
 	version: Version,
 	object: T,
+}
+
+/// A store, usually a git repository, which stores multiple versions of a desired piece of information.
+/// Agnostic to systems like branches, it's expected that the object itself stores the branch it is on, and if you would like to explore a different branch (or tag), mutate first. Different history mechanisms (like tags) should likely implement historical themselves.
+pub trait Historical {
+	/// Go back to the last event in the history
+	fn past(&self);
+
+	/// Go forward to the next event in the history
+	fn future();
+
+	/// Get the information for a particular event in the history
+	fn present();
 }
