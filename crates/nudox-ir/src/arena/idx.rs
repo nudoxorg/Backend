@@ -4,7 +4,7 @@ use nonmax::NonMaxUsize;
 
 pub struct EntryIdx<T> {
 	index: NonMaxUsize,
-	_p:    PhantomData<T>,
+	_p:    PhantomData<fn() -> T>,
 }
 
 impl<T> EntryIdx<T> {
