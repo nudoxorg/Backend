@@ -315,7 +315,7 @@ pub trait WriteRegistry: Registry {
 
 	/// Publish a package to the registry.
 	/// Returns the final, global package object, for you to syndicate out to the global store
-	async fn publish(&self, payload: Payload) -> Result<Self::Package>;
+	async fn publish(&self, payload: Versioned<Payload>) -> Result<Self::Package>;
 
 	/// Alter the engines ranking system for a registry
 	async fn rank(&mut self, policy: RankingPolicy) -> Result<()>;
@@ -323,7 +323,7 @@ pub trait WriteRegistry: Registry {
 	/// Change the state of an already-published package, name, description, yank status, etc.
 	/// Not expected to be called often, but should also signify any of the dependent infra
 	/// Returns the newly minted global package object
-	async fn modify(&self, payload: Payload, package: Package) -> Result<Self::Package>;
+	async fn modify(&self, payload: Versioned<Payload>, package: Package) -> Result<Self::Package>;
 
 	// Will likely sit on top of: https://lib.rs/crates/object_store
 }
@@ -338,4 +338,10 @@ pub struct Blob {
 
 	/// The condensed source representation (re: taring)
 	source_text: String,
+}
+
+/// A versioned representation of a particular object
+pub struct Versioned<T> {
+	version: Version,
+	object: T,
 }
