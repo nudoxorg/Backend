@@ -290,21 +290,46 @@ pub trait Progressive {
     fn on_complete(&self, mut callback: impl FnMut());
 }
 
-
-/// A store of packages, of some flavor.
 pub trait Registry {
-	/// An enum that represents various supported filters/conditions for search and listing
-	type Condition;
-
-	// TODO: Add some kind of mechanism for abstracting over how ranking should be handled? I wonder about splitting this into two traits, one for frontend/read-only and one for backend/mutability?
+	/// The particular language that this is oworking within
+	const LANGUAGE: Language;
 
 	/// The package that the registry is in charge of holding/indexing over
 	type Package;
 
+	/// The failure mode for this registry
+    type Error: std::error::Error + Send + Sync + 'static;
+}
+
+/// A store of packages, of some flavor.
+pub trait ReadRegistry:Registry {
+	/// An enum that represents various supported filters/conditions for search and listing
+	type Condition;
+
+	const Language: Language;
+
+	// TODO: Add some kind of mechanism for abstracting over how ranking should be handled? I wonder about splitting this into two traits, one for frontend/read-only and one for backend/mutability?
+
 	/// List the packages in this registry
-	async fn list(&self, conditions: &[Condition]);
+	async fn list(&self, conditions: &[Self::Condition]);
+
+	async fn get(&self, package: &Self::Package) -> Result<Option<Package>>;
 
 	/// Search through the packages in this registry
-	async fn search(&self, conditions: &[Condition]);
+	async fn search(&self, conditions: &[Self::Condition]);
+}
+
+pub trait WriteRegistry {
+	/// The package that the registry is in charge of holding/indexing over
+	type Package;
+
+	/// Add to the registry
+	async fn add()
+
+	/// Delete a package in the registry
+	async fn delete()
+
+	/// Alter the engines ranking system for a registry
+	async fn rank()
 }
 
