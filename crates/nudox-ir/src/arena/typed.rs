@@ -1,6 +1,7 @@
 use std::{any::Any, marker::PhantomData};
 
-use crate::{arena::Entry, kind::{EntryKind, Kind}, symbol::Symbol};
+use super::Entry;
+use crate::{kind::{EntryKind, Kind}, symbol::Symbol};
 
 #[repr(transparent)]
 pub struct TypedEntry<T> {
