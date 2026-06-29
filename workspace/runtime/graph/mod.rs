@@ -4,8 +4,9 @@
 pub mod expansion;
 pub mod resolution;
 
-use crate::heart::{Id, Symbol};
-use crate::store::StoreError;
+use heart::{Id, StoreError, Symbol};
+use secrecy::SecretString;
+use url::Url;
 
 /// A trait for objects which are or hold graph-based data storing mechanisms, for surfacing direct/known relationships
 pub trait GraphStore {
@@ -24,7 +25,30 @@ pub trait GraphStore {
     async fn are_related(&self, from: Id<Symbol>, to: Id<Symbol>) -> Result<bool, Self::Error>;
 }
 
+/// The TerminusDB organization a database is namespaced under.
+pub struct Organization(String);
+
+/// The name of a TerminusDB database within an [`Organization`].
+pub struct Database(String);
+
+/// HTTP basic-auth credentials for a TerminusDB endpoint.
+pub struct Credentials {
+	user: String,
+	password: SecretString,
+}
+
 /// Our graph database of choice (terminus)
 pub struct Graph {
+	/// The pooled HTTP client used for every request to the endpoint.
+	client: reqwest::Client,
 
+	/// The base URL of the TerminusDB server.
+	endpoint: Url,
+
+	/// The organization + database the documents live in.
+	organization: Organization,
+	database: Database,
+
+	/// The credentials presented on each request.
+	credentials: Credentials,
 }

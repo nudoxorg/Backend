@@ -1,17 +1,24 @@
 [package]
-name = "nudox-core"
+name = "registry"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
 
 [dependencies]
-async-trait = { workspace = true }
+heart = { workspace = true }
+ir = { workspace = true }
+semver = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-chrono = { workspace = true }
-# `rc` enables Serialize/Deserialize for Arc<str> (SourceChunk.raw_code), which
-# the workspace otherwise only satisfies via transitive feature unification.
-serde = { workspace = true, features = ["rc"] }
-tracing = { workspace = true }
-triomphe = { workspace = true }
-smol_str = { workspace = true }
+# Real representations for the three blob resolutions + the global (postgres) index.
+arborium-tree-sitter = { workspace = true }
+tar = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+ir = { workspace = true }

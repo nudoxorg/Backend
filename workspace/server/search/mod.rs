@@ -6,11 +6,10 @@
 pub mod query;
 pub mod symbolic;
 
-use heart::Id;
+use futures::Stream;
+use heart::{Guid, StoreError, Symbol};
 use runtime::graph::GraphStore;
 use runtime::vector::Scored;
-
-use crate::store::StoreError;
 
 pub use query::{AbstractQuery, Filter, Match, Query, Search};
 
@@ -31,7 +30,7 @@ pub trait SearchTarget {
 	// Again I don't believe in listing
 }
 
-//! Not doing any kind of embedder trait, because again, it's just keyed to something specific, we're not going to have more of these unfort
+// Not doing any kind of embedder trait, because again, it's just keyed to something specific, we're not going to have more of these unfort
 
 /// A store of symbols with both semantic and precise search
 pub trait SymbolStore: SearchTarget<Item = Symbol> + GraphStore {

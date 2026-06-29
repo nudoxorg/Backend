@@ -17,9 +17,9 @@ pub type Embedding = NonEmpty<f32>;
 /// model
 const EMBEDDING_MODEL: &'static str = "text-embedding-3-small";
 
-//! Embedders that turn a source chunk into a vector for the semantic store.
-//!
-//! Backs both ingest-time index embeddings and query-time embeddings, behind a
-//! single trait so the in-process, remote (OpenAI-compatible), placeholder, and
-//! mock implementations are interchangeable.
+// Embedders that turn a source chunk into a vector for the semantic store.
+//
+// Backs both ingest-time index embeddings and query-time embeddings, behind a
+// single trait so the in-process, remote (OpenAI-compatible), placeholder, and
+// mock implementations are interchangeable.
 

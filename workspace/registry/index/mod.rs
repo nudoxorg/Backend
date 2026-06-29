@@ -29,12 +29,20 @@ pub enum Phase {
 }
 
 
-//! The concept of a resolution outcome is frankly pointless, A package always holds a state, it's not something with an "outcome" if we need to re-index, then we change the state. The outcome is just weird and voltaile.
+// The concept of a resolution outcome is frankly pointless, A package always holds a state, it's not something with an "outcome" if we need to re-index, then we change the state. The outcome is just weird and voltaile.
 
 
 // TODO: Wire up postgres types for global indexing, and the parse queue and association (establishing a link)
 
+/// The `{org}/{db}` TerminusDB instance every deterministic global id is salted
+/// with, so a `GlobalSymbolId` is recomputable offline from the same instance.
+pub struct TerminusInstance(String);
+
 /// Our globalstore/connective tissue (postgres)
 pub struct GlobalStore {
+	/// The connection pool to the postgres instance that owns the global index.
+	pool: sqlx::PgPool,
 
+	/// The instance every global symbol id in this store is derived against.
+	instance: TerminusInstance,
 }

@@ -20,5 +20,5 @@ pub trait Progressive {
 
 	/// The action to take when the progress has reached a natural end or a stopping point.
 	/// Called when progress reaches a natural end.
-    fn on_complete(&self, mut callback: impl FnMut());
+    fn on_complete(&self, callback: impl FnMut());
 }

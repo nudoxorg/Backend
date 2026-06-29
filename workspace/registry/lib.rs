@@ -8,9 +8,29 @@ pub mod index;
 pub mod persist;
 pub mod resolve;
 
-use heart::{Id, Language, Versioned};
+use heart::{Guid, Id, Language, StoreError, Versioned};
+use semver::Version;
 
-use crate::store::StoreError;
+/// A package as it lives in a single registry, before global syndication.
+pub struct Package {
+	/// The registry name of the package (e.g. `axum`, `@types/node`).
+	pub name: String,
+
+	/// The exact version this record describes.
+	pub version: Version,
+
+	/// The language/ecosystem this package belongs to.
+	pub language: Language,
+}
+
+/// The final, globally-syndicated package object handed back to the global store.
+pub struct GlobalPackage {
+	/// The canonical, version-agnostic global identity of the package.
+	pub id: Guid,
+
+	/// The per-registry record this global package was minted from.
+	pub package: Package,
+}
 
 /// A registry that holds all of the packages and metadata for a particular language, including their code.
 pub trait Registry {
@@ -38,7 +58,7 @@ pub trait ReadRegistry: Registry {
 	/// List the packages in this registry
 	async fn list(&self, conditions: &[Self::Condition]);
 
-	async fn get(&self, package: &Self::Package) -> Result<Option<Package>>;
+	async fn get(&self, package: &Self::Package) -> Result<Option<Package>, Self::Error>;
 
 	/// Search through the packages in this registry
 	async fn search(&self, conditions: &[Self::Condition]);

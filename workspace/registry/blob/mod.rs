@@ -13,6 +13,11 @@
 //! blob. For this we need to have a (sort of) custom binary serialization
 //! process (probably just bincode)
 
+use std::io::Cursor;
+
+use arborium_tree_sitter::Tree;
+use ir::entry::Index;
+
 pub mod creation;
 pub mod emit;
 
@@ -21,11 +26,12 @@ pub struct Blob {
 	// TODO: Some way of idenitfying/claering out old blobs
 
 	/// The entire syntax tree (re: treesitter)
-	concrete_syntax_tree: String,
+	concrete_syntax_tree: Tree,
 
 	/// The full API surface (re: nudox IR gen)
-	api_surface: String,
+	api_surface: Index,
 
-	/// The condensed source representation (re: taring)
-	source_text: String,
+	/// The condensed source representation (re: taring): an in-memory `tar`
+	/// archive of the package's source text, kept alongside the lossy CST.
+	source_text: tar::Archive<Cursor<Vec<u8>>>,
 }

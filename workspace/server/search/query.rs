@@ -5,7 +5,8 @@ use std::num::NonZeroUsize;
 
 use nonempty::NonEmpty;
 
-use heart::Language;
+use heart::{Language, SymbolKind as Kind};
+use registry::Package;
 
 /// An abstract query, fed to qdrant for responses based on semantic similarity rather than some ground response
 pub enum AbstractQuery{

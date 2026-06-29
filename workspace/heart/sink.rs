@@ -22,11 +22,11 @@ pub trait Sink: Sync {
 	/// How we're going to handle an opportunity to try again
 	fn backoff(&self) -> impl BackoffBuilder {
 		// Uses https://crates.io/crates/backon
-		ExponentialBuilder::default().with_jitter();
+		ExponentialBuilder::default().with_jitter()
 	}
 
 	/// Did we get an error that's unproblematic and avoidable?
-	fn retryable(error: &Self::Error);
+	fn retryable(&self, error: &Self::Error) -> bool;
 
 	/// Handle the process of delivering the record
 	async fn deliver(&self, item: Self::Item) -> Result<(), Self::Error>

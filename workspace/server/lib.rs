@@ -51,12 +51,19 @@ impl ServerConfiguration {
     }
 }
 
-//! Also I'm not messing with any of the env stuff. I think we'll be able to get with configuration flags for most of this, just having separate default implementation/etc for dev/prod/other
+// Also I'm not messing with any of the env stuff. I think we'll be able to get with configuration flags for most of this, just having separate default implementation/etc for dev/prod/other
 
 pub struct Server {
-	// TODO: Figure out connection types
+	/// The static, private-facing configuration this server was built from.
+	pub config: ServerConfiguration,
+
+	/// Our graph database of choice (terminus).
 	pub graph: Graph,
+
+	/// Our semantic/vector embedding database of choice (Qdrant).
 	pub semantics: Semantic,
+
+	/// Our globalstore/connective tissue (postgres).
 	pub global_store: GlobalStore,
 }
 

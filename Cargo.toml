@@ -16,7 +16,7 @@ members = [
   "./source/producers",
 ]
 default-members = ["./source/server"]
-exclude = ["deno_doc"]
+exclude = ["deno_doc", "workspace"]
 
 [workspace.package]
 edition = "2024"

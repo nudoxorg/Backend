@@ -2,7 +2,6 @@
 //! directly or through a thin abstraction. The canonical, always-on serving
 //! store; persistence and coordination live elsewhere.
 
-pub mod embed;
 pub mod graph;
 pub mod session;
 pub mod text;
