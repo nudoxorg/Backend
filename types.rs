@@ -227,6 +227,8 @@ pub struct GlobalStore {
 /// A remote sink or data place, that we reach out to process information
 /// Used for any external/remote source that is ingesting information that we;re producing here
 pub trait Sink: Sync {
+	// TODO: Either here or in another mechanism add support for multiple parents/sources
+
 	/// The thing that we're uploading
 	type Item: Sync;
 
@@ -257,9 +259,9 @@ pub trait Sink: Sync {
 	}
 }
 
-
-
-//! Holding off on creating a true batch operator because I'm not entirely convinced that we're going to need it for the common case? Like I only thought it was useful for terminus?
+/// A sink which responds well to batch operators
+pub trait BatchSink: Sink {}
+// Seems like qdrant and terminus both have constants for concurrency or batching, and I think this could be resolved to just one abstraction, but still am working on conceiving it
 
 /// Our trait for anything that can communicate progress or hold an in-between state
 pub trait Progressive {
@@ -280,5 +282,23 @@ pub trait Progressive {
 	/// The action to take when the progress has reached a natural end or a stopping point.
 	/// Called when progress reaches a natural end.
     fn on_complete(&self, mut callback: impl FnMut());
+}
+
+
+/// A store of packages, of some flavor.
+pub trait Registry {
+	/// An enum that represents various supported filters/conditions for search and listing
+	type Condition;
+
+	// TODO: Add some kind of mechanism for abstracting over how ranking should be handled? I wonder about splitting this into two traits, one for frontend/read-only and one for backend/mutability?
+
+	/// The package that the registry is in charge of holding/indexing over
+	type Package;
+
+	/// List the packages in this registry
+	async fn list(&self, conditions: &[Condition]);
+
+	/// Search through the packages in this registry
+	async fn search(&self, conditions: &[Condition]);
 }
 
