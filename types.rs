@@ -226,18 +226,36 @@ pub struct GlobalStore {
 
 /// A remote sink or data place, that we reach out to process information
 /// Used for any external/remote source that is ingesting information that we;re producing here
-pub trait Sink {
+pub trait Sink: Sync {
 	/// The thing that we're uploading
-	type UploadObject;
+	type Item: Sync;
 
-	/// How many upload objects we should attempt to push at one time
-	type ChunkSize;
+	/// The failure mode of an upload.
+    type Error: std::error::Error + Send + Sync + 'static;
 
 	/// How we're going to approach the upload, and what to do under an error?
 	type RetryStrategy;
 
+	type RetryMechanism: FnMut();
+
 	/// Upload the documents to the store
-	async fn upload(object: Self::UploadObject) -> Result<()>;
+	async fn upload_mechanism(&self, object: Self::UploadObject) -> Result<()>;
+
+	/// How we're going to handle an opportunity to try again
+	fn backoff(&self) -> impl BackoffBuilder {
+		ExponentialBuilder::default().with_jitter();
+	}
+
+	/// Did we get an error that's unproblematic and avoidable?
+	fn retryable(error: &Self::Error);
+
+	/// Handle the process of delivering the record
+	async fn deliver(&self, item: &Self::Item, retry: RetryMechamism) {
+		// Combine all of our expressive work
+		self.upload_mechanism().retry(self.backoff()).when(self.retryable).await
+	}
+
+	// We're not doing drain, that's up to the caller unless it ends up being a really common pattern
 }
 
 /// Our trait for anything that can communicate progress or hold an in-between state
