@@ -11,6 +11,29 @@
 //! blob. For this we need to have a (sort of) custom binary serialization
 //! process (probably just bincode)
 
+
+/// Our struct for defining global UUIDs
+pub struct Id<T>(Uuid, PhantomData<fn() -> T>);
+
+
+impl<T> Clone for Id<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Id<T> {}
+impl<T> PartialEq for Id<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl<T> Eq for Id<T> {}
+impl<T> std::hash::Hash for Id<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
+
 pub enum EmbeddingPurpose {
 	/// We're creating embeddings based on the code/surface
 	Code,
@@ -26,6 +49,7 @@ pub struct Hit<T> {
 }
 
 //! I figure we don't need a special embedding type -- it seems a nonempty vec would do all of the heavy lifting we need it to do.
+pub type Embedding = NonEmpty<f32>;
 
 
 /// Not worth keeping this as an enum, as they're proprietary for the embedding model
@@ -91,17 +115,22 @@ pub struct Search {
 // Also this is something that would be a parameter on a search, as an optional (with a default implementation) to avoid a ton of optionals on fields
 pub struct Filter {
 	/// The language(s) we should search under
-	pub language: Vec<Language>,
+	pub language: Option<NonEmpty<Language>>,
 
 	/// The package(s) we should search under
-	pub package: Vec<Package>,
+	pub package: Option<NonEmpty<Package>>,
 
 	/// The range of packages we want to see
 	/// You would use this to bound the number of results
-	pub limits: Range<NonZeroUsize>
+	pub page: Pagination
 
 	// Establish a curtain of popularity, only showing results that... i don't think this is that useful TODO: remove?
 	// occurences: Occurences
+}
+
+struct Pagination {
+    pub limit: NonZeroUsize,
+    pub offset: usize,
 }
 
 /// We pulled a match !
@@ -124,65 +153,81 @@ pub struct Match {
 
 /// A trait for stores/targets of search to support both abstract and literal search queries.
 pub trait SearchTarget {
+	/// What this target yields.
+    type Item;
+
+    /// Per-implementor failure mode.
+    type Error: StoreError;
+
 	/// Make a search, returning a stream of results
-	async fn search(&self, request: &Search, scope: Option<Filter>) -> Result<impl Stream<Item = Result<Hit>>>;
+	async fn search(&self, request: &Search, scope: Option<Filter>) -> Result<impl Stream<Item = Result<Scored<Self::Item>, Self::Error>>, Self::Error>;
 
 	/// Find an item by an id
-	async fn get_by_id(&self, id: Guid) -> Result<Hit>;
+	async fn get_by_id(&self, id: Guid) -> Result<Option<Self::Item>, Self::Error>;
 
 	// Again I don't believe in listing
 }
 
 /// A trait for objects which are or hold graph-based data storing mechanisms, for surfacing direct/known relationships
 pub trait GraphStore {
+	type Error: StoreError;
+
 	// TODO: Store the kind of relation two items have? Like is this a member?
 	// TODO: Make all streaming
 
 	/// Return all of the symbols which hold the input within their declaration
-	async fn get_occurences(&self, item: Guid) -> Vec<Guid> {}
+	async fn get_occurrences(&self, item: Id<Symbol>) -> Result<Vec<Id<Symbol>>, Self::Error>;
 
-	/// What points to this?
-	async fn get_references(&self, item: Guid) -> Vec<Guid>;
+    /// What points to this?
+    async fn get_references(&self, item: Id<Symbol>) -> Result<Vec<Id<Symbol>>, Self::Error>;
 
-	/// Determine if two items are related
-	async fn are_related(&self, from: Guid, to: Guid) -> bool;
+    /// Determine if two items are related.
+    async fn are_related(&self, from: Id<Symbol>, to: Id<Symbol>) -> Result<bool, Self::Error>;
 }
 
 /// A store of symbols with both semantic and precise search
-pub trait SymbolStore: SearchTarget + GraphStore {
-	/// Given a hit from search, walk its relationships and score them
-    async fn related_hits(&self, hit: &Hit) -> Result<Vec<Hit>>;
+pub trait SymbolStore: SearchTarget<Item = Symbol> + GraphStore {
+    /// Given a hit from search, walk its relationships and score them.
+    async fn related_hits(
+        &self,
+        hit: &Scored<Symbol>,
+    ) -> Result<Vec<Scored<Symbol>>, <Self as SearchTarget>::Error>;
 }
 
 /// Our server configuration
 /// This is not meant to be constructed in any other way besides "default", as this is a private-facing configuration, where for simplicity we want static defaults
 pub struct ServerConfiguration {
 	serving_address: SocketAddr,
-	remote_dependencies: HashSet<String, Url>
+	remote_dependencies: HashMap<String, Url>,
 	// TODO: Add fields for the rest of the configuration for these databases or simply scope it in the function bodies? Don't see a reason to carry most of this data around
 }
 
 impl Default for ServerConfiguration {
 	fn default() -> Self {
-		let serving_address = "1000";
+		let serving_address = SocketAddr::from(([127, 0, 0, 1], 1000));
 
 		// We assign them here as untyped key/value pairs, typing them through the methods
 		// TODO: Write as an enum?
-		let server_friends = HashMap::from(("terminus", "1000"));
+		        let remote_dependencies = HashMap::from([(
+            "terminus".to_owned(),
+            Url::parse("http://127.0.0.1:1000").expect("static URL is valid"),
+        )]);
 
 		Self {
-			serving_address
+			serving_address,
+			remote_dependencies,
 		}
 	}
 }
 
 impl ServerConfiguration {
 	/// The amount of time we're going to wait before we give up on uploading a document
-	const UPLOAD_TIMEOUT: u32 = 2000;
+	const UPLOAD_TIMEOUT:
+    std::time::Duration = Duration::from_millis(2000);
 
-	fn terminus_endpoint(&self) -> Url {
-		self.remote_dependencies.get("terminus").unwrap()
-	}
+    fn terminus_endpoint(&self) -> Option<&Url> {
+        self.remote_dependencies.get("terminus")
+    }
 }
 
 //! Also I'm not messing with any of the env stuff. I think we'll be able to get with configuration flags for most of this, just having separate default implementation/etc for dev/prod/other
@@ -219,18 +264,13 @@ pub trait Sink: Sync {
 	// TODO: Either here or in another mechanism add support for multiple parents/sources
 
 	/// The thing that we're uploading
-	type Item: Sync;
+	type Item: Sync + Sync;
 
 	/// The failure mode of an upload.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-	/// How we're going to approach the upload, and what to do under an error?
-	type RetryStrategy;
-
-	type RetryMechanism: FnMut();
+	type Error: StoreError;
 
 	/// Upload the documents to the store
-	async fn upload_mechanism(&self, object: Self::UploadObject) -> Result<()>;
+	async fn upload(&self, item: Self::Item) -> Result<(), Self::Error>;
 
 	/// How we're going to handle an opportunity to try again
 	fn backoff(&self) -> impl BackoffBuilder {
@@ -242,18 +282,31 @@ pub trait Sink: Sync {
 	fn retryable(error: &Self::Error);
 
 	/// Handle the process of delivering the record
-	async fn deliver(&self, item: &Self::Item, retry: RetryMechamism) {
-		// Combine all of our expressive work
-		self.upload_mechanism().retry(self.backoff()).when(self.retryable).await
-	}
+	async fn deliver(&self, item: Self::Item) -> Result<(), Self::Error>
+    where
+        Self::Item: Clone,
+    {
+        (|| self.upload(item.clone()))
+            .retry(self.backoff())
+            .when(|e| self.retryable(e))
+            .await
+    }
 }
 
 /// A sink which responds well to batch operators
-pub trait BatchSink: Sink {}
+pub trait BatchSink: Sink {
+    /// Largest batch the backend will accept in one call.
+    const MAX_BATCH: usize;
+
+    /// Upload many items at once.
+    async fn upload_batch(&self, items: Vec<Self::Item>) -> Result<(), Self::Error>;
+}
+
 // Seems like qdrant and terminus both have constants for concurrency or batching, and I think this could be resolved to just one abstraction, but still am working on conceiving it
 
 /// Our trait for anything that can communicate progress or hold an in-between state
 pub trait Progressive {
+	// TODO: Support phasic behavior optionally
 	/// The information the item is observing to update its internal progress, can be just the item itself.
 	type Change;
 
@@ -261,7 +314,7 @@ pub trait Progressive {
 	fn get_progress(&self) -> u8;
 
 	/// Update the progress of the object with a new variant of the struct, diffing and incorporating
-	fn update_progress(mut self, information: Self::Change);
+	fn update_progress(&mut self, information: Self::Change);
 
 	/// Returns `true` if progress has reached a terminal state.
     fn is_complete(&self) -> bool {
@@ -315,21 +368,30 @@ pub trait WriteRegistry: Registry {
 
 	/// Publish a package to the registry.
 	/// Returns the final, global package object, for you to syndicate out to the global store
-	async fn publish(&self, payload: Versioned<Payload>) -> Result<Self::Package>;
+	async fn publish(
+        &self,
+        payload: Versioned<Self::Payload>,
+    ) -> Result<GlobalPackage, Self::Error>;
 
 	/// Alter the engines ranking system for a registry
-	async fn rank(&mut self, policy: RankingPolicy) -> Result<()>;
+	async fn rank(&self, policy: Self::RankingPolicy) -> Result<(), Self::Error>;
 
 	/// Change the state of an already-published package, name, description, yank status, etc.
 	/// Not expected to be called often, but should also signify any of the dependent infra
 	/// Returns the newly minted global package object
-	async fn modify(&self, payload: Versioned<Payload>, package: Package) -> Result<Self::Package>;
+	    async fn modify(
+        &self,
+        payload: Versioned<Self::Payload>,
+        package: Id<Self::Package>,
+    ) -> Result<GlobalPackage, Self::Error>;
 
 	// Will likely sit on top of: https://lib.rs/crates/object_store
 }
 
 /// An anonymous blob. Stores the representation of a particular package in the three resolutions we care the most about, post-processing.
 pub struct Blob {
+	// TODO: Some way of idenitfying/claering out old blobs
+
 	/// The entire syntax tree (re: treesitter)
 	concrete_syntax_tree: String,
 
@@ -350,12 +412,17 @@ pub struct Versioned<T> {
 /// A store, usually a git repository, which stores multiple versions of a desired piece of information.
 /// Agnostic to systems like branches, it's expected that the object itself stores the branch it is on, and if you would like to explore a different branch (or tag), mutate first. Different history mechanisms (like tags) should likely implement historical themselves.
 pub trait Historical {
-	/// Go back to the last event in the history
-	fn past(&self);
+    /// The object whose history is tracked.
+    type Item;
+    type Error: StoreError;
 
-	/// Go forward to the next event in the history
-	fn future();
+    /// The version before `current`, if any (`None` at the root).
+    async fn previous(&self, current: &Version) -> Result<Option<Version>, Self::Error>;
 
-	/// Get the information for a particular event in the history
-	fn present();
+    /// The version after `current`, if any (`None` at HEAD).
+    async fn next(&self, current: &Version) -> Result<Option<Version>, Self::Error>;
+
+    /// The object as it was at `version`.
+    async fn at(&self, version: &Version) -> Result<Versioned<Self::Item>, Self::Error>;
 }
+
