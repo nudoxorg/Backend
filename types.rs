@@ -273,6 +273,7 @@ pub trait Progressive {
     fn on_complete(&self, mut callback: impl FnMut());
 }
 
+/// A registry that holds all of the packages and metadata for a particular language, including their code.
 pub trait Registry {
 	/// The particular language that this is oworking within
 	const LANGUAGE: Language;
@@ -287,7 +288,7 @@ pub trait Registry {
 }
 
 /// A store of packages, of some flavor.
-pub trait ReadRegistry:Registry {
+pub trait ReadRegistry: Registry {
 	/// An enum that represents various supported filters/conditions for search and listing
 	type Condition;
 
@@ -306,16 +307,23 @@ pub trait ReadRegistry:Registry {
 
 pub trait WriteRegistry: Registry {
 	/// The package that the registry is in charge of holding/indexing over
-	type PublishPayload;
+	type Payload;
 
-	/// Add to the registry
-	async fn publish()
+	/// The structure that defines how popularity should be decided
+	// TODO: Should by closure, maybe? Idk what this is serializing against
+	type RankingPolicy;
+
+	/// Publish a package to the registry.
+	/// Returns the final, global package object, for you to syndicate out to the global store
+	async fn publish(&self, payload: Payload) -> Result<Self::Package>;
 
 	/// Alter the engines ranking system for a registry
-	async fn rank()
+	async fn rank(&mut self, policy: RankingPolicy) -> Result<()>;
 
-	//! We're not a "real" registry so we don't keep any record of yanks or deletions, at least for the time being
+	/// Change the state of an already-published package, name, description, yank status, etc.
+	/// Not expected to be called often, but should also signify any of the dependent infra
+	/// Returns the newly minted global package object
+	async fn modify(&self, payload: Payload, package: Package) -> Result<Self::Package>;
 
 	// Will likely sit on top of: https://lib.rs/crates/object_store
 }
-
