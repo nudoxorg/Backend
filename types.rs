@@ -120,23 +120,6 @@ pub struct Match {
 //! Not doing any kind of embedder trait, because again, it's just keyed to something specific, we're not going to have more of these unfort
 
 
-/// The persitent store for blobs
-/// Meant to be used with a higher-level coordinator, as this is a slim wrapper for a content-addressed store, the coordinator is meant to assign these content-addressed blobs to the actual GUIDs.
-pub trait BlobStore {
-	/// Put a blob into the store, and get the hashed return value
-	async fn put(&self, blob: Blob) -> Result<Hash>;
-
-	/// Get a blob from the store
-	async fn get(&self, hash: Hash) -> Result<Blob>;
-
-	/// Update a blob within the store
-	/// Any failure would be propogation of the store, which I supose would only be something network related
-	async fn update(&self) -> Result<()>;
-
-	// Because this content-addressed, I think listing is pointless ? Maybe iterating through?
-	// Will likely sit on top of: https://lib.rs/crates/object_store
-}
-
 // TODO: Wire up postgres types for global indexing, and the parse queue and association (establishing a link)
 
 /// A trait for stores/targets of search to support both abstract and literal search queries.
@@ -297,6 +280,8 @@ pub trait Registry {
 	/// The package that the registry is in charge of holding/indexing over
 	type Package;
 
+	// TODO: Find some way to avoid this annoying error repition
+
 	/// The failure mode for this registry
     type Error: std::error::Error + Send + Sync + 'static;
 }
@@ -319,17 +304,18 @@ pub trait ReadRegistry:Registry {
 	async fn search(&self, conditions: &[Self::Condition]);
 }
 
-pub trait WriteRegistry {
+pub trait WriteRegistry: Registry {
 	/// The package that the registry is in charge of holding/indexing over
-	type Package;
+	type PublishPayload;
 
 	/// Add to the registry
-	async fn add()
-
-	/// Delete a package in the registry
-	async fn delete()
+	async fn publish()
 
 	/// Alter the engines ranking system for a registry
 	async fn rank()
+
+	//! We're not a "real" registry so we don't keep any record of yanks or deletions, at least for the time being
+
+	// Will likely sit on top of: https://lib.rs/crates/object_store
 }
 
