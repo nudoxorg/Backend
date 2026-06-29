@@ -327,3 +327,15 @@ pub trait WriteRegistry: Registry {
 
 	// Will likely sit on top of: https://lib.rs/crates/object_store
 }
+
+/// An anonymous blob. Stores the representation of a particular package in the three resolutions we care the most about, post-processing.
+pub struct Blob {
+	/// The entire syntax tree (re: treesitter)
+	concrete_syntax_tree: String,
+
+	/// The full API surface (re: nudox IR gen)
+	api_surface: String,
+
+	/// The condensed source representation (re: taring)
+	source_text: String,
+}
