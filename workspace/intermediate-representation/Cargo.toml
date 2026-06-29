@@ -1,0 +1,23 @@
+[package]
+name = "ir"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+facet = "0.42.0"
+serde = { version = "1.0.228", features = ["derive"] }
+yoke.workspace = true
+arborium-tree-sitter.workspace = true
+rustc-hash = { workspace = true }
+
+[dev-dependencies]
+arborium = { workspace = true, features = ["lang-rust"] }
+
+[features]
+default = []
+facet = []
+serde = []

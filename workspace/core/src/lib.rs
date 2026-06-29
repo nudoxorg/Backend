@@ -340,7 +340,7 @@ pub trait Registry {
     type Error: std::error::Error + Send + Sync + 'static;
 }
 
-/// A store of packages, of some flavor.
+/// A registry we're just pulling from, typically for providing search functionality
 pub trait ReadRegistry: Registry {
 	/// An enum that represents various supported filters/conditions for search and listing
 	type Condition;
@@ -358,6 +358,7 @@ pub trait ReadRegistry: Registry {
 	async fn search(&self, conditions: &[Self::Condition]);
 }
 
+/// This is for registries we own and are actively attempting to write to/from
 pub trait WriteRegistry: Registry {
 	/// The package that the registry is in charge of holding/indexing over
 	type Payload;
