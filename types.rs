@@ -243,6 +243,7 @@ pub trait Sink: Sync {
 
 	/// How we're going to handle an opportunity to try again
 	fn backoff(&self) -> impl BackoffBuilder {
+		// Uses https://crates.io/crates/backon
 		ExponentialBuilder::default().with_jitter();
 	}
 
@@ -254,9 +255,11 @@ pub trait Sink: Sync {
 		// Combine all of our expressive work
 		self.upload_mechanism().retry(self.backoff()).when(self.retryable).await
 	}
-
-	// We're not doing drain, that's up to the caller unless it ends up being a really common pattern
 }
+
+
+
+//! Holding off on creating a true batch operator because I'm not entirely convinced that we're going to need it for the common case? Like I only thought it was useful for terminus?
 
 /// Our trait for anything that can communicate progress or hold an in-between state
 pub trait Progressive {
