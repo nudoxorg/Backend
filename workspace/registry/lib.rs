@@ -43,6 +43,11 @@ pub struct GlobalPackage {
 	pub package: Package,
 }
 
+// Do note that the expectation is that for the individual registries, like
+// Rust/Typescript/whatever, they'll add anything platform specific, I don't
+// think the generics and patterns for gating on Language would be that useful
+// there but we will see I suppose :)
+
 /// Read-only registry — query, list, and search packages.
 pub trait Registry<P: Plane> {
 	/// The particular language that this is working within
@@ -104,10 +109,10 @@ pub trait Historical {
 	type Error: StoreError;
 
 	/// The version before `current`, if any (`None` at the root).
-	async fn previous(&self, current: &Version) -> Result<Option<Version>, Self::Error>;
+	async fn past(&self, current: &Version) -> Result<Option<Version>, Self::Error>;
 
 	/// The version after `current`, if any (`None` at HEAD).
-	async fn next(&self, current: &Version) -> Result<Option<Version>, Self::Error>;
+	async fn future(&self, current: &Version) -> Result<Option<Version>, Self::Error>;
 
 	/// The object as it was at `version`.
 	async fn at(&self, version: &Version) -> Result<Versioned<Self::Item>, Self::Error>;
