@@ -2,4 +2,5 @@
 //! coordination methods, and the DTOs that shape requests and responses.
 
 pub mod dto;
+pub mod handlers;
 pub mod router;

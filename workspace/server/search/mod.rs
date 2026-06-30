@@ -4,6 +4,8 @@
 //! module
 
 pub mod query;
+pub mod registry;
+pub mod semantic;
 pub mod symbolic;
 
 use futures::Stream;
