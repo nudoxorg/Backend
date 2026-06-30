@@ -4,9 +4,9 @@ use pyrefly::alt::answers::Answers;
 use pyrefly::binding::bindings::Bindings;
 use pyrefly::state::state::Transaction;
 use pyrefly_build::handle::Handle;
-use pyrefly_types::callable::{Param, Params};
+use pyrefly_types::callable::{FuncFlags, Param, Params};
 use pyrefly_types::class::ClassFields;
-use pyrefly_types::types::{BoundMethodType, Forallable, Type};
+use pyrefly_types::types::{BoundMethodType, Forallable, Overload, Type};
 
 use super::types;
 use ir::function::{Attribute, Function};
@@ -32,18 +32,50 @@ pub fn lower_function(
     name: &str,
     py_type: &Type,
 ) -> Function {
+    // Overloaded callables: Pyrefly pre-merges every `@overload`-decorated
+    // signature into a single `Type::Overload`, so the grouping is already done
+    // for us — we just lower each branch and surface them via `overloads`.
+    if let Type::Overload(overload) = py_type {
+        return lower_overload(name, overload);
+    }
+    lower_single(name, py_type)
+}
+
+/// Lower a single (non-overloaded) callable type, honoring decorator-derived
+/// `FuncFlags` (async / static / classmethod / abstract / stub body).
+fn lower_single(name: &str, py_type: &Type) -> Function {
+    let _ = name;
     let mut attrs = Vec::new();
     let input_params = extract_inputs(py_type);
     let output_params = extract_outputs(py_type);
-    let receiver = detect_receiver(&input_params);
+    let mut receiver = detect_receiver(&input_params);
+    let mut implemented = true;
 
-    // Detect async from the pyrefly function metadata. Pyrefly's `FuncFlags`
-    // exposes `is_async` (set for `async def`) but has no dedicated generator
-    // flag at this revision, so generator detection is left to a later pass.
-    if let Type::Function(f) = py_type {
-        if f.metadata.flags.is_async {
+    // Decorators surface as flags on the function metadata; Pyrefly resolves
+    // them for us, so we never need to read the decorator AST here. See
+    // `FuncFlags` in `pyrefly_types::callable`.
+    if let Some(flags) = func_flags(py_type) {
+        // `async def` (not a sync function annotated to return a coroutine).
+        if flags.is_async {
             attrs.push(Attribute::Async);
         }
+        // `@staticmethod` / `@classmethod` → no instance receiver. (For a
+        // classmethod the leading `cls` param also maps to `Static` via
+        // `detect_receiver`, but a staticmethod has neither `self` nor `cls`,
+        // so we must set it explicitly.)
+        if flags.is_staticmethod || flags.is_classmethod {
+            receiver = Some(ReceiverKind::Static);
+        }
+        // `@abstractmethod`, or a `...`/absent stub body, means there is no
+        // concrete implementation to point at.
+        if flags.is_abstract_method || flags.lacks_implementation {
+            implemented = false;
+        }
+        // `@property`: kept as a `Function`; the getter's return type already
+        // flows through `extract_outputs` and the receiver stays `self`. There
+        // is no dedicated IR marker for properties at this revision.
+        // `@final` (`flags.has_final_decoration`): no `Function`-level slot in
+        // the IR, so it is not represented here.
     }
 
     Function {
@@ -58,10 +90,58 @@ pub fn lower_function(
         generics: None,
         receiver,
         overloads: None,
-        implemented: true,
+        implemented,
         members: None,
         implemented_protocols: None,
         body: None,
+    }
+}
+
+/// Lower a `Type::Overload` into one `Function` whose `overloads` field carries
+/// every branch.
+///
+/// The primary `Function` is shaped from the first branch (so its `signature`
+/// surface is usable directly); the complete branch list — including the first
+/// — is preserved in `overloads` so consumers can enumerate every variant.
+///
+/// NOTE: at this Pyrefly revision the *implementation* signature of an
+/// overloaded function is not exposed separately from the `@overload`-decorated
+/// branches, so the primary is the first declared overload rather than the
+/// implementation.
+fn lower_overload(name: &str, overload: &Overload) -> Function {
+    let branches: Vec<Function> = overload
+        .signatures
+        .iter()
+        .map(|ot| {
+            let ty = ot.as_type();
+            lower_single(name, &ty)
+        })
+        .collect();
+
+    // `Overload::signatures` is a `Vec1`, so there is always at least one branch.
+    let mut primary = branches
+        .first()
+        .cloned()
+        .expect("Type::Overload always carries at least one signature");
+    primary.overloads = Some(branches);
+    primary
+}
+
+/// Extract the decorator-derived `FuncFlags` from any callable-shaped type.
+fn func_flags(py_type: &Type) -> Option<&FuncFlags> {
+    match py_type {
+        Type::Function(f) => Some(&f.metadata.flags),
+        Type::Overload(o) => Some(&o.metadata.flags),
+        Type::Forall(forall) => match &forall.body {
+            Forallable::Function(f) => Some(&f.metadata.flags),
+            _ => None,
+        },
+        Type::BoundMethod(bm) => match &bm.func {
+            BoundMethodType::Function(f) => Some(&f.metadata.flags),
+            BoundMethodType::Forall(fa) => Some(&fa.body.metadata.flags),
+            BoundMethodType::Overload(o) => Some(&o.metadata.flags),
+        },
+        _ => None,
     }
 }
 

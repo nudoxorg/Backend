@@ -29,3 +29,16 @@ pub fn resolve_memory_handle(
     let path = ModulePath::memory(std::path::PathBuf::from(virtual_path));
     Handle::new(name, path, sys_info.clone())
 }
+
+/// Build a filesystem `Handle` from an already-resolved [`ModuleName`].
+///
+/// Used by package discovery, where the dotted module name has been computed
+/// from a file's path relative to the import root (so we keep the precise
+/// `ModuleName` rather than round-tripping through a string).
+pub fn filesystem_handle(name: ModuleName, file_path: &Path, sys_info: &SysInfo) -> Handle {
+    Handle::new(
+        name,
+        ModulePath::filesystem(file_path.to_path_buf()),
+        sys_info.clone(),
+    )
+}

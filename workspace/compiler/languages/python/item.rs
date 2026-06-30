@@ -1,9 +1,13 @@
-use ir::{entry::NudoxPath, function::Function, kind::{Entry, Symbol, Visibility}, module::Module, parameter::Parameter as IrParameter, protocols::{TraitDef, TraitMethod}, record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant}, ty::{Type as IrType, TypeReference}};
+use std::collections::HashMap as StdHashMap;
+
+use ir::{entry::NudoxPath, function::Function, generics::GenericArg, kind::{Entry, Symbol, Visibility}, module::Module, parameter::Parameter as IrParameter, protocols::{TraitDef, TraitMethod}, record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant}, ty::{Type as IrType, TypeReference}};
 use pyrefly::{alt::answers::Answers, binding::{binding::{KeyClassField, KeyClassMetadata}, bindings::Bindings}, state::state::Transaction};
 use pyrefly_build::handle::Handle;
-use pyrefly_types::{class::{Class, ClassFields}, literal::Lit, types::Type as PyType};
+use pyrefly_python::module_name::ModuleName;
+use pyrefly_types::{callable::{FuncMetadata, FunctionKind}, class::{Class, ClassFields}, literal::Lit, types::{Forallable, Type as PyType}};
 
-use super::{function, types};
+use super::docstring::{DocCatalog, ParsedDocstring};
+use super::{docstring, function, types};
 
 /// Lower the module-level items (classes, functions, constants, type aliases)
 /// from pyrefly's `Bindings` into a `Vec<(NudoxPath, Entry)>`.
@@ -28,7 +32,17 @@ pub fn lower_module(
 
 	let module_name = handle.module().as_str().to_string();
 
-	// Module entry
+	// Phase 3 "doc brain": build a per-module docstring catalog from the Ruff
+	// AST. Pyrefly does not attach docstrings to the `Type` values, and the
+	// per-export `docstring_range` lives behind a private `ExportLocation`, so
+	// the AST is the reachable source for method docstrings.
+	let module_info = tx.get_module_info(handle);
+	let catalog = match (tx.get_ast(handle), &module_info) {
+		(Some(ast), Some(mi)) => docstring::build_catalog(&ast.body, mi),
+		_ => DocCatalog::default(),
+	};
+
+	// Module entry, carrying the module-level docstring.
 	let nudox_path = module_path.clone();
 	entries.push((
 		nudox_path.clone(),
@@ -37,7 +51,7 @@ pub fn lower_module(
 			path:          nudox_path.clone(),
 			aliases:       None,
 			visibility:    Visibility::Public,
-			documentation: None,
+			documentation: catalog.module.as_ref().and_then(ParsedDocstring::documentation),
 			inner:         Module { members: None },
 		}),
 	));
@@ -57,14 +71,66 @@ pub fn lower_module(
 		let any = pyrefly_types::types::Type::Any(pyrefly_types::types::AnyStyle::Implicit);
 		let ty = resolved.as_deref().unwrap_or(&any);
 
-		let entry = lower_binding(&export_name, ty, handle, tx, &bindings, &answers);
+		// Phase 3 #1: a module re-exports every name it can see — including
+		// `from enum import Enum`. Drop names whose *definition* lives in
+		// another module so imports don't leak out as bogus entries.
+		if !is_local_definition(ty, handle) {
+			continue;
+		}
+
+		let entry = lower_binding(&export_name, ty, handle, tx, &bindings, &answers, &catalog);
 
 		if let Some((path, entry)) = entry {
 			entries.push((path, entry));
 		}
 	}
 
+	// Phase 3 #4: best-effort intra-module type linking.
+	link_local_types(&mut entries, &module_name);
+
 	entries
+}
+
+/// Phase 3 #1 — import-vs-local rule.
+///
+/// A re-exported name is kept only when its *definition* lives in this module.
+/// The signal is the defining module recorded on the resolved type: a class's
+/// `module_name()` and a function's `FuncId.module` (only `FunctionKind::Def`
+/// is a user definition — every other `FunctionKind` is a special/builtin
+/// callable such as `dataclasses.dataclass`). Submodule references and typing
+/// special forms (`Protocol`, `Final`, …) are always imports.
+///
+/// Constants/instances carry no definition-module on their value type, so they
+/// are kept conservatively (an imported *constant* can still leak — a
+/// documented limitation; classes/functions/modules, the common imports, are
+/// filtered reliably).
+fn is_local_definition(ty: &PyType, handle: &Handle) -> bool {
+	let this = handle.module();
+	match ty {
+		PyType::ClassDef(cls) => cls.module_name() == this,
+		PyType::Function(f) => func_def_in_module(&f.metadata, this),
+		PyType::Overload(o) => func_def_in_module(&o.metadata, this),
+		PyType::Forall(forall) => match &forall.body {
+			Forallable::Function(f) => func_def_in_module(&f.metadata, this),
+			_ => true,
+		},
+		// Bound methods are not module-level exports; stay conservative.
+		PyType::BoundMethod(_) => true,
+		// `import os` surfaces a module value — not a local definition.
+		PyType::Module(_) => false,
+		// `from typing import Protocol/Final/...` — typing special forms.
+		PyType::SpecialForm(_) => false,
+		_ => true,
+	}
+}
+
+fn func_def_in_module(meta: &FuncMetadata, this: ModuleName) -> bool {
+	match &meta.kind {
+		FunctionKind::Def(id) => id.module.name() == this,
+		// A user-defined local function is always `Def`; any other kind is a
+		// special/builtin callable (`dataclass`, `cast`, `overload`, …).
+		_ => false,
+	}
 }
 
 fn lower_binding(
@@ -74,58 +140,218 @@ fn lower_binding(
 	tx: &Transaction,
 	bindings: &Bindings,
 	answers: &Answers,
+	catalog: &DocCatalog,
 ) -> Option<(NudoxPath, Entry)> {
 	let path =
 		NudoxPath::Local(std::path::PathBuf::from(format!("{}::{}", handle.module().as_str(), name)));
 
-	let entry = match ty {
-		// Class definition — extract fields and methods
-		pyrefly_types::types::Type::ClassDef(cls) => {
-			lower_class(name, cls, handle, tx, bindings, answers, &path)
+	// Phase 3 #2/#3: docstring + decorator-derived shape for top-level callables.
+	let doc = catalog.item(name);
+
+	let entry = if is_function_like(ty) {
+		let mut ir_func = function::lower_function(handle, tx, bindings, answers, name, ty);
+		if let Some(doc) = doc {
+			apply_param_docs(&mut ir_func, &doc.params);
 		}
-
-		// Function definition
-		pyrefly_types::types::Type::Function(_)
-		| pyrefly_types::types::Type::Callable(_)
-		| pyrefly_types::types::Type::BoundMethod(_) => {
-			let ir_func = function::lower_function(handle, tx, bindings, answers, name, ty);
-			Some(Entry::Function(Symbol {
-				name:          name.to_string(),
-				path:          path.clone(),
-				aliases:       None,
-				visibility:    Visibility::Public,
-				documentation: None,
-				inner:         ir_func,
-			}))
-		}
-
-		// Type alias
-		pyrefly_types::types::Type::TypeAlias(_) | pyrefly_types::types::Type::UntypedAlias(_) => {
-			Some(Entry::TypeAlias(Symbol {
-				name:          name.to_string(),
-				path:          path.clone(),
-				aliases:       None,
-				visibility:    Visibility::Public,
-				documentation: None,
-				inner:         types::lower_type(ty),
-			}))
-		}
-
-		// Module-level constant (immutable)
-		_ if name.starts_with('_') && name != "__init__" => None,
-
-		// Everything else — treat as a constant or variable
-		_ => Some(Entry::Constant(Symbol {
+		Some(Entry::Function(Symbol {
 			name:          name.to_string(),
 			path:          path.clone(),
 			aliases:       None,
-			visibility:    Visibility::Public,
-			documentation: None,
-			inner:         (),
-		})),
+			visibility:    member_visibility(name),
+			documentation: doc.and_then(ParsedDocstring::documentation),
+			inner:         ir_func,
+		}))
+	} else {
+		match ty {
+			// Class definition — extract fields and methods
+			pyrefly_types::types::Type::ClassDef(cls) => {
+				lower_class(name, cls, handle, tx, bindings, answers, &path, catalog)
+			}
+
+			// Type alias
+			pyrefly_types::types::Type::TypeAlias(_) | pyrefly_types::types::Type::UntypedAlias(_) => {
+				Some(Entry::TypeAlias(Symbol {
+					name:          name.to_string(),
+					path:          path.clone(),
+					aliases:       None,
+					visibility:    member_visibility(name),
+					documentation: doc.and_then(ParsedDocstring::documentation),
+					inner:         types::lower_type(ty),
+				}))
+			}
+
+			// Module-level constant (immutable)
+			_ if name.starts_with('_') && name != "__init__" => None,
+
+			// Everything else — treat as a constant or variable
+			_ => Some(Entry::Constant(Symbol {
+				name:          name.to_string(),
+				path:          path.clone(),
+				aliases:       None,
+				visibility:    member_visibility(name),
+				documentation: doc.and_then(ParsedDocstring::documentation),
+				inner:         (),
+			})),
+		}
 	};
 
 	entry.map(|e| (path, e))
+}
+
+/// Whether a resolved type should be lowered as a function entry. Covers plain
+/// functions/callables/bound-methods, pre-merged overloads, and generic
+/// (`Forall`) functions — but not a `Forall` wrapping a non-callable.
+fn is_function_like(ty: &PyType) -> bool {
+	match ty {
+		PyType::Function(_)
+		| PyType::Callable(_)
+		| PyType::BoundMethod(_)
+		| PyType::Overload(_) => true,
+		PyType::Forall(f) => matches!(&f.body, Forallable::Function(_)),
+		_ => false,
+	}
+}
+
+/// Attach per-parameter docstring descriptions to a lowered function's literal
+/// input parameters (matched by name).
+fn apply_param_docs(func: &mut Function, params: &StdHashMap<String, String>) {
+	apply_param_descs(&mut func.input_parameters, params);
+}
+
+/// Attach per-parameter docstring descriptions to a parameter list (matched by
+/// name). Shared by free functions, record methods, and protocol methods.
+fn apply_param_descs(
+	inputs: &mut Option<Vec<IrParameter>>,
+	params: &StdHashMap<String, String>,
+) {
+	if params.is_empty() {
+		return;
+	}
+	if let Some(inputs) = inputs.as_mut() {
+		for p in inputs.iter_mut() {
+			if let IrParameter::Literal(lp) = p {
+				if let Some(desc) = params.get(&lp.name) {
+					lp.description = Some(desc.clone());
+				}
+			}
+		}
+	}
+}
+
+/// Phase 3 #4 — best-effort intra-module type linking.
+///
+/// SCOPE: *intra-module only*. We map a type-reference identifier that names a
+/// type defined in **this** module (Pyrefly qname `"<module>.<Name>"`) to a
+/// synthetic, stable id for the corresponding local entry. Cross-module linking
+/// is DEFERRED — it needs the global registry's id assignment, which is owned
+/// outside this lowering pass.
+///
+/// The id is a stable 64-bit FNV-1a hash of the target entry's `NudoxPath`
+/// string, so a consumer can recompute the same id from any entry's path; these
+/// are not (yet) the registry's canonical ids.
+fn link_local_types(entries: &mut [(NudoxPath, Entry)], module_name: &str) {
+	// Build identifier -> id for every type-like local entry.
+	let mut local: StdHashMap<String, i64> = StdHashMap::new();
+	for (path, entry) in entries.iter() {
+		if is_type_entry(entry) {
+			local.insert(format!("{}.{}", module_name, entry.name()), path_id(path));
+		}
+	}
+	if local.is_empty() {
+		return;
+	}
+
+	for (_path, entry) in entries.iter_mut() {
+		if let Entry::Function(sym) = entry {
+			let mut refs = Vec::new();
+			collect_function_refs(&sym.inner, &mut refs);
+
+			let mut links = sym.inner.type_links.take().unwrap_or_default();
+			for ident in refs {
+				if let Some(&id) = local.get(&ident) {
+					links.insert(ident, id);
+				}
+			}
+			if !links.is_empty() {
+				sym.inner.type_links = Some(links);
+			}
+		}
+	}
+}
+
+fn is_type_entry(entry: &Entry) -> bool {
+	matches!(
+		entry,
+		Entry::RecordType(_) | Entry::SumType(_) | Entry::TraitDef(_) | Entry::TypeAlias(_)
+	)
+}
+
+/// Stable 64-bit FNV-1a hash of a `NudoxPath`'s debug form, as a non-negative
+/// `i64` (the IR's `type_links` value type).
+fn path_id(path: &NudoxPath) -> i64 {
+	let key = format!("{path:?}");
+	let mut hash: u64 = 0xcbf29ce484222325;
+	for byte in key.as_bytes() {
+		hash ^= *byte as u64;
+		hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+	}
+	(hash >> 1) as i64
+}
+
+/// Collect every `TypeReference` identifier mentioned by a function's input and
+/// output parameter types (including overload branches).
+fn collect_function_refs(func: &Function, acc: &mut Vec<String>) {
+	for list in [&func.input_parameters, &func.output_parameters] {
+		if let Some(params) = list {
+			for p in params {
+				if let IrParameter::Literal(lp) = p {
+					if let Some(ty) = &lp.r#type {
+						collect_type_refs(ty, acc);
+					}
+				}
+			}
+		}
+	}
+	if let Some(overloads) = &func.overloads {
+		for branch in overloads {
+			collect_function_refs(branch, acc);
+		}
+	}
+}
+
+/// Walk an IR type, pushing every `TypeReference` identifier (and those nested
+/// in generic args / unions / tuples / containers) onto `acc`.
+fn collect_type_refs(ty: &IrType, acc: &mut Vec<String>) {
+	match ty {
+		IrType::TypeReference(r) => {
+			acc.push(r.identifier.clone());
+			if let Some(args) = &r.generic_args {
+				for arg in args {
+					if let GenericArg::Type(t) = arg {
+						collect_type_refs(t, acc);
+					}
+				}
+			}
+		}
+		IrType::Union(v) | IrType::Intersection(v) | IrType::Tuple(v) => {
+			v.iter().for_each(|t| collect_type_refs(t, acc));
+		}
+		IrType::Slice(b) | IrType::Variadic(b) => collect_type_refs(b, acc),
+		IrType::FunctionPointer(fp) => {
+			for list in [&fp.inputs, &fp.outputs] {
+				if let Some(params) = list {
+					for p in params {
+						if let IrParameter::Literal(lp) = p {
+							if let Some(t) = &lp.r#type {
+								collect_type_refs(t, acc);
+							}
+						}
+					}
+				}
+			}
+		}
+		_ => {}
+	}
 }
 
 /// Leading-underscore members are conventionally private in Python.
@@ -200,7 +426,10 @@ fn lower_class(
 	_bindings: &Bindings,
 	_answers: &Answers,
 	path: &NudoxPath,
+	catalog: &DocCatalog,
 ) -> Option<Entry> {
+	// Class-level docstring (shared by the Record / SumType / TraitDef shapes).
+	let class_doc = catalog.item(name).and_then(ParsedDocstring::documentation);
 	// Resolve bindings/answers for the class's *defining* module, so imported
 	// classes resolve against the right tables. Mirrors `Transaction::
 	// get_class_fields`, which keys a fresh `Handle` off the class's qname.
@@ -265,8 +494,8 @@ fn lower_class(
 			name:          name.to_string(),
 			path:          path.clone(),
 			aliases:       None,
-			visibility:    Visibility::Public,
-			documentation: None,
+			visibility:    member_visibility(name),
+			documentation: class_doc,
 			inner:         variants,
 		}));
 	}
@@ -281,7 +510,13 @@ fn lower_class(
 				Some(ty) if is_callable_type(&ty) => {
 					let func =
 						function::lower_method(handle, tx, &bindings, &answers, &fname_s, &ty, class_fields);
-					required_methods.push(function_to_trait_method(&fname_s, func));
+					let mut method = function_to_trait_method(&fname_s, func);
+					// Phase 3 #2: method docstring + per-parameter descriptions.
+					if let Some(mdoc) = catalog.member(name, &fname_s) {
+						method.documentation = mdoc.documentation();
+						apply_param_descs(&mut method.parameters, &mdoc.params);
+					}
+					required_methods.push(method);
 				}
 				other => {
 					let irt = other.as_ref().map(types::lower_type);
@@ -308,8 +543,8 @@ fn lower_class(
 			name:          name.to_string(),
 			path:          path.clone(),
 			aliases:       None,
-			visibility:    Visibility::Public,
-			documentation: None,
+			visibility:    member_visibility(name),
+			documentation: class_doc,
 			inner:         trait_def,
 		}));
 	}
@@ -323,8 +558,14 @@ fn lower_class(
 		let fname_s = fname.to_string();
 		match resolve_ty(fname) {
 			Some(ty) if is_callable_type(&ty) => {
-				let func =
+				let mut func =
 					function::lower_method(handle, tx, &bindings, &answers, &fname_s, &ty, class_fields);
+				// Phase 3 #2: `Record` methods are bare `Function`s with no
+				// documentation slot, so only per-parameter descriptions can be
+				// attached here (the method summary has nowhere to live).
+				if let Some(mdoc) = catalog.member(name, &fname_s) {
+					apply_param_docs(&mut func, &mdoc.params);
+				}
 				if fname_s == "__init__" || fname_s == "__new__" {
 					ir_constructors.push(func);
 				} else {
@@ -346,8 +587,8 @@ fn lower_class(
 		name:          name.to_string(),
 		path:          path.clone(),
 		aliases:       None,
-		visibility:    Visibility::Public,
-		documentation: None,
+		visibility:    member_visibility(name),
+		documentation: class_doc,
 		inner:         Record {
 			name:                  Some(name.to_string()),
 			generics:              None,

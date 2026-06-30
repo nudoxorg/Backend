@@ -10,6 +10,7 @@
 //!   4. Tree-sitter CST extraction for function bodies.
 
 pub mod context;
+pub mod docstring;
 pub mod function;
 pub mod item;
 pub mod module;
