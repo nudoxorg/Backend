@@ -4,6 +4,7 @@ members = [
   "heart",
   "compiler",
   "compiler/intermediate-representation",
+  "schema",
   "registry",
   "runtime",
   "server",
@@ -22,6 +23,7 @@ ir = { path = "compiler/intermediate-representation" }
 compiler = { path = "compiler" }
 registry = { path = "registry" }
 runtime = { path = "runtime" }
+schema = { path = "schema" }
 
 # Shared third-party deps
 async-trait = "0.1"

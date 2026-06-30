@@ -11,6 +11,7 @@ path = "lib.rs"
 [dependencies]
 heart = { workspace = true }
 ir = { workspace = true }
+schema = { workspace = true }
 semver = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }

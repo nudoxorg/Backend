@@ -1,0 +1,19 @@
+[package]
+name = "schema"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+name = "schema"
+crate-type = ["lib"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"]  , optional = true  }
+serde-value = "0.7.0"
+serde_yml = { version = "0.0.12", optional = true }
+serde_path_to_error = { version = "0.1.17", optional = true }
+
+
+[features]
+default = ["serde"]
+serde = ["dep:serde", "dep:serde_yml", "dep:serde_path_to_error"]
