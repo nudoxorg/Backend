@@ -159,6 +159,26 @@ enums:
 
 slots:
 
+  id:
+    description: >-
+      Stable document identity. Serialized as the JSON-LD ``@id`` keyword and
+      used by TerminusDB as the document key. Cross-store primary key.
+    range: uriorcurie
+    identifier: true
+    annotations:
+      rust.linkml.io/serde/rename: "@id"
+
+  type_designator:
+    description: >-
+      Structural discriminator. Serialized as the JSON-LD ``@type`` keyword;
+      its value is the class name (e.g. "Function", "Entry"). For the Kind
+      hierarchy it is supplied by the tagged union and is not duplicated on
+      the concrete document.
+    designates_type: true
+    range: string
+    annotations:
+      rust.linkml.io/serde/rename: "@type"
+
   name:
     description: Short (unqualified) name of the symbol.
     range: string
@@ -206,12 +226,6 @@ slots:
   kind:
     description: >-
       URI of the structural Kind node for this Entry.
-    range: string
-    required: true
-
-  kind_tag:
-    description: >-
-      Discriminator tag for the Kind variant (e.g. "Module", "Function").
     range: string
     required: true
 
@@ -367,6 +381,8 @@ classes:
       Structural meaning lives behind the `kind` reference.
     class_uri: nudox:Entry
     slots:
+      - id
+      - type_designator
       - name
       - fq_name
       - aliases
@@ -384,7 +400,8 @@ classes:
       Answers "what is this symbol structurally".
     class_uri: nudox:Kind
     slots:
-      - kind_tag
+      - id
+      - type_designator
 
   Module:
     is_a: Kind
