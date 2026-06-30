@@ -1,23 +1,30 @@
 //! The vector/semantic runtime store (Qdrant) and the embedding types that feed
 //! it.
+//!
+//! Two type-level guarantees live here:
+//! - the collection's vector dimension is the const generic `DIM`, so a
+//!   wrong-dimension query cannot be formed;
+//! - semantic search is reachable only on a [`Live`] store AND only when handed
+//!   a [`SemanticGate`], so the heavy path is never taken implicitly.
 
-use std::num::NonZeroU64;
+use std::{marker::PhantomData, num::NonZeroUsize};
 
+use heart::{Cold, Guid, Live, Score};
 use qdrant_client::Qdrant;
 
 pub mod embedding;
+pub mod gate;
 pub mod language;
 pub mod similarity;
 pub mod snippet;
 
-pub use embedding::{Embedding, EmbeddingPurpose};
+pub use embedding::{Embedder, Embedding, EmbeddingPurpose};
+pub use gate::SemanticGate;
 
-/// A value paired with its relevance score, as returned by a search target.
-// NOTE: glue placeholder so the relocated search sketches typecheck; mirrors
-// `heart::Hit` and will converge with it as the migration lands.
+/// A value paired with its (provably finite) relevance score.
 pub struct Scored<T> {
 	pub value: T,
-	pub score: f32,
+	pub score: Score,
 }
 
 /// The name of the single global Qdrant collection symbols are upserted into.
@@ -25,14 +32,41 @@ pub struct Scored<T> {
 /// separate collections.
 pub struct CollectionName(String);
 
-/// Our semantic/vector embedding database of choice (Qdrant)
-pub struct Semantic {
-	/// The live gRPC client to the Qdrant instance.
+/// Raised when a `Cold` store fails to come up (or its collection's dimension
+/// disagrees with `DIM`).
+#[derive(Debug)]
+pub struct ConnectError;
+
+/// Our semantic/vector embedding database of choice (Qdrant).
+///
+/// `DIM` is the vector dimension; `S` is the connection state ([`Cold`] until
+/// [`connect`](Semantic::connect) verifies it, then [`Live`]).
+pub struct Semantic<const DIM: usize, S = Cold> {
+	/// The gRPC client to the Qdrant instance.
 	client: Qdrant,
 
 	/// The collection every symbol vector is upserted into / searched against.
 	collection: CollectionName,
 
-	/// The dimensionality every embedding in `collection` must have.
-	vector_dimensions: NonZeroU64,
+	_state: PhantomData<S>,
+}
+
+impl<const DIM: usize> Semantic<DIM, Cold> {
+	/// Verify the Qdrant collection exists and has dimension `DIM`, promoting the
+	/// handle to [`Live`]. Query methods exist only on the `Live` form.
+	pub async fn connect(self) -> Result<Semantic<DIM, Live>, ConnectError> {
+		let _ = (&self.client, &self.collection);
+		todo!("ping qdrant + assert collection dim == DIM, then go Live")
+	}
+}
+
+impl<const DIM: usize> Semantic<DIM, Live> {
+	pub async fn search(
+		&self,
+		_gate: &SemanticGate,
+		_query: &Embedding<DIM>,
+		_limit: NonZeroUsize,
+	) -> Vec<Scored<Guid>> {
+		todo!("query qdrant for the top-k nearest points")
+	}
 }
