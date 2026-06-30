@@ -3583,15 +3583,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "indoc"
-version = "2.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "inlinable_string"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3619,15 +3610,6 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
-]
-
-[[package]]
-name = "inventory"
-version = "0.3.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
-dependencies = [
- "rustversion",
 ]
 
 [[package]]
@@ -3865,16 +3847,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libyml"
-version = "0.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3302702afa434ffa30847a83305f0a69d6abd74293b6554c18ec85c7ef30c980"
-dependencies = [
- "anyhow",
- "version_check",
-]
-
-[[package]]
 name = "libz-rs-sys"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3953,12 +3925,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
 
 [[package]]
-name = "maplit"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3978,16 +3944,6 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
-name = "matrixmultiply"
-version = "0.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a06de3016e9fae57a36fd14dba131fccf49f74b40b7fbdb472f96e361ec71a08"
-dependencies = [
- "autocfg",
- "rawpointer",
-]
 
 [[package]]
 name = "maybe-async"
@@ -4033,15 +3989,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "744133e4a0e0a658e1374cf3bf8e415c4052a15a111acd372764c55b4177d490"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "memoffset"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
-dependencies = [
- "autocfg",
 ]
 
 [[package]]
@@ -4161,21 +4108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ndarray"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "882ed72dce9365842bf196bdeedf5055305f11fc8c03dee7bb0194a6cad34841"
-dependencies = [
- "matrixmultiply",
- "num-complex",
- "num-integer",
- "num-traits",
- "portable-atomic",
- "portable-atomic-util",
- "rawpointer",
-]
-
-[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4265,18 +4197,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nudox_schema"
-version = "0.0.0"
-dependencies = [
- "pyo3",
- "pyo3-stub-gen",
- "serde",
- "serde-value",
- "serde_path_to_error",
- "serde_yml",
-]
-
-[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4301,15 +4221,6 @@ dependencies = [
  "rand 0.8.5",
  "smallvec",
  "zeroize",
-]
-
-[[package]]
-name = "num-complex"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]
@@ -4371,22 +4282,6 @@ checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
 dependencies = [
  "hermit-abi",
  "libc",
-]
-
-[[package]]
-name = "numpy"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29f1dee9aa8d3f6f8e8b9af3803006101bb3653866ef056d530d53ae68587191"
-dependencies = [
- "libc",
- "ndarray",
- "num-complex",
- "num-integer",
- "num-traits",
- "pyo3",
- "pyo3-build-config",
- "rustc-hash 2.1.1",
 ]
 
 [[package]]
@@ -4498,15 +4393,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "ordered-float"
-version = "2.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]
@@ -4967,103 +4853,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pyo3"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8970a78afe0628a3e3430376fc5fd76b6b45c4d43360ffd6cdd40bdde72b682a"
-dependencies = [
- "chrono",
- "indoc",
- "libc",
- "memoffset",
- "once_cell",
- "portable-atomic",
- "pyo3-build-config",
- "pyo3-ffi",
- "pyo3-macros",
- "unindent",
-]
-
-[[package]]
-name = "pyo3-build-config"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "458eb0c55e7ece017adeba38f2248ff3ac615e53660d7c71a238d7d2a01c7598"
-dependencies = [
- "once_cell",
- "target-lexicon",
-]
-
-[[package]]
-name = "pyo3-ffi"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7114fe5457c61b276ab77c5055f206295b812608083644a5c5b2640c3102565c"
-dependencies = [
- "libc",
- "pyo3-build-config",
-]
-
-[[package]]
-name = "pyo3-macros"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8725c0a622b374d6cb051d11a0983786448f7785336139c3c94f5aa6bef7e50"
-dependencies = [
- "proc-macro2 1.0.105",
- "pyo3-macros-backend",
- "quote 1.0.43",
- "syn 2.0.114",
-]
-
-[[package]]
-name = "pyo3-macros-backend"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4109984c22491085343c05b0dbc54ddc405c3cf7b4374fc533f5c3313a572ccc"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2 1.0.105",
- "pyo3-build-config",
- "quote 1.0.43",
- "syn 2.0.114",
-]
-
-[[package]]
-name = "pyo3-stub-gen"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b93cd67bcfbf726f81cd5d5f2cc85a69e089b4eaa11bb41a6514ad1783fb9355"
-dependencies = [
- "anyhow",
- "chrono",
- "either",
- "indexmap 2.13.0",
- "inventory",
- "itertools 0.13.0",
- "log",
- "maplit",
- "num-complex",
- "numpy",
- "pyo3",
- "pyo3-stub-gen-derive",
- "serde",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "pyo3-stub-gen-derive"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f2933be64abedb32a666273e843a1c949e957c18071cf52d543daf4adb2b4e9"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2 1.0.105",
- "quote 1.0.43",
- "syn 2.0.114",
-]
-
-[[package]]
 name = "qdrant-client"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5247,12 +5036,6 @@ checksum = "6f97cdb2a36ed4183de61b2f824cc45c9f1037f28afe0a322e9fff4c108b5aaa"
 dependencies = [
  "rand_core 0.6.4",
 ]
-
-[[package]]
-name = "rawpointer"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
 
 [[package]]
 name = "rayon"
@@ -5845,16 +5628,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde-value"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
-dependencies = [
- "ordered-float",
- "serde",
-]
-
-[[package]]
 name = "serde-wasm-bindgen"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5960,21 +5733,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "serde_yml"
-version = "0.0.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59e2dd588bf1597a252c3b920e0143eb99b0f76e4e082f4c92ce34fbc9e71ddd"
-dependencies = [
- "indexmap 2.13.0",
- "itoa",
- "libyml",
- "memchr",
- "ryu",
- "serde",
- "version_check",
 ]
 
 [[package]]
@@ -7187,12 +6945,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "target-lexicon"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
-
-[[package]]
 name = "tempfile"
 version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7217,7 +6969,7 @@ dependencies = [
 [[package]]
 name = "terminusdb-client"
 version = "0.1.0"
-source = "git+https://github.com/ParapluOU/terminusdb-rs?rev=e79c1f4f401c091a0be695032b8f4bf7b67f8f3c#e79c1f4f401c091a0be695032b8f4bf7b67f8f3c"
+source = "git+https://github.com/ParapluOU/terminusdb-rs#4fefb0434f65baa847af5af9fc00175b3e4d827b"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -7261,7 +7013,7 @@ dependencies = [
 [[package]]
 name = "terminusdb-relation"
 version = "0.1.0"
-source = "git+https://github.com/ParapluOU/terminusdb-rs?rev=e79c1f4f401c091a0be695032b8f4bf7b67f8f3c#e79c1f4f401c091a0be695032b8f4bf7b67f8f3c"
+source = "git+https://github.com/ParapluOU/terminusdb-rs#4fefb0434f65baa847af5af9fc00175b3e4d827b"
 dependencies = [
  "terminusdb-schema",
  "terminusdb-woql2",
@@ -7270,7 +7022,7 @@ dependencies = [
 [[package]]
 name = "terminusdb-schema"
 version = "0.1.0"
-source = "git+https://github.com/ParapluOU/terminusdb-rs?rev=e79c1f4f401c091a0be695032b8f4bf7b67f8f3c#e79c1f4f401c091a0be695032b8f4bf7b67f8f3c"
+source = "git+https://github.com/ParapluOU/terminusdb-rs#4fefb0434f65baa847af5af9fc00175b3e4d827b"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7302,7 +7054,7 @@ dependencies = [
 [[package]]
 name = "terminusdb-schema-derive"
 version = "0.1.0"
-source = "git+https://github.com/ParapluOU/terminusdb-rs?rev=e79c1f4f401c091a0be695032b8f4bf7b67f8f3c#e79c1f4f401c091a0be695032b8f4bf7b67f8f3c"
+source = "git+https://github.com/ParapluOU/terminusdb-rs#4fefb0434f65baa847af5af9fc00175b3e4d827b"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7326,7 +7078,7 @@ dependencies = [
 [[package]]
 name = "terminusdb-woql-builder"
 version = "0.1.0"
-source = "git+https://github.com/ParapluOU/terminusdb-rs?rev=e79c1f4f401c091a0be695032b8f4bf7b67f8f3c#e79c1f4f401c091a0be695032b8f4bf7b67f8f3c"
+source = "git+https://github.com/ParapluOU/terminusdb-rs#4fefb0434f65baa847af5af9fc00175b3e4d827b"
 dependencies = [
  "chrono",
  "decimal-rs",
@@ -7338,7 +7090,7 @@ dependencies = [
 [[package]]
 name = "terminusdb-woql-js"
 version = "0.1.0"
-source = "git+https://github.com/ParapluOU/terminusdb-rs?rev=e79c1f4f401c091a0be695032b8f4bf7b67f8f3c#e79c1f4f401c091a0be695032b8f4bf7b67f8f3c"
+source = "git+https://github.com/ParapluOU/terminusdb-rs#4fefb0434f65baa847af5af9fc00175b3e4d827b"
 dependencies = [
  "anyhow",
  "rquickjs",
@@ -7350,7 +7102,7 @@ dependencies = [
 [[package]]
 name = "terminusdb-woql2"
 version = "0.1.0"
-source = "git+https://github.com/ParapluOU/terminusdb-rs?rev=e79c1f4f401c091a0be695032b8f4bf7b67f8f3c#e79c1f4f401c091a0be695032b8f4bf7b67f8f3c"
+source = "git+https://github.com/ParapluOU/terminusdb-rs#4fefb0434f65baa847af5af9fc00175b3e4d827b"
 dependencies = [
  "anyhow",
  "decimal-rs",
@@ -7850,7 +7602,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "typestate"
 version = "0.1.0"
-source = "git+https://github.com/ParapluOU/terminusdb-rs?rev=e79c1f4f401c091a0be695032b8f4bf7b67f8f3c#e79c1f4f401c091a0be695032b8f4bf7b67f8f3c"
+source = "git+https://github.com/ParapluOU/terminusdb-rs#4fefb0434f65baa847af5af9fc00175b3e4d827b"
 
 [[package]]
 name = "ubyte"
@@ -7960,12 +7712,6 @@ name = "unicode_categories"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39ec24b3121d976906ece63c9daad25b85969647682eee313cb5779fdd69e14e"
-
-[[package]]
-name = "unindent"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
 
 [[package]]
 name = "unsigned-varint"
