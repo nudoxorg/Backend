@@ -59,6 +59,16 @@ arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
 tar = "0.4"
 
+# Pyrefly — Meta's Rust Python type checker (type-query API lives in the `pyrefly` library).
+# The main crate provides the programmatic checker + query API; the sub-crates let us
+# construct/match types, configure the checker, and work with Python ASTs directly.
+# See https://github.com/facebook/pyrefly
+pyrefly = { git = "https://github.com/facebook/pyrefly" }
+pyrefly_types = { git = "https://github.com/facebook/pyrefly" }
+pyrefly_config = { git = "https://github.com/facebook/pyrefly" }
+pyrefly_python = { git = "https://github.com/facebook/pyrefly" }
+pyrefly_util = { git = "https://github.com/facebook/pyrefly" }
+
 # Use the rocket-free vendored copy of terminusdb-schema everywhere it appears in
 # the dependency graph (including transitively, e.g. via the derive crate). See
 # vendor/terminusdb-schema for the (minimal) delta from upstream.
