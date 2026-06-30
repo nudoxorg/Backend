@@ -13,7 +13,7 @@
 //! blob. For this we need to have a (sort of) custom binary serialization
 //! process (probably just bincode)
 
-use std::io::Cursor;
+use std::{io::Cursor, marker::PhantomData};
 
 use arborium_tree_sitter::Tree;
 use ir::entry::Index;
@@ -21,10 +21,11 @@ use ir::entry::Index;
 pub mod creation;
 pub mod emit;
 
-/// An anonymous blob. Stores the representation of a particular package in the three resolutions we care the most about, post-processing.
+/// An anonymous blob. Stores the representation of a particular package in the
+/// three resolutions we care the most about, post-processing.
+#[must_use = "a built blob must be emitted (or explicitly discarded)"]
 pub struct Blob {
 	// TODO: Some way of idenitfying/claering out old blobs
-
 	/// The entire syntax tree (re: treesitter)
 	concrete_syntax_tree: Tree,
 
