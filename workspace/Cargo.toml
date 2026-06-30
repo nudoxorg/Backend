@@ -39,8 +39,9 @@ semver = "1"
 backon = "1"
 nonempty = "0.11"
 rustc-hash = "2"
-
-# Real backing-store clients (terminus over HTTP, qdrant gRPC, postgres via sqlx)
+nutype = "0.6"
+generativity = "1"
+object_store = "0.11"
 qdrant-client = "1.13"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
