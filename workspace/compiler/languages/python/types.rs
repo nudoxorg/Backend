@@ -16,11 +16,25 @@ use pyrefly_types::typed_dict::TypedDict;
 use pyrefly_types::types::{BoundMethodType, Forallable, NeverStyle, Type, Union};
 
 use ir::function::Attribute;
-use ir::generics::{GenericArg, GenericParam};
+use ir::generics::GenericArg;
 use ir::parameter::{LiteralParameter, Parameter as IrParameter, ParameterAttribute};
 use ir::primitives::{Primitive, Width};
-use ir::protocols::ReceiverKind;
-use ir::ty::{self, DynTrait, FunctionPointer, PolyTrait, TypeReference};
+use ir::ty::{GenericParam, FunctionPointer, TypeReference};
+
+/// Strip the trailing `@line:col-col` source-location suffix that pyrefly's
+/// `QName` / `Class` `Display` appends to a fully-qualified name
+/// (e.g. `builtins.int@418:7-10`), yielding a stable cross-reference
+/// identifier (`builtins.int`).
+///
+/// A Python dotted name never contains `@`, so truncating at the first `@`
+/// reliably drops only the location. Use this everywhere a
+/// `TypeReference.identifier` is derived from a `qname()`.
+pub fn strip_loc(ident: &str) -> String {
+    match ident.split_once('@') {
+        Some((head, _)) => head.to_string(),
+        None => ident.to_string(),
+    }
+}
 
 /// Lower a pyrefly `Type` into the language-agnostic `ir::ty::Type`.
 ///
@@ -50,31 +64,27 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
         Type::ClassType(ct) => lower_class_type(ct),
         Type::ClassDef(cls) => {
             // ClassDef is the definition; represent as `Type[ClassName]`.
-            let qname = format!("{}", cls.qname());
+            let qname = strip_loc(&format!("{}", cls.qname()));
             ir::ty::Type::TypeReference(TypeReference {
                 identifier: format!("typing.Type"),
-                generic_args: Some(vec![GenericArg::Type(Box::new(
+                generic_args: Some(vec![GenericArg::Type(
                     ir::ty::Type::TypeReference(TypeReference {
                         identifier: qname,
                         generic_args: None,
                     }),
-                ))]),
+                )]),
             })
         }
         Type::Function(func) => lower_function_type(func),
         Type::Callable(callable) => lower_callable_type(callable),
-        Type::BoundMethod(bm) => lower_bound_method(bm),
+        Type::BoundMethod(bm) => lower_bound_method(&bm.func),
         Type::Forall(forall) => {
-            let body = forall.body.as_type();
+            let body = forall.body.clone().as_type();
             lower_type(&body)
         }
         Type::Overload(overload) => {
             // Pick the first overload signature; caller should inspect overloads.
-            if let Some(sig) = overload.signatures.first() {
-                lower_callable_type(sig)
-            } else {
-                ir::ty::Type::Any
-            }
+            lower_type(&overload.signatures.first().as_type())
         }
         Type::Tuple(tuple) => lower_tuple_type(tuple),
         Type::TypedDict(td) => lower_typed_dict(td),
@@ -113,18 +123,17 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
             for p in prefix.iter() {
                 params.push(IrParameter::Literal(LiteralParameter {
                     name: String::new(),
-                    r#type: Some(lower_type(p.annotated_type())),
+                    r#type: Some(lower_type(p.ty())),
                     attributes: None,
                     default_value: None,
                     description: None,
                 }));
             }
+            // The tail of a `Concatenate[...]` is itself a type (a ParamSpec,
+            // `...`, or a nested concatenation); lower it as the trailing param.
             params.push(IrParameter::Literal(LiteralParameter {
                 name: String::new(),
-                r#type: Some(ir::ty::Type::GenericParam(GenericParam {
-                    name: ps.name.to_string(),
-                    kind: None,
-                })),
+                r#type: Some(lower_type(ps)),
                 attributes: None,
                 default_value: None,
                 description: None,
@@ -146,7 +155,7 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
         Type::SuperInstance(super_inst) => {
             let (start_class, _obj) = &**super_inst;
             ir::ty::Type::TypeReference(TypeReference {
-                identifier: format!("{}", start_class.qname()),
+                identifier: strip_loc(&format!("{}", start_class.qname())),
                 generic_args: None,
             })
         }
@@ -157,19 +166,24 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
             generic_args: None,
         }),
         Type::NNModule(mod_ty) => ir::ty::Type::TypeReference(TypeReference {
-            identifier: format!("{}", mod_ty.class.qname()),
+            identifier: strip_loc(&format!("{}", mod_ty.class.qname())),
             generic_args: Some(
                 mod_ty
                     .class
                     .targs()
                     .as_slice()
                     .iter()
-                    .map(|t| GenericArg::Type(Box::new(lower_type(t))))
+                    .map(|t| GenericArg::Type(lower_type(t)))
                     .collect(),
             ),
         }),
         Type::Size(_) => ir::ty::Type::Primitive(Primitive::Int(Width::W64)),
         Type::Dim(inner) => lower_type(inner),
+        // The value-representation of a type, i.e. `type[X]`.
+        Type::Type(inner) => ir::ty::Type::TypeReference(TypeReference {
+            identifier: "typing.Type".into(),
+            generic_args: Some(vec![GenericArg::Type(lower_type(inner))]),
+        }),
         Type::TypeForm(inner) => lower_type(inner),
         Type::Materialization => ir::ty::Type::Infer,
         Type::Ellipsis => ir::ty::Type::Infer,
@@ -182,11 +196,11 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
         Type::Kwargs(q) | Type::KwargsValue(q) => ir::ty::Type::TypeReference(TypeReference {
             identifier: "builtins.dict".into(),
             generic_args: Some(vec![
-                GenericArg::Type(Box::new(ir::ty::Type::Primitive(Primitive::String))),
-                GenericArg::Type(Box::new(ir::ty::Type::GenericParam(GenericParam {
+                GenericArg::Type(ir::ty::Type::Primitive(Primitive::String)),
+                GenericArg::Type(ir::ty::Type::GenericParam(GenericParam {
                     name: q.name.to_string(),
                     kind: None,
-                }))),
+                })),
             ]),
         }),
         Type::ParamSpecValue(params) => ir::ty::Type::FunctionPointer(FunctionPointer {
@@ -195,17 +209,16 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
             attributes: None,
         }),
         Type::Sentinel(_) => ir::ty::Type::Any,
-        Type::KwCall(_) => ir::ty::Type::Any,
     }
 }
 
 fn lower_class_type(ct: &ClassType) -> ir::ty::Type {
-    let qname = format!("{}", ct.qname());
+    let qname = strip_loc(&format!("{}", ct.qname()));
     let args: Vec<GenericArg> = ct
         .targs()
         .as_slice()
         .iter()
-        .map(|t| GenericArg::Type(Box::new(lower_type(t))))
+        .map(|t| GenericArg::Type(lower_type(t)))
         .collect();
     ir::ty::Type::TypeReference(TypeReference {
         identifier: qname,
@@ -214,13 +227,7 @@ fn lower_class_type(ct: &ClassType) -> ir::ty::Type {
 }
 
 fn lower_function_type(func: &Function) -> ir::ty::Type {
-    let inputs: Vec<IrParameter> = func
-        .signature
-        .params
-        .items()
-        .iter()
-        .map(lower_param_to_ir)
-        .collect();
+    let inputs: Vec<IrParameter> = callable_param_types(&func.signature.params);
     let outputs = vec![IrParameter::Literal(LiteralParameter {
         name: String::new(),
         r#type: Some(lower_type(&func.signature.ret)),
@@ -230,10 +237,7 @@ fn lower_function_type(func: &Function) -> ir::ty::Type {
     })];
 
     let mut attrs = Vec::new();
-    if func.metadata.flags.is_generator {
-        attrs.push(Attribute::Generator);
-    }
-    if func.metadata.flags.is_asyncio {
+    if func.metadata.flags.is_async {
         attrs.push(Attribute::Async);
     }
 
@@ -264,9 +268,10 @@ fn lower_callable_type(callable: &Callable) -> ir::ty::Type {
 fn lower_bound_method(bm: &BoundMethodType) -> ir::ty::Type {
     match bm {
         BoundMethodType::Function(f) => lower_function_type(f),
-        BoundMethodType::Forall(f) => lower_type(&f.body.as_type()),
+        BoundMethodType::Forall(f) => lower_function_type(&f.body),
         BoundMethodType::Overload(o) => {
-            let sigs: Vec<ir::ty::Type> = o.signatures.iter().map(lower_callable_type).collect();
+            let sigs: Vec<ir::ty::Type> =
+                o.signatures.iter().map(|ot| lower_type(&ot.as_type())).collect();
             ir::ty::Type::Union(sigs)
         }
     }
@@ -288,12 +293,12 @@ fn lower_tuple_type(tuple: &Tuple) -> ir::ty::Type {
 fn lower_typed_dict(td: &TypedDict) -> ir::ty::Type {
     match td {
         TypedDict::TypedDict(inner) => {
-            let qname = format!("{}", inner.qname());
+            let qname = strip_loc(&format!("{}", inner.qname()));
             let args: Vec<GenericArg> = inner
                 .targs()
                 .as_slice()
                 .iter()
-                .map(|t| GenericArg::Type(Box::new(lower_type(t))))
+                .map(|t| GenericArg::Type(lower_type(t)))
                 .collect();
             ir::ty::Type::TypeReference(TypeReference {
                 identifier: qname,
@@ -313,9 +318,12 @@ fn lower_literal(lit: &pyrefly_types::literal::Literal) -> ir::ty::Type {
         Lit::Bool(b) => ir::ty::Type::Primitive(Primitive::Bool),
         Lit::Str(_) => ir::ty::Type::Primitive(Primitive::String),
         Lit::Bytes(_) => ir::ty::Type::Primitive(Primitive::Bytes),
-        Lit::Float(_) => ir::ty::Type::Primitive(Primitive::Float(Width::W64)),
         Lit::Enum(enum_lit) => ir::ty::Type::TypeReference(TypeReference {
-            identifier: format!("{}.{}", enum_lit.class.qname(), enum_lit.member),
+            identifier: format!(
+                "{}.{}",
+                strip_loc(&format!("{}", enum_lit.class.qname())),
+                enum_lit.member
+            ),
             generic_args: None,
         }),
     }
@@ -341,7 +349,7 @@ fn lower_type_alias(alias: &TypeAliasData) -> ir::ty::Type {
                 generic_args: r#ref.args.as_ref().map(|args| {
                     args.as_slice()
                         .iter()
-                        .map(|t| GenericArg::Type(Box::new(lower_type(t))))
+                        .map(|t| GenericArg::Type(lower_type(t)))
                         .collect()
                 }),
             })
@@ -350,17 +358,20 @@ fn lower_type_alias(alias: &TypeAliasData) -> ir::ty::Type {
 }
 
 fn lower_param_to_ir(param: &Param) -> IrParameter {
+    fn opt_name<N: ToString>(n: &Option<N>) -> String {
+        n.as_ref().map(|n| n.to_string()).unwrap_or_default()
+    }
     let (name, ty, attrs) = match param {
-        Param::PosOnly(name, ty, _) => (name.to_string(), ty, vec![]),
+        Param::PosOnly(name, ty, _) => (opt_name(name), ty, vec![]),
         Param::Pos(name, ty, _) => (name.to_string(), ty, vec![]),
         Param::Varargs(name, ty) => (
-            name.to_string(),
+            opt_name(name),
             ty,
             vec![ParameterAttribute::Variadic],
         ),
         Param::KwOnly(name, ty, _) => (name.to_string(), ty, vec![]),
         Param::Kwargs(name, ty) => (
-            name.to_string(),
+            opt_name(name),
             ty,
             vec![ParameterAttribute::Variadic],
         ),

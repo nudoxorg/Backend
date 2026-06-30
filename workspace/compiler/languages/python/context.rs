@@ -16,7 +16,6 @@ use pyrefly_util::thread_pool::ThreadCount;
 use super::item;
 use super::types;
 use ir::entry::{Index, NudoxPath};
-use ir::kind::Entry;
 
 /// The lowering context for a Python package.
 ///
@@ -60,12 +59,19 @@ impl PythonContext {
         let sys_info = self.resolve_sys_info();
         let handle = Handle::new(module_name, module_path, sys_info);
 
-        let mut tx = self.state.transaction();
-        tx.set_memory(vec![(
+        // Run inference inside a *committable* transaction and commit it, so the
+        // resolved bindings/answers persist in the shared `State`. A throwaway
+        // `state.transaction()` would discard its `updated_modules` on drop,
+        // leaving `lower_handle` to read an empty (Any-only) view.
+        let mut tx = self
+            .state
+            .new_committable_transaction(Require::Everything, None);
+        tx.as_mut().set_memory(vec![(
             handle.path().as_path().to_path_buf(),
-            Some(Arc::new(FileContents::from_source(source))),
+            Some(Arc::new(FileContents::from_source(source.to_string()))),
         )]);
-        tx.run(&[handle.dupe()], Require::Everything, None);
+        tx.as_mut().run(&[handle.clone()], Require::Everything, None);
+        self.state.commit_transaction(tx, None);
 
         Ok(handle)
     }
@@ -82,8 +88,12 @@ impl PythonContext {
         let sys_info = self.resolve_sys_info();
         let handle = Handle::new(module_name, module_path, sys_info);
 
-        let mut tx = self.state.transaction();
-        tx.run(&[handle.dupe()], Require::Everything, None);
+        // Same committed-transaction discipline as `check_snippet` (see there).
+        let mut tx = self
+            .state
+            .new_committable_transaction(Require::Everything, None);
+        tx.as_mut().run(&[handle.clone()], Require::Everything, None);
+        self.state.commit_transaction(tx, None);
 
         Ok(handle)
     }
@@ -95,29 +105,25 @@ impl PythonContext {
         let tx = self.state.transaction();
 
         let module_info = tx.get_module_info(handle);
-        let _bindings = tx.get_bindings(handle);
-        let _answers = tx.get_answers(handle);
 
-        let mut entries_by_path: rustc_hash::FxHashMap<NudoxPath, Entry> =
-            rustc_hash::FxHashMap::default();
-        let mut root_ids = Vec::new();
+        let mut index = Index {
+            root_ids: Vec::new(),
+            entries_by_path: Default::default(),
+        };
 
         if let Some(module_info) = module_info {
             let path = module_path_to_nudox(&module_info);
             let module_entry = item::lower_module(handle, &tx, &path);
 
+            if let Some(module_nudox) = module_info_path(&module_info) {
+                index.root_ids.push(module_nudox);
+            }
             for (child_path, entry) in module_entry {
-                if let Some(module_nudox) = module_info_path(&module_info) {
-                    root_ids.push(module_nudox);
-                }
-                entries_by_path.insert(child_path.clone(), entry);
+                index.entries_by_path.insert(child_path, entry);
             }
         }
 
-        Index {
-            root_ids,
-            entries_by_path,
-        }
+        index
     }
 
     /// Resolve the Python environment's `SysInfo`.

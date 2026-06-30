@@ -16,7 +16,7 @@ pub fn resolve_handle(
 ) -> Handle {
     let name = ModuleName::from_str(module_name);
     let path = ModulePath::filesystem(file_path.to_path_buf());
-    Handle::new(name, path, sys_info.dupe())
+    Handle::new(name, path, sys_info.clone())
 }
 
 /// Resolve a Python module from a memory/snippet source into a `Handle`.
@@ -27,5 +27,5 @@ pub fn resolve_memory_handle(
 ) -> Handle {
     let name = ModuleName::from_str(module_name);
     let path = ModulePath::memory(std::path::PathBuf::from(virtual_path));
-    Handle::new(name, path, sys_info.dupe())
+    Handle::new(name, path, sys_info.clone())
 }

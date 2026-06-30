@@ -4,9 +4,9 @@ use pyrefly::alt::answers::Answers;
 use pyrefly::binding::bindings::Bindings;
 use pyrefly::state::state::Transaction;
 use pyrefly_build::handle::Handle;
-use pyrefly_types::callable::Param;
-use pyrefly_types::class::{Class, ClassFields};
-use pyrefly_types::types::Type;
+use pyrefly_types::callable::{Param, Params};
+use pyrefly_types::class::ClassFields;
+use pyrefly_types::types::{BoundMethodType, Forallable, Type};
 
 use super::types;
 use ir::function::{Attribute, Function};
@@ -37,12 +37,11 @@ pub fn lower_function(
     let output_params = extract_outputs(py_type);
     let receiver = detect_receiver(&input_params);
 
-    // Detect generator / async from the pyrefly function metadata
+    // Detect async from the pyrefly function metadata. Pyrefly's `FuncFlags`
+    // exposes `is_async` (set for `async def`) but has no dedicated generator
+    // flag at this revision, so generator detection is left to a later pass.
     if let Type::Function(f) = py_type {
-        if f.metadata.flags.is_generator {
-            attrs.push(Attribute::Generator);
-        }
-        if f.metadata.flags.is_asyncio {
+        if f.metadata.flags.is_async {
             attrs.push(Attribute::Async);
         }
     }
@@ -85,16 +84,26 @@ pub fn lower_method(
     func
 }
 
+/// Extract the `&[Param]` from a pyrefly `Params`, which is only a concrete
+/// list in the `Params::List` case (Ellipsis / Materialization / ParamSpec
+/// have no enumerable parameters).
+fn params_as_slice(params: &Params) -> &[Param] {
+    match params {
+        Params::List(list) => list.items(),
+        _ => &[],
+    }
+}
+
 fn extract_inputs(py_type: &Type) -> Vec<IrParameter> {
-    let params = match py_type {
-        Type::Function(f) => f.signature.params.items(),
-        Type::Callable(c) => c.params.items(),
-        Type::BoundMethod(bm) => match bm {
-            pyrefly_types::types::BoundMethodType::Function(f) => f.signature.params.items(),
+    let params: &[Param] = match py_type {
+        Type::Function(f) => params_as_slice(&f.signature.params),
+        Type::Callable(c) => params_as_slice(&c.params),
+        Type::BoundMethod(bm) => match &bm.func {
+            BoundMethodType::Function(f) => params_as_slice(&f.signature.params),
             _ => return Vec::new(),
         },
         Type::Forall(f) => match &f.body {
-            pyrefly_types::types::Forallable::Function(func) => func.signature.params.items(),
+            Forallable::Function(func) => params_as_slice(&func.signature.params),
             _ => return Vec::new(),
         },
         _ => return Vec::new(),
@@ -104,11 +113,11 @@ fn extract_inputs(py_type: &Type) -> Vec<IrParameter> {
         .iter()
         .map(|p| {
             let (name, ty, attrs) = match p {
-                Param::PosOnly(n, t, _) => (n.to_string(), t, vec![]),
+                Param::PosOnly(n, t, _) => (opt_name(n), t, vec![]),
                 Param::Pos(n, t, _) => (n.to_string(), t, vec![]),
-                Param::Varargs(n, t) => (n.to_string(), t, vec![ParameterAttribute::Variadic]),
+                Param::Varargs(n, t) => (opt_name(n), t, vec![ParameterAttribute::Variadic]),
                 Param::KwOnly(n, t, _) => (n.to_string(), t, vec![]),
-                Param::Kwargs(n, t) => (n.to_string(), t, vec![ParameterAttribute::Variadic]),
+                Param::Kwargs(n, t) => (opt_name(n), t, vec![ParameterAttribute::Variadic]),
             };
 
             IrParameter::Literal(LiteralParameter {
@@ -122,16 +131,22 @@ fn extract_inputs(py_type: &Type) -> Vec<IrParameter> {
         .collect()
 }
 
+/// Render an optional parameter name (anonymous positional-only / `*args` /
+/// `**kwargs` slots may carry no name) into a `String`.
+fn opt_name<N: ToString>(name: &Option<N>) -> String {
+    name.as_ref().map(|n| n.to_string()).unwrap_or_default()
+}
+
 fn extract_outputs(py_type: &Type) -> Option<IrParameter> {
     let ret = match py_type {
         Type::Function(f) => Some(&f.signature.ret),
         Type::Callable(c) => Some(&c.ret),
-        Type::BoundMethod(bm) => match bm {
-            pyrefly_types::types::BoundMethodType::Function(f) => Some(&f.signature.ret),
+        Type::BoundMethod(bm) => match &bm.func {
+            BoundMethodType::Function(f) => Some(&f.signature.ret),
             _ => None,
         },
         Type::Forall(f) => match &f.body {
-            pyrefly_types::types::Forallable::Function(func) => Some(&func.signature.ret),
+            Forallable::Function(func) => Some(&func.signature.ret),
             _ => None,
         },
         _ => None,
@@ -151,11 +166,13 @@ fn extract_outputs(py_type: &Type) -> Option<IrParameter> {
 fn detect_receiver(params: &[IrParameter]) -> Option<ReceiverKind> {
     let first = params.first()?;
     match &first {
+        // `self` is an instance receiver → model as a shared/borrowing receiver.
         IrParameter::Literal(LiteralParameter { name, .. }) if name == "self" => {
-            Some(ReceiverKind::Self_)
+            Some(ReceiverKind::SharedRef)
         }
+        // `cls` is the class-method receiver → `Static` ("class method, no receiver").
         IrParameter::Literal(LiteralParameter { name, .. }) if name == "cls" => {
-            Some(ReceiverKind::Self_)
+            Some(ReceiverKind::Static)
         }
         _ => None,
     }
