@@ -9,7 +9,6 @@
 //! The processed output is handed to `linked_data` for graph-store emission.
 
 pub mod error;
+pub mod generate;
 pub mod languages;
-pub mod linked_data;
-pub mod tar;
 pub mod treesitter;

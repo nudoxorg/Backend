@@ -4,4 +4,10 @@
 //! `target/doc/{crate}.json`, and produces an `ir::Index` plus a fq-name →
 //! source-text map for downstream tree-sitter extraction.
 
+pub mod context;
+pub mod function;
+pub mod generics;
+pub mod item;
+pub mod package;
 pub mod traversal;
+pub mod types;
