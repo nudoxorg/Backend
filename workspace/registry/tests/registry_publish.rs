@@ -1,11 +1,11 @@
-//! Pipeline part: **registry read/write** (`registry::{Registry, ReadRegistry, WriteRegistry}`).
+//! Pipeline part: **registry read/write** (`registry::{Registry, RegistryWrite, ReadOnly, ReadWrite}`).
 //!
 //! TDD specs for publishing into a registry we own and reading/searching a
 //! registry we pull from.
 
 /// Publishing a versioned payload yields a global package.
 ///
-/// Act: `WriteRegistry::publish(Versioned { version, payload })`.
+/// Act: `RegistryWrite::<ReadWrite>::publish(Versioned { version, payload })`.
 /// Assert: returns a `GlobalPackage` with a stable global id, ready to syndicate
 ///   to the global store.
 #[tokio::test]
@@ -33,7 +33,7 @@ async fn rank_applies_a_ranking_policy() {
 
 /// A read registry lists and gets packages by condition.
 ///
-/// Assert: `ReadRegistry::list(&conditions)` returns the matching packages and
+/// Assert: `Registry::<ReadOnly>::list(&conditions)` returns the matching packages and
 ///   `get(&package)` fetches one.
 #[tokio::test]
 async fn read_registry_lists_and_gets() {
