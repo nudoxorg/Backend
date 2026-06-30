@@ -9,40 +9,57 @@
 pub enum ResolutionState {
 	/// No indexing has been attempted yet
 	Unindexed {
-		/// Indexing for a package which is related to this has been accomplished, and is incomplete with this package left untouched
-	 needed: bool
+		/// Indexing for a package which is related to this has been accomplished,
+		/// and is incomplete with this package left untouched
+		needed: bool,
 	},
 	/// The indexing is in progress, and will soon be ready to work with.
 	Progressing(Phase),
 	/// All phases complete, stored and actionable
-	Stored
+	Stored,
 }
 
-/// The phase that the indexing is currently in, and the particular progress that that phase has gone through
+/// The phase that the indexing is currently in, and the particular progress
+/// that that phase has gone through
 pub enum Phase {
 	/// The compiler is chewing through it
 	Compiling,
 	/// Treesitter has chewed through the library and produced a concrete tree
-	Treesat
-
-	// I don't know the rest of this
+	Treesat, // I don't know the rest of this
 }
 
+// The concept of a resolution outcome is frankly pointless, A package always
+// holds a state, it's not something with an "outcome" if we need to re-index,
+// then we change the state. The outcome is just weird and voltaile.
 
-// The concept of a resolution outcome is frankly pointless, A package always holds a state, it's not something with an "outcome" if we need to re-index, then we change the state. The outcome is just weird and voltaile.
-
-
-// TODO: Wire up postgres types for global indexing, and the parse queue and association (establishing a link)
+// TODO: Wire up postgres types for global indexing, and the parse queue and
+// association (establishing a link)
 
 /// The `{org}/{db}` TerminusDB instance every deterministic global id is salted
 /// with, so a `GlobalSymbolId` is recomputable offline from the same instance.
 pub struct TerminusInstance(String);
 
-/// Our globalstore/connective tissue (postgres)
-pub struct GlobalStore {
+/// Raised when a `Cold` global store fails to come up (or its schema is not
+/// migrated).
+#[derive(Debug)]
+pub struct ConnectError;
+
+/// Our globalstore/connective tissue (postgres). `S` is the connection state
+/// ([`Cold`](heart::Cold) until [`connect`](GlobalStore::connect), then
+/// [`Live`](heart::Live)).
+pub struct GlobalStore<S = heart::Cold> {
 	/// The connection pool to the postgres instance that owns the global index.
 	pool: sqlx::PgPool,
 
 	/// The instance every global symbol id in this store is derived against.
 	instance: TerminusInstance,
+
+	_state: std::marker::PhantomData<S>,
+}
+
+impl GlobalStore<heart::Cold> {
+	pub async fn connect(self) -> Result<GlobalStore<heart::Live>, ConnectError> {
+		let _ = (&self.pool, &self.instance);
+		todo!("verify the pool + run/await migrations, then go Live")
+	}
 }

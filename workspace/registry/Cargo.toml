@@ -18,6 +18,8 @@ uuid = { workspace = true }
 arborium-tree-sitter = { workspace = true }
 tar = { workspace = true }
 sqlx = { workspace = true }
+generativity = { workspace = true }
+object_store = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

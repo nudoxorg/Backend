@@ -1,12 +1,22 @@
 //! Registry — the interface for all registry actions and methods: storing and
 //! retrieving packages after computation, durable search, and the global index.
+#![feature(adt_const_params)]
 
 pub mod blob;
+pub mod catalog;
 pub mod cordination;
+pub mod health;
 pub mod identity;
 pub mod index;
+pub mod metadata;
 pub mod persist;
+pub mod queue;
+pub mod reproducibility;
 pub mod resolve;
+pub mod search;
+pub mod store;
+
+pub use store::Store;
 
 use heart::{Guid, Id, Language, StoreError, Versioned};
 use semver::Version;

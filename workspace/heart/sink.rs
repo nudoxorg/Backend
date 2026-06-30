@@ -6,9 +6,11 @@ use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
 use crate::StoreError;
 
 /// A remote sink or data place, that we reach out to process information
-/// Used for any external/remote source that is ingesting information that we;re producing here
+/// Used for any external/remote source that is ingesting information that we;re
+/// producing here
 pub trait Sink: Sync {
-	// TODO: Either here or in another mechanism add support for multiple parents/sources
+	// TODO: Either here or in another mechanism add support for multiple
+	// parents/sources
 
 	/// The thing that we're uploading
 	type Item: Sync + Sync;
@@ -30,23 +32,22 @@ pub trait Sink: Sync {
 
 	/// Handle the process of delivering the record
 	async fn deliver(&self, item: Self::Item) -> Result<(), Self::Error>
-    where
-        Self::Item: Clone,
-    {
-        (|| self.upload(item.clone()))
-            .retry(self.backoff())
-            .when(|e| self.retryable(e))
-            .await
-    }
+	where
+		Self::Item: Clone,
+	{
+		(|| self.upload(item.clone())).retry(self.backoff()).when(|e| self.retryable(e)).await
+	}
 }
 
 /// A sink which responds well to batch operators
 pub trait BatchSink: Sink {
-    /// Largest batch the backend will accept in one call.
-    const MAX_BATCH: usize;
+	/// Largest batch the backend will accept in one call.
+	const MAX_BATCH: usize;
 
-    /// Upload many items at once.
-    async fn upload_batch(&self, items: Vec<Self::Item>) -> Result<(), Self::Error>;
+	/// Upload many items at once.
+	async fn upload_batch(&self, items: Vec<Self::Item>) -> Result<(), Self::Error>;
 }
 
-// Seems like qdrant and terminus both have constants for concurrency or batching, and I think this could be resolved to just one abstraction, but still am working on conceiving it
+// Seems like qdrant and terminus both have constants for concurrency or
+// batching, and I think this could be resolved to just one abstraction, but
+// still am working on conceiving it

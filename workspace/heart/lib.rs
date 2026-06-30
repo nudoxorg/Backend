@@ -6,18 +6,26 @@
 //! remains here is deliberately small and generic: the type-tagged identifier,
 //! the scored-result wrapper, the language enum, the versioned wrapper, and the
 //! cross-cutting `Progressive` / `Sink` behavioural traits.
+#![feature(adt_const_params)]
 
+pub mod access;
+pub mod connection;
 pub mod hit;
 pub mod identifier;
 pub mod language;
+pub mod model;
 pub mod progress;
+pub mod score;
 pub mod sink;
 pub mod version;
 
+pub use connection::{Cold, Live};
 pub use hit::Hit;
 pub use identifier::Id;
-pub use language::Language;
+pub use language::{Language, LanguageTag};
+pub use model::ModelId;
 pub use progress::Progressive;
+pub use score::Score;
 pub use sink::{BatchSink, Sink};
 pub use version::Versioned;
 

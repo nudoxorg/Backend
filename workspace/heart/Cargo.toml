@@ -12,6 +12,7 @@ path = "lib.rs"
 uuid = { workspace = true }
 semver = { workspace = true }
 backon = { workspace = true }
+nutype = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
