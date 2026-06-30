@@ -1,10 +1,31 @@
-//! Python module resolution: import graph, `__init__.py` merging, namespace
-//! packages, and the bridge between pyrefly's module handles and the IR.
-//!
-//! IMPLEMENT HERE:
-//!   - Resolving `from X import Y` and `import X` into pyrefly `Handle`s.
-//!   - Flattening `__init__.py` re-exports into the parent module's entry list.
-//!   - Mapping pyrefly `ModuleName` / `ModulePath` → `ir::entry::NudoxPath`.
-//!   - Building the `ir::module::Module` with resolved member paths.
-//!   - Handling namespace packages (PEP 420) — multiple directories, one module.
-//!   - Native/built-in module stubs (via `pyrefly_bundled` or typeshed).
+use std::path::Path;
+
+use pyrefly_build::handle::Handle;
+use pyrefly_python::module_name::ModuleName;
+use pyrefly_python::module_path::ModulePath;
+use pyrefly_python::sys_info::SysInfo;
+
+/// Resolve a Python module name + file path into a pyrefly `Handle`.
+///
+/// This is the bridge between the compiler's file-discovery layer and
+/// pyrefly's module representation.
+pub fn resolve_handle(
+    module_name: &str,
+    file_path: &Path,
+    sys_info: &SysInfo,
+) -> Handle {
+    let name = ModuleName::from_str(module_name);
+    let path = ModulePath::filesystem(file_path.to_path_buf());
+    Handle::new(name, path, sys_info.dupe())
+}
+
+/// Resolve a Python module from a memory/snippet source into a `Handle`.
+pub fn resolve_memory_handle(
+    module_name: &str,
+    virtual_path: &str,
+    sys_info: &SysInfo,
+) -> Handle {
+    let name = ModuleName::from_str(module_name);
+    let path = ModulePath::memory(std::path::PathBuf::from(virtual_path));
+    Handle::new(name, path, sys_info.dupe())
+}

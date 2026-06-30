@@ -25,3 +25,13 @@ tracing = { workspace = true }
 # Python compiler backend — uses pyrefly's type-checker and type representation.
 pyrefly = { workspace = true }
 pyrefly_types = { workspace = true }
+pyrefly_build = { workspace = true }
+pyrefly_python = { workspace = true }
+pyrefly_config = { workspace = true }
+
+# Python package resolution — uv's internal PEP 440 + PEP 508 crates.
+uv-pep440 = "0.0"
+uv-pep508 = "0.0"
+
+# Gzip decompression for PyPI sdists (.tar.gz).
+flate2 = "1"

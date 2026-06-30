@@ -9,6 +9,7 @@
 //!   3. Lower pyrefly's `Type` / `Handle` / module-info into `ir::kind::Entry`.
 //!   4. Tree-sitter CST extraction for function bodies.
 
+pub mod context;
 pub mod function;
 pub mod item;
 pub mod module;
