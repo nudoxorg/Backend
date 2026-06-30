@@ -4,7 +4,6 @@ members = [
   "heart",
   "compiler",
   "compiler/intermediate-representation",
-  "schema",
   "registry",
   "runtime",
   "server",
@@ -23,7 +22,11 @@ ir = { path = "compiler/intermediate-representation" }
 compiler = { path = "compiler" }
 registry = { path = "registry" }
 runtime = { path = "runtime" }
-schema = { path = "schema" }
+
+# TerminusDB schema + instance derives (graph-store model lives in compiler/graph).
+# Git-only crate; the schema crate is async-free (no tokio/reqwest in normal deps).
+terminusdb-schema = { git = "https://github.com/ParapluOU/terminusdb-rs", package = "terminusdb-schema" }
+terminusdb-schema-derive = { git = "https://github.com/ParapluOU/terminusdb-rs", package = "terminusdb-schema-derive" }
 
 # Shared third-party deps
 async-trait = "0.1"
@@ -55,3 +58,9 @@ yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
 tar = "0.4"
+
+# Use the rocket-free vendored copy of terminusdb-schema everywhere it appears in
+# the dependency graph (including transitively, e.g. via the derive crate). See
+# vendor/terminusdb-schema for the (minimal) delta from upstream.
+[patch."https://github.com/ParapluOU/terminusdb-rs"]
+terminusdb-schema = { path = "vendor/terminusdb-schema" }

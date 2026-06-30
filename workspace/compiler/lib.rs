@@ -10,5 +10,6 @@
 
 pub mod error;
 pub mod generate;
+pub mod graph;
 pub mod languages;
 pub mod treesitter;

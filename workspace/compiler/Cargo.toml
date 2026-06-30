@@ -11,3 +11,13 @@ path = "lib.rs"
 [dependencies]
 heart = { workspace = true }
 ir = { workspace = true }
+
+# Graph-store model (compiler/graph): TerminusDB schema + instance via derive.
+# The derive emits fully-qualified paths into these crates, so they must be
+# direct dependencies of this crate.
+terminusdb-schema = { workspace = true }
+terminusdb-schema-derive = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
