@@ -45,8 +45,8 @@ pub struct PackageHandle<'brand> {
 	brand: Id<'brand>,
 }
 
-/// A registry catalog: branded `'brand`, typed to one language `L` and one
-/// capability plane `P`.
+/// A registry catalog, a specialized selection of some packages from the
+/// backing registry. Typically for use in a client
 pub struct Catalog<'brand, const L: LanguageTag, P: Plane> {
 	brand:  Id<'brand>,
 	_plane: PhantomData<P>,
