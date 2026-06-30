@@ -1,64 +1,57 @@
-//! Pipeline part: **blob storage** (`registry::blob`).
+//! Pipeline part: **the registry store** (`registry::store`).
 //!
-//! TDD specs for the content-addressed blob store: the immutable CST+IR+tar body
-//! plus a mutable resolution sidecar. Mirrors the old `blobstore` guarantees.
+//! TDD specs for the package-addressed durable store over `object_store`
+//! (S3 / local). The system is built around `Package`: you `put`/`get` a
+//! package's parsed blob *by the package*, with the object location derived from
+//! its coordinates — there is no opaque ref to round-trip.
 
-/// A blob round-trips: what you put is what you get.
+/// A package's blob round-trips: what you put is what you get back.
 ///
-/// Act: `put(blob)` then `get(&ref)`.
+/// Act: `store.put(&package, &blob)` then `store.get(&package)`.
 /// Assert: the retrieved blob equals the stored one.
 #[tokio::test]
 async fn put_then_get_round_trips() {
-    todo!("assert put/get round-trips a blob");
+    todo!("assert put/get round-trips a package's blob");
 }
 
-/// Storage is content-addressed and idempotent.
+/// The location is derived deterministically from the package coordinates.
 ///
-/// Assert: putting identical content twice yields the same `BlobRef` (a hash),
-///   and `list()` shows a single entry.
+/// Assert: two packages with different language/name/version land at different
+///   object-store paths; the same package always maps to the same path.
 #[tokio::test]
-async fn put_is_content_addressed_and_idempotent() {
-    todo!("assert identical content -> identical ref, list len 1");
+async fn location_is_derived_from_package_coordinates() {
+    todo!("assert deterministic, collision-free package locations");
 }
 
-/// The resolution state is excluded from the content address.
+/// Re-putting the same package overwrites in place (no duplicate objects).
 ///
-/// Assert: an `Unresolved` and a later-`Resolved` form of the same blob hash to
-///   the same `BlobRef` (re-resolving never re-keys).
+/// Assert: putting a package twice leaves a single object at its location.
 #[tokio::test]
-async fn resolution_is_excluded_from_the_content_address() {
-    todo!("assert resolution does not affect the blob ref");
+async fn reput_overwrites_in_place() {
+    todo!("assert idempotent put at the package's location");
 }
 
-/// Updating resolution writes the sidecar and leaves the body write-once.
+/// Getting a package that was never stored reports a backend not-found.
+#[tokio::test]
+async fn get_unknown_package_errors() {
+    todo!("assert StoreError::Backend(NotFound) for an unstored package");
+}
+
+/// A re-parse with a changed representation is detected via the freshness hash.
 ///
-/// Assert: `update_resolution(ref, gid)` makes `get` return `Resolved(gid)` while
-///   the immutable body bytes are unchanged.
+/// Assert: `metadata::hash::freshness(recorded, recomputed)` is `Stale` when the
+///   code/treesitter hash changed, `Fresh` when it didn't — the signal that
+///   gates pulling a library down again.
 #[tokio::test]
-async fn update_resolution_leaves_body_write_once() {
-    todo!("assert sidecar overlay + write-once body");
+async fn changed_representation_is_stale() {
+    todo!("assert freshness Stale on changed hash, Fresh otherwise");
 }
 
-/// A wrong blob schema version is rejected on put.
+/// Packages persist across a store reopen (S3/local durability).
 ///
-/// Assert: putting a blob whose `blob_schema_version` differs from the current
-///   constant returns a `SchemaVersionMismatch`.
+/// Assert: after reopening the store over the same backend, a previously-put
+///   package's blob is still retrievable.
 #[tokio::test]
-async fn put_with_wrong_schema_version_is_rejected() {
-    todo!("assert schema-version mismatch is rejected");
-}
-
-/// Getting an unknown ref returns NotFound.
-#[tokio::test]
-async fn get_missing_ref_returns_not_found() {
-    todo!("assert NotFound for an unknown blob ref");
-}
-
-/// Blobs persist across a store reopen.
-///
-/// Assert: after dropping and reopening the store over the same dir, a
-///   previously-put blob is still retrievable.
-#[tokio::test]
-async fn blobs_persist_across_reopen() {
-    todo!("assert persistence across store reopen");
+async fn packages_persist_across_reopen() {
+    todo!("assert durability across store reopen");
 }
