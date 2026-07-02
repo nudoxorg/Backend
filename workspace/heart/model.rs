@@ -6,6 +6,6 @@ use nutype::nutype;
 #[nutype(
     sanitize(trim),
     validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, Hash, Display, AsRef)
+    derive(Debug, Clone, PartialEq, Eq, Hash, Display, AsRef, Serialize, Deserialize)
 )]
 pub struct ModelId(String);

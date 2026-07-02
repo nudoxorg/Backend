@@ -5,6 +5,6 @@ use nutype::nutype;
 
 #[nutype(
     validate(finite),
-    derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Display)
+    derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Display, Serialize, Deserialize)
 )]
 pub struct Score(f32);
