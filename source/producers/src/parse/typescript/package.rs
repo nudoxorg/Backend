@@ -1,6 +1,6 @@
-use std::{collections::BTreeSet, fs, io::Cursor, path::{Path, PathBuf}, process::Command, sync::Arc};
+use std::{collections::BTreeSet, fs, io::Cursor, path::{Path, PathBuf}, sync::Arc};
 
-use deno_doc::{DocParser, DocParserOptions};
+use deno_doc::{DocParser, DocParserOptions, Document};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph, ModuleSpecifier, ast::CapturingModuleAnalyzer, source::{LoadFuture, LoadOptions, LoadResponse, Loader}};
 use ir::pipeline::{Collected, Ir};
 use rustc_hash::FxHashMap as HashMap;
@@ -10,24 +10,51 @@ use url::Url;
 
 use super::{TsDocParser, error::Package as PackageError};
 
-fn summarize_command_output(bytes: &[u8]) -> String {
-	let text = String::from_utf8_lossy(bytes);
-	let trimmed = text.trim();
-	if trimmed.is_empty() {
-		return String::new();
-	}
-	const LIMIT: usize = 2_000;
-	if trimmed.len() <= LIMIT {
-		return trimmed.to_owned();
-	}
-	let mut end = LIMIT;
-	while !trimmed.is_char_boundary(end) {
-		end -= 1;
-	}
-	format!("{}...", &trimmed[..end])
+fn npm_slug(name: &str) -> String { name.to_ascii_lowercase().replace('/', "__") }
+
+fn parse_npm_entry_point(entry_point: &str) -> Option<(&str, Version)> {
+	let rest = entry_point.strip_prefix("npm:")?;
+	let (name, version) = rest.rsplit_once('@')?;
+	Some((name, Version::parse(version).ok()?))
 }
 
-fn npm_slug(name: &str) -> String { name.to_ascii_lowercase().replace('/', "__") }
+fn build_documents_from_roots(
+	roots: Vec<ModuleSpecifier>,
+	loader: &impl Loader,
+) -> Result<HashMap<String, Document>, PackageError> {
+	let analyzer = CapturingModuleAnalyzer::default();
+	let mut graph = ModuleGraph::new(GraphKind::TypesOnly);
+	let runtime = tokio::runtime::Builder::new_current_thread()
+		.enable_all()
+		.build()
+		.map_err(PackageError::Io)?;
+	runtime.block_on(async {
+		graph
+			.build(roots.clone(), Vec::new(), loader, BuildOptions {
+				module_analyzer: &analyzer,
+				..Default::default()
+			})
+			.await;
+	});
+
+	let parser = DocParser::new(&graph, &analyzer, &roots, DocParserOptions {
+		diagnostics: false,
+		private:     true,
+	})
+	.map_err(|source| PackageError::Graph(source.to_string()))?;
+	let parse_output =
+		parser.parse().map_err(|source| PackageError::Graph(source.to_string()))?;
+	Ok(parse_output
+		.into_iter()
+		.map(|(specifier, document)| (specifier.to_string(), document))
+		.collect())
+}
+
+fn documents_to_ir(documents: HashMap<String, Document>) -> Result<Ir<Collected>, PackageError> {
+	let mut parser = TsDocParser::from_doc(documents)?;
+	let entries = parser.parse()?;
+	Ok(Ir::from_entries(entries))
+}
 
 // ============================================================================
 // Package — implements the Package trait
@@ -44,9 +71,6 @@ pub struct Package {
 }
 
 impl Package {
-	const RUNNER_SCRIPT: &'static str =
-		concat!(env!("CARGO_MANIFEST_DIR"), "/../server/src/core/ts_doc_runner.ts");
-
 	pub fn retrieve(
 		&self,
 		_version: Version,
@@ -60,7 +84,11 @@ impl Package {
 			return self.generate_ir_from_local_path(local_entry_point);
 		}
 
-		self.generate_ir_with_deno()
+		if let Some((name, version)) = parse_npm_entry_point(&self.entry_point) {
+			return self.generate_ir_from_materialized_npm(name, &version);
+		}
+
+		self.generate_ir_from_remote_specifier()
 	}
 
 	fn generate_ir_from_local_path(
@@ -80,76 +108,33 @@ impl Package {
 			})
 			.collect::<Result<Vec<_>, _>>()?;
 
-		let analyzer = CapturingModuleAnalyzer::default();
-		let mut graph = ModuleGraph::new(GraphKind::TypesOnly);
-		let loader = SourceFileLoader;
+		let documents = build_documents_from_roots(roots, &SourceFileLoader)?;
+		documents_to_ir(documents)
+	}
+
+	fn generate_ir_from_materialized_npm(
+		&self,
+		name: &str,
+		version: &Version,
+	) -> Result<Ir<Collected>, PackageError> {
+		let workspace = tempfile::tempdir().map_err(PackageError::Io)?;
 		let runtime = tokio::runtime::Builder::new_current_thread()
 			.enable_all()
 			.build()
 			.map_err(PackageError::Io)?;
-		runtime.block_on(async {
-			graph
-				.build(roots.clone(), Vec::new(), &loader, BuildOptions {
-					module_analyzer: &analyzer,
-					..Default::default()
-				})
-				.await;
-		});
-
-		let parser = DocParser::new(&graph, &analyzer, &roots, DocParserOptions {
-			diagnostics: false,
-			private:     true,
-		})
-		.map_err(|source| PackageError::Graph(source.to_string()))?;
-		let parse_output = parser.parse().map_err(|source| PackageError::Graph(source.to_string()))?;
-		let documents: HashMap<String, deno_doc::Document> = parse_output
-			.into_iter()
-			.map(|(specifier, document)| (specifier.to_string(), document))
-			.collect();
-
-		let mut parser = TsDocParser::from_doc(documents)?;
-		let entries = parser.parse()?;
-
-		Ok(Ir::from_entries(entries))
+		let entry_point = runtime.block_on(Npm::default().materialize_package_version(
+			name,
+			version,
+			workspace.path(),
+		))?;
+		self.generate_ir_from_local_path(entry_point)
 	}
 
-	fn generate_ir_with_deno(&self) -> Result<Ir<Collected>, PackageError> {
-		let output = Command::new("deno")
-			.arg("run")
-			.arg("--allow-read")
-			.arg("--allow-net")
-			.arg("--allow-env")
-			.arg(Self::RUNNER_SCRIPT)
-			.arg(&self.entry_point)
-			.output()?;
-
-		if !output.status.success() {
-			let stderr = summarize_command_output(&output.stderr);
-			let stdout = summarize_command_output(&output.stdout);
-			let details = if !stderr.is_empty() {
-				format!(": {stderr}")
-			} else if !stdout.is_empty() {
-				format!(": {stdout}")
-			} else {
-				String::new()
-			};
-			return Err(PackageError::Process {
-				command: format!("deno run ts_doc_runner {}", self.entry_point),
-				status: output.status,
-				details,
-			});
-		}
-
-		// `output.stdout` is already an owned, mutable byte buffer — exactly what
-		// simd-json wants. Parse it in place (simd-json validates UTF-8 itself),
-		// skipping the intermediate `String` copy from `from_utf8`.
-		let mut json = output.stdout;
-		let documents: HashMap<String, deno_doc::Document> = simd_json::from_slice(&mut json)?;
-
-		let mut parser = TsDocParser::from_doc(documents)?;
-		let entries = parser.parse()?;
-
-		Ok(Ir::from_entries(entries))
+	fn generate_ir_from_remote_specifier(&self) -> Result<Ir<Collected>, PackageError> {
+		let root = ModuleSpecifier::parse(&self.entry_point)
+			.map_err(|source| PackageError::InvalidUrl(source.to_string()))?;
+		let documents = build_documents_from_roots(vec![root], &RemoteModuleLoader::new()?)?;
+		documents_to_ir(documents)
 	}
 
 	fn local_entry_point(&self) -> Result<Option<PathBuf>, PackageError> {
@@ -758,6 +743,71 @@ impl Loader for SourceFileLoader {
 				content: content.into_bytes().into(),
 				mtime: None,
 			}))
+		})
+	}
+}
+
+struct RemoteModuleLoader {
+	client: reqwest::Client,
+}
+
+impl RemoteModuleLoader {
+	fn new() -> Result<Self, PackageError> {
+		Ok(Self {
+			client: reqwest::Client::builder()
+				.build()
+				.map_err(PackageError::Network)?,
+		})
+	}
+}
+
+impl Loader for RemoteModuleLoader {
+	fn load(&self, specifier: &ModuleSpecifier, _options: LoadOptions) -> LoadFuture {
+		let specifier = specifier.clone();
+		let client = self.client.clone();
+		Box::pin(async move {
+			match specifier.scheme() {
+				"file" => {
+					let path = specifier.to_file_path().map_err(|_| {
+						deno_graph::source::LoadError::Other(Arc::new(std::io::Error::new(
+							std::io::ErrorKind::InvalidInput,
+							format!("not a file URL: {specifier}"),
+						)))
+					})?;
+					let content = fs::read(&path)
+						.map_err(|e| deno_graph::source::LoadError::Other(Arc::new(e)))?;
+					Ok(Some(LoadResponse::Module {
+						specifier,
+						maybe_headers: None,
+						content: content.into(),
+						mtime: None,
+					}))
+				}
+				"http" | "https" => {
+					let response = client.get(specifier.as_str()).send().await.map_err(|e| {
+						deno_graph::source::LoadError::Other(Arc::new(std::io::Error::other(e)))
+					})?;
+					let response = response
+						.error_for_status()
+						.map_err(|e| deno_graph::source::LoadError::Other(Arc::new(std::io::Error::other(e))))?;
+					let mut headers = std::collections::HashMap::new();
+					for (name, value) in response.headers().iter() {
+						if let Ok(value) = value.to_str() {
+							headers.insert(name.as_str().to_string(), value.to_string());
+						}
+					}
+					let content = response.bytes().await.map_err(|e| {
+						deno_graph::source::LoadError::Other(Arc::new(std::io::Error::other(e)))
+					})?;
+					Ok(Some(LoadResponse::Module {
+						specifier,
+						maybe_headers: Some(headers),
+						content: Arc::from(content.as_ref()),
+						mtime: None,
+					}))
+				}
+				_ => Ok(None),
+			}
 		})
 	}
 }
