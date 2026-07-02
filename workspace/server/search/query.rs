@@ -1,65 +1,138 @@
 //! The query, filter, and match types that describe a search request and its
 //! results.
+//!
+//! Typing fixes over the original: no raw `Language` (uses [`Ecosystem`]); no
+//! raw tantivy string (a validated [`LiteralQuery`] with an escape policy);
+//! package scope is a [`PackageSelector`] with an *optional version constraint*
+//! so "any version of axum" is expressible; pagination is opaque-cursor, not
+//! offset; and every search carries an [`AccessContext`].
 
-use std::num::NonZeroUsize;
+use std::num::NonZeroU32;
 
+use heart::{AccessContext, Cursor, Ecosystem, PackageName, Score, package::PackageVersion};
 use nonempty::NonEmpty;
+use serde::{Deserialize, Serialize};
 
-use heart::{Language, SymbolKind as Kind};
-use registry::Package;
-
-/// An abstract query, fed to qdrant for responses based on semantic similarity rather than some ground response
-pub enum AbstractQuery{
-	/// A query like "error types" or "stuff in axum" that isn't structured in any kind of particular way
+/// A semantic query, embedded and matched by similarity rather than exact terms.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AbstractQuery {
+	/// Free-form natural language ("error types", "an http router").
 	NaturalLanguage(String),
 
-	/// An (assumed to be) code snippet for an assumed language (little we can do to verify either)
-	CodeSnippet(String)
+	/// A code snippet, with the ecosystem it is assumed to be written in (used
+	/// to shape the embedding text). `None` means "unknown / let the embedder
+	/// decide".
+	CodeSnippet { ecosystem: Option<Ecosystem>, code: String },
 }
 
+/// A precise, term-based query against the tantivy index. Constructed through
+/// [`LiteralQuery::parse`] so raw user input can never inject tantivy query
+/// syntax — special characters are escaped per an explicit policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiteralQuery(String);
+
+impl LiteralQuery {
+	/// Validate and escape raw user input into a safe literal query.
+	pub fn parse(raw: &str) -> Result<Self, QueryError> {
+		let _ = raw;
+		todo!("reject empty, escape tantivy special chars per policy")
+	}
+
+	/// The escaped query string.
+	pub fn as_str(&self) -> &str { &self.0 }
+}
+
+/// A search query: either precise or semantic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Query {
+	/// Semantic (gated) query.
 	Abstract(AbstractQuery),
-	Literal(String), // TODO: Replace with the native tantivy search type
+	/// Precise (default) query.
+	Literal(LiteralQuery),
 }
 
-pub struct Search {
-	filter: Filter,
-	query: Query
-	// TODO: Find out the best way to support things like AND and OR (various ways to chain?)
+/// A version constraint on a package scope — exact or a range, per ecosystem
+/// grammar. Both range grammars are *typed* (no stringly-typed specifier), so an
+/// unparseable constraint is rejected at the boundary, not at query time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VersionConstraint {
+	/// Exactly this version.
+	Exact(PackageVersion),
+	/// A SemVer range (crates/npm).
+	SemverRange(semver::VersionReq),
+	/// A PEP 440 specifier set (Python), e.g. `>=1.2,<2`.
+	Pep440(uv_pep440::VersionSpecifiers),
 }
 
-/// The scope for which a search takes place
-// Should maybe be a generic so we don't make people use vec![] for single language queries (also should be non-empty)
-// Also this is something that would be a parameter on a search, as an optional (with a default implementation) to avoid a ton of optionals on fields
+/// A package to scope a search to: a name plus an optional version constraint
+/// (absent = any version).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackageSelector {
+	/// The (normalized) package name.
+	pub name: PackageName,
+	/// The version constraint, or `None` for any version.
+	pub version: Option<VersionConstraint>,
+}
+
+/// The optional scope narrowing a search. Absent fields mean "no restriction".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Filter {
-	/// The language(s) we should search under
-	pub language: Option<NonEmpty<Language>>,
-
-	/// The package(s) we should search under
-	pub package: Option<NonEmpty<Package>>,
-
-	/// The range of packages we want to see
-	/// You would use this to bound the number of results
-	pub page: Pagination
-
-	// Establish a curtain of popularity, only showing results that... i don't think this is that useful TODO: remove?
-	// occurences: Occurences
+	/// Restrict to these ecosystems.
+	pub ecosystems: Option<NonEmpty<Ecosystem>>,
+	/// Restrict to these packages.
+	pub packages: Option<NonEmpty<PackageSelector>>,
 }
 
-struct Pagination {
-    pub limit: NonZeroUsize,
-    pub offset: usize,
+/// Opaque-cursor pagination request. Keyset-based, never offset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Page {
+	/// Maximum results in this page.
+	pub limit: NonZeroU32,
+	/// The opaque continuation cursor from a prior page, if any. `K` is the
+	/// keyset key of the surface being paged.
+	pub after: Option<String>,
 }
 
-/// We pulled a match !
-/// Includes all of the possible useful information about the said match
-/// Mainly used temporarily when displaying results
-// Because we're only showing this for a moment, things like symbol origination are dumb (inferrable by context?) and same for metadata and embeddings and lifecycle(bruh)
+/// A complete search request: what to find, how to narrow it, who is asking.
+pub struct Search<'a> {
+	/// The query.
+	pub query: Query,
+	/// The optional scope filter.
+	pub filter: Filter,
+	/// The page request.
+	pub page: Page,
+	/// The authenticated context this search runs under.
+	pub scope: &'a AccessContext,
+}
+
+/// A search hit, flattened for display. Carries the durable id so a caller can
+/// fetch the full symbol on demand rather than over-fetching here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Match {
-	// TODO: Change to the actual type for symbols (which should include source)
-	/// The fully qualified name of the symbol
-	pub symbol_name: String,
+	/// The symbol's durable global id.
+	pub id: heart::GlobalSymbolId,
+	/// The fully-qualified name of the symbol.
+	pub fq_name: smol_str::SmolStr,
+	/// What kind of thing it is.
+	pub kind: heart::SymbolKind,
+	/// Its relevance score.
+	pub score: Score,
+}
 
-	/// The kind of thing this is
-	pub kind: Kind,
+/// Typed keyset key for symbol-search pagination: score then id, so ties order
+/// deterministically.
+pub type SymbolCursorKey = (Score, heart::GlobalSymbolId);
+
+/// A concrete symbol-search cursor.
+pub type SymbolCursor = Cursor<SymbolCursorKey>;
+
+/// Why a query could not be parsed/validated.
+#[derive(Debug, thiserror::Error)]
+pub enum QueryError {
+	/// The query text was empty.
+	#[error("empty query")]
+	Empty,
+	/// The literal query could not be escaped/validated.
+	#[error("invalid literal query: {0}")]
+	Invalid(String),
 }

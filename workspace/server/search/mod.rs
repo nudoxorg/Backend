@@ -1,44 +1,50 @@
-//! This module is responsible for providing all of the search operations on the
-//! backing databases, read-only, if you're looking to create/edit/write on the
-//! databases themselves, you should go to their relevant top-level workspace
-//! module
+//! The read-only search surfaces and the traits over them.
+//!
+//! Everything here is read-plane. A [`SearchTarget`] is any store answering a
+//! [`Search`] with a *stream* of [`Scored`] hits (never a materialized `Vec`);
+//! a [`SymbolStore`] additionally walks graph relationships. Streams are
+//! keyset-paginated via the query's [`query::Page`] cursor.
 
+pub mod planner;
 pub mod query;
 pub mod registry;
 pub mod semantic;
 pub mod symbolic;
 
 use futures::Stream;
-use heart::{Guid, StoreError, Symbol};
+use heart::{GlobalSymbolId, Scored, StoreError, Symbol};
 use runtime::graph::GraphStore;
-use runtime::vector::Scored;
 
-pub use query::{AbstractQuery, Filter, Match, Query, Search};
+pub use planner::SearchPlanner;
+pub use query::{AbstractQuery, Filter, Match, Query, Search, SymbolCursor};
 
-/// A trait for stores/targets of search to support both abstract and literal search queries.
+/// A store/target that answers searches with a stream of scored results.
 pub trait SearchTarget {
 	/// What this target yields.
-    type Item;
+	type Item;
 
-    /// Per-implementor failure mode.
-    type Error: StoreError;
+	/// Per-implementor failure mode.
+	type Error: StoreError;
 
-	/// Make a search, returning a stream of results
-	async fn search(&self, request: &Search, scope: Option<Filter>) -> Result<impl Stream<Item = Result<Scored<Self::Item>, Self::Error>>, Self::Error>;
+	/// Run a search, streaming scored results (keyset-paginated via the request's
+	/// `page`). The stream is the contract — results are never collected here.
+	async fn search(
+		&self,
+		request: &Search<'_>,
+	) -> Result<impl Stream<Item = Result<Scored<Self::Item>, Self::Error>> + Send, Self::Error>;
 
-	/// Find an item by an id
-	async fn get_by_id(&self, id: Guid) -> Result<Option<Self::Item>, Self::Error>;
-
-	// Again I don't believe in listing
+	/// Fetch a single item by its durable global id.
+	async fn get_by_id(&self, id: GlobalSymbolId) -> Result<Option<Self::Item>, Self::Error>;
 }
 
-// Not doing any kind of embedder trait, because again, it's just keyed to something specific, we're not going to have more of these unfort
-
-/// A store of symbols with both semantic and precise search
+/// A store of symbols supporting both precise and (gated) semantic search, plus
+/// graph-relationship expansion. This is what the server's symbol-search surface
+/// is generic over.
 pub trait SymbolStore: SearchTarget<Item = Symbol> + GraphStore {
-    /// Given a hit from search, walk its relationships and score them.
-    async fn related_hits(
-        &self,
-        hit: &Scored<Symbol>,
-    ) -> Result<Vec<Scored<Symbol>>, <Self as SearchTarget>::Error>;
+	/// Given a hit, walk its graph relationships and score the related symbols —
+	/// the "expand from here" operation that powers session-based exploration.
+	async fn related_hits(
+		&self,
+		hit: &Scored<Symbol>,
+	) -> Result<Vec<Scored<Symbol>>, <Self as SearchTarget>::Error>;
 }
