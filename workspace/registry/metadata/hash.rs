@@ -1,31 +1,31 @@
-//! The hash of a package's code / treesitter representation.
+//! Package-level content hashing.
 //!
-//! Postgres records this next to a package's canonical GUID
-//! (see [`guid`](super::guid)) for **one purpose**: detecting re-parses. When a
-//! freshly-computed hash differs from the recorded one, the library is pulled
-//! down again and re-indexed.
+//! The content-addressing primitives ([`ContentHash`], [`ContentHasher`],
+//! [`Freshness`], [`Generation`]) now live in [`heart::content`]; this module
+//! re-exports them so registry callers have one import path, and adds the
+//! *package-level* canonical hashing this crate is responsible for: folding a
+//! package's per-file digests, in a stable sorted order, into a single
+//! [`Generation`].
 
-/// A content hash of a package's parsed representation, used only for
-/// freshness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContentHash([u8; 32]);
+pub use heart::content::{ContentHash, ContentHasher, Freshness, Generation};
 
-impl ContentHash {
-	/// Wrap a freshly-computed (or postgres-recorded) representation hash.
-	pub fn new(hash: [u8; 32]) -> Self { Self(hash) }
+use crate::blob::FileEntry;
+
+/// Fold a package's sorted per-file digests into its canonical [`Generation`].
+///
+/// This is *the* definition of a package's content identity: sort the
+/// [`FileEntry`]s by path (so file order in the archive is irrelevant),
+/// length-prefix and feed each `(path, hash)` into a [`ContentHasher`], and
+/// finalize. Deterministic and offline-recomputable. `// runs on spawn_blocking
+/// for large file sets`.
+pub fn package_generation(files: &[FileEntry]) -> Generation {
+	let _ = files;
+	todo!("sort by path, fold length-prefixed (path, file-hash) pairs, finalize into Generation")
 }
 
-/// Whether a package's stored representation still matches its source.
-pub enum Freshness {
-	/// The recorded hash matches a freshly-computed one.
-	Fresh,
-
-	/// The representation changed.
-	Stale,
-}
-
-/// Decide whether a package needs re-parsing by comparing its recorded hash to
-/// a freshly-computed one.
-pub fn freshness(recorded: ContentHash, recomputed: ContentHash) -> Freshness {
-	if recorded == recomputed { Freshness::Fresh } else { Freshness::Stale }
+/// Compare a package's recorded generation against a freshly-computed one to
+/// decide whether it must be re-acquired and re-indexed. Thin wrapper over
+/// [`Freshness::compare`] at the [`Generation`] granularity.
+pub fn freshness(recorded: Generation, recomputed: Generation) -> Freshness {
+	Freshness::compare(recorded.0, recomputed.0)
 }
