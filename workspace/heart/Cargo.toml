@@ -13,6 +13,21 @@ uuid = { workspace = true }
 semver = { workspace = true }
 backon = { workspace = true }
 nutype = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+smol_str = { workspace = true }
+compact_str = { workspace = true }
+chrono = { workspace = true }
+ordered-float = { workspace = true }
+strum = { workspace = true }
+data-encoding = { workspace = true }
+postcard = { workspace = true }
+uv-pep440 = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+proptest = { workspace = true }
+insta = { workspace = true }
+semver = { workspace = true }
