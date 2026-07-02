@@ -1,16 +1,17 @@
 //! The connective mesh: coordinating an ingest across subsystems.
 //!
-//! A package is parsed once into a single projection that fans out to every
-//! sink (text index, vector store, graph store, blob/registry persistence),
-//! reporting progress and reconciling the resulting events back to the global
-//! index.
+//! The durability model is **postgres-as-WAL + derived stores as pollers**: a
+//! publish is one postgres transaction (package row + parse-status + outbox
+//! entry); every derived store (qdrant/terminus/tantivy) is a poller with its
+//! own durable cursor. So the coordination layer here only ever *enqueues* and
+//! *records intents* — it never fans out synchronously, and a partial failure
+//! converges on retry rather than corrupting a subset of stores.
 //!
-//! The three client → server flows live here:
-//! - [`initialization`]: ensure a library is present (index it or request it),
-//!   tracking usage / tiers / freshness.
-//! - [`indexing`]: run the compiler, update postgres, generate blob info.
-//! - [`search`]: answer search/read requests.
-//! - [`health`]: track parse status + coordinate load balancing.
+//! Flows:
+//! - [`initialization`]: ensure a package is present + fresh (enqueue if not);
+//! - [`indexing`]: drive one job through acquire → extract → compile → emit;
+//! - [`search`]: dispatch a read to the right surface;
+//! - [`health`]: parse-status + readiness.
 
 pub mod health;
 pub mod indexing;
