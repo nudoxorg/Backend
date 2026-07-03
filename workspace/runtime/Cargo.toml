@@ -24,9 +24,16 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 # Serialization / wire.
 serde = { workspace = true }
+serde_json = { workspace = true }
 bytes = { workspace = true }
+# Postgres — the durable watermark the text index polls from.
+sqlx = { workspace = true }
+# ModelId refinement (validated non-empty string).
+nutype = { workspace = true }
 # Errors + retry classification.
 thiserror = { workspace = true }
+# Upload sinks are tower services wrapped with heart's retry policy.
+tower = { workspace = true }
 # Observability.
 tracing = { workspace = true }
 # Embedding cache + rate limiting.

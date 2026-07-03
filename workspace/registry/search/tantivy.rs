@@ -1,33 +1,27 @@
-//! The tantivy abstraction over registry search.
+//! Our Tantivy abstraction against the backing registry
 //!
-//! Postgres is the source of truth for what packages exist; this is a
-//! **replica-local** tantivy index that mirrors a searchable projection of it.
-//! Each replica keeps its own index on local disk and **polls postgres from a
-//! watermark** to catch up — the index is derived, disposable, and rebuildable,
-//! never authoritative. Search reads never touch postgres on the hot path.
+//! We prefer Tantivy, not as a source of truth, but for its search abilities.
+//! This forms a replica structure that gets a searchable slice of the postgres
+//! store. This makes it disposable and rebuildable!
 
-use heart::{access::AccessContext, content::Generation, package::PackageId};
+use heart::{PackageId, access::AccessContext};
 use tantivy::{Index, IndexReader};
 
 use crate::{GlobalPackage, error::SearchError};
 
 /// The last postgres position a replica has folded into its local index — the
-/// watermark it resumes syncing from. Anchored to a [`Generation`] so a page
-/// served against a newer sync can be detected as skewed.
+/// watermark it resumes syncing from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SyncWatermark {
 	/// The postgres logical sequence (e.g. an `updated_at` cursor or txid) last
 	/// consumed.
 	pub position: i64,
-
-	/// The index generation this watermark reflects.
-	pub generation: Generation,
 }
 
 /// A replica-local tantivy index over the searchable package projection.
 pub struct PackageIndex {
-	index: Index,
-	reader: IndexReader,
+	index:     Index,
+	reader:    IndexReader,
 	watermark: SyncWatermark,
 }
 

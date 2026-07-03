@@ -17,11 +17,12 @@
 //! - Connection typestates ([`heart::Cold`]/[`heart::Live`]) gate query methods;
 //!   every store implements [`heart::Connect`] so the server brings them all up
 //!   through one uniform path.
-//! - Every derived record is generation-stamped ([`heart::Generation`]) so a
-//!   join across stores can *detect* version skew instead of silently mixing.
+//! - Freshness is a content hash ([`heart::ContentHash`]) computed by an isolated
+//!   subroutine when a package's git history changes — not a stamp carried on
+//!   every derived record.
 //! - Every query threads an [`heart::AccessContext`] for authorization.
 //! - One `thiserror` enum per area lives in [`error`]; each is
-//!   [`heart::Retryable`] so the retry/queue machinery is written once.
+//!   [`heart::Retryable`], and [`error::RuntimeError`] aggregates them.
 #![feature(return_type_notation)]
 
 pub mod error;
@@ -29,3 +30,5 @@ pub mod graph;
 pub mod session;
 pub mod text;
 pub mod vector;
+
+pub use error::RuntimeError;

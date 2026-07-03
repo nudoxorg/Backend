@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::{error::BackendKind, identifier::Id};
+use crate::{error::BackendKind, identity::Id};
 
 /// Namespace for deriving deterministic [`SourceId`]s from a source's stable
 /// name, so the same configured source keeps its identity across restarts.

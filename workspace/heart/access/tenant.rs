@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identifier::Id;
+use crate::identity::Id;
 
 /// The unit that owns records and against which access is granted: an
 /// individual user or an enterprise organization.

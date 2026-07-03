@@ -6,7 +6,7 @@ use heart::{AccessContext, Scored};
 use registry::GlobalPackage;
 
 use crate::error::ServerError;
-use crate::search::query::{Page, Query};
+use crate::search::query::{Pagination, Query};
 
 /// The read-side entry point for package discovery.
 pub struct RegistrySearchSurface {
@@ -19,7 +19,7 @@ impl RegistrySearchSurface {
 	pub async fn search(
 		&self,
 		query: &Query,
-		page: &Page,
+		page: &Pagination,
 		scope: &AccessContext,
 	) -> Result<impl Stream<Item = Result<Scored<GlobalPackage>, ServerError>> + Send, ServerError> {
 		let _ = (query, page, scope);

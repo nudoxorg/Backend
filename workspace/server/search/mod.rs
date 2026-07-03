@@ -12,11 +12,11 @@ pub mod semantic;
 pub mod symbolic;
 
 use futures::Stream;
-use heart::{GlobalSymbolId, Scored, StoreError, Symbol};
+use heart::{SymbolId, Scored, StoreError, Symbol};
 use runtime::graph::GraphStore;
 
 pub use planner::SearchPlanner;
-pub use query::{AbstractQuery, Filter, Match, Query, Search, SymbolCursor};
+pub use query::{AbstractQuery, Filter, Pagination, Query, Search, SymbolCursor};
 
 /// A store/target that answers searches with a stream of scored results.
 pub trait SearchTarget {
@@ -34,7 +34,7 @@ pub trait SearchTarget {
 	) -> Result<impl Stream<Item = Result<Scored<Self::Item>, Self::Error>> + Send, Self::Error>;
 
 	/// Fetch a single item by its durable global id.
-	async fn get_by_id(&self, id: GlobalSymbolId) -> Result<Option<Self::Item>, Self::Error>;
+	async fn get_by_id(&self, id: SymbolId) -> Result<Option<Self::Item>, Self::Error>;
 }
 
 /// A store of symbols supporting both precise and (gated) semantic search, plus

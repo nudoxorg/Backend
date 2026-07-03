@@ -9,11 +9,11 @@
 
 use futures::Stream;
 use heart::{
+	PackageId, Scored,
 	access::AccessContext,
 	cursor::Cursor,
-	ecosystem::Ecosystem,
-	package::PackageId,
-	scored::Scored,
+	ecosystem::Language,
+	search::Page,
 };
 
 use crate::{GlobalPackage, error::SearchError};
@@ -33,7 +33,7 @@ pub struct RegistryQuery {
 	pub text: String,
 
 	/// Restrict to a single ecosystem, or search across all when `None`.
-	pub ecosystem: Option<Ecosystem>,
+	pub ecosystem: Option<Language>,
 
 	/// Page size.
 	pub limit: usize,
@@ -76,18 +76,8 @@ impl RegistrySearch {
 		&self,
 		ctx: &AccessContext,
 		query: &RegistryQuery,
-	) -> Result<SearchPage, SearchError> {
+	) -> Result<Page<GlobalPackage>, SearchError> {
 		let _ = (&self.index, ctx, query);
 		todo!("run the query, access-filter, de-dupe multi-parent, build the next cursor")
 	}
-}
-
-/// One materialized page of registry-search results plus its continuation.
-#[derive(Debug, Clone)]
-pub struct SearchPage {
-	/// The scored packages on this page.
-	pub hits: Vec<Scored<GlobalPackage>>,
-
-	/// The cursor to resume after, or `None` at the end of results.
-	pub next: Option<Cursor<SearchKey>>,
 }

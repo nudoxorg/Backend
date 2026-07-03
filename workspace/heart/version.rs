@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::package::PackageVersion;
+use crate::identity::PackageVersion;
 
 /// A payload paired with the package version it corresponds to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

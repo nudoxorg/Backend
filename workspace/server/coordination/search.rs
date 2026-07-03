@@ -6,7 +6,7 @@
 //! implicitly.
 
 use futures::Stream;
-use heart::{AccessContext, GlobalSymbolId, Scored, Sourced, Symbol};
+use heart::{AccessContext, SymbolId, Scored, Sourced, Symbol};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
@@ -38,15 +38,17 @@ impl<M: EmbeddingModel> Server<M> {
 	/// it — so callers can tell an overlay override from a definitive record.
 	pub async fn resolve_symbol(
 		&self,
-		id: GlobalSymbolId,
+		id: SymbolId,
 		ctx: &AccessContext,
 	) -> Result<Option<Sourced<Symbol>>, ServerError> {
 		let _ = (id, ctx);
-		for (source_id, role, stores) in self.federation().in_precedence() {
+		for sourced in self.federation().in_precedence() {
 			// The first source (highest precedence) that has `id` wins; an overlay
 			// therefore shadows the base. Access is checked per source.
-			let _ = (source_id, role, &stores.global_store);
-			// if let Some(sym) = stores.lookup(id, ctx).await? { return Ok(Some(Sourced::new(sym, source_id, role))); }
+			let _ = (sourced.source, sourced.role, &sourced.value.global_store);
+			// if let Some(sym) = sourced.value.lookup(id, ctx).await? {
+			//     return Ok(Some(Sourced { value: sym, source: sourced.source, role: sourced.role }));
+			// }
 		}
 		todo!("federated resolve: overlay-override then definitive base")
 	}

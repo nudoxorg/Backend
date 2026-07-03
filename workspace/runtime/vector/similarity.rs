@@ -7,11 +7,11 @@
 
 use std::num::NonZeroUsize;
 
-use heart::{AccessContext, GlobalSymbolId, Score, Scored};
+use heart::{AccessContext, SymbolId, Score, Scored};
 
 use crate::{
 	error::VectorError,
-	vector::{embedding::{Embedding, EmbeddingModel}, gate::SemanticGate, SemanticLive},
+	vector::{Embedding, SemanticLive, gate::SemanticGate, model::EmbeddingModel},
 };
 
 /// Cosine similarity of two embeddings of the same model brand, as a
@@ -32,10 +32,10 @@ pub fn cosine<M: EmbeddingModel>(a: &Embedding<M>, b: &Embedding<M>) -> Score {
 pub async fn similar_to<M: EmbeddingModel>(
 	store: &SemanticLive<M>,
 	gate: SemanticGate,
-	symbol: GlobalSymbolId,
+	symbol: SymbolId,
 	limit: NonZeroUsize,
 	scope: &AccessContext,
-) -> Result<Vec<Scored<GlobalSymbolId>>, VectorError> {
+) -> Result<Vec<Scored<SymbolId>>, VectorError> {
 	let _ = (store, gate, symbol, limit, scope);
 	todo!("look up symbol's stored vector, k-NN search, drop the self-hit")
 }

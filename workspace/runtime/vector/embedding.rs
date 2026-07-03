@@ -9,32 +9,19 @@
 //! (`M::DIMENSIONS`) and the stable [`ModelId`] (`M::id()`), so those never have
 //! to be threaded or re-stated.
 //!
+//! The model brand/catalog/[`ModelId`] themselves live in [`super::model`]; this
+//! file is only the embedding *value* type and the *embedder* interface.
+//!
 //! Storage is a validated `Arc<[f32]>`: length is checked once, at the
 //! construction boundary, against `M::DIMENSIONS`. This drops the fixed-array
 //! `serde_arrays` hack and removes any need for `generic_const_exprs`.
 
 use std::{marker::PhantomData, sync::Arc};
 
-use heart::ModelId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::model::{EmbeddingModel, ModelId};
 use crate::error::EmbedError;
-
-mod sealed {
-	pub trait Sealed {}
-}
-
-/// A compile-time embedding-model brand: which model produced a vector, its
-/// dimensionality, and its stable id. Sealed — only the known models in
-/// [`models`] exist, so a brand always corresponds to a real, configured model.
-pub trait EmbeddingModel: sealed::Sealed + Send + Sync + 'static {
-	/// The model's output dimensionality.
-	const DIMENSIONS: usize;
-
-	/// The stable model id — stamped alongside every stored vector and used as
-	/// the migration key when the model changes.
-	fn id() -> ModelId;
-}
 
 /// What a piece of text is being embedded *as*. The same text embedded under two
 /// purposes yields two distinct vectors, so code-vs-doc search stay separable in
@@ -165,49 +152,4 @@ pub fn assert_embedder_futures_send<E>()
 where
 	E: Embedder<embed(..): Send, embed_batch(..): Send>,
 {
-}
-
-/// The concrete, sealed embedding-model brands the system supports. Adding a
-/// model is adding a zero-sized type here; nothing else needs a numeric literal.
-pub mod models {
-	use heart::ModelId;
-
-	use super::{EmbeddingModel, sealed::Sealed};
-
-	/// Build a static, known-non-empty [`ModelId`].
-	fn model_id(name: &str) -> ModelId {
-		ModelId::try_new(name).expect("static model id is non-empty")
-	}
-
-	/// `intfloat/e5-small-v2` — 384-dim.
-	pub struct E5Small;
-	impl Sealed for E5Small {}
-	impl EmbeddingModel for E5Small {
-		const DIMENSIONS: usize = 384;
-		fn id() -> ModelId { model_id("intfloat/e5-small-v2") }
-	}
-
-	/// `Qwen/Qwen3-Embedding` — 1024-dim.
-	pub struct Qwen3;
-	impl Sealed for Qwen3 {}
-	impl EmbeddingModel for Qwen3 {
-		const DIMENSIONS: usize = 1024;
-		fn id() -> ModelId { model_id("Qwen/Qwen3-Embedding") }
-	}
-
-	/// OpenAI `text-embedding-3-small` — 1536-dim.
-	pub struct OpenAi3Small;
-	impl Sealed for OpenAi3Small {}
-	impl EmbeddingModel for OpenAi3Small {
-		const DIMENSIONS: usize = 1536;
-		fn id() -> ModelId { model_id("openai/text-embedding-3-small") }
-	}
-
-	/// OpenAI `text-embedding-3-large` — 3072-dim.
-	pub struct OpenAi3Large;
-	impl Sealed for OpenAi3Large {}
-	impl EmbeddingModel for OpenAi3Large {
-		const DIMENSIONS: usize = 3072;
-		fn id() -> ModelId { model_id("openai/text-embedding-3-large") }
-	}
 }

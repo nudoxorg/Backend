@@ -3,8 +3,7 @@
 //! the retrying sink.
 
 use heart::{
-	Id, Scored, Versioned,
-	package::PackageVersion,
+	Id, PackageVersion, Scored, Versioned,
 	progress::{JobProgress, Percent, Progressive},
 	score::Score,
 };
@@ -69,13 +68,21 @@ fn progressive_completes_from_state() {
 	assert!(!mid.is_complete());
 }
 
-/// `Sink::deliver` retries transient failures per the backoff, and surfaces a
-/// non-retryable error immediately.
+/// `Sink::deliver` (a thin wrapper over a `tower::Service`) retries transient
+/// failures per the policy, and surfaces a non-retryable error immediately.
 #[tokio::test]
 async fn sink_deliver_retries_transient_failures() {
-	use std::sync::atomic::{AtomicU32, Ordering};
+	use std::{
+		future::{Ready, ready},
+		sync::{
+			Arc,
+			atomic::{AtomicU32, Ordering},
+		},
+		task::{Context, Poll},
+	};
 
 	use heart::{Retryable, Sink};
+	use tower::Service;
 
 	#[derive(Debug)]
 	struct TestErr {
@@ -89,45 +96,60 @@ async fn sink_deliver_retries_transient_failures() {
 		fn is_retryable(&self) -> bool { self.retryable }
 	}
 
-	// Fails `fails_left` times (transiently) then succeeds.
+	// A tower service that fails transiently `fails_left` times then succeeds.
+	// Counters are shared through `Arc` so the `Clone` the retry layer needs does
+	// not reset them.
+	#[derive(Clone)]
 	struct Flaky {
-		fails_left: AtomicU32,
-		attempts: AtomicU32,
+		fails_left: Arc<AtomicU32>,
+		attempts:   Arc<AtomicU32>,
 	}
-	impl Sink for Flaky {
-		type Item = ();
+	impl Service<()> for Flaky {
+		type Response = ();
 		type Error = TestErr;
-		async fn upload(&self, _item: ()) -> Result<(), TestErr> {
+		type Future = Ready<Result<(), TestErr>>;
+		fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), TestErr>> {
+			Poll::Ready(Ok(()))
+		}
+		fn call(&mut self, _req: ()) -> Self::Future {
 			self.attempts.fetch_add(1, Ordering::SeqCst);
 			if self
 				.fails_left
 				.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
 				.is_ok()
 			{
-				Result::Err(TestErr { retryable: true })
+				ready(Result::Err(TestErr { retryable: true }))
 			} else {
-				Ok(())
+				ready(Ok(()))
 			}
 		}
 	}
 
-	let flaky = Flaky { fails_left: AtomicU32::new(2), attempts: AtomicU32::new(0) };
-	assert!(flaky.deliver(()).await.is_ok());
-	assert_eq!(flaky.attempts.load(Ordering::SeqCst), 3, "2 transient failures then success");
+	let attempts = Arc::new(AtomicU32::new(0));
+	let flaky = Flaky { fails_left: Arc::new(AtomicU32::new(2)), attempts: attempts.clone() };
+	let sink = Sink::new(flaky);
+	assert!(sink.deliver(()).await.is_ok());
+	assert_eq!(attempts.load(Ordering::SeqCst), 3, "2 transient failures then success");
 
 	// A non-retryable failure is surfaced on the first attempt.
+	#[derive(Clone)]
 	struct Fatal {
-		attempts: AtomicU32,
+		attempts: Arc<AtomicU32>,
 	}
-	impl Sink for Fatal {
-		type Item = ();
+	impl Service<()> for Fatal {
+		type Response = ();
 		type Error = TestErr;
-		async fn upload(&self, _item: ()) -> Result<(), TestErr> {
+		type Future = Ready<Result<(), TestErr>>;
+		fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), TestErr>> {
+			Poll::Ready(Ok(()))
+		}
+		fn call(&mut self, _req: ()) -> Self::Future {
 			self.attempts.fetch_add(1, Ordering::SeqCst);
-			Result::Err(TestErr { retryable: false })
+			ready(Result::Err(TestErr { retryable: false }))
 		}
 	}
-	let fatal = Fatal { attempts: AtomicU32::new(0) };
-	assert!(fatal.deliver(()).await.is_err());
-	assert_eq!(fatal.attempts.load(Ordering::SeqCst), 1, "non-retryable: no retries");
+	let fatal_attempts = Arc::new(AtomicU32::new(0));
+	let sink = Sink::new(Fatal { attempts: fatal_attempts.clone() });
+	assert!(sink.deliver(()).await.is_err());
+	assert_eq!(fatal_attempts.load(Ordering::SeqCst), 1, "non-retryable: no retries");
 }

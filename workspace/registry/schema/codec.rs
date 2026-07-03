@@ -4,10 +4,10 @@
 //! so a round-trip through postgres is the identity.
 //!
 //! - discriminant enums (`ResolutionState`, `Phase`, `FailureKind`,
-//!   `Ecosystem`, `Visibility`, `SinkKind`, tenant kind) ↔ short `text` tokens;
+//!   `Language`, `Visibility`, `SinkKind`, tenant kind) ↔ short `text` tokens;
 //! - `Failure` / `Toolchain` ↔ `jsonb` (via serde);
 //! - `ContentHash` / `Generation` ↔ `bytea` (exactly 32 bytes);
-//! - `PackageId` / `GlobalSymbolId` / `Tenant` id ↔ `uuid`.
+//! - `PackageId` / `SymbolId` / `Tenant` id ↔ `uuid`.
 //!
 //! The token tables here are the same domains the schema's CHECK constraints
 //! enforce, so the database rejects precisely what [`state_from_token`] et al.
@@ -16,11 +16,10 @@
 use heart::{
 	Visibility,
 	access::Tenant,
-	content::{ContentHash, Generation},
-	ecosystem::Ecosystem,
-	identifier::Id,
+	content::ContentHash,
+	ecosystem::Language,
+	identity::{Id, SymbolId, PackageId},
 	lifecycle::{Failure, Phase, ResolutionState},
-	package::{GlobalSymbolId, PackageId},
 };
 use uuid::Uuid;
 
@@ -54,7 +53,7 @@ pub enum CodecError {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The raw uuid backing a [`PackageId`], for a `uuid` column.
-pub fn package_id_to_uuid(id: PackageId) -> Uuid { id.as_id().into_uuid() }
+pub fn package_id_to_uuid(id: PackageId) -> Uuid { *id.as_uuid() }
 
 /// Reconstruct a [`PackageId`] from a `uuid` column.
 ///
@@ -69,11 +68,11 @@ pub fn package_id_from_uuid(uuid: Uuid) -> PackageId {
 		.expect("a valid uuid always deserializes into a PackageId")
 }
 
-/// The raw uuid backing a [`GlobalSymbolId`].
-pub fn symbol_id_to_uuid(id: GlobalSymbolId) -> Uuid { *id.as_uuid() }
+/// The raw uuid backing a [`SymbolId`].
+pub fn symbol_id_to_uuid(id: SymbolId) -> Uuid { *id.as_uuid() }
 
 /// The raw uuid backing a [`Tenant`].
-pub fn tenant_to_uuid(t: Tenant) -> Uuid { t.id().into_uuid() }
+pub fn tenant_to_uuid(t: Tenant) -> Uuid { *t.id().as_uuid() }
 
 /// Reconstruct a [`Tenant`] from its uuid + kind token.
 pub fn tenant_from_parts(uuid: Uuid, kind: &str) -> Result<Tenant, CodecError> {
@@ -109,27 +108,27 @@ pub fn hash_from_bytes(bytes: &[u8]) -> Result<ContentHash, CodecError> {
 	Ok(ContentHash::from_bytes(arr))
 }
 
-/// The 32 raw bytes of a [`Generation`].
-pub fn generation_to_bytes(g: Generation) -> Vec<u8> { hash_to_bytes(g.0) }
+/// The 32 raw bytes of a snapshot [`ContentHash`], for a `bytea` column.
+pub fn generation_to_bytes(g: ContentHash) -> Vec<u8> { hash_to_bytes(g) }
 
-/// Reconstruct a [`Generation`] from a `bytea` column.
-pub fn generation_from_bytes(bytes: &[u8]) -> Result<Generation, CodecError> {
-	Ok(Generation(hash_from_bytes(bytes)?))
+/// Reconstruct a snapshot [`ContentHash`] from a `bytea` column.
+pub fn generation_from_bytes(bytes: &[u8]) -> Result<ContentHash, CodecError> {
+	hash_from_bytes(bytes)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ecosystem / visibility / sink kind ↔ text
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The stable lowercase token for an [`Ecosystem`].
-pub fn ecosystem_token(e: Ecosystem) -> &'static str { e.as_token() }
+/// The stable lowercase token for an [`Language`].
+pub fn ecosystem_token(e: Language) -> &'static str { e.as_token() }
 
-/// Reconstruct an [`Ecosystem`] from its token.
-pub fn ecosystem_from_token(token: &str) -> Result<Ecosystem, CodecError> {
+/// Reconstruct an [`Language`] from its token.
+pub fn ecosystem_from_token(token: &str) -> Result<Language, CodecError> {
 	match token {
-		"rust" => Ok(Ecosystem::Rust),
-		"typescript" => Ok(Ecosystem::Typescript),
-		"python" => Ok(Ecosystem::Python),
+		"rust" => Ok(Language::Rust),
+		"typescript" => Ok(Language::Typescript),
+		"python" => Ok(Language::Python),
 		other => Err(CodecError::UnknownDiscriminant {
 			domain: "ecosystem",
 			value: other.to_owned(),

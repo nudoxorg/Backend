@@ -7,7 +7,7 @@ use futures::Stream;
 use heart::{AccessContext, Scored, Symbol};
 
 use crate::error::ServerError;
-use crate::search::query::{LiteralQuery, Page};
+use crate::search::query::{LiteralQuery, Pagination};
 
 /// The default precise-search surface over symbols.
 pub struct SymbolTextSurface {
@@ -20,7 +20,7 @@ impl SymbolTextSurface {
 	pub async fn search(
 		&self,
 		query: &LiteralQuery,
-		page: &Page,
+		page: &Pagination,
 		scope: &AccessContext,
 	) -> Result<impl Stream<Item = Result<Scored<Symbol>, ServerError>> + Send, ServerError> {
 		let _ = (query, page, scope);

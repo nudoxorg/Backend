@@ -37,7 +37,7 @@ async fn expansion_is_depth_and_breadth_bounded() {
 /// Cross-version resolution stabilizes identifiers across versions.
 ///
 /// Act: `resolution::resolve_across(prev_version, next_version)`.
-/// Assert: a symbol present in both versions keeps one stable `GlobalSymbolId`
+/// Assert: a symbol present in both versions keeps one stable `SymbolId`
 ///   (diffing maps the old occurrence onto the new).
 #[tokio::test]
 async fn resolution_stabilizes_ids_across_versions() {

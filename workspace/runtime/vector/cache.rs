@@ -2,30 +2,33 @@
 //!
 //! Embedding is the expensive, rate-limited step. Two facts make it cacheable:
 //! the *same text under the same model* always yields the same vector, and the
-//! same symbol text recurs constantly — across re-parses of a package and across
-//! duplicate symbols in different packages (re-exports, vendored copies,
-//! identical prelude items). Keying on `(ModelId, ContentHash)` — where the hash
-//! is [`ContentHash::of_bytes`] over the exact text that was embedded — lets us
-//! serve those hits without a second network call.
+//! same symbol text recurs constantly — across re-parses of a package and
+//! across duplicate symbols in different packages (re-exports, vendored copies,
+//! identical prelude items). Keying on `(ModelId, ContentHash)` — where the
+//! hash is [`ContentHash::of_bytes`] over the exact text that was embedded —
+//! lets us serve those hits without a second network call.
 //!
 //! Backed by [`moka`]'s async cache: bounded, concurrent, TTL-capable.
 
-use heart::{ContentHash, ModelId};
+use heart::ContentHash;
 use moka::future::Cache;
 
 use crate::{
 	error::EmbedError,
-	vector::embedding::{Embedder, Embedding, EmbeddingModel, EmbeddingPurpose},
+	vector::{
+		embedding::{Embedder, Embedding, EmbeddingPurpose},
+		model::{EmbeddingModel, ModelId},
+	},
 };
 
 /// The cache key: which model produced the vector, and the content hash of the
-/// exact text that was embedded. `Generation` deliberately is *not* part of the
-/// key — identical text embeds identically regardless of which package snapshot
-/// it came from, which is what makes cross-package dedupe work.
+/// exact text that was embedded. The package snapshot deliberately is *not* part
+/// of the key — identical text embeds identically regardless of which package
+/// snapshot it came from, which is what makes cross-package dedupe work.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EmbeddingKey {
 	/// The model that produced (or would produce) the vector.
-	pub model: ModelId,
+	pub model:     ModelId,
 	/// The BLAKE3 hash of the embedded text.
 	pub text_hash: ContentHash,
 }
@@ -37,8 +40,8 @@ impl EmbeddingKey {
 	}
 }
 
-/// A `moka`-backed cache from [`EmbeddingKey`] to `Embedding<DIM>`, so re-parses
-/// and cross-package duplicate symbols never re-embed.
+/// A `moka`-backed cache from [`EmbeddingKey`] to `Embedding<DIM>`, so
+/// re-parses and cross-package duplicate symbols never re-embed.
 pub struct EmbeddingCache<M: EmbeddingModel> {
 	inner: Cache<EmbeddingKey, Embedding<M>>,
 }

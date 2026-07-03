@@ -1,7 +1,7 @@
 //! The query, filter, and match types that describe a search request and its
 //! results.
 //!
-//! Typing fixes over the original: no raw `Language` (uses [`Ecosystem`]); no
+//! Typing fixes over the original: no raw `Language` (uses [`Language`]); no
 //! raw tantivy string (a validated [`LiteralQuery`] with an escape policy);
 //! package scope is a [`PackageSelector`] with an *optional version constraint*
 //! so "any version of axum" is expressible; pagination is opaque-cursor, not
@@ -9,7 +9,7 @@
 
 use std::num::NonZeroU32;
 
-use heart::{AccessContext, Cursor, Ecosystem, PackageName, Score, package::PackageVersion};
+use heart::{AccessContext, Cursor, Language, PackageName, PackageVersion, Score};
 use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +22,7 @@ pub enum AbstractQuery {
 	/// A code snippet, with the ecosystem it is assumed to be written in (used
 	/// to shape the embedding text). `None` means "unknown / let the embedder
 	/// decide".
-	CodeSnippet { ecosystem: Option<Ecosystem>, code: String },
+	CodeSnippet { ecosystem: Option<Language>, code: String },
 }
 
 /// A precise, term-based query against the tantivy index. Constructed through
@@ -78,18 +78,19 @@ pub struct PackageSelector {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Filter {
 	/// Restrict to these ecosystems.
-	pub ecosystems: Option<NonEmpty<Ecosystem>>,
+	pub ecosystems: Option<NonEmpty<Language>>,
 	/// Restrict to these packages.
 	pub packages: Option<NonEmpty<PackageSelector>>,
 }
 
-/// Opaque-cursor pagination request. Keyset-based, never offset.
+/// Opaque-cursor pagination *request*. Keyset-based, never offset. (The response
+/// side is [`heart::Page`], whose items are `heart::Scored<T>`; this is only the
+/// request knob, hence the distinct name.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Page {
+pub struct Pagination {
 	/// Maximum results in this page.
 	pub limit: NonZeroU32,
-	/// The opaque continuation cursor from a prior page, if any. `K` is the
-	/// keyset key of the surface being paged.
+	/// The opaque continuation cursor from a prior page, if any.
 	pub after: Option<String>,
 }
 
@@ -100,28 +101,18 @@ pub struct Search<'a> {
 	/// The optional scope filter.
 	pub filter: Filter,
 	/// The page request.
-	pub page: Page,
+	pub page: Pagination,
 	/// The authenticated context this search runs under.
 	pub scope: &'a AccessContext,
 }
 
-/// A search hit, flattened for display. Carries the durable id so a caller can
-/// fetch the full symbol on demand rather than over-fetching here.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Match {
-	/// The symbol's durable global id.
-	pub id: heart::GlobalSymbolId,
-	/// The fully-qualified name of the symbol.
-	pub fq_name: smol_str::SmolStr,
-	/// What kind of thing it is.
-	pub kind: heart::SymbolKind,
-	/// Its relevance score.
-	pub score: Score,
-}
+// A "search hit" is deliberately not its own struct: it is `heart::Scored<Symbol>`
+// (and the wire form is `heart::Page<Symbol>`), so there is exactly one hit shape
+// across the search surfaces, the HTTP layer, and the graph layer.
 
 /// Typed keyset key for symbol-search pagination: score then id, so ties order
 /// deterministically.
-pub type SymbolCursorKey = (Score, heart::GlobalSymbolId);
+pub type SymbolCursorKey = (Score, heart::SymbolId);
 
 /// A concrete symbol-search cursor.
 pub type SymbolCursor = Cursor<SymbolCursorKey>;

@@ -3,16 +3,16 @@
 //! associative (it is set-union under the hood); these tests make that a checked
 //! invariant rather than a doc-comment promise.
 
-use heart::GlobalSymbolId;
+use heart::SymbolId;
 use proptest::prelude::*;
-use runtime::session::{Edge, Merge, SessionGraph};
+use runtime::session::{Edge, SessionGraph};
 use runtime::graph::RelationKind;
 use uuid::Uuid;
 
 /// Build a `SessionGraph` from raw ids so proptest can generate arbitrary graphs
 /// without depending on the (todo) identity-minting pipeline.
 fn graph_from(nodes: Vec<u64>, edges: Vec<(u64, u8, u64)>) -> SessionGraph {
-	let sym = |n: u64| GlobalSymbolId::from_uuid(Uuid::from_u128(n as u128));
+	let sym = |n: u64| SymbolId::from_uuid(Uuid::from_u128(n as u128));
 	let kind = |k: u8| match k % 4 {
 		0 => RelationKind::Member,
 		1 => RelationKind::Reference,

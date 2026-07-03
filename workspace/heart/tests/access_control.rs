@@ -66,7 +66,7 @@ fn multiple_sources_can_coexist() {
 	assert_eq!(fed.base_id(), base);
 
 	let order: Vec<(_, SourceRole)> =
-		fed.in_precedence().map(|(id, role, _)| (id, role)).collect();
+		fed.in_precedence().map(|s| (s.source, s.role)).collect();
 	// Overlays first (in declared order), then the definitive base last.
 	assert_eq!(
 		order,

@@ -2,54 +2,58 @@
 //! it.
 //!
 //! Two type-level guarantees live here:
-//! - the collection's vector dimension is the const generic `DIM`, so a
+//! - the collection's vector dimension is the brand's `M::DIMENSIONS`, so a
 //!   wrong-dimension query cannot be formed, and [`Connect`] asserts the live
 //!   collection actually has that dimension;
 //! - semantic search is reachable only on a [`Live`] store AND only when handed
 //!   a [`SemanticGate`], so the heavy path is never taken implicitly.
 //!
 //! ## Model-migration playbook
-//! Vectors are only comparable within one `(ModelId, Generation)` regime.
-//! Re-embedding in place would make the collection briefly incoherent (mixed
-//! models rank against each other), so migration is a **cutover**:
-//! 1. Create a *second* collection named for the new `(ModelId, Generation)`
-//!    (see [`CollectionName`]), same `DIM`.
-//! 2. Re-embed every symbol with the new model into the new collection, its
-//!    payload carrying the new generation stamp.
+//! Vectors are only comparable within one model regime. Re-embedding in place
+//! would make the collection briefly incoherent (mixed models rank against each
+//! other), so migration is a **cutover**:
+//! 1. Create a *second* collection named for the new model (see
+//!    [`CollectionName::for_regime`]), same dimension.
+//! 2. Re-embed every symbol with the new model into the new collection.
 //! 3. Flip the read path to the new collection once backfill is complete.
 //! 4. Retire the old collection after a grace period.
-//!
-//! Because each point's payload carries its `Generation` and `ModelId`, a query
-//! can detect (and refuse) cross-regime skew rather than silently mixing.
 
-use std::{marker::PhantomData, num::NonZeroUsize};
+use std::{
+	future::Future,
+	marker::PhantomData,
+	num::NonZeroUsize,
+	pin::Pin,
+	sync::Arc,
+	task::{Context, Poll},
+};
 
 use futures::Stream;
+use heart::{
+	AccessContext, BackendKind, Cold, Connect, ConnectError, Cursor, Live, Retryable, Scored,
+	Symbol, SymbolId,
+};
 use qdrant_client::Qdrant;
 use serde::{Deserialize, Serialize};
-
-use heart::{
-	AccessContext, BackendKind, Cold, Connect, ConnectError, Cursor, Generation, GlobalSymbolId,
-	Live, Scored, Sink, BatchSink, Retryable, Symbol,
-};
 
 pub mod cache;
 pub mod embedding;
 pub mod gate;
 pub mod language;
+pub mod model;
 pub mod similarity;
 pub mod snippet;
 
 pub use cache::{EmbeddingCache, EmbeddingKey};
-pub use embedding::{Embedder, Embedding, EmbeddingModel, EmbeddingPurpose, models};
+pub use embedding::{Embedder, Embedding, EmbeddingPurpose};
 pub use gate::SemanticGate;
+pub use model::{EmbeddingModel, ModelId, catalog as models};
 
 use crate::error::VectorError;
 
 /// The keyset key a semantic-search [`Cursor`] resumes from: the last hit's
 /// score paired with its id (score alone is not unique). Ordered so pagination
 /// is stable across an eventually-consistent index.
-pub type SemanticCursorKey = (heart::Score, GlobalSymbolId);
+pub type SemanticCursorKey = (heart::Score, SymbolId);
 
 /// A connected [`Semantic`] store — the form query methods live on.
 pub type SemanticLive<M> = Semantic<M, Live>;
@@ -86,10 +90,10 @@ impl CollectionName {
 		todo!("trim, reject empty, validate qdrant-legal charset, wrap")
 	}
 
-	/// Derive the migration-collection name for a `(ModelId, Generation)` regime.
-	pub fn for_regime(model: &heart::ModelId, generation: Generation) -> Self {
-		let _ = (model, generation);
-		todo!("deterministic name from model id + generation, e.g. sym-<model>-<gen>")
+	/// Derive the migration-collection name for a model regime.
+	pub fn for_regime(model: &ModelId) -> Self {
+		let _ = model;
+		todo!("deterministic name from model id, e.g. sym-<model>")
 	}
 
 	/// The underlying name.
@@ -99,35 +103,34 @@ impl CollectionName {
 /// The wire/payload shape of one stored vector: the symbol identity plus the
 /// stamps that make cross-store joins and migrations safe.
 ///
-/// Uploaded via the [`BatchSink`] impl; the generation stamp lives in the
-/// qdrant point payload so version skew is observable.
+/// Uploaded via [`Semantic::batch_sink`]; the producing model is carried by the
+/// vector's brand `M`, so no separate `model` field is stored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SymbolPoint<M: EmbeddingModel> {
 	/// The symbol this vector represents.
-	pub symbol: GlobalSymbolId,
+	pub symbol: SymbolId,
 	/// The vector itself. Its brand `M` supplies both the dimension and the
 	/// producing model, so a separate `model` field is redundant.
 	pub embedding: Embedding<M>,
-	/// The package generation this vector reflects (skew detection).
-	pub generation: Generation,
 	/// The ecosystem, mirrored into the payload for language-scoped filtering.
-	pub ecosystem: heart::Ecosystem,
+	pub ecosystem: heart::Language,
 	/// What the vector was embedded as (code vs documentation).
 	pub purpose: EmbeddingPurpose,
 }
 
 impl<M: EmbeddingModel> SymbolPoint<M> {
 	/// The producing model's id — the migration key, derived from the brand.
-	pub fn model(&self) -> heart::ModelId { M::id() }
+	pub fn model(&self) -> ModelId { M::id() }
 }
 
 /// Our semantic/vector embedding database of choice (Qdrant).
 ///
-/// `DIM` is the vector dimension; `S` is the connection state ([`Cold`] until
+/// `M` is the embedding-model brand; `S` is the connection state ([`Cold`] until
 /// [`Connect::connect`] verifies it, then [`Live`]).
 pub struct Semantic<M: EmbeddingModel, S = Cold> {
-	/// The gRPC client to the Qdrant instance.
-	client: Qdrant,
+	/// The gRPC client to the Qdrant instance (shared so upload sinks are cheap
+	/// to clone).
+	client: Arc<Qdrant>,
 
 	/// The collection every symbol vector is upserted into / searched against.
 	collection: CollectionName,
@@ -140,7 +143,7 @@ impl<M: EmbeddingModel> Semantic<M, Cold> {
 	/// Configure a cold handle from an existing client and (validated) collection.
 	/// Reachability and dimension are only checked at [`Connect::connect`].
 	pub fn new(client: Qdrant, collection: CollectionName) -> Self {
-		Self { client, collection, _model: PhantomData, _state: PhantomData }
+		Self { client: Arc::new(client), collection, _model: PhantomData, _state: PhantomData }
 	}
 }
 
@@ -164,8 +167,7 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 	/// Gated: the [`SemanticGate`] is **consumed by value**, so one issuance
 	/// authorizes exactly one query and cannot be stashed and reused. Every hit
 	/// is access-checked against `scope`. `after` resumes a previous page via the
-	/// keyset [`Cursor`]; a page served against a newer generation than the
-	/// cursor is flagged as [`VectorError::GenerationSkew`].
+	/// keyset [`Cursor`].
 	///
 	/// Returns a stream so large result sets are not materialized at once.
 	pub async fn search(
@@ -175,37 +177,90 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 		limit: NonZeroUsize,
 		scope: &AccessContext,
 		after: Option<Cursor<SemanticCursorKey>>,
-	) -> Result<
-		impl Stream<Item = Result<Scored<GlobalSymbolId>, VectorError>> + Send,
-		VectorError,
-	> {
+	) -> Result<impl Stream<Item = Result<Scored<SymbolId>, VectorError>> + Send, VectorError> {
 		let _ = (gate, query, limit, scope, after, &self.client);
-		todo!("build a qdrant search with access + keyset filters, stream Scored<GlobalSymbolId>");
+		todo!("build a qdrant search with access + keyset filters, stream Scored<SymbolId>");
 		#[allow(unreachable_code)]
 		Ok(futures::stream::empty())
 	}
-}
 
-/// Upserting vectors is a [`BatchSink`]: symbol points ship to qdrant in bulk,
-/// each carrying its generation stamp in the payload. Delivery-with-retry and
-/// backoff are inherited from [`heart::Sink`].
-impl<M: EmbeddingModel> Sink for Semantic<M, Live> {
-	type Item = SymbolPoint<M>;
-	type Error = VectorError;
+	/// A retrying single-point [`heart::Sink`] over this store.
+	pub fn sink(&self) -> heart::Sink<VectorSink<M>> { heart::Sink::new(self.uploader()) }
 
-	async fn upload(&self, item: Self::Item) -> Result<(), Self::Error> {
-		let _ = (item, &self.client, &self.collection);
-		todo!("upsert a single point into the collection")
+	/// A retrying bulk [`heart::BatchSink`] over this store — qdrant ingests
+	/// points in bulk, so prefer this for backfills.
+	pub fn batch_sink(&self) -> heart::BatchSink<VectorSink<M>> {
+		heart::BatchSink::new(self.uploader())
+	}
+
+	fn uploader(&self) -> VectorSink<M> {
+		VectorSink {
+			client:     Arc::clone(&self.client),
+			collection: self.collection.clone(),
+			_model:     PhantomData,
+		}
 	}
 }
 
-impl<M: EmbeddingModel> BatchSink for Semantic<M, Live> {
-	/// Qdrant ingests points in bulk; chunk callers to this ceiling.
-	const MAX_BATCH: usize = 256;
+/// The upsert path expressed as a cloneable [`tower::Service`], so wrapping it in
+/// [`heart::Sink`] / [`heart::BatchSink`] adds retry/backoff for free (and any
+/// further tower layer — concurrency limit, rate limit — composes at the wrap
+/// site). Handles `SymbolPoint<M>` (single) and `Vec<SymbolPoint<M>>` (batch,
+/// chunk callers to [`VectorSink::MAX_BATCH`]).
+pub struct VectorSink<M: EmbeddingModel> {
+	client:     Arc<Qdrant>,
+	collection: CollectionName,
+	_model:     PhantomData<fn() -> M>,
+}
 
-	async fn upload_batch(&self, items: Vec<Self::Item>) -> Result<(), Self::Error> {
-		let _ = (items, &self.client, &self.collection);
-		todo!("upsert a batch of points (<= MAX_BATCH) into the collection")
+impl<M: EmbeddingModel> VectorSink<M> {
+	/// Qdrant ingests points in bulk; chunk batch callers to this ceiling.
+	pub const MAX_BATCH: usize = 256;
+}
+
+// Hand-written so the brand `M` (a zero-sized marker, not `Clone`) doesn't leak a
+// spurious `M: Clone` bound.
+impl<M: EmbeddingModel> Clone for VectorSink<M> {
+	fn clone(&self) -> Self {
+		Self { client: Arc::clone(&self.client), collection: self.collection.clone(), _model: PhantomData }
+	}
+}
+
+type UploadFuture = Pin<Box<dyn Future<Output = Result<(), VectorError>> + Send>>;
+
+impl<M: EmbeddingModel> tower::Service<SymbolPoint<M>> for VectorSink<M> {
+	type Response = ();
+	type Error = VectorError;
+	type Future = UploadFuture;
+
+	fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+		Poll::Ready(Ok(()))
+	}
+
+	fn call(&mut self, point: SymbolPoint<M>) -> Self::Future {
+		let (client, collection) = (Arc::clone(&self.client), self.collection.clone());
+		Box::pin(async move {
+			let _ = (client, collection, point);
+			todo!("upsert a single point into the collection")
+		})
+	}
+}
+
+impl<M: EmbeddingModel> tower::Service<Vec<SymbolPoint<M>>> for VectorSink<M> {
+	type Response = ();
+	type Error = VectorError;
+	type Future = UploadFuture;
+
+	fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+		Poll::Ready(Ok(()))
+	}
+
+	fn call(&mut self, points: Vec<SymbolPoint<M>>) -> Self::Future {
+		let (client, collection) = (Arc::clone(&self.client), self.collection.clone());
+		Box::pin(async move {
+			let _ = (client, collection, points);
+			todo!("upsert a batch of points (<= MAX_BATCH) into the collection")
+		})
 	}
 }
 

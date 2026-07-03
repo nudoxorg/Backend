@@ -9,7 +9,7 @@
 //! [`heart::FailureKind::Unsafe`] so the queue dead-letters bombs instead of
 //! retrying them.
 
-use heart::{Toolchain, package::PackageId};
+use heart::{PackageId, Toolchain};
 
 use crate::{blob::BlobBuilder, error::IngestError};
 

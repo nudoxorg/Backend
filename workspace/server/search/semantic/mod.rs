@@ -8,7 +8,7 @@
 use std::num::NonZeroUsize;
 
 use futures::Stream;
-use heart::{AccessContext, GlobalSymbolId, Scored};
+use heart::{AccessContext, SymbolId, Scored};
 use runtime::vector::{Embedder, Embedding, EmbeddingModel, EmbeddingPurpose, SemanticGate};
 
 use crate::error::ServerError;
@@ -33,7 +33,7 @@ impl<'a, M: EmbeddingModel, E: Embedder<Model = M>> SemanticSurface<'a, M, E> {
 		scope: &AccessContext,
 		after: Option<SymbolCursor>,
 	) -> Result<
-		impl Stream<Item = Result<Scored<GlobalSymbolId>, ServerError>> + Send,
+		impl Stream<Item = Result<Scored<SymbolId>, ServerError>> + Send,
 		ServerError,
 	> {
 		let _ = (gate, query, limit, scope, after, EmbeddingPurpose::Code);

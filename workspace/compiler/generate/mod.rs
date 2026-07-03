@@ -23,7 +23,7 @@ pub mod tar;
 
 use std::path::PathBuf;
 
-use heart::{Generation, Toolchain, package::PackageCoordinates};
+use heart::{ContentHash, PackageCoordinates, Toolchain};
 use ir::entry::Index;
 
 pub use blob_info::BlobInfo;
@@ -56,10 +56,10 @@ pub struct GeneratedPackage {
 	pub cst: CstSet,
 	/// The content-addressed source archive.
 	pub archive: SourceArchive,
-	/// The assembled, sink-ready blob info (file digests + generation).
+	/// The assembled, sink-ready blob info (file digests + snapshot hash).
 	pub blob_info: BlobInfo,
 	/// The canonical content hash of this package snapshot.
-	pub generation: Generation,
+	pub snapshot: ContentHash,
 }
 
 /// Run the full generation pipeline over a materialized package: lower the

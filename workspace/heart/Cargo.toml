@@ -11,7 +11,7 @@ path = "lib.rs"
 [dependencies]
 uuid = { workspace = true }
 semver = { workspace = true }
-backon = { workspace = true }
+tower = { workspace = true }
 nutype = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

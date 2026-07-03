@@ -11,14 +11,15 @@
 
 use std::num::NonZeroUsize;
 
-use heart::{AccessContext, Ecosystem, GlobalSymbolId, Scored, Symbol};
+use heart::{AccessContext, Language, SymbolId, Scored, Symbol};
 
 use crate::{
 	error::VectorError,
 	vector::{
-		embedding::{EmbeddingModel, EmbeddingPurpose},
-		gate::SemanticGate,
 		Embedding, SemanticLive,
+		embedding::EmbeddingPurpose,
+		gate::SemanticGate,
+		model::EmbeddingModel,
 	},
 };
 
@@ -27,7 +28,7 @@ use crate::{
 /// cache hashes, so it must be deterministic and stable.
 pub trait EmbeddingText: Send + Sync {
 	/// The ecosystem this shaper knows how to render.
-	fn ecosystem(&self) -> Ecosystem;
+	fn ecosystem(&self) -> Language;
 
 	/// Produce the canonical embedding text for `symbol` under `purpose`. Must be
 	/// deterministic: the same symbol always yields byte-identical text, so its
@@ -40,11 +41,11 @@ pub trait EmbeddingText: Send + Sync {
 pub async fn similar_within<M: EmbeddingModel>(
 	store: &SemanticLive<M>,
 	gate: SemanticGate,
-	ecosystem: Ecosystem,
+	ecosystem: Language,
 	query: &Embedding<M>,
 	limit: NonZeroUsize,
 	scope: &AccessContext,
-) -> Result<Vec<Scored<GlobalSymbolId>>, VectorError> {
+) -> Result<Vec<Scored<SymbolId>>, VectorError> {
 	let _ = (store, gate, ecosystem, query, limit, scope);
 	todo!("k-NN search with a payload filter pinning ecosystem == the given one")
 }

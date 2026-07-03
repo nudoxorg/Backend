@@ -11,15 +11,16 @@ use std::{num::NonZeroUsize, ops::Range};
 
 use serde::{Deserialize, Serialize};
 
-use heart::{AccessContext, GlobalSymbolId, Scored};
+use heart::{AccessContext, SymbolId, Scored};
 use smol_str::SmolStr;
 
 use crate::{
 	error::VectorError,
 	vector::{
-		embedding::{Embedder, EmbeddingModel, EmbeddingPurpose},
-		gate::SemanticGate,
 		SemanticLive,
+		embedding::{Embedder, EmbeddingPurpose},
+		gate::SemanticGate,
+		model::EmbeddingModel,
 	},
 };
 
@@ -57,7 +58,7 @@ pub async fn similar_to_snippet<M: EmbeddingModel, E: Embedder<Model = M>>(
 	purpose: EmbeddingPurpose,
 	limit: NonZeroUsize,
 	scope: &AccessContext,
-) -> Result<Vec<Scored<GlobalSymbolId>>, VectorError> {
+) -> Result<Vec<Scored<SymbolId>>, VectorError> {
 	let _ = (store, gate, embedder, snippet, purpose, limit, scope);
 	todo!("embed the snippet, k-NN search the store")
 }

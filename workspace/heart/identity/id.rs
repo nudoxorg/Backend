@@ -1,47 +1,41 @@
-//! The shared, type-tagged global identifier used across every module.
+//! The one identifier constructor for the whole system.
 //!
-//! `Id<T>` is a UUID branded with the phantom type `T`, so an `Id<Symbol>` can
-//! never be passed where an `Id<Package>` is expected. The tag is
-//! variance-free (`fn() -> T`) so `Id<T>` is `Send`/`Sync`/`Copy` regardless of
-//! `T`, and never borrows or drops a `T`.
+//! Everything identifiable is an [`Id<T>`] — a UUID branded with a phantom tag so
+//! a package id can never be mixed up with a symbol id, yet all ids share one
+//! construction/derivation surface. Domain aliases (`PackageId`, `SymbolId`,
+//! `SourceId`, ...) are just `Id<Thing>`; there are no per-entity newtypes
+//! re-implementing `as_uuid`/`from_uuid`/derivation.
 
 use std::{fmt, marker::PhantomData};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// A globally-unique, type-tagged identifier.
-///
-/// Construction is explicit and total:
-/// - [`Id::from_uuid`] wraps a raw UUID (e.g. one read back from storage);
-/// - [`Id::new_random`] mints a fresh v4 id for content with no natural key;
-/// - [`Id::from_name`] derives a deterministic v5 id from a namespace + bytes,
-///   which is how every *stable* identity in the system is produced.
+/// A globally-unique, type-tagged identifier. The tag `T` exists only in the type
+/// system (via `PhantomData<fn() -> T>`, which keeps `Id<T>: Send + Sync` for any
+/// `T`); it never affects equality, ordering, or the wire encoding.
 pub struct Id<T>(Uuid, PhantomData<fn() -> T>);
 
 impl<T> Id<T> {
-	/// Wrap a raw UUID as a tagged id.
+	/// Wrap a raw UUID as a tagged id — the inverse of [`Id::as_uuid`], used when
+	/// hydrating a row read back from storage.
 	pub const fn from_uuid(uuid: Uuid) -> Self { Self(uuid, PhantomData) }
 
+	/// The raw UUID, for storage keys and wire encoding.
+	pub const fn as_uuid(&self) -> &Uuid { &self.0 }
+
 	/// Mint a fresh random (v4) id. Use only for values with no natural,
-	/// reproducible key; prefer [`Id::from_name`] for anything content-derived.
+	/// reproducible key; anything content-derived should use [`Id::from_name`].
 	pub fn new_random() -> Self { Self(Uuid::new_v4(), PhantomData) }
 
-	/// Derive a deterministic (v5) id from a namespace and name bytes. The same
-	/// inputs always yield the same id, on any machine, forever — this is the
-	/// backbone of the global index's offline-recomputable identity.
+	/// Derive a deterministic (v5) id from a namespace and name bytes — the single
+	/// primitive every `*Id` derivation (package coordinates, entry URIs, source
+	/// names) is built on, so "the same thing" always hashes to the same id.
 	pub fn from_name(namespace: &Uuid, name: &[u8]) -> Self {
 		Self(Uuid::new_v5(namespace, name), PhantomData)
 	}
 
-	/// The underlying raw UUID.
-	pub const fn as_uuid(&self) -> &Uuid { &self.0 }
-
-	/// Consume into the raw UUID.
-	pub const fn into_uuid(self) -> Uuid { self.0 }
-
-	/// Re-tag this id as identifying a different type. Deliberately explicit —
-	/// the only sanctioned way to cross the phantom boundary.
+	/// Re-tag this id as identifying a different type, preserving the UUID.
 	pub const fn cast<U>(self) -> Id<U> { Id(self.0, PhantomData) }
 }
 
@@ -71,9 +65,7 @@ impl<T> fmt::Display for Id<T> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
 }
 impl<T> Serialize for Id<T> {
-	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-		self.0.serialize(s)
-	}
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> { self.0.serialize(s) }
 }
 impl<'de, T> Deserialize<'de> for Id<T> {
 	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {

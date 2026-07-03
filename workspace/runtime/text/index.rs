@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use heart::{GlobalSymbolId, Symbol};
+use heart::{SymbolId, Symbol};
 
 use crate::error::TextError;
 
@@ -19,18 +19,18 @@ pub struct TextSchema {
 }
 
 impl TextSchema {
-	/// Build the symbol schema: the [`GlobalSymbolId`] (stored, keyed for
+	/// Build the symbol schema: the [`SymbolId`] (stored, keyed for
 	/// upsert-by-id), name + fq-name (tokenized for exact/partial match), kind,
-	/// ecosystem, and generation stamp.
+	/// and ecosystem.
 	pub fn build() -> Self {
-		todo!("define tantivy schema: id (stored+fast), name, fq_name, kind, ecosystem, generation")
+		todo!("define tantivy schema: id (stored+fast), name, fq_name, kind, ecosystem")
 	}
 }
 
 /// A replica-local tantivy index over [`Symbol`] records.
 ///
 /// One writer, one directory, one replica. Re-indexing the same
-/// [`GlobalSymbolId`] *updates* the document rather than duplicating it
+/// [`SymbolId`] *updates* the document rather than duplicating it
 /// (delete-by-term then add), so the index is a projection of postgres, never a
 /// growing append log.
 pub struct TextIndex {
@@ -65,7 +65,7 @@ impl TextIndex {
 
 	/// Remove a symbol's document by id.
 	// runs on spawn_blocking
-	pub fn remove(&self, id: GlobalSymbolId) -> Result<(), TextError> {
+	pub fn remove(&self, id: SymbolId) -> Result<(), TextError> {
 		let _ = id;
 		todo!("delete_term over the id field")
 	}

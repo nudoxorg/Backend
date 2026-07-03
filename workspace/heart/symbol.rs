@@ -2,21 +2,15 @@
 //!
 //! This is the *serving* view of a symbol — the minimal, ecosystem-erased shape
 //! the read plane speaks — as distinct from the compiler's rich IR entry. It
-//! carries the durable [`GlobalSymbolId`] so results from tantivy, qdrant, and
+//! carries the durable [`SymbolId`] so results from tantivy, qdrant, and
 //! terminus all join on the same key.
 
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::{
-	content::Generation,
-	ecosystem::Ecosystem,
-	package::{GlobalSymbolId, PackageId},
-};
+use crate::{ecosystem::Language, identity::{PackageId, SymbolId}};
 
-/// The kind of thing a [`Symbol`] is — the shared, ecosystem-agnostic taxonomy
-/// used by search results and the graph layer. (The compiler's IR has a far
-/// richer `Entry` kind set; this is the flattened serving projection.)
+// TODO: Merely derive from the IR, no OTHER
 #[derive(
 	Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display, strum::EnumString,
 )]
@@ -36,28 +30,43 @@ pub enum SymbolKind {
 	Other,
 }
 
+/// A symbol's identifying names: the bare identifier and its fully-qualified
+/// path. Private fields with accessors so the two can't be transposed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Name {
+	plain:           SmolStr,
+	fully_qualified: SmolStr,
+}
+
+impl Name {
+	/// Pair a bare identifier with its fully-qualified path.
+	pub fn new(plain: impl Into<SmolStr>, fully_qualified: impl Into<SmolStr>) -> Self {
+		Self { plain: plain.into(), fully_qualified: fully_qualified.into() }
+	}
+
+	/// The bare identifier (e.g. `Router`).
+	pub fn plain(&self) -> &str { &self.plain }
+
+	/// The fully-qualified path (e.g. `axum::routing::Router`).
+	pub fn fully_qualified(&self) -> &str { &self.fully_qualified }
+}
+
 /// The canonical symbol record surfaced by search and graph queries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Symbol {
 	/// The stable, deterministic global identity of this symbol.
-	pub id: GlobalSymbolId,
+	pub id: SymbolId,
 
 	/// The package this symbol belongs to.
 	pub package: PackageId,
 
 	/// The ecosystem, carried so the language-erased read plane can still filter.
-	pub ecosystem: Ecosystem,
+	pub ecosystem: Language,
 
-	/// The bare symbol name (e.g. `Router`).
-	pub name: SmolStr,
-
-	/// The fully-qualified name (e.g. `axum::Router`).
-	pub fq_name: SmolStr,
+	/// The identifying information of the symbol
+	pub name: Name,
 
 	/// What kind of thing this symbol is.
 	pub kind: SymbolKind,
-
-	/// The generation (package content hash) this record reflects, so a join
-	/// across stores can detect version skew instead of silently mixing.
-	pub generation: Generation,
+	// I don't think we need to carry around Generation
 }

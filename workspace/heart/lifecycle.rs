@@ -19,7 +19,6 @@ pub enum ResolutionState {
 	/// No indexing attempted yet.
 	Unindexed {
 		/// A related package's indexing needs this one, but it is still untouched
-		/// (drives dependency-ordered scheduling).
 		needed: bool,
 	},
 
@@ -32,22 +31,27 @@ pub enum ResolutionState {
 	/// Indexing failed. Retriable until `attempts` hits the policy ceiling.
 	Failed(Failure),
 
-	/// Terminally failed and quarantined — removed from the live queue, awaiting
-	/// operator inspection. The escape hatch that makes poison pills bounded.
+	/// So this failed, and is waiting for a real person to inspect and make this
+	/// actually fixed.
 	DeadLettered(Failure),
 }
 
 /// The distinct phases of indexing a package, in order. Progress within a phase
 /// is a derived `0..=100`, not stored per-phase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display, strum::EnumIter)]
+#[derive(
+	Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display, strum::EnumIter,
+)]
 pub enum Phase {
 	/// Resolving the concrete version + downloading the source archive.
 	Acquiring,
+
 	/// Extracting + sanitizing the (untrusted) source archive.
 	Extracting,
-	/// The compiler/oracle is lowering source to IR.
+
+	/// The compiler is lowering source to IR.
 	Compiling,
-	/// Fanning the parsed result out to the derived stores.
+
+	/// Fanning the parsed result out
 	Emitting,
 }
 
@@ -57,36 +61,43 @@ pub enum Phase {
 pub struct Failure {
 	/// How many attempts have been made so far.
 	pub attempts: u32,
+
 	/// The phase the most recent attempt failed in.
 	pub phase: Phase,
-	/// The classified kind of failure (drives retry policy).
+
+	/// The classified kind of failure.
 	pub kind: FailureKind,
-	/// A human-readable rendering of the underlying error.
+
+	/// What the underlying error is
 	pub message: String,
+
 	/// When the most recent attempt failed.
 	pub at: DateTime<Utc>,
 }
 
-/// The class of a failure — what the retry policy branches on.
+/// Failure classes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display)]
 pub enum FailureKind {
-	/// Transient (network, timeout, backend 5xx) — retry with backoff.
+	/// Transient (network, timeout, backend 5xx).
 	Transient,
-	/// The source could not be acquired (404, yanked, gone) — terminal.
+
+	/// The source could not be acquired (404, yanked, gone).
 	SourceUnavailable,
-	/// The producer/oracle rejected the source (parse error) — terminal.
+
+	/// The producer/oracle rejected the source (parse error).
 	Malformed,
-	/// The job exceeded its wall-clock budget — retry a bounded number of times.
+
+	/// The job exceeded its wall-clock budget.
 	Timeout,
-	/// The archive tripped a safety limit (bomb, traversal) — terminal + flagged.
+
+	/// The archive tripped a safety limit (bomb, traversal).
 	Unsafe,
-	/// An internal invariant broke — terminal, alert-worthy.
+
+	/// An internal invariant broke.
 	Internal,
 }
 
 impl FailureKind {
-	/// Whether a failure of this kind should be retried at all (before the
-	/// attempt ceiling is even consulted).
 	pub const fn is_retriable(self) -> bool {
 		matches!(self, FailureKind::Transient | FailureKind::Timeout)
 	}

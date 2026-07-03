@@ -51,6 +51,10 @@ nonempty = { workspace = true }
 # ── Serialization ──────────────────────────────────────────────────────────
 serde = { workspace = true }
 strum = { workspace = true }
+postcard = { workspace = true }
+
+# ── Version-resolution source lookups ──────────────────────────────────────
+reqwest = { workspace = true }
 
 # ── Async runtime + streaming ──────────────────────────────────────────────
 futures = { workspace = true }

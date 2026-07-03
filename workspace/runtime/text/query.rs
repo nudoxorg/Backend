@@ -10,7 +10,7 @@ use std::num::NonZeroUsize;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 
-use heart::{AccessContext, Cursor, Ecosystem, Scored, Symbol, SymbolKind};
+use heart::{AccessContext, Cursor, Language, Scored, Symbol, SymbolKind};
 
 use crate::{
 	error::TextError,
@@ -24,7 +24,7 @@ pub struct TextQuery {
 	/// The user's raw query text (matched against name + fq-name).
 	pub terms: String,
 	/// Restrict to a single ecosystem, if set.
-	pub ecosystem: Option<Ecosystem>,
+	pub ecosystem: Option<Language>,
 	/// Restrict to a set of symbol kinds, if non-empty.
 	pub kinds: Vec<SymbolKind>,
 }
@@ -37,32 +37,17 @@ impl TextQuery {
 }
 
 /// The searchable view over a [`TextIndex`]: the default query surface.
-pub trait TextSearch: Send + Sync {
-	/// The failure mode of a text search.
-	type Error;
-
+impl TextIndex {
 	/// Search the index, returning up to `limit` [`Scored`] symbols ranked by
 	/// relevance, streamed. `after` resumes a previous page via the keyset
 	/// cursor; results are access-scoped.
-	fn search(
+	pub fn search(
 		&self,
 		query: &TextQuery,
 		limit: NonZeroUsize,
 		scope: &AccessContext,
 		after: Option<Cursor<TextCursorKey>>,
-	) -> impl Stream<Item = Result<Scored<Symbol>, Self::Error>> + Send;
-}
-
-impl TextSearch for TextIndex {
-	type Error = TextError;
-
-	fn search(
-		&self,
-		query: &TextQuery,
-		limit: NonZeroUsize,
-		scope: &AccessContext,
-		after: Option<Cursor<TextCursorKey>>,
-	) -> impl Stream<Item = Result<Scored<Symbol>, Self::Error>> + Send {
+	) -> impl Stream<Item = Result<Scored<Symbol>, TextError>> + Send {
 		let _ = (query, limit, scope, after);
 		// runs on spawn_blocking: parse the query, run the tantivy search from the
 		// keyset position, access-filter, and stream the page.

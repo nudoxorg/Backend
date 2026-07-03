@@ -13,8 +13,8 @@
 //! highest-scored representative and recording the alternates as provenance.
 
 use heart::{
-	package::{PackageId, RegistryOrigin},
-	scored::Scored,
+	Scored,
+	identity::{PackageId, RegistryOrigin},
 };
 
 use crate::GlobalPackage;

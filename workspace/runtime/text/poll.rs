@@ -5,8 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use heart::Generation;
-
 use crate::{error::TextError, text::index::TextIndex};
 
 /// A durable pointer into postgres marking how far the local index has been
@@ -20,8 +18,6 @@ use crate::{error::TextError, text::index::TextIndex};
 pub struct Watermark {
 	/// The last postgres change sequence pulled into the index.
 	pub sequence: u64,
-	/// The generation the most-recently-pulled batch reflected, for skew checks.
-	pub generation: Generation,
 }
 
 /// Drives the postgres → tantivy poll loop: reads rows changed since the

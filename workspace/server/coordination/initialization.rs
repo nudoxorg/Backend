@@ -4,13 +4,16 @@
 //! Idempotent by construction — identity is the deterministic [`PackageId`], so
 //! a duplicate request returns the existing state rather than re-enqueuing.
 
-use heart::{AccessContext, PackageCoordinates, ResolutionState, package::PackageId};
+use heart::{AccessContext, PackageCoordinates, PackageId, ResolutionState};
+use serde::{Deserialize, Serialize};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
 use crate::error::ServerResult;
 
-/// The outcome of ensuring a package is initialized.
+/// The outcome of ensuring a package is initialized. Serialized directly as the
+/// add/ensure response — no parallel `*Dto` mirror.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Initialized {
 	/// The deterministic id the request resolved to.
 	pub package: PackageId,

@@ -12,9 +12,8 @@ use std::{num::NonZeroU32, time::Duration};
 
 use chrono::{DateTime, Utc};
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId,
 	lifecycle::{FailureKind, ResolutionState},
-	package::PackageId,
 };
 use sqlx::{Row, postgres::PgRow};
 

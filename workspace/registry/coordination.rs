@@ -14,10 +14,9 @@
 
 use chrono::{DateTime, Utc};
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live,
-	content::Generation,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId,
+	content::ContentHash,
 	lifecycle::ResolutionState,
-	package::PackageId,
 };
 use sqlx::{Row, postgres::PgRow};
 
@@ -36,9 +35,6 @@ pub struct OutboxEntry {
 
 	/// The package that changed.
 	pub package: PackageId,
-
-	/// The generation that was emitted.
-	pub generation: Generation,
 
 	/// Which derived sink this intent is for.
 	pub kind: SinkKind,
@@ -94,17 +90,14 @@ impl Connect for Outbox<Cold> {
 fn row_to_entry(row: &PgRow) -> Result<OutboxEntry, OutboxError> {
 	let seq: i64 = row.try_get(0).map_err(OutboxError::Database)?;
 	let package_uuid: uuid::Uuid = row.try_get(1).map_err(OutboxError::Database)?;
-	let gen_bytes: Vec<u8> = row.try_get(2).map_err(OutboxError::Database)?;
 	let kind_tok: String = row.try_get(3).map_err(OutboxError::Database)?;
 	let created_at: DateTime<Utc> = row.try_get(4).map_err(OutboxError::Database)?;
 
-	let generation = codec::generation_from_bytes(&gen_bytes).map_err(codec_to_outbox)?;
 	let kind = codec::sink_kind_from_token(&kind_tok).map_err(codec_to_outbox)?;
 
 	Ok(OutboxEntry {
 		id: OutboxSeq(seq),
 		package: codec::package_id_from_uuid(package_uuid),
-		generation,
 		kind,
 		created_at,
 	})
@@ -129,12 +122,12 @@ impl Outbox<Live> {
 	pub async fn append(
 		&self,
 		package: PackageId,
-		generation: Generation,
+		snapshot: ContentHash,
 		kinds: &[SinkKind],
 	) -> Result<(), OutboxError> {
 		let mut tx = self.pool.begin().await.map_err(OutboxError::Database)?;
 		for &kind in kinds {
-			let (sql, vals) = queries::outbox::append_one(package, generation, kind);
+			let (sql, vals) = queries::outbox::append_one(package, snapshot, kind);
 			sqlx::query_with(&sql, vals)
 				.execute(&mut *tx)
 				.await
@@ -157,18 +150,18 @@ impl Outbox<Live> {
 		&self,
 		index: &GlobalStore,
 		package: PackageId,
-		generation: Generation,
+		snapshot: ContentHash,
 	) -> Result<(), OutboxError> {
 		let mut tx = self.pool.begin().await.map_err(OutboxError::Database)?;
 
-		// 1. Transition the lifecycle row to Stored { generation } in this txn.
-		let stored = ResolutionState::Stored { hash: generation.0 };
+		// 1. Transition the lifecycle row to Stored { snapshot } in this txn.
+		let stored = ResolutionState::Stored { hash: snapshot };
 		GlobalStore::set_state_tx(&mut tx, package, &stored)
 			.await
 			.map_err(index_to_outbox)?;
 
 		// 2. Fan out one idempotent intent per sink in the *same* txn.
-		let (sql, vals) = queries::outbox::append_all(package, generation);
+		let (sql, vals) = queries::outbox::append_all(package, snapshot);
 		sqlx::query_with(&sql, vals)
 			.execute(&mut *tx)
 			.await

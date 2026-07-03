@@ -1,13 +1,7 @@
-//! Connection typestate markers + the shared connect protocol.
+//! Our typestate markers. We of course want to avoid connections or attempted
+//! sends to a database that isn't actually alive.
 //!
-//! A store handle is either [`Cold`] (configured, but not yet verified to be
-//! reachable/migrated) or [`Live`] (connected and ready). Query methods live
-//! only on the `Live` form, and the `Server` is assemblable only from `Live`
-//! stores — so "used a store before it was connected" is a compile error.
-//!
-//! [`Connect`] unifies the three hand-rolled `connect()` methods into one
-//! protocol so `Server::assemble` can `try_join!` every backend through a
-//! single, uniform path with one error type.
+//! This is our attempt to mark this.
 
 use crate::error::ConnectError;
 
@@ -18,8 +12,7 @@ pub struct Cold;
 pub struct Live;
 
 /// A `Cold` store handle that can verify itself and transition to a `Live`
-/// handle of the associated type. Implemented by every backing store, so the
-/// server assembles them uniformly.
+/// handle of the associated type.
 #[diagnostic::on_unimplemented(
 	message = "`{Self}` cannot be connected",
 	note = "implement `Connect` so the server can bring this store up uniformly"

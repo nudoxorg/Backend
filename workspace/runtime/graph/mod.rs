@@ -1,10 +1,9 @@
 //! The graph runtime store (terminus) — the **source of truth** for how a
 //! package's symbols are structured and related.
 //!
-//! Keyed on the durable [`GlobalSymbolId`] (not the old `Id<Symbol>`), so
+//! Keyed on the durable [`SymbolId`] (not the old `Id<Symbol>`), so
 //! results join cleanly with tantivy and qdrant. Every method that returns a set
-//! streams it. Records are generation-aware: a query can scope to a generation
-//! and detect skew rather than silently mixing versions.
+//! streams it.
 //!
 //! ## Connection lifecycle
 //! [`Graph<Cold>`] implements [`Connect`]: `connect()` verifies the endpoint,
@@ -26,7 +25,7 @@ use smol_str::SmolStr;
 use url::Url;
 
 use heart::{
-	AccessContext, Cold, Connect, ConnectError, Generation, GlobalSymbolId, Live, Scored,
+	AccessContext, Cold, Connect, ConnectError, SymbolId, Live, Scored,
 	StoreError,
 };
 
@@ -64,8 +63,8 @@ pub enum RelationKind {
 	ReExport,
 }
 
-/// A trait for objects which hold graph-based symbol relationships, generation-
-/// aware and streaming. Implemented by the terminus-backed [`Graph`].
+/// A trait for objects which hold graph-based symbol relationships, streaming.
+/// Implemented by the terminus-backed [`Graph`].
 #[diagnostic::on_unimplemented(
 	message = "`{Self}` is not a `GraphStore`",
 	note = "implement `GraphStore` (e.g. terminus-backed) to surface symbol relationships"
@@ -79,26 +78,23 @@ pub trait GraphStore: Send + Sync {
 	/// scored by relevance and streamed.
 	fn get_occurrences(
 		&self,
-		item: GlobalSymbolId,
-		generation: Generation,
+		item: SymbolId,
 		scope: &AccessContext,
-	) -> impl Stream<Item = Result<Scored<GlobalSymbolId>, Self::Error>> + Send;
+	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send;
 
 	/// Everything that points at `item` (its callers/users), scored and streamed.
 	fn get_references(
 		&self,
-		item: GlobalSymbolId,
-		generation: Generation,
+		item: SymbolId,
 		scope: &AccessContext,
-	) -> impl Stream<Item = Result<Scored<GlobalSymbolId>, Self::Error>> + Send;
+	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send;
 
 	/// If `from` and `to` are directly linked, the [`RelationKind`] of that link;
 	/// `None` if unrelated.
 	async fn are_related(
 		&self,
-		from: GlobalSymbolId,
-		to: GlobalSymbolId,
-		generation: Generation,
+		from: SymbolId,
+		to: SymbolId,
 		scope: &AccessContext,
 	) -> Result<Option<RelationKind>, Self::Error>;
 }
@@ -145,7 +141,7 @@ impl Organization {
 }
 
 /// The name of a TerminusDB database within an [`Organization`]. Also the
-/// **instance token** salted into every [`GlobalSymbolId`], so it must be stable.
+/// **instance token** salted into every [`SymbolId`], so it must be stable.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Database(SmolStr);
 
@@ -241,36 +237,33 @@ impl GraphStore for Graph<Live> {
 
 	fn get_occurrences(
 		&self,
-		item: GlobalSymbolId,
-		generation: Generation,
+		item: SymbolId,
 		scope: &AccessContext,
-	) -> impl Stream<Item = Result<Scored<GlobalSymbolId>, Self::Error>> + Send {
-		let _ = (item, generation, scope, &self.client);
-		todo!("WOQL: symbols whose declaration holds `item`, at `generation`, access-filtered");
+	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send {
+		let _ = (item, scope, &self.client);
+		todo!("WOQL: symbols whose declaration holds `item`, access-filtered");
 		#[allow(unreachable_code)]
 		futures::stream::empty()
 	}
 
 	fn get_references(
 		&self,
-		item: GlobalSymbolId,
-		generation: Generation,
+		item: SymbolId,
 		scope: &AccessContext,
-	) -> impl Stream<Item = Result<Scored<GlobalSymbolId>, Self::Error>> + Send {
-		let _ = (item, generation, scope, &self.client);
-		todo!("WOQL: symbols referencing `item`, at `generation`, access-filtered");
+	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send {
+		let _ = (item, scope, &self.client);
+		todo!("WOQL: symbols referencing `item`, access-filtered");
 		#[allow(unreachable_code)]
 		futures::stream::empty()
 	}
 
 	async fn are_related(
 		&self,
-		from: GlobalSymbolId,
-		to: GlobalSymbolId,
-		generation: Generation,
+		from: SymbolId,
+		to: SymbolId,
 		scope: &AccessContext,
 	) -> Result<Option<RelationKind>, Self::Error> {
-		let _ = (from, to, generation, scope, &self.client);
+		let _ = (from, to, scope, &self.client);
 		todo!("WOQL: the edge kind between `from` and `to`, if any")
 	}
 }

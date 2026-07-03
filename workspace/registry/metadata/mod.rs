@@ -5,23 +5,17 @@
 //! [`hash`] re-exports heart's content-addressing vocabulary (which moved to
 //! heart) and adds the *package-level* canonical hashing this crate owns.
 
-use heart::{
-	content::Generation,
-	package::PackageId,
-};
+use heart::identity::PackageId;
 
 pub mod guid;
 pub mod hash;
 
-/// The metadata row for one package: its identity, current generation, and the
-/// per-store materialization links the read plane joins on.
+/// The metadata row for one package: its identity and the per-store
+/// materialization links the read plane joins on.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PackageMetadata {
 	/// The deterministic global identity.
 	pub id: PackageId,
-
-	/// The generation (content hash) this metadata reflects.
-	pub generation: Generation,
 
 	/// Whether each derived store has materialized this generation.
 	pub links: StoreLinks,

@@ -17,34 +17,19 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use heart::{GlobalSymbolId, Id};
+use heart::{SymbolId, Id};
 
 use crate::{error::SessionError, graph::RelationKind};
-
-/// A join-semilattice element: a value that merges with another of its own type
-/// under a least-upper-bound operation.
-///
-/// LAWS (relied on by the session tests; implementors must uphold them):
-/// - **idempotent**: `x.merge(x.clone())` leaves `x` unchanged;
-/// - **commutative**: `a.merge(b)` and `b.merge(a)` reach the same value;
-/// - **associative**: `(a ∨ b) ∨ c == a ∨ (b ∨ c)`.
-///
-/// Together these make merge *order-insensitive* and safe to apply repeatedly —
-/// exactly the guarantees a concurrent, replayable session needs.
-pub trait Merge {
-	/// Fold `other` into `self` (a least-upper-bound / union step).
-	fn merge(&mut self, other: Self);
-}
 
 /// A directed, kinded edge between two symbols in a session graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Edge {
 	/// The source symbol.
-	pub from: GlobalSymbolId,
+	pub from: SymbolId,
 	/// The kind of relationship.
 	pub kind: RelationKind,
 	/// The target symbol.
-	pub to: GlobalSymbolId,
+	pub to: SymbolId,
 }
 
 /// The stable identity of an exploration session.
@@ -52,11 +37,11 @@ pub type SessionId = Id<SessionGraph>;
 
 /// The accumulated graph of one exploration session: the set of symbols seen and
 /// the set of edges between them. Both are `BTreeSet`s, so union is set-union and
-/// the whole structure is a join-semilattice under [`Merge`].
+/// the whole structure is a join-semilattice under [`SessionGraph::merge`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionGraph {
 	/// The symbols encountered so far.
-	pub nodes: BTreeSet<GlobalSymbolId>,
+	pub nodes: BTreeSet<SymbolId>,
 	/// The edges encountered so far.
 	pub edges: BTreeSet<Edge>,
 }
@@ -67,12 +52,19 @@ impl SessionGraph {
 
 	/// Whether this session has accumulated nothing.
 	pub fn is_empty(&self) -> bool { self.nodes.is_empty() && self.edges.is_empty() }
-}
 
-impl Merge for SessionGraph {
-	/// Union the node and edge sets. Idempotent, commutative, and associative
-	/// because set-union is.
-	fn merge(&mut self, other: Self) {
+	/// Fold `other` into `self` (a least-upper-bound / union step): union the node
+	/// and edge sets. Idempotent, commutative, and associative because set-union
+	/// is.
+	///
+	/// LAWS (relied on by the session tests; callers may assume them):
+	/// - **idempotent**: `x.merge(x.clone())` leaves `x` unchanged;
+	/// - **commutative**: `a.merge(b)` and `b.merge(a)` reach the same value;
+	/// - **associative**: `(a ∨ b) ∨ c == a ∨ (b ∨ c)`.
+	///
+	/// Together these make merge *order-insensitive* and safe to apply repeatedly
+	/// — exactly the guarantees a concurrent, replayable session needs.
+	pub fn merge(&mut self, other: Self) {
 		self.nodes.extend(other.nodes);
 		self.edges.extend(other.edges);
 	}
@@ -105,7 +97,8 @@ pub trait SessionStore: Send + Sync {
 	async fn open(&self, session: SessionId) -> Result<Arc<SessionGraph>, SessionError>;
 
 	/// Merge `delta` into the session, returning the unioned graph. Idempotent
-	/// and order-insensitive per [`Merge`]; isolated to this `session`.
+	/// and order-insensitive per [`SessionGraph::merge`]; isolated to this
+	/// `session`.
 	async fn merge_into(
 		&self,
 		session: SessionId,
@@ -155,7 +148,7 @@ impl SessionStore for MemorySessionStore {
 		delta: SessionGraph,
 	) -> Result<Arc<SessionGraph>, SessionError> {
 		let _ = (session, delta);
-		todo!("copy-on-write: clone current, Merge::merge(delta), swap the Arc, return it")
+		todo!("copy-on-write: clone current, SessionGraph::merge(delta), swap the Arc, return it")
 	}
 
 	async fn snapshot(&self, session: SessionId) -> Result<Arc<SessionGraph>, SessionError> {

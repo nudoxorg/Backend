@@ -1,8 +1,10 @@
 //! The server's error taxonomy and its mapping onto HTTP responses.
 //!
-//! Internal subsystem errors (registry, runtime) are wrapped, never flattened,
-//! so the source chain survives all the way to structured logs; only the
-//! outward [`ServerError::status`] projection decides what the client sees.
+//! Internal subsystem errors (registry, runtime) are carried as their **concrete**
+//! typed sources via `#[from]` — never boxed/erased — so the whole chain survives
+//! to structured logs and retry classification can delegate straight to the
+//! subsystem's own [`Retryable`]. Only the outward [`ServerError::status`]
+//! projection decides what the client sees.
 
 use heart::{ConnectError, Retryable};
 
@@ -14,12 +16,12 @@ pub enum ServerError {
 	Connect(#[from] ConnectError),
 
 	/// The registry tier failed.
-	#[error("registry error")]
-	Registry(#[source] Box<dyn std::error::Error + Send + Sync>),
+	#[error(transparent)]
+	Registry(#[from] registry::RegistryError),
 
 	/// The runtime serving tier failed.
-	#[error("runtime error")]
-	Runtime(#[source] Box<dyn std::error::Error + Send + Sync>),
+	#[error(transparent)]
+	Runtime(#[from] runtime::RuntimeError),
 
 	/// The request was malformed or violated an invariant (→ 4xx).
 	#[error("bad request: {0}")]
@@ -38,8 +40,8 @@ pub enum ServerError {
 	Config(#[from] crate::config::ConfigError),
 
 	/// An internal invariant broke (→ 500).
-	#[error("internal error")]
-	Internal(#[source] Box<dyn std::error::Error + Send + Sync>),
+	#[error("internal error: {0}")]
+	Internal(String),
 }
 
 impl ServerError {

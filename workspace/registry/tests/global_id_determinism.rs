@@ -1,12 +1,12 @@
 //! Pipeline part: **deterministic global identity** (`registry::identity`).
 //!
-//! TDD specs for the version-agnostic `GlobalSymbolId` derivation. The whole
+//! TDD specs for the version-agnostic `SymbolId` derivation. The whole
 //! point is that any system recomputes the same id offline — never random.
 
 /// The same instance + entry URI always yields the same id.
 ///
 /// Act: `compute(instance, uri)` twice.
-/// Assert: both calls return the identical `GlobalSymbolId` (UUID v5).
+/// Assert: both calls return the identical `SymbolId` (UUID v5).
 #[test]
 fn id_is_deterministic() {
     todo!("assert compute() is stable for the same inputs");

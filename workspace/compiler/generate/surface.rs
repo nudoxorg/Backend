@@ -4,7 +4,7 @@
 //! backend, which drives that language's documentation/type oracle and lowers it
 //! into the shared IR.
 
-use heart::Ecosystem;
+use heart::Language;
 use ir::{entry::Index, pipeline::{Collected, Ir}};
 
 use crate::{error::GenerateError, generate::PackageInput};
@@ -12,9 +12,9 @@ use crate::{error::GenerateError, generate::PackageInput};
 /// Lower a package's source into the collected IR, dispatching on ecosystem.
 pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
 	match input.coordinates.ecosystem() {
-		Ecosystem::Python => todo!("drive crate::languages::python lowering"),
-		Ecosystem::Rust => todo!("drive crate::languages::rust lowering"),
-		Ecosystem::Typescript => todo!("drive crate::languages::typescript lowering"),
+		Language::Python => todo!("drive crate::languages::python lowering"),
+		Language::Rust => todo!("drive crate::languages::rust lowering"),
+		Language::Typescript => todo!("drive crate::languages::typescript lowering"),
 	}
 }
 

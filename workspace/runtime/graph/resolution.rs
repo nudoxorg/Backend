@@ -1,7 +1,7 @@
 //! Cross-version resolution: diffing a package's symbols across two versions so a
-//! symbol present in both keeps one stable [`GlobalSymbolId`].
+//! symbol present in both keeps one stable [`SymbolId`].
 //!
-//! [`GlobalSymbolId`] is derived from the instance token + entry URI, so a
+//! [`SymbolId`] is derived from the instance token + entry URI, so a
 //! symbol whose path is unchanged is *already* stable across versions. Real
 //! resolution handles the harder cases: a renamed/moved symbol that is "the same
 //! thing", and mapping an old occurrence onto its new identity so references
@@ -10,55 +10,40 @@
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 
-use heart::{AccessContext, Generation, GlobalSymbolId, PackageId, Scored};
+use heart::{AccessContext, SymbolId, PackageId, Scored};
 
 /// How an old symbol maps onto the next version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Resolution {
 	/// The symbol is unchanged (same id in both versions).
-	Stable(GlobalSymbolId),
+	Stable(SymbolId),
 	/// The symbol moved/renamed; the old id maps to a new one (scored by match
 	/// confidence).
 	Moved {
 		/// Its identity in the previous version.
-		previous: GlobalSymbolId,
+		previous: SymbolId,
 		/// Its identity (and match confidence) in the next version.
-		next: Scored<GlobalSymbolId>,
+		next: Scored<SymbolId>,
 	},
 	/// The symbol was removed in the next version.
-	Removed(GlobalSymbolId),
+	Removed(SymbolId),
 	/// The symbol is new in the next version.
-	Added(GlobalSymbolId),
+	Added(SymbolId),
 }
 
 /// Resolves symbol identities across a version diff of one package.
-pub trait ResolveAcross: Send + Sync {
-	/// The failure mode of a resolution.
-	type Error;
-
-	/// Diff `package` between two generations, streaming a [`Resolution`] per
-	/// affected symbol.
-	fn resolve_across(
+impl crate::graph::Graph<heart::Live> {
+	/// Diff a package across a version bump — from `previous` to `next` (each a
+	/// distinct [`PackageId`], since the version is part of the coordinates) —
+	/// streaming a [`Resolution`] per affected symbol.
+	pub fn resolve_across(
 		&self,
-		package: PackageId,
-		previous: Generation,
-		next: Generation,
+		previous: PackageId,
+		next: PackageId,
 		scope: &AccessContext,
-	) -> impl Stream<Item = Result<Resolution, Self::Error>> + Send;
-}
-
-impl ResolveAcross for crate::graph::Graph<heart::Live> {
-	type Error = crate::error::GraphError;
-
-	fn resolve_across(
-		&self,
-		package: PackageId,
-		previous: Generation,
-		next: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<Resolution, Self::Error>> + Send {
-		let _ = (package, previous, next, scope);
-		todo!("diff the two generations; map moved/renamed symbols; stream Resolutions");
+	) -> impl Stream<Item = Result<Resolution, crate::error::GraphError>> + Send {
+		let _ = (previous, next, scope);
+		todo!("diff the two versions; map moved/renamed symbols; stream Resolutions");
 		#[allow(unreachable_code)]
 		futures::stream::empty()
 	}

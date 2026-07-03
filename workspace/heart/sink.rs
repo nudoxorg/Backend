@@ -1,20 +1,25 @@
-//! The generic remote-sink upload trait shared by every module that ships data
-//! out to an external store (qdrant, terminus, object store, tantivy).
+//! The remote-upload contract every derived store speaks — a thin wrapper over a
+//! [`tower::Service`].
 //!
-//! The default [`Sink::deliver`] wraps [`Sink::upload`] in the crate-wide
-//! backoff policy and consults [`crate::error::Retryable`] on the error, so
-//! retry behaviour is uniform and defined once. `BatchSink` layers a
-//! backend-declared maximum batch size for stores that ingest in bulk.
+//! Rather than re-implement a retry loop per backend, a [`Sink`] wraps whatever
+//! `Service<Req>` a store exposes with one shared [`RetryTransient`] policy: it
+//! consults [`Retryable`] to back off on transient faults and surface permanent
+//! ones immediately. [`BatchSink`] is the same, for services that take a batch
+//! per call. Stacking further tower layers (concurrency limit, rate limit,
+//! timeout) is then just `ServiceBuilder` composition at the wrap site.
 
-use backon::{BackoffBuilder, ExponentialBuilder, Retryable as _};
+use std::future::{Ready, ready};
+
 use serde::{Deserialize, Serialize};
+use tower::{
+	Service, ServiceExt,
+	retry::{Policy, Retry},
+};
 
-use crate::error::{Retryable, StoreError};
+use crate::error::Retryable;
 
-/// The kinds of *derived* read-model store fed from the durable spine: the
-/// vector store, the graph store, and the text index. This is the single shared
-/// enumeration used for outbox fan-out intents (registry) and rebuild targets
-/// (server) — neither re-defines it.
+/// Which derived store a record fans out to. The relational spine is the source
+/// of truth; these are the read-optimized projections kept in sync from it.
 #[derive(
 	Debug,
 	Clone,
@@ -31,65 +36,108 @@ use crate::error::{Retryable, StoreError};
 pub enum DerivedStore {
 	/// The semantic vector store (qdrant).
 	Vector,
+
 	/// The relationship graph store (terminus).
 	Graph,
+
 	/// The full-text search index (tantivy).
 	Text,
 }
 
-impl DerivedStore {
-	/// All derived stores, for iterating fan-out targets.
-	pub const ALL: [DerivedStore; 3] = [DerivedStore::Vector, DerivedStore::Graph, DerivedStore::Text];
+/// The shared tower retry policy: retry only *transient* failures (per
+/// [`Retryable`]), and only until a fixed budget is spent — so a poison-pill
+/// upload can neither livelock nor be silently dropped.
+#[derive(Debug, Clone)]
+pub struct RetryTransient {
+	remaining: usize,
 }
 
-/// A remote sink: an external store we ship produced records to. Implementors
-/// need only provide [`upload`](Sink::upload) and (optionally) tune the backoff;
-/// delivery-with-retry is provided.
-pub trait Sink: Send + Sync {
-	/// The record type this sink ingests.
-	type Item: Send + Sync;
+impl RetryTransient {
+	/// The default number of retry attempts a transient failure gets.
+	pub const DEFAULT_BUDGET: usize = 4;
 
-	/// The failure mode of an upload. Must classify itself as [`Retryable`] so
-	/// [`deliver`](Sink::deliver) can decide retries without backend-specific
-	/// logic.
-	type Error: StoreError + Retryable;
+	/// A policy with an explicit retry budget.
+	pub const fn new(budget: usize) -> Self { Self { remaining: budget } }
+}
 
-	/// Upload a single record to the store.
-	async fn upload(&self, item: Self::Item) -> Result<(), Self::Error>;
+impl Default for RetryTransient {
+	fn default() -> Self { Self::new(Self::DEFAULT_BUDGET) }
+}
 
-	/// The backoff schedule for retries. Exponential with jitter by default.
-	fn backoff(&self) -> impl BackoffBuilder { ExponentialBuilder::default().with_jitter() }
+impl<Req, Res, E> Policy<Req, Res, E> for RetryTransient
+where
+	Req: Clone,
+	E: Retryable,
+{
+	type Future = Ready<()>;
 
-	/// Deliver a record, retrying transient failures per the backoff schedule.
-	async fn deliver(&self, item: Self::Item) -> Result<(), Self::Error>
+	fn retry(&mut self, _req: &mut Req, result: &mut Result<Res, E>) -> Option<Self::Future> {
+		match result {
+			Ok(_) => None,
+			Err(e) if self.remaining > 0 && e.is_retryable() => {
+				self.remaining -= 1;
+				Some(ready(()))
+			}
+			Err(_) => None,
+		}
+	}
+
+	fn clone_request(&mut self, req: &Req) -> Option<Req> { Some(req.clone()) }
+}
+
+/// A remote-upload endpoint: a [`tower::Service`] wrapped with the shared
+/// transient-retry policy. Any module ships a record out through
+/// [`Sink::deliver`] and gets backpressure-aware retries for free.
+#[derive(Debug, Clone)]
+pub struct Sink<S> {
+	inner:  S,
+	policy: RetryTransient,
+}
+
+impl<S> Sink<S> {
+	/// Wrap a service as a retrying sink with the default retry budget.
+	pub fn new(inner: S) -> Self { Self { inner, policy: RetryTransient::default() } }
+
+	/// Wrap a service with an explicit retry budget.
+	pub fn with_budget(inner: S, budget: usize) -> Self {
+		Self { inner, policy: RetryTransient::new(budget) }
+	}
+
+	/// Deliver one item, retrying transient failures per [`Retryable`].
+	pub async fn deliver<Req>(&self, item: Req) -> Result<S::Response, S::Error>
 	where
-		Self::Item: Clone,
+		S: Service<Req> + Clone,
+		Req: Clone,
+		S::Error: Retryable,
 	{
-		(|| self.upload(item.clone()))
-			.retry(self.backoff())
-			.when(|e: &Self::Error| e.is_retryable())
-			.await
+		Retry::new(self.policy.clone(), self.inner.clone()).oneshot(item).await
 	}
 }
 
-/// A sink that ingests records in bulk. Batching cuts round-trips to stores
-/// (qdrant, terminus) that expose a maximum batch size.
-pub trait BatchSink: Sink {
-	/// The largest batch the backend accepts in one call. Callers must chunk to
-	/// this size.
-	const MAX_BATCH: usize;
+/// Like [`Sink`], but the wrapped service accepts a *batch* of records per call —
+/// one round-trip for many items.
+#[derive(Debug, Clone)]
+pub struct BatchSink<S> {
+	inner:  S,
+	policy: RetryTransient,
+}
 
-	/// Upload a batch (must be `<= MAX_BATCH`).
-	async fn upload_batch(&self, items: Vec<Self::Item>) -> Result<(), Self::Error>;
+impl<S> BatchSink<S> {
+	/// Wrap a batch service with the default retry budget.
+	pub fn new(inner: S) -> Self { Self { inner, policy: RetryTransient::default() } }
 
-	/// Deliver a batch, retrying transient failures per the backoff schedule.
-	async fn deliver_batch(&self, items: Vec<Self::Item>) -> Result<(), Self::Error>
+	/// Wrap a batch service with an explicit retry budget.
+	pub fn with_budget(inner: S, budget: usize) -> Self {
+		Self { inner, policy: RetryTransient::new(budget) }
+	}
+
+	/// Deliver a batch, retrying transient failures per [`Retryable`].
+	pub async fn deliver_batch<Item>(&self, items: Vec<Item>) -> Result<S::Response, S::Error>
 	where
-		Vec<Self::Item>: Clone,
+		S: Service<Vec<Item>> + Clone,
+		Item: Clone,
+		S::Error: Retryable,
 	{
-		(|| self.upload_batch(items.clone()))
-			.retry(self.backoff())
-			.when(|e: &Self::Error| e.is_retryable())
-			.await
+		Retry::new(self.policy.clone(), self.inner.clone()).oneshot(items).await
 	}
 }

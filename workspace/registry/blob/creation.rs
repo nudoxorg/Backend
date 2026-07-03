@@ -10,9 +10,8 @@
 //! the builder does no I/O itself — the caller decides transaction ordering.
 
 use heart::{
-	Toolchain,
-	content::{ContentHash, ContentHasher, Generation},
-	package::PackageId,
+	PackageId, Toolchain,
+	content::{ContentHash, ContentHasher},
 };
 use smol_str::SmolStr;
 
@@ -88,7 +87,7 @@ impl BlobBuilder {
 		todo!("sort files, finalize digest into Generation, require ir_ref+references_ref, validate")
 	}
 
-	/// The generation computed *so far* (for progress/debug); not the final
+	/// The snapshot hash computed *so far* (for progress/debug); not the final
 	/// committed value until [`finalize`](BlobBuilder::finalize).
-	pub fn provisional_generation(&self) -> Generation { Generation(self.digest.finalize()) }
+	pub fn provisional_generation(&self) -> ContentHash { self.digest.finalize() }
 }

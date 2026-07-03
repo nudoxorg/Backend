@@ -4,7 +4,7 @@
 //!   this catalog issues can only ever be resolved against *this* catalog, never
 //!   another. The brand exists purely at the type level.
 //!
-//! - **ecosystem** — lifted into a const generic ([`Ecosystem`] is `ConstParamTy`)
+//! - **ecosystem** — lifted into a const generic ([`Language`] is `ConstParamTy`)
 //!   so a Rust catalog and a TypeScript catalog are distinct types and can never
 //!   be incidentally mixed.
 //!
@@ -21,7 +21,7 @@
 use std::marker::PhantomData;
 
 use generativity::{Guard, Id};
-use heart::{Ecosystem, access::AccessContext};
+use heart::{Language, access::AccessContext};
 
 use crate::Package;
 
@@ -60,12 +60,12 @@ pub struct PackageHandle<'brand> {
 /// A registry catalog: a specialized selection of packages from the backing
 /// registry, for a single ecosystem, under one capability plane. Typically held
 /// by a client for the duration of a request.
-pub struct Catalog<'brand, const L: Ecosystem, P: Plane> {
+pub struct Catalog<'brand, const L: Language, P: Plane> {
 	brand: Id<'brand>,
 	_plane: PhantomData<P>,
 }
 
-impl<'brand, const L: Ecosystem, P: Plane> Catalog<'brand, L, P> {
+impl<'brand, const L: Language, P: Plane> Catalog<'brand, L, P> {
 	/// Open a catalog under a fresh brand (obtain the guard via
 	/// `generativity::make_guard!`, which mints a unique lifetime per call site).
 	pub fn open(guard: Guard<'brand>) -> Self { Self { brand: guard.into(), _plane: PhantomData } }
@@ -90,7 +90,7 @@ impl<'brand, const L: Ecosystem, P: Plane> Catalog<'brand, L, P> {
 	}
 }
 
-impl<'brand, const L: Ecosystem, P: Mutable> Catalog<'brand, L, P> {
+impl<'brand, const L: Language, P: Mutable> Catalog<'brand, L, P> {
 	/// Publish a package into this ecosystem's catalog, returning a branded
 	/// handle. Only reachable on a [`Mutable`] plane. Threaded through the access
 	/// layer.

@@ -15,9 +15,9 @@
 //!   tantivy polled from postgres.
 //!
 //! ## Identity
-//! All identity is minted through [`heart::package`] — deterministic UUIDv5
+//! All identity is minted through [`heart::identity`] — deterministic UUIDv5
 //! fingerprints — never hand-rolled here. This crate never re-defines
-//! `PackageId`, `GlobalSymbolId`, `ContentHash`, or the lifecycle states; it
+//! `PackageId`, `SymbolId`, `ContentHash`, or the lifecycle states; it
 //! composes them.
 #![feature(adt_const_params)]
 #![feature(return_type_notation)]
@@ -39,11 +39,9 @@ pub mod search;
 pub mod store;
 
 use heart::{
-	PackageCoordinates, Toolchain, Visibility,
+	PackageCoordinates, PackageId, Toolchain, Visibility,
 	access::Tenant,
-	content::Generation,
 	lifecycle::ResolutionState,
-	package::PackageId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -87,9 +85,9 @@ impl Package {
 /// The final, globally-syndicated package object handed to the global index.
 ///
 /// Carries the deterministic [`PackageId`], the per-source [`Package`] it was
-/// minted from, the [`Generation`] (content hash) of the snapshot it reflects,
-/// and its current lifecycle [`ResolutionState`] — the orchestration triad the
-/// queue and outbox key on.
+/// minted from, and its current lifecycle [`ResolutionState`] — the
+/// orchestration pair the queue and outbox key on. The recorded snapshot hash
+/// lives inside [`ResolutionState::Stored`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalPackage {
 	/// The canonical, deterministic global identity of the package.
@@ -97,9 +95,6 @@ pub struct GlobalPackage {
 
 	/// The per-source record this global package was minted from.
 	pub package: Package,
-
-	/// The generation (package content hash) this record reflects.
-	pub generation: Generation,
 
 	/// Where this package currently sits in the pipeline.
 	pub state: ResolutionState,

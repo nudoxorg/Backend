@@ -12,10 +12,9 @@
 use std::time::Duration;
 
 use heart::{
-	BackendKind, ConnectError, Retryable,
-	content::{ContentHash, Generation},
+	BackendKind, ConnectError, PackageId, Retryable,
+	content::ContentHash,
 	lifecycle::FailureKind,
-	package::PackageId,
 };
 use thiserror::Error;
 
@@ -98,7 +97,7 @@ impl Retryable for RegistryError {
 pub enum BlobError {
 	/// A file section could not be (de)serialized. `// runs on spawn_blocking`.
 	#[error("blob section (de)serialization failed")]
-	Codec(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Codec(#[source] postcard::Error),
 
 	/// A stored section's recomputed BLAKE3 digest did not match its recorded
 	/// hash — corruption or tampering.
@@ -320,10 +319,10 @@ pub enum OutboxError {
 	#[error("outbox database operation failed")]
 	Database(#[source] sqlx::Error),
 
-	/// The append raced an equivalent `(package, generation, kind)` intent; the
+	/// The append raced an equivalent `(package, snapshot, kind)` intent; the
 	/// dedupe key already exists (idempotent no-op for the caller).
-	#[error("duplicate outbox intent for package {package:?} generation {generation:?}")]
-	Duplicate { package: PackageId, generation: Generation },
+	#[error("duplicate outbox intent for package {package:?}")]
+	Duplicate { package: PackageId },
 }
 
 impl Retryable for OutboxError {
@@ -355,7 +354,7 @@ impl Retryable for SearchError {
 }
 
 /// Failures resolving a version request to a concrete
-/// [`heart::package::PackageVersion`].
+/// [`heart::PackageVersion`].
 #[derive(Debug, Error)]
 pub enum ResolveError {
 	/// No published version satisfied the request/range.
@@ -368,7 +367,7 @@ pub enum ResolveError {
 
 	/// Looking up published versions failed (registry unreachable/errored).
 	#[error("version lookup failed")]
-	Lookup(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Lookup(#[source] reqwest::Error),
 
 	/// The named package does not exist in the source.
 	#[error("package {0} not found in source")]

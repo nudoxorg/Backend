@@ -127,7 +127,7 @@ impl Endpoints {
 pub enum ConfigError {
 	/// A layer (file/env) could not be read or parsed.
 	#[error("failed to load configuration")]
-	Load(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Load(#[source] figment::Error),
 	/// The merged configuration was structurally invalid.
 	#[error("invalid configuration: {0}")]
 	Invalid(String),

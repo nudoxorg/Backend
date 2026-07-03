@@ -2,9 +2,9 @@
 //! thus dimension) is carried in the type, so a wrong-length vector cannot be
 //! built and two different models' vectors are distinct, incomparable types.
 
-use runtime::vector::embedding::{
-	Embedding, EmbeddingModel,
-	models::{OpenAi3Large, OpenAi3Small},
+use runtime::vector::{
+	embedding::Embedding,
+	model::{EmbeddingModel, ModelId, OpenAi3Large, OpenAi3Small},
 };
 
 /// An embedding knows its dimension from its brand, and validates length at the
@@ -35,4 +35,13 @@ fn different_models_are_different_types() {
 	assert_eq!(small.as_slice().len(), 1536);
 	assert_eq!(large.as_slice().len(), 3072);
 	// let _mismatch: Embedding<OpenAi3Small> = large; // <- type error
+}
+
+/// A blank model id is unconstructible (the qdrant collection key can never be
+/// empty).
+#[test]
+fn model_id_rejects_blank() {
+	assert!(ModelId::try_new("   ").is_err());
+	assert!(ModelId::try_new("").is_err());
+	assert!(ModelId::try_new("text-embedding-3-small").is_ok());
 }

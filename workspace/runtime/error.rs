@@ -1,12 +1,14 @@
 //! One `thiserror` enum per runtime area, each classifying itself as
-//! [`heart::Retryable`] so the retry/queue machinery is written exactly once.
+//! [`heart::Retryable`] so the retry/queue machinery is written exactly once, plus
+//! the crate-level [`RuntimeError`] that aggregates them for callers that want a
+//! single `#[from]` (the server).
 //!
 //! ## Conventions
 //! - No field-less unit errors. A failure that is really "could not connect"
 //!   reuses [`heart::ConnectError`] (which already carries [`heart::BackendKind`]
 //!   + [`heart::ConnectFailure`], including `DimensionMismatch`).
-//! - Underlying causes are chained via `#[source]` so the full error chain is
-//!   preserved for operators.
+//! - Underlying causes are chained via `#[source]` as their **concrete** backend
+//!   types — no `Box<dyn Error>` — so the full error chain is preserved and typed.
 //! - Each area's error implements [`heart::Retryable`] so transient backend
 //!   faults (timeouts, 5xx, rate limits) retry uniformly while validation/auth
 //!   failures do not.
@@ -35,19 +37,14 @@ pub enum GraphError {
 		message: String,
 	},
 
-	/// The graph responded but the payload could not be decoded into the
+	/// The graph responded but the JSON payload could not be decoded into the
 	/// expected shape.
 	#[error("malformed graph response")]
-	Decode(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Decode(#[source] serde_json::Error),
 
 	/// A requested symbol/id was absent from the graph.
 	#[error("symbol not present in graph")]
 	NotFound,
-
-	/// The record's generation stamp disagreed with the queried generation —
-	/// cross-store version skew, surfaced rather than silently mixed.
-	#[error("graph generation skew: record is stale relative to the query")]
-	GenerationSkew,
 }
 
 impl Retryable for GraphError {
@@ -55,10 +52,7 @@ impl Retryable for GraphError {
 		match self {
 			GraphError::Connect(e) => e.is_retryable(),
 			GraphError::Transport(e) => e.is_timeout() || e.is_connect(),
-			GraphError::Query { .. }
-			| GraphError::Decode(_)
-			| GraphError::NotFound
-			| GraphError::GenerationSkew => false,
+			GraphError::Query { .. } | GraphError::Decode(_) | GraphError::NotFound => false,
 		}
 	}
 
@@ -84,7 +78,7 @@ pub enum VectorError {
 
 	/// The qdrant client/transport failed.
 	#[error("vector transport error")]
-	Transport(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Transport(#[source] qdrant_client::QdrantError),
 
 	/// Embedding the query text failed on the gated path.
 	#[error("query embedding failed")]
@@ -92,12 +86,7 @@ pub enum VectorError {
 
 	/// A returned point's payload could not be decoded into a symbol identity.
 	#[error("malformed point payload")]
-	Payload(#[source] Box<dyn std::error::Error + Send + Sync>),
-
-	/// A page was requested against a newer index generation than its cursor was
-	/// anchored to — the keyset position is no longer valid.
-	#[error("vector cursor generation skew: index regenerated under the cursor")]
-	GenerationSkew,
+	Payload(#[source] serde_json::Error),
 }
 
 impl Retryable for VectorError {
@@ -106,9 +95,7 @@ impl Retryable for VectorError {
 			VectorError::Connect(e) => e.is_retryable(),
 			VectorError::Embed(e) => e.is_retryable(),
 			VectorError::Transport(_) => true,
-			VectorError::Collection(_)
-			| VectorError::Payload(_)
-			| VectorError::GenerationSkew => false,
+			VectorError::Collection(_) | VectorError::Payload(_) => false,
 		}
 	}
 
@@ -130,11 +117,11 @@ pub enum TextError {
 
 	/// A tantivy operation (open, write, commit, search) failed.
 	#[error("text index engine error")]
-	Engine(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Engine(#[source] tantivy::TantivyError),
 
 	/// The postgres poll that feeds the index failed.
 	#[error("text index poll (postgres) failed")]
-	Poll(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Poll(#[source] sqlx::Error),
 
 	/// A query could not be parsed into a tantivy query.
 	#[error("malformed text query: {message}")]
@@ -167,7 +154,7 @@ pub enum SessionError {
 
 	/// A persisted session snapshot could not be (de)serialized.
 	#[error("session snapshot codec error")]
-	Codec(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Codec(#[source] serde_json::Error),
 
 	/// The referenced session id was not open.
 	#[error("session not found")]
@@ -186,7 +173,7 @@ impl Retryable for SessionError {
 pub enum EmbedError {
 	/// The embedding backend was unreachable / the transport failed.
 	#[error("embedding transport error")]
-	Transport(#[source] Box<dyn std::error::Error + Send + Sync>),
+	Transport(#[source] reqwest::Error),
 
 	/// The model rejected the request (bad input, unsupported purpose).
 	#[error("embedding request rejected: {message}")]
@@ -231,6 +218,54 @@ impl Retryable for EmbedError {
 		match self {
 			EmbedError::RateLimited { retry_after } => *retry_after,
 			_ => None,
+		}
+	}
+}
+
+/// The crate-level error: every runtime failure, aggregated so a caller (the
+/// server) can `#[from]` one type instead of five. Direct `#[from]` of each area
+/// enum — no boxing.
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeError {
+	/// A graph-store failure.
+	#[error(transparent)]
+	Graph(#[from] GraphError),
+
+	/// A vector-store failure.
+	#[error(transparent)]
+	Vector(#[from] VectorError),
+
+	/// A text-index failure.
+	#[error(transparent)]
+	Text(#[from] TextError),
+
+	/// A session-store failure.
+	#[error(transparent)]
+	Session(#[from] SessionError),
+
+	/// An embedding failure.
+	#[error(transparent)]
+	Embed(#[from] EmbedError),
+}
+
+impl Retryable for RuntimeError {
+	fn is_retryable(&self) -> bool {
+		match self {
+			RuntimeError::Graph(e) => e.is_retryable(),
+			RuntimeError::Vector(e) => e.is_retryable(),
+			RuntimeError::Text(e) => e.is_retryable(),
+			RuntimeError::Session(e) => e.is_retryable(),
+			RuntimeError::Embed(e) => e.is_retryable(),
+		}
+	}
+
+	fn retry_after(&self) -> Option<Duration> {
+		match self {
+			RuntimeError::Graph(e) => e.retry_after(),
+			RuntimeError::Vector(e) => e.retry_after(),
+			RuntimeError::Text(e) => e.retry_after(),
+			RuntimeError::Session(e) => e.retry_after(),
+			RuntimeError::Embed(e) => e.retry_after(),
 		}
 	}
 }

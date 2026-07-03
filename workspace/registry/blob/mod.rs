@@ -25,9 +25,8 @@
 //! data, so cross-references survive without the tree.
 
 use heart::{
-	Toolchain,
-	content::{ContentHash, Generation},
-	package::PackageId,
+	PackageId, Toolchain,
+	content::ContentHash,
 };
 use ir::syntax::ResolvedReference;
 use serde::{Deserialize, Serialize};
@@ -50,9 +49,6 @@ pub use creation::BlobBuilder;
 pub struct BlobManifest {
 	/// The package this snapshot describes.
 	pub package: PackageId,
-
-	/// The generation (canonical package content hash) this snapshot *is*.
-	pub generation: Generation,
 
 	/// The source files, each addressed by its own content hash. Sorted by path
 	/// for a canonical, reproducible manifest fingerprint. `NonEmpty` because a

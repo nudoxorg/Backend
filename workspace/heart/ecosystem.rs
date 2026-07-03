@@ -1,23 +1,9 @@
-//! The ecosystem taxonomy, split cleanly into two concerns the old `Language`
-//! enum conflated:
-//!
-//! - [`Ecosystem`] — *which* language/registry world a thing belongs to. It is
-//!   fieldless and `ConstParamTy`, so it can be lifted into a const generic
-//!   (see the registry `Catalog`) and used as a plain map/filter key.
-//! - [`Toolchain`] — the *specific* build environment a package was produced
-//!   against (compiler/interpreter version, edition). This is what a producer
-//!   records; it is never used as an identity or filter key.
-//!
-//! Separating them fixes the bug where you couldn't express "search all of
-//! Rust" without inventing a compiler version.
-
 use std::marker::ConstParamTy;
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-/// A language/registry ecosystem. Fieldless on purpose: this is the identity
-/// and filter dimension, liftable into a const generic.
+/// The world the code belongs to.
 #[derive(
 	Debug,
 	Clone,
@@ -34,27 +20,28 @@ use serde::{Deserialize, Serialize};
 	strum::EnumString,
 	strum::EnumIter,
 	strum::AsRefStr,
+	strum::IntoStaticStr,
 )]
 #[strum(serialize_all = "lowercase")]
-pub enum Ecosystem {
-	/// <https://rust-lang.org/> — crates.io.
+pub enum Language {
+	/// <https://rust-lang.org/>.io.
 	Rust,
-	/// <https://www.typescriptlang.org/> — npm.
+
+	/// <https://www.typescriptlang.org/>.
 	Typescript,
-	/// <https://python.org/> — PyPI.
+
+	/// <https://python.org/>.
 	Python,
 }
 
-impl Ecosystem {
-	/// The stable lowercase wire/storage token (`"rust"`, `"typescript"`,
-	/// `"python"`). Used in object-store paths and ids, so it must never drift.
-	pub const fn as_token(self) -> &'static str {
-		match self {
-			Ecosystem::Rust => "rust",
-			Ecosystem::Typescript => "typescript",
-			Ecosystem::Python => "python",
-		}
-	}
+impl Language {
+	/// The stable lowercase wire token (`"rust"` / `"typescript"` / `"python"`) as
+	/// a `&'static str` — the form persisted in postgres and used as a codec token.
+	///
+	/// Delegates to `strum::IntoStaticStr` so the token set can never drift from
+	/// the variants. (`AsRefStr` yields the same strings but borrowed from `self`,
+	/// which can't satisfy the `'static` return the storage/codec paths need.)
+	pub fn as_token(&self) -> &'static str { self.into() }
 }
 
 /// The Rust edition a crate was produced under.
@@ -66,8 +53,7 @@ pub enum Edition {
 	E2024,
 }
 
-/// The concrete toolchain a package was built/analyzed against. Recorded by
-/// producers for provenance and reproducibility; never an identity key.
+/// The concrete toolchain a package was built/analyzed against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Toolchain {
 	/// `rustc` version + edition.
@@ -80,13 +66,13 @@ pub enum Toolchain {
 	Python { interpreter: Version },
 }
 
-impl Toolchain {
-	/// The ecosystem this toolchain belongs to.
-	pub const fn ecosystem(&self) -> Ecosystem {
-		match self {
-			Toolchain::Rust { .. } => Ecosystem::Rust,
-			Toolchain::Typescript { .. } => Ecosystem::Typescript,
-			Toolchain::Python { .. } => Ecosystem::Python,
+impl From<&Toolchain> for Language {
+	/// The ecosystem (language) this toolchain belongs to.
+	fn from(toolchain: &Toolchain) -> Self {
+		match toolchain {
+			Toolchain::Rust { .. } => Language::Rust,
+			Toolchain::Typescript { .. } => Language::Typescript,
+			Toolchain::Python { .. } => Language::Python,
 		}
 	}
 }

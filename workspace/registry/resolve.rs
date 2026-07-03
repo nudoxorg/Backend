@@ -9,8 +9,8 @@
 //! [`PackageCoordinates::id`].
 
 use heart::{
-	ecosystem::Ecosystem,
-	package::{
+	ecosystem::Language,
+	identity::{
 		PackageCoordinates, PackageName, PackageVersion, RegistryOrigin,
 	},
 };
@@ -32,7 +32,7 @@ pub enum VersionRequest {
 
 	/// A raw ecosystem range string to be parsed under the ecosystem's grammar
 	/// (covers PEP 440 specifiers SemVer cannot represent).
-	Range { ecosystem: Ecosystem, spec: String },
+	Range { ecosystem: Language, spec: String },
 }
 
 /// A source to resolve against — a public registry, or a self-hosted origin.
@@ -46,7 +46,7 @@ pub struct ResolveSource {
 ///
 /// Fetches the published version set, filters to those satisfying `request`
 /// under the ecosystem's version grammar, and selects the greatest — assembling
-/// validated [`PackageCoordinates`] whose [`PackageId`](heart::package::PackageId)
+/// validated [`PackageCoordinates`] whose [`PackageId`](heart::PackageId)
 /// is then deterministic. `// registry version-list fetch is network I/O`.
 pub async fn resolve(
 	source: &ResolveSource,

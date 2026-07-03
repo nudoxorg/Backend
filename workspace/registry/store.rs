@@ -24,7 +24,7 @@ use heart::{
 	Cold, Connect, ConnectError, Live,
 	access::AccessContext,
 	content::ContentHash,
-	package::{PackageCoordinates, PackageId},
+	identity::{PackageCoordinates, PackageId},
 };
 use object_store::{ObjectStore, path::Path};
 

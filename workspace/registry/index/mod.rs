@@ -8,15 +8,15 @@
 //! it sits.
 //!
 //! Identity is never minted here — it is delegated to heart's deterministic
-//! derivers ([`PackageCoordinates::id`], [`GlobalSymbolId::derive`]) so the same
+//! derivers ([`PackageCoordinates::id`], [`SymbolId::derive`]) so the same
 //! id is recomputable offline against the same [`TerminusInstance`].
 
 use heart::{
 	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live,
 	access::AccessContext,
-	content::Generation,
+	content::ContentHash,
+	identity::{EntryUri, SymbolId, PackageCoordinates, PackageId},
 	lifecycle::ResolutionState,
-	package::{EntryUri, GlobalSymbolId, PackageCoordinates, PackageId},
 };
 use sqlx::{Row, postgres::PgRow};
 
@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The `{org}/{db}` TerminusDB instance every deterministic global id is salted
-/// with, so a [`GlobalSymbolId`] is recomputable offline from the same instance.
+/// with, so a [`SymbolId`] is recomputable offline from the same instance.
 ///
 /// The wrapped string is validated to the `org/db` shape on construction — an
 /// invalid instance token would silently fork the id space.
@@ -112,10 +112,10 @@ impl GlobalStore<Live> {
 	/// heart — kept here so callers have one minting choke point.
 	pub fn package_id(coordinates: &PackageCoordinates) -> PackageId { coordinates.id() }
 
-	/// Mint the deterministic [`GlobalSymbolId`] for an entry, salted with this
-	/// store's instance. Delegates to [`GlobalSymbolId::derive`].
-	pub fn symbol_id(&self, uri: &EntryUri) -> GlobalSymbolId {
-		GlobalSymbolId::derive(self.instance.token(), uri)
+	/// Mint the deterministic [`SymbolId`] for an entry, salted with this
+	/// store's instance. Delegates to [`EntryUri::symbol_id`].
+	pub fn symbol_id(&self, uri: &EntryUri) -> SymbolId {
+		uri.symbol_id(self.instance.token())
 	}
 
 	/// Upsert a package's global record (identity + state + generation). The
@@ -213,12 +213,13 @@ impl GlobalStore<Live> {
 		todo!("rebuild PackageCoordinates + Package from the packages row once heart's constructors land")
 	}
 
-	/// The recorded [`Generation`] for a package, for freshness comparison
-	/// against a freshly-computed hash. `None` unless the package is `Stored`.
+	/// The recorded snapshot [`ContentHash`] for a package, for freshness
+	/// comparison against a freshly-computed hash. `None` unless the package is
+	/// `Stored`.
 	pub async fn generation(
 		&self,
 		package: PackageId,
-	) -> Result<Option<Generation>, IndexError> {
+	) -> Result<Option<ContentHash>, IndexError> {
 		let (sql, vals) = queries::index::get_generation(package);
 		let row = sqlx::query_with(&sql, vals)
 			.fetch_optional(&self.pool)
@@ -240,11 +241,11 @@ impl GlobalStore<Live> {
 	/// id.
 	pub async fn upsert_symbol(
 		&self,
-		id: GlobalSymbolId,
+		id: SymbolId,
 		package: PackageId,
 		fq_name: &str,
 		kind: heart::SymbolKind,
-		generation: Generation,
+		generation: ContentHash,
 	) -> Result<(), IndexError> {
 		let (sql, vals) = queries::index::upsert_symbol(id, package, fq_name, kind, generation);
 		sqlx::query_with(&sql, vals)

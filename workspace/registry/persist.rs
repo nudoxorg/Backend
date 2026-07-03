@@ -8,7 +8,7 @@
 //! ([`Stored`](ResolutionState::Stored), [`DeadLettered`](ResolutionState::DeadLettered))
 //! are left untouched.
 
-use heart::{lifecycle::ResolutionState, package::PackageId};
+use heart::{PackageId, lifecycle::ResolutionState};
 
 use crate::{error::RegistryError, index::GlobalStore, queue::Queue};
 // The reconciliation bodies (still `todo!()`) build their statements from these.

@@ -28,11 +28,12 @@ use crate::{
 use heart::{
 	Visibility,
 	access::Tenant,
-	content::Generation,
+	content::ContentHash,
 	ecosystem::Toolchain,
+	identity::{SymbolId, PackageCoordinates, PackageId},
 	lifecycle::ResolutionState,
-	package::{GlobalSymbolId, PackageCoordinates, PackageId},
 };
+use strum::IntoEnumIterator;
 
 /// The Postgres flavour every statement is rendered + bound against.
 type Pg = sea_query::PostgresQueryBuilder;
@@ -71,7 +72,7 @@ pub mod index {
 			.into_table(Packages::Table)
 			.columns([
 				Packages::Id,
-				Packages::Ecosystem,
+				Packages::Language,
 				Packages::OriginToken,
 				Packages::NameCanonical,
 				Packages::NameOriginal,
@@ -205,7 +206,7 @@ pub mod index {
 		Query::select()
 			.columns([
 				Packages::Id,
-				Packages::Ecosystem,
+				Packages::Language,
 				Packages::OriginToken,
 				Packages::NameCanonical,
 				Packages::NameOriginal,
@@ -233,11 +234,11 @@ pub mod index {
 	/// `INSERT INTO symbols (...) ON CONFLICT (id) DO UPDATE ...` — upsert a
 	/// serving-projection symbol row, keyed on its deterministic global id.
 	pub fn upsert_symbol(
-		id: GlobalSymbolId,
+		id: SymbolId,
 		package: PackageId,
 		fq_name: &str,
 		kind: heart::SymbolKind,
-		generation: Generation,
+		generation: ContentHash,
 	) -> (String, SqlxValues) {
 		Query::insert()
 			.into_table(Symbols::Table)
@@ -456,7 +457,7 @@ pub mod outbox {
 	/// impossible without a distributed transaction.
 	pub fn append_one(
 		package: PackageId,
-		generation: Generation,
+		generation: ContentHash,
 		kind: SinkKind,
 	) -> (String, SqlxValues) {
 		Query::insert()
@@ -481,7 +482,7 @@ pub mod outbox {
 
 	/// Append a fan-out intent for *every* [`SinkKind`] in one multi-row insert,
 	/// deduped per `(package, generation, kind)`.
-	pub fn append_all(package: PackageId, generation: Generation) -> (String, SqlxValues) {
+	pub fn append_all(package: PackageId, generation: ContentHash) -> (String, SqlxValues) {
 		let pkg = codec::package_id_to_uuid(package);
 		let gen_bytes = codec::generation_to_bytes(generation);
 
@@ -491,7 +492,7 @@ pub mod outbox {
 			Outbox::Generation,
 			Outbox::SinkKind,
 		]);
-		for kind in SinkKind::ALL {
+		for kind in SinkKind::iter() {
 			stmt.values_panic([
 				pkg.into(),
 				gen_bytes.clone().into(),

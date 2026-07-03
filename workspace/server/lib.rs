@@ -18,7 +18,7 @@ pub mod config;
 pub mod coordination;
 pub mod error;
 pub mod http;
-pub mod reproducibility;
+pub mod save;
 pub mod search;
 
 use std::sync::Arc;
@@ -115,7 +115,7 @@ impl<M: EmbeddingModel> Server<M> {
 		// postgres watermark, not "connected".
 		let text_dir: std::path::PathBuf = todo!("per-source text-index dir from cfg");
 		let text =
-			TextIndex::open_or_create(&text_dir).map_err(|e| ServerError::Runtime(Box::new(e)))?;
+			TextIndex::open_or_create(&text_dir).map_err(|e| ServerError::Runtime(e.into()))?;
 
 		Ok(SourceStores { global_store, blobs, queue, outbox, graph, semantics, text })
 	}
