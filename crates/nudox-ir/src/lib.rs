@@ -7,6 +7,8 @@ pub mod record;
 pub mod symbol;
 pub mod ty;
 
+#[cfg(test)]
+mod test_helpers;
 // pub mod generics;
 // pub mod parameter;
 // pub mod protocols;

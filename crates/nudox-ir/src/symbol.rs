@@ -2,11 +2,15 @@ use std::{path::PathBuf, range::Range};
 
 use ecow::EcoString;
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct NudoxPath;
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Visibility {
 	Public,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Symbol {
 	pub name:          EcoString,
 	pub path:          NudoxPath,

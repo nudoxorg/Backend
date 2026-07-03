@@ -20,6 +20,7 @@ pub trait EntryKind: Any {
 
 macro_rules! register_kinds {
 	($($(#[$meta:meta])* $kind:ident,)*) => {
+		#[derive(Debug, PartialEq, Eq)]
 		pub enum Kind {
 			$(
 			$(#[$meta])*

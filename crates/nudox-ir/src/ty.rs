@@ -2,6 +2,7 @@ use ecow::EcoVec;
 
 use crate::{arena::EntryIdx, primitive::Primitive};
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Type {
 	/// A receiver/self type such as Rust `Self` or TypeScript `this`.
 	SelfType,

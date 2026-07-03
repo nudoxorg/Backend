@@ -3,7 +3,7 @@ use ecow::EcoString;
 use crate::{arena::EntryIdx, ty::Type};
 
 /// A language-level primitive type, independent of any target architecture.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Primitive {
 	Integer {
 		signed: bool,
@@ -46,7 +46,7 @@ pub enum Primitive {
 }
 
 /// A language-level primitive type, independent of any target architecture.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Width {
 	Fixed(usize),
 
