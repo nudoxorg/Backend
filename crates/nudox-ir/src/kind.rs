@@ -28,7 +28,7 @@ macro_rules! register_kinds {
 		}
 
 		impl Kind {
-			pub(crate) fn as_dyn(&self) -> &dyn EntryKind {
+			pub(crate) fn variant_as_dyn(&self) -> &dyn EntryKind {
 				match self {
 					$(
 					Kind::$kind(it) => it,
