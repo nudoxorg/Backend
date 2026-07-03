@@ -21,13 +21,7 @@ impl<T: EntryKind> TypedEntry<T> {
 	pub fn sym(&self) -> &Symbol { &self.inner.sym }
 
 	pub fn kind(&self) -> &T {
-		let dyn_kind = kind_as_dyn_any(&self.inner.kind);
-
-		// guard UB from broken invariants in debug mode
-		debug_assert!(dyn_kind.is::<T>(), "TypedEntry broken invariant");
-
-		// Safety: this is upheld as an invariant of `TypedEntry`
-		unsafe { dyn_kind.downcast_unchecked_ref() }
+		kind_as_dyn_any(&self.inner.kind).downcast_ref().expect("using TypedEntry with incorrect type")
 	}
 }
 

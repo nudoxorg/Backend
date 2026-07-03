@@ -1,5 +1,3 @@
-#![feature(downcast_unchecked)]
-
 pub mod arena;
 pub mod function;
 pub mod kind;
