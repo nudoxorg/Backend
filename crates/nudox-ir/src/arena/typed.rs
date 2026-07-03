@@ -21,14 +21,10 @@ impl<T> TypedEntry<T> {
 }
 
 impl<T: EntryKind> TypedEntry<T> {
-	/// # Safety
-	///
-	/// the caller must guarentee that the variant of Kind is type `T`.
-	pub(super) unsafe fn new(entry: &Entry) -> &Self {
-		debug_assert!(kind_as_dyn_any(&entry.kind).is::<T>(), "creating invalid TypedEntry");
-
-		// Safety: the caller upholds invariant that the kind of the entry is `T`, and
-		// `TypedEntry` is `repr(transparent)` so this is safe
+	pub(super) fn new(entry: &Entry) -> &Self {
+		// Safety: `TypedEntry` is `repr(transparent)` and there are no possibilities
+		// for UB as all operations are checked before accessing the inner Kind
+		// variant regardless
 		unsafe { &*std::ptr::from_ref(entry).cast() }
 	}
 
@@ -67,7 +63,7 @@ mod tests {
 			kind: Kind::Module(Module {}),
 		};
 
-		let entry = unsafe { TypedEntry::new(&entry) };
+		let entry = TypedEntry::new(&entry);
 
 		let _module: &Module = entry.get();
 	}
