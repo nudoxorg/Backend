@@ -3,7 +3,9 @@ use std::{path::PathBuf, range::Range};
 use ecow::EcoString;
 
 pub struct NudoxPath;
-pub enum Visibility {}
+pub enum Visibility {
+	Public,
+}
 
 pub struct Symbol {
 	pub name:          EcoString,

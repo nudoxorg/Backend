@@ -41,7 +41,34 @@ impl<T: EntryKind> TypedEntry<T> {
 // helper function to get a &dyn Any from the inner variant of a Kind as &dyn
 // Any, needed because variant_as_dyn returns &dyn EntryKind which doesn't
 // implicitly downcast to &dyn Any for some reason?
-//
-// TODO: ensure that this works as expected through testing, since it could be
-// doing <&dyn EntryKind as &dyn Any> instead of trait upcasting
 fn kind_as_dyn_any(kind: &Kind) -> &dyn Any { kind.variant_as_dyn() }
+
+#[cfg(test)]
+mod tests {
+	use std::path::PathBuf;
+
+	use ecow::EcoVec;
+
+	use super::*;
+	use crate::{arena::{Entry, Node}, kind::Kind, module::Module, symbol::{NudoxPath, Symbol, Visibility}};
+
+	#[test]
+	fn get_allows_typed_access() {
+		let entry = Entry {
+			node: Node { parent: None, children: EcoVec::new() },
+			sym:  Symbol {
+				name:          "test_sym".into(),
+				path:          NudoxPath,
+				visibility:    Visibility::Public,
+				documentation: None,
+				source:        PathBuf::new(),
+				span:          std::range::Range { start: 0, end: 0 },
+			},
+			kind: Kind::Module(Module {}),
+		};
+
+		let entry = unsafe { TypedEntry::new(&entry) };
+
+		let _module: &Module = entry.get();
+	}
+}
