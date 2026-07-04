@@ -7,4 +7,7 @@ license.workspace = true
 [dependencies]
 nonmax = { workspace = true }
 
+[dev-dependencies]
+itertools = { workspace = true }
+
 [features]

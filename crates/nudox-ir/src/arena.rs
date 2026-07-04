@@ -21,9 +21,7 @@ impl EntryArena {
 	{
 		let entries = EntryBuilder::root(self.len(), sym).build(build);
 
-		for entry in entries.iter() {
-			self.entries.push(entry);
-		}
+		self.entries.extend(entries.iter());
 	}
 
 	pub fn len(&self) -> usize { self.entries.len() }
@@ -53,5 +51,20 @@ mod tests {
 			sym:  dummy_symbol("module"),
 			kind: Kind::Module(Module {}),
 		}]);
+
+		arena.create_top_level(dummy_symbol("module_2"), |_| Module {});
+
+		assert_eq!(arena.entries, [
+			Entry {
+				node: Node { parent: None, children: Vec::new() },
+				sym:  dummy_symbol("module"),
+				kind: Kind::Module(Module {}),
+			},
+			Entry {
+				node: Node { parent: None, children: Vec::new() },
+				sym:  dummy_symbol("module_2"),
+				kind: Kind::Module(Module {}),
+			}
+		])
 	}
 }

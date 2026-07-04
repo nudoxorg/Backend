@@ -10,8 +10,9 @@ pub struct EntryIdx<T> {
 }
 
 impl<T> EntryIdx<T> {
-	#[expect(unused)]
-	pub(super) fn new(index: NonMaxUsize) -> Self { EntryIdx { index, _p: PhantomData } }
+	pub(super) fn new(index: usize) -> Self {
+		EntryIdx { index: NonMaxUsize::new(index).unwrap(), _p: PhantomData }
+	}
 
 	pub(super) fn index(self) -> usize { self.index.get() }
 }

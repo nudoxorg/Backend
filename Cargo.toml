@@ -22,6 +22,7 @@ yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
 
+itertools = "0.15"
 nonmax = "0.5"
 
 # nudox-occurrences shared deps
@@ -44,4 +45,3 @@ dotenvy = "0.15"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid"] }
 tokio-test = "0.4"
 insta = { version = "1", features = ["json", "redactions"] }
-
