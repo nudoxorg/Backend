@@ -2,6 +2,8 @@ use std::{fmt, marker::PhantomData};
 
 use nonmax::NonMaxUsize;
 
+use crate::kind::EntryKind;
+
 pub struct EntryIdx<T> {
 	index: NonMaxUsize,
 	_p:    PhantomData<fn() -> T>,
@@ -29,3 +31,14 @@ impl<T> PartialEq for EntryIdx<T> {
 }
 
 impl<T> Eq for EntryIdx<T> {}
+
+pub type RawEntryIdx = EntryIdx<private::UntypedMarker>;
+
+// allow converting to a RawEntryIdx from any typed EntryIdx
+impl<T: EntryKind> From<EntryIdx<T>> for RawEntryIdx {
+	fn from(idx: EntryIdx<T>) -> Self { EntryIdx { index: idx.index, _p: PhantomData } }
+}
+
+mod private {
+	pub struct UntypedMarker;
+}

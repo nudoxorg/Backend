@@ -1,9 +1,7 @@
-use ecow::EcoVec;
-
-use super::EntryIdx;
+use crate::arena::RawEntryIdx;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Node {
-	pub parent:   Option<EntryIdx<()>>,
-	pub children: EcoVec<EntryIdx<()>>,
+	pub parent:   Option<RawEntryIdx>,
+	pub children: Vec<RawEntryIdx>,
 }

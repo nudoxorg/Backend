@@ -1,5 +1,3 @@
-use ecow::EcoString;
-
 use crate::{arena::EntryIdx, ty::Type};
 
 /// A language-level primitive type, independent of any target architecture.
@@ -36,13 +34,13 @@ pub enum Primitive {
 	/// A managed reference with optional lifetime/mutability tracking.
 	/// Ex: `&'a mut T`.
 	Reference {
-		lifetime: Option<EcoString>,
+		lifetime: Option<String>,
 		mutable:  bool,
 		ty:       EntryIdx<Type>,
 	},
 
 	/// An arbitrary primtive type, e.g. Date in JavaScript/TypeScript
-	Builtin(EcoString),
+	Builtin(String),
 }
 
 /// A language-level primitive type, independent of any target architecture.

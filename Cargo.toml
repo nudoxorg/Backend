@@ -22,7 +22,6 @@ yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
 
-ecow = "0.3"
 nonmax = "0.5"
 
 # nudox-occurrences shared deps

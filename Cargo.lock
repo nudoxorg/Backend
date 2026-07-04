@@ -569,7 +569,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f2d24a6dcf0cd402a21b65d35340f3a49ff3475dc5fdac91d22d2733e6641c6"
 dependencies = [
  "capacity_builder_macros",
- "ecow 0.2.6",
+ "ecow",
  "hipstr",
  "itoa",
 ]
@@ -1233,7 +1233,7 @@ checksum = "92d46d2fd6959170a6e9f6607a6f79683868fa82ceac56ca520ab014e4fa5b21"
 dependencies = [
  "capacity_builder",
  "deno_error",
- "ecow 0.2.6",
+ "ecow",
  "hipstr",
  "monch",
  "once_cell",
@@ -1447,12 +1447,6 @@ checksum = "78e4f79b296fbaab6ce2e22d52cb4c7f010fe0ebe7a32e34fa25885fd797bd02"
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "ecow"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62bac48c16a993694c703f2991527d422d9efb8ec5625756004ba30e97683720"
 
 [[package]]
 name = "either"
@@ -4147,7 +4141,6 @@ dependencies = [
 name = "nudox-ir"
 version = "0.1.0"
 dependencies = [
- "ecow 0.3.0",
  "nonmax",
 ]
 

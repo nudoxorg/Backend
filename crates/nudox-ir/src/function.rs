@@ -1,9 +1,7 @@
-use ecow::EcoVec;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
-	pub input_params:  EcoVec<Param>,
-	pub output_params: EcoVec<Param>,
+	pub input_params:  Vec<Param>,
+	pub output_params: Vec<Param>,
 	// TODO: rest
 }
 

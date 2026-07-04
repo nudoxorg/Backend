@@ -43,15 +43,13 @@ fn kind_as_dyn_any(kind: &Kind) -> &dyn Any { kind.variant_as_dyn() }
 mod tests {
 	use std::path::PathBuf;
 
-	use ecow::EcoVec;
-
 	use super::*;
 	use crate::{arena::{Entry, Node}, kind::Kind, module::Module, symbol::{NudoxPath, Symbol, Visibility}};
 
 	#[test]
 	fn get_allows_typed_access() {
 		let entry = Entry {
-			node: Node { parent: None, children: EcoVec::new() },
+			node: Node { parent: None, children: Vec::new() },
 			sym:  Symbol {
 				name:          "test_sym".into(),
 				path:          NudoxPath,

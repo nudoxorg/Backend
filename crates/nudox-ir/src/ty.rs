@@ -1,5 +1,3 @@
-use ecow::EcoVec;
-
 use crate::{arena::EntryIdx, primitive::Primitive};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -13,7 +11,7 @@ pub enum Type {
 
 	/// A fixed-length, heterogeneous collection of types.
 	/// Ex: `(i32, String)`. An empty vec `()` represents the Unit type.
-	Tuple(EcoVec<EntryIdx<Type>>),
+	Tuple(Vec<EntryIdx<Type>>),
 
 	/// A dynamically-sized view into a contiguous sequence.
 	/// Ex: `[u8]` or `[]T`.
@@ -25,11 +23,11 @@ pub enum Type {
 
 	/// An untagged union or sum of types.
 	/// Ex: `string | number`.
-	Union(EcoVec<EntryIdx<Type>>),
+	Union(Vec<EntryIdx<Type>>),
 
 	/// An intersection or combination of types.
 	/// Ex: `Serializable & Cloneable`.
-	Intersection(EcoVec<EntryIdx<Type>>),
+	Intersection(Vec<EntryIdx<Type>>),
 
 	/// Represents a type that cannot exist (Bottom Type).
 	/// Ex: `!` in Rust, `never` in TypeScript, `NoReturn` in Python.
