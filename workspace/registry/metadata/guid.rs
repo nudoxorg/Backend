@@ -8,7 +8,8 @@
 //! instance-independent (they fingerprint coordinates only) and delegate
 //! straight through.
 
-use heart::identity::{EntryUri, SymbolId, PackageCoordinates, PackageId};
+use heart::identity::{EntryUri, SymbolId, PackageId};
+use crate::package::Coordinates as PackageCoordinates;
 
 use crate::index::TerminusInstance;
 

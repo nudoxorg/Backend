@@ -25,7 +25,7 @@ use smol_str::SmolStr;
 use url::Url;
 
 use heart::{
-	AccessContext, Cold, Connect, ConnectError, SymbolId, Live, Scored,
+	Cold, Connect, ConnectError, SymbolId, Live, Scored,
 	StoreError,
 };
 
@@ -79,14 +79,12 @@ pub trait GraphStore: Send + Sync {
 	fn get_occurrences(
 		&self,
 		item: SymbolId,
-		scope: &AccessContext,
 	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send;
 
 	/// Everything that points at `item` (its callers/users), scored and streamed.
 	fn get_references(
 		&self,
 		item: SymbolId,
-		scope: &AccessContext,
 	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send;
 
 	/// If `from` and `to` are directly linked, the [`RelationKind`] of that link;
@@ -95,7 +93,6 @@ pub trait GraphStore: Send + Sync {
 		&self,
 		from: SymbolId,
 		to: SymbolId,
-		scope: &AccessContext,
 	) -> Result<Option<RelationKind>, Self::Error>;
 }
 
@@ -238,10 +235,9 @@ impl GraphStore for Graph<Live> {
 	fn get_occurrences(
 		&self,
 		item: SymbolId,
-		scope: &AccessContext,
 	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send {
-		let _ = (item, scope, &self.client);
-		todo!("WOQL: symbols whose declaration holds `item`, access-filtered");
+		let _ = (item, &self.client);
+		todo!("WOQL: symbols whose declaration holds `item`");
 		#[allow(unreachable_code)]
 		futures::stream::empty()
 	}
@@ -249,10 +245,9 @@ impl GraphStore for Graph<Live> {
 	fn get_references(
 		&self,
 		item: SymbolId,
-		scope: &AccessContext,
 	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send {
-		let _ = (item, scope, &self.client);
-		todo!("WOQL: symbols referencing `item`, access-filtered");
+		let _ = (item, &self.client);
+		todo!("WOQL: symbols referencing `item`");
 		#[allow(unreachable_code)]
 		futures::stream::empty()
 	}
@@ -261,9 +256,8 @@ impl GraphStore for Graph<Live> {
 		&self,
 		from: SymbolId,
 		to: SymbolId,
-		scope: &AccessContext,
 	) -> Result<Option<RelationKind>, Self::Error> {
-		let _ = (from, to, scope, &self.client);
+		let _ = (from, to, &self.client);
 		todo!("WOQL: the edge kind between `from` and `to`, if any")
 	}
 }

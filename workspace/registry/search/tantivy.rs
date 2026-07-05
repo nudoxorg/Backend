@@ -4,7 +4,7 @@
 //! This forms a replica structure that gets a searchable slice of the postgres
 //! store. This makes it disposable and rebuildable!
 
-use heart::{PackageId, access::AccessContext};
+use heart::PackageId;
 use tantivy::{Index, IndexReader};
 
 use crate::{GlobalPackage, error::SearchError};
@@ -51,11 +51,10 @@ impl PackageIndex {
 	/// search runs on spawn_blocking`.
 	pub fn query(
 		&self,
-		ctx: &AccessContext,
 		text: &str,
 		limit: usize,
 	) -> Result<Vec<(PackageId, f32)>, SearchError> {
-		let _ = (&self.reader, ctx, text, limit);
+		let _ = (&self.reader, text, limit);
 		todo!("parse query, collect top-k with scores, project to package ids")
 	}
 

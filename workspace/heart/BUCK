@@ -1,0 +1,23 @@
+load("//build:rust.bzl", "deps", "rust_crate")
+
+rust_crate(
+    name = "heart",
+    deps = deps(crates = [
+        "uuid",
+        "semver",
+        "tower",
+        "nutype",
+        "serde",
+        "thiserror",
+        "blake3",
+        "smol_str",
+        "compact_str",
+        "chrono",
+        "ordered_float",
+        "strum",
+        "data_encoding",
+        "postcard",
+        "uv_pep440",
+        "url",
+    ]),
+)

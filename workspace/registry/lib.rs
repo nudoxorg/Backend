@@ -31,6 +31,7 @@ pub mod identity;
 pub mod index;
 pub mod ingest;
 pub mod metadata;
+pub mod package;
 pub mod persist;
 pub mod queue;
 pub mod resolve;
@@ -38,11 +39,7 @@ pub mod schema;
 pub mod search;
 pub mod store;
 
-use heart::{
-	PackageCoordinates, PackageId, Toolchain, Visibility,
-	access::Tenant,
-	lifecycle::ResolutionState,
-};
+use heart::{PackageId, ResolutionState, Toolchain};
 use serde::{Deserialize, Serialize};
 
 pub use blob::{BlobBuilder, BlobManifest, FileEntry};
@@ -53,33 +50,26 @@ pub use store::Store;
 /// A package as it lives in a single registry/source, before global
 /// syndication.
 ///
-/// Built on [`heart::PackageCoordinates`] rather than a bare `name` + language,
+/// Built on [`crate::package::Coordinates`] rather than a bare `name` + language,
 /// so "the same package" is a deterministic, offline-recomputable fact and the
 /// object-store key layout is derived from a validated address. Carries the
-/// build provenance ([`Toolchain`]), the access dimensions ([`Visibility`] +
-/// owning [`Tenant`]) threaded through every publish/search path.
+/// build provenance ([`Toolchain`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Package {
-	/// The full, validated addressing tuple (origin × name × version).
-	pub coordinates: PackageCoordinates,
+    /// The full, validated addressing tuple (origin × name × version).
+    pub coordinates: crate::package::Coordinates,
 
-	/// The concrete toolchain this package was analyzed against (provenance,
-	/// never identity).
-	pub toolchain: Toolchain,
-
-	/// Who may see this package's records.
-	pub visibility: Visibility,
-
-	/// The tenant that owns this package record.
-	pub owner: Tenant,
+    /// The concrete toolchain this package was analyzed against (provenance,
+    /// never identity).
+    pub toolchain: Toolchain,
 }
 
 impl Package {
-	/// The deterministic, system-wide identity of this package.
-	///
-	/// Delegates to [`PackageCoordinates::id`] — identity is never minted
-	/// locally.
-	pub fn id(&self) -> PackageId { self.coordinates.id() }
+    /// The deterministic, system-wide identity of this package.
+    ///
+    /// Delegates to [`crate::package::Coordinates::id`] — identity is never minted
+    /// locally.
+    pub fn id(&self) -> PackageId { self.coordinates.id() }
 }
 
 /// The final, globally-syndicated package object handed to the global index.
@@ -90,12 +80,12 @@ impl Package {
 /// lives inside [`ResolutionState::Stored`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalPackage {
-	/// The canonical, deterministic global identity of the package.
-	pub id: PackageId,
+    /// The canonical, deterministic global identity of the package.
+    pub id: PackageId,
 
-	/// The per-source record this global package was minted from.
-	pub package: Package,
+    /// The per-source record this global package was minted from.
+    pub package: Package,
 
-	/// Where this package currently sits in the pipeline.
-	pub state: ResolutionState,
+    /// Where this package currently sits in the pipeline.
+    pub state: ResolutionState,
 }

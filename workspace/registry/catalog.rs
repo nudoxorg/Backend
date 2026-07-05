@@ -21,7 +21,7 @@
 use std::marker::PhantomData;
 
 use generativity::{Guard, Id};
-use heart::{Language, access::AccessContext};
+use heart::Language;
 
 use crate::Package;
 
@@ -72,15 +72,15 @@ impl<'brand, const L: Language, P: Plane> Catalog<'brand, L, P> {
 
 	/// Look up a package by name, returning a handle valid only against THIS
 	/// catalog. Threaded through the access layer.
-	pub fn get(&self, ctx: &AccessContext, name: &str) -> Option<PackageHandle<'brand>> {
-		let _ = (self.brand, ctx, name);
-		todo!("access-check then find the package, returning a branded handle")
+	pub fn get(&self, name: &str) -> Option<PackageHandle<'brand>> {
+		let _ = (self.brand, name);
+		todo!("find the package, returning a branded handle")
 	}
 
 	/// Search the catalog, returning branded handles. Available on every plane.
-	pub fn search(&self, ctx: &AccessContext, query: &str) -> Vec<PackageHandle<'brand>> {
-		let _ = (self.brand, ctx, query);
-		todo!("access-filter + search, returning branded handles")
+	pub fn search(&self, query: &str) -> Vec<PackageHandle<'brand>> {
+		let _ = (self.brand, query);
+		todo!("search, returning branded handles")
 	}
 
 	/// Resolve a handle THIS catalog issued into the package it points at.
@@ -94,8 +94,8 @@ impl<'brand, const L: Language, P: Mutable> Catalog<'brand, L, P> {
 	/// Publish a package into this ecosystem's catalog, returning a branded
 	/// handle. Only reachable on a [`Mutable`] plane. Threaded through the access
 	/// layer.
-	pub fn publish(&self, ctx: &AccessContext, package: Package) -> PackageHandle<'brand> {
-		let _ = (self.brand, ctx, package);
-		todo!("access-check write, publish into this ecosystem's catalog, return branded handle")
+	pub fn publish(&self, package: Package) -> PackageHandle<'brand> {
+		let _ = (self.brand, package);
+		todo!("publish into this ecosystem's catalog, return branded handle")
 	}
 }

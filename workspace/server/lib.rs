@@ -130,9 +130,6 @@ impl<M: EmbeddingModel> Server<M> {
 	/// The definitive base source's stores — the common single-source path.
 	pub fn base(&self) -> &SourceStores<M> { self.federation.base() }
 
-	/// The access policy.
-	pub fn policy(&self) -> &Arc<dyn AccessPolicy> { &self.policy }
-
 	// ── Convenience accessors delegating to the definitive base. Federated flows
 	// use `federation()` to walk overlays-then-base; single-source flows use these.
 

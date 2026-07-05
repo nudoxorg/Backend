@@ -21,11 +21,10 @@
 use std::sync::Arc;
 
 use heart::{
-	Cold, Connect, ConnectError, Live,
-	access::AccessContext,
+	Cold, Connect, ConnectError, Live, PackageId,
 	content::ContentHash,
-	identity::{PackageCoordinates, PackageId},
 };
+use crate::package::Coordinates as PackageCoordinates;
 use object_store::{ObjectStore, path::Path};
 
 use crate::{
@@ -108,10 +107,9 @@ impl Store<Live> {
 	/// package's `ptr/` to it. Threaded through the access layer.
 	pub async fn put_manifest(
 		&self,
-		ctx: &AccessContext,
 		manifest: &BlobManifest,
 	) -> Result<ContentHash, StoreError> {
-		let _ = (&self.backend, ctx, manifest);
+		let _ = (&self.backend, manifest);
 		todo!("serialize+hash manifest, idempotent-put to cas/, atomically repoint ptr/")
 	}
 
@@ -119,10 +117,9 @@ impl Store<Live> {
 	/// manifest hash and fetching it.
 	pub async fn get_manifest(
 		&self,
-		ctx: &AccessContext,
 		package: &PackageCoordinates,
 	) -> Result<BlobManifest, StoreError> {
-		let _ = (&self.backend, ctx, package);
+		let _ = (&self.backend, package);
 		todo!("read ptr/ -> manifest hash, get_section, deserialize into BlobManifest")
 	}
 

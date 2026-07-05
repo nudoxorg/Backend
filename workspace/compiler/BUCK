@@ -1,0 +1,31 @@
+load("//build:rust.bzl", "deps", "rust_crate")
+
+rust_crate(
+    name = "compiler",
+    srcs = native.glob(["**/*.rs"], exclude = ["intermediate-representation/**"]),
+    deps = deps(
+        members = ["heart", "ir", "registry"],
+        crates = [
+            "serde",
+            "serde_json",
+            "anyhow",
+            "thiserror",
+            "tracing",
+            "bytes",
+            "flate2",
+            "tar",
+            "reqwest",
+            "uv_pep440",
+            "uv_pep508",
+            "terminusdb_schema",
+            "terminusdb_schema_derive",
+            "pyrefly",
+            "pyrefly_types",
+            "pyrefly_build",
+            "pyrefly_python",
+            "pyrefly_config",
+            "pyrefly_util",
+            "ruff_python_ast",
+        ],
+    ),
+)

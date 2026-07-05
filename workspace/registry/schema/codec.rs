@@ -14,12 +14,10 @@
 //! would fail to decode.
 
 use heart::{
-	Visibility,
-	access::Tenant,
+	Failure, Phase, ResolutionState,
 	content::ContentHash,
 	ecosystem::Language,
-	identity::{Id, SymbolId, PackageId},
-	lifecycle::{Failure, Phase, ResolutionState},
+	identity::{SymbolId, PackageId},
 };
 use uuid::Uuid;
 
@@ -71,29 +69,6 @@ pub fn package_id_from_uuid(uuid: Uuid) -> PackageId {
 /// The raw uuid backing a [`SymbolId`].
 pub fn symbol_id_to_uuid(id: SymbolId) -> Uuid { *id.as_uuid() }
 
-/// The raw uuid backing a [`Tenant`].
-pub fn tenant_to_uuid(t: Tenant) -> Uuid { *t.id().as_uuid() }
-
-/// Reconstruct a [`Tenant`] from its uuid + kind token.
-pub fn tenant_from_parts(uuid: Uuid, kind: &str) -> Result<Tenant, CodecError> {
-	let id: Id<Tenant> = Id::from_uuid(uuid);
-	match kind {
-		"individual" => Ok(Tenant::Individual(id)),
-		"enterprise" => Ok(Tenant::Enterprise(id)),
-		other => Err(CodecError::UnknownDiscriminant {
-			domain: "tenant kind",
-			value: other.to_owned(),
-		}),
-	}
-}
-
-/// The `owner_kind` token for a tenant.
-pub fn tenant_kind_token(t: Tenant) -> &'static str {
-	match t {
-		Tenant::Individual(_) => "individual",
-		Tenant::Enterprise(_) => "enterprise",
-	}
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // bytea ↔ content hash / generation
@@ -131,28 +106,6 @@ pub fn ecosystem_from_token(token: &str) -> Result<Language, CodecError> {
 		"python" => Ok(Language::Python),
 		other => Err(CodecError::UnknownDiscriminant {
 			domain: "ecosystem",
-			value: other.to_owned(),
-		}),
-	}
-}
-
-/// The token for a [`Visibility`].
-pub fn visibility_token(v: Visibility) -> &'static str {
-	match v {
-		Visibility::Personal => "personal",
-		Visibility::Private => "private",
-		Visibility::Public => "public",
-	}
-}
-
-/// Reconstruct a [`Visibility`] from its token.
-pub fn visibility_from_token(token: &str) -> Result<Visibility, CodecError> {
-	match token {
-		"personal" => Ok(Visibility::Personal),
-		"private" => Ok(Visibility::Private),
-		"public" => Ok(Visibility::Public),
-		other => Err(CodecError::UnknownDiscriminant {
-			domain: "visibility",
 			value: other.to_owned(),
 		}),
 	}

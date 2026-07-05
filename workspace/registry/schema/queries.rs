@@ -26,13 +26,12 @@ use crate::{
 };
 
 use heart::{
-	Visibility,
-	access::Tenant,
+	ResolutionState, SymbolKind,
 	content::ContentHash,
 	ecosystem::Toolchain,
-	identity::{SymbolId, PackageCoordinates, PackageId},
-	lifecycle::ResolutionState,
+	identity::{SymbolId, PackageId},
 };
+use crate::package::Coordinates as PackageCoordinates;
 use strum::IntoEnumIterator;
 
 /// The Postgres flavour every statement is rendered + bound against.
@@ -55,8 +54,6 @@ pub mod index {
 	pub fn upsert_package(
 		coords: &PackageCoordinates,
 		toolchain: &Toolchain,
-		visibility: Visibility,
-		owner: Tenant,
 	) -> Result<(String, SqlxValues), codec::CodecError> {
 		let id = codec::package_id_to_uuid(coords.id());
 		let ecosystem = codec::ecosystem_token(coords.ecosystem());
@@ -65,8 +62,6 @@ pub mod index {
 		let name_original = coords.name.original().to_string();
 		let version_canonical = coords.version.canonical();
 		let toolchain_json = codec::toolchain_to_json(toolchain)?;
-		let owner_uuid = codec::tenant_to_uuid(owner);
-		let owner_kind = codec::tenant_kind_token(owner);
 
 		let (sql, values) = Query::insert()
 			.into_table(Packages::Table)
@@ -77,9 +72,6 @@ pub mod index {
 				Packages::NameCanonical,
 				Packages::NameOriginal,
 				Packages::VersionCanonical,
-				Packages::Visibility,
-				Packages::OwnerTenant,
-				Packages::OwnerKind,
 				Packages::Toolchain,
 			])
 			.values_panic([
@@ -89,18 +81,12 @@ pub mod index {
 				name_canonical.into(),
 				name_original.into(),
 				version_canonical.into(),
-				codec::visibility_token(visibility).into(),
-				owner_uuid.into(),
-				owner_kind.into(),
 				toolchain_json.into(),
 			])
 			.on_conflict(
 				sea_query::OnConflict::column(Packages::Id)
 					.update_columns([
 						Packages::NameOriginal,
-						Packages::Visibility,
-						Packages::OwnerTenant,
-						Packages::OwnerKind,
 						Packages::Toolchain,
 					])
 					.value(Packages::UpdatedAt, Expr::current_timestamp())

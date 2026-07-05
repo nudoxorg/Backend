@@ -29,7 +29,7 @@ use std::{
 
 use futures::Stream;
 use heart::{
-	AccessContext, BackendKind, Cold, Connect, ConnectError, Cursor, Live, Retryable, Scored,
+	BackendKind, Cold, Connect, ConnectError, Cursor, Live, Retryable, Scored,
 	Symbol, SymbolId,
 };
 use qdrant_client::Qdrant;
@@ -175,31 +175,24 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 		gate: SemanticGate,
 		query: &Embedding<M>,
 		limit: NonZeroUsize,
-		scope: &AccessContext,
 		after: Option<Cursor<SemanticCursorKey>>,
 	) -> Result<impl Stream<Item = Result<Scored<SymbolId>, VectorError>> + Send, VectorError> {
-		let _ = (gate, query, limit, scope, after, &self.client);
+		let _ = (gate, query, limit, after, &self.client);
 		todo!("build a qdrant search with access + keyset filters, stream Scored<SymbolId>");
 		#[allow(unreachable_code)]
 		Ok(futures::stream::empty())
 	}
 
-	/// A retrying single-point [`heart::Sink`] over this store.
-	pub fn sink(&self) -> heart::Sink<VectorSink<M>> { heart::Sink::new(self.uploader()) }
-
-	/// A retrying bulk [`heart::BatchSink`] over this store — qdrant ingests
-	/// points in bulk, so prefer this for backfills.
-	pub fn batch_sink(&self) -> heart::BatchSink<VectorSink<M>> {
-		heart::BatchSink::new(self.uploader())
-	}
-
-	fn uploader(&self) -> VectorSink<M> {
+	/// The tower [`Service`] for this store; use [`heart::sink::SinkExt`] methods
+	/// to get retry-aware delivery.
+	pub fn uploader(&self) -> VectorSink<M> {
 		VectorSink {
 			client:     Arc::clone(&self.client),
 			collection: self.collection.clone(),
 			_model:     PhantomData,
 		}
 	}
+
 }
 
 /// The upsert path expressed as a cloneable [`tower::Service`], so wrapping it in

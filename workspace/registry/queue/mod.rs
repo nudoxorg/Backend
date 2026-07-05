@@ -12,8 +12,8 @@ use std::{num::NonZeroU32, time::Duration};
 
 use chrono::{DateTime, Utc};
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId,
-	lifecycle::{FailureKind, ResolutionState},
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, FailureKind, Live, PackageId,
+	ResolutionState,
 };
 use sqlx::{Row, postgres::PgRow};
 
@@ -152,7 +152,7 @@ fn row_to_job(row: &PgRow) -> Result<Job, QueueError> {
 	// re-enqueueable `Unindexed` state unless it is a richer stored/failed form
 	// the worker will overwrite on its next transition anyway.
 	let state = match state_tok.as_str() {
-		"progressing" => ResolutionState::Progressing(heart::lifecycle::Phase::Acquiring),
+		"progressing" => ResolutionState::Progressing(heart::Phase::Acquiring),
 		_ => ResolutionState::Unindexed { needed: false },
 	};
 

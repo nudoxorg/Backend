@@ -23,7 +23,8 @@ pub mod tar;
 
 use std::path::PathBuf;
 
-use heart::{ContentHash, PackageCoordinates, Toolchain};
+use heart::{ContentHash, Toolchain};
+use registry::identity::PackageCoordinates;
 use ir::entry::Index;
 
 pub use blob_info::BlobInfo;

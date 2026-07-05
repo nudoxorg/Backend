@@ -12,9 +12,8 @@
 use std::time::Duration;
 
 use heart::{
-	BackendKind, ConnectError, PackageId, Retryable,
+	BackendKind, ConnectError, FailureKind, PackageId, Retryable,
 	content::ContentHash,
-	lifecycle::FailureKind,
 };
 use thiserror::Error;
 
@@ -199,7 +198,7 @@ pub enum IngestError {
 
 impl IngestError {
 	/// The lifecycle failure class this error records into
-	/// [`heart::lifecycle::Failure`].
+	/// [`heart::Failure`].
 	pub const fn failure_kind(&self) -> FailureKind {
 		match self {
 			IngestError::Unsafe(_) => FailureKind::Unsafe,

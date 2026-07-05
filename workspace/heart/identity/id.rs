@@ -1,19 +1,12 @@
 //! The one identifier constructor for the whole system.
-//!
-//! Everything identifiable is an [`Id<T>`] — a UUID branded with a phantom tag so
-//! a package id can never be mixed up with a symbol id, yet all ids share one
-//! construction/derivation surface. Domain aliases (`PackageId`, `SymbolId`,
-//! `SourceId`, ...) are just `Id<Thing>`; there are no per-entity newtypes
-//! re-implementing `as_uuid`/`from_uuid`/derivation.
 
 use std::{fmt, marker::PhantomData};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// A globally-unique, type-tagged identifier. The tag `T` exists only in the type
-/// system (via `PhantomData<fn() -> T>`, which keeps `Id<T>: Send + Sync` for any
-/// `T`); it never affects equality, ordering, or the wire encoding.
+/// Strongly-typed id: named by phantom `T` so ids for different entity kinds
+/// are incompatible at the type level.
 pub struct Id<T>(Uuid, PhantomData<fn() -> T>);
 
 impl<T> Id<T> {

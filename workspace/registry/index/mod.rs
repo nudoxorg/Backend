@@ -12,12 +12,11 @@
 //! id is recomputable offline against the same [`TerminusInstance`].
 
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live,
-	access::AccessContext,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, ResolutionState,
 	content::ContentHash,
-	identity::{EntryUri, SymbolId, PackageCoordinates, PackageId},
-	lifecycle::ResolutionState,
+	identity::{EntryUri, SymbolId, PackageId},
 };
+use crate::package::Coordinates as PackageCoordinates;
 use sqlx::{Row, postgres::PgRow};
 
 use crate::{
@@ -126,14 +125,11 @@ impl GlobalStore<Live> {
 	/// never has identity without a lifecycle row (or vice versa).
 	pub async fn upsert(
 		&self,
-		_ctx: &AccessContext,
 		package: &GlobalPackage,
 	) -> Result<(), IndexError> {
 		let (id_sql, id_vals) = queries::index::upsert_package(
 			&package.package.coordinates,
 			&package.package.toolchain,
-			package.package.visibility,
-			package.package.owner,
 		)
 		.map_err(codec_to_index)?;
 		let (st_sql, st_vals) =
@@ -156,7 +152,6 @@ impl GlobalStore<Live> {
 	/// `Stored`). The state machine's only mutator.
 	pub async fn set_state(
 		&self,
-		_ctx: &AccessContext,
 		package: PackageId,
 		state: &ResolutionState,
 	) -> Result<(), IndexError> {
@@ -187,7 +182,6 @@ impl GlobalStore<Live> {
 	/// Fetch a package's current lifecycle [`ResolutionState`] from `parse_status`.
 	pub async fn get_state(
 		&self,
-		_ctx: &AccessContext,
 		package: PackageId,
 	) -> Result<ResolutionState, IndexError> {
 		let (sql, vals) = queries::index::get_state(package);
@@ -202,14 +196,13 @@ impl GlobalStore<Live> {
 	/// Fetch a package's current global record.
 	pub async fn get(
 		&self,
-		ctx: &AccessContext,
 		package: PackageId,
 	) -> Result<GlobalPackage, IndexError> {
 		// The lifecycle half is fully reconstructable from `parse_status`; the
 		// identity half requires rebuilding `PackageCoordinates`, whose heart
 		// constructors (`PackageName::new`, `PackageVersion::parse`, ...) are still
 		// stubbed, so that projection is the remaining glue.
-		let _state = self.get_state(ctx, package).await?;
+		let _state = self.get_state(package).await?;
 		todo!("rebuild PackageCoordinates + Package from the packages row once heart's constructors land")
 	}
 

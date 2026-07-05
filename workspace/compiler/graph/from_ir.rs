@@ -13,11 +13,12 @@ use ir::kind::Visibility as IrVis;
 
 use super::model as m;
 
-// ───────────────────────────── identity ─────────────────────────────
-
 fn path_segments(p: &NudoxPath) -> Vec<String> {
-    let comps =
-        |pb: &std::path::Path| pb.iter().map(|c| c.to_string_lossy().into_owned()).collect::<Vec<_>>();
+    let comps = |pb: &std::path::Path| {
+        pb.iter()
+            .map(|c| c.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
     match p {
         NudoxPath::Local(pb) => comps(pb),
         NudoxPath::External { path, dependency } => {
@@ -33,14 +34,16 @@ fn path_string(p: &NudoxPath) -> String {
 }
 
 fn paths_set(ps: &Option<Vec<NudoxPath>>) -> BTreeSet<String> {
-    ps.as_deref().unwrap_or(&[]).iter().map(path_string).collect()
+    ps.as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(path_string)
+        .collect()
 }
 
 fn opt_slice<T>(o: &Option<Vec<T>>) -> &[T] {
     o.as_deref().unwrap_or(&[])
 }
-
-// ───────────────────────────── leaf enums ─────────────────────────────
 
 fn visibility(v: &IrVis) -> m::Visibility {
     match v {
@@ -182,12 +185,18 @@ fn unary_op(o: &ir::generics::UnaryOp) -> m::UnaryOp {
 fn ty_reference(tr: &ir::ty::TypeReference) -> m::TyReference {
     m::TyReference {
         identifier: tr.identifier.clone(),
-        generic_args: opt_slice(&tr.generic_args).iter().map(generic_arg).collect(),
+        generic_args: opt_slice(&tr.generic_args)
+            .iter()
+            .map(generic_arg)
+            .collect(),
     }
 }
 
 fn poly_trait(p: &ir::ty::PolyTrait) -> m::PolyTrait {
-    m::PolyTrait { trait_ref: trait_ref(&p.trait_ref), lifetimes: p.lifetimes.clone() }
+    m::PolyTrait {
+        trait_ref: trait_ref(&p.trait_ref),
+        lifetimes: p.lifetimes.clone(),
+    }
 }
 
 fn type_(t: &ir::ty::Type) -> m::Type {
@@ -214,36 +223,48 @@ fn type_(t: &ir::ty::Type) -> m::Type {
         T::Tuple(v) => m::Type::Tuple(m::TyTuple { types: types(v) }),
         T::RecordLiteral(r) => m::Type::RecordLiteral(record(r)),
         T::Slice(i) => m::Type::Slice(m::TySlice { inner: bx(i) }),
-        T::Array { r#type, length } => {
-            m::Type::Array(m::TyArray { element: bx(r#type), length: *length as i64 })
-        }
-        T::ImplTrait(b) => {
-            m::Type::ImplTrait(m::TyImplTrait { bounds: b.iter().map(generic_bound).collect() })
-        }
+        T::Array { r#type, length } => m::Type::Array(m::TyArray {
+            element: bx(r#type),
+            length: *length as i64,
+        }),
+        T::ImplTrait(b) => m::Type::ImplTrait(m::TyImplTrait {
+            bounds: b.iter().map(generic_bound).collect(),
+        }),
         T::Infer => m::Type::Infer,
         T::Never => m::Type::Never,
         T::Any => m::Type::Any,
-        T::RawPointer { is_mutable, r#type } => {
-            m::Type::RawPointer(m::TyRawPointer { is_mutable: *is_mutable, target: bx(r#type) })
-        }
-        T::BorrowedRef { lifetime, is_mutable, r#type } => m::Type::BorrowedRef(m::TyBorrowedRef {
+        T::RawPointer { is_mutable, r#type } => m::Type::RawPointer(m::TyRawPointer {
+            is_mutable: *is_mutable,
+            target: bx(r#type),
+        }),
+        T::BorrowedRef {
+            lifetime,
+            is_mutable,
+            r#type,
+        } => m::Type::BorrowedRef(m::TyBorrowedRef {
             lifetime: lifetime.clone(),
             is_mutable: *is_mutable,
             target: bx(r#type),
         }),
         T::Union(v) => m::Type::Union(m::TyUnion { types: types(v) }),
         T::Intersection(v) => m::Type::Intersection(m::TyIntersection { types: types(v) }),
-        T::Sum(vs) => m::Type::Sum(m::TySum { variants: vs.iter().map(sum_variant).collect() }),
+        T::Sum(vs) => m::Type::Sum(m::TySum {
+            variants: vs.iter().map(sum_variant).collect(),
+        }),
         T::QualifiedPath(q) => m::Type::QualifiedPath(m::QualifiedPath {
             name: q.name.clone(),
-            generic_arguments: opt_slice(&q.generic_arguments).iter().map(generic_arg).collect(),
+            generic_arguments: opt_slice(&q.generic_arguments)
+                .iter()
+                .map(generic_arg)
+                .collect(),
             self_type: bx(&q.self_type),
             tr: q.tr.as_ref().map(ty_reference),
         }),
         T::Variadic(i) => m::Type::Variadic(m::TyVariadic { inner: bx(i) }),
-        T::TypeOperator(o) => {
-            m::Type::TypeOperator(m::TypeOperator { operator: o.operator.clone(), target: bx(&o.r#type) })
-        }
+        T::TypeOperator(o) => m::Type::TypeOperator(m::TypeOperator {
+            operator: o.operator.clone(),
+            target: bx(&o.r#type),
+        }),
         T::Conditional(c) => m::Type::Conditional(m::ConditionalType {
             check_type: bx(&c.check_type),
             extends_type: bx(&c.extends_type),
@@ -262,7 +283,9 @@ fn type_(t: &ir::ty::Type) -> m::Type {
             asserts: p.asserts,
             subject: match &p.subject {
                 ir::ty::PredicateSubject::This => m::PredicateSubject::This,
-                ir::ty::PredicateSubject::Identifier(s) => m::PredicateSubject::Identifier(s.clone()),
+                ir::ty::PredicateSubject::Identifier(s) => {
+                    m::PredicateSubject::Identifier(s.clone())
+                }
             },
             target: p.r#type.as_ref().map(|t| bx(t)),
         }),
@@ -280,12 +303,15 @@ fn const_expr(c: &ir::generics::ConstExpr) -> m::ConstExpr {
         C::Bool(b) => m::ConstExpr::Bool(*b),
         C::Str(s) => m::ConstExpr::Str(s.clone()),
         C::Var(s) => m::ConstExpr::Var(m::ConstVar { name: s.clone() }),
-        C::BinOp { op, lhs, rhs } => {
-            m::ConstExpr::BinOp(m::ConstBinOp { op: bin_op(op), lhs: bx(lhs), rhs: bx(rhs) })
-        }
-        C::UnaryOp { op, operand } => {
-            m::ConstExpr::UnaryOp(m::ConstUnaryOp { op: unary_op(op), operand: bx(operand) })
-        }
+        C::BinOp { op, lhs, rhs } => m::ConstExpr::BinOp(m::ConstBinOp {
+            op: bin_op(op),
+            lhs: bx(lhs),
+            rhs: bx(rhs),
+        }),
+        C::UnaryOp { op, operand } => m::ConstExpr::UnaryOp(m::ConstUnaryOp {
+            op: unary_op(op),
+            operand: bx(operand),
+        }),
         C::Call { func, args } => m::ConstExpr::Call(m::ConstCall {
             func: func.clone(),
             args: args.iter().map(const_expr).collect(),
@@ -303,19 +329,26 @@ fn kind(k: &ir::generics::Kind) -> m::Kind {
         K::Type => m::Kind::Type,
         K::Constraint => m::Kind::Constraint,
         K::Row => m::Kind::Row,
-        K::Arrow(a, b) => {
-            m::Kind::Arrow(m::KindArrow { from: Box::new(kind(a)), to: Box::new(kind(b)) })
-        }
+        K::Arrow(a, b) => m::Kind::Arrow(m::KindArrow {
+            from: Box::new(kind(a)),
+            to: Box::new(kind(b)),
+        }),
         K::Var(s) => m::Kind::Var(s.clone()),
     }
 }
 
 fn type_expr(t: &ir::generics::TypeExpr) -> m::TypeExpr {
-    m::TypeExpr { name: t.name.clone(), args: t.args.iter().map(type_expr).collect() }
+    m::TypeExpr {
+        name: t.name.clone(),
+        args: t.args.iter().map(type_expr).collect(),
+    }
 }
 
 fn trait_ref(tr: &ir::generics::TraitRef) -> m::TraitRef {
-    m::TraitRef { name: tr.name.clone(), args: tr.args.iter().map(type_expr).collect() }
+    m::TraitRef {
+        name: tr.name.clone(),
+        args: tr.args.iter().map(type_expr).collect(),
+    }
 }
 
 fn generic_arg(a: &ir::generics::GenericArg) -> m::GenericArg {
@@ -340,28 +373,45 @@ fn generic_bound(b: &ir::protocols::GenericBound) -> m::GenericBound {
 fn term(t: &ir::generics::Term) -> m::Term {
     use ir::generics::Term as T;
     match t {
-        T::Equality(ty) => m::Term::Equality(m::TypeBox { inner: Box::new(type_(ty)) }),
-        T::Bound(cs) => m::Term::Bound(m::TermBound { constraints: cs.iter().map(constraint).collect() }),
+        T::Equality(ty) => m::Term::Equality(m::TypeBox {
+            inner: Box::new(type_(ty)),
+        }),
+        T::Bound(cs) => m::Term::Bound(m::TermBound {
+            constraints: cs.iter().map(constraint).collect(),
+        }),
     }
 }
 
 fn constraint(c: &ir::generics::Constraint) -> m::Constraint {
     use ir::generics::Constraint as C;
     match c {
-        C::TraitBound { param, trait_ref: tr } => {
-            m::Constraint::TraitBound(m::CTraitBound { param: param.clone(), trait_ref: trait_ref(tr) })
-        }
-        C::AssociatedTypeBound { param, assoc_name, bound } => {
-            m::Constraint::AssociatedTypeBound(m::CAssocTypeBound {
+        C::TraitBound {
+            param,
+            trait_ref: tr,
+        } => m::Constraint::TraitBound(m::CTraitBound {
+            param: param.clone(),
+            trait_ref: trait_ref(tr),
+        }),
+        C::AssociatedTypeBound {
+            param,
+            assoc_name,
+            bound,
+        } => m::Constraint::AssociatedTypeBound(m::CAssocTypeBound {
+            param: param.clone(),
+            assoc_name: assoc_name.clone(),
+            bound: type_expr(bound),
+        }),
+        C::HigherKindedBound { param, kind: k } => {
+            m::Constraint::HigherKindedBound(m::CHigherKinded {
                 param: param.clone(),
-                assoc_name: assoc_name.clone(),
-                bound: type_expr(bound),
+                kind: kind(k),
             })
         }
-        C::HigherKindedBound { param, kind: k } => {
-            m::Constraint::HigherKindedBound(m::CHigherKinded { param: param.clone(), kind: kind(k) })
-        }
-        C::AssociatedItem { name, args, term: t } => m::Constraint::AssociatedItem(m::CAssocItem {
+        C::AssociatedItem {
+            name,
+            args,
+            term: t,
+        } => m::Constraint::AssociatedItem(m::CAssocItem {
             name: name.clone(),
             args: opt_slice(args).iter().map(generic_arg).collect(),
             term: term(t),
@@ -374,18 +424,23 @@ fn constraint(c: &ir::generics::Constraint) -> m::Constraint {
             param: param.clone(),
             expr: const_expr(expr),
         }),
-        C::LogicalPredicate { pred } => {
-            m::Constraint::LogicalPredicate(m::CLogicalPredicate { predicate_expr: format!("{pred:?}") })
-        }
-        C::FunctionalDependency { sources, determined } => {
-            m::Constraint::FunctionalDependency(m::CFunctionalDependency {
-                sources: sources.clone(),
-                determined: determined.clone(),
-            })
-        }
-        C::ImplicitBound { param, trait_ref: tr } => {
-            m::Constraint::ImplicitBound(m::CImplicitBound { param: param.clone(), trait_ref: trait_ref(tr) })
-        }
+        C::LogicalPredicate { pred } => m::Constraint::LogicalPredicate(m::CLogicalPredicate {
+            predicate_expr: format!("{pred:?}"),
+        }),
+        C::FunctionalDependency {
+            sources,
+            determined,
+        } => m::Constraint::FunctionalDependency(m::CFunctionalDependency {
+            sources: sources.clone(),
+            determined: determined.clone(),
+        }),
+        C::ImplicitBound {
+            param,
+            trait_ref: tr,
+        } => m::Constraint::ImplicitBound(m::CImplicitBound {
+            param: param.clone(),
+            trait_ref: trait_ref(tr),
+        }),
     }
 }
 
@@ -414,9 +469,10 @@ fn parameter(p: &ir::parameter::Parameter) -> m::Parameter {
             ty: type_expr(&c.r#type),
             default_value: c.default_value.as_ref().map(const_expr),
         }),
-        P::Lifetime(l) => {
-            m::Parameter::Lifetime(m::LifetimeParam { name: l.name.clone(), variance: variance(&l.variance) })
-        }
+        P::Lifetime(l) => m::Parameter::Lifetime(m::LifetimeParam {
+            name: l.name.clone(),
+            variance: variance(&l.variance),
+        }),
         P::Dependent(d) => m::Parameter::Dependent(m::DependentParam {
             name: d.name.clone(),
             ty: type_expr(&d.r#type),
@@ -451,7 +507,10 @@ fn record(r: &ir::record::Record) -> m::Record {
         call_signatures: opt_slice(&r.call_signatures).iter().map(function).collect(),
         constructors: opt_slice(&r.constructors).iter().map(function).collect(),
         methods: opt_slice(&r.methods).iter().map(function).collect(),
-        index_signatures: opt_slice(&r.index_signatures).iter().map(index_signature).collect(),
+        index_signatures: opt_slice(&r.index_signatures)
+            .iter()
+            .map(index_signature)
+            .collect(),
         super_types: opt_slice(&r.super_types).iter().map(type_).collect(),
     }
 }
@@ -508,10 +567,12 @@ fn sum_variant(v: &ir::record::SumVariant) -> m::SumVariant {
 fn sum_field(s: &ir::record::SumField) -> m::SumField {
     use ir::record::SumField as S;
     match s {
-        S::Tuple(ts) => m::SumField::Tuple(m::SumFieldTuple { types: ts.iter().map(type_).collect() }),
-        S::StructLike(fs) => {
-            m::SumField::StructLike(m::SumFieldStruct { fields: fs.iter().map(field).collect() })
-        }
+        S::Tuple(ts) => m::SumField::Tuple(m::SumFieldTuple {
+            types: ts.iter().map(type_).collect(),
+        }),
+        S::StructLike(fs) => m::SumField::StructLike(m::SumFieldStruct {
+            fields: fs.iter().map(field).collect(),
+        }),
     }
 }
 
@@ -519,8 +580,14 @@ fn sum_field(s: &ir::record::SumField) -> m::SumField {
 
 fn function(f: &ir::function::Function) -> m::Function {
     m::Function {
-        input_parameters: opt_slice(&f.input_parameters).iter().map(parameter).collect(),
-        output_parameters: opt_slice(&f.output_parameters).iter().map(parameter).collect(),
+        input_parameters: opt_slice(&f.input_parameters)
+            .iter()
+            .map(parameter)
+            .collect(),
+        output_parameters: opt_slice(&f.output_parameters)
+            .iter()
+            .map(parameter)
+            .collect(),
         attributes: opt_slice(&f.attributes).iter().map(function_attr).collect(),
         generics: f.generics.as_ref().map(generics),
         receiver: f.receiver.as_ref().map(receiver_kind),
@@ -578,17 +645,35 @@ fn trait_def(d: &ir::protocols::TraitDef) -> m::TraitDef {
     m::TraitDef {
         generics: d.generics.as_ref().map(generics),
         super_traits: opt_slice(&d.super_traits).iter().map(trait_ref).collect(),
-        associated_types: opt_slice(&d.associated_types).iter().map(associated_type).collect(),
+        associated_types: opt_slice(&d.associated_types)
+            .iter()
+            .map(associated_type)
+            .collect(),
         properties: opt_slice(&d.properties).iter().map(field).collect(),
-        required_methods: opt_slice(&d.required_methods).iter().map(trait_method).collect(),
-        provided_methods: opt_slice(&d.provided_methods).iter().map(trait_method).collect(),
-        required_constants: opt_slice(&d.required_constants).iter().map(trait_constant).collect(),
-        attributes: opt_slice(&d.attributes).iter().map(trait_attribute).collect(),
+        required_methods: opt_slice(&d.required_methods)
+            .iter()
+            .map(trait_method)
+            .collect(),
+        provided_methods: opt_slice(&d.provided_methods)
+            .iter()
+            .map(trait_method)
+            .collect(),
+        required_constants: opt_slice(&d.required_constants)
+            .iter()
+            .map(trait_constant)
+            .collect(),
+        attributes: opt_slice(&d.attributes)
+            .iter()
+            .map(trait_attribute)
+            .collect(),
     }
 }
 
 fn associated_type_impl(a: &ir::protocols::AssociatedTypeImpl) -> m::AssociatedTypeImpl {
-    m::AssociatedTypeImpl { name: a.name.clone(), ty: Box::new(type_(&a.r#type)) }
+    m::AssociatedTypeImpl {
+        name: a.name.clone(),
+        ty: Box::new(type_(&a.r#type)),
+    }
 }
 
 fn trait_impl(i: &ir::protocols::TraitImpl) -> m::TraitImpl {
@@ -596,10 +681,19 @@ fn trait_impl(i: &ir::protocols::TraitImpl) -> m::TraitImpl {
         tr: trait_ref(&i.tr),
         for_type: Box::new(type_(&i.for_type)),
         generics: i.generics.as_ref().map(generics),
-        where_constraints: opt_slice(&i.where_constraints).iter().map(constraint).collect(),
+        where_constraints: opt_slice(&i.where_constraints)
+            .iter()
+            .map(constraint)
+            .collect(),
         methods: opt_slice(&i.methods).iter().map(function).collect(),
-        associated_types: opt_slice(&i.associated_types).iter().map(associated_type_impl).collect(),
-        associated_constants: opt_slice(&i.associated_constants).iter().map(trait_constant).collect(),
+        associated_types: opt_slice(&i.associated_types)
+            .iter()
+            .map(associated_type_impl)
+            .collect(),
+        associated_constants: opt_slice(&i.associated_constants)
+            .iter()
+            .map(trait_constant)
+            .collect(),
         is_negative: i.is_negative,
         is_blanket: i.is_blanket,
         is_unsafe: i.is_unsafe,
@@ -609,13 +703,16 @@ fn trait_impl(i: &ir::protocols::TraitImpl) -> m::TraitImpl {
 // ───────────────────────────── the Entry ─────────────────────────────
 
 /// `(structural kind, visibility, member paths, implemented-protocol paths)`.
-fn project_kind(
-    e: &ir::kind::Entry,
-) -> (m::KindData, &IrVis, BTreeSet<String>, BTreeSet<String>) {
+fn project_kind(e: &ir::kind::Entry) -> (m::KindData, &IrVis, BTreeSet<String>, BTreeSet<String>) {
     use ir::kind::Entry as E;
     let empty = BTreeSet::new;
     match e {
-        E::Module(s) => (m::KindData::Module, &s.visibility, paths_set(&s.inner.members), empty()),
+        E::Module(s) => (
+            m::KindData::Module,
+            &s.visibility,
+            paths_set(&s.inner.members),
+            empty(),
+        ),
         E::RecordType(s) => (
             m::KindData::RecordType(record(&s.inner)),
             &s.visibility,
@@ -623,25 +720,37 @@ fn project_kind(
             paths_set(&s.inner.implemented_protocols),
         ),
         E::Info(s) => (
-            m::KindData::Info(m::InfoKind { text: s.inner.clone() }),
+            m::KindData::Info(m::InfoKind {
+                text: s.inner.clone(),
+            }),
             &s.visibility,
             empty(),
             empty(),
         ),
         E::UnionType(s) => (
-            m::KindData::UnionType(m::UnionTypeKind { types: s.inner.iter().map(type_).collect() }),
+            m::KindData::UnionType(m::UnionTypeKind {
+                types: s.inner.iter().map(type_).collect(),
+            }),
             &s.visibility,
             empty(),
             empty(),
         ),
-        E::TraitDef(s) => {
-            (m::KindData::TraitDef(trait_def(&s.inner)), &s.visibility, paths_set(&s.inner.members), empty())
-        }
-        E::TraitImpl(s) => {
-            (m::KindData::TraitImpl(trait_impl(&s.inner)), &s.visibility, paths_set(&s.inner.members), empty())
-        }
+        E::TraitDef(s) => (
+            m::KindData::TraitDef(trait_def(&s.inner)),
+            &s.visibility,
+            paths_set(&s.inner.members),
+            empty(),
+        ),
+        E::TraitImpl(s) => (
+            m::KindData::TraitImpl(trait_impl(&s.inner)),
+            &s.visibility,
+            paths_set(&s.inner.members),
+            empty(),
+        ),
         E::SumType(s) => (
-            m::KindData::SumType(m::SumTypeKind { variants: s.inner.iter().map(sum_variant).collect() }),
+            m::KindData::SumType(m::SumTypeKind {
+                variants: s.inner.iter().map(sum_variant).collect(),
+            }),
             &s.visibility,
             empty(),
             empty(),
@@ -653,7 +762,9 @@ fn project_kind(
             paths_set(&s.inner.implemented_protocols),
         ),
         E::TypeAlias(s) => (
-            m::KindData::TypeAlias(m::TypeAliasKind { aliased: type_(&s.inner) }),
+            m::KindData::TypeAlias(m::TypeAliasKind {
+                aliased: type_(&s.inner),
+            }),
             &s.visibility,
             empty(),
             empty(),
@@ -707,10 +818,22 @@ mod tests {
     #[test]
     fn schema_tree_builds_and_includes_key_classes() {
         // The recursive model must not overflow when its schema is walked.
-        let names: Vec<String> =
-            m::Entry::to_schema_tree().iter().map(|s| s.class_name().clone()).collect();
-        for expected in ["Entry", "KindData", "Type", "ConstExpr", "Function", "Parameter"] {
-            assert!(names.iter().any(|n| n == expected), "schema tree missing {expected}: {names:?}");
+        let names: Vec<String> = m::Entry::to_schema_tree()
+            .iter()
+            .map(|s| s.class_name().clone())
+            .collect();
+        for expected in [
+            "Entry",
+            "KindData",
+            "Type",
+            "ConstExpr",
+            "Function",
+            "Parameter",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "schema tree missing {expected}: {names:?}"
+            );
         }
     }
 

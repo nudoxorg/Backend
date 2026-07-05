@@ -1,0 +1,9 @@
+load(":defs.bzl", "third_party")
+load(":registry.bzl", "REGISTRY")
+load(":git.bzl", "GIT")
+
+third_party(
+    registry = REGISTRY,
+    git_repos = GIT,
+    patches = ["patches/terminusdb-schema/remove-rocket.patch"],
+)

@@ -9,7 +9,6 @@ pub mod cursor;
 pub mod ecosystem;
 pub mod error;
 pub mod identity;
-pub mod lifecycle;
 pub mod progress;
 pub mod score;
 pub mod search;
@@ -17,24 +16,20 @@ pub mod sink;
 pub mod symbol;
 pub mod version;
 
-pub use access::{
-	AccessContext, AccessDecision, Federation, Principal, Source, SourceId, SourceRole, Sourced,
-	Tenant, Visibility,
-};
+pub use access::{Federation, Source, SourceId, SourceRole, Sourced};
 pub use connection::{Cold, Connect, Live};
 pub use content::{ContentHash, ContentHasher, Freshness};
 pub use cursor::Cursor;
 pub use ecosystem::{Edition, Language, Toolchain};
-pub use error::{BackendKind, ConnectError, ConnectFailure, Retryable, StoreError};
-pub use identity::{
-	EntryUri, Id, Package, PackageCoordinates, PackageId, PackageName, PackageVersion,
-	RegistryOrigin, SymbolId,
+pub use error::{
+    BackendKind, ConnectError, ConnectFailure, Failure, FailureKind, Phase, ResolutionState,
+    Retryable, StoreError,
 };
-pub use lifecycle::{Failure, FailureKind, Phase, ResolutionState};
+pub use identity::{EntryUri, Id, NameError, Package, PackageId, PackageVersion, RegistryOrigin, SymbolId};
 pub use progress::{JobProgress, Percent, Progressive};
 pub use score::{Score, Scored};
 pub use search::Page;
-pub use sink::{BatchSink, DerivedStore, Sink};
+pub use sink::DerivedStore;
 pub use symbol::{Name, Symbol, SymbolKind};
 pub use version::Versioned;
 

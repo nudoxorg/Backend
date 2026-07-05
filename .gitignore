@@ -27,9 +27,7 @@
 !/.envrc
 !/.editorconfig
 
-# Rust / Cargo
-!/**/Cargo.toml
-!/**/Cargo.lock
+# Rust
 !/**/*.rs
 !/**/rustfmt.toml
 
@@ -47,9 +45,13 @@
 # Documentation
 !/**/*.md
 
+# Patch files for Buck2 genrules
+!/**/*.patch
+
 # Allow empty .keep files
 !/**/.keep
 !/.config/scripts/*.nu
+!/.vscode/settings.json
 
 ## Cue
 !/.config/**/*.cue
@@ -67,5 +69,18 @@
 
 !/deno_doc/**/*
 
+# Buck2 build system
+!/.buckconfig
+!/.buckroot
+!/.buckversion
+!/build/
+!/build/**
+!**/BUCK
+!**/TARGETS
+/buck-out/
+/.buckconfig.local
+/.buckcredentials
+/rust-project.json
+/prelude
 
 .claude/worktrees/

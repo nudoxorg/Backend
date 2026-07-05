@@ -1,0 +1,55 @@
+load("//build:rust.bzl", "deps", "rust_bin", "rust_crate")
+
+rust_crate(
+    name = "server-lib",
+    srcs = native.glob(["**/*.rs"], exclude = ["main.rs"]),
+    crate = "server",
+    deps = deps(
+        members = ["heart", "registry", "runtime", "ir"],
+        crates = [
+            "tokio",
+            "tokio_stream",
+            "futures",
+            "futures_util",
+            "async_stream",
+            "bytes",
+            "axum",
+            "tower",
+            "tower_http",
+            "hyper",
+            "http",
+            "http_body_util",
+            "serde",
+            "serde_json",
+            "nonempty",
+            "smol_str",
+            "semver",
+            "uv_pep440",
+            "url",
+            "uuid",
+            "figment",
+            "secrecy",
+            "thiserror",
+            "anyhow",
+            "tracing",
+            "tracing_subscriber",
+            "metrics",
+            "metrics_exporter_prometheus",
+            "arc_swap",
+            "moka",
+            "mimalloc",
+        ],
+    ),
+)
+
+rust_bin(
+    name = "server",
+    srcs = ["main.rs"],
+    crate_root = "main.rs",
+    crate = "server_bin",
+    deps = deps(
+        members = ["runtime"],
+        crates = ["tokio", "anyhow", "mimalloc", "tracing", "tracing_subscriber"],
+        raw = [":server-lib"],
+    ),
+)

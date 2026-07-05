@@ -6,8 +6,6 @@
 //! `cas/` sections are committed idempotently, and one [`OutboxEntry`] per
 //! derived sink is appended so qdrant/terminus/tantivy can poll the fan-out.
 
-use heart::AccessContext;
-
 use super::{BlobManifest, creation::PendingSection};
 use crate::{coordination::Outbox, error::BlobError, store::Store};
 
@@ -34,10 +32,9 @@ pub struct Emitted {
 pub async fn emit(
 	store: &Store,
 	outbox: &Outbox,
-	ctx: &AccessContext,
 	manifest: BlobManifest,
 	sections: Vec<PendingSection>,
 ) -> Result<Emitted, BlobError> {
-	let _ = (store, outbox, ctx, manifest, sections);
+	let _ = (store, outbox, manifest, sections);
 	todo!("idempotent-put each section, record the manifest, fan out outbox intents per SinkKind")
 }

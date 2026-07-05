@@ -14,9 +14,8 @@
 
 use chrono::{DateTime, Utc};
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId, ResolutionState,
 	content::ContentHash,
-	lifecycle::ResolutionState,
 };
 use sqlx::{Row, postgres::PgRow};
 

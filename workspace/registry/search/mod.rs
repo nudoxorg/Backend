@@ -10,7 +10,6 @@
 use futures::Stream;
 use heart::{
 	PackageId, Scored,
-	access::AccessContext,
 	cursor::Cursor,
 	ecosystem::Language,
 	search::Page,
@@ -60,10 +59,9 @@ impl RegistrySearch {
 	/// package or a per-item error.
 	pub fn search<'a>(
 		&'a self,
-		ctx: &'a AccessContext,
 		query: &'a RegistryQuery,
 	) -> impl Stream<Item = Result<Scored<GlobalPackage>, SearchError>> + 'a {
-		let _ = (&self.index, ctx, query);
+		let _ = (&self.index, query);
 		// A concrete stream (async_stream over tantivy segment readers) fills in
 		// here. A typed empty stream stands in so the signature is final.
 		// TODO: stream scored, access-filtered, multi-parent-deduped packages.
@@ -74,10 +72,9 @@ impl RegistrySearch {
 	/// callers that page rather than stream.
 	pub async fn page(
 		&self,
-		ctx: &AccessContext,
 		query: &RegistryQuery,
 	) -> Result<Page<GlobalPackage>, SearchError> {
-		let _ = (&self.index, ctx, query);
+		let _ = (&self.index, query);
 		todo!("run the query, access-filter, de-dupe multi-parent, build the next cursor")
 	}
 }

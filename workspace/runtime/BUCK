@@ -1,0 +1,32 @@
+load("//build:rust.bzl", "deps", "rust_crate")
+
+rust_crate(
+    name = "runtime",
+    deps = deps(
+        members = ["heart", "ir"],
+        crates = [
+            "nonempty",
+            "qdrant_client",
+            "reqwest",
+            "url",
+            "secrecy",
+            "tokio",
+            "tokio_stream",
+            "futures",
+            "futures_util",
+            "serde",
+            "serde_json",
+            "bytes",
+            "sqlx",
+            "nutype",
+            "thiserror",
+            "tower",
+            "tracing",
+            "moka",
+            "governor",
+            "smol_str",
+            "strum",
+            "tantivy",
+        ],
+    ),
+)

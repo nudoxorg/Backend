@@ -9,11 +9,10 @@
 //! [`PackageCoordinates::id`].
 
 use heart::{
+	PackageVersion, RegistryOrigin,
 	ecosystem::Language,
-	identity::{
-		PackageCoordinates, PackageName, PackageVersion, RegistryOrigin,
-	},
 };
+use crate::package::{Coordinates as PackageCoordinates, PackageName};
 
 use crate::error::ResolveError;
 
