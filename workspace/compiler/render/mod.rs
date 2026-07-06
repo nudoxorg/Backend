@@ -6,38 +6,34 @@
 //! one function signature, one trait at a time. Whole-module and whole-package
 //! emission is deliberately out of scope.
 //!
-//! One submodule per target language, starting with Rust. Every renderer is a
-//! plain, infallible function returning `String`; there is intentionally no
-//! trait-abstraction layer here — the shared vocabulary stays limited to
-//! [`RenderOptions`] until a second target language justifies more.
+//! # Architecture
+//!
+//! Layout is expressed with a Wadler–Lindig document algebra ([`doc`]) so that
+//! *what* to print is separated from *where* to break; the printer makes every
+//! line-breaking decision lazily, once it knows the column budget. On top of
+//! that sits a small [`Backend`] trait plus shared layout combinators
+//! ([`backend`]), and one thin `impl Backend` per target language ([`emit`]):
+//! Rust, Go, Java, TypeScript, and Python. Call [`render_entry`] with a
+//! [`RenderCtx`] carrying the target [`Language`].
 //!
 //! Item-level documentation and item names live on `ir::kind::Symbol`, not on
-//! the payload structs (`Record`, `Function`, `TraitDef`, …), so renderers
-//! take the name explicitly where the payload does not carry one and leave
-//! item-level doc comments to the caller. Documentation carried *inside* the
-//! payloads (fields, variants, trait methods) is rendered when
-//! [`RenderOptions::show_docs`] is set.
+//! the payload structs (`Record`, `Function`, `TraitDef`, …); the entry point
+//! weaves them in, and payloads carry their own inner docs (fields, variants,
+//! trait methods), rendered when [`RenderOptions::show_docs`] is set.
+//!
+//! # Legacy
+//!
+//! [`rust`] is the original, string-concatenating Rust renderer with its own
+//! golden tests. It predates the document algebra and is retained for parity;
+//! new work should target the [`Backend`]-based path above, which supersedes it
+//! and covers every language uniformly.
 
+pub mod backend;
+pub mod doc;
+pub mod emit;
 pub mod rust;
 
-/// Shared knobs for all target languages.
-///
-/// Deliberately concrete and minimal — plain data, no trait layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderOptions {
-	/// Identifiers in the IR are fully-qualified paths
-	/// (e.g. `std::vec::Vec`). By default renderers print only the last
-	/// path segment (`Vec`) for readability; set this to render the full
-	/// path instead.
-	pub qualified_paths: bool,
-
-	/// Emit documentation carried inside IR payloads (fields, variants,
-	/// trait methods) as doc comments above the corresponding lines.
-	pub show_docs: bool,
-}
-
-impl Default for RenderOptions {
-	fn default() -> Self {
-		Self { qualified_paths: false, show_docs: false }
-	}
-}
+pub use backend::{
+    render_entry, render_entry_doc, Annotation, Backend, Language, RenderCtx, RenderOptions,
+    Rendered,
+};

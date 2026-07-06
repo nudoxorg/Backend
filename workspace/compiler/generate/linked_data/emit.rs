@@ -1,11 +1,11 @@
 //! The emission pipeline: project an `ir::Index` into graph documents and stream
 //! them to a sink.
 //!
-//! Each IR entry is projected to the graph model via [`crate::graph::from_ir`],
-//! serialized to a JSON-LD document, and handed to the [`DocumentSink`] one (or
-//! one small batch) at a time — so a large package never materializes its whole
-//! document set in memory. Documents are emitted in a deterministic order
-//! (kinds-first, deepest-entry-first) so the corpus upload is reproducible.
+//! The index is projected to a [`crate::graph::from_ir::GraphCorpus`] via
+//! [`crate::graph::from_ir::project`], then serialized to JSON-LD documents and
+//! handed to the [`DocumentSink`] in the wave order the graph store's
+//! referential integrity expects (GRAPH-ARCHITECTURE.md §5): packages → bare
+//! symbols → symbols with links → reified relations → version membership.
 
 use ir::entry::Index;
 use serde_json::Value;
@@ -25,9 +25,9 @@ pub trait DocumentSink {
 	}
 }
 
-/// Stream every entry in `index` as a JSON-LD graph document into `sink`, in the
-/// deterministic kinds-first / deepest-first order the corpus upload expects.
+/// Stream every document of `index`'s graph corpus into `sink`, in the
+/// deterministic wave order the corpus upload expects.
 pub fn emit<S: DocumentSink>(index: &Index, sink: &mut S) -> Result<(), GenerateError> {
 	let _ = (index, sink);
-	todo!("order entries; for each: graph::from_ir::entry -> serialize -> sink.write; then flush")
+	todo!("graph::from_ir::project -> serialize corpus in wave order -> sink.write; then flush")
 }
