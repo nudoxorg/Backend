@@ -64,22 +64,8 @@ impl<'a> SymbolTextSurface<'a> {
 	}
 
 	/// Fetch one symbol by its durable id.
-	///
-	/// The text index exposes no term-level get, so this issues a literal search
-	/// on the id's canonical string (the id is an indexed field) and confirms the
-	/// exact id on the way out — the closest join available today.
 	pub async fn find(&self, id: SymbolId) -> Result<Option<Symbol>, ServerError> {
-		let query = TextQuery::new(id.to_string());
-		let limit = NonZeroUsize::new(8).expect("eight is non-zero");
-		let hits = self.index.search(&query, limit, None);
-		futures::pin_mut!(hits);
-		while let Some(hit) = hits.next().await {
-			let hit = hit.map_err(|error| ServerError::Runtime(error.into()))?;
-			if hit.value.id == id {
-				return Ok(Some(hit.value));
-			}
-		}
-		Ok(None)
+		self.index.find_by_id(id).await.map_err(|error| ServerError::Runtime(error.into()))
 	}
 }
 

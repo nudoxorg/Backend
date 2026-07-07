@@ -1,4 +1,4 @@
-load("//build:rust.bzl", "deps", "rust_bin", "rust_crate")
+load("//build:rust.bzl", "deps", "rust_bin", "rust_crate", "rust_tests")
 
 rust_crate(
     name = "server-lib",
@@ -48,6 +48,26 @@ rust_crate(
         # axum speaks http 1.x; the bare `http` alias resolves to the vendored
         # 0.2 build, so the versioned target is named explicitly.
         raw = ["//build/third-party:http-1"],
+    ),
+)
+
+rust_tests(
+    prefix = "test",
+    deps = deps(
+        members = ["heart", "registry", "runtime"],
+        crates = [
+            "axum",
+            "tower",
+            "tokio",
+            "futures",
+            "chrono",
+            "http_body_util",
+            "nonempty",
+            "serde_json",
+            "smol_str",
+            "uuid",
+        ],
+        raw = [":server-lib", "//build/third-party:http-1"],
     ),
 )
 

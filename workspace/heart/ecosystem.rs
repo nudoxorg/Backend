@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 	strum::IntoStaticStr,
 )]
 #[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum Language {
 	/// <https://rust-lang.org/>.io.
 	Rust,

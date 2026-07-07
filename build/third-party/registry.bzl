@@ -4925,7 +4925,7 @@ REGISTRY = [
         "label": "proptest-1",
         "alias": True,
         "deps": [":bit_set-0_8", ":bit_vec-0_8", ":bitflags-2", ":num_traits-0_2", ":rand-0_9", ":rand_chacha-0_9", ":rand_xorshift-0_4", ":regex_syntax-0_8", ":rusty_fork-0_3", ":tempfile-3", ":unarray-0_1"],
-        "features": [],
+        "features": ["std", "fork", "bit-set"],
         "build_script": False,
         "proc_macro": False,
     },

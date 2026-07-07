@@ -41,6 +41,35 @@ impl TextQuery {
 }
 
 impl TextIndex {
+	/// Fetch a single symbol by its exact [`SymbolId`].
+	///
+	/// Uses a term query on the stored `id` field — no tokenization, exact UUID
+	/// match.
+	pub async fn find_by_id(&self, id: heart::SymbolId) -> Result<Option<Symbol>, TextError> {
+		let reader = self.reader.clone();
+		let schema = self.schema().clone();
+		let id_str = id.as_uuid().to_string();
+		tokio::task::spawn_blocking(move || {
+			reader.reload().map_err(TextError::Engine)?;
+			let searcher = reader.searcher();
+			let term = Term::from_field_text(schema.id, &id_str);
+			let query = TermQuery::new(term, IndexRecordOption::Basic);
+			let docs = searcher
+				.search(&query, &TopDocs::with_limit(1))
+				.map_err(TextError::Engine)?;
+			docs.into_iter()
+				.next()
+				.map(|(_, address)| {
+					let document: TantivyDocument =
+						searcher.doc(address).map_err(TextError::Engine)?;
+					symbol_from_document(&schema, &document)
+				})
+				.transpose()
+		})
+		.await
+		.unwrap_or_else(|join_error| Err(TextError::Io(std::io::Error::other(join_error))))
+	}
+
 	pub fn search(
 		&self,
 		query: &TextQuery,

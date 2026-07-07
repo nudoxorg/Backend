@@ -31,6 +31,24 @@ def rust_crate(name, deps = [], crate_root = "lib.rs", edition = "2024",
         **kw
     )
 
+def rust_tests(prefix, deps = [], edition = "2024", **kw):
+    """One rust_test target per `tests/*.rs` integration-test crate.
+
+    Each file is its own crate (cargo's layout); `tests/common/` rides along as
+    the shared fixture module.
+    """
+    fixtures = native.glob(["tests/common/**/*.rs", "tests/support/**/*.rs"])
+    for src in native.glob(["tests/*.rs"]):
+        stem = src.removeprefix("tests/").removesuffix(".rs")
+        native.rust_test(
+            name = prefix + "-" + stem,
+            srcs = [src] + fixtures,
+            crate_root = src,
+            edition = edition,
+            deps = deps,
+            **kw
+        )
+
 def rust_bin(name, srcs, crate_root, deps = [], edition = "2024", visibility = None, **kw):
     native.rust_binary(
         name = name,

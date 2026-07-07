@@ -1,4 +1,4 @@
-load("//build:rust.bzl", "deps", "rust_crate")
+load("//build:rust.bzl", "deps", "rust_crate", "rust_tests")
 
 rust_crate(
     name = "runtime",
@@ -28,5 +28,21 @@ rust_crate(
             "strum",
             "tantivy",
         ],
+    ),
+)
+
+rust_tests(
+    prefix = "test",
+    deps = deps(
+        members = ["heart"],
+        crates = [
+            "futures",
+            "proptest",
+            "serde_json",
+            "tokio",
+            "uuid",
+            "smol_str",
+        ],
+        raw = [":runtime"],
     ),
 )
