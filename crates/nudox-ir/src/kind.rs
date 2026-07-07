@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use crate::{module::Module, record::Record, ty::Type};
+use crate::{module::Module, record::{Field, Record}, ty::Type};
 
 register_kinds! {
 	/// A namespace, package, or module — a container for other entries.
@@ -8,6 +8,8 @@ register_kinds! {
 
 	/// A product type: struct, class, record, or data class.
 	Record,
+
+	Field,
 
 	Type,
 }
