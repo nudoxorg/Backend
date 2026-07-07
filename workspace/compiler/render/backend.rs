@@ -39,8 +39,13 @@ pub enum Language {
 
 impl Language {
     /// Every supported target, in a stable order (handy for demos and tests).
-    pub const ALL: [Language; 5] =
-        [Language::Rust, Language::Go, Language::Java, Language::TypeScript, Language::Python];
+    pub const ALL: [Language; 5] = [
+        Language::Rust,
+        Language::Go,
+        Language::Java,
+        Language::TypeScript,
+        Language::Python,
+    ];
 
     /// A human label for the language.
     pub fn name(self) -> &'static str {
@@ -81,7 +86,10 @@ pub struct RenderOptions {
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { qualified_paths: false, show_docs: false }
+        Self {
+            qualified_paths: false,
+            show_docs: false,
+        }
     }
 }
 
@@ -97,7 +105,11 @@ pub struct RenderCtx {
 impl RenderCtx {
     /// A context for `language` with default options and an 80-column budget.
     pub fn new(language: Language) -> Self {
-        Self { language, options: RenderOptions::default(), width: 80 }
+        Self {
+            language,
+            options: RenderOptions::default(),
+            width: 80,
+        }
     }
 
     /// Builder-style override of the column budget.
@@ -172,9 +184,7 @@ pub fn render_entry_doc(entry: &Entry, cx: &RenderCtx) -> Rendered {
     let be = cx.backend();
     let body = match entry {
         Entry::RecordType(s) => be.record(&s.name, &s.visibility, &s.inner, cx),
-        Entry::SumType(s) => {
-            be.sum(&s.name, None, &s.inner, &s.visibility, cx)
-        }
+        Entry::SumType(s) => be.sum(&s.name, None, &s.inner, &s.visibility, cx),
         Entry::TraitDef(s) => be.interface(&s.name, &s.inner, &s.visibility, cx),
         Entry::Function(s) => be.function(&s.name, &s.inner, &s.visibility, cx),
         Entry::TypeAlias(s) => alias_doc(be, &s.name, &s.inner, cx),
@@ -197,12 +207,21 @@ fn alias_doc(be: &dyn Backend, name: &str, ty: &Type, cx: &RenderCtx) -> Rendere
         Language::TypeScript => {
             kw("type") + sp() + ident(name) + sp() + punct("=") + sp() + be.ty(ty, cx) + punct(";")
         }
-        Language::Python => ident(name) + punct(":") + sp() + kw("TypeAlias") + sp() + punct("=")
-            + sp()
-            + be.ty(ty, cx),
+        Language::Python => {
+            ident(name)
+                + punct(":")
+                + sp()
+                + kw("TypeAlias")
+                + sp()
+                + punct("=")
+                + sp()
+                + be.ty(ty, cx)
+        }
         Language::Java => {
             // Java has no type aliases; the least-lossy surface is a comment.
-            txt("// type ").annotate(Comment) + ident(name) + txt(" = ").annotate(Comment)
+            txt("// type ").annotate(Comment)
+                + ident(name)
+                + txt(" = ").annotate(Comment)
                 + be.ty(ty, cx)
         }
     }
@@ -220,9 +239,12 @@ fn alias_doc_from_rendered(name: &str, rendered: Rendered, cx: &RenderCtx) -> Re
         }
         Language::Python => ident(name) + sp() + punct("=") + sp() + rendered,
         Language::Go => kw("type") + sp() + ident(name) + sp() + rendered,
-        Language::Java => txt("// type ").annotate(Annotation::Comment) + ident(name)
-            + txt(" = ").annotate(Annotation::Comment)
-            + rendered,
+        Language::Java => {
+            txt("// type ").annotate(Annotation::Comment)
+                + ident(name)
+                + txt(" = ").annotate(Annotation::Comment)
+                + rendered
+        }
     }
 }
 
@@ -292,17 +314,17 @@ pub fn arglist(open: &str, items: Vec<Rendered>, close: &str) -> Rendered {
     let inner = Doc::join(sep, items);
     // Trailing comma appears only in the broken layout.
     let trailer = trailing_comma_when_broken();
-    (punct(open) + (Doc::softline() + inner + trailer).nest(INDENT) + Doc::softline() + punct(close))
-        .group()
+    (punct(open)
+        + (Doc::softline() + inner + trailer).nest(INDENT)
+        + Doc::softline()
+        + punct(close))
+    .group()
 }
 
-/// A trailing separator that is present only when the enclosing group breaks:
-/// `softline` is empty when flat, so the comma rides an otherwise-empty break.
+/// A trailing separator that is present only when the enclosing group breaks.
+/// In flat mode: nothing. In break mode: a comma.
 fn trailing_comma_when_broken() -> Rendered {
-    // A group that is flat contributes nothing; broken contributes ",".
-    // Implemented as: an empty flat / "," broken toggle via a nested group is
-    // overkill — instead we omit trailing commas, which every target accepts.
-    Doc::nil()
+    Doc::flat_alt(Doc::nil(), punct(","))
 }
 
 /// An angle/bracket-delimited generic list (`<A, B>` or `[A, B]`), breakable.
@@ -321,10 +343,16 @@ pub fn short_name<'a>(path: &'a str, cx: &RenderCtx) -> &'a str {
     if cx.options.qualified_paths {
         return path;
     }
-    if !path.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '<' | '>')) {
+    if !path
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '<' | '>'))
+    {
         return path;
     }
-    let last_sep = path.rfind("::").map(|i| i + 2).or_else(|| path.rfind('.').map(|i| i + 1));
+    let last_sep = path
+        .rfind("::")
+        .map(|i| i + 2)
+        .or_else(|| path.rfind('.').map(|i| i + 1));
     match last_sep {
         Some(i) if i < path.len() => &path[i..],
         _ => path,

@@ -1,6 +1,6 @@
 //! IR → Rust surface syntax.
 
-use ir::function::Function;
+use ir::function::{Attribute, Function};
 use ir::generics::{GenericArg, Generics};
 use ir::kind::Visibility;
 use ir::parameter::Parameter;
@@ -18,7 +18,9 @@ pub struct Rust;
 
 impl Backend for Rust {
     fn doc_comment(&self, text: &str) -> Rendered {
-        let lines = text.lines().map(|l| txt("/// ").annotate(Annotation::Comment) + txt(l));
+        let lines = text
+            .lines()
+            .map(|l| txt("/// ").annotate(Annotation::Comment) + txt(l));
         Doc::join(Doc::hardline(), lines).annotate(Annotation::Comment)
     }
 
@@ -30,11 +32,7 @@ impl Backend for Rust {
         let info = analyze_generics(rec.generics.as_ref());
         let header = vis_prefix(vis) + kw("struct") + sp() + tyname(name) + generics_decl(&info);
 
-        let fields: Vec<Rendered> = rec
-            .fields
-            .iter()
-            .filter_map(|f| field(f, cx))
-            .collect();
+        let fields: Vec<Rendered> = rec.fields.iter().filter_map(|f| field(f, cx)).collect();
 
         if fields.is_empty() {
             header + punct(";")
@@ -59,8 +57,10 @@ impl Backend for Rust {
 
     fn function(&self, name: &str, f: &Function, vis: &Visibility, cx: &RenderCtx) -> Rendered {
         let info = analyze_generics(f.generics.as_ref());
+        let quals = fn_qualifiers(f.attributes.as_deref());
         let params = signature_params(f.receiver.as_ref(), f.input_parameters.as_deref(), cx);
         let sig = vis_prefix(vis)
+            + quals
             + kw("fn")
             + sp()
             + ident(name)
@@ -92,6 +92,25 @@ impl Backend for Rust {
 // ---------------------------------------------------------------------------
 // Declarations
 // ---------------------------------------------------------------------------
+
+/// Canonical Rust qualifier order: `const async gen unsafe`.
+fn fn_qualifiers(attrs: Option<&[Attribute]>) -> Rendered {
+    let mut out = Doc::nil();
+    let attrs = attrs.unwrap_or(&[]);
+    if attrs.contains(&Attribute::Const) {
+        out = out + kw("const") + sp();
+    }
+    if attrs.contains(&Attribute::Async) {
+        out = out + kw("async") + sp();
+    }
+    if attrs.contains(&Attribute::Generator) {
+        out = out + kw("gen") + sp();
+    }
+    if attrs.contains(&Attribute::Unsafe) {
+        out = out + kw("unsafe") + sp();
+    }
+    out
+}
 
 fn vis_prefix(v: &Visibility) -> Rendered {
     match v {
@@ -138,7 +157,10 @@ fn field_with(f: &Field, with_vis: bool, cx: &RenderCtx) -> Option<Rendered> {
         FieldKey::Computed(_) => "_".into(),
     };
     let vis = if with_vis {
-        kf.visibility.as_ref().map(vis_prefix).unwrap_or_else(Doc::nil)
+        kf.visibility
+            .as_ref()
+            .map(vis_prefix)
+            .unwrap_or_else(Doc::nil)
     } else {
         Doc::nil()
     };
@@ -159,11 +181,12 @@ fn variant(v: &SumVariant, cx: &RenderCtx) -> Rendered {
     let head = doc + tyname(&v.name);
     let body = match &v.data {
         None => Doc::nil(),
-        Some(SumField::Tuple(tys)) => {
-            arglist("(", tys.iter().map(|t| ty(t, cx)).collect(), ")")
-        }
+        Some(SumField::Tuple(tys)) => arglist("(", tys.iter().map(|t| ty(t, cx)).collect(), ")"),
         Some(SumField::StructLike(fields)) => {
-            let fs: Vec<Rendered> = fields.iter().filter_map(|f| field_with(f, false, cx)).collect();
+            let fs: Vec<Rendered> = fields
+                .iter()
+                .filter_map(|f| field_with(f, false, cx))
+                .collect();
             sp() + block("{", fs, "}")
         }
     };
@@ -172,6 +195,7 @@ fn variant(v: &SumVariant, cx: &RenderCtx) -> Rendered {
 
 fn trait_method(m: &TraitMethod, provided: bool, cx: &RenderCtx) -> Rendered {
     let info = analyze_generics(m.generics.as_ref());
+    let quals = fn_qualifiers(m.attributes.as_deref());
     let params = signature_params(m.receiver.as_ref(), m.parameters.as_deref(), cx);
     let ret = m
         .return_type
@@ -180,6 +204,7 @@ fn trait_method(m: &TraitMethod, provided: bool, cx: &RenderCtx) -> Rendered {
         .unwrap_or_else(Doc::nil);
     let doc = doc_prefix(m.documentation.as_deref(), cx);
     let sig = doc
+        + quals
         + kw("fn")
         + sp()
         + ident(&m.name)
@@ -264,12 +289,20 @@ fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
         Type::Array { r#type, length } => {
             punct("[") + ty(r#type, cx) + punct("; ") + tyname(&length.to_string()) + punct("]")
         }
-        Type::BorrowedRef { lifetime, is_mutable, r#type } => {
+        Type::BorrowedRef {
+            lifetime,
+            is_mutable,
+            r#type,
+        } => {
             let lt = lifetime
                 .as_ref()
                 .map(|l| punct("'") + ident(l) + sp())
                 .unwrap_or_else(Doc::nil);
-            let m = if *is_mutable { kw("mut") + sp() } else { Doc::nil() };
+            let m = if *is_mutable {
+                kw("mut") + sp()
+            } else {
+                Doc::nil()
+            };
             punct("&") + lt + m + ty(r#type, cx)
         }
         Type::RawPointer { is_mutable, r#type } => {
@@ -292,7 +325,22 @@ fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
 }
 
 fn type_reference(r: &TypeReference, cx: &RenderCtx) -> Rendered {
-    let base = tyname(short_name(&r.identifier, cx));
+    let sn = short_name(&r.identifier, cx);
+    // Pre-render type args for the known_type check.
+    let type_args: Vec<Rendered> = r
+        .generic_args
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|a| match a {
+            GenericArg::Type(t) => Some(ty(t, cx)),
+            _ => None,
+        })
+        .collect();
+    if let Some(known) = super::known_type(sn, &type_args, Language::Rust) {
+        return known;
+    }
+    let base = tyname(sn);
     match &r.generic_args {
         Some(args) if !args.is_empty() => base + generic_args(args, cx),
         _ => base,
@@ -356,5 +404,405 @@ fn type_tag(t: &Type) -> &'static str {
         Type::Mapped(_) => "mapped",
         Type::Predicate(_) => "predicate",
         _ => "type",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ir::function::{Attribute, Function};
+    use ir::generics::{Constraint, GenericArg, Generics, TraitRef};
+    use ir::generics::{Kind, Variance};
+    use ir::kind::Visibility;
+    use ir::parameter::TypeParamOrigin;
+    use ir::parameter::{LifetimeParam, LiteralParameter, Parameter, TypeParam};
+    use ir::primitives::{Primitive, Width};
+    use ir::protocols::{ReceiverKind, TraitDef, TraitMethod};
+    use ir::record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumField, SumVariant};
+    use ir::ty::{GenericParam, Type, TypeReference};
+
+    use super::super::super::backend::Backend;
+    use super::super::super::backend::{Language, RenderCtx, RenderOptions};
+    use super::Rust;
+
+    fn cx() -> RenderCtx {
+        RenderCtx::new(Language::Rust)
+    }
+
+    fn cx_with_docs() -> RenderCtx {
+        RenderCtx::new(Language::Rust).with_docs(true)
+    }
+
+    fn ty_ref(identifier: &str) -> Type {
+        Type::TypeReference(TypeReference {
+            identifier: identifier.to_string(),
+            generic_args: None,
+        })
+    }
+
+    fn ty_ref_args(identifier: &str, args: Vec<GenericArg>) -> Type {
+        Type::TypeReference(TypeReference {
+            identifier: identifier.to_string(),
+            generic_args: Some(args),
+        })
+    }
+
+    fn ty_param(name: &str) -> Type {
+        Type::GenericParam(GenericParam {
+            name: name.to_string(),
+            kind: None,
+        })
+    }
+
+    fn no_field_attributes() -> FieldAttributes {
+        FieldAttributes {
+            decorators: vec![],
+            is_mutable: false,
+            is_optional: false,
+            is_static: false,
+        }
+    }
+
+    fn known_field(
+        name: &str,
+        ty: Type,
+        visibility: Visibility,
+        documentation: Option<&str>,
+    ) -> Field {
+        Field::Known(KnownField {
+            key: FieldKey::Ident(name.to_string()),
+            r#type: Some(Box::new(ty)),
+            default_value: None,
+            attributes: no_field_attributes(),
+            visibility: Some(visibility),
+            documentation: documentation.map(str::to_string),
+        })
+    }
+
+    fn tuple_field(index: usize, ty: Type, visibility: Visibility) -> Field {
+        Field::Known(KnownField {
+            key: FieldKey::Index(index),
+            r#type: Some(Box::new(ty)),
+            default_value: None,
+            attributes: no_field_attributes(),
+            visibility: Some(visibility),
+            documentation: None,
+        })
+    }
+
+    fn record(name: &str, generics: Option<Generics>, fields: Vec<Field>) -> Record {
+        Record {
+            name: Some(name.to_string()),
+            generics,
+            fields,
+            call_signatures: None,
+            constructors: None,
+            methods: None,
+            index_signatures: None,
+            super_types: None,
+            members: None,
+            implemented_protocols: None,
+        }
+    }
+
+    fn type_param_p(name: &str) -> Parameter {
+        Parameter::Type(TypeParam {
+            name: Some(name.to_string()),
+            kind: Kind::Type,
+            variance: Variance::Invariant,
+            default_type: None,
+            params: None,
+            origin: TypeParamOrigin::Free,
+        })
+    }
+
+    fn lifetime_param_p(name: &str) -> Parameter {
+        Parameter::Lifetime(LifetimeParam {
+            name: name.to_string(),
+            variance: Variance::Invariant,
+        })
+    }
+
+    fn literal_param(name: &str, ty: Type) -> Parameter {
+        Parameter::Literal(LiteralParameter {
+            name: name.to_string(),
+            r#type: Some(ty),
+            attributes: None,
+            default_value: None,
+            description: None,
+        })
+    }
+
+    fn output(ty: Type) -> Vec<Parameter> {
+        vec![Parameter::Literal(LiteralParameter {
+            name: String::new(),
+            r#type: Some(ty),
+            attributes: None,
+            default_value: None,
+            description: None,
+        })]
+    }
+
+    fn trait_ref_val(name: &str) -> TraitRef {
+        TraitRef {
+            name: name.to_string(),
+            args: vec![],
+        }
+    }
+
+    #[test]
+    fn plain_struct() {
+        let rec = record(
+            "Point",
+            None,
+            vec![
+                known_field(
+                    "x",
+                    Type::Primitive(Primitive::Float(Width::W64)),
+                    Visibility::Public,
+                    None,
+                ),
+                known_field(
+                    "y",
+                    Type::Primitive(Primitive::Float(Width::W64)),
+                    Visibility::Public,
+                    None,
+                ),
+            ],
+        );
+        let result = Rust
+            .record("Point", &Visibility::Public, &rec, &cx())
+            .render(80);
+        assert_eq!(
+            result,
+            "pub struct Point {\n    pub x: f64,\n    pub y: f64,\n}"
+        );
+    }
+
+    #[test]
+    fn plain_struct_with_field_docs() {
+        let rec = record(
+            "Point",
+            None,
+            vec![known_field(
+                "x",
+                Type::Primitive(Primitive::Float(Width::W64)),
+                Visibility::Public,
+                Some("The x coordinate."),
+            )],
+        );
+        let result = Rust
+            .record("Point", &Visibility::Public, &rec, &cx_with_docs())
+            .render(80);
+        assert_eq!(
+            result,
+            "pub struct Point {\n    /// The x coordinate.\n    pub x: f64,\n}"
+        );
+    }
+
+    #[test]
+    fn generic_struct_simple_bounds_only() {
+        let generics = Generics {
+            params: vec![lifetime_param_p("'a"), type_param_p("T")],
+            constraints: vec![
+                Constraint::TraitBound {
+                    param: "T".to_string(),
+                    trait_ref: TraitRef {
+                        name: "Iterator".to_string(),
+                        args: vec![ir::generics::TypeExpr {
+                            name: "Item = u8".to_string(),
+                            args: vec![],
+                        }],
+                    },
+                },
+                Constraint::LifetimeBound {
+                    shorter: "T".to_string(),
+                    longer: "'a".to_string(),
+                },
+            ],
+        };
+        let rec = record(
+            "Wrap",
+            Some(generics),
+            vec![known_field(
+                "inner",
+                Type::BorrowedRef {
+                    lifetime: Some("'a".to_string()),
+                    is_mutable: false,
+                    r#type: Box::new(ty_param("T")),
+                },
+                Visibility::Public,
+                None,
+            )],
+        );
+        // New backend: no where clause, no lifetime bounds inline → <'a, T>
+        let result = Rust
+            .record("Wrap", &Visibility::Public, &rec, &cx())
+            .render(80);
+        assert_eq!(result, "pub struct Wrap<'a, T> {\n    pub inner: &'a T,\n}");
+    }
+
+    #[test]
+    fn unit_struct() {
+        let rec = record("Marker", None, vec![]);
+        let result = Rust
+            .record("Marker", &Visibility::Public, &rec, &cx())
+            .render(80);
+        assert_eq!(result, "pub struct Marker;");
+    }
+
+    #[test]
+    fn tuple_struct_as_named() {
+        let rec = record(
+            "Pair",
+            None,
+            vec![
+                tuple_field(
+                    0,
+                    Type::Primitive(Primitive::UInt(Width::W8)),
+                    Visibility::Public,
+                ),
+                tuple_field(1, Type::Primitive(Primitive::Bool), Visibility::Private),
+            ],
+        );
+        let result = Rust
+            .record("Pair", &Visibility::Public, &rec, &cx())
+            .render(80);
+        assert_eq!(result, "pub struct Pair {\n    pub 0: u8,\n    1: bool,\n}");
+    }
+
+    #[test]
+    fn enum_with_all_variant_shapes() {
+        let variants = vec![
+            SumVariant {
+                name: "Unit".to_string(),
+                data: None,
+                documentation: None,
+            },
+            SumVariant {
+                name: "Tup".to_string(),
+                data: Some(SumField::Tuple(vec![
+                    Type::Primitive(Primitive::UInt(Width::W8)),
+                    ty_ref("alloc::string::String"),
+                ])),
+                documentation: None,
+            },
+            SumVariant {
+                name: "Rec".to_string(),
+                data: Some(SumField::StructLike(vec![known_field(
+                    "id",
+                    Type::Primitive(Primitive::UInt(Width::W64)),
+                    Visibility::Public,
+                    None,
+                )])),
+                documentation: None,
+            },
+        ];
+        let result = Rust
+            .sum("Shape", None, &variants, &Visibility::Public, &cx())
+            .render(80);
+        // Struct-like variants use block{} which always breaks; different from legacy.
+        assert_eq!(
+            result,
+            "pub enum Shape {\n    Unit,\n    Tup(u8, String),\n    Rec {\n        id: u64,\n    },\n}"
+        );
+    }
+
+    #[test]
+    fn async_method_with_receiver_and_generics() {
+        let function = Function {
+            input_parameters: Some(vec![literal_param(
+                "limit",
+                Type::Primitive(Primitive::UInt(Width::Arch)),
+            )]),
+            output_parameters: Some(output(ty_ref_args(
+                "alloc::vec::Vec",
+                vec![GenericArg::Type(ty_param("T"))],
+            ))),
+            type_links: None,
+            attributes: Some(vec![Attribute::Async]),
+            generics: Some(Generics {
+                params: vec![type_param_p("T")],
+                constraints: vec![Constraint::TraitBound {
+                    param: "T".to_string(),
+                    trait_ref: trait_ref_val("core::clone::Clone"),
+                }],
+            }),
+            receiver: Some(ReceiverKind::MutRef),
+            overloads: None,
+            implemented: true,
+            members: None,
+            implemented_protocols: None,
+            body: None,
+        };
+        let result = Rust
+            .function("fetch", &function, &Visibility::Public, &cx())
+            .render(80);
+        assert_eq!(
+            result,
+            "pub async fn fetch<T: Clone>(&mut self, limit: usize) -> Vec<T>;"
+        );
+    }
+
+    #[test]
+    fn trait_with_methods() {
+        let def = TraitDef {
+            generics: None,
+            super_traits: None,
+            associated_types: None,
+            properties: None,
+            required_methods: Some(vec![TraitMethod {
+                name: "next".to_string(),
+                parameters: None,
+                return_type: Some(Box::new(ty_ref_args(
+                    "core::option::Option",
+                    vec![GenericArg::Type(Type::Primitive(Primitive::UInt(
+                        Width::W8,
+                    )))],
+                ))),
+                generics: None,
+                attributes: None,
+                documentation: None,
+                receiver: Some(ReceiverKind::MutRef),
+                has_default_implementation: false,
+            }]),
+            provided_methods: Some(vec![TraitMethod {
+                name: "reset".to_string(),
+                parameters: None,
+                return_type: None,
+                generics: None,
+                attributes: None,
+                documentation: None,
+                receiver: Some(ReceiverKind::MutRef),
+                has_default_implementation: true,
+            }]),
+            required_constants: None,
+            attributes: None,
+            members: None,
+        };
+        let result = Rust
+            .interface("Source", &def, &Visibility::Public, &cx())
+            .render(80);
+        assert_eq!(
+            result,
+            "pub trait Source {\n    fn next(&mut self) -> Option<u8>;\n    fn reset(&mut self) { ... }\n}"
+        );
+    }
+
+    #[test]
+    fn qualified_paths_flag() {
+        let ty_val = ty_ref("std::vec::Vec");
+        let default_result = Rust.ty(&ty_val, &cx()).render(80);
+        assert_eq!(default_result, "Vec");
+        // qualified_paths=true requires constructing RenderCtx differently:
+        let qual_cx = RenderCtx {
+            language: Language::Rust,
+            options: RenderOptions {
+                qualified_paths: true,
+                show_docs: false,
+            },
+            width: 80,
+        };
+        let qualified_result = Rust.ty(&ty_val, &qual_cx).render(80);
+        assert_eq!(qualified_result, "std::vec::Vec");
     }
 }

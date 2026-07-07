@@ -68,10 +68,17 @@ impl Backend for Go {
                 + kw("struct")
                 + sp()
                 + block("{", fields, "}");
+            // Build receiver type: ShapeCircle when no type params, ShapeCircle[T] when has them.
+            let receiver_ty = if info.types.is_empty() {
+                tyname(&vname)
+            } else {
+                let tp_args: Vec<Rendered> = info.types.iter().map(|t| tyname(t)).collect();
+                tyname(&vname) + generic_list("[", tp_args, "]")
+            };
             let marker = kw("func")
                 + sp()
                 + punct("(")
-                + tyname(&vname)
+                + receiver_ty
                 + punct(")")
                 + sp()
                 + ident(&sealed)
@@ -213,7 +220,21 @@ fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
 }
 
 fn type_reference(r: &TypeReference, cx: &RenderCtx) -> Rendered {
-    let base = tyname(short_name(&r.identifier, cx));
+    let sn = short_name(&r.identifier, cx);
+    let type_args: Vec<Rendered> = r
+        .generic_args
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|a| match a {
+            GenericArg::Type(t) => Some(ty(t, cx)),
+            _ => None,
+        })
+        .collect();
+    if let Some(known) = super::known_type(sn, &type_args, Language::Go) {
+        return known;
+    }
+    let base = tyname(sn);
     match &r.generic_args {
         Some(args) if !args.is_empty() => base + generic_args(args, cx),
         _ => base,

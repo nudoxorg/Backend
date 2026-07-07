@@ -67,6 +67,7 @@ impl Backend for Java {
             let rec = kw("record")
                 + sp()
                 + tyname(&v.name)
+                + decl.clone()
                 + arglist("(", components, ")")
                 + sp()
                 + kw("implements")
@@ -139,7 +140,7 @@ fn generics_decl(info: &GenericInfo) -> Rendered {
 
 fn field(f: &Field, cx: &RenderCtx) -> Option<Rendered> {
     let Field::Known(kf) = f else { return None };
-    let name = field_name(&kf.key);
+    let name = super::to_camel_case(&field_name(&kf.key));
     let base = kf.r#type.as_ref().map(|t| ty(t, cx)).unwrap_or_else(|| tyname("Object"));
     let t = if kf.attributes.is_optional {
         tyname("Optional") + punct("<") + base + punct(">")
@@ -163,7 +164,7 @@ fn record_components(v: &SumVariant, cx: &RenderCtx) -> Vec<Rendered> {
             .filter_map(|f| match f {
                 Field::Known(kf) => {
                     let t = kf.r#type.as_ref().map(|t| ty(t, cx))?;
-                    Some(t + sp() + ident(&field_name(&kf.key)))
+                    Some(t + sp() + ident(&super::to_camel_case(&field_name(&kf.key))))
                 }
                 _ => None,
             })
@@ -203,7 +204,8 @@ fn method_sig(m: &TraitMethod, cx: &RenderCtx) -> Rendered {
         .map(|t| ty(t, cx))
         .unwrap_or_else(|| kw("void"));
     let params = value_params(m.parameters.as_deref(), cx);
-    ret + sp() + ident(&m.name) + arglist("(", params, ")") + punct(";")
+    let method_name = super::to_camel_case(&m.name);
+    ret + sp() + ident(&method_name) + arglist("(", params, ")") + punct(";")
 }
 
 fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
@@ -224,10 +226,24 @@ fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
 }
 
 fn type_reference(r: &TypeReference, cx: &RenderCtx) -> Rendered {
-    let base = tyname(short_name(&r.identifier, cx));
+    let sn = short_name(&r.identifier, cx);
+    let type_args: Vec<Rendered> = r
+        .generic_args
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|a| match a {
+            GenericArg::Type(t) => Some(ty(t, cx)),
+            _ => None,
+        })
+        .collect();
+    if let Some(known) = super::known_type(sn, &type_args, Language::Java) {
+        return known;
+    }
+    let base = tyname(sn);
     match &r.generic_args {
-        Some(args) if !args.is_empty() => {
-            let items: Vec<Rendered> = args
+        Some(ga) if !ga.is_empty() => {
+            let items: Vec<Rendered> = ga
                 .iter()
                 .filter_map(|a| match a {
                     GenericArg::Type(t) => Some(ty(t, cx)),

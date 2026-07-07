@@ -22,8 +22,8 @@ pub struct Python;
 
 impl Backend for Python {
     fn doc_comment(&self, text: &str) -> Rendered {
-        let lines = text.lines().map(|l| txt("# ").annotate(Annotation::Comment) + txt(l));
-        Doc::join(Doc::hardline(), lines).annotate(Annotation::Comment)
+        let inner = Doc::join(Doc::hardline(), text.lines().map(|l| txt(l)));
+        txt("\"\"\"") + Doc::hardline() + inner + Doc::hardline() + txt("\"\"\"")
     }
 
     fn ty(&self, t: &Type, cx: &RenderCtx) -> Rendered {
@@ -33,7 +33,10 @@ impl Backend for Python {
     fn record(&self, name: &str, _vis: &Visibility, rec: &Record, cx: &RenderCtx) -> Rendered {
         let info = analyze_generics(rec.generics.as_ref());
         let header = kw("class") + sp() + tyname(name) + type_params(&info);
-        let fields: Vec<Rendered> = rec.fields.iter().filter_map(|f| field(f, cx)).collect();
+        let mut field_pairs: Vec<(bool, Rendered)> = rec.fields.iter().filter_map(|f| field(f, cx)).collect();
+        // Non-optional fields must precede optional fields in a @dataclass.
+        field_pairs.sort_by_key(|(is_optional, _)| *is_optional);
+        let fields: Vec<Rendered> = field_pairs.into_iter().map(|(_, r)| r).collect();
         decorator("@dataclass") + suite(header, fields)
     }
 
@@ -118,16 +121,17 @@ fn type_params(info: &GenericInfo) -> Rendered {
     generic_list("[", params.collect(), "]")
 }
 
-fn field(f: &Field, cx: &RenderCtx) -> Option<Rendered> {
+fn field(f: &Field, cx: &RenderCtx) -> Option<(bool, Rendered)> {
     let Field::Known(kf) = f else { return None };
-    let name = field_name(&kf.key);
+    let name = super::to_snake_case(&field_name(&kf.key));
     let base = kf.r#type.as_ref().map(|t| ty(t, cx)).unwrap_or_else(|| tyname("Any"));
-    let (t, default) = if kf.attributes.is_optional {
+    let is_optional = kf.attributes.is_optional;
+    let (t, default) = if is_optional {
         (tyname("Optional") + punct("[") + base + punct("]"), sp() + punct("=") + sp() + kw("None"))
     } else {
         (base, Doc::nil())
     };
-    Some(ident(&name) + punct(": ") + t + default)
+    Some((is_optional, ident(&name) + punct(": ") + t + default))
 }
 
 fn variant_fields(v: &SumVariant, cx: &RenderCtx) -> Vec<Rendered> {
@@ -138,7 +142,12 @@ fn variant_fields(v: &SumVariant, cx: &RenderCtx) -> Vec<Rendered> {
             .enumerate()
             .map(|(i, t)| ident(&format!("field{i}")) + punct(": ") + ty(t, cx))
             .collect(),
-        Some(SumField::StructLike(fields)) => fields.iter().filter_map(|f| field(f, cx)).collect(),
+        Some(SumField::StructLike(fields)) => {
+            let mut pairs: Vec<(bool, Rendered)> =
+                fields.iter().filter_map(|f| field(f, cx)).collect();
+            pairs.sort_by_key(|(is_optional, _)| *is_optional);
+            pairs.into_iter().map(|(_, r)| r).collect()
+        }
     }
 }
 
@@ -202,7 +211,21 @@ fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
 }
 
 fn type_reference(r: &TypeReference, cx: &RenderCtx) -> Rendered {
-    let base = tyname(short_name(&r.identifier, cx));
+    let sn = short_name(&r.identifier, cx);
+    let type_args: Vec<Rendered> = r
+        .generic_args
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|a| match a {
+            GenericArg::Type(t) => Some(ty(t, cx)),
+            _ => None,
+        })
+        .collect();
+    if let Some(known) = super::known_type(sn, &type_args, Language::Python) {
+        return known;
+    }
+    let base = tyname(sn);
     match &r.generic_args {
         Some(args) if !args.is_empty() => {
             let items: Vec<Rendered> = args

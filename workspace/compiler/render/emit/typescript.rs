@@ -21,9 +21,15 @@ pub struct TypeScript;
 
 impl Backend for TypeScript {
     fn doc_comment(&self, text: &str) -> Rendered {
-        let body = text.lines().map(|l| txt(" * ").annotate(Annotation::Comment) + txt(l));
-        (txt("/**") + Doc::hardline() + Doc::join(Doc::hardline(), body) + Doc::hardline() + txt(" */"))
-            .annotate(Annotation::Comment)
+        let body = text
+            .lines()
+            .map(|l| txt(" * ").annotate(Annotation::Comment) + txt(l));
+        (txt("/**")
+            + Doc::hardline()
+            + Doc::join(Doc::hardline(), body)
+            + Doc::hardline()
+            + txt(" */"))
+        .annotate(Annotation::Comment)
     }
 
     fn ty(&self, t: &Type, cx: &RenderCtx) -> Rendered {
@@ -46,9 +52,13 @@ impl Backend for TypeScript {
         cx: &RenderCtx,
     ) -> Rendered {
         let info = super::analyze_sum_generics(generics, variants);
-        let header = kw("export type") + sp() + tyname(name) + generics_decl(&info) + sp() + punct("=");
+        let header =
+            kw("export type") + sp() + tyname(name) + generics_decl(&info) + sp() + punct("=");
         // Each variant is an object type with a discriminant `tag`.
-        let arms: Vec<Rendered> = variants.iter().map(|v| punct("| ") + variant_object(v, cx)).collect();
+        let arms: Vec<Rendered> = variants
+            .iter()
+            .map(|v| punct("| ") + variant_object(v, cx))
+            .collect();
         let body = Doc::join(Doc::hardline(), arms);
         header + (Doc::hardline() + body).nest(INDENT) + punct(";")
     }
@@ -102,14 +112,27 @@ fn generics_decl(info: &GenericInfo) -> Rendered {
 fn field(f: &Field, cx: &RenderCtx) -> Option<Rendered> {
     let Field::Known(kf) = f else { return None };
     let name = field_name(&kf.key);
-    let opt = if kf.attributes.is_optional { punct("?") } else { Doc::nil() };
-    let readonly = if !kf.attributes.is_mutable { kw("readonly") + sp() } else { Doc::nil() };
-    let t = kf.r#type.as_ref().map(|t| ty(t, cx)).unwrap_or_else(|| tyname("unknown"));
+    let opt = if kf.attributes.is_optional {
+        punct("?")
+    } else {
+        Doc::nil()
+    };
+    let readonly = if !kf.attributes.is_mutable {
+        kw("readonly") + sp()
+    } else {
+        Doc::nil()
+    };
+    let t = kf
+        .r#type
+        .as_ref()
+        .map(|t| ty(t, cx))
+        .unwrap_or_else(|| tyname("unknown"));
     Some(readonly + ident(&name) + opt + punct(": ") + t + punct(";"))
 }
 
 fn variant_object(v: &SumVariant, cx: &RenderCtx) -> Rendered {
-    let tag = ident("tag") + punct(": ") + txt(&format!("\"{}\"", v.name)).annotate(Annotation::Type);
+    let tag =
+        ident("tag") + punct(": ") + txt(&format!("\"{}\"", v.name)).annotate(Annotation::Type);
     let mut members = vec![tag + punct(";")];
     match &v.data {
         None => {}
@@ -135,7 +158,11 @@ fn value_params(inputs: Option<&[Parameter]>, cx: &RenderCtx) -> Vec<Rendered> {
         .flatten()
         .filter_map(|p| match p {
             Parameter::Literal(lp) => {
-                let t = lp.r#type.as_ref().map(|t| ty(t, cx)).unwrap_or_else(|| tyname("unknown"));
+                let t = lp
+                    .r#type
+                    .as_ref()
+                    .map(|t| ty(t, cx))
+                    .unwrap_or_else(|| tyname("unknown"));
                 Some(ident(&lp.name) + punct(": ") + t)
             }
             _ => None,
@@ -162,8 +189,18 @@ fn return_type(outputs: Option<&[Parameter]>, cx: &RenderCtx) -> Rendered {
 fn method_sig(m: &TraitMethod, cx: &RenderCtx) -> Rendered {
     let info = analyze_generics(m.generics.as_ref());
     let params = value_params(m.parameters.as_deref(), cx);
-    let ret = m.return_type.as_ref().map(|t| ty(t, cx)).unwrap_or_else(|| kw("void"));
-    ident(&m.name) + generics_decl(&info) + arglist("(", params, ")") + punct(": ") + ret + punct(";")
+    let ret = m
+        .return_type
+        .as_ref()
+        .map(|t| ty(t, cx))
+        .unwrap_or_else(|| kw("void"));
+    let method_name = super::to_camel_case(&m.name);
+    ident(&method_name)
+        + generics_decl(&info)
+        + arglist("(", params, ")")
+        + punct(": ")
+        + ret
+        + punct(";")
 }
 
 fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
@@ -186,7 +223,21 @@ fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
 }
 
 fn type_reference(r: &TypeReference, cx: &RenderCtx) -> Rendered {
-    let base = tyname(short_name(&r.identifier, cx));
+    let sn = short_name(&r.identifier, cx);
+    let type_args: Vec<Rendered> = r
+        .generic_args
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|a| match a {
+            GenericArg::Type(t) => Some(ty(t, cx)),
+            _ => None,
+        })
+        .collect();
+    if let Some(known) = super::known_type(sn, &type_args, Language::TypeScript) {
+        return known;
+    }
+    let base = tyname(sn);
     match &r.generic_args {
         Some(args) if !args.is_empty() => {
             let items: Vec<Rendered> = args
@@ -204,7 +255,9 @@ fn type_reference(r: &TypeReference, cx: &RenderCtx) -> Rendered {
 
 fn primitive(p: &Primitive) -> &'static str {
     match p {
-        Primitive::Int(_) | Primitive::UInt(_) | Primitive::Float(_) | Primitive::Address => "number",
+        Primitive::Int(_) | Primitive::UInt(_) | Primitive::Float(_) | Primitive::Address => {
+            "number"
+        }
         Primitive::Bool => "boolean",
         Primitive::String | Primitive::Char => "string",
         Primitive::Bytes => "Uint8Array",

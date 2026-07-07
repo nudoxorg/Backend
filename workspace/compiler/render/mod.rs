@@ -20,18 +20,10 @@
 //! the payload structs (`Record`, `Function`, `TraitDef`, …); the entry point
 //! weaves them in, and payloads carry their own inner docs (fields, variants,
 //! trait methods), rendered when [`RenderOptions::show_docs`] is set.
-//!
-//! # Legacy
-//!
-//! [`rust`] is the original, string-concatenating Rust renderer with its own
-//! golden tests. It predates the document algebra and is retained for parity;
-//! new work should target the [`Backend`]-based path above, which supersedes it
-//! and covers every language uniformly.
 
 pub mod backend;
 pub mod doc;
 pub mod emit;
-pub mod rust;
 
 pub use backend::{
     render_entry, render_entry_doc, Annotation, Backend, Language, RenderCtx, RenderOptions,

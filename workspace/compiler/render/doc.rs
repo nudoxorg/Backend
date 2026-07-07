@@ -57,6 +57,8 @@ pub enum Doc<A> {
     Group(Rc<Doc<A>>),
     /// Attach an annotation to a sub-document (surfaced by the printer).
     Annot(A, Rc<Doc<A>>),
+    /// Render `flat` when the enclosing group is flat, `broken` when broken.
+    FlatAlt(Rc<Doc<A>>, Rc<Doc<A>>),
 }
 
 /// Rendering mode chosen per group by the printer.
@@ -121,6 +123,11 @@ impl<A: Clone> Doc<A> {
         docs.into_iter().fold(Doc::nil(), Doc::append)
     }
 
+    /// Render `flat` in flat mode, `broken` in broken mode.
+    pub fn flat_alt(flat: Doc<A>, broken: Doc<A>) -> Self {
+        Doc::FlatAlt(Rc::new(flat), Rc::new(broken))
+    }
+
     /// Concatenate a sequence of documents, placing `sep` between each pair.
     pub fn join(sep: Doc<A>, docs: impl IntoIterator<Item = Doc<A>>) -> Self {
         let mut out = Doc::nil();
@@ -131,6 +138,15 @@ impl<A: Clone> Doc<A> {
             out = out.append(d);
         }
         out
+    }
+
+    /// Greedy fill combinator: pack items separated by `sep` as many per line as
+    /// fit; when a break is needed, use `hardline` instead of `sep`.
+    ///
+    /// `fill(sep, [x]) = x`
+    /// `fill(sep, x:xs) = x <> flat_alt(sep <> fill(sep, xs), hardline() <> fill(sep, xs))`
+    pub fn fill(sep: Doc<A>, items: impl IntoIterator<Item = Doc<A>>) -> Self {
+        fill_impl(sep, items.into_iter().collect())
     }
 
     /// Render the document to a string, breaking to keep lines within `width`.
@@ -196,6 +212,10 @@ impl<A: Clone> Doc<A> {
                     stack.push(Item::PopAnnot);
                     stack.push(Item::Doc(indent, mode, d));
                 }
+                Doc::FlatAlt(flat, broken) => {
+                    let d = if mode == Mode::Flat { flat } else { broken };
+                    stack.push(Item::Doc(indent, mode, d));
+                }
             }
         }
     }
@@ -259,8 +279,26 @@ fn fits<A>(mut remaining: isize, indent: usize, doc: &Doc<A>, rest: &[Item<'_, A
             },
             Doc::Group(x) => local.push((ind, Mode::Flat, x)),
             Doc::Annot(_, x) => local.push((ind, mode, x)),
+            Doc::FlatAlt(flat, broken) => {
+                let d = if mode == Mode::Flat { flat } else { broken };
+                local.push((ind, mode, d));
+            }
         }
     }
+}
+
+fn fill_impl<A: Clone>(sep: Doc<A>, items: Vec<Doc<A>>) -> Doc<A> {
+    if items.is_empty() {
+        return Doc::nil();
+    }
+    let mut iter = items.into_iter();
+    let x = iter.next().unwrap();
+    let xs: Vec<Doc<A>> = iter.collect();
+    if xs.is_empty() {
+        return x;
+    }
+    let rest = fill_impl(sep.clone(), xs);
+    x + Doc::flat_alt(sep + rest.clone(), Doc::hardline() + rest)
 }
 
 /// Add a signed nesting delta to an indent, clamping at zero.
@@ -268,9 +306,29 @@ fn add(indent: usize, delta: isize) -> usize {
     (indent as isize + delta).max(0) as usize
 }
 
-/// Display width of a literal. Codepoint count is sufficient for source text.
+/// Display width of a string: ASCII chars are 1 column, wide CJK/emoji are 2.
 fn width_of(s: &str) -> usize {
-    s.chars().count()
+    s.chars().map(char_width).sum()
+}
+
+fn char_width(c: char) -> usize {
+    if (c as u32) < 128 {
+        return 1;
+    }
+    match c {
+        '\u{1100}'..='\u{115F}'
+        | '\u{2E80}'..='\u{303E}'
+        | '\u{3040}'..='\u{33FF}'
+        | '\u{3400}'..='\u{4DBF}'
+        | '\u{4E00}'..='\u{9FFF}'
+        | '\u{A000}'..='\u{A48F}'
+        | '\u{F900}'..='\u{FAFF}'
+        | '\u{FE30}'..='\u{FE6F}'
+        | '\u{FF01}'..='\u{FF60}'
+        | '\u{FFE0}'..='\u{FFE6}'
+        | '\u{1F300}'..='\u{1F9FF}' => 2,
+        _ => 1,
+    }
 }
 
 fn newline<A>(sink: &mut impl Sink<A>, indent: usize) {
