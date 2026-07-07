@@ -1,10 +1,39 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
 load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 
+# The Cargo.lock → registry translation flattens target-specific dependencies
+# (`[target.'cfg(windows)'.dependencies]`) into the unconditional `deps` list,
+# so Windows-only crates (windows*, winapi, uv_windows) get pulled into every
+# build. On non-Windows hosts some of those crates do not even compile (e.g.
+# windows-future vs. the pinned windows-core), which breaks the build. Restore
+# Cargo's `cfg(windows)` gating by wrapping those deps in a `select()`.
+
+def _is_windows_dep(dep):
+    # `dep` is a target label like ":windows_future-0_2" or ":uv_windows-0_0".
+    label = dep[1:] if dep.startswith(":") else dep
+    return (
+        label.startswith("windows-") or
+        label.startswith("windows_") or
+        label.startswith("winapi-") or
+        label.startswith("uv_windows-")
+        # NB: deliberately excludes "winnow" (a parser crate, not Windows).
+    )
+
+def _gate_windows_deps(deps):
+    windows = [d for d in deps if _is_windows_dep(d)]
+    if not windows:
+        return deps
+    portable = [d for d in deps if not _is_windows_dep(d)]
+    return portable + select({
+        "prelude//os/constraints:windows": windows,
+        "DEFAULT": [],
+    })
+
 def _registry_crate(name, version, sha256, edition, label, alias, deps, features, build_script, proc_macro, build_script_root = "build.rs", lib_root = "src/lib.rs", named_deps = {}, extra_env = {}):
     archive_name = name + "-" + version + ".crate"
     src_ref = ":" + archive_name
     crate_name = name.replace("-", "_")
+    deps = _gate_windows_deps(deps)
 
     # Split version into parts for CARGO_PKG_VERSION_* env vars
     _ver_parts = version.split(".")
@@ -120,7 +149,7 @@ def _registry_crate(name, version, sha256, edition, label, alias, deps, features
             visibility = ["PUBLIC"],
         )
 
-def _git_crate(archive_name, crate_name, subdir, edition, deps, features, proc_macro, patch):
+def _git_crate(archive_name, crate_name, subdir, edition, deps, features, proc_macro, patch, patch_strip):
     normalized = crate_name.replace("-", "_")
 
     if patch != None:
@@ -130,8 +159,7 @@ def _git_crate(archive_name, crate_name, subdir, edition, deps, features, proc_m
             bash = (
                 "mkdir -p \"$OUT\"\n" +
                 "cp -R $(location :" + archive_name + ")/" + subdir + "/. \"$OUT\"/\n" +
-                "cd \"$OUT\"\n" +
-                "patch -p1 < $(location :" + patch + ")"
+                "/usr/bin/patch -p" + str(patch_strip) + " -d \"$OUT\" < $(location :" + patch + ")"
             ),
             out = normalized,
             visibility = [],
@@ -183,6 +211,7 @@ def _git_repo(archive_name, urls, strip_prefix, sha256, crates):
             features = c.get("features", []),
             proc_macro = c.get("proc_macro", False),
             patch = c.get("patch", None),
+            patch_strip = c.get("patch_strip", 1),
         )
 
 def _patch_files(files):
