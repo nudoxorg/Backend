@@ -17,18 +17,68 @@ pub enum AbstractQuery {
 pub struct LiteralQuery(String);
 
 impl LiteralQuery {
+	/// The longest literal query accepted; anything larger is a paste accident,
+	/// not a name lookup.
+	const MAXIMUM_LENGTH: usize = 1024;
+
+	/// The characters the tantivy query grammar treats as operators. Escaping
+	/// them (rather than rejecting) means a user can search for `Option<T>` or
+	/// `operator+` literally — the whole point of the precise surface.
+	const TANTIVY_OPERATORS: &'static [char] =
+		&['+', '-', '!', '(', ')', '{', '}', '[', ']', '^', '"', '~', '*', '?', ':', '\\'];
+
 	pub fn parse(raw: &str) -> Result<Self, QueryError> {
-		let _ = raw;
-		todo!("reject empty, escape tantivy special chars per policy")
+		let trimmed = raw.trim();
+		if trimmed.is_empty() {
+			return Err(QueryError::Empty);
+		}
+		if trimmed.len() > Self::MAXIMUM_LENGTH {
+			return Err(QueryError::Invalid(format!(
+				"query exceeds {} bytes",
+				Self::MAXIMUM_LENGTH
+			)));
+		}
+		if trimmed.chars().any(char::is_control) {
+			return Err(QueryError::Invalid("query contains control characters".into()));
+		}
+		let mut escaped = String::with_capacity(trimmed.len());
+		for character in trimmed.chars() {
+			if Self::TANTIVY_OPERATORS.contains(&character) {
+				escaped.push('\\');
+			}
+			escaped.push(character);
+		}
+		Ok(Self(escaped))
 	}
 
 	pub fn as_str(&self) -> &str { &self.0 }
+}
+
+impl AbstractQuery {
+	/// The raw text to embed (or to degrade into a literal search when the
+	/// semantic path is unavailable).
+	pub fn text(&self) -> &str {
+		match self {
+			AbstractQuery::NaturalLanguage(text) => text,
+			AbstractQuery::CodeSnippet { code, .. } => code,
+		}
+	}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Query {
 	Abstract(AbstractQuery),
 	Literal(LiteralQuery),
+}
+
+impl Query {
+	/// The query's raw text, whichever surface it targets.
+	pub fn text(&self) -> &str {
+		match self {
+			Query::Abstract(query) => query.text(),
+			Query::Literal(query) => query.as_str(),
+		}
+	}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,10 +94,41 @@ pub struct PackageSelector {
 	pub version: Option<VersionConstraint>,
 }
 
+impl PackageSelector {
+	/// Whether a symbol plausibly belongs to the selected package.
+	///
+	/// Symbols carry a [`heart::PackageId`], which cannot be re-derived from a
+	/// bare name (identity needs origin + version), so the match is on the
+	/// fully-qualified name's leading segment — the package/crate/module root
+	/// every ecosystem's grammar puts first.
+	pub fn matches(&self, symbol: &heart::Symbol) -> bool {
+		symbol.ecosystem == self.name.ecosystem()
+			&& symbol
+				.name
+				.fully_qualified
+				.split(|separator| separator == ':' || separator == '.' || separator == '/')
+				.next()
+				.is_some_and(|root| root == self.name.canonical())
+	}
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Filter {
 	pub ecosystems: Option<NonEmpty<Language>>,
 	pub packages: Option<NonEmpty<PackageSelector>>,
+}
+
+impl Filter {
+	/// Whether a symbol survives this filter. `None` dimensions are unbounded.
+	pub fn admits(&self, symbol: &heart::Symbol) -> bool {
+		self.ecosystems
+			.as_ref()
+			.is_none_or(|ecosystems| ecosystems.iter().any(|ecosystem| *ecosystem == symbol.ecosystem))
+			&& self
+				.packages
+				.as_ref()
+				.is_none_or(|packages| packages.iter().any(|selector| selector.matches(symbol)))
+	}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use thiserror::Error;
 
-use super::{namespace, Id};
+use super::Id;
 use crate::ecosystem::Language;
 
 /// Identity tag for packages. Zero-variant: it exists only to brand [`Id`], never
@@ -52,8 +52,18 @@ impl TryFrom<(Language, &str)> for PackageVersion {
     type Error = VersionError;
 
     fn try_from((ecosystem, raw): (Language, &str)) -> Result<Self, Self::Error> {
-        let _ = (ecosystem, raw);
-        todo!("dispatch to semver::Version::parse or uv_pep440::Version::from_str")
+        let invalid = |message: String| VersionError { ecosystem, raw: raw.to_owned(), message };
+        match ecosystem {
+            Language::Rust => semver::Version::parse(raw).map(Self::Cargo),
+            Language::Typescript => semver::Version::parse(raw).map(Self::Npm),
+            Language::Python => {
+                return raw
+                    .parse::<uv_pep440::Version>()
+                    .map(Self::Python)
+                    .map_err(|error| invalid(error.to_string()));
+            }
+        }
+        .map_err(|error| invalid(error.to_string()))
     }
 }
 

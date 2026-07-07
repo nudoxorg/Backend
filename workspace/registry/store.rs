@@ -7,11 +7,12 @@
 //!   bytes. Keyed purely by hash, so identical content across packages and
 //!   versions is stored exactly once (dedupe) and every read is integrity-
 //!   checkable.
-//! - **`ptr/{ecosystem}/{origin}/{name}/{version}`** — a small mutable pointer
-//!   from a package's coordinates to its current manifest's [`ContentHash`].
-//!   Names are percent-encoded *and* the leaf is hashed so a scoped name like
-//!   `@types/node` or a version with slashes can never break the key layout or
-//!   escape its prefix.
+//! - **`ptr/{package-id}`** — a small mutable pointer from a package's
+//!   deterministic [`PackageId`] (itself a UUIDv5 fingerprint of the validated
+//!   coordinate tuple) to its current manifest's [`ContentHash`]. Keying on the
+//!   id rather than raw name segments means a scoped name like `@types/node` or
+//!   a version with slashes can never break the key layout or escape its
+//!   prefix — the leaf is always a fixed-shape UUID.
 //!
 //! ## Idempotency
 //! A `cas/` put of content whose hash already exists is a no-op — puts are
@@ -21,7 +22,7 @@
 use std::sync::Arc;
 
 use heart::{
-	Cold, Connect, ConnectError, Live, PackageId,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId,
 	content::ContentHash,
 };
 use crate::package::Coordinates as PackageCoordinates;
@@ -29,7 +30,7 @@ use object_store::{ObjectStore, path::Path};
 
 use crate::{
 	blob::{BlobManifest, creation::PendingSection},
-	error::StoreError,
+	error::{BlobError, StoreError, hash_hex, verify_integrity},
 };
 
 /// The registry's content-addressed store over object storage.
@@ -54,26 +55,57 @@ impl Store<Cold> {
 impl Connect for Store<Cold> {
 	type Live = Store<Live>;
 
-	/// A "connection" is a bucket-reachability check: HEAD/list a sentinel key
-	/// and confirm credentials + network before going [`Live`].
+	/// A "connection" is a bucket-reachability check: HEAD a sentinel key and
+	/// confirm credentials + network before going [`Live`]. A `NotFound` on the
+	/// sentinel is *success* — the bucket answered.
 	async fn connect(self) -> Result<Self::Live, ConnectError> {
-		let _ = &self.backend;
-		todo!("probe the bucket (list a sentinel prefix); map failures to ConnectError::ObjectStore")
+		let sentinel = Path::from("cas/.reachability-probe");
+		match self.backend.head(&sentinel).await {
+			Ok(_) | Err(object_store::Error::NotFound { .. }) => {
+				tracing::debug!("object store answered the sentinel probe; going live");
+				Ok(Store { backend: self.backend, _state: std::marker::PhantomData })
+			}
+			Err(
+				object_store::Error::Unauthenticated { .. }
+				| object_store::Error::PermissionDenied { .. },
+			) => Err(ConnectError::new(BackendKind::ObjectStore, ConnectFailure::Auth)),
+			Err(other) => Err(ConnectError::new(
+				BackendKind::ObjectStore,
+				ConnectFailure::Other(Box::new(other)),
+			)),
+		}
+	}
+}
+
+/// Map a raw backend error on `path` onto the store's error vocabulary,
+/// folding the backend's `NotFound` into [`StoreError::NotFound`] with the key
+/// preserved.
+fn keyed(path: &Path, error: object_store::Error) -> StoreError {
+	match error {
+		object_store::Error::NotFound { .. } => StoreError::NotFound(path.to_string()),
+		other => StoreError::Backend(other),
 	}
 }
 
 impl Store<Live> {
 	/// The `cas/{hash}` object path for a content hash.
 	pub fn cas_path(hash: ContentHash) -> Path {
-		let _ = hash;
-		todo!("build a Path of the form cas/<blake3-hex> from hash.to_hex()")
+		Path::from(format!("cas/{}", hash_hex(&hash)))
 	}
 
-	/// The `ptr/...` pointer path for a package's coordinates. Percent-encodes +
-	/// hashes the name/version leaf so scoped names can't break the layout.
+	/// The `ptr/{package-id}` pointer path for a package's coordinates. The leaf
+	/// is the deterministic [`PackageId`] — a fixed-shape UUID derived from the
+	/// validated coordinate tuple — so no name or version, however exotic, can
+	/// break the layout.
 	pub fn pointer_path(coordinates: &PackageCoordinates) -> Path {
-		let _ = coordinates;
-		todo!("build ptr/<ecosystem>/<origin-token>/<pct-name>/<pct-version>, leaf hashed for safety")
+		Self::pointer_path_for(coordinates.id())
+	}
+
+	/// The pointer path from a bare [`PackageId`] — what [`Store::put_manifest`]
+	/// (which only carries the id) writes and what
+	/// [`Store::pointer_path`] delegates to, so the two can never diverge.
+	fn pointer_path_for(package: PackageId) -> Path {
+		Path::from(format!("ptr/{}", package.as_uuid()))
 	}
 
 	/// Idempotently store one content-addressed section. If an object already
@@ -81,36 +113,69 @@ impl Store<Live> {
 	/// otherwise it writes and returns `true`. `// object-store put may run on
 	/// spawn_blocking depending on backend`.
 	pub async fn put_section(&self, section: &PendingSection) -> Result<bool, StoreError> {
-		let _ = (&self.backend, section);
-		todo!("HEAD the cas section; if absent, put bytes; verify no hash collision")
+		let path = Self::cas_path(section.hash);
+		// Refuse to persist bytes that do not hash to their declared key — a
+		// mis-addressed put would poison the CAS for every future reader.
+		verify_integrity(path.as_ref(), &section.bytes, section.hash)?;
+		match self.backend.head(&path).await {
+			Ok(_) => Ok(false),
+			Err(object_store::Error::NotFound { .. }) => {
+				self.backend.put(&path, section.bytes.clone().into()).await?;
+				tracing::debug!(key = %path, size = section.bytes.len(), "cas section written");
+				Ok(true)
+			}
+			Err(other) => Err(StoreError::Backend(other)),
+		}
 	}
 
 	/// Fetch a content-addressed section's bytes, verifying they hash back to the
 	/// key. `// blake3 verification runs on spawn_blocking`.
 	pub async fn get_section(&self, hash: ContentHash) -> Result<bytes::Bytes, StoreError> {
-		let _ = (&self.backend, hash);
-		todo!("get the cas section, verify_integrity, return bytes")
+		let path = Self::cas_path(hash);
+		let result = self.backend.get(&path).await.map_err(|e| keyed(&path, e))?;
+		let bytes = result.bytes().await.map_err(|e| keyed(&path, e))?;
+		verify_integrity(path.as_ref(), &bytes, hash)?;
+		Ok(bytes)
 	}
 
 	/// Fetch a ranged slice of a content-addressed section (for large files a
-	/// caller only partially needs).
+	/// caller only partially needs). A partial read cannot be integrity-verified
+	/// against the whole-object hash; callers trade verification for bandwidth.
 	pub async fn get_section_range(
 		&self,
 		hash: ContentHash,
 		range: std::ops::Range<u64>,
 	) -> Result<bytes::Bytes, StoreError> {
-		let _ = (&self.backend, hash, range);
-		todo!("object_store get_range on the cas section; note: ranged reads can't full-verify")
+		let path = Self::cas_path(hash);
+		self.backend
+			.get_range(&path, range.start as usize..range.end as usize)
+			.await
+			.map_err(|e| keyed(&path, e))
 	}
 
 	/// Record a manifest: write it as its own `cas/` object and repoint the
 	/// package's `ptr/` to it. Threaded through the access layer.
+	#[tracing::instrument(skip(self, manifest), fields(package = %manifest.package))]
 	pub async fn put_manifest(
 		&self,
 		manifest: &BlobManifest,
 	) -> Result<ContentHash, StoreError> {
-		let _ = (&self.backend, manifest);
-		todo!("serialize+hash manifest, idempotent-put to cas/, atomically repoint ptr/")
+		manifest.validate().map_err(|e| StoreError::Blob(Box::new(e)))?;
+		let bytes = postcard::to_allocvec(manifest)
+			.map_err(|e| StoreError::Blob(Box::new(BlobError::Codec(e))))?;
+		let hash = ContentHash::of_bytes(&bytes);
+
+		// The manifest itself is content-addressed (idempotent put)...
+		self.put_section(&PendingSection { hash, bytes: bytes.into() }).await?;
+
+		// ...and the pointer repoint is a single-object replace, which every
+		// object-store backend performs atomically.
+		let pointer = Self::pointer_path_for(manifest.package);
+		self.backend
+			.put(&pointer, bytes::Bytes::copy_from_slice(hash.as_bytes()).into())
+			.await?;
+		tracing::info!(manifest = %hash_hex(&hash), "manifest recorded and pointer repointed");
+		Ok(hash)
 	}
 
 	/// Load the current manifest for a package by resolving its `ptr/` to a
@@ -119,14 +184,29 @@ impl Store<Live> {
 		&self,
 		package: &PackageCoordinates,
 	) -> Result<BlobManifest, StoreError> {
-		let _ = (&self.backend, package);
-		todo!("read ptr/ -> manifest hash, get_section, deserialize into BlobManifest")
+		let pointer = Self::pointer_path(package);
+		let result = self.backend.get(&pointer).await.map_err(|e| keyed(&pointer, e))?;
+		let raw = result.bytes().await.map_err(|e| keyed(&pointer, e))?;
+		let digest: [u8; 32] = raw
+			.as_ref()
+			.try_into()
+			.map_err(|_| StoreError::KeyEncoding(pointer.to_string()))?;
+
+		let bytes = self.get_section(ContentHash::from_bytes(digest)).await?;
+		let manifest: BlobManifest = postcard::from_bytes(&bytes)
+			.map_err(|e| StoreError::Blob(Box::new(BlobError::Codec(e))))?;
+		manifest.validate().map_err(|e| StoreError::Blob(Box::new(e)))?;
+		Ok(manifest)
 	}
 
 	/// Whether a package currently has a stored manifest.
 	pub async fn exists(&self, package: &PackageCoordinates) -> Result<bool, StoreError> {
-		let _ = (&self.backend, package);
-		todo!("HEAD the ptr/ key")
+		let pointer = Self::pointer_path(package);
+		match self.backend.head(&pointer).await {
+			Ok(_) => Ok(true),
+			Err(object_store::Error::NotFound { .. }) => Ok(false),
+			Err(other) => Err(StoreError::Backend(other)),
+		}
 	}
 
 	/// Resolve a package's coordinates to its deterministic id (pure delegation

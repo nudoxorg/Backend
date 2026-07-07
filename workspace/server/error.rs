@@ -61,6 +61,35 @@ impl ServerError {
     }
 }
 
+impl axum::response::IntoResponse for ServerError {
+    /// Project onto the wire: the [`ServerError::status`] code plus a small JSON
+    /// body. The full typed chain is logged here (the last point it exists);
+    /// clients only ever see the projection.
+    fn into_response(self) -> axum::response::Response {
+        let status = self.status();
+        let chain = {
+            let mut rendered = self.to_string();
+            let mut source = std::error::Error::source(&self);
+            while let Some(cause) = source {
+                rendered.push_str(": ");
+                rendered.push_str(&cause.to_string());
+                source = cause.source();
+            }
+            rendered
+        };
+        if status.is_server_error() {
+            tracing::error!(%status, error = %chain, "request failed");
+        } else {
+            tracing::warn!(%status, error = %chain, "request rejected");
+        }
+        let body = axum::Json(serde_json::json!({
+            "status": status.as_u16(),
+            "error": self.to_string(),
+        }));
+        (status, body).into_response()
+    }
+}
+
 impl Retryable for ServerError {
     fn is_retryable(&self) -> bool {
         matches!(

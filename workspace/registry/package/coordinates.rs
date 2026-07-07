@@ -18,7 +18,19 @@ impl Coordinates {
     }
 
     pub fn identity_bytes(&self) -> Vec<u8> {
-        todo!("origin.token \\0 name.canonical \\0 version.canonical, length-prefixed")
+        // Length-prefixing every part makes the encoding injective — no
+        // crafted origin/name pair can collide with a different tuple's byte
+        // stream; the trailing NUL is a readability seam, not the mechanism.
+        let origin = self.origin.token();
+        let version = self.version.canonical();
+        [origin.as_bytes(), self.name.canonical().as_bytes(), version.as_bytes()]
+            .into_iter()
+            .fold(Vec::new(), |mut bytes, part| {
+                bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(part);
+                bytes.push(0);
+                bytes
+            })
     }
 
     pub fn id(&self) -> PackageId {

@@ -37,8 +37,13 @@ impl TerminusInstance {
 	/// Validate and wrap an `{org}/{db}` instance token. Rejects anything that is
 	/// not exactly two non-empty, slash-separated segments.
 	pub fn new(token: impl Into<String>) -> Result<Self, IndexError> {
-		let _ = token;
-		todo!("split on '/', require exactly two non-empty segments; else IndexError::InvalidInstance")
+		let token = token.into();
+		match token.split('/').collect::<Vec<_>>()[..] {
+			[organization, database] if !organization.is_empty() && !database.is_empty() => {
+				Ok(Self(token))
+			}
+			_ => Err(IndexError::InvalidInstance(token)),
+		}
 	}
 
 	/// The validated `org/db` token, used as the salt for id derivation.
@@ -193,17 +198,24 @@ impl GlobalStore<Live> {
 		row_to_state(&row).map_err(codec_to_index)
 	}
 
-	/// Fetch a package's current global record.
+	/// Fetch a package's current global record: the identity half rebuilt (and
+	/// re-validated) from the `packages` row, the lifecycle half from
+	/// `parse_status`.
 	pub async fn get(
 		&self,
 		package: PackageId,
 	) -> Result<GlobalPackage, IndexError> {
-		// The lifecycle half is fully reconstructable from `parse_status`; the
-		// identity half requires rebuilding `PackageCoordinates`, whose heart
-		// constructors (`PackageName::new`, `PackageVersion::parse`, ...) are still
-		// stubbed, so that projection is the remaining glue.
-		let _state = self.get_state(package).await?;
-		todo!("rebuild PackageCoordinates + Package from the packages row once heart's constructors land")
+		let state = self.get_state(package).await?;
+
+		let (sql, vals) = queries::index::get_package(package);
+		let row = sqlx::query_with(&sql, vals)
+			.fetch_optional(&self.pool)
+			.await
+			.map_err(IndexError::Database)?
+			.ok_or(IndexError::NotFound(package))?;
+		let package = row_to_package(&row).map_err(codec_to_index)?;
+
+		Ok(GlobalPackage { id: package.id(), package, state })
 	}
 
 	/// The recorded snapshot [`ContentHash`] for a package, for freshness
@@ -269,6 +281,27 @@ fn connect_failure(e: &sqlx::Error) -> ConnectFailure {
 			other.to_string(),
 		))),
 	}
+}
+
+/// Reassemble a [`crate::Package`] from a `packages` result row. The column
+/// order matches [`queries::index::get_package`]: id, language, origin_token,
+/// name_canonical, name_original, version_canonical, visibility, owner_tenant,
+/// owner_kind, toolchain.
+fn row_to_package(row: &PgRow) -> Result<crate::Package, codec::CodecError> {
+	let language: String = row.try_get(1).map_err(row_decode)?;
+	let origin_token: String = row.try_get(2).map_err(row_decode)?;
+	let name_original: String = row.try_get(4).map_err(row_decode)?;
+	let version_canonical: String = row.try_get(5).map_err(row_decode)?;
+	let toolchain_json: serde_json::Value = row.try_get(9).map_err(row_decode)?;
+
+	let coordinates = codec::coordinates_from_columns(
+		&language,
+		&origin_token,
+		&name_original,
+		&version_canonical,
+	)?;
+	let toolchain = codec::toolchain_from_json(&toolchain_json)?;
+	Ok(crate::Package { coordinates, toolchain })
 }
 
 /// Reassemble a [`ResolutionState`] from a `parse_status` result row. The row

@@ -18,8 +18,17 @@ use crate::blob::FileEntry;
 /// finalize. Deterministic and offline-recomputable. `// runs on spawn_blocking
 /// for large file sets`.
 pub fn package_generation(files: &[FileEntry]) -> ContentHash {
-	let _ = files;
-	todo!("sort by path, fold length-prefixed (path, file-hash) pairs, finalize into ContentHash")
+	let mut sorted: Vec<&FileEntry> = files.iter().collect();
+	sorted.sort_by(|a, b| a.path.cmp(&b.path));
+
+	let mut hasher = ContentHash::builder();
+	for entry in sorted {
+		// Length-prefix the path so `(ab, c)` and `(a, bc)` cannot collide.
+		hasher.update(&(entry.path.len() as u64).to_le_bytes());
+		hasher.update(entry.path.as_bytes());
+		hasher.update(entry.hash.as_bytes());
+	}
+	hasher.finalize()
 }
 
 /// Compare a package's recorded snapshot hash against a freshly-computed one to

@@ -34,8 +34,18 @@ impl EntryAllowlist {
 
 	/// Classify a raw tar entry-type byte and decide if it is permitted.
 	pub fn admits(&self, kind: EntryKind) -> bool {
-		let _ = kind;
-		todo!("map EntryKind onto allowlist; reject Symlink/Hardlink/Char/Block/Fifo/Other")
+		match kind {
+			EntryKind::Regular => self.regular,
+			EntryKind::Directory => self.directories,
+			// Never configurable: links can point out of the jail, and device /
+			// fifo / socket nodes have no business in a source archive.
+			EntryKind::Symlink
+			| EntryKind::Hardlink
+			| EntryKind::Character
+			| EntryKind::Block
+			| EntryKind::Fifo
+			| EntryKind::Other => false,
+		}
 	}
 }
 
@@ -72,10 +82,34 @@ impl Budget {
 	}
 
 	/// Charge a would-be file against the budget, erroring (with the specific
-	/// [`UnsafeArchive`] variant) if it would breach any ceiling.
+	/// [`UnsafeArchive`] variant) if it would breach any ceiling. Nothing is
+	/// consumed on failure. A `FileTooLarge` is raised with an empty path — the
+	/// budget doesn't know one; [`sanitize_entry`] fills it in.
 	pub fn charge(&mut self, size: u64) -> Result<(), UnsafeArchive> {
-		let _ = (size, &mut self.total_bytes, &mut self.file_count, &self.limits);
-		todo!("check per-file, running-total, and file-count ceilings; update on success")
+		let file_count = self.file_count + 1;
+		if file_count > self.limits.max_files {
+			return Err(UnsafeArchive::TooManyFiles {
+				actual: file_count,
+				limit: self.limits.max_files,
+			});
+		}
+		if size > self.limits.max_file_bytes {
+			return Err(UnsafeArchive::FileTooLarge {
+				path: String::new(),
+				actual: size,
+				limit: self.limits.max_file_bytes,
+			});
+		}
+		let total_bytes = self.total_bytes.saturating_add(size);
+		if total_bytes > self.limits.max_total_bytes {
+			return Err(UnsafeArchive::TotalTooLarge {
+				actual: total_bytes,
+				limit: self.limits.max_total_bytes,
+			});
+		}
+		self.file_count = file_count;
+		self.total_bytes = total_bytes;
+		Ok(())
 	}
 }
 
@@ -86,21 +120,64 @@ impl Budget {
 /// package-relative path on success. The single choke point for path safety —
 /// no other code interprets archive paths.
 pub fn jail_path(root_depth_limit: usize, raw: &str) -> Result<SmolStr, UnsafeArchive> {
-	let _ = (root_depth_limit, raw);
-	todo!("reject absolute/traversal, enforce depth <= limit, normalize to relative SmolStr")
+	let traversal = || UnsafeArchive::PathTraversal { path: raw.to_owned() };
+
+	// Absolute paths (unix or windows-drive shaped), backslash separators, and
+	// embedded NULs never survive — each is a jail-relevant ambiguity.
+	let drive_absolute =
+		raw.len() >= 2 && raw.as_bytes()[0].is_ascii_alphabetic() && raw.as_bytes()[1] == b':';
+	if raw.starts_with('/') || raw.contains('\\') || raw.contains('\0') || drive_absolute {
+		return Err(traversal());
+	}
+
+	// Normalize component-by-component; a `..` that pops past the root escaped.
+	let mut segments: Vec<&str> = Vec::new();
+	for component in raw.split('/') {
+		match component {
+			"" | "." => {}
+			".." => {
+				if segments.pop().is_none() {
+					return Err(traversal());
+				}
+			}
+			normal => segments.push(normal),
+		}
+	}
+	if segments.is_empty() {
+		return Err(traversal());
+	}
+	if segments.len() > root_depth_limit {
+		return Err(UnsafeArchive::PathTooDeep {
+			path: raw.to_owned(),
+			actual: segments.len(),
+			limit: root_depth_limit,
+		});
+	}
+	Ok(SmolStr::from(segments.join("/")))
 }
 
 /// Classify a tar header's entry type into the boundary's [`EntryKind`].
 pub fn classify(entry_type: tar::EntryType) -> EntryKind {
-	let _ = entry_type;
-	todo!("map tar::EntryType onto EntryKind, folding unknowns to Other")
+	use tar::EntryType;
+	match entry_type {
+		EntryType::Regular | EntryType::Continuous | EntryType::GNUSparse => EntryKind::Regular,
+		EntryType::Directory => EntryKind::Directory,
+		EntryType::Symlink => EntryKind::Symlink,
+		EntryType::Link => EntryKind::Hardlink,
+		EntryType::Char => EntryKind::Character,
+		EntryType::Block => EntryKind::Block,
+		EntryType::Fifo => EntryKind::Fifo,
+		_ => EntryKind::Other,
+	}
 }
 
 /// Sanitize one raw tar entry into a [`SanitizedEntry`], or reject it.
 ///
 /// Applies, in order: entry-type allowlist, path jail, per-entry size charge.
-/// Only regular files with clean paths under budget survive. `// runs on
-/// spawn_blocking (synchronous tar read)`.
+/// Only regular files with clean paths under budget survive. The caller must
+/// pre-bound `read_bytes` (e.g. against the declared header size) so a hostile
+/// entry cannot materialize past the ceiling before the charge lands. `// runs
+/// on spawn_blocking (synchronous tar read)`.
 pub fn sanitize_entry(
 	allow: EntryAllowlist,
 	budget: &mut Budget,
@@ -109,6 +186,37 @@ pub fn sanitize_entry(
 	entry_type: tar::EntryType,
 	read_bytes: impl FnOnce() -> std::io::Result<Bytes>,
 ) -> Result<Option<SanitizedEntry>, IngestError> {
-	let _ = (allow, budget, limits, raw_path, entry_type, read_bytes);
-	todo!("classify+admit, jail_path, charge budget, read bytes; None for admitted dirs")
+	let kind = classify(entry_type);
+	if !allow.admits(kind) {
+		tracing::warn!(path = raw_path, ?kind, "disallowed archive entry rejected");
+		return Err(IngestError::Unsafe(UnsafeArchive::DisallowedEntry {
+			kind,
+			path: raw_path.to_owned(),
+		}));
+	}
+
+	let path = jail_path(limits.max_path_depth, raw_path).map_err(IngestError::Unsafe)?;
+
+	// Directories are structural: admitted (their path was still validated) but
+	// they carry no bytes and produce no entry.
+	if kind == EntryKind::Directory {
+		return Ok(None);
+	}
+
+	let bytes = read_bytes().map_err(IngestError::Io)?;
+	budget
+		.charge(bytes.len() as u64)
+		.map_err(|violation| IngestError::Unsafe(locate(violation, &path)))?;
+	Ok(Some(SanitizedEntry { path, bytes }))
+}
+
+/// Attach the offending path to a budget violation ([`Budget::charge`] doesn't
+/// know one).
+fn locate(violation: UnsafeArchive, path: &str) -> UnsafeArchive {
+	match violation {
+		UnsafeArchive::FileTooLarge { actual, limit, .. } => {
+			UnsafeArchive::FileTooLarge { path: path.to_owned(), actual, limit }
+		}
+		other => other,
+	}
 }

@@ -1,5 +1,3 @@
-use thiserror::Error;
-
 pub mod connect;
 pub mod failure;
 

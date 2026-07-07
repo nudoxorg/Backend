@@ -49,8 +49,7 @@ pub struct EmbeddingCache<M: EmbeddingModel> {
 impl<M: EmbeddingModel> EmbeddingCache<M> {
 	/// Create a cache holding up to `capacity` entries (LRU/TinyLFU eviction).
 	pub fn new(capacity: u64) -> Self {
-		let _ = capacity;
-		todo!("build a moka::future::Cache with the given max capacity")
+		Self { inner: Cache::new(capacity) }
 	}
 
 	/// Look up the embedding for `text` under `embedder`'s model; on a miss,
@@ -58,6 +57,11 @@ impl<M: EmbeddingModel> EmbeddingCache<M> {
 	///
 	/// `key` is passed explicitly so callers that already computed the text hash
 	/// (e.g. from the symbol record) avoid re-hashing.
+	///
+	/// Deliberately get-then-insert rather than moka's coalesced `try_get_with`:
+	/// that API surfaces errors as `Arc<E>`, and [`EmbedError`] carries non-Clone
+	/// sources. Two racing misses may embed the same text twice — harmless,
+	/// since embedding is deterministic and last-write-wins stores equal values.
 	pub async fn get_or_embed<E: Embedder<Model = M>>(
 		&self,
 		key: EmbeddingKey,
@@ -65,13 +69,17 @@ impl<M: EmbeddingModel> EmbeddingCache<M> {
 		text: &str,
 		purpose: EmbeddingPurpose,
 	) -> Result<Embedding<M>, EmbedError> {
-		let _ = (&self.inner, key, embedder, text, purpose);
-		todo!("cache get_with: on miss call embedder.embed(text, purpose), store, return")
+		if let Some(hit) = self.inner.get(&key).await {
+			tracing::debug!(model = %key.model, "embedding cache hit");
+			return Ok(hit);
+		}
+		let embedding = embedder.embed(text, purpose).await?;
+		self.inner.insert(key, embedding.clone()).await;
+		Ok(embedding)
 	}
 
 	/// Best-effort peek without embedding — returns `None` on a miss.
 	pub async fn get(&self, key: &EmbeddingKey) -> Option<Embedding<M>> {
-		let _ = (&self.inner, key);
-		todo!("cache.get(key)")
+		self.inner.get(key).await
 	}
 }

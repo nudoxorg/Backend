@@ -25,8 +25,16 @@ pub struct EntryUri {
 }
 
 impl EntryUri {
-	/// The canonical string form of this URI.
-	pub fn canonical(&self) -> String { todo!("join package id + path segments canonically") }
+	/// The canonical string form of this URI: the package id followed by every
+	/// path segment, `/`-joined — a separator no ecosystem's symbol grammar uses,
+	/// so the form is unambiguous and injective.
+	pub fn canonical(&self) -> String {
+		self.path.iter().fold(self.package.to_string(), |mut uri, segment| {
+			uri.push('/');
+			uri.push_str(segment);
+			uri
+		})
+	}
 
 	/// Derive the deterministic symbol id from the graph-instance token and this
 	/// URI — the one construction site. Salting with the instance keeps two

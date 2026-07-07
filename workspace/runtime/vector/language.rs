@@ -21,6 +21,10 @@ pub trait EmbeddingText: Send + Sync {
 }
 
 /// Semantic search restricted to a single `ecosystem`.
+///
+/// One collection, payload-level scoping: the filter pins each hit's stored
+/// `ecosystem` stamp to the requested language, so no per-language collection
+/// (and no cross-language leakage) exists.
 pub async fn similar_within<M: EmbeddingModel>(
 	store: &SemanticLive<M>,
 	gate: SemanticGate,
@@ -28,6 +32,13 @@ pub async fn similar_within<M: EmbeddingModel>(
 	query: &Embedding<M>,
 	limit: NonZeroUsize,
 ) -> Result<Vec<Scored<SymbolId>>, VectorError> {
-	let _ = (store, gate, ecosystem, query, limit);
-	todo!("k-NN search with a payload filter pinning ecosystem == the given one")
+	use futures::TryStreamExt;
+	use qdrant_client::qdrant::{Condition, Filter};
+
+	let scope = Filter::must([Condition::matches("ecosystem", ecosystem.as_token().to_owned())]);
+	store
+		.search_with_filter(gate, query, limit, None, Some(scope))
+		.await?
+		.try_collect()
+		.await
 }

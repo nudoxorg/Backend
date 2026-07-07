@@ -83,17 +83,37 @@ pub enum CollectionNameError {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CollectionName(String);
 
+/// Whether qdrant accepts `character` in a collection name — the conservative
+/// portable subset (alphanumerics plus `-`, `_`, `.`).
+fn qdrant_legal(character: char) -> bool {
+	character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+}
+
 impl CollectionName {
 	/// Validate and wrap a raw collection name (non-empty, legal charset).
 	pub fn new(raw: impl Into<String>) -> Result<Self, CollectionNameError> {
-		let _ = raw;
-		todo!("trim, reject empty, validate qdrant-legal charset, wrap")
+		let raw = raw.into();
+		let trimmed = raw.trim();
+		if trimmed.is_empty() {
+			return Err(CollectionNameError::Empty);
+		}
+		if trimmed.chars().all(qdrant_legal) {
+			Ok(Self(trimmed.to_owned()))
+		} else {
+			Err(CollectionNameError::Invalid { raw })
+		}
 	}
 
-	/// Derive the migration-collection name for a model regime.
+	/// Derive the migration-collection name for a model regime: `sym-<model>`,
+	/// with any qdrant-illegal characters in the model id folded to `-`.
+	/// Deterministic, so the same model always cuts over to the same collection.
 	pub fn for_regime(model: &ModelId) -> Self {
-		let _ = model;
-		todo!("deterministic name from model id, e.g. sym-<model>")
+		let sanitized: String = model
+			.as_ref()
+			.chars()
+			.map(|character| if qdrant_legal(character) { character } else { '-' })
+			.collect();
+		Self(format!("sym-{sanitized}"))
 	}
 
 	/// The underlying name.
@@ -147,14 +167,56 @@ impl<M: EmbeddingModel> Semantic<M, Cold> {
 	}
 }
 
+/// Dig the configured (unnamed) dense-vector size out of a collection-info
+/// reply; `None` when any layer is absent or the collection uses named vectors.
+fn configured_dimension(reply: qdrant_client::qdrant::GetCollectionInfoResponse) -> Option<u64> {
+	use qdrant_client::qdrant::vectors_config::Config;
+	match reply.result?.config?.params?.vectors_config?.config? {
+		Config::Params(parameters) => Some(parameters.size),
+		Config::ParamsMap(_) => None,
+	}
+}
+
 impl<M: EmbeddingModel> Connect for Semantic<M, Cold> {
 	type Live = Semantic<M, Live>;
 
 	/// Ping qdrant and assert the collection's configured vector size equals
 	/// `M::DIMENSIONS`, else fail with [`heart::ConnectFailure::DimensionMismatch`].
 	async fn connect(self) -> Result<Self::Live, ConnectError> {
-		let _ = (&self.client, &self.collection, BackendKind::Qdrant, M::DIMENSIONS);
-		todo!("ping qdrant; read collection info; assert vector size == M::DIMENSIONS else DimensionMismatch")
+		use heart::ConnectFailure;
+		let fail = |kind| ConnectError::new(BackendKind::Qdrant, kind);
+
+		self.client
+			.health_check()
+			.await
+			.map_err(|error| fail(ConnectFailure::Other(Box::new(error))))?;
+
+		let info = self
+			.client
+			.collection_info(self.collection.as_str())
+			.await
+			.map_err(|error| fail(ConnectFailure::Other(Box::new(error))))?;
+		// A missing/named-vector layout cannot serve `Embedding<M>` queries at all.
+		let found = configured_dimension(info).ok_or_else(|| fail(ConnectFailure::SchemaMismatch))?;
+		if found as usize != M::DIMENSIONS {
+			return Err(fail(ConnectFailure::DimensionMismatch {
+				expected: M::DIMENSIONS,
+				found: found as usize,
+			}));
+		}
+
+		tracing::info!(
+			collection = self.collection.as_str(),
+			model = %M::id(),
+			dimensions = M::DIMENSIONS,
+			"vector store verified; promoting to Live"
+		);
+		Ok(Semantic {
+			client: self.client,
+			collection: self.collection,
+			_model: PhantomData,
+			_state: PhantomData,
+		})
 	}
 }
 
@@ -177,10 +239,114 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 		limit: NonZeroUsize,
 		after: Option<Cursor<SemanticCursorKey>>,
 	) -> Result<impl Stream<Item = Result<Scored<SymbolId>, VectorError>> + Send, VectorError> {
-		let _ = (gate, query, limit, after, &self.client);
-		todo!("build a qdrant search with access + keyset filters, stream Scored<SymbolId>");
-		#[allow(unreachable_code)]
-		Ok(futures::stream::empty())
+		self.search_with_filter(gate, query, limit, after, None).await
+	}
+
+	/// The shared gated k-NN body: [`search`](Self::search) plus an optional
+	/// qdrant payload `filter` (how language scoping stays inside one
+	/// collection). Crate-internal so the gate remains the only public door.
+	///
+	/// Keyset resume: qdrant cannot filter on the *computed* similarity score,
+	/// so pages after a cursor over-fetch (doubling, capped) and skip past the
+	/// `(score, id)` key client-side. The cursor's snapshot hash is advisory
+	/// here — an eventually-consistent ANN index has no cheap content hash — so
+	/// it is carried but not enforced.
+	pub(crate) async fn search_with_filter(
+		&self,
+		gate: SemanticGate,
+		query: &Embedding<M>,
+		limit: NonZeroUsize,
+		after: Option<Cursor<SemanticCursorKey>>,
+		filter: Option<qdrant_client::qdrant::Filter>,
+	) -> Result<impl Stream<Item = Result<Scored<SymbolId>, VectorError>> + Send, VectorError> {
+		use qdrant_client::qdrant::SearchPointsBuilder;
+
+		/// The deepest a keyset resume will dig before truncating the page.
+		const MAX_FETCH: u64 = 4096;
+
+		tracing::debug!(
+			reason = gate.reason(),
+			collection = self.collection.as_str(),
+			limit = limit.get(),
+			resumed = after.is_some(),
+			"semantic search authorized"
+		);
+
+		let target = limit.get();
+		let mut fetch = match &after {
+			None => target as u64,
+			Some(_) => (target as u64 * 2).min(MAX_FETCH),
+		};
+		loop {
+			let mut request = SearchPointsBuilder::new(
+				self.collection.as_str(),
+				query.as_slice().to_vec(),
+				fetch,
+			)
+			.with_payload(false);
+			if let Some(filter) = filter.clone() {
+				request = request.filter(filter);
+			}
+			let reply =
+				self.client.search_points(request).await.map_err(VectorError::Transport)?;
+
+			let exhausted = (reply.result.len() as u64) < fetch;
+			let mut hits = reply
+				.result
+				.into_iter()
+				.map(scored_symbol)
+				.collect::<Result<Vec<_>, _>>()?;
+			// Stable keyset order: qdrant sorts by score; ties get an id tiebreak.
+			hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.value.cmp(&b.value)));
+
+			let page: Vec<_> = hits
+				.into_iter()
+				.filter(|hit| {
+					after.as_ref().is_none_or(|cursor| {
+						let (score, id) = &cursor.after;
+						hit.score < *score || (hit.score == *score && hit.value > *id)
+					})
+				})
+				.take(target)
+				.collect();
+
+			if page.len() == target || exhausted || fetch >= MAX_FETCH {
+				if page.len() < target && !exhausted && fetch >= MAX_FETCH {
+					tracing::warn!(fetched = fetch, "keyset resume truncated at fetch ceiling");
+				}
+				return Ok(futures::stream::iter(page.into_iter().map(Ok)));
+			}
+			fetch = (fetch * 2).min(MAX_FETCH);
+		}
+	}
+
+	/// The stored embedding for `symbol`, if the collection holds its point —
+	/// the lookup behind similarity-from-a-symbol. Not gated: reading one point
+	/// back is cheap; only the k-NN scan is the heavy, gated operation.
+	pub(crate) async fn stored_embedding(
+		&self,
+		symbol: SymbolId,
+	) -> Result<Option<Embedding<M>>, VectorError> {
+		use qdrant_client::qdrant::{GetPointsBuilder, PointId, vectors_output::VectorsOptions};
+
+		let request = GetPointsBuilder::new(
+			self.collection.as_str(),
+			vec![PointId::from(symbol.as_uuid().to_string())],
+		)
+		.with_vectors(true);
+		let reply = self.client.get_points(request).await.map_err(VectorError::Transport)?;
+
+		let Some(point) = reply.result.into_iter().next() else { return Ok(None) };
+		let values = match point.vectors.and_then(|vectors| vectors.vectors_options) {
+			Some(VectorsOptions::Vector(vector)) => vector.data,
+			Some(_) => {
+				return Err(payload_error(format_args!(
+					"point {symbol} stores named vectors, expected a single dense vector"
+				)));
+			}
+			None => return Ok(None),
+		};
+		Embedding::from_vec(values).map(Some).map_err(VectorError::Embed)
 	}
 
 	/// The tower [`Service`] for this store; use [`heart::sink::SinkExt`] methods
@@ -193,6 +359,69 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 		}
 	}
 
+}
+
+/// A malformed point reported through [`VectorError::Payload`] with a message
+/// naming exactly what was wrong.
+fn payload_error(message: impl std::fmt::Display) -> VectorError {
+	VectorError::Payload(<serde_json::Error as serde::de::Error>::custom(message))
+}
+
+/// Decode one qdrant hit into a [`Scored<SymbolId>`]: the point id **is** the
+/// symbol's uuid, so no payload round-trip is needed on the hot path.
+fn scored_symbol(point: qdrant_client::qdrant::ScoredPoint) -> Result<Scored<SymbolId>, VectorError> {
+	use qdrant_client::qdrant::point_id::PointIdOptions;
+
+	let id = match point.id.and_then(|id| id.point_id_options) {
+		Some(PointIdOptions::Uuid(raw)) => raw
+			.parse::<heart::Guid>()
+			.map(SymbolId::from_uuid)
+			.map_err(|_| payload_error(format_args!("point id {raw:?} is not a uuid")))?,
+		Some(PointIdOptions::Num(number)) => {
+			return Err(payload_error(format_args!("numeric point id {number} is not a symbol")));
+		}
+		None => return Err(payload_error("hit without a point id")),
+	};
+	let score = heart::Score::try_new(point.score)
+		.map_err(|_| payload_error(format_args!("non-finite score for point {id}")))?;
+	Ok(Scored::new(id, score))
+}
+
+/// Shape one [`SymbolPoint`] into the qdrant wire form. The payload carries the
+/// filterable stamps (`ecosystem`, `purpose`); the vector's model rides on the
+/// brand and the collection name, not on every point.
+fn point_struct<M: EmbeddingModel>(
+	point: SymbolPoint<M>,
+) -> qdrant_client::qdrant::PointStruct {
+	let mut payload = qdrant_client::Payload::new();
+	payload.insert("ecosystem", point.ecosystem.as_token());
+	payload.insert("purpose", match point.purpose {
+		EmbeddingPurpose::Code => "code",
+		EmbeddingPurpose::Documentation => "documentation",
+	});
+	qdrant_client::qdrant::PointStruct::new(
+		point.symbol.as_uuid().to_string(),
+		point.embedding.as_slice().to_vec(),
+		payload,
+	)
+}
+
+/// Upsert one chunk (≤ [`VectorSink::MAX_BATCH`]) of points, waiting for the
+/// write to be applied so a delivered batch is immediately searchable.
+async fn upsert_chunk(
+	client: &Qdrant,
+	collection: &CollectionName,
+	points: Vec<qdrant_client::qdrant::PointStruct>,
+) -> Result<(), VectorError> {
+	use qdrant_client::qdrant::UpsertPointsBuilder;
+
+	let count = points.len();
+	client
+		.upsert_points(UpsertPointsBuilder::new(collection.as_str(), points).wait(true))
+		.await
+		.map_err(VectorError::Transport)?;
+	tracing::debug!(collection = collection.as_str(), points = count, "points upserted");
+	Ok(())
 }
 
 /// The upsert path expressed as a cloneable [`tower::Service`], so wrapping it in
@@ -232,10 +461,7 @@ impl<M: EmbeddingModel> tower::Service<SymbolPoint<M>> for VectorSink<M> {
 
 	fn call(&mut self, point: SymbolPoint<M>) -> Self::Future {
 		let (client, collection) = (Arc::clone(&self.client), self.collection.clone());
-		Box::pin(async move {
-			let _ = (client, collection, point);
-			todo!("upsert a single point into the collection")
-		})
+		Box::pin(async move { upsert_chunk(&client, &collection, vec![point_struct(point)]).await })
 	}
 }
 
@@ -251,8 +477,14 @@ impl<M: EmbeddingModel> tower::Service<Vec<SymbolPoint<M>>> for VectorSink<M> {
 	fn call(&mut self, points: Vec<SymbolPoint<M>>) -> Self::Future {
 		let (client, collection) = (Arc::clone(&self.client), self.collection.clone());
 		Box::pin(async move {
-			let _ = (client, collection, points);
-			todo!("upsert a batch of points (<= MAX_BATCH) into the collection")
+			// Callers are asked to chunk to MAX_BATCH; over-large batches are
+			// still delivered correctly by chunking here rather than rejected.
+			let mut shaped = points.into_iter().map(point_struct).collect::<Vec<_>>();
+			while !shaped.is_empty() {
+				let tail = shaped.split_off(shaped.len().min(Self::MAX_BATCH));
+				upsert_chunk(&client, &collection, std::mem::replace(&mut shaped, tail)).await?;
+			}
+			Ok(())
 		})
 	}
 }

@@ -167,8 +167,15 @@ impl Retryable for StoreError {
 /// Classify an `object_store::Error` as transient. Kept in one place so both
 /// [`StoreError`] and any wrapper agree.
 fn is_object_store_retryable(err: &object_store::Error) -> bool {
-	let _ = err;
-	todo!("map object_store generic/timeout/reset variants onto transient vs terminal")
+	match err {
+		// `Generic` is the catch-all the HTTP backends surface network faults,
+		// 5xx responses, and timeouts through; a task-join failure is likewise a
+		// runtime hiccup, not a property of the request.
+		object_store::Error::Generic { .. } | object_store::Error::JoinError { .. } => true,
+		// Everything else (NotFound, InvalidPath, Precondition, auth, ...) is a
+		// deterministic property of the key or credentials.
+		_ => false,
+	}
 }
 
 /// Failures extracting an **untrusted** source archive.
@@ -380,8 +387,20 @@ impl Retryable for ResolveError {
 /// Classify a `sqlx::Error` as transient. Connection resets, pool timeouts, and
 /// serialization failures are retryable; syntax/constraint errors are not.
 fn is_sqlx_retryable(err: &sqlx::Error) -> bool {
-	let _ = err;
-	todo!("map sqlx pool-timeout/io + SQLSTATE 40001/40P01 (serialization/deadlock) onto transient")
+	match err {
+		// Transport / pool pressure: retrying against a healthy pool can succeed.
+		sqlx::Error::Io(_)
+		| sqlx::Error::PoolTimedOut
+		| sqlx::Error::WorkerCrashed => true,
+		// SQLSTATE 40001 (serialization_failure) and 40P01 (deadlock_detected)
+		// are postgres explicitly telling us to retry the transaction; 57P03
+		// (cannot_connect_now) and 53300 (too_many_connections) are startup /
+		// pressure conditions that clear on their own.
+		sqlx::Error::Database(db) => {
+			matches!(db.code().as_deref(), Some("40001" | "40P01" | "57P03" | "53300"))
+		}
+		_ => false,
+	}
 }
 
 /// Bridge from a classified [`FailureKind`] to a [`BackendKind`] tag, for
@@ -390,6 +409,22 @@ pub const fn backend_of(_kind: FailureKind) -> Option<BackendKind> { None }
 
 /// Assert an object hashes to its declared key; the single integrity gate every
 /// content-addressed read passes through. `// runs on spawn_blocking`.
-pub fn verify_integrity(_key: &str, _bytes: &[u8], _expected: ContentHash) -> Result<(), StoreError> {
-	todo!("blake3 the bytes, compare to expected, raise StoreError::Integrity on mismatch")
+pub fn verify_integrity(key: &str, bytes: &[u8], expected: ContentHash) -> Result<(), StoreError> {
+	let found = ContentHash::of_bytes(bytes);
+	if found == expected {
+		Ok(())
+	} else {
+		tracing::warn!(key, "content-addressed read failed its integrity check");
+		Err(StoreError::Integrity {
+			key: key.to_owned(),
+			expected: hash_hex(&expected),
+			found: hash_hex(&found),
+		})
+	}
+}
+
+/// The lowercase hex form of a [`ContentHash`] — the display convention every
+/// error message and object key in this crate shares.
+pub(crate) fn hash_hex(hash: &ContentHash) -> String {
+	data_encoding::HEXLOWER.encode(hash.as_bytes())
 }

@@ -47,13 +47,22 @@ pub struct ResolveSource {
 /// under the ecosystem's version grammar, and selects the greatest — assembling
 /// validated [`PackageCoordinates`] whose [`PackageId`](heart::PackageId)
 /// is then deterministic. `// registry version-list fetch is network I/O`.
+#[tracing::instrument(skip(source), fields(origin = %source.origin.token()))]
 pub async fn resolve(
 	source: &ResolveSource,
 	name: &PackageName,
 	request: &VersionRequest,
 ) -> Result<PackageCoordinates, ResolveError> {
-	let _ = (source, name, request);
-	todo!("fetch published versions, filter by request under grammar, pick max, build coordinates")
+	let published = published_versions(&source.origin, name).await?;
+	tracing::debug!(candidates = published.len(), "published version set fetched");
+	let version = select(request, &published).map_err(|error| match error {
+		// `select` works over a bare candidate set; re-attach the name here.
+		ResolveError::NoMatch { request, .. } => {
+			ResolveError::NoMatch { name: name.original().to_owned(), request }
+		}
+		other => other,
+	})?;
+	Ok(PackageCoordinates { origin: source.origin.clone(), name: name.clone(), version })
 }
 
 /// Select the greatest version from a candidate set satisfying `request`. Split
@@ -62,6 +71,142 @@ pub fn select(
 	request: &VersionRequest,
 	candidates: &[PackageVersion],
 ) -> Result<PackageVersion, ResolveError> {
-	let _ = (request, candidates);
-	todo!("apply request under the ecosystem grammar, return the max satisfying candidate")
+	let no_match = || ResolveError::NoMatch {
+		name: String::from("<candidate set>"),
+		request: request_display(request),
+	};
+
+	let satisfying: Vec<&PackageVersion> = match request {
+		VersionRequest::Latest => candidates.iter().collect(),
+		VersionRequest::Exact(pin) => {
+			return candidates.iter().find(|candidate| *candidate == pin).cloned().ok_or_else(no_match);
+		}
+		VersionRequest::SemverRange(range) => {
+			candidates.iter().filter(|candidate| semver_matches(range, candidate)).collect()
+		}
+		VersionRequest::Range { ecosystem, spec } => match ecosystem {
+			Language::Rust | Language::Typescript => {
+				let range = semver::VersionReq::parse(spec)
+					.map_err(|_| ResolveError::MalformedRequest(spec.clone()))?;
+				candidates.iter().filter(|candidate| semver_matches(&range, candidate)).collect()
+			}
+			Language::Python => {
+				let specifiers: uv_pep440::VersionSpecifiers =
+					spec.parse().map_err(|_| ResolveError::MalformedRequest(spec.clone()))?;
+				candidates
+					.iter()
+					.filter(|candidate| match candidate {
+						PackageVersion::Python(version) => specifiers.contains(version),
+						_ => false,
+					})
+					.collect()
+			}
+		},
+	};
+
+	satisfying.into_iter().max_by(|a, b| grammar_order(a, b)).cloned().ok_or_else(no_match)
+}
+
+/// Whether a SemVer range admits a candidate (only meaningful for the SemVer
+/// ecosystems; PEP 440 candidates never satisfy a SemVer range).
+fn semver_matches(range: &semver::VersionReq, candidate: &PackageVersion) -> bool {
+	match candidate {
+		PackageVersion::Cargo(version) | PackageVersion::Npm(version) => range.matches(version),
+		PackageVersion::Python(_) => false,
+	}
+}
+
+/// Order two candidates under their own grammar. Mixed grammars have no order
+/// and compare equal, so `max_by` keeps the earlier of an (invalid) mixed set.
+fn grammar_order(a: &&PackageVersion, b: &&PackageVersion) -> std::cmp::Ordering {
+	match (a, b) {
+		(PackageVersion::Cargo(x), PackageVersion::Cargo(y))
+		| (PackageVersion::Npm(x), PackageVersion::Npm(y)) => x.cmp(y),
+		(PackageVersion::Python(x), PackageVersion::Python(y)) => x.cmp(y),
+		_ => std::cmp::Ordering::Equal,
+	}
+}
+
+/// The human form of a request, for error messages.
+fn request_display(request: &VersionRequest) -> String {
+	match request {
+		VersionRequest::Latest => String::from("latest"),
+		VersionRequest::Exact(version) => version.canonical(),
+		VersionRequest::SemverRange(range) => range.to_string(),
+		VersionRequest::Range { spec, .. } => spec.clone(),
+	}
+}
+
+/// Fetch the published version set for `name` from `origin`, parsed under the
+/// ecosystem's grammar (unparseable strays are skipped with a debug log, not
+/// fatal). `// registry version-list fetch is network I/O`.
+async fn published_versions(
+	origin: &RegistryOrigin,
+	name: &PackageName,
+) -> Result<Vec<PackageVersion>, ResolveError> {
+	let ecosystem = name.ecosystem();
+	let url = versions_url(origin, name);
+	let response = reqwest::get(&url).await.map_err(ResolveError::Lookup)?;
+	if response.status() == reqwest::StatusCode::NOT_FOUND {
+		return Err(ResolveError::NotFound(name.original().to_owned()));
+	}
+	let body: serde_json::Value = response
+		.error_for_status()
+		.map_err(ResolveError::Lookup)?
+		.json()
+		.await
+		.map_err(ResolveError::Lookup)?;
+
+	Ok(raw_versions(ecosystem, &body)
+		.into_iter()
+		.filter_map(|raw| {
+			PackageVersion::try_from((ecosystem, raw.as_str()))
+				.inspect_err(|error| {
+					tracing::debug!(%raw, %error, "skipping unparseable published version");
+				})
+				.ok()
+		})
+		.collect())
+}
+
+/// The version-list endpoint for an origin, following each public registry's
+/// documented API shape; a custom origin is assumed to mirror its ecosystem's
+/// public shape under its own base URL.
+fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
+	let base = match origin {
+		RegistryOrigin::CratesIo => String::from("https://crates.io"),
+		RegistryOrigin::NpmPublic => String::from("https://registry.npmjs.org"),
+		RegistryOrigin::PyPi => String::from("https://pypi.org"),
+		RegistryOrigin::Custom { url, .. } => url.as_str().trim_end_matches('/').to_owned(),
+	};
+	match name.ecosystem() {
+		Language::Rust => format!("{base}/api/v1/crates/{}", name.canonical()),
+		Language::Typescript => format!("{base}/{}", name.canonical()),
+		Language::Python => format!("{base}/pypi/{}/json", name.canonical()),
+	}
+}
+
+/// Project the raw version strings out of each registry's response shape,
+/// dropping yanked crates.io versions (npm/PyPI listings are already live-only
+/// at these endpoints).
+fn raw_versions(ecosystem: Language, body: &serde_json::Value) -> Vec<String> {
+	match ecosystem {
+		Language::Rust => body["versions"]
+			.as_array()
+			.into_iter()
+			.flatten()
+			.filter(|version| !version["yanked"].as_bool().unwrap_or(false))
+			.filter_map(|version| version["num"].as_str().map(str::to_owned))
+			.collect(),
+		Language::Typescript => body["versions"]
+			.as_object()
+			.into_iter()
+			.flat_map(|versions| versions.keys().cloned())
+			.collect(),
+		Language::Python => body["releases"]
+			.as_object()
+			.into_iter()
+			.flat_map(|releases| releases.keys().cloned())
+			.collect(),
+	}
 }

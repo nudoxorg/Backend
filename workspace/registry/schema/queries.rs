@@ -223,7 +223,7 @@ pub mod index {
 		id: SymbolId,
 		package: PackageId,
 		fq_name: &str,
-		kind: heart::SymbolKind,
+		kind: SymbolKind,
 		generation: ContentHash,
 	) -> (String, SqlxValues) {
 		Query::insert()
@@ -561,6 +561,52 @@ pub mod outbox {
 			.column(SinkWatermarks::LastSeq)
 			.from(SinkWatermarks::Table)
 			.and_where(Expr::col(SinkWatermarks::SinkKind).eq(codec::sink_kind_token(kind)))
+			.build_sqlx(PG)
+	}
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// search — the tantivy replica's poll of changed packages
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Query builders for the replica-local search sync.
+pub mod search {
+	use super::*;
+	use chrono::{DateTime, Utc};
+
+	/// `SELECT p.<identity+toolchain+updated_at>, ps.<lifecycle> FROM packages p
+	/// LEFT JOIN parse_status ps ON ps.package_id = p.id WHERE p.updated_at > $1
+	/// ORDER BY p.updated_at ASC LIMIT $2` — the poll the tantivy replica
+	/// performs against its watermark. The left join keeps packages with no
+	/// lifecycle row visible (they surface as `Unindexed`).
+	pub fn changed_since(after: DateTime<Utc>, limit: u64) -> (String, SqlxValues) {
+		Query::select()
+			.columns([
+				(Packages::Table, Packages::Id),
+				(Packages::Table, Packages::Language),
+				(Packages::Table, Packages::OriginToken),
+				(Packages::Table, Packages::NameCanonical),
+				(Packages::Table, Packages::NameOriginal),
+				(Packages::Table, Packages::VersionCanonical),
+				(Packages::Table, Packages::Toolchain),
+				(Packages::Table, Packages::UpdatedAt),
+			])
+			.columns([
+				(ParseStatus::Table, ParseStatus::State),
+				(ParseStatus::Table, ParseStatus::Phase),
+				(ParseStatus::Table, ParseStatus::ContentHash),
+				(ParseStatus::Table, ParseStatus::Needed),
+				(ParseStatus::Table, ParseStatus::Failure),
+			])
+			.from(Packages::Table)
+			.left_join(
+				ParseStatus::Table,
+				Expr::col((Packages::Table, Packages::Id))
+					.equals((ParseStatus::Table, ParseStatus::PackageId)),
+			)
+			.and_where(Expr::col((Packages::Table, Packages::UpdatedAt)).gt(after))
+			.order_by((Packages::Table, Packages::UpdatedAt), sea_query::Order::Asc)
+			.limit(limit)
 			.build_sqlx(PG)
 	}
 }

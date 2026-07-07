@@ -51,6 +51,7 @@ impl Default for ExtractionLimits {
 /// Takes an async reader (not a path or a materialized buffer) so the whole
 /// archive is never resident. `// blake3 hashing + tar walking run on
 /// spawn_blocking`.
+#[tracing::instrument(skip(toolchain, reader, allow), fields(format = ?format))]
 pub async fn ingest_archive<R>(
 	package: PackageId,
 	toolchain: Toolchain,
@@ -62,8 +63,106 @@ pub async fn ingest_archive<R>(
 where
 	R: tokio::io::AsyncRead + Unpin + Send,
 {
-	let _ = (package, toolchain, reader, format, limits, allow);
-	todo!("stream-decompress, extract::sanitize each entry, push into BlobBuilder, return it")
+	use tokio::io::AsyncReadExt;
+
+	use crate::error::UnsafeArchive;
+
+	// Stage 1 — pull the *compressed* stream into a bounded buffer. The
+	// decompressed payload is what bombs; the compressed form is capped at the
+	// total-bytes ceiling (a compressed stream already larger than the
+	// uncompressed ceiling cannot possibly extract under it), so this buffer is
+	// finite by construction and the caller's reader borrow never has to cross
+	// onto a blocking thread. Decompressed bytes are only ever materialized one
+	// budget-charged file at a time.
+	let ceiling = limits.max_total_bytes;
+	let mut compressed = Vec::new();
+	let mut bounded = reader.take(ceiling + 1);
+	bounded.read_to_end(&mut compressed).await.map_err(IngestError::Io)?;
+	if compressed.len() as u64 > ceiling {
+		return Err(IngestError::Unsafe(UnsafeArchive::TotalTooLarge {
+			actual: compressed.len() as u64,
+			limit: ceiling,
+		}));
+	}
+	tracing::debug!(compressed_bytes = compressed.len(), "archive buffered under ceiling");
+
+	// Stage 2 — decompress + walk the tar synchronously, off the async runtime.
+	// `// blake3 hashing + tar walking run on spawn_blocking`.
+	tokio::task::spawn_blocking(move || {
+		extract_into_builder(package, toolchain, compressed, format, limits, allow)
+	})
+	.await
+	.map_err(|join| IngestError::Io(std::io::Error::other(join)))?
+}
+
+/// The synchronous half of [`ingest_archive`]: decompress, walk, sanitize, and
+/// feed the builder. Runs on a blocking thread.
+fn extract_into_builder(
+	package: PackageId,
+	toolchain: Toolchain,
+	compressed: Vec<u8>,
+	format: ArchiveFormat,
+	limits: ExtractionLimits,
+	allow: EntryAllowlist,
+) -> Result<BlobBuilder, IngestError> {
+	use std::io::Read;
+
+	use crate::error::UnsafeArchive;
+
+	let cursor = std::io::Cursor::new(compressed);
+	let decompressed: Box<dyn Read> = match format {
+		ArchiveFormat::TarGz => Box::new(flate2::read::GzDecoder::new(cursor)),
+		ArchiveFormat::TarZst => {
+			Box::new(zstd::stream::read::Decoder::new(cursor).map_err(IngestError::Malformed)?)
+		}
+		ArchiveFormat::Tar => Box::new(cursor),
+	};
+
+	let mut archive = tar::Archive::new(decompressed);
+	let mut builder = BlobBuilder::new(package, toolchain);
+	let mut budget = extract::Budget::new(limits);
+	let mut admitted = 0usize;
+
+	for entry in archive.entries().map_err(IngestError::Malformed)? {
+		let mut entry = entry.map_err(IngestError::Malformed)?;
+
+		// A non-UTF-8 path is jail-ambiguous; the boundary rejects it outright.
+		let raw_path = match std::str::from_utf8(&entry.path_bytes()) {
+			Ok(path) => path.to_owned(),
+			Err(_) => {
+				return Err(IngestError::Unsafe(UnsafeArchive::PathTraversal {
+					path: String::from_utf8_lossy(&entry.path_bytes()).into_owned(),
+				}));
+			}
+		};
+
+		// A lying header can never make us materialize past the per-file
+		// ceiling: the declared size is checked first and the read is clamped.
+		let declared = entry.header().size().map_err(IngestError::Malformed)?;
+		if declared > limits.max_file_bytes {
+			return Err(IngestError::Unsafe(UnsafeArchive::FileTooLarge {
+				path: raw_path,
+				actual: declared,
+				limit: limits.max_file_bytes,
+			}));
+		}
+
+		let entry_type = entry.header().entry_type();
+		let sanitized =
+			extract::sanitize_entry(allow, &mut budget, limits, &raw_path, entry_type, || {
+				let mut bytes = Vec::with_capacity(declared as usize);
+				(&mut entry).take(limits.max_file_bytes + 1).read_to_end(&mut bytes)?;
+				Ok(bytes::Bytes::from(bytes))
+			})?;
+
+		if let Some(file) = sanitized {
+			builder.push_file(file.path, file.bytes)?;
+			admitted += 1;
+		}
+	}
+
+	tracing::info!(package = %package, files = admitted, "archive sanitized and ingested");
+	Ok(builder)
 }
 
 /// The compression framing of an incoming archive.

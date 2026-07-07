@@ -44,6 +44,18 @@ pub enum CodecError {
 	/// its non-null `content_hash`, etc. — a state/column-set invariant broke.
 	#[error("state {state:?} is missing required column {column}")]
 	MissingColumn { state: &'static str, column: &'static str },
+
+	/// A stored package name no longer re-validates under its ecosystem's rules.
+	#[error("stored package name failed re-validation")]
+	Name(#[source] heart::NameError),
+
+	/// A stored version string no longer parses under its ecosystem's grammar.
+	#[error("stored package version failed re-validation")]
+	Version(#[source] heart::identity::VersionError),
+
+	/// A custom origin token could not be reconstituted into a base URL.
+	#[error("custom origin token {token:?} does not name a valid base URL")]
+	Origin { token: String },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,4 +278,43 @@ pub fn toolchain_from_json(
 ) -> Result<heart::ecosystem::Toolchain, CodecError> {
 	serde_json::from_value(v.clone())
 		.map_err(|source| CodecError::Json { domain: "Toolchain", source })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// origin / coordinates ↔ columns
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reconstruct a [`heart::RegistryOrigin`] from its stable token. The public
+/// registries map exactly; anything else is a custom origin whose base URL is
+/// reconstituted from the token (the token *is* the origin's stable name).
+pub fn origin_from_token(token: &str) -> Result<heart::RegistryOrigin, CodecError> {
+	match token {
+		"crates.io" => Ok(heart::RegistryOrigin::CratesIo),
+		"npm" => Ok(heart::RegistryOrigin::NpmPublic),
+		"pypi" => Ok(heart::RegistryOrigin::PyPi),
+		custom => {
+			let url = url::Url::parse(&format!("https://{custom}"))
+				.map_err(|_| CodecError::Origin { token: custom.to_owned() })?;
+			Ok(heart::RegistryOrigin::Custom { name: custom.into(), url })
+		}
+	}
+}
+
+/// Rebuild validated [`crate::package::Coordinates`] from their stored column
+/// decomposition — the inverse of the `packages` upsert projection.
+/// Re-validation is deliberate: a row that no longer normalizes identically is
+/// surfaced as an error, never trusted blindly.
+pub fn coordinates_from_columns(
+	language: &str,
+	origin_token: &str,
+	name_original: &str,
+	version_canonical: &str,
+) -> Result<crate::package::Coordinates, CodecError> {
+	let ecosystem = ecosystem_from_token(language)?;
+	let origin = origin_from_token(origin_token)?;
+	let name = crate::package::PackageName::new(ecosystem, name_original)
+		.map_err(CodecError::Name)?;
+	let version = heart::PackageVersion::try_from((ecosystem, version_canonical))
+		.map_err(CodecError::Version)?;
+	Ok(crate::package::Coordinates { origin, name, version })
 }

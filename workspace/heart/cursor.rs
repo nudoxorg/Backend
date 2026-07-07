@@ -24,12 +24,18 @@ where
 	pub fn new(after: K, snapshot: ContentHash) -> Self { Self { after, snapshot } }
 
 	/// Encode to an opaque base64url token for the wire.
-	pub fn encode(&self) -> String { todo!("postcard-serialize then base64url (no padding)") }
+	pub fn encode(&self) -> String {
+		let bytes = postcard::to_allocvec(self)
+			.expect("cursor keys are plain data and serialize infallibly");
+		data_encoding::BASE64URL_NOPAD.encode(&bytes)
+	}
 
 	/// Decode an opaque token back into a cursor.
 	pub fn decode(token: &str) -> Result<Self, CursorError> {
-		let _ = token;
-		todo!("base64url-decode then postcard-deserialize")
+		let bytes = data_encoding::BASE64URL_NOPAD
+			.decode(token.as_bytes())
+			.map_err(|_| CursorError::Encoding)?;
+		postcard::from_bytes(&bytes).map_err(|_| CursorError::Payload)
 	}
 }
 

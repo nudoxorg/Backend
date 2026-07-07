@@ -17,11 +17,17 @@ rust_crate(
             "tower",
             "tower_http",
             "hyper",
-            "http",
             "http_body_util",
             "serde",
             "serde_json",
+            "toml",
             "nonempty",
+            "sqlx",
+            "qdrant_client",
+            "reqwest",
+            "object_store",
+            "chrono",
+            "strum",
             "smol_str",
             "semver",
             "uv_pep440",
@@ -39,6 +45,9 @@ rust_crate(
             "moka",
             "mimalloc",
         ],
+        # axum speaks http 1.x; the bare `http` alias resolves to the vendored
+        # 0.2 build, so the versioned target is named explicitly.
+        raw = ["//build/third-party:http-1"],
     ),
 )
 

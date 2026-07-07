@@ -69,8 +69,26 @@ pub trait Probeable {
 /// `Probeable::probe` a native `async fn` (RPITIT) with no `Box<dyn Future>`
 /// anywhere.
 pub fn aggregate(probes: &[Probe]) -> Health {
-	let _ = probes;
-	todo!("classify probes: all-healthy => Ready, required-down => Down, else Degraded(list)")
+	/// The backends without which the registry cannot serve *anything*: the
+	/// relational spine (identity, lifecycle, queue, outbox) and the blob store
+	/// (the durable root every read plane derives from). The derived stores
+	/// (qdrant / terminus / tantivy) only degrade their own surfaces.
+	const REQUIRED: [BackendKind; 2] = [BackendKind::Postgres, BackendKind::ObjectStore];
+
+	let impaired: Vec<BackendKind> =
+		probes.iter().filter(|probe| !probe.healthy).map(|probe| probe.backend).collect();
+
+	match &impaired[..] {
+		[] => Health::Ready,
+		down if down.iter().any(|backend| REQUIRED.contains(backend)) => {
+			tracing::warn!(?down, "a required backend is down; registry not serving");
+			Health::Down
+		}
+		_ => {
+			tracing::warn!(backends = ?impaired, "registry degraded");
+			Health::Degraded(impaired)
+		}
+	}
 }
 
 /// Assert a store's probe future is `Send` (so the aggregator can `join!` it on a

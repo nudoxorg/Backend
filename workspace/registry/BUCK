@@ -22,6 +22,8 @@ rust_crate(
             "generativity",
             "uuid",
             "semver",
+            "uv_pep440",
+            "zstd",
             "smol_str",
             "chrono",
             "url",
