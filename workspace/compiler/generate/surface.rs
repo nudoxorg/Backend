@@ -4,17 +4,54 @@
 //! backend, which drives that language's documentation/type oracle and lowers it
 //! into the shared IR.
 
-use heart::Language;
+use heart::{Language, PackageVersion, RegistryOrigin};
 use ir::{entry::Index, pipeline::{Collected, Ir}};
 
-use crate::{error::GenerateError, generate::PackageInput};
+use crate::{error::GenerateError, generate::PackageInput, languages};
 
 /// Lower a package's source into the collected IR, dispatching on ecosystem.
 pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
 	match input.coordinates.ecosystem() {
-		Language::Python => todo!("drive crate::languages::python lowering"),
-		Language::Rust => todo!("drive crate::languages::rust lowering"),
-		Language::Typescript => todo!("drive crate::languages::typescript lowering"),
+		Language::Python => {
+			let context = languages::python::context::PythonContext::new();
+			let index = context.lower_package(&input.root);
+			// lower_package indexes eagerly; re-enter the typestate at
+			// Collected so build() owns the (idempotent) indexing step.
+			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
+		}
+		Language::Rust => {
+			let PackageVersion::Cargo(version) = &input.coordinates.version else {
+				// Coordinates are ecosystem-validated at construction; a Rust
+				// package always carries a Cargo version.
+				return Err(GenerateError::UnsupportedEcosystem);
+			};
+			// Registry tarballs document the public surface; direct repos
+			// (custom origins) also get the private-items + workspace pass.
+			let direct_repo = matches!(input.coordinates.origin, RegistryOrigin::Custom { .. });
+			let package = languages::rust::RustPackage {
+				name: input.coordinates.name.original().to_string(),
+				direct_repo,
+			};
+			let (collected, _sources) = package
+				.generate_ir_with_sources(&input.root, version)
+				.map_err(|error| GenerateError::Lower(Box::new(error)))?;
+			Ok(collected)
+		}
+		Language::Typescript => {
+			let PackageVersion::Npm(_version) = &input.coordinates.version else {
+				// Coordinates are ecosystem-validated at construction; a
+				// TypeScript package always carries an npm version.
+				return Err(GenerateError::UnsupportedEcosystem);
+			};
+			// The lowering documents the materialized root as-is; the version
+			// only selects which root gets materialized upstream.
+			let package = languages::typescript::TypescriptPackage {
+				name: input.coordinates.name.original().to_string(),
+			};
+			package
+				.generate_ir(&input.root)
+				.map_err(|error| GenerateError::Lower(Box::new(error)))
+		}
 	}
 }
 

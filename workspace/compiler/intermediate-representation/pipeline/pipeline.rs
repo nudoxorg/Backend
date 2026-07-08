@@ -33,7 +33,7 @@ impl Ir<Collected> {
 
 		for entry in self.data {
 			if let NudoxPath::Local(p) = entry.path()
-				&& p.iter().count() <= 1
+				&& !p.to_string_lossy().contains("::")
 			{
 				root_ids.push(entry.path().clone());
 			}

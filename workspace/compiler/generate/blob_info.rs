@@ -28,9 +28,21 @@ impl BlobInfo {
 	/// order streamed through a [`ContentHasher`], so the same package snapshot
 	/// always yields the same hash on any machine.
 	pub fn assemble(surface: &Index, cst: &CstSet, archive: SourceArchive) -> Self {
+		// The surface and CST are derived deterministically from the same
+		// source bytes the archive digests, so they carry no extra identity;
+		// they ride along only for the manifest's leaf references.
 		let _ = (surface, cst);
+
 		let mut hasher = ContentHash::builder();
-		let _ = &mut hasher;
-		todo!("fold sorted (path, file-hash) pairs into the hasher; finalize into a ContentHash")
+		for file in &archive.files {
+			// Length-prefix each path so the (path, hash) stream is injective —
+			// no split point ambiguity between neighbouring entries.
+			let path = file.path.to_string_lossy();
+			hasher.update(&(path.len() as u64).to_le_bytes());
+			hasher.update(path.as_bytes());
+			hasher.update(file.hash.as_bytes());
+		}
+
+		BlobInfo { snapshot: hasher.finalize(), archive }
 	}
 }
