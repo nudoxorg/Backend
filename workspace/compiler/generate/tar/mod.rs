@@ -37,12 +37,10 @@ pub fn write_tar<W: Write>(
 		// Zeroed mtime keeps the produced view byte-reproducible for a given
 		// entry stream.
 		header.set_mtime(0);
-		builder
-			.append_data(&mut header, &entry.path, entry.bytes.as_ref())
-			.map_err(GenerateError::Archive)?;
+		builder.append_data(&mut header, &entry.path, entry.bytes.as_ref())?;
 	}
 
-	let mut writer = builder.into_inner().map_err(GenerateError::Archive)?;
-	writer.flush().map_err(GenerateError::Archive)?;
+	let mut writer = builder.into_inner()?;
+	writer.flush()?;
 	Ok(())
 }

@@ -29,11 +29,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
 use ir::entry::Index;
 
 use super::context;
 use super::oracle;
+use super::error::{JavaError, JavaPackageError, OracleError};
 
 /// How the project is built (drives source-root discovery only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,24 +69,24 @@ pub struct JavaProject {
 
 /// Discover, extract, and lower the Java project at (or above) `root` into
 /// a single [`Index`] — the producer's public entry point.
-pub fn lower_package(root: &Path) -> Result<Index> {
+pub fn lower_package(root: &Path) -> Result<Index, JavaError> {
 	let project = discover_project(root)?;
-	let extraction = oracle::extract(&project.source_roots).with_context(|| {
-		format!("extracting Java project at {}", project.root.display())
+	let extraction = oracle::extract(&project.source_roots).map_err(|source| {
+		JavaPackageError::OracleExtractFailed { root: project.root.clone(), source }
 	})?;
 	Ok(context::lower_extraction(&extraction))
 }
 
 /// Locate the project root at or above `start` and assemble its source
 /// roots. `start` may be the root itself, a subdirectory, or a file.
-pub fn discover_project(start: &Path) -> Result<JavaProject> {
+pub fn discover_project(start: &Path) -> Result<JavaProject, JavaError> {
 	let start_dir = if start.is_file() {
 		start.parent().unwrap_or(Path::new("."))
 	} else {
 		start
 	};
 	if !start_dir.is_dir() {
-		bail!("{} is not a directory", start_dir.display());
+		return Err(JavaPackageError::NotDirectory { path: start_dir.to_path_buf() }.into());
 	}
 
 	// Walk upward looking for a build manifest.
@@ -108,8 +108,14 @@ pub fn discover_project(start: &Path) -> Result<JavaProject> {
 	let coordinates = match layout {
 		Layout::Maven => {
 			let pom_path = root.join("pom.xml");
-			let text = fs::read_to_string(&pom_path)
-				.with_context(|| format!("reading {}", pom_path.display()))?;
+			// Explicit guard + error (NoPom variant) even though is_file was
+			// true at discovery time (race or removal).
+			if !pom_path.is_file() {
+				return Err(JavaPackageError::NoPom { path: pom_path.clone() }.into());
+			}
+			let text = fs::read_to_string(&pom_path).map_err(|source| {
+				JavaPackageError::PomReadFailed { path: pom_path.clone(), source }
+			})?;
 			parse_pom(&text).coordinates()
 		}
 		_ => None,
@@ -117,7 +123,16 @@ pub fn discover_project(start: &Path) -> Result<JavaProject> {
 
 	let source_roots = source_roots(&root, layout);
 	if source_roots.is_empty() {
-		bail!("no Java source roots found under {}", root.display());
+		let layout_name = match layout {
+			Layout::Maven => "Maven",
+			Layout::Gradle => "Gradle",
+			Layout::Plain => "Plain",
+		};
+		return Err(JavaPackageError::NoSourceRootsDetailed {
+			root: root.clone(),
+			layout: layout_name.to_string(),
+		}
+		.into());
 	}
 
 	Ok(JavaProject { root, layout, coordinates, source_roots })

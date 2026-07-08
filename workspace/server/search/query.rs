@@ -7,6 +7,8 @@ use nonempty::NonEmpty;
 use registry::package::PackageName;
 use serde::{Deserialize, Serialize};
 
+use crate::error::QueryError;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AbstractQuery {
 	NaturalLanguage(String),
@@ -29,17 +31,27 @@ impl LiteralQuery {
 
 	pub fn parse(raw: &str) -> Result<Self, QueryError> {
 		let trimmed = raw.trim();
-		if trimmed.is_empty() {
-			return Err(QueryError::Empty);
+		if raw.trim().is_empty() {
+			// Distinguish "provided nothing" from "only whitespace".
+			if raw.is_empty() {
+				return Err(QueryError::Empty);
+			} else {
+				return Err(QueryError::EmptyAfterTrim { raw: raw.to_owned() });
+			}
 		}
-		if trimmed.len() > Self::MAXIMUM_LENGTH {
-			return Err(QueryError::Invalid(format!(
-				"query exceeds {} bytes",
-				Self::MAXIMUM_LENGTH
-			)));
+		let len = trimmed.len();
+		if len > Self::MAXIMUM_LENGTH {
+			return Err(QueryError::TooLong {
+				len,
+				max: Self::MAXIMUM_LENGTH,
+				snippet: trimmed.chars().take(64).collect(),
+			});
 		}
-		if trimmed.chars().any(char::is_control) {
-			return Err(QueryError::Invalid("query contains control characters".into()));
+		if let Some((position, _ch)) = trimmed.char_indices().find(|(_, c)| c.is_control()) {
+			return Err(QueryError::ControlCharacter {
+				position,
+				snippet: trimmed.chars().skip(position.saturating_sub(8)).take(32).collect(),
+			});
 		}
 		let mut escaped = String::with_capacity(trimmed.len());
 		for character in trimmed.chars() {
@@ -149,10 +161,4 @@ pub struct Search<'a> {
 pub type SymbolCursorKey = (Score, heart::SymbolId);
 pub type SymbolCursor = Cursor<SymbolCursorKey>;
 
-#[derive(Debug, thiserror::Error)]
-pub enum QueryError {
-	#[error("empty query")]
-	Empty,
-	#[error("invalid literal query: {0}")]
-	Invalid(String),
-}
+pub use crate::error::QueryError;

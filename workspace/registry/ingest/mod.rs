@@ -9,6 +9,8 @@
 //! [`heart::FailureKind::Unsafe`] so the queue dead-letters bombs instead of
 //! retrying them.
 
+use std::path::PathBuf;
+
 use heart::{PackageId, Toolchain};
 
 use crate::{blob::BlobBuilder, error::IngestError};
@@ -79,7 +81,7 @@ where
 	let mut bounded = reader.take(ceiling + 1);
 	bounded.read_to_end(&mut compressed).await.map_err(IngestError::Io)?;
 	if compressed.len() as u64 > ceiling {
-		return Err(IngestError::Unsafe(UnsafeArchive::TotalTooLarge {
+		return Err(IngestError::Unsafe(UnsafeArchive::CompressedSizeExceeded {
 			actual: compressed.len() as u64,
 			limit: ceiling,
 		}));
@@ -113,7 +115,7 @@ fn extract_into_builder(
 	let decompressed: Box<dyn Read> = match format {
 		ArchiveFormat::TarGz => Box::new(flate2::read::GzDecoder::new(cursor)),
 		ArchiveFormat::TarZst => {
-			Box::new(zstd::stream::read::Decoder::new(cursor).map_err(IngestError::Malformed)?)
+			Box::new(zstd::stream::read::Decoder::new(cursor).map_err(IngestError::DecompressorInit)?)
 		}
 		ArchiveFormat::Tar => Box::new(cursor),
 	};
@@ -130,8 +132,8 @@ fn extract_into_builder(
 		let raw_path = match std::str::from_utf8(&entry.path_bytes()) {
 			Ok(path) => path.to_owned(),
 			Err(_) => {
-				return Err(IngestError::Unsafe(UnsafeArchive::PathTraversal {
-					path: String::from_utf8_lossy(&entry.path_bytes()).into_owned(),
+				return Err(IngestError::Unsafe(UnsafeArchive::NonUtf8Path {
+					bytes: entry.path_bytes().into_owned(),
 				}));
 			}
 		};
@@ -141,7 +143,7 @@ fn extract_into_builder(
 		let declared = entry.header().size().map_err(IngestError::Malformed)?;
 		if declared > limits.max_file_bytes {
 			return Err(IngestError::Unsafe(UnsafeArchive::FileTooLarge {
-				path: raw_path,
+				path: PathBuf::from(raw_path),
 				actual: declared,
 				limit: limits.max_file_bytes,
 			}));

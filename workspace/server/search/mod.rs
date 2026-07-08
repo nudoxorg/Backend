@@ -23,7 +23,7 @@ pub use planner::SearchPlanner;
 pub use query::{AbstractQuery, Filter, Pagination, Query, Search, SymbolCursor};
 
 use crate::SourceStores;
-use crate::error::{ServerError, ServerResult};
+use crate::error::{BadRequestReason, ServerError, ServerResult};
 use crate::search::symbolic::symbols::SymbolTextSurface;
 
 /// A store/target that answers searches with a stream of scored results.
@@ -113,7 +113,7 @@ impl<M: EmbeddingModel> SearchTarget for SourceStores<M> {
 		let literal = match &request.query {
 			Query::Literal(literal) => literal.clone(),
 			Query::Abstract(query) => query::LiteralQuery::parse(query.text())
-				.map_err(|error| ServerError::BadRequest(error.to_string()))?,
+				.map_err(BadRequestReason::from)?,
 		};
 		let surface = SymbolTextSurface::over(&self.text);
 		let hits = surface.collect(&literal, &request.page, &request.filter).await?;

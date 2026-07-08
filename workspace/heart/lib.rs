@@ -22,10 +22,13 @@ pub use content::{ContentHash, ContentHasher, Freshness};
 pub use cursor::Cursor;
 pub use ecosystem::{Edition, Language, Toolchain};
 pub use error::{
-    BackendKind, ConnectError, ConnectFailure, Failure, FailureKind, Phase, ResolutionState,
+    BackendKind, ConnectError, ConnectFailure, ErrorDetails, Failure, FailureKind, Phase, ResolutionState,
     Retryable, StoreError,
 };
-pub use identity::{EntryUri, Id, NameError, Package, PackageId, PackageVersion, RegistryOrigin, SymbolId};
+pub use identity::{
+    CargoVersionError, EntryUri, Id, NameError, NpmVersionError, Package, PackageId, PackageVersion,
+    PythonVersionError, RegistryOrigin, SymbolId, VersionError,
+};
 pub use progress::{JobProgress, Percent, Progressive};
 pub use score::{Score, Scored};
 pub use search::Page;

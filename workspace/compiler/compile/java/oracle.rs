@@ -28,9 +28,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
-
 use super::schema;
+use super::error::{DocletError, ExtractionError, JavadocError, OracleError};
 
 /// The embedded doclet, written out verbatim before compiling.
 const ORACLE_SOURCES: &[(&str, &str)] = &[
@@ -48,19 +47,14 @@ const TOOLCHAIN_HINT: &str =
 /// This is the one-call entry point: it materializes + compiles the doclet
 /// (cached), collects the source set, runs `javadoc`, and parses the
 /// emitted document into the [`schema`] mirror.
-pub fn extract(source_roots: &[PathBuf]) -> Result<schema::Extraction> {
+pub fn extract(source_roots: &[PathBuf]) -> Result<schema::Extraction, OracleError> {
 	let files = collect_sources(source_roots);
 	if files.is_empty() {
-		bail!(
-			"no .java sources found under {}",
-			source_roots
-				.iter()
-				.map(|p| p.display().to_string())
-				.collect::<Vec<_>>()
-				.join(", ")
-		);
+		return Err(OracleError::NoJavaSources {
+			roots: source_roots.to_vec(),
+		});
 	}
-	let classes = compile_oracle().context("preparing the vendored javadoc doclet")?;
+	let classes = compile_oracle()?;
 	run_doclet(&classes, &files)
 }
 
@@ -105,7 +99,7 @@ fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Materialize the embedded doclet sources into their content-addressed
 /// directory and compile them (cached via a `.compiled` stamp). Returns the
 /// classes directory for `-docletpath`.
-pub fn compile_oracle() -> Result<PathBuf> {
+pub fn compile_oracle() -> Result<PathBuf, OracleError> {
 	let dir = materialize_oracle()?;
 	let classes = dir.join("classes");
 	let stamp = dir.join(".compiled");
@@ -113,33 +107,37 @@ pub fn compile_oracle() -> Result<PathBuf> {
 		return Ok(classes);
 	}
 
-	fs::create_dir_all(&classes)
-		.with_context(|| format!("creating {}", classes.display()))?;
+	fs::create_dir_all(&classes).map_err(|source| DocletError::CreateClassesDirFailed {
+		path: classes.clone(),
+		source,
+	})?;
 
 	let mut cmd = Command::new("javac");
 	cmd.arg("-encoding").arg("UTF-8").arg("-d").arg(&classes);
 	for (name, _) in ORACLE_SOURCES {
 		cmd.arg(dir.join(name));
 	}
-	let output = cmd
-		.output()
-		.with_context(|| format!("spawning `javac` — {TOOLCHAIN_HINT}"))?;
+	let output = cmd.output().map_err(|source| DocletError::SpawnJavacFailed { source })?;
 	if !output.status.success() {
-		bail!(
-			"compiling the javadoc doclet failed ({}): {}",
-			output.status,
-			String::from_utf8_lossy(&output.stderr).trim()
-		);
+		return Err(DocletError::DocletCompileFailed {
+			status: output.status.to_string(),
+			stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+			stdout: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+		}
+		.into());
 	}
 
-	fs::write(&stamp, b"ok").with_context(|| format!("writing {}", stamp.display()))?;
+	fs::write(&stamp, b"ok").map_err(|source| DocletError::WriteStampFailed {
+		path: stamp.clone(),
+		source,
+	})?;
 	Ok(classes)
 }
 
 /// Write the embedded sources into a stable, content-addressed temp
 /// directory and return it. Idempotent; the directory name keys the exact
 /// vendored revision, so an existing copy is always current.
-pub fn materialize_oracle() -> Result<PathBuf> {
+pub fn materialize_oracle() -> Result<PathBuf, DocletError> {
 	let dir =
 		std::env::temp_dir().join(format!("nudox-java-oracle-{:016x}", oracle_hash()));
 	for (name, contents) in ORACLE_SOURCES {
@@ -148,11 +146,14 @@ pub fn materialize_oracle() -> Result<PathBuf> {
 			continue;
 		}
 		if let Some(parent) = path.parent() {
-			fs::create_dir_all(parent)
-				.with_context(|| format!("creating {}", parent.display()))?;
+			fs::create_dir_all(parent).map_err(|source| {
+				DocletError::CreateMaterializeParentFailed { path: parent.to_path_buf(), source }
+			})?;
 		}
-		fs::write(&path, contents)
-			.with_context(|| format!("writing oracle source {}", path.display()))?;
+		fs::write(&path, contents).map_err(|source| DocletError::MaterializeSourceFailed {
+			path: path.clone(),
+			source,
+		})?;
 	}
 	Ok(dir)
 }
@@ -171,7 +172,7 @@ fn oracle_hash() -> u64 {
 }
 
 /// Run `javadoc -doclet` over the collected files and parse the document.
-fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction> {
+fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction, OracleError> {
 	// Fresh per-run scratch: the argfile and the JSON out-path.
 	let scratch = tempdir_for_run()?;
 	let argfile = scratch.join("sources.args");
@@ -182,8 +183,10 @@ fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction> {
 		listing.push_str(&argfile_quote(&file.display().to_string()));
 		listing.push('\n');
 	}
-	fs::write(&argfile, listing)
-		.with_context(|| format!("writing argfile {}", argfile.display()))?;
+	fs::write(&argfile, listing).map_err(|source| JavadocError::WriteArgfileFailed {
+		path: argfile.clone(),
+		source,
+	})?;
 
 	let output = Command::new("javadoc")
 		.arg("-doclet")
@@ -198,21 +201,44 @@ fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction> {
 		.arg(&outfile)
 		.arg(format!("@{}", argfile.display()))
 		.output()
-		.with_context(|| format!("spawning `javadoc` — {TOOLCHAIN_HINT}"))?;
+		.map_err(|source| JavadocError::SpawnJavadocFailed { source })?;
 
 	if !output.status.success() {
-		bail!(
-			"javadoc oracle failed ({}): {}",
-			output.status,
-			String::from_utf8_lossy(&output.stderr).trim()
-		);
+		return Err(JavadocError::JavadocOracleFailed {
+			status: output.status.to_string(),
+			stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+			stdout: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+		}
+		.into());
 	}
 
-	let json = fs::read(&outfile).with_context(|| {
-		format!("reading oracle output {} (doclet ran but wrote nothing?)", outfile.display())
+	let json = fs::read(&outfile).map_err(|source| JavadocError::ReadOracleOutputFailed {
+		path: outfile.clone(),
+		source,
 	})?;
-	let extraction: schema::Extraction =
-		serde_json::from_slice(&json).context("parsing oracle JSON output")?;
+	let extraction: schema::Extraction = serde_json::from_slice(&json)?;
+
+	// Validate against patterns in the Java extractor (format, presence of
+	// types, TypeMirror::Error nodes that indicate resolution failure in
+	// javax.lang.model).
+	if extraction.format != 1 {
+		return Err(ExtractionError::UnsupportedFormat { format: extraction.format }.into());
+	}
+	if extraction.types.is_empty() {
+		return Err(ExtractionError::NoTypesExtracted.into());
+	}
+	for t in &extraction.types {
+		// Surface TypeMirror::Error from the Java oracle (Extractor walks
+		// javax.lang.model and emits Error{name: sourceText} for unresolvable
+		// in API surface positions such as throws).
+		for m in &t.methods {
+			for th in &m.thrown {
+				if let schema::TypeMirror::Error { name } = th {
+					return Err(ExtractionError::TypeMirrorErrorInApi { name: name.clone() }.into());
+				}
+			}
+		}
+	}
 
 	// Best-effort cleanup; the scratch dir is per-run and disposable.
 	let _ = fs::remove_dir_all(&scratch);
@@ -221,7 +247,7 @@ fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction> {
 }
 
 /// A unique per-run scratch directory under the system temp dir.
-fn tempdir_for_run() -> Result<PathBuf> {
+fn tempdir_for_run() -> Result<PathBuf, JavadocError> {
 	let dir = std::env::temp_dir().join(format!(
 		"nudox-java-run-{}-{:x}",
 		std::process::id(),
@@ -230,7 +256,10 @@ fn tempdir_for_run() -> Result<PathBuf> {
 			.map(|d| d.as_nanos())
 			.unwrap_or(0)
 	));
-	fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+	fs::create_dir_all(&dir).map_err(|source| JavadocError::TempDirFailed {
+		path: dir.clone(),
+		source,
+	})?;
 	Ok(dir)
 }
 

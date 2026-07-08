@@ -10,12 +10,13 @@ use std::sync::{Mutex, MutexGuard};
 use tantivy::{
 	Index, IndexReader, IndexWriter, TantivyDocument, TantivyError, Term, doc,
 	directory::MmapDirectory,
-	schema::{Field, STORED, STRING, Schema},
+	schema::{Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions},
 };
 
 use heart::{ContentHash, SymbolId, Symbol, SymbolKind};
 
 use crate::error::TextError;
+use crate::text::tokenizer;
 
 /// Heap budget for the single writer — modest, since symbol documents are tiny.
 const WRITER_MEMORY_BYTES: usize = 50_000_000;
@@ -23,11 +24,15 @@ const WRITER_MEMORY_BYTES: usize = 50_000_000;
 /// The tantivy schema fields the symbol index is built over. Held so field
 /// handles are resolved once, not per-operation.
 ///
-/// Every field is a raw (untokenized) `STRING`: precise lookup works on whole
+/// Most fields are raw (untokenized) `STRING`: precise lookup works on whole
 /// terms and dictionary regexes, and the stored fields carry everything needed
-/// to rebuild a [`Symbol`] from a hit. The lowercased shadow fields exist so
-/// contains-matching is case-insensitive without a custom tokenizer (which
-/// would have to be re-registered on every reopen).
+/// to rebuild a [`Symbol`] from a hit. The lowercased shadow fields make
+/// contains-matching case-insensitive. On top of those, `name_tokens`/`fq_tokens`
+/// are tokenized with the identifier analyzer ([`tokenizer`]) so a query for a
+/// *part* of a name (`user` → `getUserById`, `http` → `HTTPServer`) matches —
+/// which raw-string contains-matching cannot do across camel/snake boundaries.
+/// That analyzer lives in the index's tokenizer manager and is re-registered on
+/// every open (see [`TextIndex::open_or_create`]).
 #[derive(Clone)]
 pub struct TextSchema {
 	pub(crate) schema: Schema,
@@ -47,12 +52,16 @@ pub struct TextSchema {
 	pub(crate) name_lower: Field,
 	/// Lowercased fully-qualified name — the path-contains match surface.
 	pub(crate) fq_lower: Field,
+	/// Plain name, identifier-tokenized — the subtoken match surface.
+	pub(crate) name_tokens: Field,
+	/// Fully-qualified name, identifier-tokenized — the path-subtoken surface.
+	pub(crate) fq_tokens: Field,
 }
 
 impl TextSchema {
 	/// Build the symbol schema: the [`SymbolId`] (stored, keyed for
-	/// upsert-by-id), name + fq-name (raw + lowercased for exact/partial match),
-	/// kind, and ecosystem.
+	/// upsert-by-id), name + fq-name (raw + lowercased for exact/partial match,
+	/// plus identifier-tokenized for subtoken match), kind, and ecosystem.
 	pub fn build() -> Self {
 		let mut builder = Schema::builder();
 		let id = builder.add_text_field("id", STRING | STORED);
@@ -63,8 +72,24 @@ impl TextSchema {
 		let fq_name = builder.add_text_field("fq_name", STRING | STORED);
 		let name_lower = builder.add_text_field("name_lower", STRING);
 		let fq_lower = builder.add_text_field("fq_lower", STRING);
+		let name_tokens = builder.add_text_field("name_tokens", Self::ident_options());
+		let fq_tokens = builder.add_text_field("fq_tokens", Self::ident_options());
 		let schema = builder.build();
-		Self { schema, id, package, ecosystem, kind, name, fq_name, name_lower, fq_lower }
+		Self {
+			schema, id, package, ecosystem, kind, name, fq_name, name_lower, fq_lower, name_tokens,
+			fq_tokens,
+		}
+	}
+
+	/// Indexing options for an identifier-tokenized field: the [`tokenizer`]
+	/// analyzer, with positions so multi-word phrase queries (`get user`) work.
+	/// Not stored — the raw `name`/`fq_name` fields carry the displayable value.
+	fn ident_options() -> TextOptions {
+		TextOptions::default().set_indexing_options(
+			TextFieldIndexing::default()
+				.set_tokenizer(tokenizer::IDENT_TOKENIZER)
+				.set_index_option(IndexRecordOption::WithFreqsAndPositions),
+		)
 	}
 }
 
@@ -113,6 +138,10 @@ impl TextIndex {
 			.map_err(|error| TextError::Engine(TantivyError::from(error)))?;
 		let index =
 			Index::open_or_create(directory, schema.schema.clone()).map_err(TextError::Engine)?;
+		// The identifier analyzer lives in the per-index tokenizer manager, which
+		// is in-memory state rebuilt on every open — register it before any write
+		// or search touches the `*_tokens` fields.
+		tokenizer::register(&index);
 		let writer = index.writer(WRITER_MEMORY_BYTES).map_err(TextError::Engine)?;
 		let reader = index
 			.reader_builder()
@@ -171,6 +200,8 @@ impl TextIndex {
 				fields.fq_name => symbol.name.fully_qualified.to_string(),
 				fields.name_lower => symbol.name.plain.to_lowercase(),
 				fields.fq_lower => symbol.name.fully_qualified.to_lowercase(),
+				fields.name_tokens => symbol.name.plain.to_string(),
+				fields.fq_tokens => symbol.name.fully_qualified.to_string(),
 			))
 			.map_err(TextError::Engine)?;
 		Ok(())

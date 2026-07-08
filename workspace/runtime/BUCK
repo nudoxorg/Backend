@@ -27,6 +27,7 @@ rust_crate(
             "smol_str",
             "strum",
             "tantivy",
+            "anyhow",
         ],
     ),
 )
@@ -42,6 +43,7 @@ rust_tests(
             "tokio",
             "uuid",
             "smol_str",
+            "tantivy",
         ],
         raw = [":runtime"],
     ),

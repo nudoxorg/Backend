@@ -155,7 +155,7 @@ impl<M: EmbeddingModel> Server<M> {
 						audit.size_mismatches.push(entry.path.to_string());
 					}
 				}
-				Err(StoreError::NotFound(_)) => audit.missing.push(entry.hash),
+				Err(StoreError::NotFound { .. }) => audit.missing.push(entry.hash),
 				Err(StoreError::Integrity { .. }) => audit.corrupt.push(entry.hash),
 				Err(other) => return Err(RegistryError::from(other).into()),
 			}
@@ -165,7 +165,7 @@ impl<M: EmbeddingModel> Server<M> {
 		// belongs to the emit path, not to this audit.
 		match stores.blobs.get_section(manifest.ir_ref).await {
 			Ok(_) => {}
-			Err(StoreError::NotFound(_)) => audit.missing.push(manifest.ir_ref),
+			Err(StoreError::NotFound { .. }) => audit.missing.push(manifest.ir_ref),
 			Err(StoreError::Integrity { .. }) => audit.corrupt.push(manifest.ir_ref),
 			Err(other) => return Err(RegistryError::from(other).into()),
 		}
@@ -180,7 +180,7 @@ impl<M: EmbeddingModel> Server<M> {
 					tracing::error!(%package, %error, "references section is byte-intact but undecodable");
 				}
 			},
-			Err(StoreError::NotFound(_)) => audit.missing.push(manifest.references_ref),
+			Err(StoreError::NotFound { .. }) => audit.missing.push(manifest.references_ref),
 			Err(StoreError::Integrity { .. }) => audit.corrupt.push(manifest.references_ref),
 			Err(other) => return Err(RegistryError::from(other).into()),
 		}

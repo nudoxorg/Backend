@@ -61,7 +61,7 @@ impl<M: EmbeddingModel> Server<M> {
 	pub async fn parse_status(&self, package: PackageId) -> ServerResult<Option<ResolutionState>> {
 		match self.global_store().get_state(package).await {
 			Ok(state) => Ok(Some(state)),
-			Err(IndexError::NotFound(_)) => Ok(None),
+			Err(IndexError::NotFound { .. }) => Ok(None),
 			Err(error) => Err(registry::RegistryError::from(error).into()),
 		}
 	}
@@ -87,23 +87,23 @@ async fn probe_source<M: EmbeddingModel>(stores: &SourceStores<M>) -> Vec<Probe>
 /// Time a probe body and shape its verdict.
 async fn timed(
 	backend: BackendKind,
-	body: impl Future<Output = Result<(), String>>,
+	body: impl Future<Output = Option<String>>,
 ) -> Probe {
 	let started = Instant::now();
-	let outcome = body.await;
+	let detail = body.await;
 	Probe {
 		backend,
-		healthy: outcome.is_ok(),
+		healthy: detail.is_none(),
 		latency_ms: u32::try_from(started.elapsed().as_millis()).ok(),
-		detail: outcome.err(),
+		detail,
 	}
 }
 
 async fn probe_postgres<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
 	timed(BackendKind::Postgres, async {
 		match stores.global_store.get_state(PackageId::from_uuid(uuid::Uuid::nil())).await {
-			Ok(_) | Err(IndexError::NotFound(_)) => Ok(()),
-			Err(error) => Err(error.to_string()),
+			Ok(_) | Err(IndexError::NotFound { .. }) => None,
+			Err(error) => Some(error.to_string()),
 		}
 	})
 	.await
@@ -113,8 +113,8 @@ async fn probe_object_store<M: EmbeddingModel>(stores: &SourceStores<M>) -> Prob
 	timed(BackendKind::ObjectStore, async {
 		let sentinel = heart::ContentHash::of_bytes(b"nudox readiness sentinel");
 		match stores.blobs.get_section(sentinel).await {
-			Ok(_) | Err(registry::StoreError::NotFound(_)) => Ok(()),
-			Err(error) => Err(error.to_string()),
+			Ok(_) | Err(registry::StoreError::NotFound { .. }) => None,
+			Err(error) => Some(error.to_string()),
 		}
 	})
 	.await
@@ -127,8 +127,8 @@ async fn probe_terminus<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
 	timed(BackendKind::Terminus, async {
 		let nobody = heart::SymbolId::from_uuid(uuid::Uuid::nil());
 		match stores.graph.are_related(nobody, nobody).await {
-			Ok(_) | Err(GraphError::NotFound) | Err(GraphError::Query { .. }) => Ok(()),
-			Err(error) => Err(error.to_string()),
+			Ok(_) | Err(GraphError::NotFound) | Err(GraphError::Query(_)) => None,
+			Err(error) => Some(error.to_string()),
 		}
 	})
 	.await
@@ -143,11 +143,11 @@ async fn probe_qdrant<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
 		let gate = crate::search::SearchPlanner::extend_across_federation("readiness probe");
 		let query = runtime::vector::Embedding::<M>::zeroed();
 		match stores.semantics.search(gate, &query, NonZeroUsize::MIN, None).await {
-			Ok(_) => Ok(()),
+			Ok(_) => None,
 			Err(error @ (VectorError::Connect(_) | VectorError::Transport(_))) => {
-				Err(error.to_string())
+				Some(error.to_string())
 			}
-			Err(_) => Ok(()),
+			Err(_) => None,
 		}
 	})
 	.await
@@ -159,8 +159,8 @@ async fn probe_tantivy<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
 		let hits = stores.text.search(&query, NonZeroUsize::MIN, None);
 		futures::pin_mut!(hits);
 		match hits.next().await {
-			None | Some(Ok(_)) => Ok(()),
-			Some(Err(error)) => Err(error.to_string()),
+			None | Some(Ok(_)) => None,
+			Some(Err(error)) => Some(error.to_string()),
 		}
 	})
 	.await

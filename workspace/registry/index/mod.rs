@@ -19,6 +19,8 @@ use heart::{
 use crate::package::Coordinates as PackageCoordinates;
 use sqlx::{Row, postgres::PgRow};
 
+use std::io;
+
 use crate::{
 	GlobalPackage,
 	error::IndexError,
@@ -42,7 +44,7 @@ impl TerminusInstance {
 			[organization, database] if !organization.is_empty() && !database.is_empty() => {
 				Ok(Self(token))
 			}
-			_ => Err(IndexError::InvalidInstance(token)),
+			_ => Err(IndexError::InvalidInstance { token }),
 		}
 	}
 
@@ -79,7 +81,7 @@ impl Connect for GlobalStore<Cold> {
 		sqlx::query("SELECT 1")
 			.execute(&self.pool)
 			.await
-			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(&e)))?;
+			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(e)))?;
 
 		// Apply the schema. There is no hand-written SQL: every `CREATE TABLE` and
 		// `CREATE INDEX` is a `sea_query` statement rendered to Postgres DDL and
@@ -89,7 +91,7 @@ impl Connect for GlobalStore<Cold> {
 			.pool
 			.begin()
 			.await
-			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(&e)))?;
+			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(e)))?;
 		for ddl in crate::schema::schema_ddl() {
 			sqlx::query(&ddl).execute(&mut *tx).await.map_err(|_| {
 				ConnectError::new(BackendKind::Postgres, ConnectFailure::SchemaMismatch)
@@ -97,7 +99,7 @@ impl Connect for GlobalStore<Cold> {
 		}
 		tx.commit()
 			.await
-			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(&e)))?;
+			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(e)))?;
 
 		Ok(GlobalStore { pool: self.pool, instance: self.instance, _state: std::marker::PhantomData })
 	}
@@ -140,7 +142,7 @@ impl GlobalStore<Live> {
 		let (st_sql, st_vals) =
 			queries::index::set_state(package.id, &package.state).map_err(codec_to_index)?;
 
-		let mut tx = self.pool.begin().await.map_err(IndexError::Database)?;
+		let mut tx = self.pool.begin().await.map_err(IndexError::BeginTx)?;
 		sqlx::query_with(&id_sql, id_vals)
 			.execute(&mut *tx)
 			.await
@@ -149,7 +151,7 @@ impl GlobalStore<Live> {
 			.execute(&mut *tx)
 			.await
 			.map_err(IndexError::Database)?;
-		tx.commit().await.map_err(IndexError::Database)?;
+		tx.commit().await.map_err(IndexError::Commit)?;
 		Ok(())
 	}
 
@@ -194,7 +196,7 @@ impl GlobalStore<Live> {
 			.fetch_optional(&self.pool)
 			.await
 			.map_err(IndexError::Database)?
-			.ok_or(IndexError::NotFound(package))?;
+			.ok_or(IndexError::NotFound { package })?;
 		row_to_state(&row).map_err(codec_to_index)
 	}
 
@@ -212,10 +214,14 @@ impl GlobalStore<Live> {
 			.fetch_optional(&self.pool)
 			.await
 			.map_err(IndexError::Database)?
-			.ok_or(IndexError::NotFound(package))?;
+			.ok_or(IndexError::NotFound { package })?;
 		let package = row_to_package(&row).map_err(codec_to_index)?;
+		let facets = row_to_facets(&row).map_err(codec_to_index)?;
 
-		Ok(GlobalPackage { id: package.id(), package, state })
+		// The `get_package` query left-joins `parse_status`, so its final column
+		// (index 10) carries the derived search facets — nullable jsonb, mirroring
+		// `failure`. `None` when metadata was never extracted for this generation.
+		Ok(GlobalPackage { id: package.id(), package, state, facets })
 	}
 
 	/// The recorded snapshot [`ContentHash`] for a package, for freshness
@@ -261,32 +267,26 @@ impl GlobalStore<Live> {
 	}
 }
 
-/// Map a serialization/codec failure into an index error. A codec failure while
-/// building a statement is an internal invariant break, surfaced as a database
-/// error carrying the decode message.
+/// Map a serialization/codec failure into an index error. Now uses the
+/// dedicated Codec variant so the original CodecError + its sources chain.
 fn codec_to_index(e: codec::CodecError) -> IndexError {
-	IndexError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
-		std::io::ErrorKind::InvalidData,
-		e.to_string(),
-	))))
+	IndexError::Codec(e)
 }
 
 /// Classify a connect-time sqlx error into a [`ConnectFailure`].
-fn connect_failure(e: &sqlx::Error) -> ConnectFailure {
+fn connect_failure(e: sqlx::Error) -> ConnectFailure {
 	match e {
 		sqlx::Error::PoolTimedOut => ConnectFailure::Timeout,
 		sqlx::Error::Io(_) => ConnectFailure::Unreachable,
-		other => ConnectFailure::Other(Box::new(std::io::Error::new(
-			std::io::ErrorKind::Other,
-			other.to_string(),
-		))),
+		other => ConnectFailure::Other(other.into()),
 	}
 }
 
 /// Reassemble a [`crate::Package`] from a `packages` result row. The column
 /// order matches [`queries::index::get_package`]: id, language, origin_token,
 /// name_canonical, name_original, version_canonical, visibility, owner_tenant,
-/// owner_kind, toolchain.
+/// owner_kind, toolchain (then the left-joined `parse_status.facets` at index
+/// 10, read separately by [`row_to_facets`]).
 fn row_to_package(row: &PgRow) -> Result<crate::Package, codec::CodecError> {
 	let language: String = row.try_get(1).map_err(row_decode)?;
 	let origin_token: String = row.try_get(2).map_err(row_decode)?;
@@ -302,6 +302,17 @@ fn row_to_package(row: &PgRow) -> Result<crate::Package, codec::CodecError> {
 	)?;
 	let toolchain = codec::toolchain_from_json(&toolchain_json)?;
 	Ok(crate::Package { coordinates, toolchain })
+}
+
+/// Read the (possibly-`NULL`) derived search facets from a [`get_package`]
+/// result row. The left join places `parse_status.facets` at column index 10,
+/// right after the ten `packages` identity/toolchain columns. Decodes via the
+/// codec's nullable-jsonb helper, exactly as `failure` is decoded.
+///
+/// [`get_package`]: queries::index::get_package
+fn row_to_facets(row: &PgRow) -> Result<Option<crate::metadata::SearchFacets>, codec::CodecError> {
+	let facets_json: Option<serde_json::Value> = row.try_get(10).map_err(row_decode)?;
+	codec::facets_from_json(facets_json.as_ref())
 }
 
 /// Reassemble a [`ResolutionState`] from a `parse_status` result row. The row
@@ -322,14 +333,8 @@ fn row_to_state(row: &PgRow) -> Result<ResolutionState, codec::CodecError> {
 	)
 }
 
-/// Bridge an sqlx row-decode error into a codec error (json domain) so
-/// [`row_to_state`] stays total.
+/// Bridge an sqlx row-decode error into a codec error (sqlx domain) so
+/// [`row_to_state`] stays total. Uses SqlxDecode to preserve source.
 fn row_decode(e: sqlx::Error) -> codec::CodecError {
-	codec::CodecError::Json {
-		domain: "parse_status row",
-		source: serde_json::Error::io(std::io::Error::new(
-			std::io::ErrorKind::InvalidData,
-			e.to_string(),
-		)),
-	}
+	codec::CodecError::SqlxDecode { domain: "parse_status row", source: e }
 }

@@ -24,8 +24,49 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use anyhow::{Context, Result, anyhow, bail};
+
 use uv_pep440::{Version, VersionSpecifiers};
+
+#[derive(Debug, thiserror::Error)]
+pub enum PythonTraversalError {
+    #[error("requesting PyPI metadata for `{name}`")]
+    MetadataRequest { name: String, #[source] source: reqwest::Error },
+
+    #[error("PyPI returned an error for `{name}`")]
+    MetadataHttp { name: String, #[source] source: reqwest::Error },
+
+    #[error("reading PyPI metadata body")]
+    MetadataBody(#[source] reqwest::Error),
+
+    #[error("parsing PyPI metadata JSON")]
+    MetadataParse(#[source] serde_json::Error),
+
+    #[error("creating extraction dir {dir}")]
+    CreateDir { dir: PathBuf, #[source] source: std::io::Error },
+
+    #[error("downloading sdist {url}")]
+    Download { url: String, #[source] source: reqwest::Error },
+
+    #[error("sdist download returned an error status")]
+    DownloadHttp(#[source] reqwest::Error),
+
+    #[error("reading sdist bytes")]
+    DownloadBody(#[source] reqwest::Error),
+
+    #[error("gunzipping sdist")]
+    Gunzip(#[source] std::io::Error),
+
+    #[error("untarring sdist into {dir}")]
+    Untar { dir: PathBuf, #[source] source: std::io::Error },
+
+    #[error("selected release for package has no download URL")]
+    NoDownloadUrl,
+
+    #[error("no sdist satisfying the request found on PyPI")]
+    NoMatchingSdist,
+}
+
+pub type Result<T> = std::result::Result<T, PythonTraversalError>;
 
 /// One uploaded artifact for a release, as listed under PyPI's `releases` map.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,31 +241,33 @@ pub fn pypi_metadata_url(name: &str) -> String {
 }
 
 /// Fetch and parse a package's PyPI JSON metadata. **Network.**
-pub fn fetch_pypi_metadata(name: &str) -> Result<serde_json::Value> {
+pub fn fetch_pypi_metadata(name: &str) -> Result<serde_json::Value, PythonTraversalError> {
     let url = pypi_metadata_url(name);
-    let body = reqwest::blocking::get(&url)
-        .with_context(|| format!("requesting PyPI metadata for `{name}`"))?
+    let resp = reqwest::blocking::get(&url)
+        .map_err(|source| PythonTraversalError::MetadataRequest { name: name.to_owned(), source })?;
+    let resp = resp
         .error_for_status()
-        .with_context(|| format!("PyPI returned an error for `{name}`"))?
-        .text()
-        .context("reading PyPI metadata body")?;
+        .map_err(|source| PythonTraversalError::MetadataHttp { name: name.to_owned(), source })?;
+    let body = resp.text()
+        .map_err(PythonTraversalError::MetadataBody)?;
     let value: serde_json::Value =
-        serde_json::from_str(&body).context("parsing PyPI metadata JSON")?;
+        serde_json::from_str(&body).map_err(PythonTraversalError::MetadataParse)?;
     Ok(value)
 }
 
 /// Download a `.tar.gz` sdist from `url` and extract it under `dest_dir`.
 /// Returns the directory the archive was extracted into. **Network + IO.**
-pub fn download_and_extract_sdist(url: &str, dest_dir: &Path) -> Result<PathBuf> {
+pub fn download_and_extract_sdist(url: &str, dest_dir: &Path) -> std::result::Result<PathBuf, PythonTraversalError> {
     std::fs::create_dir_all(dest_dir)
-        .with_context(|| format!("creating extraction dir {}", dest_dir.display()))?;
+        .map_err(|source| PythonTraversalError::CreateDir { dir: dest_dir.to_path_buf(), source })?;
 
-    let bytes = reqwest::blocking::get(url)
-        .with_context(|| format!("downloading sdist {url}"))?
+    let resp = reqwest::blocking::get(url)
+        .map_err(|source| PythonTraversalError::Download { url: url.to_owned(), source })?;
+    let resp = resp
         .error_for_status()
-        .context("sdist download returned an error status")?
-        .bytes()
-        .context("reading sdist bytes")?;
+        .map_err(PythonTraversalError::DownloadHttp)?;
+    let bytes = resp.bytes()
+        .map_err(PythonTraversalError::DownloadBody)?;
 
     extract_tar_gz(&bytes, dest_dir)?;
     Ok(dest_dir.to_path_buf())
@@ -238,11 +281,11 @@ pub fn extract_tar_gz(bytes: &[u8], dest_dir: &Path) -> Result<()> {
     let mut tar_bytes = Vec::new();
     decoder
         .read_to_end(&mut tar_bytes)
-        .context("gunzipping sdist")?;
+        .map_err(PythonTraversalError::Gunzip)?;
     let mut archive = tar::Archive::new(std::io::Cursor::new(tar_bytes));
     archive
         .unpack(dest_dir)
-        .with_context(|| format!("untarring sdist into {}", dest_dir.display()))?;
+        .map_err(|source| PythonTraversalError::Untar { dir: dest_dir.to_path_buf(), source })?;
     Ok(())
 }
 
@@ -252,13 +295,13 @@ pub fn resolve_and_fetch_sdist(
     name: &str,
     req: &VersionSpecifiers,
     workspace: &Path,
-) -> Result<PathBuf> {
+) -> Result<PathBuf, PythonTraversalError> {
     let metadata = fetch_pypi_metadata(name)?;
     let releases = parse_releases(&metadata);
     let chosen = select_best_release(&releases, req)
-        .ok_or_else(|| anyhow!("no sdist satisfying `{name} {req}` found on PyPI"))?;
+        .ok_or(PythonTraversalError::NoMatchingSdist)?;
     if chosen.url.is_empty() {
-        bail!("selected release for `{name}` has no download URL");
+        return Err(PythonTraversalError::NoDownloadUrl);
     }
     let dest = workspace.join(format!("{name}-{}", chosen.version));
     download_and_extract_sdist(&chosen.url, &dest)

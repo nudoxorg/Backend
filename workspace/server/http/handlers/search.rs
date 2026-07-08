@@ -20,7 +20,7 @@ use runtime::session::{SessionGraph, SessionId, SessionStore};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
-use crate::error::{ServerError, ServerResult};
+use crate::error::{BadRequestReason, ServerError, ServerResult};
 use crate::http::dto::SearchRequestDto;
 use crate::search::merge_overlay_first;
 use crate::search::query::{LiteralQuery, Pagination, Query};
@@ -59,9 +59,7 @@ pub async fn search_packages<M: EmbeddingModel>(
 	server.authorize("search.packages")?;
 	let limit = req.limit.get() as usize;
 	let query =
-		Query::Literal(LiteralQuery::parse(&req.query).map_err(|error| {
-			ServerError::BadRequest(error.to_string())
-		})?);
+		Query::Literal(LiteralQuery::parse(&req.query).map_err(BadRequestReason::from)?);
 	let page = Pagination { limit: req.limit, after: req.cursor };
 
 	let mut groups = Vec::new();
@@ -91,8 +89,11 @@ pub async fn expand<M: EmbeddingModel>(
 	State(server): State<Arc<Server<M>>>,
 	Json(req): Json<SearchRequestDto>,
 ) -> ServerResult<Json<Page<Symbol>>> {
-	let seed: uuid::Uuid = req.query.trim().parse().map_err(|_| {
-		ServerError::BadRequest(format!("expand takes a symbol id, got {:?}", req.query))
+	let seed: uuid::Uuid = req.query.trim().parse().map_err(|e| {
+		BadRequestReason::InvalidSymbolId {
+			raw: req.query.clone(),
+			source: e,
+		}
 	})?;
 	let seed = SymbolId::from_uuid(seed);
 

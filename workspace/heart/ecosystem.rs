@@ -33,6 +33,12 @@ pub enum Language {
 
 	/// <https://python.org/>.
 	Python,
+
+	/// <https://go.dev/>.
+	Go,
+
+	/// <https://www.java.com/>.
+	Java,
 }
 
 impl Language {
@@ -65,6 +71,12 @@ pub enum Toolchain {
 
 	/// The CPython (or compatible) interpreter version the type oracle ran as.
 	Python { interpreter: Version },
+
+	/// The Go toolchain version (from `go version` or go.mod).
+	Go { compiler: Version },
+
+	/// The JDK/javac version used for extraction.
+	Java { compiler: Version },
 }
 
 impl From<&Toolchain> for Language {
@@ -74,6 +86,8 @@ impl From<&Toolchain> for Language {
 			Toolchain::Rust { .. } => Language::Rust,
 			Toolchain::Typescript { .. } => Language::Typescript,
 			Toolchain::Python { .. } => Language::Python,
+			Toolchain::Go { .. } => Language::Go,
+			Toolchain::Java { .. } => Language::Java,
 		}
 	}
 }

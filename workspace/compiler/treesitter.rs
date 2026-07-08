@@ -103,7 +103,7 @@ fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
 	match lang {
 		Language::Rust => arborium::get_language("rust"),
 		// No grammar registered yet — callers take the graceful-fallback path.
-		Language::Typescript | Language::Python => None,
+		Language::Typescript | Language::Python | Language::Go | Language::Java => None,
 	}
 }
 

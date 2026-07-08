@@ -206,13 +206,12 @@ impl ServerConfiguration {
 		let mut names = std::collections::HashSet::new();
 		for source in std::iter::once(&self.definitive).chain(&self.overlays) {
 			if source.name.trim().is_empty() {
-				return Err(ConfigError::Invalid("a source has an empty name".into()));
+				return Err(ConfigError::Validation(ConfigValidationError::EmptySourceName));
 			}
 			if !names.insert(source.name.clone()) {
-				return Err(ConfigError::Invalid(format!(
-					"duplicate source name {:?}: source identities are derived from names",
-					source.name
-				)));
+				return Err(ConfigError::Validation(ConfigValidationError::DuplicateSourceName {
+					name: source.name.clone(),
+				}));
 			}
 		}
 		Ok(())
@@ -329,9 +328,65 @@ pub enum ConfigError {
 	/// A layer (file/env) could not be read or parsed.
 	#[error("failed to load configuration")]
 	Load(#[source] figment::Error),
-	/// The merged configuration was structurally invalid.
-	#[error("invalid configuration: {0}")]
-	Invalid(String),
+
+	/// The merged configuration failed structural validation.
+	#[error(transparent)]
+	Validation(#[from] ConfigValidationError),
+}
+
+/// Detailed, typed configuration validation failures. All data carried
+/// explicitly; no dynamic strings for the core reason.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigValidationError {
+	/// A source name (definitive or overlay) is empty or whitespace-only.
+	#[error("a source has an empty name")]
+	EmptySourceName,
+
+	/// Two sources (definitive or overlays) share the same name. Identities are
+	/// derived from names, so duplicates are fatal.
+	#[error("duplicate source name {name:?}: source identities are derived from names")]
+	DuplicateSourceName { name: smol_str::SmolStr },
+
+	/// A required endpoint URL (after deserialization) was empty or invalid
+	/// for its purpose.
+	#[error("missing or invalid required endpoint: {endpoint}")]
+	MissingRequiredEndpoint { endpoint: &'static str },
+
+	/// A numeric dimension / limit from config is outside the supported range.
+	#[error("dimension out of range for {what}: expected {expected}, found {found}")]
+	DimensionOutOfRange {
+		what: &'static str,
+		expected: String,
+		found: String,
+	},
+
+	/// A URL field (e.g. embeddings, qdrant, terminus) failed to parse or is
+	/// unusable.
+	#[error("invalid url for {field}: {url}")]
+	InvalidUrl {
+		field: &'static str,
+		url: String,
+		#[source]
+		source: Option<url::ParseError>,
+	},
+
+	/// Terminus organization name failed validation (carries the rich GraphNameError
+	/// with position, length, char details etc.).
+	#[error("invalid terminus organization")]
+	InvalidTerminusOrganization(#[from] runtime::graph::GraphNameError),
+
+	/// Terminus database name failed validation.
+	#[error("invalid terminus database")]
+	InvalidTerminusDatabase(#[from] runtime::graph::GraphNameError),
+
+	/// A Qdrant collection name failed validation (carries the rich CollectionNameError).
+	#[error("invalid qdrant collection name")]
+	InvalidQdrantCollection(#[from] runtime::vector::CollectionNameError),
+
+	/// Generic other validation problem (use only when no more specific variant
+	/// fits; prefer extending the enum).
+	#[error("invalid configuration: {detail}")]
+	Other { detail: String },
 }
 
 /// Serde adapter so a secret connection URL round-trips as a plain string in

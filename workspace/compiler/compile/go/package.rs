@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use super::error::{GoError, Result};
 
 use super::oracle;
 
@@ -48,8 +48,7 @@ pub struct GoModule {
 
 /// Locate the nearest `go.mod` at or above `start` and parse it.
 pub fn discover_module(start: &Path) -> Result<GoModule> {
-	let go_mod = find_go_mod(start)
-		.with_context(|| format!("no go.mod found at or above {}", start.display()))?;
+	let go_mod = find_go_mod(start).ok_or_else(|| GoError::NoGoMod { start: start.to_path_buf() })?;
 	parse_go_mod(&go_mod)
 }
 
@@ -73,7 +72,7 @@ fn find_go_mod(start: &Path) -> Option<PathBuf> {
 /// version for reporting.
 pub fn parse_go_mod(path: &Path) -> Result<GoModule> {
 	let text = fs::read_to_string(path)
-		.with_context(|| format!("reading {}", path.display()))?;
+		.map_err(|source| GoError::ReadGoMod { path: path.to_path_buf(), source })?;
 
 	let mut module_path = None;
 	let mut go_version = None;
@@ -88,7 +87,7 @@ pub fn parse_go_mod(path: &Path) -> Result<GoModule> {
 	}
 
 	let module_path = module_path
-		.with_context(|| format!("{} has no `module` directive", path.display()))?;
+		.ok_or_else(|| GoError::NoModuleDirective { path: path.to_path_buf() })?;
 	let root = path
 		.parent()
 		.map(Path::to_path_buf)
@@ -112,10 +111,10 @@ fn strip_line_comment(line: &str) -> &str {
 /// oracle's stderr and are surfaced in the error on failure; load errors
 /// that still produced a document are carried in [`oracle::Output::errors`].
 pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
-	let oracle_dir = materialize_oracle().context("materializing the embedded Go oracle")?;
+	let oracle_dir = materialize_oracle()?;
 	let target = module_root
 		.canonicalize()
-		.with_context(|| format!("resolving module root {}", module_root.display()))?;
+		.map_err(|source| GoError::ResolveModuleRoot { root: module_root.to_path_buf(), source })?;
 
 	let output = Command::new("go")
 		.arg("run")
@@ -125,18 +124,20 @@ pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
 		.env("GOWORK", "off")
 		.env("GOFLAGS", "-mod=mod")
 		.output()
-		.context("spawning `go run` — is a Go toolchain on PATH?")?;
+		.map_err(|source| GoError::SpawnOracle { source })?;
 
 	if !output.status.success() {
-		bail!(
-			"go oracle failed on {} ({}): {}",
-			target.display(),
-			output.status,
-			String::from_utf8_lossy(&output.stderr).trim()
-		);
+		return Err(GoError::OracleExecution {
+			target,
+			status: output.status.to_string(),
+			stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+		});
 	}
 
-	serde_json::from_slice(&output.stdout).context("parsing oracle JSON output")
+	serde_json::from_slice(&output.stdout).map_err(|source| GoError::OracleOutputParse {
+		source,
+		stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
+	})
 }
 
 /// Write the embedded oracle sources into a stable, content-addressed
@@ -145,14 +146,14 @@ pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
 pub fn materialize_oracle() -> Result<PathBuf> {
 	let dir = std::env::temp_dir().join(format!("nudox-go-oracle-{:016x}", oracle_hash()));
 	fs::create_dir_all(&dir)
-		.with_context(|| format!("creating oracle dir {}", dir.display()))?;
+		.map_err(|source| GoError::MaterializeOracleDir { dir: dir.clone(), source })?;
 
 	for (name, contents) in ORACLE_FILES {
 		let path = dir.join(name);
 		// The directory is content-addressed, so present == current.
 		if !path.is_file() {
 			fs::write(&path, contents)
-				.with_context(|| format!("writing oracle source {}", path.display()))?;
+				.map_err(|source| GoError::WriteOracleSource { path: path.clone(), source })?;
 		}
 	}
 	Ok(dir)

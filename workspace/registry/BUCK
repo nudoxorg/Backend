@@ -32,6 +32,7 @@ rust_crate(
             "strum",
             "postcard",
             "reqwest",
+            "anyhow",
             "futures",
             "futures_util",
             "tokio",

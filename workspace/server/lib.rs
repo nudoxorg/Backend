@@ -168,7 +168,7 @@ impl<M: EmbeddingModel> Server<M> {
 			.max_connections(16)
 			.connect_lazy(endpoints.postgres.expose_secret())
 			.map_err(|error| {
-				ConnectError::new(BackendKind::Postgres, ConnectFailure::Other(Box::new(error)))
+				ConnectError::new(BackendKind::Postgres, ConnectFailure::Other(error.into()))
 			})?;
 
 		let instance = TerminusInstance::new(endpoints.terminus_instance())
@@ -190,7 +190,7 @@ impl<M: EmbeddingModel> Server<M> {
 		);
 		let semantic_cold: Semantic<M, heart::Cold> = Semantic::new(
 			qdrant_client::Qdrant::from_url(endpoints.qdrant.as_str()).build().map_err(
-				|error| ConnectError::new(BackendKind::Qdrant, ConnectFailure::Other(Box::new(error))),
+				|error| ConnectError::new(BackendKind::Qdrant, ConnectFailure::Other(error.into())),
 			)?,
 			CollectionName::new(endpoints.qdrant_collection.as_str())
 				.map_err(invalid_configuration)?,
@@ -322,12 +322,12 @@ fn object_store_backend(url: &url::Url) -> ServerResult<Arc<dyn object_store::Ob
 	if url.scheme() == "file" {
 		if let Ok(path) = url.to_file_path() {
 			std::fs::create_dir_all(&path).map_err(|error| {
-				ConnectError::new(BackendKind::ObjectStore, ConnectFailure::Other(Box::new(error)))
+				ConnectError::new(BackendKind::ObjectStore, ConnectFailure::Other(error.into()))
 			})?;
 		}
 	}
 	let (backend, prefix) = object_store::parse_url(url).map_err(|error| {
-		ConnectError::new(BackendKind::ObjectStore, ConnectFailure::Other(Box::new(error)))
+		ConnectError::new(BackendKind::ObjectStore, ConnectFailure::Other(error.into()))
 	})?;
 	Ok(Arc::new(object_store::prefix::PrefixStore::new(backend, prefix)))
 }

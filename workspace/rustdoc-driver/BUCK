@@ -1,0 +1,19 @@
+load("//build:rust.bzl", "deps", "rust_bin")
+
+# The rustdoc in-process driver — zero-disk-JSON doc pass.
+#
+# Strips --out-dir from cargo's argv so system rustdoc writes JSON to stdout,
+# then pipes that JSON through RustdocParser → IR.  No rustc_private linkage
+# needed; no #![feature(rustc_private)].
+#
+# Usage:  buck2 build //workspace/rustdoc-driver:rustdoc-driver
+rust_bin(
+    name = "rustdoc-driver",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = deps(
+        members = ["ir", "rust-lowering"],
+        crates = ["rustdoc_types", "serde_json", "serde"],
+    ),
+)

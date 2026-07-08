@@ -44,16 +44,16 @@ pub fn extract(input: &PackageInput) -> Result<CstSet, GenerateError> {
             Some(grammar) => (grammar, "rs"),
             None => return Ok(CstSet::default()),
         },
-        Language::Typescript | Language::Python => return Ok(CstSet::default()),
+        Language::Typescript | Language::Python | Language::Go | Language::Java => return Ok(CstSet::default()),
     };
 
     let mut files = Vec::new();
     let mut pending = vec![input.root.clone()];
 
     while let Some(dir) = pending.pop() {
-        for entry in fs::read_dir(&dir).map_err(GenerateError::Archive)? {
-            let entry = entry.map_err(GenerateError::Archive)?;
-            let file_type = entry.file_type().map_err(GenerateError::Archive)?;
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
             let path = entry.path();
 
             if file_type.is_dir() {
@@ -80,10 +80,11 @@ pub fn extract(input: &PackageInput) -> Result<CstSet, GenerateError> {
             };
 
             let references =
-                resolve_file(&source, &grammar).map_err(|source| GenerateError::Cst {
-                    path: relative.display().to_string(),
-                    source,
-                })?;
+                resolve_file(&source, &grammar, &relative.display().to_string())
+                    .map_err(|source| GenerateError::Cst {
+                        path: relative.display().to_string(),
+                        source,
+                    })?;
             files.push(Cst {
                 path: relative,
                 references,
@@ -97,14 +98,20 @@ pub fn extract(input: &PackageInput) -> Result<CstSet, GenerateError> {
 
 /// Parse one file with a transient tree, walk it for references, and keep only
 /// the serializable spans — the C-allocated tree is dropped on return.
+/// The `path` is carried into the error variants so LanguageError / parse
+/// failures preserve the originating source file in the error chain.
 fn resolve_file(
     source: &str,
     grammar: &tree_sitter::Language,
+    path: &str,
 ) -> Result<Vec<ResolvedReference>, ParseError> {
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(grammar)?;
+    parser.set_language(grammar).map_err(|e| ParseError::LanguageWithSource {
+        path:   path.to_owned(),
+        source: e,
+    })?;
     let tree = parser
         .parse(source.as_bytes(), None)
-        .ok_or(ParseError::Parse)?;
+        .ok_or_else(|| ParseError::ParseWithSource { path: path.to_owned() })?;
     Ok(walk_references(&tree, source, classify_rust))
 }

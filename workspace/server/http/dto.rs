@@ -13,7 +13,7 @@ use strum::IntoEnumIterator;
 use url::Url;
 
 use crate::config::CustomRegistry;
-use crate::error::ServerError;
+use crate::error::{BadRequestReason, ServerError};
 use crate::search::query::{
 	AbstractQuery, Filter, LiteralQuery, PackageSelector, Pagination, Query, Search,
 };
@@ -44,7 +44,7 @@ impl SearchRequestDto {
 		let query = if self.semantic {
 			Query::Abstract(AbstractQuery::NaturalLanguage(self.query))
 		} else {
-			Query::Literal(LiteralQuery::parse(&self.query).map_err(bad_request)?)
+			Query::Literal(LiteralQuery::parse(&self.query).map_err(BadRequestReason::from)?)
 		};
 
 		// Package names are ecosystem-scoped; a bare name is tried against every
@@ -62,9 +62,7 @@ impl SearchRequestDto {
 			}
 		}
 		if !self.packages.is_empty() && selectors.is_empty() {
-			return Err(ServerError::BadRequest(
-				"no requested package name is valid for the requested ecosystems".into(),
-			));
+			return Err(BadRequestReason::NoValidPackageSelectors.into());
 		}
 
 		Ok(Search {
@@ -91,9 +89,9 @@ pub struct AddPackageDto {
 impl AddPackageDto {
 	pub fn into_coordinates(&self) -> Result<PackageCoordinates, ServerError> {
 		let name = PackageName::new(self.ecosystem, self.name.as_str())
-			.map_err(|e| ServerError::BadRequest(e.to_string()))?;
+			.map_err(BadRequestReason::from)?;
 		let version = PackageVersion::try_from((self.ecosystem, self.version.as_str()))
-			.map_err(|e| ServerError::BadRequest(e.to_string()))?;
+			.map_err(BadRequestReason::from)?;
 		let origin = match self.origin.as_deref() {
 			None => default_origin(self.ecosystem),
 			Some(custom) => resolve_custom_origin(custom)?,
@@ -107,6 +105,10 @@ fn default_origin(ecosystem: Language) -> RegistryOrigin {
 		Language::Rust => RegistryOrigin::CratesIo,
 		Language::Typescript => RegistryOrigin::NpmPublic,
 		Language::Python => RegistryOrigin::PyPi,
+		Language::Go | Language::Java => RegistryOrigin::Custom {
+			name: SmolStr::new_static("custom"),
+			url: Url::parse("https://example.invalid").expect("static url"),
+		},
 	}
 }
 
@@ -133,12 +135,23 @@ fn resolve_custom_origin(name: &str) -> Result<RegistryOrigin, ServerError> {
 		.load()
 		.get(name)
 		.map(|url| RegistryOrigin::Custom { name: SmolStr::new(name), url: url.clone() })
-		.ok_or_else(|| ServerError::BadRequest(format!("unknown custom registry {name:?}")))
+		.ok_or_else(|| BadRequestReason::UnknownCustomRegistry { name: name.to_owned() }.into())
 }
 
 /// The wire error a DTO field rejection projects to.
+/// Deprecated in favor of direct construction of `BadRequestReason` variants
+/// (which are `Into<ServerError>` via the `#[from]` chain). Kept only for
+/// any remaining call sites during the transition.
+#[allow(dead_code)]
 fn bad_request(error: impl std::fmt::Display) -> ServerError {
-	ServerError::BadRequest(error.to_string())
+	// Fallback only; prefer typed.
+	crate::error::BadRequestReason::MalformedQuery(
+		crate::search::query::QueryError::Malformed {
+			detail: error.to_string(),
+			query: String::new(),
+		},
+	)
+	.into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

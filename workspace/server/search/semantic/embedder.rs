@@ -5,7 +5,7 @@
 use std::marker::PhantomData;
 use std::time::Duration;
 
-use runtime::error::EmbedError;
+use runtime::error::{EmbedError, EmbedRejectionReason};
 use runtime::vector::{Embedder, Embedding, EmbeddingModel, EmbeddingPurpose, ModelId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -44,7 +44,7 @@ impl<M: EmbeddingModel> HttpEmbedder<M> {
 			"input": texts,
 		});
 		let body = serde_json::to_vec(&payload)
-			.map_err(|error| EmbedError::Rejected { message: error.to_string() })?;
+			.map_err(|error| EmbedRejectionReason::Serialization(error).into())?;
 
 		let mut request = self
 			.client
@@ -69,18 +69,18 @@ impl<M: EmbeddingModel> HttpEmbedder<M> {
 		}
 		if !status.is_success() {
 			let message = response.text().await.unwrap_or_default();
-			return Err(EmbedError::Rejected {
-				message: format!("{status}: {}", message.chars().take(512).collect::<String>()),
-			});
+			let body: String = message.chars().take(512).collect();
+			return Err(EmbedRejectionReason::HttpStatus { status, body }.into());
 		}
 
 		let bytes = response.bytes().await.map_err(EmbedError::Transport)?;
 		let decoded: WireResponse = serde_json::from_slice(&bytes)
-			.map_err(|error| EmbedError::Rejected { message: format!("malformed response: {error}") })?;
+			.map_err(|error| EmbedRejectionReason::MalformedResponse(error).into())?;
 		if decoded.data.len() != texts.len() {
-			return Err(EmbedError::Rejected {
-				message: format!("expected {} vectors, got {}", texts.len(), decoded.data.len()),
-			});
+			return Err(EmbedRejectionReason::BatchSizeMismatch {
+				expected: texts.len(),
+				received: decoded.data.len(),
+			}.into());
 		}
 		decoded
 			.data
@@ -101,7 +101,7 @@ impl<M: EmbeddingModel> Embedder for HttpEmbedder<M> {
 		purpose: EmbeddingPurpose,
 	) -> Result<Embedding<M>, EmbedError> {
 		let mut vectors = self.embed_batch(&[text], purpose).await?;
-		vectors.pop().ok_or(EmbedError::Rejected { message: "empty embedding batch".into() })
+		vectors.pop().ok_or_else(|| EmbedRejectionReason::EmptyResponse.into())
 	}
 
 	async fn embed_batch(

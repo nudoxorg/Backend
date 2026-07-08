@@ -9,18 +9,24 @@
 //! collided with [`heart::StoreError`], a marker trait) — every concrete error
 //! type now lives here.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use heart::{
 	BackendKind, ConnectError, FailureKind, PackageId, Retryable,
 	content::ContentHash,
 };
+use object_store::path::Path as StorePath;
 use thiserror::Error;
+
+use crate::coordination::SinkKind;
+use crate::schema::codec;
 
 /// The top-level registry error — the union every public entry point surfaces.
 ///
 /// Wraps the area-specific errors so a caller can `?` up through the stack and
-/// still recover provenance + a retry decision.
+/// still recover provenance + a retry decision. All source chains are preserved
+/// with concrete types (no Box<dyn Error>).
 #[derive(Debug, Error)]
 pub enum RegistryError {
 	/// A blob assembly / (de)serialization failure.
@@ -60,8 +66,8 @@ pub enum RegistryError {
 	Connect(#[from] ConnectError),
 
 	/// The caller lacks permission for the requested operation.
-	#[error("access denied: {reason}")]
-	AccessDenied { reason: &'static str },
+	#[error("access denied")]
+	AccessDenied(#[from] AccessDeniedReason),
 }
 
 impl Retryable for RegistryError {
@@ -76,7 +82,7 @@ impl Retryable for RegistryError {
 			RegistryError::Search(e) => e.is_retryable(),
 			RegistryError::Resolve(e) => e.is_retryable(),
 			RegistryError::Connect(e) => e.is_retryable(),
-			RegistryError::AccessDenied { .. } => false,
+			RegistryError::AccessDenied(_) => false,
 		}
 	}
 
@@ -96,24 +102,68 @@ impl Retryable for RegistryError {
 pub enum BlobError {
 	/// A file section could not be (de)serialized. `// runs on spawn_blocking`.
 	#[error("blob section (de)serialization failed")]
-	Codec(#[source] postcard::Error),
+	Codec(#[from] postcard::Error),
 
 	/// A stored section's recomputed BLAKE3 digest did not match its recorded
-	/// hash — corruption or tampering.
-	#[error("content hash mismatch: manifest declares {expected}, store holds {found}")]
-	HashMismatch { expected: String, found: String },
+	/// hash — corruption or tampering. Uses typed hashes so full data available
+	/// for tracing without string formatting at construction.
+	#[error("content hash mismatch")]
+	HashMismatch { expected: ContentHash, found: ContentHash },
 
 	/// The manifest referenced a section hash the store does not hold.
-	#[error("blob references a missing section {0}")]
-	MissingSection(String),
+	#[error("blob references a missing section")]
+	MissingSection { hash: ContentHash },
 
-	/// The manifest was structurally invalid (empty file set, dangling ir ref).
-	#[error("malformed blob manifest: {0}")]
-	Malformed(&'static str),
+	// --- Explicit fine-grained structural malformation variants (no dynamic
+	// strings in error data; all literal messages + typed fields).
+	#[error("duplicate file path in manifest")]
+	DuplicateFilePathInManifest,
+
+	#[error("manifest files are not sorted by path")]
+	ManifestFilesNotSorted,
+
+	#[error("manifest is missing its ir section")]
+	MissingIrSection,
+
+	#[error("manifest is missing its references section")]
+	MissingReferencesSection,
+
+	#[error("manifest has no files")]
+	ManifestHasNoFiles,
+
+	#[error("duplicate file path pushed into builder")]
+	DuplicateFilePathInBuilder,
+
+	#[error("ir section attached twice")]
+	IrSectionAttachedTwice,
+
+	#[error("references section attached twice")]
+	ReferencesSectionAttachedTwice,
+
+	#[error("reference span is inverted")]
+	InvertedReferenceSpan,
+
+	#[error("unknown reference kind discriminant")]
+	UnknownReferenceKindDiscriminant { wire: u8 },
+
+	#[error("non-UTF-8 path in resolved reference target")]
+	NonUtf8ReferencePath,
+
+	// End fine-grained malformations.
 
 	/// Assembling the manifest touched the object store, which failed.
 	#[error("blob store operation failed")]
 	Store(#[source] Box<StoreError>),
+
+	/// Outbox fan-out failure during emit (proper source, no fake Backend).
+	#[error("outbox failure during blob emit")]
+	Outbox(#[source] OutboxError),
+}
+
+impl From<StoreError> for BlobError {
+	fn from(e: StoreError) -> Self {
+		BlobError::Store(Box::new(e))
+	}
 }
 
 impl Retryable for BlobError {
@@ -129,28 +179,70 @@ impl Retryable for BlobError {
 /// Failures of the content-addressed object [`crate::store`].
 ///
 /// Renamed from the old `store::StoreError` — the name now lives only here.
+/// All variants carry typed data (StorePath, ContentHash, PackageId) and
+/// concrete #[source] for full chaining (e.g. sqlx inside index inside registry).
 #[derive(Debug, Error)]
 pub enum StoreError {
-	/// The underlying object store (S3/GCS/local) returned an error.
+	// --- Fine-grained mappings for object_store::Error (specific variants
+	// instead of always opaque Backend; preserves original error as source).
+	#[error("object store not found")]
+	ObjectStoreNotFound { path: StorePath, #[source] source: object_store::Error },
+
+	#[error("object store permission denied")]
+	ObjectStorePermissionDenied { path: Option<StorePath>, #[source] source: object_store::Error },
+
+	#[error("object store unauthenticated")]
+	ObjectStoreUnauthenticated { #[source] source: object_store::Error },
+
+	#[error("object store precondition failed")]
+	ObjectStorePreconditionFailed { path: StorePath, #[source] source: object_store::Error },
+
+	#[error("object store already exists")]
+	ObjectStoreAlreadyExists { path: StorePath, #[source] source: object_store::Error },
+
+	#[error("object store generic failure")]
+	ObjectStoreGeneric { store: &'static str, #[source] source: object_store::Error },
+
+	#[error("object store join failure")]
+	ObjectStoreJoin { #[source] source: object_store::Error },
+
+	// Catch-all for other object_store cases (e.g. new variants in dep).
 	#[error("object store backend failed")]
 	Backend(#[from] object_store::Error),
 
-	/// A key could not be encoded safely (e.g. a name that would escape the
-	/// `cas/` or pointer layout even after percent-encoding).
-	#[error("could not encode object key for {0:?}")]
-	KeyEncoding(String),
+	/// A key could not be encoded safely (typed path + explicit reason enum).
+	#[error("could not encode object key")]
+	KeyEncoding { path: StorePath, reason: KeyEncodingFailure },
 
-	/// A blob/section addressed by hash was not present.
-	#[error("object {0} not found")]
-	NotFound(String),
+	/// A blob/section addressed by hash or pointer was not present.
+	#[error("object not found at {path}")]
+	NotFound { path: StorePath },
 
 	/// The bytes read back did not hash to the key they were fetched under.
-	#[error("integrity check failed for {key}: expected {expected}, computed {found}")]
-	Integrity { key: String, expected: String, found: String },
+	/// Carries typed ContentHash (no hex strings in data) + path.
+	#[error("integrity check failed")]
+	Integrity { path: StorePath, expected: ContentHash, found: ContentHash },
+
+	/// Pointer bytes had wrong length for ContentHash.
+	#[error("pointer bytes had invalid length for content hash")]
+	InvalidPointerLength { path: StorePath, len: usize },
 
 	/// A blob-level failure surfaced while (de)serializing a manifest.
 	#[error("blob (de)serialization failed")]
 	Blob(#[source] Box<BlobError>),
+}
+
+/// Distinct reasons a CAS key could not be encoded (fine grained, no strings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum KeyEncodingFailure {
+	#[error("pointer bytes not 32 bytes")]
+	PointerNot32Bytes,
+
+	#[error("path contained invalid characters after encoding")]
+	InvalidChar,
+
+	#[error("path too long for layout")]
+	TooLong,
 }
 
 impl Retryable for StoreError {
@@ -158,7 +250,10 @@ impl Retryable for StoreError {
 		match self {
 			// object_store surfaces transient network faults we can retry.
 			StoreError::Backend(e) => is_object_store_retryable(e),
+			StoreError::ObjectStoreGeneric { source, .. } => is_object_store_retryable(source),
+			StoreError::ObjectStoreJoin { source } => is_object_store_retryable(source),
 			StoreError::Blob(e) => e.is_retryable(),
+			// NotFound, integrity, key encode, permission etc are permanent.
 			_ => false,
 		}
 	}
@@ -187,7 +282,7 @@ fn is_object_store_retryable(err: &object_store::Error) -> bool {
 pub enum IngestError {
 	/// The archive tripped a safety limit (bomb, traversal, disallowed entry
 	/// type). Terminal + flagged: maps to [`FailureKind::Unsafe`].
-	#[error("unsafe archive rejected: {0}")]
+	#[error("unsafe archive rejected")]
 	Unsafe(#[from] UnsafeArchive),
 
 	/// The archive framing / compression was malformed.
@@ -201,6 +296,10 @@ pub enum IngestError {
 	/// Feeding sanitized bytes into the blob builder failed.
 	#[error("blob assembly during ingest failed")]
 	Blob(#[from] BlobError),
+
+	/// Zstd or gzip decoder init failed (distinct from generic malformed io).
+	#[error("decompressor init failed")]
+	DecompressorInit(#[source] std::io::Error),
 }
 
 impl IngestError {
@@ -221,32 +320,48 @@ impl Retryable for IngestError {
 }
 
 /// The specific way an archive violated the extraction safety policy. Carried by
-/// [`IngestError::Unsafe`]; each variant is terminal.
+/// [`IngestError::Unsafe`]; each variant is terminal. Paths are PathBuf (typed),
+/// sizes u64, no dynamic strings created via format/to_string for the data.
 #[derive(Debug, Error)]
 pub enum UnsafeArchive {
 	/// A path escaped the extraction root (`..`, absolute, symlinked jail).
-	#[error("path traversal attempt: {path:?}")]
-	PathTraversal { path: String },
+	#[error("path traversal attempt")]
+	PathTraversal { path: PathBuf },
+
+	/// Non-UTF-8 path bytes (separate from traversal for richer tracing).
+	#[error("non utf8 path in archive")]
+	NonUtf8Path { bytes: Vec<u8> },
 
 	/// A disallowed entry type (symlink / hardlink / device / fifo / socket).
-	#[error("disallowed entry type {kind:?} at {path:?}")]
-	DisallowedEntry { kind: EntryKind, path: String },
+	#[error("disallowed entry type")]
+	DisallowedEntry { kind: EntryKind, path: PathBuf },
 
 	/// The total uncompressed size exceeded the ceiling (decompression bomb).
-	#[error("total size {actual} exceeds limit {limit}")]
+	#[error("total size exceeds limit")]
 	TotalTooLarge { actual: u64, limit: u64 },
 
 	/// A single file exceeded the per-file byte ceiling.
-	#[error("file {path:?} size {actual} exceeds per-file limit {limit}")]
-	FileTooLarge { path: String, actual: u64, limit: u64 },
+	#[error("file size exceeds per-file limit")]
+	FileTooLarge { path: PathBuf, actual: u64, limit: u64 },
 
 	/// The archive contained more entries than allowed.
-	#[error("entry count {actual} exceeds limit {limit}")]
+	#[error("entry count exceeds limit")]
 	TooManyFiles { actual: usize, limit: usize },
 
 	/// A path nested deeper than the allowed depth.
-	#[error("path {path:?} depth {actual} exceeds limit {limit}")]
-	PathTooDeep { path: String, actual: usize, limit: usize },
+	#[error("path depth exceeds limit")]
+	PathTooDeep { path: PathBuf, actual: usize, limit: usize },
+
+	// Expanded variants for other modes found in extract.rs / ingest (header
+	// sizes, budget charge variants surfaced differently, etc.).
+	#[error("archive entry header size read failed")]
+	HeaderSizeRead,
+
+	#[error("compressed stream exceeded total byte ceiling before decompress")]
+	CompressedSizeExceeded { actual: u64, limit: u64 },
+
+	#[error("archive entry count exceeded during budget charge")]
+	EntryCountExceededDuringCharge { actual: usize, limit: usize },
 }
 
 /// The tar entry classes the extractor recognizes when rejecting non-regular
@@ -263,6 +378,10 @@ pub enum EntryKind {
 	Other,
 }
 
+/// Lightweight id for error carrying (avoids pulling full queue::Job type).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobIdForError(pub uuid::Uuid);
+
 /// Failures of the durable postgres job [`crate::queue`].
 #[derive(Debug, Error)]
 pub enum QueueError {
@@ -271,21 +390,38 @@ pub enum QueueError {
 	Database(#[source] sqlx::Error),
 
 	/// A job referenced by id was not present.
-	#[error("job for package {0:?} not found")]
-	NotFound(PackageId),
+	#[error("job for package not found")]
+	NotFound { package: PackageId },
 
 	/// A completion/fail was attempted on a job whose lease had already expired
 	/// and been reclaimed — the worker lost the race.
-	#[error("lease lost for package {0:?}; job was reclaimed")]
-	LeaseLost(PackageId),
+	#[error("lease lost; job was reclaimed")]
+	LeaseLost { package: PackageId },
+
+	// Fine-grained DB contexts (carry typed package where known, source chain).
+	#[error("queue enqueue failed")]
+	EnqueueFailed { package: PackageId, #[source] source: sqlx::Error },
+
+	#[error("queue dequeue failed")]
+	DequeueFailed { #[source] source: sqlx::Error },
+
+	#[error("queue complete failed")]
+	CompleteFailed { job: JobIdForError, #[source] source: sqlx::Error },
 }
+
+/// Lightweight id for error carrying without pulling full Job type (avoids cycles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+
 
 impl Retryable for QueueError {
 	fn is_retryable(&self) -> bool {
 		match self {
 			QueueError::Database(e) => is_sqlx_retryable(e),
-			QueueError::LeaseLost(_) => true,
-			QueueError::NotFound(_) => false,
+			QueueError::EnqueueFailed { source, .. } => is_sqlx_retryable(source),
+			QueueError::DequeueFailed { source } => is_sqlx_retryable(source),
+			QueueError::CompleteFailed { source, .. } => is_sqlx_retryable(source),
+			QueueError::LeaseLost { .. } => true,
+			QueueError::NotFound { .. } => false,
 		}
 	}
 }
@@ -298,21 +434,46 @@ pub enum IndexError {
 	Database(#[source] sqlx::Error),
 
 	/// The `{org}/{db}` terminus-instance token was malformed.
-	#[error("invalid terminus instance token {0:?}: expected `org/db`")]
-	InvalidInstance(String),
+	#[error("invalid terminus instance token: expected `org/db`")]
+	InvalidInstance { token: String },
 
 	/// A package expected in the index was absent.
-	#[error("package {0:?} not present in the global index")]
-	NotFound(PackageId),
+	#[error("package not present in the global index")]
+	NotFound { package: PackageId },
 
 	/// Applying the (sea-query-defined) schema DDL on connect failed.
 	#[error("index schema initialization failed")]
 	SchemaInit(#[source] sqlx::Error),
+
+	// Fine grained DB ops for context without string messages.
+	#[error("index begin transaction failed")]
+	BeginTx(#[source] sqlx::Error),
+
+	#[error("index commit failed")]
+	Commit(#[source] sqlx::Error),
+
+	#[error("index upsert failed")]
+	UpsertFailed { package: PackageId, #[source] source: sqlx::Error },
+
+	#[error("index row decode failed")]
+	RowDecode { column: &'static str, #[source] source: sqlx::Error },
+
+	/// Codec failures (e.g. from schema rows) now carried with concrete source
+	/// so trace is not lost to to_string + Decode.
+	#[error("index codec failure")]
+	Codec(#[from] codec::CodecError),
 }
 
 impl Retryable for IndexError {
 	fn is_retryable(&self) -> bool {
-		matches!(self, IndexError::Database(e) if is_sqlx_retryable(e))
+		match self {
+			IndexError::Database(e) => is_sqlx_retryable(e),
+			IndexError::BeginTx(e) => is_sqlx_retryable(e),
+			IndexError::Commit(e) => is_sqlx_retryable(e),
+			IndexError::UpsertFailed { source, .. } => is_sqlx_retryable(source),
+			IndexError::RowDecode { source, .. } => is_sqlx_retryable(source),
+			_ => false,
+		}
 	}
 
 	fn retry_after(&self) -> Option<Duration> { None }
@@ -327,13 +488,25 @@ pub enum OutboxError {
 
 	/// The append raced an equivalent `(package, snapshot, kind)` intent; the
 	/// dedupe key already exists (idempotent no-op for the caller).
-	#[error("duplicate outbox intent for package {package:?}")]
-	Duplicate { package: PackageId },
+	#[error("duplicate outbox intent")]
+	Duplicate { package: PackageId, generation: ContentHash, kind: SinkKind },
+
+	// Fine grained for trace.
+	#[error("outbox begin tx failed")]
+	BeginTx(#[source] sqlx::Error),
+
+	#[error("outbox append failed")]
+	AppendFailed { package: PackageId, #[source] source: sqlx::Error },
 }
 
 impl Retryable for OutboxError {
 	fn is_retryable(&self) -> bool {
-		matches!(self, OutboxError::Database(e) if is_sqlx_retryable(e))
+		match self {
+			OutboxError::Database(e) => is_sqlx_retryable(e),
+			OutboxError::BeginTx(e) => is_sqlx_retryable(e),
+			OutboxError::AppendFailed { source, .. } => is_sqlx_retryable(source),
+			_ => false,
+		}
 	}
 }
 
@@ -351,11 +524,35 @@ pub enum SearchError {
 	/// Reading the postgres watermark / source failed.
 	#[error("search source read failed")]
 	Source(#[source] sqlx::Error),
+
+	// Fine-grained tantivy + internal + codec to avoid losing source via to_string + InternalError.
+	#[error("tantivy query parse failed")]
+	TantivyQueryParse(#[source] tantivy::TantivyError),
+
+	#[error("tantivy internal invariant")]
+	TantivyInternal(#[source] tantivy::TantivyError),
+
+	#[error("search row decode failed")]
+	RowDecode { column: &'static str, #[source] source: sqlx::Error },
+
+	#[error("search json decode failed")]
+	JsonDecode { domain: &'static str, #[source] source: serde_json::Error },
+
+	#[error("stored package_id not a uuid")]
+	StoredIdNotUuid,
+
+	/// Codec failures preserved.
+	#[error("search codec failure")]
+	Codec(#[from] codec::CodecError),
 }
 
 impl Retryable for SearchError {
 	fn is_retryable(&self) -> bool {
-		matches!(self, SearchError::Source(e) if is_sqlx_retryable(e))
+		match self {
+			SearchError::Source(e) => is_sqlx_retryable(e),
+			SearchError::RowDecode { source, .. } => is_sqlx_retryable(source),
+			_ => false,
+		}
 	}
 }
 
@@ -363,25 +560,37 @@ impl Retryable for SearchError {
 /// [`heart::PackageVersion`].
 #[derive(Debug, Error)]
 pub enum ResolveError {
-	/// No published version satisfied the request/range.
-	#[error("no version of {name} satisfies {request}")]
-	NoMatch { name: String, request: String },
+	// Fine-grained NoMatch by request kind (distinct modes, typed name where
+	// possible; request strings unavoidable for user specs but not via format!).
+	#[error("no version satisfies latest request")]
+	NoMatchLatest { name: String },
+
+	#[error("no version satisfies exact pin")]
+	NoMatchExact { name: String, pin: String },
+
+	#[error("no version satisfies semver range")]
+	NoMatchSemver { name: String, range: String },
+
+	#[error("no version satisfies ecosystem range")]
+	NoMatchRange { name: String, spec: String },
 
 	/// The version request string was itself malformed.
-	#[error("malformed version request {0:?}")]
-	MalformedRequest(String),
+	#[error("malformed version request")]
+	MalformedRequest { spec: String },
 
 	/// Looking up published versions failed (registry unreachable/errored).
 	#[error("version lookup failed")]
-	Lookup(#[source] reqwest::Error),
+	Lookup(#[from] reqwest::Error),
 
 	/// The named package does not exist in the source.
-	#[error("package {0} not found in source")]
-	NotFound(String),
+	#[error("package not found in source")]
+	NotFound { name: String },
 }
 
 impl Retryable for ResolveError {
-	fn is_retryable(&self) -> bool { matches!(self, ResolveError::Lookup(_)) }
+	fn is_retryable(&self) -> bool {
+		matches!(self, ResolveError::Lookup(_))
+	}
 }
 
 /// Classify a `sqlx::Error` as transient. Connection resets, pool timeouts, and
@@ -407,24 +616,39 @@ fn is_sqlx_retryable(err: &sqlx::Error) -> bool {
 /// health/outbox provenance. Kept here so the mapping is defined once.
 pub const fn backend_of(_kind: FailureKind) -> Option<BackendKind> { None }
 
+/// Explicit reasons for access denial (no more opaque &'static str; all cases
+/// are first-class variants so callers can match and logs have structure).
+#[derive(Debug, Error)]
+pub enum AccessDeniedReason {
+	#[error("insufficient permissions for package {package:?}")]
+	Package { package: PackageId },
+
+	#[error("insufficient permissions for tenant or org operation")]
+	Tenant,
+
+	#[error("operation not allowed in current state")]
+	State,
+
+	#[error("custom access policy violation")]
+	Policy { detail: &'static str },
+}
+
 /// Assert an object hashes to its declared key; the single integrity gate every
 /// content-addressed read passes through. `// runs on spawn_blocking`.
-pub fn verify_integrity(key: &str, bytes: &[u8], expected: ContentHash) -> Result<(), StoreError> {
+/// Carries typed StorePath + ContentHash (no strings created for error data).
+pub fn verify_integrity(key: StorePath, bytes: &[u8], expected: ContentHash) -> Result<(), StoreError> {
 	let found = ContentHash::of_bytes(bytes);
 	if found == expected {
 		Ok(())
 	} else {
-		tracing::warn!(key, "content-addressed read failed its integrity check");
-		Err(StoreError::Integrity {
-			key: key.to_owned(),
-			expected: hash_hex(&expected),
-			found: hash_hex(&found),
-		})
+		tracing::warn!(key = %key, "content-addressed read failed its integrity check");
+		Err(StoreError::Integrity { path: key, expected, found })
 	}
 }
 
 /// The lowercase hex form of a [`ContentHash`] — the display convention every
-/// error message and object key in this crate shares.
+/// error message and object key in this crate shares. Used only for *path*
+/// construction and logging, never to populate error fields (typed hashes kept).
 pub(crate) fn hash_hex(hash: &ContentHash) -> String {
 	data_encoding::HEXLOWER.encode(hash.as_bytes())
 }

@@ -57,7 +57,7 @@ async fn recording_a_blob_registers_it_globally() {
     // The blob exists — record it to the surrounding systems.
     let generation = ContentHash::of_bytes(b"blob generation");
     outbox
-        .record_stored(&store, package.id(), generation)
+        .record_stored(&store, package.id(), generation, None)
         .await
         .expect("recording the blob creation succeeds");
 
@@ -110,9 +110,9 @@ async fn recording_is_idempotent() {
         .expect("the package is tracked");
 
     let generation = ContentHash::of_bytes(b"one generation");
-    outbox.record_stored(&store, package.id(), generation).await.expect("first recording");
+    outbox.record_stored(&store, package.id(), generation, None).await.expect("first recording");
     outbox
-        .record_stored(&store, package.id(), generation)
+        .record_stored(&store, package.id(), generation, None)
         .await
         .expect("a retried recording is a silent no-op");
 
@@ -158,7 +158,7 @@ async fn recording_advances_resolution_state() {
     );
 
     let generation = ContentHash::of_bytes(b"emitted generation");
-    outbox.record_stored(&store, package.id(), generation).await.expect("coordination succeeds");
+    outbox.record_stored(&store, package.id(), generation, None).await.expect("coordination succeeds");
 
     assert_eq!(
         store.get_state(package.id()).await.expect("state resolves"),

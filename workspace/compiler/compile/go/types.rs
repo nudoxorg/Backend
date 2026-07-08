@@ -32,9 +32,10 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
-
 use ir::function::Attribute;
+
+use super::error::{GoError, Result};
+use super::package;
 use ir::generics::{Constraint, GenericArg, Generics, Kind, Predicate, Term, TraitRef, TypeExpr, Variance};
 use ir::kind::Visibility;
 use ir::parameter::{LiteralParameter, Parameter as IrParameter, ParameterAttribute, TypeParam, TypeParamOrigin};
@@ -579,10 +580,10 @@ pub fn validate(t: &oracle::Type) -> Result<()> {
 		TypeKind::Pointer | TypeKind::Slice | TypeKind::Array | TypeKind::Chan
 			if t.elem.is_none() =>
 		{
-			bail!("oracle `{:?}` node missing `elem`", t.kind)
+			return Err(GoError::OracleSchema { detail: "oracle `elem` node missing `elem`" });
 		}
 		TypeKind::Map if t.key.is_none() || t.value.is_none() => {
-			bail!("oracle map node missing `key`/`value`")
+			return Err(GoError::OracleSchema { detail: "oracle map node missing `key`/`value`" });
 		}
 		_ => Ok(()),
 	}

@@ -23,7 +23,7 @@ pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
 			let PackageVersion::Cargo(version) = &input.coordinates.version else {
 				// Coordinates are ecosystem-validated at construction; a Rust
 				// package always carries a Cargo version.
-				return Err(GenerateError::UnsupportedEcosystem);
+				return Err(GenerateError::UnsupportedRust);
 			};
 			// Registry tarballs document the public surface; direct repos
 			// (custom origins) also get the private-items + workspace pass.
@@ -34,23 +34,31 @@ pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
 			};
 			let (collected, _sources) = package
 				.generate_ir_with_sources(&input.root, version)
-				.map_err(|error| GenerateError::Lower(Box::new(error)))?;
+				.map_err(GenerateError::from)?;
 			Ok(collected)
 		}
 		Language::Typescript => {
 			let PackageVersion::Npm(_version) = &input.coordinates.version else {
 				// Coordinates are ecosystem-validated at construction; a
 				// TypeScript package always carries an npm version.
-				return Err(GenerateError::UnsupportedEcosystem);
+				return Err(GenerateError::UnsupportedTypescript);
 			};
 			// The lowering documents the materialized root as-is; the version
 			// only selects which root gets materialized upstream.
 			let package = languages::typescript::TypescriptPackage {
 				name: input.coordinates.name.original().to_string(),
 			};
-			package
-				.generate_ir(&input.root)
-				.map_err(|error| GenerateError::Lower(Box::new(error)))
+			// Direct ? works because GenerateError::LowerTypescript(#[from] languages::typescript::Package)
+			// and the TS Package error now contains the full exploded taxonomy (Ts* subs + PathBufs + sources).
+			Ok(package.generate_ir(&input.root)?)
+		}
+		Language::Go => {
+			let index = languages::go::lower_package(&input.root)?;
+			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
+		}
+		Language::Java => {
+			let index = languages::java::package::lower_package(&input.root)?;
+			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
 		}
 	}
 }

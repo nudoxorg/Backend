@@ -57,9 +57,10 @@ pub async fn resolve(
 	tracing::debug!(candidates = published.len(), "published version set fetched");
 	let version = select(request, &published).map_err(|error| match error {
 		// `select` works over a bare candidate set; re-attach the name here.
-		ResolveError::NoMatch { request, .. } => {
-			ResolveError::NoMatch { name: name.original().to_owned(), request }
-		}
+		ResolveError::NoMatchLatest { .. } => ResolveError::NoMatchLatest { name: name.original().to_owned() },
+		ResolveError::NoMatchExact { request: pin, .. } => ResolveError::NoMatchExact { name: name.original().to_owned(), pin },
+		ResolveError::NoMatchSemver { range, .. } => ResolveError::NoMatchSemver { name: name.original().to_owned(), range },
+		ResolveError::NoMatchRange { spec, .. } => ResolveError::NoMatchRange { name: name.original().to_owned(), spec },
 		other => other,
 	})?;
 	Ok(PackageCoordinates { origin: source.origin.clone(), name: name.clone(), version })
@@ -71,32 +72,36 @@ pub fn select(
 	request: &VersionRequest,
 	candidates: &[PackageVersion],
 ) -> Result<PackageVersion, ResolveError> {
-	let no_match = || ResolveError::NoMatch {
+	let no_match = || ResolveError::NoMatchLatest {
 		name: String::from("<candidate set>"),
-		request: request_display(request),
 	};
 
 	let satisfying: Vec<&PackageVersion> = match request {
 		VersionRequest::Latest => candidates.iter().collect(),
 		VersionRequest::Exact(pin) => {
-			return candidates.iter().find(|candidate| *candidate == pin).cloned().ok_or_else(no_match);
+			let pin_s = pin.canonical();
+			return candidates.iter().find(|candidate| *candidate == pin).cloned().ok_or(ResolveError::NoMatchExact { name: String::from("<candidate set>"), pin: pin_s });
 		}
 		VersionRequest::SemverRange(range) => {
+			let r = range.to_string();
+			let _ = r; // used only on error path below if empty
 			candidates.iter().filter(|candidate| semver_matches(range, candidate)).collect()
 		}
 		VersionRequest::Range { ecosystem, spec } => match ecosystem {
 			Language::Rust | Language::Typescript => {
 				let range = semver::VersionReq::parse(spec)
-					.map_err(|_| ResolveError::MalformedRequest(spec.clone()))?;
+					.map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
 				candidates.iter().filter(|candidate| semver_matches(&range, candidate)).collect()
 			}
 			Language::Python => {
 				let specifiers: uv_pep440::VersionSpecifiers =
-					spec.parse().map_err(|_| ResolveError::MalformedRequest(spec.clone()))?;
+					spec.parse().map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
 				candidates
 					.iter()
 					.filter(|candidate| match candidate {
 						PackageVersion::Python(version) => specifiers.contains(version),
+		PackageVersion::Go(_) | PackageVersion::Java(_) => false, // version resolution via tags for Go/Java
+
 						_ => false,
 					})
 					.collect()
@@ -104,7 +109,12 @@ pub fn select(
 		},
 	};
 
-	satisfying.into_iter().max_by(|a, b| grammar_order(a, b)).cloned().ok_or_else(no_match)
+	let best = satisfying.into_iter().max_by(|a, b| grammar_order(a, b)).cloned();
+	match request {
+		VersionRequest::SemverRange(range) => best.ok_or_else(|| ResolveError::NoMatchSemver { name: String::from("<candidate set>"), range: range.to_string() }),
+		VersionRequest::Range { spec, .. } => best.ok_or_else(|| ResolveError::NoMatchRange { name: String::from("<candidate set>"), spec: spec.clone() }),
+		_ => best.ok_or_else(no_match),
+	}
 }
 
 /// Whether a SemVer range admits a candidate (only meaningful for the SemVer
@@ -113,6 +123,8 @@ fn semver_matches(range: &semver::VersionReq, candidate: &PackageVersion) -> boo
 	match candidate {
 		PackageVersion::Cargo(version) | PackageVersion::Npm(version) => range.matches(version),
 		PackageVersion::Python(_) => false,
+		PackageVersion::Go(_) | PackageVersion::Java(_) => false, // not via semver range here
+
 	}
 }
 
@@ -123,6 +135,10 @@ fn grammar_order(a: &&PackageVersion, b: &&PackageVersion) -> std::cmp::Ordering
 		(PackageVersion::Cargo(x), PackageVersion::Cargo(y))
 		| (PackageVersion::Npm(x), PackageVersion::Npm(y)) => x.cmp(y),
 		(PackageVersion::Python(x), PackageVersion::Python(y)) => x.cmp(y),
+		(PackageVersion::Go(x), PackageVersion::Go(y))
+		| (PackageVersion::Java(x), PackageVersion::Java(y)) => x.cmp(y),
+		_ => std::cmp::Ordering::Equal, // mixed not happen
+
 		_ => std::cmp::Ordering::Equal,
 	}
 }
@@ -148,7 +164,7 @@ async fn published_versions(
 	let url = versions_url(origin, name);
 	let response = reqwest::get(&url).await.map_err(ResolveError::Lookup)?;
 	if response.status() == reqwest::StatusCode::NOT_FOUND {
-		return Err(ResolveError::NotFound(name.original().to_owned()));
+		return Err(ResolveError::NotFound { name: name.original().to_owned() });
 	}
 	let body: serde_json::Value = response
 		.error_for_status()
@@ -183,6 +199,8 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		Language::Rust => format!("{base}/api/v1/crates/{}", name.canonical()),
 		Language::Typescript => format!("{base}/{}", name.canonical()),
 		Language::Python => format!("{base}/pypi/{}/json", name.canonical()),
+		Language::Go => format!("{base}/{}", name.canonical()),
+		Language::Java => format!("{base}/{}", name.canonical()),
 	}
 }
 
@@ -208,5 +226,6 @@ fn raw_versions(ecosystem: Language, body: &serde_json::Value) -> Vec<String> {
 			.into_iter()
 			.flat_map(|releases| releases.keys().cloned())
 			.collect(),
+		Language::Go | Language::Java => vec![], // not via this registry resolve path yet
 	}
 }

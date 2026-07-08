@@ -48,7 +48,13 @@ fn progress_of(state: ResolutionState) -> JobProgress {
 
 /// A recorded parse failure with a human-readable reason.
 fn parse_failure(error: &str) -> Failure {
-    Failure { attempts: 1, phase: Phase::Compiling, error: error.to_owned(), at: chrono::Utc::now() }
+    Failure {
+        attempts: 1,
+        phase: Phase::Compiling,
+        message: error.to_owned(),
+        cause: Some(heart::ErrorDetails::Message(error.to_owned())),
+        at: chrono::Utc::now(),
+    }
 }
 
 /// A new project is unparsed / pending.
@@ -157,7 +163,7 @@ async fn failed_parse_is_degraded() {
     let ResolutionState::Failed(recorded) = state else {
         panic!("a failed parse must read Failed, got {state:?}");
     };
-    assert_eq!(recorded.error, failure.error, "the failure reason must be stored verbatim");
+    assert_eq!(recorded.message, failure.message, "the failure reason must be stored verbatim");
     assert_eq!(recorded.phase, Phase::Compiling, "the failing phase must be recorded");
     assert_eq!(recorded.attempts, failure.attempts);
 }

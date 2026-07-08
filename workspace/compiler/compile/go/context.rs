@@ -31,11 +31,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
-
 use ir::entry::{Index, NudoxPath};
 use ir::kind::Entry;
 
+use super::error::{GoError, Result};
 use super::item;
 use super::oracle;
 use super::package;
@@ -58,9 +57,11 @@ impl GoContext {
 	/// fail the build (the oracle extracts best-effort).
 	pub fn load(start: &Path) -> Result<Self> {
 		let module = package::discover_module(start)?;
-		let output = package::run_oracle(&module.root).with_context(|| {
-			format!("running the Go oracle over {}", module.root.display())
-		})?;
+		let output = package::run_oracle(&module.root)
+			.map_err(|source| GoError::RunOracle {
+				root:   module.root.clone(),
+				source: Box::new(source),
+			})?;
 
 		for error in &output.errors {
 			tracing::warn!(module = %module.module_path, "go oracle diagnostic: {error}");

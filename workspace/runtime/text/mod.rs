@@ -18,6 +18,7 @@
 pub mod index;
 pub mod poll;
 pub mod query;
+pub mod tokenizer;
 
 pub use index::{TextIndex, TextSchema};
 pub use poll::{Poller, Watermark};

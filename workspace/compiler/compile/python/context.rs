@@ -56,7 +56,7 @@ impl PythonContext {
     /// `source` — the Python source code to check.
     ///
     /// Returns a `Handle` that can be used with `lower_handle`.
-    pub fn check_snippet(&self, module_name: &str, source: &str) -> Result<Handle, String> {
+    pub fn check_snippet(&self, module_name: &str, source: &str) -> Handle {
         let module_name = ModuleName::from_str(module_name);
         let module_path = ModulePath::memory(PathBuf::from(format!("{}.py", module_name)));
         let sys_info = self.resolve_sys_info();
@@ -76,7 +76,7 @@ impl PythonContext {
         tx.as_mut().run(&[handle.clone()], Require::Everything, None);
         self.state.commit_transaction(tx, None);
 
-        Ok(handle)
+        handle
     }
 
     /// Type-check a file on disk.
@@ -85,7 +85,7 @@ impl PythonContext {
     /// `path` — the filesystem path to the `.py` file.
     ///
     /// Returns a `Handle` that can be used with `lower_handle`.
-    pub fn check_file(&self, module_name: &str, path: &Path) -> Result<Handle, String> {
+    pub fn check_file(&self, module_name: &str, path: &Path) -> Handle {
         let module_name = ModuleName::from_str(module_name);
         let module_path = ModulePath::filesystem(path.to_path_buf());
         let sys_info = self.resolve_sys_info();
@@ -98,7 +98,7 @@ impl PythonContext {
         tx.as_mut().run(&[handle.clone()], Require::Everything, None);
         self.state.commit_transaction(tx, None);
 
-        Ok(handle)
+        handle
     }
 
     /// Lower a previously-checked handle into an `ir::Index`.

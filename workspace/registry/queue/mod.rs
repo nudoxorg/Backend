@@ -187,7 +187,7 @@ impl Queue<Live> {
 			.fetch_optional(&self.pool)
 			.await
 			.map_err(QueueError::Database)?
-			.ok_or(QueueError::NotFound(package))?;
+			.ok_or(QueueError::NotFound { package })?;
 		let id: i64 = row.try_get(0).map_err(QueueError::Database)?;
 		Ok(JobId::from_serial(id))
 	}
@@ -225,7 +225,7 @@ impl Queue<Live> {
 		match settled {
 			Some(_) => Ok(()),
 			// No row settled → the lease had expired and been reclaimed.
-			None => Err(QueueError::LeaseLost(job_package(&self.pool, job).await?)),
+			None => Err(QueueError::LeaseLost { package: job_package(&self.pool, job).await? }),
 		}
 	}
 
@@ -251,7 +251,7 @@ impl Queue<Live> {
 				let a: i32 = r.try_get(0).map_err(QueueError::Database)?;
 				a.max(0) as u32
 			}
-			None => return Err(QueueError::LeaseLost(job_package(&self.pool, job).await?)),
+			None => return Err(QueueError::LeaseLost { package: job_package(&self.pool, job).await? }),
 		};
 
 		let decision = self.policy.decide(kind, attempts);
@@ -275,7 +275,7 @@ impl Queue<Live> {
 		};
 		match affected {
 			Some(_) => Ok(decision),
-			None => Err(QueueError::LeaseLost(job_package(&self.pool, job).await?)),
+			None => Err(QueueError::LeaseLost { package: job_package(&self.pool, job).await? }),
 		}
 	}
 

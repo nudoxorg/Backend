@@ -48,9 +48,7 @@ fn param_description<'a>(func: &'a Function, name: &str) -> Option<&'a str> {
 #[test]
 fn function_docstring_and_param_descriptions_are_populated() {
     let ctx = PythonContext::new();
-    let handle = ctx
-        .check_snippet("docstrings_mod", SNIPPET)
-        .expect("type-checking the snippet failed");
+    let handle = ctx.check_snippet("docstrings_mod", SNIPPET);
     let index = ctx.lower_handle(&handle);
 
     let greet = function_symbol(&index, "greet");

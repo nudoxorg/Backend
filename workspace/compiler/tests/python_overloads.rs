@@ -35,9 +35,7 @@ fn functions_named<'a>(index: &'a Index, name: &str) -> Vec<&'a Function> {
 #[test]
 fn overloads_collapse_to_one_function_with_branches() {
     let ctx = PythonContext::new();
-    let handle = ctx
-        .check_snippet("overloads_mod", SNIPPET)
-        .expect("type-checking the snippet failed");
+    let handle = ctx.check_snippet("overloads_mod", SNIPPET);
     let index = ctx.lower_handle(&handle);
     let entries: Vec<&str> = index.entries_by_path.values().map(|e| e.name()).collect();
     println!("entries: {entries:?}");

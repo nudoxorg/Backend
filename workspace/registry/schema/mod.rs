@@ -87,6 +87,10 @@ pub enum ParseStatus {
 	Attempts,
 	/// `jsonb` nullable — the serialized [`heart::lifecycle::Failure`].
 	Failure,
+	/// `jsonb` nullable — the serialized [`crate::metadata::SearchFacets`]
+	/// (derived keywords + quality). Mirrors `Failure`'s nullable-jsonb shape;
+	/// `NULL` until rich metadata is extracted for the stored generation.
+	Facets,
 	/// `bool` — the `Unindexed { needed }` flag (dependency-ordered scheduling).
 	Needed,
 	/// `timestamptz` — last transition time.
@@ -271,6 +275,7 @@ pub fn create_parse_status() -> TableCreateStatement {
 		.col(ColumnDef::new(ParseStatus::ContentHash).binary().null())
 		.col(ColumnDef::new(ParseStatus::Attempts).integer().not_null().default(0))
 		.col(ColumnDef::new(ParseStatus::Failure).json_binary().null())
+		.col(ColumnDef::new(ParseStatus::Facets).json_binary().null())
 		.col(ColumnDef::new(ParseStatus::Needed).boolean().not_null().default(false))
 		.col(
 			ColumnDef::new(ParseStatus::UpdatedAt)

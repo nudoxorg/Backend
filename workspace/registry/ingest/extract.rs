@@ -11,6 +11,8 @@
 //! stopped at the ceiling rather than after it has already exhausted memory or
 //! disk.
 
+use std::path::PathBuf;
+
 use bytes::Bytes;
 use smol_str::SmolStr;
 
@@ -95,7 +97,7 @@ impl Budget {
 		}
 		if size > self.limits.max_file_bytes {
 			return Err(UnsafeArchive::FileTooLarge {
-				path: String::new(),
+				path: PathBuf::new(),
 				actual: size,
 				limit: self.limits.max_file_bytes,
 			});
@@ -120,7 +122,7 @@ impl Budget {
 /// package-relative path on success. The single choke point for path safety —
 /// no other code interprets archive paths.
 pub fn jail_path(root_depth_limit: usize, raw: &str) -> Result<SmolStr, UnsafeArchive> {
-	let traversal = || UnsafeArchive::PathTraversal { path: raw.to_owned() };
+	let traversal = || UnsafeArchive::PathTraversal { path: PathBuf::from(raw) };
 
 	// Absolute paths (unix or windows-drive shaped), backslash separators, and
 	// embedded NULs never survive — each is a jail-relevant ambiguity.
@@ -148,7 +150,7 @@ pub fn jail_path(root_depth_limit: usize, raw: &str) -> Result<SmolStr, UnsafeAr
 	}
 	if segments.len() > root_depth_limit {
 		return Err(UnsafeArchive::PathTooDeep {
-			path: raw.to_owned(),
+			path: PathBuf::from(raw),
 			actual: segments.len(),
 			limit: root_depth_limit,
 		});
@@ -191,7 +193,7 @@ pub fn sanitize_entry(
 		tracing::warn!(path = raw_path, ?kind, "disallowed archive entry rejected");
 		return Err(IngestError::Unsafe(UnsafeArchive::DisallowedEntry {
 			kind,
-			path: raw_path.to_owned(),
+			path: PathBuf::from(raw_path),
 		}));
 	}
 
@@ -215,7 +217,7 @@ pub fn sanitize_entry(
 fn locate(violation: UnsafeArchive, path: &str) -> UnsafeArchive {
 	match violation {
 		UnsafeArchive::FileTooLarge { actual, limit, .. } => {
-			UnsafeArchive::FileTooLarge { path: path.to_owned(), actual, limit }
+			UnsafeArchive::FileTooLarge { path: PathBuf::from(path), actual, limit }
 		}
 		other => other,
 	}

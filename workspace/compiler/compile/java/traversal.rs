@@ -27,7 +27,7 @@
 
 use std::cmp::Ordering;
 
-use anyhow::{Context, Result, bail};
+use super::error::MavenVersionError;
 
 /// One token of a parsed Maven version.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,7 +271,7 @@ pub enum VersionRequest {
 /// Parse a requested version: empty / `latest` → newest; one or two bare
 /// numeric segments (`1`, `1.4`) → prefix query; anything else that parses
 /// as a Maven version → exact.
-pub fn parse_requested(requested: &str) -> Result<VersionRequest> {
+pub fn parse_requested(requested: &str) -> Result<VersionRequest, MavenVersionError> {
 	let trimmed = requested.trim();
 	if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("latest") {
 		return Ok(VersionRequest::Latest);
@@ -284,14 +284,23 @@ pub fn parse_requested(requested: &str) -> Result<VersionRequest> {
 	if all_numeric && segments.len() <= 2 {
 		let nums = segments
 			.iter()
-			.map(|s| s.parse::<u64>().context("numeric segment overflows"))
+			.map(|s| {
+				s.parse::<u64>().map_err(|source| {
+					MavenVersionError::NumericSegmentOverflow {
+						requested: requested.to_owned(),
+						source,
+					}
+				})
+			})
 			.collect::<Result<Vec<u64>>>()?;
 		return Ok(VersionRequest::Prefix(nums));
 	}
 
 	match parse_version(trimmed) {
 		Some(version) => Ok(VersionRequest::Exact(version)),
-		None => bail!("unparseable Maven version request `{requested}`"),
+		None => Err(MavenVersionError::UnparseableVersion {
+			requested: requested.to_owned(),
+		}),
 	}
 }
 

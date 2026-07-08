@@ -139,9 +139,9 @@ async fn get_unknown_package_errors() {
     // The backend's NotFound is folded into StoreError::NotFound with the
     // derived key preserved (the spec's `Backend(NotFound)`, post-mapping).
     match error {
-        StoreError::NotFound(key) => assert_eq!(
-            key,
-            Store::pointer_path(&unstored).to_string(),
+        StoreError::NotFound { path } => assert_eq!(
+            path,
+            Store::pointer_path(&unstored),
             "the error must name the exact derived location that missed"
         ),
         other => panic!("expected StoreError::NotFound, got {other:?}"),

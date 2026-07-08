@@ -20,7 +20,7 @@ pub mod package;
 pub mod traversal;
 pub mod types;
 
-pub use self::{error::{Package, Parse}, package::TypescriptPackage};
+pub use self::{error::{Package, Parse, TsDeclarationError, TsInterfaceError, TsTypeError}, package::TypescriptPackage};
 
 pub type Result<T> = std::result::Result<T, Parse>;
 

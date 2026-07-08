@@ -2,7 +2,7 @@ pub mod connect;
 pub mod failure;
 
 pub use connect::{ConnectError, ConnectFailure};
-pub use failure::{Failure, FailureKind, Phase, ResolutionState};
+pub use failure::{ErrorDetails, Failure, FailureKind, Phase, ResolutionState};
 
 pub trait StoreError: std::error::Error + Send + Sync + 'static {}
 impl<T: std::error::Error + Send + Sync + 'static> StoreError for T {}

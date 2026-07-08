@@ -87,10 +87,10 @@ async fn emit_retries_transient_failures() {
     assert!(BlobError::Store(Box::new(transient)).is_retryable());
 
     let permanent = StoreError::Integrity {
-        key: "cas/deadbeef".into(),
-        expected: "aa".into(),
-        found: "bb".into(),
+        path: object_store::path::Path::from("cas/deadbeef"),
+        expected: heart::content::ContentHash::of_bytes(b"aa"),
+        found: heart::content::ContentHash::of_bytes(b"bb"),
     };
     assert!(!permanent.is_retryable());
-    assert!(!BlobError::Malformed("structurally invalid").is_retryable());
+    assert!(!BlobError::DuplicateFilePathInManifest.is_retryable());
 }

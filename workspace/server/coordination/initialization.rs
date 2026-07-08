@@ -62,6 +62,7 @@ pub fn provisional_global_package(coordinates: &PackageCoordinates) -> GlobalPac
 			toolchain: provisional_toolchain(coordinates.ecosystem()),
 		},
 		state: ResolutionState::Unindexed { needed: true },
+		facets: None,
 	}
 }
 
@@ -74,6 +75,8 @@ fn provisional_toolchain(ecosystem: Language) -> Toolchain {
 		},
 		Language::Typescript => Toolchain::Typescript { compiler: semver::Version::new(5, 8, 0) },
 		Language::Python => Toolchain::Python { interpreter: semver::Version::new(3, 13, 0) },
+		Language::Go => Toolchain::Go { compiler: semver::Version::new(1, 23, 0) },
+		Language::Java => Toolchain::Java { compiler: semver::Version::new(23, 0, 0) },
 	}
 }
 
@@ -88,7 +91,7 @@ impl<M: EmbeddingModel> Server<M> {
 
 		let state = match stores.global_store.get_state(package).await {
 			Ok(state) => Some(state),
-			Err(IndexError::NotFound(_)) => None,
+			Err(IndexError::NotFound { .. }) => None,
 			Err(error) => return Err(RegistryError::from(error).into()),
 		};
 

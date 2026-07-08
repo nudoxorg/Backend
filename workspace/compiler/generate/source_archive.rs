@@ -44,9 +44,9 @@ pub fn build(input: &PackageInput) -> Result<SourceArchive, GenerateError> {
     let mut pending = vec![input.root.clone()];
 
     while let Some(dir) = pending.pop() {
-        for entry in fs::read_dir(&dir).map_err(GenerateError::Archive)? {
-            let entry = entry.map_err(GenerateError::Archive)?;
-            let file_type = entry.file_type().map_err(GenerateError::Archive)?;
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
             let path = entry.path();
 
             if file_type.is_dir() {
@@ -75,13 +75,13 @@ pub fn build(input: &PackageInput) -> Result<SourceArchive, GenerateError> {
 /// Stream one file through a [`ContentHash`] builder, returning its digest and
 /// byte size without ever holding the whole file in memory.
 fn hash_file(path: &Path) -> Result<(ContentHash, u64), GenerateError> {
-    let file = fs::File::open(path).map_err(GenerateError::Archive)?;
+    let file = fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
     let mut hasher = ContentHash::builder();
     let mut size = 0u64;
 
     loop {
-        let chunk = reader.fill_buf().map_err(GenerateError::Archive)?;
+        let chunk = reader.fill_buf()?;
         if chunk.is_empty() {
             break;
         }

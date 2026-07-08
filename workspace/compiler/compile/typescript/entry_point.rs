@@ -47,9 +47,7 @@ pub fn resolve_repository_entry_point(
 		}
 	}
 
-	Err(PackageError::EntryPointDiscovery {
-		path: repository_root.to_string_lossy().into_owned(),
-	})
+	Err(PackageError::EntryPointDiscoveryFailed { path: repository_root.to_path_buf() })
 }
 
 fn ensure_entry_point(
@@ -66,7 +64,7 @@ fn ensure_entry_point(
 		}
 	}
 
-	Err(PackageError::EntryPointMissing { path: candidate.to_string_lossy().into_owned() })
+	Err(PackageError::EntryPointMissing { path: candidate })
 }
 
 fn source_fallback_candidates(repository_root: &Path, candidate: &Path) -> Vec<PathBuf> {

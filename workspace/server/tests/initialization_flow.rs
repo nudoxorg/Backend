@@ -163,7 +163,8 @@ fn fixture_failure() -> Failure {
     Failure {
         attempts: 1,
         phase: Phase::Compiling,
-        error: "fixture: the compiler rejected the package".into(),
+        message: "fixture: the compiler rejected the package".into(),
+        cause: Some(heart::ErrorDetails::Message("fixture: the compiler rejected the package".into())),
         at: chrono::Utc::now(),
     }
 }

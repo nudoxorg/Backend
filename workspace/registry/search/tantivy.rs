@@ -117,13 +117,18 @@ impl PackageIndex {
 			// Upsert: delete any prior generation of this package, then re-add.
 			writer.delete_term(tantivy::Term::from_field_text(fields.package_id, &token));
 
-			let json = serde_json::to_string(record).map_err(|e| internal(e.to_string()))?;
+			let json = serde_json::to_string(record).map_err(|e| SearchError::JsonDecode { domain: "GlobalPackage", source: e })?;
 			let coordinates = &record.package.coordinates;
 			let mut document = tantivy::TantivyDocument::default();
 			document.add_text(fields.package_id, &token);
 			document.add_text(fields.name, coordinates.name.canonical());
 			document.add_text(fields.name, coordinates.name.original());
 			document.add_text(fields.ecosystem, coordinates.ecosystem().as_token());
+			// Derived keywords (when rich metadata has been extracted) feed the
+			// searchable `keywords` field; absent facets simply index no keywords.
+			if let Some(facets) = &record.facets {
+				document.add_text(fields.keywords, facets.keyword_text());
+			}
 			document.add_text(fields.record, &json);
 			writer.add_document(document).map_err(SearchError::Tantivy)?;
 			folded += 1;
@@ -174,7 +179,7 @@ impl PackageIndex {
 			vec![fields.name, fields.description, fields.keywords],
 		);
 		let query = parser.parse_query(text).map_err(|e| {
-			SearchError::Tantivy(tantivy::TantivyError::InvalidArgument(e.to_string()))
+			SearchError::TantivyQueryParse(tantivy::TantivyError::InvalidArgument(e.to_string()))
 		})?;
 		let top = searcher
 			.search(&query, &TopDocs::with_limit(limit.max(1)))
@@ -186,7 +191,7 @@ impl PackageIndex {
 					searcher.doc(address).map_err(SearchError::Tantivy)?;
 				let id = stored_text(&document, fields.package_id)?
 					.parse::<uuid::Uuid>()
-					.map_err(|_| internal("stored package_id is not a uuid"))?;
+					.map_err(|_| SearchError::StoredIdNotUuid)?;
 				Ok((codec::package_id_from_uuid(id), score))
 			})
 			.collect()
@@ -214,7 +219,7 @@ impl PackageIndex {
 			let document: tantivy::TantivyDocument =
 				searcher.doc(address).map_err(SearchError::Tantivy)?;
 			let json = stored_text(&document, fields.record)?;
-			records.push(serde_json::from_str(&json).map_err(|e| internal(e.to_string()))?);
+			records.push(serde_json::from_str(&json).map_err(|e| SearchError::JsonDecode { domain: "GlobalPackage", source: e })?);
 		}
 		Ok(records)
 	}
@@ -231,29 +236,25 @@ fn stored_text(
 ) -> Result<String, SearchError> {
 	match document.get_first(field) {
 		Some(tantivy::schema::OwnedValue::Str(text)) => Ok(text.clone()),
-		_ => Err(internal("stored document is missing a schema-required text field")),
+		_ => Err(SearchError::TantivyInternal(tantivy::TantivyError::InternalError(
+			"stored document is missing a schema-required text field".into()
+		))),
 	}
 }
 
-/// An index-internal invariant break, on tantivy's own error channel.
-fn internal(message: impl Into<String>) -> SearchError {
-	SearchError::Tantivy(tantivy::TantivyError::InternalError(message.into()))
-}
+// internal() removed; use specific SearchError variants (TantivyInternal, StoredIdNotUuid, JsonDecode) carrying concrete sources.
 
 /// A codec failure while decoding a polled row — a corrupt-row invariant break,
-/// surfaced on the source (postgres) channel.
+/// surfaced on the source (postgres) channel. Use Codec variant.
 fn codec_to_search(e: codec::CodecError) -> SearchError {
-	SearchError::Source(sqlx::Error::Decode(Box::new(std::io::Error::new(
-		std::io::ErrorKind::InvalidData,
-		e.to_string(),
-	))))
+	SearchError::Codec(e)
 }
 
 /// Reassemble one `(GlobalPackage, updated_at micros)` from a
 /// [`queries::search::changed_since`] row. Column order: id, language,
 /// origin_token, name_canonical, name_original, version_canonical, toolchain,
 /// updated_at, then the (left-joined, possibly absent) lifecycle columns
-/// state, phase, content_hash, needed, failure.
+/// state, phase, content_hash, needed, failure, facets.
 fn row_to_record(row: &sqlx::postgres::PgRow) -> Result<(GlobalPackage, i64), SearchError> {
 	let id: uuid::Uuid = row.try_get(0).map_err(SearchError::Source)?;
 	let language: String = row.try_get(1).map_err(SearchError::Source)?;
@@ -267,6 +268,7 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> Result<(GlobalPackage, i64), Se
 	let content_hash: Option<Vec<u8>> = row.try_get(10).map_err(SearchError::Source)?;
 	let needed: Option<bool> = row.try_get(11).map_err(SearchError::Source)?;
 	let failure: Option<serde_json::Value> = row.try_get(12).map_err(SearchError::Source)?;
+	let facets_json: Option<serde_json::Value> = row.try_get(13).map_err(SearchError::Source)?;
 
 	let coordinates = codec::coordinates_from_columns(
 		&language,
@@ -289,7 +291,14 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> Result<(GlobalPackage, i64), Se
 		.map_err(codec_to_search)?,
 	};
 
+	let facets = codec::facets_from_json(facets_json.as_ref()).map_err(codec_to_search)?;
+
 	let package = crate::Package { coordinates, toolchain };
-	let record = GlobalPackage { id: codec::package_id_from_uuid(id), package, state };
+	// The postgres sync path now carries the derived facets from `ps.facets`
+	// (nullable jsonb, mirroring `ps.failure`): keywords + quality flow straight
+	// into the replica index and the ranking fusion. `None` when metadata was
+	// never extracted for this generation.
+	let record =
+		GlobalPackage { id: codec::package_id_from_uuid(id), package, state, facets };
 	Ok((record, updated_at.timestamp_micros()))
 }

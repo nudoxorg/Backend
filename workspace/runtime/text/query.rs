@@ -19,7 +19,7 @@ use tantivy::{
 use crate::{
 	error::TextError,
 	text::{
-		TextCursorKey,
+		TextCursorKey, tokenizer,
 		index::{TextIndex, TextSchema, kind_token, snapshot_hash, symbol_from_document},
 	},
 };
@@ -110,7 +110,9 @@ fn search_blocking(
 	if let Some(cursor) = &after
 		&& cursor.snapshot != snapshot_hash(&searcher)
 	{
-		return Err(TextError::Cursor(heart::cursor::CursorError::Payload));
+		// Simulate payload error (carries real postcard source via the helper
+		// so runtime need not depend on postcard directly).
+		return Err(TextError::Cursor(heart::cursor::stale_snapshot_error()));
 	}
 
 	let parsed = build_query(schema, query)?;
@@ -165,8 +167,15 @@ fn finite_score(raw: f32) -> Score {
 }
 
 /// Lower a [`TextQuery`] into the tantivy query tree:
-/// `(exact-name OR name-contains OR path-contains) AND ecosystem? AND kinds?`.
-/// Matching is case-insensitive via the lowercased shadow fields.
+/// `(exact-name OR name-contains OR path-contains OR name-subtokens OR
+/// path-subtokens) AND ecosystem? AND kinds?`.
+///
+/// The first three tiers match on the lowercased raw fields (exact term, then
+/// case-insensitive substring). The subtoken tiers add what raw matching cannot:
+/// a query for the *parts* of a name (`user` → `getUserById`, `read string` →
+/// `read_to_string`) via the identifier-tokenized `name_tokens`/`fq_tokens`
+/// fields. All tiers are `Should`, so any one satisfies the name requirement and
+/// documents matching more tiers score higher.
 pub(crate) fn build_query(
 	schema: &TextSchema,
 	query: &TextQuery,
@@ -187,11 +196,42 @@ pub(crate) fn build_query(
 		Term::from_field_text(schema.name_lower, &needle),
 		IndexRecordOption::Basic,
 	)) as Box<dyn Query>;
-	let names = BooleanQuery::new(vec![
+
+	// Split the *original-case* query so camelCase humps break before lowercasing,
+	// matching how the index tokenized each stored name. A conjunction of the
+	// resulting subtokens means every queried part must be present.
+	let parts = tokenizer::subtokens(query.terms.trim());
+	let subtoken_clause = |field: Field| -> Option<Box<dyn Query>> {
+		if parts.is_empty() {
+			return None;
+		}
+		let terms: Vec<(Occur, Box<dyn Query>)> = parts
+			.iter()
+			.map(|part| {
+				(
+					Occur::Must,
+					Box::new(TermQuery::new(
+						Term::from_field_text(field, part),
+						IndexRecordOption::WithFreqs,
+					)) as Box<dyn Query>,
+				)
+			})
+			.collect();
+		Some(Box::new(BooleanQuery::new(terms)))
+	};
+
+	let mut name_tiers: Vec<(Occur, Box<dyn Query>)> = vec![
 		(Occur::Should, exact),
 		(Occur::Should, contains(schema.name_lower)?),
 		(Occur::Should, contains(schema.fq_lower)?),
-	]);
+	];
+	if let Some(clause) = subtoken_clause(schema.name_tokens) {
+		name_tiers.push((Occur::Should, clause));
+	}
+	if let Some(clause) = subtoken_clause(schema.fq_tokens) {
+		name_tiers.push((Occur::Should, clause));
+	}
+	let names = BooleanQuery::new(name_tiers);
 
 	let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, Box::new(names))];
 	if let Some(ecosystem) = query.ecosystem {

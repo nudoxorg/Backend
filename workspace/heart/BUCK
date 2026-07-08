@@ -19,5 +19,6 @@ rust_crate(
         "postcard",
         "uv_pep440",
         "url",
+        "anyhow",
     ]),
 )

@@ -12,7 +12,7 @@ use semver::Version;
 use tracing::instrument;
 
 use crate::languages::vcs::find_commit_with_extractor;
-pub use crate::languages::vcs::{materialize_commit, open_or_clone_repository};
+pub use crate::languages::vcs::{GitError, materialize_commit, open_or_clone_repository};
 
 /// Walk newest→oldest. First commit whose package.json has `package_name` at
 /// `target_version` is the latest commit for that version.

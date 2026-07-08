@@ -76,7 +76,7 @@ impl BlobBuilder {
 	/// files).
 	pub fn push_file(&mut self, path: SmolStr, bytes: bytes::Bytes) -> Result<&mut Self, BlobError> {
 		if self.files.iter().any(|entry| entry.path == path) {
-			return Err(BlobError::Malformed("duplicate file path pushed into builder"));
+			return Err(BlobError::DuplicateFilePathInBuilder);
 		}
 		let size = bytes.len() as u64;
 		self.digest.update(&(path.len() as u64).to_le_bytes()).update(path.as_bytes());
@@ -89,7 +89,7 @@ impl BlobBuilder {
 	/// spawn_blocking` (serialization + hashing).
 	pub fn set_ir(&mut self, ir_bytes: bytes::Bytes) -> Result<&mut Self, BlobError> {
 		if self.ir_ref.is_some() {
-			return Err(BlobError::Malformed("ir section attached twice"));
+			return Err(BlobError::IrSectionAttachedTwice);
 		}
 		self.ir_ref = Some(self.address(ir_bytes));
 		Ok(self)
@@ -99,7 +99,7 @@ impl BlobBuilder {
 	/// spawn_blocking`.
 	pub fn set_references(&mut self, refs: &ReferenceSet) -> Result<&mut Self, BlobError> {
 		if self.references_ref.is_some() {
-			return Err(BlobError::Malformed("references section attached twice"));
+			return Err(BlobError::ReferencesSectionAttachedTwice);
 		}
 		let encoded = refs.encode()?;
 		self.references_ref = Some(self.address(bytes::Bytes::from(encoded)));
@@ -112,15 +112,15 @@ impl BlobBuilder {
 	/// `files` are sorted for reproducibility. Fails if no files, IR, or
 	/// references were supplied.
 	pub fn finalize(self) -> Result<(BlobManifest, Vec<PendingSection>), BlobError> {
-		let ir_ref = self.ir_ref.ok_or(BlobError::Malformed("manifest is missing its ir section"))?;
+		let ir_ref = self.ir_ref.ok_or(BlobError::MissingIrSection)?;
 		let references_ref = self
 			.references_ref
-			.ok_or(BlobError::Malformed("manifest is missing its references section"))?;
+			.ok_or(BlobError::MissingReferencesSection)?;
 
 		let mut files = self.files;
 		files.sort_by(|a, b| a.path.cmp(&b.path));
 		let files = nonempty::NonEmpty::from_vec(files)
-			.ok_or(BlobError::Malformed("manifest has no files"))?;
+			.ok_or(BlobError::ManifestHasNoFiles)?;
 
 		let manifest =
 			BlobManifest { package: self.package, files, ir_ref, references_ref, toolchain: self.toolchain };

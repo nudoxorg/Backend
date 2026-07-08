@@ -25,7 +25,7 @@ pub enum ConnectFailure {
 
     /// Anything else, with its source preserved.
     #[error("connection failed")]
-    Other(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Other(#[from] anyhow::Error),
 }
 
 #[derive(Debug, Error)]

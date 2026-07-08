@@ -1,0 +1,18 @@
+load("//build:rust.bzl", "deps", "rust_crate")
+
+rust_crate(
+    name = "rust-lowering",
+    srcs = native.glob(["**/*.rs"]),
+    crate_root = "lib.rs",
+    deps = deps(
+        members = ["ir"],
+        crates = [
+            "rustdoc_types",
+            "rustc_hash",
+            "tracing",
+            "thiserror",
+            "serde_json",
+            "semver",
+        ],
+    ),
+)

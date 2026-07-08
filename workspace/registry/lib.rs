@@ -88,4 +88,12 @@ pub struct GlobalPackage {
 
     /// Where this package currently sits in the pipeline.
     pub state: ResolutionState,
+
+    /// Derived search facets (normalized keywords + quality), when rich metadata
+    /// has been extracted for this generation. `None` until extraction runs — the
+    /// postgres sync path leaves it unset until backfilled. Feeds the tantivy
+    /// `keywords` field and the ranking fusion. `#[serde(default)]` so records
+    /// stored before this field existed still deserialize.
+    #[serde(default)]
+    pub facets: Option<metadata::SearchFacets>,
 }

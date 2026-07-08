@@ -4,7 +4,7 @@ rust_crate(
     name = "compiler",
     srcs = native.glob(["**/*.rs"], exclude = ["intermediate-representation/**"]),
     deps = deps(
-        members = ["heart", "ir", "registry"],
+        members = ["heart", "ir", "rust-lowering", "registry"],
         crates = [
             "serde",
             "serde_json",

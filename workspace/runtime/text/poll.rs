@@ -14,7 +14,7 @@ use sqlx::Row;
 
 use heart::Retryable;
 
-use crate::{error::TextError, text::index::TextIndex};
+use crate::{error::{RowDecodeError, TextError}, text::index::TextIndex};
 
 /// A durable pointer into postgres marking how far the local index has been
 /// caught up. Persisted alongside the tantivy directory so a restarted replica
@@ -76,9 +76,7 @@ impl Poller {
 	/// Load the persisted watermark for this replica's index (bottom if none).
 	pub async fn watermark(&self) -> Result<Watermark, TextError> {
 		match tokio::fs::read(&self.watermark_path).await {
-			Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-				TextError::Io(std::io::Error::new(ErrorKind::InvalidData, error))
-			}),
+			Ok(bytes) => serde_json::from_slice(&bytes).map_err(TextError::Codec),
 			Err(error) if error.kind() == ErrorKind::NotFound => Ok(Watermark::BOTTOM),
 			Err(error) => Err(TextError::Io(error)),
 		}
@@ -185,8 +183,6 @@ fn blocking<T>(work: impl FnOnce() -> T) -> T {
 /// index serves. The plain name is the last path segment of the stored
 /// fully-qualified name (postgres does not carry it separately).
 fn symbol_from_row(row: &sqlx::postgres::PgRow) -> Result<heart::Symbol, TextError> {
-	let malformed = |message: String| TextError::Poll(sqlx::Error::Decode(message.into()));
-
 	let id: heart::Guid = row.try_get("id").map_err(TextError::Poll)?;
 	let package: heart::Guid = row.try_get("package_id").map_err(TextError::Poll)?;
 	let fq_name: String = row.try_get("fq_name").map_err(TextError::Poll)?;
@@ -198,13 +194,13 @@ fn symbol_from_row(row: &sqlx::postgres::PgRow) -> Result<heart::Symbol, TextErr
 		package: heart::PackageId::from_uuid(package),
 		ecosystem: language
 			.parse()
-			.map_err(|_| malformed(format!("unknown ecosystem token {language:?}")))?,
+			.map_err(|_| TextError::Row(RowDecodeError::UnknownEcosystem { raw: language }))?,
 		name: heart::Name {
 			plain: plain_name(&fq_name).into(),
 			fully_qualified: fq_name.as_str().into(),
 		},
 		kind: crate::text::index::parse_kind(&kind)
-			.ok_or_else(|| malformed(format!("unknown symbol kind {kind:?}")))?,
+			.ok_or_else(|| TextError::Row(RowDecodeError::UnknownSymbolKind { raw: kind }))?,
 	})
 }
 

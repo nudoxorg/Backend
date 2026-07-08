@@ -21,20 +21,50 @@ pub type PackageId = Id<Package>;
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum NameError {
     #[error("package name is empty")]
-    Empty,
-    #[error("package name {raw:?} is invalid for {ecosystem}")]
-    Invalid { ecosystem: Language, raw: String },
-    #[error("package name {raw:?} exceeds the {ecosystem} length limit")]
-    TooLong { ecosystem: Language, raw: String },
+    NameEmpty,
+    #[error("package name for {ecosystem} is too long (len={len}, max={max})")]
+    NameTooLong { ecosystem: Language, len: usize, max: usize },
+    #[error("package name for {ecosystem} contains invalid characters: {invalid_chars:?}")]
+    NameHasInvalidChars { ecosystem: Language, invalid_chars: Vec<char> },
 }
 
-/// Why a raw version failed to parse.
+/// Wrapper carrying raw input + source for Cargo/npm (both use semver but
+/// kept distinct so ecosystem is traceable in the error chain).
 #[derive(Debug, Error)]
-#[error("invalid {ecosystem} version {raw:?}: {message}")]
-pub struct VersionError {
-    pub ecosystem: Language,
-    pub raw: String,
-    pub message: String,
+#[error("invalid cargo version {raw:?}: {source}")]
+pub struct CargoVersionError {
+    raw: String,
+    #[from]
+    source: semver::Error,
+}
+
+#[derive(Debug, Error)]
+#[error("invalid npm version {raw:?}: {source}")]
+pub struct NpmVersionError {
+    raw: String,
+    #[from]
+    source: semver::Error,
+}
+
+/// Wrapper for PEP 440.
+#[derive(Debug, Error)]
+#[error("invalid python version {raw:?}: {source}")]
+pub struct PythonVersionError {
+    raw: String,
+    #[from]
+    source: uv_pep440::VersionParseError,
+}
+
+/// Why a raw version failed to parse. Each variant wraps the concrete parser
+/// error (with raw for context) and uses #[from] for direct ? conversion.
+#[derive(Debug, Error)]
+pub enum VersionError {
+    #[error(transparent)]
+    Cargo(#[from] CargoVersionError),
+    #[error(transparent)]
+    Npm(#[from] NpmVersionError),
+    #[error(transparent)]
+    Python(#[from] PythonVersionError),
 }
 
 /// An ecosystem-appropriate, typed package version.
@@ -46,24 +76,36 @@ pub enum PackageVersion {
     Npm(semver::Version),
     /// Python PEP 440.
     Python(uv_pep440::Version),
+    /// Go module version (tag or pseudo-version).
+    Go(String),
+    /// Java/Maven version string.
+    Java(String),
 }
 
 impl TryFrom<(Language, &str)> for PackageVersion {
     type Error = VersionError;
 
     fn try_from((ecosystem, raw): (Language, &str)) -> Result<Self, Self::Error> {
-        let invalid = |message: String| VersionError { ecosystem, raw: raw.to_owned(), message };
         match ecosystem {
-            Language::Rust => semver::Version::parse(raw).map(Self::Cargo),
-            Language::Typescript => semver::Version::parse(raw).map(Self::Npm),
-            Language::Python => {
-                return raw
-                    .parse::<uv_pep440::Version>()
-                    .map(Self::Python)
-                    .map_err(|error| invalid(error.to_string()));
+            Language::Rust => {
+                let v = semver::Version::parse(raw)
+                    .map_err(|source| CargoVersionError { raw: raw.to_owned(), source })?;
+                Ok(Self::Cargo(v))
             }
+            Language::Typescript => {
+                let v = semver::Version::parse(raw)
+                    .map_err(|source| NpmVersionError { raw: raw.to_owned(), source })?;
+                Ok(Self::Npm(v))
+            }
+            Language::Python => {
+                let v = raw
+                    .parse::<uv_pep440::Version>()
+                    .map_err(|source| PythonVersionError { raw: raw.to_owned(), source })?;
+                Ok(Self::Python(v))
+            }
+            Language::Go => Ok(Self::Go(raw.to_owned())),
+            Language::Java => Ok(Self::Java(raw.to_owned())),
         }
-        .map_err(|error| invalid(error.to_string()))
     }
 }
 
@@ -73,6 +115,7 @@ impl PackageVersion {
         match self {
             PackageVersion::Cargo(v) | PackageVersion::Npm(v) => v.to_string(),
             PackageVersion::Python(v) => v.to_string(),
+            PackageVersion::Go(v) | PackageVersion::Java(v) => v.clone(),
         }
     }
 }
@@ -83,6 +126,8 @@ impl From<&PackageVersion> for Language {
             PackageVersion::Cargo(_) => Language::Rust,
             PackageVersion::Npm(_) => Language::Typescript,
             PackageVersion::Python(_) => Language::Python,
+            PackageVersion::Go(_) => Language::Go,
+            PackageVersion::Java(_) => Language::Java,
         }
     }
 }

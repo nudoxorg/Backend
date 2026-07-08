@@ -101,12 +101,10 @@ impl BlobManifest {
             match pair[0].path.cmp(&pair[1].path) {
                 std::cmp::Ordering::Less => {}
                 std::cmp::Ordering::Equal => {
-                    return Err(BlobError::Malformed("duplicate file path in manifest"));
+                    return Err(BlobError::DuplicateFilePathInManifest);
                 }
                 std::cmp::Ordering::Greater => {
-                    return Err(BlobError::Malformed(
-                        "manifest files are not sorted by path",
-                    ));
+                    return Err(BlobError::ManifestFilesNotSorted);
                 }
             }
         }
@@ -233,7 +231,7 @@ impl WireReference {
 
     fn into_reference(self) -> Result<ResolvedReference, BlobError> {
         if self.span_start > self.span_end {
-            return Err(BlobError::Malformed("reference span is inverted"));
+            return Err(BlobError::InvertedReferenceSpan);
         }
         Ok(ResolvedReference {
             target: self.target.into_target(),
@@ -246,9 +244,7 @@ impl WireReference {
 impl WireTarget {
     fn from_target(target: &ir::entry::NudoxPath) -> Result<Self, BlobError> {
         let utf8 = |path: &std::path::Path| {
-            path.to_str().map(str::to_owned).ok_or(BlobError::Malformed(
-                "non-UTF-8 path in resolved reference target",
-            ))
+            path.to_str().map(str::to_owned).ok_or(BlobError::NonUtf8ReferencePath)
         };
         Ok(match target {
             ir::entry::NudoxPath::External { path, dependency } => Self::External {
@@ -297,7 +293,7 @@ fn kind_from_wire(wire: u8) -> Result<ir::syntax::ReferenceKind, BlobError> {
         4 => MacroInvocation,
         5 => FieldAccess,
         6 => Import,
-        _ => return Err(BlobError::Malformed("unknown reference kind discriminant")),
+        _ => return Err(BlobError::UnknownReferenceKindDiscriminant { wire }),
     })
 }
 

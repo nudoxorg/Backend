@@ -8,7 +8,7 @@ use heart::{ContentHash, Cursor, Score, Scored};
 use registry::GlobalPackage;
 use registry::search::{SearchKey, tantivy::{PackageIndex, SyncWatermark}};
 
-use crate::error::{ServerError, ServerResult};
+use crate::error::{BadRequestReason, ServerError, ServerResult};
 use crate::search::query::{Pagination, Query};
 
 /// One source's replica-local package index, shared between the query surface
@@ -113,7 +113,10 @@ impl RegistrySearchSurface {
 			.as_deref()
 			.map(|token| {
 				Cursor::<SearchKey>::decode(token)
-					.map_err(|error| ServerError::BadRequest(format!("invalid cursor: {error}")))
+					.map_err(|source| BadRequestReason::InvalidCursor {
+						token: token.to_owned(),
+						source,
+					})
 			})
 			.transpose()?;
 		let hits = self

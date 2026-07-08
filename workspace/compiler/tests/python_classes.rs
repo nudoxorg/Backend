@@ -91,9 +91,7 @@ fn field_named<'a>(rec: &'a ir::record::Record, name: &str) -> &'a ir::record::K
 #[test]
 fn dataclass_lowers_to_record_with_resolved_fields_methods_and_supertypes() {
     let ctx = PythonContext::new();
-    let handle = ctx
-        .check_snippet("classes_mod", SNIPPET)
-        .expect("type-checking the snippet failed");
+    let handle = ctx.check_snippet("classes_mod", SNIPPET);
     let index = ctx.lower_handle(&handle);
     println!("entries: {}", dump(&index));
 
@@ -139,9 +137,7 @@ fn dataclass_lowers_to_record_with_resolved_fields_methods_and_supertypes() {
 #[test]
 fn enum_lowers_to_sumtype_with_variants() {
     let ctx = PythonContext::new();
-    let handle = ctx
-        .check_snippet("classes_mod", SNIPPET)
-        .expect("type-checking the snippet failed");
+    let handle = ctx.check_snippet("classes_mod", SNIPPET);
     let index = ctx.lower_handle(&handle);
 
     let variants = index
@@ -166,9 +162,7 @@ fn enum_lowers_to_sumtype_with_variants() {
 #[test]
 fn protocol_lowers_to_traitdef_with_methods() {
     let ctx = PythonContext::new();
-    let handle = ctx
-        .check_snippet("classes_mod", SNIPPET)
-        .expect("type-checking the snippet failed");
+    let handle = ctx.check_snippet("classes_mod", SNIPPET);
     let index = ctx.lower_handle(&handle);
 
     let trait_def = index

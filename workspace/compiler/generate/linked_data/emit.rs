@@ -14,7 +14,7 @@ use ir::entry::Index;
 use serde_json::Value;
 use terminusdb_schema::ToTDBInstance;
 
-use crate::error::GenerateError;
+use crate::error::{EmitLinkedDataError, GenerateError};
 use crate::graph::from_ir::project;
 use crate::graph::link::PackageCtx;
 
@@ -62,9 +62,7 @@ impl EmitState {
 						// Identical re-emission: first write wins, silently.
 						return Ok(());
 					}
-					return Err(GenerateError::Emit(
-						format!("conflicting document bodies for @id {id}").into(),
-					));
+					return Err(EmitLinkedDataError::ConflictingDocumentBody { id: id.to_owned() }.into());
 				}
 				std::collections::hash_map::Entry::Vacant(slot) => {
 					slot.insert(body_hash);

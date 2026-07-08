@@ -70,9 +70,7 @@ fn param_type(p: &Parameter) -> &Type {
 fn pyrefly_oracle_resolves_annotated_and_inferred_types() {
     let ctx = PythonContext::new();
 
-    let handle = ctx
-        .check_snippet("oracle_mod", SNIPPET)
-        .expect("type-checking the snippet failed");
+    let handle = ctx.check_snippet("oracle_mod", SNIPPET);
     let index = ctx.lower_handle(&handle);
 
     // --- annotated function: `def add(a: int, b: int) -> int` ---

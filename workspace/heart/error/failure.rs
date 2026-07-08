@@ -16,15 +16,33 @@ pub enum Phase {
     Emitting,
 }
 
+/// Structured cause captured for a failure without storing an untyped
+/// `Box<dyn Error>` or bare ad-hoc String. The human message is always
+/// derived from the cause at construction time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "info")]
+pub enum ErrorDetails {
+    /// Fallback for cases where only a rendered message was captured.
+    /// Prefer more specific variants when adding new failure paths.
+    Message(String),
+}
+
 /// A recorded failure, with enough context to decide retry vs dead-letter.
+/// The serialized shape preserves the legacy "error" key for DB roundtrips.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Failure {
     /// How many attempts have been made so far.
     pub attempts: u32,
     /// The phase the most recent attempt failed in.
     pub phase: Phase,
-    /// Human-readable error message from the failed attempt.
-    pub error: String,
+    /// Human-readable message (rendered from the cause). Serialized under
+    /// the key "error" for persistence compatibility.
+    #[serde(rename = "error")]
+    pub message: String,
+    /// Structured details about the cause (enables future richer capture
+    /// without losing source info in the Rust error chain at call sites).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<ErrorDetails>,
     /// When the most recent attempt failed.
     pub at: DateTime<Utc>,
 }

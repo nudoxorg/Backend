@@ -25,7 +25,8 @@
 
 use std::cmp::Ordering;
 
-use anyhow::{Context, Result};
+use super::error::{GoError, Result};
+use super::package;
 
 /// A parsed strict-semver version (Go module flavor).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,16 +243,16 @@ pub fn parse_requested(requested: &str) -> Result<VersionRequest> {
 	let major = parts
 		.next()
 		.and_then(parse_num)
-		.with_context(|| format!("unparseable Go version request `{requested}`"))?;
+		.ok_or_else(|| GoError::UnparseableVersionRequest { requested: requested.to_string() })?;
 	let minor = match parts.next() {
 		Some(m) => Some(
 			parse_num(m)
-				.with_context(|| format!("unparseable Go version request `{requested}`"))?,
+				.ok_or_else(|| GoError::UnparseableVersionRequest { requested: requested.to_string() })?,
 		),
 		None => None,
 	};
 	if parts.next().is_some() {
-		anyhow::bail!("unparseable Go version request `{requested}`");
+		return Err(GoError::UnparseableVersionRequest { requested: requested.to_string() });
 	}
 	Ok(VersionRequest::Prefix { major, minor })
 }

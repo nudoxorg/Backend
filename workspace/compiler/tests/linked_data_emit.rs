@@ -189,7 +189,7 @@ fn duplicate_uri_is_first_write_wins() {
     let result = emit(&index, ctx(), &mut sink);
 
     assert!(
-        matches!(result, Err(GenerateError::Emit(_))),
+        matches!(result, Err(GenerateError::EmitLinkedData(_))),
         "colliding @ids with different bodies must error, got {result:?}"
     );
 }

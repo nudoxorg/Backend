@@ -26,11 +26,23 @@ use crate::coordination::SinkKind;
 /// A decode failure — a stored column value that does not correspond to any
 /// domain value. Should be impossible given the CHECK constraints, but decoding
 /// is kept total so a corrupt row surfaces an error rather than a panic.
+///
+/// Deep refactor: sub-variants for token kinds, #[from] for Name/Version,
+/// concrete sources, no lossy to_string when wrapping sqlx.
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
-	/// A discriminant token was not a member of its domain.
-	#[error("unknown {domain} discriminant {value:?}")]
-	UnknownDiscriminant { domain: &'static str, value: String },
+	/// A discriminant token was not a member of its domain (fine-grained).
+	#[error("unknown ecosystem discriminant")]
+	UnknownEcosystemDiscriminant { token: String },
+
+	#[error("unknown sink kind discriminant")]
+	UnknownSinkKindDiscriminant { token: String },
+
+	#[error("unknown phase discriminant")]
+	UnknownPhaseDiscriminant { token: String },
+
+	#[error("unknown state discriminant")]
+	UnknownStateDiscriminant { token: String },
 
 	/// A `bytea` content hash was not exactly 32 bytes.
 	#[error("content hash must be 32 bytes, got {0}")]
@@ -42,20 +54,26 @@ pub enum CodecError {
 
 	/// A `Progressing` row was missing its non-null `phase`, or a `Stored` row
 	/// its non-null `content_hash`, etc. — a state/column-set invariant broke.
-	#[error("state {state:?} is missing required column {column}")]
+	#[error("state is missing required column")]
 	MissingColumn { state: &'static str, column: &'static str },
 
 	/// A stored package name no longer re-validates under its ecosystem's rules.
+	/// (Now uses explicit NameEmpty / NameTooLong / NameHasInvalidChars.)
 	#[error("stored package name failed re-validation")]
-	Name(#[source] heart::NameError),
+	Name(#[from] heart::NameError),
 
 	/// A stored version string no longer parses under its ecosystem's grammar.
+	/// (Now carries typed source via VersionError::{Cargo,Npm,Python} wrappers.)
 	#[error("stored package version failed re-validation")]
-	Version(#[source] heart::identity::VersionError),
+	Version(#[from] heart::identity::VersionError),
 
 	/// A custom origin token could not be reconstituted into a base URL.
-	#[error("custom origin token {token:?} does not name a valid base URL")]
-	Origin { token: String },
+	#[error("custom origin token does not name a valid base URL")]
+	Origin { token: String, #[source] source: url::ParseError },
+
+	/// Sqlx row decode surfaced with source (for search/index wrappers).
+	#[error("codec sqlx decode")]
+	SqlxDecode { domain: &'static str, #[source] source: sqlx::Error },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,10 +134,9 @@ pub fn ecosystem_from_token(token: &str) -> Result<Language, CodecError> {
 		"rust" => Ok(Language::Rust),
 		"typescript" => Ok(Language::Typescript),
 		"python" => Ok(Language::Python),
-		other => Err(CodecError::UnknownDiscriminant {
-			domain: "ecosystem",
-			value: other.to_owned(),
-		}),
+		"go" => Ok(Language::Go),
+		"java" => Ok(Language::Java),
+		other => Err(CodecError::UnknownEcosystemDiscriminant { token: other.to_owned() }),
 	}
 }
 
@@ -138,10 +155,7 @@ pub fn sink_kind_from_token(token: &str) -> Result<SinkKind, CodecError> {
 		"vector" => Ok(SinkKind::Vector),
 		"graph" => Ok(SinkKind::Graph),
 		"text" => Ok(SinkKind::Text),
-		other => Err(CodecError::UnknownDiscriminant {
-			domain: "sink kind",
-			value: other.to_owned(),
-		}),
+		other => Err(CodecError::UnknownSinkKindDiscriminant { token: other.to_owned() }),
 	}
 }
 
@@ -166,7 +180,7 @@ pub fn phase_from_token(token: &str) -> Result<Phase, CodecError> {
 		"extracting" => Ok(Phase::Extracting),
 		"compiling" => Ok(Phase::Compiling),
 		"emitting" => Ok(Phase::Emitting),
-		other => Err(CodecError::UnknownDiscriminant { domain: "phase", value: other.to_owned() }),
+		other => Err(CodecError::UnknownPhaseDiscriminant { token: other.to_owned() }),
 	}
 }
 
@@ -257,7 +271,36 @@ pub fn state_from_columns(
 				ResolutionState::DeadLettered(f)
 			})
 		}
-		other => Err(CodecError::UnknownDiscriminant { domain: "state", value: other.to_owned() }),
+		other => Err(CodecError::UnknownStateDiscriminant { token: other.to_owned() }),
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SearchFacets ↔ jsonb
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Serialize a [`crate::metadata::SearchFacets`] to a `jsonb` value — the
+/// facets analog of the `Failure` jsonb encoding in [`state_to_columns`].
+/// Malformed serialization surfaces as a codec error (never a panic).
+pub fn facets_to_json(
+	f: &crate::metadata::SearchFacets,
+) -> Result<serde_json::Value, CodecError> {
+	serde_json::to_value(f).map_err(|source| CodecError::Json { domain: "SearchFacets", source })
+}
+
+/// Deserialize an optional [`crate::metadata::SearchFacets`] from the nullable
+/// `parse_status.facets` `jsonb` column. `None` (a `NULL` column) is the common
+/// case — a package whose rich metadata was never extracted; a malformed
+/// payload is a codec error, exactly as [`state_from_columns`] treats a
+/// malformed `failure`.
+pub fn facets_from_json(
+	v: Option<&serde_json::Value>,
+) -> Result<Option<crate::metadata::SearchFacets>, CodecError> {
+	match v {
+		None => Ok(None),
+		Some(value) => serde_json::from_value(value.clone())
+			.map(Some)
+			.map_err(|source| CodecError::Json { domain: "SearchFacets", source }),
 	}
 }
 
@@ -294,7 +337,7 @@ pub fn origin_from_token(token: &str) -> Result<heart::RegistryOrigin, CodecErro
 		"pypi" => Ok(heart::RegistryOrigin::PyPi),
 		custom => {
 			let url = url::Url::parse(&format!("https://{custom}"))
-				.map_err(|_| CodecError::Origin { token: custom.to_owned() })?;
+				.map_err(|source| CodecError::Origin { token: custom.to_owned(), source })?;
 			Ok(heart::RegistryOrigin::Custom { name: custom.into(), url })
 		}
 	}

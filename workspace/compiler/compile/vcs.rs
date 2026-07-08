@@ -53,6 +53,30 @@ pub enum GitError {
 		source: io::Error,
 	},
 
+	/// Fetch-related failure (remote lookup, connect, prepare, receive, or shell fallback).
+	#[error(transparent)]
+	Fetch(#[from] FetchError),
+
+	/// Checkout / worktree materialization failure.
+	#[error(transparent)]
+	Checkout(#[from] CheckoutError),
+
+	/// Reference / commit / HEAD resolution failure.
+	#[error(transparent)]
+	Reference(#[from] ReferenceError),
+
+	/// Tree traversal / entry lookup failure.
+	#[error(transparent)]
+	Tree(#[from] TreeError),
+
+	/// Manifest (Cargo.toml / package.json etc) parse failure (utf8 / toml / json / semver).
+	#[error(transparent)]
+	ManifestParse(#[from] ManifestParseError),
+}
+
+/// Fetch / clone transport and fallback failures.
+#[derive(Debug, Error)]
+pub enum FetchError {
 	/// The repository has no usable fetch remote.
 	#[error("failed to find git remote: {source}")]
 	FindRemote {
@@ -88,6 +112,20 @@ pub enum GitError {
 		source: gix::clone::fetch::Error,
 	},
 
+	/// `git fetch --prune` shell fallback (after gix transport error) failed.
+	/// Captures status + stdout/stderr explicitly (no format! into Io source).
+	#[error("git fetch fallback failed at `{path}` with status {status}: stdout={stdout:?} stderr={stderr:?}")]
+	Fallback {
+		path:   PathBuf,
+		status: std::process::ExitStatus,
+		stdout: String,
+		stderr: String,
+	},
+}
+
+/// Worktree checkout and materialization failures.
+#[derive(Debug, Error)]
+pub enum CheckoutError {
 	/// Checking out the main worktree after a clone failed.
 	#[error("worktree checkout failed: {source}")]
 	WorktreeCheckout {
@@ -95,9 +133,36 @@ pub enum GitError {
 		source: gix::clone::checkout::main_worktree::Error,
 	},
 
+	/// Deriving checkout options from the repository config failed.
+	#[error("failed to obtain checkout options: {source}")]
+	CheckoutOptions(#[source] gix::config::checkout_options::Error),
+
+	/// Writing the tree contents to the destination directory failed.
+	#[error("failed to materialize worktree: {source}")]
+	Materialize(#[source] gix_worktree_state::checkout::Error),
+
+	/// Converting the object database into its `Arc`-backed form failed.
+	#[error("failed to open Arc-backed object database: {source}")]
+	OpenArcObjects {
+		#[source]
+		source: io::Error,
+	},
+
+	/// Building an in-memory index from a tree failed.
+	#[error("failed to build index from tree `{tree}`: {source}")]
+	IndexFromTree {
+		tree:   String,
+		#[source]
+		source: gix::repository::index_from_tree::Error,
+	},
+}
+
+/// Reference, HEAD, object, and packed-ref resolution failures.
+#[derive(Debug, Error)]
+pub enum ReferenceError {
 	/// A commit/reference could not be resolved to an object.
 	#[error("failed to resolve git reference `{name}`: {source}")]
-	Reference {
+	Resolve {
 		name:   String,
 		#[source]
 		source: gix::object::find::existing::with_conversion::Error,
@@ -109,60 +174,6 @@ pub enum GitError {
 		name:   String,
 		#[source]
 		source: gix_object::decode::Error,
-	},
-
-	/// Building an in-memory index from a tree failed.
-	#[error("failed to build index from tree `{tree}`: {source}")]
-	IndexFromTree {
-		tree:   String,
-		#[source]
-		source: gix::repository::index_from_tree::Error,
-	},
-
-	/// Deriving checkout options from the repository config failed.
-	#[error("failed to obtain checkout options: {0}")]
-	CheckoutOptions(#[source] gix::config::checkout_options::Error),
-
-	/// Writing the tree contents to the destination directory failed.
-	#[error("failed to materialize worktree: {0}")]
-	Materialize(#[source] gix_worktree_state::checkout::Error),
-
-	/// Converting the object database into its `Arc`-backed form failed.
-	#[error("failed to open Arc-backed object database: {source}")]
-	OpenArcObjects {
-		#[source]
-		source: io::Error,
-	},
-
-	/// Looking up an entry by path within a tree failed.
-	#[error("failed to find tree entry at `{path}`: {source}")]
-	TreeLookupEntry {
-		path:   String,
-		#[source]
-		source: gix::object::find::existing::Error,
-	},
-
-	/// A blob object referenced by a tree entry could not be loaded.
-	#[error("failed to find blob at `{path}`: {source}")]
-	FindBlob {
-		path:   String,
-		#[source]
-		source: gix::object::find::existing::with_conversion::Error,
-	},
-
-	/// A subtree object referenced by a tree entry could not be loaded.
-	#[error("failed to find tree at `{path}`: {source}")]
-	FindTree {
-		path:   String,
-		#[source]
-		source: gix::object::find::existing::with_conversion::Error,
-	},
-
-	/// Iterating a tree's entries failed.
-	#[error("failed to traverse tree: {source}")]
-	TreeTraverse {
-		#[source]
-		source: gix::diff::object::decode::Error,
 	},
 
 	/// HEAD could not be looked up.
@@ -199,10 +210,51 @@ pub enum GitError {
 		#[source]
 		source: gix_ref::packed::buffer::open::Error,
 	},
+}
 
+/// Tree walking and entry/blob/tree lookup failures.
+#[derive(Debug, Error)]
+pub enum TreeError {
+	/// Looking up an entry by path within a tree failed.
+	#[error("failed to find tree entry at `{path}`: {source}")]
+	LookupEntry {
+		path:   String,
+		#[source]
+		source: gix::object::find::existing::Error,
+	},
+
+	/// A blob object referenced by a tree entry could not be loaded.
+	#[error("failed to find blob at `{path}`: {source}")]
+	FindBlob {
+		path:   String,
+		#[source]
+		source: gix::object::find::existing::with_conversion::Error,
+	},
+
+	/// A subtree object referenced by a tree entry could not be loaded.
+	#[error("failed to find tree at `{path}`: {source}")]
+	FindTree {
+		path:   String,
+		#[source]
+		source: gix::object::find::existing::with_conversion::Error,
+	},
+
+	/// Iterating a tree's entries failed.
+	#[error("failed to traverse tree: {source}")]
+	Traverse {
+		#[source]
+		source: gix::diff::object::decode::Error,
+	},
+}
+
+/// Failures parsing language manifests inside a commit tree (utf8, format, version).
+/// Used by Rust (Cargo.toml) and potentially others; explicit variants avoid
+/// format strings for parse data.
+#[derive(Debug, Error)]
+pub enum ManifestParseError {
 	/// A manifest blob was not valid UTF-8.
 	#[error("invalid utf-8 in blob at `{path}`: {source}")]
-	BlobEncoding {
+	Utf8 {
 		path:   String,
 		#[source]
 		source: std::str::Utf8Error,
@@ -210,7 +262,7 @@ pub enum GitError {
 
 	/// A manifest blob was not valid TOML.
 	#[error("failed to parse `{path}` as TOML: {source}")]
-	TomlParse {
+	Toml {
 		path:   String,
 		#[source]
 		source: toml::de::Error,
@@ -218,7 +270,7 @@ pub enum GitError {
 
 	/// A manifest declared a version that is not valid semver.
 	#[error("invalid version `{version}` in `{path}`: {source}")]
-	VersionParse {
+	Version {
 		path:    String,
 		version: String,
 		#[source]
@@ -263,11 +315,11 @@ pub fn clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, Git
 
 	let (mut checkout_handle, _) = fetch_handle
 		.fetch_then_checkout(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(|source| GitError::FetchCheckout { source })?;
+		.map_err(FetchError::FetchCheckout)?;
 
 	let (repo, _) = checkout_handle
 		.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(|source| GitError::WorktreeCheckout { source })?;
+		.map_err(CheckoutError::WorktreeCheckout)?;
 
 	Ok(repo)
 }
@@ -278,7 +330,7 @@ fn repository_matches_remote(repo: &Repository, remote: &Url) -> Result<bool, Gi
 	let fetch_remote = repo
 		.find_fetch_remote(Some("origin".as_bytes().as_bstr()))
 		.or_else(|_| repo.find_fetch_remote(None))
-		.map_err(|source| GitError::FindRemote { source })?;
+		.map_err(FetchError::FindRemote)?;
 	let Some(configured_url) = fetch_remote.url(remote::Direction::Fetch) else {
 		return Ok(false);
 	};
@@ -292,14 +344,13 @@ fn repository_matches_remote(repo: &Repository, remote: &Url) -> Result<bool, Gi
 pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Result<(), GitError> {
 	let remote = repo
 		.find_fetch_remote(remote_name.map(|name| name.as_bytes().as_bstr()))
-		.map_err(|source| GitError::FindRemote { source })?;
+		.map_err(FetchError::FindRemote)?;
 
 	let fetch_result: Result<(), GitError> = (|| {
-		let connection =
-			remote.connect(remote::Direction::Fetch).map_err(|source| GitError::Connect { source })?;
+		let connection = remote.connect(remote::Direction::Fetch).map_err(FetchError::Connect)?;
 		let prepare = connection
 			.prepare_fetch(Discard, remote::ref_map::Options::default())
-			.map_err(|source| GitError::PrepareFetch { source })?;
+			.map_err(FetchError::PrepareFetch)?;
 
 		prepare
 			.with_write_packed_refs_only(true)
@@ -307,7 +358,7 @@ pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Res
 				action: "fetch".to_owned(),
 			})
 			.receive(Discard, &gix::interrupt::IS_INTERRUPTED)
-			.map_err(|source| GitError::ReceiveFetch { source })?;
+			.map_err(FetchError::ReceiveFetch)?;
 
 		Ok(())
 	})();
@@ -331,17 +382,17 @@ pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Res
 		return Ok(());
 	}
 
-	let stderr = String::from_utf8_lossy(&output.stderr);
-	let stdout = String::from_utf8_lossy(&output.stdout);
-	Err(GitError::Io {
+	// Capture stdout/stderr explicitly into structured Fallback (no format! stuffing
+	// into a generic Io source; all data fields are typed/explicit).
+	let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+	let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+	Err(FetchError::Fallback {
 		path:   repo_dir.to_path_buf(),
-		source: std::io::Error::other(format!(
-			"gix fetch failed and git fetch fallback exited with status {}: stdout: {} stderr: {}",
-			output.status,
-			stdout.trim(),
-			stderr.trim()
-		)),
-	})
+		status: output.status,
+		stdout,
+		stderr,
+	}
+	.into())
 }
 
 /// The commit at the tip of `refs/remotes/{remote_name}/{branch}`, if that
@@ -370,29 +421,35 @@ pub fn materialize_commit(
 
 	let tree_id = repo
 		.find_commit(commit)
-		.map_err(|source| GitError::Reference { name: commit.to_hex().to_string(), source })?
+		.map_err(|source| ReferenceError::Resolve { name: commit.to_hex().to_string(), source })?
 		.tree_id()
-		.map_err(|source| GitError::CommitDecode { name: commit.to_hex().to_string(), source })?;
+		.map_err(|source| ReferenceError::CommitDecode { name: commit.to_hex().to_string(), source })?;
 
 	let mut index = repo
 		.index_from_tree(&tree_id)
-		.map_err(|source| GitError::IndexFromTree { tree: tree_id.to_string(), source })?;
+		.map_err(|source| CheckoutError::IndexFromTree { tree: tree_id.to_string(), source })?;
 	let mut options = repo
 		.checkout_options(gix_worktree::stack::state::attributes::Source::IdMapping)
-		.map_err(GitError::CheckoutOptions)?;
+		.map_err(CheckoutError::CheckoutOptions)?;
 	options.destination_is_initially_empty = true;
 	options.overwrite_existing = true;
+
+	let objects = repo
+		.objects
+		.clone()
+		.into_arc()
+		.map_err(|source| CheckoutError::OpenArcObjects { source })?;
 
 	gix_worktree_state::checkout(
 		&mut index,
 		destination,
-		repo.objects.clone().into_arc().map_err(|source| GitError::OpenArcObjects { source })?,
+		objects,
 		&Discard,
 		&Discard,
 		&gix::interrupt::IS_INTERRUPTED,
 		options,
 	)
-	.map_err(GitError::Materialize)?;
+	.map_err(CheckoutError::Materialize)?;
 
 	Ok(())
 }
@@ -413,21 +470,21 @@ pub(crate) fn version_search_start_points(
 	} else {
 		let head = repo
 			.head()
-			.map_err(|source| GitError::Head { source })?
+			.map_err(ReferenceError::Head)?
 			.peel_to_object()
-			.map_err(|source| GitError::ObjectLookup { source })?
+			.map_err(ReferenceError::ObjectLookup)?
 			.id()
 			.detach();
 		seen.insert(head);
 		starts.push(head);
 	}
 
-	let refs = repo.references().map_err(|source| GitError::ReferencesOpen { source })?;
+	let refs = repo.references().map_err(ReferenceError::ReferencesOpen)?;
 	for reference in refs
 		.all()
-		.map_err(|source| GitError::ReferencesAll { source })?
+		.map_err(ReferenceError::ReferencesAll)?
 		.peeled()
-		.map_err(|source| GitError::ReferencesPeeled { source })?
+		.map_err(ReferenceError::ReferencesPeeled)?
 	{
 		let Ok(mut reference) = reference else {
 			continue;

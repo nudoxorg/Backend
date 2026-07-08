@@ -18,7 +18,13 @@ use heart::{
 use crate::{GlobalPackage, error::SearchError};
 
 pub mod multi_parent;
+pub mod ranking;
 pub mod tantivy;
+
+/// The quality assigned to a package with no extracted facets yet — a neutral
+/// midpoint so the fusion multiplier neither erases (`0.0`) nor inflates such a
+/// package relative to its BM25 relevance. See [`RegistrySearch::collect_hits`].
+const NEUTRAL_QUALITY: f32 = 0.5;
 
 /// The keyset a registry-search cursor advances over: a relevance score paired
 /// with the package id as the tiebreak, so pagination is stable across an
@@ -138,12 +144,45 @@ impl RegistrySearch {
 			})
 			.collect();
 
-		// Collapse multi-parent duplicates to their best representative, then
-		// rank by score (descending) with the id as the stable tiebreak — the
-		// same order the pagination keyset advances over.
-		let mut hits: Vec<Scored<GlobalPackage>> = multi_parent::merge(scored)
+		// Collapse multi-parent duplicates to their best representative.
+		let representatives = multi_parent::merge(scored)
 			.into_iter()
-			.map(|merged| merged.representative)
+			.map(|merged| merged.representative.value);
+
+		// Fuse tantivy relevance with the derived quality signal (BM25 × quality
+		// with the "+1 kink", plus the exact/contains name bonus). Only the
+		// *pagination-safe* fusion is applied — the positional post-processing
+		// stages (diversity, representative pull-up, downloads-bubble) would break
+		// the `(score, id)` keyset resume, so they are intentionally deferred to a
+		// future first-page surface (see [`ranking::fused_scores`]). Each candidate
+		// carries the record as its payload so the scored hit can be rebuilt.
+		let candidates: Vec<ranking::Candidate<GlobalPackage>> = representatives
+			.map(|package| {
+				let bm25 = scores.get(&package.id).copied().unwrap_or_default();
+				// A package whose rich metadata hasn't been extracted yet has no
+				// quality signal. Treat "unknown" as neutral, not zero — otherwise
+				// `bm25 × 0` would erase its relevance. A uniform neutral multiplier
+				// leaves the pure-BM25 order of unscored packages intact while still
+				// letting genuinely-scored packages sort above known-bad ones.
+				let (quality, keywords) = package
+					.facets
+					.as_ref()
+					.map(|facets| (facets.quality(), facets.keywords.clone()))
+					.unwrap_or((NEUTRAL_QUALITY, Vec::new()));
+				let name = package.package.coordinates.name.canonical().to_string();
+				// No download signal in this registry yet; the download-based
+				// ranking stages are unused (and not on the fusion path anyway).
+				ranking::Candidate { item: package, name, bm25, quality, downloads: 0, keywords }
+			})
+			.collect();
+
+		let fused = ranking::fused_scores(&query.text, &candidates);
+		// Rank by fused score (descending) with the id as the stable tiebreak —
+		// the same order the pagination keyset advances over.
+		let mut hits: Vec<Scored<GlobalPackage>> = candidates
+			.into_iter()
+			.zip(fused)
+			.map(|(candidate, score)| Scored::new(candidate.item, finite_score(score)))
 			.collect();
 		hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.value.id.cmp(&b.value.id)));
 		Ok(hits)

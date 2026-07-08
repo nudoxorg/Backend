@@ -243,7 +243,7 @@ fn transport_failure(error: reqwest::Error) -> heart::ConnectFailure {
 	} else if error.is_connect() {
 		ConnectFailure::Unreachable
 	} else {
-		ConnectFailure::Other(Box::new(error))
+		ConnectFailure::Other(error.into())
 	}
 }
 
@@ -263,7 +263,7 @@ impl Connect for Graph<Cold> {
 		let info = self
 			.endpoint
 			.join("api/info")
-			.map_err(|error| fail(ConnectFailure::Other(Box::new(error))))?;
+			.map_err(|error| fail(ConnectFailure::Other(error.into())))?;
 		let reply = self
 			.client
 			.get(info)
@@ -278,7 +278,7 @@ impl Connect for Graph<Cold> {
 			}
 			status => {
 				return Err(fail(ConnectFailure::Other(
-					format!("terminus /api/info answered {status}").into(),
+					anyhow::anyhow!("terminus /api/info answered {status}"),
 				)));
 			}
 		}
@@ -287,7 +287,7 @@ impl Connect for Graph<Cold> {
 		let database = self
 			.endpoint
 			.join(&format!("api/db/{}/{}", self.organization.as_str(), self.database.as_str()))
-			.map_err(|error| fail(ConnectFailure::Other(Box::new(error))))?;
+			.map_err(|error| fail(ConnectFailure::Other(error.into())))?;
 		let reply = self
 			.client
 			.get(database)
@@ -303,7 +303,7 @@ impl Connect for Graph<Cold> {
 			reqwest::StatusCode::NOT_FOUND => return Err(fail(ConnectFailure::SchemaMismatch)),
 			status => {
 				return Err(fail(ConnectFailure::Other(
-					format!("terminus db check answered {status}").into(),
+					anyhow::anyhow!("terminus db check answered {status}"),
 				)));
 			}
 		}

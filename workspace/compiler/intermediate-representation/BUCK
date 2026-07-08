@@ -9,5 +9,6 @@ rust_crate(
         "yoke",
         "arborium_tree_sitter",
         "rustc_hash",
+        "thiserror",
     ]),
 )

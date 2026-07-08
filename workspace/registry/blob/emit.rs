@@ -48,7 +48,7 @@ pub async fn emit(
 	//    and every already-present hash is a cheap no-op.
 	let mut emitted = Emitted { written: 0, deduped: 0 };
 	for section in &sections {
-		match store.put_section(section).await.map_err(boxed_store)? {
+		match store.put_section(section).await.map_err(BlobError::from)? {
 			true => emitted.written += 1,
 			false => emitted.deduped += 1,
 		}
@@ -57,12 +57,12 @@ pub async fn emit(
 	// 2. The manifest becomes its own `cas/` object and the package pointer is
 	//    repointed at it.
 	let package = manifest.package;
-	let generation = store.put_manifest(&manifest).await.map_err(boxed_store)?;
+	let generation = store.put_manifest(&manifest).await.map_err(BlobError::from)?;
 
 	// 3. Fan out one idempotent intent per derived sink so the read plane hears
 	//    about the new generation.
 	let kinds: Vec<SinkKind> = SinkKind::iter().collect();
-	outbox.append(package, generation, &kinds).await.map_err(outbox_to_blob)?;
+	outbox.append(package, generation, &kinds).await.map_err(BlobError::Outbox)?;
 
 	tracing::info!(
 		written = emitted.written,
@@ -72,17 +72,6 @@ pub async fn emit(
 	Ok(emitted)
 }
 
-/// A store failure inside emission, boxed onto the blob error surface.
-fn boxed_store(error: StoreError) -> BlobError {
-	BlobError::Store(Box::new(error))
-}
+// Store/Outbox errors now surface directly via #[from]-style or explicit rich
+// variants on BlobError (Outbox variant added; Store uses proper #[source] Box).
 
-/// An outbox failure inside emission. [`BlobError`] deliberately has no
-/// postgres variant (assembly is store-shaped), so the fan-out failure rides
-/// the store channel as a generic backend error with its source preserved.
-fn outbox_to_blob(error: OutboxError) -> BlobError {
-	BlobError::Store(Box::new(StoreError::Backend(object_store::Error::Generic {
-		store: "transactional outbox",
-		source: Box::new(error),
-	})))
-}

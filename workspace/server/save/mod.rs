@@ -18,7 +18,7 @@ use registry::blob::BlobManifest;
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
-use crate::error::{ServerError, ServerResult};
+use crate::error::{BadRequestReason, ServerError, ServerResult};
 
 /// Which derived store to rebuild — the shared [`heart::DerivedStore`], the same
 /// type the registry outbox fans out to (no duplicate enum).
@@ -49,9 +49,7 @@ impl<M: EmbeddingModel> Server<M> {
 		let manifest = self.current_manifest(package).await?;
 		let current = ContentHash::of_bytes(&manifest.identity_bytes());
 		if current != snapshot {
-			return Err(ServerError::BadRequest(format!(
-				"snapshot mismatch for {package}: the blob store holds a different generation"
-			)));
+			return Err(BadRequestReason::SnapshotMismatch { package }.into());
 		}
 
 		stores
@@ -73,9 +71,7 @@ impl<M: EmbeddingModel> Server<M> {
 
 		let record = stores.global_store.get(package).await.map_err(RegistryError::from)?;
 		let ResolutionState::Stored { hash: recorded } = record.state else {
-			return Err(ServerError::BadRequest(format!(
-				"package {package} has no recorded snapshot to verify against"
-			)));
+			return Err(BadRequestReason::NoRecordedSnapshot { package }.into());
 		};
 
 		// Re-read every section through the integrity-verifying store path (each

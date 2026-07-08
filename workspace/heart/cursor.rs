@@ -32,10 +32,8 @@ where
 
 	/// Decode an opaque token back into a cursor.
 	pub fn decode(token: &str) -> Result<Self, CursorError> {
-		let bytes = data_encoding::BASE64URL_NOPAD
-			.decode(token.as_bytes())
-			.map_err(|_| CursorError::Encoding)?;
-		postcard::from_bytes(&bytes).map_err(|_| CursorError::Payload)
+		let bytes = data_encoding::BASE64URL_NOPAD.decode(token.as_bytes())?;
+		postcard::from_bytes(&bytes)?
 	}
 }
 
@@ -44,8 +42,19 @@ where
 pub enum CursorError {
 	/// The token was not valid base64url.
 	#[error("malformed cursor encoding")]
-	Encoding,
+	Encoding(#[from] data_encoding::DecodeError),
 	/// The decoded bytes did not match the expected keyset shape.
 	#[error("malformed cursor payload")]
-	Payload,
+	Payload(#[from] postcard::Error),
+}
+
+/// Helper to obtain a CursorError::Payload carrying a concrete source error.
+/// Used by call sites that simulate payload failures (e.g. stale cursor snapshot)
+/// without taking a direct dependency on `postcard`.
+pub fn stale_snapshot_error() -> CursorError {
+    // `[]` always fails to deserialize as a non-unit for our Cursor keys.
+    match postcard::from_bytes::<()>(&[]) {
+        Ok(_) => unreachable!("empty bytes cannot be a valid cursor payload"),
+        Err(e) => e.into(),
+    }
 }

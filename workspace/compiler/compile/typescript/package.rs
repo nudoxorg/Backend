@@ -45,10 +45,7 @@ impl TypescriptPackage {
 			.iter()
 			.map(|root| {
 				ModuleSpecifier::from_file_path(root).map_err(|_| {
-					PackageError::InvalidLocalEntryPoint(format!(
-						"could not convert `{}` into a file module specifier",
-						root.display()
-					))
+					PackageError::InvalidModuleSpecifier { path: root.clone() }
 				})
 			})
 			.collect::<Result<Vec<_>, _>>()?;
@@ -84,12 +81,16 @@ fn build_documents_from_roots(
 			.await;
 	})?;
 
+	let entry_path = roots
+		.first()
+		.and_then(|s| s.to_file_path().ok())
+		.unwrap_or_else(|| PathBuf::from("."));
 	let parser = DocParser::new(&graph, &analyzer, &roots, DocParserOptions {
 		diagnostics: false,
 		private:     true,
 	})
-	.map_err(|source| PackageError::Graph(source.to_string()))?;
-	let parse_output = parser.parse().map_err(|source| PackageError::Graph(source.to_string()))?;
+	.map_err(|source| PackageError::DocParserCreationFailed { entry: entry_path.clone(), source })?;
+	let parse_output = parser.parse().map_err(|source| PackageError::DocParseFailed { entry: entry_path, source })?;
 	Ok(parse_output
 		.into_iter()
 		.map(|(specifier, document)| (specifier.to_string(), document))
@@ -125,10 +126,7 @@ pub fn resolve_materialized_entry_point(root: &Path) -> Result<PathBuf, PackageE
 		}
 	}
 
-	Err(PackageError::InvalidLocalEntryPoint(format!(
-		"could not determine a TypeScript entry point in `{}`",
-		root.display()
-	)))
+	Err(PackageError::EntryPointDeterminationFailed { root: root.to_path_buf() })
 }
 
 /// Expand an entry point into the full set of declaration roots to document,
@@ -457,11 +455,7 @@ fn ensure_materialized_entry_point(
 			return Ok(with_suffix);
 		}
 	}
-	Err(PackageError::InvalidLocalEntryPoint(format!(
-		"entry point `{}` does not exist in `{}`",
-		candidate.display(),
-		root.display()
-	)))
+	Err(PackageError::EntryPointDoesNotExist { candidate, root: root.to_path_buf() })
 }
 
 /// A `deno_graph` loader that serves `file://` specifiers from disk and

@@ -113,15 +113,24 @@ impl<M: EmbeddingModel> Indexer<M> {
 		self.advance(stores, package, &progressing(Phase::Emitting)).await?;
 		let (manifest, sections) = builder.finalize().map_err(RegistryError::from)?;
 		let snapshot = ContentHash::of_bytes(&manifest.identity_bytes());
+
+		// Derive the search facets *before* `emit` consumes the manifest+sections:
+		// the `sections` still hold every file's bytes in memory, so we read
+		// `Cargo.toml` + README straight from them (no post-emit blob round-trip).
+		// Non-fatal by construction: a missing/unparseable manifest yields `None`
+		// and ingest proceeds — search metadata must never fail a store.
+		let facets = extract_facets(&coordinates, &manifest, &sections);
+
 		let emitted = registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
 			.await
 			.map_err(RegistryError::from)?;
 
-		// The transactional boundary: `Stored { snapshot }` and the per-sink
-		// fan-out intents commit together (emit's own appends dedupe against it).
+		// The transactional boundary: `Stored { snapshot }`, the derived facets,
+		// and the per-sink fan-out intents commit together (emit's own appends
+		// dedupe against it).
 		stores
 			.outbox
-			.record_stored(&stores.global_store, package, snapshot)
+			.record_stored(&stores.global_store, package, snapshot, facets.as_ref())
 			.await
 			.map_err(RegistryError::from)?;
 
@@ -271,7 +280,8 @@ impl<M: EmbeddingModel> Indexer<M> {
 				let failure = heart::Failure {
 					attempts: job.attempts,
 					phase,
-					error: message.clone(),
+					message: message.clone(),
+					cause: Some(heart::ErrorDetails::Message(message.clone())),
 					at: chrono::Utc::now(),
 				};
 				let failed = ResolutionState::Failed(failure);
@@ -364,7 +374,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 		let response = self.acquisition.get(&metadata).send().await.map_err(lookup_failure)?;
 		if response.status() == reqwest::StatusCode::NOT_FOUND {
 			return Err(ServerError::Registry(
-				ResolveError::NotFound(name.to_owned()).into(),
+				ResolveError::NotFound { name: name.to_owned() }.into(),
 			));
 		}
 		let bytes = response
@@ -382,7 +392,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 			.find(|file| file.packagetype == "sdist")
 			.ok_or_else(|| {
 				ServerError::Registry(
-					ResolveError::NoMatch { name: name.to_owned(), request: "an sdist".into() }
+					ResolveError::NoMatchRange { name: name.to_owned(), spec: "an sdist".into() }
 						.into(),
 				)
 			})?;
@@ -397,7 +407,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 pub fn classify_failure(error: &ServerError) -> FailureKind {
 	match error {
 		ServerError::Registry(RegistryError::Ingest(ingest)) => ingest.failure_kind(),
-		ServerError::Registry(RegistryError::Resolve(ResolveError::NotFound(_))) => {
+		ServerError::Registry(RegistryError::Resolve(ResolveError::NotFound { .. })) => {
 			FailureKind::SourceUnavailable
 		}
 		ServerError::BadRequest(_) => FailureKind::Malformed,
@@ -437,7 +447,7 @@ fn lookup_failure(error: reqwest::Error) -> ServerError {
 /// The package's origin does not know it.
 fn not_found(coordinates: &PackageCoordinates) -> ServerError {
 	ServerError::Registry(
-		ResolveError::NotFound(coordinates.name.canonical().to_owned()).into(),
+		ResolveError::NotFound { name: coordinates.name.canonical().to_owned() }.into(),
 	)
 }
 
@@ -448,4 +458,154 @@ fn ensure_trailing_slash(url: &url::Url) -> String {
 		rendered.push('/');
 	}
 	rendered
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Facet extraction — turn the emitted snapshot's manifest + README into the
+// searchable [`registry::metadata::SearchFacets`] that ride the stored record.
+// ─────────────────────────────────────────────────────────────────────────────
+
+use registry::blob::{BlobManifest, FileEntry};
+use registry::blob::creation::PendingSection;
+use registry::metadata::SearchFacets;
+use registry::metadata::rich::{self, ExtractionInput};
+
+/// The owned inputs a `Cargo.toml` yields for [`rich::extract`]. Separated from
+/// the borrowing [`ExtractionInput`] so the parse is a *pure*, unit-testable
+/// function over a `&str` (the `ExtractionInput` is stitched together from these
+/// owned fields + the README at the call site, where the borrows are valid).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct CargoManifestFacts {
+	/// `[package] description`.
+	pub description: Option<String>,
+	/// `[package] keywords` (Cargo caps at 5).
+	pub keywords: Vec<String>,
+	/// `[package] categories`.
+	pub categories: Vec<String>,
+	/// `[package] repository` is present.
+	pub has_repository: bool,
+	/// `[package] documentation` is present.
+	pub has_documentation: bool,
+	/// `[package] license` or `license-file` is present.
+	pub has_license: bool,
+}
+
+/// Parse a `Cargo.toml` string into the [`CargoManifestFacts`] rich-metadata
+/// extraction cares about. Pure and total — a malformed or minimal manifest
+/// simply yields empty/`false` facts (never an error), so the caller's facet
+/// extraction stays non-fatal. Kept `pub` so the isolated verification harness
+/// exercises exactly this parse.
+pub fn parse_cargo_toml(text: &str) -> CargoManifestFacts {
+	let Ok(value) = text.parse::<toml::Value>() else {
+		return CargoManifestFacts::default();
+	};
+	let Some(package) = value.get("package").and_then(toml::Value::as_table) else {
+		return CargoManifestFacts::default();
+	};
+
+	let string_field = |key: &str| {
+		package.get(key).and_then(toml::Value::as_str).map(str::to_owned)
+	};
+	let string_array = |key: &str| {
+		package
+			.get(key)
+			.and_then(toml::Value::as_array)
+			.map(|arr| {
+				arr.iter().filter_map(toml::Value::as_str).map(str::to_owned).collect::<Vec<_>>()
+			})
+			.unwrap_or_default()
+	};
+
+	CargoManifestFacts {
+		description: string_field("description"),
+		keywords: string_array("keywords"),
+		categories: string_array("categories"),
+		has_repository: package.contains_key("repository"),
+		has_documentation: package.contains_key("documentation"),
+		has_license: package.contains_key("license") || package.contains_key("license-file"),
+	}
+}
+
+/// Build the [`SearchFacets`] for a freshly-emitted snapshot from its manifest
+/// files and their still-in-memory `sections` bytes.
+///
+/// Non-fatal by design: any missing/unparseable input degrades to a minimal
+/// name-only facet set (or `None`), so ingest never fails because search
+/// metadata could not be derived. Only Rust/`Cargo.toml` is parsed today; other
+/// ecosystems fall back to a name-only [`SearchFacets`].
+fn extract_facets(
+	coordinates: &PackageCoordinates,
+	manifest: &BlobManifest,
+	sections: &[PendingSection],
+) -> Option<SearchFacets> {
+	// Bytes of a manifest file are fetched from `sections` by content hash — the
+	// same hash the `FileEntry` records — so no post-emit blob round-trip is
+	// needed.
+	let file_text = |entry: &FileEntry| -> Option<String> {
+		let section = sections.iter().find(|s| s.hash == entry.hash)?;
+		String::from_utf8(section.bytes.to_vec()).ok()
+	};
+
+	let name = coordinates.name.canonical().to_owned();
+
+	// Only Rust is parsed for now; other ecosystems get a name-only facet set.
+	if coordinates.ecosystem() != heart::ecosystem::Language::Rust {
+		let input = ExtractionInput { name: &name, ..Default::default() };
+		let rich = rich::extract(&input, None, None);
+		let facets = SearchFacets::from_rich(&rich);
+		tracing::debug!(package = %manifest.package, "non-Rust ecosystem: name-only facets");
+		return Some(facets);
+	}
+
+	// Locate the root `Cargo.toml` and the first `README*` (case-insensitive,
+	// package-root only — nested manifests/readmes are ignored).
+	let is_root_manifest = |path: &str| path == "Cargo.toml";
+	let is_root_readme = |path: &str| {
+		!path.contains('/') && path.to_ascii_lowercase().starts_with("readme")
+	};
+
+	let manifest_text = manifest
+		.files
+		.iter()
+		.find(|e| is_root_manifest(e.path.as_str()))
+		.and_then(file_text);
+	let readme_text = manifest
+		.files
+		.iter()
+		.find(|e| is_root_readme(e.path.as_str()))
+		.and_then(file_text);
+
+	let facts = match &manifest_text {
+		Some(text) => parse_cargo_toml(text),
+		None => {
+			// No manifest: fall back to a name-only facet set rather than failing.
+			tracing::debug!(package = %manifest.package, "no Cargo.toml in snapshot; name-only facets");
+			CargoManifestFacts::default()
+		}
+	};
+
+	// `loc` ≈ total README + source-file line count would be costly to compute
+	// precisely; leave 0 for now (a cheap, honest under-count).
+	let loc = 0u32;
+	// TODO: idents/dependencies from IR once the compiler lands.
+	let identifiers: Vec<String> = Vec::new();
+	let dependencies: Vec<String> = Vec::new();
+
+	let input = ExtractionInput {
+		name: &name,
+		description: facts.description.as_deref(),
+		manifest_keywords: &facts.keywords,
+		manifest_categories: &facts.categories,
+		readme: readme_text.as_deref(),
+		identifiers: &identifiers,
+		dependencies: &dependencies,
+		has_repository: facts.has_repository,
+		has_documentation: facts.has_documentation,
+		has_license: facts.has_license,
+		loc,
+	};
+
+	// TODO: load Synonyms/Specifics from the config data dir; `None` for now.
+	let rich = rich::extract(&input, None, None);
+	Some(SearchFacets::from_rich(&rich))
 }

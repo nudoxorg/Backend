@@ -8,7 +8,7 @@ use deno_doc::{Declaration, DeclarationDef, class::{ClassConstructorDef, ClassDe
 use ir::{entry::NudoxPath, generics::{GenericArg, TraitRef}, kind::{Entry, Visibility}, module::Module, protocols::{ReceiverKind, TraitDef, TraitMethod}, record::{Record, SumVariant}, ty::{Type, TypeReference}};
 use rustc_hash::FxHashSet as HashSet;
 
-use super::{PropertyFieldMetadata, Result, TsDocParser, accessibility_to_visibility, declaration_kind_to_visibility, empty_to_none, error::Parse, extract_doc, path_to_id, pick_primary_declaration};
+use super::{PropertyFieldMetadata, Result, TsDocParser, accessibility_to_visibility, declaration_kind_to_visibility, empty_to_none, error::{Parse, TsDeclarationError}, extract_doc, path_to_id, pick_primary_declaration};
 
 impl TsDocParser {
 	pub(super) fn item_at_path(&mut self, path: &[String]) -> Result<Vec<Entry>> {
@@ -17,7 +17,7 @@ impl TsDocParser {
 		}
 
 		if self.state.visiting.contains(path) {
-			return Err(Parse::CircularDependency { path: path.join("::") });
+			return Err(Parse::CircularDependency { path: std::path::PathBuf::from(path.join("::")) });
 		}
 		self.state.visiting.insert(path.to_vec());
 
@@ -88,7 +88,7 @@ impl TsDocParser {
 			.and_then(|doc| doc.symbols.iter().find(|s| s.name.as_ref() == symbol_name).cloned());
 
 		let symbol =
-			symbol.ok_or_else(|| Parse::SymbolNotFound(format!("{module_name}::{symbol_name}")))?;
+			symbol.ok_or_else(|| TsDeclarationError::SymbolNotFound { module: module_name.to_string(), symbol: symbol_name.to_string() })?;
 
 		self.symbol(module_name, &symbol)
 	}
@@ -306,7 +306,7 @@ impl TsDocParser {
 			.and_then(|doc| doc.symbols.iter().find(|s| s.name.as_ref() == parent_name).cloned());
 
 		let parent_symbol = parent_symbol
-			.ok_or_else(|| Parse::SymbolNotFound(format!("{module_name}::{parent_name}")))?;
+			.ok_or_else(|| TsDeclarationError::SymbolNotFound { module: module_name.to_string(), symbol: parent_name.to_string() })?;
 
 		for decl in &parent_symbol.declarations {
 			if let DeclarationDef::Class(cls) = &decl.def {
@@ -334,7 +334,7 @@ impl TsDocParser {
 			}
 		}
 
-		Err(Parse::SymbolNotFound(format!("{module_name}::{parent_name}::{member_name}")))
+		Err(TsDeclarationError::SymbolNotFound { module: module_name.to_string(), symbol: format!("{}::{}", parent_name, member_name) })
 	}
 
 	pub(super) fn method_entry(

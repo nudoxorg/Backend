@@ -8,7 +8,7 @@ use heart::{SymbolId, Scored, Sourced, Symbol};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
-use crate::error::ServerError;
+use crate::error::{BadRequestReason, InternalError, ServerError};
 use crate::search::planner::Plan;
 use crate::search::query::{Query, Search};
 use crate::search::semantic::SemanticSurface;
@@ -80,9 +80,7 @@ impl<M: EmbeddingModel> Server<M> {
 	) -> Result<Vec<Scored<Symbol>>, ServerError> {
 		let Query::Abstract(query) = &request.query else {
 			// The planner never plans a literal query semantically.
-			return Err(ServerError::Internal(
-				"planner produced a semantic plan for a literal query".into(),
-			));
+			return Err(InternalError::PlannerInvariantSemanticForLiteral.into());
 		};
 		let limit = NonZeroUsize::new(page_limit(request)).unwrap_or(NonZeroUsize::MIN);
 		let after = request
@@ -91,7 +89,10 @@ impl<M: EmbeddingModel> Server<M> {
 			.as_deref()
 			.map(|token| {
 				heart::Cursor::decode(token)
-					.map_err(|error| ServerError::BadRequest(format!("invalid cursor: {error}")))
+					.map_err(|source| BadRequestReason::InvalidCursor {
+				token: token.to_owned(),
+				source,
+			})
 			})
 			.transpose()?;
 

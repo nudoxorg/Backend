@@ -189,13 +189,13 @@ impl<M: EmbeddingModel> Connect for Semantic<M, Cold> {
 		self.client
 			.health_check()
 			.await
-			.map_err(|error| fail(ConnectFailure::Other(Box::new(error))))?;
+			.map_err(|error| fail(ConnectFailure::Other(error.into())))?;
 
 		let info = self
 			.client
 			.collection_info(self.collection.as_str())
 			.await
-			.map_err(|error| fail(ConnectFailure::Other(Box::new(error))))?;
+			.map_err(|error| fail(ConnectFailure::Other(error.into())))?;
 		// A missing/named-vector layout cannot serve `Embedding<M>` queries at all.
 		let found = configured_dimension(info).ok_or_else(|| fail(ConnectFailure::SchemaMismatch))?;
 		if found as usize != M::DIMENSIONS {

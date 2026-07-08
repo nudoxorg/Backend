@@ -46,27 +46,27 @@ pub async fn reconcile_on_start(
 	let rows = sqlx::query_with(&select_sql, select_vals)
 		.fetch_all(pool)
 		.await
-		.map_err(|e| IndexError::Database(e))?;
+		.map_err(IndexError::Database)?;
 	let reset: Vec<PackageId> = rows
 		.iter()
 		.map(|row| row.try_get::<uuid::Uuid, _>(0).map(codec::package_id_from_uuid))
 		.collect::<Result<_, _>>()
-		.map_err(|e| IndexError::Database(e))?;
+		.map_err(IndexError::Database)?;
 
 	// 2. Reset every transient row and drop every stale lease, atomically —
 	//    a half-applied recovery would be worse than none.
-	let mut tx = pool.begin().await.map_err(|e| IndexError::Database(e))?;
+	let mut tx = pool.begin().await.map_err(IndexError::BeginTx)?;
 	let (reset_sql, reset_vals) = queries::persist::reset_transient_parse_status();
 	sqlx::query_with(&reset_sql, reset_vals)
 		.execute(&mut *tx)
 		.await
-		.map_err(|e| IndexError::Database(e))?;
+		.map_err(IndexError::Database)?;
 	let (lease_sql, lease_vals) = queries::persist::clear_all_leases();
 	sqlx::query_with(&lease_sql, lease_vals)
 		.execute(&mut *tx)
 		.await
-		.map_err(|e| IndexError::Database(e))?;
-	tx.commit().await.map_err(|e| IndexError::Database(e))?;
+		.map_err(IndexError::Database)?;
+	tx.commit().await.map_err(IndexError::Commit)?;
 
 	// 3. Re-enqueue each recovered package (idempotent per package).
 	let mut requeued = Vec::with_capacity(reset.len());

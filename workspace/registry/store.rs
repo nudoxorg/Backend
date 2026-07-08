@@ -71,19 +71,25 @@ impl Connect for Store<Cold> {
 			) => Err(ConnectError::new(BackendKind::ObjectStore, ConnectFailure::Auth)),
 			Err(other) => Err(ConnectError::new(
 				BackendKind::ObjectStore,
-				ConnectFailure::Other(Box::new(other)),
+				ConnectFailure::Other(other.into()),
 			)),
 		}
 	}
 }
 
 /// Map a raw backend error on `path` onto the store's error vocabulary,
-/// folding the backend's `NotFound` into [`StoreError::NotFound`] with the key
-/// preserved.
+/// folding the backend's `NotFound` into rich typed NotFound variant.
+/// No .to_string() used to create error data.
 fn keyed(path: &Path, error: object_store::Error) -> StoreError {
-	match error {
-		object_store::Error::NotFound { .. } => StoreError::NotFound(path.to_string()),
-		other => StoreError::Backend(other),
+	match &error {
+		object_store::Error::NotFound { .. } => StoreError::ObjectStoreNotFound { path: path.clone(), source: error },
+		object_store::Error::PermissionDenied { .. } => StoreError::ObjectStorePermissionDenied { path: Some(path.clone()), source: error },
+		object_store::Error::Unauthenticated { .. } => StoreError::ObjectStoreUnauthenticated { source: error },
+		object_store::Error::Precondition { .. } => StoreError::ObjectStorePreconditionFailed { path: path.clone(), source: error },
+		object_store::Error::AlreadyExists { .. } => StoreError::ObjectStoreAlreadyExists { path: path.clone(), source: error },
+		object_store::Error::Generic { store, .. } => StoreError::ObjectStoreGeneric { store: *store, source: error },
+		object_store::Error::JoinError { .. } => StoreError::ObjectStoreJoin { source: error },
+		_ => StoreError::Backend(error),
 	}
 }
 
@@ -116,7 +122,7 @@ impl Store<Live> {
 		let path = Self::cas_path(section.hash);
 		// Refuse to persist bytes that do not hash to their declared key — a
 		// mis-addressed put would poison the CAS for every future reader.
-		verify_integrity(path.as_ref(), &section.bytes, section.hash)?;
+		verify_integrity(path.clone(), &section.bytes, section.hash)?;
 		match self.backend.head(&path).await {
 			Ok(_) => Ok(false),
 			Err(object_store::Error::NotFound { .. }) => {
@@ -124,7 +130,7 @@ impl Store<Live> {
 				tracing::debug!(key = %path, size = section.bytes.len(), "cas section written");
 				Ok(true)
 			}
-			Err(other) => Err(StoreError::Backend(other)),
+			Err(other) => Err(keyed(&pointer, other)),
 		}
 	}
 
@@ -134,7 +140,7 @@ impl Store<Live> {
 		let path = Self::cas_path(hash);
 		let result = self.backend.get(&path).await.map_err(|e| keyed(&path, e))?;
 		let bytes = result.bytes().await.map_err(|e| keyed(&path, e))?;
-		verify_integrity(path.as_ref(), &bytes, hash)?;
+		verify_integrity(path.clone(), &bytes, hash)?;
 		Ok(bytes)
 	}
 
@@ -190,7 +196,7 @@ impl Store<Live> {
 		let digest: [u8; 32] = raw
 			.as_ref()
 			.try_into()
-			.map_err(|_| StoreError::KeyEncoding(pointer.to_string()))?;
+			.map_err(|_| StoreError::InvalidPointerLength { path: pointer.clone(), len: raw.len() })?;
 
 		let bytes = self.get_section(ContentHash::from_bytes(digest)).await?;
 		let manifest: BlobManifest = postcard::from_bytes(&bytes)
@@ -205,7 +211,7 @@ impl Store<Live> {
 		match self.backend.head(&pointer).await {
 			Ok(_) => Ok(true),
 			Err(object_store::Error::NotFound { .. }) => Ok(false),
-			Err(other) => Err(StoreError::Backend(other)),
+			Err(other) => Err(keyed(&pointer, other)),
 		}
 	}
 

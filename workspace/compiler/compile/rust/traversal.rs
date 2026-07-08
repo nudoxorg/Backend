@@ -16,8 +16,12 @@ use std::collections::HashSet;
 use semver::Version;
 use tracing::{instrument, warn};
 
-use crate::languages::vcs::{GitError, find_commit_with_extractor};
-pub use crate::languages::vcs::{materialize_commit, open_or_clone_repository};
+use crate::languages::vcs::{
+	find_commit_with_extractor, GitError, ManifestParseError, TreeError,
+};
+pub use crate::languages::vcs::{
+	GitError, ManifestParseError, materialize_commit, open_or_clone_repository, TreeError,
+};
 
 /// Walk newest→oldest. First commit whose Cargo.toml has `package_name` at
 /// `target_version` is the latest commit for that version.
@@ -48,7 +52,7 @@ pub fn extract_package_version(
 ) -> Result<Option<Version>, GitError> {
 	let Some(entry) = tree
 		.lookup_entry_by_path("Cargo.toml")
-		.map_err(|source| GitError::TreeLookupEntry { path: "Cargo.toml".into(), source })?
+		.map_err(|source| TreeError::LookupEntry { path: "Cargo.toml".into(), source })?
 		.filter(|entry| entry.mode().is_blob())
 	else {
 		return Ok(None);
@@ -56,11 +60,11 @@ pub fn extract_package_version(
 
 	let blob = repo
 		.find_blob(entry.oid())
-		.map_err(|source| GitError::FindBlob { path: "Cargo.toml".into(), source })?;
+		.map_err(|source| TreeError::FindBlob { path: "Cargo.toml".into(), source })?;
 	let content = std::str::from_utf8(&blob.data)
-		.map_err(|source| GitError::BlobEncoding { path: "Cargo.toml".into(), source })?;
+		.map_err(|source| ManifestParseError::Utf8 { path: "Cargo.toml".into(), source })?;
 	let manifest: toml::Value = toml::from_str(content)
-		.map_err(|source| GitError::TomlParse { path: "Cargo.toml".into(), source })?;
+		.map_err(|source| ManifestParseError::Toml { path: "Cargo.toml".into(), source })?;
 
 	if let Some(workspace) = manifest.get("workspace") {
 		// A workspace root can also be a package itself ([workspace] + [package]).
@@ -122,7 +126,7 @@ fn read_toml(
 ) -> Result<toml::Value, GitError> {
 	let Some(entry) = tree
 		.lookup_entry_by_path(path)
-		.map_err(|source| GitError::TreeLookupEntry { path: path.into(), source })?
+		.map_err(|source| TreeError::LookupEntry { path: path.into(), source })?
 		.filter(|entry| entry.mode().is_blob())
 	else {
 		return Ok(toml::Value::Table(Default::default()));
@@ -130,11 +134,12 @@ fn read_toml(
 
 	let blob = repo
 		.find_blob(entry.oid())
-		.map_err(|source| GitError::FindBlob { path: path.into(), source })?;
+		.map_err(|source| TreeError::FindBlob { path: path.into(), source })?;
 	let content = std::str::from_utf8(&blob.data)
-		.map_err(|source| GitError::BlobEncoding { path: path.into(), source })?;
+		.map_err(|source| ManifestParseError::Utf8 { path: path.into(), source })?;
 
-	toml::from_str(content).map_err(|source| GitError::TomlParse { path: path.into(), source })
+	toml::from_str(content)
+		.map_err(|source| ManifestParseError::Toml { path: path.into(), source })?
 }
 
 /// Expand `[workspace] members` patterns (including globs) against the
@@ -198,7 +203,7 @@ pub fn check_package_version(
 		return Ok(None);
 	};
 
-	let version = Version::parse(version_string).map_err(|source| GitError::VersionParse {
+	let version = Version::parse(version_string).map_err(|source| ManifestParseError::Version {
 		path: manifest_path.into(),
 		version: version_string.into(),
 		source,
@@ -246,14 +251,14 @@ fn collect_manifest_directories(
 	out: &mut Vec<String>,
 ) -> Result<Vec<String>, GitError> {
 	for entry in tree.iter() {
-		let entry = entry.map_err(|source| GitError::TreeTraverse { source })?;
+		let entry = entry.map_err(|source| TreeError::Traverse { source })?;
 		let name = entry.filename().to_string();
 		let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
 
 		if entry.mode().is_tree() {
 			let subtree = repo
 				.find_tree(entry.oid())
-				.map_err(|source| GitError::FindTree { path: path.clone(), source })?;
+				.map_err(|source| TreeError::FindTree { path: path.clone(), source })?;
 			collect_manifest_directories(repo, &subtree, &path, out)?;
 			continue;
 		}

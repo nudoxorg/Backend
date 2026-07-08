@@ -6,7 +6,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use heart::{Cursor, Scored, Symbol, SymbolId, SymbolKind};
 use runtime::text::{TextIndex, TextQuery};
 
-use crate::error::ServerError;
+use crate::error::{BadRequestReason, ServerError};
 use crate::search::query::{Filter, LiteralQuery, Pagination};
 
 /// The thin adapter from the server's query vocabulary onto one replica-local
@@ -87,7 +87,10 @@ fn decode_cursor(
 		.as_deref()
 		.map(|token| {
 			Cursor::decode(token)
-				.map_err(|error| ServerError::BadRequest(format!("invalid cursor: {error}")))
+				.map_err(|source| BadRequestReason::InvalidCursor {
+					token: token.to_owned(),
+					source,
+				})
 		})
 		.transpose()
 }

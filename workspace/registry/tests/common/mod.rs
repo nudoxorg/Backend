@@ -80,7 +80,7 @@ pub fn unique_rust_name(prefix: &str) -> String {
 /// A [`GlobalPackage`] minted from a per-source package the deterministic way
 /// (`id` is always the coordinates fingerprint, never invented).
 pub fn global_package(package: Package, state: ResolutionState) -> GlobalPackage {
-    GlobalPackage { id: package.id(), package, state }
+    GlobalPackage { id: package.id(), package, state, facets: None }
 }
 
 /// A unique temporary directory removed on drop (for tantivy replicas).
