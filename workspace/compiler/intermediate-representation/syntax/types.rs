@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ResolvedReference {
 	pub target: crate::entry::NudoxPath,
 	pub span:   std::ops::Range<usize>,
@@ -6,6 +7,7 @@ pub struct ResolvedReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ReferenceKind {
 	FunctionCall,
 	MethodCall,

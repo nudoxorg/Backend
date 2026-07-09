@@ -45,7 +45,6 @@
 
 pub mod backend;
 pub mod budget;
-pub mod cache;
 pub mod cage;
 pub mod cancel;
 pub mod cgroup;
@@ -70,7 +69,6 @@ pub use backend::{
 	Backend, Capabilities, LinuxBwrap, MacSeatbelt, NixDerivation, Passthrough, Selected, select,
 };
 pub use budget::{CapabilityBudget, FsGrant, NetGrant};
-pub use cache::{CacheKey, ParseCache};
 pub use cage::{Cage, CageCaps, CageId, DevPassthrough, LinuxNamespaces, Policy, run_sealed};
 pub use cancel::CancelToken;
 pub use error::{CageError, KillReason, SandboxError, to_io_error};

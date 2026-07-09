@@ -271,10 +271,10 @@ fn limit_override_applies_sparsely() {
 }
 
 #[test]
-fn parse_cache_key_changes_with_inputs() {
-	use sandbox::CacheKey;
-	let a = CacheKey::derive(b"v1", b"tc", b"src", b"lock");
-	let b = CacheKey::derive(b"v1", b"tc", b"src2", b"lock");
+fn job_key_changes_with_inputs() {
+	use heart::JobKey;
+	let a = JobKey::derive(b"v1", b"tc", b"src", b"lock");
+	let b = JobKey::derive(b"v1", b"tc", b"src2", b"lock");
 	assert_ne!(a.hex(), b.hex());
 }
 
