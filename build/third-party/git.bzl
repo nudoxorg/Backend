@@ -600,7 +600,9 @@ GIT = [
                     "builtin_macros": ":snix_eval_builtin_macros",
                 },
                 "env": {
-                    "SNIX_CURRENT_SYSTEM": "aarch64-darwin",
+                    # snix's `llvm_triple_to_nix_double` expects an LLVM/rustc
+                    # triple (e.g. aarch64-apple-darwin), not a Nix double.
+                    "SNIX_CURRENT_SYSTEM": "aarch64-apple-darwin",
                 },
                 "deps": [
                     ":bstr-1",

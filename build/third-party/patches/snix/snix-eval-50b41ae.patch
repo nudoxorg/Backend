@@ -1,3 +1,20 @@
+--- a/src/systems.rs
++++ b/src/systems.rs
+@@ -10,6 +10,14 @@
+ /// approximation as a nix double, where "best" is currently defined
+ /// as "however cppnix handles it".
+ pub fn llvm_triple_to_nix_double(llvm_triple: &str) -> String {
++    // Already a Nix double (cpu-os) — pass through. Some build systems set
++    // SNIX_CURRENT_SYSTEM to a Nix double rather than an LLVM triple.
++    {
++        let parts: Vec<&str> = llvm_triple.split('-').collect();
++        if parts.len() == 2 && is_second_coordinate(parts[1]) {
++            return llvm_triple.to_string();
++        }
++    }
+     let parts: Vec<&str> = llvm_triple.split('-').collect();
+     let cpu = match parts[0] {
+         "armv6" => "armv6l", // cppnix appends an "l" to armv6
 --- a/src/value/function.rs	2025-12-01 19:58:48.000000000 -0500
 +++ b/src/value/function.rs	2026-07-08 00:00:00.000000000 +0000
 @@ -9,15 +9,15 @@
