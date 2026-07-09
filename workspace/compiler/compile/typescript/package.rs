@@ -61,23 +61,31 @@ impl TypescriptPackage {
 /// boundary. Reusing one runtime per thread avoids per-package build/teardown —
 /// the production path runs inside the long-lived `producer-worker`, so the
 /// runtime lives for the worker process.
+///
+/// [`OnceCell`] (not `RefCell`) so install does not hold a mutable borrow across
+/// `block_on` (re-entrant calls would panic a `RefCell`; nested runtimes still
+/// fail at the tokio layer, which is correct).
 fn block_on<F: Future>(future: F) -> Result<F::Output, PackageError> {
-	use std::cell::RefCell;
+	use std::cell::OnceCell;
 
 	thread_local! {
-		static RT: RefCell<Option<tokio::runtime::Runtime>> = const { RefCell::new(None) };
+		static RT: OnceCell<tokio::runtime::Runtime> = const { OnceCell::new() };
 	}
 
 	RT.with(|cell| {
-		let mut slot = cell.borrow_mut();
-		if slot.is_none() {
-			let rt = tokio::runtime::Builder::new_current_thread()
-				.enable_all()
-				.build()
-				.map_err(PackageError::Io)?;
-			*slot = Some(rt);
-		}
-		Ok(slot.as_ref().expect("runtime just installed").block_on(future))
+		let rt = match cell.get() {
+			Some(rt) => rt,
+			None => {
+				let built = tokio::runtime::Builder::new_current_thread()
+					.enable_all()
+					.build()
+					.map_err(PackageError::Io)?;
+				// Racing install on one thread cannot happen; ignore AlreadyInit.
+				let _ = cell.set(built);
+				cell.get().expect("runtime just installed")
+			}
+		};
+		Ok(rt.block_on(future))
 	})
 }
 

@@ -12,9 +12,9 @@ use crate::compile::producer::{
 /// Java project producer (vendored javadoc doclet → IR).
 ///
 /// Multi-step (materialize → javac → javadoc) is orchestrated inside the existing
-/// oracle path; [`produce`](Producer::produce) calls that path so intermediate
-/// classpaths stay consistent. `plan`/`decode` document the final doclet step
-/// for ForgeRuntime (Phase 4) which will own staged scratch.
+/// oracle path via [`produce`](Producer::produce). `plan`/`decode` return explicit
+/// errors (not hollow empty commands); ForgeRuntime (Phase 4) will stage sequential
+/// sealed commands under one scratch.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct JavaProducer;
 
@@ -29,12 +29,8 @@ impl Producer for JavaProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(&self, input: &SealedInput) -> Result<ExecPlan, ProducerError> {
-		// Adaptive: source-root discovery + oracle compile are host prep.
-		// Phase 4 will split these into sequential SealedCommands under one
-		// scratch; for now produce() owns the full pipeline.
-		let _ = input;
-		Ok(ExecPlan::Commands(Vec::new()))
+	fn plan(&self, _input: &SealedInput) -> Result<ExecPlan, ProducerError> {
+		Err(ProducerError::adaptive("javadoc multi-step"))
 	}
 
 	fn decode(
@@ -43,7 +39,7 @@ impl Producer for JavaProducer {
 		_captured: Captured,
 	) -> Result<ProducerOutput, ProducerError> {
 		Err(ProducerError::decode(
-			"java decode goes through produce() until multi-command staging lands",
+			"javadoc multi-step: adaptive — call produce() (Phase 4 stages sealed commands)",
 		))
 	}
 

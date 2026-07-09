@@ -149,10 +149,11 @@ pub fn compile_oracle() -> Result<PathBuf, OracleError> {
 /// directory and return it. Idempotent; the directory name keys the exact
 /// vendored revision, so an existing copy is always current.
 pub fn materialize_oracle() -> Result<PathBuf, DocletError> {
+	let dir = producer::oracle_dir("java", producer::oracle_hash(ORACLE_SOURCES));
 	producer::materialize_oracle(ORACLE_SOURCES, "java")
 		.map(|p| p.dir)
 		.map_err(|e| DocletError::MaterializeSourceFailed {
-			path: std::env::temp_dir().join("nudox-java-oracle"),
+			path: dir,
 			source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
 		})
 }

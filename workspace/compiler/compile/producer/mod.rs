@@ -9,9 +9,9 @@
 //! decode(Captured) → ProducerOutput { index, aux }
 //! ```
 //!
-//! Adaptive multi-step toolchains (Rust multi-crate) may override
-//! [`Producer::produce`] while still advertising real `plan`/`decode` for the
-//! single-crate shape.
+//! Adaptive multi-step toolchains (Rust multi-crate, Java javac+javadoc) override
+//! [`Producer::produce`] and return [`ProducerError::Plan`] / [`ProducerError::Decode`]
+//! from `plan`/`decode` so introspection never sees a hollow empty command list.
 
 mod oracle;
 mod scratch;
@@ -32,8 +32,8 @@ use std::time::Duration;
 use heart::Language;
 use ir::entry::Index;
 use sandbox::{
-	Captured, Env, FsGrant, Mounts, NetGrant, ProcessEnd, ProducerProfile, SealedCommand,
-	SealedInput, Sealer, WorkerLang,
+	Captured, Env, Mounts, NetGrant, ProcessEnd, ProducerProfile, SealedCommand, SealedInput,
+	Sealer, WorkerLang,
 };
 use thiserror::Error;
 
@@ -53,7 +53,10 @@ impl std::fmt::Display for ProducerId {
 	}
 }
 
-/// Threat tier driving default budget policy (Phase 6 tightens this further).
+/// Threat tier driving budget *policy* (Phase 6 tightens this further).
+///
+/// Resource ceilings come from [`Producer::profile`], not this enum alone —
+/// `Untrusted` is not a synonym for [`ProducerProfile::Tiny`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreatTier {
 	/// Interpreters that execute package code (nix / ts / python).
@@ -62,17 +65,6 @@ pub enum ThreatTier {
 	Untrusted,
 	/// Fully trusted host tooling (none today).
 	Trusted,
-}
-
-impl ThreatTier {
-	/// Profile used when sealing a package for this tier's default producer.
-	pub const fn profile(self) -> ProducerProfile {
-		match self {
-			Self::Hostile => ProducerProfile::StaticParser,
-			Self::Untrusted => ProducerProfile::Tiny,
-			Self::Trusted => ProducerProfile::Tiny,
-		}
-	}
 }
 
 // ─── Plan / output ───────────────────────────────────────────────────────────
@@ -129,7 +121,7 @@ pub enum ProducerError {
 	#[error("decode failed: {0}")]
 	Decode(String),
 
-	/// Plan construction failed.
+	/// Plan construction failed (including adaptive multi-step producers).
 	#[error("plan failed: {0}")]
 	Plan(String),
 
@@ -161,16 +153,12 @@ impl ProducerError {
 	pub fn decode(e: impl std::fmt::Display) -> Self {
 		Self::Decode(e.to_string())
 	}
-}
 
-impl From<IsolatedFailureKind> for ProducerError {
-	fn from(kind: IsolatedFailureKind) -> Self {
-		Self::Isolated(IsolatedFailure {
-			command: "producer".into(),
-			kind,
-			stdout: None,
-			stderr: None,
-		})
+	/// Adaptive multi-step: use [`Producer::produce`], not plan→execute.
+	pub fn adaptive(step: &str) -> Self {
+		Self::Plan(format!(
+			"{step}: adaptive multi-step — call produce() (Phase 4 stages sealed commands)"
+		))
 	}
 }
 
@@ -184,8 +172,19 @@ pub trait Producer: Send + Sync {
 	/// Ecosystem this producer lowers.
 	fn language(&self) -> Language;
 
-	/// Threat tier (drives budget defaults).
+	/// Threat tier (drives budget *policy*; ceilings via [`Self::profile`]).
 	fn tier(&self) -> ThreatTier;
+
+	/// Resource profile for sealing / cage limits (language-specific, not tier-only).
+	fn profile(&self) -> ProducerProfile {
+		match self.language() {
+			Language::Rust => ProducerProfile::Rust,
+			Language::Go => ProducerProfile::Go,
+			Language::Java => ProducerProfile::Java,
+			Language::Nix => ProducerProfile::Nix,
+			Language::Python | Language::Typescript => ProducerProfile::StaticParser,
+		}
+	}
 
 	/// Convenience for monomorphic call sites (`GoProducer::ID` also works).
 	fn id(&self) -> ProducerId {
@@ -196,6 +195,9 @@ pub trait Producer: Send + Sync {
 	///
 	/// May materialize oracles / write scratch under `input.budget.fs.scratch`
 	/// (seal-time host prep). Must not re-read ambient secrets into the guest.
+	///
+	/// Adaptive multi-step producers return [`ProducerError::Plan`] here and
+	/// own orchestration in [`Self::produce`].
 	fn plan(&self, input: &SealedInput) -> Result<ExecPlan, ProducerError>;
 
 	/// Decode cage / worker captures into IR.
@@ -225,21 +227,41 @@ pub trait Producer: Send + Sync {
 	}
 }
 
-// ─── Dispatch ────────────────────────────────────────────────────────────────
+// ─── Seal + RAII scratch ─────────────────────────────────────────────────────
 
-/// Seal a package root under a producer tier's default profile + toolchains.
-pub fn seal_package(root: &Path, profile: ProducerProfile) -> SealedInput {
+/// Sealed package root + owned scratch (cleaned on drop).
+///
+/// Hold this for the duration of [`Producer::produce`] so the budget's RW
+/// scratch remains valid and is removed afterward.
+pub struct SealedPackage {
+	input: SealedInput,
+	_scratch: Scratch,
+}
+
+impl SealedPackage {
+	/// Borrow the sealed input.
+	pub fn input(&self) -> &SealedInput {
+		&self.input
+	}
+
+	/// Package root.
+	pub fn root(&self) -> &Path {
+		&self.input.root
+	}
+}
+
+/// Seal a package root under a language profile + toolchains.
+///
+/// Scratch is a unique temp dir owned by the returned [`SealedPackage`] (RAII).
+pub fn seal_package(
+	root: &Path,
+	profile: ProducerProfile,
+) -> Result<SealedPackage, ProducerError> {
+	let scratch = Scratch::temp("producer")?;
+	let scratch_root = scratch.path().to_path_buf();
+
 	let sealer = Sealer::new();
 	let toolchains = ToolchainPaths::from_env();
-	let scratch_root = std::env::temp_dir().join(format!(
-		"nudox-producer-{}-{:x}",
-		std::process::id(),
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_nanos())
-			.unwrap_or(0)
-	));
-	let _ = std::fs::create_dir_all(&scratch_root);
 
 	let mut env = Env::empty().set(
 		"PATH",
@@ -252,7 +274,7 @@ pub fn seal_package(root: &Path, profile: ProducerProfile) -> SealedInput {
 		env = env.set("LC_ALL", v);
 	}
 	env = apply_toolchain_env(env, &toolchains);
-	// Seal-time secret projection: never put credential-shaped keys in the budget.
+	// Defense-in-depth: strip secret-shaped keys if any bulk-copy ever lands.
 	env = project_hermetic_env(env);
 
 	let mut mounts = Mounts::new();
@@ -269,19 +291,23 @@ pub fn seal_package(root: &Path, profile: ProducerProfile) -> SealedInput {
 
 	let limits = sandbox::overrides::resolve(profile, None);
 	let budget = sealer.budget_from_mounts(mounts, scratch_root, NetGrant::Off, env, limits);
-	SealedInput::new(root, budget)
+	Ok(SealedPackage {
+		input: SealedInput::new(root, budget),
+		_scratch: scratch,
+	})
 }
 
-/// Strip / refuse secret-shaped keys from a sealed env allowlist.
+/// Strip secret-shaped keys from a sealed env allowlist.
 ///
-/// Used at seal time so guests (and in-process hermetic evals that honor the
-/// budget) never see host credentials. Replaces process-global `remove_var`
-/// scrubbing for the worker path (pool already `env_clear`s children).
+/// `Env` is intentionally not ambient, but bulk `from_pairs` can still inject
+/// credentials. This is the choke point that drops them before the budget is
+/// sealed. Replaces process-global `remove_var` scrubbing.
 pub fn project_hermetic_env(env: Env) -> Env {
-	// Env is an allowlist builder — callers only set safe keys. This is the
-	// documented choke point for future bulk projections.
-	let _ = SECRET_ENV_PREFIXES;
-	env
+	Env::from_pairs(
+		env.into_pairs()
+			.into_iter()
+			.filter(|(k, _)| !is_secret_env_key(&k.to_string_lossy())),
+	)
 }
 
 /// Secret-shaped env prefixes (mirrored from nix hermeticity).
@@ -457,7 +483,30 @@ pub fn decode_index_json(bytes: &[u8]) -> Result<Index, ProducerError> {
 	serde_json::from_slice(bytes).map_err(|e| ProducerError::decode(e.to_string()))
 }
 
-/// Borrow the sealed scratch as an [`FsGrant`] helper.
-pub fn grant_scratch(input: &SealedInput) -> &FsGrant {
-	&input.budget.fs
+/// Content-addressed oracle dir path for a label + hash (for error context).
+pub fn oracle_dir(label: &str, hash: u64) -> PathBuf {
+	std::env::temp_dir().join(format!("nudox-{label}-oracle-{hash:016x}"))
+}
+
+#[cfg(test)]
+mod hermetic_env_tests {
+	use super::*;
+
+	#[test]
+	fn project_strips_secret_shaped_keys() {
+		let env = Env::empty()
+			.set("PATH", "/usr/bin")
+			.set("AWS_SECRET_ACCESS_KEY", "leak")
+			.set("GITHUB_TOKEN", "ghp")
+			.set("HARMLESS", "ok");
+		let projected = project_hermetic_env(env);
+		let keys: Vec<_> = projected
+			.iter()
+			.map(|(k, _)| k.to_string_lossy().into_owned())
+			.collect();
+		assert!(keys.iter().any(|k| k == "PATH"));
+		assert!(keys.iter().any(|k| k == "HARMLESS"));
+		assert!(!keys.iter().any(|k| k.contains("AWS")));
+		assert!(!keys.iter().any(|k| k.contains("GITHUB")));
+	}
 }

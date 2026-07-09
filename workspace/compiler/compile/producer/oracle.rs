@@ -1,9 +1,10 @@
 //! Shared content-addressed materialization for vendored oracles (Go + Java).
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::ProducerError;
+use super::{ProducerError, oracle_dir};
 
 /// Path to a materialised oracle tree (content-addressed under temp).
 #[derive(Debug, Clone)]
@@ -30,21 +31,29 @@ impl AsRef<Path> for OraclePath {
 /// `label` is a short tag (`"go"`, `"java"`) used in the directory name.
 /// The directory name keys the exact FNV-1a hash of `(name, contents)` pairs,
 /// so an existing copy is always current for this binary revision.
+///
+/// Writes are atomic (`*.part` → rename) so a killed mid-write cannot poison
+/// the content-addressed cache. Existing files with the wrong length are rewritten.
 pub fn materialize(files: &[(&str, &str)], label: &str) -> Result<OraclePath, ProducerError> {
 	let hash = oracle_hash(files);
-	let dir = std::env::temp_dir().join(format!("nudox-{label}-oracle-{hash:016x}"));
+	let dir = oracle_dir(label, hash);
 	fs::create_dir_all(&dir)?;
 
 	for (name, contents) in files {
 		let path = dir.join(name);
-		// Content-addressed dir ⇒ present == current.
 		if path.is_file() {
-			continue;
+			let ok = fs::metadata(&path)
+				.map(|m| m.len() == contents.len() as u64)
+				.unwrap_or(false);
+			if ok {
+				continue;
+			}
+			// Corrupt / partial — rewrite atomically.
 		}
 		if let Some(parent) = path.parent() {
 			fs::create_dir_all(parent)?;
 		}
-		fs::write(&path, contents)?;
+		write_atomic(&path, contents.as_bytes())?;
 	}
 	Ok(OraclePath { dir })
 }
@@ -59,6 +68,23 @@ pub fn oracle_hash(files: &[(&str, &str)]) -> u64 {
 		}
 	}
 	hash
+}
+
+/// Write `bytes` to `path` via a sibling `*.part` file + rename.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ProducerError> {
+	let parent = path.parent().unwrap_or_else(|| Path::new("."));
+	let name = path
+		.file_name()
+		.map(|n| n.to_string_lossy().into_owned())
+		.unwrap_or_else(|| "oracle.bin".into());
+	let tmp = parent.join(format!(".{name}.part"));
+	{
+		let mut f = fs::File::create(&tmp)?;
+		f.write_all(bytes)?;
+		f.sync_all()?;
+	}
+	fs::rename(&tmp, path)?;
+	Ok(())
 }
 
 #[cfg(test)]
@@ -80,6 +106,23 @@ mod tests {
 		assert_eq!(
 			fs::read_to_string(a.dir.join("marker.txt")).unwrap(),
 			"hello-oracle"
+		);
+	}
+
+	#[test]
+	fn materialize_rewrites_truncated_file() {
+		let files = [("poison.txt", "full-contents-here")];
+		let hash = oracle_hash(&files);
+		let dir = oracle_dir("test-poison", hash);
+		let _ = fs::remove_dir_all(&dir);
+		fs::create_dir_all(&dir).unwrap();
+		// Simulate a killed mid-write.
+		fs::write(dir.join("poison.txt"), b"trunc").unwrap();
+
+		let got = materialize(&files, "test-poison").unwrap();
+		assert_eq!(
+			fs::read_to_string(got.dir.join("poison.txt")).unwrap(),
+			"full-contents-here"
 		);
 	}
 }

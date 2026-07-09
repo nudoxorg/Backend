@@ -167,10 +167,11 @@ pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
 /// temp directory and return it. Idempotent: an existing up-to-date copy
 /// is reused, which also lets the Go build cache do its job across runs.
 pub fn materialize_oracle() -> Result<PathBuf> {
+	let dir = producer::oracle_dir("go", producer::oracle_hash(ORACLE_FILES));
 	producer::materialize_oracle(ORACLE_FILES, "go")
 		.map(|p| p.dir)
 		.map_err(|e| GoError::MaterializeOracleDir {
-			dir: std::env::temp_dir().join("nudox-go-oracle"),
+			dir,
 			source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
 		})
 }

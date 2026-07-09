@@ -16,7 +16,8 @@ use super::RustPackage;
 ///
 /// Planning is adaptive: `cargo metadata` decides which local packages to
 /// document, so [`produce`](Producer::produce) orchestrates metadata + N rustdoc
-/// runs. ForgeRuntime (Phase 4) will stage that as sequential sealed commands.
+/// runs. `plan`/`decode` return explicit errors (not hollow empty commands);
+/// ForgeRuntime (Phase 4) will stage sequential sealed commands.
 #[derive(Debug, Clone)]
 pub struct RustProducer {
 	/// Root package name as cargo metadata reports it.
@@ -38,11 +39,8 @@ impl Producer for RustProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(&self, input: &SealedInput) -> Result<ExecPlan, ProducerError> {
-		// Adaptive multi-crate plan is owned by produce(); empty Commands would
-		// fail execute(), so produce is the entry point.
-		let _ = input;
-		Ok(ExecPlan::Commands(Vec::new()))
+	fn plan(&self, _input: &SealedInput) -> Result<ExecPlan, ProducerError> {
+		Err(ProducerError::adaptive("rustdoc multi-crate"))
 	}
 
 	fn decode(
@@ -51,7 +49,7 @@ impl Producer for RustProducer {
 		_captured: Captured,
 	) -> Result<ProducerOutput, ProducerError> {
 		Err(ProducerError::decode(
-			"rust decode goes through produce() until multi-command staging lands",
+			"rustdoc multi-crate: adaptive — call produce() (Phase 4 stages sealed commands)",
 		))
 	}
 

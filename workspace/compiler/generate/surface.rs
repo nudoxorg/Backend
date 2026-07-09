@@ -11,7 +11,6 @@ use ir::{
 	entry::Index,
 	pipeline::{Collected, Ir},
 };
-use sandbox::ProducerProfile;
 
 use crate::languages::producer::Producer;
 use crate::{
@@ -37,7 +36,12 @@ pub fn build(input: &PackageInput) -> Result<Index, GenerateError> {
 }
 
 /// Seal + produce for the package's language — the only surface dispatch.
-fn run_producer(input: &PackageInput) -> Result<producer::ProducerOutput, GenerateError> {
+///
+/// Scratch lives in [`producer::SealedPackage`] and is removed when this
+/// function returns (RAII).
+fn run_producer(
+	input: &PackageInput,
+) -> Result<producer::ProducerOutput, GenerateError> {
 	match input.coordinates.ecosystem() {
 		Language::Rust => {
 			let PackageVersion::Cargo(version) = &input.coordinates.version else {
@@ -49,23 +53,23 @@ fn run_producer(input: &PackageInput) -> Result<producer::ProducerOutput, Genera
 				version: version.clone(),
 				direct_repo,
 			};
-			let sealed = producer::seal_package(&input.root, ProducerProfile::Rust);
-			p.produce(&sealed).map_err(GenerateError::from)
+			let sealed = producer::seal_package(&input.root, p.profile())?;
+			p.produce(sealed.input()).map_err(GenerateError::from)
 		}
 		Language::Go => {
 			let p = GoProducer;
-			let sealed = producer::seal_package(&input.root, ProducerProfile::Go);
-			p.produce(&sealed).map_err(GenerateError::from)
+			let sealed = producer::seal_package(&input.root, p.profile())?;
+			p.produce(sealed.input()).map_err(GenerateError::from)
 		}
 		Language::Java => {
 			let p = JavaProducer;
-			let sealed = producer::seal_package(&input.root, ProducerProfile::Java);
-			p.produce(&sealed).map_err(GenerateError::from)
+			let sealed = producer::seal_package(&input.root, p.profile())?;
+			p.produce(sealed.input()).map_err(GenerateError::from)
 		}
 		Language::Python => {
 			let p = PythonProducer;
-			let sealed = producer::seal_package(&input.root, p.tier().profile());
-			p.produce(&sealed).map_err(GenerateError::from)
+			let sealed = producer::seal_package(&input.root, p.profile())?;
+			p.produce(sealed.input()).map_err(GenerateError::from)
 		}
 		Language::Typescript => {
 			let PackageVersion::Npm(_) = &input.coordinates.version else {
@@ -74,13 +78,13 @@ fn run_producer(input: &PackageInput) -> Result<producer::ProducerOutput, Genera
 			let p = TypescriptProducer {
 				name: input.coordinates.name.original().to_string(),
 			};
-			let sealed = producer::seal_package(&input.root, p.tier().profile());
-			p.produce(&sealed).map_err(GenerateError::from)
+			let sealed = producer::seal_package(&input.root, p.profile())?;
+			p.produce(sealed.input()).map_err(GenerateError::from)
 		}
 		Language::Nix => {
 			let p = NixProducer;
-			let sealed = producer::seal_package(&input.root, ProducerProfile::Nix);
-			p.produce(&sealed).map_err(GenerateError::from)
+			let sealed = producer::seal_package(&input.root, p.profile())?;
+			p.produce(sealed.input()).map_err(GenerateError::from)
 		}
 	}
 }

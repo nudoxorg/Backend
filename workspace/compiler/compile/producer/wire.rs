@@ -78,12 +78,14 @@ pub fn wire_index_members<P: PathParent>(index: &mut Index, split: &P) {
 /// Apply a precomputed module-key → children map (Python / Go style).
 ///
 /// Accepts any iterator so callers may use `std` or `Fx` hash maps.
+/// Sort key is `Debug` formatting to preserve historical Python IR order
+/// (path Display can differ for externals / lossy paths).
 pub fn apply_members_to_index(
 	index: &mut Index,
 	members: impl IntoIterator<Item = (NudoxPath, Vec<NudoxPath>)>,
 ) {
 	for (module_key, mut children) in members {
-		children.sort_by(|a, b| path_str(a).cmp(&path_str(b)));
+		children.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
 		if let Some(Entry::Module(symbol)) = index.entries_by_path.get_mut(&module_key) {
 			symbol.inner.members = Some(children);
 		}

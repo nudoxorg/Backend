@@ -76,7 +76,7 @@ pub enum GenerateError {
 	UnsupportedTypescript,
 
 	/// Producer plan / execute / decode failed (unified surface path).
-	#[error("producer failed")]
+	#[error(transparent)]
 	Producer(#[from] crate::languages::producer::ProducerError),
 }
 
