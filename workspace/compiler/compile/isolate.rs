@@ -1,8 +1,11 @@
 //! Seam F: run producer toolchains inside the sandbox.
 //!
 //! Producers keep their language-specific logic; this module is the only place
-//! that builds a [`sandbox::Spec`] for external toolchains (Rust/Java/Go) and
+//! that builds isolation inputs for external toolchains (Rust/Java/Go) and
 //! for the in-process worker binary (Nix/TS/Python).
+//!
+//! Phase 2: [`IsolatedCommand`] is a thin shim over [`sandbox::SealedCommand`]
+//! so existing producers keep compiling. Full `Producer` trait is Phase 3.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -10,8 +13,8 @@ use std::process::Output as StdOutput;
 use std::sync::OnceLock;
 
 use sandbox::{
-	run, Env, KillReason, LimitOverride, Mounts, Network, ProducerProfile, SandboxError, Spec,
-	WorkerLang, WorkerPool, WorkerPoolConfig,
+	CancelToken, Env, KillReason, LimitOverride, Mounts, Network, ProducerProfile, SandboxError,
+	SealedCommand, Sealer, WorkerLang, WorkerPool, WorkerPoolConfig, run,
 };
 
 /// Map a sandbox kill / denial into a displayable process-style failure.
@@ -133,6 +136,9 @@ fn global_toolchains() -> &'static ToolchainPaths {
 }
 
 /// Inputs for an isolated toolchain invocation.
+///
+/// Thin shim over [`SealedCommand`] for this phase: builders stay familiar to
+/// producers; [`run_isolated`] seals and runs through the sandbox surface.
 pub struct IsolatedCommand {
 	/// Program (name on PATH or absolute).
 	pub program: PathBuf,
@@ -224,6 +230,10 @@ impl IsolatedCommand {
 }
 
 /// Run an isolated command; on success return a std-like [`StdOutput`].
+///
+/// Builds a [`SealedCommand`] (via [`Sealer`]) then runs it. Ambient PATH /
+/// locale / toolchain discovery still happens here — that is the sealer
+/// boundary until ForgeRuntime (Phase 4) owns it.
 pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> {
 	let command_label = format!(
 		"{} {}",
@@ -235,56 +245,11 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 			.join(" ")
 	);
 
-	let toolchains = global_toolchains();
-	let mut env = Env::empty().set(
-		"PATH",
-		std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
-	);
-	// Minimal locale so toolchains don't panic — not a secret channel.
-	if let Ok(v) = std::env::var("LANG") {
-		env = env.set("LANG", v);
-	}
-	if let Ok(v) = std::env::var("LC_ALL") {
-		env = env.set("LC_ALL", v);
-	}
-	env = toolchains.apply_env(env);
-	for (k, v) in cmd.env {
-		env = env.set(k, v);
-	}
-
-	let mut mounts = Mounts::new();
-	for p in &cmd.read_only {
-		mounts = mounts.ro(p);
-	}
-	for p in toolchains.ro_binds() {
-		mounts = mounts.ro(p);
-	}
-	for p in &cmd.writable {
-		mounts = mounts.rw(p);
-	}
-	// Nix store RO for absolute PT_INTERP / RPATH toolchains.
-	if Path::new("/nix/store").is_dir() {
-		mounts = mounts.ro("/nix/store");
-	}
-	// Narrow scratch — never ambient $HOME.
-	let scratch = std::env::temp_dir();
-	mounts = mounts.rw(&scratch);
-	if let Some(ref cwd) = cmd.cwd {
-		mounts = mounts.rw(cwd);
-	}
-
-	// Profile → process-wide config overlays → per-command overlay.
-	let mut limits = sandbox::overrides::resolve(cmd.profile, None);
-	limits = cmd.override_.apply(limits);
-	let mut spec = Spec::new(cmd.program, limits)
-		.args(cmd.args)
-		.env(env)
-		.mounts(mounts)
-		.network(cmd.network);
-	if let Some(cwd) = cmd.cwd {
-		spec = spec.cwd(cwd);
-	}
-
+	let sealed = seal_isolated(cmd);
+	// Shim: project to Spec and use the process-wide backend. Direct Cage::run
+	// lands fully once ForgeRuntime owns the cage (Phase 4).
+	let _cancel = CancelToken::never();
+	let spec = sealed.into_spec();
 	match run(spec) {
 		Ok(out) => {
 			if out.success() {
@@ -339,11 +304,66 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 
 fn nonempty_utf8(bytes: &[u8]) -> Option<String> {
 	let s = String::from_utf8_lossy(bytes).trim().to_string();
-	if s.is_empty() {
-		None
-	} else {
-		Some(s)
+	if s.is_empty() { None } else { Some(s) }
+}
+
+/// Project an [`IsolatedCommand`] into a [`SealedCommand`] (sealer boundary).
+fn seal_isolated(cmd: IsolatedCommand) -> SealedCommand {
+	let sealer = Sealer::new();
+	let toolchains = global_toolchains();
+	let mut env = Env::empty().set(
+		"PATH",
+		std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+	);
+	// Minimal locale so toolchains don't panic — not a secret channel.
+	if let Ok(v) = std::env::var("LANG") {
+		env = env.set("LANG", v);
 	}
+	if let Ok(v) = std::env::var("LC_ALL") {
+		env = env.set("LC_ALL", v);
+	}
+	env = toolchains.apply_env(env);
+	for (k, v) in cmd.env {
+		env = env.set(k, v);
+	}
+
+	let mut mounts = Mounts::new();
+	for p in &cmd.read_only {
+		mounts = mounts.ro(p);
+	}
+	for p in toolchains.ro_binds() {
+		mounts = mounts.ro(p);
+	}
+	for p in &cmd.writable {
+		mounts = mounts.rw(p);
+	}
+	// Nix store RO for absolute PT_INTERP / RPATH toolchains.
+	if Path::new("/nix/store").is_dir() {
+		mounts = mounts.ro("/nix/store");
+	}
+	// Narrow scratch — never ambient $HOME.
+	let scratch = std::env::temp_dir();
+	mounts = mounts.rw(&scratch);
+	if let Some(ref cwd) = cmd.cwd {
+		mounts = mounts.rw(cwd);
+	}
+
+	// Profile → process-wide config overlays → per-command overlay.
+	let mut limits = sandbox::overrides::resolve(cmd.profile, None);
+	limits = cmd.override_.apply(limits);
+
+	let budget = sealer.budget_from_mounts(
+		mounts,
+		scratch,
+		sandbox::NetGrant::from(cmd.network),
+		env,
+		limits,
+	);
+	let mut sealed = sealer.seal_command(cmd.program, cmd.args, budget);
+	if let Some(cwd) = cmd.cwd {
+		sealed = sealed.cwd(cwd);
+	}
+	sealed
 }
 
 /// Collect ancestor directory binds so a package tree is visible.

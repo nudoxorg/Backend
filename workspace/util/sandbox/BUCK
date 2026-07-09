@@ -30,6 +30,7 @@ rust_tests(
     prefix = "test",
     deps = deps([
         crate("serde_json"),
+        crate("tempfile"),
         target(":sandbox"),
     ]),
 )

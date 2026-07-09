@@ -1,9 +1,11 @@
-//! Typed sandbox failure modes.
+//! Typed sandbox / cage failure modes.
 //!
-//! Maps cleanly onto producer `ProcessFailure` / `EvalTimeout` / OOM outcomes
-//! without stringly-typed "backend said no".
+//! [`SandboxError`] remains the Backend-facing surface. New cage paths prefer
+//! [`CageError`] with enumerated variants; the two convert losslessly enough
+//! for shims.
 
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -87,4 +89,121 @@ pub enum SandboxError {
 	/// I/O while reading child pipes or scratch.
 	#[error("sandbox I/O error")]
 	Io(#[from] io::Error),
+}
+
+/// Enumerated cage failure modes (Phase 2+).
+///
+/// Prefer these over stringly [`SandboxError::Backend`] on new paths.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum CageError {
+	/// Policy / production gate refused the request.
+	#[error("cage denied: {reason}")]
+	Denied {
+		/// Human-readable denial reason.
+		reason: String,
+	},
+
+	/// Required toolchain binary missing.
+	#[error("toolchain missing: {program}")]
+	ToolchainMissing {
+		/// Program name or path.
+		program: String,
+	},
+
+	/// bubblewrap / sandbox-exec / helper missing.
+	#[error("sandbox helper missing: {program}")]
+	HelperMissing {
+		/// Helper binary name.
+		program: String,
+	},
+
+	/// Spawn failed before isolation applied.
+	#[error("failed to spawn sandboxed process")]
+	Spawn(#[source] io::Error),
+
+	/// Resource ceiling kill.
+	#[error("sandboxed process killed: {reason}")]
+	Killed {
+		/// Which ceiling fired.
+		reason: KillReason,
+		/// Observed wall time before kill.
+		wall: Duration,
+	},
+
+	/// cgroup sysfs write failed.
+	#[error("cgroup write {path}: {message}")]
+	CgroupWrite {
+		/// Path that failed.
+		path: PathBuf,
+		/// OS / context message.
+		message: String,
+	},
+
+	/// Seccomp BPF compile or install failed.
+	#[error("seccomp compile failed: {0}")]
+	SeccompCompile(String),
+
+	/// A path required by the FS grant is missing on the host.
+	#[error("required mount missing: {path}")]
+	MountMissing {
+		/// Missing path.
+		path: PathBuf,
+	},
+
+	/// Worker line-protocol failure.
+	#[error("worker protocol: {detail}")]
+	WorkerProtocol {
+		/// Detail message.
+		detail: String,
+	},
+
+	/// Caller cancelled via [`crate::CancelToken`].
+	#[error("cage run cancelled")]
+	Cancelled,
+
+	/// I/O while reading pipes or scratch.
+	#[error("cage I/O error")]
+	Io(#[from] io::Error),
+
+	/// Catch-all for legacy Backend string errors during the shim window.
+	#[error("cage backend: {0}")]
+	Backend(String),
+}
+
+impl From<SandboxError> for CageError {
+	fn from(e: SandboxError) -> Self {
+		match e {
+			SandboxError::Denied { reason } => Self::Denied { reason },
+			SandboxError::ToolchainMissing { program } => Self::ToolchainMissing { program },
+			SandboxError::HelperMissing { program } => Self::HelperMissing { program },
+			SandboxError::Spawn(err) => Self::Spawn(err),
+			SandboxError::Killed { reason, wall } => Self::Killed { reason, wall },
+			SandboxError::Backend(s) => Self::Backend(s),
+			SandboxError::Io(err) => Self::Io(err),
+		}
+	}
+}
+
+impl From<CageError> for SandboxError {
+	fn from(e: CageError) -> Self {
+		match e {
+			CageError::Denied { reason } => Self::Denied { reason },
+			CageError::ToolchainMissing { program } => Self::ToolchainMissing { program },
+			CageError::HelperMissing { program } => Self::HelperMissing { program },
+			CageError::Spawn(err) => Self::Spawn(err),
+			CageError::Killed { reason, wall } => Self::Killed { reason, wall },
+			CageError::CgroupWrite { path, message } => {
+				Self::Backend(format!("cgroup write {}: {message}", path.display()))
+			}
+			CageError::SeccompCompile(s) => Self::Backend(format!("seccomp: {s}")),
+			CageError::MountMissing { path } => {
+				Self::Backend(format!("mount missing: {}", path.display()))
+			}
+			CageError::WorkerProtocol { detail } => Self::Backend(format!("worker: {detail}")),
+			CageError::Cancelled => Self::Backend("cancelled".into()),
+			CageError::Io(err) => Self::Io(err),
+			CageError::Backend(s) => Self::Backend(s),
+		}
+	}
 }

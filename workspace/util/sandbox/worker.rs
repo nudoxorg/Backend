@@ -1,29 +1,30 @@
-//! Pooled sandboxed workers for in-process interpreter isolation.
+//! Pooled sandboxed workers for library-form producer isolation.
 //!
-//! Long-lived children run under rlimits + cgroup (and env scrub) and speak a
-//! minimal line-oriented JSON protocol. A parser bug or memory bomb kills a
-//! worker, not the indexer. Workers restart on death or RSS watermark.
+//! Cage-internal (DAEMON-PLAN §2.2): long-lived children under rlimits + cgroup
+//! speak a line-oriented JSON protocol. Not a peer of the Backend enum —
+//! [`LinuxNamespaces`](crate::LinuxNamespaces) remains the production OS cage;
+//! this pool is how library producers (nix/ts/python) run inside that model.
 //!
-//! The worker **binary** is supplied by the caller (compiler's
-//! `producer-worker`); this module is protocol + pool only.
-//!
-//! Full bwrap-per-job remains available via [`crate::run`] / [`lower_once`]
-//! for one-shot work where the package root set is fixed at spawn.
+//! Concurrency: free-list of slots (`Mutex<Vec<WorkerSlot>>` + condvar) so the
+//! free-list lock is never held across worker I/O. Real parallelism equals pool
+//! size. A hung worker costs one slot for one wall budget, not the whole pool
+//! forever (deadline-safe non-blocking pipe I/O).
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SandboxError;
+use crate::Backend;
+use crate::cancel::CancelToken;
+use crate::error::{CageError, KillReason, SandboxError};
 use crate::limits::Limits;
 use crate::observer;
 use crate::profiles::ProducerProfile;
 use crate::spec::{Env, Mounts, Spec};
-use crate::Backend;
 
 /// Languages the worker binary can lower (closed set — no free strings at the
 /// isolate boundary).
@@ -114,7 +115,7 @@ pub enum JobResponse {
 pub struct WorkerPoolConfig {
 	/// Path to the worker binary.
 	pub worker_bin: PathBuf,
-	/// How many workers to keep warm.
+	/// How many workers to keep warm (= max concurrent jobs).
 	pub size: usize,
 	/// Resource ceilings per worker process.
 	pub limits: Limits,
@@ -126,22 +127,26 @@ pub struct WorkerPoolConfig {
 
 impl WorkerPoolConfig {
 	/// Defaults for static parsers (design §7.5).
+	///
+	/// Limits come from the process-wide override table when installed.
 	pub fn static_parser(worker_bin: impl Into<PathBuf>) -> Self {
 		Self {
 			worker_bin: worker_bin.into(),
 			size: 2,
-			limits: ProducerProfile::StaticParser.limits(),
+			limits: crate::overrides::resolve(ProducerProfile::StaticParser, None),
 			read_only: Vec::new(),
 			memory_watermark: 768 * 1024 * 1024,
 		}
 	}
 
 	/// Defaults for snix workers.
+	///
+	/// Limits come from the process-wide override table when installed.
 	pub fn nix(worker_bin: impl Into<PathBuf>) -> Self {
 		Self {
 			worker_bin: worker_bin.into(),
 			size: 2,
-			limits: ProducerProfile::Nix.limits(),
+			limits: crate::overrides::resolve(ProducerProfile::Nix, None),
 			read_only: Vec::new(),
 			memory_watermark: 768 * 1024 * 1024,
 		}
@@ -151,84 +156,159 @@ impl WorkerPoolConfig {
 /// One warm worker process.
 ///
 /// **Drop contract:** pool restart / pool drop paths kill and `wait` the child
-/// before the slot is dropped so the owned cgroup is empty when reaped. An
-/// accidental early drop still best-effort kills via `Child::Drop` and then
-/// removes the cgroup dir (may leave a non-empty cgroup if procs linger).
+/// before the slot is dropped so the owned cgroup is empty when reaped.
 struct WorkerSlot {
 	child: Child,
 	stdin: ChildStdin,
-	stdout: BufReader<ChildStdout>,
+	stdout: ChildStdout,
+	/// Partial line assembly for non-blocking reads.
+	line_buf: Vec<u8>,
 	/// Owned for the worker's lifetime; dropped on restart so cgroup dirs are
-	/// reaped (was previously leaked via `mem::forget`).
-	_cgroup: Option<crate::cgroup::Cgroup>,
+	/// reaped.
+	cgroup: Option<crate::cgroup::Cgroup>,
 	/// Per-worker HOME/TMPDIR; removed when the slot is dropped.
 	scratch: PathBuf,
 }
 
-impl Drop for WorkerSlot {
-	fn drop(&mut self) {
-		// Best-effort: pool paths already waited; this covers accidental drops.
+impl WorkerSlot {
+	/// Kill the process tree (cgroup.kill when available) and wait.
+	fn kill_tree(&mut self) {
+		if let Some(ref cg) = self.cgroup {
+			let _ = cg.kill_all();
+		}
 		let _ = self.child.kill();
 		let _ = self.child.wait();
+	}
+}
+
+impl Drop for WorkerSlot {
+	fn drop(&mut self) {
+		self.kill_tree();
 		let _ = std::fs::remove_dir_all(&self.scratch);
 	}
 }
 
-/// A pool of sandboxed worker processes.
+/// Free-list of warm slots + condvar. Lock is held only to take/return a slot,
+/// never across worker I/O — so real parallelism equals pool size.
+struct FreeList {
+	/// Idle slots (owned by the pool when here).
+	slots: Mutex<Vec<WorkerSlot>>,
+	/// Signaled when a slot is returned.
+	cv: Condvar,
+	/// Configured size (for diagnostics).
+	size: usize,
+}
+
+impl FreeList {
+	fn take(&self) -> WorkerSlot {
+		let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+		loop {
+			if let Some(slot) = slots.pop() {
+				return slot;
+			}
+			slots = self.cv.wait(slots).unwrap_or_else(|e| e.into_inner());
+		}
+	}
+
+	fn put(&self, slot: WorkerSlot) {
+		let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+		slots.push(slot);
+		self.cv.notify_one();
+	}
+}
+
+/// A pool of sandboxed worker processes (cage-internal runner).
+///
+/// Real parallelism equals [`WorkerPoolConfig::size`]: a free-list hands out
+/// slots; the free-list mutex is **not** held during worker I/O (unlike the
+/// Phase-0 serial design).
 pub struct WorkerPool {
 	config: WorkerPoolConfig,
-	slots: Mutex<Vec<WorkerSlot>>,
+	free: FreeList,
 }
 
 impl WorkerPool {
 	/// Spawn `config.size` workers under rlimits + cgroup.
 	pub fn new(config: WorkerPoolConfig) -> Result<Self, SandboxError> {
-		let mut slots = Vec::with_capacity(config.size);
-		for _ in 0..config.size.max(1) {
+		let size = config.size.max(1);
+		let mut slots = Vec::with_capacity(size);
+		for _ in 0..size {
 			slots.push(spawn_worker(&config)?);
 		}
 		Ok(Self {
 			config,
-			slots: Mutex::new(slots),
+			free: FreeList {
+				slots: Mutex::new(slots),
+				cv: Condvar::new(),
+				size,
+			},
 		})
 	}
 
-	/// Submit a job to any free worker (serialised for simplicity).
-	pub fn submit(&self, req: JobRequest) -> Result<JobResponse, SandboxError> {
-		let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-		if slots.is_empty() {
-			slots.push(spawn_worker(&self.config)?);
-		}
-		let mut slot = slots.pop().expect("just ensured non-empty");
+	/// How many workers (max concurrent jobs).
+	pub fn size(&self) -> usize {
+		self.free.size
+	}
 
-		let result = match call_worker(&mut slot, &req, self.config.limits.wall) {
+	/// Submit a job to a free worker. Blocks until a slot is available.
+	///
+	/// Parallelism: up to `size` submits run at once on distinct slots.
+	pub fn submit(&self, req: JobRequest) -> Result<JobResponse, SandboxError> {
+		self.submit_cancel(req, &CancelToken::never())
+	}
+
+	/// Submit with a cancellation token (honored via cgroup.kill + child kill).
+	pub fn submit_cancel(
+		&self,
+		req: JobRequest,
+		cancel: &CancelToken,
+	) -> Result<JobResponse, SandboxError> {
+		if cancel.is_cancelled() {
+			return Err(CageError::Cancelled.into());
+		}
+
+		// Take a slot without holding the free-list lock during I/O.
+		let mut slot = self.free.take();
+		let result = self.run_on_slot(&mut slot, &req, cancel);
+		self.free.put(slot);
+		result
+	}
+
+	fn run_on_slot(
+		&self,
+		slot: &mut WorkerSlot,
+		req: &JobRequest,
+		cancel: &CancelToken,
+	) -> Result<JobResponse, SandboxError> {
+		let wall = self.config.limits.wall;
+		match call_worker(slot, req, wall, cancel) {
 			Ok(resp) => {
-				// Opportunistic watermark: ping after work when RSS is cheap.
 				if !matches!(req, JobRequest::Ping | JobRequest::Shutdown) {
 					if let Ok(JobResponse::Pong { rss: Some(rss) }) =
-						call_worker(&mut slot, &JobRequest::Ping, Duration::from_secs(5))
+						call_worker(slot, &JobRequest::Ping, Duration::from_secs(5), cancel)
 					{
 						if rss > self.config.memory_watermark {
 							observer::global().worker_restart("rss_watermark");
-							let _ = slot.child.kill();
-							let _ = slot.child.wait();
-							slot = spawn_worker(&self.config)?;
+							slot.kill_tree();
+							*slot = spawn_worker(&self.config)?;
 						}
 					}
 				}
 				Ok(resp)
 			}
 			Err(e) => {
+				// Cancelled: do not restart-and-retry.
+				if cancel.is_cancelled() {
+					slot.kill_tree();
+					*slot = spawn_worker(&self.config)?;
+					return Err(e);
+				}
 				observer::global().worker_restart("dead");
-				let _ = slot.child.kill();
-				let _ = slot.child.wait();
-				slot = spawn_worker(&self.config)?;
-				call_worker(&mut slot, &req, self.config.limits.wall).map_err(|_| e)
+				slot.kill_tree();
+				*slot = spawn_worker(&self.config)?;
+				call_worker(slot, req, wall, cancel).map_err(|_| e)
 			}
-		};
-
-		slots.push(slot);
-		result
+		}
 	}
 
 	/// Lower a package via the worker pool.
@@ -238,23 +318,29 @@ impl WorkerPool {
 			root: root.to_path_buf(),
 		})? {
 			JobResponse::Ok { body } => Ok(body),
-			JobResponse::Err { kind, message } => Err(SandboxError::Backend(format!(
-				"worker {kind}: {message}"
-			))),
-			JobResponse::Pong { .. } => Err(SandboxError::Backend(
-				"worker returned pong for lower".into(),
-			)),
+			JobResponse::Err { kind, message } => Err(CageError::WorkerProtocol {
+				detail: format!("{kind}: {message}"),
+			}
+			.into()),
+			JobResponse::Pong { .. } => Err(CageError::WorkerProtocol {
+				detail: "worker returned pong for lower".into(),
+			}
+			.into()),
 		}
 	}
 }
 
 impl Drop for WorkerPool {
 	fn drop(&mut self) {
-		if let Ok(mut slots) = self.slots.lock() {
+		if let Ok(mut slots) = self.free.slots.lock() {
 			for mut slot in slots.drain(..) {
-				let _ = call_worker(&mut slot, &JobRequest::Shutdown, Duration::from_secs(2));
-				let _ = slot.child.kill();
-				let _ = slot.child.wait();
+				let _ = call_worker(
+					&mut slot,
+					&JobRequest::Shutdown,
+					Duration::from_secs(2),
+					&CancelToken::never(),
+				);
+				slot.kill_tree();
 			}
 		}
 	}
@@ -285,7 +371,8 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 		let limits = config.limits;
 		unsafe {
 			cmd.pre_exec(move || {
-				crate::backend::supervisor::apply_rlimits(&limits).map_err(crate::error::to_io_error)
+				crate::backend::supervisor::apply_rlimits(&limits)
+					.map_err(crate::error::to_io_error)
 			});
 		}
 	}
@@ -299,17 +386,25 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 	let stdin = child
 		.stdin
 		.take()
-		.ok_or_else(|| SandboxError::Backend("worker stdin missing".into()))?;
+		.ok_or_else(|| CageError::WorkerProtocol {
+			detail: "worker stdin missing".into(),
+		})?;
 	let stdout = child
 		.stdout
 		.take()
-		.ok_or_else(|| SandboxError::Backend("worker stdout missing".into()))?;
+		.ok_or_else(|| CageError::WorkerProtocol {
+			detail: "worker stdout missing".into(),
+		})?;
+
+	// Non-blocking stdout so wall deadlines cannot hang the slot forever.
+	make_nonblocking(&stdout);
 
 	Ok(WorkerSlot {
 		child,
 		stdin,
-		stdout: BufReader::new(stdout),
-		_cgroup: cgroup,
+		stdout,
+		line_buf: Vec::new(),
+		cgroup,
 		scratch,
 	})
 }
@@ -318,38 +413,103 @@ fn call_worker(
 	slot: &mut WorkerSlot,
 	req: &JobRequest,
 	wall: Duration,
+	cancel: &CancelToken,
 ) -> Result<JobResponse, SandboxError> {
-	let line = serde_json::to_string(req)
-		.map_err(|e| SandboxError::Backend(format!("serialize request: {e}")))?;
-	writeln!(slot.stdin, "{line}")
-		.map_err(|e| SandboxError::Backend(format!("worker write: {e}")))?;
-	slot.stdin
-		.flush()
-		.map_err(|e| SandboxError::Backend(format!("worker flush: {e}")))?;
+	if cancel.is_cancelled() {
+		return Err(CageError::Cancelled.into());
+	}
+
+	let line = serde_json::to_string(req).map_err(|e| CageError::WorkerProtocol {
+		detail: format!("serialize request: {e}"),
+	})?;
+	writeln!(slot.stdin, "{line}").map_err(|e| CageError::WorkerProtocol {
+		detail: format!("worker write: {e}"),
+	})?;
+	slot.stdin.flush().map_err(|e| CageError::WorkerProtocol {
+		detail: format!("worker flush: {e}"),
+	})?;
 
 	let deadline = Instant::now() + wall;
 	loop {
+		if cancel.is_cancelled() {
+			slot.kill_tree();
+			return Err(CageError::Cancelled.into());
+		}
 		if Instant::now() >= deadline {
-			let _ = slot.child.kill();
+			slot.kill_tree();
 			return Err(SandboxError::Killed {
-				reason: crate::error::KillReason::Wall,
+				reason: KillReason::Wall,
 				wall,
 			});
 		}
-		// Non-blocking poll of the child; blocking read_line is acceptable
-		// under wall budget because the supervisor-equivalent is the kill above
-		// on next iteration — use a short approach: read_line blocks, so we
-		// rely on the worker process rlimit/wall via OS. For hung workers,
-		// the outer indexer deadline is the backstop.
-		let mut response = String::new();
-		match slot.stdout.read_line(&mut response) {
-			Ok(0) => return Err(SandboxError::Backend("worker closed pipe".into())),
-			Ok(_) => {
-				return serde_json::from_str(response.trim())
-					.map_err(|e| SandboxError::Backend(format!("worker response: {e}")));
+
+		match read_line_nonblock(slot) {
+			Ok(Some(response)) => {
+				return serde_json::from_str(response.trim()).map_err(|e| {
+					CageError::WorkerProtocol {
+						detail: format!("worker response: {e}"),
+					}
+					.into()
+				});
 			}
-			Err(e) => return Err(SandboxError::Backend(format!("worker read: {e}"))),
+			Ok(None) => {
+				// Would block — brief sleep, still bound by deadline.
+				std::thread::sleep(Duration::from_millis(5));
+			}
+			Err(e) => return Err(e),
 		}
+	}
+}
+
+/// Read one full line if available; `Ok(None)` on would-block.
+fn read_line_nonblock(slot: &mut WorkerSlot) -> Result<Option<String>, SandboxError> {
+	let mut tmp = [0u8; 4096];
+	loop {
+		match slot.stdout.read(&mut tmp) {
+			Ok(0) => {
+				return Err(CageError::WorkerProtocol {
+					detail: "worker closed pipe".into(),
+				}
+				.into());
+			}
+			Ok(n) => {
+				slot.line_buf.extend_from_slice(&tmp[..n]);
+				if let Some(pos) = slot.line_buf.iter().position(|&b| b == b'\n') {
+					let line = slot.line_buf.drain(..=pos).collect::<Vec<u8>>();
+					let s = String::from_utf8_lossy(&line).into_owned();
+					return Ok(Some(s));
+				}
+				// More data may still be available.
+				continue;
+			}
+			Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+			Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+			Err(e) => {
+				return Err(CageError::WorkerProtocol {
+					detail: format!("worker read: {e}"),
+				}
+				.into());
+			}
+		}
+	}
+}
+
+fn make_nonblocking(pipe: &impl std::os::fd::AsFd) {
+	#[cfg(unix)]
+	{
+		use std::os::fd::AsRawFd;
+		let fd = pipe.as_fd().as_raw_fd();
+		// SAFETY: fcntl on a pipe fd we own.
+		unsafe {
+			let flags = libc::fcntl(fd, libc::F_GETFL);
+			if flags >= 0 {
+				let _ = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+			}
+		}
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = pipe;
 	}
 }
 
@@ -392,10 +552,15 @@ pub fn lower_once(
 	let out = out?;
 	if !out.success() {
 		let stderr = String::from_utf8_lossy(&out.stderr);
-		return Err(SandboxError::Backend(format!(
-			"worker exit {:?}: {stderr}",
-			out.end
-		)));
+		return Err(CageError::WorkerProtocol {
+			detail: format!("worker exit {:?}: {stderr}", out.end),
+		}
+		.into());
 	}
-	String::from_utf8(out.stdout).map_err(|e| SandboxError::Backend(format!("utf8: {e}")))
+	String::from_utf8(out.stdout).map_err(|e| {
+		CageError::WorkerProtocol {
+			detail: format!("utf8: {e}"),
+		}
+		.into()
+	})
 }
