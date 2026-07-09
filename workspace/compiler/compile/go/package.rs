@@ -17,7 +17,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use crate::compile::isolate::{self, IsolatedCommand, IsolatedFailureKind};
+use sandbox::ProducerProfile;
 
 use super::error::{GoError, Result};
 
@@ -116,15 +118,35 @@ pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
 		.canonicalize()
 		.map_err(|source| GoError::ResolveModuleRoot { root: module_root.to_path_buf(), source })?;
 
-	let output = Command::new("go")
-		.arg("run")
-		.arg(".")
-		.arg(&target)
-		.current_dir(&oracle_dir)
-		.env("GOWORK", "off")
-		.env("GOFLAGS", "-mod=mod")
-		.output()
-		.map_err(|source| GoError::SpawnOracle { source })?;
+	// Network off + GOPROXY=off: deps must already be in the module cache
+	// (P-fetch materialised them). GOFLAGS=-mod=mod still allows reading the
+	// cache; combined with empty netns this is the docs.rs pattern.
+	let output = isolate::run_isolated(
+		IsolatedCommand::new("go", ProducerProfile::Go)
+			.arg("run")
+			.arg(".")
+			.arg(&target)
+			.cwd(&oracle_dir)
+			.env("GOWORK", "off")
+			.env("GOFLAGS", "-mod=mod")
+			.env("GOPROXY", "off")
+			.ro(&oracle_dir)
+			.ro(&target)
+			.rw(&oracle_dir)
+			.rw(std::env::temp_dir()),
+	)
+	.map_err(|e| match e.kind {
+		IsolatedFailureKind::ToolchainMissing(_) | IsolatedFailureKind::Sandbox(_) => {
+			GoError::SpawnOracle {
+				source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+			}
+		}
+		_ => GoError::OracleExecution {
+			target: target.clone(),
+			status: e.kind.to_string(),
+			stderr: e.stderr.unwrap_or_default(),
+		},
+	})?;
 
 	if !output.status.success() {
 		return Err(GoError::OracleExecution {

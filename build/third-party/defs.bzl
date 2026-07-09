@@ -150,18 +150,19 @@ def _registry_crate(name, version, sha256, edition, label, alias, deps, features
             }),
             rustc_flags = ["@$(location :" + label + "-build-script-run[rustc_flags])"],
         )
-        resolved_import_links = {
-            links_name: ":" + dep_label + "-build-script-run"
-            for links_name, dep_label in import_links.items()
-        }
+        # The stock buck2-prelude `buildscript_run` rule does not declare
+        # `links` / `import_links` attrs. Passing them (even as None/{}) fails
+        # analysis. Only forward when non-empty *and* the rule accepts them —
+        # for now, omit always; C `links` crates that need import_links need a
+        # prelude bump (arborium path already vendors the tree-sitter glue).
+        _ = links
+        _ = import_links
         buildscript_run(
             name = label + "-build-script-run",
             package_name = name,
             buildscript_rule = ":" + label + "-build-script-build",
             features = features,
             version = version,
-            links = links,
-            import_links = resolved_import_links,
             rustc_link_lib = True,
             rustc_link_search = True,
             env = dict({

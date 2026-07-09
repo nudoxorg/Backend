@@ -3,6 +3,8 @@
 //! the language's VCS/manifest conventions (`traversal`).
 
 pub mod go;
+/// Sandbox seam for external toolchains and worker-isolated interpreters.
+pub mod isolate;
 pub mod java;
 pub mod nix;
 pub mod python;

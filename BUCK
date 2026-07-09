@@ -4,6 +4,7 @@ alias(name = "ir",       actual = "//workspace/compiler/intermediate-representat
 alias(name = "registry", actual = "//workspace/registry:registry", visibility = ["PUBLIC"])
 alias(name = "runtime",  actual = "//workspace/runtime:runtime", visibility = ["PUBLIC"])
 alias(name = "compiler", actual = "//workspace/compiler:compiler", visibility = ["PUBLIC"])
+alias(name = "sandbox",  actual = "//workspace/util/sandbox:sandbox", visibility = ["PUBLIC"])
 
 command_alias(name = "add",    exe = "//build/third-party/tools:crates", args = ["add"],    visibility = ["PUBLIC"])
 command_alias(name = "update", exe = "//build/third-party/tools:crates", args = ["update"], visibility = ["PUBLIC"])

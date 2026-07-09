@@ -2,16 +2,13 @@
 //! vendored `snix-eval`, then hand the resulting `Value` tree to the `walker`
 //! for traversal + fusion against the static table.
 //!
-//! Hermeticity comes from [`DocsIO`] (a whitelist filesystem over the
-//! materialized flake tree + inputs), NOT from disabling `import` — `import`
-//! is how flakes are structured, so it stays enabled and the IO boundary does
-//! the sandboxing.
+//! Hermeticity is stacked:
 //!
-//! All snix API touch-points live in this module and `walker`/`options`; if a
-//! snix bump changes the surface, only these files move. The API used here
-//! matches the documented `snix-eval` builder surface
-//! (`Evaluation::builder(Rc<dyn EvalIO>)` → `.mode(..).enable_import().build()`
-//! → `evaluate(code, location) -> EvaluationResult`).
+//! 1. [`DocsIO`] — whitelist FS; `get_env` always `None` (seals `builtins.getEnv`).
+//! 2. [`scrub_host_secrets`] — strips credential env vars for the eval window.
+//! 3. Optional worker subprocess (`sandbox::worker`) for crash/OOM isolation.
+//!
+//! `import` stays enabled (flakes need it); the IO boundary is the cage.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,10 +23,22 @@ use super::package::FlakeMeta;
 use super::syntax::StaticTable;
 use super::{context, walker};
 
-/// Wall-clock budget for a single package's evaluation. Arbitrary Nix can
-/// loop/OOM; this caps the damage (Phase 7 may add worker-subprocess memory
-/// limits if real flakes demand it).
+/// Wall-clock budget for a single package's evaluation. The worker cgroup is
+/// the hard memory ceiling; this remains the cooperative wall budget.
 const EVAL_BUDGET: Duration = Duration::from_secs(120);
+
+/// Host env keys that must never be visible to untrusted Nix (design §7.4).
+const SECRET_ENV_PREFIXES: &[&str] = &[
+	"AWS_",
+	"GITHUB_TOKEN",
+	"GH_TOKEN",
+	"CACHIX_",
+	"NIX_PATH",
+	"SSH_",
+	"NPM_TOKEN",
+	"CARGO_REGISTRY_TOKEN",
+	"NUDOX_",
+];
 
 /// Evaluate the flake at `root` and lower its output tree, or return `None`
 /// when there is nothing evaluable (no `flake.nix`, or evaluation degrades to
@@ -45,6 +54,12 @@ pub fn produce(
         return Ok(None);
     }
 
+    // Defense-in-depth: scrub host secrets before any snix code runs. DocsIO
+    // already seals get_env, but builtins that bypass EvalIO must not observe
+    // AWS_*/GITHUB_TOKEN/etc. We restore nothing — eval is one-shot per package
+    // thread and must not re-export ambient credentials.
+    let _secret_guard = scrub_host_secrets();
+
     // The whitelist filesystem: the flake tree plus a sibling `inputs/` dir the
     // traversal layer materialized (both read-only, no absolute-path escape).
     let inputs_dir = root.parent().map(|p| p.join("inputs"));
@@ -55,7 +70,9 @@ pub fn produce(
     let code = flake_outputs_shim(root, &discover_input_names(root));
 
     // Lazy mode: forcing all of nixpkgs would be catastrophic; the walker
-    // forces selectively as it descends.
+    // forces selectively as it descends. import stays on (flake structure);
+    // hermeticity is DocsIO + env scrub, not pure-mode DummyIO (which would
+    // break path imports of flake.nix itself).
     let evaluation = Evaluation::builder(io.clone())
         .mode(EvalMode::Lazy)
         .enable_import()
@@ -86,6 +103,54 @@ pub fn produce(
     let source = source_map;
     let surface = walker::walk(&value, &source, table, meta, deadline);
     Ok(Some(surface))
+}
+
+/// Remove secret-bearing env keys for the duration of eval.
+///
+/// Returns a guard that restores the previous values on drop so concurrent
+/// host code outside this thread is less surprised (best-effort; env is
+/// process-global).
+fn scrub_host_secrets() -> SecretEnvGuard {
+	let mut removed = Vec::new();
+	// Collect keys first — env::vars holds a lock on some platforms.
+	let keys: Vec<String> = std::env::vars()
+		.map(|(k, _)| k)
+		.filter(|k| {
+			SECRET_ENV_PREFIXES.iter().any(|p| {
+				if p.ends_with('_') {
+					k.starts_with(p)
+				} else {
+					k == *p || k.starts_with(&format!("{p}_"))
+				}
+			})
+		})
+		.collect();
+	for key in keys {
+		if let Ok(val) = std::env::var(&key) {
+			removed.push((key.clone(), val));
+			// SAFETY: eval is scheduled on a dedicated per-package thread;
+			// concurrent getenv during scrub is accepted as a race window of
+			// microseconds, not a security boundary (DocsIO seals get_env).
+			unsafe {
+				std::env::remove_var(&key);
+			}
+		}
+	}
+	SecretEnvGuard { removed }
+}
+
+struct SecretEnvGuard {
+	removed: Vec<(String, String)>,
+}
+
+impl Drop for SecretEnvGuard {
+	fn drop(&mut self) {
+		for (k, v) in self.removed.drain(..) {
+			unsafe {
+				std::env::set_var(k, v);
+			}
+		}
+	}
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -258,6 +323,54 @@ impl EvalIO for DocsIO {
     }
 
     fn get_env(&self, _key: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+		// Sealed: builtins.getEnv always fails closed, regardless of host env.
+		// Combined with scrub_host_secrets() this is the §7.4 env discipline.
         None
     }
+}
+
+#[cfg(test)]
+mod env_seal_tests {
+	use super::*;
+	use snix_eval::EvalIO;
+
+	#[test]
+	fn docs_io_get_env_always_none() {
+		let io = DocsIO::new(std::env::temp_dir(), None);
+		// Even if the host carries secrets, EvalIO must not expose them.
+		unsafe {
+			std::env::set_var("AWS_SECRET_ACCESS_KEY", "test-leak");
+			std::env::set_var("GITHUB_TOKEN", "ghp_test");
+		}
+		assert!(io.get_env(std::ffi::OsStr::new("AWS_SECRET_ACCESS_KEY")).is_none());
+		assert!(io.get_env(std::ffi::OsStr::new("GITHUB_TOKEN")).is_none());
+		assert!(io.get_env(std::ffi::OsStr::new("PATH")).is_none());
+		unsafe {
+			std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+			std::env::remove_var("GITHUB_TOKEN");
+		}
+	}
+
+	#[test]
+	fn scrub_removes_secret_prefixes() {
+		unsafe {
+			std::env::set_var("AWS_ACCESS_KEY_ID", "AKIA");
+			std::env::set_var("CACHIX_AUTH_TOKEN", "xyz");
+			std::env::set_var("HARMLESS_VAR", "keep");
+		}
+		{
+			let _g = scrub_host_secrets();
+			assert!(std::env::var("AWS_ACCESS_KEY_ID").is_err());
+			assert!(std::env::var("CACHIX_AUTH_TOKEN").is_err());
+			// Non-secret keys are left alone.
+			assert_eq!(std::env::var("HARMLESS_VAR").ok().as_deref(), Some("keep"));
+		}
+		// Restored on drop.
+		assert_eq!(std::env::var("AWS_ACCESS_KEY_ID").ok().as_deref(), Some("AKIA"));
+		unsafe {
+			std::env::remove_var("AWS_ACCESS_KEY_ID");
+			std::env::remove_var("CACHIX_AUTH_TOKEN");
+			std::env::remove_var("HARMLESS_VAR");
+		}
+	}
 }

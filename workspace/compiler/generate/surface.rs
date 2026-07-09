@@ -13,6 +13,21 @@ use crate::{error::GenerateError, generate::PackageInput, languages};
 pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
 	match input.coordinates.ecosystem() {
 		Language::Python => {
+			if let Some(worker) = languages::isolate::try_worker_lower("python", &input.root) {
+				let body = worker.map_err(|e| {
+					GenerateError::Archive(std::io::Error::new(
+						std::io::ErrorKind::Other,
+						e.to_string(),
+					))
+				})?;
+				let index: ir::entry::Index = serde_json::from_str(&body).map_err(|e| {
+					GenerateError::Archive(std::io::Error::new(
+						std::io::ErrorKind::InvalidData,
+						e.to_string(),
+					))
+				})?;
+				return Ok(Ir::from_entries(index.entries_by_path.into_values().collect()));
+			}
 			let context = languages::python::context::PythonContext::new();
 			let index = context.lower_package(&input.root);
 			// lower_package indexes eagerly; re-enter the typestate at
@@ -43,6 +58,21 @@ pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
 				// TypeScript package always carries an npm version.
 				return Err(GenerateError::UnsupportedTypescript);
 			};
+			if let Some(worker) = languages::isolate::try_worker_lower("typescript", &input.root) {
+				let body = worker.map_err(|e| {
+					GenerateError::Archive(std::io::Error::new(
+						std::io::ErrorKind::Other,
+						e.to_string(),
+					))
+				})?;
+				let index: ir::entry::Index = serde_json::from_str(&body).map_err(|e| {
+					GenerateError::Archive(std::io::Error::new(
+						std::io::ErrorKind::InvalidData,
+						e.to_string(),
+					))
+				})?;
+				return Ok(Ir::from_entries(index.entries_by_path.into_values().collect()));
+			}
 			// The lowering documents the materialized root as-is; the version
 			// only selects which root gets materialized upstream.
 			let package = languages::typescript::TypescriptPackage {
@@ -61,6 +91,21 @@ pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
 			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
 		}
 		Language::Nix => {
+			if let Some(worker) = languages::isolate::try_worker_lower("nix", &input.root) {
+				let body = worker.map_err(|e| {
+					GenerateError::Archive(std::io::Error::new(
+						std::io::ErrorKind::Other,
+						e.to_string(),
+					))
+				})?;
+				let index: ir::entry::Index = serde_json::from_str(&body).map_err(|e| {
+					GenerateError::Archive(std::io::Error::new(
+						std::io::ErrorKind::InvalidData,
+						e.to_string(),
+					))
+				})?;
+				return Ok(Ir::from_entries(index.entries_by_path.into_values().collect()));
+			}
 			let index = languages::nix::lower_package(&input.root)?;
 			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
 		}

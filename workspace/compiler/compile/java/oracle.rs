@@ -26,7 +26,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use crate::compile::isolate::{self, IsolatedCommand, IsolatedFailure, IsolatedFailureKind};
+use sandbox::ProducerProfile;
 
 use super::schema;
 use super::error::{DocletError, ExtractionError, JavadocError, OracleError};
@@ -112,12 +114,18 @@ pub fn compile_oracle() -> Result<PathBuf, OracleError> {
 		source,
 	})?;
 
-	let mut cmd = Command::new("javac");
-	cmd.arg("-encoding").arg("UTF-8").arg("-d").arg(&classes);
+	let mut cmd = IsolatedCommand::new("javac", ProducerProfile::Java)
+		.arg("-encoding")
+		.arg("UTF-8")
+		.arg("-d")
+		.arg(&classes)
+		.ro(&dir)
+		.rw(&classes)
+		.rw(std::env::temp_dir());
 	for (name, _) in ORACLE_SOURCES {
-		cmd.arg(dir.join(name));
+		cmd = cmd.arg(dir.join(name));
 	}
-	let output = cmd.output().map_err(|source| DocletError::SpawnJavacFailed { source })?;
+	let output = isolate::run_isolated(cmd).map_err(|e| map_java_spawn(e, "javac"))?;
 	if !output.status.success() {
 		return Err(DocletError::DocletCompileFailed {
 			status: output.status.to_string(),
@@ -188,7 +196,8 @@ fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction, O
 		source,
 	})?;
 
-	let output = Command::new("javadoc")
+	// Source roots must be RO-visible; scratch + classes RW.
+	let mut cmd = IsolatedCommand::new("javadoc", ProducerProfile::Java)
 		.arg("-doclet")
 		.arg("nudox.oracle.Extractor")
 		.arg("-docletpath")
@@ -200,8 +209,15 @@ fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction, O
 		.arg("-outfile")
 		.arg(&outfile)
 		.arg(format!("@{}", argfile.display()))
-		.output()
-		.map_err(|source| JavadocError::SpawnJavadocFailed { source })?;
+		.ro(classes)
+		.rw(&scratch)
+		.rw(std::env::temp_dir());
+	for file in files {
+		if let Some(parent) = file.parent() {
+			cmd = cmd.ro(parent);
+		}
+	}
+	let output = isolate::run_isolated(cmd).map_err(|e| map_javadoc_spawn(e))?;
 
 	if !output.status.success() {
 		return Err(JavadocError::JavadocOracleFailed {
@@ -268,6 +284,40 @@ fn tempdir_for_run() -> Result<PathBuf, JavadocError> {
 fn argfile_quote(path: &str) -> String {
 	let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
 	format!("\"{escaped}\"")
+}
+
+fn map_java_spawn(err: IsolatedFailure, _tool: &str) -> OracleError {
+	match err.kind {
+		IsolatedFailureKind::ToolchainMissing(_) | IsolatedFailureKind::Sandbox(_) => {
+			DocletError::SpawnJavacFailed {
+				source: std::io::Error::new(std::io::ErrorKind::Other, err.to_string()),
+			}
+			.into()
+		}
+		_ => DocletError::DocletCompileFailed {
+			status: err.kind.to_string(),
+			stderr: err.stderr.unwrap_or_default(),
+			stdout: err.stdout,
+		}
+		.into(),
+	}
+}
+
+fn map_javadoc_spawn(err: IsolatedFailure) -> OracleError {
+	match err.kind {
+		IsolatedFailureKind::ToolchainMissing(_) | IsolatedFailureKind::Sandbox(_) => {
+			JavadocError::SpawnJavadocFailed {
+				source: std::io::Error::new(std::io::ErrorKind::Other, err.to_string()),
+			}
+			.into()
+		}
+		_ => JavadocError::JavadocOracleFailed {
+			status: err.kind.to_string(),
+			stderr: err.stderr.unwrap_or_default(),
+			stdout: err.stdout,
+		}
+		.into(),
+	}
 }
 
 #[cfg(test)]

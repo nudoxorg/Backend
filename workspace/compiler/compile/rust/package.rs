@@ -11,7 +11,6 @@ use std::{
     collections::{BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::Arc,
 };
 
@@ -21,10 +20,13 @@ use semver::Version;
 use serde::Deserialize;
 use tracing::{debug, info, instrument};
 
+use crate::compile::isolate::{self, IsolatedCommand, IsolatedFailure, IsolatedFailureKind};
+
 use super::{
     context::RustdocParser,
     error::{MetadataError, Package, ProcessFailure, ProcessFailureKind},
 };
+use sandbox::{KillReason, ProducerProfile};
 
 /// A Rust package to document from a local source tree.
 #[derive(Clone, Debug)]
@@ -94,31 +96,34 @@ impl RustPackage {
         let wrapper = write_rustdoc_stdout_wrapper()?;
         let system_rustdoc = system_rustdoc_path();
 
-        let mut command = Command::new("cargo");
-        command
+        let mut cmd = IsolatedCommand::new("cargo", ProducerProfile::Rust)
             .arg("rustdoc")
             .arg("--package")
             .arg(Self::cargo_package_spec_for(package_name, version));
         if lib_only {
-            command.arg("--lib");
+            cmd = cmd.arg("--lib");
         }
-        command
+        cmd = cmd
             .arg("--")
-            .args(self.direct_repo.then_some("--document-private-items"))
+            .args(self.direct_repo.then_some("--document-private-items").into_iter())
             .arg("-Z")
             .arg("unstable-options")
             .arg("--output-format")
             .arg("json")
-            // Unstable rustdoc JSON needs nightly (or bootstrap). Buck test
-            // runners often inherit a non-direnv PATH where rustup's default is
-            // stable; RUSTC_BOOTSTRAP unlocks -Z for the same toolchain bits.
+            // Unstable rustdoc JSON needs nightly (or bootstrap).
             .env("RUSTC_BOOTSTRAP", "1")
             .env("RUSTDOC", &wrapper)
             .env("NUDOX_RUSTDOC_SYSTEM", &system_rustdoc)
             .env("NUDOX_RUSTDOC_OUT", json_out)
-            .current_dir(code);
+            .cwd(code)
+            .ro(code)
+            .rw(std::env::temp_dir())
+            .rw(json_out.parent().unwrap_or(Path::new("/tmp")));
 
-        let output = command.output()?;
+        // Package target/ must be writable for cargo.
+        cmd = cmd.rw(code);
+
+        let output = isolate::run_isolated(cmd).map_err(isolated_to_package)?;
         if output.status.success() {
             return Ok(output);
         }
@@ -285,7 +290,12 @@ fn system_rustdoc_path() -> PathBuf {
     if let Ok(p) = std::env::var("NUDOX_RUSTDOC_SYSTEM") {
         return PathBuf::from(p);
     }
-    if let Ok(out) = Command::new("rustc").arg("--print").arg("sysroot").output() {
+    if let Ok(out) = isolate::run_isolated(
+        IsolatedCommand::new("rustc", ProducerProfile::Tiny)
+            .arg("--print")
+            .arg("sysroot")
+            .rw(std::env::temp_dir()),
+    ) {
         if out.status.success() {
             let sysroot = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
             let candidate = sysroot.join("bin/rustdoc");
@@ -306,12 +316,22 @@ fn parse_rustdoc_crate(bytes: &[u8]) -> std::result::Result<rustdoc_types::Crate
 // ─── cargo metadata ──────────────────────────────────────────────────────────
 
 fn cargo_metadata(code: &Path) -> std::result::Result<Metadata, Package> {
-    let output = Command::new("cargo")
-        .arg("metadata")
-        .arg("--format-version")
-        .arg("1")
-        .current_dir(code)
-        .output()?;
+    // Metadata is pure resolution against already-fetched sources; still
+    // network-off so a malicious crate cannot phone home during the parse phase.
+    // Network off at the sandbox layer (bwrap/seatbelt). Do not pass
+    // --offline here: local cargo caches still work; missing deps fail
+    // without ambient network when isolation is production-grade.
+    let output = isolate::run_isolated(
+        IsolatedCommand::new("cargo", ProducerProfile::Rust)
+            .arg("metadata")
+            .arg("--format-version")
+            .arg("1")
+            .cwd(code)
+            .ro(code)
+            .rw(code)
+            .rw(std::env::temp_dir()),
+    )
+    .map_err(isolated_to_package)?;
 
     if !output.status.success() {
         return Err(
@@ -321,6 +341,30 @@ fn cargo_metadata(code: &Path) -> std::result::Result<Metadata, Package> {
     }
 
     serde_json::from_slice(&output.stdout).map_err(MetadataError::from).map_err(Into::into)
+}
+
+fn isolated_to_package(err: IsolatedFailure) -> Package {
+    let kind = match err.kind {
+        IsolatedFailureKind::Resource(KillReason::Wall | KillReason::CpuTime) => {
+            ProcessFailureKind::TimedOut
+        }
+        IsolatedFailureKind::Resource(_) => ProcessFailureKind::Signaled,
+        IsolatedFailureKind::NonZero { status } => {
+            // We don't have a real ExitStatus here — surface as Signaled-like.
+            let _ = status;
+            ProcessFailureKind::Signaled
+        }
+        IsolatedFailureKind::Sandbox(_) | IsolatedFailureKind::ToolchainMissing(_) => {
+            ProcessFailureKind::Signaled
+        }
+    };
+    ProcessFailure::Failed {
+        command: err.command,
+        kind,
+        stdout: err.stdout,
+        stderr: err.stderr,
+    }
+    .into()
 }
 
 fn source_map_from_crate(
