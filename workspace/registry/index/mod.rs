@@ -8,17 +8,18 @@
 //! it sits.
 //!
 //! Identity is never minted here — it is delegated to heart's deterministic
-//! derivers ([`PackageCoordinates::id`], [`GlobalSymbolId::derive`]) so the same
+//! derivers ([`PackageCoordinates::id`], [`SymbolId::derive`]) so the same
 //! id is recomputable offline against the same [`TerminusInstance`].
 
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live,
-	access::AccessContext,
-	content::Generation,
-	lifecycle::ResolutionState,
-	package::{EntryUri, GlobalSymbolId, PackageCoordinates, PackageId},
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, ResolutionState,
+	content::ContentHash,
+	identity::{EntryUri, SymbolId, PackageId},
 };
+use crate::package::Coordinates as PackageCoordinates;
 use sqlx::{Row, postgres::PgRow};
+
+use std::io;
 
 use crate::{
 	GlobalPackage,
@@ -27,7 +28,7 @@ use crate::{
 };
 
 /// The `{org}/{db}` TerminusDB instance every deterministic global id is salted
-/// with, so a [`GlobalSymbolId`] is recomputable offline from the same instance.
+/// with, so a [`SymbolId`] is recomputable offline from the same instance.
 ///
 /// The wrapped string is validated to the `org/db` shape on construction — an
 /// invalid instance token would silently fork the id space.
@@ -38,8 +39,13 @@ impl TerminusInstance {
 	/// Validate and wrap an `{org}/{db}` instance token. Rejects anything that is
 	/// not exactly two non-empty, slash-separated segments.
 	pub fn new(token: impl Into<String>) -> Result<Self, IndexError> {
-		let _ = token;
-		todo!("split on '/', require exactly two non-empty segments; else IndexError::InvalidInstance")
+		let token = token.into();
+		match token.split('/').collect::<Vec<_>>()[..] {
+			[organization, database] if !organization.is_empty() && !database.is_empty() => {
+				Ok(Self(token))
+			}
+			_ => Err(IndexError::InvalidInstance { token }),
+		}
 	}
 
 	/// The validated `org/db` token, used as the salt for id derivation.
@@ -75,7 +81,7 @@ impl Connect for GlobalStore<Cold> {
 		sqlx::query("SELECT 1")
 			.execute(&self.pool)
 			.await
-			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(&e)))?;
+			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(e)))?;
 
 		// Apply the schema. There is no hand-written SQL: every `CREATE TABLE` and
 		// `CREATE INDEX` is a `sea_query` statement rendered to Postgres DDL and
@@ -85,7 +91,7 @@ impl Connect for GlobalStore<Cold> {
 			.pool
 			.begin()
 			.await
-			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(&e)))?;
+			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(e)))?;
 		for ddl in crate::schema::schema_ddl() {
 			sqlx::query(&ddl).execute(&mut *tx).await.map_err(|_| {
 				ConnectError::new(BackendKind::Postgres, ConnectFailure::SchemaMismatch)
@@ -93,7 +99,7 @@ impl Connect for GlobalStore<Cold> {
 		}
 		tx.commit()
 			.await
-			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(&e)))?;
+			.map_err(|e| ConnectError::new(BackendKind::Postgres, connect_failure(e)))?;
 
 		Ok(GlobalStore { pool: self.pool, instance: self.instance, _state: std::marker::PhantomData })
 	}
@@ -112,10 +118,10 @@ impl GlobalStore<Live> {
 	/// heart — kept here so callers have one minting choke point.
 	pub fn package_id(coordinates: &PackageCoordinates) -> PackageId { coordinates.id() }
 
-	/// Mint the deterministic [`GlobalSymbolId`] for an entry, salted with this
-	/// store's instance. Delegates to [`GlobalSymbolId::derive`].
-	pub fn symbol_id(&self, uri: &EntryUri) -> GlobalSymbolId {
-		GlobalSymbolId::derive(self.instance.token(), uri)
+	/// Mint the deterministic [`SymbolId`] for an entry, salted with this
+	/// store's instance. Delegates to [`EntryUri::symbol_id`].
+	pub fn symbol_id(&self, uri: &EntryUri) -> SymbolId {
+		uri.symbol_id(self.instance.token())
 	}
 
 	/// Upsert a package's global record (identity + state + generation). The
@@ -126,20 +132,17 @@ impl GlobalStore<Live> {
 	/// never has identity without a lifecycle row (or vice versa).
 	pub async fn upsert(
 		&self,
-		_ctx: &AccessContext,
 		package: &GlobalPackage,
 	) -> Result<(), IndexError> {
 		let (id_sql, id_vals) = queries::index::upsert_package(
 			&package.package.coordinates,
 			&package.package.toolchain,
-			package.package.visibility,
-			package.package.owner,
 		)
 		.map_err(codec_to_index)?;
 		let (st_sql, st_vals) =
 			queries::index::set_state(package.id, &package.state).map_err(codec_to_index)?;
 
-		let mut tx = self.pool.begin().await.map_err(IndexError::Database)?;
+		let mut tx = self.pool.begin().await.map_err(IndexError::BeginTx)?;
 		sqlx::query_with(&id_sql, id_vals)
 			.execute(&mut *tx)
 			.await
@@ -148,7 +151,7 @@ impl GlobalStore<Live> {
 			.execute(&mut *tx)
 			.await
 			.map_err(IndexError::Database)?;
-		tx.commit().await.map_err(IndexError::Database)?;
+		tx.commit().await.map_err(IndexError::Commit)?;
 		Ok(())
 	}
 
@@ -156,7 +159,6 @@ impl GlobalStore<Live> {
 	/// `Stored`). The state machine's only mutator.
 	pub async fn set_state(
 		&self,
-		_ctx: &AccessContext,
 		package: PackageId,
 		state: &ResolutionState,
 	) -> Result<(), IndexError> {
@@ -187,7 +189,6 @@ impl GlobalStore<Live> {
 	/// Fetch a package's current lifecycle [`ResolutionState`] from `parse_status`.
 	pub async fn get_state(
 		&self,
-		_ctx: &AccessContext,
 		package: PackageId,
 	) -> Result<ResolutionState, IndexError> {
 		let (sql, vals) = queries::index::get_state(package);
@@ -195,30 +196,41 @@ impl GlobalStore<Live> {
 			.fetch_optional(&self.pool)
 			.await
 			.map_err(IndexError::Database)?
-			.ok_or(IndexError::NotFound(package))?;
+			.ok_or(IndexError::NotFound { package })?;
 		row_to_state(&row).map_err(codec_to_index)
 	}
 
-	/// Fetch a package's current global record.
+	/// Fetch a package's current global record: the identity half rebuilt (and
+	/// re-validated) from the `packages` row, the lifecycle half from
+	/// `parse_status`.
 	pub async fn get(
 		&self,
-		ctx: &AccessContext,
 		package: PackageId,
 	) -> Result<GlobalPackage, IndexError> {
-		// The lifecycle half is fully reconstructable from `parse_status`; the
-		// identity half requires rebuilding `PackageCoordinates`, whose heart
-		// constructors (`PackageName::new`, `PackageVersion::parse`, ...) are still
-		// stubbed, so that projection is the remaining glue.
-		let _state = self.get_state(ctx, package).await?;
-		todo!("rebuild PackageCoordinates + Package from the packages row once heart's constructors land")
+		let state = self.get_state(package).await?;
+
+		let (sql, vals) = queries::index::get_package(package);
+		let row = sqlx::query_with(&sql, vals)
+			.fetch_optional(&self.pool)
+			.await
+			.map_err(IndexError::Database)?
+			.ok_or(IndexError::NotFound { package })?;
+		let package = row_to_package(&row).map_err(codec_to_index)?;
+		let facets = row_to_facets(&row).map_err(codec_to_index)?;
+
+		// The `get_package` query left-joins `parse_status`, so its final column
+		// (index 10) carries the derived search facets — nullable jsonb, mirroring
+		// `failure`. `None` when metadata was never extracted for this generation.
+		Ok(GlobalPackage { id: package.id(), package, state, facets })
 	}
 
-	/// The recorded [`Generation`] for a package, for freshness comparison
-	/// against a freshly-computed hash. `None` unless the package is `Stored`.
+	/// The recorded snapshot [`ContentHash`] for a package, for freshness
+	/// comparison against a freshly-computed hash. `None` unless the package is
+	/// `Stored`.
 	pub async fn generation(
 		&self,
 		package: PackageId,
-	) -> Result<Option<Generation>, IndexError> {
+	) -> Result<Option<ContentHash>, IndexError> {
 		let (sql, vals) = queries::index::get_generation(package);
 		let row = sqlx::query_with(&sql, vals)
 			.fetch_optional(&self.pool)
@@ -240,11 +252,11 @@ impl GlobalStore<Live> {
 	/// id.
 	pub async fn upsert_symbol(
 		&self,
-		id: GlobalSymbolId,
+		id: SymbolId,
 		package: PackageId,
 		fq_name: &str,
 		kind: heart::SymbolKind,
-		generation: Generation,
+		generation: ContentHash,
 	) -> Result<(), IndexError> {
 		let (sql, vals) = queries::index::upsert_symbol(id, package, fq_name, kind, generation);
 		sqlx::query_with(&sql, vals)
@@ -255,26 +267,52 @@ impl GlobalStore<Live> {
 	}
 }
 
-/// Map a serialization/codec failure into an index error. A codec failure while
-/// building a statement is an internal invariant break, surfaced as a database
-/// error carrying the decode message.
+/// Map a serialization/codec failure into an index error. Now uses the
+/// dedicated Codec variant so the original CodecError + its sources chain.
 fn codec_to_index(e: codec::CodecError) -> IndexError {
-	IndexError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
-		std::io::ErrorKind::InvalidData,
-		e.to_string(),
-	))))
+	IndexError::Codec(e)
 }
 
 /// Classify a connect-time sqlx error into a [`ConnectFailure`].
-fn connect_failure(e: &sqlx::Error) -> ConnectFailure {
+fn connect_failure(e: sqlx::Error) -> ConnectFailure {
 	match e {
 		sqlx::Error::PoolTimedOut => ConnectFailure::Timeout,
 		sqlx::Error::Io(_) => ConnectFailure::Unreachable,
-		other => ConnectFailure::Other(Box::new(std::io::Error::new(
-			std::io::ErrorKind::Other,
-			other.to_string(),
-		))),
+		other => ConnectFailure::Other(other.into()),
 	}
+}
+
+/// Reassemble a [`crate::Package`] from a `packages` result row. The column
+/// order matches [`queries::index::get_package`]: id, language, origin_token,
+/// name_canonical, name_original, version_canonical, visibility, owner_tenant,
+/// owner_kind, toolchain (then the left-joined `parse_status.facets` at index
+/// 10, read separately by [`row_to_facets`]).
+fn row_to_package(row: &PgRow) -> Result<crate::Package, codec::CodecError> {
+	let language: String = row.try_get(1).map_err(row_decode)?;
+	let origin_token: String = row.try_get(2).map_err(row_decode)?;
+	let name_original: String = row.try_get(4).map_err(row_decode)?;
+	let version_canonical: String = row.try_get(5).map_err(row_decode)?;
+	let toolchain_json: serde_json::Value = row.try_get(9).map_err(row_decode)?;
+
+	let coordinates = codec::coordinates_from_columns(
+		&language,
+		&origin_token,
+		&name_original,
+		&version_canonical,
+	)?;
+	let toolchain = codec::toolchain_from_json(&toolchain_json)?;
+	Ok(crate::Package { coordinates, toolchain })
+}
+
+/// Read the (possibly-`NULL`) derived search facets from a [`get_package`]
+/// result row. The left join places `parse_status.facets` at column index 10,
+/// right after the ten `packages` identity/toolchain columns. Decodes via the
+/// codec's nullable-jsonb helper, exactly as `failure` is decoded.
+///
+/// [`get_package`]: queries::index::get_package
+fn row_to_facets(row: &PgRow) -> Result<Option<crate::metadata::SearchFacets>, codec::CodecError> {
+	let facets_json: Option<serde_json::Value> = row.try_get(10).map_err(row_decode)?;
+	codec::facets_from_json(facets_json.as_ref())
 }
 
 /// Reassemble a [`ResolutionState`] from a `parse_status` result row. The row
@@ -295,14 +333,8 @@ fn row_to_state(row: &PgRow) -> Result<ResolutionState, codec::CodecError> {
 	)
 }
 
-/// Bridge an sqlx row-decode error into a codec error (json domain) so
-/// [`row_to_state`] stays total.
+/// Bridge an sqlx row-decode error into a codec error (sqlx domain) so
+/// [`row_to_state`] stays total. Uses SqlxDecode to preserve source.
 fn row_decode(e: sqlx::Error) -> codec::CodecError {
-	codec::CodecError::Json {
-		domain: "parse_status row",
-		source: serde_json::Error::io(std::io::Error::new(
-			std::io::ErrorKind::InvalidData,
-			e.to_string(),
-		)),
-	}
+	codec::CodecError::SqlxDecode { domain: "parse_status row", source: e }
 }

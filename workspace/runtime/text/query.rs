@@ -1,73 +1,289 @@
 //! Querying the tantivy text index — the default interface for searching through
 //! items by name/signature.
-//!
-//! Search is CPU-bound and synchronous, so it runs on `spawn_blocking`. Results
-//! stream as [`Scored`] symbols, paginated by an opaque keyset [`Cursor`] and
-//! access-scoped.
 
 use std::num::NonZeroUsize;
 
-use futures::Stream;
+use futures::{Stream, TryFutureExt};
 use serde::{Deserialize, Serialize};
 
-use heart::{AccessContext, Cursor, Ecosystem, Scored, Symbol, SymbolKind};
+use heart::{Cursor, Language, Score, Scored, Symbol, SymbolKind};
 
-use crate::{
-	error::TextError,
-	text::{index::TextIndex, TextCursorKey},
+use tantivy::{
+	IndexReader, TantivyDocument,
+	collector::TopDocs,
+	query::{BooleanQuery, Occur, Query, RegexQuery, TermQuery},
+	schema::{Field, IndexRecordOption},
+	Term,
 };
 
-/// A parsed text query: the raw terms plus optional structured filters that
-/// narrow the result set before ranking.
+use crate::{
+	error::{TextError, TextQueryError},
+	text::{
+		TextCursorKey, tokenizer,
+		index::{TextIndex, TextSchema, kind_token, snapshot_hash, symbol_from_document},
+	},
+};
+
+/// The deepest a keyset resume will dig into the ranking before truncating.
+const MAX_FETCH: usize = 10_000;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextQuery {
-	/// The user's raw query text (matched against name + fq-name).
 	pub terms: String,
-	/// Restrict to a single ecosystem, if set.
-	pub ecosystem: Option<Ecosystem>,
-	/// Restrict to a set of symbol kinds, if non-empty.
+	pub ecosystem: Option<Language>,
 	pub kinds: Vec<SymbolKind>,
 }
 
 impl TextQuery {
-	/// A bare term query with no filters.
 	pub fn new(terms: impl Into<String>) -> Self {
 		Self { terms: terms.into(), ecosystem: None, kinds: Vec::new() }
 	}
 }
 
-/// The searchable view over a [`TextIndex`]: the default query surface.
-pub trait TextSearch: Send + Sync {
-	/// The failure mode of a text search.
-	type Error;
+impl TextIndex {
+	/// Fetch a single symbol by its exact [`SymbolId`].
+	///
+	/// Uses a term query on the stored `id` field — no tokenization, exact UUID
+	/// match.
+	pub async fn find_by_id(&self, id: heart::SymbolId) -> Result<Option<Symbol>, TextError> {
+		let reader = self.reader.clone();
+		let schema = self.schema().clone();
+		let id_str = id.as_uuid().to_string();
+		tokio::task::spawn_blocking(move || {
+			reader.reload().map_err(TextError::Engine)?;
+			let searcher = reader.searcher();
+			let term = Term::from_field_text(schema.id, &id_str);
+			let query = TermQuery::new(term, IndexRecordOption::Basic);
+			let docs = searcher
+				.search(&query, &TopDocs::with_limit(1))
+				.map_err(TextError::Engine)?;
+			docs.into_iter()
+				.next()
+				.map(|(_, address)| {
+					let document: TantivyDocument =
+						searcher.doc(address).map_err(TextError::Engine)?;
+					symbol_from_document(&schema, &document)
+				})
+				.transpose()
+		})
+		.await
+		.unwrap_or_else(|join_error| Err(TextError::Io(std::io::Error::other(join_error))))
+	}
 
-	/// Search the index, returning up to `limit` [`Scored`] symbols ranked by
-	/// relevance, streamed. `after` resumes a previous page via the keyset
-	/// cursor; results are access-scoped.
-	fn search(
+	pub fn search(
 		&self,
 		query: &TextQuery,
 		limit: NonZeroUsize,
-		scope: &AccessContext,
 		after: Option<Cursor<TextCursorKey>>,
-	) -> impl Stream<Item = Result<Scored<Symbol>, Self::Error>> + Send;
+	) -> impl Stream<Item = Result<Scored<Symbol>, TextError>> + Send {
+		// Everything the blocking task needs, owned — tantivy search is
+		// CPU/disk-bound, so it must not run on the async worker threads.
+		let reader = self.reader.clone();
+		let schema = self.schema().clone();
+		let query = query.clone();
+		async move {
+			let hits = tokio::task::spawn_blocking(move || {
+				search_blocking(&reader, &schema, &query, limit, after)
+			})
+			.await
+			.unwrap_or_else(|join_error| Err(TextError::Io(std::io::Error::other(join_error))))?;
+			Ok(futures::stream::iter(hits.into_iter().map(Ok)))
+		}
+		.try_flatten_stream()
+	}
 }
 
-impl TextSearch for TextIndex {
-	type Error = TextError;
+/// The synchronous search body: reload, validate the cursor against the live
+/// snapshot, rank, then resume strictly after the keyset key.
+fn search_blocking(
+	reader: &IndexReader,
+	schema: &TextSchema,
+	query: &TextQuery,
+	limit: NonZeroUsize,
+	after: Option<Cursor<TextCursorKey>>,
+) -> Result<Vec<Scored<Symbol>>, TextError> {
+	reader.reload().map_err(TextError::Engine)?;
+	let searcher = reader.searcher();
 
-	fn search(
-		&self,
-		query: &TextQuery,
-		limit: NonZeroUsize,
-		scope: &AccessContext,
-		after: Option<Cursor<TextCursorKey>>,
-	) -> impl Stream<Item = Result<Scored<Symbol>, Self::Error>> + Send {
-		let _ = (query, limit, scope, after);
-		// runs on spawn_blocking: parse the query, run the tantivy search from the
-		// keyset position, access-filter, and stream the page.
-		todo!("spawn_blocking tantivy search from the cursor keyset, access-filtered, streamed");
-		#[allow(unreachable_code)]
-		futures::stream::empty()
+	// A cursor minted against an older snapshot no longer addresses this
+	// ranking; flag it so the caller can restart cleanly.
+	if let Some(cursor) = &after
+		&& cursor.snapshot != snapshot_hash(&searcher)
+	{
+		// Simulate payload error (carries real postcard source via the helper
+		// so runtime need not depend on postcard directly).
+		return Err(TextError::Cursor(heart::cursor::stale_snapshot_error()));
 	}
+
+	let parsed = build_query(schema, query)?;
+	let target = limit.get();
+	// Keyset over a score-ranked list: tantivy has no seek-to-key and no
+	// secondary sort, so we over-fetch, re-sort by (score desc, id asc), then
+	// either take the first page or skip past the cursor. Expand until the
+	// TopDocs cut is exhausted (or we hit MAX_FETCH) so score-tied groups are
+	// ordered by id completely — a short first-page cut would otherwise mint a
+	// cursor mid-pack of the true keyset order.
+	let mut fetch = match &after {
+		None => target,
+		Some(_) => (target * 2).min(MAX_FETCH),
+	};
+	loop {
+		let ranked = searcher
+			.search(&parsed, &TopDocs::with_limit(fetch))
+			.map_err(TextError::Engine)?;
+		let exhausted = ranked.len() < fetch;
+
+		let mut hits = Vec::with_capacity(ranked.len());
+		for (score, address) in ranked {
+			let document: TantivyDocument =
+				searcher.doc(address).map_err(TextError::Engine)?;
+			hits.push(Scored::new(symbol_from_document(schema, &document)?, finite_score(score)));
+		}
+		// Stable keyset order: score descending, id ascending on ties.
+		hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.value.id.cmp(&b.value.id)));
+
+		let page: Vec<_> = hits
+			.into_iter()
+			.filter(|hit| {
+				after.as_ref().is_none_or(|cursor| {
+					let (score, id) = &cursor.after;
+					hit.score < *score || (hit.score == *score && hit.value.id > *id)
+				})
+			})
+			.take(target)
+			.collect();
+
+		// Expand while TopDocs may still be hiding docs that reorder the page
+		// under the (score, id) keyset — including a full first page cut.
+		if !exhausted && fetch < MAX_FETCH {
+			fetch = (fetch * 2).min(MAX_FETCH);
+			continue;
+		}
+		if page.len() < target && !exhausted && fetch >= MAX_FETCH {
+			tracing::warn!(fetched = fetch, "text keyset resume truncated at fetch ceiling");
+		}
+		return Ok(page);
+	}
+}
+
+/// A tantivy score is finite BM25 (or a constant for regex clauses); clamp the
+/// pathological case rather than panic deep inside a search.
+fn finite_score(raw: f32) -> Score {
+	Score::try_new(raw)
+		.unwrap_or_else(|_| Score::try_new(0.0).expect("zero is finite"))
+}
+
+/// Lower a [`TextQuery`] into the tantivy query tree:
+/// `(exact-name OR name-contains OR path-contains OR name-subtokens OR
+/// path-subtokens) AND ecosystem? AND kinds?`.
+///
+/// The first three tiers match on the lowercased raw fields (exact term, then
+/// case-insensitive substring). The subtoken tiers add what raw matching cannot:
+/// a query for the *parts* of a name (`user` → `getUserById`, `read string` →
+/// `read_to_string`) via the identifier-tokenized `name_tokens`/`fq_tokens`
+/// fields. All tiers are `Should`, so any one satisfies the name requirement and
+/// documents matching more tiers score higher.
+pub(crate) fn build_query(
+	schema: &TextSchema,
+	query: &TextQuery,
+) -> Result<Box<dyn Query>, TextError> {
+	let needle = query.terms.trim().to_lowercase();
+	if needle.is_empty() {
+		return Err(TextError::Query(TextQueryError::Empty));
+	}
+
+	let contains = |field: Field| -> Result<Box<dyn Query>, TextError> {
+		RegexQuery::from_pattern(&format!(".*{}.*", escape_regex(&needle)), field)
+			.map(|matched| Box::new(matched) as Box<dyn Query>)
+			.map_err(|cause| {
+				TextError::Query(TextQueryError::InvalidPattern {
+					needle: needle.clone(),
+					cause,
+				})
+			})
+	};
+	let exact = Box::new(TermQuery::new(
+		Term::from_field_text(schema.name_lower, &needle),
+		IndexRecordOption::Basic,
+	)) as Box<dyn Query>;
+
+	// Split the *original-case* query so camelCase humps break before lowercasing,
+	// matching how the index tokenized each stored name. A conjunction of the
+	// resulting subtokens means every queried part must be present.
+	let parts = tokenizer::subtokens(query.terms.trim());
+	let subtoken_clause = |field: Field| -> Option<Box<dyn Query>> {
+		if parts.is_empty() {
+			return None;
+		}
+		let terms: Vec<(Occur, Box<dyn Query>)> = parts
+			.iter()
+			.map(|part| {
+				(
+					Occur::Must,
+					Box::new(TermQuery::new(
+						Term::from_field_text(field, part),
+						IndexRecordOption::WithFreqs,
+					)) as Box<dyn Query>,
+				)
+			})
+			.collect();
+		Some(Box::new(BooleanQuery::new(terms)))
+	};
+
+	let mut name_tiers: Vec<(Occur, Box<dyn Query>)> = vec![
+		(Occur::Should, exact),
+		(Occur::Should, contains(schema.name_lower)?),
+		(Occur::Should, contains(schema.fq_lower)?),
+	];
+	if let Some(clause) = subtoken_clause(schema.name_tokens) {
+		name_tiers.push((Occur::Should, clause));
+	}
+	if let Some(clause) = subtoken_clause(schema.fq_tokens) {
+		name_tiers.push((Occur::Should, clause));
+	}
+	let names = BooleanQuery::new(name_tiers);
+
+	let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, Box::new(names))];
+	if let Some(ecosystem) = query.ecosystem {
+		clauses.push((
+			Occur::Must,
+			Box::new(TermQuery::new(
+				Term::from_field_text(schema.ecosystem, ecosystem.as_token()),
+				IndexRecordOption::Basic,
+			)),
+		));
+	}
+	if !query.kinds.is_empty() {
+		let kinds = query
+			.kinds
+			.iter()
+			.map(|kind| {
+				(
+					Occur::Should,
+					Box::new(TermQuery::new(
+						Term::from_field_text(schema.kind, &kind_token(*kind)),
+						IndexRecordOption::Basic,
+					)) as Box<dyn Query>,
+				)
+			})
+			.collect::<Vec<_>>();
+		clauses.push((Occur::Must, Box::new(BooleanQuery::new(kinds))));
+	}
+	Ok(Box::new(BooleanQuery::new(clauses)))
+}
+
+/// Escape the regex metacharacters of the term dictionary's pattern syntax so
+/// user input always matches literally.
+fn escape_regex(raw: &str) -> String {
+	let mut escaped = String::with_capacity(raw.len());
+	for character in raw.chars() {
+		if matches!(
+			character,
+			'.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '\\'
+		) {
+			escaped.push('\\');
+		}
+		escaped.push(character);
+	}
+	escaped
 }

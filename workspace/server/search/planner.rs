@@ -1,49 +1,124 @@
 //! The search planner — the *only* place a [`SemanticGate`] is minted.
-//!
-//! The default surface is precise (tantivy) text search. Semantic (qdrant)
-//! search is heavy and never implicit: the planner decides — from policy,
-//! quota, and the request — whether to engage it, and is the sole issuer of the
-//! capability token. Because [`SemanticGate`] is non-`Copy` and consumed by the
-//! semantic call, a gate cannot be stashed, forged, or reused; "ran an
-//! expensive semantic query by accident" is unrepresentable.
 
-use heart::AccessContext;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use runtime::vector::SemanticGate;
 
-use crate::search::query::{Query, Search};
+use crate::search::query::{AbstractQuery, Query, Search};
 
-/// Which surface a request should be routed to, decided by the planner.
 pub enum Plan {
-	/// Route to precise tantivy search (the default).
 	Precise,
-	/// Route to semantic search, carrying the minted capability token.
 	Semantic(SemanticGate),
 }
 
-/// Decides how each request is served and issues the semantic capability when —
-/// and only when — the policy permits the heavy path.
+/// How many semantic queries the default planner admits per window. Semantic
+/// search is the expensive path; the budget keeps a chatty client from turning
+/// every keystroke into an embedding round-trip.
+const DEFAULT_SEMANTIC_BUDGET: u32 = 64;
+const DEFAULT_SEMANTIC_WINDOW: Duration = Duration::from_secs(60);
+
 pub struct SearchPlanner {
-	// TODO: quota / budget / policy handles the planner consults.
+	/// The policy half: whether the expensive path is warranted *right now*.
+	semantic_quota: Quota,
 }
 
 impl SearchPlanner {
-	/// Construct a planner from the server's policy/quota handles.
-	pub fn new() -> Self { todo!("wire policy + quota handles") }
+	pub fn new() -> Self {
+		Self::with_quota(DEFAULT_SEMANTIC_BUDGET, DEFAULT_SEMANTIC_WINDOW)
+	}
 
-	/// Decide the plan for a request. Mints a [`SemanticGate`] (with an audit
-	/// reason) iff the request asks for semantic search AND policy/quota allow.
-	pub fn plan(&self, request: &Search<'_>, ctx: &AccessContext) -> Plan {
-		let _ = ctx;
+	/// A planner with an explicit semantic budget — `capacity` gates per
+	/// `window`. `capacity: 0` yields a planner that never plans semantically.
+	pub fn with_quota(capacity: u32, window: Duration) -> Self {
+		Self { semantic_quota: Quota::new(capacity, window) }
+	}
+
+	pub fn plan(&self, request: &Search<'_>) -> Plan {
 		match &request.query {
 			Query::Literal(_) => Plan::Precise,
-			Query::Abstract(_) => {
-				// Only here, and only after the (todo) policy/quota check, is a gate issued.
-				todo!("check policy+quota; if allowed -> Plan::Semantic(SemanticGate::issue(...))")
+			Query::Abstract(query) => {
+				if self.semantic_quota.admit() {
+					Plan::Semantic(SemanticGate::issue(match query {
+						AbstractQuery::NaturalLanguage(_) => {
+							"planner: natural-language query warrants the semantic surface"
+						}
+						AbstractQuery::CodeSnippet { .. } => {
+							"planner: code-snippet query warrants the semantic surface"
+						}
+					}))
+				} else {
+					// Quota exhausted: degrade to the cheap precise surface. The
+					// inverse — text silently escalating to semantic — never happens.
+					tracing::debug!("semantic quota exhausted; degrading to precise search");
+					Plan::Precise
+				}
 			}
 		}
+	}
+
+	/// Authorize one explicit similar-items (sidebar) query, or `None` when the
+	/// semantic budget is spent. The sidebar is a deliberate qdrant call, so it
+	/// draws from the same budget as planned semantic searches.
+	pub fn authorize_similar(&self) -> Option<SemanticGate> {
+		self.semantic_quota
+			.admit()
+			.then(|| SemanticGate::issue("similar-items sidebar"))
+	}
+
+	/// Extend a planner-issued authorization across a federation fan-out: one
+	/// user-visible semantic query touches every source, and each per-source
+	/// query needs its own single-use token. Takes the *reason of an already
+	/// issued gate*, and minting stays inside this module, so the "only the
+	/// planner issues gates" invariant keeps one home.
+	pub(crate) fn extend_across_federation(reason: &'static str) -> SemanticGate {
+		SemanticGate::issue(reason)
 	}
 }
 
 impl Default for SearchPlanner {
 	fn default() -> Self { Self::new() }
+}
+
+/// A fixed-window budget: `capacity` admissions per `window`, then denial until
+/// the window rolls. Coarse on purpose — this bounds blast radius, it does not
+/// bill anyone.
+struct Quota {
+	capacity: u32,
+	window: Duration,
+	state: Mutex<QuotaWindow>,
+}
+
+struct QuotaWindow {
+	opened: Instant,
+	admitted: u32,
+}
+
+impl Quota {
+	fn new(capacity: u32, window: Duration) -> Self {
+		Self {
+			capacity,
+			window,
+			state: Mutex::new(QuotaWindow { opened: Instant::now(), admitted: 0 }),
+		}
+	}
+
+	fn admit(&self) -> bool {
+		let mut window = match self.state.lock() {
+			Ok(window) => window,
+			// A poisoned window means a panic mid-admit; deny the expensive path
+			// rather than run unmetered.
+			Err(_) => return false,
+		};
+		if window.opened.elapsed() >= self.window {
+			window.opened = Instant::now();
+			window.admitted = 0;
+		}
+		if window.admitted < self.capacity {
+			window.admitted += 1;
+			true
+		} else {
+			false
+		}
+	}
 }

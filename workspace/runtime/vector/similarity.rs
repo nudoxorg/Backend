@@ -1,41 +1,55 @@
 //! Vector similarity kernels and similarity-from-a-symbol queries.
-//!
-//! The ranking metric for the semantic store is cosine similarity. The kernel
-//! below is a hot path over `DIM`-length vectors; the eventual implementation is
-//! a SIMD target (e.g. `std::simd` / `wide`), so it is isolated here behind a
-//! stable signature.
 
 use std::num::NonZeroUsize;
 
-use heart::{AccessContext, GlobalSymbolId, Score, Scored};
+use heart::{SymbolId, Score, Scored};
 
 use crate::{
 	error::VectorError,
-	vector::{embedding::{Embedding, EmbeddingModel}, gate::SemanticGate, SemanticLive},
+	vector::{Embedding, SemanticLive, gate::SemanticGate, model::EmbeddingModel},
 };
 
-/// Cosine similarity of two embeddings of the same model brand, as a
-/// provably-finite [`Score`]. Same brand ⇒ same dimension by construction, so no
-/// length check is needed — and two *different* models can't be compared at all.
+/// Cosine similarity of two embeddings of the same model brand.
 ///
-/// SIMD KERNEL TARGET: this is the inner loop of every semantic query; it will
-/// be lowered to explicit SIMD once the shape stabilizes.
+/// Accumulates in `f64` for stability, clamps into `[-1, 1]` (rounding can
+/// nudge past the bound), and maps a zero vector to `0.0` — so the result is
+/// always a finite [`Score`].
 pub fn cosine<M: EmbeddingModel>(a: &Embedding<M>, b: &Embedding<M>) -> Score {
-	let _ = (a, b);
-	todo!("dot(a,b) / (||a|| * ||b||), clamped into a finite Score")
+	let (mut dot, mut norm_a, mut norm_b) = (0.0f64, 0.0f64, 0.0f64);
+	for (x, y) in a.as_slice().iter().zip(b.as_slice()) {
+		let (x, y) = (f64::from(*x), f64::from(*y));
+		dot += x * y;
+		norm_a += x * x;
+		norm_b += y * y;
+	}
+	let denominator = norm_a.sqrt() * norm_b.sqrt();
+	let value = if denominator == 0.0 { 0.0 } else { (dot / denominator).clamp(-1.0, 1.0) };
+	Score::try_new(value as f32).expect("a clamped cosine is finite by construction")
 }
 
-/// Find symbols semantically near a *stored* symbol: fetch its vector, then
-/// nearest-neighbour on the store, excluding the symbol itself.
-///
-/// Gated (semantic path) and access-scoped like every semantic query.
+/// Find symbols semantically near a *stored* symbol.
 pub async fn similar_to<M: EmbeddingModel>(
 	store: &SemanticLive<M>,
 	gate: SemanticGate,
-	symbol: GlobalSymbolId,
+	symbol: SymbolId,
 	limit: NonZeroUsize,
-	scope: &AccessContext,
-) -> Result<Vec<Scored<GlobalSymbolId>>, VectorError> {
-	let _ = (store, gate, symbol, limit, scope);
-	todo!("look up symbol's stored vector, k-NN search, drop the self-hit")
+) -> Result<Vec<Scored<SymbolId>>, VectorError> {
+	use futures::TryStreamExt;
+
+	// The query vector is the symbol's own stored point.
+	let Some(query) = store.stored_embedding(symbol).await? else {
+		// No stored vector means no meaningful neighborhood; an empty result is
+		// the honest answer (the symbol simply is not in the semantic surface).
+		tracing::warn!(%symbol, "similar_to on a symbol with no stored vector");
+		return Ok(Vec::new());
+	};
+	// Over-fetch by one: the symbol itself is (almost always) its own top hit.
+	let widened = NonZeroUsize::new(limit.get().saturating_add(1))
+		.expect("a nonzero limit plus one is nonzero");
+	let hits: Vec<_> = store
+		.search_with_filter(gate, &query, widened, None, None)
+		.await?
+		.try_collect()
+		.await?;
+	Ok(hits.into_iter().filter(|hit| hit.value != symbol).take(limit.get()).collect())
 }

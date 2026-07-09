@@ -17,6 +17,11 @@
       url = "github:numtide/devshell";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    buck2-prelude = {
+      url = "github:facebookincubator/buck2-prelude?rev=4b374e200a64838660463994b079899b5094689a";
+      flake = false;
+    };
   };
   outputs =
     {
@@ -25,6 +30,7 @@
       fenix,
       git-hooks,
       devshell,
+      buck2-prelude,
     }:
     let
       # Everything that Nix supports right now
@@ -143,6 +149,14 @@
             "rust-src"
             "rust-docs"
             "rustc"
+            # rustc-dev ships the compiler's own crates (rustc_driver,
+            # rustc_interface, rustc_hir, …) into the sysroot. It is the
+            # prerequisite for building `#![feature(rustc_private)]` code —
+            # i.e. vendoring librustdoc and driving it in-process so the Rust
+            # producer can obtain rustdoc's `Crate` without shelling out to
+            # `cargo rustdoc` and round-tripping through JSON.
+            "rustc-dev"
+            "llvm-tools"
             "rustfmt"
             "rustc-codegen-cranelift-preview"
           ];
@@ -158,6 +172,10 @@
           default = (devshell.legacyPackages.${system}.mkShell) {
             name = "NuNuShell";
             env = [
+              {
+                name = "RUSTC_BOOTSTRAP";
+                value = "1";
+              }
               {
                 # TODO: See if there's a more reliable way to avoid this, just a linker issue I started facing
                 name = "LIBRARY_PATH";
@@ -217,6 +235,8 @@
               pkgs.goreleaser
               pkgs.cuelsp
               pkgs.b3sum
+              pkgs.buckle # Buck2 version launcher — reads .buckversion, downloads/caches the pinned binary
+              (pkgs.writeShellScriptBin "buck2" ''exec ${pkgs.buckle}/bin/buckle "$@"'')
               (if pkgs.stdenv.isLinux then pkgs.wild-unwrapped else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.openssl else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.clang else null)
@@ -226,6 +246,12 @@
               (mkCommand "check" "Check workspace for compilation and syntax errors" "build")
               (mkCommand "build" "Build workspace in debug mode" "build")
               (mkCommand "build-release" "Build workspace in release mode" "build")
+              {
+                name = "ra-index";
+                help = "Generate rust-project.json for rust-analyzer (run once after dep changes)";
+                category = "build";
+                command = "bash build/gen-rust-project.sh";
+              }
 
               # --- Packaging --- #
               {
@@ -267,7 +293,11 @@
               (mkCommand "rad-sync" "manually sync radicle repos" "utilities")
             ];
             devshell.startup.shellHook.text = ''
+              ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
               export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
+              # sccache intercepts rustc --version as a non-compilation call and returns empty output,
+              # breaking Buck2 build scripts (e.g. rustversion). Buck2 has its own caching.
+              unset RUSTC_WRAPPER
               ${hooks.shellHook}
               (
                 # Use a lockfile to prevent multiple instances from stomping on Git

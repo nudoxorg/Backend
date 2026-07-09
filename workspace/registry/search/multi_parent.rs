@@ -13,8 +13,8 @@
 //! highest-scored representative and recording the alternates as provenance.
 
 use heart::{
-	package::{PackageId, RegistryOrigin},
-	scored::Scored,
+	Scored,
+	identity::{PackageId, RegistryOrigin},
 };
 
 use crate::GlobalPackage;
@@ -48,6 +48,44 @@ pub struct Alternate {
 /// best-scored record as representative, and folds the rest into `alternates`.
 /// Stable: input order breaks ties so pagination stays deterministic.
 pub fn merge(results: Vec<Scored<GlobalPackage>>) -> Vec<Merged> {
-	let _ = results;
-	todo!("group by (name.canonical, version.canonical), keep max score, collect alternates")
+	use std::collections::{HashMap, hash_map::Entry};
+
+	// The logical-package key: origin-independent, so federated copies of the
+	// same (name, version) fold together.
+	let key = |package: &GlobalPackage| {
+		let coordinates = &package.package.coordinates;
+		(
+			coordinates.ecosystem(),
+			coordinates.name.canonical().to_owned(),
+			coordinates.version.canonical(),
+		)
+	};
+	let provenance = |package: &GlobalPackage| Alternate {
+		origin: package.package.coordinates.origin.clone(),
+		id: package.id,
+	};
+
+	let mut merged: Vec<Merged> = Vec::new();
+	let mut groups: HashMap<_, usize> = HashMap::new();
+
+	for scored in results {
+		match groups.entry(key(&scored.value)) {
+			Entry::Vacant(slot) => {
+				slot.insert(merged.len());
+				merged.push(Merged { representative: scored, alternates: Vec::new() });
+			}
+			Entry::Occupied(slot) => {
+				let group = &mut merged[*slot.get()];
+				// A strictly better score dethrones the representative; ties
+				// keep the earlier arrival so pagination stays deterministic.
+				if scored.score > group.representative.score {
+					let dethroned = std::mem::replace(&mut group.representative, scored);
+					group.alternates.push(provenance(&dethroned.value));
+				} else {
+					group.alternates.push(provenance(&scored.value));
+				}
+			}
+		}
+	}
+	merged
 }

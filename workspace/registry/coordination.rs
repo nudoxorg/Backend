@@ -14,10 +14,8 @@
 
 use chrono::{DateTime, Utc};
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live,
-	content::Generation,
-	lifecycle::ResolutionState,
-	package::PackageId,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId, ResolutionState,
+	content::ContentHash,
 };
 use sqlx::{Row, postgres::PgRow};
 
@@ -36,9 +34,6 @@ pub struct OutboxEntry {
 
 	/// The package that changed.
 	pub package: PackageId,
-
-	/// The generation that was emitted.
-	pub generation: Generation,
 
 	/// Which derived sink this intent is for.
 	pub kind: SinkKind,
@@ -94,28 +89,26 @@ impl Connect for Outbox<Cold> {
 fn row_to_entry(row: &PgRow) -> Result<OutboxEntry, OutboxError> {
 	let seq: i64 = row.try_get(0).map_err(OutboxError::Database)?;
 	let package_uuid: uuid::Uuid = row.try_get(1).map_err(OutboxError::Database)?;
-	let gen_bytes: Vec<u8> = row.try_get(2).map_err(OutboxError::Database)?;
 	let kind_tok: String = row.try_get(3).map_err(OutboxError::Database)?;
 	let created_at: DateTime<Utc> = row.try_get(4).map_err(OutboxError::Database)?;
 
-	let generation = codec::generation_from_bytes(&gen_bytes).map_err(codec_to_outbox)?;
 	let kind = codec::sink_kind_from_token(&kind_tok).map_err(codec_to_outbox)?;
 
 	Ok(OutboxEntry {
 		id: OutboxSeq(seq),
 		package: codec::package_id_from_uuid(package_uuid),
-		generation,
 		kind,
 		created_at,
 	})
 }
 
 /// A codec failure while decoding an outbox row is a corrupt-row / internal
-/// invariant break, surfaced as a database decode error.
+/// invariant break, surfaced as a database decode error. (We keep Database for
+/// outbox surface; full Codec would be added if we expand OutboxError more.)
 fn codec_to_outbox(e: codec::CodecError) -> OutboxError {
 	OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
 		std::io::ErrorKind::InvalidData,
-		e.to_string(),
+		format!("codec: {e}"),
 	))))
 }
 
@@ -129,12 +122,12 @@ impl Outbox<Live> {
 	pub async fn append(
 		&self,
 		package: PackageId,
-		generation: Generation,
+		snapshot: ContentHash,
 		kinds: &[SinkKind],
 	) -> Result<(), OutboxError> {
 		let mut tx = self.pool.begin().await.map_err(OutboxError::Database)?;
 		for &kind in kinds {
-			let (sql, vals) = queries::outbox::append_one(package, generation, kind);
+			let (sql, vals) = queries::outbox::append_one(package, snapshot, kind);
 			sqlx::query_with(&sql, vals)
 				.execute(&mut *tx)
 				.await
@@ -153,22 +146,42 @@ impl Outbox<Live> {
 	///
 	/// The caller passes the `GlobalStore` whose pool this outbox shares so the
 	/// state write and the outbox writes run on the same connection/transaction.
+	///
+	/// `facets` are the derived [`crate::metadata::SearchFacets`] for this generation (keywords +
+	/// quality); they are written into the *same* `parse_status` row, in the same
+	/// transaction, so the search-relevant metadata can never diverge from the
+	/// `Stored` state that owns it. This mirrors how `Failure` rides the lifecycle
+	/// row: a nullable jsonb column, written alongside the state transition.
+	/// `None` clears the column (writes `NULL`), so a re-emit without extracted
+	/// metadata does not strand stale facets.
 	pub async fn record_stored(
 		&self,
 		index: &GlobalStore,
 		package: PackageId,
-		generation: Generation,
+		snapshot: ContentHash,
+		facets: Option<&crate::metadata::SearchFacets>,
 	) -> Result<(), OutboxError> {
 		let mut tx = self.pool.begin().await.map_err(OutboxError::Database)?;
 
-		// 1. Transition the lifecycle row to Stored { generation } in this txn.
-		let stored = ResolutionState::Stored { hash: generation.0 };
+		// 1. Transition the lifecycle row to Stored { snapshot } in this txn.
+		let stored = ResolutionState::Stored { hash: snapshot };
 		GlobalStore::set_state_tx(&mut tx, package, &stored)
 			.await
 			.map_err(index_to_outbox)?;
 
-		// 2. Fan out one idempotent intent per sink in the *same* txn.
-		let (sql, vals) = queries::outbox::append_all(package, generation);
+		// 2. Persist the derived search facets on the same lifecycle row, in the
+		//    same txn — the facets analog of the `failure` jsonb write. Runs after
+		//    the `set_state` upsert has guaranteed the row exists, and never
+		//    disturbs the state/phase/hash columns.
+		let (facets_sql, facets_vals) =
+			queries::index::set_facets(package, facets).map_err(codec_to_outbox)?;
+		sqlx::query_with(&facets_sql, facets_vals)
+			.execute(&mut *tx)
+			.await
+			.map_err(OutboxError::Database)?;
+
+		// 3. Fan out one idempotent intent per sink in the *same* txn.
+		let (sql, vals) = queries::outbox::append_all(package, snapshot);
 		sqlx::query_with(&sql, vals)
 			.execute(&mut *tx)
 			.await
@@ -240,9 +253,13 @@ impl Outbox<Live> {
 fn index_to_outbox(e: IndexError) -> OutboxError {
 	match e {
 		IndexError::Database(db) => OutboxError::Database(db),
+		IndexError::Codec(c) => OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
+			std::io::ErrorKind::Other,
+			format!("codec: {c}"),
+		)))),
 		other => OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
 			std::io::ErrorKind::Other,
-			other.to_string(),
+			format!("index: {other}"),
 		)))),
 	}
 }

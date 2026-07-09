@@ -1,66 +1,132 @@
 //! The search/read flow: route a read request to the right surface and assemble
 //! the response.
-//!
-//! The planner decides precise-vs-semantic and mints the [`SemanticGate`] only
-//! when the heavy path is authorized; this flow never engages semantic search
-//! implicitly.
 
-use futures::Stream;
-use heart::{AccessContext, GlobalSymbolId, Scored, Sourced, Symbol};
+use std::num::NonZeroUsize;
+
+use futures::{Stream, StreamExt};
+use heart::{SymbolId, Scored, Sourced, Symbol};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
-use crate::error::ServerError;
+use crate::error::{BadRequestReason, InternalError, ServerError};
 use crate::search::planner::Plan;
-use crate::search::query::Search;
+use crate::search::query::{Query, Search};
+use crate::search::semantic::SemanticSurface;
+use crate::search::{SearchTarget, SearchPlanner, SymbolStore, merge_overlay_first};
 
 impl<M: EmbeddingModel> Server<M> {
-	/// Answer a symbol search: plan it, dispatch to precise or (gated) semantic,
-	/// query every federated source, and merge with overlay-override precedence.
-	/// Access-scoped and keyset-paged throughout.
 	pub async fn search_symbols<'a>(
 		&'a self,
 		request: &'a Search<'a>,
 	) -> Result<impl Stream<Item = Result<Scored<Symbol>, ServerError>> + Send + 'a, ServerError> {
-		match self.planner().plan(request, request.scope) {
-			// Both arms fan the query across `self.federation().in_precedence()`,
-			// then merge so an overlay hit for a symbol shadows the base's.
-			Plan::Precise => todo!("query each source's tantivy surface; merge overlay-over-base"),
-			Plan::Semantic(_gate) => todo!("query each source's gated qdrant surface; merge overlay-over-base"),
-		}
-		#[allow(unreachable_code)]
-		Ok(futures::stream::empty())
+		self.authorize("search.symbols")?;
+		let hits = match self.planner().plan(request) {
+			Plan::Precise => self.precise_hits(request).await?,
+			Plan::Semantic(gate) => self.semantic_hits(gate, request).await?,
+		};
+		Ok(futures::stream::iter(hits.into_iter().map(Ok)))
 	}
 
-	/// Resolve a single symbol across the federation with **override semantics**:
-	/// walk sources in precedence order (overlays first, then the definitive
-	/// base) and return the first that has it, tagged with which source provided
-	/// it — so callers can tell an overlay override from a definitive record.
 	pub async fn resolve_symbol(
 		&self,
-		id: GlobalSymbolId,
-		ctx: &AccessContext,
+		id: SymbolId,
 	) -> Result<Option<Sourced<Symbol>>, ServerError> {
-		let _ = (id, ctx);
-		for (source_id, role, stores) in self.federation().in_precedence() {
-			// The first source (highest precedence) that has `id` wins; an overlay
-			// therefore shadows the base. Access is checked per source.
-			let _ = (source_id, role, &stores.global_store);
-			// if let Some(sym) = stores.lookup(id, ctx).await? { return Ok(Some(Sourced::new(sym, source_id, role))); }
+		self.authorize("search.resolve_symbol")?;
+		for sourced in self.federation().in_precedence() {
+			if let Some(symbol) = sourced.value.symbol_by_id(id).await? {
+				return Ok(Some(sourced.map(|_| symbol)));
+			}
 		}
-		todo!("federated resolve: overlay-override then definitive base")
+		Ok(None)
 	}
 
-	/// Expand from a hit through graph relationships (session-driven exploration).
 	pub async fn expand(
 		&self,
 		hit: &Scored<Symbol>,
-		ctx: &AccessContext,
 	) -> Result<Vec<Scored<Symbol>>, ServerError> {
-		let _ = (hit, ctx);
-		todo!("walk GraphStore relationships, score, merge into the caller's session")
+		self.authorize("search.expand")?;
+		let mut groups = Vec::new();
+		for sourced in self.federation().in_precedence() {
+			groups.push(sourced.value.related_hits(hit).await?);
+		}
+		Ok(merge_overlay_first(groups, |symbol| symbol.id, usize::MAX))
 	}
 
-	/// The (lazily-built) search planner for this server.
-	fn planner(&self) -> &crate::search::SearchPlanner { todo!("hold a planner on the Server") }
+	fn planner(&self) -> &crate::search::SearchPlanner { &self.planner }
+
+	/// The precise (tantivy) arm: query every source's text surface, merge
+	/// overlay-over-base, rank by score, bound by the requested page.
+	async fn precise_hits(&self, request: &Search<'_>) -> Result<Vec<Scored<Symbol>>, ServerError> {
+		let mut groups = Vec::new();
+		for sourced in self.federation().in_precedence() {
+			let hits = sourced.value.search(request).await?;
+			futures::pin_mut!(hits);
+			let mut collected = Vec::new();
+			while let Some(hit) = hits.next().await {
+				collected.push(hit?);
+			}
+			groups.push(collected);
+		}
+		Ok(merge_overlay_first(groups, |symbol| symbol.id, page_limit(request)))
+	}
+
+	/// The gated semantic (qdrant) arm: embed the query once (cache-first), fan
+	/// the planner's authorization across the federation, hydrate the returned
+	/// ids into symbols, and merge overlay-over-base.
+	async fn semantic_hits(
+		&self,
+		gate: runtime::vector::SemanticGate,
+		request: &Search<'_>,
+	) -> Result<Vec<Scored<Symbol>>, ServerError> {
+		let Query::Abstract(query) = &request.query else {
+			// The planner never plans a literal query semantically.
+			return Err(InternalError::PlannerInvariantSemanticForLiteral.into());
+		};
+		let limit = NonZeroUsize::new(page_limit(request)).unwrap_or(NonZeroUsize::MIN);
+		let after = request
+			.page
+			.after
+			.as_deref()
+			.map(|token| {
+				heart::Cursor::decode(token)
+					.map_err(|source| BadRequestReason::InvalidCursor {
+				token: token.to_owned(),
+				source,
+			})
+			})
+			.transpose()?;
+
+		// One planner issuance authorizes one user-visible query; fanning it out
+		// across the federation re-issues per source under the same audit reason.
+		let reason = gate.reason();
+		let mut authorization = Some(gate);
+		let mut groups = Vec::new();
+		for sourced in self.federation().in_precedence() {
+			let gate = authorization
+				.take()
+				.unwrap_or_else(|| SearchPlanner::extend_across_federation(reason));
+			let surface = SemanticSurface::new(
+				&sourced.value.semantics,
+				&self.embedder,
+				&self.embedding_cache,
+			);
+			let identities = surface.search(gate, query, limit, after.clone()).await?;
+			futures::pin_mut!(identities);
+
+			let mut collected = Vec::new();
+			while let Some(scored_identity) = identities.next().await {
+				let scored_identity = scored_identity?;
+				if let Some(symbol) = sourced.value.symbol_by_id(scored_identity.value).await? {
+					if request.filter.admits(&symbol) {
+						collected.push(Scored::new(symbol, scored_identity.score));
+					}
+				}
+			}
+			groups.push(collected);
+		}
+		Ok(merge_overlay_first(groups, |symbol| symbol.id, page_limit(request)))
+	}
 }
+
+/// The requested page size, widened to the merge vocabulary.
+fn page_limit(request: &Search<'_>) -> usize { request.page.limit.get() as usize }

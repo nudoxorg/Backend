@@ -4,23 +4,20 @@
 //! so a round-trip through postgres is the identity.
 //!
 //! - discriminant enums (`ResolutionState`, `Phase`, `FailureKind`,
-//!   `Ecosystem`, `Visibility`, `SinkKind`, tenant kind) ↔ short `text` tokens;
+//!   `Language`, `Visibility`, `SinkKind`, tenant kind) ↔ short `text` tokens;
 //! - `Failure` / `Toolchain` ↔ `jsonb` (via serde);
 //! - `ContentHash` / `Generation` ↔ `bytea` (exactly 32 bytes);
-//! - `PackageId` / `GlobalSymbolId` / `Tenant` id ↔ `uuid`.
+//! - `PackageId` / `SymbolId` / `Tenant` id ↔ `uuid`.
 //!
 //! The token tables here are the same domains the schema's CHECK constraints
 //! enforce, so the database rejects precisely what [`state_from_token`] et al.
 //! would fail to decode.
 
 use heart::{
-	Visibility,
-	access::Tenant,
-	content::{ContentHash, Generation},
-	ecosystem::Ecosystem,
-	identifier::Id,
-	lifecycle::{Failure, Phase, ResolutionState},
-	package::{GlobalSymbolId, PackageId},
+	Failure, Phase, ResolutionState,
+	content::ContentHash,
+	ecosystem::Language,
+	identity::{SymbolId, PackageId},
 };
 use uuid::Uuid;
 
@@ -29,11 +26,23 @@ use crate::coordination::SinkKind;
 /// A decode failure — a stored column value that does not correspond to any
 /// domain value. Should be impossible given the CHECK constraints, but decoding
 /// is kept total so a corrupt row surfaces an error rather than a panic.
+///
+/// Deep refactor: sub-variants for token kinds, #[from] for Name/Version,
+/// concrete sources, no lossy to_string when wrapping sqlx.
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
-	/// A discriminant token was not a member of its domain.
-	#[error("unknown {domain} discriminant {value:?}")]
-	UnknownDiscriminant { domain: &'static str, value: String },
+	/// A discriminant token was not a member of its domain (fine-grained).
+	#[error("unknown ecosystem discriminant")]
+	UnknownEcosystemDiscriminant { token: String },
+
+	#[error("unknown sink kind discriminant")]
+	UnknownSinkKindDiscriminant { token: String },
+
+	#[error("unknown phase discriminant")]
+	UnknownPhaseDiscriminant { token: String },
+
+	#[error("unknown state discriminant")]
+	UnknownStateDiscriminant { token: String },
 
 	/// A `bytea` content hash was not exactly 32 bytes.
 	#[error("content hash must be 32 bytes, got {0}")]
@@ -45,8 +54,26 @@ pub enum CodecError {
 
 	/// A `Progressing` row was missing its non-null `phase`, or a `Stored` row
 	/// its non-null `content_hash`, etc. — a state/column-set invariant broke.
-	#[error("state {state:?} is missing required column {column}")]
+	#[error("state is missing required column")]
 	MissingColumn { state: &'static str, column: &'static str },
+
+	/// A stored package name no longer re-validates under its ecosystem's rules.
+	/// (Now uses explicit NameEmpty / NameTooLong / NameHasInvalidChars.)
+	#[error("stored package name failed re-validation")]
+	Name(#[from] heart::NameError),
+
+	/// A stored version string no longer parses under its ecosystem's grammar.
+	/// (Now carries typed source via VersionError::{Cargo,Npm,Python} wrappers.)
+	#[error("stored package version failed re-validation")]
+	Version(#[from] heart::identity::VersionError),
+
+	/// A custom origin token could not be reconstituted into a base URL.
+	#[error("custom origin token does not name a valid base URL")]
+	Origin { token: String, #[source] source: url::ParseError },
+
+	/// Sqlx row decode surfaced with source (for search/index wrappers).
+	#[error("codec sqlx decode")]
+	SqlxDecode { domain: &'static str, #[source] source: sqlx::Error },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +81,7 @@ pub enum CodecError {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The raw uuid backing a [`PackageId`], for a `uuid` column.
-pub fn package_id_to_uuid(id: PackageId) -> Uuid { id.as_id().into_uuid() }
+pub fn package_id_to_uuid(id: PackageId) -> Uuid { *id.as_uuid() }
 
 /// Reconstruct a [`PackageId`] from a `uuid` column.
 ///
@@ -69,32 +96,9 @@ pub fn package_id_from_uuid(uuid: Uuid) -> PackageId {
 		.expect("a valid uuid always deserializes into a PackageId")
 }
 
-/// The raw uuid backing a [`GlobalSymbolId`].
-pub fn symbol_id_to_uuid(id: GlobalSymbolId) -> Uuid { *id.as_uuid() }
+/// The raw uuid backing a [`SymbolId`].
+pub fn symbol_id_to_uuid(id: SymbolId) -> Uuid { *id.as_uuid() }
 
-/// The raw uuid backing a [`Tenant`].
-pub fn tenant_to_uuid(t: Tenant) -> Uuid { t.id().into_uuid() }
-
-/// Reconstruct a [`Tenant`] from its uuid + kind token.
-pub fn tenant_from_parts(uuid: Uuid, kind: &str) -> Result<Tenant, CodecError> {
-	let id: Id<Tenant> = Id::from_uuid(uuid);
-	match kind {
-		"individual" => Ok(Tenant::Individual(id)),
-		"enterprise" => Ok(Tenant::Enterprise(id)),
-		other => Err(CodecError::UnknownDiscriminant {
-			domain: "tenant kind",
-			value: other.to_owned(),
-		}),
-	}
-}
-
-/// The `owner_kind` token for a tenant.
-pub fn tenant_kind_token(t: Tenant) -> &'static str {
-	match t {
-		Tenant::Individual(_) => "individual",
-		Tenant::Enterprise(_) => "enterprise",
-	}
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // bytea ↔ content hash / generation
@@ -109,53 +113,31 @@ pub fn hash_from_bytes(bytes: &[u8]) -> Result<ContentHash, CodecError> {
 	Ok(ContentHash::from_bytes(arr))
 }
 
-/// The 32 raw bytes of a [`Generation`].
-pub fn generation_to_bytes(g: Generation) -> Vec<u8> { hash_to_bytes(g.0) }
+/// The 32 raw bytes of a snapshot [`ContentHash`], for a `bytea` column.
+pub fn generation_to_bytes(g: ContentHash) -> Vec<u8> { hash_to_bytes(g) }
 
-/// Reconstruct a [`Generation`] from a `bytea` column.
-pub fn generation_from_bytes(bytes: &[u8]) -> Result<Generation, CodecError> {
-	Ok(Generation(hash_from_bytes(bytes)?))
+/// Reconstruct a snapshot [`ContentHash`] from a `bytea` column.
+pub fn generation_from_bytes(bytes: &[u8]) -> Result<ContentHash, CodecError> {
+	hash_from_bytes(bytes)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ecosystem / visibility / sink kind ↔ text
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The stable lowercase token for an [`Ecosystem`].
-pub fn ecosystem_token(e: Ecosystem) -> &'static str { e.as_token() }
+/// The stable lowercase token for an [`Language`].
+pub fn ecosystem_token(e: Language) -> &'static str { e.as_token() }
 
-/// Reconstruct an [`Ecosystem`] from its token.
-pub fn ecosystem_from_token(token: &str) -> Result<Ecosystem, CodecError> {
+/// Reconstruct an [`Language`] from its token.
+pub fn ecosystem_from_token(token: &str) -> Result<Language, CodecError> {
 	match token {
-		"rust" => Ok(Ecosystem::Rust),
-		"typescript" => Ok(Ecosystem::Typescript),
-		"python" => Ok(Ecosystem::Python),
-		other => Err(CodecError::UnknownDiscriminant {
-			domain: "ecosystem",
-			value: other.to_owned(),
-		}),
-	}
-}
-
-/// The token for a [`Visibility`].
-pub fn visibility_token(v: Visibility) -> &'static str {
-	match v {
-		Visibility::Personal => "personal",
-		Visibility::Private => "private",
-		Visibility::Public => "public",
-	}
-}
-
-/// Reconstruct a [`Visibility`] from its token.
-pub fn visibility_from_token(token: &str) -> Result<Visibility, CodecError> {
-	match token {
-		"personal" => Ok(Visibility::Personal),
-		"private" => Ok(Visibility::Private),
-		"public" => Ok(Visibility::Public),
-		other => Err(CodecError::UnknownDiscriminant {
-			domain: "visibility",
-			value: other.to_owned(),
-		}),
+		"rust" => Ok(Language::Rust),
+		"typescript" => Ok(Language::Typescript),
+		"python" => Ok(Language::Python),
+		"go" => Ok(Language::Go),
+		"java" => Ok(Language::Java),
+		"nix" => Ok(Language::Nix),
+		other => Err(CodecError::UnknownEcosystemDiscriminant { token: other.to_owned() }),
 	}
 }
 
@@ -174,10 +156,7 @@ pub fn sink_kind_from_token(token: &str) -> Result<SinkKind, CodecError> {
 		"vector" => Ok(SinkKind::Vector),
 		"graph" => Ok(SinkKind::Graph),
 		"text" => Ok(SinkKind::Text),
-		other => Err(CodecError::UnknownDiscriminant {
-			domain: "sink kind",
-			value: other.to_owned(),
-		}),
+		other => Err(CodecError::UnknownSinkKindDiscriminant { token: other.to_owned() }),
 	}
 }
 
@@ -202,7 +181,7 @@ pub fn phase_from_token(token: &str) -> Result<Phase, CodecError> {
 		"extracting" => Ok(Phase::Extracting),
 		"compiling" => Ok(Phase::Compiling),
 		"emitting" => Ok(Phase::Emitting),
-		other => Err(CodecError::UnknownDiscriminant { domain: "phase", value: other.to_owned() }),
+		other => Err(CodecError::UnknownPhaseDiscriminant { token: other.to_owned() }),
 	}
 }
 
@@ -293,7 +272,36 @@ pub fn state_from_columns(
 				ResolutionState::DeadLettered(f)
 			})
 		}
-		other => Err(CodecError::UnknownDiscriminant { domain: "state", value: other.to_owned() }),
+		other => Err(CodecError::UnknownStateDiscriminant { token: other.to_owned() }),
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SearchFacets ↔ jsonb
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Serialize a [`crate::metadata::SearchFacets`] to a `jsonb` value — the
+/// facets analog of the `Failure` jsonb encoding in [`state_to_columns`].
+/// Malformed serialization surfaces as a codec error (never a panic).
+pub fn facets_to_json(
+	f: &crate::metadata::SearchFacets,
+) -> Result<serde_json::Value, CodecError> {
+	serde_json::to_value(f).map_err(|source| CodecError::Json { domain: "SearchFacets", source })
+}
+
+/// Deserialize an optional [`crate::metadata::SearchFacets`] from the nullable
+/// `parse_status.facets` `jsonb` column. `None` (a `NULL` column) is the common
+/// case — a package whose rich metadata was never extracted; a malformed
+/// payload is a codec error, exactly as [`state_from_columns`] treats a
+/// malformed `failure`.
+pub fn facets_from_json(
+	v: Option<&serde_json::Value>,
+) -> Result<Option<crate::metadata::SearchFacets>, CodecError> {
+	match v {
+		None => Ok(None),
+		Some(value) => serde_json::from_value(value.clone())
+			.map(Some)
+			.map_err(|source| CodecError::Json { domain: "SearchFacets", source }),
 	}
 }
 
@@ -314,4 +322,44 @@ pub fn toolchain_from_json(
 ) -> Result<heart::ecosystem::Toolchain, CodecError> {
 	serde_json::from_value(v.clone())
 		.map_err(|source| CodecError::Json { domain: "Toolchain", source })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// origin / coordinates ↔ columns
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reconstruct a [`heart::RegistryOrigin`] from its stable token. The public
+/// registries map exactly; anything else is a custom origin whose base URL is
+/// reconstituted from the token (the token *is* the origin's stable name).
+pub fn origin_from_token(token: &str) -> Result<heart::RegistryOrigin, CodecError> {
+	match token {
+		"crates.io" => Ok(heart::RegistryOrigin::CratesIo),
+		"npm" => Ok(heart::RegistryOrigin::NpmPublic),
+		"pypi" => Ok(heart::RegistryOrigin::PyPi),
+		"flakehub" => Ok(heart::RegistryOrigin::FlakeHub),
+		custom => {
+			let url = url::Url::parse(&format!("https://{custom}"))
+				.map_err(|source| CodecError::Origin { token: custom.to_owned(), source })?;
+			Ok(heart::RegistryOrigin::Custom { name: custom.into(), url })
+		}
+	}
+}
+
+/// Rebuild validated [`crate::package::Coordinates`] from their stored column
+/// decomposition — the inverse of the `packages` upsert projection.
+/// Re-validation is deliberate: a row that no longer normalizes identically is
+/// surfaced as an error, never trusted blindly.
+pub fn coordinates_from_columns(
+	language: &str,
+	origin_token: &str,
+	name_original: &str,
+	version_canonical: &str,
+) -> Result<crate::package::Coordinates, CodecError> {
+	let ecosystem = ecosystem_from_token(language)?;
+	let origin = origin_from_token(origin_token)?;
+	let name = crate::package::PackageName::new(ecosystem, name_original)
+		.map_err(CodecError::Name)?;
+	let version = heart::PackageVersion::try_from((ecosystem, version_canonical))
+		.map_err(CodecError::Version)?;
+	Ok(crate::package::Coordinates { origin, name, version })
 }

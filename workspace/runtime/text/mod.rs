@@ -18,11 +18,12 @@
 pub mod index;
 pub mod poll;
 pub mod query;
+pub mod tokenizer;
 
 pub use index::{TextIndex, TextSchema};
 pub use poll::{Poller, Watermark};
-pub use query::{TextQuery, TextSearch};
+pub use query::TextQuery;
 
 /// The keyset key a text-search [`heart::Cursor`] resumes from: a hit's score
 /// paired with its symbol id (score alone is not unique).
-pub type TextCursorKey = (heart::Score, heart::GlobalSymbolId);
+pub type TextCursorKey = (heart::Score, heart::SymbolId);

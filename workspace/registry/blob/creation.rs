@@ -10,9 +10,8 @@
 //! the builder does no I/O itself — the caller decides transaction ordering.
 
 use heart::{
-	Toolchain,
-	content::{ContentHash, ContentHasher, Generation},
-	package::PackageId,
+	PackageId, Toolchain,
+	content::{ContentHash, ContentHasher},
 };
 use smol_str::SmolStr;
 
@@ -51,8 +50,24 @@ pub struct BlobBuilder {
 impl BlobBuilder {
 	/// Begin assembling a snapshot for `package` produced under `toolchain`.
 	pub fn new(package: PackageId, toolchain: Toolchain) -> Self {
-		let _ = (package, toolchain);
-		todo!("init with an empty ContentHasher + empty file/pending vectors")
+		Self {
+			package,
+			toolchain,
+			files: Vec::new(),
+			pending: Vec::new(),
+			digest: ContentHash::builder(),
+			ir_ref: None,
+			references_ref: None,
+		}
+	}
+
+	/// Content-address one section: hash the bytes, queue the `cas/` write, and
+	/// fold the section into the running (arrival-order, provisional) digest.
+	fn address(&mut self, bytes: bytes::Bytes) -> ContentHash {
+		let hash = ContentHash::of_bytes(&bytes);
+		self.digest.update(hash.as_bytes());
+		self.pending.push(PendingSection { hash, bytes });
+		hash
 	}
 
 	/// Add one sanitized source file. Hashes the bytes (BLAKE3), records a
@@ -60,22 +75,35 @@ impl BlobBuilder {
 	/// running package digest. `// runs on spawn_blocking` (blake3 on large
 	/// files).
 	pub fn push_file(&mut self, path: SmolStr, bytes: bytes::Bytes) -> Result<&mut Self, BlobError> {
-		let _ = (path, bytes, &mut self.files, &mut self.pending, &mut self.digest);
-		todo!("blake3 the bytes, push FileEntry + PendingSection, update the canonical digest")
+		if self.files.iter().any(|entry| entry.path == path) {
+			return Err(BlobError::DuplicateFilePathInBuilder);
+		}
+		let size = bytes.len() as u64;
+		self.digest.update(&(path.len() as u64).to_le_bytes()).update(path.as_bytes());
+		let hash = self.address(bytes);
+		self.files.push(FileEntry { path, hash, size });
+		Ok(self)
 	}
 
 	/// Attach the serialized IR (`ir::entry::Index`) section. `// runs on
 	/// spawn_blocking` (serialization + hashing).
 	pub fn set_ir(&mut self, ir_bytes: bytes::Bytes) -> Result<&mut Self, BlobError> {
-		let _ = (ir_bytes, &mut self.ir_ref);
-		todo!("hash the ir bytes, set ir_ref, queue the cas/ write, fold into digest")
+		if self.ir_ref.is_some() {
+			return Err(BlobError::IrSectionAttachedTwice);
+		}
+		self.ir_ref = Some(self.address(ir_bytes));
+		Ok(self)
 	}
 
 	/// Attach the CST-free extracted-reference section. `// runs on
 	/// spawn_blocking`.
 	pub fn set_references(&mut self, refs: &ReferenceSet) -> Result<&mut Self, BlobError> {
-		let _ = (refs, &mut self.references_ref);
-		todo!("encode refs, hash, set references_ref, queue the cas/ write, fold into digest")
+		if self.references_ref.is_some() {
+			return Err(BlobError::ReferencesSectionAttachedTwice);
+		}
+		let encoded = refs.encode()?;
+		self.references_ref = Some(self.address(bytes::Bytes::from(encoded)));
+		Ok(self)
 	}
 
 	/// Finalize into a validated manifest plus the outstanding `cas/` writes.
@@ -84,11 +112,43 @@ impl BlobBuilder {
 	/// `files` are sorted for reproducibility. Fails if no files, IR, or
 	/// references were supplied.
 	pub fn finalize(self) -> Result<(BlobManifest, Vec<PendingSection>), BlobError> {
-		let _ = (self.package, self.toolchain, self.files, self.pending, self.digest);
-		todo!("sort files, finalize digest into Generation, require ir_ref+references_ref, validate")
+		let ir_ref = self.ir_ref.ok_or(BlobError::MissingIrSection)?;
+		let references_ref = self
+			.references_ref
+			.ok_or(BlobError::MissingReferencesSection)?;
+
+		let mut files = self.files;
+		files.sort_by(|a, b| a.path.cmp(&b.path));
+		let files = nonempty::NonEmpty::from_vec(files)
+			.ok_or(BlobError::ManifestHasNoFiles)?;
+
+		let manifest =
+			BlobManifest { package: self.package, files, ir_ref, references_ref, toolchain: self.toolchain };
+		manifest.validate()?;
+		tracing::debug!(
+			package = %manifest.package,
+			files = manifest.files.len(),
+			sections = self.pending.len(),
+			"blob manifest finalized"
+		);
+		Ok((manifest, self.pending))
 	}
 
-	/// The generation computed *so far* (for progress/debug); not the final
+	/// The snapshot hash computed *so far* (for progress/debug); not the final
 	/// committed value until [`finalize`](BlobBuilder::finalize).
-	pub fn provisional_generation(&self) -> Generation { Generation(self.digest.finalize()) }
+	pub fn provisional_generation(&self) -> ContentHash { self.digest.finalize() }
+
+	/// Iterate the sanitized source files already staged in this builder as
+	/// `(package-relative path, bytes)` pairs. Used by the compile phase to
+	/// materialize a temporary tree for the language producers without a
+	/// second archive pass.
+	pub fn source_files(&self) -> impl Iterator<Item = (&SmolStr, &bytes::Bytes)> + '_ {
+		self.files.iter().filter_map(|entry| {
+			let section = self.pending.iter().find(|s| s.hash == entry.hash)?;
+			Some((&entry.path, &section.bytes))
+		})
+	}
+
+	/// The toolchain this builder was created with.
+	pub fn toolchain(&self) -> &Toolchain { &self.toolchain }
 }

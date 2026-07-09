@@ -1,52 +1,86 @@
 //! The semantic (qdrant) search surface — explicitly gated.
-//!
-//! Reachable only with a [`SemanticGate`] minted by the [`crate::search::planner`].
-//! This surface embeds the query (via the configured [`Embedder`]), consulting
-//! the embedding cache, then streams nearest neighbours from qdrant. It is never
-//! the default and never invoked implicitly by the precise path.
+
+pub mod embedder;
 
 use std::num::NonZeroUsize;
 
 use futures::Stream;
-use heart::{AccessContext, GlobalSymbolId, Scored};
-use runtime::vector::{Embedder, Embedding, EmbeddingModel, EmbeddingPurpose, SemanticGate};
+use heart::{Live, SymbolId, Scored};
+use runtime::vector::{
+	Embedder, Embedding, EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose, Semantic,
+	SemanticGate,
+};
 
 use crate::error::ServerError;
 use crate::search::query::{AbstractQuery, SymbolCursor};
 
-/// The gated semantic surface, generic over the embedding-model brand `M` and an
-/// embedder that produces vectors for that same model.
 pub struct SemanticSurface<'a, M: EmbeddingModel, E: Embedder<Model = M>> {
-	// TODO: borrowed Semantic<M, Live> + embedder + cache from the Server.
-	_marker: std::marker::PhantomData<(&'a E, fn() -> M)>,
+	store: &'a Semantic<M, Live>,
+	embedder: &'a E,
+	cache: &'a EmbeddingCache<M>,
 }
 
 impl<'a, M: EmbeddingModel, E: Embedder<Model = M>> SemanticSurface<'a, M, E> {
-	/// Run a gated semantic search. The `gate` is consumed — it cannot be reused.
-	/// The query is embedded (cache-first), then top-`limit` neighbours stream
-	/// back, keyset-paged and access-scoped.
+	/// Borrow a surface over one source's vector store, sharing the server-wide
+	/// embedder + cache (embeddings are model-scoped, not source-scoped).
+	pub fn new(
+		store: &'a Semantic<M, Live>,
+		embedder: &'a E,
+		cache: &'a EmbeddingCache<M>,
+	) -> Self {
+		Self { store, embedder, cache }
+	}
+
 	pub async fn search(
 		&self,
 		gate: SemanticGate,
 		query: &AbstractQuery,
 		limit: NonZeroUsize,
-		scope: &AccessContext,
 		after: Option<SymbolCursor>,
 	) -> Result<
-		impl Stream<Item = Result<Scored<GlobalSymbolId>, ServerError>> + Send,
+		impl Stream<Item = Result<Scored<SymbolId>, ServerError>> + Send,
 		ServerError,
 	> {
-		let _ = (gate, query, limit, scope, after, EmbeddingPurpose::Code);
-		todo!("shape query text, embed (cache-first), Semantic::search, map errors");
-		#[allow(unreachable_code)]
-		Ok(futures::stream::empty())
+		use futures::StreamExt;
+
+		tracing::debug!(reason = gate.reason(), "semantic search authorized");
+		let embedding = self.embed(query.text(), Self::purpose(query)).await?;
+		let hits = self
+			.store
+			.search(gate, &embedding, limit, after)
+			.await
+			.map_err(|error| ServerError::Runtime(error.into()))?;
+
+		// The store's stream captures the borrowed query embedding (RPIT 2024
+		// lifetime rules), so the limit-bounded page is drained here and re-yielded
+		// as an owned stream.
+		futures::pin_mut!(hits);
+		let mut page = Vec::new();
+		while let Some(hit) = hits.next().await {
+			page.push(hit.map_err(|error| ServerError::Runtime(error.into()))?);
+		}
+		Ok(futures::stream::iter(page.into_iter().map(Ok)))
 	}
 
-	/// The purpose an abstract query embeds under.
-	fn purpose(_query: &AbstractQuery) -> EmbeddingPurpose { EmbeddingPurpose::Code }
+	/// What the query text should be embedded *as*: prose reads against the
+	/// documentation regime, code against the code regime.
+	fn purpose(query: &AbstractQuery) -> EmbeddingPurpose {
+		match query {
+			AbstractQuery::NaturalLanguage(_) => EmbeddingPurpose::Documentation,
+			AbstractQuery::CodeSnippet { .. } => EmbeddingPurpose::Code,
+		}
+	}
 
-	/// Embed a query string, checking the cache first.
-	async fn embed(&self, _text: &str) -> Result<Embedding<M>, ServerError> {
-		todo!("cache.get_or_embed(model, hash(text), embedder, text, purpose)")
+	/// Embed the query text, cache-first: identical text under the same model
+	/// never pays the network round-trip twice.
+	async fn embed(
+		&self,
+		text: &str,
+		purpose: EmbeddingPurpose,
+	) -> Result<Embedding<M>, ServerError> {
+		self.cache
+			.get_or_embed(EmbeddingKey::new(M::id(), text), self.embedder, text, purpose)
+			.await
+			.map_err(|error| ServerError::Runtime(error.into()))
 	}
 }

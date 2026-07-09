@@ -21,7 +21,7 @@
 //! [`crate::schema::codec`], and lets sea-query bind them as plain strings.
 //!
 //! ## Byte / uuid / json columns
-//! - `PackageId` / `GlobalSymbolId` / tenant ids  → `uuid`.
+//! - `PackageId` / `SymbolId` / tenant ids  → `uuid`.
 //! - `ContentHash` / `Generation`                 → `bytea` (exactly 32 bytes).
 //! - `ResolutionState::Failed`/`DeadLettered` payload, `Toolchain` → `jsonb`.
 
@@ -42,11 +42,11 @@ use sea_query::{
 pub enum Packages {
 	/// Table name.
 	Table,
-	/// `uuid` PK — the deterministic [`heart::package::PackageId`].
+	/// `uuid` PK — the deterministic [`heart::PackageId`].
 	Id,
 	/// `text` — ecosystem token (`rust`/`typescript`/`python`).
-	Ecosystem,
-	/// `text` — the [`heart::package::RegistryOrigin`] stable token.
+	Language,
+	/// `text` — the [`heart::RegistryOrigin`] stable token.
 	OriginToken,
 	/// `text` — normalized name (identity form).
 	NameCanonical,
@@ -87,6 +87,10 @@ pub enum ParseStatus {
 	Attempts,
 	/// `jsonb` nullable — the serialized [`heart::lifecycle::Failure`].
 	Failure,
+	/// `jsonb` nullable — the serialized [`crate::metadata::SearchFacets`]
+	/// (derived keywords + quality). Mirrors `Failure`'s nullable-jsonb shape;
+	/// `NULL` until rich metadata is extracted for the stored generation.
+	Facets,
 	/// `bool` — the `Unindexed { needed }` flag (dependency-ordered scheduling).
 	Needed,
 	/// `timestamptz` — last transition time.
@@ -123,7 +127,7 @@ pub enum Outbox {
 	Seq,
 	/// `uuid` FK → `packages.id`.
 	PackageId,
-	/// `bytea` — the [`heart::content::Generation`] (32-byte content hash).
+	/// `bytea` — the [`heart::ContentHash`] (32-byte content hash).
 	Generation,
 	/// `text` — the [`crate::coordination::SinkKind`] discriminant.
 	SinkKind,
@@ -149,7 +153,7 @@ pub enum SinkWatermarks {
 pub enum Symbols {
 	/// Table name.
 	Table,
-	/// `uuid` PK — the [`heart::package::GlobalSymbolId`].
+	/// `uuid` PK — the [`heart::SymbolId`].
 	Id,
 	/// `uuid` FK → `packages.id`.
 	PackageId,
@@ -213,7 +217,7 @@ pub fn create_packages() -> TableCreateStatement {
 		.table(Packages::Table)
 		.if_not_exists()
 		.col(ColumnDef::new(Packages::Id).uuid().not_null().primary_key())
-		.col(ColumnDef::new(Packages::Ecosystem).text().not_null())
+		.col(ColumnDef::new(Packages::Language).text().not_null())
 		.col(ColumnDef::new(Packages::OriginToken).text().not_null())
 		.col(ColumnDef::new(Packages::NameCanonical).text().not_null())
 		.col(ColumnDef::new(Packages::NameOriginal).text().not_null())
@@ -271,6 +275,7 @@ pub fn create_parse_status() -> TableCreateStatement {
 		.col(ColumnDef::new(ParseStatus::ContentHash).binary().null())
 		.col(ColumnDef::new(ParseStatus::Attempts).integer().not_null().default(0))
 		.col(ColumnDef::new(ParseStatus::Failure).json_binary().null())
+		.col(ColumnDef::new(ParseStatus::Facets).json_binary().null())
 		.col(ColumnDef::new(ParseStatus::Needed).boolean().not_null().default(false))
 		.col(
 			ColumnDef::new(ParseStatus::UpdatedAt)
@@ -404,7 +409,7 @@ pub fn create_indexes() -> Vec<IndexCreateStatement> {
 		Index::create()
 			.name(IDX_PACKAGES_COORDS)
 			.table(Packages::Table)
-			.col(Packages::Ecosystem)
+			.col(Packages::Language)
 			.col(Packages::OriginToken)
 			.col(Packages::NameCanonical)
 			.col(Packages::VersionCanonical)

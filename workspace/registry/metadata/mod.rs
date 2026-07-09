@@ -4,24 +4,26 @@
 //! [`guid`] wraps heart's deterministic id minting with this instance's token;
 //! [`hash`] re-exports heart's content-addressing vocabulary (which moved to
 //! heart) and adds the *package-level* canonical hashing this crate owns.
+//! [`heuristics`] provides keyword-normalization and synonym/specifics tables
+//! ported from the lib.rs upstream.
 
-use heart::{
-	content::Generation,
-	package::PackageId,
-};
+use heart::identity::PackageId;
 
 pub mod guid;
 pub mod hash;
+pub mod heuristics;
+pub mod rich;
 
-/// The metadata row for one package: its identity, current generation, and the
-/// per-store materialization links the read plane joins on.
+pub use rich::{RichMetadata, SearchFacets};
+
+pub use heuristics::{normalize_keyword, Specifics, Synonyms};
+
+/// The metadata row for one package: its identity and the per-store
+/// materialization links the read plane joins on.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PackageMetadata {
 	/// The deterministic global identity.
 	pub id: PackageId,
-
-	/// The generation (content hash) this metadata reflects.
-	pub generation: Generation,
 
 	/// Whether each derived store has materialized this generation.
 	pub links: StoreLinks,

@@ -27,6 +27,20 @@ pub fn write_tar<W: Write>(
 	writer: W,
 	entries: impl Iterator<Item = Result<TarEntry, GenerateError>>,
 ) -> Result<(), GenerateError> {
-	let _ = (writer, entries);
-	todo!("tar::Builder::new(writer); append each entry; finish()")
+	let mut builder = ::tar::Builder::new(writer);
+
+	for entry in entries {
+		let entry = entry?;
+		let mut header = ::tar::Header::new_gnu();
+		header.set_size(entry.bytes.len() as u64);
+		header.set_mode(0o644);
+		// Zeroed mtime keeps the produced view byte-reproducible for a given
+		// entry stream.
+		header.set_mtime(0);
+		builder.append_data(&mut header, &entry.path, entry.bytes.as_ref())?;
+	}
+
+	let mut writer = builder.into_inner()?;
+	writer.flush()?;
+	Ok(())
 }

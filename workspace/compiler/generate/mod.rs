@@ -23,7 +23,8 @@ pub mod tar;
 
 use std::path::PathBuf;
 
-use heart::{Generation, Toolchain, package::PackageCoordinates};
+use heart::{ContentHash, Toolchain};
+use registry::identity::PackageCoordinates;
 use ir::entry::Index;
 
 pub use blob_info::BlobInfo;
@@ -56,10 +57,10 @@ pub struct GeneratedPackage {
 	pub cst: CstSet,
 	/// The content-addressed source archive.
 	pub archive: SourceArchive,
-	/// The assembled, sink-ready blob info (file digests + generation).
+	/// The assembled, sink-ready blob info (file digests + snapshot hash).
 	pub blob_info: BlobInfo,
 	/// The canonical content hash of this package snapshot.
-	pub generation: Generation,
+	pub snapshot: ContentHash,
 }
 
 /// Run the full generation pipeline over a materialized package: lower the
@@ -69,6 +70,22 @@ pub struct GeneratedPackage {
 /// CPU-bound and deterministic — the caller runs this on a blocking pool /
 /// worker, never on an async serving thread.
 pub fn generate(input: &PackageInput) -> Result<GeneratedPackage, GenerateError> {
-	let _ = input;
-	todo!("surface::build -> cst::extract -> source_archive::build -> blob_info::assemble")
+	let surface = surface::build(input)?;
+	let cst = cst::extract(input)?;
+	let archive = source_archive::build(input)?;
+
+	// BlobInfo owns its archive copy (it travels to the sink independently of
+	// the GeneratedPackage), so the archive is cloned rather than split.
+	let blob_info = BlobInfo::assemble(&surface, &cst, archive.clone());
+	let snapshot = blob_info.snapshot;
+
+	Ok(GeneratedPackage {
+		coordinates: input.coordinates.clone(),
+		toolchain: input.toolchain.clone(),
+		surface,
+		cst,
+		archive,
+		blob_info,
+		snapshot,
+	})
 }

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use server::{Server, ServerConfiguration};
+use server::{Server, ServerConfiguration, UnrestrictedAccess};
 
 /// The compiled-in embedding model. The whole server is monomorphized over this
 /// brand, so a store built for a *different model* (not merely a different
@@ -18,13 +18,28 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-	// TODO: init tracing-subscriber (env-filter + json) and the prometheus recorder.
+	// The vendored tracing-subscriber build carries no env-filter; the level
+	// comes from `NUDOX_LOG`/`RUST_LOG` as a plain level name, defaulting to info.
+	// (The prometheus recorder installs inside `serve()`, on the runtime.)
+	tracing_subscriber::fmt().with_max_level(log_level()).init();
+
 	let config = ServerConfiguration::resolve()?;
 
-	// TODO: build the concrete AccessPolicy (default or enterprise-supplied).
-	let policy = todo!("construct the access policy");
+	// Access control for hosted deployments happens at the fronting proxy (see
+	// `heart::access`); in-process, everyone authenticated to reach us may act.
+	let policy = Arc::new(UnrestrictedAccess);
 
 	let server = Arc::new(Server::<EmbedModel>::assemble(config, policy).await?);
 	server.serve().await?;
 	Ok(())
+}
+
+/// The maximum tracing level: `NUDOX_LOG` (then `RUST_LOG`) as a level name,
+/// defaulting to `info`.
+fn log_level() -> tracing::Level {
+	["NUDOX_LOG", "RUST_LOG"]
+		.iter()
+		.find_map(|name| std::env::var(name).ok())
+		.and_then(|raw| raw.parse().ok())
+		.unwrap_or(tracing::Level::INFO)
 }

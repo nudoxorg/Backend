@@ -1,65 +1,123 @@
 //! Cross-version resolution: diffing a package's symbols across two versions so a
-//! symbol present in both keeps one stable [`GlobalSymbolId`].
-//!
-//! [`GlobalSymbolId`] is derived from the instance token + entry URI, so a
-//! symbol whose path is unchanged is *already* stable across versions. Real
-//! resolution handles the harder cases: a renamed/moved symbol that is "the same
-//! thing", and mapping an old occurrence onto its new identity so references
-//! survive a version bump.
+//! symbol present in both keeps one stable [`SymbolId`].
 
-use futures::Stream;
+use std::collections::BTreeSet;
+
+use futures::{Stream, TryFutureExt};
 use serde::{Deserialize, Serialize};
 
-use heart::{AccessContext, Generation, GlobalSymbolId, PackageId, Scored};
+use heart::{Symbol, SymbolId, PackageId, Scored};
 
 /// How an old symbol maps onto the next version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Resolution {
-	/// The symbol is unchanged (same id in both versions).
-	Stable(GlobalSymbolId),
-	/// The symbol moved/renamed; the old id maps to a new one (scored by match
-	/// confidence).
-	Moved {
-		/// Its identity in the previous version.
-		previous: GlobalSymbolId,
-		/// Its identity (and match confidence) in the next version.
-		next: Scored<GlobalSymbolId>,
-	},
-	/// The symbol was removed in the next version.
-	Removed(GlobalSymbolId),
-	/// The symbol is new in the next version.
-	Added(GlobalSymbolId),
+	Stable(SymbolId),
+	Moved { previous: SymbolId, next: Scored<SymbolId> },
+	Removed(SymbolId),
+	Added(SymbolId),
 }
 
-/// Resolves symbol identities across a version diff of one package.
-pub trait ResolveAcross: Send + Sync {
-	/// The failure mode of a resolution.
-	type Error;
+/// The pure diff behind [`crate::graph::Graph::resolve_across`], factored out so
+/// the matching rules are testable without a live graph.
+///
+/// Rules, in precedence order:
+/// - same fully-qualified path in both versions → [`Resolution::Stable`],
+///   carrying the *next* version's id (the identity going forward);
+/// - otherwise, the best unclaimed next-version symbol with the same plain name
+///   and kind → [`Resolution::Moved`], scored by path-segment similarity;
+/// - otherwise the previous symbol is [`Resolution::Removed`];
+/// - any next-version symbol left unclaimed is [`Resolution::Added`].
+pub fn diff(previous: &[Symbol], next: &[Symbol]) -> Vec<Resolution> {
+	let mut claimed: BTreeSet<SymbolId> = BTreeSet::new();
+	let mut resolutions = Vec::with_capacity(previous.len() + next.len());
 
-	/// Diff `package` between two generations, streaming a [`Resolution`] per
-	/// affected symbol.
-	fn resolve_across(
-		&self,
-		package: PackageId,
-		previous: Generation,
-		next: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<Resolution, Self::Error>> + Send;
+	for old in previous {
+		// Exact path survival: the symbol simply persists.
+		let survivor = next.iter().find(|candidate| {
+			!claimed.contains(&candidate.id)
+				&& candidate.name.fully_qualified == old.name.fully_qualified
+		});
+		if let Some(survivor) = survivor {
+			claimed.insert(survivor.id);
+			resolutions.push(Resolution::Stable(survivor.id));
+			continue;
+		}
+
+		// A move/rename: same leaf name and kind, best-matching path.
+		let moved = next
+			.iter()
+			.filter(|candidate| {
+				!claimed.contains(&candidate.id)
+					&& candidate.name.plain == old.name.plain
+					&& candidate.kind == old.kind
+			})
+			.map(|candidate| {
+				let similarity = path_similarity(
+					&old.name.fully_qualified,
+					&candidate.name.fully_qualified,
+				);
+				(candidate, similarity)
+			})
+			.max_by(|(_, a), (_, b)| a.total_cmp(b));
+		match moved {
+			Some((candidate, similarity)) => {
+				claimed.insert(candidate.id);
+				let score = heart::Score::try_new(similarity)
+					.expect("segment jaccard over finite sets is finite");
+				resolutions.push(Resolution::Moved {
+					previous: old.id,
+					next: Scored::new(candidate.id, score),
+				});
+			}
+			None => resolutions.push(Resolution::Removed(old.id)),
+		}
+	}
+
+	resolutions.extend(
+		next.iter()
+			.filter(|candidate| !claimed.contains(&candidate.id))
+			.map(|candidate| Resolution::Added(candidate.id)),
+	);
+	resolutions
 }
 
-impl ResolveAcross for crate::graph::Graph<heart::Live> {
-	type Error = crate::error::GraphError;
+/// Jaccard similarity of two fully-qualified paths' segment sets — a cheap,
+/// symmetric measure of how much of the surrounding module path survived a move.
+fn path_similarity(previous: &str, next: &str) -> f32 {
+	let segments = |path: &str| {
+		path.split(['/', '.', ':'])
+			.filter(|segment| !segment.is_empty())
+			.map(str::to_owned)
+			.collect::<BTreeSet<_>>()
+	};
+	let (previous, next) = (segments(previous), segments(next));
+	let union = previous.union(&next).count();
+	if union == 0 {
+		return 0.0;
+	}
+	previous.intersection(&next).count() as f32 / union as f32
+}
 
-	fn resolve_across(
+impl crate::graph::Graph<heart::Live> {
+	pub fn resolve_across(
 		&self,
-		package: PackageId,
-		previous: Generation,
-		next: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<Resolution, Self::Error>> + Send {
-		let _ = (package, previous, next, scope);
-		todo!("diff the two generations; map moved/renamed symbols; stream Resolutions");
-		#[allow(unreachable_code)]
-		futures::stream::empty()
+		previous: PackageId,
+		next: PackageId,
+	) -> impl Stream<Item = Result<Resolution, crate::error::GraphError>> + Send {
+		async move {
+			let (previous, next) = futures::try_join!(
+				self.symbols_in_package(previous),
+				self.symbols_in_package(next),
+			)?;
+			let resolutions = diff(&previous, &next);
+			tracing::debug!(
+				previous = previous.len(),
+				next = next.len(),
+				resolutions = resolutions.len(),
+				"cross-version resolution computed"
+			);
+			Ok(futures::stream::iter(resolutions.into_iter().map(Ok)))
+		}
+		.try_flatten_stream()
 	}
 }

@@ -1,99 +1,103 @@
-//! The API surface + structure view over the terminus graph — terminus is the
-//! source of truth for how a package's symbols are structured and related.
-//!
-//! Where the text/vector indexes and the graph disagree about an item's shape,
-//! the graph wins: this module reads the authoritative structural tree.
+//! The API surface + structure view over the terminus graph.
 
-use futures::Stream;
+use std::collections::BTreeMap;
+
+use futures::{Stream, TryFutureExt};
 use serde::{Deserialize, Serialize};
 
-use heart::{AccessContext, Generation, GlobalSymbolId, PackageId, Symbol, SymbolKind};
+use heart::{SymbolId, PackageId, Symbol, SymbolKind};
 
 use crate::{error::GraphError, graph::RelationKind};
 
-/// One node in a package's structural tree: the symbol plus how it nests under
-/// its parent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructureNode {
-	/// The symbol at this node.
 	pub symbol: Symbol,
-	/// Its parent in the structure tree, if any (root modules have none).
-	pub parent: Option<GlobalSymbolId>,
-	/// How this node relates to its parent (`Member`, `Implements`, ...).
+	pub parent: Option<SymbolId>,
 	pub relation: Option<RelationKind>,
-	/// The kind, hoisted for cheap filtering without loading the full symbol.
 	pub kind: SymbolKind,
 }
 
-/// Reads the authoritative structural/API-surface shape of a package out of the
-/// graph store.
-pub trait StructureView: Send + Sync {
-	/// The failure mode of a structural read.
-	type Error;
-
-	/// Stream the package's full structural tree (modules → types → members) at
-	/// the given generation, access-scoped.
-	fn structure(
-		&self,
-		package: PackageId,
-		generation: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<StructureNode, Self::Error>> + Send;
-
-	/// The direct members of a single symbol (a type's methods/fields, a module's
-	/// items), streamed.
-	fn members(
-		&self,
-		symbol: GlobalSymbolId,
-		generation: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<StructureNode, Self::Error>> + Send;
-
-	/// The traits/interfaces a type implements, streamed.
-	fn implemented_by(
-		&self,
-		symbol: GlobalSymbolId,
-		generation: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<GlobalSymbolId, Self::Error>> + Send;
+/// Join a package's symbols with its parent-edges into [`StructureNode`]s — the
+/// pure assembly step behind [`crate::graph::Graph::structure`], factored out so
+/// the shaping is testable without a live terminus. `kind` is copied from the
+/// graph's symbol record: the graph is the source of truth, so a consumer
+/// holding a stale copy from another store reads the authoritative kind here.
+pub fn assemble(
+	symbols: Vec<Symbol>,
+	parents: &BTreeMap<SymbolId, (RelationKind, SymbolId)>,
+) -> Vec<StructureNode> {
+	symbols
+		.into_iter()
+		.map(|symbol| {
+			let (relation, parent) = match parents.get(&symbol.id) {
+				Some((relation, parent)) => (Some(*relation), Some(*parent)),
+				None => (None, None),
+			};
+			let kind = symbol.kind;
+			StructureNode { symbol, parent, relation, kind }
+		})
+		.collect()
 }
 
-impl StructureView for crate::graph::Graph<heart::Live> {
-	type Error = GraphError;
-
-	fn structure(
+impl crate::graph::Graph<heart::Live> {
+	pub fn structure(
 		&self,
 		package: PackageId,
-		generation: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<StructureNode, Self::Error>> + Send {
-		let _ = (package, generation, scope);
-		todo!("WOQL: the package's structural tree at `generation`");
-		#[allow(unreachable_code)]
-		futures::stream::empty()
+	) -> impl Stream<Item = Result<StructureNode, GraphError>> + Send {
+		async move {
+			let (symbols, parents) =
+				futures::try_join!(self.symbols_in_package(package), self.member_parents(package))?;
+			tracing::debug!(%package, symbols = symbols.len(), "package structure fetched");
+			Ok(futures::stream::iter(assemble(symbols, &parents).into_iter().map(Ok)))
+		}
+		.try_flatten_stream()
 	}
 
-	fn members(
+	pub fn members(
 		&self,
-		symbol: GlobalSymbolId,
-		generation: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<StructureNode, Self::Error>> + Send {
-		let _ = (symbol, generation, scope);
-		todo!("WOQL: direct members of `symbol`");
-		#[allow(unreachable_code)]
-		futures::stream::empty()
+		symbol: SymbolId,
+	) -> impl Stream<Item = Result<StructureNode, GraphError>> + Send {
+		async move {
+			// Direct members: targets of Member edges out of `symbol`, hydrated
+			// into full records via each one's package document.
+			let members = self
+				.outgoing_edges(symbol)
+				.await?
+				.into_iter()
+				.filter(|(relation, _)| *relation == RelationKind::Member)
+				.map(|(_, member)| member)
+				.collect::<Vec<_>>();
+			let mut nodes = Vec::with_capacity(members.len());
+			for member in members {
+				if let Some(record) = self.symbol_record(member).await? {
+					let kind = record.kind;
+					nodes.push(StructureNode {
+						symbol: record,
+						parent: Some(symbol),
+						relation: Some(RelationKind::Member),
+						kind,
+					});
+				}
+			}
+			Ok(futures::stream::iter(nodes.into_iter().map(Ok)))
+		}
+		.try_flatten_stream()
 	}
 
-	fn implemented_by(
+	pub fn implemented_by(
 		&self,
-		symbol: GlobalSymbolId,
-		generation: Generation,
-		scope: &AccessContext,
-	) -> impl Stream<Item = Result<GlobalSymbolId, Self::Error>> + Send {
-		let _ = (symbol, generation, scope);
-		todo!("WOQL: traits/interfaces implemented by `symbol`");
-		#[allow(unreachable_code)]
-		futures::stream::empty()
+		symbol: SymbolId,
+	) -> impl Stream<Item = Result<SymbolId, GraphError>> + Send {
+		async move {
+			let targets = self
+				.outgoing_edges(symbol)
+				.await?
+				.into_iter()
+				.filter(|(relation, _)| *relation == RelationKind::Implements)
+				.map(|(_, target)| target)
+				.collect::<Vec<_>>();
+			Ok(futures::stream::iter(targets.into_iter().map(Ok)))
+		}
+		.try_flatten_stream()
 	}
 }

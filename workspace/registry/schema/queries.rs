@@ -26,13 +26,13 @@ use crate::{
 };
 
 use heart::{
-	Visibility,
-	access::Tenant,
-	content::Generation,
+	ResolutionState, SymbolKind,
+	content::ContentHash,
 	ecosystem::Toolchain,
-	lifecycle::ResolutionState,
-	package::{GlobalSymbolId, PackageCoordinates, PackageId},
+	identity::{SymbolId, PackageId},
 };
+use crate::package::Coordinates as PackageCoordinates;
+use strum::IntoEnumIterator;
 
 /// The Postgres flavour every statement is rendered + bound against.
 type Pg = sea_query::PostgresQueryBuilder;
@@ -54,8 +54,6 @@ pub mod index {
 	pub fn upsert_package(
 		coords: &PackageCoordinates,
 		toolchain: &Toolchain,
-		visibility: Visibility,
-		owner: Tenant,
 	) -> Result<(String, SqlxValues), codec::CodecError> {
 		let id = codec::package_id_to_uuid(coords.id());
 		let ecosystem = codec::ecosystem_token(coords.ecosystem());
@@ -64,21 +62,16 @@ pub mod index {
 		let name_original = coords.name.original().to_string();
 		let version_canonical = coords.version.canonical();
 		let toolchain_json = codec::toolchain_to_json(toolchain)?;
-		let owner_uuid = codec::tenant_to_uuid(owner);
-		let owner_kind = codec::tenant_kind_token(owner);
 
 		let (sql, values) = Query::insert()
 			.into_table(Packages::Table)
 			.columns([
 				Packages::Id,
-				Packages::Ecosystem,
+				Packages::Language,
 				Packages::OriginToken,
 				Packages::NameCanonical,
 				Packages::NameOriginal,
 				Packages::VersionCanonical,
-				Packages::Visibility,
-				Packages::OwnerTenant,
-				Packages::OwnerKind,
 				Packages::Toolchain,
 			])
 			.values_panic([
@@ -88,18 +81,12 @@ pub mod index {
 				name_canonical.into(),
 				name_original.into(),
 				version_canonical.into(),
-				codec::visibility_token(visibility).into(),
-				owner_uuid.into(),
-				owner_kind.into(),
 				toolchain_json.into(),
 			])
 			.on_conflict(
 				sea_query::OnConflict::column(Packages::Id)
 					.update_columns([
 						Packages::NameOriginal,
-						Packages::Visibility,
-						Packages::OwnerTenant,
-						Packages::OwnerKind,
 						Packages::Toolchain,
 					])
 					.value(Packages::UpdatedAt, Expr::current_timestamp())
@@ -171,6 +158,32 @@ pub mod index {
 		Ok((sql, values))
 	}
 
+	/// `UPDATE parse_status SET facets = $1, updated_at = now() WHERE package_id
+	/// = $2` — persist (or clear) the derived [`crate::metadata::SearchFacets`]
+	/// on an existing lifecycle row. The facets analog of the `failure` write,
+	/// but a standalone `UPDATE` rather than part of the `set_state` upsert: it
+	/// runs in the *same* transaction as the `Stored` transition (see
+	/// [`crate::coordination::Outbox::record_stored`]) so state and facets commit
+	/// atomically, yet it never disturbs the state/phase/hash columns the
+	/// [`set_state`] upsert owns. `facets` is nullable jsonb (mirrors `failure`);
+	/// `None` writes `NULL`.
+	pub fn set_facets(
+		package: PackageId,
+		facets: Option<&crate::metadata::SearchFacets>,
+	) -> Result<(String, SqlxValues), codec::CodecError> {
+		let facets_val: SimpleExpr = match facets {
+			Some(f) => codec::facets_to_json(f)?.into(),
+			None => Expr::val(Option::<serde_json::Value>::None).into(),
+		};
+		let (sql, values) = Query::update()
+			.table(ParseStatus::Table)
+			.value(ParseStatus::Facets, facets_val)
+			.value(ParseStatus::UpdatedAt, Expr::current_timestamp())
+			.and_where(Expr::col(ParseStatus::PackageId).eq(codec::package_id_to_uuid(package)))
+			.build_sqlx(PG);
+		Ok((sql, values))
+	}
+
 	/// `SELECT state, phase, content_hash, needed, failure FROM parse_status
 	/// WHERE package_id = $1` — the columns [`codec::state_from_columns`] reassembles.
 	pub fn get_state(package: PackageId) -> (String, SqlxValues) {
@@ -199,24 +212,35 @@ pub mod index {
 			.build_sqlx(PG)
 	}
 
-	/// `SELECT ... FROM packages WHERE id = $1` — the full identity row for
-	/// rebuilding a `GlobalPackage`.
+	/// `SELECT p.<identity+toolchain>, ps.facets FROM packages p LEFT JOIN
+	/// parse_status ps ON ps.package_id = p.id WHERE p.id = $1` — the full
+	/// identity row for rebuilding a `GlobalPackage`, plus the (possibly-`NULL`)
+	/// derived search facets from the lifecycle row. The left join keeps a
+	/// package with no `parse_status` row visible (facets simply come back
+	/// `NULL`). Facets sits at column index 10 — [`super::super::index`]'s
+	/// `row_to_package`/`get` read it positionally.
 	pub fn get_package(package: PackageId) -> (String, SqlxValues) {
 		Query::select()
 			.columns([
-				Packages::Id,
-				Packages::Ecosystem,
-				Packages::OriginToken,
-				Packages::NameCanonical,
-				Packages::NameOriginal,
-				Packages::VersionCanonical,
-				Packages::Visibility,
-				Packages::OwnerTenant,
-				Packages::OwnerKind,
-				Packages::Toolchain,
+				(Packages::Table, Packages::Id),
+				(Packages::Table, Packages::Language),
+				(Packages::Table, Packages::OriginToken),
+				(Packages::Table, Packages::NameCanonical),
+				(Packages::Table, Packages::NameOriginal),
+				(Packages::Table, Packages::VersionCanonical),
+				(Packages::Table, Packages::Visibility),
+				(Packages::Table, Packages::OwnerTenant),
+				(Packages::Table, Packages::OwnerKind),
+				(Packages::Table, Packages::Toolchain),
 			])
+			.column((ParseStatus::Table, ParseStatus::Facets))
 			.from(Packages::Table)
-			.and_where(Expr::col(Packages::Id).eq(codec::package_id_to_uuid(package)))
+			.left_join(
+				ParseStatus::Table,
+				Expr::col((Packages::Table, Packages::Id))
+					.equals((ParseStatus::Table, ParseStatus::PackageId)),
+			)
+			.and_where(Expr::col((Packages::Table, Packages::Id)).eq(codec::package_id_to_uuid(package)))
 			.build_sqlx(PG)
 	}
 
@@ -233,11 +257,11 @@ pub mod index {
 	/// `INSERT INTO symbols (...) ON CONFLICT (id) DO UPDATE ...` — upsert a
 	/// serving-projection symbol row, keyed on its deterministic global id.
 	pub fn upsert_symbol(
-		id: GlobalSymbolId,
+		id: SymbolId,
 		package: PackageId,
 		fq_name: &str,
-		kind: heart::SymbolKind,
-		generation: Generation,
+		kind: SymbolKind,
+		generation: ContentHash,
 	) -> (String, SqlxValues) {
 		Query::insert()
 			.into_table(Symbols::Table)
@@ -456,7 +480,7 @@ pub mod outbox {
 	/// impossible without a distributed transaction.
 	pub fn append_one(
 		package: PackageId,
-		generation: Generation,
+		generation: ContentHash,
 		kind: SinkKind,
 	) -> (String, SqlxValues) {
 		Query::insert()
@@ -481,7 +505,7 @@ pub mod outbox {
 
 	/// Append a fan-out intent for *every* [`SinkKind`] in one multi-row insert,
 	/// deduped per `(package, generation, kind)`.
-	pub fn append_all(package: PackageId, generation: Generation) -> (String, SqlxValues) {
+	pub fn append_all(package: PackageId, generation: ContentHash) -> (String, SqlxValues) {
 		let pkg = codec::package_id_to_uuid(package);
 		let gen_bytes = codec::generation_to_bytes(generation);
 
@@ -491,7 +515,7 @@ pub mod outbox {
 			Outbox::Generation,
 			Outbox::SinkKind,
 		]);
-		for kind in SinkKind::ALL {
+		for kind in SinkKind::iter() {
 			stmt.values_panic([
 				pkg.into(),
 				gen_bytes.clone().into(),
@@ -574,6 +598,55 @@ pub mod outbox {
 			.column(SinkWatermarks::LastSeq)
 			.from(SinkWatermarks::Table)
 			.and_where(Expr::col(SinkWatermarks::SinkKind).eq(codec::sink_kind_token(kind)))
+			.build_sqlx(PG)
+	}
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// search — the tantivy replica's poll of changed packages
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Query builders for the replica-local search sync.
+pub mod search {
+	use super::*;
+	use chrono::{DateTime, Utc};
+
+	/// `SELECT p.<identity+toolchain+updated_at>, ps.<lifecycle> FROM packages p
+	/// LEFT JOIN parse_status ps ON ps.package_id = p.id WHERE p.updated_at > $1
+	/// ORDER BY p.updated_at ASC LIMIT $2` — the poll the tantivy replica
+	/// performs against its watermark. The left join keeps packages with no
+	/// lifecycle row visible (they surface as `Unindexed`). The trailing
+	/// `ps.facets` column (index 13) carries the derived search facets so the
+	/// replica index picks up keywords + quality on every sync.
+	pub fn changed_since(after: DateTime<Utc>, limit: u64) -> (String, SqlxValues) {
+		Query::select()
+			.columns([
+				(Packages::Table, Packages::Id),
+				(Packages::Table, Packages::Language),
+				(Packages::Table, Packages::OriginToken),
+				(Packages::Table, Packages::NameCanonical),
+				(Packages::Table, Packages::NameOriginal),
+				(Packages::Table, Packages::VersionCanonical),
+				(Packages::Table, Packages::Toolchain),
+				(Packages::Table, Packages::UpdatedAt),
+			])
+			.columns([
+				(ParseStatus::Table, ParseStatus::State),
+				(ParseStatus::Table, ParseStatus::Phase),
+				(ParseStatus::Table, ParseStatus::ContentHash),
+				(ParseStatus::Table, ParseStatus::Needed),
+				(ParseStatus::Table, ParseStatus::Failure),
+				(ParseStatus::Table, ParseStatus::Facets),
+			])
+			.from(Packages::Table)
+			.left_join(
+				ParseStatus::Table,
+				Expr::col((Packages::Table, Packages::Id))
+					.equals((ParseStatus::Table, ParseStatus::PackageId)),
+			)
+			.and_where(Expr::col((Packages::Table, Packages::UpdatedAt)).gt(after))
+			.order_by((Packages::Table, Packages::UpdatedAt), sea_query::Order::Asc)
+			.limit(limit)
 			.build_sqlx(PG)
 	}
 }

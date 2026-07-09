@@ -3,5 +3,4 @@
 
 pub mod health;
 pub mod indexing;
-pub mod initialization;
 pub mod search;

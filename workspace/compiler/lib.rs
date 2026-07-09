@@ -11,5 +11,7 @@
 pub mod error;
 pub mod generate;
 pub mod graph;
-pub mod languages;
+pub mod compile;
+pub use crate::compile as languages;
+pub mod render;
 pub mod treesitter;

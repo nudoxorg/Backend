@@ -1,93 +1,162 @@
-//! Request/response DTOs — the serialized shapes the API speaks, kept separate
-//! from the internal domain types they project from.
-//!
-//! Pagination is always by **opaque cursor token** (never offset): a page
-//! response carries `next` only if more results exist, and the client echoes it
-//! back verbatim. This keeps paging correct over an eventually-consistent index
-//! (see [`heart::Cursor`]).
+//! Request DTOs — the serialized shapes the API *accepts* — and their lowering
+//! into the typed domain vocabulary.
 
-use heart::{Ecosystem, GlobalSymbolId, PackageId, Score, SymbolKind};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
+
+use arc_swap::ArcSwap;
+use heart::{Language, PackageVersion, RegistryOrigin};
+use registry::package::{Coordinates as PackageCoordinates, PackageName};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+use strum::IntoEnumIterator;
+use url::Url;
 
-/// A search request as it arrives on the wire.
+use crate::config::CustomRegistry;
+use crate::error::{BadRequestReason, ServerError};
+use crate::search::query::{
+	AbstractQuery, Filter, LiteralQuery, PackageSelector, Pagination, Query, Search,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchRequestDto {
-	/// The raw query text.
 	pub query: String,
-	/// Whether to treat the query as a natural-language / semantic query. The
-	/// semantic path is still gated server-side; this is only a request.
 	#[serde(default)]
 	pub semantic: bool,
-	/// Optional ecosystem scope.
 	#[serde(default)]
-	pub ecosystems: Vec<Ecosystem>,
-	/// Optional package-name scope (any version), by canonical name.
+	pub ecosystems: Vec<Language>,
 	#[serde(default)]
 	pub packages: Vec<String>,
-	/// Page size.
 	pub limit: std::num::NonZeroU32,
-	/// Opaque cursor from a previous page, if continuing.
 	#[serde(default)]
 	pub cursor: Option<String>,
+	/// The caller's exploration session, when the results should accumulate
+	/// into a session graph (the `/expand` surface).
+	#[serde(default)]
+	pub session: Option<uuid::Uuid>,
 }
 
-/// One search hit, flattened for display. Deliberately minimal — richer symbol
-/// data is fetched by id on demand.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchDto {
-	/// The symbol's durable global id (stable across queries and stores).
-	pub id: GlobalSymbolId,
-	/// The package the symbol belongs to.
-	pub package: PackageId,
-	/// The bare symbol name.
-	pub name: SmolStr,
-	/// The fully-qualified name.
-	pub fq_name: SmolStr,
-	/// What kind of symbol it is.
-	pub kind: SymbolKind,
-	/// Its relevance score.
-	pub score: Score,
+impl SearchRequestDto {
+	/// Lower the wire request into the typed [`Search`]. A semantic opt-in
+	/// becomes an [`AbstractQuery`] (which only the planner may escalate);
+	/// everything else is a validated, operator-escaped literal.
+	pub fn into_search(self) -> Result<Search<'static>, ServerError> {
+		let query = if self.semantic {
+			Query::Abstract(AbstractQuery::NaturalLanguage(self.query))
+		} else {
+			Query::Literal(LiteralQuery::parse(&self.query).map_err(BadRequestReason::from)?)
+		};
+
+		// Package names are ecosystem-scoped; a bare name is tried against every
+		// requested (or, unstated, every known) ecosystem's grammar.
+		let candidates: Vec<Language> = match self.ecosystems.as_slice() {
+			[] => Language::iter().collect(),
+			requested => requested.to_vec(),
+		};
+		let mut selectors = Vec::new();
+		for raw in &self.packages {
+			for &ecosystem in &candidates {
+				if let Ok(name) = PackageName::new(ecosystem, raw.as_str()) {
+					selectors.push(PackageSelector { name, version: None });
+				}
+			}
+		}
+		if !self.packages.is_empty() && selectors.is_empty() {
+			return Err(BadRequestReason::NoValidPackageSelectors.into());
+		}
+
+		Ok(Search {
+			query,
+			filter: Filter {
+				ecosystems: nonempty::NonEmpty::from_vec(self.ecosystems),
+				packages: nonempty::NonEmpty::from_vec(selectors),
+			},
+			page: Pagination { limit: self.limit, after: self.cursor },
+			_lifetime: std::marker::PhantomData,
+		})
+	}
 }
 
-/// A single page of results plus the opaque continuation token.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Page<T> {
-	/// The results on this page.
-	pub items: Vec<T>,
-	/// The opaque cursor to fetch the next page, or `None` if exhausted.
-	pub next: Option<String>,
-}
-
-/// A request to add/index a package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddPackageDto {
-	/// The ecosystem the package lives in.
-	pub ecosystem: Ecosystem,
-	/// The package name as published.
+	pub ecosystem: Language,
 	pub name: String,
-	/// The version requested (concrete or a range to resolve).
 	pub version: String,
-	/// The origin registry, if not the ecosystem default.
 	#[serde(default)]
 	pub origin: Option<String>,
 }
 
-/// The response to an add/index request: the resolved id and current lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddPackageResponseDto {
-	/// The deterministic id the package resolved to (idempotent: a duplicate add
-	/// returns the existing id).
-	pub package: PackageId,
-	/// The package's current lifecycle state, serialized.
-	pub state: heart::ResolutionState,
+impl AddPackageDto {
+	pub fn into_coordinates(&self) -> Result<PackageCoordinates, ServerError> {
+		let name = PackageName::new(self.ecosystem, self.name.as_str())
+			.map_err(BadRequestReason::from)?;
+		let version = PackageVersion::try_from((self.ecosystem, self.version.as_str()))
+			.map_err(BadRequestReason::from)?;
+		let origin = match self.origin.as_deref() {
+			None => default_origin(self.ecosystem),
+			Some(custom) => resolve_custom_origin(custom)?,
+		};
+		Ok(PackageCoordinates { origin, name, version })
+	}
 }
 
-/// The health/readiness projection returned by the health endpoint.
+fn default_origin(ecosystem: Language) -> RegistryOrigin {
+	match ecosystem {
+		Language::Rust => RegistryOrigin::CratesIo,
+		Language::Typescript => RegistryOrigin::NpmPublic,
+		Language::Python => RegistryOrigin::PyPi,
+		Language::Nix => RegistryOrigin::FlakeHub,
+		Language::Go | Language::Java => RegistryOrigin::Custom {
+			name: SmolStr::new_static("custom"),
+			url: Url::parse("https://example.invalid").expect("static url"),
+		},
+	}
+}
+
+/// The process-wide lookup table behind the `origin` field of an add-package
+/// request. A free function ([`resolve_custom_origin`]) resolves against it, so
+/// the table is installed once at assembly rather than threaded through every
+/// DTO conversion.
+static CUSTOM_REGISTRIES: LazyLock<ArcSwap<HashMap<SmolStr, Url>>> =
+	LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
+
+/// Install (replacing wholesale) the operator-configured custom registries as
+/// the origin lookup table. Called once per assembly from [`crate::Server`].
+pub fn register_custom_registries(registries: &[CustomRegistry]) {
+	let table: HashMap<SmolStr, Url> = registries
+		.iter()
+		.map(|registry| (registry.name.clone(), registry.url.clone()))
+		.collect();
+	tracing::debug!(registries = table.len(), "custom registries registered");
+	CUSTOM_REGISTRIES.store(Arc::new(table));
+}
+
+fn resolve_custom_origin(name: &str) -> Result<RegistryOrigin, ServerError> {
+	CUSTOM_REGISTRIES
+		.load()
+		.get(name)
+		.map(|url| RegistryOrigin::Custom { name: SmolStr::new(name), url: url.clone() })
+		.ok_or_else(|| BadRequestReason::UnknownCustomRegistry { name: name.to_owned() }.into())
+}
+
+/// The wire error a DTO field rejection projects to.
+/// Deprecated in favor of direct construction of `BadRequestReason` variants
+/// (which are `Into<ServerError>` via the `#[from]` chain). Kept only for
+/// any remaining call sites during the transition.
+#[allow(dead_code)]
+fn bad_request(error: impl std::fmt::Display) -> ServerError {
+	// Fallback only; prefer typed.
+	crate::error::BadRequestReason::MalformedQuery(
+		crate::error::QueryError::Malformed {
+			detail: error.to_string(),
+			query: String::new(),
+		},
+	)
+	.into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthDto {
-	/// Overall readiness.
 	pub ready: bool,
-	/// Backends currently degraded/unreachable, if any.
 	pub degraded: Vec<heart::BackendKind>,
 }

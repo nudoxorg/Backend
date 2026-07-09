@@ -1,14 +1,15 @@
 //! Deterministic id minting, salted with the graph instance.
 //!
 //! Wraps heart's deterministic derivers ([`PackageCoordinates::id`],
-//! [`GlobalSymbolId::derive`]) behind a [`Minter`] that carries the
+//! [`SymbolId::derive`]) behind a [`Minter`] that carries the
 //! [`TerminusInstance`] token every symbol id is salted with, so a
-//! [`GlobalSymbolId`] is recomputable offline against the same instance and two
+//! [`SymbolId`] is recomputable offline against the same instance and two
 //! instances of the same corpus never share ids. Package ids are
 //! instance-independent (they fingerprint coordinates only) and delegate
 //! straight through.
 
-use heart::package::{EntryUri, GlobalSymbolId, PackageCoordinates, PackageId};
+use heart::identity::{EntryUri, SymbolId, PackageId};
+use crate::package::Coordinates as PackageCoordinates;
 
 use crate::index::TerminusInstance;
 
@@ -30,9 +31,9 @@ impl Minter {
 	}
 
 	/// The deterministic, instance-salted symbol id for an entry URI. Delegates
-	/// to [`GlobalSymbolId::derive`] with this minter's instance token.
-	pub fn symbol_id(&self, uri: &EntryUri) -> GlobalSymbolId {
-		GlobalSymbolId::derive(self.instance.token(), uri)
+	/// to [`EntryUri::symbol_id`] with this minter's instance token.
+	pub fn symbol_id(&self, uri: &EntryUri) -> SymbolId {
+		uri.symbol_id(self.instance.token())
 	}
 
 	/// The instance this minter salts with.

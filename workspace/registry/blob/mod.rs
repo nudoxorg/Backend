@@ -24,11 +24,7 @@
 //! of extracted [`ir::syntax::ResolvedReference`] spans, as plain serializable
 //! data, so cross-references survive without the tree.
 
-use heart::{
-	Toolchain,
-	content::{ContentHash, Generation},
-	package::PackageId,
-};
+use heart::{content::ContentHash, PackageId, Toolchain};
 use ir::syntax::ResolvedReference;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -48,42 +44,72 @@ pub use creation::BlobBuilder;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[must_use = "a built manifest must be emitted (recorded + stored) or explicitly discarded"]
 pub struct BlobManifest {
-	/// The package this snapshot describes.
-	pub package: PackageId,
+    /// The package this snapshot describes.
+    pub package: PackageId,
 
-	/// The generation (canonical package content hash) this snapshot *is*.
-	pub generation: Generation,
+    /// The source files, each addressed by its own content hash. Sorted by path
+    /// for a canonical, reproducible manifest fingerprint. `NonEmpty` because a
+    /// manifest with zero files is a meaningless blob — the invariant the builder
+    /// enforces at `finalize` is now carried in the type.
+    pub files: nonempty::NonEmpty<FileEntry>,
 
-	/// The source files, each addressed by its own content hash. Sorted by path
-	/// for a canonical, reproducible manifest fingerprint. `NonEmpty` because a
-	/// manifest with zero files is a meaningless blob — the invariant the builder
-	/// enforces at `finalize` is now carried in the type.
-	pub files: nonempty::NonEmpty<FileEntry>,
+    /// The content hash of the serialized IR (`ir::entry::Index`) object this
+    /// snapshot produced, stored separately in `cas/`.
+    pub ir_ref: ContentHash,
 
-	/// The content hash of the serialized IR (`ir::entry::Index`) object this
-	/// snapshot produced, stored separately in `cas/`.
-	pub ir_ref: ContentHash,
+    /// The content hash of the serialized extracted [`ResolvedReference`] spans
+    /// (the CST-free cross-reference data), stored separately in `cas/`.
+    pub references_ref: ContentHash,
 
-	/// The content hash of the serialized extracted [`ResolvedReference`] spans
-	/// (the CST-free cross-reference data), stored separately in `cas/`.
-	pub references_ref: ContentHash,
-
-	/// The toolchain this snapshot was produced against (provenance).
-	pub toolchain: Toolchain,
+    /// The toolchain this snapshot was produced against (provenance).
+    pub toolchain: Toolchain,
 }
 
 impl BlobManifest {
-	/// The canonical byte encoding fed to the generation hasher — the single
-	/// definition of "the same snapshot". Length-prefixed and order-stable.
-	pub fn identity_bytes(&self) -> Vec<u8> {
-		todo!("fold sorted file (path, hash), ir_ref, references_ref, toolchain deterministically")
-	}
+    /// The canonical byte encoding fed to the generation hasher — the single
+    /// definition of "the same snapshot". Length-prefixed and order-stable.
+    pub fn identity_bytes(&self) -> Vec<u8> {
+        let push = |bytes: &mut Vec<u8>, part: &[u8]| {
+            bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(part);
+        };
 
-	/// Verify the manifest is structurally well-formed (non-empty, sorted,
-	/// no duplicate paths) before it is trusted.
-	pub fn validate(&self) -> Result<(), BlobError> {
-		todo!("assert files sorted+unique by path, generation matches identity_bytes")
-	}
+        // Sort defensively so the fingerprint is order-stable even over a
+        // manifest that has not passed [`BlobManifest::validate`] yet.
+        let mut sorted: Vec<&FileEntry> = self.files.iter().collect();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path));
+
+        let mut bytes = Vec::new();
+        for entry in sorted {
+            push(&mut bytes, entry.path.as_bytes());
+            bytes.extend_from_slice(entry.hash.as_bytes());
+        }
+        bytes.extend_from_slice(self.ir_ref.as_bytes());
+        bytes.extend_from_slice(self.references_ref.as_bytes());
+        let toolchain = postcard::to_allocvec(&self.toolchain)
+            .expect("Toolchain is plain owned data and serializes infallibly with alloc");
+        push(&mut bytes, &toolchain);
+        bytes
+    }
+
+    /// Verify the manifest is structurally well-formed (non-empty, sorted,
+    /// no duplicate paths) before it is trusted.
+    pub fn validate(&self) -> Result<(), BlobError> {
+        // `NonEmpty` already carries the non-emptiness invariant in the type;
+        // what remains is strict path ordering, which implies uniqueness.
+        for pair in self.files.iter().collect::<Vec<_>>().windows(2) {
+            match pair[0].path.cmp(&pair[1].path) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => {
+                    return Err(BlobError::DuplicateFilePathInManifest);
+                }
+                std::cmp::Ordering::Greater => {
+                    return Err(BlobError::ManifestFilesNotSorted);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One source file within a package snapshot: its in-package path, its
@@ -93,15 +119,15 @@ impl BlobManifest {
 /// the manifest small and dedupe free.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileEntry {
-	/// The file's path relative to the package root (already sanitized by
-	/// [`crate::ingest`]).
-	pub path: SmolStr,
+    /// The file's path relative to the package root (already sanitized by
+    /// [`crate::ingest`]).
+    pub path: SmolStr,
 
-	/// The BLAKE3 digest the file's bytes are stored under.
-	pub hash: ContentHash,
+    /// The BLAKE3 digest the file's bytes are stored under.
+    pub hash: ContentHash,
 
-	/// The file's uncompressed size in bytes.
-	pub size: u64,
+    /// The file's uncompressed size in bytes.
+    pub size: u64,
 }
 
 /// The CST-free cross-reference payload persisted alongside a snapshot.
@@ -117,29 +143,166 @@ pub struct FileEntry {
 /// spawn_blocking`.
 #[derive(Debug, Clone)]
 pub struct ReferenceSet {
-	/// Per-file reference spans, keyed by the same in-package path as
-	/// [`FileEntry::path`].
-	pub by_file: Vec<FileReferences>,
+    /// Per-file reference spans, keyed by the same in-package path as
+    /// [`FileEntry::path`].
+    pub by_file: Vec<FileReferences>,
 }
 
 impl ReferenceSet {
-	/// Encode to the object-store section bytes. `// runs on spawn_blocking`.
-	pub fn encode(&self) -> Result<Vec<u8>, BlobError> {
-		todo!("bespoke length-prefixed encoding of (path, span, kind) triples")
-	}
+    /// Encode to the object-store section bytes. `// runs on spawn_blocking`.
+    pub fn encode(&self) -> Result<Vec<u8>, BlobError> {
+        let wire = self
+            .by_file
+            .iter()
+            .map(|file| {
+                let references = file
+                    .references
+                    .iter()
+                    .map(WireReference::from_reference)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(WireFile {
+                    path: file.path.to_string(),
+                    references,
+                })
+            })
+            .collect::<Result<Vec<_>, BlobError>>()?;
+        postcard::to_allocvec(&wire).map_err(BlobError::Codec)
+    }
 
-	/// Decode a section back into references. `// runs on spawn_blocking`.
-	pub fn decode(_bytes: &[u8]) -> Result<Self, BlobError> {
-		todo!("inverse of encode; validate spans + kinds")
-	}
+    /// Decode a section back into references. `// runs on spawn_blocking`.
+    pub fn decode(bytes: &[u8]) -> Result<Self, BlobError> {
+        let wire: Vec<WireFile> = postcard::from_bytes(bytes).map_err(BlobError::Codec)?;
+        let by_file = wire
+            .into_iter()
+            .map(|file| {
+                let references = file
+                    .references
+                    .into_iter()
+                    .map(WireReference::into_reference)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(FileReferences {
+                    path: file.path.into(),
+                    references,
+                })
+            })
+            .collect::<Result<Vec<_>, BlobError>>()?;
+        Ok(Self { by_file })
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The bespoke wire mirror of `ir::syntax::ResolvedReference` (which carries no
+// serde impls of its own). Total in both directions: every field is either
+// re-validated (span order, kind range, UTF-8 paths) or rejected.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One file's worth of reference spans, on the wire.
+#[derive(Serialize, Deserialize)]
+struct WireFile {
+    path: String,
+    references: Vec<WireReference>,
+}
+
+/// One reference span, on the wire.
+#[derive(Serialize, Deserialize)]
+struct WireReference {
+    target: WireTarget,
+    span_start: u64,
+    span_end: u64,
+    kind: u8,
+}
+
+/// The wire form of `ir::entry::NudoxPath`.
+#[derive(Serialize, Deserialize)]
+enum WireTarget {
+    External { path: String, dependency: String },
+    Local(String),
+}
+
+impl WireReference {
+    fn from_reference(reference: &ResolvedReference) -> Result<Self, BlobError> {
+        Ok(Self {
+            target: WireTarget::from_target(&reference.target)?,
+            span_start: reference.span.start as u64,
+            span_end: reference.span.end as u64,
+            kind: kind_to_wire(&reference.kind),
+        })
+    }
+
+    fn into_reference(self) -> Result<ResolvedReference, BlobError> {
+        if self.span_start > self.span_end {
+            return Err(BlobError::InvertedReferenceSpan);
+        }
+        Ok(ResolvedReference {
+            target: self.target.into_target(),
+            span: (self.span_start as usize)..(self.span_end as usize),
+            kind: kind_from_wire(self.kind)?,
+        })
+    }
+}
+
+impl WireTarget {
+    fn from_target(target: &ir::entry::NudoxPath) -> Result<Self, BlobError> {
+        let utf8 = |path: &std::path::Path| {
+            path.to_str().map(str::to_owned).ok_or(BlobError::NonUtf8ReferencePath)
+        };
+        Ok(match target {
+            ir::entry::NudoxPath::External { path, dependency } => Self::External {
+                path: utf8(path)?,
+                dependency: dependency.clone(),
+            },
+            ir::entry::NudoxPath::Local(path) => Self::Local(utf8(path)?),
+        })
+    }
+
+    fn into_target(self) -> ir::entry::NudoxPath {
+        match self {
+            Self::External { path, dependency } => ir::entry::NudoxPath::External {
+                path: path.into(),
+                dependency,
+            },
+            Self::Local(path) => ir::entry::NudoxPath::Local(path.into()),
+        }
+    }
+}
+
+/// The stable `ReferenceKind` wire discriminants. Kept explicit (not `as u8`
+/// on an untagged enum) so reordering the ir enum can never silently reshuffle
+/// stored data.
+fn kind_to_wire(kind: &ir::syntax::ReferenceKind) -> u8 {
+    use ir::syntax::ReferenceKind::*;
+    match kind {
+        FunctionCall => 0,
+        MethodCall => 1,
+        TypeReference => 2,
+        VariableUse => 3,
+        MacroInvocation => 4,
+        FieldAccess => 5,
+        Import => 6,
+    }
+}
+
+/// Inverse of [`kind_to_wire`]; rejects out-of-range discriminants.
+fn kind_from_wire(wire: u8) -> Result<ir::syntax::ReferenceKind, BlobError> {
+    use ir::syntax::ReferenceKind::*;
+    Ok(match wire {
+        0 => FunctionCall,
+        1 => MethodCall,
+        2 => TypeReference,
+        3 => VariableUse,
+        4 => MacroInvocation,
+        5 => FieldAccess,
+        6 => Import,
+        _ => return Err(BlobError::UnknownReferenceKindDiscriminant { wire }),
+    })
 }
 
 /// The extracted references for a single file.
 #[derive(Debug, Clone)]
 pub struct FileReferences {
-	/// The in-package path these references were extracted from.
-	pub path: SmolStr,
+    /// The in-package path these references were extracted from.
+    pub path: SmolStr,
 
-	/// The resolved reference spans, as plain data (no tree).
-	pub references: Vec<ResolvedReference>,
+    /// The resolved reference spans, as plain data (no tree).
+    pub references: Vec<ResolvedReference>,
 }

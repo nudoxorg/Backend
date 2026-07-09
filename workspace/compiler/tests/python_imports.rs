@@ -38,9 +38,7 @@ fn has_entry(index: &Index, name: &str) -> bool {
 #[test]
 fn imports_are_filtered_locals_are_kept() {
     let ctx = PythonContext::new();
-    let handle = ctx
-        .check_snippet("imports_mod", SNIPPET)
-        .expect("type-checking the snippet failed");
+    let handle = ctx.check_snippet("imports_mod", SNIPPET);
     let index = ctx.lower_handle(&handle);
     println!("entries: {:?}", names(&index));
 
