@@ -293,7 +293,7 @@
               (mkCommand "rad-sync" "manually sync radicle repos" "utilities")
             ];
             devshell.startup.shellHook.text = ''
-              ln -sfn ${./build/prelude} "$PRJ_ROOT/prelude"
+              ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
               export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
               # sccache intercepts rustc --version as a non-compilation call and returns empty output,
               # breaking Buck2 build scripts (e.g. rustversion). Buck2 has its own caching.
