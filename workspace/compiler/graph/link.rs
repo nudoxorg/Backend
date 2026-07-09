@@ -46,29 +46,42 @@ fn sanitize(segment: &str) -> String {
         .collect()
 }
 
-/// `Symbol/{language}/{package}/{fq_path}` — the one place symbol IRIs are
-/// minted.
+/// Hierarchical coordinate → single id segment.
+///
+/// [`EntityIDFor`] only accepts `TypeName/id` with a **single** id segment;
+/// extra `/` is parsed as a subdocument path and the type check fails
+/// (`expected 'Symbol', found 'pkg'`). The logical hierarchy is therefore
+/// encoded with `%2F` so the wire form stays one segment while remaining
+/// reversible via [`decode_id_segment`].
+fn encode_id_segment(parts: &[&str]) -> String {
+    parts.iter().map(|p| sanitize(p)).collect::<Vec<_>>().join("%2F")
+}
+
+/// Reverse of [`encode_id_segment`].
+pub fn decode_id_segment(encoded: &str) -> Vec<String> {
+    encoded.split("%2F").map(str::to_string).collect()
+}
+
+/// `Symbol/{language}%2F{package}%2F{fq_path}` — the one place symbol IRIs are
+/// minted. Logical hierarchy is `Symbol/{lang}/{package}/{fq}`; the `%2F`
+/// encoding is required by EntityIDFor (see [`encode_id_segment`]).
 pub fn symbol_iri(language: &str, package: &str, fq_name: &str) -> String {
     format!(
-        "Symbol/{}/{}/{}",
-        sanitize(language),
-        sanitize(package),
-        sanitize(fq_name)
+        "Symbol/{}",
+        encode_id_segment(&[language, package, fq_name])
     )
 }
 
-/// `Package/{language}/{name}`.
+/// `Package/{language}%2F{name}`.
 pub fn package_iri(language: &str, package: &str) -> String {
-    format!("Package/{}/{}", sanitize(language), sanitize(package))
+    format!("Package/{}", encode_id_segment(&[language, package]))
 }
 
-/// `PackageVersion/{language}/{name}@{version}`.
+/// `PackageVersion/{language}%2F{name}@{version}`.
 pub fn package_version_iri(language: &str, package: &str, version: &str) -> String {
     format!(
-        "PackageVersion/{}/{}@{}",
-        sanitize(language),
-        sanitize(package),
-        sanitize(version)
+        "PackageVersion/{}",
+        encode_id_segment(&[language, &format!("{}@{}", package, version)])
     )
 }
 
@@ -248,7 +261,8 @@ impl Linker {
                 let fq = seed.segments.join("::");
                 m::Symbol {
                     id: EntityIDFor::new(&iri).expect("sanitized iri"),
-                    uri: iri.trim_start_matches("Symbol/").to_string(),
+                    // Logical `{lang}/{package}/{fq}` (decoded from %2F id segment).
+                    uri: decode_id_segment(iri.trim_start_matches("Symbol/")).join("/"),
                     fq_name: fq.clone(),
                     name: seed.segments.last().cloned().unwrap_or(fq),
                     path: seed.segments,

@@ -1,24 +1,36 @@
-load("//build:rust.bzl", "deps", "rust_crate")
+load("//build:rust.bzl", "crate", "deps", "rust_crate", "rust_tests", "target")
 
 rust_crate(
     name = "heart",
-    deps = deps(crates = [
-        "uuid",
-        "semver",
-        "tower",
-        "nutype",
-        "serde",
-        "thiserror",
-        "blake3",
-        "smol_str",
-        "compact_str",
-        "chrono",
-        "ordered_float",
-        "strum",
-        "data_encoding",
-        "postcard",
-        "uv_pep440",
-        "url",
-        "anyhow",
+    srcs = native.glob(["**/*.rs"], exclude = ["tests/**"]),
+    deps = deps([
+        crate("uuid", features = ["v4", "v5"]),
+        crate("semver", features = ["serde"]),
+        crate("tower", features = ["retry"]),
+        crate("nutype", features = ["serde"]),
+        crate("strum", features = ["derive"]),
+        crate("postcard", features = ["alloc"]),
+        crate("uv_pep440", features = ["version-ranges", "serde"]),
+        crate("serde"),
+        crate("thiserror"),
+        crate("blake3"),
+        crate("smol_str"),
+        crate("compact_str"),
+        crate("chrono"),
+        crate("ordered_float"),
+        crate("data_encoding"),
+        crate("url"),
+        crate("anyhow"),
+    ]),
+)
+
+rust_tests(
+    prefix = "test",
+    deps = deps([
+        crate("uuid"),
+        crate("semver"),
+        crate("tower"),
+        crate("tokio"),
+        target(":heart"),
     ]),
 )

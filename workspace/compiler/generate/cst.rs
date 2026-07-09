@@ -44,7 +44,9 @@ pub fn extract(input: &PackageInput) -> Result<CstSet, GenerateError> {
             Some(grammar) => (grammar, "rs"),
             None => return Ok(CstSet::default()),
         },
-        Language::Typescript | Language::Python | Language::Go | Language::Java => return Ok(CstSet::default()),
+        Language::Typescript | Language::Python | Language::Go | Language::Java | Language::Nix => {
+            return Ok(CstSet::default());
+        }
     };
 
     let mut files = Vec::new();

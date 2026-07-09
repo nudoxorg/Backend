@@ -241,7 +241,7 @@ pub fn pypi_metadata_url(name: &str) -> String {
 }
 
 /// Fetch and parse a package's PyPI JSON metadata. **Network.**
-pub fn fetch_pypi_metadata(name: &str) -> Result<serde_json::Value, PythonTraversalError> {
+pub fn fetch_pypi_metadata(name: &str) -> Result<serde_json::Value> {
     let url = pypi_metadata_url(name);
     let resp = reqwest::blocking::get(&url)
         .map_err(|source| PythonTraversalError::MetadataRequest { name: name.to_owned(), source })?;
@@ -295,7 +295,7 @@ pub fn resolve_and_fetch_sdist(
     name: &str,
     req: &VersionSpecifiers,
     workspace: &Path,
-) -> Result<PathBuf, PythonTraversalError> {
+) -> Result<PathBuf> {
     let metadata = fetch_pypi_metadata(name)?;
     let releases = parse_releases(&metadata);
     let chosen = select_best_release(&releases, req)

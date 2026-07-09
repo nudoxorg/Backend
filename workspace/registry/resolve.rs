@@ -58,7 +58,7 @@ pub async fn resolve(
 	let version = select(request, &published).map_err(|error| match error {
 		// `select` works over a bare candidate set; re-attach the name here.
 		ResolveError::NoMatchLatest { .. } => ResolveError::NoMatchLatest { name: name.original().to_owned() },
-		ResolveError::NoMatchExact { request: pin, .. } => ResolveError::NoMatchExact { name: name.original().to_owned(), pin },
+		ResolveError::NoMatchExact { pin, .. } => ResolveError::NoMatchExact { name: name.original().to_owned(), pin },
 		ResolveError::NoMatchSemver { range, .. } => ResolveError::NoMatchSemver { name: name.original().to_owned(), range },
 		ResolveError::NoMatchRange { spec, .. } => ResolveError::NoMatchRange { name: name.original().to_owned(), spec },
 		other => other,
@@ -88,7 +88,7 @@ pub fn select(
 			candidates.iter().filter(|candidate| semver_matches(range, candidate)).collect()
 		}
 		VersionRequest::Range { ecosystem, spec } => match ecosystem {
-			Language::Rust | Language::Typescript => {
+			Language::Rust | Language::Typescript | Language::Nix => {
 				let range = semver::VersionReq::parse(spec)
 					.map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
 				candidates.iter().filter(|candidate| semver_matches(&range, candidate)).collect()
@@ -100,12 +100,12 @@ pub fn select(
 					.iter()
 					.filter(|candidate| match candidate {
 						PackageVersion::Python(version) => specifiers.contains(version),
-		PackageVersion::Go(_) | PackageVersion::Java(_) => false, // version resolution via tags for Go/Java
-
+						PackageVersion::Go(_) | PackageVersion::Java(_) => false, // version resolution via tags for Go/Java
 						_ => false,
 					})
 					.collect()
 			}
+			Language::Go | Language::Java => vec![],
 		},
 	};
 
@@ -121,7 +121,9 @@ pub fn select(
 /// ecosystems; PEP 440 candidates never satisfy a SemVer range).
 fn semver_matches(range: &semver::VersionReq, candidate: &PackageVersion) -> bool {
 	match candidate {
-		PackageVersion::Cargo(version) | PackageVersion::Npm(version) => range.matches(version),
+		PackageVersion::Cargo(version)
+		| PackageVersion::Npm(version)
+		| PackageVersion::Nix(version) => range.matches(version),
 		PackageVersion::Python(_) => false,
 		PackageVersion::Go(_) | PackageVersion::Java(_) => false, // not via semver range here
 
@@ -137,9 +139,8 @@ fn grammar_order(a: &&PackageVersion, b: &&PackageVersion) -> std::cmp::Ordering
 		(PackageVersion::Python(x), PackageVersion::Python(y)) => x.cmp(y),
 		(PackageVersion::Go(x), PackageVersion::Go(y))
 		| (PackageVersion::Java(x), PackageVersion::Java(y)) => x.cmp(y),
+		(PackageVersion::Nix(x), PackageVersion::Nix(y)) => x.cmp(y),
 		_ => std::cmp::Ordering::Equal, // mixed not happen
-
-		_ => std::cmp::Ordering::Equal,
 	}
 }
 
@@ -193,6 +194,7 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		RegistryOrigin::CratesIo => String::from("https://crates.io"),
 		RegistryOrigin::NpmPublic => String::from("https://registry.npmjs.org"),
 		RegistryOrigin::PyPi => String::from("https://pypi.org"),
+		RegistryOrigin::FlakeHub => String::from("https://api.flakehub.com"),
 		RegistryOrigin::Custom { url, .. } => url.as_str().trim_end_matches('/').to_owned(),
 	};
 	match name.ecosystem() {
@@ -201,6 +203,9 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		Language::Python => format!("{base}/pypi/{}/json", name.canonical()),
 		Language::Go => format!("{base}/{}", name.canonical()),
 		Language::Java => format!("{base}/{}", name.canonical()),
+		// FlakeHub resolution has bespoke semantics handled by the Nix
+		// producer's `traversal` module, not this generic registry path.
+		Language::Nix => format!("{base}/f/{}/releases", name.canonical()),
 	}
 }
 
@@ -227,5 +232,6 @@ fn raw_versions(ecosystem: Language, body: &serde_json::Value) -> Vec<String> {
 			.flat_map(|releases| releases.keys().cloned())
 			.collect(),
 		Language::Go | Language::Java => vec![], // not via this registry resolve path yet
+		Language::Nix => vec![],                 // resolved via FlakeHub in the Nix producer
 	}
 }

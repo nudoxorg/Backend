@@ -34,6 +34,11 @@ pub enum GenerateError {
 	#[error("failed to lower Java source to IR")]
 	LowerJava(#[from] crate::languages::java::JavaError),
 
+	/// Nix flake lowering to IR failed (FlakeHub acquisition, static analysis,
+	/// or hermetic evaluation).
+	#[error("failed to lower Nix source to IR")]
+	LowerNix(#[from] crate::languages::nix::NixError),
+
 	/// Extracting the CST for a file failed.
 	#[error("failed to extract CST for {path}")]
 	Cst {
@@ -87,8 +92,8 @@ impl heart::Retryable for GenerateError {
 /// Classify GitError for retry: IO errors that look transient, plus fetch/connect errors.
 fn is_git_retryable(e: &crate::languages::vcs::GitError) -> bool {
 	match e {
-		crate::languages::vcs::GitError::Io(io) => matches!(
-			io.kind(),
+		crate::languages::vcs::GitError::Io { source, .. } => matches!(
+			source.kind(),
 			std::io::ErrorKind::Interrupted
 				| std::io::ErrorKind::TimedOut
 				| std::io::ErrorKind::ConnectionReset

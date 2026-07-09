@@ -3,7 +3,7 @@
 
 use ir::{generics::{ConstExpr, Constraint, GenericArg, Generics, Term, TraitRef, TypeExpr, Variance}, parameter::{ConstParam, LifetimeParam, Parameter, TypeParam, TypeParamOrigin}, protocols::GenericBound, ty::Type};
 
-use crate::{Result, context::ParseContext};
+use super::{Result, context::ParseContext};
 
 impl ParseContext {
 	pub(crate) fn generic_params(&self, generics: &rustdoc_types::Generics) -> Option<Generics> {
@@ -162,7 +162,7 @@ impl ParseContext {
 								.iter()
 								.map(|t| {
 									let parsed = self.generic_bounds(std::slice::from_ref(t))?;
-									Ok::<_, crate::error::Parse>(parsed.into_iter().map(|b| match b {
+									Ok::<_, super::Parse>(parsed.into_iter().map(|b| match b {
 										GenericBound::Trait(tr) => {
 											Constraint::TraitBound { param: String::new(), trait_ref: tr }
 										}

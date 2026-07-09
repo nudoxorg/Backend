@@ -451,9 +451,10 @@ impl Graph<Live> {
 		let status = reply.status();
 		let bytes = reply.bytes().await.map_err(GraphError::Transport)?;
 		if !status.is_success() {
-			return Err(GraphError::Query {
-				message: format!("{status}: {}", String::from_utf8_lossy(&bytes)),
-			});
+			return Err(GraphError::Query(crate::error::GraphQueryError::HttpStatus {
+				status,
+				body: String::from_utf8_lossy(&bytes).into_owned(),
+			}));
 		}
 
 		#[derive(serde::Deserialize)]

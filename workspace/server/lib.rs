@@ -43,6 +43,7 @@ use secrecy::ExposeSecret;
 
 pub use config::{Endpoints, Limits, ServerConfiguration, SourceConfig};
 pub use error::{ServerError, ServerResult};
+use error::InternalError;
 
 use crate::search::registry::PackageSearchIndex;
 use crate::search::semantic::embedder::HttpEmbedder;
@@ -281,11 +282,11 @@ impl<M: EmbeddingModel> Server<M> {
 		let router = http::router::router(Arc::clone(&self));
 		let listener = tokio::net::TcpListener::bind(self.config.serving_address)
 			.await
-			.map_err(|error| {
-				ServerError::Internal(format!(
-					"could not bind {}: {error}",
-					self.config.serving_address
-				))
+			.map_err(|source| {
+				ServerError::Internal(InternalError::BindFailed {
+					address: self.config.serving_address,
+					source,
+				})
 			})?;
 		tracing::info!(address = %self.config.serving_address, "serving");
 
@@ -302,7 +303,7 @@ impl<M: EmbeddingModel> Server<M> {
 		axum::serve(listener, router)
 			.with_graceful_shutdown(shutdown_signal())
 			.await
-			.map_err(|error| ServerError::Internal(format!("http serve failed: {error}")))?;
+			.map_err(|source| ServerError::Internal(InternalError::ServeFailed { source }))?;
 
 		// The listener has drained; wind the pollers down at their next await
 		// point and reap them so nothing outlives the server.
@@ -334,7 +335,9 @@ fn object_store_backend(url: &url::Url) -> ServerResult<Arc<dyn object_store::Ob
 
 /// A config-shape error surfaced while building store handles.
 fn invalid_configuration(error: impl std::fmt::Display) -> ServerError {
-	ServerError::Config(config::ConfigError::Invalid(error.to_string()))
+	ServerError::Config(config::ConfigError::Validation(
+		config::ConfigValidationError::Other { detail: error.to_string() },
+	))
 }
 
 /// Resolve when the process is asked to stop: SIGINT (ctrl-c) or SIGTERM.

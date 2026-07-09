@@ -126,7 +126,7 @@ pub fn resolve_materialized_entry_point(root: &Path) -> Result<PathBuf, PackageE
 		}
 	}
 
-	Err(PackageError::EntryPointDeterminationFailed { root: root.to_path_buf() })
+	Err(PackageError::EntryPointDiscoveryFailed { path: root.to_path_buf() })
 }
 
 /// Expand an entry point into the full set of declaration roots to document,

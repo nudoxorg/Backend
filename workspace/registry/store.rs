@@ -78,11 +78,11 @@ impl Connect for Store<Cold> {
 }
 
 /// Map a raw backend error on `path` onto the store's error vocabulary,
-/// folding the backend's `NotFound` into rich typed NotFound variant.
-/// No .to_string() used to create error data.
+/// folding the backend's `NotFound` into the rich typed [`StoreError::NotFound`]
+/// variant (path preserved; source discarded — absence is the signal).
 fn keyed(path: &Path, error: object_store::Error) -> StoreError {
 	match &error {
-		object_store::Error::NotFound { .. } => StoreError::ObjectStoreNotFound { path: path.clone(), source: error },
+		object_store::Error::NotFound { .. } => StoreError::NotFound { path: path.clone() },
 		object_store::Error::PermissionDenied { .. } => StoreError::ObjectStorePermissionDenied { path: Some(path.clone()), source: error },
 		object_store::Error::Unauthenticated { .. } => StoreError::ObjectStoreUnauthenticated { source: error },
 		object_store::Error::Precondition { .. } => StoreError::ObjectStorePreconditionFailed { path: path.clone(), source: error },
@@ -130,7 +130,7 @@ impl Store<Live> {
 				tracing::debug!(key = %path, size = section.bytes.len(), "cas section written");
 				Ok(true)
 			}
-			Err(other) => Err(keyed(&pointer, other)),
+			Err(other) => Err(keyed(&path, other)),
 		}
 	}
 

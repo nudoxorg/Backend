@@ -32,10 +32,14 @@ impl Ir<Collected> {
 		let mut root_ids = Vec::new();
 
 		for entry in self.data {
-			if let NudoxPath::Local(p) = entry.path()
-				&& !p.to_string_lossy().contains("::")
-			{
-				root_ids.push(entry.path().clone());
+			// Roots are top-level local items only: a single path component, not
+			// nested under another local path (`alpha` yes; `alpha/beta` no) and
+			// not a fully-qualified `::`-style spelling.
+			if let NudoxPath::Local(p) = entry.path() {
+				let lossy = p.to_string_lossy();
+				if p.components().count() == 1 && !lossy.contains("::") {
+					root_ids.push(entry.path().clone());
+				}
 			}
 			entries_by_path.insert(entry.path().clone(), entry);
 		}

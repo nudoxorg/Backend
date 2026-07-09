@@ -149,6 +149,14 @@
             "rust-src"
             "rust-docs"
             "rustc"
+            # rustc-dev ships the compiler's own crates (rustc_driver,
+            # rustc_interface, rustc_hir, …) into the sysroot. It is the
+            # prerequisite for building `#![feature(rustc_private)]` code —
+            # i.e. vendoring librustdoc and driving it in-process so the Rust
+            # producer can obtain rustdoc's `Crate` without shelling out to
+            # `cargo rustdoc` and round-tripping through JSON.
+            "rustc-dev"
+            "llvm-tools"
             "rustfmt"
             "rustc-codegen-cranelift-preview"
           ];
@@ -164,6 +172,10 @@
           default = (devshell.legacyPackages.${system}.mkShell) {
             name = "NuNuShell";
             env = [
+              {
+                name = "RUSTC_BOOTSTRAP";
+                value = "1";
+              }
               {
                 # TODO: See if there's a more reliable way to avoid this, just a linker issue I started facing
                 name = "LIBRARY_PATH";
@@ -281,7 +293,7 @@
               (mkCommand "rad-sync" "manually sync radicle repos" "utilities")
             ];
             devshell.startup.shellHook.text = ''
-              ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
+              ln -sfn ${./build/prelude} "$PRJ_ROOT/prelude"
               export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
               # sccache intercepts rustc --version as a non-compilation call and returns empty output,
               # breaking Buck2 build scripts (e.g. rustversion). Buck2 has its own caching.

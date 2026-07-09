@@ -251,6 +251,18 @@ impl Retryable for VectorError {
 	}
 }
 
+/// Failures decoding a postgres row into the shapes the text index serves.
+#[derive(Debug, thiserror::Error)]
+pub enum RowDecodeError {
+	/// An ecosystem/language token from postgres was not a known [`heart::Language`].
+	#[error("unknown ecosystem token in text index row: {raw}")]
+	UnknownEcosystem { raw: String },
+
+	/// A symbol-kind token from postgres was not a known [`heart::SymbolKind`].
+	#[error("unknown symbol kind token in text index row: {raw}")]
+	UnknownSymbolKind { raw: String },
+}
+
 /// Failures from the text index (tantivy) and its postgres poller.
 #[derive(Debug, thiserror::Error)]
 pub enum TextError {
@@ -273,6 +285,14 @@ pub enum TextError {
 	/// The pagination cursor could not be decoded / no longer matches the index.
 	#[error("invalid text search cursor")]
 	Cursor(#[source] heart::cursor::CursorError),
+
+	/// Watermark / sidecar JSON (de)serialization failed.
+	#[error("text index codec error")]
+	Codec(#[source] serde_json::Error),
+
+	/// A durable row could not be decoded into a symbol the index can serve.
+	#[error("text index row decode failed")]
+	Row(#[source] RowDecodeError),
 }
 
 impl Retryable for TextError {
@@ -280,7 +300,11 @@ impl Retryable for TextError {
 		match self {
 			// A local-disk index blip or a transient postgres fault is worth a retry.
 			TextError::Io(_) | TextError::Poll(_) => true,
-			TextError::Engine(_) | TextError::Query(_) | TextError::Cursor(_) => false,
+			TextError::Engine(_)
+			| TextError::Query(_)
+			| TextError::Cursor(_)
+			| TextError::Codec(_)
+			| TextError::Row(_) => false,
 		}
 	}
 }

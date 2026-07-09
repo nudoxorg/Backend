@@ -7,7 +7,7 @@ use nonempty::NonEmpty;
 use registry::package::PackageName;
 use serde::{Deserialize, Serialize};
 
-use crate::error::QueryError;
+pub use crate::error::QueryError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AbstractQuery {
@@ -160,5 +160,3 @@ pub struct Search<'a> {
 
 pub type SymbolCursorKey = (Score, heart::SymbolId);
 pub type SymbolCursor = Cursor<SymbolCursorKey>;
-
-pub use crate::error::QueryError;

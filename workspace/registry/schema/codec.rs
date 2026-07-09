@@ -136,6 +136,7 @@ pub fn ecosystem_from_token(token: &str) -> Result<Language, CodecError> {
 		"python" => Ok(Language::Python),
 		"go" => Ok(Language::Go),
 		"java" => Ok(Language::Java),
+		"nix" => Ok(Language::Nix),
 		other => Err(CodecError::UnknownEcosystemDiscriminant { token: other.to_owned() }),
 	}
 }
@@ -335,6 +336,7 @@ pub fn origin_from_token(token: &str) -> Result<heart::RegistryOrigin, CodecErro
 		"crates.io" => Ok(heart::RegistryOrigin::CratesIo),
 		"npm" => Ok(heart::RegistryOrigin::NpmPublic),
 		"pypi" => Ok(heart::RegistryOrigin::PyPi),
+		"flakehub" => Ok(heart::RegistryOrigin::FlakeHub),
 		custom => {
 			let url = url::Url::parse(&format!("https://{custom}"))
 				.map_err(|source| CodecError::Origin { token: custom.to_owned(), source })?;

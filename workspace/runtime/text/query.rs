@@ -17,7 +17,7 @@ use tantivy::{
 };
 
 use crate::{
-	error::TextError,
+	error::{TextError, TextQueryError},
 	text::{
 		TextCursorKey, tokenizer,
 		index::{TextIndex, TextSchema, kind_token, snapshot_hash, symbol_from_document},
@@ -117,8 +117,12 @@ fn search_blocking(
 
 	let parsed = build_query(schema, query)?;
 	let target = limit.get();
-	// Keyset resume over a score-ranked list: tantivy has no seek-to-key, so
-	// resumed pages over-fetch (doubling, capped) and skip past the key.
+	// Keyset over a score-ranked list: tantivy has no seek-to-key and no
+	// secondary sort, so we over-fetch, re-sort by (score desc, id asc), then
+	// either take the first page or skip past the cursor. Expand until the
+	// TopDocs cut is exhausted (or we hit MAX_FETCH) so score-tied groups are
+	// ordered by id completely — a short first-page cut would otherwise mint a
+	// cursor mid-pack of the true keyset order.
 	let mut fetch = match &after {
 		None => target,
 		Some(_) => (target * 2).min(MAX_FETCH),
@@ -149,13 +153,16 @@ fn search_blocking(
 			.take(target)
 			.collect();
 
-		if page.len() == target || exhausted || fetch >= MAX_FETCH {
-			if page.len() < target && !exhausted && fetch >= MAX_FETCH {
-				tracing::warn!(fetched = fetch, "text keyset resume truncated at fetch ceiling");
-			}
-			return Ok(page);
+		// Expand while TopDocs may still be hiding docs that reorder the page
+		// under the (score, id) keyset — including a full first page cut.
+		if !exhausted && fetch < MAX_FETCH {
+			fetch = (fetch * 2).min(MAX_FETCH);
+			continue;
 		}
-		fetch = (fetch * 2).min(MAX_FETCH);
+		if page.len() < target && !exhausted && fetch >= MAX_FETCH {
+			tracing::warn!(fetched = fetch, "text keyset resume truncated at fetch ceiling");
+		}
+		return Ok(page);
 	}
 }
 
@@ -182,14 +189,17 @@ pub(crate) fn build_query(
 ) -> Result<Box<dyn Query>, TextError> {
 	let needle = query.terms.trim().to_lowercase();
 	if needle.is_empty() {
-		return Err(TextError::Query { message: "empty query terms".to_owned() });
+		return Err(TextError::Query(TextQueryError::Empty));
 	}
 
 	let contains = |field: Field| -> Result<Box<dyn Query>, TextError> {
 		RegexQuery::from_pattern(&format!(".*{}.*", escape_regex(&needle)), field)
 			.map(|matched| Box::new(matched) as Box<dyn Query>)
-			.map_err(|error| TextError::Query {
-				message: format!("terms {needle:?} do not form a searchable pattern: {error}"),
+			.map_err(|cause| {
+				TextError::Query(TextQueryError::InvalidPattern {
+					needle: needle.clone(),
+					cause,
+				})
 			})
 	};
 	let exact = Box::new(TermQuery::new(

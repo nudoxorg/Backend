@@ -1,30 +1,30 @@
-//! Resolving a Rust package + its documented local/workspace members and running
-//! `cargo rustdoc` via the `rustdoc-driver` binary.
+//! Resolving a Rust package + its documented local/workspace members, running
+//! `cargo rustdoc --output-format json`, and capturing the resulting crate JSON.
 //!
-//! The driver is invoked via `RUSTDOC=<driver>`, which runs the doc pass
-//! in-process, lowers `rustdoc_types::Crate → IR` inside the driver, and writes
-//! only IR JSON to `NUDOX_IR_OUT` — no rustdoc JSON file is ever written or read.
-//!
-//! The driver binary is located via `NUDOX_RUSTDOC_DRIVER` env var, a sibling
-//! binary next to the current executable (Buck build layout), or `PATH`.
+//! A short-lived `RUSTDOC` wrapper rewrites cargo's `-o`/`--out-dir` to a private
+//! staging directory, then copies the emitted `{crate}.json` into
+//! `NUDOX_RUSTDOC_OUT`. (Modern rustdoc writes JSON next to the HTML out-dir,
+//! not to stdout — stripping out-dir and redirecting stdout is a no-op.)
+//! The bytes are parsed in-process and lowered via [`super::context::RustdocParser`].
 
 use std::{
     collections::{BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
 };
 
-use ir::{
-    kind::Entry,
-    pipeline::{Collected, Ir},
-};
+use ir::pipeline::{Collected, Ir};
 use rustc_hash::FxHashMap as HashMap;
 use semver::Version;
 use serde::Deserialize;
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument};
 
-use rust_lowering::error::{MetadataError, Package, ProcessFailure, ProcessFailureKind};
+use super::{
+    context::RustdocParser,
+    error::{MetadataError, Package, ProcessFailure, ProcessFailureKind},
+};
 
 /// A Rust package to document from a local source tree.
 #[derive(Clone, Debug)]
@@ -58,6 +58,7 @@ struct CargoPackage {
 
 #[derive(Deserialize)]
 struct Target {
+    name: String,
     kind: Vec<String>,
 }
 
@@ -77,43 +78,22 @@ struct Dep {
     pkg: PackageId,
 }
 
-// ─── Driver lookup ────────────────────────────────────────────────────────────
-
-fn effective_driver_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("NUDOX_RUSTDOC_DRIVER") {
-        let p = PathBuf::from(p);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|d| d.join("rustdoc-driver")))
-        .filter(|p| p.exists())
-        .or_else(|| {
-            std::env::var_os("PATH").and_then(|path| {
-                std::env::split_paths(&path)
-                    .map(|dir| dir.join("rustdoc-driver"))
-                    .find(|p| p.exists())
-            })
-        })
-}
-
 impl RustPackage {
     fn cargo_package_spec_for(package_name: &str, version: &Version) -> String {
         format!("{package_name}@{version}")
     }
 
-    fn run_cargo_with_driver(
+    fn run_cargo_rustdoc(
         &self,
         code: &Path,
-        driver: &Path,
-        ir_out: &Path,
-        source_map_out: &Path,
         package_name: &str,
         version: &Version,
+        json_out: &Path,
         lib_only: bool,
     ) -> std::result::Result<std::process::Output, Package> {
+        let wrapper = write_rustdoc_stdout_wrapper()?;
+        let system_rustdoc = system_rustdoc_path();
+
         let mut command = Command::new("cargo");
         command
             .arg("rustdoc")
@@ -129,10 +109,13 @@ impl RustPackage {
             .arg("unstable-options")
             .arg("--output-format")
             .arg("json")
-            .env("RUSTDOC", driver)
-            .env("NUDOX_IR_OUT", ir_out)
-            .env("NUDOX_SOURCE_MAP_OUT", source_map_out)
-            .env("NUDOX_WORKSPACE_ROOT", code)
+            // Unstable rustdoc JSON needs nightly (or bootstrap). Buck test
+            // runners often inherit a non-direnv PATH where rustup's default is
+            // stable; RUSTC_BOOTSTRAP unlocks -Z for the same toolchain bits.
+            .env("RUSTC_BOOTSTRAP", "1")
+            .env("RUSTDOC", &wrapper)
+            .env("NUDOX_RUSTDOC_SYSTEM", &system_rustdoc)
+            .env("NUDOX_RUSTDOC_OUT", json_out)
             .current_dir(code);
 
         let output = command.output()?;
@@ -143,14 +126,10 @@ impl RustPackage {
         let stderr = summarize_command_output(&output.stderr);
         let stdout = summarize_command_output(&output.stdout);
         Err(ProcessFailure::Failed {
-            command: if lib_only {
-                "cargo rustdoc (driver) --lib".into()
-            } else {
-                "cargo rustdoc (driver)".into()
-            },
-            kind:   ProcessFailureKind::NonZeroExit { status: output.status },
-            stdout: if stdout.is_empty() { None } else { Some(stdout) },
-            stderr: if stderr.is_empty() { None } else { Some(stderr) },
+            command: if lib_only { "cargo rustdoc --lib".into() } else { "cargo rustdoc".into() },
+            kind:    ProcessFailureKind::NonZeroExit { status: output.status },
+            stdout:  if stdout.is_empty() { None } else { Some(stdout) },
+            stderr:  if stderr.is_empty() { None } else { Some(stderr) },
         }
         .into())
     }
@@ -162,46 +141,32 @@ impl RustPackage {
         package_name: &str,
         version: &Version,
     ) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
-        let driver = effective_driver_path().ok_or_else(|| {
-            Package::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "rustdoc-driver not found; set NUDOX_RUSTDOC_DRIVER or place it on PATH",
-            ))
-        })?;
-        self.generate_ir_via_driver(code, package_name, version, &driver)
-    }
-
-    fn generate_ir_via_driver(
-        &self,
-        code: &Path,
-        package_name: &str,
-        version: &Version,
-        driver: &Path,
-    ) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
         let tmp = std::env::temp_dir();
         let safe_name = package_name.replace(['/', ':'], "_");
-        let ir_out = tmp.join(format!("nudox-{safe_name}-ir.json"));
-        let sm_out = tmp.join(format!("nudox-{safe_name}-sm.json"));
+        let json_out = tmp.join(format!("nudox-{safe_name}-rustdoc.json"));
 
-        match self.run_cargo_with_driver(code, driver, &ir_out, &sm_out, package_name, version, false) {
+        match self.run_cargo_rustdoc(code, package_name, version, &json_out, false) {
             Ok(_) => {}
             Err(Package::Process(ProcessFailure::Failed { stderr: Some(ref d), .. }))
                 if d.contains("extra arguments to `rustdoc` can only be passed to one target") =>
             {
-                self.run_cargo_with_driver(
-                    code, driver, &ir_out, &sm_out, package_name, version, true,
-                )?;
+                self.run_cargo_rustdoc(code, package_name, version, &json_out, true)?;
             }
             Err(error) => return Err(error),
         }
 
-        let entries: Vec<Entry> = serde_json::from_slice(&fs::read(&ir_out)?)?;
-        let source_map: HashMap<String, String> =
-            serde_json::from_slice(&fs::read(&sm_out)?)?;
+        let json_bytes = fs::read(&json_out)?;
+        let rustdoc_crate = parse_rustdoc_crate(&json_bytes)?;
+        drop(json_bytes);
+        debug!("rustdoc output parsed");
 
-        let ir = Ir::from_entries(entries);
-        info!(entries = ir.len(), "IR generation complete (in-process driver)");
-        Ok((ir, source_map))
+        let source_map = source_map_from_crate(&rustdoc_crate, code);
+
+        let mut parser = RustdocParser::from_doc(rustdoc_crate)?;
+        let parse_result = parser.parse()?;
+        info!(entries = parse_result.len(), "IR generation complete");
+
+        Ok((Ir::from_entries(parse_result), source_map))
     }
 
     pub fn generate_ir_with_sources(
@@ -238,6 +203,99 @@ impl RustPackage {
     }
 }
 
+// ─── rustdoc JSON capture ────────────────────────────────────────────────────
+
+/// Write a short-lived shell wrapper that cargo invokes via `RUSTDOC=…`.
+///
+/// Cargo always passes `-o target/doc` (or `--out-dir`). With
+/// `--output-format json`, rustdoc writes `{crate}.json` into that directory.
+/// The wrapper rewrites the out-dir to a private staging path and copies the
+/// single top-level `.json` into `NUDOX_RUSTDOC_OUT`.
+fn write_rustdoc_stdout_wrapper() -> std::result::Result<PathBuf, Package> {
+    let path = std::env::temp_dir().join(format!("nudox-rustdoc-wrapper-{}", std::process::id()));
+    let script = r#"#!/bin/sh
+set -eu
+out="${NUDOX_RUSTDOC_OUT:?NUDOX_RUSTDOC_OUT must be set}"
+system="${NUDOX_RUSTDOC_SYSTEM:-rustdoc}"
+stage="$(dirname "$out")/nudox-rustdoc-stage-$$"
+mkdir -p "$stage"
+cleanup() { rm -rf "$stage"; }
+trap cleanup EXIT
+
+skip=0
+args=""
+for arg in "$@"; do
+  if [ "$skip" -eq 1 ]; then
+    # Replace cargo's out-dir path with our staging directory.
+    args="$args $(printf '%q' "$stage")"
+    skip=0
+    continue
+  fi
+  if [ "$arg" = "--out-dir" ] || [ "$arg" = "-o" ] || [ "$arg" = "--output" ]; then
+    skip=1
+    args="$args $(printf '%q' "$arg")"
+    continue
+  fi
+  case "$arg" in
+    --out-dir=*|--output=*)
+      args="$args $(printf '%q' "--out-dir=$stage")"
+      continue
+      ;;
+  esac
+  args="$args $(printf '%q' "$arg")"
+done
+
+# shellcheck disable=SC2086
+eval "\"$system\" $args"
+
+# Prefer the single crate JSON at the stage root (not nested fingerprints).
+json=""
+for candidate in "$stage"/*.json; do
+  if [ -f "$candidate" ]; then
+    json="$candidate"
+    break
+  fi
+done
+if [ -z "$json" ]; then
+  echo "nudox rustdoc wrapper: no *.json under $stage" >&2
+  ls -la "$stage" >&2 || true
+  exit 1
+fi
+cp "$json" "$out"
+"#;
+    fs::write(&path, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(path)
+}
+
+fn system_rustdoc_path() -> PathBuf {
+    if let Ok(p) = std::env::var("NUDOX_RUSTDOC_SYSTEM") {
+        return PathBuf::from(p);
+    }
+    if let Ok(out) = Command::new("rustc").arg("--print").arg("sysroot").output() {
+        if out.status.success() {
+            let sysroot = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+            let candidate = sysroot.join("bin/rustdoc");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("rustdoc")
+}
+
+// ─── rustdoc output parsing ──────────────────────────────────────────────────
+
+fn parse_rustdoc_crate(bytes: &[u8]) -> std::result::Result<rustdoc_types::Crate, Package> {
+    serde_json::from_slice(bytes).map_err(Into::into)
+}
+
 // ─── cargo metadata ──────────────────────────────────────────────────────────
 
 fn cargo_metadata(code: &Path) -> std::result::Result<Metadata, Package> {
@@ -256,6 +314,50 @@ fn cargo_metadata(code: &Path) -> std::result::Result<Metadata, Package> {
     }
 
     serde_json::from_slice(&output.stdout).map_err(MetadataError::from).map_err(Into::into)
+}
+
+fn source_map_from_crate(
+    krate: &rustdoc_types::Crate,
+    workspace: &Path,
+) -> HashMap<String, String> {
+    let mut map = HashMap::default();
+    let mut file_cache: HashMap<PathBuf, Option<(Arc<str>, Vec<usize>)>> = HashMap::default();
+
+    for (id, item) in &krate.index {
+        if !matches!(&item.inner, rustdoc_types::ItemEnum::Function(_)) {
+            continue;
+        }
+        let Some(span) = &item.span else { continue };
+        let Some(summary) = krate.paths.get(id) else { continue };
+        let fq_name = summary.path.join("::");
+
+        let source_file = workspace.join(&span.filename);
+        let cached = file_cache.entry(source_file.clone()).or_insert_with(|| {
+            let source = fs::read_to_string(&source_file).ok()?;
+            let offsets = line_start_offsets(&source);
+            Some((Arc::<str>::from(source), offsets))
+        });
+        let Some((source, line_starts)) = cached.as_ref() else { continue };
+
+        let Some(&start) = line_starts.get(span.begin.0.saturating_sub(1)) else { continue };
+        let end = line_starts.get(span.end.0).copied().unwrap_or(source.len());
+        let raw: String = source[start..end].lines().collect::<Vec<_>>().join("\n");
+
+        if !raw.is_empty() {
+            map.insert(fq_name, raw);
+        }
+    }
+    map
+}
+
+fn line_start_offsets(source: &str) -> Vec<usize> {
+    let mut offsets = vec![0usize];
+    for (idx, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            offsets.push(idx + 1);
+        }
+    }
+    offsets
 }
 
 // ─── Package graph helpers ────────────────────────────────────────────────────

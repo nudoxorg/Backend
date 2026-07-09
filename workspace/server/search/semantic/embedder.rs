@@ -44,7 +44,7 @@ impl<M: EmbeddingModel> HttpEmbedder<M> {
 			"input": texts,
 		});
 		let body = serde_json::to_vec(&payload)
-			.map_err(|error| EmbedRejectionReason::Serialization(error).into())?;
+			.map_err(|error| EmbedError::from(EmbedRejectionReason::Serialization(error)))?;
 
 		let mut request = self
 			.client
@@ -70,17 +70,17 @@ impl<M: EmbeddingModel> HttpEmbedder<M> {
 		if !status.is_success() {
 			let message = response.text().await.unwrap_or_default();
 			let body: String = message.chars().take(512).collect();
-			return Err(EmbedRejectionReason::HttpStatus { status, body }.into());
+			return Err(EmbedError::from(EmbedRejectionReason::HttpStatus { status, body }));
 		}
 
 		let bytes = response.bytes().await.map_err(EmbedError::Transport)?;
 		let decoded: WireResponse = serde_json::from_slice(&bytes)
-			.map_err(|error| EmbedRejectionReason::MalformedResponse(error).into())?;
+			.map_err(|error| EmbedError::from(EmbedRejectionReason::MalformedResponse(error)))?;
 		if decoded.data.len() != texts.len() {
-			return Err(EmbedRejectionReason::BatchSizeMismatch {
+			return Err(EmbedError::from(EmbedRejectionReason::BatchSizeMismatch {
 				expected: texts.len(),
 				received: decoded.data.len(),
-			}.into());
+			}));
 		}
 		decoded
 			.data

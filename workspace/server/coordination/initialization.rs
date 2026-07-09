@@ -77,6 +77,7 @@ fn provisional_toolchain(ecosystem: Language) -> Toolchain {
 		Language::Python => Toolchain::Python { interpreter: semver::Version::new(3, 13, 0) },
 		Language::Go => Toolchain::Go { compiler: semver::Version::new(1, 23, 0) },
 		Language::Java => Toolchain::Java { compiler: semver::Version::new(23, 0, 0) },
+		Language::Nix => Toolchain::Nix { evaluator: semver::Version::new(0, 1, 0) },
 	}
 }
 

@@ -19,9 +19,7 @@ use tracing::{instrument, warn};
 use crate::languages::vcs::{
 	find_commit_with_extractor, GitError, ManifestParseError, TreeError,
 };
-pub use crate::languages::vcs::{
-	GitError, ManifestParseError, materialize_commit, open_or_clone_repository, TreeError,
-};
+pub use crate::languages::vcs::{materialize_commit, open_or_clone_repository};
 
 /// Walk newest→oldest. First commit whose Cargo.toml has `package_name` at
 /// `target_version` is the latest commit for that version.
@@ -49,7 +47,7 @@ pub fn extract_package_version(
 	repo: &gix::Repository,
 	tree: &gix::Tree,
 	package_name: &str,
-) -> Result<Option<Version>, GitError> {
+) -> std::result::Result<Option<Version>, GitError> {
 	let Some(entry) = tree
 		.lookup_entry_by_path("Cargo.toml")
 		.map_err(|source| TreeError::LookupEntry { path: "Cargo.toml".into(), source })?
@@ -123,7 +121,7 @@ fn read_toml(
 	repo: &gix::Repository,
 	tree: &gix::Tree,
 	path: &str,
-) -> Result<toml::Value, GitError> {
+) -> std::result::Result<toml::Value, GitError> {
 	let Some(entry) = tree
 		.lookup_entry_by_path(path)
 		.map_err(|source| TreeError::LookupEntry { path: path.into(), source })?
@@ -138,8 +136,9 @@ fn read_toml(
 	let content = std::str::from_utf8(&blob.data)
 		.map_err(|source| ManifestParseError::Utf8 { path: path.into(), source })?;
 
-	toml::from_str(content)
-		.map_err(|source| ManifestParseError::Toml { path: path.into(), source })?
+	let manifest: toml::Value = toml::from_str(content)
+		.map_err(|source| ManifestParseError::Toml { path: path.into(), source })?;
+	Ok(manifest)
 }
 
 /// Expand `[workspace] members` patterns (including globs) against the
@@ -150,7 +149,7 @@ pub fn resolve_workspace_members(
 	tree: &gix::Tree,
 	members: &[String],
 	excludes: &[String],
-) -> Result<Vec<String>, GitError> {
+) -> std::result::Result<Vec<String>, GitError> {
 	let mut resolved = Vec::new();
 	let mut seen = HashSet::new();
 	let candidates = collect_manifest_directories(repo, tree, "", &mut Vec::new())?;
@@ -189,7 +188,7 @@ pub fn check_package_version(
 	workspace_manifest: Option<&toml::Value>,
 	package_name: &str,
 	manifest_path: &str,
-) -> Result<Option<Version>, GitError> {
+) -> std::result::Result<Option<Version>, GitError> {
 	let Some(pkg) = manifest.get("package") else {
 		return Ok(None);
 	};
@@ -249,7 +248,7 @@ fn collect_manifest_directories(
 	tree: &gix::Tree,
 	prefix: &str,
 	out: &mut Vec<String>,
-) -> Result<Vec<String>, GitError> {
+) -> std::result::Result<Vec<String>, GitError> {
 	for entry in tree.iter() {
 		let entry = entry.map_err(|source| TreeError::Traverse { source })?;
 		let name = entry.filename().to_string();

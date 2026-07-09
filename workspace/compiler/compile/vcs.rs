@@ -135,11 +135,17 @@ pub enum CheckoutError {
 
 	/// Deriving checkout options from the repository config failed.
 	#[error("failed to obtain checkout options: {source}")]
-	CheckoutOptions(#[source] gix::config::checkout_options::Error),
+	CheckoutOptions {
+		#[source]
+		source: gix::config::checkout_options::Error,
+	},
 
 	/// Writing the tree contents to the destination directory failed.
 	#[error("failed to materialize worktree: {source}")]
-	Materialize(#[source] gix_worktree_state::checkout::Error),
+	Materialize {
+		#[source]
+		source: gix_worktree_state::checkout::Error,
+	},
 
 	/// Converting the object database into its `Arc`-backed form failed.
 	#[error("failed to open Arc-backed object database: {source}")]
@@ -315,11 +321,11 @@ pub fn clone_repository(out_path: &Path, remote: &Url) -> Result<Repository, Git
 
 	let (mut checkout_handle, _) = fetch_handle
 		.fetch_then_checkout(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(FetchError::FetchCheckout)?;
+		.map_err(|source| FetchError::FetchCheckout { source })?;
 
 	let (repo, _) = checkout_handle
 		.main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED)
-		.map_err(CheckoutError::WorktreeCheckout)?;
+		.map_err(|source| CheckoutError::WorktreeCheckout { source })?;
 
 	Ok(repo)
 }
@@ -330,7 +336,7 @@ fn repository_matches_remote(repo: &Repository, remote: &Url) -> Result<bool, Gi
 	let fetch_remote = repo
 		.find_fetch_remote(Some("origin".as_bytes().as_bstr()))
 		.or_else(|_| repo.find_fetch_remote(None))
-		.map_err(FetchError::FindRemote)?;
+		.map_err(|source| FetchError::FindRemote { source })?;
 	let Some(configured_url) = fetch_remote.url(remote::Direction::Fetch) else {
 		return Ok(false);
 	};
@@ -344,13 +350,13 @@ fn repository_matches_remote(repo: &Repository, remote: &Url) -> Result<bool, Gi
 pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Result<(), GitError> {
 	let remote = repo
 		.find_fetch_remote(remote_name.map(|name| name.as_bytes().as_bstr()))
-		.map_err(FetchError::FindRemote)?;
+		.map_err(|source| FetchError::FindRemote { source })?;
 
 	let fetch_result: Result<(), GitError> = (|| {
-		let connection = remote.connect(remote::Direction::Fetch).map_err(FetchError::Connect)?;
+		let connection = remote.connect(remote::Direction::Fetch).map_err(|source| FetchError::Connect { source })?;
 		let prepare = connection
 			.prepare_fetch(Discard, remote::ref_map::Options::default())
-			.map_err(FetchError::PrepareFetch)?;
+			.map_err(|source| FetchError::PrepareFetch { source })?;
 
 		prepare
 			.with_write_packed_refs_only(true)
@@ -358,7 +364,7 @@ pub fn fetch_remote_updates(repo: &Repository, remote_name: Option<&str>) -> Res
 				action: "fetch".to_owned(),
 			})
 			.receive(Discard, &gix::interrupt::IS_INTERRUPTED)
-			.map_err(FetchError::ReceiveFetch)?;
+			.map_err(|source| FetchError::ReceiveFetch { source })?;
 
 		Ok(())
 	})();
@@ -430,7 +436,7 @@ pub fn materialize_commit(
 		.map_err(|source| CheckoutError::IndexFromTree { tree: tree_id.to_string(), source })?;
 	let mut options = repo
 		.checkout_options(gix_worktree::stack::state::attributes::Source::IdMapping)
-		.map_err(CheckoutError::CheckoutOptions)?;
+		.map_err(|source| CheckoutError::CheckoutOptions { source })?;
 	options.destination_is_initially_empty = true;
 	options.overwrite_existing = true;
 
@@ -449,7 +455,7 @@ pub fn materialize_commit(
 		&gix::interrupt::IS_INTERRUPTED,
 		options,
 	)
-	.map_err(CheckoutError::Materialize)?;
+	.map_err(|source| CheckoutError::Materialize { source })?;
 
 	Ok(())
 }
@@ -470,21 +476,21 @@ pub(crate) fn version_search_start_points(
 	} else {
 		let head = repo
 			.head()
-			.map_err(ReferenceError::Head)?
+			.map_err(|source| ReferenceError::Head { source })?
 			.peel_to_object()
-			.map_err(ReferenceError::ObjectLookup)?
+			.map_err(|source| ReferenceError::ObjectLookup { source })?
 			.id()
 			.detach();
 		seen.insert(head);
 		starts.push(head);
 	}
 
-	let refs = repo.references().map_err(ReferenceError::ReferencesOpen)?;
+	let refs = repo.references().map_err(|source| ReferenceError::ReferencesOpen { source })?;
 	for reference in refs
 		.all()
-		.map_err(ReferenceError::ReferencesAll)?
+		.map_err(|source| ReferenceError::ReferencesAll { source })?
 		.peeled()
-		.map_err(ReferenceError::ReferencesPeeled)?
+		.map_err(|source| ReferenceError::ReferencesPeeled { source })?
 	{
 		let Ok(mut reference) = reference else {
 			continue;

@@ -311,6 +311,7 @@ impl IngestError {
 			IngestError::Malformed(_) => FailureKind::Malformed,
 			IngestError::Io(_) => FailureKind::Transient,
 			IngestError::Blob(_) => FailureKind::Internal,
+			IngestError::DecompressorInit(_) => FailureKind::Internal,
 		}
 	}
 }
@@ -408,10 +409,6 @@ pub enum QueueError {
 	#[error("queue complete failed")]
 	CompleteFailed { job: JobIdForError, #[source] source: sqlx::Error },
 }
-
-/// Lightweight id for error carrying without pulling full Job type (avoids cycles).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-
 
 impl Retryable for QueueError {
 	fn is_retryable(&self) -> bool {

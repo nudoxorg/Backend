@@ -35,16 +35,18 @@ pub enum Language {
     Java,
     TypeScript,
     Python,
+    Nix,
 }
 
 impl Language {
     /// Every supported target, in a stable order (handy for demos and tests).
-    pub const ALL: [Language; 5] = [
+    pub const ALL: [Language; 6] = [
         Language::Rust,
         Language::Go,
         Language::Java,
         Language::TypeScript,
         Language::Python,
+        Language::Nix,
     ];
 
     /// A human label for the language.
@@ -55,6 +57,7 @@ impl Language {
             Language::Java => "Java",
             Language::TypeScript => "TypeScript",
             Language::Python => "Python",
+            Language::Nix => "Nix",
         }
     }
 }
@@ -131,6 +134,7 @@ impl RenderCtx {
             Language::Java => &emit::java::Java,
             Language::TypeScript => &emit::typescript::TypeScript,
             Language::Python => &emit::python::Python,
+            Language::Nix => &emit::nix::Nix,
         }
     }
 }
@@ -224,6 +228,13 @@ fn alias_doc(be: &dyn Backend, name: &str, ty: &Type, cx: &RenderCtx) -> Rendere
                 + txt(" = ").annotate(Comment)
                 + be.ty(ty, cx)
         }
+        Language::Nix => {
+            // Nix has no type aliases; document as a `# type` comment.
+            txt("# type ").annotate(Comment)
+                + ident(name)
+                + txt(" = ").annotate(Comment)
+                + be.ty(ty, cx)
+        }
     }
 }
 
@@ -241,6 +252,12 @@ fn alias_doc_from_rendered(name: &str, rendered: Rendered, cx: &RenderCtx) -> Re
         Language::Go => kw("type") + sp() + ident(name) + sp() + rendered,
         Language::Java => {
             txt("// type ").annotate(Annotation::Comment)
+                + ident(name)
+                + txt(" = ").annotate(Annotation::Comment)
+                + rendered
+        }
+        Language::Nix => {
+            txt("# type ").annotate(Annotation::Comment)
                 + ident(name)
                 + txt(" = ").annotate(Annotation::Comment)
                 + rendered

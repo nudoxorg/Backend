@@ -5,7 +5,7 @@ use ir::{function::{Attribute as FnAttribute, Function}, parameter::{LiteralPara
 use rustc_hash::FxHashMap as HashMap;
 use rustdoc_types::Id;
 
-use crate::{Result, context::ParseContext, empty_to_none, error::{ItemError, Parse}};
+use super::{Result, context::ParseContext, empty_to_none, error::{ItemError, Parse}};
 
 impl ParseContext {
 	/// The receiver kind implied by a function's first parameter.

@@ -7,7 +7,7 @@ use ir::{entry::NudoxPath, kind::Entry};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use rustdoc_types::{Crate, Id, Item, ItemEnum};
 
-use crate::{Result, error::{ItemError, Parse}};
+use super::{Result, error::{ItemError, Parse}};
 
 pub(crate) struct ParseContext {
 	pub(crate) krate:         Crate,
@@ -213,10 +213,41 @@ impl ParseContext {
 	pub(crate) fn get_path(&self, id: &Id) -> Result<Vec<String>> { self.get_primary_path(id) }
 
 	pub(crate) fn nudox_path_for_rustdoc_path(&self, path: &rustdoc_types::Path) -> NudoxPath {
+		// Local items we already path-mapped during the module walk.
 		if let Ok(local_path) = self.get_primary_path(&path.id) {
 			return NudoxPath::Local(std::path::PathBuf::from(local_path.join("::")));
 		}
 
+		// Prefer rustdoc's `paths` table: it carries the defining crate id and
+		// the full path segments. The display `path.path` string is only the
+		// *use-site* spelling (often a bare name like `Marker` or `Send`),
+		// which would otherwise mint `External { dependency: "Marker", .. }`.
+		if let Some(summary) = self.krate.paths.get(&path.id) {
+			if summary.crate_id == 0 {
+				// Same crate, but not in our walk (e.g. a private item we
+				// never queued). Still a local coordinate.
+				return NudoxPath::Local(std::path::PathBuf::from(summary.path.join("::")));
+			}
+			let dependency = self
+				.krate
+				.external_crates
+				.get(&summary.crate_id)
+				.map(|c| c.name.clone())
+				.or_else(|| summary.path.first().cloned())
+				.unwrap_or_default();
+			// Drop a leading segment that restates the crate name so the
+			// relative path is crate-relative (`helper::Marker` → `Marker`).
+			let relative = match summary.path.as_slice() {
+				[head, rest @ ..] if *head == dependency => rest.join("::"),
+				other => other.join("::"),
+			};
+			return NudoxPath::External {
+				dependency,
+				path: std::path::PathBuf::from(relative),
+			};
+		}
+
+		// Last resort: parse the use-site path string.
 		let mut segments = path.path.split("::");
 		let Some(dependency) = segments.next() else {
 			return NudoxPath::Local(std::path::PathBuf::new());

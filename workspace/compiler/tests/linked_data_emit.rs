@@ -145,7 +145,9 @@ fn entry_emits_entry_and_kind_documents() {
 /// Entry documents carry protocol references as resolved IRIs.
 ///
 /// Assert: implemented protocols are emitted as resolved symbol IRIs
-///   (`Symbol/{lang}/{pkg}/{fq}`), not raw `NudoxPath`s.
+///   (`Symbol/{lang}%2F{pkg}%2F{fq}` — EntityIDFor requires a single id
+///   segment, so the logical `Symbol/{lang}/{pkg}/{fq}` hierarchy is
+///   `%2F`-encoded; see `graph::link::symbol_iri`), not raw `NudoxPath`s.
 #[test]
 fn entry_document_resolves_member_uris() {
     let index = index_of(vec![
@@ -163,9 +165,10 @@ fn entry_document_resolves_member_uris() {
         .expect("a Widget document with a populated implements edge");
 
     let implements = widget["implements"].to_string();
+    // path `pkg/Greeter` → fq `pkg::Greeter` → Symbol/rust%2Fpkg%2Fpkg::Greeter
     assert!(
-        implements.contains("Symbol/rust/pkg/Greeter"),
-        "implements must hold the resolved IRI, got {implements}"
+        implements.contains("Symbol/rust%2Fpkg%2Fpkg::Greeter"),
+        "implements must hold the resolved (encoded) IRI, got {implements}"
     );
 }
 

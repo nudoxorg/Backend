@@ -1,14 +1,14 @@
-load("//build:rust.bzl", "deps", "rust_crate")
+load("//build:rust.bzl", "crate", "deps", "rust_crate")
 
 rust_crate(
     name = "ir",
     features = ["facet", "serde"],
-    deps = deps(crates = [
-        "facet",
-        "serde",
-        "yoke",
-        "arborium_tree_sitter",
-        "rustc_hash",
-        "thiserror",
+    deps = deps([
+        crate("facet"),
+        crate("serde"),
+        crate("yoke"),
+        crate("arborium_tree_sitter"),
+        crate("rustc_hash"),
+        crate("thiserror"),
     ]),
 )

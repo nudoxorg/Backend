@@ -292,7 +292,7 @@ pub fn parse_requested(requested: &str) -> Result<VersionRequest, MavenVersionEr
 					}
 				})
 			})
-			.collect::<Result<Vec<u64>>>()?;
+			.collect::<std::result::Result<Vec<_>, MavenVersionError>>()?;
 		return Ok(VersionRequest::Prefix(nums));
 	}
 

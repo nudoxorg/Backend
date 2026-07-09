@@ -60,6 +60,10 @@ pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
 			let index = languages::java::package::lower_package(&input.root)?;
 			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
 		}
+		Language::Nix => {
+			let index = languages::nix::lower_package(&input.root)?;
+			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
+		}
 	}
 }
 

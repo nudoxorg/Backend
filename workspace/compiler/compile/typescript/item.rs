@@ -334,7 +334,7 @@ impl TsDocParser {
 			}
 		}
 
-		Err(TsDeclarationError::SymbolNotFound { module: module_name.to_string(), symbol: format!("{}::{}", parent_name, member_name) })
+		Err(Parse::Declaration(TsDeclarationError::SymbolNotFound { module: module_name.to_string(), symbol: format!("{}::{}", parent_name, member_name) }))
 	}
 
 	pub(super) fn method_entry(

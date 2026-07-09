@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 
 use ir::entry::Index;
 use serde_json::Value;
-use terminusdb_schema::ToTDBInstance;
+use terminusdb_schema::{ToJson, ToTDBInstance};
 
 use crate::error::{EmitLinkedDataError, GenerateError};
 use crate::graph::from_ir::project;

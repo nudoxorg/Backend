@@ -862,7 +862,13 @@ pub fn project(index: &Index, ctx: PackageCtx) -> GraphCorpus {
         package: TdbLazy::new_id_unchecked(&package_iri(&ctx.language, &ctx.package)),
         declares: symbols
             .iter()
-            .map(|s| TdbLazy::new_id_unchecked(&format!("Symbol/{}", s.uri)))
+            // Re-encode the logical uri (`lang/pkg/fq`) for the EntityID path.
+            .map(|s| {
+                TdbLazy::new_id_unchecked(&format!(
+                    "Symbol/{}",
+                    s.uri.replace('/', "%2F")
+                ))
+            })
             .collect(),
     });
 
@@ -1012,15 +1018,14 @@ fn project_entry(
         iris.iter().map(|i| linker.lazy(i)).collect()
     };
 
-    let uri = iri.trim_start_matches("Symbol/").to_string();
-    let path: Vec<String> = uri
-        .splitn(3, '/')
-        .nth(2)
-        .unwrap_or(&uri)
-        .split("::")
-        .map(str::to_string)
-        .collect();
-    let package = uri.split('/').nth(1).unwrap_or_default().to_string();
+    // IRI is `Symbol/{lang}%2F{package}%2F{fq}` — recover the hierarchy.
+    let encoded = iri.trim_start_matches("Symbol/");
+    let parts = super::link::decode_id_segment(encoded);
+    let package = parts.get(1).cloned().unwrap_or_default();
+    let fq = parts.get(2).cloned().unwrap_or_else(|| encoded.to_string());
+    let path: Vec<String> = fq.split("::").map(str::to_string).collect();
+    // Cross-store coordinate keeps real `/` separators (not the EntityID encoding).
+    let uri = parts.join("/");
     let aliases = entry
         .aliases()
         .map(|set| set.iter().map(|segs| segs.join("::")).collect())

@@ -38,7 +38,7 @@ use registry::coordination::OutboxSeq;
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
-use crate::error::{ServerError, ServerResult};
+use crate::error::{BadRequestReason, ServerError, ServerResult};
 
 use super::DerivedStore;
 
@@ -217,9 +217,7 @@ impl<M: EmbeddingModel> Server<M> {
 		// different one would re-materialize a mixed read plane.
 		let manifest = self.current_manifest(package).await?;
 		if ContentHash::of_bytes(&manifest.identity_bytes()) != recorded {
-			return Err(ServerError::BadRequest(format!(
-				"snapshot mismatch for {package}: the blob store holds a different generation"
-			)));
+			return Err(ServerError::BadRequest(BadRequestReason::SnapshotMismatch { package }));
 		}
 
 		let sinks: Vec<DerivedStore> =
@@ -239,9 +237,7 @@ impl<M: EmbeddingModel> Server<M> {
 		let state =
 			self.base().global_store.get_state(package).await.map_err(RegistryError::from)?;
 		let ResolutionState::Stored { hash } = state else {
-			return Err(ServerError::BadRequest(format!(
-				"package {package} has no recorded snapshot"
-			)));
+			return Err(ServerError::BadRequest(BadRequestReason::NoRecordedSnapshot { package }));
 		};
 		Ok(hash)
 	}

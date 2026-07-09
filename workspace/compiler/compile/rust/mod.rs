@@ -1,18 +1,17 @@
-//! Lowering Rust into the surface IR via the `rustdoc-driver` in-process path.
+//! Lowering Rust into the surface IR via `cargo rustdoc`'s JSON output.
 //!
-//! Resolves documented local/workspace packages, runs `cargo rustdoc` with
-//! `RUSTDOC=<rustdoc-driver>`, and reads back the IR JSON the driver writes.
+//! Resolves documented local/workspace packages, captures rustdoc JSON from
+//! stdout (no on-disk `.json` file), and produces an `ir::Index` plus a
+//! fq-name → source-text map for downstream tree-sitter extraction.
 
-pub use rust_lowering::{context, error, function, generics, item, types};
-pub use rust_lowering::{empty_to_none, Result};
-pub use rust_lowering::error::{
-    GenericError, ImplError, ItemError, MetadataError, Package, Parse, ProcessFailure,
-    ProcessFailureKind, SignatureError, TypeResolutionError,
-};
-pub use self::package::RustPackage;
-
+pub mod context;
+pub mod error;
+pub mod function;
+pub mod generics;
+pub mod item;
 pub mod package;
 pub mod traversal;
+pub mod types;
 
 use std::path::Path;
 
@@ -20,6 +19,28 @@ use ir::entry::Index;
 use rustc_hash::FxHashMap as HashMap;
 use semver::Version;
 
+pub use self::{
+    error::{
+        GenericError, ImplError, ItemError, MetadataError, Package, Parse, ProcessFailure,
+        ProcessFailureKind, SignatureError, TypeResolutionError,
+    },
+    package::RustPackage,
+};
+
+pub type Result<T> = std::result::Result<T, Parse>;
+
+/// Convert an empty vec to `None`, wrapping a non-empty vec in `Some`.
+pub(crate) fn empty_to_none<T>(v: Vec<T>) -> Option<Vec<T>> {
+    if v.is_empty() { None } else { Some(v) }
+}
+
+/// Lower a materialized Rust package/workspace at `root` into the indexed API
+/// surface plus the fq-name → source-text map for downstream tree-sitter
+/// extraction.
+///
+/// `name` is the root package to document; `document_private` runs the
+/// `--document-private-items` pass and pulls the workspace's local library
+/// dependencies into the surface (the direct-repo behaviour).
 pub fn generate_ir(
     root: &Path,
     name: &str,

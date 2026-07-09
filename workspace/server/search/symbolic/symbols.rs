@@ -87,9 +87,11 @@ fn decode_cursor(
 		.as_deref()
 		.map(|token| {
 			Cursor::decode(token)
-				.map_err(|source| BadRequestReason::InvalidCursor {
-					token: token.to_owned(),
-					source,
+				.map_err(|source| {
+					ServerError::from(BadRequestReason::InvalidCursor {
+						token: token.to_owned(),
+						source,
+					})
 				})
 		})
 		.transpose()

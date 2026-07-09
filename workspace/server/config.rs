@@ -373,11 +373,12 @@ pub enum ConfigValidationError {
 	/// Terminus organization name failed validation (carries the rich GraphNameError
 	/// with position, length, char details etc.).
 	#[error("invalid terminus organization")]
-	InvalidTerminusOrganization(#[from] runtime::graph::GraphNameError),
+	InvalidTerminusOrganization(runtime::graph::GraphNameError),
 
 	/// Terminus database name failed validation.
 	#[error("invalid terminus database")]
-	InvalidTerminusDatabase(#[from] runtime::graph::GraphNameError),
+	// Same source type as organization; no #[from] so From is not ambiguous.
+	InvalidTerminusDatabase(runtime::graph::GraphNameError),
 
 	/// A Qdrant collection name failed validation (carries the rich CollectionNameError).
 	#[error("invalid qdrant collection name")]

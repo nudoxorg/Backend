@@ -105,6 +105,7 @@ fn default_origin(ecosystem: Language) -> RegistryOrigin {
 		Language::Rust => RegistryOrigin::CratesIo,
 		Language::Typescript => RegistryOrigin::NpmPublic,
 		Language::Python => RegistryOrigin::PyPi,
+		Language::Nix => RegistryOrigin::FlakeHub,
 		Language::Go | Language::Java => RegistryOrigin::Custom {
 			name: SmolStr::new_static("custom"),
 			url: Url::parse("https://example.invalid").expect("static url"),
@@ -146,7 +147,7 @@ fn resolve_custom_origin(name: &str) -> Result<RegistryOrigin, ServerError> {
 fn bad_request(error: impl std::fmt::Display) -> ServerError {
 	// Fallback only; prefer typed.
 	crate::error::BadRequestReason::MalformedQuery(
-		crate::search::query::QueryError::Malformed {
+		crate::error::QueryError::Malformed {
 			detail: error.to_string(),
 			query: String::new(),
 		},

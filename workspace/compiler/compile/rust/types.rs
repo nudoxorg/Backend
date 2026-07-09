@@ -4,7 +4,7 @@
 use ir::{generics::{GenericArg, Term, TraitRef, TypeExpr}, kind::Visibility, primitives::{Primitive, Width}, ty::{DynTrait, PolyTrait, QualifiedPath, Type, TypeReference}};
 use rustdoc_types::{Id, ItemEnum};
 
-use crate::{Result, context::ParseContext, error::{ItemError, Parse, TypeResolutionError}};
+use super::{Result, context::ParseContext, error::{ItemError, Parse, TypeResolutionError}};
 
 impl ParseContext {
 	/// Map rustdoc's visibility onto the IR's.

@@ -37,6 +37,7 @@ impl PackageName {
             Language::Python => canonicalize_pep503(&original),
             Language::Go => canonicalize_go_module(&original),
             Language::Java => canonicalize_maven_artifact(&original),
+            Language::Nix => canonicalize_nix_flake(&original),
         }
         .ok_or_else(|| {
             // Compute the concrete invalid chars for richer error (no raw stored in error).
@@ -66,6 +67,7 @@ const fn length_limit(ecosystem: Language) -> usize {
         Language::Rust => 64,
         Language::Typescript | Language::Python => 214,
         Language::Go | Language::Java => 256, // generous for module/artifact
+        Language::Nix => 256,                 // FlakeHub `org/project` slugs
     }
 }
 
@@ -80,6 +82,8 @@ fn is_valid_char_for(ecosystem: Language, c: char) -> bool {
         Language::Go | Language::Java => {
             c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')
         }
+        // FlakeHub `org/project`: GitHub-style slugs on both sides of the slash.
+        Language::Nix => c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'),
     }
 }
 
@@ -144,5 +148,22 @@ fn canonicalize_maven_artifact(raw: &str) -> Option<String> {
     let valid = raw.starts_with(|c: char| c.is_ascii_alphanumeric())
         && raw.ends_with(|c: char| c.is_ascii_alphanumeric())
         && raw.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    valid.then(|| raw.to_ascii_lowercase())
+}
+
+/// Nix/FlakeHub: `org/project`, GitHub-style slugs on each side of a single
+/// slash. Case is folded (FlakeHub org/project are case-insensitive). A bare
+/// name (no slash) is also accepted for indirect/registry flake refs.
+fn canonicalize_nix_flake(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.starts_with('/') || raw.ends_with('/') || raw.contains("..") {
+        return None;
+    }
+    if raw.matches('/').count() > 1 {
+        return None;
+    }
+    let valid = raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+        && raw.starts_with(|c: char| c.is_ascii_alphanumeric());
     valid.then(|| raw.to_ascii_lowercase())
 }

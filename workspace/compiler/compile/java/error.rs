@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+#[derive(Debug, Error)]
 pub enum JavaError {
-    #[error("failed to lower Java source to IR")]
+    #[error(transparent)]
     Package(#[from] JavaPackageError),
 }
 

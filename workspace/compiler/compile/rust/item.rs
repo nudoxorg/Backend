@@ -5,7 +5,7 @@ use ir::{entry::NudoxPath, function::Function, generics::ConstExpr, kind::Entry,
 use rustc_hash::FxHashSet as HashSet;
 use rustdoc_types::{Id, ItemEnum};
 
-use crate::{Result, context::{ParseContext, ParseState}, empty_to_none, error::{ImplError, ItemError, Parse}};
+use super::{Result, context::{ParseContext, ParseState}, empty_to_none, error::{ImplError, ItemError, Parse}};
 
 fn item_enum_kind_name(inner: &ItemEnum) -> &'static str {
 	match inner {

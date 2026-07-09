@@ -27,7 +27,7 @@ use registry::queue::Job;
 use registry::{RegistryError, error::ResolveError};
 use runtime::vector::EmbeddingModel;
 
-use crate::error::{ServerError, ServerResult};
+use crate::error::{BadRequestReason, InternalError, ServerError, ServerResult};
 use crate::{Server, SourceStores};
 
 /// How long a claimed job's lease lasts — comfortably above the job deadline so
@@ -255,9 +255,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 		.await
 		{
 			Ok(outcome) => outcome,
-			Err(_) => Err(ServerError::Internal(format!(
-				"indexing exceeded the {JOB_DEADLINE:?} deadline"
-			))),
+			Err(_) => Err(ServerError::Internal(InternalError::IndexingDeadlineExceeded)),
 		};
 
 		match outcome {
@@ -318,15 +316,15 @@ impl<M: EmbeddingModel> Indexer<M> {
 
 		if let Some(length) = response.content_length() {
 			if length > ExtractionLimits::DEFAULT.max_total_bytes {
-				return Err(ServerError::BadRequest(format!(
-					"archive is {length} bytes; the ceiling is {}",
-					ExtractionLimits::DEFAULT.max_total_bytes
-				)));
+				return Err(ServerError::BadRequest(BadRequestReason::ArchiveTooLarge {
+					actual: length,
+					limit: ExtractionLimits::DEFAULT.max_total_bytes,
+				}));
 			}
 		}
 		let archive = response.bytes().await.map_err(lookup_failure)?;
 		if archive.len() as u64 > ExtractionLimits::DEFAULT.max_total_bytes {
-			return Err(ServerError::BadRequest("archive exceeded the download ceiling".into()));
+			return Err(ServerError::BadRequest(BadRequestReason::ArchiveExceedsLimit));
 		}
 		Ok(archive)
 	}
@@ -348,13 +346,19 @@ impl<M: EmbeddingModel> Indexer<M> {
 				format!("https://registry.npmjs.org/{name}/-/{leaf}-{version}.tgz")
 			}
 			RegistryOrigin::PyPi => return self.pypi_sdist_url(name, &version).await,
+			RegistryOrigin::FlakeHub => {
+				// FlakeHub's tarball endpoint 307-redirects to a pinned,
+				// CloudFront-signed URL; the Nix producer's `traversal` module
+				// follows the chain. `name` is the `org/project` slug.
+				format!("https://api.flakehub.com/f/{name}/{version}.tar.gz")
+			}
 			RegistryOrigin::Custom { url, .. } => {
 				// Convention for self-hosted origins: a flat archives/ namespace.
 				format!("{}archives/{name}/{name}-{version}.tar.gz", ensure_trailing_slash(url))
 			}
 		};
 		url::Url::parse(&raw)
-			.map_err(|error| ServerError::Internal(format!("malformed archive url {raw:?}: {error}")))
+			.map_err(|_| ServerError::Internal(InternalError::MalformedArchiveUrl { raw }))
 	}
 
 	/// Resolve a PyPI release to its sdist URL via the JSON metadata API (sdist
@@ -383,8 +387,11 @@ impl<M: EmbeddingModel> Indexer<M> {
 			.bytes()
 			.await
 			.map_err(lookup_failure)?;
-		let release: Release = serde_json::from_slice(&bytes).map_err(|error| {
-			ServerError::Internal(format!("malformed pypi metadata for {name} {version}: {error}"))
+		let release: Release = serde_json::from_slice(&bytes).map_err(|_| {
+			ServerError::Internal(InternalError::MalformedPypiMetadata {
+				name: name.to_owned(),
+				version: version.to_owned(),
+			})
 		})?;
 		let sdist = release
 			.urls
@@ -397,7 +404,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 				)
 			})?;
 		url::Url::parse(&sdist.url)
-			.map_err(|error| ServerError::Internal(format!("malformed sdist url: {error}")))
+			.map_err(|_| ServerError::Internal(InternalError::MalformedSdistUrl))
 	}
 }
 
@@ -411,7 +418,7 @@ pub fn classify_failure(error: &ServerError) -> FailureKind {
 			FailureKind::SourceUnavailable
 		}
 		ServerError::BadRequest(_) => FailureKind::Malformed,
-		ServerError::Internal(message) if message.contains("deadline") => FailureKind::Timeout,
+		ServerError::Internal(InternalError::IndexingDeadlineExceeded) => FailureKind::Timeout,
 		_ if error.is_retryable() => FailureKind::Transient,
 		_ => FailureKind::Internal,
 	}
@@ -436,7 +443,7 @@ fn empty_intermediate_representation() -> ServerResult<bytes::Bytes> {
 	};
 	serde_json::to_vec(&index)
 		.map(bytes::Bytes::from)
-		.map_err(|error| ServerError::Internal(format!("could not serialize empty IR: {error}")))
+		.map_err(|source| ServerError::Internal(InternalError::EmptyIrSerializationFailed { source }))
 }
 
 /// A registry lookup/transport fault, carried with its typed source.

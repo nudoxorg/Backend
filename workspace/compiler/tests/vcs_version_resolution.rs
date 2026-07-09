@@ -9,6 +9,7 @@
 /// Arrange: a git fixture whose HEAD `Cargo.toml` is `mycrate@1.2.0`.
 /// Act: `rust::traversal::find_commit_for_version(&repo, "1.2.0")`.
 /// Assert: returns the HEAD commit.
+#[ignore = "TDD stub — not yet implemented"]
 #[test]
 fn finds_rust_commit_for_version_at_head() {
     todo!("build a git fixture and assert the resolved commit");
@@ -18,6 +19,7 @@ fn finds_rust_commit_for_version_at_head() {
 ///
 /// Arrange: the target version is only reachable on a non-HEAD branch.
 /// Assert: it is still found (walks every peeled ref tip).
+#[ignore = "TDD stub — not yet implemented"]
 #[test]
 fn scans_all_refs_not_just_head_history() {
     todo!("assert a version on a side branch is found");
@@ -27,6 +29,7 @@ fn scans_all_refs_not_just_head_history() {
 ///
 /// Assert: a member crate inheriting the workspace version resolves to the
 ///   commit where the workspace root declared it.
+#[ignore = "TDD stub — not yet implemented"]
 #[test]
 fn resolves_workspace_inherited_versions() {
     todo!("assert workspace-inherited version resolution");
@@ -36,6 +39,7 @@ fn resolves_workspace_inherited_versions() {
 ///
 /// Act: `typescript::traversal::find_commit_for_version(&repo, "1.2.3")`.
 /// Assert: returns the commit whose `package.json` declares `1.2.3`.
+#[ignore = "TDD stub — not yet implemented"]
 #[test]
 fn finds_typescript_commit_for_version() {
     todo!("assert package.json-based TS commit resolution");
@@ -45,6 +49,7 @@ fn finds_typescript_commit_for_version() {
 ///
 /// Assert: `materialize_commit(commit, dest)` populates `dest` with the source
 ///   tree at that commit.
+#[ignore = "TDD stub — not yet implemented"]
 #[test]
 fn materializes_commit_tree_into_workspace() {
     todo!("assert the materialized worktree contents");
@@ -54,6 +59,7 @@ fn materializes_commit_tree_into_workspace() {
 ///
 /// Assert: `open_or_clone_repository` wipes + re-clones when the cached remote
 ///   URL no longer matches the requested source.
+#[ignore = "TDD stub — not yet implemented"]
 #[test]
 fn reclones_when_cached_remote_differs() {
     todo!("assert stale cached clones are replaced");

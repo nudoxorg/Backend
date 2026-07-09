@@ -1,9 +1,41 @@
+# Pinned to nightly toolchain commit (see flake.nix fenix-complete).
+# The tarball is large (~300 MB); sha256 must be filled in after downloading:
+#   nix-prefetch-url --unpack \
+#     https://github.com/rust-lang/rust/archive/<LIBRUSTDOC_COMMIT>.tar.gz
+# For everyday builds the driver is compiled via the cargo genrule in
+# workspace/compiler/BUCK which reads vendor/librustdoc/ directly; the Buck
+# http_archive entry here is provided for completeness / future hermetic builds.
+LIBRUSTDOC_COMMIT = "f46ec5218fe7829ac18323b5ee0b409a63169f27"
+
 PYREFLY_REV = "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
 RUFF_REV = "db5aa0a5f1b92cb91d910bf0866a967554dd94f5"
 TERMINUS_REV = "4fefb0434f65baa847af5af9fc00175b3e4d827b"
 LSP_TYPES_REV = "395d6bfcd6c3696a64cfe9cd93b86f981fb85112"
 
+# deno_doc is built from source (not the crates.io registry) so we can apply
+# patches/deno-doc/deno_doc-0.202.0.patch — it exposes the `params` module and
+# drops an unreachable debug_assert. Deps/features mirror the 0.202.0 manifest.
+DENO_DOC_REV = "0.202.0"
+
+# rustdoc-types is vendored from the rust-lang git source (not the crates.io
+# registry alias) so its FORMAT_VERSION is pinned to exactly match the nightly
+# rustdoc our Rust producer shells out to. The pinned toolchain (see flake.nix
+# fenix-complete, currently 1.98.0-nightly) emits rustdoc JSON at
+# FORMAT_VERSION 60; crates.io rustdoc-types 0.56 targets FORMAT_VERSION 56, a
+# 4-version drift that `serde_json::from_slice` previously tolerated only by
+# luck. v0.60.0 == FORMAT_VERSION 60. The crate is fully `pub` and needs no
+# patch to expose internals (unlike deno_doc); building from git rather than
+# the registry keeps every `rustdoc-json-types`-derived type in one place and
+# lets us bump the tag in lockstep with the toolchain. Default features only
+# (no `rkyv_0_8`, no `rustc-hash`) — deps are just serde + serde_derive.
+RUSTDOC_TYPES_REV = "v0.60.0"
+
 GIT = [
+    # librustdoc is NOT fetched via http_archive (that would download ~300 MB of
+    # rust-lang/rust). Instead, `scripts/vendor-librustdoc.sh` sparse-clones just
+    # src/librustdoc into build/third-party/vendor/librustdoc/, applies the patch,
+    # and a local_only genrule in build/third-party/BUCK builds it there via cargo.
+    # See build/third-party/BUCK for the `librustdoc` genrule target.
     {
         "archive_name": "pyrefly-repo",
         "urls": ["https://github.com/facebook/pyrefly/archive/" + PYREFLY_REV + ".tar.gz"],
@@ -88,7 +120,10 @@ GIT = [
                     ":serde-1",
                     ":serde_json-1",
                     ":starlark_map-0_14",
+                    ":static_interner-0_1",
                     ":tempfile-3",
+                    ":thin_vec-0_2",
+                    ":thiserror-2",
                     ":tracing-0_1",
                 ],
             },
@@ -110,6 +145,7 @@ GIT = [
                     ":tempfile-3",
                     ":tracing-0_1",
                     ":vec1-1",
+                    ":which-4",
                 ],
             },
             {
@@ -129,32 +165,144 @@ GIT = [
                     ":ruff_python_ast",
                     ":ruff_text_size",
                     ":starlark_map-0_14",
+                    ":static_assertions-1",
+                    ":vec1-1",
+                ],
+            },
+            {
+                "name": "pyrefly_config",
+                "subdir": "crates/pyrefly_config",
+                "edition": "2024",
+                "deps": [
+                    ":anyhow-1",
+                    ":clap-4",
+                    ":configparser-3",
+                    ":convert_case-0_11",
+                    ":derivative-2",
+                    ":dupe-0_9",
+                    ":enum_iterator-2",
+                    ":itertools-0_15",
+                    ":parse_display-0_8",
+                    ":pyrefly_build",
+                    ":pyrefly_python",
+                    ":pyrefly_util",
+                    ":regex-1",
+                    ":regex_syntax-0_8",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":serde_jsonrc-0_1",
+                    ":serde_with-3",
+                    ":starlark_map-0_14",
+                    ":thiserror-2",
+                    ":toml-1",
+                    ":toml_edit-0_25",
+                    ":tracing-0_1",
+                    ":walkdir-2",
+                    ":which-4",
+                    ":yansi-1",
+                ],
+            },
+            {
+                "name": "pyrefly_graph",
+                "subdir": "crates/pyrefly_graph",
+                "edition": "2024",
+                "version": "1.1.1",
+                "deps": [
+                    ":dupe-0_9",
+                    ":pyrefly_util",
+                    ":starlark_map-0_14",
+                ],
+            },
+            {
+                "name": "pyrefly_bundled",
+                "subdir": "crates/pyrefly_bundled",
+                "edition": "2024",
+                "version": "1.1.1",
+                "build_script": True,
+                "build_script_deps": [
+                    ":sha2-0_10",
+                    ":tar-0_4",
+                    ":zstd-0_13",
+                ],
+                "deps": [
+                    ":anyhow-1",
+                    ":starlark_map-0_14",
+                    ":tar-0_4",
+                    ":zstd-0_13",
+                ],
+            },
+            {
+                "name": "tsp_types",
+                "subdir": "crates/tsp_types",
+                "edition": "2024",
+                "version": "1.1.1",
+                "deps": [
+                    ":lsp_server-0_7",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":serde_repr-0_1",
                 ],
             },
             {
                 "name": "pyrefly",
                 "subdir": "pyrefly",
                 "edition": "2024",
+                "version": "1.1.1",
+                "crate_root_suffix": "lib/lib.rs",
                 "deps": [
+                    ":anstream-0_6",
                     ":anyhow-1",
+                    ":arc_swap-1",
+                    ":blake3-1",
+                    ":capnp-0_25",
                     ":clap-4",
+                    ":crossbeam_channel-0_5",
+                    ":dashmap-6",
                     ":dupe-0_9",
+                    ":enum_iterator-2",
+                    ":faster_hex-0_6",
+                    ":fuzzy_matcher-0_3",
+                    ":fxhash-0_2",
+                    ":indicatif-0_18",
                     ":itertools-0_15",
+                    ":lsp_server-0_7",
+                    ":lsp_types",
+                    ":num_traits-0_2",
+                    ":parse_display-0_8",
+                    ":paste-1",
+                    ":percent_encoding-2",
                     ":pyrefly_build",
+                    ":pyrefly_bundled",
+                    ":pyrefly_config",
+                    ":pyrefly_derive",
+                    ":pyrefly_graph",
                     ":pyrefly_python",
                     ":pyrefly_types",
                     ":pyrefly_util",
                     ":rayon-1",
+                    ":regex-1",
+                    ":ruff_annotate_snippets",
+                    ":ruff_notebook",
                     ":ruff_python_ast",
                     ":ruff_python_parser",
+                    ":ruff_source_file",
                     ":ruff_text_size",
                     ":serde-1",
                     ":serde_json-1",
+                    ":serde_repr-0_1",
                     ":starlark_map-0_14",
-                    ":static_interner-0_1",
+                    ":static_assertions-1",
                     ":tempfile-3",
+                    ":thin_vec-0_2",
+                    ":tokio-1",
+                    ":toml-1",
                     ":tracing-0_1",
-                    ":tracing_subscriber-0_3",
+                    ":tsp_types",
+                    ":uuid-1",
+                    ":vec1-1",
+                    ":web_time-1",
+                    ":xxhash_rust-0_8",
+                    ":yansi-1",
                 ],
             },
         ],
@@ -169,13 +317,15 @@ GIT = [
                 "name": "ruff_text_size",
                 "subdir": "crates/ruff_text_size",
                 "edition": "2024",
-                "deps": [],
+                "features": ["get-size", "serde"],
+                "deps": [":get_size2", ":serde-1"],
             },
             {
                 "name": "ruff_source_file",
                 "subdir": "crates/ruff_source_file",
                 "edition": "2024",
-                "deps": [":ruff_text_size", ":memchr"],
+                "features": ["get-size", "serde"],
+                "deps": [":ruff_text_size", ":get_size2", ":memchr", ":serde-1"],
             },
             {
                 "name": "ruff_python_trivia",
@@ -246,10 +396,18 @@ GIT = [
                     ":is_macro",
                     ":memchr",
                     ":rustc_hash-2",
+                    ":serde-1",
                     ":thiserror-2",
-                    ":thin_vec",
+                    ":thin_vec-0_2",
                 ],
-                "features": ["cache"],
+                "features": [
+                    "cache",
+                    "get-size",
+                    "serde",
+                    "compact_str/serde",
+                    "thin-vec/serde",
+                    "ruff_text_size/serde",
+                ],
             },
             {
                 "name": "ruff_python_parser",
@@ -286,6 +444,8 @@ GIT = [
                     ":serde",
                     ":serde_json",
                     ":serde_with",
+                    ":thiserror-2",
+                    ":uuid-1",
                 ],
             },
         ],
@@ -367,7 +527,121 @@ GIT = [
         "sha256": "2c9984223652831a3a49e689bd649ca5ed7898b764747890f2655c1ca52272e8",
         "strip_prefix": "lsp-types-" + LSP_TYPES_REV,
         "crates": [
-            {"name": "lsp_types", "subdir": ""},
+            {"name": "lsp_types", "subdir": "", "deps": [":bitflags-1", ":serde-1", ":serde_json-1", ":serde_repr-0_1", ":url-2"]},
+        ],
+    },
+    {
+        "archive_name": "rustdoc-types-repo",
+        "urls": ["https://github.com/rust-lang/rustdoc-types/archive/refs/tags/" + RUSTDOC_TYPES_REV + ".tar.gz"],
+        "sha256": "29d0c94bef23df7f9d3e162692c67511fbedccf080153daae3bac64cdf99d5dc",
+        "strip_prefix": "rustdoc-types-0.60.0",
+        "crates": [
+            {
+                "name": "rustdoc_types",
+                "subdir": "",
+                "edition": "2024",
+                "deps": [":serde-1", ":serde_derive-1"],
+            },
+        ],
+    },
+    {
+        "archive_name": "deno-doc-repo",
+        "urls": ["https://github.com/denoland/deno_doc/archive/refs/tags/" + DENO_DOC_REV + ".tar.gz"],
+        "sha256": "3a94adbbbabdd40959655e8a90a849b6603bfb30d8f15d1954e410a20074d6c8",
+        "strip_prefix": "deno_doc-" + DENO_DOC_REV,
+        "crates": [
+            {
+                "name": "deno_doc",
+                "subdir": "",
+                "edition": "2024",
+                "patch": "deno_doc-0.202.0.patch",
+                "patch_strip": 1,
+                "features": ["comrak", "rust"],
+                "deps": [
+                    ":anyhow-1",
+                    ":cfg_if-1",
+                    ":comrak-0_29",
+                    ":deno_ast-0_53",
+                    ":deno_graph-0_110",
+                    ":deno_path_util-0_6",
+                    ":deno_terminal-0_2_3",
+                    ":handlebars-6",
+                    ":html_escape-0_2",
+                    ":indexmap-2",
+                    ":itoa-1",
+                    ":js_sys-0_3",
+                    ":lazy_static-1",
+                    ":percent_encoding-2",
+                    ":regex-1",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":serde_wasm_bindgen-0_6",
+                    ":similar-2",
+                    ":termcolor-1",
+                    ":url-2",
+                    ":wasm_bindgen-0_2",
+                ],
+            },
+        ],
+    },
+    {
+        "archive_name": "snix-repo",
+        "urls": ["https://github.com/cachix/snix/archive/50b41ae7e05b423a7525b4dda53d372a71931506.tar.gz"],
+        "sha256": "c53e20b429f5d4e7d5daad4bbfe49ac8b21c7e7c8f5e2946422ef1755dd5df96",
+        "strip_prefix": "snix-50b41ae7e05b423a7525b4dda53d372a71931506",
+        "crates": [
+            {
+                "name": "snix_eval",
+                "subdir": "snix/eval",
+                "edition": "2024",
+                "patch": "snix-eval-50b41ae.patch",
+                "patch_strip": 1,
+                "named_deps": {
+                    "builtin_macros": ":snix_eval_builtin_macros",
+                },
+                "env": {
+                    "SNIX_CURRENT_SYSTEM": "aarch64-darwin",
+                },
+                "deps": [
+                    ":bstr-1",
+                    ":bytes-1",
+                    ":codemap-0_1",
+                    ":codemap_diagnostic-0_1",
+                    ":data_encoding-2",
+                    ":dirs-4",
+                    ":genawaiter-0_99",
+                    ":hashbrown-0_15",
+                    ":itertools-0_12",
+                    ":lexical_core-0_8",
+                    ":md_5-0_10",
+                    ":os_str_bytes-6",
+                    ":path_clean-0_1",
+                    ":regex-1",
+                    ":rnix-0_11",
+                    ":rowan-0_15",
+                    ":rustc_hash-2",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":sha1-0_10",
+                    ":sha2-0_10",
+                    ":smol_str-0_2",
+                    ":tabwriter-1",
+                    ":thiserror-2",
+                    ":toml-0_6",
+                    ":vu128-1",
+                ],
+            },
+            {
+                "name": "snix_eval_builtin_macros",
+                "subdir": "snix/eval/builtin-macros",
+                "edition": "2024",
+                "proc_macro": True,
+                "deps": [
+                    ":proc_macro2-1",
+                    ":quote-1",
+                    ":syn-1",
+                ],
+            },
         ],
     },
 ]

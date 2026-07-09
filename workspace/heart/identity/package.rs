@@ -34,7 +34,7 @@ pub enum NameError {
 #[error("invalid cargo version {raw:?}: {source}")]
 pub struct CargoVersionError {
     raw: String,
-    #[from]
+    #[source]
     source: semver::Error,
 }
 
@@ -42,7 +42,7 @@ pub struct CargoVersionError {
 #[error("invalid npm version {raw:?}: {source}")]
 pub struct NpmVersionError {
     raw: String,
-    #[from]
+    #[source]
     source: semver::Error,
 }
 
@@ -51,8 +51,18 @@ pub struct NpmVersionError {
 #[error("invalid python version {raw:?}: {source}")]
 pub struct PythonVersionError {
     raw: String,
-    #[from]
+    #[source]
     source: uv_pep440::VersionParseError,
+}
+
+/// FlakeHub versions are Cargo-semver (`X.Y.Z+rev-{sha}`); kept distinct from
+/// Cargo so the ecosystem stays traceable in the error chain.
+#[derive(Debug, Error)]
+#[error("invalid nix flake version {raw:?}: {source}")]
+pub struct NixVersionError {
+    raw: String,
+    #[source]
+    source: semver::Error,
 }
 
 /// Why a raw version failed to parse. Each variant wraps the concrete parser
@@ -65,6 +75,8 @@ pub enum VersionError {
     Npm(#[from] NpmVersionError),
     #[error(transparent)]
     Python(#[from] PythonVersionError),
+    #[error(transparent)]
+    Nix(#[from] NixVersionError),
 }
 
 /// An ecosystem-appropriate, typed package version.
@@ -80,6 +92,10 @@ pub enum PackageVersion {
     Go(String),
     /// Java/Maven version string.
     Java(String),
+    /// Nix flake version — FlakeHub Cargo-semver (`X.Y.Z+rev-{sha}`); the
+    /// `+rev` build metadata is preserved but ignored in ordering (FlakeHub
+    /// patch numbers are monotonic commit counts, so ordering stays correct).
+    Nix(semver::Version),
 }
 
 impl TryFrom<(Language, &str)> for PackageVersion {
@@ -105,6 +121,11 @@ impl TryFrom<(Language, &str)> for PackageVersion {
             }
             Language::Go => Ok(Self::Go(raw.to_owned())),
             Language::Java => Ok(Self::Java(raw.to_owned())),
+            Language::Nix => {
+                let v = semver::Version::parse(raw)
+                    .map_err(|source| NixVersionError { raw: raw.to_owned(), source })?;
+                Ok(Self::Nix(v))
+            }
         }
     }
 }
@@ -113,7 +134,9 @@ impl PackageVersion {
     /// The canonical string form under this version's grammar.
     pub fn canonical(&self) -> String {
         match self {
-            PackageVersion::Cargo(v) | PackageVersion::Npm(v) => v.to_string(),
+            PackageVersion::Cargo(v) | PackageVersion::Npm(v) | PackageVersion::Nix(v) => {
+                v.to_string()
+            }
             PackageVersion::Python(v) => v.to_string(),
             PackageVersion::Go(v) | PackageVersion::Java(v) => v.clone(),
         }
@@ -128,6 +151,7 @@ impl From<&PackageVersion> for Language {
             PackageVersion::Python(_) => Language::Python,
             PackageVersion::Go(_) => Language::Go,
             PackageVersion::Java(_) => Language::Java,
+            PackageVersion::Nix(_) => Language::Nix,
         }
     }
 }
@@ -138,6 +162,9 @@ pub enum RegistryOrigin {
     CratesIo,
     NpmPublic,
     PyPi,
+    /// FlakeHub — a first-class origin (bespoke resolution semantics), not a
+    /// `Custom` registry.
+    FlakeHub,
     Custom { name: SmolStr, url: url::Url },
 }
 
@@ -147,6 +174,7 @@ impl RegistryOrigin {
             RegistryOrigin::CratesIo => Cow::Borrowed("crates.io"),
             RegistryOrigin::NpmPublic => Cow::Borrowed("npm"),
             RegistryOrigin::PyPi => Cow::Borrowed("pypi"),
+            RegistryOrigin::FlakeHub => Cow::Borrowed("flakehub"),
             RegistryOrigin::Custom { name, .. } => Cow::Owned(name.to_string()),
         }
     }

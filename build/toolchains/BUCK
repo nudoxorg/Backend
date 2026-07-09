@@ -1,3 +1,84 @@
-load("@prelude//toolchains:demo.bzl", "system_demo_toolchains")
+load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+load("@prelude//toolchains:cxx.bzl", "cxx_tools_info_toolchain")
+load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
+load("@prelude//toolchains:python.bzl", "remote_python_toolchain", "system_python_wheel_toolchain")
+load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
+load("@prelude//toolchains:zip_file.bzl", "zip_file_toolchain")
+load(":defs.bzl", "absolute_clang_tools")
 
-system_demo_toolchains()
+# ── C/C++ ──────────────────────────────────────────────────────────────────
+#
+# Uses absolute paths so cc-rs build scripts can invoke the compiler through
+# the prelude's from_any_dir.py shim (which calls os.execl, not execlp).
+#
+# Nix users: override clang/clangxx/ar with the Nix store paths by pointing
+# at a nix flake.package() target once buck2.nix is added as an external cell:
+#
+#   load("@nix//flake.bzl", "flake")
+#   flake.package(name = "clang", binary = "clang", path = "build/toolchains/nix")
+#   absolute_clang_tools(
+#       name = "clang-tools",
+#       clang   = "$(location :clang)",  # resolves to Nix store path
+#       clangxx = "$(location :clang++)",
+#       ar      = "$(location :ar)",
+#   )
+
+absolute_clang_tools(
+    name = "clang-tools",
+    visibility = ["PUBLIC"],
+)
+
+cxx_tools_info_toolchain(
+    name = "cxx",
+    cxx_tools_info = ":clang-tools",
+    visibility = ["PUBLIC"],
+)
+
+# ── Rust ───────────────────────────────────────────────────────────────────
+#
+# rustc/rustdoc/clippy-driver are invoked directly by Buck2 (not through the
+# cc shim), so bare command names resolve correctly via the process PATH.
+# In the Nix devshell, fenix provides the nightly rustc on PATH automatically.
+#
+# Nix users who want version-pinned rustc as a Buck2 artifact can switch to:
+#   load("@nix//toolchains:rust.bzl", "nix_rust_toolchain")
+#   nix_rust_toolchain(name = "rust", rustc = ":rustc", ...)
+
+system_rust_toolchain(
+    name = "rust",
+    default_edition = "2021",
+    visibility = ["PUBLIC"],
+)
+
+# ── Support toolchains ─────────────────────────────────────────────────────
+
+system_genrule_toolchain(
+    name = "genrule",
+    visibility = ["PUBLIC"],
+)
+
+remote_python_toolchain(
+    name = "python",
+    visibility = ["PUBLIC"],
+)
+
+system_python_wheel_toolchain(
+    name = "python_wheel",
+    visibility = ["PUBLIC"],
+)
+
+remote_test_execution_toolchain(
+    name = "remote_test_execution",
+    visibility = ["PUBLIC"],
+)
+
+noop_test_toolchain(
+    name = "test",
+    visibility = ["PUBLIC"],
+)
+
+zip_file_toolchain(
+    name = "zip_file",
+    visibility = ["PUBLIC"],
+)
