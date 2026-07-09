@@ -9,8 +9,7 @@
 //! 3. **rlimits** — applied in `pre_exec` of bwrap (inherit to guest).
 //! 4. **seccomp** — `bwrap --seccomp FD` only. Never `apply_filter` on the
 //!    bwrap process: denylisting `unshare`/`mount` would break setup.
-//! 5. **Landlock** — optional on the *direct* path (`run_direct_hardened`);
-//!    bwrap already provides the FS cage.
+//! 5. **Landlock** — not applied on the bwrap path (bwrap provides the FS cage).
 //!
 //! Resource authority: cgroup `memory.max` is real RAM; `RLIMIT_AS` is VA
 //! headroom (~4×).
@@ -199,15 +198,15 @@ fn ro_bind_if(args: &mut Vec<OsString>, src: &str, dst: &str) {
 #[cfg(target_os = "linux")]
 fn write_seccomp_bpf_file() -> Result<PathBuf, SandboxError> {
 	let bytes = crate::seccomp::denylist_bpf_bytes()?;
-	let path = std::env::temp_dir().join(format!(
-		"nudox-seccomp-{}-{}.bpf",
-		std::process::id(),
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_nanos())
-			.unwrap_or(0)
-	));
-	fs::write(&path, bytes)?;
+	let mut file = tempfile::Builder::new()
+		.prefix("nudox-seccomp-")
+		.suffix(".bpf")
+		.tempfile()
+		.map_err(SandboxError::Io)?;
+	use std::io::Write;
+	file.write_all(&bytes).map_err(SandboxError::Io)?;
+	// Persist path until the child has opened it; caller deletes after supervise.
+	let (_, path) = file.keep().map_err(|e| SandboxError::Io(e.error))?;
 	Ok(path)
 }
 
@@ -274,9 +273,7 @@ impl Backend for LinuxBwrap {
 						let _ = self_attach_cgroup(procs);
 					}
 					// 2) rlimits inherit to guest.
-					apply_rlimits(&limits).map_err(|e| {
-						std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-					})?;
+					apply_rlimits(&limits).map_err(crate::error::to_io_error)?;
 					// 3) Install seccomp BPF as FD for bwrap --seccomp (not apply_filter).
 					if let Some(ref path) = bpf_path {
 						open_seccomp_fd(path, SECCOMP_CHILD_FD)?;
@@ -341,58 +338,4 @@ fn self_attach_cgroup(procs_path: &Path) -> std::io::Result<()> {
 	let mut f = fs::OpenOptions::new().write(true).open(procs_path)?;
 	write!(f, "{pid}")?;
 	Ok(())
-}
-
-/// Run without bwrap but with Landlock+seccomp+rlimit+cgroup (fallback / tests).
-pub fn run_direct_hardened(spec: Spec) -> Result<Output, SandboxError> {
-	let limits = spec.limits;
-	let cgroup = Cgroup::try_create(&limits)?;
-	let cgroup_procs = cgroup.as_ref().map(|c| c.procs_path());
-
-	if which::which(&spec.command).is_err() && !spec.command.exists() {
-		return Err(SandboxError::ToolchainMissing {
-			program: spec.command_display(),
-		});
-	}
-
-	let mut cmd = supervisor::base_command(&spec.command);
-	cmd.args(&spec.args);
-	for (k, v) in spec.env.iter() {
-		cmd.env(k, v);
-	}
-	if let Some(cwd) = &spec.cwd {
-		cmd.current_dir(cwd);
-	}
-
-	#[cfg(unix)]
-	{
-		use std::os::unix::process::CommandExt;
-		let limits = limits;
-		#[cfg(target_os = "linux")]
-		let mounts = spec.mounts.clone();
-		let cgroup_procs = cgroup_procs;
-		unsafe {
-			cmd.pre_exec(move || {
-				if let Some(ref procs) = cgroup_procs {
-					let _ = self_attach_cgroup(procs);
-				}
-				// Order: rlimit → landlock → seccomp (seccomp last).
-				apply_rlimits(&limits).map_err(|e| {
-					std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-				})?;
-				#[cfg(target_os = "linux")]
-				{
-					let _ = crate::landlock::restrict_self(&mounts);
-					let _ = crate::seccomp::apply_denylist();
-				}
-				Ok(())
-			});
-		}
-	}
-
-	let child = cmd.spawn().map_err(SandboxError::Spawn)?;
-	if let Some(ref cg) = cgroup {
-		let _ = cg.add_pid(child.id());
-	}
-	supervisor::supervise(child, &limits, cgroup)
 }

@@ -67,13 +67,13 @@ pub use backend::{
 	select, Backend, Capabilities, LinuxBwrap, MacSeatbelt, NixDerivation, Passthrough, Selected,
 };
 pub use cache::{CacheKey, ParseCache};
-pub use error::{KillReason, SandboxError};
+pub use error::{to_io_error, KillReason, SandboxError};
 pub use limits::{LimitOverride, Limits, Network};
 pub use observer::{CountingObserver, NullObserver, SandboxObserver};
 pub use probe::{require as require_isolation, HostIsolation, IsolationPolicy, LandlockAbi};
 pub use overrides::install as install_limit_overrides;
 pub use profiles::ProducerProfile;
-pub use spec::{Env, Mounts, Output, Spec};
+pub use spec::{Captured, Env, Mounts, Output, ProcessEnd, Spec};
 pub use worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConfig};
 
 use std::sync::OnceLock;

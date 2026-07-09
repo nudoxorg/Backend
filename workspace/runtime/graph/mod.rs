@@ -25,7 +25,7 @@ use smol_str::SmolStr;
 use url::Url;
 
 use heart::{
-	Cold, Connect, ConnectError, SymbolId, Live, Scored,
+	BackendKind, Cold, Connect, ConnectError, SymbolId, Live, Scored,
 	StoreError,
 };
 
@@ -692,5 +692,23 @@ impl GraphStore for Graph<Live> {
 			.first()
 			.map(|row| parse_relation_kind(binding_string(row, "Kind")?))
 			.transpose()
+	}
+}
+
+impl heart::Probeable for Graph<Live> {
+	fn backend(&self) -> BackendKind {
+		BackendKind::Terminus
+	}
+
+	async fn probe(&self) -> heart::Probe {
+		use crate::error::GraphError;
+		heart::timed_probe(BackendKind::Terminus, async {
+			let nobody = SymbolId::from_uuid(heart::Guid::nil());
+			match self.are_related(nobody, nobody).await {
+				Ok(_) | Err(GraphError::NotFound) | Err(GraphError::Query(_)) => None,
+				Err(error) => Some(error.to_string()),
+			}
+		})
+		.await
 	}
 }

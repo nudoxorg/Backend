@@ -26,7 +26,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use heart::{BackendKind, ConnectError, ConnectFailure, Connect, Federation, Live, access::AccessPolicy};
+use heart::{BackendKind, ConnectError, ConnectFailure, Connect, Federation, Live};
 use registry::{
 	Store,
 	coordination::Outbox,
@@ -58,13 +58,6 @@ const INDEXING_RETRY_POLICY: RetryPolicy = RetryPolicy {
 
 /// How many query-text embeddings the in-process cache retains.
 const EMBEDDING_CACHE_CAPACITY: u64 = 65_536;
-
-/// The default access policy: everyone may read and write. Access control for
-/// hosted deployments happens at the proxy in front of this server (see
-/// [`heart::access`]); this policy is the honest name for that arrangement.
-pub struct UnrestrictedAccess;
-
-impl AccessPolicy for UnrestrictedAccess {}
 
 /// The full set of connected backing stores for one federated source. Every
 /// source — definitive or overlay — is a complete, independently-verified stack.
@@ -99,9 +92,6 @@ pub struct Server<M: EmbeddingModel> {
 	/// connected stack. Reads resolve overlay-first (override), then base.
 	federation: Federation<SourceStores<M>>,
 
-	/// The access-control policy every read/write is checked through.
-	policy: Arc<dyn AccessPolicy>,
-
 	/// The query planner — the only place a semantic gate is minted.
 	planner: crate::search::SearchPlanner,
 
@@ -119,10 +109,10 @@ impl<M: EmbeddingModel> Server<M> {
 	/// Assemble a server: connect the definitive base and every overlay
 	/// concurrently, then materialize the federation. Any single connection
 	/// failure of any source aborts assembly with a context-rich [`ServerError`].
-	pub async fn assemble(
-		config: ServerConfiguration,
-		policy: Arc<dyn AccessPolicy>,
-	) -> ServerResult<Self> {
+	///
+	/// Access control for hosted deployments is enforced at the fronting proxy
+	/// (see [`heart::access`]); there is no in-process policy trait yet.
+	pub async fn assemble(config: ServerConfiguration) -> ServerResult<Self> {
 		config.validate()?;
 		http::dto::register_custom_registries(&config.custom_registries);
 
@@ -149,7 +139,6 @@ impl<M: EmbeddingModel> Server<M> {
 		Ok(Self {
 			config,
 			federation,
-			policy,
 			planner: crate::search::SearchPlanner::new(),
 			embedder,
 			embedding_cache,
@@ -263,12 +252,10 @@ impl<M: EmbeddingModel> Server<M> {
 
 	/// The single choke point every read/write flow authorizes through.
 	///
-	/// [`heart::access::AccessPolicy`] currently exposes no deny surface (hosted
-	/// deployments gate at the fronting proxy), so today this is an audit trace
-	/// plus the structural guarantee that every flow *has* an authorization
-	/// point to grow into.
+	/// Hosted deployments gate at the fronting proxy (see [`heart::access`]), so
+	/// today this is an audit trace plus the structural guarantee that every
+	/// flow *has* an authorization point to grow into.
 	pub(crate) fn authorize(&self, action: &'static str) -> ServerResult<()> {
-		let _ = &self.policy;
 		tracing::trace!(action, "access granted");
 		Ok(())
 	}

@@ -497,6 +497,33 @@ where
 {
 }
 
+impl<M: EmbeddingModel> heart::Probeable for Semantic<M, Live> {
+	fn backend(&self) -> BackendKind {
+		BackendKind::Qdrant
+	}
+
+	async fn probe(&self) -> heart::Probe {
+		use crate::error::VectorError;
+		heart::timed_probe(BackendKind::Qdrant, async {
+			// Cheap one-hit zero-vector query; connectivity is the signal.
+			// Gate issued here solely for readiness — not a user-facing search.
+			let gate = SemanticGate::issue("readiness probe");
+			let query = Embedding::<M>::zeroed();
+			match self
+				.search(gate, &query, NonZeroUsize::MIN, None)
+				.await
+			{
+				Ok(_) => None,
+				Err(error @ (VectorError::Connect(_) | VectorError::Transport(_))) => {
+					Some(error.to_string())
+				}
+				Err(_) => None,
+			}
+		})
+		.await
+	}
+}
+
 // Ensure the retry classification is wired: the sink machinery consults it.
 const _: fn() = || {
 	fn assert_retryable<T: Retryable>() {}

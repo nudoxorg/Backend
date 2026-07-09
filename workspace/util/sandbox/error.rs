@@ -36,6 +36,12 @@ impl std::fmt::Display for KillReason {
 	}
 }
 
+/// Map a displayable error into an `io::Error` for `pre_exec` and similar
+/// callbacks that only accept `io::Error`.
+pub fn to_io_error(err: impl std::fmt::Display) -> io::Error {
+	io::Error::other(err.to_string())
+}
+
 /// Failures from constructing or running a sandbox.
 #[derive(Debug, Error)]
 #[non_exhaustive]

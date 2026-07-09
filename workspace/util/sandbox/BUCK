@@ -19,6 +19,7 @@ rust_crate(
         crate("serde_json"),
         crate("libc"),
         crate("blake3"),
+        crate("tempfile"),
     ]) + select({
         "prelude//os/constraints:linux": _LINUX_DEPS,
         "DEFAULT": [],

@@ -152,6 +152,9 @@ struct WorkerSlot {
 	child: Child,
 	stdin: ChildStdin,
 	stdout: BufReader<ChildStdout>,
+	/// Owned for the worker's lifetime; dropped on restart so cgroup dirs are
+	/// reaped (was previously leaked via `mem::forget`).
+	_cgroup: Option<crate::cgroup::Cgroup>,
 }
 
 /// A pool of sandboxed worker processes.
@@ -241,15 +244,12 @@ impl Drop for WorkerPool {
 }
 
 fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
-	let scratch = std::env::temp_dir().join(format!(
-		"nudox-worker-{}-{}",
-		std::process::id(),
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_nanos())
-			.unwrap_or(0)
-	));
-	std::fs::create_dir_all(&scratch)?;
+	let scratch = tempfile::Builder::new()
+		.prefix("nudox-worker-")
+		.tempdir()
+		.map_err(SandboxError::Io)?;
+	// Persist the directory for the worker process; TempDir would delete on drop.
+	let scratch = scratch.keep();
 
 	let mut cmd = Command::new(&config.worker_bin);
 	cmd.arg("serve")
@@ -268,19 +268,15 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 		let limits = config.limits;
 		unsafe {
 			cmd.pre_exec(move || {
-				crate::backend::supervisor::apply_rlimits(&limits).map_err(|e| {
-					std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-				})
+				crate::backend::supervisor::apply_rlimits(&limits).map_err(crate::error::to_io_error)
 			});
 		}
 	}
 
 	let cgroup = crate::cgroup::Cgroup::try_create(&config.limits)?;
 	let mut child = cmd.spawn().map_err(SandboxError::Spawn)?;
-	if let Some(cg) = cgroup {
+	if let Some(ref cg) = cgroup {
 		let _ = cg.add_pid(child.id());
-		// Keep the cgroup alive for the worker lifetime.
-		std::mem::forget(cg);
 	}
 
 	let stdin = child
@@ -296,6 +292,7 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 		child,
 		stdin,
 		stdout: BufReader::new(stdout),
+		_cgroup: cgroup,
 	})
 }
 
@@ -352,15 +349,11 @@ pub fn lower_once(
 	for p in extra_ro {
 		mounts = mounts.ro(p);
 	}
-	let scratch = std::env::temp_dir().join(format!(
-		"nudox-once-{}-{}",
-		std::process::id(),
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_nanos())
-			.unwrap_or(0)
-	));
-	std::fs::create_dir_all(&scratch)?;
+	let scratch = tempfile::Builder::new()
+		.prefix("nudox-once-")
+		.tempdir()
+		.map_err(SandboxError::Io)?;
+	let scratch = scratch.keep();
 	mounts = mounts.rw(&scratch);
 
 	let env = Env::empty()
@@ -381,7 +374,7 @@ pub fn lower_once(
 		let stderr = String::from_utf8_lossy(&out.stderr);
 		return Err(SandboxError::Backend(format!(
 			"worker exit {:?}: {stderr}",
-			out.status
+			out.end
 		)));
 	}
 	String::from_utf8(out.stdout).map_err(|e| SandboxError::Backend(format!("utf8: {e}")))

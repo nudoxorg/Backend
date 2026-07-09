@@ -146,15 +146,11 @@ impl Backend for NixDerivation {
 			});
 		}
 
-		let work = std::env::temp_dir().join(format!(
-			"nudox-nixdrv-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.map(|d| d.as_nanos())
-				.unwrap_or(0)
-		));
-		fs::create_dir_all(&work)?;
+		let work = tempfile::Builder::new()
+			.prefix("nudox-nixdrv-")
+			.tempdir()
+			.map_err(SandboxError::Io)?;
+		let work = work.keep();
 		let expr = self.write_expression(&spec, &work)?;
 
 		let start = Instant::now();
@@ -236,10 +232,9 @@ impl Backend for NixDerivation {
 		Ok(Output {
 			stdout,
 			stderr: output.stderr,
-			status,
+			end: crate::spec::ProcessEnd::Exited(status),
 			wall,
 			peak_mem: None,
-			killed: None,
 		})
 	}
 }

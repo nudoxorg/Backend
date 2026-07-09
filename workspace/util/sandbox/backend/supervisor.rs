@@ -132,10 +132,9 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 				return Ok(Output {
 					stdout: stdout_buf,
 					stderr: stderr_buf,
-					status,
+					end: crate::spec::ProcessEnd::Exited(status),
 					wall,
 					peak_mem,
-					killed: None,
 				});
 			}
 			Ok(None) => {

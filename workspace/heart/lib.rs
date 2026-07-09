@@ -8,6 +8,7 @@ pub mod content;
 pub mod cursor;
 pub mod ecosystem;
 pub mod error;
+pub mod health;
 pub mod identity;
 pub mod progress;
 pub mod score;
@@ -17,6 +18,7 @@ pub mod symbol;
 pub mod version;
 
 pub use access::{Federation, Source, SourceId, SourceRole, Sourced};
+pub use health::{timed as timed_probe, Probe, Probeable};
 pub use connection::{Cold, Connect, Live};
 pub use content::{ContentHash, ContentHasher, Freshness};
 pub use cursor::Cursor;

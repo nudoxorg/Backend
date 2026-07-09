@@ -29,11 +29,7 @@ impl Passthrough {
 	}
 
 	fn production_forbidden(&self) -> bool {
-		if self.force_deny {
-			return true;
-		}
-		matches!(std::env::var("NUDOX_SANDBOX_REQUIRE").as_deref(), Ok("1") | Ok("true"))
-			|| matches!(std::env::var("NUDOX_ENV").as_deref(), Ok("prod") | Ok("production"))
+		self.force_deny || crate::probe::IsolationPolicy::env_requires_production()
 	}
 }
 
@@ -89,9 +85,7 @@ impl Backend for Passthrough {
 			let limits = limits;
 			unsafe {
 				cmd.pre_exec(move || {
-					apply_rlimits(&limits).map_err(|e| {
-						std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-					})?;
+					apply_rlimits(&limits).map_err(crate::error::to_io_error)?;
 					Ok(())
 				});
 			}

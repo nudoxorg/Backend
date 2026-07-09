@@ -20,7 +20,7 @@ use heart::{
 use sqlx::{Row, postgres::PgRow};
 
 use crate::{
-	error::{IndexError, OutboxError},
+	error::OutboxError,
 	index::GlobalStore,
 	schema::{codec, queries},
 };
@@ -92,7 +92,7 @@ fn row_to_entry(row: &PgRow) -> Result<OutboxEntry, OutboxError> {
 	let kind_tok: String = row.try_get(3).map_err(OutboxError::Database)?;
 	let created_at: DateTime<Utc> = row.try_get(4).map_err(OutboxError::Database)?;
 
-	let kind = codec::sink_kind_from_token(&kind_tok).map_err(codec_to_outbox)?;
+	let kind = codec::sink_kind_from_token(&kind_tok).map_err(OutboxError::Codec)?;
 
 	Ok(OutboxEntry {
 		id: OutboxSeq(seq),
@@ -100,16 +100,6 @@ fn row_to_entry(row: &PgRow) -> Result<OutboxEntry, OutboxError> {
 		kind,
 		created_at,
 	})
-}
-
-/// A codec failure while decoding an outbox row is a corrupt-row / internal
-/// invariant break, surfaced as a database decode error. (We keep Database for
-/// outbox surface; full Codec would be added if we expand OutboxError more.)
-fn codec_to_outbox(e: codec::CodecError) -> OutboxError {
-	OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
-		std::io::ErrorKind::InvalidData,
-		format!("codec: {e}"),
-	))))
 }
 
 impl Outbox<Live> {
@@ -167,14 +157,14 @@ impl Outbox<Live> {
 		let stored = ResolutionState::Stored { hash: snapshot };
 		GlobalStore::set_state_tx(&mut tx, package, &stored)
 			.await
-			.map_err(index_to_outbox)?;
+			.map_err(OutboxError::Index)?;
 
 		// 2. Persist the derived search facets on the same lifecycle row, in the
 		//    same txn — the facets analog of the `failure` jsonb write. Runs after
 		//    the `set_state` upsert has guaranteed the row exists, and never
 		//    disturbs the state/phase/hash columns.
 		let (facets_sql, facets_vals) =
-			queries::index::set_facets(package, facets).map_err(codec_to_outbox)?;
+			queries::index::set_facets(package, facets).map_err(OutboxError::Codec)?;
 		sqlx::query_with(&facets_sql, facets_vals)
 			.execute(&mut *tx)
 			.await
@@ -248,18 +238,4 @@ impl Outbox<Live> {
 	}
 }
 
-/// An index error surfacing inside an outbox transaction (the state-transition
-/// half of [`Outbox::record_stored`]).
-fn index_to_outbox(e: IndexError) -> OutboxError {
-	match e {
-		IndexError::Database(db) => OutboxError::Database(db),
-		IndexError::Codec(c) => OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
-			std::io::ErrorKind::Other,
-			format!("codec: {c}"),
-		)))),
-		other => OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
-			std::io::ErrorKind::Other,
-			format!("index: {other}"),
-		)))),
-	}
-}
+

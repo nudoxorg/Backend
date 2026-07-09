@@ -149,16 +149,15 @@ impl RustPackage {
         package_name: &str,
         version: &Version,
     ) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
-        // Unique per invocation so concurrent generate/test runs on the same
-        // package name cannot race on a shared rustdoc JSON path.
-        let tmp = std::env::temp_dir();
+        // Unique per invocation so concurrent generate/test runs cannot race.
         let safe_name = package_name.replace(['/', ':'], "_");
-        let uniq = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let json_out =
-            tmp.join(format!("nudox-{safe_name}-rustdoc-{}-{uniq}.json", std::process::id()));
+        let json_file = tempfile::Builder::new()
+            .prefix(&format!("nudox-{safe_name}-rustdoc-"))
+            .suffix(".json")
+            .tempfile()
+            .map_err(Package::from)?;
+        // Persist so cargo/rustdoc can rewrite the path without a held fd.
+        let (_, json_out) = json_file.keep().map_err(|e| Package::from(e.error))?;
 
         match self.run_cargo_rustdoc(code, package_name, version, &json_out, false) {
             Ok(_) => {}
@@ -167,10 +166,14 @@ impl RustPackage {
             {
                 self.run_cargo_rustdoc(code, package_name, version, &json_out, true)?;
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                let _ = fs::remove_file(&json_out);
+                return Err(error);
+            }
         }
 
         let json_bytes = fs::read(&json_out)?;
+        let _ = fs::remove_file(&json_out);
         let rustdoc_crate = parse_rustdoc_crate(&json_bytes)?;
         drop(json_bytes);
         debug!("rustdoc output parsed");
@@ -227,7 +230,14 @@ impl RustPackage {
 /// The wrapper rewrites the out-dir to a private staging path and copies the
 /// single top-level `.json` into `NUDOX_RUSTDOC_OUT`.
 fn write_rustdoc_stdout_wrapper() -> std::result::Result<PathBuf, Package> {
-    let path = std::env::temp_dir().join(format!("nudox-rustdoc-wrapper-{}", std::process::id()));
+    // Unique path (not bare pid) so concurrent Rust jobs in one process cannot
+    // clobber each other's RUSTDOC wrapper.
+    let file = tempfile::Builder::new()
+        .prefix("nudox-rustdoc-wrapper-")
+        .suffix(".sh")
+        .tempfile()
+        .map_err(Package::from)?;
+    let (_, path) = file.keep().map_err(|e| Package::from(e.error))?;
     let script = r#"#!/bin/sh
 set -eu
 out="${NUDOX_RUSTDOC_OUT:?NUDOX_RUSTDOC_OUT must be set}"

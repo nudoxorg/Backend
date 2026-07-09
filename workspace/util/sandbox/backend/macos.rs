@@ -176,9 +176,7 @@ impl Backend for MacSeatbelt {
 			let limits = limits;
 			unsafe {
 				cmd.pre_exec(move || {
-					apply_rlimits(&limits).map_err(|e| {
-						std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-					})
+					apply_rlimits(&limits).map_err(crate::error::to_io_error)
 				});
 			}
 		}
@@ -210,13 +208,11 @@ impl Drop for ProfileFile {
 }
 
 fn tempfile_profile() -> Result<ProfileFile, SandboxError> {
-	let path = std::env::temp_dir().join(format!(
-		"nudox-seatbelt-{}-{}.sb",
-		std::process::id(),
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_nanos())
-			.unwrap_or(0)
-	));
+	let file = tempfile::Builder::new()
+		.prefix("nudox-seatbelt-")
+		.suffix(".sb")
+		.tempfile()
+		.map_err(SandboxError::Io)?;
+	let (_, path) = file.keep().map_err(|e| SandboxError::Io(e.error))?;
 	Ok(ProfileFile { path })
 }

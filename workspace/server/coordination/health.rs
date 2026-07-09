@@ -4,13 +4,8 @@
 //! registry's postgres-backed health + queue) into the projections the health
 //! endpoint and load-balancer consult.
 
-use std::num::NonZeroUsize;
-use std::time::Instant;
-
-use futures::StreamExt;
-use heart::{BackendKind, PackageId, ResolutionState};
+use heart::{BackendKind, PackageId, Probeable, ResolutionState};
 use registry::error::IndexError;
-use registry::health::Probe;
 
 use runtime::vector::EmbeddingModel;
 use crate::error::ServerResult;
@@ -67,101 +62,14 @@ impl<M: EmbeddingModel> Server<M> {
 	}
 }
 
-/// Probe one source's five backends concurrently.
-///
-/// The stores expose no dedicated ping (no [`registry::health::Probeable`]
-/// impls yet), so each probe is the cheapest read the store's API affords —
-/// where "the thing does not exist" is *proof of reachability*, it counts as
-/// healthy.
-async fn probe_source<M: EmbeddingModel>(stores: &SourceStores<M>) -> Vec<Probe> {
+/// Probe one source's five backends concurrently via [`Probeable`].
+async fn probe_source<M: EmbeddingModel>(stores: &SourceStores<M>) -> Vec<heart::Probe> {
 	let (postgres, object_store, terminus, qdrant, tantivy) = tokio::join!(
-		probe_postgres(stores),
-		probe_object_store(stores),
-		probe_terminus(stores),
-		probe_qdrant(stores),
-		probe_tantivy(stores),
+		stores.global_store.probe(),
+		stores.blobs.probe(),
+		stores.graph.probe(),
+		stores.semantics.probe(),
+		stores.text.probe(),
 	);
 	vec![postgres, object_store, terminus, qdrant, tantivy]
-}
-
-/// Time a probe body and shape its verdict.
-async fn timed(
-	backend: BackendKind,
-	body: impl Future<Output = Option<String>>,
-) -> Probe {
-	let started = Instant::now();
-	let detail = body.await;
-	Probe {
-		backend,
-		healthy: detail.is_none(),
-		latency_ms: u32::try_from(started.elapsed().as_millis()).ok(),
-		detail,
-	}
-}
-
-async fn probe_postgres<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
-	timed(BackendKind::Postgres, async {
-		match stores.global_store.get_state(PackageId::from_uuid(uuid::Uuid::nil())).await {
-			Ok(_) | Err(IndexError::NotFound { .. }) => None,
-			Err(error) => Some(error.to_string()),
-		}
-	})
-	.await
-}
-
-async fn probe_object_store<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
-	timed(BackendKind::ObjectStore, async {
-		let sentinel = heart::ContentHash::of_bytes(b"nudox readiness sentinel");
-		match stores.blobs.get_section(sentinel).await {
-			Ok(_) | Err(registry::StoreError::NotFound { .. }) => None,
-			Err(error) => Some(error.to_string()),
-		}
-	})
-	.await
-}
-
-async fn probe_terminus<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
-	use runtime::error::GraphError;
-	use runtime::graph::GraphStore;
-
-	timed(BackendKind::Terminus, async {
-		let nobody = heart::SymbolId::from_uuid(uuid::Uuid::nil());
-		match stores.graph.are_related(nobody, nobody).await {
-			Ok(_) | Err(GraphError::NotFound) | Err(GraphError::Query(_)) => None,
-			Err(error) => Some(error.to_string()),
-		}
-	})
-	.await
-}
-
-async fn probe_qdrant<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
-	use runtime::error::VectorError;
-
-	timed(BackendKind::Qdrant, async {
-		// A one-hit zero-vector query: cheap, and gated like every semantic read
-		// (the token still comes from the planner module, the one minting home).
-		let gate = crate::search::SearchPlanner::extend_across_federation("readiness probe");
-		let query = runtime::vector::Embedding::<M>::zeroed();
-		match stores.semantics.search(gate, &query, NonZeroUsize::MIN, None).await {
-			Ok(_) => None,
-			Err(error @ (VectorError::Connect(_) | VectorError::Transport(_))) => {
-				Some(error.to_string())
-			}
-			Err(_) => None,
-		}
-	})
-	.await
-}
-
-async fn probe_tantivy<M: EmbeddingModel>(stores: &SourceStores<M>) -> Probe {
-	timed(BackendKind::Tantivy, async {
-		let query = runtime::text::TextQuery::new("readiness");
-		let hits = stores.text.search(&query, NonZeroUsize::MIN, None);
-		futures::pin_mut!(hits);
-		match hits.next().await {
-			None | Some(Ok(_)) => None,
-			Some(Err(error)) => Some(error.to_string()),
-		}
-	})
-	.await
 }

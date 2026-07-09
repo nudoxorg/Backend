@@ -40,6 +40,26 @@ impl TextQuery {
 	}
 }
 
+impl heart::Probeable for TextIndex {
+	fn backend(&self) -> heart::BackendKind {
+		heart::BackendKind::Tantivy
+	}
+
+	async fn probe(&self) -> heart::Probe {
+		use futures::StreamExt;
+		heart::timed_probe(heart::BackendKind::Tantivy, async {
+			let query = TextQuery::new("readiness");
+			let hits = self.search(&query, NonZeroUsize::MIN, None);
+			futures::pin_mut!(hits);
+			match hits.next().await {
+				None | Some(Ok(_)) => None,
+				Some(Err(error)) => Some(error.to_string()),
+			}
+		})
+		.await
+	}
+}
+
 impl TextIndex {
 	/// Fetch a single symbol by its exact [`SymbolId`].
 	///

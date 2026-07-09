@@ -85,6 +85,7 @@ rust_crate(
         crate("toml"),
         crate("rowan"),
         crate("url"),
+        crate("tempfile"),
     ]),
 )
 

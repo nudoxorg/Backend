@@ -288,17 +288,20 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 	match run(spec) {
 		Ok(out) => {
 			if out.success() {
+				let status = out.status().expect("success implies exited");
 				Ok(StdOutput {
-					status: out.status,
+					status,
 					stdout: out.stdout,
 					stderr: out.stderr,
 				})
 			} else {
+				let status = match out.end {
+					sandbox::ProcessEnd::Exited(s) => s.to_string(),
+					sandbox::ProcessEnd::Killed(r) => format!("killed ({r})"),
+				};
 				Err(IsolatedFailure {
 					command: command_label,
-					kind: IsolatedFailureKind::NonZero {
-						status: out.status.to_string(),
-					},
+					kind: IsolatedFailureKind::NonZero { status },
 					stdout: nonempty_utf8(&out.stdout),
 					stderr: nonempty_utf8(&out.stderr),
 				})
@@ -385,15 +388,12 @@ fn which_bin(bin: &Path) -> Result<PathBuf, ()> {
 	Err(())
 }
 
-/// Whether production requires the worker path (no in-process interpreters).
+/// Whether the worker path is mandatory (no in-process interpreters).
+///
+/// Delegates to the single prod-gate resolution in
+/// [`sandbox::IsolationPolicy::require_worker`].
 pub fn require_worker() -> bool {
-	matches!(
-		std::env::var("NUDOX_SANDBOX_REQUIRE").as_deref(),
-		Ok("1") | Ok("true")
-	) || matches!(
-		std::env::var("NUDOX_ENV").as_deref(),
-		Ok("prod") | Ok("production")
-	) || std::env::var_os("NUDOX_PRODUCER_WORKER").is_some()
+	sandbox::IsolationPolicy::require_worker()
 }
 
 fn nix_pool() -> Option<&'static WorkerPool> {
