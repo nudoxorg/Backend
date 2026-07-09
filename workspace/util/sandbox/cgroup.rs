@@ -8,7 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::error::SandboxError;
+use crate::error::{CageError, SandboxError};
 use crate::limits::Limits;
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
@@ -36,8 +36,12 @@ impl Cgroup {
 			SEQ.fetch_add(1, Ordering::Relaxed)
 		);
 		let path = parent.join(&name);
-		fs::create_dir(&path)
-			.map_err(|e| SandboxError::Backend(format!("cgroup create {}: {e}", path.display())))?;
+		fs::create_dir(&path).map_err(|e| {
+			SandboxError::from(CageError::CgroupWrite {
+				path: path.clone(),
+				message: format!("create: {e}"),
+			})
+		})?;
 
 		let cg = Self { path };
 		if let Err(e) = cg.apply(limits) {
@@ -81,10 +85,10 @@ impl Cgroup {
 		match fs::write(&path, "1") {
 			Ok(()) => Ok(()),
 			Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-			Err(e) => Err(SandboxError::Backend(format!(
-				"cgroup write {}: {e}",
-				path.display()
-			))),
+			Err(e) => Err(SandboxError::from(CageError::CgroupWrite {
+				path,
+				message: e.to_string(),
+			})),
 		}
 	}
 
@@ -113,8 +117,12 @@ impl Drop for Cgroup {
 }
 
 fn write_file(path: PathBuf, contents: &str) -> Result<(), SandboxError> {
-	fs::write(&path, contents)
-		.map_err(|e| SandboxError::Backend(format!("cgroup write {}: {e}", path.display())))
+	fs::write(&path, contents).map_err(|e| {
+		SandboxError::from(CageError::CgroupWrite {
+			path,
+			message: e.to_string(),
+		})
+	})
 }
 
 /// Whether a writable cgroup v2 parent exists (for probes / admission).

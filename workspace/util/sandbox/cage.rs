@@ -195,6 +195,12 @@ impl LinuxNamespaces {
 		ro_bind_if(&mut args, "/etc/resolv.conf", "/etc/resolv.conf");
 		ro_bind_if(&mut args, "/etc/hosts", "/etc/hosts");
 
+		// Primary scratch is required; optional extra binds stay soft-skip.
+		if !cmd.budget.fs.scratch.exists() {
+			return Err(CageError::MountMissing {
+				path: cmd.budget.fs.scratch.clone(),
+			});
+		}
 		let mounts = cmd.budget.fs.to_mounts();
 		for path in &mounts.read_only {
 			let path = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -323,9 +329,7 @@ impl LinuxNamespaces {
 		}
 
 		if cancel.is_cancelled() {
-			if let Some(ref cg) = cgroup {
-				let _ = cg.kill_all();
-			}
+			// No child yet — nothing to kill.
 			return Err(CageError::Cancelled);
 		}
 
@@ -334,11 +338,9 @@ impl LinuxNamespaces {
 			let _ = cg.add_pid(child.id());
 		}
 
-		let result = supervisor::supervise(child, &limits, cgroup).map_err(CageError::from);
-		if cancel.is_cancelled() {
-			return Err(CageError::Cancelled);
-		}
-		result
+		// Mid-run cancel: supervisor polls cancel each iteration and force-kills
+		// via cgroup.kill + child.kill.
+		supervisor::supervise(child, &limits, cgroup, cancel).map_err(CageError::from)
 	}
 }
 
@@ -390,12 +392,16 @@ fn ro_bind_if(args: &mut Vec<std::ffi::OsString>, src: &str, dst: &str) {
 	}
 }
 
-/// Compile denylist BPF once; return a stable path for `pre_exec` open+dup2.
+/// Compile denylist BPF once on **success**; failures are not cached so a
+/// later retry can still install the filter.
 fn seccomp_bpf_path() -> Result<PathBuf, CageError> {
-	static PATH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-	PATH.get_or_init(|| compile_seccomp_path().map_err(|e| e.to_string()))
-		.clone()
-		.map_err(CageError::SeccompCompile)
+	static PATH: OnceLock<PathBuf> = OnceLock::new();
+	if let Some(p) = PATH.get() {
+		return Ok(p.clone());
+	}
+	let p = compile_seccomp_path()?;
+	let _ = PATH.set(p.clone());
+	Ok(p)
 }
 
 fn compile_seccomp_path() -> Result<PathBuf, CageError> {
@@ -572,26 +578,38 @@ impl Cage for DevPassthrough {
 		}
 
 		if cancel.is_cancelled() {
-			if let Some(ref cg) = cgroup {
-				let _ = cg.kill_all();
-			}
 			return Err(CageError::Cancelled);
 		}
 
 		let child = proc.spawn().map_err(CageError::Spawn)?;
-		let result = supervisor::supervise(child, &limits, cgroup).map_err(CageError::from);
-		if cancel.is_cancelled() {
-			return Err(CageError::Cancelled);
-		}
-		result
+		supervisor::supervise(child, &limits, cgroup, cancel).map_err(CageError::from)
 	}
 }
 
-/// Run via the process-wide default backend, as a sealed command.
+/// Run a sealed command on a platform-appropriate cage, honoring `cancel`.
+///
+/// Uses [`LinuxNamespaces`] when bwrap is available; otherwise
+/// [`DevPassthrough`] under a development policy (or the process-wide Backend
+/// shim when construction fails).
 pub fn run_sealed(cmd: SealedCommand, cancel: &CancelToken) -> Result<Captured, CageError> {
-	let spec = cmd.into_spec();
 	if cancel.is_cancelled() {
 		return Err(CageError::Cancelled);
 	}
-	crate::run(spec).map_err(CageError::from)
+
+	#[cfg(target_os = "linux")]
+	{
+		let linux = LinuxNamespaces::new();
+		if linux.probe_available() {
+			return Cage::run(&linux, cmd, cancel);
+		}
+	}
+
+	match DevPassthrough::try_new(Policy::from_env()) {
+		Ok(dev) => Cage::run(&dev, cmd, cancel),
+		Err(_) => {
+			// Production host without bwrap: fall through to selected Backend
+			// (will Deny/fail closed under RequireProduction).
+			crate::run(cmd.into_spec()).map_err(CageError::from)
+		}
+	}
 }

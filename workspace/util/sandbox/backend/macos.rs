@@ -48,7 +48,11 @@ impl MacSeatbelt {
 			.iter()
 			.chain(spec.mounts.writable.iter())
 		{
-			let s = path.display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
+			let s = path
+				.display()
+				.to_string()
+				.replace('\\', "\\\\")
+				.replace('"', "\\\"");
 			allows.push_str(&format!("  (subpath \"{s}\")\n"));
 		}
 		// System + Nix store (required for store-linked cargo/rustc dyld).
@@ -72,7 +76,11 @@ impl MacSeatbelt {
 
 		let mut rw = String::new();
 		for path in &spec.mounts.writable {
-			let s = path.display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
+			let s = path
+				.display()
+				.to_string()
+				.replace('\\', "\\\\")
+				.replace('"', "\\\"");
 			rw.push_str(&format!("  (subpath \"{s}\")\n"));
 		}
 		rw.push_str("  (subpath \"/private/tmp\")\n");
@@ -133,11 +141,12 @@ impl Backend for MacSeatbelt {
 	}
 
 	fn run(&self, spec: Spec) -> Result<Output, SandboxError> {
-		let sandbox_exec = self.sandbox_exec.as_ref().ok_or_else(|| {
-			SandboxError::HelperMissing {
-				program: "sandbox-exec".into(),
-			}
-		})?;
+		let sandbox_exec =
+			self.sandbox_exec
+				.as_ref()
+				.ok_or_else(|| SandboxError::HelperMissing {
+					program: "sandbox-exec".into(),
+				})?;
 
 		if which::which(&spec.command).is_err() && !spec.command.exists() {
 			return Err(SandboxError::ToolchainMissing {
@@ -175,15 +184,13 @@ impl Backend for MacSeatbelt {
 			use std::os::unix::process::CommandExt;
 			let limits = limits;
 			unsafe {
-				cmd.pre_exec(move || {
-					apply_rlimits(&limits).map_err(crate::error::to_io_error)
-				});
+				cmd.pre_exec(move || apply_rlimits(&limits).map_err(crate::error::to_io_error));
 			}
 		}
 
 		let child = cmd.spawn().map_err(SandboxError::Spawn)?;
 		drop(profile_file);
-		supervisor::supervise(child, &limits, None)
+		supervisor::supervise(child, &limits, None, &crate::CancelToken::never())
 	}
 }
 

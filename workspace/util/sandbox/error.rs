@@ -86,6 +86,10 @@ pub enum SandboxError {
 	#[error("sandbox backend error: {0}")]
 	Backend(String),
 
+	/// Caller cancelled via [`crate::CancelToken`].
+	#[error("sandbox run cancelled")]
+	Cancelled,
+
 	/// I/O while reading child pipes or scratch.
 	#[error("sandbox I/O error")]
 	Io(#[from] io::Error),
@@ -179,7 +183,21 @@ impl From<SandboxError> for CageError {
 			SandboxError::HelperMissing { program } => Self::HelperMissing { program },
 			SandboxError::Spawn(err) => Self::Spawn(err),
 			SandboxError::Killed { reason, wall } => Self::Killed { reason, wall },
+			// Recover enumerated cgroup writes encoded via SandboxError::from(CageError).
+			SandboxError::Backend(s) if s.starts_with("cgroup write ") => {
+				// "cgroup write {path}: {message}"
+				let rest = s.trim_start_matches("cgroup write ");
+				if let Some((path, message)) = rest.split_once(": ") {
+					Self::CgroupWrite {
+						path: PathBuf::from(path),
+						message: message.to_string(),
+					}
+				} else {
+					Self::Backend(s)
+				}
+			}
 			SandboxError::Backend(s) => Self::Backend(s),
+			SandboxError::Cancelled => Self::Cancelled,
 			SandboxError::Io(err) => Self::Io(err),
 		}
 	}
@@ -201,7 +219,7 @@ impl From<CageError> for SandboxError {
 				Self::Backend(format!("mount missing: {}", path.display()))
 			}
 			CageError::WorkerProtocol { detail } => Self::Backend(format!("worker: {detail}")),
-			CageError::Cancelled => Self::Backend("cancelled".into()),
+			CageError::Cancelled => Self::Cancelled,
 			CageError::Io(err) => Self::Io(err),
 			CageError::Backend(s) => Self::Backend(s),
 		}

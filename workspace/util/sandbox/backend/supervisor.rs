@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::cancel::CancelToken;
 use crate::cgroup::Cgroup;
 use crate::error::{KillReason, SandboxError};
 use crate::limits::Limits;
@@ -11,7 +12,16 @@ use crate::observer;
 use crate::spec::Output;
 
 /// Drive a spawned child to completion under `limits`.
-pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> Result<Output, SandboxError> {
+///
+/// Honors `cancel` each poll iteration: writes `cgroup.kill` (when a cgroup is
+/// owned) then kills the direct child. Forced kills (wall, output cap, cancel)
+/// always go through [`force_kill`].
+pub fn supervise(
+	mut child: Child,
+	limits: &Limits,
+	cgroup: Option<Cgroup>,
+	cancel: &CancelToken,
+) -> Result<Output, SandboxError> {
 	if let Some(ref cg) = cgroup {
 		if let Err(e) = cg.add_pid(child.id()) {
 			tracing::warn!(error = %e, "cgroup attach failed; relying on rlimits");
@@ -27,15 +37,17 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 	let mut stderr_done = false;
 
 	// Non-blocking-ish drain with deadline: use try_wait + read with short sleeps.
-	// For simplicity and correctness under small tools, we set pipes nonblocking
-	// via a short polling loop.
 	make_nonblocking(child.stdout.as_mut());
 	make_nonblocking(child.stderr.as_mut());
 
 	loop {
+		if cancel.is_cancelled() {
+			force_kill(&mut child, cgroup.as_ref());
+			return Err(SandboxError::Cancelled);
+		}
+
 		if Instant::now() >= deadline {
-			let _ = child.kill();
-			let _ = child.wait();
+			force_kill(&mut child, cgroup.as_ref());
 			let wall = start.elapsed();
 			observer::global().job_killed(None, KillReason::Wall);
 			return Err(SandboxError::Killed {
@@ -50,8 +62,7 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 					Drain::WouldBlock => {}
 					Drain::Eof => stdout_done = true,
 					Drain::Capped => {
-						let _ = child.kill();
-						let _ = child.wait();
+						force_kill(&mut child, cgroup.as_ref());
 						let wall = start.elapsed();
 						observer::global().job_killed(None, KillReason::OutputCap);
 						return Err(SandboxError::Killed {
@@ -72,8 +83,7 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 					Drain::WouldBlock => {}
 					Drain::Eof => stderr_done = true,
 					Drain::Capped => {
-						let _ = child.kill();
-						let _ = child.wait();
+						force_kill(&mut child, cgroup.as_ref());
 						let wall = start.elapsed();
 						observer::global().job_killed(None, KillReason::OutputCap);
 						return Err(SandboxError::Killed {
@@ -143,6 +153,16 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 			Err(e) => return Err(SandboxError::Io(e)),
 		}
 	}
+}
+
+/// Kill the process tree: cgroup.kill first (covers forked guests), then the
+/// direct child, then wait.
+fn force_kill(child: &mut Child, cgroup: Option<&Cgroup>) {
+	if let Some(cg) = cgroup {
+		let _ = cg.kill_all();
+	}
+	let _ = child.kill();
+	let _ = child.wait();
 }
 
 enum Drain {

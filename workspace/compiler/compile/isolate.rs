@@ -13,8 +13,8 @@ use std::process::Output as StdOutput;
 use std::sync::OnceLock;
 
 use sandbox::{
-	CancelToken, Env, KillReason, LimitOverride, Mounts, Network, ProducerProfile, SandboxError,
-	SealedCommand, Sealer, WorkerLang, WorkerPool, WorkerPoolConfig, run,
+	Env, KillReason, LimitOverride, Mounts, Network, ProducerProfile, SandboxError, SealedCommand,
+	Sealer, WorkerLang, WorkerPool, WorkerPoolConfig, run,
 };
 
 /// Map a sandbox kill / denial into a displayable process-style failure.
@@ -246,9 +246,8 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 	);
 
 	let sealed = seal_isolated(cmd);
-	// Shim: project to Spec and use the process-wide backend. Direct Cage::run
-	// lands fully once ForgeRuntime owns the cage (Phase 4).
-	let _cancel = CancelToken::never();
+	// Phase 2 shim: seal → Spec → process-wide Backend. Full Cage::run with a
+	// live CancelToken waits on ForgeRuntime (Phase 4).
 	let spec = sealed.into_spec();
 	match run(spec) {
 		Ok(out) => {

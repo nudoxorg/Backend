@@ -1,15 +1,22 @@
 //! Cooperative cancellation for cage runs.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 /// Shared cancellation flag for in-flight cage work.
 ///
-/// Cheap to clone. Linux cages honor cancel by writing `cgroup.kill` when a
-/// cgroup is owned; worker slots kill the child process tree the same way.
-#[derive(Debug, Clone, Default)]
+/// Cheap to clone. Linux cages honor cancel mid-run by writing `cgroup.kill`
+/// (via the supervisor) when a cgroup is owned; worker slots kill the child
+/// process tree the same way.
+#[derive(Debug, Clone)]
 pub struct CancelToken {
 	inner: Arc<AtomicBool>,
+}
+
+impl Default for CancelToken {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl CancelToken {
@@ -20,10 +27,17 @@ impl CancelToken {
 		}
 	}
 
-	/// Token that is never cancelled (shared static-friendly handle).
+	/// Process-wide token that is never cancelled.
+	///
+	/// Do **not** call [`cancel`](Self::cancel) on this handle — it is shared.
 	pub fn never() -> Self {
-		// Distinct instance; never call cancel on it.
-		Self::new()
+		static NEVER: OnceLock<CancelToken> = OnceLock::new();
+		NEVER
+			.get_or_init(|| Self {
+				// Shared flag that stays false for the process lifetime.
+				inner: Arc::new(AtomicBool::new(false)),
+			})
+			.clone()
 	}
 
 	/// Request cancellation. Idempotent.

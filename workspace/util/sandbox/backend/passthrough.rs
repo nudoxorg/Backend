@@ -52,8 +52,9 @@ impl Backend for Passthrough {
 	fn run(&self, spec: Spec) -> Result<Output, SandboxError> {
 		if self.production_forbidden() {
 			return Err(SandboxError::Denied {
-				reason: "passthrough backend forbidden when NUDOX_SANDBOX_REQUIRE=1 or NUDOX_ENV=prod"
-					.into(),
+				reason:
+					"passthrough backend forbidden when NUDOX_SANDBOX_REQUIRE=1 or NUDOX_ENV=prod"
+						.into(),
 			});
 		}
 
@@ -92,6 +93,6 @@ impl Backend for Passthrough {
 		}
 
 		let child = cmd.spawn().map_err(SandboxError::Spawn)?;
-		supervisor::supervise(child, &limits, cgroup)
+		supervisor::supervise(child, &limits, cgroup, &crate::CancelToken::never())
 	}
 }

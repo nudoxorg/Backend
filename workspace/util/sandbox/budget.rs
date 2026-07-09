@@ -55,11 +55,21 @@ impl FsGrant {
 	}
 
 	/// Build from legacy mounts; `scratch` becomes the primary RW root.
+	///
+	/// Any entry in `mounts.writable` equal to `scratch` is dropped so the
+	/// primary is not double-bound by [`to_mounts`](Self::to_mounts). Matches
+	/// [`crate::SealedCommand::from_spec`]'s peel of the first writable.
 	pub fn from_mounts(mounts: Mounts, scratch: impl Into<PathBuf>) -> Self {
+		let scratch = scratch.into();
+		let writable = mounts
+			.writable
+			.into_iter()
+			.filter(|p| p != &scratch)
+			.collect();
 		Self {
 			read_only: mounts.read_only,
-			scratch: scratch.into(),
-			writable: mounts.writable,
+			scratch,
+			writable,
 		}
 	}
 

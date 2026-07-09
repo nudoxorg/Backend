@@ -217,11 +217,43 @@ impl FreeList {
 	}
 }
 
+/// RAII lease: always returns the slot to the free-list on drop (including panic).
+struct Lease<'a> {
+	free: &'a FreeList,
+	slot: Option<WorkerSlot>,
+}
+
+impl<'a> Lease<'a> {
+	fn take(free: &'a FreeList) -> Self {
+		Self {
+			free,
+			slot: Some(free.take()),
+		}
+	}
+
+	fn slot_mut(&mut self) -> &mut WorkerSlot {
+		self.slot.as_mut().expect("lease slot present until drop")
+	}
+}
+
+impl Drop for Lease<'_> {
+	fn drop(&mut self) {
+		if let Some(slot) = self.slot.take() {
+			self.free.put(slot);
+		}
+	}
+}
+
 /// A pool of sandboxed worker processes (cage-internal runner).
 ///
 /// Real parallelism equals [`WorkerPoolConfig::size`]: a free-list hands out
 /// slots; the free-list mutex is **not** held during worker I/O (unlike the
 /// Phase-0 serial design).
+///
+/// **Drop contract:** do not call [`submit`](Self::submit) concurrently with
+/// dropping the pool (e.g. while other threads hold an `Arc<WorkerPool>` and
+/// still submit). Drop only drains slots currently on the free list; in-flight
+/// leases return workers after Drop has finished. Join in-flight work first.
 pub struct WorkerPool {
 	config: WorkerPoolConfig,
 	free: FreeList,
@@ -267,11 +299,9 @@ impl WorkerPool {
 			return Err(CageError::Cancelled.into());
 		}
 
-		// Take a slot without holding the free-list lock during I/O.
-		let mut slot = self.free.take();
-		let result = self.run_on_slot(&mut slot, &req, cancel);
-		self.free.put(slot);
-		result
+		// Lease returns the slot even if run_on_slot panics.
+		let mut lease = Lease::take(&self.free);
+		self.run_on_slot(lease.slot_mut(), &req, cancel)
 	}
 
 	fn run_on_slot(
@@ -396,7 +426,9 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 			detail: "worker stdout missing".into(),
 		})?;
 
-	// Non-blocking stdout so wall deadlines cannot hang the slot forever.
+	// Non-blocking pipes so wall/cancel deadlines cannot hang the slot forever
+	// on a full write buffer or a silent worker.
+	make_nonblocking(&stdin);
 	make_nonblocking(&stdout);
 
 	Ok(WorkerSlot {
@@ -409,6 +441,9 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 	})
 }
 
+/// Cap on a single protocol line (worker responses are IR JSON, not unbounded).
+const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+
 fn call_worker(
 	slot: &mut WorkerSlot,
 	req: &JobRequest,
@@ -419,17 +454,14 @@ fn call_worker(
 		return Err(CageError::Cancelled.into());
 	}
 
-	let line = serde_json::to_string(req).map_err(|e| CageError::WorkerProtocol {
+	let mut line = serde_json::to_string(req).map_err(|e| CageError::WorkerProtocol {
 		detail: format!("serialize request: {e}"),
 	})?;
-	writeln!(slot.stdin, "{line}").map_err(|e| CageError::WorkerProtocol {
-		detail: format!("worker write: {e}"),
-	})?;
-	slot.stdin.flush().map_err(|e| CageError::WorkerProtocol {
-		detail: format!("worker flush: {e}"),
-	})?;
+	line.push('\n');
 
 	let deadline = Instant::now() + wall;
+	write_all_deadline(slot, line.as_bytes(), deadline, cancel, wall)?;
+
 	loop {
 		if cancel.is_cancelled() {
 			slot.kill_tree();
@@ -461,6 +493,60 @@ fn call_worker(
 	}
 }
 
+/// Write `bytes` to the worker stdin with a wall/cancel deadline (non-blocking).
+fn write_all_deadline(
+	slot: &mut WorkerSlot,
+	mut bytes: &[u8],
+	deadline: Instant,
+	cancel: &CancelToken,
+	wall: Duration,
+) -> Result<(), SandboxError> {
+	while !bytes.is_empty() {
+		if cancel.is_cancelled() {
+			slot.kill_tree();
+			return Err(CageError::Cancelled.into());
+		}
+		if Instant::now() >= deadline {
+			slot.kill_tree();
+			return Err(SandboxError::Killed {
+				reason: KillReason::Wall,
+				wall,
+			});
+		}
+		match slot.stdin.write(bytes) {
+			Ok(0) => {
+				slot.kill_tree();
+				return Err(CageError::WorkerProtocol {
+					detail: "worker stdin closed".into(),
+				}
+				.into());
+			}
+			Ok(n) => bytes = &bytes[n..],
+			Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+				std::thread::sleep(Duration::from_millis(5));
+			}
+			Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+			Err(e) => {
+				slot.kill_tree();
+				return Err(CageError::WorkerProtocol {
+					detail: format!("worker write: {e}"),
+				}
+				.into());
+			}
+		}
+	}
+	// Best-effort flush (non-blocking may WouldBlock; remaining data is already
+	// in the kernel buffer after successful write).
+	match slot.stdin.flush() {
+		Ok(()) => Ok(()),
+		Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+		Err(e) => Err(CageError::WorkerProtocol {
+			detail: format!("worker flush: {e}"),
+		}
+		.into()),
+	}
+}
+
 /// Read one full line if available; `Ok(None)` on would-block.
 fn read_line_nonblock(slot: &mut WorkerSlot) -> Result<Option<String>, SandboxError> {
 	let mut tmp = [0u8; 4096];
@@ -473,6 +559,13 @@ fn read_line_nonblock(slot: &mut WorkerSlot) -> Result<Option<String>, SandboxEr
 				.into());
 			}
 			Ok(n) => {
+				if slot.line_buf.len() + n > MAX_LINE_BYTES {
+					slot.kill_tree();
+					return Err(CageError::WorkerProtocol {
+						detail: format!("worker line exceeds {MAX_LINE_BYTES} bytes"),
+					}
+					.into());
+				}
 				slot.line_buf.extend_from_slice(&tmp[..n]);
 				if let Some(pos) = slot.line_buf.iter().position(|&b| b == b'\n') {
 					let line = slot.line_buf.drain(..=pos).collect::<Vec<u8>>();
