@@ -1,0 +1,199 @@
+--- /tmp/terminus-orig/terminusdb-rs-4fefb0434f65baa847af5af9fc00175b3e4d827b/crates/schema/Cargo.toml	2026-06-06 17:13:42.000000000 -0400
++++ /tmp/schema-patched/Cargo.toml	2026-07-02 23:15:04.483561935 -0400
+@@ -34,20 +34,9 @@
+ serde_canonical_json = "1.0.0"
+ pretty_assertions = "1.4.1"
+ refined = "0.3.1"
+-rocket = "0.5.1"
+ urlencoding = "2.1"
+ tracing = { workspace = true }
+ 
+ [lib]
+ path = "src/lib.rs"
+ #crate-type = ["cdylib"]
+-
+-[dev-dependencies]
+-terminusdb-schema-derive = { path = "derive" }
+-terminusdb-woql2 = { path = "../woql2" }
+-terminusdb-relation = { path = "../relation" }
+-reqwest = "0.11"
+-
+-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+-tokio = "1"
+-tokio-test = "0.3.0"
+--- /tmp/terminus-orig/terminusdb-rs-4fefb0434f65baa847af5af9fc00175b3e4d827b/crates/schema/src/id.rs	2026-06-06 17:13:42.000000000 -0400
++++ /tmp/schema-patched/src/id.rs	2026-07-02 23:15:04.483180315 -0400
+@@ -6,8 +6,6 @@
+     ToSchemaProperty, ToTDBSchema, TypeFamily, STRING, URI,
+ };
+ use anyhow::{anyhow, bail};
+-use rocket::form::{self, FromFormField, ValueField};
+-use rocket::request::FromParam;
+ use serde::{Deserialize, Deserializer, Serialize, Serializer};
+ use serde_json::Value;
+ use std::collections::HashSet;
+@@ -564,39 +562,6 @@
+     }
+ }
+ 
+-// todo: put behind rocket-specific feature
+-impl<T: ToTDBSchema> FromParam<'_> for EntityIDFor<T> {
+-    type Error = anyhow::Error;
+-
+-    fn from_param(param: &'_ str) -> Result<Self, Self::Error> {
+-        // The param is the raw URL segment - could be:
+-        // 1. Just an ID: "123"
+-        // 2. Type/ID: "Person/123"
+-        // 3. Full IRI: "terminusdb://data#Person/123" (though URL encoding might affect this)
+-
+-        // URL decode the parameter first in case it contains encoded characters
+-        let decoded = urlencoding::decode(param)
+-            .map_err(|e| anyhow!("Failed to URL decode parameter: {}", e))?;
+-
+-        // Use the existing constructor which handles all formats
+-        Self::new_untyped(&decoded)
+-    }
+-}
+-
+-// Implement FromFormField for form submissions
+-impl<'r, T: ToTDBSchema + Send> FromFormField<'r> for EntityIDFor<T> {
+-    fn from_value(field: ValueField<'r>) -> form::Result<'r, Self> {
+-        // Use the existing new() method to parse the value
+-        match Self::new_untyped(field.value) {
+-            Ok(entity_id) => Ok(entity_id),
+-            Err(e) => Err(form::Error::validation(format!(
+-                "Invalid EntityIDFor<{}>: {}",
+-                T::schema_name(),
+-                e
+-            )))?,
+-        }
+-    }
+-}
+ 
+ /// A server-managed ID that wraps Option<EntityIDFor<T>> but is read-only for users.
+ /// This type can only be set by the HTTP client when retrieving models from the server.
+@@ -806,39 +771,6 @@
+     }
+ }
+ 
+-// Rocket FromParam implementation
+-impl<T: ToTDBSchema> FromParam<'_> for ServerIDFor<T> {
+-    type Error = anyhow::Error;
+-
+-    fn from_param(param: &'_ str) -> Result<Self, Self::Error> {
+-        // URL decode the parameter first
+-        let decoded = urlencoding::decode(param)
+-            .map_err(|e| anyhow!("Failed to URL decode parameter: {}", e))?;
+-
+-        // Parse as EntityIDFor
+-        let entity_id = EntityIDFor::new_untyped(&decoded)?;
+-        Ok(Self {
+-            inner: Some(entity_id),
+-        })
+-    }
+-}
+-
+-// Rocket FromFormField implementation
+-impl<'r, T: ToTDBSchema + Send + Class> FromFormField<'r> for ServerIDFor<T> {
+-    fn from_value(field: ValueField<'r>) -> form::Result<'r, Self> {
+-        // Try to parse as EntityIDFor
+-        match EntityIDFor::<T>::new(field.value) {
+-            Ok(entity_id) => Ok(Self {
+-                inner: Some(entity_id),
+-            }),
+-            Err(e) => Err(form::Error::validation(format!(
+-                "Invalid ServerIDFor<{}>: {}",
+-                T::schema_name(),
+-                e
+-            )))?,
+-        }
+-    }
+-}
+ 
+ #[cfg(test)]
+ mod tests {
+@@ -951,74 +883,8 @@
+         assert_eq!(entity_id.iri_string(), "terminusdb:///data/TestEntity/789");
+     }
+ 
+-    // Test FromFormField implementation
+-    #[test]
+-    fn test_from_form_field_simple_id() {
+-        use rocket::form::ValueField;
+-
+-        let field = ValueField {
+-            name: rocket::form::name::NameView::new("id"),
+-            value: "1234",
+-        };
+-
+-        let result = <EntityIDFor<TestEntity> as FromFormField>::from_value(field);
+-        assert!(result.is_ok());
+-        let entity_id = result.unwrap();
+-        assert_eq!(entity_id.id(), "1234");
+-        assert_eq!(entity_id.typed(), "TestEntity/1234");
+-    }
+-
+-    #[test]
+-    fn test_from_form_field_typed_id() {
+-        use rocket::form::ValueField;
+-
+-        let field = ValueField {
+-            name: rocket::form::name::NameView::new("id"),
+-            value: "TestEntity/5678",
+-        };
+-
+-        let result = <EntityIDFor<TestEntity> as FromFormField>::from_value(field);
+-        assert!(result.is_ok());
+-        let entity_id = result.unwrap();
+-        assert_eq!(entity_id.id(), "5678");
+-        assert_eq!(entity_id.typed(), "TestEntity/5678");
+-    }
+ 
+     #[test]
+-    fn test_from_form_field_invalid_type() {
+-        use rocket::form::ValueField;
+-
+-        let field = ValueField {
+-            name: rocket::form::name::NameView::new("id"),
+-            value: "WrongType/1234",
+-        };
+-
+-        let result = <EntityIDFor<TestEntity> as FromFormField>::from_value(field);
+-        assert!(result.is_err());
+-        let error = result.unwrap_err();
+-        assert!(error
+-            .to_string()
+-            .contains("Invalid EntityIDFor<TestEntity>"));
+-    }
+-
+-    #[test]
+-    fn test_from_form_field_iri() {
+-        use rocket::form::ValueField;
+-
+-        let field = ValueField {
+-            name: rocket::form::name::NameView::new("id"),
+-            value: "terminusdb://data#TestEntity/91011",
+-        };
+-
+-        let result = <EntityIDFor<TestEntity> as FromFormField>::from_value(field);
+-        assert!(result.is_ok());
+-        let entity_id = result.unwrap();
+-        assert_eq!(entity_id.id(), "91011");
+-        assert_eq!(entity_id.typed(), "TestEntity/91011");
+-    }
+-
+-    // ServerIDFor tests
+-    #[test]
+     fn test_server_id_for_new() {
+         let server_id: ServerIDFor<TestEntity> = ServerIDFor::new();
+         assert!(server_id.is_none());
+@@ -1172,8 +1038,7 @@
+ 
+     #[test]
+     fn test_server_id_for_from_param() {
+-        use rocket::request::FromParam;
+-
++        
+         // Simple ID
+         let result = ServerIDFor::<TestEntity>::from_param("simple-id");
+         assert!(result.is_ok());
