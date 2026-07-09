@@ -33,4 +33,9 @@ impl CasError {
 	pub(crate) fn io(path: impl Into<Option<PathBuf>>, source: std::io::Error) -> Self {
 		Self::Io { path: path.into(), source }
 	}
+
+	/// Whether this error means "tier absent / not wired" rather than a hard fail.
+	pub fn is_unsupported(&self) -> bool {
+		matches!(self, Self::Unsupported(_))
+	}
 }

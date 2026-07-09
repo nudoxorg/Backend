@@ -17,6 +17,9 @@ use heart::{ContentHash, JobKey, Toolchain};
 pub const PRODUCER_VERSION: &str = "nudox-producer/2";
 
 /// Process-wide CAS used by generate.
+///
+/// Open failures fall back to an L1-only store so a one-shot disk/permission
+/// problem does not permanently disable caching for the process lifetime.
 fn cas() -> Option<&'static Tiered> {
 	static CAS: OnceLock<Option<Tiered>> = OnceLock::new();
 	CAS.get_or_init(|| {
@@ -26,18 +29,29 @@ fn cas() -> Option<&'static Tiered> {
 		) {
 			return None;
 		}
-		Tiered::default_open().ok()
+		match Tiered::default_open() {
+			Ok(t) => Some(t),
+			Err(e) => {
+				tracing::error!(
+					error = %e,
+					"cas default_open failed; falling back to memory-only L1"
+				);
+				Some(Tiered::memory_only(256))
+			},
+		}
 	})
 	.as_ref()
 }
 
 /// Drive a CAS future from the sync generate path.
 ///
-/// Generate runs on `spawn_blocking` (or bare unit tests). From a blocking
-/// worker, `Handle::block_on` is safe; without a runtime we spin a tiny one.
+/// Generate runs on `spawn_blocking` (or bare unit tests). When a multi-thread
+/// runtime handle is present we use `block_in_place` so an accidental call from
+/// an async task parks the worker instead of panicking. Without a runtime we
+/// spin a tiny current-thread one for tests.
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 	match tokio::runtime::Handle::try_current() {
-		Ok(handle) => handle.block_on(fut),
+		Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
 		Err(_) => {
 			static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 			let rt = RT.get_or_init(|| {
@@ -154,7 +168,15 @@ pub fn get(key: ContentHash) -> Option<Bytes> {
 	}
 }
 
-/// Store opaque bytes under `key` (best-effort).
+/// Drop a poison / wrong-version entry so a subsequent put can land.
+pub fn invalidate(key: ContentHash) {
+	let Some(c) = cas() else { return };
+	if let Err(e) = block_on(c.invalidate(key)) {
+		tracing::warn!(error = %e, "cas invalidate failed");
+	}
+}
+
+/// Store opaque bytes under `key` (best-effort, first-write-wins).
 pub fn put(key: ContentHash, bytes: Bytes) {
 	let Some(c) = cas() else { return };
 	if let Err(e) = block_on(c.put_keyed(key, bytes)) {

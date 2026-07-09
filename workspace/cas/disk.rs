@@ -3,9 +3,16 @@
 //! Layout: `{root}/cas/{blake3-hex}` — same shape as the historical parse-cache
 //! L2 and the registry object-store prefix. Each blob is self-authenticating:
 //! `blake3(value) ‖ value`.
+//!
+//! # Blocking I/O
+//!
+//! All methods hit the filesystem **synchronously**. Call them from a blocking
+//! context (`spawn_blocking`, or after `block_in_place`) — never from a Tokio
+//! worker task that needs to make progress while this runs.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use heart::ContentHash;
@@ -43,6 +50,14 @@ impl DiskCas {
 		self.root.join("cas").join(key.hex())
 	}
 
+	/// Unique sibling of `path` for a race-free publish step.
+	fn unique_tmp(path: &Path) -> PathBuf {
+		static COUNTER: AtomicU64 = AtomicU64::new(0);
+		let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+		let pid = std::process::id();
+		path.with_extension(format!("{pid}.{n}.tmp"))
+	}
+
 	/// Synchronous get — for callers already on a blocking thread.
 	pub fn get_sync(&self, key: ContentHash) -> Result<Option<Bytes>, CasError> {
 		let path = self.blob_path(key);
@@ -60,16 +75,59 @@ impl DiskCas {
 		}
 	}
 
-	/// Synchronous put_keyed.
+	/// Synchronous put_keyed (first-write-wins, race-safe).
+	///
+	/// Writes a uniquely-named temp blob, then publishes with `hard_link` so a
+	/// concurrent creator loses cleanly (`AlreadyExists` → `Ok(false)`). Falls
+	/// back to rename when hard links are unavailable.
 	pub fn put_keyed_sync(&self, key: ContentHash, bytes: Bytes) -> Result<bool, CasError> {
 		let path = self.blob_path(key);
 		if path.exists() {
 			return Ok(false);
 		}
-		let tmp = path.with_extension("tmp");
-		fs::write(&tmp, envelope(&bytes)).map_err(|source| CasError::io(Some(tmp.clone()), source))?;
-		fs::rename(&tmp, &path).map_err(|source| CasError::io(Some(path), source))?;
-		Ok(true)
+
+		let tmp = Self::unique_tmp(&path);
+		fs::write(&tmp, envelope(&bytes))
+			.map_err(|source| CasError::io(Some(tmp.clone()), source))?;
+
+		match fs::hard_link(&tmp, &path) {
+			Ok(()) => {
+				let _ = fs::remove_file(&tmp);
+				Ok(true)
+			},
+			Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+				let _ = fs::remove_file(&tmp);
+				Ok(false)
+			},
+			Err(_) => {
+				// FS without hard links (or cross-device): exclusive-ish rename.
+				if path.exists() {
+					let _ = fs::remove_file(&tmp);
+					return Ok(false);
+				}
+				match fs::rename(&tmp, &path) {
+					Ok(()) => Ok(true),
+					Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+						let _ = fs::remove_file(&tmp);
+						Ok(false)
+					},
+					Err(source) => {
+						let _ = fs::remove_file(&tmp);
+						Err(CasError::io(Some(path), source))
+					},
+				}
+			},
+		}
+	}
+
+	/// Synchronous invalidate.
+	pub fn invalidate_sync(&self, key: ContentHash) -> Result<(), CasError> {
+		let path = self.blob_path(key);
+		match fs::remove_file(&path) {
+			Ok(()) => Ok(()),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+			Err(source) => Err(CasError::io(Some(path), source)),
+		}
 	}
 }
 
@@ -86,6 +144,10 @@ impl Cas for DiskCas {
 
 	async fn put_keyed(&self, key: ContentHash, bytes: Bytes) -> Result<bool, CasError> {
 		self.put_keyed_sync(key, bytes)
+	}
+
+	async fn invalidate(&self, key: ContentHash) -> Result<(), CasError> {
+		self.invalidate_sync(key)
 	}
 }
 
@@ -107,3 +169,6 @@ fn strip_envelope(bytes: &[u8]) -> Option<Vec<u8>> {
 	}
 	Some(value.to_vec())
 }
+
+#[cfg(test)]
+pub(crate) fn envelope_for_test(value: &[u8]) -> Vec<u8> { envelope(value) }

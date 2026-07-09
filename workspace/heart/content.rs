@@ -139,4 +139,15 @@ mod tests {
 		assert_ne!(k.with_tag(b"cst"), k.with_tag(b"archive"));
 		assert_ne!(k.with_tag(b"cst"), k.as_hash());
 	}
+
+	/// Golden digest for the historical `CacheKey::derive` length-prefix layout.
+	/// Changing the encoding is a cache-invalidation event — fail loudly.
+	#[test]
+	fn job_key_derive_matches_historical_layout() {
+		let k = JobKey::derive(b"1.0.0", b"tc", b"src", b"lock");
+		assert_eq!(
+			k.hex(),
+			"3ae60363db0e590a112c9a1bf085bc8ad744a168a7263fea78b1390b2bb26e3e"
+		);
+	}
 }

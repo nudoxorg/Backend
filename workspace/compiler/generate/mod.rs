@@ -120,8 +120,11 @@ where
 				return Ok(value);
 			},
 			Err(e) => {
-				// Corrupt / wrong-version entry — fall through to recompute.
-				tracing::warn!(key = %key, error = %e, "cas value decode failed; recomputing");
+				// Envelope-valid but undecodable: drop the poison entry so the
+				// recompute can put a fresh value (first-write-wins otherwise
+				// leaves the bad blob on disk forever).
+				tracing::warn!(key = %key, error = %e, "cas value decode failed; invalidating");
+				parse_cache::invalidate(key);
 			},
 		}
 	}

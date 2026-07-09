@@ -17,10 +17,17 @@ const PROMOTE_COST: Duration = Duration::from_millis(1);
 /// immutable under a fixed job key; a long TTL just bounds memory residency.
 const L1_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Tiered CAS: in-process stampede cache, optional local disk, optional L3 stub.
+/// Tiered CAS: in-process stampede cache, optional local disk, optional L3.
 ///
-/// Read order: L1 → L2 → L3. Hits promote upward. Writes go to every configured
-/// tier (L1 always; L2/L3 when present).
+/// Read order: L1 → L2 → L3. Hits promote upward.
+///
+/// Write policy (best-effort lower tiers):
+/// - Durable tiers (L2, then L3) are written before L1.
+/// - [`CasError::Unsupported`] from L3 is treated as "tier absent" (skip), so a
+///   Phase 1 [`RegistryCas`] stub never fails a put/get.
+/// - First-write-wins on durable tiers: when L2 already holds the key, L1 is
+///   filled from L2 (not from the caller's possibly-different bytes) so the
+///   tiers cannot diverge.
 pub struct Tiered {
 	l1: StampedeCache<ContentHash, Bytes>,
 	l2: Option<DiskCas>,
@@ -46,7 +53,7 @@ impl Tiered {
 		Ok(Self::new(256, Some(DiskCas::default_open()?), None))
 	}
 
-	/// L1 only (tests).
+	/// L1 only (tests / open-failure fallback).
 	pub fn memory_only(capacity: u64) -> Self {
 		Self::new(capacity, None, None)
 	}
@@ -64,19 +71,31 @@ impl Cas for Tiered {
 		}
 
 		if let Some(l2) = &self.l2 {
-			if let Some(v) = l2.get(key).await? {
-				self.l1.insert(key, v.clone(), PROMOTE_COST).await;
-				return Ok(Some(v));
+			match l2.get(key).await {
+				Ok(Some(v)) => {
+					self.l1.insert(key, v.clone(), PROMOTE_COST).await;
+					return Ok(Some(v));
+				},
+				Ok(None) => {},
+				// Integrity errors already deleted the blob; treat as miss.
+				Err(e) if matches!(e, CasError::Integrity { .. }) => {},
+				Err(e) => return Err(e),
 			}
 		}
 
 		if let Some(l3) = &self.l3 {
-			if let Some(v) = l3.get(key).await? {
-				if let Some(l2) = &self.l2 {
-					let _ = l2.put_keyed(key, v.clone()).await?;
-				}
-				self.l1.insert(key, v.clone(), PROMOTE_COST).await;
-				return Ok(Some(v));
+			match l3.get(key).await {
+				Ok(Some(v)) => {
+					if let Some(l2) = &self.l2 {
+						let _ = l2.put_keyed(key, v.clone()).await?;
+					}
+					self.l1.insert(key, v.clone(), PROMOTE_COST).await;
+					return Ok(Some(v));
+				},
+				Ok(None) => {},
+				// Unwired L3 is a soft miss, not a hard failure.
+				Err(e) if e.is_unsupported() => {},
+				Err(e) => return Err(e),
 			}
 		}
 
@@ -92,14 +111,49 @@ impl Cas for Tiered {
 	async fn put_keyed(&self, key: ContentHash, bytes: Bytes) -> Result<bool, CasError> {
 		// Write durable tiers first so a crash after L1 insert still has the blob.
 		let mut novel = true;
+
 		if let Some(l2) = &self.l2 {
 			novel = l2.put_keyed(key, bytes.clone()).await?;
+		} else if self.l1.get(&key).await.is_some() {
+			// Memory-only: L1 is the durable face — first-write-wins there too.
+			novel = false;
+		}
+
+		if let Some(l3) = &self.l3 {
+			match l3.put_keyed(key, bytes.clone()).await {
+				Ok(wrote) => novel = novel && wrote,
+				Err(e) if e.is_unsupported() => {},
+				Err(e) => return Err(e),
+			}
+		}
+
+		if novel {
+			self.l1.insert(key, bytes, PROMOTE_COST).await;
+		} else if self.l1.get(&key).await.is_none() {
+			// Durable tier already held the key; promote *that* value into L1
+			// so we never let a losing concurrent put poison L1.
+			if let Some(l2) = &self.l2 {
+				if let Ok(Some(existing)) = l2.get(key).await {
+					self.l1.insert(key, existing, PROMOTE_COST).await;
+				}
+			}
+		}
+
+		Ok(novel)
+	}
+
+	async fn invalidate(&self, key: ContentHash) -> Result<(), CasError> {
+		self.l1.invalidate(&key).await;
+		if let Some(l2) = &self.l2 {
+			l2.invalidate(key).await?;
 		}
 		if let Some(l3) = &self.l3 {
-			let wrote = l3.put_keyed(key, bytes.clone()).await?;
-			novel = novel && wrote;
+			match l3.invalidate(key).await {
+				Ok(()) => {},
+				Err(e) if e.is_unsupported() => {},
+				Err(e) => return Err(e),
+			}
 		}
-		self.l1.insert(key, bytes, PROMOTE_COST).await;
-		Ok(novel)
+		Ok(())
 	}
 }

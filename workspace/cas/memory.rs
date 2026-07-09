@@ -42,4 +42,10 @@ impl Cas for MemoryCas {
 			},
 		}
 	}
+
+	async fn invalidate(&self, key: ContentHash) -> Result<(), CasError> {
+		let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+		guard.remove(&key);
+		Ok(())
+	}
 }

@@ -4,6 +4,9 @@
 //! with forge assembly) or force object-store types into this crate. The
 //! adapter shape is fixed so Phase 4 (`ForgeRuntime`) can hand a real backend
 //! without changing [`crate::Cas`] or [`crate::Tiered`].
+//!
+//! [`Tiered`] treats [`CasError::Unsupported`] as "tier absent" so composing a
+//! stub never hard-fails a get/put.
 
 use bytes::Bytes;
 use heart::ContentHash;
@@ -37,5 +40,10 @@ impl Cas for RegistryCas {
 		Err(CasError::Unsupported(
 			"RegistryCas L3 adapter not wired yet (Phase 1 stub)",
 		))
+	}
+
+	async fn invalidate(&self, _key: ContentHash) -> Result<(), CasError> {
+		// Nothing to drop — stub has no storage.
+		Ok(())
 	}
 }

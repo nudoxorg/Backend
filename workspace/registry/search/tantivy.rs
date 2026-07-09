@@ -67,7 +67,20 @@ impl PackageIndex {
 		let index =
 			Index::open_or_create(directory, Self::schema()).map_err(SearchError::Tantivy)?;
 		let reader = index.reader().map_err(SearchError::Tantivy)?;
-		let watermark = load_watermark(path);
+		let mut watermark = load_watermark(path);
+		// Orphan watermark + empty index (dir recreated, file left behind) would
+		// skip history on resume — reset to zero when there is nothing folded.
+		if watermark.position > 0 {
+			let _ = reader.reload();
+			if reader.searcher().num_docs() == 0 {
+				tracing::warn!(
+					path = %path.display(),
+					position = watermark.position,
+					"watermark present but index empty; resuming from zero"
+				);
+				watermark = SyncWatermark { position: 0 };
+			}
+		}
 		tracing::debug!(
 			path = %path.display(),
 			position = watermark.position,
@@ -247,6 +260,10 @@ impl PackageIndex {
 }
 
 /// Read `sync_watermark.json` next to the index, or `{ position: 0 }` on miss/corrupt.
+///
+/// `NotFound` is the common cold-start path (silent zero). Other I/O errors and
+/// corrupt JSON log a warning and still resume from zero — rebuild-from-postgres
+/// remains the recovery story.
 fn load_watermark(dir: &std::path::Path) -> SyncWatermark {
 	let path = dir.join(WATERMARK_FILE);
 	match std::fs::read(&path) {
@@ -261,7 +278,15 @@ fn load_watermark(dir: &std::path::Path) -> SyncWatermark {
 				SyncWatermark { position: 0 }
 			},
 		},
-		Err(_) => SyncWatermark { position: 0 },
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => SyncWatermark { position: 0 },
+		Err(e) => {
+			tracing::warn!(
+				path = %path.display(),
+				error = %e,
+				"failed to read tantivy watermark; resuming from zero"
+			);
+			SyncWatermark { position: 0 }
+		},
 	}
 }
 
