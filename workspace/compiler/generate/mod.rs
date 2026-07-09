@@ -24,9 +24,11 @@ pub mod tar;
 
 use std::path::PathBuf;
 
+use bytes::Bytes;
 use heart::{ContentHash, Toolchain};
 use registry::identity::PackageCoordinates;
 use ir::entry::Index;
+use serde::{Deserialize, Serialize};
 
 pub use blob_info::BlobInfo;
 pub use cst::CstSet;
@@ -72,32 +74,22 @@ pub struct GeneratedPackage {
 /// worker, never on an async serving thread.
 ///
 /// Re-indexing the same `(producer, toolchain, source, lock)` is a content-
-/// addressed cache hit (design §10), not a re-parse.
+/// addressed cache hit (design §10), not a re-parse. Surface / CST / archive
+/// each live under their own CAS key so a hit can skip every tree walk.
 pub fn generate(input: &PackageInput) -> Result<GeneratedPackage, GenerateError> {
 	let source_hash = parse_cache::hash_source_tree(&input.root).unwrap_or_else(|_| {
 		ContentHash::of_bytes(input.root.to_string_lossy().as_bytes())
 	});
 	let dep_lock = parse_cache::hash_dep_lock(&input.root);
-	let cache_key = parse_cache::key(&input.toolchain, source_hash, dep_lock);
+	let job = parse_cache::key(&input.toolchain, source_hash, dep_lock);
 
-	let surface = if let Some(bytes) = parse_cache::get(&cache_key) {
-		tracing::debug!(key = %cache_key.hex(), "parse cache hit");
-		serde_json::from_slice(&bytes).map_err(|e| {
-			GenerateError::Archive(std::io::Error::new(
-				std::io::ErrorKind::InvalidData,
-				format!("cached IR: {e}"),
-			))
-		})?
-	} else {
+	let surface = cache_get_or_build(job.as_hash(), || {
 		let surface = surface::build(input)?;
-		if let Ok(bytes) = serde_json::to_vec(&surface) {
-			parse_cache::put(cache_key, bytes);
-		}
-		surface
-	};
+		Ok(surface)
+	})?;
 
-	let cst = cst::extract(input)?;
-	let archive = source_archive::build(input)?;
+	let cst = cache_get_or_build(job.with_tag(b"cst"), || cst::extract(input))?;
+	let archive = cache_get_or_build(job.with_tag(b"archive"), || source_archive::build(input))?;
 
 	// BlobInfo owns its archive copy (it travels to the sink independently of
 	// the GeneratedPackage), so the archive is cloned rather than split.
@@ -113,4 +105,30 @@ pub fn generate(input: &PackageInput) -> Result<GeneratedPackage, GenerateError>
 		blob_info,
 		snapshot,
 	})
+}
+
+/// Postcard get-or-compute against the process CAS.
+fn cache_get_or_build<T, F>(key: ContentHash, build: F) -> Result<T, GenerateError>
+where
+	T: Serialize + for<'de> Deserialize<'de>,
+	F: FnOnce() -> Result<T, GenerateError>,
+{
+	if let Some(bytes) = parse_cache::get(key) {
+		match postcard::from_bytes::<T>(&bytes) {
+			Ok(value) => {
+				tracing::debug!(key = %key, "cas hit");
+				return Ok(value);
+			},
+			Err(e) => {
+				// Corrupt / wrong-version entry — fall through to recompute.
+				tracing::warn!(key = %key, error = %e, "cas value decode failed; recomputing");
+			},
+		}
+	}
+
+	let value = build()?;
+	if let Ok(bytes) = postcard::to_allocvec(&value) {
+		parse_cache::put(key, Bytes::from(bytes));
+	}
+	Ok(value)
 }

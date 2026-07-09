@@ -1,44 +1,65 @@
-//! Content-addressed IR parse cache at the generate boundary (design §10 / P4).
+//! Content-addressed producer cache at the generate boundary (design §10 / P4).
 //!
-//! `key = H(producer_version ‖ toolchain ‖ source_tree ‖ dep_lock)`.
-//! Same key ⇒ serve cached IR JSON, never re-run producers.
+//! `JobKey = H(producer_version ‖ toolchain ‖ source_tree ‖ dep_lock)`.
+//! Same key ⇒ serve cached IR (postcard), never re-run producers.
 //!
-//! Backed by [`sandbox::ParseCache`] (L1 map + L2 disk CAS).
+//! Backed by the unified [`cas::Tiered`] store (L1 StampedeCache + L2 DiskCas).
 
 use std::path::Path;
 use std::sync::OnceLock;
 
-use heart::{ContentHash, Toolchain};
-use sandbox::{CacheKey, ParseCache};
+use bytes::Bytes;
+use cas::{Cas, Tiered};
+use heart::{ContentHash, JobKey, Toolchain};
 
 /// Bump when IR shape / lowering semantics change (automatic invalidation).
-pub const PRODUCER_VERSION: &str = "nudox-producer/1";
+/// `/2` marks the postcard value encoding (was JSON under `/1`).
+pub const PRODUCER_VERSION: &str = "nudox-producer/2";
 
-/// Process-wide parse cache.
-fn cache() -> Option<&'static ParseCache> {
-	static CACHE: OnceLock<Option<ParseCache>> = OnceLock::new();
-	CACHE
-		.get_or_init(|| {
-			if matches!(
-				std::env::var("NUDOX_PARSE_CACHE_DISABLE").as_deref(),
-				Ok("1") | Ok("true")
-			) {
-				return None;
-			}
-			ParseCache::default_open().ok()
-		})
-		.as_ref()
+/// Process-wide CAS used by generate.
+fn cas() -> Option<&'static Tiered> {
+	static CAS: OnceLock<Option<Tiered>> = OnceLock::new();
+	CAS.get_or_init(|| {
+		if matches!(
+			std::env::var("NUDOX_PARSE_CACHE_DISABLE").as_deref(),
+			Ok("1") | Ok("true")
+		) {
+			return None;
+		}
+		Tiered::default_open().ok()
+	})
+	.as_ref()
 }
 
-/// Build the design §10 key from known parts.
+/// Drive a CAS future from the sync generate path.
+///
+/// Generate runs on `spawn_blocking` (or bare unit tests). From a blocking
+/// worker, `Handle::block_on` is safe; without a runtime we spin a tiny one.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+	match tokio::runtime::Handle::try_current() {
+		Ok(handle) => handle.block_on(fut),
+		Err(_) => {
+			static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+			let rt = RT.get_or_init(|| {
+				tokio::runtime::Builder::new_current_thread()
+					.enable_all()
+					.build()
+					.expect("cas fallback runtime")
+			});
+			rt.block_on(fut)
+		},
+	}
+}
+
+/// Build the design §10 job key from known parts.
 pub fn key(
 	toolchain: &Toolchain,
 	source_hash: ContentHash,
 	dep_lock_hash: ContentHash,
-) -> CacheKey {
+) -> JobKey {
 	// Stable, order-preserving encoding already used elsewhere for toolchain.
 	let tc = serde_json::to_vec(toolchain).unwrap_or_default();
-	CacheKey::derive(
+	JobKey::derive(
 		PRODUCER_VERSION.as_bytes(),
 		&tc,
 		source_hash.as_bytes(),
@@ -113,14 +134,30 @@ pub fn hash_dep_lock(root: &Path) -> ContentHash {
 	}
 }
 
-/// Lookup cached IR JSON.
-pub fn get(k: &CacheKey) -> Option<Vec<u8>> {
-	cache()?.get(k)
+/// Lookup opaque cached bytes under `key`.
+pub fn get(key: ContentHash) -> Option<Bytes> {
+	let c = cas()?;
+	match block_on(c.get(key)) {
+		Ok(Some(bytes)) => {
+			sandbox::observer::global().cache_hit();
+			Some(bytes)
+		},
+		Ok(None) => {
+			sandbox::observer::global().cache_miss();
+			None
+		},
+		Err(e) => {
+			tracing::warn!(error = %e, "cas get failed");
+			sandbox::observer::global().cache_miss();
+			None
+		},
+	}
 }
 
-/// Store IR JSON under `k`.
-pub fn put(k: CacheKey, ir_json: Vec<u8>) {
-	if let Some(c) = cache() {
-		let _ = c.put_composite(k, ir_json);
+/// Store opaque bytes under `key` (best-effort).
+pub fn put(key: ContentHash, bytes: Bytes) {
+	let Some(c) = cas() else { return };
+	if let Err(e) = block_on(c.put_keyed(key, bytes)) {
+		tracing::warn!(error = %e, "cas put failed");
 	}
 }

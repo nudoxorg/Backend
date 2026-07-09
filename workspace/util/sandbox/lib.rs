@@ -45,7 +45,6 @@
 #![deny(missing_docs)]
 
 pub mod backend;
-pub mod cache;
 pub mod cgroup;
 pub mod error;
 pub mod limits;
@@ -66,7 +65,6 @@ pub mod seccomp;
 pub use backend::{
 	select, Backend, Capabilities, LinuxBwrap, MacSeatbelt, NixDerivation, Passthrough, Selected,
 };
-pub use cache::{CacheKey, ParseCache};
 pub use error::{to_io_error, KillReason, SandboxError};
 pub use limits::{LimitOverride, Limits, Network};
 pub use observer::{CountingObserver, NullObserver, SandboxObserver};

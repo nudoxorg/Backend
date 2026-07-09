@@ -1,4 +1,4 @@
-load("//build:rust.bzl", "crate", "deps", "rust_crate", "rust_tests", "target")
+load("//build:rust.bzl", "crate", "deps", "member", "rust_crate", "rust_tests", "target")
 
 # Linux-only isolation crates (Landlock LSM + seccomp BPF). Gated so macOS
 # analysis never builds them.
@@ -18,7 +18,6 @@ rust_crate(
         crate("serde", features = ["derive"]),
         crate("serde_json"),
         crate("libc"),
-        crate("blake3"),
         crate("tempfile"),
     ]) + select({
         "prelude//os/constraints:linux": _LINUX_DEPS,
@@ -30,6 +29,7 @@ rust_tests(
     prefix = "test",
     deps = deps([
         crate("serde_json"),
+        member("heart"),
         target(":sandbox"),
     ]),
 )
