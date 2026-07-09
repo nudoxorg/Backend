@@ -1,16 +1,19 @@
 //! Resource ceilings and network policy.
 //!
 //! Every field of [`Limits`] is required: there is no "forgot to cap memory"
-//! state representable in the type system.
+//! state representable in the type system. Partial overrides are
+//! [`LimitOverride`] — only `Some` fields replace the profile base.
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 
 /// Whether the sandboxed process may observe a network namespace with routes.
 ///
 /// Parse phases **must** use [`Network::Off`]. Fetch phases that need the
 /// network still hash-pin inputs; prefer fixed-output derivations when possible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Network {
 	/// Empty netns / denied outbound (default for P-parse).
 	#[default]
@@ -38,6 +41,102 @@ pub struct Limits {
 	pub fsize_bytes: NonZeroU64,
 	/// Soft cap on open file descriptors.
 	pub nofile: NonZeroU64,
+}
+
+/// Sparse overlay on a profile's [`Limits`] (design §13 / P5).
+///
+/// All fields optional — only set values replace the base. Zero is rejected
+/// via [`NonZeroU64`] / [`NonZeroU32`] at construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LimitOverride {
+	/// Replace memory ceiling (bytes).
+	#[serde(default)]
+	pub mem_bytes: Option<NonZeroU64>,
+	/// Replace CPU seconds.
+	#[serde(default)]
+	pub cpu_secs: Option<NonZeroU64>,
+	/// Replace wall-clock budget.
+	#[serde(default, with = "humantime_serde_opt")]
+	pub wall: Option<Duration>,
+	/// Replace pid budget.
+	#[serde(default)]
+	pub pids: Option<NonZeroU32>,
+	/// Replace stdout cap.
+	#[serde(default)]
+	pub max_stdout: Option<usize>,
+	/// Replace stderr cap.
+	#[serde(default)]
+	pub max_stderr: Option<usize>,
+	/// Replace file-size rlimit.
+	#[serde(default)]
+	pub fsize_bytes: Option<NonZeroU64>,
+	/// Replace nofile rlimit.
+	#[serde(default)]
+	pub nofile: Option<NonZeroU64>,
+}
+
+impl LimitOverride {
+	/// Empty overlay (identity).
+	pub const fn none() -> Self {
+		Self {
+			mem_bytes: None,
+			cpu_secs: None,
+			wall: None,
+			pids: None,
+			max_stdout: None,
+			max_stderr: None,
+			fsize_bytes: None,
+			nofile: None,
+		}
+	}
+
+	/// Apply this overlay onto `base`.
+	pub fn apply(self, mut base: Limits) -> Limits {
+		if let Some(v) = self.mem_bytes {
+			base.mem_bytes = v;
+		}
+		if let Some(v) = self.cpu_secs {
+			base.cpu_secs = v;
+		}
+		if let Some(v) = self.wall {
+			base.wall = v;
+		}
+		if let Some(v) = self.pids {
+			base.pids = v;
+		}
+		if let Some(v) = self.max_stdout {
+			base.max_stdout = v;
+		}
+		if let Some(v) = self.max_stderr {
+			base.max_stderr = v;
+		}
+		if let Some(v) = self.fsize_bytes {
+			base.fsize_bytes = v;
+		}
+		if let Some(v) = self.nofile {
+			base.nofile = v;
+		}
+		base
+	}
+}
+
+/// Optional duration as seconds in config (avoid pulling humantime).
+mod humantime_serde_opt {
+	use std::time::Duration;
+
+	use serde::{Deserialize, Deserializer, Serializer};
+
+	pub fn serialize<S: Serializer>(v: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+		match v {
+			Some(d) => s.serialize_some(&d.as_secs()),
+			None => s.serialize_none(),
+		}
+	}
+
+	pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+		let opt = Option::<u64>::deserialize(d)?;
+		Ok(opt.map(Duration::from_secs))
+	}
 }
 
 impl Limits {

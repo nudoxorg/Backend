@@ -104,6 +104,8 @@ impl RustPackage {
             cmd = cmd.arg("--lib");
         }
         cmd = cmd
+            // P-parse is network-off; deps must already be materialised (design §8).
+            .arg("--offline")
             .arg("--")
             .args(self.direct_repo.then_some("--document-private-items").into_iter())
             .arg("-Z")
@@ -112,6 +114,7 @@ impl RustPackage {
             .arg("json")
             // Unstable rustdoc JSON needs nightly (or bootstrap).
             .env("RUSTC_BOOTSTRAP", "1")
+            .env("CARGO_NET_OFFLINE", "true")
             .env("RUSTDOC", &wrapper)
             .env("NUDOX_RUSTDOC_SYSTEM", &system_rustdoc)
             .env("NUDOX_RUSTDOC_OUT", json_out)

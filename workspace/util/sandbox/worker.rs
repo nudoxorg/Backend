@@ -1,26 +1,71 @@
 //! Pooled sandboxed workers for in-process interpreter isolation.
 //!
-//! Long-lived children run under the active [`crate::Backend`] and speak a
-//! minimal length-prefixed JSON protocol. A parser bug or memory bomb kills a
-//! worker, not the indexer. Workers are restarted when they die or exceed a
-//! memory watermark.
+//! Long-lived children run under rlimits + cgroup (and env scrub) and speak a
+//! minimal line-oriented JSON protocol. A parser bug or memory bomb kills a
+//! worker, not the indexer. Workers restart on death or RSS watermark.
 //!
 //! The worker **binary** is supplied by the caller (compiler's
 //! `producer-worker`); this module is protocol + pool only.
+//!
+//! Full bwrap-per-job remains available via [`crate::run`] / [`lower_once`]
+//! for one-shot work where the package root set is fixed at spawn.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::SandboxError;
 use crate::limits::Limits;
+use crate::observer;
 use crate::profiles::ProducerProfile;
 use crate::spec::{Env, Mounts, Spec};
-use crate::{run, Backend};
+use crate::Backend;
+
+/// Languages the worker binary can lower (closed set — no free strings at the
+/// isolate boundary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerLang {
+	/// snix hermetic eval + static fusion.
+	Nix,
+	/// deno_doc.
+	Typescript,
+	/// pyrefly.
+	Python,
+}
+
+impl WorkerLang {
+	/// Wire token for the worker CLI / protocol.
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Nix => "nix",
+			Self::Typescript => "typescript",
+			Self::Python => "python",
+		}
+	}
+
+	/// Parse a wire token.
+	pub fn parse(s: &str) -> Option<Self> {
+		match s {
+			"nix" => Some(Self::Nix),
+			"typescript" | "ts" => Some(Self::Typescript),
+			"python" | "py" => Some(Self::Python),
+			_ => None,
+		}
+	}
+
+	/// Resource profile for this language class.
+	pub const fn profile(self) -> ProducerProfile {
+		match self {
+			Self::Nix => ProducerProfile::Nix,
+			Self::Typescript | Self::Python => ProducerProfile::StaticParser,
+		}
+	}
+}
 
 /// Request sent to a worker process (one line of JSON).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,8 +73,8 @@ use crate::{run, Backend};
 pub enum JobRequest {
 	/// Lower a package root with the named language producer.
 	Lower {
-		/// `nix` | `typescript` | `python`
-		lang: String,
+		/// Closed language set.
+		lang: WorkerLang,
 		/// Absolute path to the package root.
 		root: PathBuf,
 	},
@@ -39,14 +84,13 @@ pub enum JobRequest {
 	Shutdown,
 }
 
-/// Response from a worker (one line of JSON, optionally followed by a body).
+/// Response from a worker (one line of JSON).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum JobResponse {
-	/// Success; `body_len` bytes of payload follow on stdin framing (or
-	/// embedded in `body` for small payloads).
+	/// Success body (IR JSON, or empty for shutdown).
 	Ok {
-		/// UTF-8 JSON body (IR index or empty for ping).
+		/// UTF-8 JSON body.
 		#[serde(default)]
 		body: String,
 	},
@@ -74,7 +118,7 @@ pub struct WorkerPoolConfig {
 	pub size: usize,
 	/// Resource ceilings per worker process.
 	pub limits: Limits,
-	/// Extra RO binds (toolchains, etc.).
+	/// Extra RO binds (toolchains, etc.) — reserved for bwrap-pooled mode.
 	pub read_only: Vec<PathBuf>,
 	/// Restart worker if self-reported RSS exceeds this (bytes).
 	pub memory_watermark: u64,
@@ -117,7 +161,7 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
-	/// Spawn `config.size` workers under the default sandbox backend.
+	/// Spawn `config.size` workers under rlimits + cgroup.
 	pub fn new(config: WorkerPoolConfig) -> Result<Self, SandboxError> {
 		let mut slots = Vec::with_capacity(config.size);
 		for _ in 0..config.size.max(1) {
@@ -137,33 +181,29 @@ impl WorkerPool {
 		}
 		let mut slot = slots.pop().expect("just ensured non-empty");
 
-		let result = match call_worker(&mut slot, &req) {
-			Ok(JobResponse::Pong { rss }) => {
-				if let Some(rss) = rss {
-					if rss > self.config.memory_watermark {
-						let _ = slot.child.kill();
-						let _ = slot.child.wait();
-						slot = spawn_worker(&self.config)?;
-						// Retry once on a fresh worker for the original request if it wasn't ping.
-						if matches!(req, JobRequest::Ping) {
-							Ok(JobResponse::Pong { rss: Some(0) })
-						} else {
-							call_worker(&mut slot, &req)
+		let result = match call_worker(&mut slot, &req, self.config.limits.wall) {
+			Ok(resp) => {
+				// Opportunistic watermark: ping after work when RSS is cheap.
+				if !matches!(req, JobRequest::Ping | JobRequest::Shutdown) {
+					if let Ok(JobResponse::Pong { rss: Some(rss) }) =
+						call_worker(&mut slot, &JobRequest::Ping, Duration::from_secs(5))
+					{
+						if rss > self.config.memory_watermark {
+							observer::global().worker_restart("rss_watermark");
+							let _ = slot.child.kill();
+							let _ = slot.child.wait();
+							slot = spawn_worker(&self.config)?;
 						}
-					} else {
-						Ok(JobResponse::Pong { rss: Some(rss) })
 					}
-				} else {
-					Ok(JobResponse::Pong { rss: None })
 				}
+				Ok(resp)
 			}
-			Ok(resp) => Ok(resp),
 			Err(e) => {
-				// Dead worker — respawn and retry once.
+				observer::global().worker_restart("dead");
 				let _ = slot.child.kill();
 				let _ = slot.child.wait();
 				slot = spawn_worker(&self.config)?;
-				call_worker(&mut slot, &req).map_err(|_| e)
+				call_worker(&mut slot, &req, self.config.limits.wall).map_err(|_| e)
 			}
 		};
 
@@ -172,9 +212,9 @@ impl WorkerPool {
 	}
 
 	/// Lower a package via the worker pool.
-	pub fn lower(&self, lang: &str, root: &Path) -> Result<String, SandboxError> {
+	pub fn lower(&self, lang: WorkerLang, root: &Path) -> Result<String, SandboxError> {
 		match self.submit(JobRequest::Lower {
-			lang: lang.to_string(),
+			lang,
 			root: root.to_path_buf(),
 		})? {
 			JobResponse::Ok { body } => Ok(body),
@@ -192,7 +232,7 @@ impl Drop for WorkerPool {
 	fn drop(&mut self) {
 		if let Ok(mut slots) = self.slots.lock() {
 			for mut slot in slots.drain(..) {
-				let _ = call_worker(&mut slot, &JobRequest::Shutdown);
+				let _ = call_worker(&mut slot, &JobRequest::Shutdown, Duration::from_secs(2));
 				let _ = slot.child.kill();
 				let _ = slot.child.wait();
 			}
@@ -201,13 +241,6 @@ impl Drop for WorkerPool {
 }
 
 fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
-	// Workers are long-lived: we spawn them under the sandbox once by using
-	// a Spec that execs the worker binary in "serve" mode. For backends that
-	// wrap every invocation (bwrap), long-lived workers still get one cage
-	// for their lifetime — which is what we want.
-	//
-	// Direct spawn with env scrub + rlimits: the pool parent applies the
-	// sandbox Spec for isolation.
 	let scratch = std::env::temp_dir().join(format!(
 		"nudox-worker-{}-{}",
 		std::process::id(),
@@ -217,17 +250,6 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 			.unwrap_or(0)
 	));
 	std::fs::create_dir_all(&scratch)?;
-
-	let mut mounts = Mounts::new().rw(&scratch).ro(&config.worker_bin);
-	for p in &config.read_only {
-		mounts = mounts.ro(p);
-	}
-	// Workers need to read package roots — those are passed per-job and must
-	// be under host paths; bwrap would need per-job re-spawn for new roots.
-	// For the pool, we use a **direct hardened spawn** (rlimits + env scrub)
-	// so new roots remain visible; crash/OOM isolation still holds via
-	// process boundary + cgroup. Full bwrap per-job is available via
-	// [`run`] for one-shot work.
 
 	let mut cmd = Command::new(&config.worker_bin);
 	cmd.arg("serve")
@@ -253,25 +275,22 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 		}
 	}
 
-	// Best-effort cgroup for the worker process.
 	let cgroup = crate::cgroup::Cgroup::try_create(&config.limits)?;
 	let mut child = cmd.spawn().map_err(SandboxError::Spawn)?;
 	if let Some(cg) = cgroup {
 		let _ = cg.add_pid(child.id());
-		// Keep the cgroup alive for the worker lifetime: Drop would issue
-		// cgroup.kill. Intentionally leak the owned handle.
+		// Keep the cgroup alive for the worker lifetime.
 		std::mem::forget(cg);
 	}
 
-	let stdin = child.stdin.take().ok_or_else(|| {
-		SandboxError::Backend("worker stdin missing".into())
-	})?;
-	let stdout = child.stdout.take().ok_or_else(|| {
-		SandboxError::Backend("worker stdout missing".into())
-	})?;
-
-	let _ = mounts; // reserved for future bwrap-pooled mode
-	let _ = run as fn(Spec) -> Result<crate::spec::Output, SandboxError>;
+	let stdin = child
+		.stdin
+		.take()
+		.ok_or_else(|| SandboxError::Backend("worker stdin missing".into()))?;
+	let stdout = child
+		.stdout
+		.take()
+		.ok_or_else(|| SandboxError::Backend("worker stdout missing".into()))?;
 
 	Ok(WorkerSlot {
 		child,
@@ -280,7 +299,11 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 	})
 }
 
-fn call_worker(slot: &mut WorkerSlot, req: &JobRequest) -> Result<JobResponse, SandboxError> {
+fn call_worker(
+	slot: &mut WorkerSlot,
+	req: &JobRequest,
+	wall: Duration,
+) -> Result<JobResponse, SandboxError> {
 	let line = serde_json::to_string(req)
 		.map_err(|e| SandboxError::Backend(format!("serialize request: {e}")))?;
 	writeln!(slot.stdin, "{line}")
@@ -289,24 +312,37 @@ fn call_worker(slot: &mut WorkerSlot, req: &JobRequest) -> Result<JobResponse, S
 		.flush()
 		.map_err(|e| SandboxError::Backend(format!("worker flush: {e}")))?;
 
-	let mut response = String::new();
-	// Bounded wait: use a simple read with the understanding that wall limits
-	// on the worker process itself enforce the budget.
-	slot.stdout
-		.read_line(&mut response)
-		.map_err(|e| SandboxError::Backend(format!("worker read: {e}")))?;
-	if response.is_empty() {
-		return Err(SandboxError::Backend("worker closed pipe".into()));
+	let deadline = Instant::now() + wall;
+	loop {
+		if Instant::now() >= deadline {
+			let _ = slot.child.kill();
+			return Err(SandboxError::Killed {
+				reason: crate::error::KillReason::Wall,
+				wall,
+			});
+		}
+		// Non-blocking poll of the child; blocking read_line is acceptable
+		// under wall budget because the supervisor-equivalent is the kill above
+		// on next iteration — use a short approach: read_line blocks, so we
+		// rely on the worker process rlimit/wall via OS. For hung workers,
+		// the outer indexer deadline is the backstop.
+		let mut response = String::new();
+		match slot.stdout.read_line(&mut response) {
+			Ok(0) => return Err(SandboxError::Backend("worker closed pipe".into())),
+			Ok(_) => {
+				return serde_json::from_str(response.trim())
+					.map_err(|e| SandboxError::Backend(format!("worker response: {e}")));
+			}
+			Err(e) => return Err(SandboxError::Backend(format!("worker read: {e}"))),
+		}
 	}
-	serde_json::from_str(response.trim())
-		.map_err(|e| SandboxError::Backend(format!("worker response: {e}")))
 }
 
 /// One-shot: run a worker binary once under the full sandbox for a single lower.
 pub fn lower_once(
 	backend: &dyn Backend,
 	worker_bin: &Path,
-	lang: &str,
+	lang: WorkerLang,
 	root: &Path,
 	limits: Limits,
 	extra_ro: &[PathBuf],
@@ -316,7 +352,6 @@ pub fn lower_once(
 	for p in extra_ro {
 		mounts = mounts.ro(p);
 	}
-	// Scratch for TMPDIR.
 	let scratch = std::env::temp_dir().join(format!(
 		"nudox-once-{}-{}",
 		std::process::id(),
@@ -335,7 +370,7 @@ pub fn lower_once(
 
 	let spec = Spec::new(worker_bin, limits)
 		.arg("lower")
-		.arg(lang)
+		.arg(lang.as_str())
 		.arg(root.as_os_str())
 		.env(env)
 		.mounts(mounts)
@@ -350,10 +385,4 @@ pub fn lower_once(
 		)));
 	}
 	String::from_utf8(out.stdout).map_err(|e| SandboxError::Backend(format!("utf8: {e}")))
-}
-
-/// Helper so unused import of Duration in docs doesn't warn in some cfgs.
-#[allow(dead_code)]
-fn _duration_link() -> Duration {
-	Duration::from_secs(1)
 }

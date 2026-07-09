@@ -97,6 +97,7 @@ rust_bin(
         member("ir"),
         member("sandbox"),
         crate("serde_json"),
+        crate("libc"),
     ]),
 )
 
@@ -114,6 +115,7 @@ rust_tests(
         crate("uv_pep440"),
         crate("semver"),
         crate("url"),
+        crate("snix_eval"),
         target(":compiler"),
     ]),
 )

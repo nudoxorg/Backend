@@ -39,10 +39,10 @@ const WRITE_PLANE_BODY_CEILING: usize = 64 * 1024;
 /// timeout on the admin mutations. The vendored `tower-http` build carries no
 /// middleware features, so tracing rides a lean `axum::middleware::from_fn`.
 pub fn router<M: EmbeddingModel>(server: Arc<Server<M>>) -> Router {
-	let limits = server.config().limits;
+	let limits = &server.config().limits;
 	Router::new()
 		.merge(read_plane().layer(DefaultBodyLimit::max(READ_PLANE_BODY_CEILING)))
-		.merge(write_plane(&limits))
+		.merge(write_plane(limits))
 		.layer(middleware::from_fn(trace_request))
 		.with_state(server)
 }

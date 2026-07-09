@@ -18,6 +18,7 @@ rust_crate(
         crate("serde", features = ["derive"]),
         crate("serde_json"),
         crate("libc"),
+        crate("blake3"),
     ]) + select({
         "prelude//os/constraints:linux": _LINUX_DEPS,
         "DEFAULT": [],

@@ -94,6 +94,11 @@ fn write_file(path: PathBuf, contents: &str) -> Result<(), SandboxError> {
 	})
 }
 
+/// Whether a writable cgroup v2 parent exists (for probes / admission).
+pub fn has_writable_parent() -> bool {
+	discover_writable_parent().is_some()
+}
+
 fn discover_writable_parent() -> Option<PathBuf> {
 	// Prefer our own cgroup (user delegation under systemd).
 	if let Some(own) = read_own_cgroup_path() {

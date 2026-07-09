@@ -10,6 +10,7 @@ rust_crate(
         member("runtime"),
         member("ir"),
         member("compiler"),
+        member("sandbox"),
         crate("moka", features = ["sync", "future"]),
         crate("tempfile"),
         crate("libsqlite3_sys", features = ["bundled"]),
@@ -87,6 +88,8 @@ rust_bin(
     crate = "server_bin",
     deps = deps([
         member("runtime"),
+        member("compiler"),
+        member("sandbox"),
         crate("tokio"),
         crate("anyhow"),
         crate("mimalloc"),

@@ -17,6 +17,7 @@
 pub mod blob_info;
 pub mod cst;
 pub mod linked_data;
+pub mod parse_cache;
 pub mod source_archive;
 pub mod surface;
 pub mod tar;
@@ -69,8 +70,32 @@ pub struct GeneratedPackage {
 ///
 /// CPU-bound and deterministic — the caller runs this on a blocking pool /
 /// worker, never on an async serving thread.
+///
+/// Re-indexing the same `(producer, toolchain, source, lock)` is a content-
+/// addressed cache hit (design §10), not a re-parse.
 pub fn generate(input: &PackageInput) -> Result<GeneratedPackage, GenerateError> {
-	let surface = surface::build(input)?;
+	let source_hash = parse_cache::hash_source_tree(&input.root).unwrap_or_else(|_| {
+		ContentHash::of_bytes(input.root.to_string_lossy().as_bytes())
+	});
+	let dep_lock = parse_cache::hash_dep_lock(&input.root);
+	let cache_key = parse_cache::key(&input.toolchain, source_hash, dep_lock);
+
+	let surface = if let Some(bytes) = parse_cache::get(&cache_key) {
+		tracing::debug!(key = %cache_key.hex(), "parse cache hit");
+		serde_json::from_slice(&bytes).map_err(|e| {
+			GenerateError::Archive(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				format!("cached IR: {e}"),
+			))
+		})?
+	} else {
+		let surface = surface::build(input)?;
+		if let Ok(bytes) = serde_json::to_vec(&surface) {
+			parse_cache::put(cache_key, bytes);
+		}
+		surface
+	};
+
 	let cst = cst::extract(input)?;
 	let archive = source_archive::build(input)?;
 

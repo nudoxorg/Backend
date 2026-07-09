@@ -111,7 +111,7 @@ pub struct Endpoints {
 }
 
 /// Operational limits that bound resource use and blast radius.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
 	/// How long to wait on a single document upload before giving up.
 	pub upload_timeout: std::time::Duration,
@@ -122,6 +122,13 @@ pub struct Limits {
 	/// How often the background pollers (queue, outbox, index sync) tick.
 	#[serde(default = "defaults::poll_interval")]
 	pub poll_interval: std::time::Duration,
+
+	/// Sandbox ceilings: profile name → sparse overlay (design §13 / P5).
+	///
+	/// Keys are lowercase profile names (`rust`, `java`, `go`, `nix`,
+	/// `static_parser`) or package coordinates (`crates.io/serde@1.0.0`).
+	#[serde(default)]
+	pub sandbox_overrides: std::collections::HashMap<String, sandbox::LimitOverride>,
 }
 
 impl Default for ServerConfiguration {
@@ -225,6 +232,7 @@ impl Default for Limits {
 			max_request_bytes: 256 * 1024 * 1024,
 			max_inflight_jobs: 16,
 			poll_interval: defaults::poll_interval(),
+			sandbox_overrides: std::collections::HashMap::new(),
 		}
 	}
 }

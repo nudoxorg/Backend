@@ -7,29 +7,12 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Output as StdOutput;
+use std::sync::OnceLock;
 
 use sandbox::{
-	run, Env, KillReason, Mounts, Network, ProducerProfile, SandboxError, Spec,
+	run, Env, KillReason, LimitOverride, Mounts, Network, ProducerProfile, SandboxError, Spec,
+	WorkerLang, WorkerPool, WorkerPoolConfig,
 };
-
-// `which` is re-exported transitively via sandbox; use std discovery if needed.
-mod which {
-	use std::path::{Path, PathBuf};
-	pub fn which(bin: &Path) -> Result<PathBuf, ()> {
-		if bin.is_absolute() && bin.exists() {
-			return Ok(bin.to_path_buf());
-		}
-		let name = bin.as_os_str();
-		let path = std::env::var_os("PATH").ok_or(())?;
-		for dir in std::env::split_paths(&path) {
-			let candidate = dir.join(name);
-			if candidate.is_file() {
-				return Ok(candidate);
-			}
-		}
-		Err(())
-	}
-}
 
 /// Map a sandbox kill / denial into a displayable process-style failure.
 #[derive(Debug)]
@@ -77,6 +60,78 @@ impl std::fmt::Display for IsolatedFailureKind {
 	}
 }
 
+/// Pinned toolchain paths for hermetic P-parse (design §5.1).
+///
+/// Loaded once from env; ambient HOME is never used as a writable mount.
+#[derive(Debug, Clone, Default)]
+pub struct ToolchainPaths {
+	/// fenix/rustup root (RO).
+	pub rustup_home: Option<PathBuf>,
+	/// cargo home (RO preferred; RW only when explicitly set for registries).
+	pub cargo_home: Option<PathBuf>,
+	/// JAVA_HOME.
+	pub java_home: Option<PathBuf>,
+	/// GOROOT.
+	pub go_root: Option<PathBuf>,
+	/// GOPATH (scratch-like; optional).
+	pub go_path: Option<PathBuf>,
+}
+
+impl ToolchainPaths {
+	/// From `NUDOX_TOOLCHAIN_*` then standard env vars (still allowlisted, not ambient dump).
+	pub fn from_env() -> Self {
+		fn first(keys: &[&str]) -> Option<PathBuf> {
+			keys.iter()
+				.find_map(|k| std::env::var_os(k).map(PathBuf::from))
+				.filter(|p| p.as_os_str().len() > 0)
+		}
+		Self {
+			rustup_home: first(&["NUDOX_TOOLCHAIN_RUSTUP_HOME", "RUSTUP_HOME"]),
+			cargo_home: first(&["NUDOX_TOOLCHAIN_CARGO_HOME", "CARGO_HOME"]),
+			java_home: first(&["NUDOX_TOOLCHAIN_JAVA_HOME", "JAVA_HOME"]),
+			go_root: first(&["NUDOX_TOOLCHAIN_GOROOT", "GOROOT"]),
+			go_path: first(&["NUDOX_TOOLCHAIN_GOPATH", "GOPATH"]),
+		}
+	}
+
+	fn apply_env(&self, mut env: Env) -> Env {
+		if let Some(p) = &self.rustup_home {
+			env = env.set("RUSTUP_HOME", p);
+		}
+		if let Some(p) = &self.cargo_home {
+			env = env.set("CARGO_HOME", p);
+		}
+		if let Some(p) = &self.java_home {
+			env = env.set("JAVA_HOME", p);
+		}
+		if let Some(p) = &self.go_root {
+			env = env.set("GOROOT", p);
+		}
+		if let Some(p) = &self.go_path {
+			env = env.set("GOPATH", p);
+		}
+		env
+	}
+
+	fn ro_binds(&self) -> Vec<PathBuf> {
+		[
+			&self.rustup_home,
+			&self.cargo_home,
+			&self.java_home,
+			&self.go_root,
+		]
+		.into_iter()
+		.filter_map(|p| p.clone())
+		.filter(|p| p.exists())
+		.collect()
+	}
+}
+
+fn global_toolchains() -> &'static ToolchainPaths {
+	static T: OnceLock<ToolchainPaths> = OnceLock::new();
+	T.get_or_init(ToolchainPaths::from_env)
+}
+
 /// Inputs for an isolated toolchain invocation.
 pub struct IsolatedCommand {
 	/// Program (name on PATH or absolute).
@@ -93,6 +148,8 @@ pub struct IsolatedCommand {
 	pub writable: Vec<PathBuf>,
 	/// Limit profile.
 	pub profile: ProducerProfile,
+	/// Optional per-package overlay.
+	pub override_: LimitOverride,
 	/// Network (default off).
 	pub network: Network,
 }
@@ -108,6 +165,7 @@ impl IsolatedCommand {
 			read_only: Vec::new(),
 			writable: Vec::new(),
 			profile,
+			override_: LimitOverride::none(),
 			network: Network::Off,
 		}
 	}
@@ -157,6 +215,12 @@ impl IsolatedCommand {
 		self.network = n;
 		self
 	}
+
+	/// Per-package limit overlay.
+	pub fn limit_override(mut self, o: LimitOverride) -> Self {
+		self.override_ = o;
+		self
+	}
 }
 
 /// Run an isolated command; on success return a std-like [`StdOutput`].
@@ -171,34 +235,19 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 			.join(" ")
 	);
 
+	let toolchains = global_toolchains();
 	let mut env = Env::empty().set(
 		"PATH",
 		std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
 	);
-	// Preserve a minimal locale so toolchains don't panic.
+	// Minimal locale so toolchains don't panic — not a secret channel.
 	if let Ok(v) = std::env::var("LANG") {
 		env = env.set("LANG", v);
 	}
 	if let Ok(v) = std::env::var("LC_ALL") {
 		env = env.set("LC_ALL", v);
 	}
-	// Nix store / rustup when present (RO via ambient path visibility on
-	// passthrough/seatbelt; bwrap binds /nix).
-	if let Ok(v) = std::env::var("RUSTUP_HOME") {
-		env = env.set("RUSTUP_HOME", v);
-	}
-	if let Ok(v) = std::env::var("CARGO_HOME") {
-		env = env.set("CARGO_HOME", v);
-	}
-	if let Ok(v) = std::env::var("JAVA_HOME") {
-		env = env.set("JAVA_HOME", v);
-	}
-	if let Ok(v) = std::env::var("GOROOT") {
-		env = env.set("GOROOT", v);
-	}
-	if let Ok(v) = std::env::var("GOPATH") {
-		env = env.set("GOPATH", v);
-	}
+	env = toolchains.apply_env(env);
 	for (k, v) in cmd.env {
 		env = env.set(k, v);
 	}
@@ -207,29 +256,27 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 	for p in &cmd.read_only {
 		mounts = mounts.ro(p);
 	}
+	for p in toolchains.ro_binds() {
+		mounts = mounts.ro(p);
+	}
 	for p in &cmd.writable {
 		mounts = mounts.rw(p);
 	}
-	// Nix store RO for absolute PT_INTERP / RPATH toolchains (bwrap also
-	// binds /nix/store globally; Landlock/seatbelt need the path listed).
+	// Nix store RO for absolute PT_INTERP / RPATH toolchains.
 	if Path::new("/nix/store").is_dir() {
 		mounts = mounts.ro("/nix/store");
 	}
-	// Always allow temp + home for toolchains that need caches; writable.
-	if let Ok(tmp) = std::env::temp_dir().canonicalize() {
-		mounts = mounts.rw(tmp);
-	}
-	if let Some(home) = std::env::var_os("HOME") {
-		mounts = mounts.rw(PathBuf::from(home));
-	}
-	if let Ok(cwd) = std::env::current_dir() {
-		mounts = mounts.ro(&cwd);
-	}
+	// Narrow scratch — never ambient $HOME.
+	let scratch = std::env::temp_dir();
+	mounts = mounts.rw(&scratch);
 	if let Some(ref cwd) = cmd.cwd {
 		mounts = mounts.rw(cwd);
 	}
 
-	let mut spec = Spec::new(cmd.program, cmd.profile.limits())
+	// Profile → process-wide config overlays → per-command overlay.
+	let mut limits = sandbox::overrides::resolve(cmd.profile, None);
+	limits = cmd.override_.apply(limits);
+	let mut spec = Spec::new(cmd.program, limits)
 		.args(cmd.args)
 		.env(env)
 		.mounts(mounts)
@@ -298,32 +345,106 @@ pub fn package_tree_binds(root: &Path) -> Vec<PathBuf> {
 	out
 }
 
-/// Resolve the producer-worker binary, if configured.
+/// Resolve the producer-worker binary.
 ///
-/// Set `NUDOX_PRODUCER_WORKER` to an absolute path (or name on PATH) to force
-/// in-process languages (nix/ts/python) through a crash-isolated subprocess.
+/// Order: `NUDOX_PRODUCER_WORKER` → same-dir `producer-worker` next to current
+/// exe → `producer-worker` on PATH.
 pub fn producer_worker_bin() -> Option<PathBuf> {
-	let raw = std::env::var_os("NUDOX_PRODUCER_WORKER")?;
-	let path = PathBuf::from(raw);
-	if path.exists() {
-		return Some(path);
+	if let Some(raw) = std::env::var_os("NUDOX_PRODUCER_WORKER") {
+		let path = PathBuf::from(raw);
+		if path.exists() {
+			return Some(path);
+		}
+		if let Ok(w) = which_bin(&path) {
+			return Some(w);
+		}
 	}
-	which::which(&path).ok()
+	if let Ok(exe) = std::env::current_exe() {
+		if let Some(dir) = exe.parent() {
+			let candidate = dir.join("producer-worker");
+			if candidate.exists() {
+				return Some(candidate);
+			}
+		}
+	}
+	which_bin(Path::new("producer-worker")).ok()
 }
 
-/// Lower via the producer-worker when configured; otherwise `None` so callers
-/// fall back to in-process (dev). Returns the IR JSON body on success.
-pub fn try_worker_lower(lang: &str, root: &Path) -> Option<Result<String, IsolatedFailure>> {
-	let bin = producer_worker_bin()?;
-	let profile = match lang {
-		"nix" => ProducerProfile::Nix,
-		_ => ProducerProfile::StaticParser,
+fn which_bin(bin: &Path) -> Result<PathBuf, ()> {
+	if bin.is_absolute() && bin.exists() {
+		return Ok(bin.to_path_buf());
+	}
+	let name = bin.as_os_str();
+	let path = std::env::var_os("PATH").ok_or(())?;
+	for dir in std::env::split_paths(&path) {
+		let candidate = dir.join(name);
+		if candidate.is_file() {
+			return Ok(candidate);
+		}
+	}
+	Err(())
+}
+
+/// Whether production requires the worker path (no in-process interpreters).
+pub fn require_worker() -> bool {
+	matches!(
+		std::env::var("NUDOX_SANDBOX_REQUIRE").as_deref(),
+		Ok("1") | Ok("true")
+	) || matches!(
+		std::env::var("NUDOX_ENV").as_deref(),
+		Ok("prod") | Ok("production")
+	) || std::env::var_os("NUDOX_PRODUCER_WORKER").is_some()
+}
+
+fn nix_pool() -> Option<&'static WorkerPool> {
+	static POOL: OnceLock<Option<WorkerPool>> = OnceLock::new();
+	POOL.get_or_init(|| {
+		let bin = producer_worker_bin()?;
+		WorkerPool::new(WorkerPoolConfig::nix(bin)).ok()
+	})
+	.as_ref()
+}
+
+fn parser_pool() -> Option<&'static WorkerPool> {
+	static POOL: OnceLock<Option<WorkerPool>> = OnceLock::new();
+	POOL.get_or_init(|| {
+		let bin = producer_worker_bin()?;
+		WorkerPool::new(WorkerPoolConfig::static_parser(bin)).ok()
+	})
+	.as_ref()
+}
+
+/// Lower via pooled worker when available.
+///
+/// - Dev: returns `None` if no worker binary → caller may fall back in-process.
+/// - Prod (`require_worker`): returns `Some(Err)` if the worker is missing.
+pub fn try_worker_lower(lang: WorkerLang, root: &Path) -> Option<Result<String, IsolatedFailure>> {
+	let pool = match lang {
+		WorkerLang::Nix => nix_pool(),
+		WorkerLang::Typescript | WorkerLang::Python => parser_pool(),
 	};
-	let cmd = IsolatedCommand::new(bin, profile)
-		.arg("lower")
-		.arg(lang)
-		.arg(root)
-		.ro(root)
-		.rw(std::env::temp_dir());
-	Some(run_isolated(cmd).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))
+
+	match pool {
+		Some(pool) => Some(pool.lower(lang, root).map_err(|e| IsolatedFailure {
+			command: format!("producer-worker {}", lang.as_str()),
+			kind: IsolatedFailureKind::Sandbox(e.to_string()),
+			stdout: None,
+			stderr: None,
+		})),
+		None if require_worker() => Some(Err(IsolatedFailure {
+			command: format!("producer-worker {}", lang.as_str()),
+			kind: IsolatedFailureKind::ToolchainMissing(
+				"producer-worker (set NUDOX_PRODUCER_WORKER)".into(),
+			),
+			stdout: None,
+			stderr: None,
+		})),
+		None => None,
+	}
+}
+
+/// Warm worker pools at process start (optional; first lower also initializes).
+pub fn warm_workers() {
+	let _ = nix_pool();
+	let _ = parser_pool();
 }

@@ -29,6 +29,50 @@ pub enum ProducerProfile {
 impl ProducerProfile {
 	/// Limits for this profile (design §7 tables).
 	pub const fn limits(self) -> Limits {
+		self.limits_with(crate::limits::LimitOverride::none())
+	}
+
+	/// Profile ceilings with a sparse per-package/operator overlay.
+	pub const fn limits_with(self, overlay: crate::limits::LimitOverride) -> Limits {
+		// const fn cannot call overlay.apply (non-const); expand inline.
+		let base = self.base_limits();
+		Limits {
+			mem_bytes: match overlay.mem_bytes {
+				Some(v) => v,
+				None => base.mem_bytes,
+			},
+			cpu_secs: match overlay.cpu_secs {
+				Some(v) => v,
+				None => base.cpu_secs,
+			},
+			wall: match overlay.wall {
+				Some(v) => v,
+				None => base.wall,
+			},
+			pids: match overlay.pids {
+				Some(v) => v,
+				None => base.pids,
+			},
+			max_stdout: match overlay.max_stdout {
+				Some(v) => v,
+				None => base.max_stdout,
+			},
+			max_stderr: match overlay.max_stderr {
+				Some(v) => v,
+				None => base.max_stderr,
+			},
+			fsize_bytes: match overlay.fsize_bytes {
+				Some(v) => v,
+				None => base.fsize_bytes,
+			},
+			nofile: match overlay.nofile {
+				Some(v) => v,
+				None => base.nofile,
+			},
+		}
+	}
+
+	pub(crate) const fn base_limits(self) -> Limits {
 		match self {
 			// mem 3 GiB, wall 15 min, cpu 900s, pids 512
 			Self::Rust => Limits::from_const(
@@ -95,6 +139,25 @@ impl ProducerProfile {
 				16 * 1024 * 1024,
 				256,
 			),
+		}
+	}
+}
+
+impl ProducerProfile {
+	/// Runtime (non-const) overlay — preferred when `LimitOverride` is dynamic.
+	pub fn with_override(self, overlay: crate::limits::LimitOverride) -> Limits {
+		overlay.apply(self.base_limits())
+	}
+
+	/// Config / metrics wire name.
+	pub const fn wire_name(self) -> &'static str {
+		match self {
+			Self::Rust => "rust",
+			Self::Java => "java",
+			Self::Go => "go",
+			Self::Nix => "nix",
+			Self::StaticParser => "static_parser",
+			Self::Tiny => "tiny",
 		}
 	}
 }

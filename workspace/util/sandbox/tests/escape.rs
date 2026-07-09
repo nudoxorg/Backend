@@ -255,3 +255,57 @@ fn seccomp_denylist_compiles() {
 	assert!(!bytes.is_empty());
 	assert_eq!(bytes.len() % 8, 0);
 }
+
+#[test]
+fn limit_override_applies_sparsely() {
+	use sandbox::LimitOverride;
+	use std::num::NonZeroU64;
+	let base = ProducerProfile::Tiny.limits();
+	let over = LimitOverride {
+		mem_bytes: NonZeroU64::new(32 * 1024 * 1024),
+		..LimitOverride::none()
+	};
+	let lim = ProducerProfile::Tiny.with_override(over);
+	assert_eq!(lim.mem_bytes.get(), 32 * 1024 * 1024);
+	assert_eq!(lim.cpu_secs, base.cpu_secs);
+}
+
+#[test]
+fn parse_cache_key_changes_with_inputs() {
+	use sandbox::CacheKey;
+	let a = CacheKey::derive(b"v1", b"tc", b"src", b"lock");
+	let b = CacheKey::derive(b"v1", b"tc", b"src2", b"lock");
+	assert_ne!(a.hex(), b.hex());
+}
+
+#[test]
+fn isolation_policy_from_env_defaults_best_effort() {
+	// Don't mutate NUDOX_ENV (other tests); just construct BestEffort explicitly.
+	assert_eq!(
+		sandbox::IsolationPolicy::BestEffort,
+		sandbox::IsolationPolicy::default()
+	);
+	let host = sandbox::probe::probe();
+	// Probe always succeeds; production_grade depends on platform.
+	assert!(!host.backend.is_empty());
+}
+
+/// When `NUDOX_ESCAPE_GATE=1` on Linux, soft-skips become hard failures.
+#[cfg(target_os = "linux")]
+#[test]
+fn escape_gate_requires_bwrap_when_set() {
+	if !matches!(
+		std::env::var("NUDOX_ESCAPE_GATE").as_deref(),
+		Ok("1") | Ok("true")
+	) {
+		return;
+	}
+	let host = sandbox::probe::probe();
+	assert!(host.bwrap, "CI escape gate requires bwrap");
+	assert!(host.seccomp, "CI escape gate requires seccomp compile");
+	assert!(
+		host.capabilities.production_grade || host.backend == "linux-bwrap",
+		"CI escape gate requires production-grade backend, got {}",
+		host.backend
+	);
+}

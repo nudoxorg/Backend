@@ -226,8 +226,9 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// `max_inflight_jobs`. (Replaces the old stateless `IndexingWorker`; the
 	/// server handle now lives on the indexer itself.)
 	pub async fn run_worker(&self) -> ServerResult<()> {
-		let limits = self.server.config().limits;
 		loop {
+			let max_inflight = self.server.config().limits.max_inflight_jobs;
+			let poll_interval = self.server.config().limits.poll_interval;
 			for sourced in self.server.federation().in_precedence() {
 				let stores = sourced.value;
 
@@ -243,16 +244,16 @@ impl<M: EmbeddingModel> Indexer<M> {
 
 				let jobs = stores
 					.queue
-					.dequeue_batch(limits.max_inflight_jobs, JOB_LEASE)
+					.dequeue_batch(max_inflight, JOB_LEASE)
 					.await
 					.map_err(RegistryError::from)?;
 				futures::stream::iter(jobs)
-					.for_each_concurrent(limits.max_inflight_jobs, |job| {
+					.for_each_concurrent(max_inflight, |job| {
 						self.drive_job(stores, job)
 					})
 					.await;
 			}
-			tokio::time::sleep(limits.poll_interval).await;
+			tokio::time::sleep(poll_interval).await;
 		}
 	}
 

@@ -3,8 +3,8 @@
 //! Two isolation problems, two mechanisms (see design §3–6):
 //!
 //! 1. **Compile-heavy, code-executing producers** (Rust, Java, Go) run as
-//!    external toolchains under a namespace cage ([`LinuxBwrap`] or a future
-//!    Nix derivation backend).
+//!    external toolchains under a namespace cage ([`LinuxBwrap`] or
+//!    [`NixDerivation`]).
 //! 2. **In-process interpreters/parsers** (snix, deno_doc, pyrefly) move out
 //!    of the indexer address space into sandboxed worker subprocesses
 //!    ([`worker`]).
@@ -30,6 +30,7 @@
 //! - [`Env`] is *only* an allowlist — ambient host environment is never inherited.
 //! - [`Network`] is explicit; the default is off.
 //! - [`Limits`] requires every ceiling (no silent "unlimited" field).
+//! - [`LimitOverride`] is sparse — zeros are unrepresentable via `NonZero*`.
 //! - [`Backend`] selection is probe-based; [`Passthrough`] refuses production.
 //!
 //! # Backends
@@ -37,15 +38,20 @@
 //! | Backend | Platform | Role |
 //! |---------|----------|------|
 //! | [`LinuxBwrap`] | Linux | Primary: bwrap + `--seccomp` + cgroups |
+//! | [`NixDerivation`] | any w/ nix | Daemon sandbox + store cache (`NUDOX_SANDBOX=nix`) |
 //! | [`MacSeatbelt`] | macOS | Opt-in (`NUDOX_SANDBOX=seatbelt`); not boundary of record |
 //! | [`Passthrough`] | any | Dev default on macOS; gated out of production |
 
 #![deny(missing_docs)]
 
 pub mod backend;
+pub mod cache;
 pub mod cgroup;
 pub mod error;
 pub mod limits;
+pub mod observer;
+pub mod overrides;
+pub mod probe;
 pub mod profiles;
 pub mod spec;
 pub mod worker;
@@ -58,13 +64,17 @@ pub mod landlock;
 pub mod seccomp;
 
 pub use backend::{
-	select, Backend, Capabilities, LinuxBwrap, MacSeatbelt, Passthrough, Selected,
+	select, Backend, Capabilities, LinuxBwrap, MacSeatbelt, NixDerivation, Passthrough, Selected,
 };
+pub use cache::{CacheKey, ParseCache};
 pub use error::{KillReason, SandboxError};
-pub use limits::{Limits, Network};
+pub use limits::{LimitOverride, Limits, Network};
+pub use observer::{CountingObserver, NullObserver, SandboxObserver};
+pub use probe::{require as require_isolation, HostIsolation, IsolationPolicy, LandlockAbi};
+pub use overrides::install as install_limit_overrides;
 pub use profiles::ProducerProfile;
 pub use spec::{Env, Mounts, Output, Spec};
-pub use worker::{JobRequest, JobResponse, WorkerPool, WorkerPoolConfig};
+pub use worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConfig};
 
 use std::sync::OnceLock;
 
@@ -82,4 +92,9 @@ pub fn run(spec: Spec) -> Result<Output, SandboxError> {
 /// Run `spec` on an explicitly chosen backend.
 pub fn run_with(backend: &dyn Backend, spec: Spec) -> Result<Output, SandboxError> {
 	backend.run(spec)
+}
+
+/// Probe host isolation and enforce policy from the environment.
+pub fn boot_check() -> Result<HostIsolation, SandboxError> {
+	require_isolation(IsolationPolicy::from_env())
 }

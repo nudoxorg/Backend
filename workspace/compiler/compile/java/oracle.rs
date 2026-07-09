@@ -114,6 +114,8 @@ pub fn compile_oracle() -> Result<PathBuf, OracleError> {
 		source,
 	})?;
 
+	// Network is already Off via IsolatedCommand (design §8). Annotation
+	// processors run inside the cage with no ambient net.
 	let mut cmd = IsolatedCommand::new("javac", ProducerProfile::Java)
 		.arg("-encoding")
 		.arg("UTF-8")
