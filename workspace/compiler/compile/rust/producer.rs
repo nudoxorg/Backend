@@ -1,5 +1,5 @@
 //! Rust [`Producer`](crate::compile::producer::Producer) — in-process
-//! rust-analyzer (default) with a rustdoc JSON fallback.
+//! rust-analyzer HIR walk → IR.
 
 use std::path::Path;
 

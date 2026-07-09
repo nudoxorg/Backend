@@ -1,7 +1,6 @@
-//! In-process rust-analyzer producer (default).
+//! In-process rust-analyzer producer.
 //!
-//! This is the primary Rust path. The rustdoc producer remains as a temporary
-//! fallback until P3 (`NUDOX_RUST_PRODUCER=rustdoc`).
+//! This is the sole Rust path; the legacy rustdoc producer was removed at P3.
 
 #[allow(dead_code)] // walk/item/ty stubs land fully in later P1 agents
 mod ctx;
@@ -38,18 +37,7 @@ pub(crate) use self::load::{ExtractConfig, LoadedWorkspace, ProbeTier, ProcMacro
 use self::ctx::LowerCtx;
 use self::walk::lower_crate;
 
-/// Env flag for the temporary dual-path switch (removed at P3).
-pub const PRODUCER_ENV: &str = "NUDOX_RUST_PRODUCER";
-
-/// True when the legacy rustdoc path is requested (`NUDOX_RUST_PRODUCER=rustdoc`,
-/// case-insensitive). Unset or any other value keeps the default RA producer.
-pub fn rustdoc_selected() -> bool {
-	std::env::var_os(PRODUCER_ENV)
-		.map(|v| v.eq_ignore_ascii_case("rustdoc"))
-		.unwrap_or(false)
-}
-
-/// RA entry point — same signature as the rustdoc `generate_ir`.
+/// RA entry point.
 ///
 /// One workspace load, then for each documented local package: find `hir::Crate`
 /// → walk → merge into a single `Index` + source map.

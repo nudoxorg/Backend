@@ -48,7 +48,6 @@ rust_crate(
         crate("tar"),
         crate("reqwest"),
         crate("rustc_hash"),
-        crate("rustdoc_types"),
         crate("semver"),
         crate("smol_str"),
         # rust-analyzer producer (ra_ap_* 0.0.341; see RUST-ANALYZER-PLAN.md)

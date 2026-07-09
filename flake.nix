@@ -149,14 +149,6 @@
             "rust-src"
             "rust-docs"
             "rustc"
-            # rustc-dev ships the compiler's own crates (rustc_driver,
-            # rustc_interface, rustc_hir, …) into the sysroot. It is the
-            # prerequisite for building `#![feature(rustc_private)]` code —
-            # i.e. vendoring librustdoc and driving it in-process so the Rust
-            # producer can obtain rustdoc's `Crate` without shelling out to
-            # `cargo rustdoc` and round-tripping through JSON.
-            # (Dropped in RUST-ANALYZER-PLAN P3 once the rustdoc path is gone.)
-            "rustc-dev"
             # rust-analyzer component ships libexec/rust-analyzer-proc-macro-srv
             # so ra_ap_load_cargo can use ProcMacroServerChoice::Sysroot.
             "rust-analyzer"
