@@ -497,6 +497,38 @@ where
 {
 }
 
+impl<M: EmbeddingModel> heart::Probeable for Semantic<M, Live> {
+	fn backend(&self) -> BackendKind {
+		BackendKind::Qdrant
+	}
+
+	async fn probe(&self) -> heart::Probe {
+		use crate::error::VectorError;
+		heart::timed_probe(BackendKind::Qdrant, async {
+			// Cheap one-hit zero-vector query; connectivity is the signal.
+			// `for_readiness` is the documented non-planner issuance site.
+			let gate = SemanticGate::for_readiness();
+			let query = Embedding::<M>::zeroed();
+			match self
+				.search(gate, &query, NonZeroUsize::MIN, None)
+				.await
+			{
+				Ok(_) => None,
+				Err(error @ (VectorError::Connect(_) | VectorError::Transport(_))) => {
+					Some(error.to_string())
+				}
+				Err(_) => None,
+			}
+		})
+		.await
+	}
+}
+
+// Concrete brand for the Send RTN guard (any EmbeddingModel works).
+const _: fn() = || {
+	heart::assert_probe_future_send::<Semantic<crate::vector::models::OpenAi3Small, Live>>();
+};
+
 // Ensure the retry classification is wired: the sink machinery consults it.
 const _: fn() = || {
 	fn assert_retryable<T: Retryable>() {}

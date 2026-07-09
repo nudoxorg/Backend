@@ -47,19 +47,36 @@ pub enum IsolationPolicy {
 }
 
 impl IsolationPolicy {
-	/// From env: `NUDOX_SANDBOX_REQUIRE=1` / `NUDOX_ENV=prod` → require.
-	pub fn from_env() -> Self {
-		if matches!(
+	/// Single resolution of the production isolation gate from env.
+	///
+	/// True when `NUDOX_SANDBOX_REQUIRE=1|true` or `NUDOX_ENV=prod|production`.
+	/// Every call site that needs the prod gate must use this (or [`Self::from_env`])
+	/// rather than re-reading the environment.
+	pub fn env_requires_production() -> bool {
+		matches!(
 			std::env::var("NUDOX_SANDBOX_REQUIRE").as_deref(),
 			Ok("1") | Ok("true")
 		) || matches!(
 			std::env::var("NUDOX_ENV").as_deref(),
 			Ok("prod") | Ok("production")
-		) {
+		)
+	}
+
+	/// From env: production gate → require; otherwise best-effort.
+	pub fn from_env() -> Self {
+		if Self::env_requires_production() {
 			Self::RequireProduction
 		} else {
 			Self::BestEffort
 		}
+	}
+
+	/// Whether interpreter workers are mandatory (no in-process fallback).
+	///
+	/// True under the production gate, or when `NUDOX_PRODUCER_WORKER` is set
+	/// (explicit worker path implies the worker route).
+	pub fn require_worker() -> bool {
+		Self::env_requires_production() || std::env::var_os("NUDOX_PRODUCER_WORKER").is_some()
 	}
 }
 

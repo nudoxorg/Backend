@@ -19,6 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::compile::isolate::{self, IsolatedCommand, IsolatedFailureKind};
+use crate::compile::producer;
 use sandbox::ProducerProfile;
 
 use super::error::{GoError, Result};
@@ -26,7 +27,7 @@ use super::error::{GoError, Result};
 use super::oracle;
 
 /// The embedded oracle program, written out verbatim before `go run`.
-const ORACLE_FILES: &[(&str, &str)] = &[
+pub const ORACLE_FILES: &[(&str, &str)] = &[
 	("main.go", include_str!("oracle/main.go")),
 	("serialize.go", include_str!("oracle/serialize.go")),
 	("docs.go", include_str!("oracle/docs.go")),
@@ -166,30 +167,11 @@ pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
 /// temp directory and return it. Idempotent: an existing up-to-date copy
 /// is reused, which also lets the Go build cache do its job across runs.
 pub fn materialize_oracle() -> Result<PathBuf> {
-	let dir = std::env::temp_dir().join(format!("nudox-go-oracle-{:016x}", oracle_hash()));
-	fs::create_dir_all(&dir)
-		.map_err(|source| GoError::MaterializeOracleDir { dir: dir.clone(), source })?;
-
-	for (name, contents) in ORACLE_FILES {
-		let path = dir.join(name);
-		// The directory is content-addressed, so present == current.
-		if !path.is_file() {
-			fs::write(&path, contents)
-				.map_err(|source| GoError::WriteOracleSource { path: path.clone(), source })?;
-		}
-	}
-	Ok(dir)
-}
-
-/// Stable FNV-1a hash over the embedded oracle sources, keying the
-/// materialization directory to the exact vendored revision.
-fn oracle_hash() -> u64 {
-	let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-	for (name, contents) in ORACLE_FILES {
-		for byte in name.bytes().chain(contents.bytes()) {
-			hash ^= byte as u64;
-			hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-		}
-	}
-	hash
+	let dir = producer::oracle_dir("go", producer::oracle_hash(ORACLE_FILES));
+	producer::materialize_oracle(ORACLE_FILES, "go")
+		.map(|p| p.dir)
+		.map_err(|e| GoError::MaterializeOracleDir {
+			dir,
+			source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+		})
 }

@@ -104,6 +104,30 @@ async fn tantivy_index_is_derived_from_postgres() {
     }
 }
 
+/// Sync watermark survives reopen next to the index directory.
+#[tokio::test]
+async fn watermark_persists_across_reopen() {
+	let directory = common::TempDir::new("watermark-reopen");
+	let serde = rust_record("serde");
+	{
+		let mut index = PackageIndex::open(directory.path()).expect("open");
+		assert_eq!(index.watermark().position, 0);
+		index.absorb([&serde], 99).expect("absorb");
+		assert_eq!(index.watermark().position, 99);
+	}
+	// Drop the first handle; reopen must restore the durable cursor.
+	let reopened = PackageIndex::open(directory.path()).expect("reopen");
+	assert_eq!(
+		reopened.watermark().position,
+		99,
+		"sync_watermark.json must restore the cursor across process restarts"
+	);
+	assert!(
+		!reopened.query("serde", 10).expect("query").is_empty(),
+		"docs folded before the restart must still be searchable"
+	);
+}
+
 /// Multi-parent packages present as a single result.
 ///
 /// Arrange: a package reachable through two parents/sources.

@@ -149,28 +149,29 @@ impl RustPackage {
         package_name: &str,
         version: &Version,
     ) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
-        // Unique per invocation so concurrent generate/test runs on the same
-        // package name cannot race on a shared rustdoc JSON path.
-        let tmp = std::env::temp_dir();
+        // Unique per invocation so concurrent generate/test runs cannot race.
+        // RAII guard unlinks on every exit path (including the lib-only retry).
         let safe_name = package_name.replace(['/', ':'], "_");
-        let uniq = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let json_out =
-            tmp.join(format!("nudox-{safe_name}-rustdoc-{}-{uniq}.json", std::process::id()));
+        let json_file = tempfile::Builder::new()
+            .prefix(&format!("nudox-{safe_name}-rustdoc-"))
+            .suffix(".json")
+            .tempfile()
+            .map_err(Package::from)?;
+        // Persist so cargo/rustdoc can rewrite the path without a held fd.
+        let (_, json_path) = json_file.keep().map_err(|e| Package::from(e.error))?;
+        let json_out = UnlinkOnDrop(json_path);
 
-        match self.run_cargo_rustdoc(code, package_name, version, &json_out, false) {
+        match self.run_cargo_rustdoc(code, package_name, version, &json_out.0, false) {
             Ok(_) => {}
             Err(Package::Process(ProcessFailure::Failed { stderr: Some(ref d), .. }))
                 if d.contains("extra arguments to `rustdoc` can only be passed to one target") =>
             {
-                self.run_cargo_rustdoc(code, package_name, version, &json_out, true)?;
+                self.run_cargo_rustdoc(code, package_name, version, &json_out.0, true)?;
             }
             Err(error) => return Err(error),
         }
 
-        let json_bytes = fs::read(&json_out)?;
+        let json_bytes = fs::read(&json_out.0)?;
         let rustdoc_crate = parse_rustdoc_crate(&json_bytes)?;
         drop(json_bytes);
         debug!("rustdoc output parsed");
@@ -220,14 +221,47 @@ impl RustPackage {
 
 // ─── rustdoc JSON capture ────────────────────────────────────────────────────
 
-/// Write a short-lived shell wrapper that cargo invokes via `RUSTDOC=…`.
+/// Unlink a kept tempfile path on drop (all error paths of the owner).
+struct UnlinkOnDrop(PathBuf);
+
+impl Drop for UnlinkOnDrop {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Write a process-wide shell wrapper that cargo invokes via `RUSTDOC=…`.
 ///
 /// Cargo always passes `-o target/doc` (or `--out-dir`). With
 /// `--output-format json`, rustdoc writes `{crate}.json` into that directory.
 /// The wrapper rewrites the out-dir to a private staging path and copies the
-/// single top-level `.json` into `NUDOX_RUSTDOC_OUT`.
+/// single top-level `.json` into `NUDOX_RUSTDOC_OUT` (per-invocation unique).
+///
+/// Cached in a [`OnceLock`]: the script is identical for every package, and
+/// concurrent jobs already isolate via `NUDOX_RUSTDOC_OUT`.
 fn write_rustdoc_stdout_wrapper() -> std::result::Result<PathBuf, Package> {
-    let path = std::env::temp_dir().join(format!("nudox-rustdoc-wrapper-{}", std::process::id()));
+    use std::sync::OnceLock;
+
+    static WRAPPER: OnceLock<PathBuf> = OnceLock::new();
+    if let Some(path) = WRAPPER.get() {
+        return Ok(path.clone());
+    }
+
+    let path = materialize_rustdoc_wrapper()?;
+    // Race: two materializations may occur; the loser leaves one temp script.
+    match WRAPPER.set(path.clone()) {
+        Ok(()) => Ok(path),
+        Err(_) => Ok(WRAPPER.get().expect("set raced with another init").clone()),
+    }
+}
+
+fn materialize_rustdoc_wrapper() -> std::result::Result<PathBuf, Package> {
+    let file = tempfile::Builder::new()
+        .prefix("nudox-rustdoc-wrapper-")
+        .suffix(".sh")
+        .tempfile()
+        .map_err(Package::from)?;
+    let (_, path) = file.keep().map_err(|e| Package::from(e.error))?;
     let script = r#"#!/bin/sh
 set -eu
 out="${NUDOX_RUSTDOC_OUT:?NUDOX_RUSTDOC_OUT must be set}"

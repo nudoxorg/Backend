@@ -12,6 +12,7 @@ _MEMBERS = {
     "server":           "//workspace/server:server-lib",
     "caching":          "//workspace/util/caching:caching",
     "sandbox":          "//workspace/util/sandbox:sandbox",
+    "cas":              "//workspace/cas:cas",
     # nudox:members
 }
 

@@ -166,29 +166,62 @@ impl Spec {
 	}
 }
 
+/// How a sandboxed process ended.
+///
+/// Mutually exclusive: a process either exited with a status or was killed by a
+/// resource ceiling. The impossible `(status, killed: Some(_))` pair is gone.
+///
+/// **Today's backends** always promote resource kills to
+/// [`crate::SandboxError::Killed`] and only construct [`ProcessEnd::Exited`]
+/// inside `Ok(Output)`. [`ProcessEnd::Killed`] exists so the type system can
+/// represent an in-band kill without reintroducing the old pair; callers that
+/// match on `Ok(out)` should still treat `Killed` as a resource failure.
+#[derive(Debug, Clone)]
+pub enum ProcessEnd {
+	/// The process exited on its own (zero or non-zero).
+	Exited(ExitStatus),
+	/// The supervisor or OS killed the process for a resource ceiling.
+	///
+	/// Not constructed by current backends (they return
+	/// [`crate::SandboxError::Killed`] instead); retained so an in-band kill
+	/// cannot be paired with an exit status.
+	Killed(KillReason),
+}
+
 /// Captured result of a successful (or non-zero-exit) sandboxed run.
 ///
-/// Resource kills surface as [`crate::SandboxError::Killed`], not as this type.
+/// Resource kills surface as [`crate::SandboxError::Killed`] on every current
+/// backend — not as [`ProcessEnd::Killed`] inside this type.
 #[derive(Debug, Clone)]
 pub struct Output {
 	/// Child stdout (already capped by the supervisor).
 	pub stdout: Vec<u8>,
 	/// Child stderr (already capped).
 	pub stderr: Vec<u8>,
-	/// Exit status when the process exited on its own.
-	pub status: ExitStatus,
+	/// How the process ended.
+	pub end: ProcessEnd,
 	/// Wall time observed by the supervisor.
 	pub wall: Duration,
 	/// Peak memory from cgroup `memory.peak`, when available.
 	pub peak_mem: Option<u64>,
-	/// Set if the supervisor killed the child (should be rare — usually
-	/// promoted to [`crate::SandboxError::Killed`]).
-	pub killed: Option<KillReason>,
 }
 
+/// Alias matching the sealed-compute vocabulary (`Captured` / `ProcessEnd`).
+///
+/// Prefer this name at new call sites; [`Output`] remains for existing code.
+pub type Captured = Output;
+
 impl Output {
-	/// Whether the child exited with status 0 and was not killed.
+	/// Whether the child exited with status 0 (not killed).
 	pub fn success(&self) -> bool {
-		self.killed.is_none() && self.status.success()
+		matches!(&self.end, ProcessEnd::Exited(s) if s.success())
+	}
+
+	/// Exit status when the process exited; `None` if it was killed.
+	pub fn status(&self) -> Option<ExitStatus> {
+		match self.end {
+			ProcessEnd::Exited(s) => Some(s),
+			ProcessEnd::Killed(_) => None,
+		}
 	}
 }

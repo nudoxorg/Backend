@@ -12,9 +12,10 @@
 //! id is recomputable offline against the same [`TerminusInstance`].
 
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, ResolutionState,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, Probeable, ResolutionState,
 	content::ContentHash,
 	identity::{EntryUri, SymbolId, PackageId},
+	timed_probe,
 };
 use crate::package::Coordinates as PackageCoordinates;
 use sqlx::{Row, postgres::PgRow};
@@ -338,3 +339,24 @@ fn row_to_state(row: &PgRow) -> Result<ResolutionState, codec::CodecError> {
 fn row_decode(e: sqlx::Error) -> codec::CodecError {
 	codec::CodecError::SqlxDecode { domain: "parse_status row", source: e }
 }
+
+impl Probeable for GlobalStore<Live> {
+	fn backend(&self) -> BackendKind {
+		BackendKind::Postgres
+	}
+
+	async fn probe(&self) -> heart::Probe {
+		timed_probe(BackendKind::Postgres, async {
+			match self.get_state(PackageId::from_uuid(heart::Guid::nil())).await {
+				Ok(_) | Err(IndexError::NotFound { .. }) => None,
+				Err(error) => Some(error.to_string()),
+			}
+		})
+		.await
+	}
+}
+
+const _: fn() = || {
+	// Fail at this crate if probe futures stop being Send.
+	heart::assert_probe_future_send::<GlobalStore<Live>>();
+};

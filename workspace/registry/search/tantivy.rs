@@ -23,11 +23,16 @@ pub struct SyncWatermark {
 	pub position: i64,
 }
 
+/// Filename for the durable sync watermark, next to the index directory root.
+const WATERMARK_FILE: &str = "sync_watermark.json";
+
 /// A replica-local tantivy index over the searchable package projection.
 pub struct PackageIndex {
 	index:     Index,
 	reader:    IndexReader,
 	watermark: SyncWatermark,
+	/// Directory the index (and watermark file) live in.
+	dir:       std::path::PathBuf,
 }
 
 /// The resolved schema fields, looked up per operation so writer and reader can
@@ -50,6 +55,10 @@ const SYNC_BATCH: u64 = 1024;
 
 impl PackageIndex {
 	/// Open (or create) the replica-local index at `path`.
+	///
+	/// Restores a previously persisted sync watermark when present so restarts
+	/// do not re-fold all of postgres history. Rebuild-from-postgres remains
+	/// the recovery path if the watermark file is missing or corrupt.
 	pub fn open(path: &std::path::Path) -> Result<Self, SearchError> {
 		std::fs::create_dir_all(path)
 			.map_err(|e| SearchError::Tantivy(tantivy::TantivyError::from(e)))?;
@@ -58,10 +67,31 @@ impl PackageIndex {
 		let index =
 			Index::open_or_create(directory, Self::schema()).map_err(SearchError::Tantivy)?;
 		let reader = index.reader().map_err(SearchError::Tantivy)?;
-		tracing::debug!(path = %path.display(), "replica-local package index opened");
-		// A fresh watermark: the replica is disposable and rebuildable, so an
-		// open always resumes from zero and idempotently re-folds history.
-		Ok(Self { index, reader, watermark: SyncWatermark { position: 0 } })
+		let mut watermark = load_watermark(path);
+		// Orphan watermark + empty index (dir recreated, file left behind) would
+		// skip history on resume — reset to zero when there is nothing folded.
+		if watermark.position > 0 {
+			let _ = reader.reload();
+			if reader.searcher().num_docs() == 0 {
+				tracing::warn!(
+					path = %path.display(),
+					position = watermark.position,
+					"watermark present but index empty; resuming from zero"
+				);
+				watermark = SyncWatermark { position: 0 };
+			}
+		}
+		tracing::debug!(
+			path = %path.display(),
+			position = watermark.position,
+			"replica-local package index opened"
+		);
+		Ok(Self {
+			index,
+			reader,
+			watermark,
+			dir: path.to_path_buf(),
+		})
 	}
 
 	/// The tantivy schema fields the package projection indexes. Defined once so
@@ -137,6 +167,7 @@ impl PackageIndex {
 		writer.commit().map_err(SearchError::Tantivy)?;
 		self.reader.reload().map_err(SearchError::Tantivy)?;
 		self.watermark = SyncWatermark { position };
+		persist_watermark(&self.dir, self.watermark);
 		tracing::debug!(folded, position, "package records absorbed into replica index");
 		Ok(self.watermark)
 	}
@@ -226,6 +257,53 @@ impl PackageIndex {
 
 	/// The current sync watermark.
 	pub fn watermark(&self) -> SyncWatermark { self.watermark }
+}
+
+/// Read `sync_watermark.json` next to the index, or `{ position: 0 }` on miss/corrupt.
+///
+/// `NotFound` is the common cold-start path (silent zero). Other I/O errors and
+/// corrupt JSON log a warning and still resume from zero — rebuild-from-postgres
+/// remains the recovery story.
+fn load_watermark(dir: &std::path::Path) -> SyncWatermark {
+	let path = dir.join(WATERMARK_FILE);
+	match std::fs::read(&path) {
+		Ok(bytes) => match serde_json::from_slice::<SyncWatermark>(&bytes) {
+			Ok(wm) => wm,
+			Err(e) => {
+				tracing::warn!(
+					path = %path.display(),
+					error = %e,
+					"corrupt tantivy watermark; resuming from zero"
+				);
+				SyncWatermark { position: 0 }
+			},
+		},
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => SyncWatermark { position: 0 },
+		Err(e) => {
+			tracing::warn!(
+				path = %path.display(),
+				error = %e,
+				"failed to read tantivy watermark; resuming from zero"
+			);
+			SyncWatermark { position: 0 }
+		},
+	}
+}
+
+/// Best-effort durable watermark write (tmp + rename).
+fn persist_watermark(dir: &std::path::Path, watermark: SyncWatermark) {
+	let path = dir.join(WATERMARK_FILE);
+	let Ok(bytes) = serde_json::to_vec(&watermark) else {
+		return;
+	};
+	let tmp = path.with_extension("json.tmp");
+	if let Err(e) = std::fs::write(&tmp, &bytes) {
+		tracing::warn!(path = %tmp.display(), error = %e, "failed to write tantivy watermark");
+		return;
+	}
+	if let Err(e) = std::fs::rename(&tmp, &path) {
+		tracing::warn!(path = %path.display(), error = %e, "failed to persist tantivy watermark");
+	}
 }
 
 /// The stored text value of `field`, or an internal error if the document

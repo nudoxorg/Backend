@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use server::{Server, ServerConfiguration, UnrestrictedAccess};
+use server::{Server, ServerConfiguration};
 
 /// The compiled-in embedding model. The whole server is monomorphized over this
 /// brand, so a store built for a *different model* (not merely a different
@@ -50,9 +50,7 @@ async fn main() -> anyhow::Result<()> {
 
 	// Access control for hosted deployments happens at the fronting proxy (see
 	// `heart::access`); in-process, everyone authenticated to reach us may act.
-	let policy = Arc::new(UnrestrictedAccess);
-
-	let server = Arc::new(Server::<EmbedModel>::assemble(config, policy).await?);
+	let server = Arc::new(Server::<EmbedModel>::assemble(config).await?);
 	server.serve().await?;
 	Ok(())
 }

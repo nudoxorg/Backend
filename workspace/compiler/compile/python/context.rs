@@ -256,14 +256,7 @@ fn wire_members(index: &mut Index, module_key_by_qualname: &HashMap<String, Nudo
             }
         }
     }
-
-    for (module_key, mut members) in members_by_module {
-        // Deterministic ordering for stable output/tests.
-        members.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-        if let Some(Entry::Module(symbol)) = index.entries_by_path.get_mut(&module_key) {
-            symbol.inner.members = Some(members);
-        }
-    }
+    crate::compile::producer::apply_members_to_index(index, members_by_module);
 }
 
 /// The package's top-level modules become `root_ids`: a module is top-level

@@ -14,7 +14,7 @@ use crate::{error::GenerateError, generate::PackageInput};
 
 /// One source file, content-addressed. Mirrors the registry's `FileEntry`, so
 /// the generated archive maps directly onto the stored blob manifest.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileDigest {
     /// The file path, relative to the package root.
     pub path: PathBuf,
@@ -28,7 +28,7 @@ pub struct FileDigest {
 
 /// The content-addressed source archive: every source file's digest, sorted by
 /// path for a reproducible manifest fingerprint.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceArchive {
     /// The per-file digests, sorted by path.
     pub files: Vec<FileDigest>,

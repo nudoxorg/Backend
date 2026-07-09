@@ -17,10 +17,15 @@ pub mod error;
 pub mod function;
 pub mod item;
 pub mod package;
+pub mod producer;
 pub mod traversal;
 pub mod types;
 
-pub use self::{error::{Package, Parse, TsDeclarationError, TsInterfaceError, TsTypeError}, package::TypescriptPackage};
+pub use self::{
+	error::{Package, Parse, TsDeclarationError, TsInterfaceError, TsTypeError},
+	package::TypescriptPackage,
+	producer::TypescriptProducer,
+};
 
 pub type Result<T> = std::result::Result<T, Parse>;
 

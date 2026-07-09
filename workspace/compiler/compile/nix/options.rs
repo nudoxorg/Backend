@@ -88,8 +88,7 @@ fn collect_options(value: &Value, prefix: &mut Vec<String>, out: &mut Vec<Field>
 fn lower_option(option: &Value, name_path: &[String]) -> Field {
     let name = name_path.join(".");
 
-    let ty = option
-        .pipe(|o| select(o, "type"))
+    let ty = select(option, "type")
         .map(|t| lower_option_type(&t))
         .unwrap_or(Type::Any);
 
@@ -259,10 +258,3 @@ fn as_list_strings(value: &Value) -> Option<Vec<String>> {
     }
 }
 
-/// Tiny pipe helper so the option-type lookup reads left-to-right.
-trait Pipe: Sized {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
-        f(self)
-    }
-}
-impl Pipe for &Value {}

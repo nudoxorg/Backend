@@ -11,8 +11,9 @@
 //!    scrubbing.
 //! 2. [`DocsIO`] — whitelist FS for `import` / path coercion; `get_env` is
 //!    sealed closed so a future impure add cannot leak host env.
-//! 3. [`scrub_host_secrets`] — defense-in-depth against anything that reads
-//!    `std::env` outside EvalIO.
+//! 3. **Seal-time env projection** — worker children start with `env_clear`
+//!    (pool parent); host secrets never enter the guest budget. Process-global
+//!    `remove_var` scrubbing was deleted (raced concurrent jobs).
 //! 4. Optional worker subprocess (`sandbox::worker`) for crash/OOM isolation.
 //!
 //! `import` stays enabled (flakes need it); the IO boundary is the cage.
@@ -36,17 +37,9 @@ use super::{context, walker};
 const EVAL_BUDGET: Duration = Duration::from_secs(120);
 
 /// Host env keys that must never be visible to untrusted Nix (design §7.4).
-const SECRET_ENV_PREFIXES: &[&str] = &[
-	"AWS_",
-	"GITHUB_TOKEN",
-	"GH_TOKEN",
-	"CACHIX_",
-	"NIX_PATH",
-	"SSH_",
-	"NPM_TOKEN",
-	"CARGO_REGISTRY_TOKEN",
-	"NUDOX_",
-];
+///
+/// Shared with [`crate::compile::producer::SECRET_ENV_PREFIXES`] for seal audits.
+pub use crate::compile::producer::SECRET_ENV_PREFIXES;
 
 /// Build a hermetic snix [`Evaluation`] over `io`.
 ///
@@ -80,10 +73,9 @@ pub fn produce(
 		return Ok(None);
 	}
 
-	// Defense-in-depth: scrub host secrets before any snix code runs. DocsIO
-	// already seals get_env; pure builtins omit getEnv/currentTime. Scrub
-	// closes the residual process-env channel.
-	let _secret_guard = scrub_host_secrets();
+	// Hermeticity: pure builtins omit getEnv/currentTime; DocsIO seals get_env.
+	// Worker path: env projected at seal/spawn (env_clear). No process-global
+	// remove_var — that raced concurrent in-process jobs.
 
 	// The whitelist filesystem: the flake tree plus a sibling `inputs/` dir the
 	// traversal layer materialized (both read-only, no absolute-path escape).
@@ -121,52 +113,6 @@ pub fn produce(
 	Ok(Some(surface))
 }
 
-/// Remove secret-bearing env keys for the duration of eval.
-///
-/// Returns a guard that restores the previous values on drop so concurrent
-/// host code outside this thread is less surprised (best-effort; env is
-/// process-global).
-fn scrub_host_secrets() -> SecretEnvGuard {
-	let mut removed = Vec::new();
-	let keys: Vec<String> = std::env::vars()
-		.map(|(k, _)| k)
-		.filter(|k| {
-			SECRET_ENV_PREFIXES.iter().any(|p| {
-				if p.ends_with('_') {
-					k.starts_with(p)
-				} else {
-					k == *p || k.starts_with(&format!("{p}_"))
-				}
-			})
-		})
-		.collect();
-	for key in keys {
-		if let Ok(val) = std::env::var(&key) {
-			removed.push((key.clone(), val));
-			// SAFETY: eval is scheduled on a dedicated per-package thread /
-			// worker; concurrent getenv during scrub is a microseconds race,
-			// not the security boundary (DocsIO + pure builtins seal getEnv).
-			unsafe {
-				std::env::remove_var(&key);
-			}
-		}
-	}
-	SecretEnvGuard { removed }
-}
-
-struct SecretEnvGuard {
-	removed: Vec<(String, String)>,
-}
-
-impl Drop for SecretEnvGuard {
-	fn drop(&mut self) {
-		for (k, v) in self.removed.drain(..) {
-			unsafe {
-				std::env::set_var(k, v);
-			}
-		}
-	}
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Flake-outputs shim
@@ -373,27 +319,13 @@ mod env_seal_tests {
 	}
 
 	#[test]
-	fn scrub_removes_secret_prefixes() {
-		unsafe {
-			std::env::set_var("AWS_ACCESS_KEY_ID", "AKIA");
-			std::env::set_var("CACHIX_AUTH_TOKEN", "xyz");
-			std::env::set_var("HARMLESS_VAR", "keep");
-		}
-		{
-			let _g = scrub_host_secrets();
-			assert!(std::env::var("AWS_ACCESS_KEY_ID").is_err());
-			assert!(std::env::var("CACHIX_AUTH_TOKEN").is_err());
-			assert_eq!(std::env::var("HARMLESS_VAR").ok().as_deref(), Some("keep"));
-		}
-		assert_eq!(
-			std::env::var("AWS_ACCESS_KEY_ID").ok().as_deref(),
-			Some("AKIA")
-		);
-		unsafe {
-			std::env::remove_var("AWS_ACCESS_KEY_ID");
-			std::env::remove_var("CACHIX_AUTH_TOKEN");
-			std::env::remove_var("HARMLESS_VAR");
-		}
+	fn secret_env_keys_classified_for_seal_projection() {
+		use crate::compile::producer::is_secret_env_key;
+		assert!(is_secret_env_key("AWS_ACCESS_KEY_ID"));
+		assert!(is_secret_env_key("CACHIX_AUTH_TOKEN"));
+		assert!(is_secret_env_key("GITHUB_TOKEN"));
+		assert!(!is_secret_env_key("HARMLESS_VAR"));
+		assert!(!is_secret_env_key("PATH"));
 	}
 
 	/// Pure hermetic eval: `builtins.getEnv` is absent (not just empty).

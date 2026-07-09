@@ -1,13 +1,17 @@
-//! Readiness / liveness for the registry's backing stores.
+//! Health + parse-status coordination for the registry's backing stores.
 //!
-//! The registry fronts several backends ([`heart::BackendKind`]); this module
-//! probes each and rolls their status into one [`Health`] verdict the server's
-//! `/readyz` surface reports. A single degraded backend is distinguished from a
-//! full outage so a load balancer can shed the right amount of traffic.
+//! Aggregates per-backend readiness ([`heart::Probe`]) into one [`Health`]
+//! verdict the server's `/readyz` surface reports. A single degraded backend is
+//! distinguished from a full outage so a load balancer can shed the right
+//! amount of traffic.
+//!
+//! Per-store probe implementations live on the store types via
+//! [`heart::Probeable`]; this module owns only the roll-up policy.
 
 use heart::BackendKind;
 
-use crate::error::RegistryError;
+// Re-export so existing `registry::health::{Probe, Probeable}` paths keep working.
+pub use heart::{assert_probe_future_send, Probe, Probeable};
 
 /// The rolled-up health verdict across every registry backend.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -25,38 +29,9 @@ pub enum Health {
 
 impl Health {
 	/// Whether the registry should accept traffic at all.
-	pub const fn is_serving(&self) -> bool { !matches!(self, Health::Down) }
-}
-
-/// The outcome of probing one backend.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Probe {
-	/// Which backend was probed.
-	pub backend: BackendKind,
-
-	/// Whether it responded healthy.
-	pub healthy: bool,
-
-	/// Round-trip latency of the probe, if it completed.
-	pub latency_ms: Option<u32>,
-
-	/// A short human-readable detail when unhealthy.
-	pub detail: Option<String>,
-}
-
-/// Something that can report its own liveness — implemented by each backing
-/// store so the aggregator probes them uniformly.
-#[allow(async_fn_in_trait, reason = "native RPITIT is the crate-wide convention; not object-safe by design")]
-#[diagnostic::on_unimplemented(
-	message = "`{Self}` cannot be health-probed",
-	note = "implement `Probeable` so the registry health aggregator can include it"
-)]
-pub trait Probeable {
-	/// The backend kind this store reports as.
-	fn backend(&self) -> BackendKind;
-
-	/// Run a cheap liveness probe (a ping / HEAD / `SELECT 1`).
-	async fn probe(&self) -> Probe;
+	pub const fn is_serving(&self) -> bool {
+		!matches!(self, Health::Down)
+	}
 }
 
 /// Aggregate per-backend probe results into one [`Health`] verdict.
@@ -75,8 +50,11 @@ pub fn aggregate(probes: &[Probe]) -> Health {
 	/// (qdrant / terminus / tantivy) only degrade their own surfaces.
 	const REQUIRED: [BackendKind; 2] = [BackendKind::Postgres, BackendKind::ObjectStore];
 
-	let impaired: Vec<BackendKind> =
-		probes.iter().filter(|probe| !probe.healthy).map(|probe| probe.backend).collect();
+	let impaired: Vec<BackendKind> = probes
+		.iter()
+		.filter(|probe| !probe.healthy)
+		.map(|probe| probe.backend)
+		.collect();
 
 	match &impaired[..] {
 		[] => Health::Ready,
@@ -89,14 +67,4 @@ pub fn aggregate(probes: &[Probe]) -> Health {
 			Health::Degraded(impaired)
 		}
 	}
-}
-
-/// Assert a store's probe future is `Send` (so the aggregator can `join!` it on a
-/// multi-threaded runtime) without boxing — via `return_type_notation`, matching
-/// the store connect/query guards elsewhere in the workspace.
-pub fn assert_probe_future_send<P>()
-where
-	P: Probeable<probe(..): Send>,
-{
-	let _ = std::marker::PhantomData::<fn() -> RegistryError>;
 }

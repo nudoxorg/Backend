@@ -55,15 +55,38 @@ impl TypescriptPackage {
 	}
 }
 
-/// Drive a deno future to completion on a fresh current-thread Tokio runtime.
+/// Drive a deno future on a **thread-local, long-lived** current-thread runtime.
 ///
-/// The compiler is otherwise synchronous; deno_graph's loader interface is the
-/// only async boundary, so it is contained here (mirroring the legacy
-/// producers backend) rather than threading a runtime through the pipeline.
+/// The compiler is otherwise synchronous; deno_graph's loader is the only async
+/// boundary. Reusing one runtime per thread avoids per-package build/teardown —
+/// the production path runs inside the long-lived `producer-worker`, so the
+/// runtime lives for the worker process.
+///
+/// [`OnceCell`] (not `RefCell`) so install does not hold a mutable borrow across
+/// `block_on` (re-entrant calls would panic a `RefCell`; nested runtimes still
+/// fail at the tokio layer, which is correct).
 fn block_on<F: Future>(future: F) -> Result<F::Output, PackageError> {
-	let runtime =
-		tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(PackageError::Io)?;
-	Ok(runtime.block_on(future))
+	use std::cell::OnceCell;
+
+	thread_local! {
+		static RT: OnceCell<tokio::runtime::Runtime> = const { OnceCell::new() };
+	}
+
+	RT.with(|cell| {
+		let rt = match cell.get() {
+			Some(rt) => rt,
+			None => {
+				let built = tokio::runtime::Builder::new_current_thread()
+					.enable_all()
+					.build()
+					.map_err(PackageError::Io)?;
+				// Racing install on one thread cannot happen; ignore AlreadyInit.
+				let _ = cell.set(built);
+				cell.get().expect("runtime just installed")
+			}
+		};
+		Ok(rt.block_on(future))
+	})
 }
 
 fn build_documents_from_roots(

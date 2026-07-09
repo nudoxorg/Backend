@@ -48,7 +48,11 @@ impl MacSeatbelt {
 			.iter()
 			.chain(spec.mounts.writable.iter())
 		{
-			let s = path.display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
+			let s = path
+				.display()
+				.to_string()
+				.replace('\\', "\\\\")
+				.replace('"', "\\\"");
 			allows.push_str(&format!("  (subpath \"{s}\")\n"));
 		}
 		// System + Nix store (required for store-linked cargo/rustc dyld).
@@ -72,7 +76,11 @@ impl MacSeatbelt {
 
 		let mut rw = String::new();
 		for path in &spec.mounts.writable {
-			let s = path.display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
+			let s = path
+				.display()
+				.to_string()
+				.replace('\\', "\\\\")
+				.replace('"', "\\\"");
 			rw.push_str(&format!("  (subpath \"{s}\")\n"));
 		}
 		rw.push_str("  (subpath \"/private/tmp\")\n");
@@ -133,11 +141,12 @@ impl Backend for MacSeatbelt {
 	}
 
 	fn run(&self, spec: Spec) -> Result<Output, SandboxError> {
-		let sandbox_exec = self.sandbox_exec.as_ref().ok_or_else(|| {
-			SandboxError::HelperMissing {
-				program: "sandbox-exec".into(),
-			}
-		})?;
+		let sandbox_exec =
+			self.sandbox_exec
+				.as_ref()
+				.ok_or_else(|| SandboxError::HelperMissing {
+					program: "sandbox-exec".into(),
+				})?;
 
 		if which::which(&spec.command).is_err() && !spec.command.exists() {
 			return Err(SandboxError::ToolchainMissing {
@@ -175,17 +184,13 @@ impl Backend for MacSeatbelt {
 			use std::os::unix::process::CommandExt;
 			let limits = limits;
 			unsafe {
-				cmd.pre_exec(move || {
-					apply_rlimits(&limits).map_err(|e| {
-						std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-					})
-				});
+				cmd.pre_exec(move || apply_rlimits(&limits).map_err(crate::error::to_io_error));
 			}
 		}
 
 		let child = cmd.spawn().map_err(SandboxError::Spawn)?;
 		drop(profile_file);
-		supervisor::supervise(child, &limits, None)
+		supervisor::supervise(child, &limits, None, &crate::CancelToken::never())
 	}
 }
 
@@ -210,13 +215,11 @@ impl Drop for ProfileFile {
 }
 
 fn tempfile_profile() -> Result<ProfileFile, SandboxError> {
-	let path = std::env::temp_dir().join(format!(
-		"nudox-seatbelt-{}-{}.sb",
-		std::process::id(),
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_nanos())
-			.unwrap_or(0)
-	));
+	let file = tempfile::Builder::new()
+		.prefix("nudox-seatbelt-")
+		.suffix(".sb")
+		.tempfile()
+		.map_err(SandboxError::Io)?;
+	let (_, path) = file.keep().map_err(|e| SandboxError::Io(e.error))?;
 	Ok(ProfileFile { path })
 }

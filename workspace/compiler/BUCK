@@ -15,6 +15,7 @@ rust_crate(
         member("ir"),
         member("registry"),
         member("sandbox"),
+        member("cas"),
         crate("deno_error", features = ["serde", "serde_json"], pin_only = True),
         crate("get_size2", features = ["compact-str", "derive", "hashbrown", "ordermap", "smallvec", "thin-vec"], pin_only = True),
         crate("static_interner", features = ["dupe"], pin_only = True),
@@ -98,6 +99,8 @@ rust_crate(
         crate("toml"),
         crate("rowan"),
         crate("url"),
+        crate("tempfile"),
+        crate("postcard", features = ["alloc"]),
     ]),
 )
 
@@ -139,6 +142,7 @@ rust_tests(
         member("ir"),
         member("registry"),
         member("sandbox"),
+        member("cas"),
         crate("tempfile"),
         crate("serde"),
         crate("serde_json"),

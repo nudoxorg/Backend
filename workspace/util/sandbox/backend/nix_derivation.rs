@@ -1,11 +1,12 @@
-//! Nix derivation backend — daemon sandbox + content-addressed output cache.
+//! Nix derivation backend — **not production-grade** (DAEMON-PLAN §2.2 / §5).
 //!
-//! For compile-heavy producers (design §5.3): generate a small derivation whose
-//! builder runs the [`Spec`] command with network off. The Nix daemon provides
-//! namespaces, seccomp, and store caching; we do not reimplement the cage.
+//! Generic Spec→drv wrapping is unsound: wall timeout is checked only after
+//! `nix build` returns, exit status is synthesized via `true`, no rlimits, and
+//! `peak_mem` is always `None`. Kept as an optional dev experiment behind
+//! `NUDOX_SANDBOX=nix` with [`production_grade`](Backend::capabilities) = false.
 //!
-//! Selection: `NUDOX_SANDBOX=nix` when `nix` is on PATH. Per-producer policy
-//! can still prefer LinuxBwrap for tiny packages (design §16.2).
+//! TODO(phase-7): replace with real per-producer derivations (`NixDaemon` cage),
+//! not a generic Spec wrapper. Prefer delete over "fix" this form.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,10 +60,7 @@ impl NixDerivation {
 			));
 		}
 		if let Some(cwd) = &spec.cwd {
-			script.push_str(&format!(
-				"cd '{}'\n",
-				sh_escape(&cwd.display().to_string())
-			));
+			script.push_str(&format!("cd '{}'\n", sh_escape(&cwd.display().to_string())));
 		}
 		script.push_str(&format!("'{}'", sh_escape(&cmd.display().to_string())));
 		for a in &spec.args {
@@ -129,13 +127,15 @@ impl Backend for NixDerivation {
 	}
 
 	fn capabilities(&self) -> Capabilities {
+		// Intentionally not production_grade — supervision model is unsound
+		// (see module docs). Must not pass IsolationPolicy::RequireProduction.
 		Capabilities {
 			isolation: true,
 			network_off: true,
 			fs_scope: true,
 			seccomp: true,
 			cgroups: true,
-			production_grade: true,
+			production_grade: false,
 		}
 	}
 
@@ -146,15 +146,11 @@ impl Backend for NixDerivation {
 			});
 		}
 
-		let work = std::env::temp_dir().join(format!(
-			"nudox-nixdrv-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.map(|d| d.as_nanos())
-				.unwrap_or(0)
-		));
-		fs::create_dir_all(&work)?;
+		let work = tempfile::Builder::new()
+			.prefix("nudox-nixdrv-")
+			.tempdir()
+			.map_err(SandboxError::Io)?;
+		let work = work.keep();
 		let expr = self.write_expression(&spec, &work)?;
 
 		let start = Instant::now();
@@ -178,10 +174,7 @@ impl Backend for NixDerivation {
 				"PATH",
 				std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
 			)
-			.env(
-				"NIX_PATH",
-				std::env::var_os("NIX_PATH").unwrap_or_default(),
-			)
+			.env("NIX_PATH", std::env::var_os("NIX_PATH").unwrap_or_default())
 			.env(
 				"HOME",
 				std::env::var_os("HOME").unwrap_or_else(|| "/tmp".into()),
@@ -228,18 +221,15 @@ impl Backend for NixDerivation {
 			});
 		}
 
-		let status = Command::new("true")
-			.status()
-			.map_err(SandboxError::Spawn)?;
+		let status = Command::new("true").status().map_err(SandboxError::Spawn)?;
 		let _ = fs::remove_dir_all(&work);
 
 		Ok(Output {
 			stdout,
 			stderr: output.stderr,
-			status,
+			end: crate::spec::ProcessEnd::Exited(status),
 			wall,
 			peak_mem: None,
-			killed: None,
 		})
 	}
 }

@@ -5,6 +5,8 @@ alias(name = "registry", actual = "//workspace/registry:registry", visibility = 
 alias(name = "runtime",  actual = "//workspace/runtime:runtime", visibility = ["PUBLIC"])
 alias(name = "compiler", actual = "//workspace/compiler:compiler", visibility = ["PUBLIC"])
 alias(name = "sandbox",  actual = "//workspace/util/sandbox:sandbox", visibility = ["PUBLIC"])
+alias(name = "cas",      actual = "//workspace/cas:cas",          visibility = ["PUBLIC"])
+alias(name = "caching",  actual = "//workspace/util/caching:caching", visibility = ["PUBLIC"])
 
 command_alias(name = "add",    exe = "//build/third-party/tools:crates", args = ["add"],    visibility = ["PUBLIC"])
 command_alias(name = "update", exe = "//build/third-party/tools:crates", args = ["update"], visibility = ["PUBLIC"])

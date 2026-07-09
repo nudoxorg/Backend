@@ -1,8 +1,11 @@
 //! Seam F: run producer toolchains inside the sandbox.
 //!
 //! Producers keep their language-specific logic; this module is the only place
-//! that builds a [`sandbox::Spec`] for external toolchains (Rust/Java/Go) and
+//! that builds isolation inputs for external toolchains (Rust/Java/Go) and
 //! for the in-process worker binary (Nix/TS/Python).
+//!
+//! Phase 2: [`IsolatedCommand`] is a thin shim over [`sandbox::SealedCommand`]
+//! so existing producers keep compiling. Full `Producer` trait is Phase 3.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -10,8 +13,8 @@ use std::process::Output as StdOutput;
 use std::sync::OnceLock;
 
 use sandbox::{
-	run, Env, KillReason, LimitOverride, Mounts, Network, ProducerProfile, SandboxError, Spec,
-	WorkerLang, WorkerPool, WorkerPoolConfig,
+	Env, KillReason, LimitOverride, Mounts, Network, ProducerProfile, SandboxError, SealedCommand,
+	Sealer, WorkerLang, WorkerPool, WorkerPoolConfig, run,
 };
 
 /// Map a sandbox kill / denial into a displayable process-style failure.
@@ -48,6 +51,8 @@ impl std::fmt::Display for IsolatedFailure {
 		write!(f, "isolated `{}` failed: {}", self.command, self.kind)
 	}
 }
+
+impl std::error::Error for IsolatedFailure {}
 
 impl std::fmt::Display for IsolatedFailureKind {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -133,6 +138,9 @@ fn global_toolchains() -> &'static ToolchainPaths {
 }
 
 /// Inputs for an isolated toolchain invocation.
+///
+/// Thin shim over [`SealedCommand`] for this phase: builders stay familiar to
+/// producers; [`run_isolated`] seals and runs through the sandbox surface.
 pub struct IsolatedCommand {
 	/// Program (name on PATH or absolute).
 	pub program: PathBuf,
@@ -224,6 +232,10 @@ impl IsolatedCommand {
 }
 
 /// Run an isolated command; on success return a std-like [`StdOutput`].
+///
+/// Builds a [`SealedCommand`] (via [`Sealer`]) then runs it. Ambient PATH /
+/// locale / toolchain discovery still happens here — that is the sealer
+/// boundary until ForgeRuntime (Phase 4) owns it.
 pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> {
 	let command_label = format!(
 		"{} {}",
@@ -235,6 +247,78 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 			.join(" ")
 	);
 
+	let sealed = seal_isolated(cmd);
+	// Phase 2 shim: seal → Spec → process-wide Backend. Full Cage::run with a
+	// live CancelToken waits on ForgeRuntime (Phase 4).
+	let spec = sealed.into_spec();
+	match run(spec) {
+		Ok(out) => {
+			if out.success() {
+				let status = out.status().expect("success implies exited");
+				Ok(StdOutput {
+					status,
+					stdout: out.stdout,
+					stderr: out.stderr,
+				})
+			} else {
+				// Resource kills normally return `SandboxError::Killed`; if a
+				// backend ever packs `ProcessEnd::Killed` into `Ok(Output)`,
+				// classify it as Resource (not NonZero).
+				match out.end {
+					sandbox::ProcessEnd::Exited(status) => Err(IsolatedFailure {
+						command: command_label,
+						kind: IsolatedFailureKind::NonZero {
+							status: status.to_string(),
+						},
+						stdout: nonempty_utf8(&out.stdout),
+						stderr: nonempty_utf8(&out.stderr),
+					}),
+					sandbox::ProcessEnd::Killed(reason) => Err(IsolatedFailure {
+						command: command_label,
+						kind: IsolatedFailureKind::Resource(reason),
+						stdout: nonempty_utf8(&out.stdout),
+						stderr: nonempty_utf8(&out.stderr),
+					}),
+				}
+			}
+		}
+		Err(SandboxError::Killed { reason, .. }) => Err(IsolatedFailure {
+			command: command_label,
+			kind: IsolatedFailureKind::Resource(reason),
+			stdout: None,
+			stderr: None,
+		}),
+		Err(SandboxError::ToolchainMissing { program }) => Err(IsolatedFailure {
+			command: command_label,
+			kind: IsolatedFailureKind::ToolchainMissing(program),
+			stdout: None,
+			stderr: None,
+		}),
+		Err(e) => Err(IsolatedFailure {
+			command: command_label,
+			kind: IsolatedFailureKind::Sandbox(e.to_string()),
+			stdout: None,
+			stderr: None,
+		}),
+	}
+}
+
+fn nonempty_utf8(bytes: &[u8]) -> Option<String> {
+	let s = String::from_utf8_lossy(bytes).trim().to_string();
+	if s.is_empty() { None } else { Some(s) }
+}
+
+/// Project an [`IsolatedCommand`] into a [`SealedCommand`] (sealer boundary).
+///
+/// Public for producers that build [`ExecPlan::Commands`] via the familiar
+/// isolated-command builder, then hand the sealed form to the cage.
+pub fn seal(cmd: IsolatedCommand) -> SealedCommand {
+	seal_isolated(cmd)
+}
+
+/// Project an [`IsolatedCommand`] into a [`SealedCommand`] (sealer boundary).
+fn seal_isolated(cmd: IsolatedCommand) -> SealedCommand {
+	let sealer = Sealer::new();
 	let toolchains = global_toolchains();
 	let mut env = Env::empty().set(
 		"PATH",
@@ -276,62 +360,19 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 	// Profile → process-wide config overlays → per-command overlay.
 	let mut limits = sandbox::overrides::resolve(cmd.profile, None);
 	limits = cmd.override_.apply(limits);
-	let mut spec = Spec::new(cmd.program, limits)
-		.args(cmd.args)
-		.env(env)
-		.mounts(mounts)
-		.network(cmd.network);
+
+	let budget = sealer.budget_from_mounts(
+		mounts,
+		scratch,
+		sandbox::NetGrant::from(cmd.network),
+		env,
+		limits,
+	);
+	let mut sealed = sealer.seal_command(cmd.program, cmd.args, budget);
 	if let Some(cwd) = cmd.cwd {
-		spec = spec.cwd(cwd);
+		sealed = sealed.cwd(cwd);
 	}
-
-	match run(spec) {
-		Ok(out) => {
-			if out.success() {
-				Ok(StdOutput {
-					status: out.status,
-					stdout: out.stdout,
-					stderr: out.stderr,
-				})
-			} else {
-				Err(IsolatedFailure {
-					command: command_label,
-					kind: IsolatedFailureKind::NonZero {
-						status: out.status.to_string(),
-					},
-					stdout: nonempty_utf8(&out.stdout),
-					stderr: nonempty_utf8(&out.stderr),
-				})
-			}
-		}
-		Err(SandboxError::Killed { reason, .. }) => Err(IsolatedFailure {
-			command: command_label,
-			kind: IsolatedFailureKind::Resource(reason),
-			stdout: None,
-			stderr: None,
-		}),
-		Err(SandboxError::ToolchainMissing { program }) => Err(IsolatedFailure {
-			command: command_label,
-			kind: IsolatedFailureKind::ToolchainMissing(program),
-			stdout: None,
-			stderr: None,
-		}),
-		Err(e) => Err(IsolatedFailure {
-			command: command_label,
-			kind: IsolatedFailureKind::Sandbox(e.to_string()),
-			stdout: None,
-			stderr: None,
-		}),
-	}
-}
-
-fn nonempty_utf8(bytes: &[u8]) -> Option<String> {
-	let s = String::from_utf8_lossy(bytes).trim().to_string();
-	if s.is_empty() {
-		None
-	} else {
-		Some(s)
-	}
+	sealed
 }
 
 /// Collect ancestor directory binds so a package tree is visible.
@@ -385,15 +426,12 @@ fn which_bin(bin: &Path) -> Result<PathBuf, ()> {
 	Err(())
 }
 
-/// Whether production requires the worker path (no in-process interpreters).
+/// Whether the worker path is mandatory (no in-process interpreters).
+///
+/// Delegates to the single prod-gate resolution in
+/// [`sandbox::IsolationPolicy::require_worker`].
 pub fn require_worker() -> bool {
-	matches!(
-		std::env::var("NUDOX_SANDBOX_REQUIRE").as_deref(),
-		Ok("1") | Ok("true")
-	) || matches!(
-		std::env::var("NUDOX_ENV").as_deref(),
-		Ok("prod") | Ok("production")
-	) || std::env::var_os("NUDOX_PRODUCER_WORKER").is_some()
+	sandbox::IsolationPolicy::require_worker()
 }
 
 fn nix_pool() -> Option<&'static WorkerPool> {

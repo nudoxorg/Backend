@@ -34,6 +34,7 @@ pub mod function;
 pub mod item;
 pub mod options;
 pub mod package;
+pub mod producer;
 pub mod sig;
 pub mod syntax;
 pub mod traversal;
@@ -42,6 +43,7 @@ pub mod walker;
 
 // Re-exports for the public surface / error mapping in the compiler pipeline.
 pub use error::{NixError, Result};
+pub use producer::NixProducer;
 
 /// One-shot entry point re-export so call sites (e.g.
 /// `languages::nix::lower_package`) and `GenerateError` can use a stable path,

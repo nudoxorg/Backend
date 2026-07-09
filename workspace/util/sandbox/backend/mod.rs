@@ -6,7 +6,7 @@ mod nix_derivation;
 mod passthrough;
 pub(crate) mod supervisor;
 
-pub use linux::{run_direct_hardened, LinuxBwrap};
+pub use linux::LinuxBwrap;
 pub use macos::MacSeatbelt;
 pub use nix_derivation::NixDerivation;
 pub use passthrough::Passthrough;

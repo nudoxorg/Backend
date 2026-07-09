@@ -22,8 +22,8 @@
 use std::sync::Arc;
 
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId,
-	content::ContentHash,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId, Probeable,
+	content::ContentHash, timed_probe,
 };
 use crate::package::Coordinates as PackageCoordinates;
 use object_store::{ObjectStore, path::Path};
@@ -219,3 +219,24 @@ impl Store<Live> {
 	/// to heart; kept here so callers don't re-derive the layout key twice).
 	pub fn id_of(package: &PackageCoordinates) -> PackageId { package.id() }
 }
+
+impl Probeable for Store<Live> {
+	fn backend(&self) -> BackendKind {
+		BackendKind::ObjectStore
+	}
+
+	async fn probe(&self) -> heart::Probe {
+		timed_probe(BackendKind::ObjectStore, async {
+			let sentinel = ContentHash::of_bytes(b"nudox readiness sentinel");
+			match self.get_section(sentinel).await {
+				Ok(_) | Err(StoreError::NotFound { .. }) => None,
+				Err(error) => Some(error.to_string()),
+			}
+		})
+		.await
+	}
+}
+
+const _: fn() = || {
+	heart::assert_probe_future_send::<Store<Live>>();
+};

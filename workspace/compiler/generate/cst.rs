@@ -16,7 +16,7 @@ use crate::{error::GenerateError, generate::PackageInput, treesitter::classify_f
 
 /// One source file's CST resolution: the resolved reference spans extracted from
 /// it. Serializable and self-contained — no live tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Cst {
 	/// The file, relative to the package root.
 	pub path: PathBuf,
@@ -25,7 +25,7 @@ pub struct Cst {
 }
 
 /// The per-file CST resolution for a whole package.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CstSet {
 	/// One entry per parsed source file, sorted by path for reproducibility.
 	pub files: Vec<Cst>,
