@@ -28,6 +28,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::compile::isolate::{self, IsolatedCommand, IsolatedFailure, IsolatedFailureKind};
+use crate::compile::producer;
 use sandbox::ProducerProfile;
 
 use super::schema;
@@ -148,37 +149,17 @@ pub fn compile_oracle() -> Result<PathBuf, OracleError> {
 /// directory and return it. Idempotent; the directory name keys the exact
 /// vendored revision, so an existing copy is always current.
 pub fn materialize_oracle() -> Result<PathBuf, DocletError> {
-	let dir =
-		std::env::temp_dir().join(format!("nudox-java-oracle-{:016x}", oracle_hash()));
-	for (name, contents) in ORACLE_SOURCES {
-		let path = dir.join(name);
-		if path.is_file() {
-			continue;
-		}
-		if let Some(parent) = path.parent() {
-			fs::create_dir_all(parent).map_err(|source| {
-				DocletError::CreateMaterializeParentFailed { path: parent.to_path_buf(), source }
-			})?;
-		}
-		fs::write(&path, contents).map_err(|source| DocletError::MaterializeSourceFailed {
-			path: path.clone(),
-			source,
-		})?;
-	}
-	Ok(dir)
+	producer::materialize_oracle(ORACLE_SOURCES, "java")
+		.map(|p| p.dir)
+		.map_err(|e| DocletError::MaterializeSourceFailed {
+			path: std::env::temp_dir().join("nudox-java-oracle"),
+			source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+		})
 }
 
-/// Stable FNV-1a hash over the embedded sources, keying the materialization
-/// directory to the vendored revision (mirrors the Go producer).
+/// Stable FNV-1a hash over the embedded sources (shared substrate).
 fn oracle_hash() -> u64 {
-	let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-	for (name, contents) in ORACLE_SOURCES {
-		for byte in name.bytes().chain(contents.bytes()) {
-			hash ^= byte as u64;
-			hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-		}
-	}
-	hash
+	producer::oracle_hash(ORACLE_SOURCES)
 }
 
 /// Run `javadoc -doclet` over the collected files and parse the document.

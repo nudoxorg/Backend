@@ -10,6 +10,7 @@ pub mod function;
 pub mod generics;
 pub mod item;
 pub mod package;
+pub mod producer;
 pub mod traversal;
 pub mod types;
 
@@ -25,6 +26,7 @@ pub use self::{
         ProcessFailureKind, SignatureError, TypeResolutionError,
     },
     package::RustPackage,
+    producer::RustProducer,
 };
 
 pub type Result<T> = std::result::Result<T, Parse>;

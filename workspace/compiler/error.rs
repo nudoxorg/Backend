@@ -74,6 +74,10 @@ pub enum GenerateError {
 	/// TypeScript package coordinates did not carry an npm version.
 	#[error("typescript packages require an npm version")]
 	UnsupportedTypescript,
+
+	/// Producer plan / execute / decode failed (unified surface path).
+	#[error("producer failed")]
+	Producer(#[from] crate::languages::producer::ProducerError),
 }
 
 impl heart::Retryable for GenerateError {
@@ -84,6 +88,11 @@ impl heart::Retryable for GenerateError {
 		match self {
 			GenerateError::Archive(e) if e.kind() == std::io::ErrorKind::Interrupted => true,
 			GenerateError::Vcs(g) => is_git_retryable(g),
+			GenerateError::Producer(crate::languages::producer::ProducerError::Io(e))
+				if e.kind() == std::io::ErrorKind::Interrupted =>
+			{
+				true
+			}
 			_ => false,
 		}
 	}

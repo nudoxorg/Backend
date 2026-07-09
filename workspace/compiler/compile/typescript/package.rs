@@ -55,15 +55,30 @@ impl TypescriptPackage {
 	}
 }
 
-/// Drive a deno future to completion on a fresh current-thread Tokio runtime.
+/// Drive a deno future on a **thread-local, long-lived** current-thread runtime.
 ///
-/// The compiler is otherwise synchronous; deno_graph's loader interface is the
-/// only async boundary, so it is contained here (mirroring the legacy
-/// producers backend) rather than threading a runtime through the pipeline.
+/// The compiler is otherwise synchronous; deno_graph's loader is the only async
+/// boundary. Reusing one runtime per thread avoids per-package build/teardown —
+/// the production path runs inside the long-lived `producer-worker`, so the
+/// runtime lives for the worker process.
 fn block_on<F: Future>(future: F) -> Result<F::Output, PackageError> {
-	let runtime =
-		tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(PackageError::Io)?;
-	Ok(runtime.block_on(future))
+	use std::cell::RefCell;
+
+	thread_local! {
+		static RT: RefCell<Option<tokio::runtime::Runtime>> = const { RefCell::new(None) };
+	}
+
+	RT.with(|cell| {
+		let mut slot = cell.borrow_mut();
+		if slot.is_none() {
+			let rt = tokio::runtime::Builder::new_current_thread()
+				.enable_all()
+				.build()
+				.map_err(PackageError::Io)?;
+			*slot = Some(rt);
+		}
+		Ok(slot.as_ref().expect("runtime just installed").block_on(future))
+	})
 }
 
 fn build_documents_from_roots(

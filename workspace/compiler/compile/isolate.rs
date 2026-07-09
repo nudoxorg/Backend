@@ -52,6 +52,8 @@ impl std::fmt::Display for IsolatedFailure {
 	}
 }
 
+impl std::error::Error for IsolatedFailure {}
+
 impl std::fmt::Display for IsolatedFailureKind {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
@@ -304,6 +306,14 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 fn nonempty_utf8(bytes: &[u8]) -> Option<String> {
 	let s = String::from_utf8_lossy(bytes).trim().to_string();
 	if s.is_empty() { None } else { Some(s) }
+}
+
+/// Project an [`IsolatedCommand`] into a [`SealedCommand`] (sealer boundary).
+///
+/// Public for producers that build [`ExecPlan::Commands`] via the familiar
+/// isolated-command builder, then hand the sealed form to the cage.
+pub fn seal(cmd: IsolatedCommand) -> SealedCommand {
+	seal_isolated(cmd)
 }
 
 /// Project an [`IsolatedCommand`] into a [`SealedCommand`] (sealer boundary).
