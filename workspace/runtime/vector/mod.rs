@@ -506,8 +506,8 @@ impl<M: EmbeddingModel> heart::Probeable for Semantic<M, Live> {
 		use crate::error::VectorError;
 		heart::timed_probe(BackendKind::Qdrant, async {
 			// Cheap one-hit zero-vector query; connectivity is the signal.
-			// Gate issued here solely for readiness — not a user-facing search.
-			let gate = SemanticGate::issue("readiness probe");
+			// `for_readiness` is the documented non-planner issuance site.
+			let gate = SemanticGate::for_readiness();
 			let query = Embedding::<M>::zeroed();
 			match self
 				.search(gate, &query, NonZeroUsize::MIN, None)
@@ -523,6 +523,11 @@ impl<M: EmbeddingModel> heart::Probeable for Semantic<M, Live> {
 		.await
 	}
 }
+
+// Concrete brand for the Send RTN guard (any EmbeddingModel works).
+const _: fn() = || {
+	heart::assert_probe_future_send::<Semantic<crate::vector::models::OpenAi3Small, Live>>();
+};
 
 // Ensure the retry classification is wired: the sink machinery consults it.
 const _: fn() = || {

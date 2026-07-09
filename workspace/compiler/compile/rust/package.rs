@@ -150,6 +150,7 @@ impl RustPackage {
         version: &Version,
     ) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
         // Unique per invocation so concurrent generate/test runs cannot race.
+        // RAII guard unlinks on every exit path (including the lib-only retry).
         let safe_name = package_name.replace(['/', ':'], "_");
         let json_file = tempfile::Builder::new()
             .prefix(&format!("nudox-{safe_name}-rustdoc-"))
@@ -157,23 +158,20 @@ impl RustPackage {
             .tempfile()
             .map_err(Package::from)?;
         // Persist so cargo/rustdoc can rewrite the path without a held fd.
-        let (_, json_out) = json_file.keep().map_err(|e| Package::from(e.error))?;
+        let (_, json_path) = json_file.keep().map_err(|e| Package::from(e.error))?;
+        let json_out = UnlinkOnDrop(json_path);
 
-        match self.run_cargo_rustdoc(code, package_name, version, &json_out, false) {
+        match self.run_cargo_rustdoc(code, package_name, version, &json_out.0, false) {
             Ok(_) => {}
             Err(Package::Process(ProcessFailure::Failed { stderr: Some(ref d), .. }))
                 if d.contains("extra arguments to `rustdoc` can only be passed to one target") =>
             {
-                self.run_cargo_rustdoc(code, package_name, version, &json_out, true)?;
+                self.run_cargo_rustdoc(code, package_name, version, &json_out.0, true)?;
             }
-            Err(error) => {
-                let _ = fs::remove_file(&json_out);
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         }
 
-        let json_bytes = fs::read(&json_out)?;
-        let _ = fs::remove_file(&json_out);
+        let json_bytes = fs::read(&json_out.0)?;
         let rustdoc_crate = parse_rustdoc_crate(&json_bytes)?;
         drop(json_bytes);
         debug!("rustdoc output parsed");
@@ -223,15 +221,41 @@ impl RustPackage {
 
 // ─── rustdoc JSON capture ────────────────────────────────────────────────────
 
-/// Write a short-lived shell wrapper that cargo invokes via `RUSTDOC=…`.
+/// Unlink a kept tempfile path on drop (all error paths of the owner).
+struct UnlinkOnDrop(PathBuf);
+
+impl Drop for UnlinkOnDrop {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Write a process-wide shell wrapper that cargo invokes via `RUSTDOC=…`.
 ///
 /// Cargo always passes `-o target/doc` (or `--out-dir`). With
 /// `--output-format json`, rustdoc writes `{crate}.json` into that directory.
 /// The wrapper rewrites the out-dir to a private staging path and copies the
-/// single top-level `.json` into `NUDOX_RUSTDOC_OUT`.
+/// single top-level `.json` into `NUDOX_RUSTDOC_OUT` (per-invocation unique).
+///
+/// Cached in a [`OnceLock`]: the script is identical for every package, and
+/// concurrent jobs already isolate via `NUDOX_RUSTDOC_OUT`.
 fn write_rustdoc_stdout_wrapper() -> std::result::Result<PathBuf, Package> {
-    // Unique path (not bare pid) so concurrent Rust jobs in one process cannot
-    // clobber each other's RUSTDOC wrapper.
+    use std::sync::OnceLock;
+
+    static WRAPPER: OnceLock<PathBuf> = OnceLock::new();
+    if let Some(path) = WRAPPER.get() {
+        return Ok(path.clone());
+    }
+
+    let path = materialize_rustdoc_wrapper()?;
+    // Race: two materializations may occur; the loser leaves one temp script.
+    match WRAPPER.set(path.clone()) {
+        Ok(()) => Ok(path),
+        Err(_) => Ok(WRAPPER.get().expect("set raced with another init").clone()),
+    }
+}
+
+fn materialize_rustdoc_wrapper() -> std::result::Result<PathBuf, Package> {
     let file = tempfile::Builder::new()
         .prefix("nudox-rustdoc-wrapper-")
         .suffix(".sh")

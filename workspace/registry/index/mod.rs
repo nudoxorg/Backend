@@ -355,3 +355,8 @@ impl Probeable for GlobalStore<Live> {
 		.await
 	}
 }
+
+const _: fn() = || {
+	// Fail at this crate if probe futures stop being Send.
+	heart::assert_probe_future_send::<GlobalStore<Live>>();
+};

@@ -82,8 +82,10 @@ impl Cgroup {
 impl Drop for Cgroup {
 	fn drop(&mut self) {
 		// Best-effort: kill remaining procs (kernel 5.14+), then remove.
+		// Callers that own a live job (see `WorkerSlot`) should kill+wait the
+		// primary PID first so `cgroup.procs` is empty; a non-empty cgroup can
+		// leave the directory behind after a single `remove_dir`.
 		let _ = write_file(self.path.join("cgroup.kill"), "1");
-		// Give the kernel a moment is not needed if empty; try remove.
 		let _ = fs::remove_dir(&self.path);
 	}
 }

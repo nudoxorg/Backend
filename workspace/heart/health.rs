@@ -52,3 +52,15 @@ pub async fn timed(backend: BackendKind, body: impl Future<Output = Option<Strin
 		detail,
 	}
 }
+
+/// Compile-time guard: `P::probe()` must be `Send` so the server can
+/// `tokio::join!` / `spawn` probes on a multi-threaded runtime.
+///
+/// Call from a store crate after implementing [`Probeable`] (e.g. a
+/// `const _: () = { assert_probe_future_send::<MyStore>(); };` or a unit test
+/// that names the type). Uses return-type notation so no boxing is required.
+pub fn assert_probe_future_send<P>()
+where
+	P: Probeable<probe(..): Send>,
+{
+}

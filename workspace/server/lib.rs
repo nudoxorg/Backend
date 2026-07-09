@@ -92,7 +92,9 @@ pub struct Server<M: EmbeddingModel> {
 	/// connected stack. Reads resolve overlay-first (override), then base.
 	federation: Federation<SourceStores<M>>,
 
-	/// The query planner — the only place a semantic gate is minted.
+	/// The query planner — the only place a *user-facing* semantic gate is
+	/// minted ([`runtime::vector::SemanticGate::issue`]). Store readiness uses
+	/// the separate [`runtime::vector::SemanticGate::for_readiness`] constructor.
 	planner: crate::search::SearchPlanner,
 
 	/// The (model-branded) query embedder behind the gated semantic path.

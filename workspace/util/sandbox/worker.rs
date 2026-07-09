@@ -148,6 +148,12 @@ impl WorkerPoolConfig {
 	}
 }
 
+/// One warm worker process.
+///
+/// **Drop contract:** pool restart / pool drop paths kill and `wait` the child
+/// before the slot is dropped so the owned cgroup is empty when reaped. An
+/// accidental early drop still best-effort kills via `Child::Drop` and then
+/// removes the cgroup dir (may leave a non-empty cgroup if procs linger).
 struct WorkerSlot {
 	child: Child,
 	stdin: ChildStdin,
@@ -155,6 +161,17 @@ struct WorkerSlot {
 	/// Owned for the worker's lifetime; dropped on restart so cgroup dirs are
 	/// reaped (was previously leaked via `mem::forget`).
 	_cgroup: Option<crate::cgroup::Cgroup>,
+	/// Per-worker HOME/TMPDIR; removed when the slot is dropped.
+	scratch: PathBuf,
+}
+
+impl Drop for WorkerSlot {
+	fn drop(&mut self) {
+		// Best-effort: pool paths already waited; this covers accidental drops.
+		let _ = self.child.kill();
+		let _ = self.child.wait();
+		let _ = std::fs::remove_dir_all(&self.scratch);
+	}
 }
 
 /// A pool of sandboxed worker processes.
@@ -293,6 +310,7 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
 		stdin,
 		stdout: BufReader::new(stdout),
 		_cgroup: cgroup,
+		scratch,
 	})
 }
 
@@ -369,7 +387,9 @@ pub fn lower_once(
 		.mounts(mounts)
 		.cwd(&scratch);
 
-	let out = backend.run(spec)?;
+	let out = backend.run(spec);
+	let _ = std::fs::remove_dir_all(&scratch);
+	let out = out?;
 	if !out.success() {
 		let stderr = String::from_utf8_lossy(&out.stderr);
 		return Err(SandboxError::Backend(format!(

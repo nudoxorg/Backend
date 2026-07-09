@@ -170,22 +170,28 @@ impl Spec {
 ///
 /// Mutually exclusive: a process either exited with a status or was killed by a
 /// resource ceiling. The impossible `(status, killed: Some(_))` pair is gone.
+///
+/// **Today's backends** always promote resource kills to
+/// [`crate::SandboxError::Killed`] and only construct [`ProcessEnd::Exited`]
+/// inside `Ok(Output)`. [`ProcessEnd::Killed`] exists so the type system can
+/// represent an in-band kill without reintroducing the old pair; callers that
+/// match on `Ok(out)` should still treat `Killed` as a resource failure.
 #[derive(Debug, Clone)]
 pub enum ProcessEnd {
 	/// The process exited on its own (zero or non-zero).
 	Exited(ExitStatus),
 	/// The supervisor or OS killed the process for a resource ceiling.
 	///
-	/// Usually promoted to [`crate::SandboxError::Killed`] before returning to
-	/// callers; retained here so the type system cannot represent both an exit
-	/// status and a kill reason at once.
+	/// Not constructed by current backends (they return
+	/// [`crate::SandboxError::Killed`] instead); retained so an in-band kill
+	/// cannot be paired with an exit status.
 	Killed(KillReason),
 }
 
 /// Captured result of a successful (or non-zero-exit) sandboxed run.
 ///
-/// Resource kills usually surface as [`crate::SandboxError::Killed`], not as
-/// [`ProcessEnd::Killed`] inside this type.
+/// Resource kills surface as [`crate::SandboxError::Killed`] on every current
+/// backend — not as [`ProcessEnd::Killed`] inside this type.
 #[derive(Debug, Clone)]
 pub struct Output {
 	/// Child stdout (already capped by the supervisor).

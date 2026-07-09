@@ -60,6 +60,10 @@ impl heart::Probeable for TextIndex {
 	}
 }
 
+const _: fn() = || {
+	heart::assert_probe_future_send::<TextIndex>();
+};
+
 impl TextIndex {
 	/// Fetch a single symbol by its exact [`SymbolId`].
 	///

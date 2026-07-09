@@ -295,16 +295,25 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 					stderr: out.stderr,
 				})
 			} else {
-				let status = match out.end {
-					sandbox::ProcessEnd::Exited(s) => s.to_string(),
-					sandbox::ProcessEnd::Killed(r) => format!("killed ({r})"),
-				};
-				Err(IsolatedFailure {
-					command: command_label,
-					kind: IsolatedFailureKind::NonZero { status },
-					stdout: nonempty_utf8(&out.stdout),
-					stderr: nonempty_utf8(&out.stderr),
-				})
+				// Resource kills normally return `SandboxError::Killed`; if a
+				// backend ever packs `ProcessEnd::Killed` into `Ok(Output)`,
+				// classify it as Resource (not NonZero).
+				match out.end {
+					sandbox::ProcessEnd::Exited(status) => Err(IsolatedFailure {
+						command: command_label,
+						kind: IsolatedFailureKind::NonZero {
+							status: status.to_string(),
+						},
+						stdout: nonempty_utf8(&out.stdout),
+						stderr: nonempty_utf8(&out.stderr),
+					}),
+					sandbox::ProcessEnd::Killed(reason) => Err(IsolatedFailure {
+						command: command_label,
+						kind: IsolatedFailureKind::Resource(reason),
+						stdout: nonempty_utf8(&out.stdout),
+						stderr: nonempty_utf8(&out.stderr),
+					}),
+				}
 			}
 		}
 		Err(SandboxError::Killed { reason, .. }) => Err(IsolatedFailure {

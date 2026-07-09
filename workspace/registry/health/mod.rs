@@ -11,7 +11,7 @@
 use heart::BackendKind;
 
 // Re-export so existing `registry::health::{Probe, Probeable}` paths keep working.
-pub use heart::{Probe, Probeable};
+pub use heart::{assert_probe_future_send, Probe, Probeable};
 
 /// The rolled-up health verdict across every registry backend.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

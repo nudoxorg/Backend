@@ -236,3 +236,7 @@ impl Probeable for Store<Live> {
 		.await
 	}
 }
+
+const _: fn() = || {
+	heart::assert_probe_future_send::<Store<Live>>();
+};
