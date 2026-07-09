@@ -12,7 +12,7 @@ use crate::limits::Limits;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProducerProfile {
-	/// `cargo rustdoc` — HIGH; build.rs + proc-macros.
+	/// rust-analyzer load: cargo metadata + build scripts + proc-macro srv — HIGH.
 	Rust,
 	/// `javac` + `javadoc` doclet — HIGH; annotation processors.
 	Java,
@@ -74,13 +74,14 @@ impl ProducerProfile {
 
 	pub(crate) const fn base_limits(self) -> Limits {
 		match self {
-			// mem 3 GiB, wall 15 min, cpu 900s, pids 512
+			// mem 6 GiB, wall 15 min, cpu 900s, pids 512
+			// RA resident sets on medium workspaces regularly exceed 3 GiB.
 			Self::Rust => Limits::from_const(
-				3 * 1024 * 1024 * 1024,
+				6 * 1024 * 1024 * 1024,
 				900,
 				15 * 60,
 				512,
-				16 * 1024 * 1024, // rustdoc JSON can be large
+				16 * 1024 * 1024, // leftover headroom; no longer rustdoc JSON
 				256 * 1024,
 				2 * 1024 * 1024 * 1024,
 				4096,

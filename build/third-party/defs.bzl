@@ -13,7 +13,8 @@ def _is_windows_dep(dep):
         label.startswith("windows-") or
         label.startswith("windows_") or
         label.startswith("winapi-") or
-        label.startswith("uv_windows-")
+        label.startswith("uv_windows-") or
+        label.startswith("miow-")
         # NB: deliberately excludes "winnow" (a parser crate, not Windows).
     )
 
@@ -22,7 +23,9 @@ def _is_linux_dep(dep):
     return (
         label.startswith("inotify-") or
         label.startswith("inotify_sys-") or
-        label.startswith("libredox-")
+        label.startswith("libredox-") or
+        label.startswith("perf_event-") or
+        label.startswith("perf_event_")
     )
 
 def _is_macos_dep(dep):

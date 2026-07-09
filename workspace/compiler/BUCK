@@ -49,6 +49,19 @@ rust_crate(
         crate("rustc_hash"),
         crate("rustdoc_types"),
         crate("semver"),
+        crate("smol_str"),
+        # rust-analyzer producer (ra_ap_* 0.0.341; see RUST-ANALYZER-PLAN.md)
+        crate("ra_ap_load_cargo"),
+        crate("ra_ap_project_model"),
+        crate("ra_ap_hir"),
+        crate("ra_ap_ide_db"),
+        crate("ra_ap_base_db"),
+        crate("ra_ap_vfs"),
+        crate("ra_ap_syntax"),
+        crate("ra_ap_paths"),
+        crate("ra_ap_cfg"),
+        crate("ra_ap_proc_macro_api"),
+
         crate("arborium", features = [
             "lang-rust",
             "lang-python",
@@ -98,6 +111,24 @@ rust_bin(
         member("sandbox"),
         crate("serde_json"),
         crate("libc"),
+    ]),
+)
+
+# P0 spike: ra_ap_load_cargo → walk local ModuleDefs (RUST-ANALYZER-PLAN §P0).
+# Fixtures ride in srcs so env!("CARGO_MANIFEST_DIR") can find them under buck.
+rust_bin(
+    name = "ra-spike",
+    srcs = ["bin/ra_spike.rs"] + native.glob(["tests/fixtures/rust/regular/**"]),
+    crate_root = "bin/ra_spike.rs",
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+    },
+    deps = deps([
+        crate("ra_ap_load_cargo"),
+        crate("ra_ap_hir"),
+        crate("ra_ap_project_model"),
+        crate("anyhow"),
+        crate("tempfile"),
     ]),
 )
 

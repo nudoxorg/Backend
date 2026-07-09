@@ -1,13 +1,13 @@
 //! Pipeline part: **Rust source → surface IR** (`compiler::languages::rust`).
 //!
-//! These specs pin down the shape `cargo rustdoc`'s JSON must be lowered into —
-//! an `ir::entry::Index` keyed by `NudoxPath`, with the visibility / method /
+//! These specs pin down the shape the Rust producer must lower into — an
+//! `ir::entry::Index` keyed by `NudoxPath`, with the visibility / method /
 //! workspace behaviour the old `producers::parse::rust` path guaranteed.
 //!
-//! The tests drive the real `cargo rustdoc --output-format json` invocation
-//! over the fixtures in `tests/fixtures/rust/`, so they need a JSON-capable
-//! (nightly) rustdoc on PATH. Each fixture is copied into a tempdir first so
-//! cargo's `target/` never pollutes the repo.
+//! Default path is the in-process rust-analyzer producer. The temporary
+//! rustdoc fallback is still available via `NUDOX_RUST_PRODUCER=rustdoc`
+//! (needs a JSON-capable nightly rustdoc on PATH). Each fixture is copied
+//! into a tempdir first so cargo's `target/` never pollutes the repo.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,10 +39,108 @@ fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Copy a fixture into a tempdir and lower it.
+/// Write Cargo manifests for a fixture. Sources are tracked in git; `Cargo.toml`
+/// is gitignored, so tests (and the RA / rustdoc loaders) must materialize them.
+fn scaffold_manifests(fixture: &str, dir: &Path) {
+    match fixture {
+        "regular" => {
+            fs::write(
+                dir.join("Cargo.toml"),
+                r#"[package]
+name = "calculator"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+helper = { path = "helper" }
+"#,
+            )
+            .expect("root Cargo.toml");
+            fs::write(
+                dir.join("helper/Cargo.toml"),
+                r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+            )
+            .expect("helper Cargo.toml");
+        }
+        "workspace" => {
+            fs::write(
+                dir.join("Cargo.toml"),
+                r#"[workspace]
+members = ["crates/odd-duck"]
+resolver = "2"
+"#,
+            )
+            .expect("workspace Cargo.toml");
+            fs::write(
+                dir.join("crates/odd-duck/Cargo.toml"),
+                r#"[package]
+name = "odd-duck"
+version = "0.3.1"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+            )
+            .expect("odd-duck Cargo.toml");
+        }
+        "binary_workspace" => {
+            fs::write(
+                dir.join("Cargo.toml"),
+                r#"[workspace]
+members = ["app", "corelib"]
+resolver = "2"
+"#,
+            )
+            .expect("workspace Cargo.toml");
+            fs::write(
+                dir.join("app/Cargo.toml"),
+                r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "app"
+path = "src/main.rs"
+
+[dependencies]
+corelib = { path = "../corelib" }
+"#,
+            )
+            .expect("app Cargo.toml");
+            fs::write(
+                dir.join("corelib/Cargo.toml"),
+                r#"[package]
+name = "corelib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+            )
+            .expect("corelib Cargo.toml");
+        }
+        other => panic!("unknown fixture for scaffold: {other}"),
+    }
+}
+
+/// Copy a fixture into a tempdir, scaffold manifests, and lower it.
 fn lower(fixture: &str, package: &str, version: &str) -> (Index, HashMap<String, String>, TempDir) {
     let dir = TempDir::new().expect("tempdir");
     copy_tree(&fixture_root().join(fixture), dir.path()).expect("fixture copies");
+    scaffold_manifests(fixture, dir.path());
     let version = Version::parse(version).expect("fixture version parses");
     let (index, sources) =
         generate_ir(dir.path(), package, &version, true).expect("lowering succeeds");

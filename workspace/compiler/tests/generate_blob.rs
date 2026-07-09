@@ -5,8 +5,8 @@
 //!
 //! Drives the real pipeline over the Rust `regular` fixture (package
 //! `calculator@0.1.0`). The fixture is copied into a tempdir first so cargo's
-//! `target/` never pollutes the repo. Needs a JSON-capable (nightly) rustdoc
-//! on PATH — same requirement as `parse_rust_to_ir`.
+//! `target/` never pollutes the repo. Default path is rust-analyzer; rustdoc
+//! fallback via `NUDOX_RUST_PRODUCER=rustdoc` (same as `parse_rust_to_ir`).
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -8,7 +8,8 @@
 //!   cargo package (fixture)  →  generate  →  BlobManifest + cas sections
 //! ```
 //!
-//! Needs a JSON-capable rustdoc on PATH. Under buck2:
+//! Default path is rust-analyzer; rustdoc fallback via
+//! `NUDOX_RUST_PRODUCER=rustdoc`. Under buck2:
 //! `buck2 test //workspace/compiler:test-rust_compiler_e2e`.
 
 use std::fs;
