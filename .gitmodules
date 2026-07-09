@@ -1,0 +1,3 @@
+[submodule "linkml"]
+	path = linkml
+	url = https://github.com/philocalyst/linkml
