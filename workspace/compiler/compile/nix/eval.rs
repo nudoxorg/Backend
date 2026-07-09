@@ -55,7 +55,11 @@ const SECRET_ENV_PREFIXES: &[&str] = &[
 /// - `import` on for flake structure
 /// - `NIX_PATH` never inherited (`nix_path(None)` is the builder default)
 /// - lazy mode so nixpkgs-scale flakes are not forced wholesale
-pub fn hermetic_evaluation(io: Rc<dyn EvalIO>) -> Evaluation<'_, '_, '_, Rc<dyn EvalIO>> {
+pub fn hermetic_evaluation(
+	io: Rc<dyn EvalIO>,
+) -> Evaluation<'static, 'static, 'static, Rc<dyn EvalIO>> {
+	// Observer/env lifetimes are unused (None); pin them to 'static so this
+	// helper can return an owned Evaluation without a caller-provided borrow.
 	Evaluation::builder(io)
 		.mode(EvalMode::Lazy)
 		.enable_import()

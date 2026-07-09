@@ -42,8 +42,37 @@ fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
 }
 
 /// Copy the regular Rust fixture into a tempdir and build a PackageInput.
+///
+/// Manifests are written here (gitignore only tracks `*.rs`).
 fn package_input(dir: &TempDir) -> PackageInput {
     copy_tree(&fixture_root().join("regular"), dir.path()).expect("fixture copies");
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "calculator"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+helper = { path = "helper" }
+"#,
+    )
+    .expect("root Cargo.toml");
+    fs::write(
+        dir.path().join("helper/Cargo.toml"),
+        r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+    )
+    .expect("helper Cargo.toml");
     PackageInput {
         coordinates: PackageCoordinates {
             origin: RegistryOrigin::CratesIo,

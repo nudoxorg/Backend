@@ -1,6 +1,6 @@
 [cells]
 root = .
-prelude = build/prelude
+prelude = build/prelude-local
 toolchains = build/toolchains
 none = none
 # nix = none  # uncomment and configure [external_cells] below to enable Nix toolchain

@@ -116,6 +116,8 @@ rust_tests(
         crate("semver"),
         crate("url"),
         crate("snix_eval"),
+        crate("bytes"),
+        crate("smol_str"),
         target(":compiler"),
     ]),
 )
