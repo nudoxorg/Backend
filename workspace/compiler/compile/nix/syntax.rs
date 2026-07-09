@@ -244,6 +244,54 @@ pub fn parse_file(rel_path: PathBuf, source: String) -> Result<StaticFile> {
         }
     }
 
+    // Third pass: bare / `inherit (from)` attrs. Bare `inherit mapAttrs` inside
+    // a nested set is how nixpkgs exposes aliases (`attrsets.mapAttrs`); without
+    // this pass the static layer only sees the original binding.
+    let existing = file.bindings.clone();
+    for node in root_node.descendants() {
+        let Some(inh) = ast::Inherit::cast(node.clone()) else { continue };
+        // `inherit (expr) …` — we cannot resolve the source lambda statically;
+        // still mint Constant-shaped bindings so the attrpath surface is visible.
+        let from_expr = inh.from().is_some();
+        let prefix = enclosing_attrpath_prefix(&node);
+        let inherit_span = node_span(&node);
+        let doc = docs::raw_doc_for(&node);
+
+        for attr in inh.attrs() {
+            let Some(name) = attr_static_name(&attr) else { continue };
+            let mut attrpath = prefix.clone();
+            attrpath.push(AttrName::Static(name.clone()));
+
+            // Skip if an explicit AttrpathValue already claims this path.
+            if existing.iter().any(|b| {
+                b.is_fully_static()
+                    && b.path_strings()
+                        == attrpath
+                            .iter()
+                            .map(|a| match a {
+                                AttrName::Static(s) => s.clone(),
+                                AttrName::Dynamic => "${}".to_string(),
+                            })
+                            .collect::<Vec<_>>()
+            }) {
+                continue;
+            }
+
+            let lambda = if from_expr {
+                None
+            } else {
+                resolve_bare_inherit_lambda(&existing, &name)
+            };
+
+            file.bindings.push(Binding {
+                attrpath,
+                value_span: inherit_span,
+                doc: doc.clone(),
+                lambda,
+            });
+        }
+    }
+
     let _ = &root; // keep parse tree alive for the duration of the walk
     Ok(file)
 }
@@ -255,8 +303,15 @@ pub fn parse_file(rel_path: PathBuf, source: String) -> Result<StaticFile> {
 /// The fully-qualified attrpath of an `AttrpathValue` node: its own attrpath
 /// with every enclosing binding's attrpath prepended.
 fn full_attrpath(node: &rnix::SyntaxNode, av: &ast::AttrpathValue) -> Vec<AttrName> {
+    let mut out = enclosing_attrpath_prefix(node);
+    out.extend(attrpath_names(av));
+    out
+}
+
+/// The attrpath prefix contributed by every enclosing `AttrpathValue` ancestor
+/// (used by both normal bindings and `inherit` attrs).
+fn enclosing_attrpath_prefix(node: &rnix::SyntaxNode) -> Vec<AttrName> {
     let mut prefix: Vec<AttrName> = Vec::new();
-    // Climb ancestors; each enclosing AttrpathValue contributes a prefix.
     for ancestor in node.ancestors().skip(1) {
         if let Some(parent_av) = ast::AttrpathValue::cast(ancestor) {
             let mut segs = attrpath_names(&parent_av);
@@ -264,9 +319,36 @@ fn full_attrpath(node: &rnix::SyntaxNode, av: &ast::AttrpathValue) -> Vec<AttrNa
             prefix = segs;
         }
     }
-    let mut out = prefix;
-    out.extend(attrpath_names(av));
-    out
+    prefix
+}
+
+/// Static name of an `Attr`, if resolvable.
+fn attr_static_name(attr: &ast::Attr) -> Option<String> {
+    match attr {
+        ast::Attr::Ident(ident) => Some(ident_text(ident)),
+        ast::Attr::Str(s) => str_literal_text(s),
+        ast::Attr::Dynamic(_) => None,
+    }
+}
+
+/// Resolve a bare `inherit name` to the lambda of a previously-recorded binding
+/// with that final path segment (preferring a single-segment top-level hit).
+fn resolve_bare_inherit_lambda(bindings: &[Binding], name: &str) -> Option<usize> {
+    // Prefer an exact single-segment path (`mapAttrs`), then any binding whose
+    // last static segment matches.
+    bindings
+        .iter()
+        .find(|b| b.is_fully_static() && b.path_strings().as_slice() == [name])
+        .and_then(|b| b.lambda)
+        .or_else(|| {
+            bindings
+                .iter()
+                .filter(|b| {
+                    b.is_fully_static()
+                        && b.path_strings().last().map(|s| s.as_str()) == Some(name)
+                })
+                .find_map(|b| b.lambda)
+        })
 }
 
 /// The local attrpath components of one `AttrpathValue`.

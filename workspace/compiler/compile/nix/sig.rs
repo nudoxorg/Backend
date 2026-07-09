@@ -539,4 +539,33 @@ mod tests {
         assert!(parse_type("{ unterminated").is_none());
         assert!(parse_type("a , b").is_none());
     }
+
+    #[test]
+    fn property_int_string_bool_chain() {
+        let sig = parse("Int -> String -> Bool").unwrap();
+        assert_eq!(sig.params.len(), 2);
+        assert!(matches!(sig.params[0], Type::Primitive(Primitive::Int(_))));
+        assert!(matches!(sig.params[1], Type::Primitive(Primitive::String)));
+        assert!(matches!(sig.ret, Type::Primitive(Primitive::Bool)));
+        assert!(matches!(sig.to_type(), Type::FunctionPointer(_)));
+    }
+
+    #[test]
+    fn property_slice_string() {
+        let sig = parse("[String]").unwrap();
+        assert!(sig.params.is_empty());
+        assert!(matches!(sig.ret, Type::Slice(_)));
+    }
+
+    #[test]
+    fn property_record_optional_and_type_vars() {
+        let rec = parse("{ name :: String; version :: String? }").unwrap();
+        match rec.ret {
+            Type::RecordLiteral(r) => assert_eq!(r.fields.len(), 2),
+            other => panic!("expected record, got {other:?}"),
+        }
+        let vars = parse("a -> b").unwrap();
+        assert!(matches!(vars.params[0], Type::GenericParam(ref g) if g.name == "a"));
+        assert!(matches!(vars.ret, Type::GenericParam(ref g) if g.name == "b"));
+    }
 }

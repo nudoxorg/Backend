@@ -119,9 +119,19 @@ pub fn lower_static(
 			let name = segs.last().cloned().unwrap_or_default();
 			let path = path_of(&segs);
 
-			// Parse the doc comment once for this binding.
-			let parsed_doc = binding
-				.doc
+			// Prefer the binding's own doc; for `inherit` aliases fall back to
+			// the doc of the owning binding / lambda that shares the same
+			// lambda index so the alias surface still carries RFC-145 text.
+			let raw_doc = binding.doc.clone().or_else(|| {
+				binding.lambda.and_then(|idx| {
+					file.bindings
+						.iter()
+						.find(|b| b.lambda == Some(idx) && b.doc.is_some())
+						.and_then(|b| b.doc.clone())
+						.or_else(|| file.lambdas.get(idx).and_then(|l| l.doc.clone()))
+				})
+			});
+			let parsed_doc = raw_doc
 				.as_deref()
 				.map(docs::parse_doc)
 				.unwrap_or_default();

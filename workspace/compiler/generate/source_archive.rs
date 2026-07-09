@@ -50,9 +50,10 @@ pub fn build(input: &PackageInput) -> Result<SourceArchive, GenerateError> {
             let path = entry.path();
 
             if file_type.is_dir() {
-                // VCS metadata is not package source; everything else the
-                // sanitizer let through is.
-                if entry.file_name() != ".git" {
+                // VCS metadata and language toolchain build dirs are not package
+                // source (rustdoc may create `target/` during surface lowering).
+                let name = entry.file_name();
+                if name != ".git" && name != "target" && name != "node_modules" && name != "__pycache__" {
                     pending.push(path);
                 }
             } else if file_type.is_file() {

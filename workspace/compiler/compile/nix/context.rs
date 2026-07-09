@@ -107,16 +107,16 @@ fn wire_members(by_path: &mut HashMap<NudoxPath, Entry>) {
 }
 
 /// The parent path of a local attrpath-based path (`lib/attrsets/mapAttrs` →
-/// `lib/attrsets`). Returns `None` for a single-segment or external path.
+/// `lib/attrsets`; `mapAttrs` → the flake root `""`). Returns `None` only for
+/// the root itself or external paths.
 fn parent_path(path: &NudoxPath) -> Option<NudoxPath> {
     match path {
         NudoxPath::Local(p) => {
+            // `Path::parent` of a single-segment path is `Some("")`, which is
+            // exactly the flake root module path minted by `item::lower_static`.
+            // Do **not** treat the empty parent as "no parent".
             let parent = p.parent()?;
-            if parent.as_os_str().is_empty() {
-                None
-            } else {
-                Some(NudoxPath::Local(parent.to_path_buf()))
-            }
+            Some(NudoxPath::Local(parent.to_path_buf()))
         }
         NudoxPath::External { .. } => None,
     }

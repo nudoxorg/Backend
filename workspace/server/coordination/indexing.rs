@@ -100,13 +100,27 @@ impl<M: EmbeddingModel> Indexer<M> {
 
 		// ── Compile ────────────────────────────────────────────────────────────
 		self.advance(stores, package, &progressing(Phase::Compiling)).await?;
-		// KNOWN GAP: the compiler crate is not a server dependency yet, so the IR
-		// and cross-reference sections are structurally-valid empties. The blob,
-		// hashing, fan-out, and lifecycle machinery around them is complete.
-		let intermediate = empty_intermediate_representation()?;
-		builder.set_ir(intermediate).map_err(RegistryError::from)?;
+		// Materialize the sanitized tree, run the language producers → IR + CST
+		// pipeline on a blocking thread, then attach the serialized sections.
+		// CPU-bound and deterministic; never on the async runtime.
+		let compile = {
+			let coordinates = coordinates.clone();
+			let toolchain = builder.toolchain().clone();
+			let files: Vec<(smol_str::SmolStr, bytes::Bytes)> = builder
+				.source_files()
+				.map(|(path, bytes)| (path.clone(), bytes.clone()))
+				.collect();
+			tokio::task::spawn_blocking(move || compile_package(coordinates, toolchain, files))
+				.await
+				.map_err(|join| {
+					ServerError::Internal(InternalError::Other {
+						message: format!("compile task join failed: {join}"),
+					})
+				})??
+		};
+		builder.set_ir(compile.ir_bytes).map_err(RegistryError::from)?;
 		builder
-			.set_references(&registry::blob::ReferenceSet { by_file: Vec::new() })
+			.set_references(&compile.references)
 			.map_err(RegistryError::from)?;
 
 		// ── Emit ───────────────────────────────────────────────────────────────
@@ -119,7 +133,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 		// `Cargo.toml` + README straight from them (no post-emit blob round-trip).
 		// Non-fatal by construction: a missing/unparseable manifest yields `None`
 		// and ingest proceeds — search metadata must never fail a store.
-		let facets = extract_facets(&coordinates, &manifest, &sections);
+		let facets = extract_facets(&coordinates, &manifest, &sections, &compile.identifiers);
 
 		let emitted = registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
 			.await
@@ -419,6 +433,10 @@ pub fn classify_failure(error: &ServerError) -> FailureKind {
 		}
 		ServerError::BadRequest(_) => FailureKind::Malformed,
 		ServerError::Internal(InternalError::IndexingDeadlineExceeded) => FailureKind::Timeout,
+		// Compile failures that aren't I/O-transient are source/malformed — a
+		// retry will just re-fail on the same tree.
+		ServerError::Compile(compile) if compile.is_retryable() => FailureKind::Transient,
+		ServerError::Compile(_) => FailureKind::Malformed,
 		_ if error.is_retryable() => FailureKind::Transient,
 		_ => FailureKind::Internal,
 	}
@@ -434,16 +452,133 @@ fn zero_percent() -> Percent {
 	Percent::try_new(Percent::ZERO).expect("zero is a valid percentage")
 }
 
-/// The serialized empty `ir::entry::Index` the compile phase emits until the
-/// compiler is wired in.
-fn empty_intermediate_representation() -> ServerResult<bytes::Bytes> {
-	let index = ir::entry::Index {
-		root_ids: Vec::new(),
-		entries_by_path: Default::default(),
+/// Output of one compile phase: the blob sections plus the public identifiers
+/// harvested for search facets.
+struct CompileOutput {
+	ir_bytes: bytes::Bytes,
+	references: registry::blob::ReferenceSet,
+	identifiers: Vec<String>,
+}
+
+/// Materialize the staged source files into a temporary tree, run
+/// [`compiler::generate`], and produce the IR + reference sections the blob
+/// layer stores. Pure sync work — call from `spawn_blocking`.
+fn compile_package(
+	coordinates: PackageCoordinates,
+	toolchain: heart::Toolchain,
+	files: Vec<(smol_str::SmolStr, bytes::Bytes)>,
+) -> ServerResult<CompileOutput> {
+	let temp = tempfile::tempdir().map_err(|source| {
+		ServerError::Internal(InternalError::MaterializeForCompile { source })
+	})?;
+	for (path, bytes) in &files {
+		let dest = temp.path().join(path.as_str());
+		if let Some(parent) = dest.parent() {
+			std::fs::create_dir_all(parent).map_err(|source| {
+				ServerError::Internal(InternalError::MaterializeForCompile { source })
+			})?;
+		}
+		std::fs::write(&dest, bytes).map_err(|source| {
+			ServerError::Internal(InternalError::MaterializeForCompile { source })
+		})?;
+	}
+
+	// crates.io / npm / PyPI tarballs wrap the package in a single top-level
+	// directory (`either-1.15.0/…`). Peel it so the language producers see
+	// their expected package root (Cargo.toml / package.json / …).
+	let root = peel_single_top_level(temp.path()).map_err(|source| {
+		ServerError::Internal(InternalError::MaterializeForCompile { source })
+	})?;
+
+	let input = compiler::generate::PackageInput {
+		coordinates: coordinates.clone(),
+		toolchain,
+		root,
 	};
-	serde_json::to_vec(&index)
+	let generated = compiler::generate::generate(&input)?;
+
+	let ir_bytes = serde_json::to_vec(&generated.surface)
 		.map(bytes::Bytes::from)
-		.map_err(|source| ServerError::Internal(InternalError::EmptyIrSerializationFailed { source }))
+		.map_err(|source| ServerError::Internal(InternalError::IrSerializationFailed { source }))?;
+
+	let references = reference_set_from_cst(&generated.cst);
+	let identifiers = identifiers_from_index(&generated.surface);
+
+	Ok(CompileOutput { ir_bytes, references, identifiers })
+}
+
+/// If `root` contains exactly one child directory and no files, return that
+/// child (the package root inside a registry tarball). Otherwise return `root`.
+fn peel_single_top_level(root: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+	let mut only_dir: Option<std::path::PathBuf> = None;
+	let mut file_count = 0usize;
+	for entry in std::fs::read_dir(root)? {
+		let entry = entry?;
+		let file_type = entry.file_type()?;
+		if file_type.is_dir() {
+			if entry.file_name() == ".git" {
+				continue;
+			}
+			if only_dir.is_some() {
+				// Multiple top-level dirs → keep the extract root.
+				return Ok(root.to_path_buf());
+			}
+			only_dir = Some(entry.path());
+		} else if file_type.is_file() {
+			file_count += 1;
+		}
+	}
+	Ok(match (only_dir, file_count) {
+		(Some(dir), 0) => dir,
+		_ => root.to_path_buf(),
+	})
+}
+
+/// Project a [`compiler::generate::CstSet`] into the registry's serializable
+/// [`registry::blob::ReferenceSet`].
+fn reference_set_from_cst(cst: &compiler::generate::CstSet) -> registry::blob::ReferenceSet {
+	use registry::blob::{FileReferences, ReferenceSet};
+	let by_file = cst
+		.files
+		.iter()
+		.map(|file| FileReferences {
+			path: smol_str::SmolStr::from(file.path.to_string_lossy().as_ref()),
+			references: file.references.clone(),
+		})
+		.collect();
+	ReferenceSet { by_file }
+}
+
+/// Harvest public symbol names from the surface IR for search facets.
+fn identifiers_from_index(index: &ir::entry::Index) -> Vec<String> {
+	use ir::kind::{Entry, Visibility};
+	let mut names: Vec<String> = index
+		.entries_by_path
+		.values()
+		.filter_map(|entry| {
+			let (name, visibility) = match entry {
+				Entry::Module(s) => (&s.name, &s.visibility),
+				Entry::RecordType(s) => (&s.name, &s.visibility),
+				Entry::Info(s) => (&s.name, &s.visibility),
+				Entry::UnionType(s) => (&s.name, &s.visibility),
+				Entry::TraitDef(s) => (&s.name, &s.visibility),
+				Entry::TraitImpl(s) => (&s.name, &s.visibility),
+				Entry::SumType(s) => (&s.name, &s.visibility),
+				Entry::Function(s) => (&s.name, &s.visibility),
+				Entry::TypeAlias(s) => (&s.name, &s.visibility),
+				Entry::Constant(s) => (&s.name, &s.visibility),
+				Entry::Variable(s) => (&s.name, &s.visibility),
+				Entry::Macro(s) => (&s.name, &s.visibility),
+				Entry::PrimitiveType(s) => (&s.name, &s.visibility),
+				Entry::Field(s) => (&s.name, &s.visibility),
+				Entry::Event(s) => (&s.name, &s.visibility),
+			};
+			matches!(visibility, Visibility::Public).then(|| name.clone())
+		})
+		.collect();
+	names.sort();
+	names.dedup();
+	names
 }
 
 /// A registry lookup/transport fault, carried with its typed source.
@@ -544,6 +679,7 @@ fn extract_facets(
 	coordinates: &PackageCoordinates,
 	manifest: &BlobManifest,
 	sections: &[PendingSection],
+	identifiers: &[String],
 ) -> Option<SearchFacets> {
 	// Bytes of a manifest file are fetched from `sections` by content hash — the
 	// same hash the `FileEntry` records — so no post-emit blob round-trip is
@@ -553,23 +689,34 @@ fn extract_facets(
 		String::from_utf8(section.bytes.to_vec()).ok()
 	};
 
+	// Also match manifests under a single tarball wrapper dir (`pkg-1.0/Cargo.toml`).
+	let is_root_manifest = |path: &str| {
+		path == "Cargo.toml"
+			|| path
+				.strip_suffix("/Cargo.toml")
+				.is_some_and(|prefix| !prefix.contains('/'))
+	};
+	let is_root_readme = |path: &str| {
+		let leaf = path.rsplit('/').next().unwrap_or(path);
+		leaf.to_ascii_lowercase().starts_with("readme")
+			&& path.matches('/').count() <= 1
+	};
+
 	let name = coordinates.name.canonical().to_owned();
 
-	// Only Rust is parsed for now; other ecosystems get a name-only facet set.
+	// Only Rust is parsed for rich Cargo.toml facets today; other ecosystems
+	// still get the compiler-harvested identifiers + a name-only base.
 	if coordinates.ecosystem() != heart::ecosystem::Language::Rust {
-		let input = ExtractionInput { name: &name, ..Default::default() };
+		let input = ExtractionInput {
+			name: &name,
+			identifiers,
+			..Default::default()
+		};
 		let rich = rich::extract(&input, None, None);
 		let facets = SearchFacets::from_rich(&rich);
-		tracing::debug!(package = %manifest.package, "non-Rust ecosystem: name-only facets");
+		tracing::debug!(package = %manifest.package, "non-Rust ecosystem: name + identifier facets");
 		return Some(facets);
 	}
-
-	// Locate the root `Cargo.toml` and the first `README*` (case-insensitive,
-	// package-root only — nested manifests/readmes are ignored).
-	let is_root_manifest = |path: &str| path == "Cargo.toml";
-	let is_root_readme = |path: &str| {
-		!path.contains('/') && path.to_ascii_lowercase().starts_with("readme")
-	};
 
 	let manifest_text = manifest
 		.files
@@ -594,8 +741,6 @@ fn extract_facets(
 	// `loc` ≈ total README + source-file line count would be costly to compute
 	// precisely; leave 0 for now (a cheap, honest under-count).
 	let loc = 0u32;
-	// TODO: idents/dependencies from IR once the compiler lands.
-	let identifiers: Vec<String> = Vec::new();
 	let dependencies: Vec<String> = Vec::new();
 
 	let input = ExtractionInput {
@@ -604,7 +749,7 @@ fn extract_facets(
 		manifest_keywords: &facts.keywords,
 		manifest_categories: &facts.categories,
 		readme: readme_text.as_deref(),
-		identifiers: &identifiers,
+		identifiers,
 		dependencies: &dependencies,
 		has_repository: facts.has_repository,
 		has_documentation: facts.has_documentation,

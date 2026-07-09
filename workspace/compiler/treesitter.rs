@@ -9,7 +9,10 @@ use std::{ops::Range, path::PathBuf};
 
 use arborium_tree_sitter as tree_sitter;
 use heart::Language;
-use ir::{entry::NudoxPath, syntax::{ReferenceKind, ResolvedReference, walk_references}};
+use ir::{
+	entry::NudoxPath,
+	syntax::{ReferenceKind, ResolvedReference, walk_references},
+};
 use serde::{Deserialize, Deserializer, Serialize};
 
 // ─── Serializable primitives ─────────────────────────────────────────────────
@@ -99,14 +102,28 @@ pub struct ReferenceEntry {
 
 // ─── Language selection ──────────────────────────────────────────────────────
 
+/// Resolve the arborium grammar for an IR [`Language`].
+///
+/// TypeScript uses the `"typescript"` grammar. File-level TSX / JavaScript
+/// selection (`.tsx` → `"tsx"`, `.js` → `"javascript"`) is handled in
+/// [`crate::generate::cst`] where the extension is known.
 fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
 	match lang {
 		Language::Rust => arborium::get_language("rust"),
-		// No grammar registered yet — callers take the graceful-fallback path.
-		Language::Typescript | Language::Python | Language::Go | Language::Java | Language::Nix => {
-			None
-		}
+		Language::Python => arborium::get_language("python"),
+		Language::Typescript => arborium::get_language("typescript"),
+		Language::Go => arborium::get_language("go"),
+		Language::Java => arborium::get_language("java"),
+		Language::Nix => arborium::get_language("nix"),
 	}
+}
+
+// ─── Shared classifier helper ────────────────────────────────────────────────
+
+fn local_ref(name: &str, span: Range<usize>, kind: ReferenceKind) -> ResolvedReference {
+	// Full path resolution happens later against the surface index. Use
+	// Local(name) as a placeholder so the reference name is preserved.
+	ResolvedReference { target: NudoxPath::Local(PathBuf::from(name)), span, kind }
 }
 
 // ─── Rust-specific node classifier ───────────────────────────────────────────
@@ -141,17 +158,205 @@ pub(crate) fn classify_rust(
 	span: Range<usize>,
 ) -> Option<ResolvedReference> {
 	let ref_kind = categorize_rust(kind, parent_kind)?;
-	// Full path resolution happens later against the surface index. Use
-	// Local(name) as a placeholder so the reference name is preserved.
-	let target = NudoxPath::Local(PathBuf::from(name));
-	Some(ResolvedReference { target, span, kind: ref_kind })
+	Some(local_ref(name, span, ref_kind))
+}
+
+// ─── Python ──────────────────────────────────────────────────────────────────
+
+fn categorize_python(kind: &str, parent: Option<&str>) -> Option<ReferenceKind> {
+	match (kind, parent) {
+		("identifier", Some("call")) => Some(ReferenceKind::FunctionCall),
+		("identifier", Some("attribute")) => Some(ReferenceKind::FieldAccess),
+		// Type annotations wrap names in a `type` node.
+		("identifier", Some("type")) => Some(ReferenceKind::TypeReference),
+		("identifier", Some("import_statement" | "import_from_statement" | "dotted_name" | "aliased_import")) => {
+			Some(ReferenceKind::Import)
+		}
+		("identifier", _) => Some(ReferenceKind::VariableUse),
+		_ => None,
+	}
+}
+
+pub(crate) fn classify_python(
+	name: &str,
+	kind: &str,
+	parent_kind: Option<&str>,
+	span: Range<usize>,
+) -> Option<ResolvedReference> {
+	let ref_kind = categorize_python(kind, parent_kind)?;
+	Some(local_ref(name, span, ref_kind))
+}
+
+// ─── TypeScript / JavaScript ─────────────────────────────────────────────────
+//
+// Tree-sitter TypeScript/JS use `member_expression` + `property_identifier`
+// (not the demo's older `property_access_expression` name).
+
+fn categorize_typescript(kind: &str, parent: Option<&str>) -> Option<ReferenceKind> {
+	match (kind, parent) {
+		("identifier", Some("call_expression")) => Some(ReferenceKind::FunctionCall),
+		("property_identifier", Some("member_expression" | "property_access_expression")) => {
+			Some(ReferenceKind::FieldAccess)
+		}
+		("identifier", Some("member_expression" | "property_access_expression")) => {
+			Some(ReferenceKind::FieldAccess)
+		}
+		("type_identifier", _) => Some(ReferenceKind::TypeReference),
+		("identifier", Some("import_specifier" | "import_clause" | "named_imports" | "namespace_import")) => {
+			Some(ReferenceKind::Import)
+		}
+		("identifier", _) => Some(ReferenceKind::VariableUse),
+		_ => None,
+	}
+}
+
+pub(crate) fn classify_typescript(
+	name: &str,
+	kind: &str,
+	parent_kind: Option<&str>,
+	span: Range<usize>,
+) -> Option<ResolvedReference> {
+	let ref_kind = categorize_typescript(kind, parent_kind)?;
+	Some(local_ref(name, span, ref_kind))
+}
+
+// ─── Go ──────────────────────────────────────────────────────────────────────
+
+fn categorize_go(kind: &str, parent: Option<&str>) -> Option<ReferenceKind> {
+	match (kind, parent) {
+		("identifier", Some("call_expression")) => Some(ReferenceKind::FunctionCall),
+		("field_identifier", Some("selector_expression")) => Some(ReferenceKind::FieldAccess),
+		("type_identifier", _) => Some(ReferenceKind::TypeReference),
+		("package_identifier", Some("import_spec" | "import_declaration")) => {
+			Some(ReferenceKind::Import)
+		}
+		// Bare package path segments in import_spec are interpreted_string_literal,
+		// so classify identifiers that appear under import nodes as Import.
+		("identifier", Some("import_spec" | "import_declaration")) => Some(ReferenceKind::Import),
+		("identifier", _) => Some(ReferenceKind::VariableUse),
+		_ => None,
+	}
+}
+
+pub(crate) fn classify_go(
+	name: &str,
+	kind: &str,
+	parent_kind: Option<&str>,
+	span: Range<usize>,
+) -> Option<ResolvedReference> {
+	let ref_kind = categorize_go(kind, parent_kind)?;
+	Some(local_ref(name, span, ref_kind))
+}
+
+// ─── Java ────────────────────────────────────────────────────────────────────
+
+fn categorize_java(kind: &str, parent: Option<&str>) -> Option<ReferenceKind> {
+	match (kind, parent) {
+		("identifier", Some("method_invocation")) => Some(ReferenceKind::FunctionCall),
+		("identifier", Some("field_access")) => Some(ReferenceKind::FieldAccess),
+		("type_identifier", _) => Some(ReferenceKind::TypeReference),
+		("scoped_identifier" | "identifier", Some("import_declaration")) => {
+			Some(ReferenceKind::Import)
+		}
+		("identifier", _) => Some(ReferenceKind::VariableUse),
+		_ => None,
+	}
+}
+
+pub(crate) fn classify_java(
+	name: &str,
+	kind: &str,
+	parent_kind: Option<&str>,
+	span: Range<usize>,
+) -> Option<ResolvedReference> {
+	let ref_kind = categorize_java(kind, parent_kind)?;
+	Some(local_ref(name, span, ref_kind))
+}
+
+// ─── Nix ─────────────────────────────────────────────────────────────────────
+//
+// Arborium-nix / tree-sitter-nix node names vary slightly across versions.
+// Accept both the longer `*_expression` forms and the shorter aliases.
+
+fn categorize_nix(kind: &str, parent: Option<&str>) -> Option<ReferenceKind> {
+	match (kind, parent) {
+		// Function application: `f x` / `f.g x`.
+		("identifier" | "variable_expression" | "attr_identifier", Some("apply_expression" | "apply" | "app")) => {
+			Some(ReferenceKind::FunctionCall)
+		}
+		// Attribute selection: `foo.bar`.
+		("identifier" | "attr_identifier", Some("select_expression" | "select" | "attrpath")) => {
+			Some(ReferenceKind::FieldAccess)
+		}
+		// `inherit (pkgs) foo` / bare `inherit foo`.
+		("identifier" | "attr_identifier", Some("inherit" | "inherited_attrs" | "attrspath")) => {
+			Some(ReferenceKind::Import)
+		}
+		("identifier" | "variable_expression" | "attr_identifier", _) => {
+			Some(ReferenceKind::VariableUse)
+		}
+		_ => None,
+	}
+}
+
+pub(crate) fn classify_nix(
+	name: &str,
+	kind: &str,
+	parent_kind: Option<&str>,
+	span: Range<usize>,
+) -> Option<ResolvedReference> {
+	let ref_kind = categorize_nix(kind, parent_kind)?;
+	Some(local_ref(name, span, ref_kind))
+}
+
+// ─── Classifier dispatch ─────────────────────────────────────────────────────
+
+/// Select the language-specific reference classifier for `lang`.
+pub(crate) fn classify_for(
+	lang: Language,
+) -> fn(&str, &str, Option<&str>, Range<usize>) -> Option<ResolvedReference> {
+	match lang {
+		Language::Rust => classify_rust,
+		Language::Python => classify_python,
+		Language::Typescript => classify_typescript,
+		Language::Go => classify_go,
+		Language::Java => classify_java,
+		Language::Nix => classify_nix,
+	}
 }
 
 // ─── Enclosing function finder ───────────────────────────────────────────────
 
-/// Returns the byte range of the innermost `function_item` or
-/// `closure_expression` node that completely contains [sym_start, sym_end), or
-/// `None` if the symbol is not inside any function node.
+/// True when `kind` is a function-like node for any supported language.
+fn is_function_like(kind: &str) -> bool {
+	matches!(
+		kind,
+		// Rust
+		"function_item"
+			| "closure_expression"
+			// Python
+			| "function_definition"
+			| "lambda"
+			// TypeScript / JavaScript / Go (Go shares `function_declaration`)
+			| "function_declaration"
+			| "function_expression"
+			| "arrow_function"
+			| "method_definition"
+			| "generator_function"
+			| "generator_function_declaration"
+			// Go
+			| "method_declaration"
+			| "func_literal"
+			// Java
+			| "constructor_declaration"
+			| "lambda_expression"
+			// Nix (long and short names used by different grammar revisions)
+			| "function"
+	)
+}
+
+/// Returns the byte range of the innermost function-like node that completely
+/// contains [sym_start, sym_end), or `None` if the symbol is not inside any.
 fn find_enclosing_fn_range(
 	tree: &tree_sitter::Tree,
 	sym_start: usize,
@@ -163,7 +368,7 @@ fn find_enclosing_fn_range(
 	let leaf = root.descendant_for_byte_range(sym_start, sym_end)?;
 	let mut node = leaf;
 	loop {
-		if matches!(node.kind(), "function_item" | "closure_expression") {
+		if is_function_like(node.kind()) {
 			return Some(node.byte_range());
 		}
 		node = node.parent()?;
@@ -280,12 +485,13 @@ pub fn parse_and_extract(
 	// The sexp and references are scoped to the *snippet* (enclosing function or
 	// line window), not the full file, so that consumers see a self-contained
 	// structural representation of the embedding chunk.
+	let classify = classify_for(lang);
 	let (references, sexp) = {
 		let mut snippet_parser = tree_sitter::Parser::new();
 		if snippet_parser.set_language(&ts_lang).is_ok() {
 			if let Some(snippet_tree) = snippet_parser.parse(snippet.as_bytes(), None) {
 				let sexp = snippet_tree.root_node().to_sexp();
-				let refs = walk_references(&snippet_tree, &snippet, classify_rust)
+				let refs = walk_references(&snippet_tree, &snippet, classify)
 					.into_iter()
 					.map(ref_to_entry)
 					.collect::<Vec<_>>();

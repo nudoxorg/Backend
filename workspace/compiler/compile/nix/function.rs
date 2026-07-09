@@ -19,11 +19,12 @@
 use ir::function::Function;
 use ir::generics::ConstExpr;
 use ir::parameter::{LiteralParameter, Parameter, ParameterAttribute};
+use ir::record::{Field, FieldKey};
 use ir::ty::Type;
 
 use super::docs::ParsedDoc;
 use super::sig::{self, Signature};
-use super::syntax::{LambdaInfo, ParamKind};
+use super::syntax::{LambdaInfo, ParamKind, StaticParam};
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public API
@@ -34,6 +35,10 @@ use super::syntax::{LambdaInfo, ParamKind};
 /// Parameters are built from `lam.params` in declaration order.  When a
 /// `sig` is supplied the corresponding positional type (`sig.params[i]`)
 /// is attached; otherwise the parameter type is left `None`.
+///
+/// Special case: a single record-typed signature parameter
+/// (`{ name :: String; … } -> Ret`) paired with record-pattern formals is
+/// expanded by field name so each formal gets its declared field type.
 ///
 /// An ellipsis (`...`) on the outermost pattern appends a synthetic
 /// variadic parameter named `"..."` with [`ParameterAttribute::Variadic`].
@@ -48,10 +53,8 @@ pub fn lower_lambda(
 	let mut inputs: Vec<Parameter> = Vec::new();
 
 	for (i, param) in lam.params.iter().enumerate() {
-		// Type: positional from sig, or None.
-		let ty: Option<Type> = sig
-			.and_then(|s| s.params.get(i))
-			.cloned();
+		// Type: field-matched for record patterns, else positional from sig.
+		let ty: Option<Type> = type_for_param(sig, param, i);
 
 		// Default: raw source text kept verbatim as a `ConstExpr::Str`.
 		let default_value: Option<ConstExpr> = param
@@ -129,4 +132,40 @@ pub fn lower_lambda(
 pub fn signature_from_doc(doc: &ParsedDoc) -> Option<Signature> {
 	let raw = doc.type_sig.as_deref()?;
 	sig::parse(raw)
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Internals
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Resolve the type of a single formal from the optional signature.
+///
+/// When the signature is a single open/closed record (`{ a :: T; b :: U } -> R`)
+/// and the formal is a pattern field, look up the field by name so each formal
+/// receives its declared type instead of the whole record type.
+fn type_for_param(sig: Option<&Signature>, param: &StaticParam, index: usize) -> Option<Type> {
+	let sig = sig?;
+	if param.kind == ParamKind::PatternField {
+		if let Some(Type::RecordLiteral(rec)) = sig.params.first() {
+			if sig.params.len() == 1 {
+				if let Some(ty) = record_field_type(rec, &param.name) {
+					return Some(ty);
+				}
+			}
+		}
+	}
+	sig.params.get(index).cloned()
+}
+
+fn record_field_type(rec: &ir::record::Record, name: &str) -> Option<Type> {
+	for field in &rec.fields {
+		if let Field::Known(kf) = field {
+			if let FieldKey::Ident(id) = &kf.key {
+				if id == name {
+					return kf.r#type.as_ref().map(|t| t.as_ref().clone());
+				}
+			}
+		}
+	}
+	None
 }

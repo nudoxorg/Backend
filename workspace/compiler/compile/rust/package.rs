@@ -141,9 +141,16 @@ impl RustPackage {
         package_name: &str,
         version: &Version,
     ) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
+        // Unique per invocation so concurrent generate/test runs on the same
+        // package name cannot race on a shared rustdoc JSON path.
         let tmp = std::env::temp_dir();
         let safe_name = package_name.replace(['/', ':'], "_");
-        let json_out = tmp.join(format!("nudox-{safe_name}-rustdoc.json"));
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let json_out =
+            tmp.join(format!("nudox-{safe_name}-rustdoc-{}-{uniq}.json", std::process::id()));
 
         match self.run_cargo_rustdoc(code, package_name, version, &json_out, false) {
             Ok(_) => {}

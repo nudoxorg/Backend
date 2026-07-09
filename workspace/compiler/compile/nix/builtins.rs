@@ -83,14 +83,24 @@ fn builtin_function() -> Function {
 /// `Value::Builtin(Builtin)`; `.documentation()` is the `///`-sourced help
 /// text collected by snix's `#[builtins]` macro.
 fn collect_builtins() -> Vec<(String, Option<String>)> {
-    snix_eval::builtins::pure_builtins()
+    // `pure_builtins()` panics on some host triples when snix's
+    // `SNIX_CURRENT_SYSTEM` env is mis-set (it also injects pure *values*
+    // like `null`/`true`/`nixVersion`). Catch that so a platform glitch
+    // never aborts static lowering, and keep only real `Builtin`s.
+    let Ok(builtins) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        snix_eval::builtins::pure_builtins()
+    })) else {
+        tracing::warn!("nix: pure_builtins() panicked; synthesizing empty builtins set");
+        return Vec::new();
+    };
+
+    builtins
         .into_iter()
-        .map(|(name, value)| {
-            let documentation = match &value {
-                snix_eval::Value::Builtin(b) => b.documentation().map(str::to_string),
-                _ => None,
-            };
-            (name.to_string(), documentation)
+        .filter_map(|(name, value)| match value {
+            snix_eval::Value::Builtin(b) => {
+                Some((name.to_string(), b.documentation().map(str::to_string)))
+            }
+            _ => None,
         })
         .collect()
 }

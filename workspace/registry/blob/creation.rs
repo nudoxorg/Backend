@@ -137,4 +137,18 @@ impl BlobBuilder {
 	/// The snapshot hash computed *so far* (for progress/debug); not the final
 	/// committed value until [`finalize`](BlobBuilder::finalize).
 	pub fn provisional_generation(&self) -> ContentHash { self.digest.finalize() }
+
+	/// Iterate the sanitized source files already staged in this builder as
+	/// `(package-relative path, bytes)` pairs. Used by the compile phase to
+	/// materialize a temporary tree for the language producers without a
+	/// second archive pass.
+	pub fn source_files(&self) -> impl Iterator<Item = (&SmolStr, &bytes::Bytes)> + '_ {
+		self.files.iter().filter_map(|entry| {
+			let section = self.pending.iter().find(|s| s.hash == entry.hash)?;
+			Some((&entry.path, &section.bytes))
+		})
+	}
+
+	/// The toolchain this builder was created with.
+	pub fn toolchain(&self) -> &Toolchain { &self.toolchain }
 }

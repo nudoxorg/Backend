@@ -25,6 +25,10 @@ pub enum ServerError {
     #[error(transparent)]
     Runtime(#[from] runtime::RuntimeError),
 
+    /// The compiler generation pipeline (surface IR / CST / archive) failed.
+    #[error(transparent)]
+    Compile(#[from] compiler::error::GenerateError),
+
     /// The request was malformed or violated an invariant (→ 4xx).
     #[error(transparent)]
     BadRequest(#[from] BadRequestReason),
@@ -237,11 +241,19 @@ pub enum InternalError {
     #[error("malformed sdist url")]
     MalformedSdistUrl,
 
-    /// The placeholder empty IR (until compiler is wired) could not be serialized.
-    #[error("could not serialize empty IR")]
-    EmptyIrSerializationFailed {
+    /// Serializing the compiler's surface IR to the blob section failed.
+    #[error("could not serialize surface IR")]
+    IrSerializationFailed {
         #[source]
         source: serde_json::Error,
+    },
+
+    /// Materializing the extracted package onto a temporary tree for the
+    /// compiler failed.
+    #[error("could not materialize package sources for compilation")]
+    MaterializeForCompile {
+        #[source]
+        source: std::io::Error,
     },
 
     /// Catch-all for other truly internal breakages where a more specific
@@ -273,6 +285,9 @@ impl ServerError {
             ServerError::Connect(_) | ServerError::Runtime(_) | ServerError::Registry(_) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
+            // Compile failures are server-side pipeline faults (→ 5xx); transient
+            // ones still surface as unavailable until retry succeeds.
+            ServerError::Compile(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ServerError::Config(_) | ServerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -314,10 +329,11 @@ impl axum::response::IntoResponse for ServerError {
 
 impl Retryable for ServerError {
     fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            ServerError::Connect(_) | ServerError::Runtime(_) | ServerError::Registry(_)
-        )
+        match self {
+            ServerError::Connect(_) | ServerError::Runtime(_) | ServerError::Registry(_) => true,
+            ServerError::Compile(error) => error.is_retryable(),
+            _ => false,
+        }
     }
 }
 
