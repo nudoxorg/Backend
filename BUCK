@@ -1,0 +1,14 @@
+alias(name = "server",   actual = "//workspace/server:server",   visibility = ["PUBLIC"])
+alias(name = "heart",    actual = "//workspace/heart:heart",     visibility = ["PUBLIC"])
+alias(name = "ir",       actual = "//workspace/compiler/intermediate-representation:ir", visibility = ["PUBLIC"])
+alias(name = "registry", actual = "//workspace/registry:registry", visibility = ["PUBLIC"])
+alias(name = "runtime",  actual = "//workspace/runtime:runtime", visibility = ["PUBLIC"])
+alias(name = "compiler", actual = "//workspace/compiler:compiler", visibility = ["PUBLIC"])
+
+command_alias(name = "add",    exe = "//build/third-party/tools:crates", args = ["add"],    visibility = ["PUBLIC"])
+command_alias(name = "update", exe = "//build/third-party/tools:crates", args = ["update"], visibility = ["PUBLIC"])
+command_alias(name = "check",  exe = "//build/third-party/tools:crates", args = ["check"],  visibility = ["PUBLIC"])
+command_alias(name = "new",    exe = "//build/third-party/tools:crates", args = ["new"],    visibility = ["PUBLIC"])
+
+command_alias(name = "tp-build", exe = "//build/third-party/tools:crates", args = ["build"], visibility = ["PUBLIC"])
+command_alias(name = "tp-test",  exe = "//build/third-party/tools:crates", args = ["test"],  visibility = ["PUBLIC"])
