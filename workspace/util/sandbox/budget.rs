@@ -1,9 +1,114 @@
 //! Capability budgets for sealed compute.
 
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::limits::{Limits, Network};
 use crate::spec::{Env, Mounts};
+
+/// Threat posture of the code a producer runs, driving *default* capability
+/// policy (DAEMON-PLAN §2.3 / §5 Phase 6).
+///
+/// This is a policy dial, not a resource profile: [`ProducerProfile`] still
+/// supplies the language-appropriate ceilings. The tier *clamps* those ceilings
+/// (and picks the default network posture) so that regardless of how loose a
+/// profile or per-package override is, hostile interpreter code can never be
+/// granted more than the tier permits.
+///
+/// [`crate::ProducerProfile`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThreatTier {
+	/// Interpreters that execute package code (nix / typescript / python).
+	/// Tightest ceilings; network defaults off.
+	Hostile,
+	/// Compilers / oracles over untrusted source (rust / go / java).
+	/// The default posture.
+	#[default]
+	Untrusted,
+	/// Fully trusted host tooling (none today). Loosest; the profile ceilings
+	/// pass through unclamped.
+	Trusted,
+}
+
+impl ThreatTier {
+	/// Default network posture for freshly sealed work at this tier.
+	///
+	/// Every tier seals with the network *off* — the acquire phase is the only
+	/// place network is granted (see [`crate::seal::Job`]). This exists so the
+	/// default is expressed by policy, not by an implicit call-site constant.
+	pub const fn net_default(self) -> NetGrant {
+		NetGrant::Off
+	}
+
+	/// Per-tier hard ceiling: the loosest limits this tier may ever be granted.
+	///
+	/// `None` (Trusted) means "no tier ceiling — the profile stands".
+	const fn ceiling(self) -> Option<Limits> {
+		match self {
+			// Hostile: 2 GiB / 5 min wall / 300 cpu-s / 128 pids. An interpreter
+			// running package code never gets the 6 GiB rustc profile.
+			Self::Hostile => Some(Limits {
+				mem_bytes: nz64(2 * 1024 * 1024 * 1024),
+				cpu_secs: nz64(300),
+				wall: Duration::from_secs(5 * 60),
+				pids: nz32(128),
+				max_stdout: 16 * 1024 * 1024,
+				max_stderr: 512 * 1024,
+				fsize_bytes: nz64(1024 * 1024 * 1024),
+				nofile: nz64(2048),
+			}),
+			// Untrusted: 8 GiB / 20 min / 1200 cpu-s / 1024 pids — headroom above
+			// the Rust profile so it never clamps a legitimate compile, but still
+			// a fleet-wide backstop against a runaway override.
+			Self::Untrusted => Some(Limits {
+				mem_bytes: nz64(8 * 1024 * 1024 * 1024),
+				cpu_secs: nz64(1200),
+				wall: Duration::from_secs(20 * 60),
+				pids: nz32(1024),
+				max_stdout: 64 * 1024 * 1024,
+				max_stderr: 4 * 1024 * 1024,
+				fsize_bytes: nz64(4 * 1024 * 1024 * 1024),
+				nofile: nz64(8192),
+			}),
+			Self::Trusted => None,
+		}
+	}
+
+	/// Clamp resolved `limits` down to this tier's ceiling.
+	///
+	/// Each field is `min(resolved, ceiling)`; a tighter profile / override is
+	/// left untouched, a looser one is capped. Trusted passes through.
+	pub fn clamp(self, limits: Limits) -> Limits {
+		let Some(cap) = self.ceiling() else {
+			return limits;
+		};
+		Limits {
+			mem_bytes: limits.mem_bytes.min(cap.mem_bytes),
+			cpu_secs: limits.cpu_secs.min(cap.cpu_secs),
+			wall: limits.wall.min(cap.wall),
+			pids: limits.pids.min(cap.pids),
+			max_stdout: limits.max_stdout.min(cap.max_stdout),
+			max_stderr: limits.max_stderr.min(cap.max_stderr),
+			fsize_bytes: limits.fsize_bytes.min(cap.fsize_bytes),
+			nofile: limits.nofile.min(cap.nofile),
+		}
+	}
+}
+
+const fn nz64(v: u64) -> NonZeroU64 {
+	match NonZeroU64::new(v) {
+		Some(v) => v,
+		None => panic!("tier ceiling must be non-zero"),
+	}
+}
+
+const fn nz32(v: u32) -> NonZeroU32 {
+	match NonZeroU32::new(v) {
+		Some(v) => v,
+		None => panic!("tier ceiling must be non-zero"),
+	}
+}
 
 /// Filesystem grant: RO roots + one primary RW scratch (+ optional extra RW).
 ///

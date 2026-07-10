@@ -66,6 +66,7 @@ fn run_producer(
 				ctx.overrides(),
 				&input.root,
 				p.profile(),
+				p.tier(),
 				Some(&package),
 				source_hash,
 				dep_lock,

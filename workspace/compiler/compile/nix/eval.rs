@@ -41,10 +41,79 @@ const EVAL_BUDGET: Duration = Duration::from_secs(120);
 /// Shared with [`crate::compile::producer::SECRET_ENV_PREFIXES`] for seal audits.
 pub use crate::compile::producer::SECRET_ENV_PREFIXES;
 
+/// Hermetic capability marker for the Nix evaluator.
+///
+/// A [`NixCaps<Hermetic>`] is the *only* capability state this module can name:
+/// there is no `Impure` state and no `enable_impure` method, so impure builtins
+/// (`getEnv`, live `currentTime`, `TvixStoreIO` fetchers) are unreachable at
+/// compile time — the type mirrors the runtime "sealed by omission" discipline
+/// (design §7.4) in the type system.
+///
+/// See [`NixCaps::hermetic`]. A negative guarantee is proven by a `compile_fail`
+/// doctest on that method.
+#[derive(Debug, Clone, Copy)]
+pub struct Hermetic;
+
+/// Capability builder for a snix [`Evaluation`], parameterized by purity state.
+///
+/// The state parameter is currently only ever [`Hermetic`]; the type is written
+/// so that adding impurity would require adding a *new* state and a method on it
+/// — it can never be reached from the hermetic state.
+#[derive(Debug, Clone, Copy)]
+pub struct NixCaps<S> {
+	import: bool,
+	lazy: bool,
+	_state: std::marker::PhantomData<S>,
+}
+
+impl NixCaps<Hermetic> {
+	/// The hermetic capability set: `import` on (flakes need it), lazy mode, and
+	/// — by construction — no impure builtins.
+	///
+	/// There is deliberately **no** `enable_impure` (or any impurity method) on
+	/// `NixCaps<Hermetic>`. Attempting to call one does not compile:
+	///
+	/// ```compile_fail
+	/// use compiler::compile::nix::eval::NixCaps;
+	/// let caps = NixCaps::hermetic();
+	/// caps.enable_impure(); // no such method on NixCaps<Hermetic>
+	/// ```
+	pub const fn hermetic() -> Self {
+		Self {
+			import: true,
+			lazy: true,
+			_state: std::marker::PhantomData,
+		}
+	}
+
+	/// Toggle `import` (flake structure needs it; on by default).
+	pub const fn import(mut self, on: bool) -> Self {
+		self.import = on;
+		self
+	}
+
+	/// Build the snix [`Evaluation`] over `io` under these hermetic caps.
+	///
+	/// The evaluation registers **pure builtins only**; because the caps type
+	/// cannot express impurity, no code path here can call `enable_impure`.
+	pub fn build(self, io: Rc<dyn EvalIO>) -> Evaluation<'static, 'static, 'static, Rc<dyn EvalIO>> {
+		let mut b = Evaluation::builder(io).mode(if self.lazy {
+			EvalMode::Lazy
+		} else {
+			EvalMode::Strict
+		});
+		if self.import {
+			b = b.enable_import();
+		}
+		b.build()
+	}
+}
+
 /// Build a hermetic snix [`Evaluation`] over `io`.
 ///
 /// Invariants encoded here (not at call sites):
-/// - pure builtins only (no `getEnv`, no live `currentTime`)
+/// - pure builtins only (no `getEnv`, no live `currentTime`) — enforced by the
+///   [`NixCaps<Hermetic>`] type, which has no way to enable impurity
 /// - `import` on for flake structure
 /// - `NIX_PATH` never inherited (`nix_path(None)` is the builder default)
 /// - lazy mode so nixpkgs-scale flakes are not forced wholesale
@@ -53,10 +122,7 @@ pub fn hermetic_evaluation(
 ) -> Evaluation<'static, 'static, 'static, Rc<dyn EvalIO>> {
 	// Observer/env lifetimes are unused (None); pin them to 'static so this
 	// helper can return an owned Evaluation without a caller-provided borrow.
-	Evaluation::builder(io)
-		.mode(EvalMode::Lazy)
-		.enable_import()
-		.build()
+	NixCaps::hermetic().build(io)
 }
 
 /// Evaluate the flake at `root` and lower its output tree, or return `None`

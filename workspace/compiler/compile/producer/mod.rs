@@ -37,7 +37,7 @@ use std::time::Duration;
 use heart::{JobKey, Language};
 use ir::entry::Index;
 use sandbox::{
-	CancelToken, Captured, Env, Mounts, NetGrant, ProcessEnd, ProducerProfile, SealedCommand,
+	CancelToken, Captured, Env, Mounts, ProcessEnd, ProducerProfile, SealedCommand,
 	SealedInput, Sealer, ToolchainSet, WorkerLang,
 };
 use serde::{Deserialize, Serialize};
@@ -59,19 +59,10 @@ impl std::fmt::Display for ProducerId {
 	}
 }
 
-/// Threat tier driving budget *policy* (Phase 6 tightens this further).
-///
-/// Resource ceilings come from [`Producer::profile`], not this enum alone —
-/// `Untrusted` is not a synonym for [`ProducerProfile::Tiny`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThreatTier {
-	/// Interpreters that execute package code (nix / ts / python).
-	Hostile,
-	/// Compilers/oracles over untrusted source (rust / go / java).
-	Untrusted,
-	/// Fully trusted host tooling (none today).
-	Trusted,
-}
+// `ThreatTier` now lives in `sandbox::budget` (below the compiler in the dep
+// DAG) so it can drive the seal-time budget clamp directly. Re-exported here
+// (`sandbox::ThreatTier`) for the producer impls that name it via this module.
+pub use sandbox::ThreatTier;
 
 // ─── Plan / output ───────────────────────────────────────────────────────────
 
@@ -289,6 +280,7 @@ pub fn seal_package(
 	overrides: &sandbox::OverrideTable,
 	root: &Path,
 	profile: ProducerProfile,
+	tier: ThreatTier,
 	package: Option<&SandboxKey>,
 	source_hash: heart::ContentHash,
 	dep_lock_hash: heart::ContentHash,
@@ -317,8 +309,13 @@ pub fn seal_package(
 	}
 	mounts = mounts.rw(&scratch_root);
 
-	let limits = overrides.resolve(profile, package);
-	let budget = sealer.budget_from_mounts(mounts, scratch_root, NetGrant::Off, env, limits);
+	// Per-package / per-profile overlay first (Phase 4 override table), then the
+	// threat-tier ceiling clamps it down. A Hostile interpreter can never be
+	// granted more than its tier permits, however loose the profile or a
+	// per-package override is. Sealed network is always off (`tier.net_default`).
+	let resolved = overrides.resolve(profile, package);
+	let limits = tier.clamp(resolved);
+	let budget = sealer.budget_from_mounts(mounts, scratch_root, tier.net_default(), env, limits);
 
 	let key = JobKey::derive(
 		PRODUCER_VERSION.as_bytes(),

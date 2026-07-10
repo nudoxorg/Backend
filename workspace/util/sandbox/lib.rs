@@ -49,6 +49,7 @@ pub mod cage;
 pub mod cancel;
 pub mod cgroup;
 pub mod error;
+pub mod job;
 pub mod limits;
 pub mod node;
 pub mod observer;
@@ -70,8 +71,9 @@ pub mod seccomp;
 pub use backend::{
 	Backend, Capabilities, LinuxBwrap, MacSeatbelt, NixDerivation, Passthrough, Selected, select,
 };
-pub use budget::{CapabilityBudget, FsGrant, NetGrant};
+pub use budget::{CapabilityBudget, FsGrant, NetGrant, ThreatTier};
 pub use cage::{Cage, CageCaps, CageId, DevPassthrough, LinuxNamespaces, Policy, run_sealed};
+pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget};
 pub use cancel::CancelToken;
 pub use error::{CageError, KillReason, SandboxError, to_io_error};
 pub use limits::{LimitOverride, Limits, Network};
