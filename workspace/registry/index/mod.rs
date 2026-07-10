@@ -266,6 +266,80 @@ impl GlobalStore<Live> {
 			.map_err(IndexError::Database)?;
 		Ok(())
 	}
+
+	/// Read a package's serving-projection symbols back out of the global index —
+	/// the symmetric read of [`upsert_symbol`].
+	///
+	/// The fan-out consumers ([`crate::coordination`] pollers) need a package's
+	/// symbol projection to materialize the derived stores (text/vector/graph),
+	/// and postgres `symbols` is exactly where the indexing path persisted them.
+	/// Each row is rebuilt into the same [`heart::Symbol`] the read plane serves:
+	/// the stored fq_name plus its leaf segment for the plain name, the recorded
+	/// kind, and the owning package's language as the ecosystem.
+	pub async fn symbols_for(
+		&self,
+		package: PackageId,
+	) -> Result<Vec<heart::Symbol>, IndexError> {
+		let (sql, vals) = queries::index::symbols_for(package);
+		let rows = sqlx::query_with(&sql, vals)
+			.fetch_all(&self.pool)
+			.await
+			.map_err(IndexError::Database)?;
+		rows.iter().map(row_to_symbol).collect()
+	}
+}
+
+/// Rebuild a [`heart::Symbol`] from a `symbols × packages` row. Column order
+/// matches [`queries::index::symbols_for`]: id, package_id, fq_name, kind,
+/// language. The plain name is the leaf segment of the fully-qualified name
+/// (postgres does not carry it separately), matching the text poller's decode.
+fn row_to_symbol(row: &PgRow) -> Result<heart::Symbol, IndexError> {
+	let id: uuid::Uuid = row.try_get(0).map_err(IndexError::Database)?;
+	let package_uuid: uuid::Uuid = row.try_get(1).map_err(IndexError::Database)?;
+	let fq_name: String = row.try_get(2).map_err(IndexError::Database)?;
+	let kind_token: String = row.try_get(3).map_err(IndexError::Database)?;
+	let language: String = row.try_get(4).map_err(IndexError::Database)?;
+
+	let ecosystem = codec::ecosystem_from_token(&language).map_err(codec_to_index)?;
+	let kind = parse_symbol_kind(&kind_token)
+		.ok_or(IndexError::UnknownSymbolKind { token: kind_token })?;
+
+	Ok(heart::Symbol {
+		id: heart::SymbolId::from_uuid(id),
+		package: codec::package_id_from_uuid(package_uuid),
+		ecosystem,
+		name: heart::Name {
+			plain: symbol_plain_name(&fq_name).into(),
+			fully_qualified: fq_name.as_str().into(),
+		},
+		kind,
+	})
+}
+
+/// Parse a [`heart::SymbolKind`] from its stored `Display` token (the same token
+/// [`GlobalStore::upsert_symbol`] persists via `SymbolKind::to_string`).
+fn parse_symbol_kind(raw: &str) -> Option<heart::SymbolKind> {
+	use heart::SymbolKind::*;
+	match raw {
+		"Function" => Some(Function),
+		"Type" => Some(Type),
+		"Module" => Some(Module),
+		"Constant" => Some(Constant),
+		"Variable" => Some(Variable),
+		"Trait" => Some(Trait),
+		"Impl" => Some(Impl),
+		"Other" => Some(Other),
+		_ => None,
+	}
+}
+
+/// The leaf identifier of a fully-qualified name, across ecosystem separators
+/// (`::` for Rust, `.` for Python/TypeScript, `/` defensively).
+fn symbol_plain_name(fully_qualified: &str) -> &str {
+	fully_qualified
+		.rsplit(['/', '.', ':'])
+		.find(|segment| !segment.is_empty())
+		.unwrap_or(fully_qualified)
 }
 
 /// Map a serialization/codec failure into an index error. Now uses the

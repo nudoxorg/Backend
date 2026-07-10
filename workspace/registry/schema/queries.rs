@@ -291,6 +291,37 @@ pub mod index {
 			)
 			.build_sqlx(PG)
 	}
+
+	/// `SELECT s.id, s.package_id, s.fq_name, s.kind, p.language FROM symbols s
+	/// JOIN packages p ON p.id = s.package_id WHERE s.package_id = $1` — read a
+	/// single package's serving-projection symbols back out.
+	///
+	/// The symmetric read of [`upsert_symbol`]: it returns exactly the columns
+	/// upsert wrote (id, package, fq_name, kind), joined with the owning
+	/// package's `language` so a full [`heart::Symbol`] (which carries the
+	/// ecosystem) can be rebuilt. Same shape as the text poller's `SYMBOLS_SQL`,
+	/// scoped to one package rather than a batch.
+	pub fn symbols_for(package: PackageId) -> (String, SqlxValues) {
+		Query::select()
+			.columns([
+				(Symbols::Table, Symbols::Id),
+				(Symbols::Table, Symbols::PackageId),
+				(Symbols::Table, Symbols::FqName),
+				(Symbols::Table, Symbols::Kind),
+			])
+			.column((Packages::Table, Packages::Language))
+			.from(Symbols::Table)
+			.inner_join(
+				Packages::Table,
+				Expr::col((Packages::Table, Packages::Id))
+					.equals((Symbols::Table, Symbols::PackageId)),
+			)
+			.and_where(
+				Expr::col((Symbols::Table, Symbols::PackageId))
+					.eq(codec::package_id_to_uuid(package)),
+			)
+			.build_sqlx(PG)
+	}
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

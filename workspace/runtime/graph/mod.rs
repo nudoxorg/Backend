@@ -425,6 +425,74 @@ pub(crate) fn direct_score() -> heart::Score {
 }
 
 impl Graph<Live> {
+	/// Insert/replace the `Symbol` documents for a set of symbols — the write
+	/// half of [`symbols_in_package`](Self::symbols_in_package), so a fan-out
+	/// consumer can materialize a package's graph projection.
+	///
+	/// Each document is written in the shape this store's own read queries
+	/// expect (the model documented above: class `Symbol` with string properties
+	/// `id`, `package`, `ecosystem`, `plain`, `fully_qualified`, `kind`). The
+	/// document `@id` is derived from the symbol's uuid, so re-inserting the same
+	/// symbol replaces it in place — the operation is idempotent, which is what
+	/// lets the outbox re-deliver safely on crash.
+	///
+	/// Writes go through the terminus document API (`?full_replace=false` +
+	/// per-document `@id`) rather than WOQL, since document replacement is the
+	/// insert primitive terminus exposes.
+	pub async fn insert_symbols(&self, symbols: &[heart::Symbol]) -> Result<(), GraphError> {
+		use secrecy::ExposeSecret;
+
+		if symbols.is_empty() {
+			return Ok(());
+		}
+
+		let documents: Vec<serde_json::Value> = symbols
+			.iter()
+			.map(|symbol| {
+				let uuid = symbol.id.as_uuid().to_string();
+				serde_json::json!({
+					"@type": "Symbol",
+					"@id": format!("Symbol/{uuid}"),
+					"id": uuid,
+					"package": symbol.package.as_uuid().to_string(),
+					"ecosystem": symbol.ecosystem.as_token(),
+					"plain": symbol.name.plain.as_str(),
+					"fully_qualified": symbol.name.fully_qualified.as_str(),
+					"kind": symbol.kind.to_string(),
+				})
+			})
+			.collect();
+
+		let url = self
+			.endpoint
+			.join(&format!("api/document/{}/{}", self.organization.as_str(), self.database.as_str()))
+			.expect("validated org/db names always form a legal url path");
+		let body = serde_json::to_vec(&documents)
+			.expect("symbol documents are plain json trees and serialize infallibly");
+		let reply = self
+			.client
+			.post(url)
+			// Instance-graph document write; upsert by `@id` so replay replaces.
+			.query(&[("graph_type", "instance"), ("author", "materialize"), ("message", "fan-out")])
+			.basic_auth(self.credentials.user(), Some(self.credentials.password().expose_secret()))
+			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.body(body)
+			.send()
+			.await
+			.map_err(GraphError::Transport)?;
+
+		let status = reply.status();
+		let bytes = reply.bytes().await.map_err(GraphError::Transport)?;
+		if !status.is_success() {
+			return Err(GraphError::Query(crate::error::GraphQueryError::HttpStatus {
+				status,
+				body: String::from_utf8_lossy(&bytes).into_owned(),
+			}));
+		}
+		tracing::debug!(symbols = symbols.len(), "symbol documents written to graph");
+		Ok(())
+	}
+
 	/// POST one WOQL query to the endpoint and return its binding rows.
 	pub(crate) async fn bindings(
 		&self,

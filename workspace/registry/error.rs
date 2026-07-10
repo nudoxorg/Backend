@@ -455,6 +455,10 @@ pub enum IndexError {
 	#[error("index row decode failed")]
 	RowDecode { column: &'static str, #[source] source: sqlx::Error },
 
+	/// A stored `symbols.kind` token did not match any known [`heart::SymbolKind`].
+	#[error("unknown symbol kind token in symbols row: {token}")]
+	UnknownSymbolKind { token: String },
+
 	/// Codec failures (e.g. from schema rows) now carried with concrete source
 	/// so trace is not lost to to_string + Decode.
 	#[error("index codec failure")]

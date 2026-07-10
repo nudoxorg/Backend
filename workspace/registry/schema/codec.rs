@@ -99,6 +99,17 @@ pub fn package_id_from_uuid(uuid: Uuid) -> PackageId {
 /// The raw uuid backing a [`SymbolId`].
 pub fn symbol_id_to_uuid(id: SymbolId) -> Uuid { *id.as_uuid() }
 
+/// Reconstruct a [`SymbolId`] from a `uuid` column.
+///
+/// Mirrors [`package_id_from_uuid`]: `SymbolId` wraps a private id with no
+/// public constructor, but round-trips through serde as its bare uuid, so
+/// re-branding a value minted deterministically before it was stored is
+/// panic-free. Postgres uuids are always well-formed.
+pub fn symbol_id_from_uuid(uuid: Uuid) -> SymbolId {
+	serde_json::from_value(serde_json::Value::String(uuid.to_string()))
+		.expect("a valid uuid always deserializes into a SymbolId")
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // bytea ↔ content hash / generation

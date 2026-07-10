@@ -274,6 +274,13 @@ impl<M: EmbeddingModel> Server<M> {
 	/// The definitive base's text index.
 	pub fn text(&self) -> &TextIndex { &self.base().text }
 
+	/// The model-branded query embedder behind the gated semantic path — also the
+	/// embedder the vector fan-out consumer drives to materialize symbol points.
+	pub(crate) fn embedder(&self) -> &HttpEmbedder<M> { &self.embedder }
+
+	/// The content-addressed embedding cache in front of the embedder.
+	pub(crate) fn embedding_cache(&self) -> &EmbeddingCache<M> { &self.embedding_cache }
+
 	/// The per-session exploration graphs.
 	pub fn sessions(&self) -> &MemorySessionStore { &self.sessions }
 
