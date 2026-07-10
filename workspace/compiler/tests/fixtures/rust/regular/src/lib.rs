@@ -2,6 +2,25 @@
 
 pub fn add(left: i32, right: i32) -> i32 { left + right }
 
+/// Superseded arithmetic helper.
+#[deprecated(since = "0.1.0", note = "use add instead")]
+pub fn legacy_add(left: i32, right: i32) -> i32 { left + right }
+
+mod sealed_marker {
+	pub trait Sealed {}
+}
+
+/// A sealed trait: downstream crates cannot implement it because its `Sealed`
+/// supertrait lives in a private module.
+pub trait SealedTrait: sealed_marker::Sealed {
+	fn describe(&self) -> &'static str;
+}
+
+/// An open trait: its only supertrait is public, so it is not sealed.
+pub trait OpenTrait: BlanketView {
+	fn kind(&self) -> u8;
+}
+
 mod internals {
 	pub(crate) struct HiddenCounter {
 		value: i32,

@@ -331,12 +331,22 @@ fn lower_trait(ctx: &mut LowerCtx<'_>, t: Trait) -> TraitDef {
 	// violation, so `None` means the trait IS usable as `dyn Trait`.
 	let object_safe = Some(t.dyn_compatibility(ctx.db).is_none());
 
-	// Sealed detection needs private-supertrait / private-module bound analysis
-	// over resolved defs, which is fiddly to get right; leave unpopulated rather
-	// than guess.
-	// TODO(P4): detect sealed traits (private supertrait or bound on a
-	// private-module item) via resolved supertrait defs + visibility.
-	let sealed = None;
+	// Sealed-trait detection (classic `pub trait Foo: private::Sealed {}`).
+	//
+	// A trait is sealed when it cannot be implemented downstream because it has a
+	// supertrait that is not *reachable* outside this crate. Reachability is not
+	// the supertrait's own declared visibility alone: `pub trait Sealed` inside a
+	// private `mod` reports `Visibility::Public` on itself, so we must also fold in
+	// its enclosing module chain. A supertrait is externally reachable iff its own
+	// visibility is `Public` AND every ancestor module (below the crate root) is
+	// `pub`. If any `direct_supertrait` is *not* externally reachable, the trait is
+	// sealed. Conservative: `Some(true)` only on a positively-unreachable
+	// supertrait, else `Some(false)`.
+	let sealed = Some(
+		t.direct_supertraits(ctx.db)
+			.into_iter()
+			.any(|st| !supertrait_reachable_downstream(ctx, st)),
+	);
 
 	let cfg = docs::cfg_string(ctx, t);
 
@@ -576,6 +586,22 @@ fn ast_name_matches(resolved: &str, hir_name: &str) -> bool {
 			.rsplit("::")
 			.next()
 			.is_some_and(|last| last == hir_name)
+}
+
+/// Whether a supertrait can be named (and thus implemented) by a downstream
+/// crate: its own declared visibility must be `Public` and every enclosing module
+/// below the crate root must be `pub`. A `pub` item inside a private module is not
+/// reachable — the classic sealed-trait guard.
+fn supertrait_reachable_downstream(ctx: &LowerCtx<'_>, st: Trait) -> bool {
+	if !matches!(st.visibility(ctx.db), HirVisibility::Public) {
+		return false;
+	}
+	let module = st.module(ctx.db);
+	module
+		.path_to_root(ctx.db)
+		.into_iter()
+		.filter(|m| !m.is_crate_root(ctx.db))
+		.all(|m| matches!(m.visibility(ctx.db), HirVisibility::Public))
 }
 
 fn source_generics<N: HasGenericParams>(

@@ -165,6 +165,16 @@ fn record<'i>(index: &'i Index, path: &str) -> &'i ir::kind::Symbol<ir::record::
     }
 }
 
+fn trait_def<'i>(
+    index: &'i Index,
+    path: &str,
+) -> &'i ir::kind::Symbol<ir::protocols::TraitDef> {
+    match entry(index, path) {
+        Entry::TraitDef(symbol) => symbol,
+        other => panic!("expected TraitDef at {path}, got {other}"),
+    }
+}
+
 // ─── Specs ───────────────────────────────────────────────────────────────────
 
 /// A regular single-crate package lowers every public item into the index.
@@ -339,6 +349,54 @@ fn external_references_are_external_paths() {
             NudoxPath::Local(path) if path.to_string_lossy().contains("Marker")
         )),
         "an external trait must never be minted as Local: {protocols:?}"
+    );
+}
+
+/// `#[deprecated(since = "…", note = "…")]` populates the `Deprecation` payload.
+///
+/// Arrange: `legacy_add` in the `regular` fixture carries
+///   `#[deprecated(since = "0.1.0", note = "use add instead")]`.
+/// Assert: its symbol's `deprecation` is present with both strings recovered from
+///   the AST (the HIR bitflag alone drops them).
+#[test]
+fn deprecated_since_and_note_are_recovered_from_ast() {
+    let (index, _sources, _dir) = lower("regular", "calculator", "0.1.0");
+
+    let dep = match entry(&index, "calculator::legacy_add") {
+        Entry::Function(symbol) => {
+            symbol.deprecation.as_ref().expect("legacy_add is deprecated")
+        }
+        other => panic!("legacy_add should be a Function, got {other}"),
+    };
+    assert_eq!(dep.since.as_deref(), Some("0.1.0"), "since parsed from AST attr");
+    assert_eq!(
+        dep.note.as_deref(),
+        Some("use add instead"),
+        "note parsed from AST attr"
+    );
+}
+
+/// Sealed-trait detection: a trait with a supertrait in a private module is
+/// sealed; one whose supertrait is public is not.
+///
+/// Assert: `SealedTrait: sealed_marker::Sealed` → `sealed = Some(true)`;
+///   `OpenTrait: BlanketView` (public supertrait) → `sealed = Some(false)`.
+#[test]
+fn sealed_traits_are_detected_from_supertrait_visibility() {
+    let (index, _sources, _dir) = lower("regular", "calculator", "0.1.0");
+
+    let sealed = trait_def(&index, "calculator::SealedTrait");
+    assert_eq!(
+        sealed.inner.sealed,
+        Some(true),
+        "private-module supertrait makes SealedTrait sealed"
+    );
+
+    let open = trait_def(&index, "calculator::OpenTrait");
+    assert_eq!(
+        open.inner.sealed,
+        Some(false),
+        "a public supertrait leaves OpenTrait unsealed"
     );
 }
 
