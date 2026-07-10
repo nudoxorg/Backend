@@ -42,7 +42,7 @@ use runtime::{
 };
 use secrecy::ExposeSecret;
 
-pub use config::{Endpoints, Limits, ServerConfiguration, SourceConfig};
+pub use config::{Endpoints, Limits, Role, ServerConfiguration, SourceConfig};
 pub use error::{ServerError, ServerResult};
 use error::InternalError;
 
@@ -314,15 +314,23 @@ impl<M: EmbeddingModel> Server<M> {
 			})?;
 		tracing::info!(address = %self.config.serving_address, "serving");
 
-		// Supervised background pollers: one queue worker, one outbox consumer per
-		// derived sink, plus the replica-local index sync/watermark loops.
+		// Supervised background pollers, gated by this node's role. The compile
+		// worker runs on forge nodes; the derived-store fan-out consumers and the
+		// replica-local index sync/watermark loops run on gateway nodes. `All`
+		// (the default) runs both; every role still serves the HTTP surface.
+		let role = self.config.role;
 		let mut pollers = tokio::task::JoinSet::new();
-		pollers.spawn(poll::queue_worker(Arc::clone(&self)));
-		for sink in <heart::DerivedStore as strum::IntoEnumIterator>::iter() {
-			pollers.spawn(poll::outbox_consumer(Arc::clone(&self), sink));
+		if role.runs_forge() {
+			pollers.spawn(poll::queue_worker(Arc::clone(&self)));
 		}
-		pollers.spawn(poll::package_index_poller(Arc::clone(&self)));
-		pollers.spawn(poll::text_index_poller(Arc::clone(&self)));
+		if role.runs_gateway() {
+			for sink in <heart::DerivedStore as strum::IntoEnumIterator>::iter() {
+				pollers.spawn(poll::outbox_consumer(Arc::clone(&self), sink));
+			}
+			pollers.spawn(poll::package_index_poller(Arc::clone(&self)));
+			pollers.spawn(poll::text_index_poller(Arc::clone(&self)));
+		}
+		tracing::info!(?role, "background pollers started");
 
 		axum::serve(listener, router)
 			.with_graceful_shutdown(shutdown_signal())

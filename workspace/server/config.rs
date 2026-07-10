@@ -41,6 +41,42 @@ pub struct ServerConfiguration {
 
 	/// Operational limits (timeouts, body sizes, concurrency).
 	pub limits: Limits,
+
+	/// This node's role in a horizontally-scaled deployment (`NUDOX_ROLE`).
+	/// Governs which background loops run; the HTTP surface (health/metrics)
+	/// is always served. Defaults to [`Role::All`] (single-node).
+	#[serde(default)]
+	pub role: Role,
+}
+
+/// A node's role in the daemon fleet. Every node consumes the same postgres
+/// queue and writes the same CAS; a role only selects which background loops
+/// this process runs (DAEMON-PLAN §Phase 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+	/// HTTP ingress + derived-store fan-out consumers + index pollers.
+	/// Serves reads and keeps search stores fresh; does not compile.
+	Gateway,
+	/// The compile worker: drains the indexing queue and produces IR/blobs.
+	/// Does not run the fan-out consumers or index pollers.
+	Forge,
+	/// Everything — the default single-node deployment.
+	#[default]
+	All,
+}
+
+impl Role {
+	/// Whether this role runs the indexing queue compile worker.
+	pub fn runs_forge(self) -> bool {
+		matches!(self, Role::Forge | Role::All)
+	}
+
+	/// Whether this role runs the fan-out consumers + replica-local index
+	/// sync/watermark pollers (the read-serving/materialization loops).
+	pub fn runs_gateway(self) -> bool {
+		matches!(self, Role::Gateway | Role::All)
+	}
 }
 
 /// A named, operator-configured registry origin (self-hosted npm proxy,
@@ -145,6 +181,7 @@ impl Default for ServerConfiguration {
 			overlays: Vec::new(),
 			custom_registries: Vec::new(),
 			limits: Limits::default(),
+			role: Role::default(),
 		}
 	}
 }

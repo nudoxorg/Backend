@@ -2,7 +2,7 @@
 //!
 //! TDD specs for the static, private-facing default configuration.
 
-use server::ServerConfiguration;
+use server::{Role, ServerConfiguration};
 
 /// The default config binds the documented local address.
 ///
@@ -32,6 +32,35 @@ fn default_exposes_terminus_endpoint() {
     );
     // The accessor is the definitive base's endpoint — the single-source path.
     assert_eq!(endpoint, &configuration.definitive.endpoints.terminus);
+}
+
+/// The default role is `All` (single-node runs both compute and fan-out).
+#[test]
+fn default_role_is_all() {
+    let configuration = ServerConfiguration::default();
+    assert_eq!(configuration.role, Role::All);
+    assert!(configuration.role.runs_forge(), "All must run the compile worker");
+    assert!(configuration.role.runs_gateway(), "All must run the fan-out loops");
+}
+
+/// Each role gates exactly the loops it owns.
+#[test]
+fn role_gating_partitions_the_loops() {
+    // Forge runs the compile worker but not the fan-out/index loops.
+    assert!(Role::Forge.runs_forge());
+    assert!(!Role::Forge.runs_gateway());
+    // Gateway runs the fan-out/index loops but not the compile worker.
+    assert!(!Role::Gateway.runs_forge());
+    assert!(Role::Gateway.runs_gateway());
+}
+
+/// Role deserializes from the lowercase wire token (`NUDOX_ROLE=forge`).
+#[test]
+fn role_parses_lowercase_token() {
+    let forge: Role = serde_json::from_str("\"forge\"").expect("forge parses");
+    assert_eq!(forge, Role::Forge);
+    let gateway: Role = serde_json::from_str("\"gateway\"").expect("gateway parses");
+    assert_eq!(gateway, Role::Gateway);
 }
 
 /// The upload timeout is the documented constant.
