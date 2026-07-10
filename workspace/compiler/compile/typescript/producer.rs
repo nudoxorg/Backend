@@ -6,8 +6,8 @@ use heart::Language;
 use sandbox::{Captured, SealedInput, WorkerLang};
 
 use crate::compile::producer::{
-	AuxOutputs, ExecPlan, Producer, ProducerError, ProducerId, ProducerOutput, ThreatTier,
-	decode_index_json,
+	AuxOutputs, ExecPlan, ForgeContext, Producer, ProducerError, ProducerId, ProducerOutput,
+	ThreatTier, decode_index_json,
 };
 
 /// TypeScript package producer (deno_doc via worker pool / in-process).
@@ -28,7 +28,11 @@ impl Producer for TypescriptProducer {
 		ThreatTier::Hostile
 	}
 
-	fn plan(&self, _input: &SealedInput) -> Result<ExecPlan, ProducerError> {
+	fn plan(
+		&self,
+		_ctx: &dyn ForgeContext,
+		_input: &SealedInput,
+	) -> Result<ExecPlan, ProducerError> {
 		Ok(ExecPlan::Library(WorkerLang::Typescript))
 	}
 
@@ -44,7 +48,11 @@ impl Producer for TypescriptProducer {
 		})
 	}
 
-	fn lower_in_process(&self, root: &Path) -> Result<ProducerOutput, ProducerError> {
+	fn lower_in_process(
+		&self,
+		_ctx: &dyn ForgeContext,
+		root: &Path,
+	) -> Result<ProducerOutput, ProducerError> {
 		let package = super::TypescriptPackage {
 			name: self.name.clone(),
 		};

@@ -3,7 +3,7 @@
 //! One dispatch path for all six languages (DAEMON-PLAN §2.3):
 //!
 //! ```text
-//! PackageInput → seal → Producer::produce (plan → cage/worker → decode)
+//! PackageInput → seal → run_producer (cas.get → cage/worker → cas.put)
 //! ```
 
 use heart::{Language, PackageVersion, RegistryOrigin};
@@ -12,79 +12,91 @@ use ir::{
 	pipeline::{Collected, Ir},
 };
 
-use crate::languages::producer::Producer;
+use crate::compile::producer::{self, ForgeContext, Producer, SandboxKey};
 use crate::{
 	error::GenerateError,
-	generate::PackageInput,
+	generate::{PackageInput, parse_cache},
 	languages::{
-		go::GoProducer, java::JavaProducer, nix::NixProducer, producer, python::PythonProducer,
+		go::GoProducer, java::JavaProducer, nix::NixProducer, python::PythonProducer,
 		rust::RustProducer, typescript::TypescriptProducer,
 	},
 };
 
 /// Lower a package's source into the collected IR, dispatching on ecosystem.
-pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
-	let out = run_producer(input)?;
+pub fn collect(ctx: &dyn ForgeContext, input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
+	let out = run_producer(ctx, input)?;
 	Ok(Ir::from_entries(
 		out.index.entries_by_path.into_values().collect(),
 	))
 }
 
 /// Lower a package's source into the indexed API surface (the `ir::Index`).
-pub fn build(input: &PackageInput) -> Result<Index, GenerateError> {
-	Ok(collect(input)?.index().into_index())
+pub fn build(ctx: &dyn ForgeContext, input: &PackageInput) -> Result<Index, GenerateError> {
+	Ok(collect(ctx, input)?.index().into_index())
 }
 
-/// Seal + produce for the package's language — the only surface dispatch.
+/// The per-package [`SandboxKey`] for override resolution.
+fn package_key(input: &PackageInput) -> SandboxKey {
+	SandboxKey::package(
+		input.coordinates.origin.token().into_owned(),
+		input.coordinates.name.original().to_string(),
+		input.coordinates.version.canonical(),
+	)
+}
+
+/// Seal + run the producer for the package's language — the only surface dispatch.
 ///
-/// Scratch lives in [`producer::SealedPackage`] and is removed when this
-/// function returns (RAII).
+/// [`producer::run_producer`] is the sole cache client: the sealed input's job
+/// key drives `ctx.cas().get` (hit → decoded [`ProducerOutput`]) / miss (run,
+/// then `put`). Scratch lives in [`producer::SealedPackage`] (RAII).
 fn run_producer(
+	ctx: &dyn ForgeContext,
 	input: &PackageInput,
 ) -> Result<producer::ProducerOutput, GenerateError> {
+	let source_hash = parse_cache::hash_source_tree(&input.root)
+		.unwrap_or_else(|_| heart::ContentHash::of_bytes(input.root.to_string_lossy().as_bytes()));
+	let dep_lock = parse_cache::hash_dep_lock(&input.root);
+	let package = package_key(input);
+
+	macro_rules! seal_and_run {
+		($p:expr) => {{
+			let p = $p;
+			let sealed = producer::seal_package(
+				ctx.toolchains(),
+				ctx.overrides(),
+				&input.root,
+				p.profile(),
+				Some(&package),
+				source_hash,
+				dep_lock,
+			)?;
+			producer::run_producer(ctx, &p, sealed.input()).map_err(GenerateError::from)
+		}};
+	}
+
 	match input.coordinates.ecosystem() {
 		Language::Rust => {
 			let PackageVersion::Cargo(version) = &input.coordinates.version else {
 				return Err(GenerateError::UnsupportedRust);
 			};
 			let direct_repo = matches!(input.coordinates.origin, RegistryOrigin::Custom { .. });
-			let p = RustProducer {
+			seal_and_run!(RustProducer {
 				name: input.coordinates.name.original().to_string(),
 				version: version.clone(),
 				direct_repo,
-			};
-			let sealed = producer::seal_package(&input.root, p.profile())?;
-			p.produce(sealed.input()).map_err(GenerateError::from)
+			})
 		}
-		Language::Go => {
-			let p = GoProducer;
-			let sealed = producer::seal_package(&input.root, p.profile())?;
-			p.produce(sealed.input()).map_err(GenerateError::from)
-		}
-		Language::Java => {
-			let p = JavaProducer;
-			let sealed = producer::seal_package(&input.root, p.profile())?;
-			p.produce(sealed.input()).map_err(GenerateError::from)
-		}
-		Language::Python => {
-			let p = PythonProducer;
-			let sealed = producer::seal_package(&input.root, p.profile())?;
-			p.produce(sealed.input()).map_err(GenerateError::from)
-		}
+		Language::Go => seal_and_run!(GoProducer),
+		Language::Java => seal_and_run!(JavaProducer),
+		Language::Python => seal_and_run!(PythonProducer),
 		Language::Typescript => {
 			let PackageVersion::Npm(_) = &input.coordinates.version else {
 				return Err(GenerateError::UnsupportedTypescript);
 			};
-			let p = TypescriptProducer {
+			seal_and_run!(TypescriptProducer {
 				name: input.coordinates.name.original().to_string(),
-			};
-			let sealed = producer::seal_package(&input.root, p.profile())?;
-			p.produce(sealed.input()).map_err(GenerateError::from)
+			})
 		}
-		Language::Nix => {
-			let p = NixProducer;
-			let sealed = producer::seal_package(&input.root, p.profile())?;
-			p.produce(sealed.input()).map_err(GenerateError::from)
-		}
+		Language::Nix => seal_and_run!(NixProducer),
 	}
 }

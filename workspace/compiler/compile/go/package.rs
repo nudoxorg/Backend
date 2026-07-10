@@ -113,7 +113,10 @@ fn strip_line_comment(line: &str) -> &str {
 /// The `go` binary is taken from `PATH`. Diagnostics stream to the
 /// oracle's stderr and are surfaced in the error on failure; load errors
 /// that still produced a document are carried in [`oracle::Output::errors`].
-pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
+pub fn run_oracle(
+	ctx: &dyn crate::compile::producer::ForgeContext,
+	module_root: &Path,
+) -> Result<oracle::Output> {
 	let oracle_dir = materialize_oracle()?;
 	let target = module_root
 		.canonicalize()
@@ -123,6 +126,7 @@ pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
 	// (P-fetch materialised them). GOFLAGS=-mod=mod still allows reading the
 	// cache; combined with empty netns this is the docs.rs pattern.
 	let output = isolate::run_isolated(
+		ctx,
 		IsolatedCommand::new("go", ProducerProfile::Go)
 			.arg("run")
 			.arg(".")

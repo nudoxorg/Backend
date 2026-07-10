@@ -6,8 +6,8 @@ use heart::Language;
 use sandbox::{Captured, SealedInput, WorkerLang};
 
 use crate::compile::producer::{
-	AuxOutputs, ExecPlan, Producer, ProducerError, ProducerId, ProducerOutput, ThreatTier,
-	decode_index_json,
+	AuxOutputs, ExecPlan, ForgeContext, Producer, ProducerError, ProducerId, ProducerOutput,
+	ThreatTier, decode_index_json,
 };
 
 /// Python package producer (pyrefly via worker pool / in-process).
@@ -25,7 +25,11 @@ impl Producer for PythonProducer {
 		ThreatTier::Hostile
 	}
 
-	fn plan(&self, _input: &SealedInput) -> Result<ExecPlan, ProducerError> {
+	fn plan(
+		&self,
+		_ctx: &dyn ForgeContext,
+		_input: &SealedInput,
+	) -> Result<ExecPlan, ProducerError> {
 		Ok(ExecPlan::Library(WorkerLang::Python))
 	}
 
@@ -41,7 +45,11 @@ impl Producer for PythonProducer {
 		})
 	}
 
-	fn lower_in_process(&self, root: &Path) -> Result<ProducerOutput, ProducerError> {
+	fn lower_in_process(
+		&self,
+		_ctx: &dyn ForgeContext,
+		root: &Path,
+	) -> Result<ProducerOutput, ProducerError> {
 		let ctx = super::context::PythonContext::new();
 		Ok(ProducerOutput::from_index(ctx.lower_package(root)))
 	}

@@ -9,7 +9,7 @@
 use crate::limits::Limits;
 
 /// Named ceiling sets for each producer class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ProducerProfile {
 	/// rust-analyzer load: cargo metadata + build scripts + proc-macro srv — HIGH.

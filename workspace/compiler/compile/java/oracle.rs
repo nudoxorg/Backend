@@ -50,15 +50,18 @@ const TOOLCHAIN_HINT: &str =
 /// This is the one-call entry point: it materializes + compiles the doclet
 /// (cached), collects the source set, runs `javadoc`, and parses the
 /// emitted document into the [`schema`] mirror.
-pub fn extract(source_roots: &[PathBuf]) -> Result<schema::Extraction, OracleError> {
+pub fn extract(
+	ctx: &dyn crate::compile::producer::ForgeContext,
+	source_roots: &[PathBuf],
+) -> Result<schema::Extraction, OracleError> {
 	let files = collect_sources(source_roots);
 	if files.is_empty() {
 		return Err(OracleError::NoJavaSources {
 			roots: source_roots.to_vec(),
 		});
 	}
-	let classes = compile_oracle()?;
-	run_doclet(&classes, &files)
+	let classes = compile_oracle(ctx)?;
+	run_doclet(ctx, &classes, &files)
 }
 
 /// Every `.java` file under the roots, sorted for determinism. Hidden
@@ -102,7 +105,9 @@ fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Materialize the embedded doclet sources into their content-addressed
 /// directory and compile them (cached via a `.compiled` stamp). Returns the
 /// classes directory for `-docletpath`.
-pub fn compile_oracle() -> Result<PathBuf, OracleError> {
+pub fn compile_oracle(
+	ctx: &dyn crate::compile::producer::ForgeContext,
+) -> Result<PathBuf, OracleError> {
 	let dir = materialize_oracle()?;
 	let classes = dir.join("classes");
 	let stamp = dir.join(".compiled");
@@ -128,7 +133,7 @@ pub fn compile_oracle() -> Result<PathBuf, OracleError> {
 	for (name, _) in ORACLE_SOURCES {
 		cmd = cmd.arg(dir.join(name));
 	}
-	let output = isolate::run_isolated(cmd).map_err(|e| map_java_spawn(e, "javac"))?;
+	let output = isolate::run_isolated(ctx, cmd).map_err(|e| map_java_spawn(e, "javac"))?;
 	if !output.status.success() {
 		return Err(DocletError::DocletCompileFailed {
 			status: output.status.to_string(),
@@ -164,7 +169,11 @@ fn oracle_hash() -> u64 {
 }
 
 /// Run `javadoc -doclet` over the collected files and parse the document.
-fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction, OracleError> {
+fn run_doclet(
+	ctx: &dyn crate::compile::producer::ForgeContext,
+	classes: &Path,
+	files: &[PathBuf],
+) -> Result<schema::Extraction, OracleError> {
 	// Fresh per-run scratch: the argfile and the JSON out-path.
 	let scratch = tempdir_for_run()?;
 	let argfile = scratch.join("sources.args");
@@ -201,7 +210,7 @@ fn run_doclet(classes: &Path, files: &[PathBuf]) -> Result<schema::Extraction, O
 			cmd = cmd.ro(parent);
 		}
 	}
-	let output = isolate::run_isolated(cmd).map_err(|e| map_javadoc_spawn(e))?;
+	let output = isolate::run_isolated(ctx, cmd).map_err(|e| map_javadoc_spawn(e))?;
 
 	if !output.status.success() {
 		return Err(JavadocError::JavadocOracleFailed {

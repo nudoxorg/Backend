@@ -50,12 +50,14 @@ pub mod cancel;
 pub mod cgroup;
 pub mod error;
 pub mod limits;
+pub mod node;
 pub mod observer;
 pub mod overrides;
 pub mod probe;
 pub mod profiles;
 pub mod seal;
 pub mod spec;
+pub mod toolchains;
 pub mod worker;
 
 /// Landlock LSM helpers (Linux only).
@@ -73,11 +75,13 @@ pub use cage::{Cage, CageCaps, CageId, DevPassthrough, LinuxNamespaces, Policy, 
 pub use cancel::CancelToken;
 pub use error::{CageError, KillReason, SandboxError, to_io_error};
 pub use limits::{LimitOverride, Limits, Network};
-pub use observer::{CountingObserver, NullObserver, SandboxObserver};
-pub use overrides::install as install_limit_overrides;
+pub use node::NodeId;
+pub use observer::{CountingObserver, ForgeObserver, NullObserver};
+pub use overrides::{OverrideTable, SandboxKey};
 pub use probe::{HostIsolation, IsolationPolicy, LandlockAbi, require as require_isolation};
 pub use profiles::ProducerProfile;
 pub use seal::{SealedCommand, SealedInput, Sealer};
+pub use toolchains::ToolchainSet;
 pub use spec::{Captured, Env, Mounts, Output, ProcessEnd, Spec};
 pub use worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConfig};
 

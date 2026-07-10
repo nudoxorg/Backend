@@ -8,7 +8,6 @@ use crate::cancel::CancelToken;
 use crate::cgroup::Cgroup;
 use crate::error::{KillReason, SandboxError};
 use crate::limits::Limits;
-use crate::observer;
 use crate::spec::Output;
 
 /// Drive a spawned child to completion under `limits`.
@@ -49,7 +48,6 @@ pub fn supervise(
 		if Instant::now() >= deadline {
 			force_kill(&mut child, cgroup.as_ref());
 			let wall = start.elapsed();
-			observer::global().job_killed(None, KillReason::Wall);
 			return Err(SandboxError::Killed {
 				reason: KillReason::Wall,
 				wall,
@@ -64,7 +62,6 @@ pub fn supervise(
 					Drain::Capped => {
 						force_kill(&mut child, cgroup.as_ref());
 						let wall = start.elapsed();
-						observer::global().job_killed(None, KillReason::OutputCap);
 						return Err(SandboxError::Killed {
 							reason: KillReason::OutputCap,
 							wall,
@@ -85,7 +82,6 @@ pub fn supervise(
 					Drain::Capped => {
 						force_kill(&mut child, cgroup.as_ref());
 						let wall = start.elapsed();
-						observer::global().job_killed(None, KillReason::OutputCap);
 						return Err(SandboxError::Killed {
 							reason: KillReason::OutputCap,
 							wall,
@@ -117,7 +113,6 @@ pub fn supervise(
 							if let Some(peak) = cg.peak_mem() {
 								if peak >= limits.mem_bytes.get().saturating_mul(9) / 10 {
 									let wall = start.elapsed();
-									observer::global().job_killed(None, KillReason::Oom);
 									return Err(SandboxError::Killed {
 										reason: KillReason::Oom,
 										wall,
@@ -128,7 +123,6 @@ pub fn supervise(
 					}
 					if status.signal() == Some(libc::SIGXCPU) {
 						let wall = start.elapsed();
-						observer::global().job_killed(None, KillReason::CpuTime);
 						return Err(SandboxError::Killed {
 							reason: KillReason::CpuTime,
 							wall,
@@ -138,7 +132,6 @@ pub fn supervise(
 
 				let peak_mem = cgroup.as_ref().and_then(|c| c.peak_mem());
 				let wall = start.elapsed();
-				observer::global().job_finished(None, wall, peak_mem);
 				return Ok(Output {
 					stdout: stdout_buf,
 					stderr: stderr_buf,

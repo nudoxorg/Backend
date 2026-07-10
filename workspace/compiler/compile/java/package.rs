@@ -69,9 +69,12 @@ pub struct JavaProject {
 
 /// Discover, extract, and lower the Java project at (or above) `root` into
 /// a single [`Index`] — the producer's public entry point.
-pub fn lower_package(root: &Path) -> Result<Index, JavaError> {
+pub fn lower_package(
+	ctx: &dyn crate::compile::producer::ForgeContext,
+	root: &Path,
+) -> Result<Index, JavaError> {
 	let project = discover_project(root)?;
-	let extraction = oracle::extract(&project.source_roots).map_err(|source| {
+	let extraction = oracle::extract(ctx, &project.source_roots).map_err(|source| {
 		JavaPackageError::OracleExtractFailed { root: project.root.clone(), source }
 	})?;
 	Ok(context::lower_extraction(&extraction))

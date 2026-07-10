@@ -6,7 +6,8 @@ use heart::Language;
 use sandbox::{Captured, SealedInput};
 
 use crate::compile::producer::{
-	AuxOutputs, ExecPlan, Producer, ProducerError, ProducerId, ProducerOutput, ThreatTier,
+	AuxOutputs, ExecPlan, ForgeContext, Producer, ProducerError, ProducerId, ProducerOutput,
+	ThreatTier,
 };
 
 /// Java project producer (vendored javadoc doclet → IR).
@@ -29,7 +30,11 @@ impl Producer for JavaProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(&self, _input: &SealedInput) -> Result<ExecPlan, ProducerError> {
+	fn plan(
+		&self,
+		_ctx: &dyn ForgeContext,
+		_input: &SealedInput,
+	) -> Result<ExecPlan, ProducerError> {
 		Err(ProducerError::adaptive("javadoc multi-step"))
 	}
 
@@ -43,12 +48,20 @@ impl Producer for JavaProducer {
 		))
 	}
 
-	fn produce(&self, input: &SealedInput) -> Result<ProducerOutput, ProducerError> {
-		self.lower_in_process(&input.root)
+	fn produce(
+		&self,
+		ctx: &dyn ForgeContext,
+		input: &SealedInput,
+	) -> Result<ProducerOutput, ProducerError> {
+		self.lower_in_process(ctx, &input.root)
 	}
 
-	fn lower_in_process(&self, root: &Path) -> Result<ProducerOutput, ProducerError> {
-		let index = super::package::lower_package(root).map_err(ProducerError::lower)?;
+	fn lower_in_process(
+		&self,
+		ctx: &dyn ForgeContext,
+		root: &Path,
+	) -> Result<ProducerOutput, ProducerError> {
+		let index = super::package::lower_package(ctx, root).map_err(ProducerError::lower)?;
 		Ok(ProducerOutput {
 			index,
 			aux: AuxOutputs::default(),

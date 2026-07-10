@@ -11,6 +11,8 @@ _LINUX_DEPS = [
 rust_crate(
     name = "sandbox",
     deps = deps([
+        # Vocabulary crate (ContentHash / JobKey) — bottom of the dep DAG, no cycle.
+        member("heart"),
         crate("thiserror"),
         crate("tracing"),
         crate("rlimit"),

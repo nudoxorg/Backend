@@ -1,44 +1,89 @@
-//! Process-wide per-package / per-profile limit overlays (design §13 / P5).
+//! Typed per-profile / per-package limit overlays (DAEMON-PLAN §2.6).
 //!
-//! The server installs a map from config (`limits.sandbox_overrides`);
-//! producers resolve via [`resolve`].
+//! Replaces the process-global `OnceLock<RwLock<HashMap<String, _>>>` with an
+//! owned [`OverrideTable`] keyed by a typed [`SandboxKey`]. The table is built
+//! once from config at `ForgeRuntime::assemble` and passed down — no install,
+//! no global.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
 use crate::limits::{LimitOverride, Limits};
 use crate::profiles::ProducerProfile;
 
-static OVERRIDES: std::sync::OnceLock<RwLock<HashMap<String, LimitOverride>>> =
-	std::sync::OnceLock::new();
-
-fn map() -> &'static RwLock<HashMap<String, LimitOverride>> {
-	OVERRIDES.get_or_init(|| RwLock::new(HashMap::new()))
+/// A typed key into the override table.
+///
+/// The package arm carries an origin/name/version triple (no registry dep at
+/// this layer — see DAEMON-PLAN §8) so per-package threat-tier overrides can be
+/// wired end to end without a `PackageId` type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SandboxKey {
+	/// A producer profile (`rust`, `java`, `go`, `nix`, `static_parser`).
+	Profile(ProducerProfile),
+	/// A specific package by `origin/name@version`.
+	Package {
+		/// Registry origin label (`crates.io`, `npm`, …).
+		origin: String,
+		/// Package name.
+		name: String,
+		/// Package version.
+		version: String,
+	},
 }
 
-/// Replace the process-wide override table (idempotent install from config).
-pub fn install(overrides: HashMap<String, LimitOverride>) {
-	if let Ok(mut guard) = map().write() {
-		*guard = overrides;
-	}
-}
-
-/// Merge `profile` base with optional keys:
-/// 1. exact `package_key` (e.g. `crates.io/serde@1.0.0`)
-/// 2. profile wire name (`rust`, `java`, `go`, `nix`, `static_parser`)
-pub fn resolve(profile: ProducerProfile, package_key: Option<&str>) -> Limits {
-	let base = profile.base_limits();
-	let guard = map().read().unwrap_or_else(|e| e.into_inner());
-	let mut overlay = LimitOverride::none();
-	if let Some(key) = package_key {
-		if let Some(o) = guard.get(key) {
-			overlay = merge(overlay, *o);
+impl SandboxKey {
+	/// Wire key for a package (`crates.io/serde@1.0.0`).
+	pub fn package(origin: impl Into<String>, name: impl Into<String>, version: impl Into<String>) -> Self {
+		Self::Package {
+			origin: origin.into(),
+			name: name.into(),
+			version: version.into(),
 		}
 	}
-	if let Some(o) = guard.get(profile.wire_name()) {
-		overlay = merge(overlay, *o);
+
+	/// The stringly wire form used as the config-map key.
+	fn wire(&self) -> String {
+		match self {
+			Self::Profile(p) => p.wire_name().to_string(),
+			Self::Package { origin, name, version } => format!("{origin}/{name}@{version}"),
+		}
 	}
-	overlay.apply(base)
+}
+
+/// Owned per-key limit overlays, resolved once from config.
+#[derive(Debug, Clone, Default)]
+pub struct OverrideTable {
+	map: HashMap<String, LimitOverride>,
+}
+
+impl OverrideTable {
+	/// An empty table (tests / no config).
+	pub fn empty() -> Self {
+		Self { map: HashMap::new() }
+	}
+
+	/// Build from a config map (profile wire-names or `origin/name@version` keys).
+	pub fn from_config(map: HashMap<String, LimitOverride>) -> Self {
+		Self { map }
+	}
+
+	/// Resolve limits for a profile, applying (package overlay then) profile
+	/// overlay on top of the profile base.
+	///
+	/// `package` names a specific package whose per-package overlay takes
+	/// precedence over the profile-wide one.
+	pub fn resolve(&self, profile: ProducerProfile, package: Option<&SandboxKey>) -> Limits {
+		let base = profile.base_limits();
+		let mut overlay = LimitOverride::none();
+		if let Some(key) = package {
+			if let Some(o) = self.map.get(&key.wire()) {
+				overlay = merge(overlay, *o);
+			}
+		}
+		if let Some(o) = self.map.get(profile.wire_name()) {
+			overlay = merge(overlay, *o);
+		}
+		overlay.apply(base)
+	}
 }
 
 fn merge(mut a: LimitOverride, b: LimitOverride) -> LimitOverride {
@@ -70,5 +115,26 @@ fn merge(mut a: LimitOverride, b: LimitOverride) -> LimitOverride {
 	a
 }
 
-/// Shared reference type for observers that need the table.
-pub type OverrideTable = Arc<HashMap<String, LimitOverride>>;
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn empty_table_returns_profile_base() {
+		let t = OverrideTable::empty();
+		assert_eq!(t.resolve(ProducerProfile::Rust, None), ProducerProfile::Rust.base_limits());
+	}
+
+	#[test]
+	fn package_overlay_beats_profile() {
+		let mut map = HashMap::new();
+		map.insert(
+			"crates.io/serde@1.0.0".to_string(),
+			LimitOverride { pids: std::num::NonZeroU32::new(7), ..LimitOverride::none() },
+		);
+		let t = OverrideTable::from_config(map);
+		let key = SandboxKey::package("crates.io", "serde", "1.0.0");
+		let limits = t.resolve(ProducerProfile::Rust, Some(&key));
+		assert_eq!(limits.pids.get(), 7);
+	}
+}

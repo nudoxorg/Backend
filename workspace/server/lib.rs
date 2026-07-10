@@ -17,6 +17,7 @@
 pub mod config;
 pub mod coordination;
 pub mod error;
+pub mod forge;
 pub mod http;
 mod poll;
 pub mod save;
@@ -105,6 +106,10 @@ pub struct Server<M: EmbeddingModel> {
 
 	/// Per-session exploration graphs (join-semilattice merge).
 	sessions: MemorySessionStore,
+
+	/// The owned compile-plane runtime (cage + CAS + toolchains + overrides +
+	/// observer), replacing every former compile-plane process global.
+	forge: Arc<crate::forge::ForgeRuntime>,
 }
 
 impl<M: EmbeddingModel> Server<M> {
@@ -138,6 +143,25 @@ impl<M: EmbeddingModel> Server<M> {
 			config.definitive.data_directory().join("sessions"),
 		));
 
+		// Assemble the compile-plane runtime once. Policy is resolved from the
+		// isolation gate; a `Production` policy refuses to build without a
+		// production-grade cage (Cold→Ready typestate).
+		let policy = sandbox::Policy::from_env();
+		let forge_cfg = crate::forge::ForgeConfig {
+			node: None,
+			overrides: config.limits.sandbox_overrides.clone(),
+			cas_root: Some(config.definitive.data_directory().join("cas")),
+			observer: std::sync::Arc::new(sandbox::NullObserver),
+		};
+		let forge = std::sync::Arc::new(
+			crate::forge::ForgeRuntime::assemble(policy, forge_cfg, tokio::runtime::Handle::current())
+				.map_err(|e| {
+					ServerError::Internal(InternalError::Other {
+						message: format!("forge assembly failed: {e}"),
+					})
+				})?,
+		);
+
 		Ok(Self {
 			config,
 			federation,
@@ -145,6 +169,7 @@ impl<M: EmbeddingModel> Server<M> {
 			embedder,
 			embedding_cache,
 			sessions,
+			forge,
 		})
 	}
 
@@ -251,6 +276,9 @@ impl<M: EmbeddingModel> Server<M> {
 
 	/// The per-session exploration graphs.
 	pub fn sessions(&self) -> &MemorySessionStore { &self.sessions }
+
+	/// The owned compile-plane runtime (cage + CAS + toolchains + overrides).
+	pub fn forge(&self) -> &Arc<crate::forge::ForgeRuntime> { &self.forge }
 
 	/// The single choke point every read/write flow authorizes through.
 	///

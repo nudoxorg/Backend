@@ -8,16 +8,15 @@ use sandbox::{Captured, SealedInput};
 use semver::Version;
 
 use crate::compile::producer::{
-	AuxOutputs, ExecPlan, Producer, ProducerError, ProducerId, ProducerOutput, ThreatTier,
+	AuxOutputs, ExecPlan, ForgeContext, Producer, ProducerError, ProducerId, ProducerOutput,
+	ThreatTier,
 };
 
-/// Rust crate/workspace producer (rust-analyzer HIR walk → IR by default;
-/// `cargo rustdoc --output-format json` via `NUDOX_RUST_PRODUCER=rustdoc`).
+/// Rust crate/workspace producer (in-process rust-analyzer HIR walk → IR).
 ///
 /// Planning is adaptive: the workspace is loaded once and lowered in-process,
 /// so [`produce`](Producer::produce) runs the in-process path directly.
-/// `plan`/`decode` return explicit errors (not hollow empty commands);
-/// ForgeRuntime (Phase 4) will stage sequential sealed commands.
+/// `plan`/`decode` return explicit errors (not hollow empty commands).
 #[derive(Debug, Clone)]
 pub struct RustProducer {
 	/// Root package name as cargo metadata reports it.
@@ -39,7 +38,11 @@ impl Producer for RustProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(&self, _input: &SealedInput) -> Result<ExecPlan, ProducerError> {
+	fn plan(
+		&self,
+		_ctx: &dyn ForgeContext,
+		_input: &SealedInput,
+	) -> Result<ExecPlan, ProducerError> {
 		Err(ProducerError::adaptive("rustdoc multi-crate"))
 	}
 
@@ -53,11 +56,19 @@ impl Producer for RustProducer {
 		))
 	}
 
-	fn produce(&self, input: &SealedInput) -> Result<ProducerOutput, ProducerError> {
-		self.lower_in_process(&input.root)
+	fn produce(
+		&self,
+		ctx: &dyn ForgeContext,
+		input: &SealedInput,
+	) -> Result<ProducerOutput, ProducerError> {
+		self.lower_in_process(ctx, &input.root)
 	}
 
-	fn lower_in_process(&self, root: &Path) -> Result<ProducerOutput, ProducerError> {
+	fn lower_in_process(
+		&self,
+		_ctx: &dyn ForgeContext,
+		root: &Path,
+	) -> Result<ProducerOutput, ProducerError> {
 		// Route through the module entry point so the default rust-analyzer
 		// producer is used (rustdoc remains a fallback via NUDOX_RUST_PRODUCER).
 		let (index, source_map) =

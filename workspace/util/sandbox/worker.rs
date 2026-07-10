@@ -22,7 +22,6 @@ use crate::Backend;
 use crate::cancel::CancelToken;
 use crate::error::{CageError, KillReason, SandboxError};
 use crate::limits::Limits;
-use crate::observer;
 use crate::profiles::ProducerProfile;
 use crate::spec::{Env, Mounts, Spec};
 
@@ -128,12 +127,13 @@ pub struct WorkerPoolConfig {
 impl WorkerPoolConfig {
 	/// Defaults for static parsers (design §7.5).
 	///
-	/// Limits come from the process-wide override table when installed.
+	/// Profile base limits; the `ForgeRuntime`'s `OverrideTable` can override at
+	/// the `run_producer` boundary.
 	pub fn static_parser(worker_bin: impl Into<PathBuf>) -> Self {
 		Self {
 			worker_bin: worker_bin.into(),
 			size: 2,
-			limits: crate::overrides::resolve(ProducerProfile::StaticParser, None),
+			limits: ProducerProfile::StaticParser.base_limits(),
 			read_only: Vec::new(),
 			memory_watermark: 768 * 1024 * 1024,
 		}
@@ -141,12 +141,13 @@ impl WorkerPoolConfig {
 
 	/// Defaults for snix workers.
 	///
-	/// Limits come from the process-wide override table when installed.
+	/// Profile base limits; the `ForgeRuntime`'s `OverrideTable` can override at
+	/// the `run_producer` boundary.
 	pub fn nix(worker_bin: impl Into<PathBuf>) -> Self {
 		Self {
 			worker_bin: worker_bin.into(),
 			size: 2,
-			limits: crate::overrides::resolve(ProducerProfile::Nix, None),
+			limits: ProducerProfile::Nix.base_limits(),
 			read_only: Vec::new(),
 			memory_watermark: 768 * 1024 * 1024,
 		}
@@ -318,7 +319,7 @@ impl WorkerPool {
 						call_worker(slot, &JobRequest::Ping, Duration::from_secs(5), cancel)
 					{
 						if rss > self.config.memory_watermark {
-							observer::global().worker_restart("rss_watermark");
+							tracing::debug!("worker restart: rss_watermark");
 							slot.kill_tree();
 							*slot = spawn_worker(&self.config)?;
 						}
@@ -333,7 +334,7 @@ impl WorkerPool {
 					*slot = spawn_worker(&self.config)?;
 					return Err(e);
 				}
-				observer::global().worker_restart("dead");
+				tracing::debug!("worker restart: dead");
 				slot.kill_tree();
 				*slot = spawn_worker(&self.config)?;
 				call_worker(slot, req, wall, cancel).map_err(|_| e)

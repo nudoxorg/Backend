@@ -110,7 +110,10 @@ impl<M: EmbeddingModel> Indexer<M> {
 				.source_files()
 				.map(|(path, bytes)| (path.clone(), bytes.clone()))
 				.collect();
-			tokio::task::spawn_blocking(move || compile_package(coordinates, toolchain, files))
+			let forge = Arc::clone(self.server.forge());
+			tokio::task::spawn_blocking(move || {
+				compile_package(&forge, coordinates, toolchain, files)
+			})
 				.await
 				.map_err(|join| {
 					ServerError::Internal(InternalError::Other {
@@ -465,6 +468,7 @@ struct CompileOutput {
 /// [`compiler::generate`], and produce the IR + reference sections the blob
 /// layer stores. Pure sync work — call from `spawn_blocking`.
 fn compile_package(
+	forge: &crate::forge::ForgeRuntime,
 	coordinates: PackageCoordinates,
 	toolchain: heart::Toolchain,
 	files: Vec<(smol_str::SmolStr, bytes::Bytes)>,
@@ -496,7 +500,7 @@ fn compile_package(
 		toolchain,
 		root,
 	};
-	let generated = compiler::generate::generate(&input)?;
+	let generated = compiler::generate::generate_with(forge, &input)?;
 
 	let ir_bytes = serde_json::to_vec(&generated.surface)
 		.map(bytes::Bytes::from)

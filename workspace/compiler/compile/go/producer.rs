@@ -7,7 +7,8 @@ use sandbox::{Captured, ProducerProfile, SealedInput};
 
 use crate::compile::isolate::{self, IsolatedCommand};
 use crate::compile::producer::{
-	AuxOutputs, ExecPlan, Producer, ProducerError, ProducerId, ProducerOutput, ThreatTier,
+	AuxOutputs, ExecPlan, ForgeContext, Producer, ProducerError, ProducerId, ProducerOutput,
+	ThreatTier,
 };
 
 use super::context::GoContext;
@@ -29,7 +30,11 @@ impl Producer for GoProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(&self, input: &SealedInput) -> Result<ExecPlan, ProducerError> {
+	fn plan(
+		&self,
+		ctx: &dyn ForgeContext,
+		input: &SealedInput,
+	) -> Result<ExecPlan, ProducerError> {
 		let module = package::discover_module(&input.root).map_err(ProducerError::plan)?;
 		let oracle_dir = package::materialize_oracle().map_err(ProducerError::plan)?;
 		let target = module.root.canonicalize().map_err(ProducerError::plan)?;
@@ -48,7 +53,7 @@ impl Producer for GoProducer {
 			.rw(input.budget.fs.scratch_path())
 			.rw(std::env::temp_dir());
 
-		Ok(ExecPlan::Commands(vec![isolate::seal(cmd)]))
+		Ok(ExecPlan::Commands(vec![isolate::seal(ctx, cmd)]))
 	}
 
 	fn decode(
@@ -71,8 +76,12 @@ impl Producer for GoProducer {
 
 	/// Keep the historical one-shot path available for call sites / tests that
 	/// don't go through plan→execute (still real lowering, not a stub).
-	fn lower_in_process(&self, root: &Path) -> Result<ProducerOutput, ProducerError> {
-		let index = super::lower_package(root).map_err(ProducerError::lower)?;
+	fn lower_in_process(
+		&self,
+		ctx: &dyn ForgeContext,
+		root: &Path,
+	) -> Result<ProducerOutput, ProducerError> {
+		let index = super::lower_package(ctx, root).map_err(ProducerError::lower)?;
 		Ok(ProducerOutput::from_index(index))
 	}
 }

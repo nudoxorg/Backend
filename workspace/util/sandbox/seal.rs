@@ -8,16 +8,21 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use heart::JobKey;
+
 use crate::budget::{CapabilityBudget, FsGrant, NetGrant};
 use crate::limits::{Limits, Network};
 use crate::spec::{Env, Mounts, Spec};
 
 /// Hash-pinned inputs already on disk, with a fully resolved budget.
 ///
-/// `JobKey` / CAS wiring arrives in Phase 1 (parallel PR); this phase carries
-/// the tree root + budget only so cage code has a stable sealed shape.
+/// The [`key`](Self::key) is the content-addressed job identity computed from
+/// `ToolchainSet::digest()` + source / lock hashes; `run_producer` uses it as
+/// the CAS key.
 #[derive(Debug, Clone)]
 pub struct SealedInput {
+	/// Content-addressed job identity (CAS key).
+	pub key: JobKey,
 	/// Package / tree root (already local, hash-pinned by the caller).
 	pub root: PathBuf,
 	/// Resolved capability budget — no re-resolution downstream.
@@ -25,12 +30,26 @@ pub struct SealedInput {
 }
 
 impl SealedInput {
-	/// Construct a sealed input (caller has already pinned `root`).
-	pub fn new(root: impl Into<PathBuf>, budget: CapabilityBudget) -> Self {
+	/// Construct a sealed input with an explicit job key.
+	pub fn new(key: JobKey, root: impl Into<PathBuf>, budget: CapabilityBudget) -> Self {
 		Self {
+			key,
 			root: root.into(),
 			budget,
 		}
+	}
+
+	/// Construct with a placeholder key derived from the root path (dev / tests
+	/// that do not go through the CAS). Prefer [`Self::new`] with a real key.
+	pub fn unkeyed(root: impl Into<PathBuf>, budget: CapabilityBudget) -> Self {
+		let root = root.into();
+		let key = JobKey::derive(
+			b"unkeyed",
+			b"",
+			root.as_os_str().as_encoded_bytes(),
+			b"",
+		);
+		Self { key, root, budget }
 	}
 }
 

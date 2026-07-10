@@ -14,10 +14,15 @@
 //! from `plan`/`decode` so introspection never sees a hollow empty command list.
 
 mod oracle;
+pub mod runtime;
 mod scratch;
 mod wire;
 
 pub use oracle::{OraclePath, materialize as materialize_oracle, oracle_hash};
+pub use runtime::{
+	ForgeContext, LocalForgeContext, cache_get_or_build, execute_plan, run_producer,
+};
+pub use sandbox::SandboxKey;
 pub use scratch::Scratch;
 pub use wire::{
 	FsPathParent, PathParent, apply_members, apply_members_to_index, members_by_parent,
@@ -29,16 +34,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use heart::Language;
+use heart::{JobKey, Language};
 use ir::entry::Index;
 use sandbox::{
-	Captured, Env, Mounts, NetGrant, ProcessEnd, ProducerProfile, SealedCommand, SealedInput,
-	Sealer, WorkerLang,
+	CancelToken, Captured, Env, Mounts, NetGrant, ProcessEnd, ProducerProfile, SealedCommand,
+	SealedInput, Sealer, ToolchainSet, WorkerLang,
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::compile::isolate::{
-	self, IsolatedFailure, IsolatedFailureKind, ToolchainPaths, package_tree_binds,
+	IsolatedFailure, IsolatedFailureKind, package_tree_binds,
 };
 
 // ─── Identity & policy ───────────────────────────────────────────────────────
@@ -79,14 +85,14 @@ pub enum ExecPlan {
 }
 
 /// Typed side-channel outputs (rust source map, …).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AuxOutputs {
 	/// Absolute path → source text, when a producer captures it (Rust).
 	pub source_map: Option<HashMap<String, String>>,
 }
 
 /// IR plus optional aux data from one producer run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProducerOutput {
 	/// Lowered API surface.
 	pub index: Index,
@@ -198,7 +204,14 @@ pub trait Producer: Send + Sync {
 	///
 	/// Adaptive multi-step producers return [`ProducerError::Plan`] here and
 	/// own orchestration in [`Self::produce`].
-	fn plan(&self, input: &SealedInput) -> Result<ExecPlan, ProducerError>;
+	///
+	/// `ctx` is available for sealing external-command plans against the injected
+	/// toolchains / overrides.
+	fn plan(
+		&self,
+		ctx: &dyn ForgeContext,
+		input: &SealedInput,
+	) -> Result<ExecPlan, ProducerError>;
 
 	/// Decode cage / worker captures into IR.
 	///
@@ -212,18 +225,28 @@ pub trait Producer: Send + Sync {
 
 	/// Dev-only in-process lower for [`ExecPlan::Library`] when no worker is up.
 	///
-	/// Production policy never reaches here (`require_worker` → error).
-	fn lower_in_process(&self, _root: &Path) -> Result<ProducerOutput, ProducerError> {
+	/// Production policy never reaches here (`require_worker` → error). Command
+	/// producers (Go/Java one-shot path) run their external toolchain through
+	/// `ctx.cage()`.
+	fn lower_in_process(
+		&self,
+		_ctx: &dyn ForgeContext,
+		_root: &Path,
+	) -> Result<ProducerOutput, ProducerError> {
 		Err(ProducerError::WorkerRequired(
 			"no in-process fallback for this producer".into(),
 		))
 	}
 
-	/// Full produce: plan → execute → decode.
+	/// Full produce: plan → execute → decode, under the injected context.
 	///
 	/// Override when the plan is adaptive (Rust multi-crate metadata → N rustdocs).
-	fn produce(&self, input: &SealedInput) -> Result<ProducerOutput, ProducerError> {
-		execute(self, input)
+	fn produce(
+		&self,
+		ctx: &dyn ForgeContext,
+		input: &SealedInput,
+	) -> Result<ProducerOutput, ProducerError> {
+		execute(ctx, self, input)
 	}
 }
 
@@ -250,30 +273,35 @@ impl SealedPackage {
 	}
 }
 
-/// Seal a package root under a language profile + toolchains.
+/// Producer version domain-separator for the job key (bump on IR-shape change).
+pub const PRODUCER_VERSION: &str = "nudox-producer/2";
+
+/// Seal a package root under a language profile + injected toolchains/overrides.
 ///
 /// Scratch is a unique temp dir owned by the returned [`SealedPackage`] (RAII).
+/// The job key is `H(producer_version ‖ toolchain.digest ‖ source ‖ lock)`, so
+/// re-indexing an unchanged package is a CAS hit under `run_producer`.
+///
+/// This is the sealer boundary: it reads no policy env — `PATH`/locale/toolchain
+/// discovery are the injected [`ToolchainSet`]'s job (done once at assemble).
 pub fn seal_package(
+	toolchains: &ToolchainSet,
+	overrides: &sandbox::OverrideTable,
 	root: &Path,
 	profile: ProducerProfile,
+	package: Option<&SandboxKey>,
+	source_hash: heart::ContentHash,
+	dep_lock_hash: heart::ContentHash,
 ) -> Result<SealedPackage, ProducerError> {
 	let scratch = Scratch::temp("producer")?;
 	let scratch_root = scratch.path().to_path_buf();
 
 	let sealer = Sealer::new();
-	let toolchains = ToolchainPaths::from_env();
 
-	let mut env = Env::empty().set(
-		"PATH",
-		std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
-	);
-	if let Ok(v) = std::env::var("LANG") {
-		env = env.set("LANG", v);
-	}
-	if let Ok(v) = std::env::var("LC_ALL") {
-		env = env.set("LC_ALL", v);
-	}
-	env = apply_toolchain_env(env, &toolchains);
+	// A minimal, hermetic env: a fixed PATH (the cage sets its own default too)
+	// plus the injected toolchain bindings. No ambient host env is read here.
+	let mut env = Env::empty().set("PATH", "/usr/bin:/bin:/nix/var/nix/profiles/default/bin");
+	env = toolchains.apply_env(env);
 	// Defense-in-depth: strip secret-shaped keys if any bulk-copy ever lands.
 	env = project_hermetic_env(env);
 
@@ -281,7 +309,7 @@ pub fn seal_package(
 	for p in package_tree_binds(root) {
 		mounts = mounts.ro(p);
 	}
-	for p in toolchain_ro_binds(&toolchains) {
+	for p in toolchains.ro_binds() {
 		mounts = mounts.ro(p);
 	}
 	if Path::new("/nix/store").is_dir() {
@@ -289,10 +317,17 @@ pub fn seal_package(
 	}
 	mounts = mounts.rw(&scratch_root);
 
-	let limits = sandbox::overrides::resolve(profile, None);
+	let limits = overrides.resolve(profile, package);
 	let budget = sealer.budget_from_mounts(mounts, scratch_root, NetGrant::Off, env, limits);
+
+	let key = JobKey::derive(
+		PRODUCER_VERSION.as_bytes(),
+		toolchains.digest().as_bytes(),
+		source_hash.as_bytes(),
+		dep_lock_hash.as_bytes(),
+	);
 	Ok(SealedPackage {
-		input: SealedInput::new(root, budget),
+		input: SealedInput::new(key, root, budget),
 		_scratch: scratch,
 	})
 }
@@ -334,63 +369,50 @@ pub fn is_secret_env_key(key: &str) -> bool {
 	})
 }
 
-fn apply_toolchain_env(mut env: Env, t: &ToolchainPaths) -> Env {
-	if let Some(p) = &t.rustup_home {
-		env = env.set("RUSTUP_HOME", p);
-	}
-	if let Some(p) = &t.cargo_home {
-		env = env.set("CARGO_HOME", p);
-	}
-	if let Some(p) = &t.java_home {
-		env = env.set("JAVA_HOME", p);
-	}
-	if let Some(p) = &t.go_root {
-		env = env.set("GOROOT", p);
-	}
-	if let Some(p) = &t.go_path {
-		env = env.set("GOPATH", p);
-	}
-	env
-}
-
-fn toolchain_ro_binds(t: &ToolchainPaths) -> Vec<PathBuf> {
-	[&t.rustup_home, &t.cargo_home, &t.java_home, &t.go_root]
-		.into_iter()
-		.filter_map(|p| p.clone())
-		.filter(|p| p.exists())
-		.collect()
-}
-
-/// Plan → run → decode for any producer.
+/// Plan → run → decode for any producer, under the injected context.
 pub fn execute<P: Producer + ?Sized>(
+	ctx: &dyn ForgeContext,
 	p: &P,
 	input: &SealedInput,
 ) -> Result<ProducerOutput, ProducerError> {
-	match p.plan(input)? {
-		ExecPlan::Library(lang) => execute_library(p, input, lang),
-		ExecPlan::Commands(cmds) => execute_commands(p, input, cmds),
+	match p.plan(ctx, input)? {
+		ExecPlan::Library(lang) => execute_library(ctx, p, input, lang),
+		ExecPlan::Commands(cmds) => execute_commands(ctx, p, input, cmds),
 	}
 }
 
 fn execute_library<P: Producer + ?Sized>(
+	ctx: &dyn ForgeContext,
 	p: &P,
 	input: &SealedInput,
 	lang: WorkerLang,
 ) -> Result<ProducerOutput, ProducerError> {
-	match isolate::try_worker_lower(lang, &input.root) {
-		Some(Ok(body)) => {
+	match ctx.worker_pool(lang) {
+		Some(pool) => {
+			let body = pool.lower(lang, &input.root).map_err(|e| {
+				ProducerError::Isolated(IsolatedFailure {
+					command: format!("producer-worker {}", lang.as_str()),
+					kind: IsolatedFailureKind::Sandbox(e.to_string()),
+					stdout: None,
+					stderr: None,
+				})
+			})?;
 			let captured = captured_from_body(body);
 			p.decode(input, captured)
 		}
-		Some(Err(e)) => Err(ProducerError::from(e)),
+		None if ctx.require_worker() => Err(ProducerError::WorkerRequired(format!(
+			"producer-worker {} unavailable and worker required",
+			lang.as_str()
+		))),
 		None => {
-			// Dev fallback only — production `require_worker` already yielded Some(Err).
-			p.lower_in_process(&input.root)
+			// Dev fallback only — production `require_worker` returns above.
+			p.lower_in_process(ctx, &input.root)
 		}
 	}
 }
 
 fn execute_commands<P: Producer + ?Sized>(
+	ctx: &dyn ForgeContext,
 	p: &P,
 	input: &SealedInput,
 	cmds: Vec<SealedCommand>,
@@ -401,7 +423,7 @@ fn execute_commands<P: Producer + ?Sized>(
 	let mut last = captured_from_body(String::new());
 	for cmd in cmds {
 		let label = cmd.command_display();
-		last = run_sealed_command(cmd, &label)?;
+		last = run_sealed_command(ctx, cmd, &label)?;
 		if !last.success() {
 			return Err(ProducerError::Isolated(IsolatedFailure {
 				command: label,
@@ -419,33 +441,33 @@ fn execute_commands<P: Producer + ?Sized>(
 	p.decode(input, last)
 }
 
-fn run_sealed_command(cmd: SealedCommand, label: &str) -> Result<Captured, ProducerError> {
-	// Phase 3: seal → Spec → process-wide Backend (Cage::run + CancelToken is Phase 4).
-	let spec = cmd.into_spec();
-	match sandbox::run(spec) {
+/// Run one sealed command through the injected cage, honoring the never token.
+fn run_sealed_command(
+	ctx: &dyn ForgeContext,
+	cmd: SealedCommand,
+	label: &str,
+) -> Result<Captured, ProducerError> {
+	match ctx.cage().run(cmd, &CancelToken::never()) {
 		Ok(out) => Ok(out),
-		Err(sandbox::SandboxError::Killed { reason, .. }) => {
-			Err(ProducerError::Isolated(IsolatedFailure {
-				command: label.to_string(),
-				kind: IsolatedFailureKind::Resource(reason),
-				stdout: None,
-				stderr: None,
-			}))
+		Err(e) => Err(ProducerError::Isolated(cage_error_to_isolated(e, label))),
+	}
+}
+
+/// Map a [`sandbox::CageError`] into the displayable isolated failure.
+fn cage_error_to_isolated(e: sandbox::CageError, label: &str) -> IsolatedFailure {
+	use sandbox::CageError;
+	let kind = match e {
+		CageError::Killed { reason, .. } => IsolatedFailureKind::Resource(reason),
+		CageError::ToolchainMissing { program } | CageError::HelperMissing { program } => {
+			IsolatedFailureKind::ToolchainMissing(program)
 		}
-		Err(sandbox::SandboxError::ToolchainMissing { program }) => {
-			Err(ProducerError::Isolated(IsolatedFailure {
-				command: label.to_string(),
-				kind: IsolatedFailureKind::ToolchainMissing(program),
-				stdout: None,
-				stderr: None,
-			}))
-		}
-		Err(e) => Err(ProducerError::Isolated(IsolatedFailure {
-			command: label.to_string(),
-			kind: IsolatedFailureKind::Sandbox(e.to_string()),
-			stdout: None,
-			stderr: None,
-		})),
+		other => IsolatedFailureKind::Sandbox(other.to_string()),
+	};
+	IsolatedFailure {
+		command: label.to_string(),
+		kind,
+		stdout: None,
+		stderr: None,
 	}
 }
 

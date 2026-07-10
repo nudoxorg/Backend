@@ -55,9 +55,9 @@ impl GoContext {
 	/// Load diagnostics that still produced a document are carried in
 	/// [`oracle::Output::errors`] and surfaced as warnings; they do not
 	/// fail the build (the oracle extracts best-effort).
-	pub fn load(start: &Path) -> Result<Self> {
+	pub fn load(ctx: &dyn crate::compile::producer::ForgeContext, start: &Path) -> Result<Self> {
 		let module = package::discover_module(start)?;
-		let output = package::run_oracle(&module.root)
+		let output = package::run_oracle(ctx, &module.root)
 			.map_err(|source| GoError::RunOracle {
 				root:   module.root.clone(),
 				source: Box::new(source),
@@ -121,8 +121,11 @@ impl GoContext {
 
 /// Discover, extract, and lower the Go module rooted at (or above)
 /// `root` in one call — the producer's one-shot entry point.
-pub fn lower_package(root: &Path) -> Result<Index> {
-	Ok(GoContext::load(root)?.lower_package())
+pub fn lower_package(
+	ctx: &dyn crate::compile::producer::ForgeContext,
+	root: &Path,
+) -> Result<Index> {
+	Ok(GoContext::load(ctx, root)?.lower_package())
 }
 
 /// The module key of `import_path`'s nearest discovered proper ancestor

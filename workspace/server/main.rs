@@ -25,28 +25,10 @@ async fn main() -> anyhow::Result<()> {
 
 	let config = ServerConfiguration::resolve()?;
 
-	// Isolation boot gate (design §5 / P5): refuse production when the host
-	// cannot provide a production-grade cage. Dev stays best-effort.
-	match sandbox::boot_check() {
-		Ok(host) => {
-			tracing::info!(
-				backend = host.backend,
-				production_grade = host.capabilities.production_grade,
-				bwrap = host.bwrap,
-				cgroup = host.cgroup,
-				seccomp = host.seccomp,
-				"sandbox host isolation probed"
-			);
-		}
-		Err(e) => {
-			tracing::error!(error = %e, "sandbox isolation requirement not met");
-			return Err(anyhow::anyhow!(e));
-		}
-	}
-	// Per-package / per-profile sandbox ceilings from config (design §13).
-	sandbox::install_limit_overrides(config.limits.sandbox_overrides.clone());
-	// Warm interpreter worker pools so the first package doesn't pay spawn cost.
-	compiler::languages::isolate::warm_workers();
+	// The isolation boot gate, per-profile ceilings, and worker warmup all live
+	// inside `ForgeRuntime::assemble` now (built by `Server::assemble`): the cage
+	// is selected and verified there, overrides come from config, and the worker
+	// pools are warmed as the runtime is constructed. No process globals.
 
 	// Access control for hosted deployments happens at the fronting proxy (see
 	// `heart::access`); in-process, everyone authenticated to reach us may act.
