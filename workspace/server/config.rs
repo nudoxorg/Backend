@@ -159,6 +159,26 @@ pub struct Limits {
 	#[serde(default = "defaults::poll_interval")]
 	pub poll_interval: std::time::Duration,
 
+	/// How long a freshly-claimed job's lease lasts before the reclaimer may
+	/// return it to the runnable set. A live worker beats a heartbeat every
+	/// `job_lease / 3` (see [`crate::coordination::indexing`]) so it never lapses,
+	/// letting this be *short* (~2 min) — a crashed node's job is then reclaimed
+	/// in minutes, not the old 15. Additive: absent in config → the 2-min default.
+	#[serde(default = "defaults::job_lease")]
+	pub job_lease: std::time::Duration,
+
+	/// The end-to-end hard deadline for one indexing job. Bounds a hung producer;
+	/// must comfortably exceed a normal compile but stay under an operator's
+	/// patience. Independent of `job_lease` now that the lease is heartbeat-kept.
+	#[serde(default = "defaults::job_deadline")]
+	pub job_deadline: std::time::Duration,
+
+	/// The bound on how long graceful shutdown waits for in-flight jobs to finish
+	/// after new dequeues stop, before the pollers are aborted. Keeps a stuck job
+	/// from wedging shutdown forever while still letting a nearly-done one commit.
+	#[serde(default = "defaults::drain_deadline")]
+	pub drain_deadline: std::time::Duration,
+
 	/// Sandbox ceilings: profile name → sparse overlay (design §13 / P5).
 	///
 	/// Keys are lowercase profile names (`rust`, `java`, `go`, `nix`,
@@ -269,6 +289,9 @@ impl Default for Limits {
 			max_request_bytes: 256 * 1024 * 1024,
 			max_inflight_jobs: 16,
 			poll_interval: defaults::poll_interval(),
+			job_lease: defaults::job_lease(),
+			job_deadline: defaults::job_deadline(),
+			drain_deadline: defaults::drain_deadline(),
 			sandbox_overrides: std::collections::HashMap::new(),
 		}
 	}
@@ -365,6 +388,12 @@ mod defaults {
 	pub(super) fn qdrant_collection() -> SmolStr { SmolStr::new_static("symbols") }
 	pub(super) fn embeddings() -> Url { super::parse_static("http://127.0.0.1:11434/v1/embeddings") }
 	pub(super) fn poll_interval() -> std::time::Duration { std::time::Duration::from_secs(2) }
+	/// Shortened, heartbeat-kept lease (DAEMON-PLAN §2.5: "~2 min").
+	pub(super) fn job_lease() -> std::time::Duration { std::time::Duration::from_secs(120) }
+	/// End-to-end job deadline (was the module const `JOB_DEADLINE`).
+	pub(super) fn job_deadline() -> std::time::Duration { std::time::Duration::from_secs(10 * 60) }
+	/// Graceful-drain bound for in-flight jobs at shutdown.
+	pub(super) fn drain_deadline() -> std::time::Duration { std::time::Duration::from_secs(30) }
 }
 
 /// Why configuration failed to resolve.

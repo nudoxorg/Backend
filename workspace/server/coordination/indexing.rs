@@ -30,12 +30,9 @@ use runtime::vector::EmbeddingModel;
 use crate::error::{BadRequestReason, InternalError, ServerError, ServerResult};
 use crate::{Server, SourceStores};
 
-/// How long a claimed job's lease lasts — comfortably above the job deadline so
-/// a live worker never loses a race with the reclaimer.
-const JOB_LEASE: Duration = Duration::from_secs(15 * 60);
-
-/// The hard deadline for one job, end to end.
-const JOB_DEADLINE: Duration = Duration::from_secs(10 * 60);
+/// The floor on the lease heartbeat interval, so a pathologically small
+/// configured `job_lease` cannot spin the renew loop.
+const MIN_HEARTBEAT: Duration = Duration::from_secs(5);
 
 /// The indexing service: owns a handle to the assembled [`Server`] and drives
 /// packages through the pipeline.
@@ -229,7 +226,21 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// `max_inflight_jobs`. (Replaces the old stateless `IndexingWorker`; the
 	/// server handle now lives on the indexer itself.)
 	pub async fn run_worker(&self) -> ServerResult<()> {
+		self.run_worker_until(&sandbox::CancelToken::never()).await
+	}
+
+	/// The worker loop with an explicit drain signal. While `drain` is
+	/// un-cancelled it dequeues and drives jobs as normal; once `drain` fires it
+	/// stops pulling *new* jobs and returns cleanly, letting the caller wait for
+	/// the in-flight `drive_job` futures (already awaited each tick) to settle.
+	/// [`run_worker`](Self::run_worker) is this with a never-cancelled token.
+	pub async fn run_worker_until(&self, drain: &sandbox::CancelToken) -> ServerResult<()> {
+		let lease = self.job_lease();
 		loop {
+			if drain.is_cancelled() {
+				tracing::info!("queue worker draining: no longer dequeuing new jobs");
+				return Ok(());
+			}
 			let max_inflight = self.server.config().limits.max_inflight_jobs;
 			let poll_interval = self.server.config().limits.poll_interval;
 			for sourced in self.server.federation().in_precedence() {
@@ -245,9 +256,15 @@ impl<M: EmbeddingModel> Indexer<M> {
 					tracing::warn!(source = %sourced.source, reclaimed, "reclaimed expired job leases");
 				}
 
+				// Stop pulling new work the moment a drain is requested; jobs
+				// already dequeued below still run to completion.
+				if drain.is_cancelled() {
+					return Ok(());
+				}
+
 				let jobs = stores
 					.queue
-					.dequeue_batch(max_inflight, JOB_LEASE)
+					.dequeue_batch(max_inflight, lease)
 					.await
 					.map_err(RegistryError::from)?;
 				futures::stream::iter(jobs)
@@ -260,20 +277,70 @@ impl<M: EmbeddingModel> Indexer<M> {
 		}
 	}
 
+	/// The configured claim lease (shortened, heartbeat-kept — DAEMON-PLAN §2.5).
+	fn job_lease(&self) -> Duration { self.server.config().limits.job_lease }
+
+	/// The configured end-to-end job deadline.
+	fn job_deadline(&self) -> Duration { self.server.config().limits.job_deadline }
+
+	/// The lease-heartbeat interval: a third of the lease (so two heartbeats can
+	/// be missed before a lapse), floored at [`MIN_HEARTBEAT`].
+	fn heartbeat_interval(&self) -> Duration { (self.job_lease() / 3).max(MIN_HEARTBEAT) }
+
+	/// Beat this job's lease every [`heartbeat_interval`](Self::heartbeat_interval)
+	/// for as long as it runs. Returns only when the lease can no longer be
+	/// renewed — i.e. it lapsed and was reclaimed ([`registry::QueueError::LeaseLost`])
+	/// — signaling the driver to abandon the orphaned run. Transient renew faults
+	/// (a blip against postgres) are logged and retried on the next beat rather
+	/// than abandoning a still-valid claim. Never returns while the lease holds,
+	/// so [`drive_job`](Self::drive_job) can `select!` it against the job future.
+	async fn beat_lease(&self, stores: &SourceStores<M>, job_id: registry::queue::JobId, package: PackageId) {
+		let interval = self.heartbeat_interval();
+		let lease = self.job_lease();
+		loop {
+			tokio::time::sleep(interval).await;
+			match stores.queue.renew_lease(job_id, lease).await {
+				Ok(()) => {
+					tracing::trace!(%package, "job lease renewed");
+				}
+				Err(registry::QueueError::LeaseLost { .. }) => {
+					tracing::warn!(%package, "job lease lost to reclaimer; abandoning run");
+					return;
+				}
+				Err(error) => {
+					// Transient DB fault: keep the run going and try again next beat.
+					tracing::warn!(%package, error = %error, "lease heartbeat failed; will retry");
+				}
+			}
+		}
+	}
+
 	/// One claimed job: run the pipeline under the deadline, then settle the
 	/// queue row — completion on success, retry-or-dead-letter on failure. Job
 	/// failures are contained here; only queue/store faults escape to the
 	/// supervisor.
 	async fn drive_job(&self, stores: &SourceStores<M>, job: Job) {
 		let package = job.package;
-		let outcome = match tokio::time::timeout(
-			JOB_DEADLINE,
-			self.run_indexing_job_on(stores, package),
-		)
-		.await
-		{
-			Ok(outcome) => outcome,
-			Err(_) => Err(ServerError::Internal(InternalError::IndexingDeadlineExceeded)),
+
+		// Race the deadline-bounded pipeline against a lease heartbeat. The
+		// shortened lease (config `job_lease`, ~2 min) is kept alive by renewing
+		// every `heartbeat_interval` while the job runs, so a live worker never
+		// loses its claim to the reclaimer even though the lease is far shorter
+		// than the job deadline. `select!` biases to the job branch; the heartbeat
+		// loop never resolves on its own (it either keeps beating or the job
+		// finishes first and cancels it).
+		let job_fut = tokio::time::timeout(self.job_deadline(), self.run_indexing_job_on(stores, package));
+		let heartbeat = self.beat_lease(stores, job.id, package);
+		let outcome = tokio::select! {
+			biased;
+			result = job_fut => match result {
+				Ok(outcome) => outcome,
+				Err(_) => Err(ServerError::Internal(InternalError::IndexingDeadlineExceeded)),
+			},
+			// The heartbeat only completes if the lease was lost (reclaimed out
+			// from under us): abandon the run rather than commit a result we can
+			// no longer own.
+			() = heartbeat => Err(ServerError::Internal(InternalError::IndexingDeadlineExceeded)),
 		};
 
 		match outcome {
@@ -323,7 +390,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 		let response = self
 			.acquisition
 			.get(url)
-			.timeout(JOB_DEADLINE / 2)
+			.timeout(self.job_deadline() / 2)
 			.send()
 			.await
 			.map_err(lookup_failure)?;

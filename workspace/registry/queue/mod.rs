@@ -96,6 +96,29 @@ impl RetryPolicy {
 	}
 }
 
+/// A job's scheduling priority: higher dequeues first, ties broken FIFO by
+/// `enqueued_at` (see [`Queue::dequeue_batch`]). A thin, `Ord` newtype over the
+/// `jobs.priority int` column so callers cannot confuse it with an attempt count
+/// or a lease. The [`Default`] is `0` — the value every existing caller carries,
+/// so priority is a purely additive scheduling hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Priority(i32);
+
+impl Priority {
+	/// The default, neutral priority (`0`): normal FIFO scheduling.
+	pub const NORMAL: Priority = Priority(0);
+
+	/// Construct an explicit priority. Larger values run earlier.
+	pub const fn new(value: i32) -> Self { Priority(value) }
+
+	/// The raw `int` value bound to the `jobs.priority` column.
+	pub const fn get(self) -> i32 { self.0 }
+}
+
+impl From<i32> for Priority {
+	fn from(value: i32) -> Self { Priority(value) }
+}
+
 /// What to do with a failed job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryDecision {
@@ -167,10 +190,25 @@ fn row_to_job(row: &PgRow) -> Result<Job, QueueError> {
 }
 
 impl Queue<Live> {
-	/// Enqueue a package for indexing. Idempotent on `package`: an existing
-	/// non-terminal job for the same package is a no-op (returns its id).
+	/// Enqueue a package for indexing at the default priority (`0`). Idempotent on
+	/// `package`: an existing non-terminal job for the same package is a no-op
+	/// (returns its id). Thin wrapper over [`Queue::enqueue_with_priority`].
 	pub async fn enqueue(&self, package: PackageId) -> Result<JobId, QueueError> {
-		let (sql, vals) = queries::queue::enqueue(package, 0);
+		self.enqueue_with_priority(package, Priority::default()).await
+	}
+
+	/// Enqueue a package for indexing at an explicit scheduling [`Priority`].
+	/// Higher priorities dequeue first (see [`Queue::dequeue_batch`], which orders
+	/// `priority DESC, enqueued_at ASC`). Idempotent on `package`: an existing
+	/// non-terminal job is a no-op and its *original* priority is preserved
+	/// (`ON CONFLICT DO NOTHING`), so a re-enqueue never silently reprioritizes a
+	/// job already claimed by a worker.
+	pub async fn enqueue_with_priority(
+		&self,
+		package: PackageId,
+		priority: Priority,
+	) -> Result<JobId, QueueError> {
+		let (sql, vals) = queries::queue::enqueue(package, priority.get());
 		// `ON CONFLICT DO NOTHING RETURNING id` yields a row only on a fresh
 		// insert; on a conflict (existing live job) we look the id back up.
 		let inserted = sqlx::query_with(&sql, vals)
@@ -210,6 +248,32 @@ impl Queue<Live> {
 			.await
 			.map_err(QueueError::Database)?;
 		rows.iter().map(row_to_job).collect()
+	}
+
+	/// Extend a claimed job's lease to `now() + lease` — the heartbeat a
+	/// long-running worker beats periodically so its lease never lapses under a
+	/// fast reclaimer (letting [`crate::queue::Queue`] run a much shorter default
+	/// lease than the job deadline).
+	///
+	/// Guarded on the lease still being held (`lease_until IS NOT NULL AND
+	/// lease_until > now()`): if the reclaimer already returned this job to the
+	/// runnable set (the worker was too slow, or paused), the update affects no
+	/// row and this returns [`QueueError::LeaseLost`]. That is the signal for the
+	/// worker to abandon its now-orphaned run rather than keep computing a result
+	/// it can no longer commit.
+	pub async fn renew_lease(&self, job: JobId, lease: Duration) -> Result<(), QueueError> {
+		let lease_until = Utc::now()
+			+ chrono::Duration::from_std(lease).unwrap_or_else(|_| chrono::Duration::days(1));
+		let (sql, vals) = queries::queue::renew_lease(job.to_serial(), lease_until);
+		let renewed = sqlx::query_with(&sql, vals)
+			.fetch_optional(&self.pool)
+			.await
+			.map_err(QueueError::Database)?;
+		match renewed {
+			Some(_) => Ok(()),
+			// No row updated → the lease had already expired and been reclaimed.
+			None => Err(QueueError::LeaseLost { package: job_package(&self.pool, job).await? }),
+		}
 	}
 
 	/// Mark a job complete and remove it from the runnable set. Fails with
@@ -308,4 +372,19 @@ async fn job_package(pool: &sqlx::PgPool, job: JobId) -> Result<PackageId, Queue
 		// The row is gone entirely; synthesize a nil-package LeaseLost target.
 		None => Ok(codec::package_id_from_uuid(uuid::Uuid::nil())),
 	}
+}
+
+/// The total order the dequeue hot path claims runnable jobs in, as a *pure*
+/// comparator: **priority descending, then FIFO by `enqueued_at` ascending**.
+/// This is the Rust mirror of the `ORDER BY priority DESC, enqueued_at ASC`
+/// clause inside [`queries::queue::dequeue_batch`]'s `SKIP LOCKED` select — kept
+/// here so the ordering invariant is unit-testable without a live postgres (the
+/// integration tests exercise the same order end-to-end against pg).
+///
+/// `Ordering::Less` means `a` is claimed *before* `b`.
+pub fn runnable_order(a: (Priority, DateTime<Utc>), b: (Priority, DateTime<Utc>)) -> std::cmp::Ordering {
+	let (a_prio, a_enq) = a;
+	let (b_prio, b_enq) = b;
+	// Higher priority first → reverse the natural (ascending) Priority order.
+	b_prio.cmp(&a_prio).then(a_enq.cmp(&b_enq))
 }

@@ -320,6 +320,11 @@ pub enum SessionError {
 	#[error("session snapshot codec error")]
 	Codec(#[source] serde_json::Error),
 
+	/// The postgres-backed session store's query failed (only the
+	/// [`crate::session::PgSessionStore`] path).
+	#[error("session database operation failed")]
+	Database(#[source] sqlx::Error),
+
 	/// The referenced session id was not open.
 	#[error("session not found")]
 	NotFound,
@@ -327,7 +332,14 @@ pub enum SessionError {
 
 impl Retryable for SessionError {
 	fn is_retryable(&self) -> bool {
-		matches!(self, SessionError::Io(_))
+		match self {
+			SessionError::Io(_) => true,
+			SessionError::Database(e) => matches!(
+				e,
+				sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::WorkerCrashed
+			),
+			_ => false,
+		}
 	}
 }
 

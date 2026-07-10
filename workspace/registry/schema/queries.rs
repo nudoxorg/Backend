@@ -480,6 +480,21 @@ pub mod queue {
 			.build_sqlx(PG)
 	}
 
+	/// `UPDATE jobs SET lease_until = $next WHERE id = $1 AND <lease still held>
+	/// RETURNING id` — the lease heartbeat: push a live claim's deadline forward
+	/// without touching `attempts` or `state`. Guarded on the lease still being
+	/// held so a worker whose lease already lapsed and was reclaimed cannot
+	/// resurrect its claim; an empty `RETURNING` is `LeaseLost`.
+	pub fn renew_lease(job_id: i64, next_lease_until: DateTime<Utc>) -> (String, SqlxValues) {
+		Query::update()
+			.table(Jobs::Table)
+			.value(Jobs::LeaseUntil, next_lease_until)
+			.and_where(Expr::col(Jobs::Id).eq(job_id))
+			.and_where(lease_still_held())
+			.returning_col(Jobs::Id)
+			.build_sqlx(PG)
+	}
+
 	/// `UPDATE jobs SET lease_until = NULL WHERE lease_until < now()` — return
 	/// jobs whose owning worker died mid-flight to the runnable set. Run by the
 	/// periodic sweeper.
@@ -620,6 +635,44 @@ pub mod outbox {
 					.to_owned(),
 			)
 			.build_sqlx(PG)
+	}
+
+	/// A stable, collision-resistant advisory-lock key for one sink. Two-int form
+	/// (`pg_try_advisory_lock(classid, objid)`): a fixed namespace `classid`
+	/// scopes these locks away from any other advisory-lock user in the database,
+	/// and the sink's iteration index is the `objid`. Using the ordinal (not a
+	/// hash) keeps the key set tiny and human-auditable.
+	pub const ADVISORY_LOCK_CLASS_OUTBOX_SINK: i32 = 0x0B0B_0001u32 as i32;
+
+	fn sink_lock_objid(kind: SinkKind) -> i32 {
+		// Position in the canonical `SinkKind` iteration order — small, stable.
+		SinkKind::iter().position(|k| k == kind).unwrap_or(0) as i32
+	}
+
+	/// `SELECT pg_try_advisory_lock($class, $objid)` — a **non-blocking** attempt
+	/// to claim the session-scoped advisory lock for one sink. Returns a single
+	/// `bool` row: `true` iff this session now holds the lock (no other replica is
+	/// draining this sink). The lock is held on the *connection* until
+	/// [`advisory_unlock`] runs (or the connection drops), so the caller must run
+	/// the lock, the drain, and the unlock on one pinned connection.
+	pub fn try_advisory_lock(kind: SinkKind) -> (String, SqlxValues) {
+		let sql = "SELECT pg_try_advisory_lock($1, $2)".to_string();
+		let values = SqlxValues(sea_query::Values(vec![
+			sea_query::Value::Int(Some(ADVISORY_LOCK_CLASS_OUTBOX_SINK)),
+			sea_query::Value::Int(Some(sink_lock_objid(kind))),
+		]));
+		(sql, values)
+	}
+
+	/// `SELECT pg_advisory_unlock($class, $objid)` — release the per-sink lock
+	/// claimed by [`try_advisory_lock`] on this same connection.
+	pub fn advisory_unlock(kind: SinkKind) -> (String, SqlxValues) {
+		let sql = "SELECT pg_advisory_unlock($1, $2)".to_string();
+		let values = SqlxValues(sea_query::Values(vec![
+			sea_query::Value::Int(Some(ADVISORY_LOCK_CLASS_OUTBOX_SINK)),
+			sea_query::Value::Int(Some(sink_lock_objid(kind))),
+		]));
+		(sql, values)
 	}
 
 	/// `SELECT last_seq FROM sink_watermarks WHERE sink_kind = $1` — read a

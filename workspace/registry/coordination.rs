@@ -221,6 +221,37 @@ impl Outbox<Live> {
 		Ok(())
 	}
 
+	/// Try to become the sole fleet-wide drainer of `kind` via a postgres
+	/// **session-level advisory lock** (`pg_try_advisory_lock`), returning a
+	/// [`SinkLockGuard`] iff this replica won the lock.
+	///
+	/// This is the replica-safety fix for outbox consumption (DAEMON-PLAN §2.5 /
+	/// §6.1): without it, two gateway replicas polling the same sink race on the
+	/// shared watermark and can double-materialize. With it, exactly one replica
+	/// drains a given sink at a time; the others get `None` and skip this tick,
+	/// retrying next poll (so failover is automatic when the holder dies and its
+	/// connection — and thus its lock — drops). Consumers are idempotent
+	/// upserts, so even a brief overlap on failover is safe.
+	///
+	/// The lock lives on the guard's pinned connection and is released when the
+	/// guard is dropped (explicit `pg_advisory_unlock`, plus the backstop that
+	/// dropping the connection frees all its session locks).
+	pub async fn try_lock_sink(&self, kind: SinkKind) -> Result<Option<SinkLockGuard>, OutboxError> {
+		let mut conn = self.pool.acquire().await.map_err(OutboxError::Database)?;
+		let (sql, vals) = queries::outbox::try_advisory_lock(kind);
+		let row = sqlx::query_with(&sql, vals)
+			.fetch_one(&mut *conn)
+			.await
+			.map_err(OutboxError::Database)?;
+		let acquired: bool = row.try_get(0).map_err(OutboxError::Database)?;
+		if acquired {
+			Ok(Some(SinkLockGuard { conn: Some(conn), kind }))
+		} else {
+			// Not ours this tick — drop the connection back to the pool untouched.
+			Ok(None)
+		}
+	}
+
 	/// Read a consumer's durable watermark (0 if never advanced).
 	pub async fn read_watermark(&self, kind: SinkKind) -> Result<OutboxSeq, OutboxError> {
 		let (sql, vals) = queries::outbox::read_watermark(kind);
@@ -238,4 +269,54 @@ impl Outbox<Live> {
 	}
 }
 
+/// Proof-of-ownership guard for a per-sink outbox drain (see
+/// [`Outbox::try_lock_sink`]). While it lives, this replica holds the sink's
+/// postgres session-level advisory lock, so no other replica will drain the same
+/// sink. Dropping it releases the lock.
+///
+/// Release happens two ways, belt-and-suspenders:
+/// - [`SinkLockGuard::release`] runs `pg_advisory_unlock` explicitly (the clean
+///   path, so the connection returns to the pool lock-free and reusable);
+/// - `Drop` (best-effort) returns the pinned connection to the pool; postgres
+///   frees every session-level advisory lock a connection held when it is reset
+///   for reuse, so the lock never leaks even if `release` was skipped.
+///
+/// Prefer `release().await` at the end of a drain; `Drop` is the crash/early-exit
+/// backstop.
+pub struct SinkLockGuard {
+	// `Option` so `release` can take the connection out and unlock explicitly,
+	// leaving `Drop` a no-op on the clean path.
+	conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+	kind: SinkKind,
+}
+
+impl SinkLockGuard {
+	/// Explicitly release the advisory lock (`pg_advisory_unlock`) on the pinned
+	/// connection, then return it to the pool. The clean shutdown of a drain tick.
+	pub async fn release(mut self) -> Result<(), OutboxError> {
+		if let Some(mut conn) = self.conn.take() {
+			let (sql, vals) = queries::outbox::advisory_unlock(self.kind);
+			sqlx::query_with(&sql, vals)
+				.execute(&mut *conn)
+				.await
+				.map_err(OutboxError::Database)?;
+		}
+		Ok(())
+	}
+
+	/// The sink this guard holds the drain lock for.
+	pub fn kind(&self) -> SinkKind { self.kind }
+}
+
+impl Drop for SinkLockGuard {
+	fn drop(&mut self) {
+		// If `release` was not called, just drop the pinned connection. postgres
+		// releases session-level advisory locks when the backing connection is
+		// reset on return to the pool, so the lock is freed either way — we cannot
+		// run an async `pg_advisory_unlock` from a sync `Drop`.
+		if self.conn.take().is_some() {
+			tracing::debug!(sink = %self.kind, "sink drain lock dropped without explicit release");
+		}
+	}
+}
 

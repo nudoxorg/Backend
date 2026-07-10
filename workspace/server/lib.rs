@@ -320,8 +320,15 @@ impl<M: EmbeddingModel> Server<M> {
 		// (the default) runs both; every role still serves the HTTP surface.
 		let role = self.config.role;
 		let mut pollers = tokio::task::JoinSet::new();
+
+		// Graceful-drain signal for the compile worker: on shutdown we fire it,
+		// let the worker stop dequeuing new jobs and finish in-flight ones (up to
+		// a bounded deadline), then abort whatever remains. The forge worker's
+		// join handle is tracked separately so we can `await` its clean drain.
+		let drain = sandbox::CancelToken::new();
+		let mut forge_worker: Option<tokio::task::JoinHandle<()>> = None;
 		if role.runs_forge() {
-			pollers.spawn(poll::queue_worker(Arc::clone(&self)));
+			forge_worker = Some(tokio::spawn(poll::queue_worker(Arc::clone(&self), drain.clone())));
 		}
 		if role.runs_gateway() {
 			for sink in <heart::DerivedStore as strum::IntoEnumIterator>::iter() {
@@ -337,8 +344,29 @@ impl<M: EmbeddingModel> Server<M> {
 			.await
 			.map_err(|source| ServerError::Internal(InternalError::ServeFailed { source }))?;
 
-		// The listener has drained; wind the pollers down at their next await
-		// point and reap them so nothing outlives the server.
+		// The HTTP listener has drained. Wind down in two phases:
+		//
+		// 1. **Graceful drain of the forge worker.** Signal it to stop dequeuing;
+		//    its in-flight jobs run to completion (or their own deadline). We wait
+		//    at most `drain_deadline` for the worker's clean return before forcing
+		//    it — a wedged job cannot hold shutdown open forever. Idempotent job
+		//    settling means a forced abort here re-delivers rather than corrupts.
+		if let Some(handle) = forge_worker {
+			tracing::info!("draining forge worker (no new jobs; finishing in-flight)");
+			drain.cancel();
+			let deadline = self.config.limits.drain_deadline;
+			match tokio::time::timeout(deadline, handle).await {
+				Ok(Ok(())) => tracing::info!("forge worker drained cleanly"),
+				Ok(Err(join)) => tracing::warn!(error = %join, "forge worker task ended abnormally"),
+				Err(_) => tracing::warn!(?deadline, "drain deadline exceeded; forcing forge worker down"),
+				// `handle` is dropped on timeout, aborting the still-running task at
+				// its next await point — the same idempotent-abort semantics as below.
+			}
+		}
+
+		// 2. **Abort the remaining (gateway) pollers** at their next await point
+		//    and reap them so nothing outlives the server. Every unit of poller
+		//    work is idempotent, so an abort mid-tick is safe.
 		tracing::info!("shutting background pollers down");
 		pollers.abort_all();
 		while pollers.join_next().await.is_some() {}

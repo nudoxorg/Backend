@@ -28,15 +28,31 @@ const OUTBOX_BATCH: usize = 64;
 
 /// Supervise the indexing queue worker: restart it with backoff whenever the
 /// underlying loop surfaces an error (a poisoned postgres connection, say).
-pub(crate) async fn queue_worker<M: EmbeddingModel>(server: Arc<Server<M>>) {
+///
+/// `drain` is the graceful-shutdown signal: once fired the worker stops
+/// dequeuing new jobs (in-flight jobs already finish inside `run_worker_until`),
+/// `run_worker_until` returns `Ok(())`, and this supervisor exits cleanly rather
+/// than restarting — so [`Server::serve`] can wait a bounded drain window for
+/// in-flight work to settle before aborting the remaining pollers.
+pub(crate) async fn queue_worker<M: EmbeddingModel>(
+	server: Arc<Server<M>>,
+	drain: sandbox::CancelToken,
+) {
 	let indexer = Indexer::new(server);
 	loop {
-		match indexer.run_worker().await {
-			// `run_worker` only returns on failure; log and restart.
-			Ok(()) => unreachable!("the worker loop runs until shutdown"),
+		match indexer.run_worker_until(&drain).await {
+			// A clean return means a drain was requested: stop supervising.
+			Ok(()) => {
+				tracing::info!("queue worker drained; stopping supervisor");
+				return;
+			}
 			Err(error) => {
 				tracing::error!(error = %error, "queue worker failed; restarting");
+				// Do not sleep past a drain request — re-check promptly on wake.
 				tokio::time::sleep(SUPERVISOR_BACKOFF).await;
+				if drain.is_cancelled() {
+					return;
+				}
 			}
 		}
 	}
@@ -49,7 +65,26 @@ pub(crate) async fn outbox_consumer<M: EmbeddingModel>(server: Arc<Server<M>>, s
 	let interval = server.config().limits.poll_interval;
 	loop {
 		for sourced in server.federation().in_precedence() {
-			match consume_once(&server, sourced.value, sink).await {
+			let stores = sourced.value;
+
+			// Per-sink replica safety: claim this source's sink via a postgres
+			// advisory lock so exactly one replica drains it. If another replica
+			// holds it (or the lock attempt errors), skip this sink this tick and
+			// try again next interval — consumers are idempotent, so nothing is
+			// lost by yielding a tick.
+			let guard = match stores.outbox.try_lock_sink(sink).await {
+				Ok(Some(guard)) => guard,
+				Ok(None) => {
+					tracing::trace!(%sink, source = %sourced.source, "sink drained by another replica; skipping");
+					continue;
+				}
+				Err(error) => {
+					tracing::warn!(%sink, source = %sourced.source, error = %error, "sink lock attempt failed");
+					continue;
+				}
+			};
+
+			match consume_once(&server, stores, sink).await {
 				Ok(0) => {}
 				Ok(consumed) => {
 					metrics::counter!("outbox_intents_consumed", "sink" => sink.to_string())
@@ -58,6 +93,12 @@ pub(crate) async fn outbox_consumer<M: EmbeddingModel>(server: Arc<Server<M>>, s
 				Err(error) => {
 					tracing::warn!(%sink, source = %sourced.source, error = %error, "outbox poll failed");
 				}
+			}
+
+			// Release the advisory lock cleanly so the connection returns to the
+			// pool lock-free; a failed unlock is non-fatal (drop frees it too).
+			if let Err(error) = guard.release().await {
+				tracing::warn!(%sink, source = %sourced.source, error = %error, "sink lock release failed");
 			}
 		}
 		tokio::time::sleep(interval).await;
