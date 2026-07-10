@@ -333,16 +333,18 @@ fn lower_trait(ctx: &mut LowerCtx<'_>, t: Trait) -> TraitDef {
 }
 
 fn lower_trait_impl(ctx: &mut LowerCtx<'_>, imp: Impl, trait_: Trait) -> Option<Entry> {
-	let tr = TraitRef {
-		name: trait_.name(ctx.db).as_str().to_owned(),
-		args: Vec::new(),
-	};
 	let for_type = Box::new(lower_self_ty(ctx, imp));
 	let impl_ast = ctx
 		.sema
 		.source(imp)
 		.or_else(|| imp.source(ctx.db))
 		.map(|s| s.value);
+	// HIR gives the trait's identity (name); the written generic args
+	// (`impl Trait<Args> for T`) come from the AST — HIR drops them.
+	let tr = TraitRef {
+		name: trait_.name(ctx.db).as_str().to_owned(),
+		args: ty::impl_trait_ref_args(ctx, impl_ast.as_ref()),
+	};
 	let generics = source_generics(ctx, impl_ast);
 
 	let mut methods = Vec::new();

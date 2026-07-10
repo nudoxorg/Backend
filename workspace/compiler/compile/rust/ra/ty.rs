@@ -578,6 +578,24 @@ fn lower_poly_traits(
 	(traits, lifetime)
 }
 
+/// Written generic args on an `impl Trait<Args> for T` header, taken from the
+/// AST. HIR erases these, so an impl of `From<String>` would otherwise lose the
+/// `String` argument on its `TraitRef`. Returns empty when the impl is inherent
+/// or the trait ref is not a plain path type.
+pub(crate) fn impl_trait_ref_args(
+	ctx: &mut LowerCtx<'_>,
+	impl_ast: Option<&ast::Impl>,
+) -> Vec<TypeExpr> {
+	impl_ast
+		.and_then(|i| i.trait_())
+		.and_then(|t| match t {
+			ast::Type::PathType(p) => Some(p),
+			_ => None,
+		})
+		.map(|p| path_type_to_trait_ref(ctx, &p).args)
+		.unwrap_or_default()
+}
+
 /// Shared by ty + generics: `PathType` → [`TraitRef`].
 pub(crate) fn path_type_to_trait_ref(
 	ctx: &mut LowerCtx<'_>,
