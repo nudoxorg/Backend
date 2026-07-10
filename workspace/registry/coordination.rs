@@ -252,6 +252,41 @@ impl Outbox<Live> {
 		}
 	}
 
+	/// Reclaim consumed outbox rows: delete every intent at or below the minimum
+	/// durable watermark across **all** sinks — i.e. every row that every sink has
+	/// already materialized. Returns the number of rows deleted.
+	///
+	/// This is the conservative half of the CAS GC duty (DAEMON-PLAN §5-ops). The
+	/// floor is computed by [`queries::outbox::min_consumed_watermark`], which
+	/// returns `0` unless **every** sink has a watermark row — so a sink that has
+	/// never advanced (no row yet) forces the floor to `0` and nothing is deleted.
+	/// Because `seq` is a `bigserial` starting at 1, a floor of `0` matches no row.
+	/// The net effect: an outbox row is only ever purged once it is provably below
+	/// every sink's consumed position, so re-delivery is never needed for it again.
+	///
+	/// The delete runs as a single statement; a crash mid-GC simply leaves the
+	/// remaining consumed rows for the next tick (the operation is idempotent —
+	/// re-running deletes nothing new once the floor is stable).
+	pub async fn gc_consumed(&self) -> Result<u64, OutboxError> {
+		let (floor_sql, floor_vals) = queries::outbox::min_consumed_watermark();
+		let row = sqlx::query_with(&floor_sql, floor_vals)
+			.fetch_one(&self.pool)
+			.await
+			.map_err(OutboxError::Database)?;
+		let floor: i64 = row.try_get(0).map_err(OutboxError::Database)?;
+		if floor <= 0 {
+			// No sink-wide floor yet (a sink without a watermark row, or nothing
+			// consumed): reclaim nothing this tick.
+			return Ok(0);
+		}
+		let (del_sql, del_vals) = queries::outbox::delete_consumed_below(floor);
+		let result = sqlx::query_with(&del_sql, del_vals)
+			.execute(&self.pool)
+			.await
+			.map_err(OutboxError::Database)?;
+		Ok(result.rows_affected())
+	}
+
 	/// Read a consumer's durable watermark (0 if never advanced).
 	pub async fn read_watermark(&self, kind: SinkKind) -> Result<OutboxSeq, OutboxError> {
 		let (sql, vals) = queries::outbox::read_watermark(kind);

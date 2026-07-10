@@ -36,7 +36,7 @@ use registry::{
 };
 use runtime::{
 	graph::{Credentials, Database, Graph, Organization},
-	session::{MemorySessionStore, Persistence},
+	session::PgSessionStore,
 	text::TextIndex,
 	vector::{CollectionName, EmbeddingCache, EmbeddingModel, Semantic},
 };
@@ -104,8 +104,11 @@ pub struct Server<M: EmbeddingModel> {
 	/// The content-addressed embedding cache in front of the embedder.
 	embedding_cache: EmbeddingCache<M>,
 
-	/// Per-session exploration graphs (join-semilattice merge).
-	sessions: MemorySessionStore,
+	/// Per-session exploration graphs (join-semilattice merge), backed by
+	/// postgres so **any** gateway replica can serve **any** session (the
+	/// node-local `MemorySessionStore` is invisible to sibling replicas). The
+	/// backing `sessions` table is created at boot via [`PgSessionStore::migrate`].
+	sessions: PgSessionStore,
 
 	/// The owned compile-plane runtime (cage + CAS + toolchains + overrides +
 	/// observer), replacing every former compile-plane process global.
@@ -139,9 +142,25 @@ impl<M: EmbeddingModel> Server<M> {
 			endpoints.embeddings_api_key.clone(),
 		);
 		let embedding_cache = EmbeddingCache::new(EMBEDDING_CACHE_CAPACITY);
-		let sessions = MemorySessionStore::new(Persistence::Directory(
-			config.definitive.data_directory().join("sessions"),
-		));
+
+		// Sessions live in postgres so any gateway replica serves any session. The
+		// pool is built the same way every other pg-backed store of the definitive
+		// source is (`connect_lazy` — no I/O until first use), from the definitive
+		// source's postgres endpoint. `migrate()` creates the `sessions` table
+		// (`IF NOT EXISTS`, idempotent). We reach the definitive source's stores
+		// (already connected above) only for their liveness; the pool here is its
+		// own lazy handle onto the same database.
+		let session_pool = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(8)
+			.connect_lazy(config.definitive.endpoints.postgres.expose_secret())
+			.map_err(|error| {
+				ConnectError::new(BackendKind::Postgres, ConnectFailure::Other(error.into()))
+			})?;
+		let sessions = PgSessionStore::new(session_pool);
+		sessions
+			.migrate()
+			.await
+			.map_err(|error| ServerError::Runtime(error.into()))?;
 
 		// Assemble the compile-plane runtime once. Policy is resolved from the
 		// isolation gate; a `Production` policy refuses to build without a
@@ -281,8 +300,8 @@ impl<M: EmbeddingModel> Server<M> {
 	/// The content-addressed embedding cache in front of the embedder.
 	pub(crate) fn embedding_cache(&self) -> &EmbeddingCache<M> { &self.embedding_cache }
 
-	/// The per-session exploration graphs.
-	pub fn sessions(&self) -> &MemorySessionStore { &self.sessions }
+	/// The per-session exploration graphs (postgres-backed; replica-shared).
+	pub fn sessions(&self) -> &PgSessionStore { &self.sessions }
 
 	/// The owned compile-plane runtime (cage + CAS + toolchains + overrides).
 	pub fn forge(&self) -> &Arc<crate::forge::ForgeRuntime> { &self.forge }
@@ -336,6 +355,11 @@ impl<M: EmbeddingModel> Server<M> {
 			}
 			pollers.spawn(poll::package_index_poller(Arc::clone(&self)));
 			pollers.spawn(poll::text_index_poller(Arc::clone(&self)));
+			// Storage reclamation (CAS GC): purge consumed outbox rows below every
+			// sink's watermark. The delete is idempotent, so overlapping replicas
+			// are harmless — no advisory lock needed. Blob GC is a documented TODO
+			// (see `poll::cas_gc`) pending a safe live-reference oracle.
+			pollers.spawn(poll::cas_gc(Arc::clone(&self)));
 		}
 		tracing::info!(?role, "background pollers started");
 

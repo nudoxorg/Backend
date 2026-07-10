@@ -684,6 +684,68 @@ pub mod outbox {
 			.and_where(Expr::col(SinkWatermarks::SinkKind).eq(codec::sink_kind_token(kind)))
 			.build_sqlx(PG)
 	}
+
+	/// The number of distinct sinks the fan-out records an intent for — one per
+	/// [`SinkKind`]. The GC's safety hinges on this: an outbox row is only
+	/// reclaimable once **every** sink has consumed it, so a min-watermark taken
+	/// over fewer than this many watermark rows is *not* a safe floor (a sink
+	/// that has never advanced has no row yet and must be treated as `0`).
+	pub fn sink_count() -> usize {
+		SinkKind::iter().count()
+	}
+
+	/// The conservative outbox-GC floor: the minimum durable watermark across
+	/// **all** sinks, but only once every sink has a watermark row — otherwise the
+	/// floor is `0` (a sink that has never advanced could still need any row, so
+	/// nothing is reclaimable yet).
+	///
+	/// ```sql
+	/// SELECT CASE WHEN count(*) = $sink_count THEN COALESCE(min(last_seq),0) ELSE 0 END
+	/// FROM sink_watermarks
+	/// ```
+	///
+	/// The `CASE` collapses to `0` whenever a sink is missing its row, so a caller
+	/// can delete `outbox` rows with `seq <= floor` and never outrun a sink that
+	/// has not yet been created. Returns a single `bigint` row.
+	pub fn min_consumed_watermark() -> (String, SqlxValues) {
+		// count(*) over the watermark table, compared to the sink count; when they
+		// match, every sink has acked and min(last_seq) is a true floor.
+		let sql = format!(
+			"SELECT CASE WHEN count(*) = {n} THEN COALESCE(min(last_seq), 0) ELSE 0 END \
+			 FROM sink_watermarks",
+			n = sink_count()
+		);
+		(sql, SqlxValues(sea_query::Values(vec![])))
+	}
+
+	/// `DELETE FROM outbox WHERE seq <= $1` — reclaim outbox rows that every sink
+	/// has already consumed. The caller passes the floor computed by
+	/// [`min_consumed_watermark`]; a floor of `0` deletes nothing (`seq` is a
+	/// `bigserial` starting at 1), so an un-acked sink is never outrun.
+	pub fn delete_consumed_below(floor: i64) -> (String, SqlxValues) {
+		Query::delete()
+			.from_table(Outbox::Table)
+			.and_where(Expr::col(Outbox::Seq).lte(floor))
+			.build_sqlx(PG)
+	}
+
+	/// The pure decision the `CASE` in [`min_consumed_watermark`] encodes, factored
+	/// out so it can be unit-tested without postgres: the safe GC floor given the
+	/// per-sink watermarks that currently have rows.
+	///
+	/// - Fewer watermark rows than sinks ⇒ some sink has never acked ⇒ floor `0`
+	///   (reclaim nothing).
+	/// - Otherwise ⇒ the minimum watermark across all sinks (every row at or below
+	///   it is consumed by every sink).
+	///
+	/// `total_sinks` is [`sink_count`]; `watermarks` are the `last_seq` values of
+	/// the sinks that have a `sink_watermarks` row.
+	pub fn gc_floor(total_sinks: usize, watermarks: &[i64]) -> i64 {
+		if watermarks.len() < total_sinks {
+			return 0;
+		}
+		watermarks.iter().copied().min().unwrap_or(0).max(0)
+	}
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -782,4 +844,37 @@ pub mod persist {
 #[allow(dead_code)]
 fn _select_all() -> SelectStatement {
 	Query::select().column(Asterisk).from(Packages::Table).take()
+}
+
+#[cfg(test)]
+mod gc_tests {
+	use super::outbox::{gc_floor, sink_count};
+
+	#[test]
+	fn floor_is_zero_when_a_sink_has_no_watermark_row() {
+		let n = sink_count();
+		assert!(n >= 2, "there is more than one derived sink");
+		// One sink missing its row: nothing is reclaimable, however high the others.
+		let missing_one = vec![100i64; n - 1];
+		assert_eq!(gc_floor(n, &missing_one), 0);
+		// No rows at all: floor 0.
+		assert_eq!(gc_floor(n, &[]), 0);
+	}
+
+	#[test]
+	fn floor_is_min_watermark_when_every_sink_acked() {
+		let n = sink_count();
+		let mut wms: Vec<i64> = (0..n as i64).map(|i| 10 + i).collect();
+		// The min is the safe floor: every row <= it is consumed by all sinks.
+		assert_eq!(gc_floor(n, &wms), 10);
+		wms[0] = 3;
+		assert_eq!(gc_floor(n, &wms), 3);
+	}
+
+	#[test]
+	fn floor_never_goes_negative() {
+		let n = sink_count();
+		let wms = vec![-5i64; n];
+		assert_eq!(gc_floor(n, &wms), 0, "a negative watermark clamps to 0");
+	}
 }

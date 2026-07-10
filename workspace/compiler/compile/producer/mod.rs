@@ -38,7 +38,7 @@ use heart::{JobKey, Language};
 use ir::entry::Index;
 use sandbox::{
 	CancelToken, Captured, Env, Mounts, ProcessEnd, ProducerProfile, SealedCommand,
-	SealedInput, Sealer, ToolchainSet, WorkerLang,
+	SealedInput, ToolchainSet, WorkerLang,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -288,8 +288,6 @@ pub fn seal_package(
 	let scratch = Scratch::temp("producer")?;
 	let scratch_root = scratch.path().to_path_buf();
 
-	let sealer = Sealer::new();
-
 	// A minimal, hermetic env: a fixed PATH (the cage sets its own default too)
 	// plus the injected toolchain bindings. No ambient host env is read here.
 	let mut env = Env::empty().set("PATH", "/usr/bin:/bin:/nix/var/nix/profiles/default/bin");
@@ -309,13 +307,11 @@ pub fn seal_package(
 	}
 	mounts = mounts.rw(&scratch_root);
 
-	// Per-package / per-profile overlay first (Phase 4 override table), then the
-	// threat-tier ceiling clamps it down. A Hostile interpreter can never be
-	// granted more than its tier permits, however loose the profile or a
-	// per-package override is. Sealed network is always off (`tier.net_default`).
+	// Per-package / per-profile overlay first (Phase 4 override table); the
+	// threat-tier ceiling then clamps it down inside `Job::seal`. A Hostile
+	// interpreter can never be granted more than its tier permits, however loose
+	// the profile or a per-package override is.
 	let resolved = overrides.resolve(profile, package);
-	let limits = tier.clamp(resolved);
-	let budget = sealer.budget_from_mounts(mounts, scratch_root, tier.net_default(), env, limits);
 
 	let key = JobKey::derive(
 		PRODUCER_VERSION.as_bytes(),
@@ -323,8 +319,34 @@ pub fn seal_package(
 		source_hash.as_bytes(),
 		dep_lock_hash.as_bytes(),
 	);
+
+	// Route through the acquire→seal typestate (DAEMON-PLAN §2.1) so the net-off
+	// guarantee is *type-enforced* on the live path, not merely a runtime value:
+	// `Job<Acquiring>::seal(tier)` is the sole constructor of a `Job<Sealed>`, it
+	// forces `net = tier.net_default()` (always `NetGrant::Off`) and clamps the
+	// resolved limits to `tier` — so `into_input()` yields a `SealedInput` whose
+	// `CapabilityBudget` *cannot* carry the network on. Behavior is preserved
+	// exactly: the projected budget is
+	// `CapabilityBudget::new(FsGrant::from_mounts(mounts, scratch), Off,
+	//  env, tier.clamp(resolved))`, byte-for-byte what `budget_from_mounts` +
+	// `SealedInput::new` produced before, with the same `key` and `root`.
+	//
+	// The acquiring `net` posture is irrelevant here — this is already the seal
+	// boundary (acquisition is complete), and `seal()` discards it regardless.
+	let fs = sandbox::FsGrant::from_mounts(mounts, scratch_root);
+	let input = sandbox::Job::acquiring(
+		key,
+		root,
+		fs,
+		env,
+		resolved,
+		sandbox::NetGrant::Off,
+	)
+	.seal(tier)
+	.into_input();
+
 	Ok(SealedPackage {
-		input: SealedInput::new(key, root, budget),
+		input,
 		_scratch: scratch,
 	})
 }

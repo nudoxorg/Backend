@@ -26,6 +26,11 @@ const SUPERVISOR_BACKOFF: Duration = Duration::from_secs(5);
 /// How many outbox intents a consumer drains per tick.
 const OUTBOX_BATCH: usize = 64;
 
+/// How often the storage-reclamation duty runs. Deliberately coarse — GC is a
+/// housekeeping sweep, not a hot path; running it hourly keeps its load off the
+/// consumers while still bounding outbox growth.
+const GC_INTERVAL: Duration = Duration::from_secs(3600);
+
 /// Supervise the indexing queue worker: restart it with backoff whenever the
 /// underlying loop surfaces an error (a poisoned postgres connection, say).
 ///
@@ -258,6 +263,67 @@ async fn materialize_graph<M: EmbeddingModel>(
 		.insert_symbols(symbols)
 		.await
 		.map_err(|error| crate::error::ServerError::Runtime(error.into()))
+}
+
+/// The storage-reclamation duty: a coarse periodic sweep that reclaims what is
+/// provably no longer needed. Like the other fan-out loops it never returns
+/// under normal operation, survives transient faults by logging and retrying at
+/// the next tick, and does only idempotent work (a `DELETE` of already-consumed
+/// rows), so an abort mid-sweep is safe.
+///
+/// **What it reclaims today — outbox rows below every sink's watermark.** Each
+/// source's outbox accumulates one row per `(package, generation, sink)`; once
+/// *every* derived sink has consumed a row it can never be re-delivered, so it
+/// is dead weight. [`registry::coordination::Outbox::gc_consumed`] deletes every
+/// row at or below the minimum watermark across all sinks — a conservative floor
+/// that is `0` (deletes nothing) unless every sink has acked, so a lagging or
+/// not-yet-created sink is never outrun.
+///
+/// **What it does NOT reclaim yet — orphaned CAS blobs.** Deleting a `cas/{hash}`
+/// blob safely requires proving no live pointer or generation references it, and
+/// the reference set is not currently enumerable from one place:
+/// - `ptr/{package-id}` objects point at the *manifest* hash, and each manifest
+///   in turn references its section hashes — so a live blob set is the transitive
+///   closure over every package's current manifest, not a single table;
+/// - `parse_status.content_hash` and `symbols.generation` name generations, but
+///   there is no index from a blob hash back to "is any live manifest still
+///   referencing it", and object stores offer no atomic "list-then-delete under a
+///   reference lock", so a naive mark-and-sweep races an in-flight `put_manifest`
+///   (which writes the blob before repointing `ptr/`) and could delete a blob a
+///   concurrent emit is about to reference.
+///
+/// A correct blob GC therefore needs either (a) a generation-count / refcount
+/// side table maintained transactionally with `put_manifest`, or (b) a
+/// stop-the-world mark phase that first snapshots every `ptr/` → manifest →
+/// section closure and only sweeps blobs older than that snapshot's start. Both
+/// are additive follow-ups; until one lands, deleting blobs is not provably safe,
+/// so this loop performs the outbox purge only.
+///
+/// TODO(blob-gc, DAEMON-PLAN §5-ops): add CAS blob reclamation once a
+/// transactional blob-reference count (or a snapshot-fenced mark-sweep) exists;
+/// see the closure/race notes above for exactly why the naive list-and-delete is
+/// unsafe.
+pub(crate) async fn cas_gc<M: EmbeddingModel>(server: Arc<Server<M>>) {
+	loop {
+		for sourced in server.federation().in_precedence() {
+			match sourced.value.outbox.gc_consumed().await {
+				Ok(0) => {}
+				Ok(reclaimed) => {
+					metrics::counter!("outbox_rows_reclaimed", "source" => sourced.source.to_string())
+						.increment(reclaimed);
+					tracing::info!(
+						source = %sourced.source,
+						reclaimed,
+						"reclaimed consumed outbox rows"
+					);
+				}
+				Err(error) => {
+					tracing::warn!(source = %sourced.source, error = %error, "outbox GC failed");
+				}
+			}
+		}
+		tokio::time::sleep(GC_INTERVAL).await;
+	}
 }
 
 /// Keep every source's replica-local package index caught up to postgres.
