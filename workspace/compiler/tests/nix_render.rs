@@ -27,6 +27,8 @@ fn render_type(ty: &Type) -> String {
         aliases:       None,
         visibility:    Visibility::Public,
         documentation: None,
+        deprecation:   None,
+        doc_links:     None,
         inner:         ty.clone(),
     });
     render_entry(&entry, &nix_ctx())
@@ -141,6 +143,8 @@ fn render_function_emits_type_comment_and_binding() {
         aliases:       None,
         visibility:    Visibility::Public,
         documentation: Some("Greet someone.".into()),
+        deprecation:   None,
+        doc_links:     None,
         inner:         func,
     });
 

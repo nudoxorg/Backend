@@ -61,6 +61,8 @@ pub fn extract_module(
         aliases: None,
         visibility: Visibility::Public,
         documentation: Some("A NixOS/home-manager module. Fields are its declared options.".to_string()),
+        deprecation: None,
+        doc_links: None,
         inner: record,
     };
 

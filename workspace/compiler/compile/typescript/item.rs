@@ -69,6 +69,8 @@ impl TsDocParser {
 			aliases: None,
 			visibility: Visibility::Public,
 			documentation,
+			deprecation: None,
+			doc_links: None,
 			inner: Module { members: empty_to_none(members) },
 		}))
 	}
@@ -119,6 +121,8 @@ impl TsDocParser {
 			aliases: None,
 			visibility,
 			documentation,
+			deprecation: None,
+			doc_links: None,
 			inner: (),
 		};
 
@@ -354,6 +358,8 @@ impl TsDocParser {
 			aliases: None,
 			visibility,
 			documentation,
+			deprecation: None,
+			doc_links: None,
 			inner: func,
 		}))
 	}
@@ -397,6 +403,8 @@ impl TsDocParser {
 			aliases:       None,
 			visibility:    accessibility_to_visibility(ctor.accessibility),
 			documentation: extract_doc(&ctor.js_doc),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         func,
 		}))
 	}
@@ -564,6 +572,8 @@ impl TsDocParser {
 			aliases:       None,
 			visibility:    Visibility::Public,
 			documentation: None,
+			deprecation:   None,
+			doc_links:     None,
 			inner:         TraitDef {
 				generics,
 				super_traits,
@@ -573,6 +583,9 @@ impl TsDocParser {
 				provided_methods: None,
 				required_constants: None,
 				attributes: None,
+				object_safe: None,
+				sealed: None,
+				cfg: None,
 				members: None,
 			},
 		}))

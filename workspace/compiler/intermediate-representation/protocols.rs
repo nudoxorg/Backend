@@ -33,6 +33,26 @@ pub struct TraitDef {
 	/// Trait-level attributes
 	pub attributes: Option<Vec<TraitAttribute>>,
 
+	/// Whether the trait is object-safe / dyn-compatible.
+	///
+	/// `Some(true)` = usable as `dyn Trait`; `Some(false)` = not; `None` = the
+	/// producer did not determine it. Rust populates this from the compiler's
+	/// dyn-compatibility check.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub object_safe: Option<bool>,
+
+	/// Whether the trait is *sealed* (cannot be implemented outside its defining
+	/// crate/module by convention, e.g. a private supertrait). `None` when the
+	/// producer does not detect sealing.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub sealed: Option<bool>,
+
+	/// cfg-gating predicate rendered to a string (e.g. `#[cfg(feature = "x")]`),
+	/// when the item is conditionally compiled. `None` when unconditional or the
+	/// producer cannot supply it.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub cfg: Option<String>,
+
 	/// Child entries conceptually scoped to this protocol.
 	///
 	/// While methods, types, and constants are tracked rigorously inline via

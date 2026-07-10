@@ -18,7 +18,7 @@ use ra_ap_hir::{
 	Adt, AssocItem, FieldSource, HasSource, HasVisibility, Impl, Module, ModuleDef, Struct,
 	StructKind, Trait, Union, Visibility as HirVisibility, attach_db,
 };
-use ra_ap_syntax::ast::HasGenericParams;
+use ra_ap_syntax::ast::{self, HasGenericParams, HasTypeBounds};
 use rustc_hash::FxHashSet as HashSet;
 
 use super::{
@@ -253,17 +253,25 @@ fn lower_union(ctx: &mut LowerCtx<'_>, u: Union) -> Vec<Type> {
 }
 
 fn lower_trait(ctx: &mut LowerCtx<'_>, t: Trait) -> TraitDef {
-	let generics = source_generics(
-		ctx,
-		ctx.sema.source(t).or_else(|| t.source(ctx.db)).map(|src| src.value),
-	);
+	let trait_ast = ctx.sema.source(t).or_else(|| t.source(ctx.db)).map(|src| src.value);
+	let generics = source_generics(ctx, trait_ast.clone());
 
+	// Supertrait bounds carry written generic args (`trait T: Bar<X>`), which
+	// HIR's `direct_supertraits` drops. Keep the HIR-resolved (unqualified) name
+	// for stability and pull the written args from the matching AST bound. Falls
+	// back to args-less when no AST bound list exists (macro-generated traits).
+	let ast_super_args = super_trait_args_from_ast(ctx, trait_ast.as_ref());
 	let super_traits: Vec<TraitRef> = t
 		.direct_supertraits(ctx.db)
 		.into_iter()
-		.map(|st| TraitRef {
-			name: st.name(ctx.db).as_str().to_owned(),
-			args: Vec::new(), // AST supertrait args when ty lowerer is fully wired
+		.map(|st| {
+			let name = st.name(ctx.db).as_str().to_owned();
+			let args = ast_super_args
+				.as_ref()
+				.and_then(|m| m.iter().find(|(n, _)| ast_name_matches(n, &name)))
+				.map(|(_, a)| a.clone())
+				.unwrap_or_default();
+			TraitRef { name, args }
 		})
 		.collect();
 
@@ -319,6 +327,19 @@ fn lower_trait(ctx: &mut LowerCtx<'_>, t: Trait) -> TraitDef {
 		None
 	};
 
+	// Object-safety (dyn-compatibility): `dyn_compatibility` returns the first
+	// violation, so `None` means the trait IS usable as `dyn Trait`.
+	let object_safe = Some(t.dyn_compatibility(ctx.db).is_none());
+
+	// Sealed detection needs private-supertrait / private-module bound analysis
+	// over resolved defs, which is fiddly to get right; leave unpopulated rather
+	// than guess.
+	// TODO(P4): detect sealed traits (private supertrait or bound on a
+	// private-module item) via resolved supertrait defs + visibility.
+	let sealed = None;
+
+	let cfg = docs::cfg_string(ctx, t);
+
 	TraitDef {
 		generics,
 		super_traits: empty_to_none(super_traits),
@@ -328,6 +349,9 @@ fn lower_trait(ctx: &mut LowerCtx<'_>, t: Trait) -> TraitDef {
 		provided_methods: empty_to_none(provided_methods),
 		required_constants: empty_to_none(required_constants),
 		attributes,
+		object_safe,
+		sealed,
+		cfg,
 		members: None,
 	}
 }
@@ -516,6 +540,42 @@ fn lower_type_alias(ctx: &mut LowerCtx<'_>, ta: ra_ap_hir::TypeAlias) -> Type {
 	// No AST — HIR display path (lifetimes erased).
 	let hir_ty = attach_db(ctx.db, || ta.ty(ctx.db));
 	ty::lower_hir_type_fallback(ctx, &hir_ty)
+}
+
+/// `(resolved-name, written-args)` for each path-type bound in the trait's AST
+/// bound list (`trait T: A + B<X>`).
+///
+/// Each bound is lowered through [`ty::path_type_to_trait_ref`], which resolves
+/// the name via `Semantics` (canonical path) and captures the written generic
+/// args HIR erases. Callers match these against `direct_supertraits` by name to
+/// attach args while keeping the HIR-resolved (unqualified) supertrait name.
+/// Lifetime bounds are not supertraits and are skipped. Returns `None` when the
+/// trait has no AST (macro-generated).
+fn super_trait_args_from_ast(
+	ctx: &mut LowerCtx<'_>,
+	trait_ast: Option<&ast::Trait>,
+) -> Option<Vec<(String, Vec<ir::generics::TypeExpr>)>> {
+	let list = trait_ast?.type_bound_list()?;
+	let mut out = Vec::new();
+	for bound in list.bounds() {
+		if let Some(ast::TypeBoundKind::PathType(_for_binder, path_ty)) = bound.kind() {
+			let tr = ty::path_type_to_trait_ref(ctx, &path_ty);
+			if !tr.args.is_empty() {
+				out.push((tr.name, tr.args));
+			}
+		}
+	}
+	Some(out)
+}
+
+/// Match a resolved bound name (possibly canonical, e.g. `core::cmp::PartialOrd`)
+/// against an unqualified HIR supertrait name (`PartialOrd`).
+fn ast_name_matches(resolved: &str, hir_name: &str) -> bool {
+	resolved == hir_name
+		|| resolved
+			.rsplit("::")
+			.next()
+			.is_some_and(|last| last == hir_name)
 }
 
 fn source_generics<N: HasGenericParams>(

@@ -197,6 +197,8 @@ impl<'a> Walk<'a> {
             aliases: None,
             visibility: Visibility::Public,
             documentation,
+            deprecation: None,
+            doc_links: None,
             inner: (),
         };
         // Constants carry no type slot; the Derivation typing is conveyed via
@@ -241,6 +243,8 @@ impl<'a> Walk<'a> {
             aliases: None, // filled by the alias-fold pass after the walk
             visibility: Visibility::Public,
             documentation,
+            deprecation: None,
+            doc_links: None,
             inner: function,
         };
         self.entries.insert(path, Entry::Function(symbol));
@@ -291,6 +295,8 @@ impl<'a> Walk<'a> {
                 aliases: None,
                 visibility: Visibility::Public,
                 documentation,
+                deprecation: None,
+                doc_links: None,
                 inner: Module { members: None },
             })
         });
@@ -307,6 +313,8 @@ impl<'a> Walk<'a> {
                 aliases: None,
                 visibility: Visibility::Public,
                 documentation,
+                deprecation: None,
+                doc_links: None,
                 inner: (),
             }),
         );

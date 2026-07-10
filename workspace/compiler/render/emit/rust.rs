@@ -777,6 +777,9 @@ mod tests {
             }]),
             required_constants: None,
             attributes: None,
+            object_safe: None,
+            sealed: None,
+            cfg: None,
             members: None,
         };
         let result = Rust

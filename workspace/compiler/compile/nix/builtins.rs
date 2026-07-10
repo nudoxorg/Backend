@@ -36,6 +36,8 @@ pub fn synthesize() -> (Vec<(NudoxPath, Entry)>, Option<NudoxPath>) {
             aliases:       None,
             visibility:    Visibility::Public,
             documentation,
+            deprecation:   None,
+            doc_links:     None,
             inner:         builtin_function(),
         };
         entries.push((path, Entry::Function(symbol)));
@@ -48,6 +50,8 @@ pub fn synthesize() -> (Vec<(NudoxPath, Entry)>, Option<NudoxPath>) {
         aliases:       None,
         visibility:    Visibility::Public,
         documentation: Some("Nix built-in functions (the `builtins` set).".to_string()),
+        deprecation:   None,
+        doc_links:     None,
         inner:         Module { members: None }, // members wired by context
     };
     entries.push((root_path.clone(), Entry::Module(module)));

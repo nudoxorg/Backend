@@ -98,6 +98,8 @@ pub fn lower_static(
 			aliases:       None,
 			visibility:    Visibility::Public,
 			documentation: root_doc,
+			deprecation:   None,
+			doc_links:     None,
 			inner:         Module { members: None },
 		}),
 	);
@@ -152,6 +154,8 @@ pub fn lower_static(
 						aliases:       None,
 						visibility:    Visibility::Private,
 						documentation,
+						deprecation:   None,
+						doc_links:     None,
 						inner:         func,
 					})
 				} else {
@@ -162,6 +166,8 @@ pub fn lower_static(
 						aliases:       None,
 						visibility:    Visibility::Private,
 						documentation,
+						deprecation:   None,
+						doc_links:     None,
 						inner:         (),
 					})
 				}
@@ -173,6 +179,8 @@ pub fn lower_static(
 					aliases:       None,
 					visibility:    Visibility::Private,
 					documentation,
+					deprecation:   None,
+					doc_links:     None,
 					inner:         (),
 				})
 			};

@@ -176,6 +176,8 @@ pub fn lower_extraction(extraction: &schema::Extraction) -> Index {
 				aliases: None,
 				visibility: Visibility::Public,
 				documentation,
+				deprecation: None,
+				doc_links: None,
 				inner: Module { members: None },
 			}),
 		);
@@ -220,6 +222,8 @@ pub fn lower_extraction(extraction: &schema::Extraction) -> Index {
 				aliases: None,
 				visibility: Visibility::Public,
 				documentation,
+				deprecation: None,
+				doc_links: None,
 				inner: Module { members: None },
 			}),
 		);

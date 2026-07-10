@@ -50,6 +50,8 @@ fn symbol<T>(name: &str, path: NudoxPath, inner: T) -> Symbol<T> {
         aliases: None,
         visibility: Visibility::Public,
         documentation: None,
+        deprecation: None,
+        doc_links: None,
         inner,
     }
 }
@@ -86,6 +88,9 @@ fn trait_def(name: &str, path: NudoxPath) -> Entry {
             provided_methods: None,
             required_constants: None,
             attributes: None,
+            object_safe: None,
+            sealed: None,
+            cfg: None,
             members: None,
         },
     ))

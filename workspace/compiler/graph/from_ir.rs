@@ -91,6 +91,33 @@ fn opt_slice<T>(o: &Option<Vec<T>>) -> &[T] {
     o.as_deref().unwrap_or(&[])
 }
 
+/// `Symbol.doc_links` (resolved intra-doc links) for any entry variant.
+fn entry_doc_links(
+    entry: &ir::kind::Entry,
+) -> Option<&rustc_hash::FxHashMap<String, NudoxPath>> {
+    use ir::kind::{Entry as E, Symbol};
+    fn links<T>(s: &Symbol<T>) -> Option<&rustc_hash::FxHashMap<String, NudoxPath>> {
+        s.doc_links.as_ref()
+    }
+    match entry {
+        E::Module(s) => links(s),
+        E::RecordType(s) => links(s),
+        E::Info(s) => links(s),
+        E::UnionType(s) => links(s),
+        E::TraitDef(s) => links(s),
+        E::TraitImpl(s) => links(s),
+        E::SumType(s) => links(s),
+        E::Function(s) => links(s),
+        E::TypeAlias(s) => links(s),
+        E::Constant(s) => links(s),
+        E::Variable(s) => links(s),
+        E::Macro(s) => links(s),
+        E::PrimitiveType(s) => links(s),
+        E::Field(s) => links(s),
+        E::Event(s) => links(s),
+    }
+}
+
 fn visibility(v: &IrVis) -> m::Visibility {
     match v {
         IrVis::Public => m::Visibility::Public,
@@ -1030,6 +1057,14 @@ fn project_entry(
         .aliases()
         .map(|set| set.iter().map(|segs| segs.join("::")).collect())
         .unwrap_or_default();
+
+    // Resolved intra-doc links feed the `mentions` edge: each link target is a
+    // symbol this entry references in its documentation prose.
+    if let Some(links) = entry_doc_links(entry) {
+        for target in links.values() {
+            cx.mentions.insert(linker.resolve_path(target));
+        }
+    }
 
     let symbol = m::Symbol {
         id: EntityIDFor::new(&iri).expect("sanitized iri"),

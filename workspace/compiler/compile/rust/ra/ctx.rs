@@ -201,7 +201,18 @@ impl<'db> LowerCtx<'db> {
 		let aliases = self.aliases_of(&key);
 		let visibility = self.visibility(def);
 		let documentation = docs::documentation(self, def);
-		Some(Symbol { name, path, aliases, visibility, documentation, inner })
+		let deprecation = docs::deprecation(self, def);
+		let doc_links = docs::doc_links(self, def, documentation.as_deref());
+		Some(Symbol {
+			name,
+			path,
+			aliases,
+			visibility,
+			documentation,
+			deprecation,
+			doc_links,
+			inner,
+		})
 	}
 
 	/// Convenience when name/path are already known (e.g. impl entries).
@@ -213,13 +224,32 @@ impl<'db> LowerCtx<'db> {
 		aliases: Option<FxHashSet<Vec<String>>>,
 		inner: T,
 	) -> Symbol<T> {
-		Symbol { name, path, aliases, visibility, documentation, inner }
+		Symbol {
+			name,
+			path,
+			aliases,
+			visibility,
+			documentation,
+			deprecation: None,
+			doc_links: None,
+			inner,
+		}
 	}
 
 	/// One pass over every local module's `Module::scope` (glob-aware).
 	///
 	/// Each `(Name, ScopeDef)` whose def's defining path differs from
 	/// `module_path::name` is recorded as an alias on that def's canonical key.
+	/// `Module::scope` already surfaces glob re-exports (`use foo::*`), so those
+	/// alias paths are captured here — strictly better than rustdoc, which skips
+	/// globs.
+	///
+	/// TODO(P4): tag *which* aliases came from a glob (vs a named/renamed
+	/// re-export). Not possible on ra_ap 0.0.341: `Module::scope` returns
+	/// `(Name, ScopeDef)` and `ScopeDef` carries no import/glob provenance; the
+	/// glob-vs-import distinction (`ImportOrGlob`) lives in `hir_def::item_scope`
+	/// and is not reachable through the public `ra_ap_hir` surface. Would need a
+	/// `hir_def` `DefMap`/`ItemScope` accessor upstream.
 	pub(crate) fn collect_aliases(&mut self) {
 		let mut stack = vec![self.krate.root_module(self.db)];
 		while let Some(module) = stack.pop() {

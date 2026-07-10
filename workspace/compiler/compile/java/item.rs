@@ -340,6 +340,8 @@ fn push_method_entries(
 				} else {
 					Some(doc_sections.join("\n\n"))
 				},
+				deprecation:   None,
+				doc_links:     None,
 				inner:         function::fold_overloads(lowered),
 			}),
 		));
@@ -459,6 +461,8 @@ fn lower_class_like(
 			visibility: types::visibility(&decl.modifiers),
 			// Record has no annotation/sealing slots → both ride the docs.
 			documentation: type_documentation(decl, parsed.as_ref(), true, true),
+			deprecation: None,
+			doc_links: None,
 			inner: record,
 		}),
 	));
@@ -556,6 +560,9 @@ fn lower_interface(
 		provided_methods: if provided.is_empty() { None } else { Some(provided) },
 		required_constants: None,
 		attributes: if attributes.is_empty() { None } else { Some(attributes) },
+		object_safe: None,
+		sealed: None,
+		cfg: None,
 		members: if members.is_empty() { None } else { Some(members) },
 	};
 
@@ -569,6 +576,8 @@ fn lower_interface(
 			// Annotations and sealing are structural attributes here, so the
 			// docs carry only prose + tags + deprecation.
 			documentation: type_documentation(decl, parsed.as_ref(), false, false),
+			deprecation: None,
+			doc_links: None,
 			inner: trait_def,
 		}),
 	));
@@ -609,6 +618,8 @@ fn lower_enum(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPath, En
 			aliases: None,
 			visibility: types::visibility(&decl.modifiers),
 			documentation: type_documentation(decl, parsed.as_ref(), true, false),
+			deprecation: None,
+			doc_links: None,
 			inner: variants,
 		}),
 	));
@@ -690,6 +701,8 @@ fn enum_field_entry(
 			aliases: None,
 			visibility: types::visibility(&f.modifiers),
 			documentation: Some(sections.join("\n\n")),
+			deprecation: None,
+			doc_links: None,
 			inner: (),
 		}),
 	)
