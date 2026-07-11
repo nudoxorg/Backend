@@ -50,8 +50,8 @@ const TOOLCHAIN_HINT: &str =
 /// This is the one-call entry point: it materializes + compiles the doclet
 /// (cached), collects the source set, runs `javadoc`, and parses the
 /// emitted document into the [`schema`] mirror.
-pub fn extract(
-	ctx: &dyn crate::compile::producer::ForgeContext,
+pub fn extract<C: crate::compile::producer::ForgeContext>(
+	ctx: &C,
 	source_roots: &[PathBuf],
 ) -> Result<schema::Extraction, OracleError> {
 	let files = collect_sources(source_roots);
@@ -105,8 +105,8 @@ fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Materialize the embedded doclet sources into their content-addressed
 /// directory and compile them (cached via a `.compiled` stamp). Returns the
 /// classes directory for `-docletpath`.
-pub fn compile_oracle(
-	ctx: &dyn crate::compile::producer::ForgeContext,
+pub fn compile_oracle<C: crate::compile::producer::ForgeContext>(
+	ctx: &C,
 ) -> Result<PathBuf, OracleError> {
 	let dir = materialize_oracle()?;
 	let classes = dir.join("classes");
@@ -169,8 +169,8 @@ fn oracle_hash() -> u64 {
 }
 
 /// Run `javadoc -doclet` over the collected files and parse the document.
-fn run_doclet(
-	ctx: &dyn crate::compile::producer::ForgeContext,
+fn run_doclet<C: crate::compile::producer::ForgeContext>(
+	ctx: &C,
 	classes: &Path,
 	files: &[PathBuf],
 ) -> Result<schema::Extraction, OracleError> {

@@ -10,7 +10,7 @@
 //! the boundary.
 
 use bytes::Bytes;
-use cas::{DynCas, Tiered};
+use cas::{Cas, EvictableCas, Tiered};
 use heart::ContentHash;
 use sandbox::{
 	Cage, ForgeObserver, NodeId, OverrideTable, SealedInput, ToolchainSet, WorkerLang,
@@ -25,6 +25,14 @@ use super::{Producer, ProducerError, ProducerOutput};
 /// The `compiler` crate reads nothing from process globals or the environment;
 /// everything policy-relevant arrives through this trait.
 pub trait ForgeContext: Send + Sync {
+	/// The concrete content-addressed store this context owns.
+	///
+	/// A fully-generic associated type (not a boxed `dyn`): the CAS is the sole
+	/// erasure point in the design, and it is erased *statically*. The
+	/// [`EvictableCas`] bound lets the poison-repair path invalidate a wrong
+	/// entry without any object-safety gymnastics.
+	type Cas: Cas + EvictableCas;
+
 	/// Stable node identity (scratch / cgroup naming).
 	fn node(&self) -> &NodeId;
 
@@ -33,10 +41,11 @@ pub trait ForgeContext: Send + Sync {
 
 	/// The content-addressed store (sole cache).
 	///
-	/// Returns a `&dyn DynCas` rather than a concrete `&Tiered` so that
-	/// `ForgeContext` stays object-safe: `DynCas` boxes the async futures,
-	/// keeping every `&dyn ForgeContext` call site unchanged.
-	fn cas(&self) -> &dyn DynCas;
+	/// Returns the concrete `&Self::Cas`. Because this names an associated type,
+	/// `ForgeContext` is consumed *generically* (`fn f<C: ForgeContext>(ctx: &C)`)
+	/// rather than through a `&dyn ForgeContext` trait object — static erasure is
+	/// the single, uniform strategy across the whole design.
+	fn cas(&self) -> &Self::Cas;
 
 	/// Resolved toolchain store paths (hashed into every job key).
 	fn toolchains(&self) -> &ToolchainSet;
@@ -65,7 +74,7 @@ pub trait ForgeContext: Send + Sync {
 }
 
 /// Drive a CAS future from the sync compile path using the context's handle.
-pub fn block_on<F: std::future::Future>(ctx: &dyn ForgeContext, fut: F) -> F::Output {
+pub fn block_on<C: ForgeContext, F: std::future::Future>(ctx: &C, fut: F) -> F::Output {
 	// Prefer the injected handle; when this thread is already on a multi-thread
 	// runtime, park it with block_in_place so we do not panic on a nested block.
 	if tokio::runtime::Handle::try_current().is_ok() {
@@ -76,7 +85,7 @@ pub fn block_on<F: std::future::Future>(ctx: &dyn ForgeContext, fut: F) -> F::Ou
 }
 
 /// Look opaque bytes up in the context CAS, recording the observer boundary.
-pub fn cas_get(ctx: &dyn ForgeContext, key: ContentHash) -> Option<Bytes> {
+pub fn cas_get<C: ForgeContext>(ctx: &C, key: ContentHash) -> Option<Bytes> {
 	match block_on(ctx, ctx.cas().get(key)) {
 		Ok(Some(bytes)) => {
 			ctx.observer().cache_hit();
@@ -95,26 +104,31 @@ pub fn cas_get(ctx: &dyn ForgeContext, key: ContentHash) -> Option<Bytes> {
 }
 
 /// Store opaque bytes under `key` (best-effort, first-write-wins).
-pub fn cas_put(ctx: &dyn ForgeContext, key: ContentHash, bytes: Bytes) {
+pub fn cas_put<C: ForgeContext>(ctx: &C, key: ContentHash, bytes: Bytes) {
 	if let Err(e) = block_on(ctx, ctx.cas().put_keyed(key, bytes)) {
 		tracing::warn!(error = %e, "cas put failed");
 	}
 }
 
 /// Drop a poison / wrong-version entry so a subsequent put can land.
-pub fn cas_invalidate(ctx: &dyn ForgeContext, key: ContentHash) {
+///
+/// Requires `C::Cas: EvictableCas`, which the [`ForgeContext::Cas`] bound already
+/// guarantees — object-store L3 tiers cannot evict, but the tiered composition
+/// evicts L1/L2 (never the immutable L3).
+pub fn cas_invalidate<C: ForgeContext>(ctx: &C, key: ContentHash) {
 	if let Err(e) = block_on(ctx, ctx.cas().invalidate(key)) {
 		tracing::warn!(error = %e, "cas invalidate failed");
 	}
 }
 
 /// Postcard get-or-compute against the context CAS — the sole cache client.
-pub fn cache_get_or_build<T, F, E>(
-	ctx: &dyn ForgeContext,
+pub fn cache_get_or_build<C, T, F, E>(
+	ctx: &C,
 	key: ContentHash,
 	build: F,
 ) -> Result<T, E>
 where
+	C: ForgeContext,
 	T: Serialize + for<'de> Deserialize<'de>,
 	F: FnOnce() -> Result<T, E>,
 {
@@ -143,8 +157,8 @@ where
 /// `input.key` is the CAS key. On a hit the postcard-encoded [`ProducerOutput`]
 /// is decoded; on a miss the plan executes under the cage (or in-process for
 /// adaptive producers), the output is stored, and observer events fire.
-pub fn run_producer<P: Producer + ?Sized>(
-	ctx: &dyn ForgeContext,
+pub fn run_producer<C: ForgeContext, P: Producer + ?Sized>(
+	ctx: &C,
 	p: &P,
 	input: &SealedInput,
 ) -> Result<ProducerOutput, ProducerError> {
@@ -174,8 +188,8 @@ pub fn run_producer<P: Producer + ?Sized>(
 }
 
 /// Execute a producer's plan under the injected cage / worker context.
-pub fn execute_plan<P: Producer + ?Sized>(
-	ctx: &dyn ForgeContext,
+pub fn execute_plan<C: ForgeContext, P: Producer + ?Sized>(
+	ctx: &C,
 	p: &P,
 	input: &SealedInput,
 ) -> Result<ProducerOutput, ProducerError> {
@@ -194,7 +208,7 @@ pub fn execute_plan<P: Producer + ?Sized>(
 pub struct LocalForgeContext {
 	node: NodeId,
 	cage: sandbox::DevPassthrough,
-	cas: Tiered,
+	cas: Tiered<cas::NoL3>,
 	toolchains: ToolchainSet,
 	overrides: OverrideTable,
 	observer: sandbox::NullObserver,
@@ -251,13 +265,15 @@ impl Drop for LocalForgeContext {
 }
 
 impl ForgeContext for LocalForgeContext {
+	type Cas = Tiered<cas::NoL3>;
+
 	fn node(&self) -> &NodeId {
 		&self.node
 	}
 	fn cage(&self) -> &dyn Cage {
 		&self.cage
 	}
-	fn cas(&self) -> &dyn DynCas {
+	fn cas(&self) -> &Tiered<cas::NoL3> {
 		&self.cas
 	}
 	fn toolchains(&self) -> &ToolchainSet {

@@ -13,13 +13,53 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas::{DynCas, Tiered};
+use bytes::Bytes;
+use cas::{Cas, CasError, ContentHash, Tiered};
 use compiler::languages::producer::ForgeContext;
 use registry::StoreCas;
 use sandbox::{
 	Cage, CageError, DevPassthrough, ForgeObserver, LinuxNamespaces, NodeId, NullObserver,
 	OverrideTable, Policy, ToolchainSet, WorkerLang, WorkerPool, WorkerPoolConfig,
 };
+
+/// The forge's L3 tier, resolved once from configuration into a single concrete
+/// type.
+///
+/// The runtime L3 choice (distributed object store vs. none) genuinely needs a
+/// single concrete type so the whole app monomorphizes to one `Tiered<...>`.
+/// This closed enum is that type: it implements [`Cas`] by either delegating to
+/// a live [`StoreCas`] or mirroring [`cas::NoL3`] (`Unsupported`, which the
+/// tiered read/write paths skip). It is deliberately *not* [`cas::EvictableCas`]:
+/// an object-store L3 holds immutable content-addressed data and cannot evict.
+pub enum ConfiguredL3 {
+	/// No distributed L3 (development / tests). Mirrors `cas::NoL3`.
+	None,
+	/// A live object-store-backed L3.
+	Store(StoreCas),
+}
+
+impl Cas for ConfiguredL3 {
+	async fn get(&self, key: ContentHash) -> Result<Option<Bytes>, CasError> {
+		match self {
+			Self::None => Err(CasError::Unsupported("L3 not configured (ConfiguredL3::None)")),
+			Self::Store(s) => s.get(key).await,
+		}
+	}
+
+	async fn put(&self, bytes: Bytes) -> Result<ContentHash, CasError> {
+		match self {
+			Self::None => Err(CasError::Unsupported("L3 not configured (ConfiguredL3::None)")),
+			Self::Store(s) => s.put(bytes).await,
+		}
+	}
+
+	async fn put_keyed(&self, key: ContentHash, bytes: Bytes) -> Result<bool, CasError> {
+		match self {
+			Self::None => Err(CasError::Unsupported("L3 not configured (ConfiguredL3::None)")),
+			Self::Store(s) => s.put_keyed(key, bytes).await,
+		}
+	}
+}
 
 /// Cold: configured but not yet verified (no cage selected).
 pub struct Cold;
@@ -78,9 +118,10 @@ pub struct ForgeRuntime<S = Ready> {
 	node: NodeId,
 	policy: Policy,
 	cage: Arc<dyn Cage>,
-	/// The erased tiered CAS — `&dyn DynCas` is what `ForgeContext::cas()`
-	/// returns, keeping `ForgeContext` object-safe regardless of L3 type.
-	cas: Arc<dyn DynCas>,
+	/// The tiered CAS, fully monomorphized to one concrete type. The runtime L3
+	/// choice is folded into [`ConfiguredL3`], so there is exactly one CAS type
+	/// (no `dyn` erasure) and `ForgeContext::cas()` returns `&Tiered<ConfiguredL3>`.
+	cas: Arc<Tiered<ConfiguredL3>>,
 	toolchains: ToolchainSet,
 	overrides: OverrideTable,
 	observer: Arc<dyn ForgeObserver>,
@@ -104,17 +145,19 @@ impl ForgeRuntime<Cold> {
 	) -> Result<ForgeRuntime<Ready>, ForgeError> {
 		let cage = select_cage(policy)?;
 
-		// Build the tiered CAS, wiring StoreCas as L3 when the caller supplies
-		// one. `DynCas` erases the concrete L3 type so `ForgeContext::cas()`
-		// can return `&dyn DynCas` without making the trait generic over L3.
-		let cas: Arc<dyn DynCas> = match (cfg.cas_root.as_deref(), cfg.l3) {
-			(Some(root), Some(l3)) => {
-				Arc::new(Tiered::with_l3(256, Some(cas::DiskCas::open(root)?), l3))
-			},
-			(Some(root), None) => Arc::new(Tiered::with_disk(256, cas::DiskCas::open(root)?)),
-			(None, Some(l3)) => Arc::new(Tiered::with_l3(256, None, l3)),
-			(None, None) => Arc::new(Tiered::memory_only(256)),
+		// Build the one concrete tiered CAS. The L3 tier is folded into
+		// `ConfiguredL3` (Store when the caller supplies a backend, None
+		// otherwise), so the runtime picks L2 wiring at runtime but the *type*
+		// is always `Tiered<ConfiguredL3>` — no `dyn` erasure anywhere.
+		let l3 = match cfg.l3 {
+			Some(store) => ConfiguredL3::Store(store),
+			None => ConfiguredL3::None,
 		};
+		let l2 = match cfg.cas_root.as_deref() {
+			Some(root) => Some(cas::DiskCas::open(root)?),
+			None => None,
+		};
+		let cas: Arc<Tiered<ConfiguredL3>> = Arc::new(Tiered::with_l3(256, l2, l3));
 
 		let node = match cfg.node {
 			Some(name) => NodeId::new(name),
@@ -155,20 +198,22 @@ impl ForgeRuntime<Ready> {
 		self.policy
 	}
 
-	/// The shared CAS handle (erased to `dyn DynCas`).
-	pub fn cas_handle(&self) -> &Arc<dyn DynCas> {
+	/// The shared CAS handle (the one concrete tiered type).
+	pub fn cas_handle(&self) -> &Arc<Tiered<ConfiguredL3>> {
 		&self.cas
 	}
 }
 
 impl ForgeContext for ForgeRuntime<Ready> {
+	type Cas = Tiered<ConfiguredL3>;
+
 	fn node(&self) -> &NodeId {
 		&self.node
 	}
 	fn cage(&self) -> &dyn Cage {
 		self.cage.as_ref()
 	}
-	fn cas(&self) -> &dyn DynCas {
+	fn cas(&self) -> &Tiered<ConfiguredL3> {
 		self.cas.as_ref()
 	}
 	fn toolchains(&self) -> &ToolchainSet {

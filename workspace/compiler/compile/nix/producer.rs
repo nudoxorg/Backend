@@ -29,9 +29,9 @@ impl Producer for NixProducer {
 		ThreatTier::Hostile
 	}
 
-	fn plan(
+	fn plan<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		_input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError> {
 		Ok(ExecPlan::Library(WorkerLang::Nix))
@@ -49,9 +49,9 @@ impl Producer for NixProducer {
 		})
 	}
 
-	fn lower_in_process(
+	fn lower_in_process<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
 		let index = super::lower_package(root).map_err(ProducerError::lower)?;

@@ -113,8 +113,8 @@ fn strip_line_comment(line: &str) -> &str {
 /// The `go` binary is taken from `PATH`. Diagnostics stream to the
 /// oracle's stderr and are surfaced in the error on failure; load errors
 /// that still produced a document are carried in [`oracle::Output::errors`].
-pub fn run_oracle(
-	ctx: &dyn crate::compile::producer::ForgeContext,
+pub fn run_oracle<C: crate::compile::producer::ForgeContext>(
+	ctx: &C,
 	module_root: &Path,
 ) -> Result<oracle::Output> {
 	let oracle_dir = materialize_oracle()?;

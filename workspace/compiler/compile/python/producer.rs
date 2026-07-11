@@ -25,9 +25,9 @@ impl Producer for PythonProducer {
 		ThreatTier::Hostile
 	}
 
-	fn plan(
+	fn plan<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		_input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError> {
 		Ok(ExecPlan::Library(WorkerLang::Python))
@@ -45,9 +45,9 @@ impl Producer for PythonProducer {
 		})
 	}
 
-	fn lower_in_process(
+	fn lower_in_process<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
 		let ctx = super::context::PythonContext::new();

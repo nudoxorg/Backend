@@ -198,9 +198,9 @@ pub trait Producer: Send + Sync {
 	///
 	/// `ctx` is available for sealing external-command plans against the injected
 	/// toolchains / overrides.
-	fn plan(
+	fn plan<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError>;
 
@@ -219,9 +219,9 @@ pub trait Producer: Send + Sync {
 	/// Production policy never reaches here (`require_worker` → error). Command
 	/// producers (Go/Java one-shot path) run their external toolchain through
 	/// `ctx.cage()`.
-	fn lower_in_process(
+	fn lower_in_process<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		_root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
 		Err(ProducerError::WorkerRequired(
@@ -232,9 +232,9 @@ pub trait Producer: Send + Sync {
 	/// Full produce: plan → execute → decode, under the injected context.
 	///
 	/// Override when the plan is adaptive (Rust multi-crate metadata → N rustdocs).
-	fn produce(
+	fn produce<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		input: &SealedInput,
 	) -> Result<ProducerOutput, ProducerError> {
 		execute(ctx, self, input)
@@ -389,8 +389,8 @@ pub fn is_secret_env_key(key: &str) -> bool {
 }
 
 /// Plan → run → decode for any producer, under the injected context.
-pub fn execute<P: Producer + ?Sized>(
-	ctx: &dyn ForgeContext,
+pub fn execute<C: ForgeContext, P: Producer + ?Sized>(
+	ctx: &C,
 	p: &P,
 	input: &SealedInput,
 ) -> Result<ProducerOutput, ProducerError> {
@@ -400,8 +400,8 @@ pub fn execute<P: Producer + ?Sized>(
 	}
 }
 
-fn execute_library<P: Producer + ?Sized>(
-	ctx: &dyn ForgeContext,
+fn execute_library<C: ForgeContext, P: Producer + ?Sized>(
+	ctx: &C,
 	p: &P,
 	input: &SealedInput,
 	lang: WorkerLang,
@@ -430,8 +430,8 @@ fn execute_library<P: Producer + ?Sized>(
 	}
 }
 
-fn execute_commands<P: Producer + ?Sized>(
-	ctx: &dyn ForgeContext,
+fn execute_commands<C: ForgeContext, P: Producer + ?Sized>(
+	ctx: &C,
 	p: &P,
 	input: &SealedInput,
 	cmds: Vec<SealedCommand>,
@@ -461,8 +461,8 @@ fn execute_commands<P: Producer + ?Sized>(
 }
 
 /// Run one sealed command through the injected cage, honoring the never token.
-fn run_sealed_command(
-	ctx: &dyn ForgeContext,
+fn run_sealed_command<C: ForgeContext>(
+	ctx: &C,
 	cmd: SealedCommand,
 	label: &str,
 ) -> Result<Captured, ProducerError> {

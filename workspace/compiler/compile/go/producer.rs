@@ -30,9 +30,9 @@ impl Producer for GoProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(
+	fn plan<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError> {
 		let module = package::discover_module(&input.root).map_err(ProducerError::plan)?;
@@ -76,9 +76,9 @@ impl Producer for GoProducer {
 
 	/// Keep the historical one-shot path available for call sites / tests that
 	/// don't go through plan→execute (still real lowering, not a stub).
-	fn lower_in_process(
+	fn lower_in_process<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
 		let index = super::lower_package(ctx, root).map_err(ProducerError::lower)?;

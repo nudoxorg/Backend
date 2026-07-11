@@ -86,8 +86,8 @@ pub fn generate(input: &PackageInput) -> Result<GeneratedPackage, GenerateError>
 ///
 /// Surface / CST / archive each live under their own CAS key so a hit skips the
 /// tree walk. All caching goes through the context's CAS — the sole cache client.
-pub fn generate_with(
-	ctx: &dyn ForgeContext,
+pub fn generate_with<C: ForgeContext>(
+	ctx: &C,
 	input: &PackageInput,
 ) -> Result<GeneratedPackage, GenerateError> {
 	let source_hash = parse_cache::hash_source_tree(&input.root)
