@@ -12,10 +12,11 @@ use crate::compile::producer::{
 
 /// Java project producer (vendored javadoc doclet → IR).
 ///
-/// Multi-step (materialize → javac → javadoc) is orchestrated inside the existing
-/// oracle path via [`produce`](Producer::produce). `plan`/`decode` return explicit
-/// errors (not hollow empty commands); ForgeRuntime (Phase 4) will stage sequential
-/// sealed commands under one scratch.
+/// The doclet jar is a Buck2-built resource (no runtime javac step); source
+/// collection + `javadoc -doclet` invocation is orchestrated inside the
+/// existing oracle path via [`produce`](Producer::produce). `plan`/`decode`
+/// return explicit errors (not hollow empty commands); ForgeRuntime (Phase 4)
+/// will stage sequential sealed commands under one scratch.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct JavaProducer;
 

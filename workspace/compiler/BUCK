@@ -2,14 +2,14 @@ load("//build:rust.bzl", "crate", "dep_pins", "deps", "member", "rust_bin", "rus
 
 rust_crate(
     name = "compiler",
-    srcs = (
-        native.glob(
-            ["**/*.rs"],
-            exclude = ["intermediate-representation/**", "tests/**", "bin/**"],
-        )
-        + native.glob(["compile/go/oracle/**"])
-        + native.glob(["compile/java/oracle/**"])
+    srcs = native.glob(
+        ["**/*.rs"],
+        exclude = ["intermediate-representation/**", "tests/**", "bin/**"],
     ),
+    resources = {
+        "go-oracle": "//workspace/compiler/compile/go/oracle:oracle",
+        "java-oracle.jar": "//workspace/compiler/compile/java/oracle:extractor",
+    },
     deps = deps([
         member("heart"),
         member("ir"),

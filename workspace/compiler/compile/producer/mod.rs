@@ -13,12 +13,12 @@
 //! [`Producer::produce`] and return [`ProducerError::Plan`] / [`ProducerError::Decode`]
 //! from `plan`/`decode` so introspection never sees a hollow empty command list.
 
-mod oracle;
+mod resource;
 pub mod runtime;
 mod scratch;
 mod wire;
 
-pub use oracle::{OraclePath, materialize as materialize_oracle, oracle_hash};
+pub use resource::buck_resource;
 pub use runtime::{
 	ForgeContext, LocalForgeContext, cache_get_or_build, execute_plan, run_producer,
 };
@@ -522,11 +522,6 @@ fn nonempty_utf8(bytes: &[u8]) -> Option<String> {
 /// Decode a worker / oracle JSON body into an [`Index`].
 pub fn decode_index_json(bytes: &[u8]) -> Result<Index, ProducerError> {
 	serde_json::from_slice(bytes).map_err(|e| ProducerError::decode(e.to_string()))
-}
-
-/// Content-addressed oracle dir path for a label + hash (for error context).
-pub fn oracle_dir(label: &str, hash: u64) -> PathBuf {
-	std::env::temp_dir().join(format!("nudox-{label}-oracle-{hash:016x}"))
 }
 
 #[cfg(test)]

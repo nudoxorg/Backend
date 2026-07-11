@@ -31,11 +31,18 @@ use uv_pep440::{Version, VersionSpecifiers};
 /// a version matches when the specifier set `contains` it. This is what lets
 /// Python carry its constraint as `VersionRequest::Constraint(..)` on the ONE
 /// shared vocabulary instead of a side-channel field plus an always-`Latest`
-/// request. (`Constraint` is local, so this impl on the foreign
-/// `VersionSpecifiers` is permitted by the orphan rules.)
-impl Constraint<Version> for VersionSpecifiers {
+/// request.
+///
+/// Both `Constraint` (from the `version` crate) and `VersionSpecifiers` (from
+/// `uv_pep440`) are foreign to this crate, so the impl must go through a local
+/// newtype to satisfy the orphan rules — mirroring Go's `GoPrefix` and Java's
+/// `PrefixConstraint`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pep440Constraint(pub VersionSpecifiers);
+
+impl Constraint<Version> for Pep440Constraint {
     fn matches(&self, v: &Version) -> bool {
-        self.contains(v)
+        self.0.contains(v)
     }
 }
 
@@ -43,7 +50,7 @@ impl Constraint<Version> for VersionSpecifiers {
 /// carrying [`VersionSpecifiers`] in its constraint case. Python only ever
 /// resolves with a specifier set (never a bare `Exact` pin here), so its use
 /// is `Constraint(specifiers)`.
-pub type PythonVersionRequest = VersionRequest<Version, VersionSpecifiers>;
+pub type PythonVersionRequest = VersionRequest<Version, Pep440Constraint>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PythonTraversalError {
@@ -232,7 +239,7 @@ struct PythonTagGrammar;
 
 impl VersionGrammar for PythonTagGrammar {
     type V = Version;
-    type C = VersionSpecifiers;
+    type C = Pep440Constraint;
 
     fn parse_tag<'t>(&self, raw_tag: &'t str, _ctx: &TagContext<'_>) -> Option<(Version, &'t str)> {
         let trimmed = raw_tag.strip_prefix(['v', 'V']).unwrap_or(raw_tag);
@@ -259,7 +266,7 @@ pub fn resolve_version_from_tags<S: AsRef<str>>(
     let ctx = TagContext::default();
     // Carry the PEP 440 specifiers as the shared `Constraint` case — no more
     // side-channel field plus always-`Latest` bypass.
-    let request: PythonVersionRequest = VersionRequest::Constraint(req.clone());
+    let request: PythonVersionRequest = VersionRequest::Constraint(Pep440Constraint(req.clone()));
     resolve_from_tags(tags, &request, &ctx, &PythonTagGrammar)
 }
 

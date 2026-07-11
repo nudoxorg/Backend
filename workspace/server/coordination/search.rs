@@ -93,7 +93,7 @@ impl<M: EmbeddingModel> Server<M> {
 			.after
 			.as_deref()
 			.map(|token| {
-				heart::Cursor::decode(token)
+				heart::Cursor::<_, heart::Advisory>::decode(token)
 					.map_err(|source| BadRequestReason::InvalidCursor {
 				token: token.to_owned(),
 				source,

@@ -27,7 +27,7 @@
 
 use std::cmp::Ordering;
 
-use version::{PrefixConstraint, TagContext, VersionGrammar, VersionRequest, resolve_from_tags};
+use version::{PrefixConstraint, TagContext, VersionGrammar, resolve_from_tags};
 
 use super::error::MavenVersionError;
 

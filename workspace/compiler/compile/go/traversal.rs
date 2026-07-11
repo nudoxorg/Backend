@@ -25,7 +25,7 @@
 
 use std::cmp::Ordering;
 
-use version::{Constraint, TagContext, VersionGrammar, VersionRequest, resolve_from_tags};
+use version::{Constraint, TagContext, VersionGrammar, resolve_from_tags};
 
 use super::error::{GoError, Result};
 

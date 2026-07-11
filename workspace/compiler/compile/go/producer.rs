@@ -36,20 +36,16 @@ impl Producer for GoProducer {
 		input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError> {
 		let module = package::discover_module(&input.root).map_err(ProducerError::plan)?;
-		let oracle_dir = package::materialize_oracle().map_err(ProducerError::plan)?;
+		let bin = package::oracle_binary().map_err(ProducerError::plan)?;
 		let target = module.root.canonicalize().map_err(ProducerError::plan)?;
 
-		let cmd = IsolatedCommand::new("go", ProducerProfile::Go)
-			.arg("run")
-			.arg(".")
+		let cmd = IsolatedCommand::new(&bin, ProducerProfile::Go)
 			.arg(&target)
-			.cwd(&oracle_dir)
 			.env("GOWORK", "off")
 			.env("GOFLAGS", "-mod=mod")
 			.env("GOPROXY", "off")
-			.ro(&oracle_dir)
+			.ro(&bin)
 			.ro(&target)
-			.rw(&oracle_dir)
 			.rw(input.budget.fs.scratch_path())
 			.rw(std::env::temp_dir());
 
