@@ -42,7 +42,7 @@ use runtime::{
 };
 use secrecy::ExposeSecret;
 
-pub use config::{Endpoints, Limits, Role, ServerConfiguration, SourceConfig};
+pub use config::{Deployment, Endpoints, Limits, Role, ServerConfiguration, SourceConfig};
 pub use error::{ServerError, ServerResult};
 use error::InternalError;
 

@@ -1,7 +1,7 @@
-//! put/get roundtrip, second-get hit, integrity, invalidate, L3 stub.
+//! put/get roundtrip, second-get hit, integrity, invalidate, generic L3.
 
 use bytes::Bytes;
-use cas::{Cas, ContentHash, DiskCas, MemoryCas, RegistryCas, Tiered};
+use cas::{Cas, ContentHash, DiskCas, MemoryCas, Tiered};
 
 #[tokio::test]
 async fn memory_put_get_roundtrip() {
@@ -93,12 +93,49 @@ async fn tiered_memory_only_first_write_wins_reports_novel() {
 	assert_eq!(cas.get(key).await.unwrap().as_deref(), Some(b"a".as_slice()));
 }
 
+/// Verify that a real L3 backend wired via `Tiered::with_l3` participates in
+/// read-through and promotion: a value in L3 only is served and promoted to
+/// L1/L2 on the first read.
 #[tokio::test]
-async fn tiered_with_stub_l3_still_gets_and_puts() {
+async fn tiered_with_l3_promotes_on_read() {
+	let l3 = MemoryCas::new();
+	let key = ContentHash::of_bytes(b"l3-payload");
+	l3.put_keyed(key, Bytes::from_static(b"from-l3")).await.unwrap();
+
+	// L1 (16 cap), no L2, l3 = MemoryCas
+	let tiered = Tiered::with_l3(16, None, l3);
+
+	// Cold L1 — should fall through to L3 and return the value.
+	let first = tiered.get(key).await.unwrap();
+	assert_eq!(first.as_deref(), Some(b"from-l3".as_slice()), "L3 read-through failed");
+
+	// Second get should hit L1 (promoted).
+	let second = tiered.get(key).await.unwrap();
+	assert_eq!(second.as_deref(), Some(b"from-l3".as_slice()), "L1 promotion failed");
+}
+
+/// Verify that a put to a Tiered stack with a live L3 writes through to L3.
+#[tokio::test]
+async fn tiered_with_l3_put_reaches_l3() {
 	let dir = tempfile::tempdir().unwrap();
-	let cas = Tiered::new(16, Some(DiskCas::open(dir.path()).unwrap()), Some(RegistryCas::stub()));
-	let key = ContentHash::of_bytes(b"with-l3-stub");
-	// Unsupported L3 must not fail the put.
+	let l3 = MemoryCas::new();
+	let tiered = Tiered::with_l3(16, Some(DiskCas::open(dir.path()).unwrap()), l3);
+
+	let key = tiered.put(Bytes::from_static(b"through-l3")).await.unwrap();
+	assert_eq!(
+		tiered.get(key).await.unwrap().as_deref(),
+		Some(b"through-l3".as_slice()),
+		"put-then-get through l3 failed"
+	);
+}
+
+/// When the L3 (NoL3 sentinel) returns Unsupported, puts and gets must still
+/// succeed using L1/L2 only.
+#[tokio::test]
+async fn tiered_with_no_l3_still_works() {
+	let dir = tempfile::tempdir().unwrap();
+	let cas = Tiered::new(16, Some(DiskCas::open(dir.path()).unwrap()), None::<cas::NoL3>);
+	let key = ContentHash::of_bytes(b"with-l3-absent");
 	assert!(cas.put_keyed(key, Bytes::from_static(b"v")).await.unwrap());
 	assert_eq!(cas.get(key).await.unwrap().as_deref(), Some(b"v".as_slice()));
 }

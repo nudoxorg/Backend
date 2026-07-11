@@ -169,6 +169,15 @@ fn render_function_emits_type_comment_and_binding() {
         out.contains("age:") && out.contains("name:"),
         "expected curried formals, got:\n{out}"
     );
+    // The body must be the idiomatic `null` stub — never a literal HTML tag.
+    assert!(
+        out.contains("null"),
+        "expected `null` body stub in Nix binding, got:\n{out}"
+    );
+    assert!(
+        !out.contains("<body>"),
+        "body must not contain literal `<body>` placeholder, got:\n{out}"
+    );
 }
 
 #[test]

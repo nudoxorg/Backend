@@ -7,7 +7,6 @@ use caching::StampedeCache;
 use heart::ContentHash;
 
 use crate::disk::DiskCas;
-use crate::registry::RegistryCas;
 use crate::{Cas, CasError};
 
 /// Assumed recompute cost when seeding L1 from a lower tier (XFetch bookkeeping).
@@ -17,37 +16,69 @@ const PROMOTE_COST: Duration = Duration::from_millis(1);
 /// immutable under a fixed job key; a long TTL just bounds memory residency.
 const L1_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// Zero-sized sentinel meaning "no L3 configured".
+///
+/// Used as the default type parameter for [`Tiered`] so that bare `Tiered`
+/// resolves to `Tiered<NoL3>` at existing call sites without any annotation.
+/// All operations return [`CasError::Unsupported`] (except `invalidate`, which
+/// is a no-op) so the tiered composition treats the tier as absent.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoL3;
+
+impl Cas for NoL3 {
+	async fn get(&self, _key: ContentHash) -> Result<Option<Bytes>, CasError> {
+		Err(CasError::Unsupported("L3 not configured (NoL3)"))
+	}
+
+	async fn put(&self, _bytes: Bytes) -> Result<ContentHash, CasError> {
+		Err(CasError::Unsupported("L3 not configured (NoL3)"))
+	}
+
+	async fn put_keyed(&self, _key: ContentHash, _bytes: Bytes) -> Result<bool, CasError> {
+		Err(CasError::Unsupported("L3 not configured (NoL3)"))
+	}
+
+	async fn invalidate(&self, _key: ContentHash) -> Result<(), CasError> {
+		// Nothing to drop — tier is absent.
+		Ok(())
+	}
+}
+
 /// Tiered CAS: in-process stampede cache, optional local disk, optional L3.
+///
+/// `L3` is any [`Cas`] implementation; the default is [`NoL3`], which the
+/// composition treats as "tier absent" (all ops return
+/// [`CasError::Unsupported`]). Bare `Tiered` therefore resolves to
+/// `Tiered<NoL3>` at every existing call site without annotation.
 ///
 /// Read order: L1 → L2 → L3. Hits promote upward.
 ///
 /// Write policy (best-effort lower tiers):
 /// - Durable tiers (L2, then L3) are written before L1.
-/// - [`CasError::Unsupported`] from L3 is treated as "tier absent" (skip), so a
-///   Phase 1 [`RegistryCas`] stub never fails a put/get.
+/// - [`CasError::Unsupported`] from L3 is treated as "tier absent" (skip), so
+///   a [`NoL3`] tier (or any tier that returns Unsupported) never fails a
+///   put/get.
 /// - First-write-wins on durable tiers: when L2 already holds the key, L1 is
 ///   filled from L2 (not from the caller's possibly-different bytes) so the
 ///   tiers cannot diverge.
-pub struct Tiered {
+pub struct Tiered<L3: Cas = NoL3> {
 	l1: StampedeCache<ContentHash, Bytes>,
 	l2: Option<DiskCas>,
-	l3: Option<RegistryCas>,
+	l3: Option<L3>,
 }
 
-impl Tiered {
-	/// Build a tiered store.
-	pub fn new(
-		l1_capacity: u64,
-		l2: Option<DiskCas>,
-		l3: Option<RegistryCas>,
-	) -> Self {
+impl<L3: Cas> Tiered<L3> {
+	/// Build a tiered store with an explicit L3 type.
+	pub fn new(l1_capacity: u64, l2: Option<DiskCas>, l3: Option<L3>) -> Self {
 		Self {
 			l1: StampedeCache::new(l1_capacity, L1_TTL),
 			l2,
 			l3,
 		}
 	}
+}
 
+impl Tiered<NoL3> {
 	/// Process-default: L1 (256) + disk at `$NUDOX_PARSE_CACHE` / temp, no L3.
 	pub fn default_open() -> Result<Self, CasError> {
 		Ok(Self::new(256, Some(DiskCas::default_open()?), None))
@@ -64,7 +95,18 @@ impl Tiered {
 	}
 }
 
-impl Cas for Tiered {
+impl<L3: Cas> Tiered<L3> {
+	/// L1 + optional disk + a live L3 backend.
+	///
+	/// Use this constructor to wire a real distributed store (e.g.
+	/// `registry::StoreCas`) as the L3 tier. The `l2` argument is optional so
+	/// callers that want memory + L3 can pass `None`.
+	pub fn with_l3(l1_capacity: u64, l2: Option<DiskCas>, l3: L3) -> Self {
+		Self::new(l1_capacity, l2, Some(l3))
+	}
+}
+
+impl<L3: Cas> Cas for Tiered<L3> {
 	async fn get(&self, key: ContentHash) -> Result<Option<Bytes>, CasError> {
 		if let Some(v) = self.l1.get(&key).await {
 			return Ok(Some(v));
@@ -93,7 +135,7 @@ impl Cas for Tiered {
 					return Ok(Some(v));
 				},
 				Ok(None) => {},
-				// Unwired L3 is a soft miss, not a hard failure.
+				// Unwired / no-op L3 is a soft miss, not a hard failure.
 				Err(e) if e.is_unsupported() => {},
 				Err(e) => return Err(e),
 			}

@@ -3,7 +3,8 @@
 //! One [`Cas`] trait, three tiers:
 //! - **L1** — in-process [`StampedeCache`] (coalesced, stampede-resistant)
 //! - **L2** — node-local plain-directory [`DiskCas`] (blake3-named files)
-//! - **L3** — shared object store via [`RegistryCas`] (stub this phase)
+//! - **L3** — any [`Cas`] impl; typically `registry::StoreCas` over the live
+//!   object store. When absent, the zero-sized [`NoL3`] sentinel fills the slot.
 //!
 //! Keys are [`heart::ContentHash`]. Job-scoped composite keys are
 //! [`heart::JobKey`] (a newtype over the same digest).
@@ -16,7 +17,6 @@
 mod disk;
 mod error;
 mod memory;
-mod registry;
 mod tiered;
 
 pub use caching::StampedeCache;
@@ -24,8 +24,7 @@ pub use disk::DiskCas;
 pub use error::CasError;
 pub use heart::{ContentHash, JobKey};
 pub use memory::MemoryCas;
-pub use registry::RegistryCas;
-pub use tiered::Tiered;
+pub use tiered::{NoL3, Tiered};
 
 use bytes::Bytes;
 

@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use url::Url;
@@ -47,6 +47,28 @@ pub struct ServerConfiguration {
 	/// is always served. Defaults to [`Role::All`] (single-node).
 	#[serde(default)]
 	pub role: Role,
+
+	/// The deployment tier (`NUDOX_DEPLOYMENT`). When `production`, the boot
+	/// guard rejects default/well-known credentials before any network
+	/// connection is opened. Defaults to [`Deployment::Development`].
+	#[serde(default)]
+	pub deployment: Deployment,
+}
+
+/// The deployment tier this node is running in.
+///
+/// In `Production` the boot guard enforces that default / well-known
+/// credentials are rejected before the server opens any network connection.
+/// `Development` (the default) relaxes that check so a `cargo run` / `buck2
+/// run` with stock localhost services works out of the box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Deployment {
+	/// Local-development / CI: default credentials are allowed.
+	#[default]
+	Development,
+	/// Production: default credentials are a hard boot error.
+	Production,
 }
 
 /// A node's role in the daemon fleet. Every node consumes the same postgres
@@ -202,6 +224,7 @@ impl Default for ServerConfiguration {
 			custom_registries: Vec::new(),
 			limits: Limits::default(),
 			role: Role::default(),
+			deployment: Deployment::default(),
 		}
 	}
 }
@@ -266,6 +289,11 @@ impl ServerConfiguration {
 
 	/// Structural validation of the merged configuration: source names must be
 	/// non-empty and unique (they seed the deterministic source identities).
+	///
+	/// **Boot guard**: when [`Deployment::Production`] any source whose postgres
+	/// URL or TerminusDB password is still the well-known development default is
+	/// a hard error — the server refuses to start rather than silently connecting
+	/// a production graph store with publicly-known credentials.
 	pub fn validate(&self) -> Result<(), ConfigError> {
 		let mut names = std::collections::HashSet::new();
 		for source in std::iter::once(&self.definitive).chain(&self.overlays) {
@@ -276,6 +304,10 @@ impl ServerConfiguration {
 				return Err(ConfigError::Validation(ConfigValidationError::DuplicateSourceName {
 					name: source.name.clone(),
 				}));
+			}
+
+			if self.deployment == Deployment::Production {
+				source.endpoints.assert_not_default_credentials()?;
 			}
 		}
 		Ok(())
@@ -319,6 +351,33 @@ impl Endpoints {
 	/// salt for every deterministic symbol id minted against this source.
 	pub fn terminus_instance(&self) -> String {
 		format!("{}/{}", self.terminus_organization, self.terminus_database)
+	}
+
+	/// In production, reject well-known default credentials before any network
+	/// connection is opened.
+	///
+	/// The postgres URL default is `postgres://nudox:nudox@127.0.0.1:5432/nudox`
+	/// and the TerminusDB password default is `root` — both are public, so they
+	/// must not be used in a production deployment.
+	fn assert_not_default_credentials(&self) -> Result<(), ConfigError> {
+		const DEFAULT_POSTGRES: &str = "postgres://nudox:nudox@127.0.0.1:5432/nudox";
+		const DEFAULT_TERMINUS_PASSWORD: &str = "root";
+
+		if self.postgres.expose_secret() == DEFAULT_POSTGRES {
+			return Err(ConfigError::Validation(
+				ConfigValidationError::DefaultCredentialInProduction {
+					field: "endpoints.postgres",
+				},
+			));
+		}
+		if self.terminus_password.expose_secret() == DEFAULT_TERMINUS_PASSWORD {
+			return Err(ConfigError::Validation(
+				ConfigValidationError::DefaultCredentialInProduction {
+					field: "endpoints.terminus_password",
+				},
+			));
+		}
+		Ok(())
 	}
 }
 
@@ -457,6 +516,17 @@ pub enum ConfigValidationError {
 	/// A Qdrant collection name failed validation (carries the rich CollectionNameError).
 	#[error("invalid qdrant collection name")]
 	InvalidQdrantCollection(#[from] runtime::vector::CollectionNameError),
+
+	/// A well-known default credential is present in a production deployment.
+	///
+	/// The named `field` still holds its development default value; the server
+	/// refuses to start so an operator configuration mistake never silently opens
+	/// a production store with publicly-known credentials.
+	#[error(
+		"production deployment must not use default credentials for `{field}`; \
+		 set it to a non-default value via config file or environment variable"
+	)]
+	DefaultCredentialInProduction { field: &'static str },
 
 	/// Generic other validation problem (use only when no more specific variant
 	/// fits; prefer extending the enum).

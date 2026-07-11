@@ -2,7 +2,7 @@
 //!
 //! TDD specs for the static, private-facing default configuration.
 
-use server::{Role, ServerConfiguration};
+use server::{Deployment, Role, ServerConfiguration};
 
 /// The default config binds the documented local address.
 ///
@@ -73,5 +73,90 @@ fn upload_timeout_is_two_seconds() {
         configuration.limits.upload_timeout,
         std::time::Duration::from_millis(2000),
         "admin mutations must give up after the documented two seconds"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Boot guard: production + default credentials → hard error
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Production + default postgres URL → validation error naming the field.
+///
+/// Assert: a `production` deployment with the stock `postgres://nudox:nudox@…`
+///   URL must be rejected at `validate()` before any network connection opens.
+#[test]
+fn production_with_default_postgres_is_rejected() {
+    let mut configuration = ServerConfiguration::default();
+    configuration.deployment = Deployment::Production;
+    // postgres URL is still the default ("postgres://nudox:nudox@127.0.0.1:5432/nudox")
+    // terminus_password is still "root" too, but postgres is checked first.
+
+    let error = configuration.validate().expect_err(
+        "production + default postgres must be a hard validation error",
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("endpoints.postgres"),
+        "error must name the unsafe field; got: {message}"
+    );
+}
+
+/// Production + default terminus password → validation error naming the field.
+///
+/// Assert: if postgres is customised but terminus_password is still `root`,
+///   `validate()` must reject with the terminus field named.
+#[test]
+fn production_with_default_terminus_password_is_rejected() {
+    use secrecy::SecretString;
+
+    let mut configuration = ServerConfiguration::default();
+    configuration.deployment = Deployment::Production;
+    // Override postgres so that check passes and we reach the password check.
+    configuration.definitive.endpoints.postgres =
+        SecretString::from("postgres://prod_user:s3cr3t@db.example.com:5432/prod");
+
+    let error = configuration.validate().expect_err(
+        "production + default terminus password must be a hard validation error",
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("endpoints.terminus_password"),
+        "error must name the unsafe field; got: {message}"
+    );
+}
+
+/// Production + both credentials non-default → validation passes.
+///
+/// Assert: once both secrets are overridden, `validate()` returns `Ok`.
+#[test]
+fn production_with_real_credentials_passes_validation() {
+    use secrecy::SecretString;
+
+    let mut configuration = ServerConfiguration::default();
+    configuration.deployment = Deployment::Production;
+    configuration.definitive.endpoints.postgres =
+        SecretString::from("postgres://prod_user:s3cr3t@db.example.com:5432/prod");
+    configuration.definitive.endpoints.terminus_password =
+        SecretString::from("sup3r_s3cr3t_terminus_pw");
+
+    configuration.validate().expect(
+        "production with non-default credentials must pass structural validation",
+    );
+}
+
+/// Development (default) with default credentials → validation passes.
+///
+/// Assert: the boot guard is not applied in the `development` tier so local
+///   `buck2 run` / CI setups work without configuring secrets.
+#[test]
+fn development_with_default_credentials_passes_validation() {
+    let configuration = ServerConfiguration::default();
+    assert_eq!(
+        configuration.deployment,
+        Deployment::Development,
+        "the default deployment must be Development"
+    );
+    configuration.validate().expect(
+        "development + default credentials must pass validation (no boot guard in dev)"
     );
 }

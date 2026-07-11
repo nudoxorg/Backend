@@ -94,6 +94,12 @@ impl ForgeRuntime<Cold> {
 	) -> Result<ForgeRuntime<Ready>, ForgeError> {
 		let cage = select_cage(policy)?;
 
+		// L3 wiring is deferred: `ForgeContext::cas()` returns `&Tiered` (i.e.
+		// `&Tiered<NoL3>`) so the trait is bound to the default L3 type.
+		// Threading `StoreCas` here would require making `ForgeContext` generic
+		// over `L3: Cas`, which is a compiler-crate change outside this phase.
+		// When a `Store` handle is available here, use `Tiered::with_l3` and
+		// update the trait signature together.
 		let cas = match &cfg.cas_root {
 			Some(root) => Arc::new(Tiered::with_disk(256, cas::DiskCas::open(root)?)),
 			None => Arc::new(Tiered::memory_only(256)),

@@ -6,6 +6,7 @@ rust_crate(
     deps = deps([
         member("heart"),
         member("ir"),
+        member("cas"),
         crate("libsqlite3_sys", features = ["bundled"]),
         crate("strum", features = ["derive"]),
         crate("postcard", features = ["alloc"]),
@@ -49,6 +50,7 @@ rust_tests(
     prefix = "test",
     deps = deps([
         member("heart"),
+        member("cas"),
         crate("object_store"),
         crate("sqlx", features = ["postgres", "runtime-tokio-rustls", "macros", "migrate", "json", "uuid", "chrono"]),
         crate("tantivy"),

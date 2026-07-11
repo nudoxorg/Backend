@@ -93,23 +93,25 @@ impl AddPackageDto {
 		let version = PackageVersion::try_from((self.ecosystem, self.version.as_str()))
 			.map_err(BadRequestReason::from)?;
 		let origin = match self.origin.as_deref() {
-			None => default_origin(self.ecosystem),
+			None => required_or_default_origin(self.ecosystem)?,
 			Some(custom) => resolve_custom_origin(custom)?,
 		};
 		Ok(PackageCoordinates { origin, name, version })
 	}
 }
 
-fn default_origin(ecosystem: Language) -> RegistryOrigin {
+/// Return the canonical default origin for ecosystems that have one (Rust, TS,
+/// Python, Nix). For Go and Java there is no universal public registry, so
+/// `origin` is required; omitting it is a 400 Bad Request.
+fn required_or_default_origin(ecosystem: Language) -> Result<RegistryOrigin, ServerError> {
 	match ecosystem {
-		Language::Rust => RegistryOrigin::CratesIo,
-		Language::Typescript => RegistryOrigin::NpmPublic,
-		Language::Python => RegistryOrigin::PyPi,
-		Language::Nix => RegistryOrigin::FlakeHub,
-		Language::Go | Language::Java => RegistryOrigin::Custom {
-			name: SmolStr::new_static("custom"),
-			url: Url::parse("https://example.invalid").expect("static url"),
-		},
+		Language::Rust => Ok(RegistryOrigin::CratesIo),
+		Language::Typescript => Ok(RegistryOrigin::NpmPublic),
+		Language::Python => Ok(RegistryOrigin::PyPi),
+		Language::Nix => Ok(RegistryOrigin::FlakeHub),
+		Language::Go | Language::Java => {
+			Err(BadRequestReason::MissingField { field: "origin" }.into())
+		}
 	}
 }
 

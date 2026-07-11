@@ -82,6 +82,7 @@ rust_tests(
         crate("smol_str"),
         crate("uuid"),
         crate("tempfile"),
+        crate("secrecy"),
         target(":server-lib"),
     ]),
 )
