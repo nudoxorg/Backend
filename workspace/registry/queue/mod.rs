@@ -46,25 +46,44 @@ pub struct Job {
 	pub lease_until: Option<DateTime<Utc>>,
 }
 
-/// A compile-time witness that a job was successfully dequeued (and therefore
-/// leased) by THIS worker.
+/// A compile-time witness that a job was leased by THIS worker **at dequeue
+/// time**.
+///
+/// # What this witness proves — and what it does NOT
 ///
 /// `dequeue_batch` is the only constructor: callers cannot mint a `LeasedJob`
-/// by wrapping an arbitrary `Job`. Terminal operations — [`Queue::complete`] and
-/// [`Queue::fail`] — *consume* this value so the witness cannot be reused after
-/// the job is settled. Non-terminal operations — [`Queue::renew_lease`] — borrow
-/// it so the caller can keep using it across multiple heartbeats.
+/// by wrapping an arbitrary `Job`. So the witness closes exactly one bug at
+/// compile time — *operating on a job this worker never dequeued* (mint-forgery
+/// / passing a bare `JobId` to a terminal op). Terminal operations —
+/// [`Queue::complete`] and [`Queue::fail`] — *consume* the value so the witness
+/// cannot be reused after the job is settled; non-terminal [`Queue::renew_lease`]
+/// borrows it so the caller can heartbeat across a run.
 ///
-/// This mirrors the capability-witness pattern already used in Phase 4a authz
-/// and the sandbox `Job::seal` typestate: "complete/fail/heartbeat a job you
-/// never leased" becomes **unrepresentable** rather than a runtime check.
+/// It does **NOT** prove the lease is *still held now*. Leases **expire**, and
+/// the reclaimer ([`Queue::reclaim_expired_leases`]) may hand this job to another
+/// worker while this witness is still in hand. Holding a `LeasedJob` at
+/// `complete()` therefore proves "I leased this at dequeue" — a *temporal*
+/// property (still-leased-at-commit) is fundamentally not expressible as a value
+/// that outlives the instant it was true. That race is closed at runtime, not by
+/// this type: see the `lease_until IS NOT NULL AND lease_until > now()` guard on
+/// the `complete`/`fail`/`renew_lease` SQL (`queries::queue::lease_still_held`),
+/// which surfaces [`QueueError::LeaseLost`] when it matches no row.
+///
+/// So the witness and the runtime guard are **complementary, not redundant**:
+/// the type rules out mint-forgery at compile time; the SQL guard rules out the
+/// expiry/reclaim race at commit time. Neither subsumes the other.
+///
+/// This mirrors the capability-witness pattern in Phase 4a authz and the sandbox
+/// `Job::seal` typestate — but scoped honestly: it makes "settle a job you never
+/// leased" unrepresentable, not "settle a job whose lease you already lost".
 #[derive(Debug)]
 pub struct LeasedJob {
 	/// The underlying job row.
 	job: Job,
-	/// The lease deadline at the time of dequeue (informational; the DB is the
-	/// authoritative source, but having it here lets callers cheaply detect
-	/// already-expired leases without a round-trip).
+	/// The lease deadline as stamped at dequeue time (informational only). The
+	/// DB is the authoritative source — this snapshot lets a caller cheaply
+	/// notice a lease that has *already* lapsed locally, but it can go stale:
+	/// only the runtime guard on the settling UPDATE proves the lease still held.
 	lease_until: DateTime<Utc>,
 }
 
@@ -84,7 +103,11 @@ impl LeasedJob {
 	/// How many times this job has been attempted (includes the current attempt).
 	pub fn attempts(&self) -> u32 { self.job.attempts }
 
-	/// The lease deadline stamped by `dequeue_batch`.
+	/// The lease deadline as stamped by `dequeue_batch` at dequeue time. This is
+	/// a local snapshot, not a live claim: it can lapse (and the row be
+	/// reclaimed) without this value changing. Treat it as a cheap hint for
+	/// "should I even bother heartbeating?"; the authoritative check is the
+	/// runtime lease guard on `complete`/`fail`/`renew_lease`.
 	pub fn lease_until(&self) -> DateTime<Utc> { self.lease_until }
 
 	/// Consume the witness and return the inner [`Job`]. Prefer the typed
@@ -335,11 +358,14 @@ impl Queue<Live> {
 	/// workers claim disjoint sets without contention, stamping `lease_until =
 	/// now() + lease` and bumping `attempts`.
 	///
-	/// Returns [`LeasedJob`] witnesses — proof that each returned job is owned
-	/// by THIS worker for the duration of its lease. Pass these witnesses to
-	/// [`Queue::complete`], [`Queue::fail`], and [`Queue::renew_lease`]; those
-	/// methods require the witness to prevent operating on a job the caller
-	/// never dequeued.
+	/// Returns [`LeasedJob`] witnesses — proof that each returned job was leased
+	/// by THIS worker *at this dequeue*. That is a compile-time guard against
+	/// operating on a job the caller never dequeued; it is **not** a proof the
+	/// lease is still held later (leases expire and can be reclaimed). Pass these
+	/// witnesses to [`Queue::complete`], [`Queue::fail`], and
+	/// [`Queue::renew_lease`], each of which additionally guards on the lease
+	/// still being live at commit time and returns [`QueueError::LeaseLost`] if
+	/// the reclaimer got there first.
 	pub async fn dequeue_batch(
 		&self,
 		limit: usize,
@@ -397,13 +423,19 @@ impl Queue<Live> {
 
 	/// Mark a job complete and remove it from the runnable set.
 	///
-	/// Consumes the [`LeasedJob`] witness: after a successful `complete` the job
-	/// is terminal and the witness cannot be reused (the type is dropped).
+	/// Consumes the [`LeasedJob`] witness: after `complete` returns the job is
+	/// terminal and the witness cannot be reused (the type is dropped). The
+	/// witness proves only that THIS worker leased the job at dequeue; it does
+	/// **not** prove the lease is still held now.
 	///
-	/// Fails with [`QueueError::LeaseLost`] if the lease was already reclaimed
-	/// (the guarded delete affected no row). `state` is the terminal `Stored`
-	/// state the caller has already recorded in the global index; the queue row
-	/// is simply settled.
+	/// **The real guard against the expiry/reclaim race is the runtime lease
+	/// check in the SQL** (`lease_still_held`: `lease_until IS NOT NULL AND
+	/// lease_until > now()`): if the lease already expired and the reclaimer
+	/// returned the row to the runnable set, the guarded delete affects no row
+	/// and this returns [`QueueError::LeaseLost`] rather than silently reporting
+	/// success — so a worker that lost the race cannot commit a result it no
+	/// longer owns. `state` is the terminal `Stored` state the caller has already
+	/// recorded in the global index; the queue row is simply settled.
 	pub async fn complete(
 		&self,
 		leased: LeasedJob,
@@ -436,7 +468,13 @@ impl Queue<Live> {
 	/// Consumes the [`LeasedJob`] witness: after `fail` the job is either
 	/// re-enqueued (where a new `LeasedJob` will be issued on the next
 	/// `dequeue_batch`) or dead-lettered. Either way the current witness is
-	/// terminal — it cannot be reused.
+	/// terminal — it cannot be reused. As with [`Queue::complete`], the witness
+	/// only proves this worker leased the job at dequeue; the guarded UPDATE
+	/// (`lease_still_held`) is what proves the lease is still live at commit.
+	///
+	/// Returns [`QueueError::LeaseLost`] if that guard matches no row (the lease
+	/// expired and was reclaimed mid-flight), so a lost race surfaces honestly
+	/// instead of masquerading as a successful retry/dead-letter.
 	pub async fn fail(
 		&self,
 		leased: LeasedJob,
