@@ -46,6 +46,53 @@ pub struct Job {
 	pub lease_until: Option<DateTime<Utc>>,
 }
 
+/// A compile-time witness that a job was successfully dequeued (and therefore
+/// leased) by THIS worker.
+///
+/// `dequeue_batch` is the only constructor: callers cannot mint a `LeasedJob`
+/// by wrapping an arbitrary `Job`. Terminal operations — [`Queue::complete`] and
+/// [`Queue::fail`] — *consume* this value so the witness cannot be reused after
+/// the job is settled. Non-terminal operations — [`Queue::renew_lease`] — borrow
+/// it so the caller can keep using it across multiple heartbeats.
+///
+/// This mirrors the capability-witness pattern already used in Phase 4a authz
+/// and the sandbox `Job::seal` typestate: "complete/fail/heartbeat a job you
+/// never leased" becomes **unrepresentable** rather than a runtime check.
+#[derive(Debug)]
+pub struct LeasedJob {
+	/// The underlying job row.
+	job: Job,
+	/// The lease deadline at the time of dequeue (informational; the DB is the
+	/// authoritative source, but having it here lets callers cheaply detect
+	/// already-expired leases without a round-trip).
+	lease_until: DateTime<Utc>,
+}
+
+impl LeasedJob {
+	/// The underlying job (immutable reference).
+	pub fn job(&self) -> &Job { &self.job }
+
+	/// The stable job id.
+	pub fn id(&self) -> JobId { self.job.id }
+
+	/// The package this job targets.
+	pub fn package(&self) -> PackageId { self.job.package }
+
+	/// The current [`ResolutionState`] as decoded from the row at dequeue time.
+	pub fn state(&self) -> &ResolutionState { &self.job.state }
+
+	/// How many times this job has been attempted (includes the current attempt).
+	pub fn attempts(&self) -> u32 { self.job.attempts }
+
+	/// The lease deadline stamped by `dequeue_batch`.
+	pub fn lease_until(&self) -> DateTime<Utc> { self.lease_until }
+
+	/// Consume the witness and return the inner [`Job`]. Prefer the typed
+	/// accessors above; `into_inner` is an escape hatch for callers that need
+	/// the whole struct (e.g. to serialise it for observability).
+	pub fn into_inner(self) -> Job { self.job }
+}
+
 /// The stable identity of a queued job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct JobId(pub uuid::Uuid);
@@ -287,11 +334,17 @@ impl Queue<Live> {
 	/// Uses `SELECT ... FOR UPDATE SKIP LOCKED LIMIT $limit` so concurrent
 	/// workers claim disjoint sets without contention, stamping `lease_until =
 	/// now() + lease` and bumping `attempts`.
+	///
+	/// Returns [`LeasedJob`] witnesses — proof that each returned job is owned
+	/// by THIS worker for the duration of its lease. Pass these witnesses to
+	/// [`Queue::complete`], [`Queue::fail`], and [`Queue::renew_lease`]; those
+	/// methods require the witness to prevent operating on a job the caller
+	/// never dequeued.
 	pub async fn dequeue_batch(
 		&self,
 		limit: usize,
 		lease: Duration,
-	) -> Result<Vec<Job>, QueueError> {
+	) -> Result<Vec<LeasedJob>, QueueError> {
 		let lease_until = Utc::now()
 			+ chrono::Duration::from_std(lease).unwrap_or_else(|_| chrono::Duration::days(1));
 		let (sql, vals) = queries::queue::dequeue_batch(limit as u64, lease_until);
@@ -299,7 +352,16 @@ impl Queue<Live> {
 			.fetch_all(&self.pool)
 			.await
 			.map_err(QueueError::Database)?;
-		rows.iter().map(row_to_job).collect()
+		rows.iter()
+			.map(|row| {
+				let job = row_to_job(row)?;
+				// The effective lease deadline: the DB stamped `lease_until` on
+				// the row, but we computed it locally just above so we can carry
+				// it on the witness without an extra SELECT.
+				let effective_lease = job.lease_until.unwrap_or(lease_until);
+				Ok(LeasedJob { job, lease_until: effective_lease })
+			})
+			.collect()
 	}
 
 	/// Extend a claimed job's lease to `now() + lease` — the heartbeat a
@@ -307,16 +369,19 @@ impl Queue<Live> {
 	/// fast reclaimer (letting [`crate::queue::Queue`] run a much shorter default
 	/// lease than the job deadline).
 	///
+	/// Requires a [`LeasedJob`] witness: only a job that THIS worker dequeued
+	/// (and that hasn't been settled yet) can have its lease renewed.
+	///
 	/// Guarded on the lease still being held (`lease_until IS NOT NULL AND
 	/// lease_until > now()`): if the reclaimer already returned this job to the
 	/// runnable set (the worker was too slow, or paused), the update affects no
 	/// row and this returns [`QueueError::LeaseLost`]. That is the signal for the
 	/// worker to abandon its now-orphaned run rather than keep computing a result
 	/// it can no longer commit.
-	pub async fn renew_lease(&self, job: JobId, lease: Duration) -> Result<(), QueueError> {
+	pub async fn renew_lease(&self, leased: &LeasedJob, lease: Duration) -> Result<(), QueueError> {
 		let lease_until = Utc::now()
 			+ chrono::Duration::from_std(lease).unwrap_or_else(|_| chrono::Duration::days(1));
-		let (sql, vals) = queries::queue::renew_lease(job.to_serial(), lease_until);
+		let (sql, vals) = queries::queue::renew_lease(leased.id().to_serial(), lease_until);
 		let renewed = sqlx::query_with(&sql, vals)
 			.fetch_optional(&self.pool)
 			.await
@@ -324,74 +389,95 @@ impl Queue<Live> {
 		match renewed {
 			Some(_) => Ok(()),
 			// No row updated → the lease had already expired and been reclaimed.
-			None => Err(QueueError::LeaseLost { package: job_package(&self.pool, job).await? }),
+			None => Err(QueueError::LeaseLost {
+				package: job_package(&self.pool, leased.id()).await?,
+			}),
 		}
 	}
 
-	/// Mark a job complete and remove it from the runnable set. Fails with
-	/// [`QueueError::LeaseLost`] if the lease was already reclaimed (the guarded
-	/// delete affected no row). `state` is the terminal `Stored` state the caller
-	/// has already recorded in the global index; the queue row is simply settled.
-	pub async fn complete(&self, job: JobId, _state: &ResolutionState) -> Result<(), QueueError> {
-		let (sql, vals) = queries::queue::complete(job.to_serial());
+	/// Mark a job complete and remove it from the runnable set.
+	///
+	/// Consumes the [`LeasedJob`] witness: after a successful `complete` the job
+	/// is terminal and the witness cannot be reused (the type is dropped).
+	///
+	/// Fails with [`QueueError::LeaseLost`] if the lease was already reclaimed
+	/// (the guarded delete affected no row). `state` is the terminal `Stored`
+	/// state the caller has already recorded in the global index; the queue row
+	/// is simply settled.
+	pub async fn complete(
+		&self,
+		leased: LeasedJob,
+		_state: &ResolutionState,
+	) -> Result<(), QueueError> {
+		let job_id = leased.id();
+		let package = leased.package();
+		let (sql, vals) = queries::queue::complete(job_id.to_serial());
 		let settled = sqlx::query_with(&sql, vals)
 			.fetch_optional(&self.pool)
 			.await
 			.map_err(QueueError::Database)?;
+		// `leased` is consumed here regardless of outcome — a completed job
+		// cannot be retried even if the DB write fails.
 		match settled {
 			Some(_) => Ok(()),
 			// No row settled → the lease had expired and been reclaimed.
-			None => Err(QueueError::LeaseLost { package: job_package(&self.pool, job).await? }),
+			None => Err(QueueError::LeaseLost {
+				package: job_package(&self.pool, job_id)
+					.await
+					.unwrap_or(package),
+			}),
 		}
 	}
 
 	/// Record a failure and apply the retry policy: either re-arm the lease with
 	/// backoff (a re-enqueue) or dead-letter the poison job. The single place
 	/// retry-vs-dead-letter is decided.
+	///
+	/// Consumes the [`LeasedJob`] witness: after `fail` the job is either
+	/// re-enqueued (where a new `LeasedJob` will be issued on the next
+	/// `dequeue_batch`) or dead-lettered. Either way the current witness is
+	/// terminal — it cannot be reused.
 	pub async fn fail(
 		&self,
-		job: JobId,
+		leased: LeasedJob,
 		kind: FailureKind,
 		message: String,
 	) -> Result<RetryDecision, QueueError> {
 		let _ = message; // recorded as the Failure payload in parse_status by the caller.
-
-		// Read the current attempt count the policy branches on.
-		let (a_sql, a_vals) = queries::queue::get_attempts(job.to_serial());
-		let attempts_row = sqlx::query_with(&a_sql, a_vals)
-			.fetch_optional(&self.pool)
-			.await
-			.map_err(QueueError::Database)?;
-		let attempts: u32 = match attempts_row {
-			Some(r) => {
-				let a: i32 = r.try_get(0).map_err(QueueError::Database)?;
-				a.max(0) as u32
-			}
-			None => return Err(QueueError::LeaseLost { package: job_package(&self.pool, job).await? }),
-		};
+		let job_id = leased.id();
+		let package = leased.package();
+		// The attempt count is already on the witness; use it rather than an
+		// extra DB round-trip.
+		let attempts = leased.attempts();
 
 		let decision = self.policy.decide(kind, attempts);
 		let affected = match decision {
 			RetryDecision::Retry { after } => {
 				let next = Utc::now()
 					+ chrono::Duration::from_std(after).unwrap_or_else(|_| chrono::Duration::zero());
-				let (sql, vals) = queries::queue::fail_retry(job.to_serial(), next);
+				let (sql, vals) = queries::queue::fail_retry(job_id.to_serial(), next);
 				sqlx::query_with(&sql, vals)
 					.fetch_optional(&self.pool)
 					.await
 					.map_err(QueueError::Database)?
 			}
 			RetryDecision::DeadLetter => {
-				let (sql, vals) = queries::queue::fail_deadletter(job.to_serial());
+				let (sql, vals) = queries::queue::fail_deadletter(job_id.to_serial());
 				sqlx::query_with(&sql, vals)
 					.fetch_optional(&self.pool)
 					.await
 					.map_err(QueueError::Database)?
 			}
 		};
+		// `leased` is consumed above — after this point the witness is gone
+		// regardless of outcome.
 		match affected {
 			Some(_) => Ok(decision),
-			None => Err(QueueError::LeaseLost { package: job_package(&self.pool, job).await? }),
+			None => Err(QueueError::LeaseLost {
+				package: job_package(&self.pool, job_id)
+					.await
+					.unwrap_or(package),
+			}),
 		}
 	}
 
@@ -511,5 +597,82 @@ mod state_discriminant_tests {
 		} else {
 			panic!("expected DeadLettered");
 		}
+	}
+}
+
+#[cfg(test)]
+mod leased_job_witness_tests {
+	use super::*;
+
+	/// Helper: mint a `LeasedJob` as `dequeue_batch` would — the ONLY place this
+	/// is valid. This simulates the internal constructor used in production.
+	fn make_leased(id_serial: i64, package_uuid: uuid::Uuid, attempts: u32) -> LeasedJob {
+		let now = Utc::now();
+		let lease_until = now + chrono::Duration::minutes(2);
+		let job = Job {
+			id: JobId::from_serial(id_serial),
+			package: codec::package_id_from_uuid(package_uuid),
+			state: ResolutionState::Progressing(heart::Phase::Acquiring),
+			attempts,
+			enqueued_at: now,
+			lease_until: Some(lease_until),
+		};
+		LeasedJob { job, lease_until }
+	}
+
+	/// A `LeasedJob` carries the same id as its inner `Job`.
+	#[test]
+	fn leased_job_id_matches_inner_job() {
+		let uuid = uuid::Uuid::new_v4();
+		let leased = make_leased(42, uuid, 1);
+		assert_eq!(leased.id(), leased.job().id, "id() must match inner job id");
+	}
+
+	/// A `LeasedJob` carries the same package as its inner `Job`.
+	#[test]
+	fn leased_job_package_matches_inner_job() {
+		let uuid = uuid::Uuid::new_v4();
+		let leased = make_leased(99, uuid, 3);
+		assert_eq!(
+			leased.package(),
+			leased.job().package,
+			"package() must match inner job package"
+		);
+	}
+
+	/// `attempts()` reflects what was in the row at dequeue time.
+	#[test]
+	fn leased_job_attempts_reflects_row() {
+		let leased = make_leased(1, uuid::Uuid::new_v4(), 5);
+		assert_eq!(leased.attempts(), 5);
+	}
+
+	/// `into_inner` yields the original `Job` — the escape hatch works.
+	#[test]
+	fn leased_job_into_inner_recovers_job() {
+		let uuid = uuid::Uuid::new_v4();
+		let leased = make_leased(7, uuid, 2);
+		let job_id = leased.id();
+		let inner = leased.into_inner();
+		assert_eq!(inner.id, job_id, "into_inner() must yield the same job");
+	}
+
+	/// Witness discipline: verify that `complete` and `fail` require a
+	/// `LeasedJob` (not a bare `JobId`). This is a compile-time property, but
+	/// we document it as a unit test to make the intent explicit. The test body
+	/// just confirms the type-level accessors work correctly — a call-site that
+	/// passes a bare `JobId` will not compile.
+	#[test]
+	fn witness_required_for_terminal_ops_is_type_checked() {
+		let uuid = uuid::Uuid::new_v4();
+		let leased = make_leased(11, uuid, 1);
+		// If this compiles, the witness is accessible and correctly typed.
+		// The ONLY way to call queue.complete(leased, ...) is with a LeasedJob.
+		let _id: JobId = leased.id();
+		let _package: heart::PackageId = leased.package();
+		let _attempts: u32 = leased.attempts();
+		// No bare-JobId path to complete/fail exists — that's the compile-time
+		// guarantee. The test above proves the accessors work; the enforcement is
+		// in the method signatures (LeasedJob consumed by complete/fail).
 	}
 }

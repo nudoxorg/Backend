@@ -23,7 +23,7 @@ use heart::{
 };
 use registry::identity::PackageCoordinates;
 use registry::ingest::{ArchiveFormat, EntryAllowlist, ExtractionLimits, ingest_archive};
-use registry::queue::Job;
+use registry::queue::LeasedJob;
 use registry::{RegistryError, error::ResolveError};
 use runtime::vector::EmbeddingModel;
 
@@ -295,12 +295,16 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// (a blip against postgres) are logged and retried on the next beat rather
 	/// than abandoning a still-valid claim. Never returns while the lease holds,
 	/// so [`drive_job`](Self::drive_job) can `select!` it against the job future.
-	async fn beat_lease(&self, stores: &SourceStores<M>, job_id: registry::queue::JobId, package: PackageId) {
+	///
+	/// Takes a `&LeasedJob` witness: the heartbeat can only keep alive a claim
+	/// that THIS worker holds (enforced by [`registry::queue::Queue::renew_lease`]).
+	async fn beat_lease(&self, stores: &SourceStores<M>, leased: &LeasedJob) {
 		let interval = self.heartbeat_interval();
 		let lease = self.job_lease();
+		let package = leased.package();
 		loop {
 			tokio::time::sleep(interval).await;
-			match stores.queue.renew_lease(job_id, lease).await {
+			match stores.queue.renew_lease(leased, lease).await {
 				Ok(()) => {
 					tracing::trace!(%package, "job lease renewed");
 				}
@@ -320,8 +324,13 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// queue row — completion on success, retry-or-dead-letter on failure. Job
 	/// failures are contained here; only queue/store faults escape to the
 	/// supervisor.
-	async fn drive_job(&self, stores: &SourceStores<M>, job: Job) {
-		let package = job.package;
+	///
+	/// Takes a [`LeasedJob`] witness: the terminal operations (`complete` and
+	/// `fail`) require and consume this witness, making "settle a job you never
+	/// dequeued" unrepresentable at the call site.
+	async fn drive_job(&self, stores: &SourceStores<M>, leased: LeasedJob) {
+		let package = leased.package();
+		let attempts = leased.attempts();
 
 		// Race the deadline-bounded pipeline against a lease heartbeat. The
 		// shortened lease (config `job_lease`, ~2 min) is kept alive by renewing
@@ -330,8 +339,12 @@ impl<M: EmbeddingModel> Indexer<M> {
 		// than the job deadline. `select!` biases to the job branch; the heartbeat
 		// loop never resolves on its own (it either keeps beating or the job
 		// finishes first and cancels it).
+		//
+		// `beat_lease` borrows `&leased`; the select arms run sequentially (only
+		// one wins), so after the select `leased` is no longer borrowed and we
+		// can move it into the terminal operation.
 		let job_fut = tokio::time::timeout(self.job_deadline(), self.run_indexing_job_on(stores, package));
-		let heartbeat = self.beat_lease(stores, job.id, package);
+		let heartbeat = self.beat_lease(stores, &leased);
 		let outcome = tokio::select! {
 			biased;
 			result = job_fut => match result {
@@ -347,7 +360,8 @@ impl<M: EmbeddingModel> Indexer<M> {
 		match outcome {
 			Ok(snapshot) => {
 				let stored = ResolutionState::Stored { hash: snapshot };
-				if let Err(error) = stores.queue.complete(job.id, &stored).await {
+				// Consume the witness — the job is terminal after this point.
+				if let Err(error) = stores.queue.complete(leased, &stored).await {
 					tracing::warn!(%package, error = %error, "job completed but settling raced");
 				}
 			}
@@ -362,7 +376,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 					_ => Phase::Acquiring,
 				};
 				let failure = heart::Failure {
-					attempts: job.attempts,
+					attempts,
 					phase,
 					message: message.clone(),
 					cause: Some(heart::ErrorDetails::Message(message.clone())),
@@ -372,7 +386,9 @@ impl<M: EmbeddingModel> Indexer<M> {
 				if let Err(state_error) = stores.global_store.set_state(package, &failed).await {
 					tracing::error!(%package, error = %state_error, "failed to persist failure state");
 				}
-				match stores.queue.fail(job.id, kind, message).await {
+				// Consume the witness — fail is terminal (retry or dead-letter,
+				// either way this worker's claim is done).
+				match stores.queue.fail(leased, kind, message).await {
 					Ok(decision) => {
 						tracing::info!(%package, ?decision, "retry policy applied");
 					}

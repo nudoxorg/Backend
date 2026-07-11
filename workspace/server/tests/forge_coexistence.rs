@@ -7,11 +7,11 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cas::{Cas, ContentHash};
+use cas::ContentHash;
 use compiler::languages::producer::ForgeContext;
 use sandbox::{
-	Cage, CageCaps, CageId, CancelToken, CapabilityBudget, Captured, CountingObserver, ForgeObserver,
-	Policy, ProcessEnd, SealedCommand,
+	Cage, CageCaps, CageId, CancelToken, CapabilityBudget, Captured, CountingObserver, Policy,
+	ProcessEnd, SealedCommand,
 };
 use server::forge::{ForgeConfig, ForgeRuntime};
 
@@ -72,6 +72,7 @@ fn dev_runtime(observer: Arc<CountingObserver>) -> Arc<ForgeRuntime> {
 		overrides: Default::default(),
 		cas_root: None, // memory-only, isolated per runtime
 		observer,
+		l3: None, // development: no distributed L3
 	};
 	Arc::new(
 		ForgeRuntime::assemble(Policy::Development, cfg, tokio::runtime::Handle::current())

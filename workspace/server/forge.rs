@@ -13,8 +13,9 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas::Tiered;
+use cas::{DynCas, Tiered};
 use compiler::languages::producer::ForgeContext;
+use registry::StoreCas;
 use sandbox::{
 	Cage, CageError, DevPassthrough, ForgeObserver, LinuxNamespaces, NodeId, NullObserver,
 	OverrideTable, Policy, ToolchainSet, WorkerLang, WorkerPool, WorkerPoolConfig,
@@ -36,6 +37,12 @@ pub struct ForgeConfig {
 	pub cas_root: Option<PathBuf>,
 	/// Metrics observer.
 	pub observer: Arc<dyn ForgeObserver>,
+	/// L3 object-store backend for the tiered CAS.
+	///
+	/// When `Some`, a live [`registry::StoreCas`] is wired as the L3 tier so
+	/// compile-plane cache misses fall through to the distributed object store.
+	/// When `None` (development / tests), the forge runs L1+L2 only.
+	pub l3: Option<StoreCas>,
 }
 
 impl Default for ForgeConfig {
@@ -45,6 +52,7 @@ impl Default for ForgeConfig {
 			overrides: HashMap::new(),
 			cas_root: None,
 			observer: Arc::new(NullObserver),
+			l3: None,
 		}
 	}
 }
@@ -70,7 +78,9 @@ pub struct ForgeRuntime<S = Ready> {
 	node: NodeId,
 	policy: Policy,
 	cage: Arc<dyn Cage>,
-	cas: Arc<Tiered>,
+	/// The erased tiered CAS — `&dyn DynCas` is what `ForgeContext::cas()`
+	/// returns, keeping `ForgeContext` object-safe regardless of L3 type.
+	cas: Arc<dyn DynCas>,
 	toolchains: ToolchainSet,
 	overrides: OverrideTable,
 	observer: Arc<dyn ForgeObserver>,
@@ -94,15 +104,16 @@ impl ForgeRuntime<Cold> {
 	) -> Result<ForgeRuntime<Ready>, ForgeError> {
 		let cage = select_cage(policy)?;
 
-		// L3 wiring is deferred: `ForgeContext::cas()` returns `&Tiered` (i.e.
-		// `&Tiered<NoL3>`) so the trait is bound to the default L3 type.
-		// Threading `StoreCas` here would require making `ForgeContext` generic
-		// over `L3: Cas`, which is a compiler-crate change outside this phase.
-		// When a `Store` handle is available here, use `Tiered::with_l3` and
-		// update the trait signature together.
-		let cas = match &cfg.cas_root {
-			Some(root) => Arc::new(Tiered::with_disk(256, cas::DiskCas::open(root)?)),
-			None => Arc::new(Tiered::memory_only(256)),
+		// Build the tiered CAS, wiring StoreCas as L3 when the caller supplies
+		// one. `DynCas` erases the concrete L3 type so `ForgeContext::cas()`
+		// can return `&dyn DynCas` without making the trait generic over L3.
+		let cas: Arc<dyn DynCas> = match (cfg.cas_root.as_deref(), cfg.l3) {
+			(Some(root), Some(l3)) => {
+				Arc::new(Tiered::with_l3(256, Some(cas::DiskCas::open(root)?), l3))
+			},
+			(Some(root), None) => Arc::new(Tiered::with_disk(256, cas::DiskCas::open(root)?)),
+			(None, Some(l3)) => Arc::new(Tiered::with_l3(256, None, l3)),
+			(None, None) => Arc::new(Tiered::memory_only(256)),
 		};
 
 		let node = match cfg.node {
@@ -144,8 +155,8 @@ impl ForgeRuntime<Ready> {
 		self.policy
 	}
 
-	/// The shared CAS handle.
-	pub fn cas_handle(&self) -> &Arc<Tiered> {
+	/// The shared CAS handle (erased to `dyn DynCas`).
+	pub fn cas_handle(&self) -> &Arc<dyn DynCas> {
 		&self.cas
 	}
 }
@@ -157,8 +168,8 @@ impl ForgeContext for ForgeRuntime<Ready> {
 	fn cage(&self) -> &dyn Cage {
 		self.cage.as_ref()
 	}
-	fn cas(&self) -> &Tiered {
-		&self.cas
+	fn cas(&self) -> &dyn DynCas {
+		self.cas.as_ref()
 	}
 	fn toolchains(&self) -> &ToolchainSet {
 		&self.toolchains

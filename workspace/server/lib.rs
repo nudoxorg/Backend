@@ -28,7 +28,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use heart::{BackendKind, ConnectError, ConnectFailure, Connect, Federation, Live};
+use heart::{BackendKind, Cold, ConnectError, ConnectFailure, Connect, Federation, Live};
 use registry::{
 	Store,
 	coordination::Outbox,
@@ -197,12 +197,30 @@ impl<M: EmbeddingModel> Server<M> {
 		// Assemble the compile-plane runtime once. Policy is resolved from the
 		// isolation gate; a `Production` policy refuses to build without a
 		// production-grade cage (Cold→Ready typestate).
+		//
+		// L3 wiring: build a dedicated `Store` for the forge by constructing a
+		// second handle against the same object-store URL as the definitive
+		// source's blob store. The `object_store` layer is stateless — multiple
+		// handles sharing the same URL are safe — so no locking or coordination
+		// with the federation's `Store<Live>` is needed.
+		let forge_l3 = {
+			let backend =
+				object_store_backend(&config.definitive.endpoints.object_store)?;
+			let store_cold: Store<Cold> = Store::new(backend);
+			let store_live: Store<Live> = store_cold.connect().await.map_err(|e| {
+				ServerError::Internal(InternalError::Other {
+					message: format!("forge L3 store connect failed: {e}"),
+				})
+			})?;
+			Some(registry::StoreCas::new(std::sync::Arc::new(store_live)))
+		};
 		let policy = sandbox::Policy::from_env();
 		let forge_cfg = crate::forge::ForgeConfig {
 			node: None,
 			overrides: config.limits.sandbox_overrides.clone(),
 			cas_root: Some(config.definitive.data_directory().join("cas")),
 			observer: std::sync::Arc::new(sandbox::NullObserver),
+			l3: forge_l3,
 		};
 		let forge = std::sync::Arc::new(
 			crate::forge::ForgeRuntime::assemble(policy, forge_cfg, tokio::runtime::Handle::current())

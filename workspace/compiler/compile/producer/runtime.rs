@@ -10,7 +10,7 @@
 //! the boundary.
 
 use bytes::Bytes;
-use cas::{Cas, Tiered};
+use cas::{DynCas, Tiered};
 use heart::ContentHash;
 use sandbox::{
 	Cage, ForgeObserver, NodeId, OverrideTable, SealedInput, ToolchainSet, WorkerLang,
@@ -32,7 +32,11 @@ pub trait ForgeContext: Send + Sync {
 	fn cage(&self) -> &dyn Cage;
 
 	/// The content-addressed store (sole cache).
-	fn cas(&self) -> &Tiered;
+	///
+	/// Returns a `&dyn DynCas` rather than a concrete `&Tiered` so that
+	/// `ForgeContext` stays object-safe: `DynCas` boxes the async futures,
+	/// keeping every `&dyn ForgeContext` call site unchanged.
+	fn cas(&self) -> &dyn DynCas;
 
 	/// Resolved toolchain store paths (hashed into every job key).
 	fn toolchains(&self) -> &ToolchainSet;
@@ -253,7 +257,7 @@ impl ForgeContext for LocalForgeContext {
 	fn cage(&self) -> &dyn Cage {
 		&self.cage
 	}
-	fn cas(&self) -> &Tiered {
+	fn cas(&self) -> &dyn DynCas {
 		&self.cas
 	}
 	fn toolchains(&self) -> &ToolchainSet {
