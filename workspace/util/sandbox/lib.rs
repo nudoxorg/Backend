@@ -29,17 +29,7 @@
 //! - [`Network`] / [`NetGrant`] is explicit; the default is off.
 //! - [`Limits`] requires every ceiling (no silent "unlimited" field).
 //! - [`LimitOverride`] is sparse — zeros are unrepresentable via `NonZero*`.
-//! - [`Backend`] selection is probe-based; [`Passthrough`] refuses production.
 //! - [`DevPassthrough`] cannot be constructed under [`Policy::Production`].
-//!
-//! # Backends (legacy selection path)
-//!
-//! | Backend | Platform | Role |
-//! |---------|----------|------|
-//! | [`LinuxNamespaces`] / `LinuxBwrap` | Linux | Primary: bwrap + `--seccomp` + cgroups |
-//! | [`NixDerivation`] | any w/ nix | Optional, **not** production_grade |
-//! | [`MacSeatbelt`] | macOS | Opt-in (`NUDOX_SANDBOX=seatbelt`); not boundary of record |
-//! | [`Passthrough`] | any | Dev default on macOS; gated out of production |
 
 #![deny(missing_docs)]
 
@@ -68,11 +58,8 @@ pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
 
-pub use backend::{
-	Backend, Capabilities, LinuxBwrap, MacSeatbelt, NixDerivation, Passthrough, Selected, select,
-};
 pub use budget::{CapabilityBudget, FsGrant, NetGrant, ThreatTier};
-pub use cage::{Cage, CageCaps, CageId, DevPassthrough, LinuxNamespaces, Policy, run_sealed};
+pub use cage::{Cage, CageCaps, CageId, DevPassthrough, LinuxBwrap, LinuxNamespaces, Policy, run_sealed};
 pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget};
 pub use cancel::CancelToken;
 pub use error::{CageError, KillReason, SandboxError, to_io_error};
@@ -84,26 +71,10 @@ pub use probe::{HostIsolation, IsolationPolicy, LandlockAbi, require as require_
 pub use profiles::ProducerProfile;
 pub use seal::{SealedCommand, SealedInput, Sealer};
 pub use toolchains::ToolchainSet;
-pub use spec::{Captured, Env, Mounts, Output, ProcessEnd, Spec};
+pub use spec::{Env, Mounts, Output, ProcessEnd, Spec};
+/// Type alias kept for external crates; new code should use [`Output`] directly.
+pub type Captured = Output;
 pub use worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConfig};
-
-use std::sync::OnceLock;
-
-/// Process-wide default backend, selected once via [`select`].
-fn global_backend() -> &'static dyn Backend {
-	static BACKEND: OnceLock<Selected> = OnceLock::new();
-	BACKEND.get_or_init(select).as_ref()
-}
-
-/// Run `spec` on the process-wide default backend.
-pub fn run(spec: Spec) -> Result<Output, SandboxError> {
-	global_backend().run(spec)
-}
-
-/// Run `spec` on an explicitly chosen backend.
-pub fn run_with(backend: &dyn Backend, spec: Spec) -> Result<Output, SandboxError> {
-	backend.run(spec)
-}
 
 /// Probe host isolation and enforce policy from the environment.
 pub fn boot_check() -> Result<HostIsolation, SandboxError> {

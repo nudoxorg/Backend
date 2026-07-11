@@ -17,6 +17,7 @@ pub mod resolution;
 pub mod structure;
 
 use std::marker::PhantomData;
+use std::str::FromStr;
 
 use futures::Stream;
 use secrecy::SecretString;
@@ -698,19 +699,12 @@ impl Graph<Live> {
 
 /// Parse a [`heart::SymbolKind`] from its stored `Display` name (the same token
 /// the registry persists), rejecting anything unknown rather than guessing.
+///
+/// Delegates to the `strum`-derived `FromStr` impl — variant names are the
+/// tokens so encode (Display) and decode (FromStr) are guaranteed symmetric.
 pub(crate) fn parse_symbol_kind(raw: &str) -> Result<heart::SymbolKind, GraphError> {
-	use heart::SymbolKind::*;
-	match raw {
-		"Function" => Ok(Function),
-		"Type" => Ok(Type),
-		"Module" => Ok(Module),
-		"Constant" => Ok(Constant),
-		"Variable" => Ok(Variable),
-		"Trait" => Ok(Trait),
-		"Impl" => Ok(Impl),
-		"Other" => Ok(Other),
-		_ => Err(decode_error(format_args!("unknown symbol kind {raw:?}"))),
-	}
+	heart::SymbolKind::from_str(raw)
+		.map_err(|_| decode_error(format_args!("unknown symbol kind {raw:?}")))
 }
 
 impl GraphStore for Graph<Live> {

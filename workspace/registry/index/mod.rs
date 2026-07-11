@@ -21,6 +21,7 @@ use crate::package::Coordinates as PackageCoordinates;
 use sqlx::{Row, postgres::PgRow};
 
 use std::io;
+use std::str::FromStr;
 
 use crate::{
 	GlobalPackage,
@@ -318,19 +319,11 @@ fn row_to_symbol(row: &PgRow) -> Result<heart::Symbol, IndexError> {
 
 /// Parse a [`heart::SymbolKind`] from its stored `Display` token (the same token
 /// [`GlobalStore::upsert_symbol`] persists via `SymbolKind::to_string`).
+///
+/// Delegates to the `strum`-derived `FromStr` impl — encode and decode are
+/// guaranteed symmetric with no manual match table to maintain.
 fn parse_symbol_kind(raw: &str) -> Option<heart::SymbolKind> {
-	use heart::SymbolKind::*;
-	match raw {
-		"Function" => Some(Function),
-		"Type" => Some(Type),
-		"Module" => Some(Module),
-		"Constant" => Some(Constant),
-		"Variable" => Some(Variable),
-		"Trait" => Some(Trait),
-		"Impl" => Some(Impl),
-		"Other" => Some(Other),
-		_ => None,
-	}
+	heart::SymbolKind::from_str(raw).ok()
 }
 
 /// The leaf identifier of a fully-qualified name, across ecosystem separators
@@ -367,6 +360,11 @@ fn row_to_package(row: &PgRow) -> Result<crate::Package, codec::CodecError> {
 	let origin_token: String = row.try_get(2).map_err(row_decode)?;
 	let name_original: String = row.try_get(4).map_err(row_decode)?;
 	let version_canonical: String = row.try_get(5).map_err(row_decode)?;
+	// Validate columns 6 (visibility) and 8 (owner_kind) through typed decoders
+	// so corrupt rows surface a rich CodecError rather than being silently ignored.
+	// The typed values are not yet stored in `Package`; this is a validation gate.
+	let visibility_token: String = row.try_get(6).map_err(row_decode)?;
+	let owner_kind_token: String = row.try_get(8).map_err(row_decode)?;
 	let toolchain_json: serde_json::Value = row.try_get(9).map_err(row_decode)?;
 
 	let coordinates = codec::coordinates_from_columns(
@@ -375,6 +373,8 @@ fn row_to_package(row: &PgRow) -> Result<crate::Package, codec::CodecError> {
 		&name_original,
 		&version_canonical,
 	)?;
+	let _visibility = codec::visibility_from_token(&visibility_token)?;
+	let _owner_kind = codec::owner_kind_from_token(&owner_kind_token)?;
 	let toolchain = codec::toolchain_from_json(&toolchain_json)?;
 	Ok(crate::Package { coordinates, toolchain })
 }

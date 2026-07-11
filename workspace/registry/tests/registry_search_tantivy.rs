@@ -8,11 +8,14 @@
 
 mod common;
 
-use heart::{Language, ResolutionState};
+use heart::{Edition, Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain};
 use registry::{
-    GlobalPackage,
-    search::{RegistryQuery, RegistrySearch, tantivy::PackageIndex},
+    GlobalPackage, Package,
+    metadata::SearchFacets,
+    package::{Coordinates, PackageName},
+    search::{RegistryQuery, search_page, tantivy::PackageIndex},
 };
+use smol_str::SmolStr;
 
 /// A first-page query for `text`, unscoped unless narrowed.
 fn query(text: &str) -> RegistryQuery {
@@ -28,11 +31,22 @@ fn rust_record(name: &str) -> GlobalPackage {
     )
 }
 
-/// Open a replica, fold `records` in at position 1, and wrap it for search.
-fn searchable(directory: &common::TempDir, records: &[GlobalPackage]) -> RegistrySearch {
+/// Open a replica, fold `records` in at position 1, and return the index.
+fn searchable_index(directory: &common::TempDir, records: &[GlobalPackage]) -> PackageIndex {
     let mut index = PackageIndex::open(directory.path()).expect("a tempdir replica opens");
     index.absorb(records.iter(), 1).expect("records absorb into the replica");
-    RegistrySearch::new(index)
+    index
+}
+
+/// Build a Rust package with facets (quality + keywords) for ranking tests.
+fn rust_record_with_facets(name: &str, quality_ppm: u32, keywords: &[&str]) -> GlobalPackage {
+    let package = common::rust_package(name, "1.0.0");
+    let id = package.id();
+    let facets = Some(SearchFacets {
+        keywords: keywords.iter().map(|&k| SmolStr::new(k)).collect(),
+        quality_ppm,
+    });
+    GlobalPackage { id, package, state: ResolutionState::Unindexed { needed: false }, facets }
 }
 
 /// Registry search finds packages by name/metadata.
@@ -43,9 +57,9 @@ async fn registry_search_finds_packages() {
     let directory = common::TempDir::new("package-search");
     let serde = rust_record("serde");
     let tokio = rust_record("tokio");
-    let search = searchable(&directory, &[serde.clone(), tokio]);
+    let index = searchable_index(&directory, &[serde.clone(), tokio]);
 
-    let page = search.page(&query("serde")).await.expect("the query executes");
+    let page = search_page(&index, &query("serde")).await.expect("the query executes");
     assert_eq!(page.items.len(), 1, "exactly the matching package must surface");
     let hit = &page.items[0].value;
     assert_eq!(hit.id, serde.id, "the hit is the package record itself, not a symbol");
@@ -153,8 +167,8 @@ async fn multi_parent_packages_collapse_to_one_result() {
         "precondition: the two parents really are distinct records"
     );
 
-    let search = searchable(&directory, &[through_crates, through_mirror]);
-    let page = search.page(&query("serde")).await.expect("the query executes");
+    let index = searchable_index(&directory, &[through_crates, through_mirror]);
+    let page = search_page(&index, &query("serde")).await.expect("the query executes");
     assert_eq!(
         page.items.len(),
         1,
@@ -177,16 +191,82 @@ async fn registry_search_respects_access_scope() {
         common::python_package("httpclient", "1.0.0"),
         ResolutionState::Unindexed { needed: false },
     );
-    let search = searchable(&directory, &[rust_side, python_side.clone()]);
+    let index = searchable_index(&directory, &[rust_side, python_side.clone()]);
 
     // Unscoped, the caller sees both worlds...
-    let open = search.page(&query("httpclient")).await.expect("the query executes");
+    let open = search_page(&index, &query("httpclient")).await.expect("the query executes");
     assert_eq!(open.items.len(), 2, "both ecosystems match without a scope");
 
     // ...scoped, only the permitted slice surfaces.
     let scoped = RegistryQuery { ecosystem: Some(Language::Python), ..query("httpclient") };
-    let page = search.page(&scoped).await.expect("the scoped query executes");
+    let page = search_page(&index, &scoped).await.expect("the scoped query executes");
     assert_eq!(page.items.len(), 1, "the scope must filter, not merely rank");
     assert_eq!(page.items[0].value.id, python_side.id);
     assert_eq!(page.items[0].value.package.coordinates.ecosystem(), Language::Python);
+}
+
+/// Fused ranking: the exact-name match outranks a higher-BM25 non-exact match.
+///
+/// Arrange:
+/// - "tokio": exact match for query "tokio", moderate quality
+/// - "tokio-extended": contains "tokio" in name, slightly higher textual match
+///   because "tokio" appears in both the name and keyword list, same quality
+///
+/// Assert: "tokio" ranks first.  The exact-name bonus (+10.0 in the default
+/// config) is far larger than any BM25 spread from a three-item corpus, so
+/// this verifies the bonus fires and dominates.
+#[tokio::test]
+async fn fused_ranking_exact_name_outranks_contains_match() {
+    let directory = common::TempDir::new("exact-name-ranking");
+    let tokio_exact = rust_record_with_facets("tokio", 500_000, &["async", "runtime"]);
+    let tokio_ext = rust_record_with_facets("tokio-extended", 500_000, &["async", "tokio", "runtime"]);
+    let serde = rust_record_with_facets("serde", 900_000, &["serialization", "json"]);
+
+    let index = searchable_index(&directory, &[tokio_ext, tokio_exact.clone(), serde]);
+
+    let page = search_page(&index, &query("tokio")).await.expect("query executes");
+
+    let names: Vec<&str> = page
+        .items
+        .iter()
+        .map(|s| s.value.package.coordinates.name.original())
+        .collect();
+
+    assert!(
+        names.first().copied() == Some("tokio"),
+        "exact-name match must rank first in fused pipeline; order was: {names:?}"
+    );
+}
+
+/// Fused ranking: quality-signal multiplier allows a high-quality crate to beat
+/// a lower-quality but equally-matched BM25 result.
+///
+/// Arrange: two packages with identical names-relative-to-query but different
+/// quality scores.  "highqual" (quality=0.9) and "lowqual" (quality=0.1) both
+/// have "async" in keywords.  Query is "async".
+///
+/// Assert: "highqual" appears before "lowqual".
+/// The quality kink: 0.9 > 0.4 → multiplier = 0.9 + 1.0 = 1.9
+///                   0.1 ≤ 0.4 → multiplier = 0.1
+/// So fused = bm25 × 1.9 vs bm25 × 0.1; the high-quality crate wins by 19×.
+#[tokio::test]
+async fn fused_ranking_quality_multiplier_applied() {
+    let directory = common::TempDir::new("quality-multiplier");
+    let highqual = rust_record_with_facets("highqual", 900_000, &["async", "runtime"]);
+    let lowqual  = rust_record_with_facets("lowqual",  100_000, &["async", "runtime"]);
+
+    let index = searchable_index(&directory, &[lowqual, highqual.clone()]);
+
+    let page = search_page(&index, &query("async")).await.expect("query executes");
+
+    let names: Vec<&str> = page
+        .items
+        .iter()
+        .map(|s| s.value.package.coordinates.name.original())
+        .collect();
+
+    assert!(
+        names.first().copied() == Some("highqual"),
+        "high-quality crate must rank above low-quality with same BM25; order was: {names:?}"
+    );
 }

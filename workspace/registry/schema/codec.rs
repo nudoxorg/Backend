@@ -23,6 +23,30 @@ use uuid::Uuid;
 
 use crate::coordination::SinkKind;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Owner kind / visibility typed domains
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The kind of tenant that owns a package — stored as the lowercase SQL token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OwnerKind {
+	/// A single-developer account.
+	Individual,
+	/// An organisation or team account.
+	Enterprise,
+}
+
+/// The visibility of a package — stored as the lowercase SQL token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Visibility {
+	/// Visible only to the owning tenant.
+	Personal,
+	/// Visible to explicitly invited members of the owning tenant.
+	Private,
+	/// Publicly discoverable.
+	Public,
+}
+
 /// A decode failure — a stored column value that does not correspond to any
 /// domain value. Should be impossible given the CHECK constraints, but decoding
 /// is kept total so a corrupt row surfaces an error rather than a panic.
@@ -43,6 +67,12 @@ pub enum CodecError {
 
 	#[error("unknown state discriminant")]
 	UnknownStateDiscriminant { token: String },
+
+	#[error("unknown owner kind discriminant")]
+	UnknownOwnerKindDiscriminant { token: String },
+
+	#[error("unknown visibility discriminant")]
+	UnknownVisibilityDiscriminant { token: String },
 
 	/// A `bytea` content hash was not exactly 32 bytes.
 	#[error("content hash must be 32 bytes, got {0}")]
@@ -373,4 +403,54 @@ pub fn coordinates_from_columns(
 	let version = heart::PackageVersion::try_from((ecosystem, version_canonical))
 		.map_err(CodecError::Version)?;
 	Ok(crate::package::Coordinates { origin, name, version })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// owner_kind / visibility ↔ text
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The stable lowercase token for an [`OwnerKind`].
+pub fn owner_kind_token(k: OwnerKind) -> &'static str {
+	match k {
+		OwnerKind::Individual => "individual",
+		OwnerKind::Enterprise => "enterprise",
+	}
+}
+
+/// Reconstruct an [`OwnerKind`] from its stored token.
+///
+/// Returns a typed [`CodecError::UnknownOwnerKindDiscriminant`] for any token
+/// not in the `packages.owner_kind` CHECK domain — the same guard the DB
+/// enforces, surfaced at the Rust decode layer so corrupt rows fail with a
+/// rich error rather than silently propagating garbage.
+pub fn owner_kind_from_token(token: &str) -> Result<OwnerKind, CodecError> {
+	match token {
+		"individual" => Ok(OwnerKind::Individual),
+		"enterprise" => Ok(OwnerKind::Enterprise),
+		other => Err(CodecError::UnknownOwnerKindDiscriminant { token: other.to_owned() }),
+	}
+}
+
+/// The stable lowercase token for a [`Visibility`].
+pub fn visibility_token(v: Visibility) -> &'static str {
+	match v {
+		Visibility::Personal => "personal",
+		Visibility::Private => "private",
+		Visibility::Public => "public",
+	}
+}
+
+/// Reconstruct a [`Visibility`] from its stored token.
+///
+/// Returns a typed [`CodecError::UnknownVisibilityDiscriminant`] for any token
+/// not in the `packages.visibility` CHECK domain — the same guard the DB
+/// enforces, surfaced at the Rust decode layer so corrupt rows fail with a
+/// rich error rather than silently propagating garbage.
+pub fn visibility_from_token(token: &str) -> Result<Visibility, CodecError> {
+	match token {
+		"personal" => Ok(Visibility::Personal),
+		"private" => Ok(Visibility::Private),
+		"public" => Ok(Visibility::Public),
+		other => Err(CodecError::UnknownVisibilityDiscriminant { token: other.to_owned() }),
+	}
 }

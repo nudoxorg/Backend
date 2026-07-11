@@ -3,15 +3,15 @@
 //! Call once at process start. [`IsolationPolicy::RequireProduction`] fails
 //! closed when the host cannot provide a production-grade cage.
 
-use crate::backend::{select, Capabilities};
+use crate::cage::{CageCaps, LinuxNamespaces, DevPassthrough, Policy, Cage};
 use crate::error::SandboxError;
 
 /// Snapshot of what this host can enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostIsolation {
-	/// Selected backend capabilities.
-	pub capabilities: Capabilities,
-	/// Selected backend name.
+	/// Selected cage capabilities.
+	pub capabilities: CageCaps,
+	/// Selected cage name.
 	pub backend: &'static str,
 	/// bubblewrap present on PATH (Linux).
 	pub bwrap: bool,
@@ -82,14 +82,26 @@ impl IsolationPolicy {
 
 /// Probe the host once.
 pub fn probe() -> HostIsolation {
-	let selected = select();
-	let backend = selected.as_ref();
-	let capabilities = backend.capabilities();
-
 	#[cfg(target_os = "linux")]
-	let bwrap = which::which("bwrap").is_ok();
+	let (capabilities, cage_name, bwrap) = {
+		let linux = LinuxNamespaces::new();
+		if linux.probe_available() {
+			let caps = Cage::capabilities(&linux);
+			(caps, "linux-namespaces", true)
+		} else {
+			let dev = DevPassthrough::try_new(Policy::Development)
+				.map(|d| Cage::capabilities(&d))
+				.unwrap_or_default();
+			(dev, "dev-passthrough", false)
+		}
+	};
 	#[cfg(not(target_os = "linux"))]
-	let bwrap = false;
+	let (capabilities, cage_name, bwrap) = {
+		let dev = DevPassthrough::try_new(Policy::Development)
+			.map(|d| Cage::capabilities(&d))
+			.unwrap_or_default();
+		(dev, "dev-passthrough", false)
+	};
 
 	let cgroup = crate::cgroup::has_writable_parent();
 
@@ -105,7 +117,7 @@ pub fn probe() -> HostIsolation {
 
 	HostIsolation {
 		capabilities,
-		backend: backend.name(),
+		backend: cage_name,
 		bwrap,
 		cgroup,
 		landlock,
@@ -134,7 +146,7 @@ pub fn require(policy: IsolationPolicy) -> Result<HostIsolation, SandboxError> {
 			if !host.capabilities.production_grade {
 				return Err(SandboxError::Denied {
 					reason: format!(
-						"production isolation required but backend `{}` is not production-grade",
+						"production isolation required but cage `{}` is not production-grade",
 						host.backend
 					),
 				});

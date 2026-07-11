@@ -206,10 +206,6 @@ pub struct Output {
 	pub peak_mem: Option<u64>,
 }
 
-/// Alias matching the sealed-compute vocabulary (`Captured` / `ProcessEnd`).
-///
-/// Prefer this name at new call sites; [`Output`] remains for existing code.
-pub type Captured = Output;
 
 impl Output {
 	/// Whether the child exited with status 0 (not killed).

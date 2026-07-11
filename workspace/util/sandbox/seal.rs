@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use heart::JobKey;
 
 use crate::budget::{CapabilityBudget, FsGrant, NetGrant};
-use crate::limits::{Limits, Network};
-use crate::spec::{Env, Mounts, Spec};
+use crate::limits::Limits;
+use crate::spec::{Env, Mounts};
 
 /// Hash-pinned inputs already on disk, with a fully resolved budget.
 ///
@@ -90,49 +90,6 @@ impl SealedCommand {
 		self
 	}
 
-	/// Project into the legacy [`Spec`] shape for Backend shims.
-	pub fn into_spec(self) -> Spec {
-		let mut spec = Spec::new(self.command, self.budget.resources)
-			.args(self.args)
-			.env(self.budget.env)
-			.mounts(self.budget.fs.to_mounts())
-			.network(Network::from(self.budget.net));
-		if let Some(cwd) = self.cwd {
-			spec = spec.cwd(cwd);
-		}
-		spec
-	}
-
-	/// Lift a legacy [`Spec`] into a sealed command (shim for existing producers).
-	///
-	/// Uses the first writable mount as scratch when present; otherwise a
-	/// placeholder under the system temp dir (caller should prefer real scratch).
-	pub fn from_spec(spec: Spec) -> Self {
-		let scratch = spec
-			.mounts
-			.writable
-			.first()
-			.cloned()
-			.unwrap_or_else(std::env::temp_dir);
-		let fs = FsGrant {
-			read_only: spec.mounts.read_only,
-			scratch,
-			// Remaining RW binds stay as extra writables (primary already chosen).
-			writable: spec.mounts.writable.into_iter().skip(1).collect(),
-		};
-		Self {
-			command: spec.command,
-			args: spec.args,
-			cwd: spec.cwd,
-			budget: CapabilityBudget {
-				fs,
-				net: NetGrant::from(spec.network),
-				env: spec.env,
-				resources: spec.limits,
-			},
-		}
-	}
-
 	/// Command path for diagnostics.
 	pub fn command_path(&self) -> &Path {
 		&self.command
@@ -146,9 +103,8 @@ impl SealedCommand {
 
 /// Projects ambient host facts into sealed budgets / commands.
 ///
-/// Phase 2 keeps this thin: producers still assemble mounts/env themselves and
-/// call [`SealedCommand::new`] / [`from_spec`](SealedCommand::from_spec). The
-/// type marks the ambient-access boundary for later ForgeRuntime work.
+/// Producers assemble mounts/env themselves and call [`SealedCommand::new`].
+/// The type marks the ambient-access boundary.
 #[derive(Debug, Default, Clone)]
 pub struct Sealer {
 	_private: (),

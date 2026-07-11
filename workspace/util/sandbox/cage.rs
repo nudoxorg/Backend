@@ -9,13 +9,12 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use crate::backend::supervisor::{self, apply_rlimits};
-use crate::backend::{Backend, Capabilities};
 use crate::budget::NetGrant;
 use crate::cancel::CancelToken;
 use crate::cgroup::Cgroup;
 use crate::error::{CageError, SandboxError};
 use crate::seal::SealedCommand;
-use crate::spec::{Captured, Output, Spec};
+use crate::spec::Output;
 
 /// Stable identity of a cage instance (logs / metrics).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -34,7 +33,7 @@ impl std::fmt::Display for CageId {
 	}
 }
 
-/// What a cage can enforce (mirrors [`Capabilities`] for the cage vocabulary).
+/// What a cage can enforce.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CageCaps {
 	/// Namespaces / seatbelt profile available.
@@ -51,31 +50,6 @@ pub struct CageCaps {
 	pub production_grade: bool,
 }
 
-impl From<Capabilities> for CageCaps {
-	fn from(c: Capabilities) -> Self {
-		Self {
-			isolation: c.isolation,
-			network_off: c.network_off,
-			fs_scope: c.fs_scope,
-			seccomp: c.seccomp,
-			cgroups: c.cgroups,
-			production_grade: c.production_grade,
-		}
-	}
-}
-
-impl From<CageCaps> for Capabilities {
-	fn from(c: CageCaps) -> Self {
-		Self {
-			isolation: c.isolation,
-			network_off: c.network_off,
-			fs_scope: c.fs_scope,
-			seccomp: c.seccomp,
-			cgroups: c.cgroups,
-			production_grade: c.production_grade,
-		}
-	}
-}
 
 /// Runtime policy resolved once at assemble (Phase 4 owns full wiring).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +80,7 @@ pub trait Cage: Send + Sync {
 	fn capabilities(&self) -> CageCaps;
 
 	/// Run a sealed command under the budget; honor `cancel` when possible.
-	fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Captured, CageError>;
+	fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError>;
 }
 
 // ─── LinuxNamespaces ────────────────────────────────────────────────────────
@@ -271,7 +245,7 @@ impl LinuxNamespaces {
 		Ok(args)
 	}
 
-	fn run_inner(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Captured, CageError> {
+	fn run_inner(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError> {
 		if cancel.is_cancelled() {
 			return Err(CageError::Cancelled);
 		}
@@ -360,23 +334,8 @@ impl Cage for LinuxNamespaces {
 		}
 	}
 
-	fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Captured, CageError> {
+	fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError> {
 		self.run_inner(cmd, cancel)
-	}
-}
-
-impl Backend for LinuxNamespaces {
-	fn name(&self) -> &'static str {
-		// Keep the historical backend name for probes/metrics continuity.
-		"linux-bwrap"
-	}
-
-	fn capabilities(&self) -> Capabilities {
-		Cage::capabilities(self).into()
-	}
-
-	fn run(&self, spec: Spec) -> Result<Output, SandboxError> {
-		Cage::run(self, SealedCommand::from_spec(spec), &CancelToken::never()).map_err(Into::into)
 	}
 }
 
@@ -540,7 +499,7 @@ impl Cage for DevPassthrough {
 		}
 	}
 
-	fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Captured, CageError> {
+	fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError> {
 		if cancel.is_cancelled() {
 			return Err(CageError::Cancelled);
 		}
@@ -589,9 +548,9 @@ impl Cage for DevPassthrough {
 /// Run a sealed command on a platform-appropriate cage, honoring `cancel`.
 ///
 /// Uses [`LinuxNamespaces`] when bwrap is available; otherwise
-/// [`DevPassthrough`] under a development policy (or the process-wide Backend
-/// shim when construction fails).
-pub fn run_sealed(cmd: SealedCommand, cancel: &CancelToken) -> Result<Captured, CageError> {
+/// [`DevPassthrough`] under a development policy. Fails with
+/// [`CageError::Denied`] on a production host without bwrap.
+pub fn run_sealed(cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError> {
 	if cancel.is_cancelled() {
 		return Err(CageError::Cancelled);
 	}
@@ -606,10 +565,10 @@ pub fn run_sealed(cmd: SealedCommand, cancel: &CancelToken) -> Result<Captured, 
 
 	match DevPassthrough::try_new(Policy::from_env()) {
 		Ok(dev) => Cage::run(&dev, cmd, cancel),
-		Err(_) => {
-			// Production host without bwrap: fall through to selected Backend
-			// (will Deny/fail closed under RequireProduction).
-			crate::run(cmd.into_spec()).map_err(CageError::from)
-		}
+		Err(_) => Err(CageError::Denied {
+			reason: "no production-grade cage available (bwrap missing) and \
+			         DevPassthrough is not permitted under Policy::Production"
+				.into(),
+		}),
 	}
 }

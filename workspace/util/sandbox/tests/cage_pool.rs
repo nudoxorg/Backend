@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 
 use sandbox::{
 	CancelToken, CapabilityBudget, DevPassthrough, Env, FsGrant, JobRequest, KillReason, Limits,
-	NetGrant, Policy, SandboxError, SealedCommand, Sealer, WorkerLang, WorkerPool,
-	WorkerPoolConfig,
+	NetGrant, Policy, SandboxError, Sealer, WorkerLang, WorkerPool, WorkerPoolConfig,
 };
 
 fn tiny_limits() -> Limits {
@@ -27,7 +26,7 @@ fn tiny_limits() -> Limits {
 }
 
 #[test]
-fn sealed_command_roundtrips_spec() {
+fn sealed_command_carries_parts() {
 	let scratch = std::env::temp_dir();
 	let sealer = Sealer::new();
 	let budget = sealer.budget(
@@ -39,12 +38,10 @@ fn sealed_command_roundtrips_spec() {
 	let cmd = sealer
 		.seal_command("/bin/echo", ["hi"], budget)
 		.cwd(&scratch);
-	let spec = cmd.clone().into_spec();
-	assert_eq!(spec.command, PathBuf::from("/bin/echo"));
-	assert_eq!(spec.args, vec![std::ffi::OsString::from("hi")]);
-	assert!(matches!(spec.network, sandbox::Network::Off));
-	let back = SealedCommand::from_spec(spec);
-	assert_eq!(back.command, cmd.command);
+	assert_eq!(cmd.command, PathBuf::from("/bin/echo"));
+	assert_eq!(cmd.args, vec![std::ffi::OsString::from("hi")]);
+	assert_eq!(cmd.budget.net, NetGrant::Off);
+	assert_eq!(cmd.cwd.as_deref(), Some(scratch.as_path()));
 }
 
 #[test]

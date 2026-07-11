@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::Backend;
+use crate::cage::Cage;
 use crate::cancel::CancelToken;
 use crate::error::{CageError, KillReason, SandboxError};
 use crate::limits::Limits;
@@ -232,8 +232,10 @@ impl<'a> Lease<'a> {
 		}
 	}
 
-	fn slot_mut(&mut self) -> &mut WorkerSlot {
-		self.slot.as_mut().expect("lease slot present until drop")
+	fn slot_mut(&mut self) -> Result<&mut WorkerSlot, CageError> {
+		self.slot.as_mut().ok_or_else(|| CageError::WorkerProtocol {
+			detail: "lease slot accessed after drop (internal invariant violated)".into(),
+		})
 	}
 }
 
@@ -302,7 +304,8 @@ impl WorkerPool {
 
 		// Lease returns the slot even if run_on_slot panics.
 		let mut lease = Lease::take(&self.free);
-		self.run_on_slot(lease.slot_mut(), &req, cancel)
+		let slot = lease.slot_mut().map_err(SandboxError::from)?;
+		self.run_on_slot(slot, &req, cancel)
 	}
 
 	fn run_on_slot(
@@ -609,41 +612,49 @@ fn make_nonblocking(pipe: &impl std::os::fd::AsFd) {
 
 /// One-shot: run a worker binary once under the full sandbox for a single lower.
 pub fn lower_once(
-	backend: &dyn Backend,
+	cage: &dyn Cage,
 	worker_bin: &Path,
 	lang: WorkerLang,
 	root: &Path,
 	limits: Limits,
 	extra_ro: &[PathBuf],
 ) -> Result<String, SandboxError> {
+	use crate::budget::{CapabilityBudget, FsGrant, NetGrant};
+	use crate::seal::SealedCommand;
+
 	let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-	let mut mounts = Mounts::new().ro(worker_bin).ro(&root);
+	let mut ro = vec![worker_bin.to_path_buf(), root.clone()];
 	for p in extra_ro {
-		mounts = mounts.ro(p);
+		ro.push(p.clone());
 	}
+
 	let scratch = tempfile::Builder::new()
 		.prefix("nudox-once-")
 		.tempdir()
 		.map_err(SandboxError::Io)?;
 	let scratch = scratch.keep();
-	mounts = mounts.rw(&scratch);
 
 	let env = Env::empty()
 		.set("HOME", &scratch)
 		.set("TMPDIR", &scratch)
 		.set("PATH", "/usr/bin:/bin:/nix/var/nix/profiles/default/bin");
 
-	let spec = Spec::new(worker_bin, limits)
-		.arg("lower")
-		.arg(lang.as_str())
-		.arg(root.as_os_str())
-		.env(env)
-		.mounts(mounts)
-		.cwd(&scratch);
+	let mut fs = FsGrant::scratch(&scratch);
+	for p in &ro {
+		fs = fs.ro(p);
+	}
 
-	let out = backend.run(spec);
+	let budget = CapabilityBudget::new(fs, NetGrant::Off, env, limits);
+	let args: Vec<std::ffi::OsString> = vec![
+		"lower".into(),
+		lang.as_str().into(),
+		root.as_os_str().into(),
+	];
+	let cmd = SealedCommand::new(worker_bin, args, budget).cwd(&scratch);
+
+	let out = cage.run(cmd, &CancelToken::never());
 	let _ = std::fs::remove_dir_all(&scratch);
-	let out = out?;
+	let out = out.map_err(SandboxError::from)?;
 	if !out.success() {
 		let stderr = String::from_utf8_lossy(&out.stderr);
 		return Err(CageError::WorkerProtocol {

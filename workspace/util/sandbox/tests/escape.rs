@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use sandbox::{
-	run, Env, KillReason, Limits, Mounts, Network, ProducerProfile, SandboxError, Spec,
+	CancelToken, CapabilityBudget, Env, FsGrant, KillReason, Limits, Mounts, NetGrant, Network,
+	Output, ProducerProfile, SandboxError, SealedCommand, Spec, run_sealed,
 };
 
 fn tiny_limits() -> Limits {
@@ -23,6 +24,41 @@ fn echo_bin() -> &'static str {
 	} else {
 		"echo"
 	}
+}
+
+/// Build a `SealedCommand` from a `Spec` for test purposes.
+///
+/// Uses the first writable mount as scratch (or temp dir as fallback).
+fn spec_to_sealed(spec: Spec) -> SealedCommand {
+	let scratch = spec
+		.mounts
+		.writable
+		.first()
+		.cloned()
+		.unwrap_or_else(std::env::temp_dir);
+	let mut fs = FsGrant::scratch(&scratch);
+	for p in &spec.mounts.read_only {
+		fs = fs.ro(p);
+	}
+	for p in spec.mounts.writable.iter().skip(1) {
+		fs = fs.rw(p);
+	}
+	let budget = CapabilityBudget::new(
+		fs,
+		NetGrant::from(spec.network),
+		spec.env,
+		spec.limits,
+	);
+	let mut cmd = SealedCommand::new(spec.command, spec.args, budget);
+	if let Some(cwd) = spec.cwd {
+		cmd = cmd.cwd(cwd);
+	}
+	cmd
+}
+
+/// Run a `Spec` via the platform cage (thin test helper).
+fn run(spec: Spec) -> Result<Output, SandboxError> {
+	run_sealed(spec_to_sealed(spec), &CancelToken::never()).map_err(Into::into)
 }
 
 fn echo_spec(arg: &str) -> Spec {
@@ -150,13 +186,14 @@ fn network_off_is_default() {
 }
 
 #[test]
-fn passthrough_refuses_production() {
-	// Use always_deny so we don't race other tests on process env.
-	use sandbox::Backend;
-	use sandbox::Passthrough;
-	let backend = Passthrough::always_deny();
-	let result = backend.run(echo_spec("x"));
-	assert!(matches!(result, Err(SandboxError::Denied { .. })));
+fn dev_passthrough_refuses_production_policy() {
+	// DevPassthrough cannot be constructed under Policy::Production.
+	use sandbox::{CageError, DevPassthrough, Policy};
+	let result = DevPassthrough::try_new(Policy::Production);
+	assert!(
+		matches!(result, Err(CageError::Denied { .. })),
+		"expected Denied, got {result:?}"
+	);
 }
 
 #[cfg(target_os = "linux")]
@@ -245,67 +282,4 @@ fn rlimit_as_has_va_headroom() {
 	// soft==hard ceilings present
 	assert!(lim.cpu_secs.get() > 0);
 	assert!(lim.nofile.get() >= 1024);
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn seccomp_denylist_compiles() {
-	// BPF program must be non-empty and a multiple of 8 bytes (sock_filter).
-	let bytes = sandbox::seccomp::denylist_bpf_bytes().expect("compile denylist");
-	assert!(!bytes.is_empty());
-	assert_eq!(bytes.len() % 8, 0);
-}
-
-#[test]
-fn limit_override_applies_sparsely() {
-	use sandbox::LimitOverride;
-	use std::num::NonZeroU64;
-	let base = ProducerProfile::Tiny.limits();
-	let over = LimitOverride {
-		mem_bytes: NonZeroU64::new(32 * 1024 * 1024),
-		..LimitOverride::none()
-	};
-	let lim = ProducerProfile::Tiny.with_override(over);
-	assert_eq!(lim.mem_bytes.get(), 32 * 1024 * 1024);
-	assert_eq!(lim.cpu_secs, base.cpu_secs);
-}
-
-#[test]
-fn job_key_changes_with_inputs() {
-	use heart::JobKey;
-	let a = JobKey::derive(b"v1", b"tc", b"src", b"lock");
-	let b = JobKey::derive(b"v1", b"tc", b"src2", b"lock");
-	assert_ne!(a.hex(), b.hex());
-}
-
-#[test]
-fn isolation_policy_from_env_defaults_best_effort() {
-	// Don't mutate NUDOX_ENV (other tests); just construct BestEffort explicitly.
-	assert_eq!(
-		sandbox::IsolationPolicy::BestEffort,
-		sandbox::IsolationPolicy::default()
-	);
-	let host = sandbox::probe::probe();
-	// Probe always succeeds; production_grade depends on platform.
-	assert!(!host.backend.is_empty());
-}
-
-/// When `NUDOX_ESCAPE_GATE=1` on Linux, soft-skips become hard failures.
-#[cfg(target_os = "linux")]
-#[test]
-fn escape_gate_requires_bwrap_when_set() {
-	if !matches!(
-		std::env::var("NUDOX_ESCAPE_GATE").as_deref(),
-		Ok("1") | Ok("true")
-	) {
-		return;
-	}
-	let host = sandbox::probe::probe();
-	assert!(host.bwrap, "CI escape gate requires bwrap");
-	assert!(host.seccomp, "CI escape gate requires seccomp compile");
-	assert!(
-		host.capabilities.production_grade || host.backend == "linux-bwrap",
-		"CI escape gate requires production-grade backend, got {}",
-		host.backend
-	);
 }

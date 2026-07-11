@@ -4,7 +4,25 @@ use serde::{Deserialize, Serialize};
 use crate::content::ContentHash;
 
 /// The distinct phases of indexing a package, in order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display, strum::EnumIter)]
+///
+/// The wire token for each variant is its lowercase name (`"acquiring"`, etc.),
+/// matching the postgres `CHECK` domain.  `VariantNames::VARIANTS` is the
+/// single source the schema CHECK constraint is derived from.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::Display,
+    strum::EnumIter,
+    strum::EnumString,
+    strum::VariantNames,
+)]
+#[strum(serialize_all = "lowercase")]
 pub enum Phase {
     /// Resolving the concrete version + downloading the source archive.
     Acquiring,
