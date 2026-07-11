@@ -1,309 +1,223 @@
-nudox Backend
-=============
+Backend
+=======
 
-A Rust workspace that indexes library APIs and symbol occurrences, and serves
-them over a REST API. The server ingests Rust and TypeScript packages and
-exposes search endpoints for code intelligence tooling.
+A multi-language documentation and code-intelligence backend. Language producers
+(Rust, TypeScript, Go, Java, Python, Nix) compile packages into a shared IR,
+which is indexed into a graph store (TerminusDB), a vector store (Qdrant), a
+full-text index (Tantivy), and a content-addressed blob store (object store).
+An HTTP API surfaces search, package management, and session-scoped graph
+traversal.
 
-Symbol search (`/symbol-search`) works out of the box with no external
-services — it persists to local disk via Tantivy and an object store. TerminusDB
-and Qdrant are optional and only needed for the legacy semantic-search path.
-
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Built with Buck2. No Cargo workspace.
 
 
-What's in this workspace
-------------------------
+Architecture
+------------
 
-~~~~
-compiler/          Server binary + ingestion pipeline (axum, TerminusDB, Qdrant)
-crates/
-  nudox-core       Shared types, traits, error type — zero logic
-  nudox-embed      Embedder implementations (Mock, Placeholder, InProcess, Remote/OpenAI)
-  nudox-blobstore  BlobStore backends: local filesystem via object_store, in-memory
-  nudox-search     SearchIndex via Tantivy, VectorIndex via Qdrant, in-memory stubs
-  nudox-pipeline   Converts PipelineInput → BlobInfo with tree-sitter snippet extraction
-  nudox-orchestrator  Ingest routing, deferred queue management, index rebuild
-  nudox-store      SQLite-backed GlobalSymbolStore + FutureParseQueue
-  nudox-indexer    Demo binary wiring all crates end-to-end
-ir/                Tree-sitter IR: syntax walking, reference classification
-linkml/            Schema definitions
-terminusdb/        TerminusDB client and embedding service
-~~~~
+```
+  Language producers (compiler/)
+    Rust (rust-analyzer) · TypeScript · Go · Java · Python · Nix
+            |
+            v
+       IR (compiler/intermediate-representation/)
+            |
+      +-----------+-----------+-----------+-----------+
+      |           |           |           |           |
+  Graph       Vector       Text       Blobs      Global index
+ (Terminus)  (Qdrant)   (Tantivy)  (obj store)  (Postgres)
+      |           |           |           |           |
+      +-------------------------------------------+
+                              |
+                       server/ (axum)
+```
 
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+**Workspace crates** (all under `workspace/`):
+
+| Crate | Role |
+| ----- | ---- |
+| `heart` | Shared vocabulary: identity types (`PackageId`, `SymbolId`, `ContentHash`), lifecycle typestates (`Cold`/`Live`), error taxonomy, ecosystem enums |
+| `compiler` | Language producers → IR → graph emission; tree-sitter CST extraction; IR → renderer for all five languages |
+| `compiler/intermediate-representation` | The IR schema: `Entry`, `Index`, type/generics/function/record/protocol nodes |
+| `registry` | Write-plane spine: object-store blobs, Postgres global index, job queue, transactional outbox, package ingest sanitizer, package-search tantivy index |
+| `runtime` | Read-plane stores: tantivy text index, Qdrant vector/semantic store, TerminusDB graph client, Postgres session store |
+| `cas` | Content-addressed storage; three-tier (in-process stampede cache → node-local disk → object store); key type is `ContentHash` (BLAKE3) |
+| `server` | HTTP surface (axum), federation assembly, search planner, background pollers, ForgeRuntime (compile-plane capabilities) |
+| `util/caching` | Stampede-resistant caching primitives: single-flight coalescing, XFetch probabilistic early expiration, TTL jitter |
+| `util/sandbox` | Process isolation: `Cage` trait, `LinuxNamespaces` (bwrap + cgroup + seccomp), `DevPassthrough`, `WorkerPool` for library-form producers |
+
+The server supports a **federated** topology: one definitive (centrally-hosted)
+source plus zero or more self-hosted overlay sources, each a complete independent
+stack. Overlays take precedence in search resolution.
+
+Deployment roles (`NUDOX_ROLE`): `gateway` (search + derived-store consumers),
+`forge` (compile worker), `all` (default, single-node).
 
 
 Building
 --------
 
-All build commands run inside the Nix flake — `Backend/.cargo/config.toml`
-requires `clang` as the linker, which is only in the flake environment:
+Requires the Nix dev shell (provides Buck2 via `buckle`, the Rust toolchain,
+and system dependencies):
 
-~~~~ bash
-# Enter the environment once (or use direnv — see below)
-nix develop /path/to/nudox/Backend
-
-# Workspace check
-cargo check --workspace
-
-# Run tests (no external services needed by default)
-cargo test --workspace
-
-# Qdrant integration tests (requires Qdrant on localhost:6334)
-cargo test --workspace --features nudox-search/qdrant-integration
+```bash
+# Enter the dev shell
+nix develop
 
 # Build the server binary
-cargo build --release -p nudox
+buck2 build //workspace/server:server
 
-# Run the demo indexer
-NUDOX_QDRANT_URL=http://localhost:6334 cargo run -p nudox-indexer
-~~~~
+# Build everything
+buck2 build //...
 
-### direnv (recommended)
+# Run all tests
+buck2 test //...
 
-~~~~ bash
-# Install direnv, then in any nudox repo:
-direnv allow
-# The flake environment loads/unloads automatically on cd.
-~~~~
+# Run tests for one crate
+buck2 test //workspace/server:test
 
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Build and run the server
+buck2 run //workspace/server:server
+```
+
+Buck2 aliases at the repo root map short names to full targets:
+`//:server`, `//:heart`, `//:ir`, `//:registry`, `//:runtime`,
+`//:compiler`, `//:sandbox`, `//:cas`, `//:caching`.
+
+Dependency management uses the custom tooling under `build/third-party/`:
+
+```bash
+buck2 run //:add    -- <crate>    # add a third-party crate
+buck2 run //:check               # verify the registry is consistent
+buck2 run //:update              # reconcile registry.bzl with BUCK files
+```
 
 
 Running the server
 ------------------
 
-~~~~ bash
-# Minimal — no TerminusDB, no Qdrant, text search only
-NUDOX_DATA_DIR=.nudox-data cargo run -p nudox
+Configuration is layered: built-in defaults, then `nudox.toml` (or the path in
+`NUDOX_CONFIG`), then `NUDOX_*` environment variables. The `__` separator in env
+var names maps to struct nesting (`NUDOX_LIMITS__MAX_INFLIGHT_JOBS=4`).
 
-# Full stack
-NUDOX_DATA_DIR=.nudox-data \
-NUDOX_TERMINUS_ENDPOINT=http://localhost:6363 \
-NUDOX_TERMINUS_ORG=my_org \
-NUDOX_TERMINUS_DB=my_db \
-NUDOX_QDRANT_ENDPOINT=http://localhost:6334 \
-OPENAI_API_KEY=sk-... \
-cargo run -p nudox
-~~~~
+```bash
+# Development (all defaults point to localhost services)
+buck2 run //:server
+```
 
-Copy `.env.example` to `.env` and fill in values; the server reads it on
-startup.
-
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+The server connects all backing stores at startup and refuses to serve until
+every store of every configured source passes its `Connect` check.
 
 
-Environment variables
----------------------
+Configuration reference
+-----------------------
 
-| Variable                  | Default                  | Notes                                        |
-| ------------------------- | ------------------------ | -------------------------------------------- |
-| `NUDOX_DATA_DIR`          | `.nudox-data`            | Storage root for all on-disk state           |
-| `NUDOX_BIND_ADDR`         | `0.0.0.0:3000`           | Server listen address                        |
-| `NUDOX_TERMINUS_ENDPOINT` | —                        | TerminusDB HTTP endpoint                     |
-| `NUDOX_TERMINUS_ORG`      | —                        | TerminusDB org name                          |
-| `NUDOX_TERMINUS_DB`       | —                        | TerminusDB database name                     |
-| `NUDOX_QDRANT_ENDPOINT`   | —                        | Qdrant gRPC endpoint                         |
-| `NUDOX_QDRANT_COLLECTION` | `nudox-embeddings`       | Qdrant collection prefix                     |
-| `NUDOX_EMBEDDING_MODEL`   | `text-embedding-3-small` | Model name passed to OpenAI-compat API       |
-| `OPENAI_API_KEY`          | —                        | Required when `NUDOX_QDRANT_ENDPOINT` is set |
-| `NUDOX_BLOB_STORE_ROOT`   | `target/nudox-blobs`     | Indexer demo blob directory                  |
-| `NUDOX_TANTIVY_DIR`       | `target/nudox-tantivy`   | Indexer demo Tantivy directory               |
-| `RUST_LOG`                | `info,nudox=debug`       | Tracing filter                               |
+All keys correspond to fields in `workspace/server/config.rs:ServerConfiguration`.
+Environment variable names are `NUDOX_` + the field path with `__` as separator.
 
-The SQLite occurrence store (`{NUDOX_DATA_DIR}/nudox-links.db`) and the Tantivy
-full-text index (`{NUDOX_DATA_DIR}/tantivy/`) are created automatically at
-startup; no manual setup is needed.
+### Top-level
 
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+| Key / env var | Dev default | Notes |
+| ------------- | ----------- | ----- |
+| `serving_address` / `NUDOX_SERVING_ADDRESS` | `127.0.0.1:8080` | TCP bind address |
+| `role` / `NUDOX_ROLE` | `all` | `gateway` \| `forge` \| `all` |
+| `NUDOX_CONFIG` | `nudox.toml` | Path to the TOML config file |
 
+### `definitive.endpoints` (and `overlays[n].endpoints`)
 
-API
----
+| Key / env var suffix | Dev default | Notes |
+| -------------------- | ----------- | ----- |
+| `terminus` | `http://127.0.0.1:6363` | TerminusDB HTTP endpoint |
+| `terminus_organization` | `nudox` | TerminusDB organization |
+| `terminus_database` | `registry` | TerminusDB database name — also seeds symbol identity |
+| `terminus_user` | `admin` | TerminusDB basic-auth user |
+| `terminus_password` | `root` | **DEV DEFAULT — insecure; set in production** |
+| `qdrant` | `http://127.0.0.1:6334` | Qdrant gRPC endpoint |
+| `qdrant_collection` | `symbols` | Qdrant collection name |
+| `postgres` | `postgres://nudox:nudox@127.0.0.1:5432/nudox` | **DEV DEFAULT — insecure; set in production** |
+| `object_store` | `file://<tmpdir>/nudox/blobs` | Object-store base URL (`file://` or S3/GCS) |
+| `embeddings` | `http://127.0.0.1:11434/v1/embeddings` | OpenAI-compatible embeddings endpoint |
+| `embeddings_api_key` | _(unset)_ | Bearer token for the embeddings endpoint |
 
-### Health
+### `limits`
 
-~~~~
-GET /healthz
-→ { "status": "ok", "tracked_packages": 3 }
-~~~~
+| Key / env var suffix | Default | Notes |
+| -------------------- | ------- | ----- |
+| `limits.upload_timeout` | `2s` | Admin-plane request timeout (returns 504) |
+| `limits.max_request_bytes` | `256 MiB` | Max body on the write plane (capped at 64 KiB for admin mutations) |
+| `limits.max_inflight_jobs` | `16` | Concurrent compile jobs per node |
+| `limits.poll_interval` | `2s` | Background-poller tick interval |
+| `limits.job_lease` | `120s` | Queue lease duration; heartbeat keeps it alive every ~40 s |
+| `limits.job_deadline` | `600s` | Hard per-job deadline |
+| `limits.drain_deadline` | `30s` | Graceful-shutdown drain window |
 
-### Symbol search by name / kind / scope (no external services)
+### Source replica-local state
 
-~~~~
-POST /symbol-search
-Content-Type: application/json
-
-{
-  "name_pattern": "Router",      // partial match, optional
-  "kind": "Struct",              // optional — Function Struct Enum Trait Method Closure TypeAlias Const
-  "scope": { "repo_id": "lib:axum:0.8.8" },  // optional
-  "combine": "Or",               // Or (default) | And
-  "limit": 20                    // default 20
-}
-~~~~
-
-Returns an array of matches:
-
-~~~~ json
-[
-  {
-    "symbol_name": "axum::Router",
-    "occurrence_id": "...",
-    "kind": "Struct",
-    "repo_id": "lib:axum:0.8.8",
-    "lib_name": null,
-    "lib_version": null,
-    "score": 1.0,
-    "occurrence_count": 1,
-    "snippet": "pub struct Router<S = ()> { ... }"
-  }
-]
-~~~~
-
-Symbols are indexed automatically during package ingestion. `body_query`
-(semantic body search) returns `501` until embeddings are configured.
-
-### Full-text symbol search (legacy Tantivy endpoint)
-
-~~~~
-GET /text-search?q=<query>[&limit=<n>]
-~~~~
-
-### Semantic search (requires Qdrant + embeddings)
-
-~~~~
-GET /search?q=<query>[&limit=<n>]
-~~~~
-
-### Symbol lookup
-
-~~~~
-GET /terminus_search?q=<symbol-uri>
-GET /terminus_search?symbol=<fq_name>&language=<language>[&package=<pkg>]
-~~~~
-
-### Code run search
-
-~~~~
-GET /run?q=<query>[&session=<id>][&limit=<n>]
-~~~~
-
-### Symbol expand
-
-~~~~
-GET /expand?uri=<symbol-uri>[&depth=<n>][&breadth=<n>][&session=<id>]
-~~~~
-
-### Package management
-
-~~~~
-GET  /api/packages             → list all tracked packages
-POST /api/packages             → add a package (triggers background ingest)
-GET  /api/packages/{id}        → get package status + snapshot
-POST /api/packages/{id}/sync   → force re-sync
-~~~~
-
-### Session
-
-~~~~
-DELETE /session?session=<id>   → clear a search session
-~~~~
-
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Each configured source stores its replica-local Tantivy indexes under
+`data_directory` (field `definitive.data_directory` / `overlays[n].data_directory`).
+When unset, defaults to `<OS tmpdir>/nudox/<source_name>/`. Subdirectories:
+`text/` (symbol index) and `packages/` (package-search index).
 
 
-Crates overview
----------------
+HTTP API
+--------
 
-See [`crates/README.md`](crates/README.md) for the full reference including
-type contracts, trait tables, SQLite schema, and integration notes.
+All routes are defined in `workspace/server/http/router.rs`.
 
-### Quick summary
+### Read plane (up to 2 MiB request body)
 
-**`nudox-core`** — contract crate. `BlobInfo` is the central artifact;
-everything else (search entry, vector point, SQLite row) is a pointer or
-derived value. `BLOB_SCHEMA_VERSION = 2` is validated on every store/retrieve.
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `POST` | `/search` | Symbol/text search |
+| `POST` | `/search/semantic` | Semantic (vector) search — requires Qdrant + embeddings |
+| `POST` | `/packages/search` | Package discovery search |
+| `POST` | `/expand` | Graph-traversal expansion from a symbol |
+| `GET`  | `/symbols/:id` | Fetch a single symbol by ID |
+| `GET`  | `/sessions/:id` | Fetch a session exploration graph |
 
-**`nudox-pipeline`** — takes `PipelineInput` (raw code + symbol span + origin),
-runs tree-sitter to extract a snippet-bounded `SourceChunk`, runs every
-configured embedder, and returns `BlobInfo`. No network calls.
+### Write / admin plane (body limit: min of 64 KiB and `limits.max_request_bytes`; `limits.upload_timeout` applies)
 
-**`nudox-orchestrator`** — routes `BlobInfo` to the backends. Repo-local
-symbols get a fresh UUID v4 `GlobalSymbolId` immediately. External-lib symbols
-either resolve against the global store or are deferred to a queue until
-`resolve_lib` is called after that library is parsed. `rebuild_indexes()`
-reconstructs all indexes from blob storage alone.
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `POST` | `/packages` | Add a package (triggers background indexing job) |
+| `GET`  | `/packages/:id` | Get package status |
+| `POST` | `/packages/:id/sync` | Force re-index of a package |
 
-**`nudox-store`** — production `GlobalSymbolStore` and `FutureParseQueue`
-backed by SQLite. `GlobalSymbolId` values are deterministic UUID v5 derived
-from `(terminus_instance, entry_uri)` — computable offline without a DB
-round-trip.
+### Operational
 
-**`nudox-search`** — `TantivySearchIndex` (upsert semantics, persists to disk)
-and `QdrantVectorIndex` (idempotent point IDs). Both have in-memory stubs for
-tests.
-
-**`nudox-blobstore`** — `ObjectStoreBlobStore` writes blobs as JSON files under
-`{root}/blobs/{uuid}.json`. `InMemoryBlobStore` for tests.
-
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET` | `/healthz` | Liveness probe |
+| `GET` | `/readyz` | Readiness probe (checks all backing stores) |
+| `GET` | `/metrics` | Prometheus metrics |
 
 
-On-disk layout
---------------
+Status / known limitations
+--------------------------
 
-After first run with `NUDOX_DATA_DIR=.nudox-data`:
+- **No authentication or authorization.** `Server::authorize()` is a no-op
+  (audit trace only). Deploy behind a trusted network boundary or a
+  terminating proxy that enforces access control.
 
-~~~~
-.nudox-data/
-  packages.json              tracked package registry
-  nudox-links.db             SQLite: global symbols + deferred queue (optional, Terminus only)
-  tantivy/                   legacy text search index (/text-search endpoint)
-  nudox-symbol-index/        Tantivy index for /symbol-search (created automatically)
-  nudox-blobs/               JSON blob store for /symbol-search (created automatically)
-  repositories/
-    rust/<source-slug>/      cloned/extracted Rust packages
-    typescript/<source-slug>/
-  sessions/                  search session state
-~~~~
+- **Single-tenant.** The source federation supports multiple named registries
+  but there is no per-user isolation or tenancy model.
 
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+- **CAS blob GC not implemented.** `cas_gc` (poll.rs) reclaims consumed outbox
+  rows but does not delete orphaned CAS blobs. Blobs accumulate until manual
+  intervention. A transactional refcount or snapshot-fenced mark-sweep is the
+  documented follow-up (DAEMON-PLAN §5-ops).
 
+- **TypeScript producer emits placeholder symbol kinds.** The TS compile path
+  is implemented but type-kind lowering is incomplete; some entries carry
+  placeholder kinds.
 
-Tests
------
+- **`/search/semantic` is gated.** Semantic search requires a running Qdrant
+  instance and a configured embeddings endpoint; it is not available in the
+  default dev configuration.
 
-~~~~ bash
-# All tests (no external services required)
-cargo test --workspace
-
-# Verbose output
-cargo test --workspace -- --nocapture
-
-# A specific crate
-cargo test -p nudox-orchestrator
-~~~~
-
-Test counts per crate (all passing, no warnings):
-
-| Crate              | Count                                                      |
-| ------------------ | ---------------------------------------------------------- |
-| nudox-core         | 11                                                         |
-| nudox-embed        | 8                                                          |
-| nudox-blobstore    | 35                                                         |
-| nudox-search       | 19                                                         |
-| nudox-pipeline     | 9                                                          |
-| nudox-orchestrator | 4 (2 disk persistence + 2 in-memory)                       |
-| nudox-store        | 15                                                         |
-| compiler           | 5 network + 7 symbol-search integration (all pass offline) |
-
-The `disk_backends_survive_reopen` and `disk_ingest_and_resolve_lib` tests in
-`nudox-orchestrator` verify that blob storage, SQLite, and the Tantivy index
-all survive process-restart simulation.
-
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+- **Dev defaults are insecure.** `terminus_password = "root"` and
+  `postgres = "postgres://nudox:nudox@..."` are compile-time dev defaults.
+  Override them in `nudox.toml` or via environment variables before any
+  non-local deployment.
 
 
 Development
@@ -311,41 +225,29 @@ Development
 
 ### Nix environment
 
-We use **Lix** (a modern Nix implementation) for reproducible environments. Do
-not install compilers or runtimes globally — add them to `flake.nix`.
+The repo uses Lix (a modern Nix implementation). Do not install compilers or
+runtimes globally — add them to `flake.nix`.
 
-~~~~ bash
+```bash
 # Install Lix
 curl -sSfL https://install.lix.systems/lix | sh -s -- install
-# Enable Flakes + New CLI when prompted.
 
-# Enter the Backend dev shell
-nix develop /path/to/nudox/Backend
-~~~~
+# Enter the dev shell
+nix develop
+```
 
 ### Commit style
 
-Follow [Conventional Commits]:
+Conventional Commits: `<type>(<scope>): <subject>`
 
-~~~~
-<type>(<scope>): <subject>
+Types: `feat` `fix` `refactor` `test` `docs` `build` `chore` `ci` `perf` `revert`
 
-# Types: feat fix refactor test docs build chore ci perf revert style
-~~~~
+### Version control
 
-[Conventional Commits]: https://www.conventionalcommits.org/en/v1.0.0/
+We use Radicle for hosting. After `rad auth`:
 
-### Radicle (version control)
-
-We use [Radicle] for hosting. After installing and running `rad auth`:
-
-~~~~ bash
+```bash
 rad node connect z6MkmTC76GDv4H7YdZB9UvMhjxpxZXoNTeQaMqGsoiRpZsJf@100.114.38.65:8776
-rad clone <RID>      # clone a repo
-rad sync             # announce your changes to the network
-~~~~
-
-Access to private repositories requires your DID to be added to the allow list
-on the seed node. Contact the project owner with your `rad self --did` output.
-
-[Radicle]: https://radicle.xyz/
+rad clone <RID>
+rad sync
+```

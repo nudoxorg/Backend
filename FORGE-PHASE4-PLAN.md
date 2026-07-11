@@ -1,3 +1,5 @@
+> STATUS: IN PROGRESS — `ForgeRuntime<Ready>` assembled in `server/forge.rs` and wired in `server/lib.rs`; `BACKEND` OnceLock in `util/sandbox` and some env reads remain.
+
 # Phase 4 — ForgeRuntime: Implementation Plan
 
 Post phases 0–3 merge (HEAD ~`1d92e6d`). Replaces compile-plane globals + env
