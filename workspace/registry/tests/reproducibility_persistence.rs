@@ -20,6 +20,9 @@ use registry::{
     search::tantivy::PackageIndex,
 };
 
+// `metadata::hash::package_generation` was removed; the canonical generation
+// stamp is now derived directly from `BlobManifest::identity_bytes`.
+
 /// A live store over a fresh in-memory backend, plus the backend handle.
 async fn memory_store() -> (Arc<InMemory>, Store) {
     let backend = Arc::new(InMemory::new());
@@ -43,8 +46,7 @@ async fn persist_blob(store: &Store, package: &registry::Package) -> BlobManifes
 /// The derived search record a blob manifest reconstructs to — the rebuild
 /// unit every read-plane store replays.
 fn record_from_blob(package: &registry::Package, manifest: &BlobManifest) -> GlobalPackage {
-    let files: Vec<registry::FileEntry> = manifest.files.iter().cloned().collect();
-    let generation = registry::metadata::hash::package_generation(&files);
+    let generation = ContentHash::of_bytes(&manifest.identity_bytes());
     common::global_package(package.clone(), ResolutionState::Stored { hash: generation })
 }
 

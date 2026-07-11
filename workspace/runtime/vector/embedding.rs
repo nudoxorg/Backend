@@ -2,8 +2,8 @@
 //! produces them.
 //!
 //! The vector's *model* is lifted into the type via [`EmbeddingModel`], not just
-//! its numeric dimension. So an `Embedding<OpenAi3Large>` and an
-//! `Embedding<Qwen3>` are different types even if their dimensions happened to
+//! its numeric dimension. So an `Embedding<OpenAi3Small>` and an
+//! `Embedding<E5Small>` are different types even if their dimensions happened to
 //! match — feeding one model's vectors to another model's store is a *compile*
 //! error, not a silent semantic bug. The brand also supplies the dimension
 //! (`M::DIMENSIONS`) and the stable [`ModelId`] (`M::id()`), so those never have

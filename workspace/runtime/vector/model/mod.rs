@@ -6,7 +6,7 @@
 pub mod catalog;
 pub mod id;
 
-pub use catalog::{E5Small, OpenAi3Large, OpenAi3Small, Qwen3};
+pub use catalog::{E5Small, OpenAi3Small};
 pub use id::ModelId;
 
 mod sealed {

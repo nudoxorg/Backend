@@ -9,9 +9,9 @@ mod common;
 
 use std::sync::Arc;
 
-use heart::{Connect, ContentHash, Freshness};
+use heart::{Connect, ContentHash};
 use object_store::{ObjectStore, memory::InMemory};
-use registry::{Store, error::StoreError, metadata::hash};
+use registry::{Store, error::StoreError};
 
 /// A live store over a fresh in-memory backend, plus the backend handle so a
 /// test can reopen over the same objects.
@@ -146,37 +146,6 @@ async fn get_unknown_package_errors() {
         ),
         other => panic!("expected StoreError::NotFound, got {other:?}"),
     }
-}
-
-/// A re-parse with a changed representation is detected via the freshness hash.
-///
-/// Assert: `metadata::hash::freshness(recorded, recomputed)` is `Stale` when the
-///   code/treesitter hash changed, `Fresh` when it didn't — the signal that
-///   gates pulling a library down again.
-#[tokio::test]
-async fn changed_representation_is_stale() {
-    let package = common::rust_package("serde", "1.0.0");
-    let (original, _) = common::built_manifest(&package);
-    let (unchanged, _) = common::built_manifest(&package);
-    let (changed, _) =
-        common::built_manifest_with(&package, b"pub fn answer() -> u32 { 43 } // re-parse");
-
-    let generation = |manifest: &registry::BlobManifest| {
-        let files: Vec<registry::FileEntry> = manifest.files.iter().cloned().collect();
-        hash::package_generation(&files)
-    };
-
-    let recorded = generation(&original);
-    assert_eq!(
-        hash::freshness(recorded, generation(&unchanged)),
-        Freshness::Fresh,
-        "an identical re-parse must read Fresh"
-    );
-    assert_eq!(
-        hash::freshness(recorded, generation(&changed)),
-        Freshness::Stale,
-        "a changed representation must read Stale"
-    );
 }
 
 /// Packages persist across a store reopen (S3/local durability).

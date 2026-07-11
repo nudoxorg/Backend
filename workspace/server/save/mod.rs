@@ -1,6 +1,6 @@
 //! Save / rebuild — the derived stores are exactly that: *derived*. The
-//! content-addressed blobs (owned by `registry`) are the root of truth; qdrant,
-//! terminus, and tantivy can all be regenerated from them deterministically.
+//! content-addressed blobs (owned by `registry`) are the root of truth and
+//! can be used to regenerate derived stores deterministically.
 //!
 //! This module is the rebuild/verify surface: given the blobs, re-emit each
 //! derived store, and *verify determinism* by re-deriving the package's
@@ -8,9 +8,6 @@
 //! trusting it blindly.
 
 pub mod blobs;
-pub mod qdrant;
-pub mod tantivy;
-pub mod terminus;
 
 use heart::{ContentHash, PackageId, ResolutionState};
 use registry::RegistryError;
@@ -18,7 +15,7 @@ use registry::blob::BlobManifest;
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
-use crate::error::{BadRequestReason, ServerError, ServerResult};
+use crate::error::{BadRequestReason, ServerResult};
 
 /// Which derived store to rebuild — the shared [`heart::DerivedStore`], the same
 /// type the registry outbox fans out to (no duplicate enum).

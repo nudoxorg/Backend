@@ -23,7 +23,6 @@
 #![feature(return_type_notation)]
 
 pub mod blob;
-pub mod catalog;
 pub mod coordination;
 pub mod error;
 pub mod health;
@@ -43,7 +42,6 @@ use heart::{PackageId, ResolutionState, Toolchain};
 use serde::{Deserialize, Serialize};
 
 pub use blob::{BlobBuilder, BlobManifest, FileEntry};
-pub use catalog::{Catalog, Mutable, Plane, ReadOnly, ReadWrite};
 pub use error::{BlobError, IngestError, QueueError, RegistryError, StoreError};
 pub use store::Store;
 

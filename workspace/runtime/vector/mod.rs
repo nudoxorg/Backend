@@ -7,16 +7,6 @@
 //!   collection actually has that dimension;
 //! - semantic search is reachable only on a [`Live`] store AND only when handed
 //!   a [`SemanticGate`], so the heavy path is never taken implicitly.
-//!
-//! ## Model-migration playbook
-//! Vectors are only comparable within one model regime. Re-embedding in place
-//! would make the collection briefly incoherent (mixed models rank against each
-//! other), so migration is a **cutover**:
-//! 1. Create a *second* collection named for the new model (see
-//!    [`CollectionName::for_regime`]), same dimension.
-//! 2. Re-embed every symbol with the new model into the new collection.
-//! 3. Flip the read path to the new collection once backfill is complete.
-//! 4. Retire the old collection after a grace period.
 
 use std::{
 	future::Future,
@@ -38,10 +28,8 @@ use serde::{Deserialize, Serialize};
 pub mod cache;
 pub mod embedding;
 pub mod gate;
-pub mod language;
 pub mod model;
 pub mod similarity;
-pub mod snippet;
 
 pub use cache::{EmbeddingCache, EmbeddingKey};
 pub use embedding::{Embedder, Embedding, EmbeddingPurpose};
@@ -102,18 +90,6 @@ impl CollectionName {
 		} else {
 			Err(CollectionNameError::Invalid { raw })
 		}
-	}
-
-	/// Derive the migration-collection name for a model regime: `sym-<model>`,
-	/// with any qdrant-illegal characters in the model id folded to `-`.
-	/// Deterministic, so the same model always cuts over to the same collection.
-	pub fn for_regime(model: &ModelId) -> Self {
-		let sanitized: String = model
-			.as_ref()
-			.chars()
-			.map(|character| if qdrant_legal(character) { character } else { '-' })
-			.collect();
-		Self(format!("sym-{sanitized}"))
 	}
 
 	/// The underlying name.

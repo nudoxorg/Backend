@@ -32,12 +32,11 @@ impl<T: Clone> Probe<T> {
 /// so "searched without the gate" is unrepresentable at compile time.
 #[tokio::test]
 async fn vector_search_requires_the_gate() {
-    // Never invoked; its existence is the (compile-time) assertion. Each of the
-    // four semantic surfaces demands the gate in its signature.
+    // Never invoked; its existence is the (compile-time) assertion.
+    // `store.search` demands the gate in its signature.
     #[allow(dead_code)]
-    async fn every_semantic_surface_demands_the_gate<M, E>(
+    async fn store_search_demands_the_gate<M, E>(
         store: &runtime::vector::SemanticLive<M>,
-        embedder: &E,
         query: &Embedding<M>,
         limit: NonZeroUsize,
     ) where
@@ -45,30 +44,6 @@ async fn vector_search_requires_the_gate() {
         E: Embedder<Model = M>,
     {
         let _ = store.search(SemanticGate::issue("spec"), query, limit, None).await;
-        let _ = runtime::vector::similarity::similar_to(
-            store,
-            SemanticGate::issue("spec"),
-            support::symbol_id(0),
-            limit,
-        )
-        .await;
-        let _ = runtime::vector::snippet::similar_to_snippet(
-            store,
-            SemanticGate::issue("spec"),
-            embedder,
-            "fn probe()",
-            EmbeddingPurpose::Code,
-            limit,
-        )
-        .await;
-        let _ = runtime::vector::language::similar_within(
-            store,
-            SemanticGate::issue("spec"),
-            heart::Language::Rust,
-            query,
-            limit,
-        )
-        .await;
     }
 
     // And the token itself cannot be forged from thin air: `issue` is the only
