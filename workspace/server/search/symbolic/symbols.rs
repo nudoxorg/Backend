@@ -25,7 +25,7 @@ impl<'a> SymbolTextSurface<'a> {
 		page: &Pagination,
 	) -> Result<impl Stream<Item = Result<Scored<Symbol>, ServerError>> + Send, ServerError> {
 		let limit = page_limit(page);
-		let after = decode_cursor(page)?;
+		let after = self.decode_cursor(page)?;
 		let text_query = TextQuery::new(query.as_str());
 
 		// The index's stream captures the borrowed query (RPIT 2024 lifetime
@@ -67,6 +67,35 @@ impl<'a> SymbolTextSurface<'a> {
 	pub async fn find(&self, id: SymbolId) -> Result<Option<Symbol>, ServerError> {
 		self.index.find_by_id(id).await.map_err(|error| ServerError::Runtime(error.into()))
 	}
+
+	/// Decode the opaque resume token, if any, as an [`Enforced`] cursor.
+	///
+	/// The token's policy tag is verified (an advisory token is rejected), and
+	/// the [`Enforced`] decode path re-checks the cursor's snapshot against the
+	/// index's *live* snapshot right here — so obtaining the branded cursor
+	/// re-proves freshness at decode time rather than trusting the erased brand.
+	/// The text paginator performs the same snapshot comparison again downstream
+	/// (a cheap defence-in-depth check against a commit racing this decode).
+	fn decode_cursor(
+		&self,
+		page: &Pagination,
+	) -> Result<Option<Cursor<runtime::text::TextCursorKey, Enforced>>, ServerError> {
+		let Some(token) = page.after.as_deref() else {
+			return Ok(None);
+		};
+		let live = self
+			.index
+			.snapshot()
+			.map_err(|error| ServerError::Runtime(error.into()))?;
+		Cursor::<runtime::text::TextCursorKey, Enforced>::decode(token, live)
+			.map(Some)
+			.map_err(|source| {
+				ServerError::from(BadRequestReason::InvalidCursor {
+					token: token.to_owned(),
+					source,
+				})
+			})
+	}
 }
 
 /// Whether a symbol's kind survives a kind allowlist (empty = unbounded).
@@ -79,23 +108,3 @@ fn page_limit(page: &Pagination) -> NonZeroUsize {
 	NonZeroUsize::new(page.limit.get() as usize).unwrap_or(NonZeroUsize::MIN)
 }
 
-/// Decode the opaque resume token, if any.
-///
-/// Text cursors are decoded as [`Enforced`] — the text paginator will verify
-/// the snapshot is still current and return an error if the index moved.
-fn decode_cursor(
-	page: &Pagination,
-) -> Result<Option<Cursor<runtime::text::TextCursorKey, Enforced>>, ServerError> {
-	page.after
-		.as_deref()
-		.map(|token| {
-			Cursor::<runtime::text::TextCursorKey, Enforced>::decode(token)
-				.map_err(|source| {
-					ServerError::from(BadRequestReason::InvalidCursor {
-						token: token.to_owned(),
-						source,
-					})
-				})
-		})
-		.transpose()
-}
