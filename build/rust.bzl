@@ -168,8 +168,24 @@ def deps(spec = None, crates = None, members = None, raw = None, features = None
 
     return crate_targets + [_member_target(m) for m in _members] + local_targets
 
+# Workspace-only lints (Phase 0 guardrail). Scoped to our crates via the
+# rules below rather than the toolchain so third-party vendored crates stay
+# quiet. `unreachable_pub` surfaces `pub` items that are never reachable across
+# a crate boundary — the zero-tooling way to find cross-crate dead surface under
+# Buck2 (cargo-machete/udeps don't run here). `unused` catches dead code, unused
+# imports/vars. Warn now; Phase 5 promotes to deny in CI once Phases 1-3 land.
+WORKSPACE_LINTS = ["-Wunreachable_pub", "-Wunused"]
+
+def _with_workspace_lints(kw):
+    merged = list(WORKSPACE_LINTS)
+    merged.extend(kw.get("rustc_flags", []))
+    out = dict(kw)
+    out["rustc_flags"] = merged
+    return out
+
 def rust_crate(name, deps = [], crate_root = "lib.rs", edition = "2024",
                srcs = None, features = None, visibility = None, **kw):
+    kw = _with_workspace_lints(kw)
     native.rust_library(
         name = name,
         srcs = srcs if srcs != None else native.glob(["**/*.rs"]),
@@ -224,6 +240,7 @@ def rust_tests(prefix, deps = [], edition = "2024", env = None, resources = None
         )
 
 def rust_bin(name, srcs, crate_root, deps = [], edition = "2024", visibility = None, **kw):
+    kw = _with_workspace_lints(kw)
     native.rust_binary(
         name = name,
         srcs = srcs,
