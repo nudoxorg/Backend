@@ -22,6 +22,18 @@
       url = "github:facebookincubator/buck2-prelude?rev=4b374e200a64838660463994b079899b5094689a";
       flake = false;
     };
+
+    # snowydeer — Buck2 → Nix store deploy boundary (Phase 4). NAR-packs a Buck2
+    # output, ripgrep reference-scans the closure, and imports it content-addressed
+    # via Lix >=2.95 `--references-list-json`/import_ca. Vendored as a source input
+    # so snowydeer/package.bzl + snowydeer/snowydeer.bxl can be wired against its
+    # upstream cells (`//toolchains//nix/nix_build.bzl`, `//constraints/link_style`,
+    # build_store_path.py). Not yet consumed by a Buck2 external cell — see the
+    # TODOs in snowydeer/snowydeer.bxl and PLANS.md for the remaining wiring.
+    snowydeer = {
+      url = "github:MercuryTechnologies/snowydeer";
+      flake = false;
+    };
   };
   outputs =
     {
@@ -31,6 +43,7 @@
       git-hooks,
       devshell,
       buck2-prelude,
+      snowydeer,
     }:
     let
       # Everything that Nix supports right now
