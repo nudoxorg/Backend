@@ -232,15 +232,19 @@ pub const SYMBOL_KIND_VALUES: &[&str] = heart::SymbolKind::VARIANTS;
 /// produces the exact SQL tokens.
 pub const LANGUAGE_VALUES: &[&str] = heart::Language::VARIANTS;
 
-/// `packages.owner_kind` domain.
-pub const OWNER_KIND_VALUES: [&str; 2] = ["individual", "enterprise"];
-/// `packages.visibility` domain.
-pub const VISIBILITY_VALUES: [&str; 3] = ["personal", "private", "public"];
+/// `packages.owner_kind` domain — derived from [`heart::OwnerKind::VARIANTS`].
+///
+/// `heart::OwnerKind` has `#[strum(serialize_all = "lowercase")]` so VARIANTS
+/// produces the exact SQL tokens.
+pub const OWNER_KIND_VALUES: &[&str] = heart::OwnerKind::VARIANTS;
+/// `packages.visibility` domain — derived from [`heart::Visibility::VARIANTS`].
+///
+/// `heart::Visibility` has `#[strum(serialize_all = "lowercase")]` so VARIANTS
+/// produces the exact SQL tokens.
+pub const VISIBILITY_VALUES: &[&str] = heart::Visibility::VARIANTS;
 
-// Lockstep compile-time guards: if variants are added/removed the assert fires.
+// Lockstep compile-time guard: if variants are added/removed the assert fires.
 const _: () = assert!(STATE_VALUES.len() == 5, "STATE_VALUES out of sync with ResolutionState");
-const _: () = assert!(OWNER_KIND_VALUES.len() == 2, "OWNER_KIND_VALUES needs manual update");
-const _: () = assert!(VISIBILITY_VALUES.len() == 3, "VISIBILITY_VALUES needs manual update");
 
 /// Render a `col IN ('a','b',...)` SQL fragment for a text CHECK constraint.
 fn check_in(col: &str, values: &[&str]) -> String {
@@ -272,14 +276,14 @@ pub fn create_packages() -> TableCreateStatement {
 			ColumnDef::new(Packages::Visibility)
 				.text()
 				.not_null()
-				.check(sea_query::Expr::cust(check_in("visibility", &VISIBILITY_VALUES))),
+				.check(sea_query::Expr::cust(check_in("visibility", VISIBILITY_VALUES))),
 		)
 		.col(ColumnDef::new(Packages::OwnerTenant).uuid().not_null())
 		.col(
 			ColumnDef::new(Packages::OwnerKind)
 				.text()
 				.not_null()
-				.check(sea_query::Expr::cust(check_in("owner_kind", &OWNER_KIND_VALUES))),
+				.check(sea_query::Expr::cust(check_in("owner_kind", OWNER_KIND_VALUES))),
 		)
 		.col(ColumnDef::new(Packages::Toolchain).json_binary().not_null())
 		.col(
