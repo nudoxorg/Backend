@@ -16,6 +16,9 @@ use crate::package::{Coordinates as PackageCoordinates, PackageName};
 
 use crate::error::ResolveError;
 
+// Re-export the shared pick_best primitive for use in this module.
+use version::pick_best;
+
 /// A version request against a package: an exact pin or a range, in the
 /// ecosystem's own grammar.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -68,6 +71,10 @@ pub async fn resolve(
 
 /// Select the greatest version from a candidate set satisfying `request`. Split
 /// out so it is unit-testable without a network round-trip.
+///
+/// Uses [`version::pick_best`] for the stable-before-prerelease preference
+/// step: among all versions satisfying the request, a stable release is
+/// preferred over a prerelease of the same or a higher version.
 pub fn select(
 	request: &VersionRequest,
 	candidates: &[PackageVersion],
@@ -109,11 +116,59 @@ pub fn select(
 		},
 	};
 
-	let best = satisfying.into_iter().max_by(|a, b| grammar_order(a, b)).cloned();
+	// Build (ord_key, &PackageVersion) pairs so pick_best can apply the
+	// stable-before-prerelease loop. OrdKey wraps a PackageVersion reference
+	// and implements Ord via grammar_order (ecosystem-aware comparison).
+	let keyed: Vec<(OrdKey<'_>, &PackageVersion)> = satisfying
+		.iter()
+		.map(|pv| (OrdKey(pv), *pv))
+		.collect();
+
+	let best = pick_best(&keyed, |key| package_version_is_prerelease(key.0)).copied().cloned();
 	match request {
 		VersionRequest::SemverRange(range) => best.ok_or_else(|| ResolveError::NoMatchSemver { name: String::from("<candidate set>"), range: range.to_string() }),
 		VersionRequest::Range { spec, .. } => best.ok_or_else(|| ResolveError::NoMatchRange { name: String::from("<candidate set>"), spec: spec.clone() }),
 		_ => best.ok_or_else(no_match),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for the pick_best integration
+// ---------------------------------------------------------------------------
+
+/// Newtype that adapts `&PackageVersion` to `Ord` via [`grammar_order`].
+///
+/// A candidate set always contains versions from a single ecosystem (callers
+/// resolve one package from one registry), so `grammar_order` never produces
+/// a mixed-ecosystem `Equal` in practice.
+#[derive(PartialEq, Eq)]
+struct OrdKey<'a>(&'a PackageVersion);
+
+impl Ord for OrdKey<'_> {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		grammar_order(&self.0, &other.0)
+	}
+}
+
+impl PartialOrd for OrdKey<'_> {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+/// Whether a `PackageVersion` represents a prerelease under its grammar.
+fn package_version_is_prerelease(v: &PackageVersion) -> bool {
+	match v {
+		PackageVersion::Cargo(sv) | PackageVersion::Npm(sv) | PackageVersion::Nix(sv) => {
+			!sv.pre.is_empty()
+		}
+		PackageVersion::Python(pv) => pv.any_prerelease(),
+		// Go and Java versions are resolved via git tags (not this registry path),
+		// but classify conservatively: any version containing a '-' or alphabetic
+		// character after the numeric part is treated as a prerelease.
+		PackageVersion::Go(s) | PackageVersion::Java(s) => {
+			s.contains('-') || s.chars().any(|c| c.is_ascii_alphabetic())
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ _MEMBERS = {
     "caching":          "//workspace/util/caching:caching",
     "sandbox":          "//workspace/util/sandbox:sandbox",
     "cas":              "//workspace/cas:cas",
+    "version":          "//workspace/version:version",
     # nudox:members
 }
 

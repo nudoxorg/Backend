@@ -159,8 +159,15 @@ impl Connect for Queue<Cold> {
 }
 
 /// Reassemble a [`Job`] from a claimed `jobs` result row. Column order matches
-/// [`queries::queue::dequeue_batch`]'s `RETURNING`: id, package_id, state,
-/// attempts, enqueued_at, lease_until.
+/// [`queries::queue::dequeue_batch`]'s `RETURNING`:
+/// `id, package_id, state, attempts, enqueued_at, lease_until`.
+///
+/// The `jobs` table stores only the state *discriminant* — the associated data
+/// (`phase`, `content_hash`, `failure` payload) live in `parse_status`.  We
+/// decode the discriminant faithfully: `deadlettered` produces
+/// [`ResolutionState::DeadLettered`] with a sentinel [`heart::Failure`], so
+/// callers can branch on the variant without consulting `parse_status` just to
+/// learn a job is poisoned.
 fn row_to_job(row: &PgRow) -> Result<Job, QueueError> {
 	let id: i64 = row.try_get(0).map_err(QueueError::Database)?;
 	let package_uuid: uuid::Uuid = row.try_get(1).map_err(QueueError::Database)?;
@@ -170,14 +177,13 @@ fn row_to_job(row: &PgRow) -> Result<Job, QueueError> {
 	let lease_until: Option<DateTime<Utc>> = row.try_get(5).map_err(QueueError::Database)?;
 
 	let package = codec::package_id_from_uuid(package_uuid);
-	// The mirrored discriminant is enough to resume; a claimed job is `Unindexed`
-	// (freshly enqueued) or being retried, so we carry the discriminant as the
-	// re-enqueueable `Unindexed` state unless it is a richer stored/failed form
-	// the worker will overwrite on its next transition anyway.
-	let state = match state_tok.as_str() {
-		"progressing" => ResolutionState::Progressing(heart::Phase::Acquiring),
-		_ => ResolutionState::Unindexed { needed: false },
-	};
+
+	// Decode the state discriminant that the jobs table stores.  The richer
+	// associated data (phase, content hash, failure payload) is in parse_status;
+	// a worker that needs it will read parse_status directly.  What matters here
+	// is that every discriminant round-trips correctly — in particular
+	// `deadlettered` must NOT silently collapse to `Unindexed`.
+	let state = state_from_discriminant(&state_tok, attempts.max(0) as u32, enqueued_at);
 
 	Ok(Job {
 		id: JobId::from_serial(id),
@@ -187,6 +193,52 @@ fn row_to_job(row: &PgRow) -> Result<Job, QueueError> {
 		enqueued_at,
 		lease_until,
 	})
+}
+
+/// Decode a jobs-table state discriminant into a [`ResolutionState`].
+///
+/// Because the `jobs` table stores only the discriminant (not the full
+/// associated columns that `parse_status` carries), we synthesise minimal
+/// placeholder payloads for variants that have associated data:
+///
+/// - `"progressing"` → `Progressing(Phase::Acquiring)` — the most conservative
+///   phase; a worker that dequeues such a job will overwrite it immediately.
+/// - `"failed"` / `"deadlettered"` → `Failed(_)` / `DeadLettered(_)` with a
+///   sentinel [`heart::Failure`] whose `message` names it as a stub.  The real
+///   failure detail is in `parse_status.failure`; this sentinel is enough for
+///   callers to branch on the variant (e.g. to refuse to retry a dead-lettered
+///   job) without an extra round-trip.
+/// - `"stored"` → `Stored { hash: ContentHash::of_bytes(&[]) }` — a sentinel
+///   hash; a stored job is terminal and will never be claimed again.
+/// - `"unindexed"` (and any unknown token) → `Unindexed { needed: false }`.
+fn state_from_discriminant(
+	token: &str,
+	attempts: u32,
+	at: DateTime<Utc>,
+) -> ResolutionState {
+	match token {
+		"progressing" => ResolutionState::Progressing(heart::Phase::Acquiring),
+		"stored" => ResolutionState::Stored {
+			hash: heart::ContentHash::of_bytes(&[]),
+		},
+		"failed" | "deadlettered" => {
+			let f = heart::Failure {
+				attempts,
+				phase: heart::Phase::Acquiring,
+				message: format!(
+					"[stub] jobs-row discriminant `{token}`; real failure in parse_status"
+				),
+				cause: None,
+				at,
+			};
+			if token == "deadlettered" {
+				ResolutionState::DeadLettered(f)
+			} else {
+				ResolutionState::Failed(f)
+			}
+		}
+		_ => ResolutionState::Unindexed { needed: false },
+	}
 }
 
 impl Queue<Live> {
@@ -387,4 +439,77 @@ pub fn runnable_order(a: (Priority, DateTime<Utc>), b: (Priority, DateTime<Utc>)
 	let (b_prio, b_enq) = b;
 	// Higher priority first → reverse the natural (ascending) Priority order.
 	b_prio.cmp(&a_prio).then(a_enq.cmp(&b_enq))
+}
+
+#[cfg(test)]
+mod state_discriminant_tests {
+	use super::*;
+
+	fn now() -> DateTime<Utc> { Utc::now() }
+
+	/// Every jobs-row state token decodes to the correct [`ResolutionState`]
+	/// variant — in particular `deadlettered` must NOT collapse to `Unindexed`.
+	#[test]
+	fn all_discriminants_decode_to_correct_variant() {
+		let t = now();
+
+		assert!(
+			matches!(
+				state_from_discriminant("unindexed", 0, t),
+				ResolutionState::Unindexed { .. }
+			),
+			"`unindexed` must decode as Unindexed"
+		);
+		assert!(
+			matches!(
+				state_from_discriminant("progressing", 1, t),
+				ResolutionState::Progressing(_)
+			),
+			"`progressing` must decode as Progressing"
+		);
+		assert!(
+			matches!(
+				state_from_discriminant("stored", 0, t),
+				ResolutionState::Stored { .. }
+			),
+			"`stored` must decode as Stored"
+		);
+		assert!(
+			matches!(
+				state_from_discriminant("failed", 2, t),
+				ResolutionState::Failed(_)
+			),
+			"`failed` must decode as Failed"
+		);
+		// The key regression: `deadlettered` must not silently become Unindexed.
+		assert!(
+			matches!(
+				state_from_discriminant("deadlettered", 3, t),
+				ResolutionState::DeadLettered(_)
+			),
+			"`deadlettered` must decode as DeadLettered, not Unindexed"
+		);
+	}
+
+	/// Unknown tokens fall back to `Unindexed` rather than panicking.
+	#[test]
+	fn unknown_discriminant_falls_back_to_unindexed() {
+		let state = state_from_discriminant("bogus_future_variant", 0, now());
+		assert!(
+			matches!(state, ResolutionState::Unindexed { .. }),
+			"unknown discriminants must not panic"
+		);
+	}
+
+	/// A dead-lettered stub carries the attempt count from the row.
+	#[test]
+	fn dead_lettered_stub_carries_attempt_count() {
+		let t = now();
+		let state = state_from_discriminant("deadlettered", 7, t);
+		if let ResolutionState::DeadLettered(f) = state {
+			assert_eq!(f.attempts, 7, "attempt count must match the row value");
+		} else {
+			panic!("expected DeadLettered");
+		}
+	}
 }

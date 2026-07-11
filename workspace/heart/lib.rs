@@ -21,7 +21,7 @@ pub use access::{Federation, Source, SourceId, SourceRole, Sourced};
 pub use health::{assert_probe_future_send, timed as timed_probe, Probe, Probeable};
 pub use connection::{Cold, Connect, Live};
 pub use content::{ContentHash, ContentHasher, Freshness, JobKey};
-pub use cursor::Cursor;
+pub use cursor::{Advisory, Cursor, CursorError, Enforced, SnapshotPolicy};
 pub use ecosystem::{Edition, Language, Toolchain};
 pub use error::{
     BackendKind, ConnectError, ConnectFailure, ErrorDetails, Failure, FailureKind, Phase, ResolutionState,

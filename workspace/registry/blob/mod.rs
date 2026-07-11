@@ -65,9 +65,55 @@ pub struct BlobManifest {
     pub toolchain: Toolchain,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TWO DELIBERATELY DISTINCT HASHES — do not unify them.
+//
+// A `BlobManifest` is the centre of two separate hash computations, each with
+// a different input and a different semantic role:
+//
+// ① GENERATION-STAMP hash  →  `BlobManifest::identity_bytes` (below)
+//
+//    INPUT:  a hand-rolled, length-prefixed, path-sorted encoding of the
+//            manifest's *logical content*: the set of (path, file-hash) pairs,
+//            ir_ref bytes, references_ref bytes, and postcard-encoded toolchain.
+//    ROLE:   "Is this the same snapshot as before?"  Callers derive a stable
+//            fingerprint from this buffer (e.g. `ContentHash::of_bytes(&ib)`)
+//            to decide whether a package's content has changed.  The encoding
+//            is deliberately bespoke so it can survive a serde-schema bump:
+//            postcard-encoding the *whole* struct would silently change all
+//            past stamps whenever a field is added, breaking freshness checks.
+//
+// ② SERIALIZED-BLOB CAS key  →  `BlobManifest::manifest_cas_key` (below)
+//
+//    INPUT:  `postcard::to_allocvec(manifest)` — the full postcard wire form.
+//    ROLE:   "Where in the object store is this manifest stored?"  The CAS key
+//            is the address under which the serialized manifest lives in
+//            `cas/{hash}` and the value written to `ptr/{package-uuid}`.  It
+//            must cover every field so the stored bytes round-trip exactly.
+//
+// WHY they must stay separate:
+// • Unifying them (using the postcard hash as the generation stamp) would mean
+//   adding an unrelated field to `BlobManifest` silently invalidates all
+//   previously-fresh cache entries — a cache-busting event with no content
+//   change.
+// • Unifying them the other way (using the bespoke encoding as the CAS key)
+//   would mean the CAS address no longer corresponds to the stored bytes,
+//   breaking integrity checks on every `get_manifest` call.
+//
+// The pinning tests in `tests/blob_hash_pins.rs` assert specific golden values
+// for both hashes over a fixed fixture.  If either encoding ever changes, those
+// tests fail loudly before the change can ship.
+// ─────────────────────────────────────────────────────────────────────────────
+
 impl BlobManifest {
     /// The canonical byte encoding fed to the generation hasher — the single
     /// definition of "the same snapshot". Length-prefixed and order-stable.
+    ///
+    /// # Hash identity (generation stamp) — Hash ①
+    ///
+    /// This encoding is the input to a generation-stamp hash.  It is *not* the
+    /// same as [`BlobManifest::manifest_cas_key`] (Hash ②).  See the module-level
+    /// comment above for why they must remain distinct.
     pub fn identity_bytes(&self) -> Vec<u8> {
         let push = |bytes: &mut Vec<u8>, part: &[u8]| {
             bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());
@@ -90,6 +136,29 @@ impl BlobManifest {
             .expect("Toolchain is plain owned data and serializes infallibly with alloc");
         push(&mut bytes, &toolchain);
         bytes
+    }
+
+    /// The CAS key (BLAKE3 of the postcard-serialized manifest) under which this
+    /// manifest is stored in `cas/` and to which `ptr/{package-id}` points.
+    ///
+    /// # Serialized-blob CAS key (blob address) — Hash ②
+    ///
+    /// This is **not** the same as hashing [`BlobManifest::identity_bytes`]
+    /// (Hash ①).  See the module-level comment above for why they must remain
+    /// distinct.
+    ///
+    /// The CAS key covers the full postcard wire encoding of the manifest.  Any
+    /// change to the encoding (new field, removed field, changed type) produces a
+    /// different CAS key, which is correct: the new bytes need a new address.
+    ///
+    /// This function is the single definition of "the manifest's blob address" so
+    /// that [`crate::store::Store::put_manifest`] and any future reader share
+    /// exactly one encoding path.  If you are tempted to inline
+    /// `postcard::to_allocvec` + `ContentHash::of_bytes` at a call site, call
+    /// this function instead.
+    pub fn manifest_cas_key(&self) -> Result<ContentHash, BlobError> {
+        let bytes = postcard::to_allocvec(self).map_err(BlobError::Codec)?;
+        Ok(ContentHash::of_bytes(&bytes))
     }
 
     /// Verify the manifest is structurally well-formed (non-empty, sorted,

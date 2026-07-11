@@ -7,6 +7,7 @@ alias(name = "compiler", actual = "//workspace/compiler:compiler", visibility = 
 alias(name = "sandbox",  actual = "//workspace/util/sandbox:sandbox", visibility = ["PUBLIC"])
 alias(name = "cas",      actual = "//workspace/cas:cas",          visibility = ["PUBLIC"])
 alias(name = "caching",  actual = "//workspace/util/caching:caching", visibility = ["PUBLIC"])
+alias(name = "version",  actual = "//workspace/version:version",      visibility = ["PUBLIC"])
 
 command_alias(name = "add",    exe = "//build/third-party/tools:crates", args = ["add"],    visibility = ["PUBLIC"])
 command_alias(name = "update", exe = "//build/third-party/tools:crates", args = ["update"], visibility = ["PUBLIC"])

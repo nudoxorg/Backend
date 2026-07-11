@@ -167,9 +167,13 @@ impl Store<Live> {
 		manifest: &BlobManifest,
 	) -> Result<ContentHash, StoreError> {
 		manifest.validate().map_err(|e| StoreError::Blob(Box::new(e)))?;
+		// Use the single canonical CAS-key derivation (Hash ②) so this site and
+		// any future reader share exactly one encoding path.  See the two-hash
+		// doc comment in `blob/mod.rs` for why this is distinct from the
+		// generation-stamp (Hash ①) produced by `identity_bytes`.
+		let hash = manifest.manifest_cas_key().map_err(|e| StoreError::Blob(Box::new(e)))?;
 		let bytes = postcard::to_allocvec(manifest)
 			.map_err(|e| StoreError::Blob(Box::new(BlobError::Codec(e))))?;
-		let hash = ContentHash::of_bytes(&bytes);
 
 		// The manifest itself is content-addressed (idempotent put)...
 		self.put_section(&PendingSection { hash, bytes: bytes.into() }).await?;

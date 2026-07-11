@@ -3,7 +3,7 @@
 use std::num::NonZeroUsize;
 
 use futures::{Stream, StreamExt, TryStreamExt};
-use heart::{Cursor, Scored, Symbol, SymbolId, SymbolKind};
+use heart::{Cursor, Enforced, Scored, Symbol, SymbolId, SymbolKind};
 use runtime::text::{TextIndex, TextQuery};
 
 use crate::error::{BadRequestReason, ServerError};
@@ -80,13 +80,16 @@ fn page_limit(page: &Pagination) -> NonZeroUsize {
 }
 
 /// Decode the opaque resume token, if any.
+///
+/// Text cursors are decoded as [`Enforced`] — the text paginator will verify
+/// the snapshot is still current and return an error if the index moved.
 fn decode_cursor(
 	page: &Pagination,
-) -> Result<Option<Cursor<runtime::text::TextCursorKey>>, ServerError> {
+) -> Result<Option<Cursor<runtime::text::TextCursorKey, Enforced>>, ServerError> {
 	page.after
 		.as_deref()
 		.map(|token| {
-			Cursor::decode(token)
+			Cursor::<runtime::text::TextCursorKey, Enforced>::decode(token)
 				.map_err(|source| {
 					ServerError::from(BadRequestReason::InvalidCursor {
 						token: token.to_owned(),

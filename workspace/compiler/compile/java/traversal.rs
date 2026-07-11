@@ -27,6 +27,8 @@
 
 use std::cmp::Ordering;
 
+use version::{TagContext, VersionGrammar, VersionRequest as SharedRequest, resolve_from_tags};
+
 use super::error::MavenVersionError;
 
 /// One token of a parsed Maven version.
@@ -304,40 +306,81 @@ pub fn parse_requested(requested: &str) -> Result<VersionRequest, MavenVersionEr
 	}
 }
 
+// ---------------------------------------------------------------------------
+// VersionGrammar implementation — wires MavenVersion into the shared loop
+// ---------------------------------------------------------------------------
+
+/// Grammar adapter that makes [`resolve_from_tags`] work for Maven/Java.
+///
+/// `parse_tag` applies Maven's multi-prefix tag stripping
+/// (`artifactId-version`, `v/V`-prefixed, `release-`, bare numeric).
+/// `matches_request` translates the local [`VersionRequest`] into the
+/// shared `Latest`/`Exact`/`Prefix` semantics (grammars match exactly).
+struct MavenGrammar<'a> {
+	/// The Maven `artifactId`, when known, unlocks the
+	/// `artifactId-version` tag shape.
+	artifact_id: Option<&'a str>,
+}
+
+impl VersionGrammar for MavenGrammar<'_> {
+	type V = MavenVersion;
+
+	fn parse_tag<'t>(&self, raw_tag: &'t str, _ctx: &TagContext<'_>) -> Option<(MavenVersion, &'t str)> {
+		let artifact_prefix = self.artifact_id.map(|a| format!("{a}-"));
+		let rest = strip_tag_prefix(raw_tag, artifact_prefix.as_deref())?;
+		let version = parse_version(rest)?;
+		Some((version, raw_tag))
+	}
+
+	fn is_prerelease(&self, v: &MavenVersion) -> bool {
+		v.is_prerelease()
+	}
+
+	/// Map the local [`VersionRequest`] onto the shared `matches_request` logic.
+	///
+	/// Maven's `Prefix(Vec<u64>)` is the same shape as the shared core's;
+	/// the default implementation would suffice if we could convert the
+	/// request type. Instead we replicate the three-arm match inline.
+	fn matches_request(
+		&self,
+		v: &MavenVersion,
+		shared_req: &SharedRequest<MavenVersion>,
+		_ctx: &TagContext<'_>,
+	) -> bool {
+		match shared_req {
+			SharedRequest::Latest => true,
+			SharedRequest::Exact(want) => v == want,
+			SharedRequest::Prefix(prefix) => self.prefix_matches(v, prefix),
+		}
+	}
+
+	fn numeric_prefix(&self, v: &MavenVersion) -> Vec<u64> {
+		v.numeric_prefix()
+	}
+}
+
 /// Resolve a version request against a repository's tags. Returns the
 /// original tag string of the winning version so the caller can check that
 /// ref out — mirroring the Go/Python producers.
+///
+/// The stable-before-prerelease selection loop is provided by
+/// [`version::resolve_from_tags`]; this function supplies the Maven grammar.
 pub fn resolve_version_from_tags<S: AsRef<str>>(
 	tags: &[S],
 	requested: &VersionRequest,
 	artifact_id: Option<&str>,
 ) -> Option<String> {
-	let candidates = candidate_tags(tags, artifact_id);
+	let grammar = MavenGrammar { artifact_id };
+	let ctx = TagContext { identifier: artifact_id.unwrap_or(""), subdir: "" };
 
-	let matching: Vec<&TagMatch> = candidates
-		.iter()
-		.filter(|c| match requested {
-			VersionRequest::Latest => true,
-			VersionRequest::Exact(want) => c.version == *want,
-			VersionRequest::Prefix(prefix) => {
-				// Zero-padded so `1.0` matches a bare `1` tag.
-				let nums = c.version.numeric_prefix();
-				prefix
-					.iter()
-					.enumerate()
-					.all(|(i, p)| nums.get(i).copied().unwrap_or(0) == *p)
-			}
-		})
-		.collect();
+	// Map the local VersionRequest to the shared type for the grammar call.
+	let shared_req = match requested {
+		VersionRequest::Latest => SharedRequest::Latest,
+		VersionRequest::Exact(v) => SharedRequest::Exact(v.clone()),
+		VersionRequest::Prefix(nums) => SharedRequest::Prefix(nums.clone()),
+	};
 
-	// Stable-before-prerelease preference, then newest.
-	let pick = matching
-		.iter()
-		.filter(|c| !c.version.is_prerelease())
-		.max_by(|a, b| a.version.cmp(&b.version))
-		.or_else(|| matching.iter().max_by(|a, b| a.version.cmp(&b.version)));
-
-	pick.map(|c| c.tag.to_string())
+	resolve_from_tags(tags, &shared_req, &ctx, &grammar)
 }
 
 // ---------------------------------------------------------------------------

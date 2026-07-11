@@ -24,7 +24,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-
+use version::{TagContext, VersionGrammar, VersionRequest as SharedRequest, resolve_from_tags};
 use uv_pep440::{Version, VersionSpecifiers};
 
 #[derive(Debug, thiserror::Error)]
@@ -199,36 +199,62 @@ pub fn select_best_release<'a>(
         .find(|r| r.is_sdist())
 }
 
+// ---------------------------------------------------------------------------
+// VersionGrammar implementation — wires uv_pep440::Version into the shared loop
+// ---------------------------------------------------------------------------
+
+/// Grammar adapter that makes [`resolve_from_tags`] work for Python/PEP 440.
+///
+/// `parse_tag` strips a single leading `v`/`V` and parses the remainder as a
+/// PEP 440 version. `matches_request` applies the caller's `VersionSpecifiers`
+/// regardless of the shared `VersionRequest` (always `Latest` at the call-site).
+struct PythonTagGrammar<'a> {
+    /// The PEP 440 version specifiers to satisfy (e.g. `>=1.2,<2`).
+    req: &'a VersionSpecifiers,
+}
+
+impl VersionGrammar for PythonTagGrammar<'_> {
+    type V = Version;
+
+    fn parse_tag<'t>(&self, raw_tag: &'t str, _ctx: &TagContext<'_>) -> Option<(Version, &'t str)> {
+        let trimmed = raw_tag.strip_prefix(['v', 'V']).unwrap_or(raw_tag);
+        let version = Version::from_str(trimmed).ok()?;
+        Some((version, raw_tag))
+    }
+
+    fn is_prerelease(&self, v: &Version) -> bool {
+        v.any_prerelease()
+    }
+
+    /// Apply the PEP 440 specifiers stored on the grammar. The shared
+    /// `VersionRequest` is always `Latest` at the call-site and is ignored;
+    /// the specifiers encode the real constraint.
+    fn matches_request(
+        &self,
+        v: &Version,
+        _shared_req: &SharedRequest<Version>,
+        _ctx: &TagContext<'_>,
+    ) -> bool {
+        self.req.contains(v)
+    }
+}
+
 /// Resolve a PEP 440 requirement against a set of git tags (e.g. `v1.2.0`,
 /// `1.3.0rc1`). Returns the *original tag string* of the newest satisfying
 /// version, so the caller can check that ref out.
 ///
 /// A single optional leading `v`/`V` is stripped before parsing; tags that
-/// don't parse as PEP 440 versions are ignored.
+/// don't parse as PEP 440 versions are ignored. The stable-before-prerelease
+/// selection loop is provided by [`version::resolve_from_tags`].
 pub fn resolve_version_from_tags<S: AsRef<str>>(
     tags: &[S],
     req: &VersionSpecifiers,
 ) -> Option<String> {
-    // (parsed version, original tag)
-    let mut parsed: Vec<(Version, &str)> = Vec::new();
-    for tag in tags {
-        let raw = tag.as_ref();
-        let trimmed = raw.strip_prefix(['v', 'V']).unwrap_or(raw);
-        if let Ok(version) = Version::from_str(trimmed) {
-            if req.contains(&version) {
-                parsed.push((version, raw));
-            }
-        }
-    }
-
-    // Same stable-before-prerelease preference as version selection.
-    let pick = parsed
-        .iter()
-        .filter(|(v, _)| !v.any_prerelease())
-        .max_by(|a, b| a.0.cmp(&b.0))
-        .or_else(|| parsed.iter().max_by(|a, b| a.0.cmp(&b.0)));
-
-    pick.map(|(_, tag)| (*tag).to_string())
+    let grammar = PythonTagGrammar { req };
+    let ctx = TagContext::default();
+    // Pass `SharedRequest::Latest` — all real filtering lives in
+    // `PythonTagGrammar::matches_request` via the stored `VersionSpecifiers`.
+    resolve_from_tags(tags, &SharedRequest::Latest, &ctx, &grammar)
 }
 
 // ---------------------------------------------------------------------------

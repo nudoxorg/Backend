@@ -7,6 +7,7 @@ rust_crate(
         member("heart"),
         member("ir"),
         member("cas"),
+        member("version"),
         crate("libsqlite3_sys", features = ["bundled"]),
         crate("strum", features = ["derive"]),
         crate("postcard", features = ["alloc"]),
