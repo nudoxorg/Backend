@@ -15,10 +15,14 @@
 //! `put_keyed` and `put` call `Store::put_section` which is already idempotent
 //! (first-write-wins).
 //!
-//! `invalidate` is a no-op: the object store has no per-key delete in the
-//! current interface, and CAS keys are content-addressed so a "wrong" entry
-//! is structurally impossible (any bytes round-trip to the same hash). If a
-//! hard delete is ever needed, call `Store::delete` directly.
+//! ## No eviction
+//!
+//! `StoreCas` holds **immutable, content-addressed** data: the object store has
+//! no per-key delete in the current interface, and any bytes round-trip to the
+//! same hash so a "wrong" entry is structurally impossible. It is therefore
+//! *not* an [`cas::EvictableCas`] — eviction is not part of its capability, and
+//! that fact is enforced at the type level rather than papered over with a no-op.
+//! If a hard delete is ever needed, call `Store::delete` directly.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -88,11 +92,5 @@ impl Cas for StoreCas {
 	async fn put_keyed(&self, key: ContentHash, bytes: Bytes) -> Result<bool, CasError> {
 		let section = PendingSection { hash: key, bytes };
 		self.store.put_section(&section).await.map_err(store_err_to_cas)
-	}
-
-	async fn invalidate(&self, _key: ContentHash) -> Result<(), CasError> {
-		// The object store has no per-key delete; content-addressed keys are
-		// self-validating so a stale entry is not possible. No-op is correct.
-		Ok(())
 	}
 }

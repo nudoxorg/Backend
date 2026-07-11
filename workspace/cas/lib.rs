@@ -9,11 +9,20 @@
 //! Keys are [`heart::ContentHash`]. Job-scoped composite keys are
 //! [`heart::JobKey`] (a newtype over the same digest).
 //!
-//! ## Object-safe erasure
+//! ## Erasure
 //!
-//! [`Cas`] uses `async fn` in trait (RPITIT) so it is not object-safe. Use the
-//! companion [`DynCas`] trait when a `&dyn` pointer is needed: every `T: Cas`
-//! gets a blanket [`DynCas`] impl that boxes the futures.
+//! [`Cas`] uses `async fn` in trait (RPITIT) so it is not object-safe. The crate
+//! deliberately keeps a **single** erasure strategy — static generics. Callers
+//! that need to abstract over the backend do so with a type parameter
+//! (`Tiered<L3>`), never a boxed trait object. Absence of an L3 tier is
+//! expressed *exactly one way*: the [`NoL3`] type.
+//!
+//! ## Eviction
+//!
+//! Dropping a key is a distinct capability from storing one: content-addressed
+//! object stores have no per-key delete, so [`Cas`] does not promise it. The
+//! [`EvictableCas`] sub-trait carries `invalidate` and is implemented only by the
+//! tiers that can honestly evict ([`DiskCas`], [`MemoryCas`], [`Tiered`]).
 
 #![allow(
 	async_fn_in_trait,
@@ -33,7 +42,6 @@ pub use memory::MemoryCas;
 pub use tiered::{NoL3, Tiered};
 
 use std::future::Future;
-use std::pin::Pin;
 
 use bytes::Bytes;
 
@@ -43,7 +51,8 @@ use bytes::Bytes;
 /// - [`Cas::put_keyed`] stores under a caller-supplied key (job keys or content
 ///   keys). **First-write-wins**: if the key already exists the call is a no-op
 ///   (`Ok(false)`) and the stored value is **not** compared or replaced.
-///   Callers that must repair a poison entry should [`Cas::invalidate`] first.
+///   Callers that must repair a poison entry need an [`EvictableCas`] tier and
+///   should [`EvictableCas::invalidate`] first.
 /// - For job keys the envelope binds value→self-hash only; the key is not
 ///   required to equal `ContentHash::of_bytes(value)`.
 pub trait Cas: Send + Sync {
@@ -62,66 +71,19 @@ pub trait Cas: Send + Sync {
 		key: ContentHash,
 		bytes: Bytes,
 	) -> impl Future<Output = Result<bool, CasError>> + Send;
+}
 
-	/// Drop `key` from every tier that holds it so a subsequent put can land.
+/// A [`Cas`] tier that can drop a key so a subsequent put can land.
+///
+/// Eviction is *not* part of the base [`Cas`] contract: content-addressed object
+/// stores (e.g. `registry::StoreCas`) have no per-key delete and hold immutable
+/// data, so they are honestly incapable of it at the type level. Only the tiers
+/// that own mutable local state ([`DiskCas`], [`MemoryCas`]) — and the composite
+/// [`Tiered`] over them — implement this.
+pub trait EvictableCas: Cas {
+	/// Drop `key` from this tier so a subsequent put can land.
 	fn invalidate(
 		&self,
 		key: ContentHash,
 	) -> impl Future<Output = Result<(), CasError>> + Send;
-}
-
-// ─── Object-safe erasure ──────────────────────────────────────────────────────
-
-/// A `dyn`-safe mirror of [`Cas`] whose methods return boxed futures.
-///
-/// `Cas` uses `async fn` in trait (RPITIT) and is therefore not object-safe.
-/// `DynCas` provides an identical API that can be used behind `&dyn DynCas`.
-/// Every `T: Cas` receives a blanket implementation, so concrete types (e.g.
-/// [`Tiered`], [`MemoryCas`]) can be erased without any additional boilerplate.
-///
-/// Only the methods that the compile path actually calls (`get`, `put_keyed`,
-/// `invalidate`) are included here to keep the surface minimal.
-pub trait DynCas: Send + Sync {
-	/// Lookup `key`. `Ok(None)` is a clean miss.
-	fn get<'a>(
-		&'a self,
-		key: ContentHash,
-	) -> Pin<Box<dyn Future<Output = Result<Option<Bytes>, CasError>> + Send + 'a>>;
-
-	/// Store `bytes` under a pre-computed `key` (first-write-wins).
-	fn put_keyed<'a>(
-		&'a self,
-		key: ContentHash,
-		bytes: Bytes,
-	) -> Pin<Box<dyn Future<Output = Result<bool, CasError>> + Send + 'a>>;
-
-	/// Drop `key` from every tier that holds it so a subsequent put can land.
-	fn invalidate<'a>(
-		&'a self,
-		key: ContentHash,
-	) -> Pin<Box<dyn Future<Output = Result<(), CasError>> + Send + 'a>>;
-}
-
-impl<T: Cas> DynCas for T {
-	fn get<'a>(
-		&'a self,
-		key: ContentHash,
-	) -> Pin<Box<dyn Future<Output = Result<Option<Bytes>, CasError>> + Send + 'a>> {
-		Box::pin(Cas::get(self, key))
-	}
-
-	fn put_keyed<'a>(
-		&'a self,
-		key: ContentHash,
-		bytes: Bytes,
-	) -> Pin<Box<dyn Future<Output = Result<bool, CasError>> + Send + 'a>> {
-		Box::pin(Cas::put_keyed(self, key, bytes))
-	}
-
-	fn invalidate<'a>(
-		&'a self,
-		key: ContentHash,
-	) -> Pin<Box<dyn Future<Output = Result<(), CasError>> + Send + 'a>> {
-		Box::pin(Cas::invalidate(self, key))
-	}
 }
