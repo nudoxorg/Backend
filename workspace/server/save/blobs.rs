@@ -23,13 +23,15 @@
 //! generations has a sink not yet acknowledged" is the root-of-truth side of
 //! every derived store's story.
 //!
-//! KNOWN GAP: a *store-wide* orphan sweep (`cas/` objects no manifest
-//! references — the GC half of a full audit) needs an enumeration API on
-//! [`registry::Store`]. The old blob store had one (`list()` in
-//! `source/blobstore/src/lib.rs`) but it was never ported to
-//! `workspace/registry/store.rs`. Until it exists, auditing is per-package,
-//! from the manifest down: it can prove presence and integrity, but not the
-//! absence of garbage.
+//! STORE-WIDE ORPHAN AUDIT: the enumeration API that was missing —
+//! [`registry::Store::list_cas`] — now exists (Phase 4f), so `cas/` objects can
+//! be listed store-wide. The remaining piece before a *deletion* sweep is safe
+//! is the live-reference side: the set of section hashes reachable from every
+//! package's current manifest, plus a snapshot fence so the mark cannot race an
+//! in-flight `put_manifest` (see the closure/race analysis in
+//! [`crate::poll::cas_gc`]). Until that lands, per-package auditing here proves
+//! presence and integrity from the manifest down, and `list_cas()` powers a
+//! read-only stored-blob gauge — enumeration without reclamation.
 
 use heart::{ContentHash, PackageId, ResolutionState};
 use registry::{RegistryError, StoreError};

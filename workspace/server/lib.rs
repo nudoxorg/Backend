@@ -33,6 +33,7 @@ use registry::{
 	Store,
 	coordination::Outbox,
 	index::{GlobalStore, TerminusInstance},
+	metadata::{Specifics, Synonyms},
 	queue::{Queue, RetryPolicy},
 };
 use runtime::{
@@ -114,6 +115,36 @@ pub struct Server<M: EmbeddingModel> {
 	/// The owned compile-plane runtime (cage + CAS + toolchains + overrides +
 	/// observer), replacing every former compile-plane process global.
 	forge: Arc<crate::forge::ForgeRuntime>,
+
+	/// Keyword-normalization heuristics (synonyms + specifics), loaded once from
+	/// `config.metadata_data_dir`. `None` disables them (the extractor then runs
+	/// with `(None, None)`, name/identifier facets only). Loaded once because the
+	/// tables are expensive to parse and immutable for the process lifetime.
+	heuristics: Option<Heuristics>,
+}
+
+/// The metadata keyword-normalization tables, loaded once at assembly and shared
+/// (read-only) across every facet extraction. Bundling both keeps the "either
+/// both wired or neither" invariant the extractor expects.
+pub struct Heuristics {
+	synonyms: Synonyms,
+	specifics: Specifics,
+}
+
+impl Heuristics {
+	/// Load both heuristics tables from `dir` (expects `tag-synonyms.csv`,
+	/// `specific-keywords.txt`, `bland-keywords.txt`). Fails loudly if the
+	/// directory is configured but the files cannot be parsed — no silent
+	/// half-wired state (parse, don't validate).
+	pub fn load(dir: &std::path::Path) -> std::io::Result<Self> {
+		Ok(Self { synonyms: Synonyms::new(dir)?, specifics: Specifics::new(dir)? })
+	}
+
+	/// The synonym table, ready to pass to `registry::metadata::rich::extract`.
+	pub fn synonyms(&self) -> &Synonyms { &self.synonyms }
+
+	/// The specifics table, ready to pass to `registry::metadata::rich::extract`.
+	pub fn specifics(&self) -> &Specifics { &self.specifics }
 }
 
 impl<M: EmbeddingModel> Server<M> {
@@ -182,6 +213,19 @@ impl<M: EmbeddingModel> Server<M> {
 				})?,
 		);
 
+		// Load keyword-normalization heuristics once, if a data dir is configured.
+		// A configured-but-unloadable dir aborts assembly rather than silently
+		// degrading to name-only facets.
+		let heuristics = match &config.metadata_data_dir {
+			Some(dir) => Some(Heuristics::load(dir).map_err(|error| {
+				invalid_configuration(format!(
+					"metadata_data_dir {} configured but heuristics failed to load: {error}",
+					dir.display()
+				))
+			})?),
+			None => None,
+		};
+
 		Ok(Self {
 			config,
 			federation,
@@ -190,8 +234,14 @@ impl<M: EmbeddingModel> Server<M> {
 			embedding_cache,
 			sessions,
 			forge,
+			heuristics,
 		})
 	}
+
+	/// The keyword-normalization heuristics, if a `metadata_data_dir` was
+	/// configured. `None` means facet extraction runs without synonym/specifics
+	/// normalization.
+	pub(crate) fn heuristics(&self) -> Option<&Heuristics> { self.heuristics.as_ref() }
 
 	/// Build and connect the full store stack for one configured source, bringing
 	/// its backends up concurrently.

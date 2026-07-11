@@ -299,10 +299,16 @@ async fn materialize_graph<M: EmbeddingModel>(
 /// are additive follow-ups; until one lands, deleting blobs is not provably safe,
 /// so this loop performs the outbox purge only.
 ///
+/// The blob-enumeration primitive the closure above needs — [`Store::list_cas`]
+/// — now exists (Phase 4f), so this loop emits an observability gauge of the
+/// stored CAS object count. Reclamation itself stays deferred: enumeration is
+/// necessary but not sufficient, and the missing half is still the
+/// transactional refcount / snapshot-fence, not the ability to list.
+///
 /// TODO(blob-gc, DAEMON-PLAN §5-ops): add CAS blob reclamation once a
 /// transactional blob-reference count (or a snapshot-fenced mark-sweep) exists;
 /// see the closure/race notes above for exactly why the naive list-and-delete is
-/// unsafe.
+/// unsafe. The `list_cas()` gauge below is the read-only, race-free half.
 pub(crate) async fn cas_gc<M: EmbeddingModel>(server: Arc<Server<M>>) {
 	loop {
 		for sourced in server.federation().in_precedence() {
@@ -319,6 +325,20 @@ pub(crate) async fn cas_gc<M: EmbeddingModel>(server: Arc<Server<M>>) {
 				}
 				Err(error) => {
 					tracing::warn!(source = %sourced.source, error = %error, "outbox GC failed");
+				}
+			}
+
+			// Read-only observability: how many content-addressed blobs the store
+			// holds. Safe under concurrent writes (it never deletes); a growing gap
+			// between this and referenced generations is the signal a real GC is
+			// eventually needed. Deletion remains deferred per the doc above.
+			match sourced.value.blobs.list_cas().await {
+				Ok(stored) => {
+					metrics::gauge!("cas_blobs_stored", "source" => sourced.source.to_string())
+						.set(stored.len() as f64);
+				}
+				Err(error) => {
+					tracing::warn!(source = %sourced.source, error = %error, "cas blob enumeration failed");
 				}
 			}
 		}

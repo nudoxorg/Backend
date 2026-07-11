@@ -53,6 +53,24 @@ pub struct ServerConfiguration {
 	/// connection is opened. Defaults to [`Deployment::Development`].
 	#[serde(default)]
 	pub deployment: Deployment,
+
+	/// Directory that contains the metadata heuristics data files:
+	/// `tag-synonyms.csv`, `specific-keywords.txt`, and `bland-keywords.txt`.
+	///
+	/// When `Some`, [`registry::metadata::heuristics::Synonyms`] and
+	/// [`registry::metadata::heuristics::Specifics`] are loaded **once** at
+	/// startup and threaded into every `rich::extract` call, enabling full
+	/// keyword normalization. Loading fails **loudly** at startup if the
+	/// directory is present but the files cannot be parsed — no silent
+	/// half-wired state.
+	///
+	/// When `None` (the default), heuristics are disabled and the extractor
+	/// receives `(None, None)` as today.
+	///
+	/// Configure via `NUDOX_METADATA_DATA_DIR=/path/to/workspace/data` or the
+	/// `metadata_data_dir` key in the TOML config file.
+	#[serde(default)]
+	pub metadata_data_dir: Option<PathBuf>,
 }
 
 /// The deployment tier this node is running in.
@@ -225,6 +243,7 @@ impl Default for ServerConfiguration {
 			limits: Limits::default(),
 			role: Role::default(),
 			deployment: Deployment::default(),
+			metadata_data_dir: None,
 		}
 	}
 }

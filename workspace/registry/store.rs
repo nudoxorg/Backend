@@ -21,6 +21,7 @@
 
 use std::sync::Arc;
 
+use futures::TryStreamExt as _;
 use heart::{
 	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId, Probeable,
 	content::ContentHash, timed_probe,
@@ -217,6 +218,50 @@ impl Store<Live> {
 			Err(object_store::Error::NotFound { .. }) => Ok(false),
 			Err(other) => Err(keyed(&pointer, other)),
 		}
+	}
+
+	/// Enumerate every content-addressed section currently held in the `cas/`
+	/// key space.
+	///
+	/// Returns the set of [`ContentHash`]es whose `cas/{hex}` objects exist in
+	/// the backend. Keys that do not parse as 32-byte BLAKE3 hex (e.g. the
+	/// reachability-probe sentinel) are silently skipped — they are not CAS
+	/// sections.
+	///
+	/// This is a read-only enumeration. It is used by audit / orphan-detection
+	/// paths to compute which stored blobs no live manifest references; it does
+	/// **not** delete anything.
+	///
+	/// # Pagination
+	/// `object_store::ObjectStore::list` returns a stream that the backend paginates
+	/// internally (S3 list pages, GCS list pages, local readdir batches). We drive
+	/// the stream to completion with `try_collect`, so all pages are consumed and
+	/// the result is the complete key set.
+	pub async fn list_cas(&self) -> Result<Vec<ContentHash>, StoreError> {
+		let cas_prefix = Path::from("cas");
+		let metas: Vec<object_store::ObjectMeta> =
+			self.backend.list(Some(&cas_prefix)).try_collect().await?;
+
+		let mut hashes = Vec::with_capacity(metas.len());
+		for meta in metas {
+			// Strip the "cas/" prefix to get the hex leaf.
+			let path_str = meta.location.as_ref();
+			let hex = match path_str.strip_prefix("cas/") {
+				Some(h) => h,
+				None => continue, // Shouldn't happen, but skip malformed keys.
+			};
+			// Skip the sentinel and any non-CAS entries (not 64 hex chars = 32 bytes).
+			if hex.len() != 64 {
+				continue;
+			}
+			let mut raw = [0u8; 32];
+			if data_encoding::HEXLOWER.decode_mut(hex.as_bytes(), &mut raw).is_err() {
+				tracing::debug!(key = path_str, "skipping non-hex cas key during list");
+				continue;
+			}
+			hashes.push(ContentHash::from_bytes(raw));
+		}
+		Ok(hashes)
 	}
 
 	/// Resolve a package's coordinates to its deterministic id (pure delegation

@@ -15,14 +15,18 @@ use heart::Connect;
 use object_store::memory::InMemory;
 use registry::{Store, StoreCas};
 
-/// Builds a `StoreCas` over a fresh in-memory object store backend.
-async fn memory_store_cas() -> StoreCas {
+/// Builds a live `Store` over a fresh in-memory object store backend.
+async fn memory_store() -> Store<heart::Live> {
     let backend = Arc::new(InMemory::new());
-    let store = Store::new(backend)
+    Store::new(backend)
         .connect()
         .await
-        .expect("in-memory backend answers the sentinel probe");
-    StoreCas::new(Arc::new(store))
+        .expect("in-memory backend answers the sentinel probe")
+}
+
+/// Builds a `StoreCas` over a fresh in-memory object store backend.
+async fn memory_store_cas() -> StoreCas {
+    StoreCas::new(Arc::new(memory_store().await))
 }
 
 /// A byte value round-trips through `StoreCas::put` → `StoreCas::get`.
@@ -83,6 +87,32 @@ async fn store_cas_put_keyed_is_first_write_wins() {
         !cas.put_keyed(key, payload.clone()).await.expect("second put_keyed"),
         "second write of same key must return false (already existed)"
     );
+}
+
+/// `list_cas` enumerates exactly the content-addressed sections that were put —
+/// the read-only primitive orphan detection is built on (Phase 4f).
+#[tokio::test]
+async fn list_cas_enumerates_stored_sections() {
+    use registry::blob::creation::PendingSection;
+
+    let store = memory_store().await;
+
+    // Empty store lists nothing.
+    assert!(store.list_cas().await.expect("empty list").is_empty());
+
+    // Put two distinct sections under their content addresses.
+    let a = Bytes::from_static(b"list-cas-section-a");
+    let b = Bytes::from_static(b"list-cas-section-b");
+    let key_a = cas::ContentHash::of_bytes(&a);
+    let key_b = cas::ContentHash::of_bytes(&b);
+    store.put_section(&PendingSection { hash: key_a, bytes: a }).await.expect("put a");
+    store.put_section(&PendingSection { hash: key_b, bytes: b }).await.expect("put b");
+
+    let mut listed = store.list_cas().await.expect("list after puts");
+    listed.sort();
+    let mut expected = vec![key_a, key_b];
+    expected.sort();
+    assert_eq!(listed, expected, "list_cas must return exactly the two stored section hashes");
 }
 
 /// `invalidate` is a no-op (documented behaviour): the key is still readable

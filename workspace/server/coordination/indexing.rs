@@ -133,7 +133,8 @@ impl<M: EmbeddingModel> Indexer<M> {
 		// `Cargo.toml` + README straight from them (no post-emit blob round-trip).
 		// Non-fatal by construction: a missing/unparseable manifest yields `None`
 		// and ingest proceeds — search metadata must never fail a store.
-		let facets = extract_facets(&coordinates, &manifest, &sections, &compile.identifiers);
+		let facets =
+			extract_facets(&coordinates, &manifest, &sections, &compile.identifiers, self.server.heuristics());
 
 		let emitted = registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
 			.await
@@ -752,7 +753,12 @@ fn extract_facets(
 	manifest: &BlobManifest,
 	sections: &[PendingSection],
 	identifiers: &[String],
+	heuristics: Option<&crate::Heuristics>,
 ) -> Option<SearchFacets> {
+	let (synonyms, specifics) = match heuristics {
+		Some(h) => (Some(h.synonyms()), Some(h.specifics())),
+		None => (None, None),
+	};
 	// Bytes of a manifest file are fetched from `sections` by content hash — the
 	// same hash the `FileEntry` records — so no post-emit blob round-trip is
 	// needed.
@@ -784,7 +790,7 @@ fn extract_facets(
 			identifiers,
 			..Default::default()
 		};
-		let rich = rich::extract(&input, None, None);
+		let rich = rich::extract(&input, synonyms, specifics);
 		let facets = SearchFacets::from_rich(&rich);
 		tracing::debug!(package = %manifest.package, "non-Rust ecosystem: name + identifier facets");
 		return Some(facets);
@@ -829,7 +835,6 @@ fn extract_facets(
 		loc,
 	};
 
-	// TODO: load Synonyms/Specifics from the config data dir; `None` for now.
-	let rich = rich::extract(&input, None, None);
+	let rich = rich::extract(&input, synonyms, specifics);
 	Some(SearchFacets::from_rich(&rich))
 }
