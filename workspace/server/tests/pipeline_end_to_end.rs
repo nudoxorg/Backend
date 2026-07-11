@@ -71,8 +71,9 @@ async fn tracked_package_is_semantically_searchable() {
         _lifetime: std::marker::PhantomData,
     };
     let found = probe(PIPELINE_DEADLINE, || async {
+        let cap = common::read_cap(&server);
         let hits: Vec<Scored<Symbol>> = server
-            .search_symbols(&request)
+            .search_symbols(&cap, &request)
             .await
             .ok()?
             .try_collect()
@@ -102,7 +103,8 @@ async fn tracked_package_is_graph_expandable() {
     let hit = await_text_hit(&server, FIXTURE_SYMBOL, package).await;
 
     let related = probe(PIPELINE_DEADLINE, || async {
-        server.expand(&hit).await.ok()
+        let cap = common::read_cap(&server);
+        server.expand(&cap, &hit).await.ok()
     })
     .await
     .expect("expansion answers once the graph sink has materialized");
@@ -165,8 +167,9 @@ async fn deferred_external_symbol_resolves_later() {
 
     // Before: the external library was never tracked, so its symbols defer.
     let request = literal(FIXTURE_SYMBOL);
+    let read_cap = common::read_cap(&server);
     let before: Vec<Scored<Symbol>> = server
-        .search_symbols(&request)
+        .search_symbols(&read_cap, &request)
         .await
         .expect("an empty corpus answers cleanly")
         .try_collect()
@@ -201,8 +204,9 @@ async fn ensure(server: &Arc<Server<common::TestModel>>) -> PackageId {
         version: heart::PackageVersion::try_from((heart::Language::Rust, FIXTURE_VERSION))
             .expect("fixture versions are valid"),
     };
+    let cap = common::write_cap(server);
     server
-        .ensure_initialized(&coordinates)
+        .ensure_initialized(&cap, &coordinates)
         .await
         .expect("the fixture package ensures cleanly")
         .package
@@ -231,8 +235,9 @@ async fn await_text_hit(
 ) -> Scored<Symbol> {
     let request = literal(name);
     probe(PIPELINE_DEADLINE, || async {
+        let cap = common::read_cap(server);
         let hits: Vec<Scored<Symbol>> = server
-            .search_symbols(&request)
+            .search_symbols(&cap, &request)
             .await
             .ok()?
             .try_collect()

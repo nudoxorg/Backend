@@ -55,6 +55,7 @@ rust_crate(
         crate("metrics"),
         crate("metrics_exporter_prometheus"),
         crate("arc_swap"),
+        crate("async_trait"),
         crate("mimalloc"),
     ]),
 )

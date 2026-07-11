@@ -14,6 +14,7 @@
 
 #![feature(return_type_notation)]
 
+pub mod authz;
 pub mod config;
 pub mod coordination;
 pub mod error;
@@ -305,16 +306,6 @@ impl<M: EmbeddingModel> Server<M> {
 
 	/// The owned compile-plane runtime (cage + CAS + toolchains + overrides).
 	pub fn forge(&self) -> &Arc<crate::forge::ForgeRuntime> { &self.forge }
-
-	/// The single choke point every read/write flow authorizes through.
-	///
-	/// Hosted deployments gate at the fronting proxy (see [`heart::access`]), so
-	/// today this is an audit trace plus the structural guarantee that every
-	/// flow *has* an authorization point to grow into.
-	pub(crate) fn authorize(&self, action: &'static str) -> ServerResult<()> {
-		tracing::trace!(action, "access granted");
-		Ok(())
-	}
 
 	/// Serve until shutdown: bind the HTTP router to `config.serving_address` and
 	/// run the background pollers (queue workers + derived-store consumers) for

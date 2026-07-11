@@ -85,10 +85,11 @@ async fn ensure_init_returns_or_requests() {
     else {
         return;
     };
+    let cap = common::write_cap(&server);
     let coordinates = fixture_coordinates();
-    let first = server.ensure_initialized(&coordinates).await.expect("ensure answers");
+    let first = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
     assert!(first.enqueued, "a never-seen package requests initialization");
-    let second = server.ensure_initialized(&coordinates).await.expect("ensure answers");
+    let second = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
     assert!(!second.enqueued, "an in-flight package returns state without re-requesting");
     assert_eq!(second.package, first.package, "identity is deterministic");
 }
@@ -103,8 +104,9 @@ async fn initialization_loads_into_postgres() {
     else {
         return;
     };
+    let cap = common::write_cap(&server);
     let coordinates = fixture_coordinates();
-    let initialized = server.ensure_initialized(&coordinates).await.expect("ensure answers");
+    let initialized = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
 
     let state = server
         .parse_status(initialized.package)
@@ -129,10 +131,11 @@ async fn usage_is_tracked_for_tiering() {
     else {
         return;
     };
+    let cap = common::write_cap(&server);
     let coordinates = fixture_coordinates();
-    let first = server.ensure_initialized(&coordinates).await.expect("ensure answers");
+    let first = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
     for _ in 0..3 {
-        let repeat = server.ensure_initialized(&coordinates).await.expect("ensure answers");
+        let repeat = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
         assert_eq!(repeat.package, first.package);
         assert!(!repeat.enqueued, "repeated use converges on the one live job");
     }

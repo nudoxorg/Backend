@@ -98,7 +98,8 @@ async fn connections_are_surfaced_from_the_graph() {
 
     // The graph store is the authority: expansion answers (an unknown symbol is
     // an empty neighbourhood), and every connection carries a score.
-    let connections = server.expand(&hit).await.expect("graph expansion answers");
+    let cap = common::read_cap(&server);
+    let connections = server.expand(&cap, &hit).await.expect("graph expansion answers");
     assert!(
         connections.windows(2).all(|pair| pair[0].score >= pair[1].score),
         "connections come back ranked, straight from the graph surface"

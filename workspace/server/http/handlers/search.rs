@@ -20,6 +20,7 @@ use runtime::session::{SessionGraph, SessionId, SessionStore};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
+use crate::authz::Principal;
 use crate::error::{BadRequestReason, ServerError, ServerResult};
 use crate::http::dto::SearchRequestDto;
 use crate::search::merge_overlay_first;
@@ -31,10 +32,12 @@ use crate::search::registry::RegistrySearchSurface;
 #[tracing::instrument(skip_all, fields(semantic = req.semantic, limit = %req.limit))]
 pub async fn search<M: EmbeddingModel>(
 	State(server): State<Arc<Server<M>>>,
+	principal: Principal,
 	Json(req): Json<SearchRequestDto>,
 ) -> ServerResult<Response> {
+	let cap = server.authorize_read(&principal, "search.symbols")?;
 	let request = req.into_search()?;
-	let hits: Vec<Scored<Symbol>> = server.search_symbols(&request).await?.try_collect().await?;
+	let hits: Vec<Scored<Symbol>> = server.search_symbols(&cap, &request).await?.try_collect().await?;
 	tracing::debug!(hits = hits.len(), "symbol search served");
 	Ok(ndjson(hits))
 }
@@ -44,19 +47,21 @@ pub async fn search<M: EmbeddingModel>(
 /// budget) still owns the final escalation decision.
 pub async fn search_semantic<M: EmbeddingModel>(
 	state: State<Arc<Server<M>>>,
+	principal: Principal,
 	Json(mut req): Json<SearchRequestDto>,
 ) -> ServerResult<Response> {
 	req.semantic = true;
-	search(state, Json(req)).await
+	search(state, principal, Json(req)).await
 }
 
 /// `POST /packages/search` — registry (package) search.
 #[tracing::instrument(skip_all, fields(limit = %req.limit))]
 pub async fn search_packages<M: EmbeddingModel>(
 	State(server): State<Arc<Server<M>>>,
+	principal: Principal,
 	Json(req): Json<SearchRequestDto>,
 ) -> ServerResult<Json<Page<registry::GlobalPackage>>> {
-	server.authorize("search.packages")?;
+	let _cap = server.authorize_read(&principal, "search.packages")?;
 	let limit = req.limit.get() as usize;
 	let query =
 		Query::Literal(LiteralQuery::parse(&req.query).map_err(BadRequestReason::from)?);
@@ -87,8 +92,10 @@ pub async fn search_packages<M: EmbeddingModel>(
 #[tracing::instrument(skip_all, fields(seed = %req.query))]
 pub async fn expand<M: EmbeddingModel>(
 	State(server): State<Arc<Server<M>>>,
+	principal: Principal,
 	Json(req): Json<SearchRequestDto>,
 ) -> ServerResult<Json<Page<Symbol>>> {
+	let cap = server.authorize_read(&principal, "search.expand")?;
 	let seed: uuid::Uuid = req.query.trim().parse().map_err(|e| {
 		BadRequestReason::InvalidSymbolId {
 			raw: req.query.clone(),
@@ -97,9 +104,9 @@ pub async fn expand<M: EmbeddingModel>(
 	})?;
 	let seed = SymbolId::from_uuid(seed);
 
-	let origin = server.resolve_symbol(seed).await?.ok_or(ServerError::NotFound)?;
+	let origin = server.resolve_symbol(&cap, seed).await?.ok_or(ServerError::NotFound)?;
 	let hit = Scored::new(origin.value, seed_relevance());
-	let mut related = server.expand(&hit).await?;
+	let mut related = server.expand(&cap, &hit).await?;
 	related.truncate(req.limit.get() as usize);
 
 	if let Some(session) = req.session {
@@ -121,10 +128,12 @@ pub async fn expand<M: EmbeddingModel>(
 #[tracing::instrument(skip_all, fields(symbol = %id))]
 pub async fn get_symbol<M: EmbeddingModel>(
 	State(server): State<Arc<Server<M>>>,
+	principal: Principal,
 	Path(id): Path<uuid::Uuid>,
 ) -> ServerResult<Json<Sourced<Symbol>>> {
+	let cap = server.authorize_read(&principal, "search.resolve_symbol")?;
 	server
-		.resolve_symbol(SymbolId::from_uuid(id))
+		.resolve_symbol(&cap, SymbolId::from_uuid(id))
 		.await?
 		.map(Json)
 		.ok_or(ServerError::NotFound)

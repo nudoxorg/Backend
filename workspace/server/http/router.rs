@@ -21,7 +21,7 @@ use axum::{
 use runtime::vector::EmbeddingModel;
 use crate::config::Limits;
 use crate::Server;
-use crate::http::handlers::{health, indexing, search};
+use crate::http::handlers::{admin, health, indexing, search};
 
 /// The largest read-plane request body: search/expand requests are JSON control
 /// messages plus at most a pasted code snippet.
@@ -43,6 +43,7 @@ pub fn router<M: EmbeddingModel>(server: Arc<Server<M>>) -> Router {
 	Router::new()
 		.merge(read_plane().layer(DefaultBodyLimit::max(READ_PLANE_BODY_CEILING)))
 		.merge(write_plane(limits))
+		.merge(admin_plane(limits))
 		.layer(middleware::from_fn(trace_request))
 		.with_state(server)
 }
@@ -82,6 +83,22 @@ fn write_plane<M: EmbeddingModel>(limits: &Limits) -> Router<Arc<Server<M>>> {
 		.route("/readyz", get(health::readyz))
 		.route("/metrics", get(health::metrics));
 	mutations.merge(operations)
+}
+
+/// The admin plane: privileged operations behind [`AdminPrincipal`] extraction.
+/// Both routes carry the same body ceiling and upload timeout as write mutations.
+fn admin_plane<M: EmbeddingModel>(limits: &Limits) -> Router<Arc<Server<M>>> {
+	let body_ceiling =
+		usize::try_from(limits.max_request_bytes).unwrap_or(usize::MAX).min(WRITE_PLANE_BODY_CEILING);
+	Router::new()
+		.route("/admin/packages/:id/verify", post(admin::verify_package))
+		.route("/admin/packages/:id/rebuild", post(admin::rebuild_package))
+		.layer(
+			tower::ServiceBuilder::new()
+				.layer(HandleErrorLayer::new(admission_timed_out))
+				.layer(tower::timeout::TimeoutLayer::new(limits.upload_timeout)),
+		)
+		.layer(DefaultBodyLimit::max(body_ceiling))
 }
 
 /// The timeout layer's error projection: an admin mutation that outlived

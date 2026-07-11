@@ -15,6 +15,7 @@ use registry::blob::BlobManifest;
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
+use crate::authz::AdminCap;
 use crate::error::{BadRequestReason, ServerResult};
 
 /// Which derived store to rebuild — the shared [`heart::DerivedStore`], the same
@@ -30,14 +31,16 @@ impl<M: EmbeddingModel> Server<M> {
 	/// sink's outbox intent for the current generation and letting the poller
 	/// re-materialize. The append dedupes on `(package, generation, sink)`, so
 	/// the whole operation is idempotent by construction.
-	#[tracing::instrument(skip(self), fields(%package, %store))]
+	///
+	/// The caller must hold an [`AdminCap`] proving authorization has occurred.
+	#[tracing::instrument(skip(self, _cap), fields(%package, %store))]
 	pub async fn rebuild(
 		&self,
+		_cap: &AdminCap,
 		package: PackageId,
 		store: DerivedStore,
 		snapshot: ContentHash,
 	) -> ServerResult<()> {
-		self.authorize("save.rebuild")?;
 		let stores = self.base();
 
 		// The manifest the blobs currently point at must *be* the requested
@@ -61,9 +64,10 @@ impl<M: EmbeddingModel> Server<M> {
 	/// Verify determinism: re-derive a package's content hash from its blob and
 	/// confirm it matches the recorded snapshot. A mismatch means non-reproducible
 	/// output — an alert-worthy invariant break.
-	#[tracing::instrument(skip(self), fields(%package))]
-	pub async fn verify_reproducible(&self, package: PackageId) -> ServerResult<bool> {
-		self.authorize("save.verify_reproducible")?;
+	///
+	/// The caller must hold an [`AdminCap`] proving authorization has occurred.
+	#[tracing::instrument(skip(self, _cap), fields(%package))]
+	pub async fn verify_reproducible(&self, _cap: &AdminCap, package: PackageId) -> ServerResult<bool> {
 		let stores = self.base();
 
 		let record = stores.global_store.get(package).await.map_err(RegistryError::from)?;

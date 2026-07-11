@@ -38,6 +38,7 @@ use registry::coordination::OutboxSeq;
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
+use crate::authz::AdminCap;
 use crate::error::{BadRequestReason, ServerError, ServerResult};
 
 use super::DerivedStore;
@@ -121,9 +122,10 @@ impl<M: EmbeddingModel> Server<M> {
 	/// Ports the old blob store's semantics that the content address doubles as
 	/// the integrity check (`source/blobstore`); the schema-version gate the old
 	/// `put`/`get` enforced is superseded by the hash-verified read itself.
-	#[tracing::instrument(skip(self), fields(%package))]
-	pub async fn verify_blobs(&self, package: PackageId) -> ServerResult<BlobAudit> {
-		self.authorize("save.verify_blobs")?;
+	///
+	/// The caller must hold an [`AdminCap`] proving authorization has occurred.
+	#[tracing::instrument(skip(self, _cap), fields(%package))]
+	pub async fn verify_blobs(&self, _cap: &AdminCap, package: PackageId) -> ServerResult<BlobAudit> {
 		let stores = self.base();
 
 		let recorded = self.recorded_snapshot(package).await?;
@@ -206,9 +208,10 @@ impl<M: EmbeddingModel> Server<M> {
 	/// [`Server::rebuild`] is the single-store form.
 	///
 	/// Returns the snapshot the intents were re-emitted at.
-	#[tracing::instrument(skip(self), fields(%package))]
-	pub async fn rebuild_from_blobs(&self, package: PackageId) -> ServerResult<ContentHash> {
-		self.authorize("save.rebuild_from_blobs")?;
+	///
+	/// The caller must hold an [`AdminCap`] proving authorization has occurred.
+	#[tracing::instrument(skip(self, _cap), fields(%package))]
+	pub async fn rebuild_from_blobs(&self, _cap: &AdminCap, package: PackageId) -> ServerResult<ContentHash> {
 		let stores = self.base();
 
 		let recorded = self.recorded_snapshot(package).await?;

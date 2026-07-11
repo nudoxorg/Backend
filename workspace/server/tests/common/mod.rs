@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use heart::{EntryUri, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
 use runtime::text::TextIndex;
+use server::authz::{AdminCap, Principal, ReadCap, WriteCap};
 use server::search::query::{Filter, Pagination, Query, Search};
 use server::{Server, ServerConfiguration};
 use smol_str::SmolStr;
@@ -60,6 +61,20 @@ pub fn populated_text_index(dir: &Path, symbols: &[Symbol]) -> TextIndex {
     index.upsert_batch(symbols).expect("fixture symbols index cleanly");
     index.commit().expect("the fixture commit succeeds");
     index
+}
+
+/// A test read capability — mints a read cap from the anonymous principal.
+pub fn read_cap<M: runtime::vector::EmbeddingModel>(server: &Server<M>) -> ReadCap {
+    server
+        .authorize_read(&Principal::anonymous(), "test.read")
+        .expect("allow-all policy always grants a read cap in tests")
+}
+
+/// A test write capability — mints a write cap from the anonymous principal.
+pub fn write_cap<M: runtime::vector::EmbeddingModel>(server: &Server<M>) -> WriteCap {
+    server
+        .authorize_write(&Principal::anonymous(), "test.write")
+        .expect("allow-all policy always grants a write cap in tests")
 }
 
 /// A literal search request over `query` with an unbounded filter.
