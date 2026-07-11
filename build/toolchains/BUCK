@@ -18,13 +18,12 @@ load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
 load("@prelude//toolchains:zip_file.bzl", "zip_file_toolchain")
 load("@prelude//toolchains/go:system_go_bootstrap_toolchain.bzl", "system_go_bootstrap_toolchain")
 load("@prelude//toolchains/go:system_go_toolchain.bzl", "system_go_toolchain")
-load(":defs.bzl", "absolute_clang_tools")
+load(":defs.bzl", "absolute_clang_tools", "nix_cxx_toolchain")
 
 # buck2.nix external cell (see .buckconfig [external_cells] nix = git). Provides
 # hermetic Nix-built toolchains via flake.package(). Run `buck2 kill` after the
 # cell config changes.
 load("@nix//:flake.bzl", "flake")
-load("@nix//toolchains:cxx.bzl", "nix_cxx_toolchain")
 load("@nix//toolchains:rust.bzl", "nix_rust_toolchain")
 
 # ── Toolchain selection toggle ───────────────────────────────────────────────

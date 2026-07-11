@@ -2,6 +2,6 @@ prelude = native
 
 prelude.java_library(
     name = "extractor",
-    srcs = glob(["nudox/oracle/**/*.java"]),
+    srcs = glob(["**/*.java"]),
     visibility = ["//workspace/compiler/..."],
 )

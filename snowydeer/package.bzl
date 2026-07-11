@@ -63,7 +63,7 @@ transition_to_static = rule(
     and more importantly: https://github.com/facebook/buck2/issues/448
     """,
     attrs = {
-        "constraint": attrs.default_only(attrs.dep(default = "//constraints/link_style")),
+        "constraint": attrs.default_only(attrs.dep(default = "//constraints/link_style:link_style")),
         "new_value": attrs.default_only(attrs.dep(default = "//constraints/link_style:static_pic")),
     },
     is_configuration_rule = True,
