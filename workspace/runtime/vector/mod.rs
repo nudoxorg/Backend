@@ -305,35 +305,6 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 		Ok(futures::stream::iter(page.into_iter().map(Ok)))
 	}
 
-	/// The stored embedding for `symbol`, if the collection holds its point —
-	/// the lookup behind similarity-from-a-symbol. Not gated: reading one point
-	/// back is cheap; only the k-NN scan is the heavy, gated operation.
-	pub(crate) async fn stored_embedding(
-		&self,
-		symbol: SymbolId,
-	) -> Result<Option<Embedding<M>>, VectorError> {
-		use qdrant_client::qdrant::{GetPointsBuilder, PointId, vectors_output::VectorsOptions};
-
-		let request = GetPointsBuilder::new(
-			self.collection.as_str(),
-			vec![PointId::from(symbol.as_uuid().to_string())],
-		)
-		.with_vectors(true);
-		let reply = self.client.get_points(request).await.map_err(VectorError::Transport)?;
-
-		let Some(point) = reply.result.into_iter().next() else { return Ok(None) };
-		let values = match point.vectors.and_then(|vectors| vectors.vectors_options) {
-			Some(VectorsOptions::Vector(vector)) => vector.data,
-			Some(_) => {
-				return Err(payload_error(format_args!(
-					"point {symbol} stores named vectors, expected a single dense vector"
-				)));
-			}
-			None => return Ok(None),
-		};
-		Embedding::from_vec(values).map(Some).map_err(VectorError::Embed)
-	}
-
 	/// The tower [`Service`] for this store; use [`heart::sink::SinkExt`] methods
 	/// to get retry-aware delivery.
 	pub fn uploader(&self) -> VectorSink<M> {

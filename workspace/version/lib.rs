@@ -127,7 +127,7 @@ where
 {
     // Collect (parsed_version, original_tag_str) for every tag that both
     // parses and satisfies the request.
-    let mut candidates: Vec<(G::V, String)> = tags
+    let candidates: Vec<(G::V, String)> = tags
         .iter()
         .filter_map(|t| {
             let raw = t.as_ref();

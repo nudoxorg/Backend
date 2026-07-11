@@ -174,7 +174,17 @@ def deps(spec = None, crates = None, members = None, raw = None, features = None
 # quiet. `unreachable_pub` surfaces `pub` items that are never reachable across
 # a crate boundary — the zero-tooling way to find cross-crate dead surface under
 # Buck2 (cargo-machete/udeps don't run here). `unused` catches dead code, unused
-# imports/vars. Warn now; Phase 5 promotes to deny in CI once Phases 1-3 land.
+# imports/vars.
+#
+# Kept at WARN, not DENY, deliberately: a chunk of the sandbox crate
+# (seccomp/landlock/cgroup helpers) is `#[cfg(target_os = "linux")]`-conditional,
+# so on a macOS dev machine it reads as dead and a hard `-Dunused` would fail the
+# local build for code that is live on Linux. Phase 5's deny promotion therefore
+# belongs in CI (Linux), where the cfg-gated code is compiled in — flip these to
+# `-D` in the CI build config, not here. The cross-platform dead code these
+# lints surfaced (unused imports, orphaned speculative methods) has been swept;
+# what remains at WARN is the platform-conditional set and the pub→pub(crate)
+# visibility chore.
 WORKSPACE_LINTS = ["-Wunreachable_pub", "-Wunused"]
 
 def _with_workspace_lints(kw):

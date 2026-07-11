@@ -427,8 +427,8 @@ pub(crate) fn direct_score() -> heart::Score {
 
 impl Graph<Live> {
 	/// Insert/replace the `Symbol` documents for a set of symbols — the write
-	/// half of [`symbols_in_package`](Self::symbols_in_package), so a fan-out
-	/// consumer can materialize a package's graph projection.
+	/// half of a package's graph projection, so a fan-out consumer can
+	/// materialize it for the read queries below.
 	///
 	/// Each document is written in the shape this store's own read queries
 	/// expect (the model documented above: class `Symbol` with string properties
@@ -587,124 +587,6 @@ impl Graph<Live> {
 			.collect()
 	}
 
-	/// Every symbol document belonging to `package`, fully hydrated.
-	pub(crate) async fn symbols_in_package(
-		&self,
-		package: heart::PackageId,
-	) -> Result<Vec<heart::Symbol>, GraphError> {
-		let query = woql::select(
-			&["Id", "Ecosystem", "Plain", "FullyQualified", "Kind"],
-			woql::and(vec![
-				woql::is_a("Doc", "Symbol"),
-				woql::triple("Doc", "package", woql::string(&package.as_uuid().to_string())),
-				woql::triple("Doc", "id", woql::variable("Id")),
-				woql::triple("Doc", "ecosystem", woql::variable("Ecosystem")),
-				woql::triple("Doc", "plain", woql::variable("Plain")),
-				woql::triple("Doc", "fully_qualified", woql::variable("FullyQualified")),
-				woql::triple("Doc", "kind", woql::variable("Kind")),
-			]),
-		);
-		self.bindings(query)
-			.await?
-			.iter()
-			.map(|row| {
-				let ecosystem = binding_string(row, "Ecosystem")?;
-				let kind = binding_string(row, "Kind")?;
-				Ok(heart::Symbol {
-					id: binding_symbol(row, "Id")?,
-					package,
-					ecosystem: ecosystem
-						.parse()
-						.map_err(|_| decode_error(format_args!("unknown ecosystem token {ecosystem:?}")))?,
-					name: heart::Name {
-						plain: binding_string(row, "Plain")?.into(),
-						fully_qualified: binding_string(row, "FullyQualified")?.into(),
-					},
-					kind: parse_symbol_kind(kind)?,
-				})
-			})
-			.collect()
-	}
-
-	/// One symbol document by id, if the graph holds it.
-	pub(crate) async fn symbol_record(
-		&self,
-		id: SymbolId,
-	) -> Result<Option<heart::Symbol>, GraphError> {
-		let query = woql::select(
-			&["Package", "Ecosystem", "Plain", "FullyQualified", "Kind"],
-			woql::and(vec![
-				woql::is_a("Doc", "Symbol"),
-				woql::triple("Doc", "id", woql::string(&id.as_uuid().to_string())),
-				woql::triple("Doc", "package", woql::variable("Package")),
-				woql::triple("Doc", "ecosystem", woql::variable("Ecosystem")),
-				woql::triple("Doc", "plain", woql::variable("Plain")),
-				woql::triple("Doc", "fully_qualified", woql::variable("FullyQualified")),
-				woql::triple("Doc", "kind", woql::variable("Kind")),
-			]),
-		);
-		self.bindings(query)
-			.await?
-			.first()
-			.map(|row| {
-				let ecosystem = binding_string(row, "Ecosystem")?;
-				let kind = binding_string(row, "Kind")?;
-				Ok(heart::Symbol {
-					id,
-					package: binding_symbol(row, "Package")?.cast(),
-					ecosystem: ecosystem
-						.parse()
-						.map_err(|_| decode_error(format_args!("unknown ecosystem token {ecosystem:?}")))?,
-					name: heart::Name {
-						plain: binding_string(row, "Plain")?.into(),
-						fully_qualified: binding_string(row, "FullyQualified")?.into(),
-					},
-					kind: parse_symbol_kind(kind)?,
-				})
-			})
-			.transpose()
-	}
-
-	/// The `Member` parent-edges among a package's symbols: child id → (relation,
-	/// parent id). Feeds [`structure::assemble`].
-	pub(crate) async fn member_parents(
-		&self,
-		package: heart::PackageId,
-	) -> Result<std::collections::BTreeMap<SymbolId, (RelationKind, SymbolId)>, GraphError> {
-		let query = woql::select(
-			&["Parent", "Child"],
-			woql::and(vec![
-				woql::is_a("Edge", "Relation"),
-				woql::triple("Edge", "kind", woql::string(&RelationKind::Member.to_string())),
-				woql::triple("Edge", "from", woql::variable("Parent")),
-				woql::triple("Edge", "to", woql::variable("Child")),
-				// Constrain to edges whose child lives in this package.
-				woql::is_a("Doc", "Symbol"),
-				woql::triple("Doc", "id", woql::variable("Child")),
-				woql::triple("Doc", "package", woql::string(&package.as_uuid().to_string())),
-			]),
-		);
-		self.bindings(query)
-			.await?
-			.iter()
-			.map(|row| {
-				Ok((
-					binding_symbol(row, "Child")?,
-					(RelationKind::Member, binding_symbol(row, "Parent")?),
-				))
-			})
-			.collect()
-	}
-}
-
-/// Parse a [`heart::SymbolKind`] from its stored `Display` name (the same token
-/// the registry persists), rejecting anything unknown rather than guessing.
-///
-/// Delegates to the `strum`-derived `FromStr` impl — variant names are the
-/// tokens so encode (Display) and decode (FromStr) are guaranteed symmetric.
-pub(crate) fn parse_symbol_kind(raw: &str) -> Result<heart::SymbolKind, GraphError> {
-	heart::SymbolKind::from_str(raw)
-		.map_err(|_| decode_error(format_args!("unknown symbol kind {raw:?}")))
 }
 
 impl GraphStore for Graph<Live> {
