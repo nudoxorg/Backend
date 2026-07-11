@@ -13,8 +13,10 @@
 //! enforce, so the database rejects precisely what [`state_from_token`] et al.
 //! would fail to decode.
 
+use std::str::FromStr;
+
 use heart::{
-	Failure, Phase, ResolutionState,
+	Failure, OwnerKind, Phase, ResolutionState, Visibility,
 	content::ContentHash,
 	ecosystem::Language,
 	identity::{SymbolId, PackageId},
@@ -22,30 +24,6 @@ use heart::{
 use uuid::Uuid;
 
 use crate::coordination::SinkKind;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Owner kind / visibility typed domains
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// The kind of tenant that owns a package — stored as the lowercase SQL token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum OwnerKind {
-	/// A single-developer account.
-	Individual,
-	/// An organisation or team account.
-	Enterprise,
-}
-
-/// The visibility of a package — stored as the lowercase SQL token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Visibility {
-	/// Visible only to the owning tenant.
-	Personal,
-	/// Visible to explicitly invited members of the owning tenant.
-	Private,
-	/// Publicly discoverable.
-	Public,
-}
 
 /// A decode failure — a stored column value that does not correspond to any
 /// domain value. Should be impossible given the CHECK constraints, but decoding
@@ -410,47 +388,43 @@ pub fn coordinates_from_columns(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The stable lowercase token for an [`OwnerKind`].
+///
+/// Delegates to the strum-derived `IntoStaticStr` on [`heart::OwnerKind`], so the
+/// token spelling is the single source shared with the schema CHECK domain and
+/// can never drift from the decoder below.
 pub fn owner_kind_token(k: OwnerKind) -> &'static str {
-	match k {
-		OwnerKind::Individual => "individual",
-		OwnerKind::Enterprise => "enterprise",
-	}
+	k.into()
 }
 
 /// Reconstruct an [`OwnerKind`] from its stored token.
 ///
-/// Returns a typed [`CodecError::UnknownOwnerKindDiscriminant`] for any token
-/// not in the `packages.owner_kind` CHECK domain — the same guard the DB
-/// enforces, surfaced at the Rust decode layer so corrupt rows fail with a
-/// rich error rather than silently propagating garbage.
+/// Routes through the strum-derived `FromStr` on [`heart::OwnerKind`] — the exact
+/// inverse of [`owner_kind_token`] — mapping any token not in the
+/// `packages.owner_kind` CHECK domain to a typed
+/// [`CodecError::UnknownOwnerKindDiscriminant`], the same guard the DB enforces,
+/// so corrupt rows fail with a rich error rather than silently propagating garbage.
 pub fn owner_kind_from_token(token: &str) -> Result<OwnerKind, CodecError> {
-	match token {
-		"individual" => Ok(OwnerKind::Individual),
-		"enterprise" => Ok(OwnerKind::Enterprise),
-		other => Err(CodecError::UnknownOwnerKindDiscriminant { token: other.to_owned() }),
-	}
+	OwnerKind::from_str(token)
+		.map_err(|_| CodecError::UnknownOwnerKindDiscriminant { token: token.to_owned() })
 }
 
 /// The stable lowercase token for a [`Visibility`].
+///
+/// Delegates to the strum-derived `IntoStaticStr` on [`heart::Visibility`], so the
+/// token spelling is the single source shared with the schema CHECK domain and
+/// can never drift from the decoder below.
 pub fn visibility_token(v: Visibility) -> &'static str {
-	match v {
-		Visibility::Personal => "personal",
-		Visibility::Private => "private",
-		Visibility::Public => "public",
-	}
+	v.into()
 }
 
 /// Reconstruct a [`Visibility`] from its stored token.
 ///
-/// Returns a typed [`CodecError::UnknownVisibilityDiscriminant`] for any token
-/// not in the `packages.visibility` CHECK domain — the same guard the DB
-/// enforces, surfaced at the Rust decode layer so corrupt rows fail with a
-/// rich error rather than silently propagating garbage.
+/// Routes through the strum-derived `FromStr` on [`heart::Visibility`] — the exact
+/// inverse of [`visibility_token`] — mapping any token not in the
+/// `packages.visibility` CHECK domain to a typed
+/// [`CodecError::UnknownVisibilityDiscriminant`], the same guard the DB enforces,
+/// so corrupt rows fail with a rich error rather than silently propagating garbage.
 pub fn visibility_from_token(token: &str) -> Result<Visibility, CodecError> {
-	match token {
-		"personal" => Ok(Visibility::Personal),
-		"private" => Ok(Visibility::Private),
-		"public" => Ok(Visibility::Public),
-		other => Err(CodecError::UnknownVisibilityDiscriminant { token: other.to_owned() }),
-	}
+	Visibility::from_str(token)
+		.map_err(|_| CodecError::UnknownVisibilityDiscriminant { token: token.to_owned() })
 }
