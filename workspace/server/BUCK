@@ -1,4 +1,5 @@
 load("//build:rust.bzl", "crate", "deps", "member", "rust_bin", "rust_crate", "rust_tests", "target")
+load("//snowydeer:package.bzl", "snowydeer_package")
 
 rust_crate(
     name = "server-lib",
@@ -104,4 +105,41 @@ rust_bin(
         crate("tracing_subscriber"),
         target(":server-lib"),
     ]),
+)
+
+# ── Deploy boundary (Phase 4 — snowydeer Nix→Buck2→Nix sandwich) ─────────────
+#
+# nudox_pkg is the snowydeer-packaged release binary used by the nixos companion
+# repo (Colmena) to import the server into the Nix store.
+#
+# Static-linking decision:
+#   The server dep graph has NO llvm-sys or system openssl dependency:
+#     - libsqlite3_sys uses the "bundled" feature (statically compiled C SQLite).
+#     - reqwest/hyper use rustls features (pure-Rust TLS, no libssl linkage).
+#     - mimalloc is a vendored allocator compiled into the crate.
+#   The only remaining dynamic deps on Linux are the C runtime (glibc/libpthread)
+#   and on macOS the system dylibs (libSystem etc.) — both categories are always
+#   present on any deploy host and do not need to appear in the Nix closure.
+#
+#   snowydeer's transition_to_static sets the Buck2 link_style constraint to
+#   static_pic. This statically links the Rust crate graph and any bundled C
+#   deps; the OS-provided C runtime remains dynamic (glibc on Linux, libSystem
+#   on Darwin). The resulting binary is "mostly static" — correct for this dep
+#   profile. snowydeer's ref_scan will find zero Nix-store hash fragments in the
+#   binary, so the store path will be registered with an empty reference set,
+#   which is accurate: the only runtime deps are glibc/libSystem, which are not
+#   in the Nix store on a NixOS deployment host either (they come from the host
+#   profile, not the Nix store closure).
+#
+#   On Darwin, the OS does not support full static linking; transition_to_static
+#   still works (it sets link_style = static_pic which rustc interprets as
+#   "statically link Rust + bundled C, keep system dylibs dynamic").
+#
+# CI invocation:
+#   buck2 bxl //snowydeer:snowydeer.bxl:main -- --target //workspace/server:nudox_pkg
+# Output: /nix/store/<hash>-nudox_pkg  (content-addressed, printed to stdout)
+snowydeer_package(
+    name = "nudox_pkg",
+    binaries = [":server"],
+    visibility = ["PUBLIC"],
 )
