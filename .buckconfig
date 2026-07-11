@@ -7,9 +7,10 @@ root = .
 prelude = build/prelude-local
 toolchains = build/toolchains
 none = none
-# The `nix` cell is provided by the [external_cells] git cell below (tweag/buck2.nix).
-# Buck2 resolves an external cell by name, so no local `nix = <path>` entry here.
+# nix is an external git cell (tweag/buck2.nix). The `none` path is a placeholder —
+# [external_cells] below overrides it with the fetched git content.
 # run `buck2 kill` after changing cells
+nix = none
 
 [cell_aliases]
 config = prelude
