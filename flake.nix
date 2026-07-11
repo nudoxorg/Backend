@@ -54,6 +54,50 @@
         "x86_64-linux"
       ];
 
+      # Pre-built buck2 binaries pinned to the release matching our prelude.
+      # Avoids both buckle's runtime download and a full Rust source build.
+      buck2Version = "2026-07-01";
+      buck2Artifacts = {
+        "aarch64-darwin" = {
+          platform = "aarch64-apple-darwin";
+          hash = "sha256-cjgWmrQiLagv4lN3dgEl2l7wDmchntMGBgFyfztRLWA=";
+        };
+        "aarch64-linux" = {
+          platform = "aarch64-unknown-linux-gnu";
+          hash = "sha256-zMbZcliSzTyfdKxgxx5A1R3tibdHhAZLLdYNNJ6gu24=";
+        };
+        "x86_64-darwin" = {
+          platform = "x86_64-apple-darwin";
+          hash = "sha256-7czaJhavbkHkv/1JsXPbi3IeNptgZHMcGLdt14de2lU=";
+        };
+        "x86_64-linux" = {
+          platform = "x86_64-unknown-linux-gnu";
+          hash = "sha256-XQzRG7QQHId6nSNCcFsXme6j2oU8uqAOoNCoflPFwzg=";
+        };
+      };
+
+      mkBuck2 =
+        pkgs:
+        let
+          art = buck2Artifacts.${pkgs.stdenv.hostPlatform.system};
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "buck2";
+          version = buck2Version;
+          src = pkgs.fetchurl {
+            url = "https://github.com/facebook/buck2/releases/download/${buck2Version}/buck2-${art.platform}.zst";
+            hash = art.hash;
+          };
+          nativeBuildInputs = [ pkgs.zstd ];
+          dontUnpack = true;
+          installPhase = ''
+            mkdir -p $out/bin
+            zstd -d $src -o $out/bin/buck2
+            chmod +x $out/bin/buck2
+          '';
+          meta.mainProgram = "buck2";
+        };
+
       eachSystem =
         f:
         nixpkgs.lib.genAttrs systems (
@@ -164,8 +208,6 @@
             "rustc"
             # rust-analyzer component ships libexec/rust-analyzer-proc-macro-srv
             # so ra_ap_load_cargo can use ProcMacroServerChoice::Sysroot.
-            "rust-analyzer"
-            "llvm-tools"
             "rustfmt"
             "rustc-codegen-cranelift-preview"
           ];
@@ -244,7 +286,7 @@
               pkgs.goreleaser
               pkgs.cuelsp
               pkgs.b3sum
-              pkgs.buck2
+              (mkBuck2 pkgs)
               (if pkgs.stdenv.isLinux then pkgs.wild-unwrapped else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.openssl else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.clang else null)
@@ -298,7 +340,9 @@
               (mkCommand "install-force" "Force install binary" "installation")
 
               # --- Buck2 --- #
-              (mkCommand "buck-build" "Build Buck2 targets (omit package for //..., or pass e.g. compiler)" "buck2")
+              (mkCommand "buck-build" "Build Buck2 targets (omit package for //..., or pass e.g. compiler)"
+                "buck2"
+              )
               (mkCommand "buck-test" "Run Buck2 tests (omit package for //..., or pass e.g. compiler)" "buck2")
 
               # --- Utilities --- #
