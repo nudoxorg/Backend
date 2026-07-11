@@ -1,9 +1,15 @@
+# Cache configuration lives in its own file; pull it in explicitly (Buck2 does
+# not auto-load buckconfig.d/). See buckconfig.d/cache.buckconfig.
+<file:buckconfig.d/cache.buckconfig>
+
 [cells]
 root = .
 prelude = build/prelude-local
 toolchains = build/toolchains
 none = none
-# nix = none  # uncomment and configure [external_cells] below to enable Nix toolchain
+# The `nix` cell is provided by the [external_cells] git cell below (tweag/buck2.nix).
+# Buck2 resolves an external cell by name, so no local `nix = <path>` entry here.
+# run `buck2 kill` after changing cells
 
 [cell_aliases]
 config = prelude
@@ -13,19 +19,43 @@ fbsource = none
 buck = none
 
 # ── Nix toolchain integration (Tweag buck2.nix approach) ──────────────────
-# Uncomment the sections below to use Nix-hermetic tools via buck2.nix.
-# Then in build/toolchains/BUCK, switch to flake.package() + nix_rust_toolchain.
+# Hermetic Nix tools via buck2.nix are now the DEFAULT toolchain. The `nix`
+# external cell provides flake.package() + nix_rust_toolchain/nix_cxx_toolchain,
+# wired up in build/toolchains/BUCK. Toggle back to the system (fenix-on-PATH +
+# /usr/bin/clang) toolchains with `-c nix.toolchain=0`.
 # See: https://github.com/tweag/buck2.nix and build/toolchains/nix/flake.nix
+# run `buck2 kill` after changing cells
 #
-# [external_cells]
-#   nix = git
-#
-# [external_cell_nix]
-#   git_origin = https://github.com/tweag/buck2.nix.git
-#   commit_hash = accae8c8924b3b51788d0fbd6ac90049cdf4f45a
+[external_cells]
+  nix = git
+
+[external_cell_nix]
+  git_origin = https://github.com/tweag/buck2.nix.git
+  # Refreshed from `git ls-remote https://github.com/tweag/buck2.nix.git HEAD`
+  # on 2026-07-11 (was the stale accae8c…). This is tweag/buck2.nix default branch.
+  commit_hash = 038b031b84846101030b9d081445003e82e3be5c
 # ──────────────────────────────────────────────────────────────────────────
 
 [parser]
 target_platform_detector_spec = target:root//...->prelude//platforms:default \
   target:prelude//...->prelude//platforms:default \
   target:toolchains//...->prelude//platforms:default
+
+# ── Java toolchain ──────────────────────────────────────────────────────────
+# Defaults to /usr/local/java-runtime/impl/17 (see build/toolchains/BUCK).
+# Override in .buckconfig.local with your JDK 17+ install if that doesn't
+# match your machine, e.g.:
+#
+# [java]
+#   java_home = /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
+
+# ── Android SDK stub ─────────────────────────────────────────────────────────
+# The vendored javacd_toolchain (needed by java_library, e.g. the Java oracle
+# doclet) transitively depends on a `dex` toolchain, which in turn wants an
+# Android SDK. We have no actual Android code — this points at empty
+# placeholder files (build/toolchains/android-sdk-stub) purely to satisfy the
+# toolchain's analysis-time symlink actions; nothing here is ever read.
+[android]
+  sdk_path = build/toolchains/android-sdk-stub
+  build_tools_version = stub
+  compile_sdk_version = android-stub

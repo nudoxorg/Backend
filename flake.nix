@@ -244,8 +244,7 @@
               pkgs.goreleaser
               pkgs.cuelsp
               pkgs.b3sum
-              pkgs.buckle # Buck2 version launcher — reads .buckversion, downloads/caches the pinned binary
-              (pkgs.writeShellScriptBin "buck2" ''exec ${pkgs.buckle}/bin/buckle "$@"'')
+              pkgs.buck2
               (if pkgs.stdenv.isLinux then pkgs.wild-unwrapped else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.openssl else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.clang else null)
@@ -298,11 +297,23 @@
               (mkCommand "install" "Build and install binary to system" "installation")
               (mkCommand "install-force" "Force install binary" "installation")
 
+              # --- Buck2 --- #
+              (mkCommand "buck-build" "Build Buck2 targets (omit package for //..., or pass e.g. compiler)" "buck2")
+              (mkCommand "buck-test" "Run Buck2 tests (omit package for //..., or pass e.g. compiler)" "buck2")
+
               # --- Utilities --- #
               (mkCommand "rad-sync" "manually sync radicle repos" "utilities")
             ];
             devshell.startup.shellHook.text = ''
               ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
+              # build/prelude-local is the patched prelude cell used by .buckconfig.
+              # Regenerate it whenever the pinned buck2-prelude store path changes.
+              _prelude_stamp="$PRJ_ROOT/build/prelude-local/.nix-source"
+              if [[ ! -f "$_prelude_stamp" || "$(cat "$_prelude_stamp")" != "${buck2-prelude}" ]]; then
+                bash "$PRJ_ROOT/build/setup-prelude.sh"
+                echo -n "${buck2-prelude}" > "$PRJ_ROOT/build/prelude-local/.nix-source"
+              fi
+              unset _prelude_stamp
               export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
               # sccache intercepts rustc --version as a non-compilation call and returns empty output,
               # breaking Buck2 build scripts (e.g. rustversion). Buck2 has its own caching.
