@@ -6,6 +6,20 @@
 //! watermark (see [`tantivy`]). Results are [`heart::Scored`] packages,
 //! keyset-paginated via [`heart::Cursor`], and access-filtered — every method
 //! takes an [`AccessContext`].
+//!
+//! # One order across all pages
+//!
+//! The full five-stage ranking pipeline (BM25 × quality kink, exact/contains
+//! bonus, diversity, representative pull-up, downloads bubble) is a *positional*
+//! reorder — it is not a monotonic function of any single per-item score. To
+//! page over it with a keyset cursor without dropping or duplicating results at
+//! the page boundary, [`collect_ranked_hits`] runs that pipeline **once** over
+//! the whole over-fetched candidate set (via [`ranking::rank_full`]) and then
+//! stamps each item with a strictly-descending **rank score** derived from its
+//! final ordinal. Page 1 and page N are then slices of that one total order:
+//! the `(score, id)` keyset cursor advances monotonically over the rank score,
+//! so there is no scoring seam between pages — the first-page and resumed-page
+//! code paths are identical.
 
 use heart::{PackageId, Scored, cursor::Cursor, ecosystem::Language, search::Page};
 
@@ -20,9 +34,16 @@ pub mod tantivy;
 /// package relative to its BM25 relevance.
 const NEUTRAL_QUALITY: f32 = 0.5;
 
-/// The keyset a registry-search cursor advances over: a relevance score paired
+/// The keyset a registry-search cursor advances over: a **rank score** paired
 /// with the package id as the tiebreak, so pagination is stable across an
 /// eventually-consistent replica.
+///
+/// The score component is *not* the raw fused BM25 relevance — it is a
+/// strictly-descending value assigned by the item's final ordinal in the one
+/// full-pipeline order (see [`collect_ranked_hits`]). Every item therefore has a
+/// distinct score, the order is a strict total order under `score desc`, and the
+/// `id` tiebreak is retained only defensively (it never fires). This is what lets
+/// keyset resume slice the *same* order the pipeline produced, seam-free.
 pub type SearchKey = (heart::Score, PackageId);
 
 /// A single query against the registry search surface.
@@ -44,12 +65,14 @@ pub struct RegistryQuery {
 /// Fetch one page of results for `query` from the replica-local `index`.
 ///
 /// This is the shared implementation backing both the server's
-/// `PackageSearchIndex::page` (server crate) and the registry's own test
-/// suite.  First pages (`query.after.is_none()`) apply the full five-stage
-/// ranking pipeline (BM25 × quality kink + exact/contains bonus + diversity +
-/// representative pull-up + downloads bubble).  Keyset-resumed pages apply
-/// only the pagination-safe fused score so the `(score, id)` cursor remains
-/// monotonic.
+/// `PackageSearchIndex::page` (server crate) and the registry's own test suite.
+/// Every page — first or keyset-resumed — is a slice of the *same* full
+/// five-stage ranking order (BM25 × quality kink + exact/contains bonus +
+/// diversity + representative pull-up + downloads bubble): [`collect_ranked_hits`]
+/// runs that pipeline once and stamps each hit with a strictly-descending rank
+/// score, so the `(score, id)` cursor advances monotonically over the identical
+/// order regardless of page position. There is no first-page/resumed-page split
+/// and no scoring seam at the page boundary.
 pub async fn search_page(
 	index: &tantivy::PackageIndex,
 	query: &RegistryQuery,
@@ -83,11 +106,14 @@ pub async fn search_page(
 }
 
 /// Run the raw query, hydrate, ecosystem-filter, de-dup the multi-parent
-/// fan-in, then rank the result set.
+/// fan-in, then rank the result set into **one** total order.
 ///
-/// For first pages the full five-stage ranking pipeline runs; for keyset-resumed
-/// pages only the pagination-safe fused score is applied so the cursor remains
-/// monotonic.
+/// The full five-stage ranking pipeline runs once over the whole over-fetched
+/// candidate set (independent of page position); each returned hit carries a
+/// strictly-descending **rank score** derived from its final ordinal in that one
+/// order. Callers then keyset-page over the result by `(score, id)` and, because
+/// every item has a distinct rank score matching the pipeline order, page 1 and
+/// page N are slices of the identical order — no drops or duplicates at the seam.
 pub async fn collect_ranked_hits(
 	index: &tantivy::PackageIndex,
 	query: &RegistryQuery,
@@ -139,32 +165,40 @@ pub async fn collect_ranked_hits(
 		})
 		.collect();
 
-	let is_first_page = query.after.is_none();
+	// The page size only tunes the position-sensitive pipeline stages
+	// (representative pull-up, bubble tail); it never truncates here — the whole
+	// ranked order is materialized so the keyset cursor can slice any page out of
+	// it. The order is thus a single function of `(query.text, ecosystem, snapshot)`
+	// and *not* of page position: page 1 and page N resume over the same order.
 	let limit = query.limit.max(1);
+	let ranked = ranking::rank_full(&query.text, candidates, limit);
 
-	let hits: Vec<Scored<GlobalPackage>> = if is_first_page {
-		// First page: apply the full five-stage ranking pipeline (diversity pass,
-		// representative pull-up, downloads bubble).  The result is ordered by the
-		// pipeline rather than by a monotonic score, so it cannot be resumed with a
-		// keyset cursor — the caller must restart for page 2.
-		ranking::rank(&query.text, candidates, limit)
-			.into_iter()
-			.map(|c| Scored::new(c.item, finite_score(c.bm25)))
-			.collect()
-	} else {
-		// Subsequent pages: pagination-safe fused score only so the `(score, id)`
-		// keyset cursor stays monotonic.
-		let fused = ranking::fused_scores(&query.text, &candidates);
-		let mut page_hits: Vec<Scored<GlobalPackage>> = candidates
-			.into_iter()
-			.zip(fused)
-			.map(|(candidate, score)| Scored::new(candidate.item, finite_score(score)))
-			.collect();
-		page_hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.value.id.cmp(&b.value.id)));
-		page_hits
-	};
+	// Stamp each item with a strictly-descending rank score keyed on its final
+	// ordinal, so `(score, id)` is a strict total order matching the pipeline
+	// order. `finite_score` clamps onto the provably-finite `heart::Score`.
+	let total = ranked.len();
+	let hits: Vec<Scored<GlobalPackage>> = ranked
+		.into_iter()
+		.enumerate()
+		.map(|(ordinal, candidate)| {
+			Scored::new(candidate.item, rank_score(ordinal, total))
+		})
+		.collect();
 
 	Ok(hits)
+}
+
+/// Map a pipeline ordinal (`0` = best) onto a strictly-descending, provably
+/// finite [`heart::Score`], so the one full-pipeline order becomes a strict
+/// total order under `score desc` that the `(score, id)` keyset cursor can page
+/// over with no seam.
+///
+/// Encoded as `(total - ordinal)`: rank 0 gets the largest score, each later
+/// rank gets exactly one less, and every item's score is distinct. The values
+/// stay well within `f32`'s exact-integer range for any realistic candidate set
+/// (over-fetch is `limit*4 + 32`), so no two ordinals ever collide.
+fn rank_score(ordinal: usize, total: usize) -> heart::Score {
+	finite_score((total.saturating_sub(ordinal)) as f32)
 }
 
 /// Clamp a raw tantivy score onto the provably-finite [`heart::Score`].
