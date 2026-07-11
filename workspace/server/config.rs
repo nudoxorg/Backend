@@ -559,11 +559,11 @@ mod secret_url {
 	use secrecy::{ExposeSecret, SecretString};
 	use serde::{Deserialize, Deserializer, Serializer};
 
-	pub fn serialize<S: Serializer>(value: &SecretString, s: S) -> Result<S::Ok, S::Error> {
+	pub(crate) fn serialize<S: Serializer>(value: &SecretString, s: S) -> Result<S::Ok, S::Error> {
 		s.serialize_str(value.expose_secret())
 	}
 
-	pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
+	pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
 		Ok(SecretString::from(String::deserialize(d)?))
 	}
 }
@@ -573,7 +573,7 @@ mod optional_secret {
 	use secrecy::{ExposeSecret, SecretString};
 	use serde::{Deserialize, Deserializer, Serializer};
 
-	pub fn serialize<S: Serializer>(
+	pub(crate) fn serialize<S: Serializer>(
 		value: &Option<SecretString>,
 		s: S,
 	) -> Result<S::Ok, S::Error> {
@@ -583,7 +583,7 @@ mod optional_secret {
 		}
 	}
 
-	pub fn deserialize<'de, D: Deserializer<'de>>(
+	pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
 		d: D,
 	) -> Result<Option<SecretString>, D::Error> {
 		Ok(Option::<String>::deserialize(d)?.map(SecretString::from))

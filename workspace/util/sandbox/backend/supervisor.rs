@@ -15,7 +15,7 @@ use crate::spec::Output;
 /// Honors `cancel` each poll iteration: writes `cgroup.kill` (when a cgroup is
 /// owned) then kills the direct child. Forced kills (wall, output cap, cancel)
 /// always go through [`force_kill`].
-pub fn supervise(
+pub(crate) fn supervise(
 	mut child: Child,
 	limits: &Limits,
 	cgroup: Option<Cgroup>,
@@ -216,7 +216,7 @@ fn make_nonblocking(pipe: Option<&mut impl std::os::fd::AsFd>) {
 /// jemalloc). We set AS to **4×** `mem_bytes` as headroom so rustc is not
 /// killed for legitimate mappings while still bounding runaway mmap.
 /// soft==hard so the guest cannot raise its own budget.
-pub fn apply_rlimits(limits: &Limits) -> Result<(), SandboxError> {
+pub(crate) fn apply_rlimits(limits: &Limits) -> Result<(), SandboxError> {
 	#[cfg(unix)]
 	{
 		use rlimit::Resource;
@@ -241,7 +241,7 @@ pub fn apply_rlimits(limits: &Limits) -> Result<(), SandboxError> {
 }
 
 /// Shared setup: pipes, clear inherit.
-pub fn base_command(program: &std::path::Path) -> Command {
+pub(crate) fn base_command(program: &std::path::Path) -> Command {
 	let mut cmd = Command::new(program);
 	cmd.stdin(Stdio::null())
 		.stdout(Stdio::piped())
@@ -252,6 +252,6 @@ pub fn base_command(program: &std::path::Path) -> Command {
 
 /// Write a seatbelt / debug helper — unused placeholder for status fd.
 #[allow(dead_code)]
-pub fn write_all(w: &mut impl Write, data: &[u8]) -> Result<(), SandboxError> {
+pub(crate) fn write_all(w: &mut impl Write, data: &[u8]) -> Result<(), SandboxError> {
 	w.write_all(data).map_err(SandboxError::Io)
 }

@@ -18,7 +18,7 @@ use super::super::error::Package;
 
 /// Producer knobs for a single workspace load.
 #[derive(Debug, Clone)]
-pub struct ExtractConfig {
+pub(crate) struct ExtractConfig {
 	pub document_private: bool,
 	/// → `CARGO_NET_OFFLINE` + cargo `--offline`.
 	pub offline: bool,
@@ -33,7 +33,7 @@ pub struct ExtractConfig {
 
 impl ExtractConfig {
 	/// Defaults matched to the rustdoc path (offline, build scripts on, std probes).
-	pub fn for_extract(document_private: bool) -> Self {
+	pub(crate) fn for_extract(document_private: bool) -> Self {
 		Self {
 			document_private,
 			offline: true,
@@ -49,7 +49,7 @@ impl ExtractConfig {
 
 /// How the proc-macro server is located.
 #[derive(Debug, Clone)]
-pub enum ProcMacroPolicy {
+pub(crate) enum ProcMacroPolicy {
 	/// Use the sysroot's `rust-analyzer-proc-macro-srv`.
 	Sysroot,
 	/// Explicit path to a server binary built with the same toolchain.
@@ -60,7 +60,7 @@ pub enum ProcMacroPolicy {
 
 /// How deep auto/blanket-impl synthesis goes (§6.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ProbeTier {
+pub(crate) enum ProbeTier {
 	/// Local crate impls only.
 	Off,
 	/// Local + std/core/alloc blankets (default; rustdoc parity).
@@ -71,7 +71,7 @@ pub enum ProbeTier {
 }
 
 /// One loaded analysis session. Dropping `_proc_macro` kills expansion.
-pub struct LoadedWorkspace {
+pub(crate) struct LoadedWorkspace {
 	pub db: RootDatabase,
 	pub vfs: Vfs,
 	/// Kept for package/target metadata (`documented_local_packages`).
@@ -83,7 +83,7 @@ pub struct LoadedWorkspace {
 ///
 /// Mirrors `load_workspace_at` but retains [`ProjectWorkspace`] for package
 /// enumeration. Primes type caches in parallel before returning.
-pub fn load(root: &Path, cfg: &ExtractConfig) -> Result<LoadedWorkspace, Package> {
+pub(crate) fn load(root: &Path, cfg: &ExtractConfig) -> Result<LoadedWorkspace, Package> {
 	let cargo_config = cargo_config(cfg);
 	let load_config = load_config(cfg);
 

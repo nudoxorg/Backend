@@ -338,17 +338,17 @@ mod woql {
 	use serde_json::{Value, json};
 
 	/// A data-position variable.
-	pub fn variable(name: &str) -> Value {
+	pub(crate) fn variable(name: &str) -> Value {
 		json!({ "@type": "Value", "variable": name })
 	}
 
 	/// A concrete `xsd:string` literal in data position.
-	pub fn string(value: &str) -> Value {
+	pub(crate) fn string(value: &str) -> Value {
 		json!({ "@type": "Value", "data": { "@type": "xsd:string", "@value": value } })
 	}
 
 	/// `Triple(?subject, @schema:property, object)`.
-	pub fn triple(subject: &str, property: &str, object: Value) -> Value {
+	pub(crate) fn triple(subject: &str, property: &str, object: Value) -> Value {
 		json!({
 			"@type": "Triple",
 			"subject": { "@type": "NodeValue", "variable": subject },
@@ -358,7 +358,7 @@ mod woql {
 	}
 
 	/// `Triple(?subject, rdf:type, @schema:class)` — pin the document class.
-	pub fn is_a(subject: &str, class: &str) -> Value {
+	pub(crate) fn is_a(subject: &str, class: &str) -> Value {
 		json!({
 			"@type": "Triple",
 			"subject": { "@type": "NodeValue", "variable": subject },
@@ -368,12 +368,12 @@ mod woql {
 	}
 
 	/// Conjunction.
-	pub fn and(queries: Vec<Value>) -> Value {
+	pub(crate) fn and(queries: Vec<Value>) -> Value {
 		json!({ "@type": "And", "and": queries })
 	}
 
 	/// Projection onto `variables`.
-	pub fn select(variables: &[&str], query: Value) -> Value {
+	pub(crate) fn select(variables: &[&str], query: Value) -> Value {
 		json!({ "@type": "Select", "variables": variables, "query": query })
 	}
 }

@@ -126,14 +126,14 @@ mod humantime_serde_opt {
 
 	use serde::{Deserialize, Deserializer, Serializer};
 
-	pub fn serialize<S: Serializer>(v: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+	pub(crate) fn serialize<S: Serializer>(v: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
 		match v {
 			Some(d) => s.serialize_some(&d.as_secs()),
 			None => s.serialize_none(),
 		}
 	}
 
-	pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+	pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
 		let opt = Option::<u64>::deserialize(d)?;
 		Ok(opt.map(Duration::from_secs))
 	}
