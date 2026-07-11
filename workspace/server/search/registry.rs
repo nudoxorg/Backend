@@ -43,18 +43,14 @@ impl PackageSearchIndex {
 	///
 	/// # Ranking
 	///
-	/// **First pages** (`after.is_none()`) run the full five-stage ranking
-	/// pipeline: BM25 × quality kink + exact/contains name bonus + diversity
-	/// pass + representative pull-up + downloads bubble.  The positional
-	/// post-processing stages (diversity, representative pull-up, bubble) reorder
-	/// results in ways that are incompatible with a monotonic `(score, id)` keyset
-	/// cursor, so the first-page ranking is not resumable — a caller paging beyond
-	/// the first page will receive results ordered by fused score only (the
-	/// pagination-safe path).
-	///
-	/// **Subsequent pages** (`after.is_some()`) apply only the pagination-safe
-	/// fused score (BM25 × quality kink + name bonus) so the `(score, id)` cursor
-	/// remains monotonic across pages.
+	/// The full five-stage ranking pipeline (BM25 × quality kink + exact/contains
+	/// name bonus + diversity pass + representative pull-up + downloads bubble)
+	/// runs **once** over the whole over-fetched candidate set, producing a single
+	/// total order; each hit carries a strictly-descending rank score derived from
+	/// its ordinal in that order (see [`registry::search::collect_ranked_hits`]).
+	/// Every page — first or resumed — is a slice of that one order, so the
+	/// `(score, id)` keyset cursor advances monotonically with no scoring seam at
+	/// the page boundary. There is no first-page/subsequent-page split.
 	pub async fn page(
 		&self,
 		text: &str,
