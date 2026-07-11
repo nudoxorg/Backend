@@ -23,7 +23,10 @@ use crate::{
 };
 
 /// Lower a package's source into the collected IR, dispatching on ecosystem.
-pub fn collect(ctx: &dyn ForgeContext, input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
+pub fn collect<C: ForgeContext>(
+	ctx: &C,
+	input: &PackageInput,
+) -> Result<Ir<Collected>, GenerateError> {
 	let out = run_producer(ctx, input)?;
 	Ok(Ir::from_entries(
 		out.index.entries_by_path.into_values().collect(),
@@ -31,7 +34,7 @@ pub fn collect(ctx: &dyn ForgeContext, input: &PackageInput) -> Result<Ir<Collec
 }
 
 /// Lower a package's source into the indexed API surface (the `ir::Index`).
-pub fn build(ctx: &dyn ForgeContext, input: &PackageInput) -> Result<Index, GenerateError> {
+pub fn build<C: ForgeContext>(ctx: &C, input: &PackageInput) -> Result<Index, GenerateError> {
 	Ok(collect(ctx, input)?.index().into_index())
 }
 
@@ -49,8 +52,8 @@ fn package_key(input: &PackageInput) -> SandboxKey {
 /// [`producer::run_producer`] is the sole cache client: the sealed input's job
 /// key drives `ctx.cas().get` (hit → decoded [`ProducerOutput`]) / miss (run,
 /// then `put`). Scratch lives in [`producer::SealedPackage`] (RAII).
-fn run_producer(
-	ctx: &dyn ForgeContext,
+fn run_producer<C: ForgeContext>(
+	ctx: &C,
 	input: &PackageInput,
 ) -> Result<producer::ProducerOutput, GenerateError> {
 	let source_hash = parse_cache::hash_source_tree(&input.root)

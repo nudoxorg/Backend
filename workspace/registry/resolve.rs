@@ -16,25 +16,57 @@ use crate::package::{Coordinates as PackageCoordinates, PackageName};
 
 use crate::error::ResolveError;
 
-// Re-export the shared pick_best primitive for use in this module.
-use version::pick_best;
+// The shared version vocabulary: the request enum, its constraint predicate,
+// and the pick_best selection primitive.
+use version::{Constraint, pick_best};
 
-/// A version request against a package: an exact pin or a range, in the
-/// ecosystem's own grammar.
+/// A version request against a package.
+///
+/// This is the shared [`version::VersionRequest`] specialised to
+/// [`PackageVersion`] with [`RangeConstraint`] as its constraint case — so a
+/// SemVer range and a raw PEP 440 (or other ecosystem) range both fold into the
+/// single `Constraint` arm rather than living as bespoke variants. `Latest` and
+/// `Exact` keep their distinct selection semantics.
+pub type VersionRequest = version::VersionRequest<PackageVersion, RangeConstraint>;
+
+/// The range constraint a registry request can carry: either a parsed SemVer
+/// range, or a raw ecosystem range string parsed lazily under that ecosystem's
+/// grammar (covers PEP 440 specifiers SemVer cannot represent).
+///
+/// The variant also records *which* [`ResolveError`] a no-match should produce
+/// (`NoMatchSemver` vs `NoMatchRange`), so folding the two old request variants
+/// into one constraint case loses none of the rich error reporting.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum VersionRequest {
-	/// The single latest published version.
-	Latest,
+pub enum RangeConstraint {
+	/// A SemVer range (crates.io / npm / nix), e.g. `^1.2`, `>=2,<3`.
+	Semver(semver::VersionReq),
 
-	/// An exact version pin.
-	Exact(PackageVersion),
-
-	/// A SemVer range (crates.io / npm), e.g. `^1.2`, `>=2,<3`.
-	SemverRange(semver::VersionReq),
-
-	/// A raw ecosystem range string to be parsed under the ecosystem's grammar
-	/// (covers PEP 440 specifiers SemVer cannot represent).
+	/// A raw ecosystem range string, parsed under `ecosystem`'s grammar.
 	Range { ecosystem: Language, spec: String },
+}
+
+impl Constraint<PackageVersion> for RangeConstraint {
+	fn matches(&self, candidate: &PackageVersion) -> bool {
+		match self {
+			RangeConstraint::Semver(range) => semver_matches(range, candidate),
+			RangeConstraint::Range { ecosystem, spec } => match ecosystem {
+				Language::Rust | Language::Typescript | Language::Nix => {
+					// A malformed range admits nothing; `select` re-parses to
+					// surface `MalformedRequest` distinctly on the error path.
+					semver::VersionReq::parse(spec)
+						.is_ok_and(|range| semver_matches(&range, candidate))
+				}
+				Language::Python => match candidate {
+					PackageVersion::Python(version) => spec
+						.parse::<uv_pep440::VersionSpecifiers>()
+						.is_ok_and(|specifiers| specifiers.contains(version)),
+					_ => false,
+				},
+				// Go/Java resolve via git tags, not this registry range path.
+				Language::Go | Language::Java => false,
+			},
+		}
+	}
 }
 
 /// A source to resolve against — a public registry, or a self-hosted origin.
@@ -89,31 +121,25 @@ pub fn select(
 			let pin_s = pin.canonical();
 			return candidates.iter().find(|candidate| *candidate == pin).cloned().ok_or(ResolveError::NoMatchExact { name: String::from("<candidate set>"), pin: pin_s });
 		}
-		VersionRequest::SemverRange(range) => {
-			let r = range.to_string();
-			let _ = r; // used only on error path below if empty
-			candidates.iter().filter(|candidate| semver_matches(range, candidate)).collect()
+		VersionRequest::Constraint(constraint) => {
+			// A raw ecosystem range whose spec doesn't parse is a *malformed
+			// request*, distinct from "parsed but nothing matched": pre-validate
+			// so that error survives the fold into the constraint case.
+			if let RangeConstraint::Range { ecosystem, spec } = constraint {
+				match ecosystem {
+					Language::Rust | Language::Typescript | Language::Nix => {
+						semver::VersionReq::parse(spec)
+							.map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
+					}
+					Language::Python => {
+						spec.parse::<uv_pep440::VersionSpecifiers>()
+							.map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
+					}
+					Language::Go | Language::Java => {}
+				}
+			}
+			candidates.iter().filter(|candidate| constraint.matches(candidate)).collect()
 		}
-		VersionRequest::Range { ecosystem, spec } => match ecosystem {
-			Language::Rust | Language::Typescript | Language::Nix => {
-				let range = semver::VersionReq::parse(spec)
-					.map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
-				candidates.iter().filter(|candidate| semver_matches(&range, candidate)).collect()
-			}
-			Language::Python => {
-				let specifiers: uv_pep440::VersionSpecifiers =
-					spec.parse().map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
-				candidates
-					.iter()
-					.filter(|candidate| match candidate {
-						PackageVersion::Python(version) => specifiers.contains(version),
-						PackageVersion::Go(_) | PackageVersion::Java(_) => false, // version resolution via tags for Go/Java
-						_ => false,
-					})
-					.collect()
-			}
-			Language::Go | Language::Java => vec![],
-		},
 	};
 
 	// Build (ord_key, &PackageVersion) pairs so pick_best can apply the
@@ -126,8 +152,12 @@ pub fn select(
 
 	let best = pick_best(&keyed, |key| package_version_is_prerelease(key.0)).copied().cloned();
 	match request {
-		VersionRequest::SemverRange(range) => best.ok_or_else(|| ResolveError::NoMatchSemver { name: String::from("<candidate set>"), range: range.to_string() }),
-		VersionRequest::Range { spec, .. } => best.ok_or_else(|| ResolveError::NoMatchRange { name: String::from("<candidate set>"), spec: spec.clone() }),
+		VersionRequest::Constraint(RangeConstraint::Semver(range)) => {
+			best.ok_or_else(|| ResolveError::NoMatchSemver { name: String::from("<candidate set>"), range: range.to_string() })
+		}
+		VersionRequest::Constraint(RangeConstraint::Range { spec, .. }) => {
+			best.ok_or_else(|| ResolveError::NoMatchRange { name: String::from("<candidate set>"), spec: spec.clone() })
+		}
 		_ => best.ok_or_else(no_match),
 	}
 }
@@ -204,8 +234,8 @@ fn request_display(request: &VersionRequest) -> String {
 	match request {
 		VersionRequest::Latest => String::from("latest"),
 		VersionRequest::Exact(version) => version.canonical(),
-		VersionRequest::SemverRange(range) => range.to_string(),
-		VersionRequest::Range { spec, .. } => spec.clone(),
+		VersionRequest::Constraint(RangeConstraint::Semver(range)) => range.to_string(),
+		VersionRequest::Constraint(RangeConstraint::Range { spec, .. }) => spec.clone(),
 	}
 }
 

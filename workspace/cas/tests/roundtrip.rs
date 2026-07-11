@@ -1,7 +1,7 @@
 //! put/get roundtrip, second-get hit, integrity, invalidate, generic L3.
 
 use bytes::Bytes;
-use cas::{Cas, ContentHash, DiskCas, MemoryCas, Tiered};
+use cas::{Cas, ContentHash, DiskCas, EvictableCas, MemoryCas, NoL3, Tiered};
 
 #[tokio::test]
 async fn memory_put_get_roundtrip() {
@@ -134,7 +134,7 @@ async fn tiered_with_l3_put_reaches_l3() {
 #[tokio::test]
 async fn tiered_with_no_l3_still_works() {
 	let dir = tempfile::tempdir().unwrap();
-	let cas = Tiered::new(16, Some(DiskCas::open(dir.path()).unwrap()), None::<cas::NoL3>);
+	let cas = Tiered::new(16, Some(DiskCas::open(dir.path()).unwrap()), NoL3);
 	let key = ContentHash::of_bytes(b"with-l3-absent");
 	assert!(cas.put_keyed(key, Bytes::from_static(b"v")).await.unwrap());
 	assert_eq!(cas.get(key).await.unwrap().as_deref(), Some(b"v".as_slice()));
@@ -152,57 +152,32 @@ async fn tiered_invalidate_clears_l1_and_l2() {
 	assert_eq!(cas.get(key).await.unwrap().as_deref(), Some(b"new".as_slice()));
 }
 
-/// Verify that `DynCas` erasure round-trips: a `Tiered<MemoryCas>` (with a
-/// live L3) can be erased to `&dyn DynCas` and its put/get/invalidate all
-/// reach the underlying tiers correctly. This is the same erasure that
-/// `ForgeContext::cas()` performs.
+/// A `Tiered<MemoryCas>` (with a live L3) evicts only L1/L2: `invalidate`
+/// clears the local tiers so a subsequent put lands, while the immutable L3
+/// backend is deliberately left untouched (still serves the original value on
+/// the next read-through). This exercises the `EvictableCas` capability that
+/// `ForgeContext::Cas` requires for poison repair.
 #[tokio::test]
-async fn dyn_cas_erasure_round_trips() {
-	let l3 = MemoryCas::new();
-	let tiered = Tiered::with_l3(16, None, l3);
-
-	// Erase to `&dyn DynCas` — the same pointer `ForgeContext::cas()` returns.
-	let erased: &dyn cas::DynCas = &tiered;
-
-	let key = ContentHash::of_bytes(b"erased-payload");
-
-	// Put through the erased pointer.
-	cas::DynCas::put_keyed(erased, key, Bytes::from_static(b"erased-payload"))
-		.await
-		.unwrap();
-
-	// Get through the erased pointer.
-	let got = cas::DynCas::get(erased, key).await.unwrap();
-	assert_eq!(got.as_deref(), Some(b"erased-payload".as_slice()), "DynCas get failed");
-
-	// Invalidate through the erased pointer, then confirm it is gone.
-	cas::DynCas::invalidate(erased, key).await.unwrap();
-	let after = cas::DynCas::get(erased, key).await.unwrap();
-	assert!(after.is_none(), "DynCas invalidate must remove the entry");
-}
-
-/// Verify that a `Tiered::with_l3` (with disk L2 + MemoryCas L3) erased to
-/// `&dyn DynCas` correctly promotes from L3 on cold-L1 reads.
-#[tokio::test]
-async fn dyn_cas_tiered_l3_promote_via_erased_pointer() {
+async fn tiered_evictable_drops_l1_l2_but_not_l3() {
 	let dir = tempfile::tempdir().unwrap();
 	let l3 = MemoryCas::new();
-	let key = ContentHash::of_bytes(b"l3-only");
-	// Pre-seed L3 directly (before handing it to the Tiered).
+	let key = ContentHash::of_bytes(b"l3-immutable");
+	// Seed L3 directly with the canonical value before wiring the tier.
 	Cas::put_keyed(&l3, key, Bytes::from_static(b"l3-value")).await.unwrap();
 
 	let tiered = Tiered::with_l3(16, Some(DiskCas::open(dir.path()).unwrap()), l3);
-	let erased: &dyn cas::DynCas = &tiered;
 
-	// Cold L1 + cold L2 — must fall through to L3 through the erased pointer.
-	let got = cas::DynCas::get(erased, key).await.unwrap();
+	// Cold read promotes L3 → L2 + L1.
+	assert_eq!(tiered.get(key).await.unwrap().as_deref(), Some(b"l3-value".as_slice()));
+
+	// Evict L1 + L2. L3 is content-addressed / immutable and is not touched.
+	tiered.invalidate(key).await.unwrap();
+
+	// The next read misses L1/L2 and falls through to L3 again — the value is
+	// still present because eviction never reached L3.
 	assert_eq!(
-		got.as_deref(),
+		tiered.get(key).await.unwrap().as_deref(),
 		Some(b"l3-value".as_slice()),
-		"DynCas erased pointer must promote from L3"
+		"L3 must survive eviction of the local tiers"
 	);
-
-	// Second read through the same erased pointer — now L1-hot.
-	let hot = cas::DynCas::get(erased, key).await.unwrap();
-	assert_eq!(hot.as_deref(), Some(b"l3-value".as_slice()), "L1 hit via erased pointer");
 }

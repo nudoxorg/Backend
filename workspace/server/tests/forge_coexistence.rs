@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cas::ContentHash;
+use cas::{Cas, ContentHash};
 use compiler::languages::producer::ForgeContext;
 use sandbox::{
 	Cage, CageCaps, CageId, CancelToken, CapabilityBudget, Captured, CountingObserver, Policy,

@@ -1,28 +1,24 @@
-//! Materializing, compiling, and running the vendored javadoc doclet.
+//! Running the vendored javadoc doclet.
 //!
-//! The doclet sources (`oracle/nudox/oracle/*.java`) are embedded into this
-//! binary at compile time and written into a content-addressed temp
-//! directory on first use, so the producer behaves identically under cargo,
-//! buck, or a bare binary — no source checkout is assumed at runtime. The
-//! same directory caches the compiled classes: a `.compiled` stamp makes
-//! repeat runs skip `javac` entirely (the directory name encodes the exact
-//! source revision, so present == current).
+//! The doclet (`//workspace/compiler/compile/java/oracle:extractor`) is
+//! built ahead of time by Buck2 as a plain `java_library` (it has no
+//! dependencies beyond the JDK itself — JDK 17+; the doclet uses
+//! `getPermittedSubclasses`, records, and pattern matching) and shipped as a
+//! `resources` artifact jar alongside this binary — see
+//! `producer::buck_resource`. There is no runtime `javac` step.
 //!
-//! Invocation is two steps:
-//!   1. `javac -d <dir>/classes <sources>` — the doclet has zero
-//!      dependencies beyond the JDK itself (JDK 17+; the doclet uses
-//!      `getPermittedSubclasses`, records, and pattern matching).
-//!   2. `javadoc -doclet nudox.oracle.Extractor -docletpath <dir>/classes
-//!      -private -quiet -encoding UTF-8 -outfile <json> @<argfile>` over
-//!      every `.java` file found under the requested source roots.
+//! Invocation: `javadoc -doclet nudox.oracle.Extractor -docletpath <jar>
+//! -private -quiet -encoding UTF-8 -outfile <json> @<argfile>` over every
+//! `.java` file found under the requested source roots.
 //!
 //! `-private` includes every declaration regardless of access — lowering
 //! (not extraction) is where policy lives. The file list rides an @argfile
 //! to dodge OS argv limits; entries are quoted per javadoc's argfile rules.
 //!
-//! Both tools come from `PATH`. JEP 467 Markdown doc comments (`///`) are
-//! only *parsed as documentation* by JDK ≥ 23 toolchains — an older JDK
-//! silently reports `doc: null` for them, so prefer a current JDK.
+//! `javadoc` comes from `PATH` (via the sandboxed toolchain). JEP 467
+//! Markdown doc comments (`///`) are only *parsed as documentation* by
+//! JDK ≥ 23 toolchains — an older JDK silently reports `doc: null` for
+//! them, so prefer a current JDK.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,24 +30,18 @@ use sandbox::ProducerProfile;
 use super::schema;
 use super::error::{DocletError, ExtractionError, JavadocError, OracleError};
 
-/// The embedded doclet, written out verbatim before compiling.
-const ORACLE_SOURCES: &[(&str, &str)] = &[
-	("nudox/oracle/Extractor.java", include_str!("oracle/nudox/oracle/Extractor.java")),
-	("nudox/oracle/Json.java", include_str!("oracle/nudox/oracle/Json.java")),
-];
-
-/// Guidance appended to toolchain-spawn failures.
-const TOOLCHAIN_HINT: &str =
-	"is a JDK (17+, ideally 23+ for Markdown doc comments) on PATH? \
-	 e.g. `nix shell nixpkgs#jdk`";
+/// Resolve the Buck2-built doclet jar shipped alongside this executable.
+fn doclet_jar() -> Result<PathBuf, DocletError> {
+	producer::buck_resource("java-oracle.jar").map_err(|source| DocletError::ResourceNotFound { source })
+}
 
 /// Run the oracle over `source_roots` and deserialize its JSON document.
 ///
-/// This is the one-call entry point: it materializes + compiles the doclet
-/// (cached), collects the source set, runs `javadoc`, and parses the
-/// emitted document into the [`schema`] mirror.
-pub fn extract(
-	ctx: &dyn crate::compile::producer::ForgeContext,
+/// This is the one-call entry point: it collects the source set, runs
+/// `javadoc` against the prebuilt doclet jar, and parses the emitted
+/// document into the [`schema`] mirror.
+pub fn extract<C: crate::compile::producer::ForgeContext>(
+	ctx: &C,
 	source_roots: &[PathBuf],
 ) -> Result<schema::Extraction, OracleError> {
 	let files = collect_sources(source_roots);
@@ -60,8 +50,8 @@ pub fn extract(
 			roots: source_roots.to_vec(),
 		});
 	}
-	let classes = compile_oracle(ctx)?;
-	run_doclet(ctx, &classes, &files)
+	let jar = doclet_jar()?;
+	run_doclet(ctx, &jar, &files)
 }
 
 /// Every `.java` file under the roots, sorted for determinism. Hidden
@@ -102,76 +92,10 @@ fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) {
 	}
 }
 
-/// Materialize the embedded doclet sources into their content-addressed
-/// directory and compile them (cached via a `.compiled` stamp). Returns the
-/// classes directory for `-docletpath`.
-pub fn compile_oracle(
-	ctx: &dyn crate::compile::producer::ForgeContext,
-) -> Result<PathBuf, OracleError> {
-	let dir = materialize_oracle()?;
-	let classes = dir.join("classes");
-	let stamp = dir.join(".compiled");
-	if stamp.is_file() && classes.is_dir() {
-		return Ok(classes);
-	}
-
-	fs::create_dir_all(&classes).map_err(|source| DocletError::CreateClassesDirFailed {
-		path: classes.clone(),
-		source,
-	})?;
-
-	// Network is already Off via IsolatedCommand (design §8). Annotation
-	// processors run inside the cage with no ambient net.
-	let mut cmd = IsolatedCommand::new("javac", ProducerProfile::Java)
-		.arg("-encoding")
-		.arg("UTF-8")
-		.arg("-d")
-		.arg(&classes)
-		.ro(&dir)
-		.rw(&classes)
-		.rw(std::env::temp_dir());
-	for (name, _) in ORACLE_SOURCES {
-		cmd = cmd.arg(dir.join(name));
-	}
-	let output = isolate::run_isolated(ctx, cmd).map_err(|e| map_java_spawn(e, "javac"))?;
-	if !output.status.success() {
-		return Err(DocletError::DocletCompileFailed {
-			status: output.status.to_string(),
-			stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-			stdout: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-		}
-		.into());
-	}
-
-	fs::write(&stamp, b"ok").map_err(|source| DocletError::WriteStampFailed {
-		path: stamp.clone(),
-		source,
-	})?;
-	Ok(classes)
-}
-
-/// Write the embedded sources into a stable, content-addressed temp
-/// directory and return it. Idempotent; the directory name keys the exact
-/// vendored revision, so an existing copy is always current.
-pub fn materialize_oracle() -> Result<PathBuf, DocletError> {
-	let dir = producer::oracle_dir("java", producer::oracle_hash(ORACLE_SOURCES));
-	producer::materialize_oracle(ORACLE_SOURCES, "java")
-		.map(|p| p.dir)
-		.map_err(|e| DocletError::MaterializeSourceFailed {
-			path: dir,
-			source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-		})
-}
-
-/// Stable FNV-1a hash over the embedded sources (shared substrate).
-fn oracle_hash() -> u64 {
-	producer::oracle_hash(ORACLE_SOURCES)
-}
-
 /// Run `javadoc -doclet` over the collected files and parse the document.
-fn run_doclet(
-	ctx: &dyn crate::compile::producer::ForgeContext,
-	classes: &Path,
+fn run_doclet<C: crate::compile::producer::ForgeContext>(
+	ctx: &C,
+	jar: &Path,
 	files: &[PathBuf],
 ) -> Result<schema::Extraction, OracleError> {
 	// Fresh per-run scratch: the argfile and the JSON out-path.
@@ -189,12 +113,12 @@ fn run_doclet(
 		source,
 	})?;
 
-	// Source roots must be RO-visible; scratch + classes RW.
+	// Source roots must be RO-visible; scratch RW; the prebuilt doclet jar RO.
 	let mut cmd = IsolatedCommand::new("javadoc", ProducerProfile::Java)
 		.arg("-doclet")
 		.arg("nudox.oracle.Extractor")
 		.arg("-docletpath")
-		.arg(classes)
+		.arg(jar)
 		.arg("-private")
 		.arg("-quiet")
 		.arg("-encoding")
@@ -202,7 +126,7 @@ fn run_doclet(
 		.arg("-outfile")
 		.arg(&outfile)
 		.arg(format!("@{}", argfile.display()))
-		.ro(classes)
+		.ro(jar)
 		.rw(&scratch)
 		.rw(std::env::temp_dir());
 	for file in files {
@@ -279,23 +203,6 @@ fn argfile_quote(path: &str) -> String {
 	format!("\"{escaped}\"")
 }
 
-fn map_java_spawn(err: IsolatedFailure, _tool: &str) -> OracleError {
-	match err.kind {
-		IsolatedFailureKind::ToolchainMissing(_) | IsolatedFailureKind::Sandbox(_) => {
-			DocletError::SpawnJavacFailed {
-				source: std::io::Error::new(std::io::ErrorKind::Other, err.to_string()),
-			}
-			.into()
-		}
-		_ => DocletError::DocletCompileFailed {
-			status: err.kind.to_string(),
-			stderr: err.stderr.unwrap_or_default(),
-			stdout: err.stdout,
-		}
-		.into(),
-	}
-}
-
 fn map_javadoc_spawn(err: IsolatedFailure) -> OracleError {
 	match err.kind {
 		IsolatedFailureKind::ToolchainMissing(_) | IsolatedFailureKind::Sandbox(_) => {
@@ -324,10 +231,5 @@ mod tests {
 			argfile_quote("/with space/A \"b\".java"),
 			"\"/with space/A \\\"b\\\".java\""
 		);
-	}
-
-	#[test]
-	fn oracle_hash_is_stable_within_a_build() {
-		assert_eq!(oracle_hash(), oracle_hash());
 	}
 }

@@ -270,3 +270,93 @@ async fn fused_ranking_quality_multiplier_applied() {
         "high-quality crate must rank above low-quality with same BM25; order was: {names:?}"
     );
 }
+
+/// Keyset pagination is seam-free: page 2 begins exactly where page 1 ended.
+///
+/// The whole point of the fix — the full five-stage ranking pipeline produces a
+/// single total order, and every page is a slice of *that one order*, so walking
+/// the pages must reconstruct the total order with no dropped or duplicated
+/// results at the page boundary.
+///
+/// Arrange: a corpus large enough to activate every ranking stage (diversity
+/// needs ≥25, representative pull-up ≥7) and span several small pages, all
+/// matching the query via a shared keyword.
+///
+/// Assert:
+/// 1. Paging with `limit = 4` yields disjoint pages (no id appears twice).
+/// 2. Concatenating the pages equals the first `k` items of a single unpaged
+///    run (`limit = corpus size`) — i.e. page N is precisely the tail after
+///    page N-1's last item under one stable order.
+#[tokio::test]
+async fn keyset_pagination_is_seam_free_across_pages() {
+    let directory = common::TempDir::new("pagination-seam");
+
+    // 40 packages, all carrying the "async" keyword (so all match the query),
+    // with varied quality so the pipeline actually reorders them.
+    let records: Vec<GlobalPackage> = (0..40_u32)
+        .map(|i| {
+            // Spread quality across the range; vary keyword tails so the
+            // diversity pass has structure to work with.
+            let quality_ppm = (i * 24_000) % 1_000_000;
+            let extra = match i % 3 {
+                0 => "runtime",
+                1 => "executor",
+                _ => "futures",
+            };
+            rust_record_with_facets(&format!("pkg{i:02}"), quality_ppm, &["async", extra])
+        })
+        .collect();
+    let index = searchable_index(&directory, &records);
+
+    // The single, unpaged total order: one full-pipeline run large enough to
+    // hold everything the pages will visit.
+    let unpaged =
+        search_page(&index, &RegistryQuery { limit: 100, ..query("async") })
+            .await
+            .expect("the unpaged query executes");
+    let total_order: Vec<_> = unpaged.items.iter().map(|s| s.value.id).collect();
+    assert!(total_order.len() >= 8, "corpus must span several pages; got {}", total_order.len());
+
+    // Walk the pages with a small limit and stitch them back together.
+    let page_size = 4;
+    let mut walked: Vec<heart::PackageId> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut after = None;
+    loop {
+        let q = RegistryQuery {
+            limit: page_size,
+            after: after.clone(),
+            ..query("async")
+        };
+        let page = search_page(&index, &q).await.expect("a page query executes");
+        assert!(page.items.len() <= page_size, "a page must respect its limit");
+        for hit in &page.items {
+            assert!(
+                seen.insert(hit.value.id),
+                "id {:?} was returned on two pages — the boundary dropped/duplicated a result",
+                hit.value.id
+            );
+            walked.push(hit.value.id);
+        }
+        match page.next {
+            Some(token) => {
+                let cursor = heart::Cursor::<registry::search::SearchKey>::decode(&token)
+                    .expect("the resume token round-trips");
+                after = Some(cursor);
+            }
+            None => break,
+        }
+        // Guard against a runaway loop if pagination ever fails to terminate.
+        assert!(walked.len() <= total_order.len(), "paging visited more items than exist");
+    }
+
+    // The stitched pages must equal the single total order, prefix-for-prefix:
+    // page N is exactly the slice of the one order after page N-1's last item.
+    assert_eq!(
+        walked,
+        total_order[..walked.len()],
+        "paged traversal must reconstruct the single full-pipeline order with no seam"
+    );
+    // And every matching package was reached exactly once.
+    assert_eq!(walked.len(), total_order.len(), "paging must visit every result once");
+}

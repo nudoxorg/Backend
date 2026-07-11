@@ -12,10 +12,11 @@ use crate::compile::producer::{
 
 /// Java project producer (vendored javadoc doclet → IR).
 ///
-/// Multi-step (materialize → javac → javadoc) is orchestrated inside the existing
-/// oracle path via [`produce`](Producer::produce). `plan`/`decode` return explicit
-/// errors (not hollow empty commands); ForgeRuntime (Phase 4) will stage sequential
-/// sealed commands under one scratch.
+/// The doclet jar is a Buck2-built resource (no runtime javac step); source
+/// collection + `javadoc -doclet` invocation is orchestrated inside the
+/// existing oracle path via [`produce`](Producer::produce). `plan`/`decode`
+/// return explicit errors (not hollow empty commands); ForgeRuntime (Phase 4)
+/// will stage sequential sealed commands under one scratch.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct JavaProducer;
 
@@ -30,9 +31,9 @@ impl Producer for JavaProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(
+	fn plan<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		_input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError> {
 		Err(ProducerError::adaptive("javadoc multi-step"))
@@ -48,17 +49,17 @@ impl Producer for JavaProducer {
 		))
 	}
 
-	fn produce(
+	fn produce<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		input: &SealedInput,
 	) -> Result<ProducerOutput, ProducerError> {
 		self.lower_in_process(ctx, &input.root)
 	}
 
-	fn lower_in_process(
+	fn lower_in_process<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
 		let index = super::package::lower_package(ctx, root).map_err(ProducerError::lower)?;

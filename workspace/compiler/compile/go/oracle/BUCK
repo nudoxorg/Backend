@@ -1,0 +1,10 @@
+prelude = native
+
+prelude.go_binary(
+    name = "oracle",
+    srcs = glob(["*.go"]),
+    visibility = ["//workspace/compiler/..."],
+    deps = [
+        "//build/third-party/go:golang.org/x/tools/go/packages",
+    ],
+)

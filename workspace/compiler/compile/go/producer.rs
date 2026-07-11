@@ -30,26 +30,22 @@ impl Producer for GoProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(
+	fn plan<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError> {
 		let module = package::discover_module(&input.root).map_err(ProducerError::plan)?;
-		let oracle_dir = package::materialize_oracle().map_err(ProducerError::plan)?;
+		let bin = package::oracle_binary().map_err(ProducerError::plan)?;
 		let target = module.root.canonicalize().map_err(ProducerError::plan)?;
 
-		let cmd = IsolatedCommand::new("go", ProducerProfile::Go)
-			.arg("run")
-			.arg(".")
+		let cmd = IsolatedCommand::new(&bin, ProducerProfile::Go)
 			.arg(&target)
-			.cwd(&oracle_dir)
 			.env("GOWORK", "off")
 			.env("GOFLAGS", "-mod=mod")
 			.env("GOPROXY", "off")
-			.ro(&oracle_dir)
+			.ro(&bin)
 			.ro(&target)
-			.rw(&oracle_dir)
 			.rw(input.budget.fs.scratch_path())
 			.rw(std::env::temp_dir());
 
@@ -76,9 +72,9 @@ impl Producer for GoProducer {
 
 	/// Keep the historical one-shot path available for call sites / tests that
 	/// don't go through plan→execute (still real lowering, not a stub).
-	fn lower_in_process(
+	fn lower_in_process<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
 		let index = super::lower_package(ctx, root).map_err(ProducerError::lower)?;

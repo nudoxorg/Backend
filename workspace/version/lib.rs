@@ -32,20 +32,85 @@ pub struct TagContext<'a> {
     pub subdir: &'a str,
 }
 
+/// An ecosystem-supplied *constraint predicate* over versions.
+///
+/// This is the general "does version `v` satisfy the request?" test, factored
+/// out of the request enum so that every ecosystem's range grammar —
+/// semver `VersionReq`, PEP 440 `VersionSpecifiers`, Go/Java numeric prefixes —
+/// becomes a single case of the ONE [`VersionRequest`]: `Constraint(c)`.
+///
+/// # Why a trait, not `Box<dyn Fn(&V) -> bool>`
+///
+/// A boxed closure would collapse the three range grammars into one type, but
+/// at the cost of `Clone`, `PartialEq`, `Eq`, and `Serialize` on the request —
+/// which real call sites depend on (Go/Java tests `assert_eq!`/`matches!` on
+/// request values; `registry::resolve::VersionRequest` is `Serialize`). By
+/// making the constraint a *typed* associated parameter `C`, the request derives
+/// `Clone`/`Eq`/`Serialize` exactly when `C` does. Concrete constraints
+/// (`semver::VersionReq`, `uv_pep440::VersionSpecifiers`, a plain numeric
+/// `Vec<u64>` prefix) are all `Clone + PartialEq`, so nothing is lost.
+///
+/// The trade-off is that a request that could carry *any* of several constraint
+/// kinds must name a sum type as its `C` (see `registry::resolve`'s
+/// `RangeConstraint`); a request that only ever carries one kind (Go, Java,
+/// Python) names that concrete kind directly and keeps `#[derive(Eq)]`.
+pub trait Constraint<V> {
+    /// Whether `v` satisfies this constraint.
+    fn matches(&self, v: &V) -> bool;
+}
+
+/// The trivial constraint that admits nothing — the default `C` for requests
+/// that never use the `Constraint` case (so the two-case `Latest`/`Exact`
+/// requests need not invent a constraint type). It can never be *constructed*
+/// as an inhabited value, so its `matches` is unreachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoConstraint {}
+
+impl<V> Constraint<V> for NoConstraint {
+    fn matches(&self, _v: &V) -> bool {
+        match *self {}
+    }
+}
+
+/// A numeric-prefix constraint (`[1, 4]` matches every version whose leading
+/// numeric segments are `1.4.*`). The shared, ecosystem-neutral form of the
+/// Go/Java `Prefix` request; matching is delegated to the grammar's
+/// [`VersionGrammar::prefix_matches`], so a bare `PrefixConstraint` on its own
+/// (via [`Constraint::matches`]) is a no-op — always route it through a grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefixConstraint(pub Vec<u64>);
+
+impl<V> Constraint<V> for PrefixConstraint {
+    /// A prefix cannot be evaluated without the grammar's `numeric_prefix`, so
+    /// the standalone predicate is intentionally inert. The grammar's
+    /// `matches_request` default special-cases prefixes and never calls this.
+    fn matches(&self, _v: &V) -> bool {
+        false
+    }
+}
+
 /// A version request against an ecosystem's tag set.
 ///
-/// The shape is drawn from Go's `VersionRequest` — the cleanest of the four —
-/// with the version type made generic so each ecosystem supplies its own.
+/// The shape unifies all four producers plus the registry: `Latest` and `Exact`
+/// keep their distinct *selection* semantics (newest-preferred / exact pin),
+/// while every range grammar — semver, PEP 440, Go/Java numeric prefixes —
+/// collapses into the single `Constraint(c)` case carrying an ecosystem-supplied
+/// [`Constraint`] predicate.
 ///
 /// * `V` must be `Ord` so the selection loop can pick the greatest match.
+/// * `C` is the constraint type; it defaults to [`NoConstraint`] so requests
+///   that only ever use `Latest`/`Exact` need not name one. The request derives
+///   `Clone`/`PartialEq`/`Eq` exactly when `V` and `C` do.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VersionRequest<V> {
+pub enum VersionRequest<V, C = NoConstraint> {
     /// The newest version in the tag set (stable preferred).
     Latest,
     /// An exact version pin: match only this precise version.
     Exact(V),
-    /// A prefix range: the newest version whose leading numeric segments match.
-    Prefix(Vec<u64>),
+    /// A general constraint/predicate: the newest version satisfying `C`
+    /// (stable preferred). Semver ranges, PEP 440 specifiers, and Go/Java
+    /// numeric prefixes are all instances of this one case.
+    Constraint(C),
 }
 
 /// An ecosystem's version grammar — how to turn a raw git tag string into a
@@ -58,12 +123,22 @@ pub enum VersionRequest<V> {
 ///   The returned `(V, String)` pair is `(parsed_version, original_tag_string)`.
 /// * `is_prerelease` must be consistent with `V: Ord` — a stable version must
 ///   compare greater than all prereleases of the same release series.
-/// * `matches_request` has a default implementation that works for grammars
-///   where `Prefix` means "all leading numeric segments equal after zero-padding".
-///   Override it if your grammar needs different prefix semantics.
+/// * `matches_request` has a default implementation that dispatches `Latest`,
+///   `Exact`, and `Constraint` (delegating to the constraint's own predicate).
+///   Grammars whose constraint needs the grammar itself to evaluate — notably
+///   [`PrefixConstraint`], or Go-style major-discipline filtering — override it.
 pub trait VersionGrammar {
     /// The parsed version type for this ecosystem.
     type V: Ord + Clone;
+
+    /// The constraint type this grammar's `Constraint` requests carry.
+    ///
+    /// Fixing the constraint as an associated type (rather than a method-level
+    /// generic) lets `matches_request` match *concretely* on the constraint —
+    /// e.g. a [`PrefixConstraint`] grammar can reach its own
+    /// [`numeric_prefix`](Self::numeric_prefix). Grammars that never use the
+    /// `Constraint` case set this to [`NoConstraint`].
+    type C: Constraint<Self::V>;
 
     /// Try to parse `raw_tag` as a version belonging to the module identified
     /// by `ctx`. Return `None` to skip the tag entirely.
@@ -75,13 +150,21 @@ pub trait VersionGrammar {
     /// Whether `v` satisfies `request` given the filtering context `ctx`.
     ///
     /// The default implementation handles `Latest` (always), `Exact` (equality),
-    /// and `Prefix` (leading numeric segments match with zero-padding).  Grammars
-    /// that need Go-style major-discipline filtering should override this.
-    fn matches_request(&self, v: &Self::V, request: &VersionRequest<Self::V>, _ctx: &TagContext<'_>) -> bool {
+    /// and `Constraint` (delegating to the ecosystem predicate's
+    /// [`Constraint::matches`]).  Grammars whose constraint is [`PrefixConstraint`]
+    /// — or that need Go-style major-discipline filtering — override this; a bare
+    /// `PrefixConstraint::matches` is inert because prefix comparison needs the
+    /// grammar's [`numeric_prefix`](Self::numeric_prefix).
+    fn matches_request(
+        &self,
+        v: &Self::V,
+        request: &VersionRequest<Self::V, Self::C>,
+        _ctx: &TagContext<'_>,
+    ) -> bool {
         match request {
             VersionRequest::Latest => true,
             VersionRequest::Exact(want) => v == want,
-            VersionRequest::Prefix(prefix) => self.prefix_matches(v, prefix),
+            VersionRequest::Constraint(constraint) => constraint.matches(v),
         }
     }
 
@@ -118,7 +201,7 @@ pub trait VersionGrammar {
 /// callers can check out or reference that exact tag.
 pub fn resolve_from_tags<G>(
     tags: &[impl AsRef<str>],
-    request: &VersionRequest<G::V>,
+    request: &VersionRequest<G::V, G::C>,
     ctx: &TagContext<'_>,
     grammar: &G,
 ) -> Option<String>
@@ -211,6 +294,7 @@ mod tests {
 
     impl VersionGrammar for SimpleGrammar {
         type V = SimpleVer;
+        type C = PrefixConstraint;
 
         fn parse_tag<'a>(&self, raw: &'a str, _ctx: &TagContext<'_>) -> Option<(SimpleVer, &'a str)> {
             let rest = raw.strip_prefix('v').unwrap_or(raw);
@@ -228,6 +312,22 @@ mod tests {
 
         fn is_prerelease(&self, v: &SimpleVer) -> bool {
             v.pre.is_some()
+        }
+
+        // This grammar's constraint case is a numeric prefix, so route it
+        // through `prefix_matches` (which uses `numeric_prefix`) rather than
+        // the inert standalone `PrefixConstraint::matches`.
+        fn matches_request(
+            &self,
+            v: &SimpleVer,
+            request: &VersionRequest<SimpleVer, PrefixConstraint>,
+            _ctx: &TagContext<'_>,
+        ) -> bool {
+            match request {
+                VersionRequest::Latest => true,
+                VersionRequest::Exact(want) => v == want,
+                VersionRequest::Constraint(PrefixConstraint(prefix)) => self.prefix_matches(v, prefix),
+            }
         }
 
         fn numeric_prefix(&self, v: &SimpleVer) -> Vec<u64> {
@@ -284,7 +384,7 @@ mod tests {
     fn prefix_picks_newest_in_range() {
         let t = tags(&["v1.4.2", "v1.4.9", "v1.4.1", "v2.0.0"]);
         let ctx = TagContext::default();
-        let result = resolve_from_tags(&t, &VersionRequest::Prefix(vec![1, 4]), &ctx, &SimpleGrammar);
+        let result = resolve_from_tags(&t, &VersionRequest::Constraint(PrefixConstraint(vec![1, 4])), &ctx, &SimpleGrammar);
         assert_eq!(result, Some("v1.4.9".to_string()));
     }
 
@@ -292,7 +392,7 @@ mod tests {
     fn prefix_stable_beats_prerelease_in_same_prefix() {
         let t = tags(&["v1.4.9-rc1", "v1.4.8"]);
         let ctx = TagContext::default();
-        let result = resolve_from_tags(&t, &VersionRequest::Prefix(vec![1, 4]), &ctx, &SimpleGrammar);
+        let result = resolve_from_tags(&t, &VersionRequest::Constraint(PrefixConstraint(vec![1, 4])), &ctx, &SimpleGrammar);
         // v1.4.8 is stable and should win over v1.4.9-rc1
         assert_eq!(result, Some("v1.4.8".to_string()));
     }

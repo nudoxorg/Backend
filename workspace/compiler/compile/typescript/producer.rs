@@ -28,9 +28,9 @@ impl Producer for TypescriptProducer {
 		ThreatTier::Hostile
 	}
 
-	fn plan(
+	fn plan<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		_input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError> {
 		Ok(ExecPlan::Library(WorkerLang::Typescript))
@@ -48,9 +48,9 @@ impl Producer for TypescriptProducer {
 		})
 	}
 
-	fn lower_in_process(
+	fn lower_in_process<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
 		let package = super::TypescriptPackage {

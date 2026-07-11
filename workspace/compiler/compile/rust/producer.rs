@@ -38,9 +38,9 @@ impl Producer for RustProducer {
 		ThreatTier::Untrusted
 	}
 
-	fn plan(
+	fn plan<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		_input: &SealedInput,
 	) -> Result<ExecPlan, ProducerError> {
 		Err(ProducerError::adaptive("rustdoc multi-crate"))
@@ -56,17 +56,17 @@ impl Producer for RustProducer {
 		))
 	}
 
-	fn produce(
+	fn produce<C: ForgeContext>(
 		&self,
-		ctx: &dyn ForgeContext,
+		ctx: &C,
 		input: &SealedInput,
 	) -> Result<ProducerOutput, ProducerError> {
 		self.lower_in_process(ctx, &input.root)
 	}
 
-	fn lower_in_process(
+	fn lower_in_process<C: ForgeContext>(
 		&self,
-		_ctx: &dyn ForgeContext,
+		_ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
 		// Route through the module entry point so the default rust-analyzer

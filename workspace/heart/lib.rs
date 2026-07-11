@@ -15,13 +15,14 @@ pub mod score;
 pub mod search;
 pub mod sink;
 pub mod symbol;
+pub mod tenant;
 pub mod version;
 
 pub use access::{Federation, Source, SourceId, SourceRole, Sourced};
 pub use health::{assert_probe_future_send, timed as timed_probe, Probe, Probeable};
 pub use connection::{Cold, Connect, Live};
 pub use content::{ContentHash, ContentHasher, Freshness, JobKey};
-pub use cursor::{Advisory, Cursor, CursorError, Enforced, SnapshotPolicy};
+pub use cursor::{Advisory, Cursor, CursorError, Enforced, PolicyTag, SnapshotPolicy};
 pub use ecosystem::{Edition, Language, Toolchain};
 pub use error::{
     BackendKind, ConnectError, ConnectFailure, ErrorDetails, Failure, FailureKind, Phase, ResolutionState,
@@ -36,6 +37,7 @@ pub use score::{Score, Scored};
 pub use search::Page;
 pub use sink::DerivedStore;
 pub use symbol::{Name, Symbol, SymbolKind};
+pub use tenant::{OwnerKind, Visibility};
 pub use version::Versioned;
 
 /// A globally-unique identifier.

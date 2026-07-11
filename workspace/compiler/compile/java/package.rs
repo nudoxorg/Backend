@@ -69,8 +69,8 @@ pub struct JavaProject {
 
 /// Discover, extract, and lower the Java project at (or above) `root` into
 /// a single [`Index`] — the producer's public entry point.
-pub fn lower_package(
-	ctx: &dyn crate::compile::producer::ForgeContext,
+pub fn lower_package<C: crate::compile::producer::ForgeContext>(
+	ctx: &C,
 	root: &Path,
 ) -> Result<Index, JavaError> {
 	let project = discover_project(root)?;

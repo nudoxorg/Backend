@@ -56,8 +56,8 @@ pub enum JavaPackageError {
 }
 
 /// Sub-enum for everything that happens inside `oracle::extract` /
-/// `compile_oracle` / `run_doclet` (materialize, javac the doclet,
-/// javadoc -doclet, argfile, json out).
+/// `run_doclet` (resolving the prebuilt doclet jar, javadoc -doclet,
+/// argfile, json out).
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum OracleError {
@@ -77,48 +77,13 @@ pub enum OracleError {
     Extraction(#[from] ExtractionError),
 }
 
-/// Failures while materializing + `javac` compiling the embedded
-/// nudox.oracle.Extractor + Json (from the vendored Java doclet sources).
+/// Failures while resolving the Buck2-built doclet jar
+/// (`//workspace/compiler/compile/java/oracle:extractor`).
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DocletError {
-    #[error("failed creating classes directory {path:?}")]
-    CreateClassesDirFailed {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("spawning `javac` failed — is a JDK (17+, ideally 23+) on PATH? e.g. `nix shell nixpkgs#jdk`")]
-    SpawnJavacFailed {
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("compiling the javadoc doclet failed ({status}): {stderr}")]
-    DocletCompileFailed {
-        status: String,
-        stderr: String,
-        stdout: Option<String>,
-    },
-
-    #[error("failed writing .compiled stamp {path:?}")]
-    WriteStampFailed {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed writing oracle source file {path:?}")]
-    MaterializeSourceFailed {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed creating parent dir for oracle source {path:?}")]
-    CreateMaterializeParentFailed {
-        path: PathBuf,
+    #[error("resolving the buck2-built doclet jar failed — was this binary built by buck2?")]
+    ResourceNotFound {
         #[source]
         source: std::io::Error,
     },

@@ -35,25 +35,16 @@ pub enum GoError {
         source: std::io::Error,
     },
 
-    /// `fs::create_dir_all` failed for the content-addressed oracle dir.
-    #[error("failed to create oracle dir {dir}: {source}")]
-    MaterializeOracleDir {
-        dir:    PathBuf,
+    /// Resolving the Buck2-built oracle binary shipped as a resource
+    /// alongside this executable failed.
+    #[error("resolving the buck2-built go oracle failed — was this binary built by buck2?: {source}")]
+    ResourceNotFound {
         #[source]
         source: std::io::Error,
     },
 
-    /// `fs::write` failed while emitting one of the embedded oracle sources.
-    #[error("failed to write oracle source {path}: {source}")]
-    WriteOracleSource {
-        path:   PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// `Command::new("go").output()` (the spawn) failed — typically no `go`
-    /// binary on PATH.
-    #[error("spawning `go run` — is a Go toolchain on PATH?: {source}")]
+    /// Spawning the prebuilt oracle binary failed.
+    #[error("spawning the go oracle failed: {source}")]
     SpawnOracle {
         #[source]
         source: std::io::Error,

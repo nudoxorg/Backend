@@ -24,8 +24,33 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use version::{TagContext, VersionGrammar, VersionRequest as SharedRequest, resolve_from_tags};
+use version::{Constraint, TagContext, VersionGrammar, VersionRequest, resolve_from_tags};
 use uv_pep440::{Version, VersionSpecifiers};
+
+/// PEP 440 specifiers (`>=1.2,<2`) as the shared [`Constraint`] predicate:
+/// a version matches when the specifier set `contains` it. This is what lets
+/// Python carry its constraint as `VersionRequest::Constraint(..)` on the ONE
+/// shared vocabulary instead of a side-channel field plus an always-`Latest`
+/// request.
+///
+/// Both `Constraint` (from the `version` crate) and `VersionSpecifiers` (from
+/// `uv_pep440`) are foreign to this crate, so the impl must go through a local
+/// newtype to satisfy the orphan rules — mirroring Go's `GoPrefix` and Java's
+/// `PrefixConstraint`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pep440Constraint(pub VersionSpecifiers);
+
+impl Constraint<Version> for Pep440Constraint {
+    fn matches(&self, v: &Version) -> bool {
+        self.0.contains(v)
+    }
+}
+
+/// The shared [`version::VersionRequest`] specialised to a PEP 440 [`Version`]
+/// carrying [`VersionSpecifiers`] in its constraint case. Python only ever
+/// resolves with a specifier set (never a bare `Exact` pin here), so its use
+/// is `Constraint(specifiers)`.
+pub type PythonVersionRequest = VersionRequest<Version, Pep440Constraint>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PythonTraversalError {
@@ -206,15 +231,15 @@ pub fn select_best_release<'a>(
 /// Grammar adapter that makes [`resolve_from_tags`] work for Python/PEP 440.
 ///
 /// `parse_tag` strips a single leading `v`/`V` and parses the remainder as a
-/// PEP 440 version. `matches_request` applies the caller's `VersionSpecifiers`
-/// regardless of the shared `VersionRequest` (always `Latest` at the call-site).
-struct PythonTagGrammar<'a> {
-    /// The PEP 440 version specifiers to satisfy (e.g. `>=1.2,<2`).
-    req: &'a VersionSpecifiers,
-}
+/// PEP 440 version. The `Constraint(VersionSpecifiers)` case of the shared
+/// request supplies the real filtering (via [`VersionSpecifiers::contains`]),
+/// so the default `matches_request` — which defers to the constraint's own
+/// [`Constraint::matches`] — is exactly right and needs no override.
+struct PythonTagGrammar;
 
-impl VersionGrammar for PythonTagGrammar<'_> {
+impl VersionGrammar for PythonTagGrammar {
     type V = Version;
+    type C = Pep440Constraint;
 
     fn parse_tag<'t>(&self, raw_tag: &'t str, _ctx: &TagContext<'_>) -> Option<(Version, &'t str)> {
         let trimmed = raw_tag.strip_prefix(['v', 'V']).unwrap_or(raw_tag);
@@ -224,18 +249,6 @@ impl VersionGrammar for PythonTagGrammar<'_> {
 
     fn is_prerelease(&self, v: &Version) -> bool {
         v.any_prerelease()
-    }
-
-    /// Apply the PEP 440 specifiers stored on the grammar. The shared
-    /// `VersionRequest` is always `Latest` at the call-site and is ignored;
-    /// the specifiers encode the real constraint.
-    fn matches_request(
-        &self,
-        v: &Version,
-        _shared_req: &SharedRequest<Version>,
-        _ctx: &TagContext<'_>,
-    ) -> bool {
-        self.req.contains(v)
     }
 }
 
@@ -250,11 +263,11 @@ pub fn resolve_version_from_tags<S: AsRef<str>>(
     tags: &[S],
     req: &VersionSpecifiers,
 ) -> Option<String> {
-    let grammar = PythonTagGrammar { req };
     let ctx = TagContext::default();
-    // Pass `SharedRequest::Latest` — all real filtering lives in
-    // `PythonTagGrammar::matches_request` via the stored `VersionSpecifiers`.
-    resolve_from_tags(tags, &SharedRequest::Latest, &ctx, &grammar)
+    // Carry the PEP 440 specifiers as the shared `Constraint` case — no more
+    // side-channel field plus always-`Latest` bypass.
+    let request: PythonVersionRequest = VersionRequest::Constraint(Pep440Constraint(req.clone()));
+    resolve_from_tags(tags, &request, &ctx, &PythonTagGrammar)
 }
 
 // ---------------------------------------------------------------------------

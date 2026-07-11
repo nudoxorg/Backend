@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use bytes::Bytes;
 use heart::ContentHash;
 
-use crate::{Cas, CasError};
+use crate::{Cas, CasError, EvictableCas};
 
 /// Mutex-backed map. No durability — unit tests and ephemeral L1 fill.
 #[derive(Default)]
@@ -42,7 +42,9 @@ impl Cas for MemoryCas {
 			},
 		}
 	}
+}
 
+impl EvictableCas for MemoryCas {
 	async fn invalidate(&self, key: ContentHash) -> Result<(), CasError> {
 		let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 		guard.remove(&key);

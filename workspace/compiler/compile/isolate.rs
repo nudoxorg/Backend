@@ -162,8 +162,8 @@ impl IsolatedCommand {
 
 /// Run an isolated command through the context cage; on success return an
 /// [`StdOutput`]-shaped capture.
-pub fn run_isolated(
-	ctx: &dyn ForgeContext,
+pub fn run_isolated<C: ForgeContext>(
+	ctx: &C,
 	cmd: IsolatedCommand,
 ) -> Result<StdOutput, IsolatedFailure> {
 	let command_label = format!(
@@ -237,7 +237,7 @@ fn nonempty_utf8(bytes: &[u8]) -> Option<String> {
 /// The sealer boundary: reads no policy env. `PATH` is a fixed hermetic set;
 /// toolchain bindings come from `ctx.toolchains()`; limits from
 /// `ctx.overrides()`.
-pub fn seal(ctx: &dyn ForgeContext, cmd: IsolatedCommand) -> SealedCommand {
+pub fn seal<C: ForgeContext>(ctx: &C, cmd: IsolatedCommand) -> SealedCommand {
 	let sealer = Sealer::new();
 	let toolchains = ctx.toolchains();
 

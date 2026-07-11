@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 use heart::ContentHash;
 
-use crate::{Cas, CasError};
+use crate::{Cas, CasError, EvictableCas};
 
 /// Directory of blake3-named files.
 #[derive(Debug, Clone)]
@@ -145,7 +145,9 @@ impl Cas for DiskCas {
 	async fn put_keyed(&self, key: ContentHash, bytes: Bytes) -> Result<bool, CasError> {
 		self.put_keyed_sync(key, bytes)
 	}
+}
 
+impl EvictableCas for DiskCas {
 	async fn invalidate(&self, key: ContentHash) -> Result<(), CasError> {
 		self.invalidate_sync(key)
 	}

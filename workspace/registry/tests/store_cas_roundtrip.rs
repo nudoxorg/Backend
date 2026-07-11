@@ -115,22 +115,38 @@ async fn list_cas_enumerates_stored_sections() {
     assert_eq!(listed, expected, "list_cas must return exactly the two stored section hashes");
 }
 
-/// `invalidate` is a no-op (documented behaviour): the key is still readable
-/// after calling invalidate, because the object store has no per-key delete.
+/// `StoreCas` is not `EvictableCas`: it holds immutable content-addressed data
+/// with no per-key delete. Wired as the L3 of a `Tiered`, an `invalidate` drops
+/// only the local L1/L2 tiers — the store keeps serving the value on the next
+/// read-through. This is the eviction contract that replaced the old no-op
+/// `StoreCas::invalidate`.
 #[tokio::test]
-async fn store_cas_invalidate_is_noop() {
-    let cas = memory_store_cas().await;
+async fn store_cas_l3_survives_tiered_eviction() {
+    use cas::{EvictableCas, Tiered};
 
-    let payload = Bytes::from_static(b"invalidate-noop");
-    let key = cas.put(payload.clone()).await.expect("put succeeds");
+    let store_cas = memory_store_cas().await;
 
-    // Invalidate should not error and should not remove the entry.
-    cas.invalidate(key).await.expect("invalidate must not error");
+    let payload = Bytes::from_static(b"immutable-l3");
+    let key = store_cas.put(payload.clone()).await.expect("seed L3");
 
-    let still_there = cas.get(key).await.expect("get after invalidate succeeds");
+    // Memory-only L1/L2 over the StoreCas L3.
+    let tiered = Tiered::with_l3(16, None, store_cas);
+
+    // Cold read promotes L3 → L1.
     assert_eq!(
-        still_there.as_deref(),
+        tiered.get(key).await.expect("read-through").as_deref(),
         Some(payload.as_ref()),
-        "invalidate is documented as a no-op; data must remain readable"
+        "L3 read-through must serve the seeded value"
+    );
+
+    // Evicting the tiered stack clears L1 only (no L2 here) — never L3.
+    tiered.invalidate(key).await.expect("tiered invalidate clears local tiers");
+
+    // The value is still served: eviction did not (and cannot) reach the
+    // immutable object-store L3.
+    assert_eq!(
+        tiered.get(key).await.expect("read after evict").as_deref(),
+        Some(payload.as_ref()),
+        "StoreCas L3 must survive eviction of the local tiers"
     );
 }
