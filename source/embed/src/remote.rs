@@ -19,14 +19,14 @@
 //! ```
 
 use async_trait::async_trait;
-use nudox_core::{Embedder, EmbedderError, EmbeddingPurpose, ModelType, Result, SourceChunk};
+use nudox_core::{Embedder, EmbedderError, Embedding, EmbeddingPurpose, ModelId, ModelType, Result, SourceChunk};
 use url::Url;
 
 /// Embedder that calls an OpenAI-compatible `/v1/embeddings` endpoint.
 pub struct RemoteEmbedder {
 	client:     reqwest::Client,
 	endpoint:   Url,
-	model_id:   String,
+	model_id:   ModelId,
 	api_key:    Option<String>,
 	model_type: ModelType,
 }
@@ -34,14 +34,14 @@ pub struct RemoteEmbedder {
 /// Builder for [`RemoteEmbedder`].
 pub struct RemoteEmbedderBuilder {
 	endpoint:   Url,
-	model_id:   String,
+	model_id:   ModelId,
 	api_key:    Option<String>,
 	model_type: ModelType,
 }
 
 impl RemoteEmbedderBuilder {
 	fn new(endpoint: Url, model_id: impl Into<String>) -> Self {
-		Self { endpoint, model_id: model_id.into(), api_key: None, model_type: ModelType::SelfHosted }
+		Self { endpoint, model_id: ModelId::new(model_id), api_key: None, model_type: ModelType::SelfHosted }
 	}
 
 	/// Set a Bearer API key sent in the `Authorization` header.
@@ -87,16 +87,16 @@ fn input_text<'a>(chunk: &'a SourceChunk, _purpose: &EmbeddingPurpose) -> &'a st
 
 #[async_trait]
 impl Embedder for RemoteEmbedder {
-	fn model_id(&self) -> &str { &self.model_id }
+	fn model_id(&self) -> &ModelId { &self.model_id }
 
 	fn model_type(&self) -> ModelType { self.model_type.clone() }
 
 	#[tracing::instrument(skip(self, chunk), fields(model = %self.model_id, purpose = ?purpose))]
-	async fn embed(&self, chunk: &SourceChunk, purpose: EmbeddingPurpose) -> Result<Vec<f32>> {
+	async fn embed(&self, chunk: &SourceChunk, purpose: EmbeddingPurpose) -> Result<Embedding> {
 		let input = input_text(chunk, &purpose);
 
 		let body = serde_json::json!({
-				"model": self.model_id,
+				"model": self.model_id.as_str(),
 				"input": input,
 		});
 
@@ -116,14 +116,22 @@ impl Embedder for RemoteEmbedder {
 		let json: serde_json::Value =
 			resp.json().await.map_err(|e| EmbedderError::Decode(Box::new(e)))?;
 
-		let vector = json["data"][0]["embedding"]
+		let raw = json["data"][0]["embedding"]
 			.as_array()
-			.ok_or(EmbedderError::InvalidResponse { field: "data[0].embedding" })?
-			.iter()
-			.map(|v| v.as_f64().unwrap_or(0.0) as f32)
-			.collect();
+			.ok_or(EmbedderError::InvalidResponse { field: "data[0].embedding" })?;
 
-		Ok(vector)
+		let mut floats = Vec::with_capacity(raw.len());
+		for (i, v) in raw.iter().enumerate() {
+			let f = v.as_f64().ok_or_else(|| EmbedderError::InvalidResponse {
+				field: "data[0].embedding[i] is not a number",
+			})? as f32;
+			let _ = i;
+			floats.push(f);
+		}
+
+		Embedding::new(floats).ok_or_else(|| EmbedderError::InvalidResponse {
+			field: "data[0].embedding is empty",
+		}.into())
 	}
 }
 
@@ -141,7 +149,7 @@ mod tests {
 		.model_type(ModelType::SelfHosted)
 		.build();
 
-		assert_eq!(e.model_id(), "nomic-embed-text");
+		assert_eq!(e.model_id().as_str(), "nomic-embed-text");
 		assert_eq!(e.model_type(), ModelType::SelfHosted);
 	}
 }
