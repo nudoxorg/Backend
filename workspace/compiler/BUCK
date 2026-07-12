@@ -86,9 +86,6 @@ rust_crate(
         crate("pyrefly_util"),
         crate("ruff_python_ast"),
         crate("tokio"),
-        crate("deno_doc"),
-        crate("deno_graph"),
-        crate("deno_ast", features = ["utils", "transforms"]),
         # OXC TypeScript producer (OXC-PLAN.md); coexists with deno stack until cutover.
         crate("oxc_parser"),
         crate("oxc_ast"),

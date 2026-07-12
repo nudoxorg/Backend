@@ -1,4 +1,4 @@
-//! TypeScript [`Producer`](crate::compile::producer::Producer) — library form (deno_doc).
+//! TypeScript [`Producer`](crate::compile::producer::Producer) — library form (OXC).
 
 use std::path::Path;
 
@@ -10,7 +10,7 @@ use crate::compile::producer::{
 	ThreatTier, decode_index_json,
 };
 
-/// TypeScript package producer (deno_doc via worker pool / in-process).
+/// TypeScript package producer (OXC via worker pool / in-process).
 #[derive(Debug, Clone)]
 pub struct TypescriptProducer {
 	/// Package name (from package.json / coordinates).
@@ -18,7 +18,7 @@ pub struct TypescriptProducer {
 }
 
 impl Producer for TypescriptProducer {
-	const ID: ProducerId = ProducerId("deno-doc/1");
+	const ID: ProducerId = ProducerId("oxc/1");
 
 	fn language(&self) -> Language {
 		Language::Typescript
@@ -53,10 +53,7 @@ impl Producer for TypescriptProducer {
 		_ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
-		let package = super::TypescriptPackage {
-			name: self.name.clone(),
-		};
-		let collected = package.generate_ir(root).map_err(ProducerError::lower)?;
-		Ok(ProducerOutput::from_index(collected.index().into_index()))
+		let index = super::oxc::generate_ir(root, &self.name).map_err(ProducerError::lower)?;
+		Ok(ProducerOutput::from_index(index))
 	}
 }
