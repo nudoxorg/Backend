@@ -2,13 +2,22 @@
 //! vendored `snix-eval`, then hand the resulting `Value` tree to the `walker`
 //! for traversal + fusion against the static table.
 //!
-//! Hermeticity is stacked:
+//! # Hermeticity stack (design §7.4)
 //!
-//! 1. [`DocsIO`] — whitelist FS; `get_env` always `None` (seals `builtins.getEnv`).
-//! 2. [`scrub_host_secrets`] — strips credential env vars for the eval window.
-//! 3. Optional worker subprocess (`sandbox::worker`) for crash/OOM isolation.
+//! 1. **Pure builtins only** — never `enable_impure` / `impure_builtins()`.
+//!    That omits `builtins.getEnv` and `builtins.currentTime` entirely
+//!    (`currentTime` is *not* on `EvalIO`; it is injected as a wall-clock
+//!    constant by `impure_builtins()`). Sealing by omission is stronger than
+//!    scrubbing.
+//! 2. [`DocsIO`] — whitelist FS for `import` / path coercion; `get_env` is
+//!    sealed closed so a future impure add cannot leak host env.
+//! 3. **Seal-time env projection** — worker children start with `env_clear`
+//!    (pool parent); host secrets never enter the guest budget. Process-global
+//!    `remove_var` scrubbing was deleted (raced concurrent jobs).
+//! 4. Optional worker subprocess (`sandbox::worker`) for crash/OOM isolation.
 //!
 //! `import` stays enabled (flakes need it); the IO boundary is the cage.
+//! Do **not** wire snix-glue / `TvixStoreIO` (reqwest fetchers).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -28,130 +37,148 @@ use super::{context, walker};
 const EVAL_BUDGET: Duration = Duration::from_secs(120);
 
 /// Host env keys that must never be visible to untrusted Nix (design §7.4).
-const SECRET_ENV_PREFIXES: &[&str] = &[
-	"AWS_",
-	"GITHUB_TOKEN",
-	"GH_TOKEN",
-	"CACHIX_",
-	"NIX_PATH",
-	"SSH_",
-	"NPM_TOKEN",
-	"CARGO_REGISTRY_TOKEN",
-	"NUDOX_",
-];
+///
+/// Shared with [`crate::compile::producer::SECRET_ENV_PREFIXES`] for seal audits.
+pub use crate::compile::producer::SECRET_ENV_PREFIXES;
+
+/// Hermetic capability marker for the Nix evaluator.
+///
+/// A [`NixCaps<Hermetic>`] is the *only* capability state this module can name:
+/// there is no `Impure` state and no `enable_impure` method, so impure builtins
+/// (`getEnv`, live `currentTime`, `TvixStoreIO` fetchers) are unreachable at
+/// compile time — the type mirrors the runtime "sealed by omission" discipline
+/// (design §7.4) in the type system.
+///
+/// See [`NixCaps::hermetic`]. A negative guarantee is proven by a `compile_fail`
+/// doctest on that method.
+#[derive(Debug, Clone, Copy)]
+pub struct Hermetic;
+
+/// Capability builder for a snix [`Evaluation`], parameterized by purity state.
+///
+/// The state parameter is currently only ever [`Hermetic`]; the type is written
+/// so that adding impurity would require adding a *new* state and a method on it
+/// — it can never be reached from the hermetic state.
+#[derive(Debug, Clone, Copy)]
+pub struct NixCaps<S> {
+	import: bool,
+	lazy: bool,
+	_state: std::marker::PhantomData<S>,
+}
+
+impl NixCaps<Hermetic> {
+	/// The hermetic capability set: `import` on (flakes need it), lazy mode, and
+	/// — by construction — no impure builtins.
+	///
+	/// There is deliberately **no** `enable_impure` (or any impurity method) on
+	/// `NixCaps<Hermetic>`. Attempting to call one does not compile:
+	///
+	/// ```compile_fail
+	/// use compiler::compile::nix::eval::NixCaps;
+	/// let caps = NixCaps::hermetic();
+	/// caps.enable_impure(); // no such method on NixCaps<Hermetic>
+	/// ```
+	pub const fn hermetic() -> Self {
+		Self {
+			import: true,
+			lazy: true,
+			_state: std::marker::PhantomData,
+		}
+	}
+
+	/// Toggle `import` (flake structure needs it; on by default).
+	pub const fn import(mut self, on: bool) -> Self {
+		self.import = on;
+		self
+	}
+
+	/// Build the snix [`Evaluation`] over `io` under these hermetic caps.
+	///
+	/// The evaluation registers **pure builtins only**; because the caps type
+	/// cannot express impurity, no code path here can call `enable_impure`.
+	pub fn build(self, io: Rc<dyn EvalIO>) -> Evaluation<'static, 'static, 'static, Rc<dyn EvalIO>> {
+		let mut b = Evaluation::builder(io).mode(if self.lazy {
+			EvalMode::Lazy
+		} else {
+			EvalMode::Strict
+		});
+		if self.import {
+			b = b.enable_import();
+		}
+		b.build()
+	}
+}
+
+/// Build a hermetic snix [`Evaluation`] over `io`.
+///
+/// Invariants encoded here (not at call sites):
+/// - pure builtins only (no `getEnv`, no live `currentTime`) — enforced by the
+///   [`NixCaps<Hermetic>`] type, which has no way to enable impurity
+/// - `import` on for flake structure
+/// - `NIX_PATH` never inherited (`nix_path(None)` is the builder default)
+/// - lazy mode so nixpkgs-scale flakes are not forced wholesale
+pub fn hermetic_evaluation(
+	io: Rc<dyn EvalIO>,
+) -> Evaluation<'static, 'static, 'static, Rc<dyn EvalIO>> {
+	// Observer/env lifetimes are unused (None); pin them to 'static so this
+	// helper can return an owned Evaluation without a caller-provided borrow.
+	NixCaps::hermetic().build(io)
+}
 
 /// Evaluate the flake at `root` and lower its output tree, or return `None`
 /// when there is nothing evaluable (no `flake.nix`, or evaluation degrades to
 /// empty). Errors are reserved for hard failures the caller logs and recovers
 /// from — per-node eval failures degrade to documented gaps inside `walker`.
 pub fn produce(
-    root: &Path,
-    table: &StaticTable,
-    meta: &FlakeMeta,
+	root: &Path,
+	table: &StaticTable,
+	meta: &FlakeMeta,
 ) -> Result<Option<context::Surface>> {
-    let flake_nix = root.join("flake.nix");
-    if !flake_nix.exists() {
-        return Ok(None);
-    }
-
-    // Defense-in-depth: scrub host secrets before any snix code runs. DocsIO
-    // already seals get_env, but builtins that bypass EvalIO must not observe
-    // AWS_*/GITHUB_TOKEN/etc. We restore nothing — eval is one-shot per package
-    // thread and must not re-export ambient credentials.
-    let _secret_guard = scrub_host_secrets();
-
-    // The whitelist filesystem: the flake tree plus a sibling `inputs/` dir the
-    // traversal layer materialized (both read-only, no absolute-path escape).
-    let inputs_dir = root.parent().map(|p| p.join("inputs"));
-    // Unsized coercion `Rc<DocsIO>` → `Rc<dyn EvalIO>` happens at the binding.
-    let io: Rc<dyn EvalIO> = Rc::new(DocsIO::new(root.to_path_buf(), inputs_dir));
-
-    let deadline = Instant::now() + EVAL_BUDGET;
-    let code = flake_outputs_shim(root, &discover_input_names(root));
-
-    // Lazy mode: forcing all of nixpkgs would be catastrophic; the walker
-    // forces selectively as it descends. import stays on (flake structure);
-    // hermeticity is DocsIO + env scrub, not pure-mode DummyIO (which would
-    // break path imports of flake.nix itself).
-    let evaluation = Evaluation::builder(io.clone())
-        .mode(EvalMode::Lazy)
-        .enable_import()
-        .build();
-
-    let source_map = evaluation.source_map();
-    let result = evaluation.evaluate(&code, Some(flake_nix.clone()));
-
-    for warning in &result.warnings {
-        tracing::debug!(?warning, "nix eval warning");
-    }
-    if !result.errors.is_empty() {
-        // A top-level failure (e.g. the shim itself broke) — degrade to
-        // static-only rather than aborting the package.
-        tracing::warn!(errors = result.errors.len(), "nix eval produced errors; static-only");
-        return Ok(None);
-    }
-
-    let Some(value) = result.value else {
-        return Ok(None);
-    };
-
-    if Instant::now() > deadline {
-        return Err(NixError::EvalTimeout { seconds: EVAL_BUDGET.as_secs() });
-    }
-
-    // Hand the forced-lazily output tree to the walker for traversal + fusion.
-    let source = source_map;
-    let surface = walker::walk(&value, &source, table, meta, deadline);
-    Ok(Some(surface))
-}
-
-/// Remove secret-bearing env keys for the duration of eval.
-///
-/// Returns a guard that restores the previous values on drop so concurrent
-/// host code outside this thread is less surprised (best-effort; env is
-/// process-global).
-fn scrub_host_secrets() -> SecretEnvGuard {
-	let mut removed = Vec::new();
-	// Collect keys first — env::vars holds a lock on some platforms.
-	let keys: Vec<String> = std::env::vars()
-		.map(|(k, _)| k)
-		.filter(|k| {
-			SECRET_ENV_PREFIXES.iter().any(|p| {
-				if p.ends_with('_') {
-					k.starts_with(p)
-				} else {
-					k == *p || k.starts_with(&format!("{p}_"))
-				}
-			})
-		})
-		.collect();
-	for key in keys {
-		if let Ok(val) = std::env::var(&key) {
-			removed.push((key.clone(), val));
-			// SAFETY: eval is scheduled on a dedicated per-package thread;
-			// concurrent getenv during scrub is accepted as a race window of
-			// microseconds, not a security boundary (DocsIO seals get_env).
-			unsafe {
-				std::env::remove_var(&key);
-			}
-		}
+	let flake_nix = root.join("flake.nix");
+	if !flake_nix.exists() {
+		return Ok(None);
 	}
-	SecretEnvGuard { removed }
-}
 
-struct SecretEnvGuard {
-	removed: Vec<(String, String)>,
-}
+	// Hermeticity: pure builtins omit getEnv/currentTime; DocsIO seals get_env.
+	// Worker path: env projected at seal/spawn (env_clear). No process-global
+	// remove_var — that raced concurrent in-process jobs.
 
-impl Drop for SecretEnvGuard {
-	fn drop(&mut self) {
-		for (k, v) in self.removed.drain(..) {
-			unsafe {
-				std::env::set_var(k, v);
-			}
-		}
+	// The whitelist filesystem: the flake tree plus a sibling `inputs/` dir the
+	// traversal layer materialized (both read-only, no absolute-path escape).
+	let inputs_dir = root.parent().map(|p| p.join("inputs"));
+	let io: Rc<dyn EvalIO> = Rc::new(DocsIO::new(root.to_path_buf(), inputs_dir));
+
+	let deadline = Instant::now() + EVAL_BUDGET;
+	let code = flake_outputs_shim(root, &discover_input_names(root));
+
+	let evaluation = hermetic_evaluation(io);
+	let source_map = evaluation.source_map();
+	let result = evaluation.evaluate(&code, Some(flake_nix.clone()));
+
+	for warning in &result.warnings {
+		tracing::debug!(?warning, "nix eval warning");
 	}
+	if !result.errors.is_empty() {
+		// A top-level failure (e.g. the shim itself broke) — degrade to
+		// static-only rather than aborting the package.
+		tracing::warn!(errors = result.errors.len(), "nix eval produced errors; static-only");
+		return Ok(None);
+	}
+
+	let Some(value) = result.value else {
+		return Ok(None);
+	};
+
+	if Instant::now() > deadline {
+		return Err(NixError::EvalTimeout {
+			seconds: EVAL_BUDGET.as_secs(),
+		});
+	}
+
+	let surface = walker::walk(&value, &source_map, table, meta, deadline);
+	Ok(Some(surface))
 }
+
 
 // ───────────────────────────────────────────────────────────────────────────
 // Flake-outputs shim
@@ -160,19 +187,12 @@ impl Drop for SecretEnvGuard {
 /// A flake-compat-style fixed point: import the flake, synthesize each input
 /// as `{ outPath, rev, narHash, lastModified, … } // outputs`, and call
 /// `outputs (inputs // { inherit self; })`.
-///
-/// We port the *semantics* of edolstra/flake-compat (the reference for this
-/// trick), not its code. Each materialized input lives at
-/// `<root>/../inputs/<name>` and is itself either a flake (has `outputs`) or a
-/// plain source tree (only `outPath`).
 fn flake_outputs_shim(root: &Path, inputs: &[String]) -> String {
-    let root_str = root.display();
-    let mut input_bindings = String::new();
-    for name in inputs {
-        // Each input: expose its source path and, if it is itself a flake, its
-        // evaluated outputs merged on top (best-effort, tryEval-guarded).
-        input_bindings.push_str(&format!(
-            r#"    {name} = let
+	let root_str = root.display();
+	let mut input_bindings = String::new();
+	for name in inputs {
+		input_bindings.push_str(&format!(
+			r#"    {name} = let
       src = /{root}/../inputs/{name};
       flakePath = src + "/flake.nix";
       base = {{ outPath = src; rev = "0000000000000000000000000000000000000000"; narHash = ""; lastModified = 0; }};
@@ -181,38 +201,44 @@ fn flake_outputs_shim(root: &Path, inputs: &[String]) -> String {
              else {{}};
     in base // outs;
 "#,
-            name = name,
-            root = root_str
-        ));
-    }
+			name = name,
+			root = root_str
+		));
+	}
 
-    format!(
-        r#"let
+	format!(
+		r#"let
   flake = import /{root}/flake.nix;
   allInputs = rec {{
 {inputs}  }};
   self = flake.outputs (allInputs // {{ inherit self; outPath = /{root}; }});
 in self
 "#,
-        root = root_str,
-        inputs = input_bindings,
-    )
+		root = root_str,
+		inputs = input_bindings,
+	)
 }
 
 /// Read the locked input names from `flake.lock` (best-effort); an absent or
 /// unreadable lock yields an empty set (the shim then supplies no inputs).
 fn discover_input_names(root: &Path) -> Vec<String> {
-    let lock = root.join("flake.lock");
-    let Ok(text) = std::fs::read_to_string(&lock) else { return Vec::new() };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
-    // The root node's `inputs` map names the direct inputs.
-    let root_key = json.get("root").and_then(|r| r.as_str()).unwrap_or("root");
-    json.get("nodes")
-        .and_then(|n| n.get(root_key))
-        .and_then(|r| r.get("inputs"))
-        .and_then(|i| i.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default()
+	let lock = root.join("flake.lock");
+	let Ok(text) = std::fs::read_to_string(&lock) else {
+		return Vec::new();
+	};
+	let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+		return Vec::new();
+	};
+	let root_key = json
+		.get("root")
+		.and_then(|r| r.as_str())
+		.unwrap_or("root");
+	json.get("nodes")
+		.and_then(|n| n.get(root_key))
+		.and_then(|r| r.get("inputs"))
+		.and_then(|i| i.as_object())
+		.map(|m| m.keys().cloned().collect())
+		.unwrap_or_default()
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -223,110 +249,116 @@ fn discover_input_names(root: &Path) -> Vec<String> {
 /// materialized `inputs/` directory. Everything else is denied. `import_path`
 /// is identity (no store); hermeticity is enforced by path containment.
 pub struct DocsIO {
-    root:   PathBuf,
-    inputs: Option<PathBuf>,
-    /// Tripped if an escape attempt is seen (surfaced as a warning, not fatal).
-    escaped: AtomicBool,
+	root: PathBuf,
+	inputs: Option<PathBuf>,
+	/// Tripped if an escape attempt is seen (surfaced as a warning, not fatal).
+	escaped: AtomicBool,
 }
 
 impl DocsIO {
-    pub fn new(root: PathBuf, inputs: Option<PathBuf>) -> Self {
-        Self { root, inputs, escaped: AtomicBool::new(false) }
-    }
+	/// Whitelist `root` and optional sibling `inputs` directory.
+	pub fn new(root: PathBuf, inputs: Option<PathBuf>) -> Self {
+		Self {
+			root,
+			inputs,
+			escaped: AtomicBool::new(false),
+		}
+	}
 
-    /// Whether `path` is contained within the flake root or inputs dir.
-    fn is_allowed(&self, path: &Path) -> bool {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let under = |base: &Path| {
-            base.canonicalize()
-                .map(|b| canonical.starts_with(&b))
-                .unwrap_or(false)
-        };
-        if under(&self.root) {
-            return true;
-        }
-        if let Some(inputs) = &self.inputs {
-            if under(inputs) {
-                return true;
-            }
-        }
-        self.escaped.store(true, Ordering::Relaxed);
-        false
-    }
+	/// Whether `path` is contained within the flake root or inputs dir.
+	fn is_allowed(&self, path: &Path) -> bool {
+		let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+		let under = |base: &Path| {
+			base.canonicalize()
+				.map(|b| canonical.starts_with(&b))
+				.unwrap_or(false)
+		};
+		if under(&self.root) {
+			return true;
+		}
+		if let Some(inputs) = &self.inputs {
+			if under(inputs) {
+				return true;
+			}
+		}
+		self.escaped.store(true, Ordering::Relaxed);
+		false
+	}
 
-    /// Whether any escape attempt was observed during evaluation.
-    pub fn escaped(&self) -> bool {
-        self.escaped.load(Ordering::Relaxed)
-    }
+	/// Whether any escape attempt was observed during evaluation.
+	pub fn escaped(&self) -> bool {
+		self.escaped.load(Ordering::Relaxed)
+	}
 
-    fn guard(&self, path: &Path) -> io::Result<()> {
-        if self.is_allowed(path) {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("path {} escapes the hermetic flake root", path.display()),
-            ))
-        }
-    }
+	fn guard(&self, path: &Path) -> io::Result<()> {
+		if self.is_allowed(path) {
+			Ok(())
+		} else {
+			Err(io::Error::new(
+				io::ErrorKind::PermissionDenied,
+				format!("path {} escapes the hermetic flake root", path.display()),
+			))
+		}
+	}
 }
 
 impl EvalIO for DocsIO {
-    fn path_exists(&self, path: &Path) -> io::Result<bool> {
-        if !self.is_allowed(path) {
-            return Ok(false);
-        }
-        Ok(path.exists())
-    }
+	fn path_exists(&self, path: &Path) -> io::Result<bool> {
+		if !self.is_allowed(path) {
+			return Ok(false);
+		}
+		Ok(path.exists())
+	}
 
-    fn open(&self, path: &Path) -> io::Result<Box<dyn io::Read>> {
-        self.guard(path)?;
-        let file = std::fs::File::open(path)?;
-        Ok(Box::new(file))
-    }
+	fn open(&self, path: &Path) -> io::Result<Box<dyn io::Read>> {
+		self.guard(path)?;
+		let file = std::fs::File::open(path)?;
+		Ok(Box::new(file))
+	}
 
-    fn file_type(&self, path: &Path) -> io::Result<FileType> {
-        self.guard(path)?;
-        let meta = std::fs::symlink_metadata(path)?;
-        Ok(if meta.is_dir() {
-            FileType::Directory
-        } else if meta.file_type().is_symlink() {
-            FileType::Symlink
-        } else {
-            FileType::Regular
-        })
-    }
+	fn file_type(&self, path: &Path) -> io::Result<FileType> {
+		self.guard(path)?;
+		let meta = std::fs::symlink_metadata(path)?;
+		Ok(if meta.is_dir() {
+			FileType::Directory
+		} else if meta.file_type().is_symlink() {
+			FileType::Symlink
+		} else {
+			FileType::Regular
+		})
+	}
 
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<(bytes::Bytes, FileType)>> {
-        self.guard(path)?;
-        let mut entries = Vec::new();
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let name = bytes::Bytes::from(entry.file_name().to_string_lossy().into_owned());
-            let ft = entry.file_type()?;
-            let kind = if ft.is_dir() {
-                FileType::Directory
-            } else if ft.is_symlink() {
-                FileType::Symlink
-            } else {
-                FileType::Regular
-            };
-            entries.push((name, kind));
-        }
-        Ok(entries)
-    }
+	fn read_dir(&self, path: &Path) -> io::Result<Vec<(bytes::Bytes, FileType)>> {
+		self.guard(path)?;
+		let mut entries = Vec::new();
+		for entry in std::fs::read_dir(path)? {
+			let entry = entry?;
+			let name = bytes::Bytes::from(entry.file_name().to_string_lossy().into_owned());
+			let ft = entry.file_type()?;
+			let kind = if ft.is_dir() {
+				FileType::Directory
+			} else if ft.is_symlink() {
+				FileType::Symlink
+			} else {
+				FileType::Regular
+			};
+			entries.push((name, kind));
+		}
+		Ok(entries)
+	}
 
-    fn import_path(&self, path: &Path) -> io::Result<PathBuf> {
-        // No store: importing a path is identity within the sandbox.
-        self.guard(path)?;
-        Ok(path.to_path_buf())
-    }
+	fn import_path(&self, path: &Path) -> io::Result<PathBuf> {
+		// No store: importing a path is identity within the sandbox.
+		self.guard(path)?;
+		Ok(path.to_path_buf())
+	}
 
-    fn get_env(&self, _key: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
-		// Sealed: builtins.getEnv always fails closed, regardless of host env.
-		// Combined with scrub_host_secrets() this is the §7.4 env discipline.
-        None
-    }
+	fn get_env(&self, _key: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+		// Sealed: even if impure builtins are added later, EvalIO must not
+		// expose host credentials. Combined with pure-builtins omission this
+		// is the §7.4 env discipline.
+		None
+	}
 }
 
 #[cfg(test)]
@@ -337,12 +369,13 @@ mod env_seal_tests {
 	#[test]
 	fn docs_io_get_env_always_none() {
 		let io = DocsIO::new(std::env::temp_dir(), None);
-		// Even if the host carries secrets, EvalIO must not expose them.
 		unsafe {
 			std::env::set_var("AWS_SECRET_ACCESS_KEY", "test-leak");
 			std::env::set_var("GITHUB_TOKEN", "ghp_test");
 		}
-		assert!(io.get_env(std::ffi::OsStr::new("AWS_SECRET_ACCESS_KEY")).is_none());
+		assert!(io
+			.get_env(std::ffi::OsStr::new("AWS_SECRET_ACCESS_KEY"))
+			.is_none());
 		assert!(io.get_env(std::ffi::OsStr::new("GITHUB_TOKEN")).is_none());
 		assert!(io.get_env(std::ffi::OsStr::new("PATH")).is_none());
 		unsafe {
@@ -352,25 +385,61 @@ mod env_seal_tests {
 	}
 
 	#[test]
-	fn scrub_removes_secret_prefixes() {
+	fn secret_env_keys_classified_for_seal_projection() {
+		use crate::compile::producer::is_secret_env_key;
+		assert!(is_secret_env_key("AWS_ACCESS_KEY_ID"));
+		assert!(is_secret_env_key("CACHIX_AUTH_TOKEN"));
+		assert!(is_secret_env_key("GITHUB_TOKEN"));
+		assert!(!is_secret_env_key("HARMLESS_VAR"));
+		assert!(!is_secret_env_key("PATH"));
+	}
+
+	/// Pure hermetic eval: `builtins.getEnv` is absent (not just empty).
+	#[test]
+	fn hermetic_eval_omits_get_env_builtin() {
 		unsafe {
-			std::env::set_var("AWS_ACCESS_KEY_ID", "AKIA");
-			std::env::set_var("CACHIX_AUTH_TOKEN", "xyz");
-			std::env::set_var("HARMLESS_VAR", "keep");
+			std::env::set_var("AWS_SECRET_ACCESS_KEY", "must-not-appear");
 		}
-		{
-			let _g = scrub_host_secrets();
-			assert!(std::env::var("AWS_ACCESS_KEY_ID").is_err());
-			assert!(std::env::var("CACHIX_AUTH_TOKEN").is_err());
-			// Non-secret keys are left alone.
-			assert_eq!(std::env::var("HARMLESS_VAR").ok().as_deref(), Some("keep"));
+		let io: Rc<dyn EvalIO> = Rc::new(DocsIO::new(std::env::temp_dir(), None));
+		let evaluation = hermetic_evaluation(io);
+		let result = evaluation.evaluate(r#"builtins.getEnv "AWS_SECRET_ACCESS_KEY""#, None);
+		// Either errors (attribute missing) or yields empty — never the secret.
+		if let Some(v) = &result.value {
+			let s = format!("{v:?}");
+			assert!(
+				!s.contains("must-not-appear"),
+				"getEnv leaked host secret: {s}"
+			);
 		}
-		// Restored on drop.
-		assert_eq!(std::env::var("AWS_ACCESS_KEY_ID").ok().as_deref(), Some("AKIA"));
+		// Body of errors/warnings must not include the planted value either.
+		let dump = format!("{:?}", result.errors);
+		assert!(!dump.contains("must-not-appear"));
 		unsafe {
-			std::env::remove_var("AWS_ACCESS_KEY_ID");
-			std::env::remove_var("CACHIX_AUTH_TOKEN");
-			std::env::remove_var("HARMLESS_VAR");
+			std::env::remove_var("AWS_SECRET_ACCESS_KEY");
 		}
+	}
+
+	/// Pure hermetic eval: `builtins.currentTime` is absent (not wall clock).
+	#[test]
+	fn hermetic_eval_omits_current_time_builtin() {
+		let io: Rc<dyn EvalIO> = Rc::new(DocsIO::new(std::env::temp_dir(), None));
+		let evaluation = hermetic_evaluation(io);
+		let result = evaluation.evaluate("builtins.currentTime", None);
+		// Pure builtins do not register currentTime. A successful integer
+		// would mean impure injection slipped in — reject any non-error path
+		// that looks like a live timestamp.
+		if let Some(snix_eval::Value::Integer(n)) = result.value {
+			panic!("currentTime must not be a live clock; got {n}");
+		}
+	}
+
+	#[test]
+	fn docs_io_denies_path_escape() {
+		let root = std::env::temp_dir().join(format!("nudox-docsio-{}", std::process::id()));
+		std::fs::create_dir_all(&root).unwrap();
+		let io = DocsIO::new(root.clone(), None);
+		assert!(io.open(Path::new("/etc/passwd")).is_err());
+		assert!(io.escaped());
+		let _ = std::fs::remove_dir_all(&root);
 	}
 }

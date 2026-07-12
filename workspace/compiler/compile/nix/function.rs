@@ -120,7 +120,6 @@ pub fn lower_lambda(
 		implemented:           true,
 		members:               None,
 		implemented_protocols: None,
-		body:                  None,
 	}
 }
 

@@ -86,45 +86,5 @@ pub struct Surface {
 /// Populate each `Entry::Module`'s `members` from the set of entries whose
 /// path is an immediate child of the module's path.
 fn wire_members(by_path: &mut HashMap<NudoxPath, Entry>) {
-    use ir::module::Module;
-
-    // Collect (parent, child) relations by path-prefix.
-    let paths: Vec<NudoxPath> = by_path.keys().cloned().collect();
-    let mut members: HashMap<NudoxPath, Vec<NudoxPath>> = HashMap::default();
-    for child in &paths {
-        if let Some(parent) = parent_path(child) {
-            if by_path.contains_key(&parent) {
-                members.entry(parent).or_default().push(child.clone());
-            }
-        }
-    }
-    for (parent, mut children) in members {
-        children.sort_by(|a, b| path_str(a).cmp(&path_str(b)));
-        if let Some(Entry::Module(sym)) = by_path.get_mut(&parent) {
-            sym.inner = Module { members: Some(children) };
-        }
-    }
-}
-
-/// The parent path of a local attrpath-based path (`lib/attrsets/mapAttrs` →
-/// `lib/attrsets`; `mapAttrs` → the flake root `""`). Returns `None` only for
-/// the root itself or external paths.
-fn parent_path(path: &NudoxPath) -> Option<NudoxPath> {
-    match path {
-        NudoxPath::Local(p) => {
-            // `Path::parent` of a single-segment path is `Some("")`, which is
-            // exactly the flake root module path minted by `item::lower_static`.
-            // Do **not** treat the empty parent as "no parent".
-            let parent = p.parent()?;
-            Some(NudoxPath::Local(parent.to_path_buf()))
-        }
-        NudoxPath::External { .. } => None,
-    }
-}
-
-fn path_str(path: &NudoxPath) -> String {
-    match path {
-        NudoxPath::Local(p) => p.display().to_string(),
-        NudoxPath::External { path, dependency } => format!("{dependency}:{}", path.display()),
-    }
+    crate::compile::producer::wire_members(by_path, &crate::compile::producer::FsPathParent);
 }
