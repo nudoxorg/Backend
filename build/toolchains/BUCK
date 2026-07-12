@@ -331,3 +331,18 @@ flake.package(
     target_compatible_with = _TARGET_MAPPING,
     visibility = ["PUBLIC"],
 )
+
+# ── Tier C — tsgo (TypeScript 7 native checker) oracle binary ──────────────────
+# The OXC TypeScript producer's Tier-C checker oracle (OXC-PLAN §Phase 6). Vendored
+# hermetically via the toolchains flake (build/toolchains/nix/flake.nix `tsgo`):
+# a noembed Go binary whose bundled lib.*.d.ts sit beside it under $out/lib, with
+# a $out/bin/tsgo wrapper. Consumed as a `resources` entry on //workspace/compiler
+# and located at runtime via producer::buck_resource("tsgo").
+flake.package(
+    name = "tsgo",
+    binary = "tsgo",
+    package = "tsgo",
+    path = "//nix:flake",
+    target_compatible_with = _TARGET_MAPPING,
+    visibility = ["PUBLIC"],
+)

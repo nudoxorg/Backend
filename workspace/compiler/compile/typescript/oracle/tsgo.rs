@@ -34,7 +34,13 @@ pub fn enabled() -> bool {
 /// crate). `Err` (e.g. the binary was not vendored for this platform) → the
 /// caller falls back to the syntactic pass.
 pub fn tsgo_binary() -> std::io::Result<PathBuf> {
-	producer::buck_resource("tsgo")
+	let resource = producer::buck_resource("tsgo")?;
+	// The Nix `flake.package` resource is the derivation's `$out` directory: the
+	// runnable wrapper lives at `bin/tsgo` (it execs `lib/tsgo`, whose sibling
+	// `lib.*.d.ts` the noembed binary resolves relative to itself). Accept either
+	// the store dir or a direct path to the binary.
+	let wrapped = resource.join("bin").join("tsgo");
+	Ok(if wrapped.is_file() { wrapped } else { resource })
 }
 
 /// Shallow heuristic: does `root` already ship `.d.ts` declarations? If so the

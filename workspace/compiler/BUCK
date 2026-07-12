@@ -9,18 +9,11 @@ rust_crate(
     resources = {
         "go-oracle": "//workspace/compiler/compile/go/oracle:oracle",
         "java-oracle.jar": "//workspace/compiler/compile/java/oracle:extractor",
-        # Tier C — tsgo (TypeScript 7) checker oracle. Verified npm data (Apache-2.0):
-        #   pkg  @typescript/native-preview-<platform> @ 7.0.0-dev.20260707.2
-        #   darwin-arm64 tgz sha256 a6d0b46d71358db2d602324c553366a58fa1d031f5dfa12c09a35b6be17fe503
-        #   linux-x64    tgz sha256 5e6ee1052190526ae0ac277b2fb52ba0c7e880619201493bd5342976a0b33eb6
-        #   strip_prefix "package"; binary at lib/tsgo (chmod +x); ships lib/lib.*.d.ts.
-        # Wire once build-verified (http_archive + platform select → export lib/tsgo):
-        #   "tsgo": select({
-        #       "config//os:macos": "//build/third-party:tsgo-darwin-arm64",
-        #       "config//os:linux": "//build/third-party:tsgo-linux-x64",
-        #   }),
-        # Until wired, buck_resource("tsgo") returns NotFound and the oracle
-        # falls back to the syntactic pass (producer stays green).
+        # Tier C — tsgo (TypeScript 7) checker oracle, vendored hermetically via Nix
+        # (build/toolchains/nix/flake.nix `tsgo`). Store dir ($out with bin/tsgo +
+        # lib/); runtime lookup via producer::buck_resource("tsgo"), graceful Tier-A
+        # fallback if absent (opt-in via NUDOX_TYPESCRIPT_ORACLE).
+        "tsgo": "toolchains//:tsgo",
     },
     deps = deps([
         member("heart"),
