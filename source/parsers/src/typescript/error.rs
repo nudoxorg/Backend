@@ -2,6 +2,7 @@ use std::process::ExitStatus;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Parse {
 	#[error("symbol not found: {0}")]
 	SymbolNotFound(String),
@@ -41,6 +42,9 @@ pub enum Package {
 
 	#[error("serialization error: {0}")]
 	Serialization(#[from] serde_json::Error),
+
+	#[error("simd-json error: {0}")]
+	SimdJson(#[from] simd_json::Error),
 
 	#[error("UTF-8 decode error: {0}")]
 	Utf8(#[from] std::string::FromUtf8Error),

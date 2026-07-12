@@ -9,7 +9,7 @@ use ir::kind::Entry;
 
 use super::error::Parse;
 use super::Result;
-use crate::DocParser;
+use crate::{DocParser, VisibilityMap};
 
 pub(super) struct ParseContext {
 	pub(super) krate:          Crate,
@@ -184,9 +184,9 @@ impl ParseContext {
 							queue.push_back((*target_id, new_path));
 						}
 					} else if import.is_glob {
-						todo!("Glob imports resolution not yet implemented");
+						// Glob re-exports are not yet resolved; skip and continue.
 					} else {
-						todo!("Import with no target ID and not a glob: {:?}", import);
+						// Import with no resolved target and not a glob — skip.
 					}
 				}
 				ItemEnum::Struct(s) => {
@@ -238,7 +238,7 @@ impl ParseContext {
 				| ItemEnum::ExternCrate { .. } => {
 				}
 				_ => {
-					todo!("Unhandled item type in build_path_map: {:?}", item.inner);
+					// Unknown item variant — not traversed, path already recorded above.
 				}
 			}
 		}

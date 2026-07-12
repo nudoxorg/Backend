@@ -10,12 +10,14 @@
 use std::sync::Arc;
 
 use blobstore::InMemoryBlobStore;
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, BodyQuery, ByteSpan, ChunkMetadata, GlobalSymbolId, GlobalSymbolQuery, Language, LibRef, OccurrenceFilter, RepoId, ResolutionOutcome, ScopeFilter, SearchIndex, SearchQuery, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex, VectorQuery};
+use std::num::NonZeroUsize;
+
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobStore, BodyQuery, ByteSpan, ChunkMetadata, Criteria, EmbedderSet, GlobalSymbolId, GlobalSymbolQuery, Language, LibRef, NamePattern, OccurrenceFilter, RepoId, ResolutionOutcome, ScopeFilter, SearchIndex, SearchQuery, SymbolOrigin, SymbolQuery, SymbolSearch, VectorIndex, VectorQuery};
 use embed::PlaceholderEmbedder;
 use pipeline::{Pipeline, PipelineConfig, PipelineInput};
 use search::{InMemorySearchIndex, InMemoryVectorIndex, SymbolSearcher};
 
-use crate::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
+use orchestrator::{NoSearcher, Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 
 const EMBED_DIM: usize = 64;
 
@@ -29,7 +31,7 @@ struct TestStack {
 	vector:       Arc<InMemoryVectorIndex>,
 	global_store: Arc<InMemoryGlobalSymbolStore>,
 	queue:        Arc<InMemoryFutureParseQueue>,
-	orchestrator: Orchestrator,
+	orchestrator: Orchestrator<NoSearcher>,
 }
 
 impl TestStack {
@@ -41,7 +43,7 @@ impl TestStack {
 		let queue = Arc::new(InMemoryFutureParseQueue::new());
 
 		let pipeline = Pipeline::new(
-			vec![Box::new(PlaceholderEmbedder::new("placeholder-v1", EMBED_DIM))],
+			EmbedderSet::new(vec![Box::new(PlaceholderEmbedder::new("placeholder-v1", EMBED_DIM))]),
 			PipelineConfig::default(),
 		);
 
@@ -92,12 +94,12 @@ fn make_input(
 	PipelineInput {
 		raw_code:      raw_code.to_string(),
 		symbol_name:   symbol_name.to_string(),
-		symbol_span:   ByteSpan { start, end: start + symbol_name.len() },
+		symbol_span:   ByteSpan::covering(start, start + symbol_name.len()),
 		symbol_origin: origin,
 		metadata:      ChunkMetadata {
 			repo_id:             repo_id.clone(),
 			file_path:           file.into(),
-			file_span:           ByteSpan { start: 0, end: raw_code.len() },
+			file_span:           ByteSpan::covering(0, raw_code.len()),
 			parsed_at:           chrono::Utc::now(),
 			lang:                Language::Rust,
 			lang_version:        None,
@@ -113,7 +115,7 @@ fn make_input(
 #[tokio::test]
 async fn name_search_roundtrip() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-a".into());
+	let repo = RepoId::from("repo-a");
 
 	// Three Rust functions with distinct names.
 	let symbols = [
@@ -142,9 +144,11 @@ async fn name_search_roundtrip() {
 	{
 		let hits = searcher
 			.search(&SymbolQuery {
-				name_pattern: Some(pattern.to_string()),
-				limit: 10,
-				..Default::default()
+				criteria:          Criteria::Name(NamePattern(pattern.to_string())),
+				limit:             NonZeroUsize::new(10).unwrap(),
+				scope:             None,
+				kind:              None,
+				occurrence_filter: None,
 			})
 			.await
 			.unwrap();
@@ -155,7 +159,13 @@ async fn name_search_roundtrip() {
 	// "fn_" (embedded in all three names indirectly via the underscore convention)
 	// — actually all three names contain underscores; check we get all 3.
 	let hits = searcher
-		.search(&SymbolQuery { name_pattern: Some("_".to_string()), limit: 10, ..Default::default() })
+		.search(&SymbolQuery {
+			criteria:          Criteria::Name(NamePattern("_".to_string())),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
+		})
 		.await
 		.unwrap();
 	assert_eq!(hits.len(), 3, "all 3 symbols contain underscores");
@@ -171,7 +181,7 @@ async fn vector_search_exact_code_match() {
 	// self-contained function equals the full raw_code text.  So pipeline
 	// embedding and query embedding use identical inputs → perfect match.
 	let s = TestStack::new();
-	let repo = RepoId("repo-vec".into());
+	let repo = RepoId::from("repo-vec");
 
 	let target = "fn add_numbers(a: i32, b: i32) -> i32 { a + b }";
 	let noise = "fn completely_unrelated_xyzabc(q: u64) -> bool { q == 0 }";
@@ -182,16 +192,18 @@ async fn vector_search_exact_code_match() {
 	let searcher = s.searcher();
 	let hits = searcher
 		.search(&SymbolQuery {
-			body_query: Some(BodyQuery::CodeSnippet(target.to_string())),
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Body(BodyQuery::CodeSnippet(target.to_string())),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
 		})
 		.await
 		.unwrap();
 
 	assert!(!hits.is_empty(), "vector search should return at least one hit");
 	assert_eq!(hits[0].blob.symbol_name, "add_numbers", "top hit should be the target function");
-	assert!(hits[0].score > 0.9, "score for exact code match should be > 0.9, got {}", hits[0].score);
+	assert!(hits[0].score.get() > 0.9, "score for exact code match should be > 0.9, got {}", hits[0].score);
 }
 
 // ── Test 3: occurrence counting through full ingest + GlobalSymbolQuery
@@ -200,7 +212,7 @@ async fn vector_search_exact_code_match() {
 #[tokio::test]
 async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-occ".into());
+	let repo = RepoId::from("repo-occ");
 	let serde_lib = LibRef { name: "serde".into(), version: "1.0".into() };
 
 	// Pre-register serde::Serialize so all 3 ingests resolve immediately.
@@ -219,9 +231,11 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	// All 3 occurrences should be findable by name.
 	let hits = searcher
 		.search(&SymbolQuery {
-			name_pattern: Some("Serialize".into()),
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Name(NamePattern("Serialize".into())),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
 		})
 		.await
 		.unwrap();
@@ -239,10 +253,11 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	// min_count = 3 → all 3 pass.
 	let hits = searcher
 		.search(&SymbolQuery {
-			name_pattern: Some("Serialize".into()),
-			occurrence_filter: Some(OccurrenceFilter { min_count: Some(3), max_count: None }),
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Name(NamePattern("Serialize".into())),
+			occurrence_filter: Some(OccurrenceFilter { min_count: Some(NonZeroUsize::new(3).unwrap()), max_count: None }),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
 		})
 		.await
 		.unwrap();
@@ -251,10 +266,11 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 	// min_count = 4 → nothing (only 3 occurrences exist).
 	let hits = searcher
 		.search(&SymbolQuery {
-			name_pattern: Some("Serialize".into()),
-			occurrence_filter: Some(OccurrenceFilter { min_count: Some(4), max_count: None }),
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Name(NamePattern("Serialize".into())),
+			occurrence_filter: Some(OccurrenceFilter { min_count: Some(NonZeroUsize::new(4).unwrap()), max_count: None }),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
 		})
 		.await
 		.unwrap();
@@ -267,7 +283,7 @@ async fn occurrence_counting_three_usages_of_same_lib_symbol() {
 #[tokio::test]
 async fn deferred_lib_becomes_searchable_after_resolve() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-defer".into());
+	let repo = RepoId::from("repo-defer");
 	let tokio_lib = LibRef { name: "tokio".into(), version: "1.0".into() };
 
 	// Ingest tokio::spawn before registering the library → deferred.
@@ -283,7 +299,13 @@ async fn deferred_lib_becomes_searchable_after_resolve() {
 
 	// Deferred blobs are not indexed — text search returns nothing.
 	let hits = searcher
-		.search(&SymbolQuery { name_pattern: Some("spawn".into()), limit: 10, ..Default::default() })
+		.search(&SymbolQuery {
+			criteria:          Criteria::Name(NamePattern("spawn".into())),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
+		})
 		.await
 		.unwrap();
 	assert!(hits.is_empty(), "deferred symbol must not appear in search before resolution");
@@ -296,7 +318,13 @@ async fn deferred_lib_becomes_searchable_after_resolve() {
 
 	// Now it must be searchable.
 	let hits = searcher
-		.search(&SymbolQuery { name_pattern: Some("spawn".into()), limit: 10, ..Default::default() })
+		.search(&SymbolQuery {
+			criteria:          Criteria::Name(NamePattern("spawn".into())),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
+		})
 		.await
 		.unwrap();
 	assert_eq!(hits.len(), 1, "spawn should be findable after resolve_lib");
@@ -309,8 +337,8 @@ async fn deferred_lib_becomes_searchable_after_resolve() {
 #[tokio::test]
 async fn scope_filter_by_repo_isolates_results() {
 	let s = TestStack::new();
-	let repo_ui = RepoId("repo-ui".into());
-	let repo_api = RepoId("repo-api".into());
+	let repo_ui = RepoId::from("repo-ui");
+	let repo_api = RepoId::from("repo-api");
 
 	s.ingest_repo(
 		&repo_ui,
@@ -331,7 +359,13 @@ async fn scope_filter_by_repo_isolates_results() {
 
 	// No scope → both repos.
 	let hits = searcher
-		.search(&SymbolQuery { name_pattern: Some("render".into()), limit: 10, ..Default::default() })
+		.search(&SymbolQuery {
+			criteria:          Criteria::Name(NamePattern("render".into())),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
+		})
 		.await
 		.unwrap();
 	assert_eq!(hits.len(), 2, "unscoped search should return symbols from both repos");
@@ -339,10 +373,11 @@ async fn scope_filter_by_repo_isolates_results() {
 	// Scope to repo-ui.
 	let hits = searcher
 		.search(&SymbolQuery {
-			name_pattern: Some("render".into()),
-			scope: Some(ScopeFilter { repo_id: Some(repo_ui.clone()), lang: None }),
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Name(NamePattern("render".into())),
+			scope:             Some(ScopeFilter { repo_id: Some(repo_ui.clone()), lang: None }),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			kind:              None,
+			occurrence_filter: None,
 		})
 		.await
 		.unwrap();
@@ -352,10 +387,11 @@ async fn scope_filter_by_repo_isolates_results() {
 	// Scope to repo-api.
 	let hits = searcher
 		.search(&SymbolQuery {
-			name_pattern: Some("render".into()),
-			scope: Some(ScopeFilter { repo_id: Some(repo_api.clone()), lang: None }),
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Name(NamePattern("render".into())),
+			scope:             Some(ScopeFilter { repo_id: Some(repo_api.clone()), lang: None }),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			kind:              None,
+			occurrence_filter: None,
 		})
 		.await
 		.unwrap();
@@ -378,7 +414,7 @@ async fn combine_or_and_with_pipeline_data() {
 	// cosine sim = 1.0 for the intended blob, near-zero for others.
 
 	let s = TestStack::new();
-	let repo = RepoId("repo-combine".into());
+	let repo = RepoId::from("repo-combine");
 
 	let snippet_b = "fn high_similarity_target(x: f64) -> f64 { x * 2.0 }";
 	let snippet_c = "fn alpha_and_similar(x: f64) -> f64 { x + 1.0 }";
@@ -395,11 +431,15 @@ async fn combine_or_and_with_pipeline_data() {
 	// OR: name="alpha" ∪ body=snippet_b → A (name), B (body), C (name+body)
 	let hits = searcher
 		.search(&SymbolQuery {
-			name_pattern: Some("alpha".into()),
-			body_query: Some(BodyQuery::CodeSnippet(snippet_b.to_string())),
-			combine: nudox_core::CombineMode::Or,
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Both {
+				name:    NamePattern("alpha".into()),
+				body:    BodyQuery::CodeSnippet(snippet_b.to_string()),
+				combine: nudox_core::CombineMode::Or,
+			},
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
 		})
 		.await
 		.unwrap();
@@ -411,11 +451,15 @@ async fn combine_or_and_with_pipeline_data() {
 	// AND: name="alpha" ∩ body=snippet_c → only C (the only blob matching both)
 	let hits = searcher
 		.search(&SymbolQuery {
-			name_pattern: Some("alpha".into()),
-			body_query: Some(BodyQuery::CodeSnippet(snippet_c.to_string())),
-			combine: nudox_core::CombineMode::And,
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Both {
+				name:    NamePattern("alpha".into()),
+				body:    BodyQuery::CodeSnippet(snippet_c.to_string()),
+				combine: nudox_core::CombineMode::And,
+			},
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
 		})
 		.await
 		.unwrap();
@@ -430,7 +474,7 @@ async fn combine_or_and_with_pipeline_data() {
 #[tokio::test]
 async fn limit_enforced_with_pipeline_data() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-limit".into());
+	let repo = RepoId::from("repo-limit");
 
 	for i in 0..8 {
 		let code = format!("fn target_fn_{i:02}(x: u32) -> u32 {{ x + {i} }}");
@@ -440,9 +484,11 @@ async fn limit_enforced_with_pipeline_data() {
 	let searcher = s.searcher();
 	let hits = searcher
 		.search(&SymbolQuery {
-			name_pattern: Some("target_fn_".into()),
-			limit: 3,
-			..Default::default()
+			criteria:          Criteria::Name(NamePattern("target_fn_".into())),
+			limit:             NonZeroUsize::new(3).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
 		})
 		.await
 		.unwrap();
@@ -456,7 +502,7 @@ async fn limit_enforced_with_pipeline_data() {
 #[tokio::test]
 async fn orchestrator_search_delegates_to_symbol_searcher() {
 	let s = TestStack::new();
-	let repo = RepoId("repo-orch".into());
+	let repo = RepoId::from("repo-orch");
 
 	s.ingest_repo(
 		&repo,
@@ -471,9 +517,11 @@ async fn orchestrator_search_delegates_to_symbol_searcher() {
 
 	let hits = orchestrator_with_search
 		.search(&SymbolQuery {
-			name_pattern: Some("orchestrate".into()),
-			limit: 10,
-			..Default::default()
+			criteria:          Criteria::Name(NamePattern("orchestrate".into())),
+			limit:             NonZeroUsize::new(10).unwrap(),
+			scope:             None,
+			kind:              None,
+			occurrence_filter: None,
 		})
 		.await
 		.unwrap();

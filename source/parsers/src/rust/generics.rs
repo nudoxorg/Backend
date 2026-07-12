@@ -149,33 +149,36 @@ impl ParseContext {
 				let mut result = Vec::new();
 
 				for constraint in constraints {
+					let args = constraint.args.as_ref().map(|a| self.generic_args(a)).transpose()?;
+					let term = match &constraint.binding {
+						rustdoc_types::AssocItemConstraintKind::Equality(term) => {
+							self.map_rustdoc_term(term.clone())
+						}
+						rustdoc_types::AssocItemConstraintKind::Constraint(bounds) => {
+							let inner = bounds
+								.iter()
+								.map(|t| {
+									let parsed = self.generic_bounds(std::slice::from_ref(t))?;
+									Ok::<_, super::error::Parse>(parsed.into_iter().map(|b| match b {
+										GenericBound::Trait(tr) => {
+											Constraint::TraitBound { param: String::new(), trait_ref: tr }
+										}
+										GenericBound::Lifetime(lt) => {
+											Constraint::LifetimeBound { shorter: String::new(), longer: lt }
+										}
+									}))
+								})
+								.collect::<Result<Vec<_>>>()?
+								.into_iter()
+								.flatten()
+								.collect();
+							Term::Bound(inner)
+						}
+					};
 					result.push(GenericArg::Constraint(Constraint::AssociatedItem {
 						name: constraint.name.clone(),
-						args: constraint.args.as_ref().map(|a| self.generic_args(&a.clone()).unwrap()),
-						term: match &constraint.binding {
-							rustdoc_types::AssocItemConstraintKind::Equality(term) => {
-								self.map_rustdoc_term(term.clone())
-							}
-							rustdoc_types::AssocItemConstraintKind::Constraint(bounds) => Term::Bound(
-								bounds
-									.iter()
-									.flat_map(|t| {
-										let parsed = self.generic_bounds(std::slice::from_ref(t)).unwrap();
-										parsed
-											.into_iter()
-											.map(|b| match b {
-												GenericBound::Trait(tr) => {
-													Constraint::TraitBound { param: String::new(), trait_ref: tr }
-												}
-												GenericBound::Lifetime(lt) => {
-													Constraint::LifetimeBound { shorter: String::new(), longer: lt }
-												}
-											})
-											.collect::<Vec<_>>()
-									})
-									.collect(),
-							),
-						},
+						args,
+						term,
 					}));
 				}
 

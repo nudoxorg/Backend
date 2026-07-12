@@ -2,6 +2,31 @@ use rustc_hash::FxHashSet as HashSet;
 
 use super::context::{ParseContext, ParseState};
 use super::{error::Parse, Result};
+use crate::{VisibilityMap, empty_to_none};
+
+fn item_enum_kind_name(inner: &ItemEnum) -> &'static str {
+	match inner {
+		ItemEnum::Module(_) => "Module",
+		ItemEnum::ExternCrate { .. } => "ExternCrate",
+		ItemEnum::Use(_) => "Use",
+		ItemEnum::Union(_) => "Union",
+		ItemEnum::Struct(_) => "Struct",
+		ItemEnum::StructField(_) => "StructField",
+		ItemEnum::Enum(_) => "Enum",
+		ItemEnum::Variant(_) => "Variant",
+		ItemEnum::Function(_) => "Function",
+		ItemEnum::Trait(_) => "Trait",
+		ItemEnum::TraitAlias(_) => "TraitAlias",
+		ItemEnum::Impl(_) => "Impl",
+		ItemEnum::TypeAlias(_) => "TypeAlias",
+		ItemEnum::Constant { .. } => "Constant",
+		ItemEnum::Static(_) => "Static",
+		ItemEnum::Macro(_) => "Macro",
+		ItemEnum::ProcMacro(_) => "ProcMacro",
+		ItemEnum::Primitive(_) => "Primitive",
+		_ => "Unknown",
+	}
+}
 use ir::entry::NudoxPath;
 use ir::function::Function;
 use ir::generics::ConstExpr;
@@ -227,7 +252,7 @@ impl ParseContext {
 					Err(Parse::InvalidItemKind {
 						id:       id.0.to_string(),
 						expected: "StructField".to_string(),
-						actual:   format!("{:?}", item.inner),
+						actual:   item_enum_kind_name(&item.inner).to_owned(),
 					})
 				}
 			})
@@ -259,7 +284,7 @@ impl ParseContext {
 										Err(Parse::InvalidItemKind {
 											id:       id.0.to_string(),
 											expected: "StructField".to_string(),
-											actual:   format!("{:?}", field_item.inner),
+											actual:   item_enum_kind_name(&field_item.inner).to_owned(),
 										})
 									}
 								})
@@ -292,7 +317,7 @@ impl ParseContext {
 										Err(Parse::InvalidItemKind {
 											id:       id.0.to_string(),
 											expected: "StructField".to_string(),
-											actual:   format!("{:?}", field_item.inner),
+											actual:   item_enum_kind_name(&field_item.inner).to_owned(),
 										})
 									}
 								})
@@ -306,7 +331,7 @@ impl ParseContext {
 					Err(Parse::InvalidItemKind {
 						id:       variant_id.0.to_string(),
 						expected: "Variant".to_string(),
-						actual:   format!("{:?}", item.inner),
+						actual:   item_enum_kind_name(&item.inner).to_owned(),
 					})
 				}
 			})
@@ -377,15 +402,11 @@ impl ParseContext {
 		Ok(TraitDef {
 			generics,
 			super_traits,
-			associated_types: if associated_types.is_empty() { None } else { Some(associated_types) },
+			associated_types: empty_to_none(associated_types),
 			properties: None,
-			required_methods: if required_methods.is_empty() { None } else { Some(required_methods) },
-			provided_methods: if provided_methods.is_empty() { None } else { Some(provided_methods) },
-			required_constants: if required_constants.is_empty() {
-				None
-			} else {
-				Some(required_constants)
-			},
+			required_methods: empty_to_none(required_methods),
+			provided_methods: empty_to_none(provided_methods),
+			required_constants: empty_to_none(required_constants),
 			attributes,
 			members: None,
 		})
@@ -452,13 +473,9 @@ impl ParseContext {
 			for_type,
 			generics,
 			where_constraints,
-			methods: if methods.is_empty() { None } else { Some(methods) },
-			associated_types: if associated_types.is_empty() { None } else { Some(associated_types) },
-			associated_constants: if associated_constants.is_empty() {
-				None
-			} else {
-				Some(associated_constants)
-			},
+			methods: empty_to_none(methods),
+			associated_types: empty_to_none(associated_types),
+			associated_constants: empty_to_none(associated_constants),
 			is_negative: i.is_negative,
 			is_blanket: i.blanket_impl.is_some(),
 			is_unsafe: i.is_unsafe,

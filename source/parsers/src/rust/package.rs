@@ -1,9 +1,10 @@
-use std::{collections::{BTreeSet, VecDeque}, fs, io, path::{Path, PathBuf}, process::Command, time::Duration};
+use std::{collections::{BTreeSet, VecDeque}, fs, io, path::{Path, PathBuf}, process::Command, sync::Arc, time::Duration};
 use rustc_hash::FxHashMap as HashMap;
 
 use cargo_metadata::{Metadata, MetadataCommand, Package as CargoPackage, PackageId};
 use crates_io_api::{AsyncClient, Crate};
 use lang_types::Language;
+use rayon::prelude::*;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument};
@@ -127,9 +128,16 @@ impl RustPackage {
 		let json_path =
 			code.join("target").join("doc").join(format!("{}.json", doc_target_name.replace('-', "_")));
 
-		let json_content = fs::read_to_string(&json_path)?;
+		// Memory-map the (large) rustdoc JSON and parse with simd-json. simd-json
+		// mutates its input in place, so we copy the mapped bytes into an owned
+		// buffer (cheaper than `read_to_string`, which UTF-8-validates + allocates a
+		// String we never reuse).
+		let json_file = fs::File::open(&json_path)?;
+		let mmap = unsafe { memmap2::Mmap::map(&json_file)? };
+		let mut json_bytes = mmap.to_vec();
+		drop(mmap);
 
-		let rustdoc_crate: rustdoc_types::Crate = serde_json::from_str(&json_content)?;
+		let rustdoc_crate: rustdoc_types::Crate = simd_json::from_slice(&mut json_bytes)?;
 		debug!("rustdoc JSON parsed");
 
 		let source_map = source_map_from_crate(&rustdoc_crate, code);
@@ -149,19 +157,28 @@ impl RustPackage {
 	) -> std::result::Result<(Ir<Collected>, HashMap<String, String>), Package> {
 		let metadata = cargo_metadata(code)?;
 		let packages = documented_local_packages(&metadata, &self.name, self.direct_repo);
+
+		// Each documented package drives an independent `cargo rustdoc` subprocess +
+		// JSON parse + (sequential) IR walk. The packages are independent, so fan the
+		// per-package work out across rayon's pool (bounded by CPU cores). The walk
+		// *inside* a single package stays sequential — it owns its own parser state.
+		let per_package: Vec<(Ir<Collected>, HashMap<String, String>)> = packages
+			.par_iter()
+			.map(|package_id| {
+				let package = metadata
+					.packages
+					.iter()
+					.find(|candidate| candidate.id == *package_id)
+					.expect("documented package id should exist in metadata");
+				let doc_target_name =
+					package_doc_target_name(package).unwrap_or_else(|| package.name.to_string());
+				self.generate_ir_for_package(code, &package.name, &doc_target_name, version)
+			})
+			.collect::<std::result::Result<Vec<_>, _>>()?;
+
 		let mut entries = Vec::new();
 		let mut source_map = HashMap::default();
-
-		for package_id in packages {
-			let package = metadata
-				.packages
-				.iter()
-				.find(|candidate| candidate.id == package_id)
-				.expect("documented package id should exist in metadata");
-			let doc_target_name =
-				package_doc_target_name(package).unwrap_or_else(|| package.name.to_string());
-			let (package_ir, package_sources) =
-				self.generate_ir_for_package(code, &package.name, &doc_target_name, version)?;
+		for (package_ir, package_sources) in per_package {
 			entries.extend(package_ir.into_entries());
 			source_map.extend(package_sources);
 		}
@@ -207,6 +224,12 @@ fn cargo_metadata(code: &PathBuf) -> std::result::Result<Metadata, Package> {
 
 fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &Path) -> HashMap<String, String> {
 	let mut map = HashMap::default();
+	// Many functions share the same source file. Read each file at most once and
+	// keep its contents alongside the byte offset of every line start, so each
+	// function's span can be sliced out without re-reading or re-splitting the file.
+	// `None` marks files that failed to read so we don't retry them.
+	let mut file_cache: HashMap<PathBuf, Option<(Arc<str>, Vec<usize>)>> = HashMap::default();
+
 	for (id, item) in &krate.index {
 		if !matches!(&item.inner, rustdoc_types::ItemEnum::Function(_)) {
 			continue;
@@ -216,21 +239,38 @@ fn source_map_from_crate(krate: &rustdoc_types::Crate, workspace: &Path) -> Hash
 		let fq_name = summary.path.join("::");
 
 		let source_file = workspace.join(&span.filename);
-		let Ok(source) = fs::read_to_string(&source_file) else { continue };
+		let cached = file_cache.entry(source_file.clone()).or_insert_with(|| {
+			let source = fs::read_to_string(&source_file).ok()?;
+			let offsets = line_start_offsets(&source);
+			Some((Arc::<str>::from(source), offsets))
+		});
+		let Some((source, line_starts)) = cached.as_ref() else { continue };
 
-		let raw: String = source
-			.lines()
-			.enumerate()
-			.filter(|(i, _)| *i + 1 >= span.begin.0 && *i < span.end.0)
-			.map(|(_, line)| line)
-			.collect::<Vec<_>>()
-			.join("\n");
+		// `span.begin.0` / `span.end.0` are 1-based line numbers; the original logic
+		// kept 0-based line indices `i` with `i + 1 >= begin && i < end`, i.e. 1-based
+		// lines `begin..=end`. Slice that byte range, then normalize with `.lines()`
+		// (matching the prior `\r` stripping) over just the small slice.
+		let Some(&start) = line_starts.get(span.begin.0.saturating_sub(1)) else { continue };
+		let end = line_starts.get(span.end.0).copied().unwrap_or(source.len());
+		let raw: String = source[start..end].lines().collect::<Vec<_>>().join("\n");
 
 		if !raw.is_empty() {
 			map.insert(fq_name, raw);
 		}
 	}
 	map
+}
+
+/// Byte offset of the start of each line (line `n`, 1-based, begins at
+/// `offsets[n - 1]`). Splitting on `\n` matches `str::lines` line boundaries.
+fn line_start_offsets(source: &str) -> Vec<usize> {
+	let mut offsets = vec![0usize];
+	for (idx, byte) in source.bytes().enumerate() {
+		if byte == b'\n' {
+			offsets.push(idx + 1);
+		}
+	}
+	offsets
 }
 
 fn documented_local_packages(
