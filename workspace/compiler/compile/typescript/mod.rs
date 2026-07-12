@@ -42,8 +42,12 @@ pub(crate) fn empty_to_none<T>(v: Vec<T>) -> Option<Vec<T>> {
 /// `name` is the package name as its manifest reports it; the entry point and
 /// declaration roots are discovered from the package's `package.json`.
 pub fn generate_ir(root: &Path, name: &str) -> std::result::Result<Index, Package> {
-	let package = TypescriptPackage { name: name.to_string() };
-	Ok(package.generate_ir(root)?.index().into_index())
+	// Cutover: the public entry point now runs the OXC pipeline. The oxc error
+	// is mapped into the legacy `Package` type so the crate error graph is
+	// undisturbed during migration (Phase 4 removes the deno taxonomy).
+	let _ = TypescriptPackage { name: name.to_string() };
+	self::oxc::generate_ir(root, name)
+		.map_err(|e| Package::Parse(Parse::DenoDocSymbolIssue { detail: e.to_string() }))
 }
 
 // ============================================================================
