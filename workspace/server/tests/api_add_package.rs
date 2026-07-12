@@ -139,6 +139,87 @@ async fn read_and_write_planes_are_separated() {
     );
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Required-origin enforcement for Go / Java packages
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Go and Java have no canonical public registry, so `origin` is required.
+///
+/// Assert: `AddPackageDto::into_coordinates()` for `go`/`java` without an
+///   `origin` field returns `Err(BadRequest { field: "origin" })`.
+#[tokio::test]
+async fn go_without_origin_is_rejected_at_lowering() {
+    let dto = AddPackageDto {
+        ecosystem: heart::Language::Go,
+        name: "github.com/gorilla/mux".into(),
+        version: "1.8.1".into(),
+        origin: None,
+    };
+    let error = dto.into_coordinates().expect_err(
+        "go without origin must be rejected (no default registry for Go)"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("origin"),
+        "error must mention the missing field; got: {message}"
+    );
+}
+
+/// Same contract for Java.
+#[tokio::test]
+async fn java_without_origin_is_rejected_at_lowering() {
+    let dto = AddPackageDto {
+        ecosystem: heart::Language::Java,
+        name: "com.example.mylib".into(),
+        version: "2.0.0".into(),
+        origin: None,
+    };
+    let error = dto.into_coordinates().expect_err(
+        "java without origin must be rejected (no default registry for Java)"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("origin"),
+        "error must mention the missing field; got: {message}"
+    );
+}
+
+/// Go with an explicit origin resolves against the custom-registry table.
+///
+/// Assert: a registered origin resolves to `RegistryOrigin::Custom`; an
+///   unknown name returns a `BadRequest` (not a panic or a placeholder URL).
+#[tokio::test]
+async fn go_with_unknown_origin_is_rejected() {
+    let dto = AddPackageDto {
+        ecosystem: heart::Language::Go,
+        name: "github.com/gorilla/mux".into(),
+        version: "1.8.1".into(),
+        origin: Some("nonexistent-registry".into()),
+    };
+    let error = dto.into_coordinates().expect_err(
+        "an unknown custom registry name must be rejected with BadRequest"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("nonexistent-registry"),
+        "error must identify the unknown registry name; got: {message}"
+    );
+}
+
+/// Ecosystems with canonical registries still work without an explicit origin.
+#[tokio::test]
+async fn rust_without_origin_defaults_to_crates_io() {
+    let dto = AddPackageDto {
+        ecosystem: heart::Language::Rust,
+        name: "serde".into(),
+        version: "1.0.219".into(),
+        origin: None,
+    };
+    dto.into_coordinates().expect(
+        "rust without origin must default to crates.io (no origin required for Rust)"
+    );
+}
+
 /// The wire body of a crates.io add request.
 fn add_body(name: &str, version: &str) -> serde_json::Value {
     serde_json::json!({
