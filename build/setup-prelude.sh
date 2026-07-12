@@ -38,4 +38,25 @@ if old not in text:
 p.write_text(text.replace(old, new, 1))
 print(f"patched {p}")
 PY
+# Patch Go toolchains to read binary path from [go] go_binary buckconfig key.
+# This lets .buckconfig.local (written by the nix devshell hook) supply an
+# absolute Nix store path so Buck2 actions find `go` without relying on PATH.
+python3 - \
+  "$DEST/toolchains/go/system_go_bootstrap_toolchain.bzl" \
+  "$DEST/toolchains/go/system_go_toolchain.bzl" <<'PY'
+import sys
+from pathlib import Path
+old = '    go = "go.exe" if go_os == "windows" else "go"'
+new = '    go = read_config("go", "go_binary", "go.exe" if go_os == "windows" else "go")'
+for path in sys.argv[1:]:
+    p = Path(path)
+    text = p.read_text()
+    if old not in text:
+        if 'read_config("go", "go_binary"' in text:
+            print(f"{p.name}: already patched")
+            continue
+        raise SystemExit(f"patch site not found in {p}")
+    p.write_text(text.replace(old, new, 1))
+    print(f"patched {p.name}")
+PY
 echo "prelude ready at $DEST (buckconfig cell: build/prelude-local)"
