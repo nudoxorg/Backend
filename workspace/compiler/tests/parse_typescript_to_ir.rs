@@ -95,17 +95,20 @@ fn type_alias_type<'i>(index: &'i Index, name: &str) -> &'i Type {
 fn regular_module_lowers_exports() {
     let (index, _dir) = lower("greeter", "greeter");
 
+    // `const` declarations must yield Entry::Constant, not Entry::Variable or
+    // any other variant.  A wrong mapping here (e.g. a hardcoded placeholder)
+    // would produce silent wrong-output data in every downstream consumer.
     assert!(
-        matches!(entry_by_name(&index, "DEFAULT_GREETING"), Entry::Constant(_) | Entry::Variable(_)),
-        "DEFAULT_GREETING lowers as a constant/variable"
+        matches!(entry_by_name(&index, "DEFAULT_GREETING"), Entry::Constant(_)),
+        "const DEFAULT_GREETING must lower as Entry::Constant, not Variable or other"
     );
     assert!(
         matches!(entry_by_name(&index, "Greeter"), Entry::RecordType(_)),
-        "Greeter lowers as a RecordType"
+        "class Greeter must lower as Entry::RecordType"
     );
     assert!(
         matches!(entry_by_name(&index, "greet"), Entry::Function(_)),
-        "greet lowers as a Function"
+        "function greet must lower as Entry::Function"
     );
 
     let secret = entry_by_name(&index, "SECRET_GREETING");
@@ -244,5 +247,67 @@ fn structural_types_are_first_class() {
     assert!(
         matches!(type_alias_type(&index, "IsString"), Type::Conditional(_)),
         "conditional type lowers to Type::Conditional"
+    );
+}
+
+/// Exhaustive TS-construct → `ir::kind::Entry` kind-mapping table.
+///
+/// This test is the canonical guard against "placeholder SymbolKind" regressions
+/// where every symbol silently lands on the same variant.  It covers the full
+/// set of TypeScript declaration forms the producer handles:
+///
+/// | TypeScript construct | Expected Entry variant |
+/// |----------------------|------------------------|
+/// | `function`           | `Entry::Function`      |
+/// | `class`              | `Entry::RecordType`    |
+/// | `interface`          | `Entry::TraitDef`      |
+/// | `type` alias         | `Entry::TypeAlias`     |
+/// | `enum`               | `Entry::SumType`       |
+/// | `const`              | `Entry::Constant`      |
+/// | `let`                | `Entry::Variable`      |
+/// | `namespace`          | `Entry::Module`        |
+#[test]
+fn ts_kind_mapping_is_correct_for_every_construct() {
+    let (index, _dir) = lower("kinds", "kinds");
+
+    assert!(
+        matches!(entry_by_name(&index, "doWork"), Entry::Function(_)),
+        "function doWork must lower as Entry::Function; got {:?}",
+        entry_by_name(&index, "doWork")
+    );
+    assert!(
+        matches!(entry_by_name(&index, "Widget"), Entry::RecordType(_)),
+        "class Widget must lower as Entry::RecordType; got {:?}",
+        entry_by_name(&index, "Widget")
+    );
+    assert!(
+        matches!(entry_by_name(&index, "Printable"), Entry::TraitDef(_)),
+        "interface Printable must lower as Entry::TraitDef; got {:?}",
+        entry_by_name(&index, "Printable")
+    );
+    assert!(
+        matches!(entry_by_name(&index, "StringOrNumber"), Entry::TypeAlias(_)),
+        "type alias StringOrNumber must lower as Entry::TypeAlias; got {:?}",
+        entry_by_name(&index, "StringOrNumber")
+    );
+    assert!(
+        matches!(entry_by_name(&index, "Direction"), Entry::SumType(_)),
+        "enum Direction must lower as Entry::SumType; got {:?}",
+        entry_by_name(&index, "Direction")
+    );
+    assert!(
+        matches!(entry_by_name(&index, "MAX_SIZE"), Entry::Constant(_)),
+        "const MAX_SIZE must lower as Entry::Constant, not Variable or other; got {:?}",
+        entry_by_name(&index, "MAX_SIZE")
+    );
+    assert!(
+        matches!(entry_by_name(&index, "currentCount"), Entry::Variable(_)),
+        "let currentCount must lower as Entry::Variable, not Constant or other; got {:?}",
+        entry_by_name(&index, "currentCount")
+    );
+    assert!(
+        matches!(entry_by_name(&index, "utils"), Entry::Module(_)),
+        "namespace utils must lower as Entry::Module; got {:?}",
+        entry_by_name(&index, "utils")
     );
 }

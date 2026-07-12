@@ -13,6 +13,7 @@ use compiler::generate::linked_data::{DocumentSink, emit};
 use compiler::graph::link::PackageCtx;
 use ir::entry::{Index, NudoxPath};
 use ir::kind::{Entry, Symbol, Visibility};
+use ir::syntax::OccurrenceSet;
 use ir::protocols::TraitDef;
 use ir::record::Record;
 use serde_json::Value;
@@ -50,6 +51,8 @@ fn symbol<T>(name: &str, path: NudoxPath, inner: T) -> Symbol<T> {
         aliases: None,
         visibility: Visibility::Public,
         documentation: None,
+        deprecation: None,
+        doc_links: None,
         inner,
     }
 }
@@ -86,6 +89,9 @@ fn trait_def(name: &str, path: NudoxPath) -> Entry {
             provided_methods: None,
             required_constants: None,
             attributes: None,
+            object_safe: None,
+            sealed: None,
+            cfg: None,
             members: None,
         },
     ))
@@ -108,7 +114,7 @@ fn ctx() -> PackageCtx {
 
 fn emit_all(index: &Index) -> Collector {
     let mut sink = Collector::default();
-    emit(index, ctx(), &mut sink).expect("emission succeeds");
+    emit(index, &OccurrenceSet::default(), ctx(), &mut sink).expect("emission succeeds");
     assert!(sink.flushed, "emit must flush the sink once at the end");
     sink
 }
@@ -189,7 +195,7 @@ fn duplicate_uri_is_first_write_wins() {
     ]);
 
     let mut sink = Collector::default();
-    let result = emit(&index, ctx(), &mut sink);
+    let result = emit(&index, &OccurrenceSet::default(), ctx(), &mut sink);
 
     assert!(
         matches!(result, Err(GenerateError::EmitLinkedData(_))),

@@ -16,6 +16,8 @@ fn constant_at(path: NudoxPath) -> Entry {
         aliases: None,
         visibility: Visibility::Public,
         documentation: None,
+        deprecation: None,
+        doc_links: None,
         inner: (),
     })
 }

@@ -5,8 +5,8 @@
 //!
 //! Drives the real pipeline over the Rust `regular` fixture (package
 //! `calculator@0.1.0`). The fixture is copied into a tempdir first so cargo's
-//! `target/` never pollutes the repo. Needs a JSON-capable (nightly) rustdoc
-//! on PATH — same requirement as `parse_rust_to_ir`.
+//! `target/` never pollutes the repo. Default path is rust-analyzer; rustdoc
+//! fallback via `NUDOX_RUST_PRODUCER=rustdoc` (same as `parse_rust_to_ir`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -42,8 +42,37 @@ fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
 }
 
 /// Copy the regular Rust fixture into a tempdir and build a PackageInput.
+///
+/// Manifests are written here (gitignore only tracks `*.rs`).
 fn package_input(dir: &TempDir) -> PackageInput {
     copy_tree(&fixture_root().join("regular"), dir.path()).expect("fixture copies");
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "calculator"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+helper = { path = "helper" }
+"#,
+    )
+    .expect("root Cargo.toml");
+    fs::write(
+        dir.path().join("helper/Cargo.toml"),
+        r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+    )
+    .expect("helper Cargo.toml");
     PackageInput {
         coordinates: PackageCoordinates {
             origin: RegistryOrigin::CratesIo,
@@ -136,7 +165,8 @@ fn generates_linked_data_documents() {
         package: "calculator".into(),
         version: Some("0.1.0".into()),
     };
-    emit(&generated.surface, ctx, &mut sink).expect("linked-data emission succeeds");
+    emit(&generated.surface, &generated.occurrences, ctx, &mut sink)
+        .expect("linked-data emission succeeds");
     assert!(sink.flushed, "emit must flush the sink once at the end");
 
     let packages: Vec<&Value> = sink.docs.iter().filter(|d| d["@type"] == "Package").collect();
