@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use serde::{Deserialize, Deserializer, Serialize};
 use crate::RepoId;
 
 /// Identifies an external library by name and version.
@@ -33,18 +34,57 @@ pub enum SymbolOrigin {
 pub struct TreesitterRepr(pub Vec<u8>);
 
 /// A byte range within a source file or buffer.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+///
+/// Invariant: `start <= end`. Enforced on construction and during deserialization.
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct ByteSpan {
-	/// Inclusive start byte offset.
-	pub start: usize,
-	/// Exclusive end byte offset.
-	pub end:   usize,
+	start: usize,
+	end:   usize,
 }
 
 impl ByteSpan {
-	/// Returns `None` when `start > end` — an inverted span is unrepresentable.
+	/// Returns `None` when `start > end`.
 	pub fn new(start: usize, end: usize) -> Option<Self> {
 		if start <= end { Some(Self { start, end }) } else { None }
+	}
+
+	/// Construct from a range known to satisfy `start <= end`. Panics otherwise.
+	#[inline]
+	pub fn covering(start: usize, end: usize) -> Self {
+		assert!(start <= end, "ByteSpan: start ({start}) > end ({end})");
+		Self { start, end }
+	}
+
+	/// Inclusive start byte offset.
+	#[inline]
+	pub fn start(self) -> usize { self.start }
+
+	/// Exclusive end byte offset.
+	#[inline]
+	pub fn end(self) -> usize { self.end }
+
+	/// Length in bytes.
+	#[inline]
+	pub fn len(self) -> usize { self.end - self.start }
+
+	/// True when `start == end`.
+	#[inline]
+	pub fn is_empty(self) -> bool { self.start == self.end }
+}
+
+impl<'de> Deserialize<'de> for ByteSpan {
+	fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+		#[derive(Deserialize)]
+		struct Raw {
+			/// Inclusive start byte offset.
+			start: usize,
+			/// Exclusive end byte offset.
+			end:   usize,
+		}
+		let Raw { start, end } = Raw::deserialize(d)?;
+		Self::new(start, end).ok_or_else(|| {
+			serde::de::Error::custom(format!("ByteSpan: start ({start}) > end ({end})"))
+		})
 	}
 }
 
@@ -53,7 +93,7 @@ impl ByteSpan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceChunk {
 	/// The raw source code text of this chunk.
-	pub raw_code:        String,
+	pub raw_code:        Arc<str>,
 	/// The tree-sitter representation of this chunk.
 	pub treesitter_repr: Option<TreesitterRepr>,
 	/// The byte span of the primary symbol within `raw_code`.
@@ -61,6 +101,7 @@ pub struct SourceChunk {
 }
 
 /// Describes the semantic purpose for which an embedding was generated.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EmbeddingPurpose {
 	/// Embedding captures the code structure and semantics.
@@ -78,6 +119,7 @@ pub enum EmbeddingPurpose {
 /// Carried with every [`EmbeddingRecord`] so that downstream consumers
 /// (indexes, reranking, debugging) can distinguish vectors from different
 /// providers even when their model names happen to collide.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModelType {
 	/// Deterministic placeholder embedder used for development.
@@ -94,6 +136,75 @@ pub enum ModelType {
 	Other(String),
 }
 
+/// A non-empty embedding vector guaranteed to contain at least one element.
+///
+/// Serializes transparently as a JSON array; deserialization accepts any
+/// `Vec<f32>` for wire compatibility with blobs written before this invariant
+/// was added.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Embedding(Vec<f32>);
+
+impl Embedding {
+	/// Returns `None` if `v` is empty.
+	pub fn new(v: Vec<f32>) -> Option<Self> {
+		(!v.is_empty()).then_some(Self(v))
+	}
+
+	/// The number of dimensions (always ≥ 1 for well-formed instances).
+	pub fn len(&self) -> usize { self.0.len() }
+
+	/// Borrow as a float slice.
+	pub fn as_slice(&self) -> &[f32] { &self.0 }
+
+	/// Consume into the underlying `Vec<f32>`.
+	pub fn into_vec(self) -> Vec<f32> { self.0 }
+}
+
+impl std::ops::Deref for Embedding {
+	type Target = [f32];
+	fn deref(&self) -> &[f32] { &self.0 }
+}
+
+impl PartialEq<Vec<f32>> for Embedding {
+	fn eq(&self, other: &Vec<f32>) -> bool { self.0 == *other }
+}
+
+/// Canonical identifier for an embedding model (e.g. `"text-embedding-3-small"`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelId(pub String);
+
+impl ModelId {
+	/// Wrap any string as a `ModelId`.
+	pub fn new(s: impl Into<String>) -> Self { Self(s.into()) }
+
+	/// Borrow the inner string.
+	pub fn as_str(&self) -> &str { &self.0 }
+}
+
+impl From<&str> for ModelId {
+	fn from(s: &str) -> Self { Self(s.to_owned()) }
+}
+
+impl From<String> for ModelId {
+	fn from(s: String) -> Self { Self(s) }
+}
+
+impl From<ModelId> for String {
+	fn from(m: ModelId) -> Self { m.0 }
+}
+
+impl PartialEq<str> for ModelId {
+	fn eq(&self, other: &str) -> bool { self.0 == other }
+}
+
+impl std::fmt::Display for ModelId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(&self.0)
+	}
+}
+
 /// A single embedding vector produced by a specific model for a specific
 /// purpose.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,11 +212,11 @@ pub struct EmbeddingRecord {
 	/// Family / provider of the model that produced this vector.
 	pub model_type: ModelType,
 	/// The model's identifier (e.g. `"text-embedding-3-small"`).
-	pub model:      String,
+	pub model:      ModelId,
 	/// The semantic purpose for which this embedding was generated.
 	pub purpose:    EmbeddingPurpose,
 	/// The raw embedding vector.
-	pub vector:     Vec<f32>,
+	pub vector:     Embedding,
 }
 
 /// Programming language of a source chunk.

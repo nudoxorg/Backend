@@ -9,5 +9,9 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-serde = { workspace = true }
+# `rc` enables Serialize/Deserialize for Arc<str> (SourceChunk.raw_code), which
+# the workspace otherwise only satisfies via transitive feature unification.
+serde = { workspace = true, features = ["rc"] }
 tracing = { workspace = true }
+triomphe = { workspace = true }
+smol_str = { workspace = true }

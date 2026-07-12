@@ -2,27 +2,47 @@ use serde::{Deserialize, Serialize};
 use crate::{BlobRef, GlobalSymbolId, OccurrenceId};
 use super::primitives::{ChunkMetadata, EmbeddingRecord, LibRef, SourceChunk, SymbolKind, SymbolOrigin};
 
+/// The resolution state of a symbol occurrence — distinguishes the three
+/// possible lifecycle positions so callers never need to infer state from
+/// `symbol_origin` + a side-channel queue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResolutionState {
+	/// No resolution has been attempted yet (fresh from the pipeline).
+	Unresolved,
+	/// Resolution is deferred until the given library is parsed.
+	Deferred(LibRef),
+	/// Successfully resolved to a global symbol identifier.
+	Resolved(GlobalSymbolId),
+}
+
+impl ResolutionState {
+	/// Returns the `GlobalSymbolId` if this state is `Resolved`, otherwise `None`.
+	pub fn resolved_id(&self) -> Option<GlobalSymbolId> {
+		if let Self::Resolved(id) = self { Some(*id) } else { None }
+	}
+}
+
 /// The primary record stored per occurrence: all data about one symbol
 /// occurrence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobInfo {
 	/// Unique identifier for this occurrence.
-	pub occurrence_id:      OccurrenceId,
+	pub occurrence_id: OccurrenceId,
 	/// Fully-qualified name of the symbol.
-	pub symbol_name:        String,
+	pub symbol_name:   String,
 	/// Where this symbol originates from.
-	pub symbol_origin:      SymbolOrigin,
-	/// Resolved global symbol identifier, if resolution has already occurred.
-	pub resolved_global_id: Option<GlobalSymbolId>,
+	pub symbol_origin: SymbolOrigin,
+	/// Current resolution lifecycle state of this occurrence.
+	pub resolution:    ResolutionState,
 	/// Syntactic kind of this symbol, if known.
 	#[serde(default)]
-	pub kind:               Option<SymbolKind>,
+	pub kind:          Option<SymbolKind>,
 	/// The extracted source chunk for this occurrence.
-	pub source:             SourceChunk,
+	pub source:        SourceChunk,
 	/// All embedding vectors computed for this occurrence.
-	pub embeddings:         Vec<EmbeddingRecord>,
+	pub embeddings:    Vec<EmbeddingRecord>,
 	/// Contextual metadata about where and when this chunk was extracted.
-	pub metadata:           ChunkMetadata,
+	pub metadata:      ChunkMetadata,
 }
 
 /// The outcome of attempting to resolve a symbol occurrence to a global
@@ -53,6 +73,9 @@ pub struct ResolveLibReport {
 	pub blobs_seen:     usize,
 	/// Number of blobs successfully resolved.
 	pub blobs_resolved: usize,
-	/// Number of blobs skipped (e.g. already resolved or unresolvable).
-	pub blobs_skipped:  usize,
+}
+
+impl ResolveLibReport {
+	/// Number of blobs that were not resolved (`blobs_seen - blobs_resolved`).
+	pub fn blobs_skipped(&self) -> usize { self.blobs_seen - self.blobs_resolved }
 }

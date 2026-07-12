@@ -2,6 +2,8 @@
 
 //! Core types, traits, and error types for nudox-occurrences.
 
+/// Newtype macro and associated error type for validated string wrappers.
+pub mod newtype;
 mod error;
 mod ids;
 mod traits;
@@ -12,10 +14,13 @@ pub use error::{
     SearchError, VectorError,
 };
 pub use ids::{BlobRef, GlobalSymbolId, OccurrenceId, RepoId};
-pub use traits::{BlobStore, Embedder, FutureParseQueue, GlobalSymbolQuery, GlobalSymbolStore, SearchIndex, SearchQuery, SymbolSearch, VectorIndex, VectorQuery};
+pub use newtype::EmptyValue;
+pub use traits::{BlobStore, Embedder, EmbedderSet, FutureParseQueue, GlobalSymbolQuery, GlobalSymbolStore, SearchIndex, SearchQuery, SymbolSearch, VectorIndex, VectorQuery};
 pub use types::*;
 
 /// Current BlobInfo schema version. Bump on any change to BlobInfo fields.
 ///
 /// v2: `EmbeddingRecord` gained `model_type: ModelType`.
-pub const BLOB_SCHEMA_VERSION: u32 = 2;
+/// v3: `resolved_global_id: Option<GlobalSymbolId>` replaced by `resolution: ResolutionState`;
+///     `SymbolQuery` gained `Criteria` + `NonZeroUsize` limit.
+pub const BLOB_SCHEMA_VERSION: u32 = 3;
