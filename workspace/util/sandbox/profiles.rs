@@ -22,6 +22,8 @@ pub enum ProducerProfile {
 	Nix,
 	/// deno_doc / pyrefly workers — LOW static parsers.
 	StaticParser,
+	/// tsgo (TypeScript 7) checker oracle — MEDIUM; batch `--emitDeclarationOnly`.
+	Typescript,
 	/// Escape tests / trivial commands.
 	Tiny,
 }
@@ -130,6 +132,17 @@ impl ProducerProfile {
 				512 * 1024 * 1024,
 				1024,
 			),
+			// mem 2 GiB, wall 2 min — tsgo checker over a source tree.
+			Self::Typescript => Limits::from_const(
+				2 * 1024 * 1024 * 1024,
+				120,
+				2 * 60,
+				64,
+				8 * 1024 * 1024,
+				256 * 1024,
+				1024 * 1024 * 1024,
+				2048,
+			),
 			Self::Tiny => Limits::from_const(
 				64 * 1024 * 1024,
 				5,
@@ -158,6 +171,7 @@ impl ProducerProfile {
 			Self::Go => "go",
 			Self::Nix => "nix",
 			Self::StaticParser => "static_parser",
+			Self::Typescript => "typescript",
 			Self::Tiny => "tiny",
 		}
 	}

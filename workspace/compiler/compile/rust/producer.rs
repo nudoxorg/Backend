@@ -78,6 +78,7 @@ impl Producer for RustProducer {
 			index,
 			aux: AuxOutputs {
 				source_map: Some(source_map.into_iter().collect()),
+				..Default::default()
 			},
 		})
 	}

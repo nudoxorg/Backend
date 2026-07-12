@@ -50,10 +50,34 @@ impl Producer for TypescriptProducer {
 
 	fn lower_in_process<C: ForgeContext>(
 		&self,
-		_ctx: &C,
+		ctx: &C,
 		root: &Path,
 	) -> Result<ProducerOutput, ProducerError> {
+		// Tier C (opt-in via NUDOX_TYPESCRIPT_ORACLE): try the tsgo checker
+		// oracle first; on ANY failure fall back to the syntactic OXC pass.
+		// Unset env → the default path below, byte-identical to Tier A/B.
+		if super::oracle::tsgo::enabled() {
+			match super::oracle::tsgo::normalize(ctx, root, &self.name) {
+				Ok(index) => {
+					let mut out = ProducerOutput::from_index(index);
+					out.aux.extraction_tier = "tsgo-emit".to_string();
+					return Ok(out);
+				}
+				Err(reason) => {
+					tracing::warn!("tsgo oracle fell back to syntactic: {reason}");
+					let index =
+						super::oxc::generate_ir(root, &self.name).map_err(ProducerError::lower)?;
+					let mut out = ProducerOutput::from_index(index);
+					out.aux.extraction_tier = "syntactic".to_string();
+					out.aux.extraction_failure = Some(reason);
+					return Ok(out);
+				}
+			}
+		}
+
 		let index = super::oxc::generate_ir(root, &self.name).map_err(ProducerError::lower)?;
-		Ok(ProducerOutput::from_index(index))
+		let mut out = ProducerOutput::from_index(index);
+		out.aux.extraction_tier = "syntactic".to_string();
+		Ok(out)
 	}
 }

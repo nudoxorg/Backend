@@ -7,6 +7,7 @@ use std::path::Path;
 
 use ir::entry::Index;
 
+pub mod oracle;
 pub mod oxc;
 pub mod producer;
 

@@ -80,6 +80,17 @@ pub enum ExecPlan {
 pub struct AuxOutputs {
 	/// Absolute path → source text, when a producer captures it (Rust).
 	pub source_map: Option<HashMap<String, String>>,
+
+	/// Which extractor produced the index — `""`/`"syntactic"` for the default
+	/// Tier-A/B OXC pass, `"tsgo-emit"` when the TypeScript checker oracle
+	/// (Tier C) normalized the surface first. Observability + reproducibility.
+	#[serde(default)]
+	pub extraction_tier: String,
+
+	/// When a higher tier was attempted but fell back, the reason (producer
+	/// honesty — e.g. tsgo missing / crashed / emitted nothing).
+	#[serde(default)]
+	pub extraction_failure: Option<String>,
 }
 
 /// IR plus optional aux data from one producer run.
