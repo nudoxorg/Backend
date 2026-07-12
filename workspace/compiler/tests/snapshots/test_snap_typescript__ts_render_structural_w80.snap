@@ -1,0 +1,25 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: rendered
+---
+// <unrendered module>
+
+/**
+ * A conditional type lowers to `Type::Conditional`.
+ */
+type IsString = unknown;
+
+/**
+ * A plain record used as the basis for the structural type aliases.
+ */
+export interface Person {}
+
+/**
+ * `keyof` lowers to a `Type::TypeOperator`.
+ */
+type PersonKeys = unknown;
+
+/**
+ * A mapped type lowers to `Type::Mapped`.
+ */
+type ReadonlyPerson = unknown;

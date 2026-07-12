@@ -1,0 +1,58 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: rendered
+---
+// <unrendered module>
+
+/**
+ * A generic box wrapping a single value.
+ */
+export interface Box<T> {
+    value: T;
+}
+
+export function constructor(v: T): void;
+
+/**
+ * Unwrap the value.
+ */
+export function unwrap(): T;
+
+/**
+ * A generic stack built on an array (Vec<T> analogue).
+ */
+export interface Stack<T> {
+    push(item: T): ;
+    pop(): T | ;
+    peek(): T | ;
+}
+
+/**
+ * A key/value store (HashMap<K,V> analogue).
+ */
+export interface Store<K, V> {
+    get(key: K): V | ;
+    set(key: K, value: V): ;
+    delete(key: K): boolean;
+}
+
+/**
+ * Tag set (HashSet<T> analogue).
+ */
+export interface TagSet<T> {
+    add(tag: T): ;
+    has(tag: T): boolean;
+    remove(tag: T): boolean;
+}
+
+/**
+ * A variadic (rest-param) helper.
+ */
+export function merge<
+    T
+>(...sources[0m[35m[0m: [0m[38;5;12mT[0m[][]: T[][]): T[];
+
+/**
+ * A function accepting an optional parameter and returning a tuple-like type.
+ */
+export function process<T>(items: T[], limit: number): [T[], number];

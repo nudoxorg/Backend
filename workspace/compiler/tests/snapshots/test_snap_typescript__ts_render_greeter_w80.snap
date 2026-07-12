@@ -1,0 +1,36 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: rendered
+---
+// <unrendered module>
+
+/**
+ * The default greeting used when none is supplied.
+ */
+// <unrendered constant>
+
+/**
+ * A greeter that can be reused across calls.
+ */
+export interface Greeter {}
+
+export function constructor(prefix: string): void;
+
+export function greet(name: string): string;
+
+/**
+ * A private greeting that must never leak into the public surface.
+ */
+// <unrendered constant>
+
+/**
+ * A private greeter that stays internal.
+ */
+export interface WhisperGreeter {}
+
+export function whisper(name: string): string;
+
+/**
+ * Greets a subject by name.
+ */
+export function greet(name: string): string;

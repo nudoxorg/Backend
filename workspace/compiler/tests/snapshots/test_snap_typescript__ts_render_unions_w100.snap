@@ -1,0 +1,21 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: rendered
+---
+// <unrendered module>
+
+export interface Aged {}
+
+type MaybeString = string | ;
+
+export interface Named {}
+
+type NamedAndAged = Named & Aged;
+
+type StringOrNumber = string | number;
+
+type Tristate = string | string | string;
+
+export function classify(input: string | number | boolean |  | ): string | string | string | string;
+
+export function parse(input: string | number): unknown;

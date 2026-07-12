@@ -1,0 +1,160 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::Greeter",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::Greeter": TraitDef(
+        Symbol {
+            name: "Greeter",
+            path: Local(
+                "mod::Greeter",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A greeter interface carrying an ordinary method plus a call signature and\nan index signature.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "greet",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "name",
+                                            type: Some(
+                                                Primitive(
+                                                    String,
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "An ordinary required method.",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "__call",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "name",
+                                            type: Some(
+                                                Primitive(
+                                                    String,
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "A call signature: `greeter(name)`.",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "__index",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "key",
+                                            type: Some(
+                                                Primitive(
+                                                    String,
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Any,
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "An index signature: `greeter[\"key\"]`.",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+}

@@ -1,0 +1,520 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::doWork",
+                        ),
+                        Local(
+                            "mod::Widget",
+                        ),
+                        Local(
+                            "mod::Printable",
+                        ),
+                        Local(
+                            "mod::StringOrNumber",
+                        ),
+                        Local(
+                            "mod::Direction",
+                        ),
+                        Local(
+                            "mod::MAX_SIZE",
+                        ),
+                        Local(
+                            "mod::currentCount",
+                        ),
+                        Local(
+                            "mod::utils",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod.utils::identity": Function(
+        Symbol {
+            name: "identity",
+            path: Local(
+                "mod.utils::identity",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "x",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "T",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "T",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Direction": SumType(
+        Symbol {
+            name: "Direction",
+            path: Local(
+                "mod::Direction",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "An enum → Entry::SumType.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: [
+                SumVariant {
+                    name: "Up",
+                    data: None,
+                    documentation: None,
+                },
+                SumVariant {
+                    name: "Down",
+                    data: None,
+                    documentation: None,
+                },
+                SumVariant {
+                    name: "Left",
+                    data: None,
+                    documentation: None,
+                },
+                SumVariant {
+                    name: "Right",
+                    data: None,
+                    documentation: None,
+                },
+            ],
+        },
+    ),
+    "mod::MAX_SIZE": Constant(
+        Symbol {
+            name: "MAX_SIZE",
+            path: Local(
+                "mod::MAX_SIZE",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A const declaration → Entry::Constant.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "mod::Printable": TraitDef(
+        Symbol {
+            name: "Printable",
+            path: Local(
+                "mod::Printable",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "An interface → Entry::TraitDef.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "print",
+                            parameters: None,
+                            return_type: Some(
+                                Tuple(
+                                    [],
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::StringOrNumber": TypeAlias(
+        Symbol {
+            name: "StringOrNumber",
+            path: Local(
+                "mod::StringOrNumber",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A type alias → Entry::TypeAlias.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Union(
+                [
+                    Primitive(
+                        String,
+                    ),
+                    Primitive(
+                        Float(
+                            W64,
+                        ),
+                    ),
+                ],
+            ),
+        },
+    ),
+    "mod::Widget": RecordType(
+        Symbol {
+            name: "Widget",
+            path: Local(
+                "mod::Widget",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A class → Entry::RecordType.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Widget",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "mod::Widget::constructor",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Widget::constructor": Function(
+        Symbol {
+            name: "constructor",
+            path: Local(
+                "mod::Widget::constructor",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "id",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::currentCount": Variable(
+        Symbol {
+            name: "currentCount",
+            path: Local(
+                "mod::currentCount",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A let declaration → Entry::Variable.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "mod::doWork": Function(
+        Symbol {
+            name: "doWork",
+            path: Local(
+                "mod::doWork",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A plain function → Entry::Function.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "x",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::utils": Module(
+        Symbol {
+            name: "utils",
+            path: Local(
+                "mod::utils",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A namespace → Entry::Module.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::utils::identity",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::utils::identity": Function(
+        Symbol {
+            name: "identity",
+            path: Local(
+                "mod::utils::identity",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "x",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "T",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "T",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

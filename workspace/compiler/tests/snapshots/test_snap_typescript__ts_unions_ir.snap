@@ -1,0 +1,487 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::StringOrNumber",
+                        ),
+                        Local(
+                            "mod::MaybeString",
+                        ),
+                        Local(
+                            "mod::Tristate",
+                        ),
+                        Local(
+                            "mod::Named",
+                        ),
+                        Local(
+                            "mod::Aged",
+                        ),
+                        Local(
+                            "mod::NamedAndAged",
+                        ),
+                        Local(
+                            "mod::parse",
+                        ),
+                        Local(
+                            "mod::classify",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::Aged": TraitDef(
+        Symbol {
+            name: "Aged",
+            path: Local(
+                "mod::Aged",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: Some(
+                    [
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "age",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [],
+                                    is_mutable: true,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: None,
+                            },
+                        ),
+                    ],
+                ),
+                required_methods: None,
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::MaybeString": TypeAlias(
+        Symbol {
+            name: "MaybeString",
+            path: Local(
+                "mod::MaybeString",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A nullable string (union with null).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Union(
+                [
+                    Primitive(
+                        String,
+                    ),
+                    Tuple(
+                        [],
+                    ),
+                ],
+            ),
+        },
+    ),
+    "mod::Named": TraitDef(
+        Symbol {
+            name: "Named",
+            path: Local(
+                "mod::Named",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "An intersection type combining two interfaces.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: Some(
+                    [
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "name",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [],
+                                    is_mutable: true,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: None,
+                            },
+                        ),
+                    ],
+                ),
+                required_methods: None,
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::NamedAndAged": TypeAlias(
+        Symbol {
+            name: "NamedAndAged",
+            path: Local(
+                "mod::NamedAndAged",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Intersection of Named and Aged.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Intersection(
+                [
+                    TypeReference(
+                        TypeReference {
+                            identifier: "Named",
+                            generic_args: None,
+                        },
+                    ),
+                    TypeReference(
+                        TypeReference {
+                            identifier: "Aged",
+                            generic_args: None,
+                        },
+                    ),
+                ],
+            ),
+        },
+    ),
+    "mod::StringOrNumber": TypeAlias(
+        Symbol {
+            name: "StringOrNumber",
+            path: Local(
+                "mod::StringOrNumber",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A discriminated union of primitive types.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Union(
+                [
+                    Primitive(
+                        String,
+                    ),
+                    Primitive(
+                        Float(
+                            W64,
+                        ),
+                    ),
+                ],
+            ),
+        },
+    ),
+    "mod::Tristate": TypeAlias(
+        Symbol {
+            name: "Tristate",
+            path: Local(
+                "mod::Tristate",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A three-way union.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Union(
+                [
+                    Primitive(
+                        String,
+                    ),
+                    Primitive(
+                        String,
+                    ),
+                    Primitive(
+                        String,
+                    ),
+                ],
+            ),
+        },
+    ),
+    "mod::classify": Function(
+        Symbol {
+            name: "classify",
+            path: Local(
+                "mod::classify",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Long union signature used for two-width render snapshots (40 vs 100 cols).\n\nThis signature is intentionally verbose to trigger line-breaking at 40 cols\nwhile fitting on one line at 100 cols.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "input",
+                                type: Some(
+                                    Union(
+                                        [
+                                            Primitive(
+                                                String,
+                                            ),
+                                            Primitive(
+                                                Float(
+                                                    W64,
+                                                ),
+                                            ),
+                                            Primitive(
+                                                Bool,
+                                            ),
+                                            Tuple(
+                                                [],
+                                            ),
+                                            Tuple(
+                                                [],
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Union(
+                                        [
+                                            Primitive(
+                                                String,
+                                            ),
+                                            Primitive(
+                                                String,
+                                            ),
+                                            Primitive(
+                                                String,
+                                            ),
+                                            Primitive(
+                                                String,
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::parse": Function(
+        Symbol {
+            name: "parse",
+            path: Local(
+                "mod::parse",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A function that accepts a union-typed parameter and returns an inline-object.\n\nThe inline return object type exercises structural/anonymous object rendering.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "input",
+                                type: Some(
+                                    Union(
+                                        [
+                                            Primitive(
+                                                String,
+                                            ),
+                                            Primitive(
+                                                Float(
+                                                    W64,
+                                                ),
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    RecordLiteral(
+                                        Record {
+                                            name: None,
+                                            generics: None,
+                                            fields: [
+                                                Known(
+                                                    KnownField {
+                                                        key: Ident(
+                                                            "value",
+                                                        ),
+                                                        type: Some(
+                                                            Primitive(
+                                                                String,
+                                                            ),
+                                                        ),
+                                                        default_value: None,
+                                                        attributes: FieldAttributes {
+                                                            decorators: [],
+                                                            is_mutable: true,
+                                                            is_optional: false,
+                                                            is_static: false,
+                                                        },
+                                                        visibility: None,
+                                                        documentation: None,
+                                                    },
+                                                ),
+                                                Known(
+                                                    KnownField {
+                                                        key: Ident(
+                                                            "raw",
+                                                        ),
+                                                        type: Some(
+                                                            Union(
+                                                                [
+                                                                    Primitive(
+                                                                        String,
+                                                                    ),
+                                                                    Primitive(
+                                                                        Float(
+                                                                            W64,
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            ),
+                                                        ),
+                                                        default_value: None,
+                                                        attributes: FieldAttributes {
+                                                            decorators: [],
+                                                            is_mutable: true,
+                                                            is_optional: false,
+                                                            is_static: false,
+                                                        },
+                                                        visibility: None,
+                                                        documentation: None,
+                                                    },
+                                                ),
+                                            ],
+                                            call_signatures: None,
+                                            constructors: None,
+                                            methods: None,
+                                            index_signatures: None,
+                                            super_types: None,
+                                            members: None,
+                                            implemented_protocols: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

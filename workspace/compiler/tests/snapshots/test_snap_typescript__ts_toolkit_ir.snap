@@ -1,0 +1,360 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::toolkit",
+                        ),
+                        Local(
+                            "mod::Builder",
+                        ),
+                        Local(
+                            "mod::default",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod.toolkit::VERSION": Constant(
+        Symbol {
+            name: "VERSION",
+            path: Local(
+                "mod.toolkit::VERSION",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "The toolkit version.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "mod.toolkit::help": Function(
+        Symbol {
+            name: "help",
+            path: Local(
+                "mod.toolkit::help",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A helper reachable through the namespace.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Builder": RecordType(
+        Symbol {
+            name: "Builder",
+            path: Local(
+                "mod::Builder",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Incrementally assembles a path from segments.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Builder",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "mod::Builder::push",
+                        ),
+                        Local(
+                            "mod::Builder::build",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Builder::build": Function(
+        Symbol {
+            name: "build",
+            path: Local(
+                "mod::Builder::build",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Materialize the accumulated path.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Builder::push": Function(
+        Symbol {
+            name: "push",
+            path: Local(
+                "mod::Builder::push",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Append a segment.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "segment",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    SelfType,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::default": Function(
+        Symbol {
+            name: "default",
+            path: Local(
+                "mod::default",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Install the toolkit (default export).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Tuple(
+                                        [],
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::toolkit": Module(
+        Symbol {
+            name: "toolkit",
+            path: Local(
+                "mod::toolkit",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A namespace grouping toolkit helpers.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::toolkit::VERSION",
+                        ),
+                        Local(
+                            "mod::toolkit::help",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::toolkit::VERSION": Constant(
+        Symbol {
+            name: "VERSION",
+            path: Local(
+                "mod::toolkit::VERSION",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "The toolkit version.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "mod::toolkit::help": Function(
+        Symbol {
+            name: "help",
+            path: Local(
+                "mod::toolkit::help",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A helper reachable through the namespace.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}
