@@ -229,16 +229,8 @@
         { pkgs, system, ... }:
         let
           buck2-bin = mkBuck2 pkgs;
-          patchedBuck2Prelude =
-            pkgs.runCommand "buck2-prelude-patched"
-              {
-                nativeBuildInputs = [ pkgs.python3 ];
-              }
-              ''
-                cp -a ${buck2-prelude}/. "$out"
-                chmod -R u+w "$out"
-                python3 ${./build/patch-prelude.py} "$out"
-              '';
+          # setup-prelude.sh does the one-time patching of load paths inside the
+          # prelude cell. We re-use the same script the devshell shellHook calls.
           bxlScript = pkgs.writeShellApplication {
             name = "nudox-buck2-build";
             runtimeInputs = [ buck2-bin ];
@@ -249,8 +241,15 @@
                 exit 1
               fi
 
-              # Wire the prelude cell: patched derivation lives in the Nix store.
-              ln -sfn ${patchedBuck2Prelude} prelude
+              # Wire the prelude cell — mirrors the devshell shellHook logic.
+              ln -sfn ${buck2-prelude} prelude
+
+              _prelude_stamp="build/prelude-local/.nix-source"
+              if [[ ! -f "$_prelude_stamp" || "$(cat "$_prelude_stamp")" != "${buck2-prelude}" ]]; then
+                bash build/setup-prelude.sh
+                echo -n "${buck2-prelude}" > "$_prelude_stamp"
+              fi
+              unset _prelude_stamp
 
               echo "nudox-buck2-build: invoking snowydeer BXL for //workspace/server:nudox_pkg" >&2
               buck2 bxl //snowydeer:snowydeer.bxl:main -- --target //workspace/server:nudox_pkg
@@ -375,16 +374,6 @@
             "rustc-codegen-cranelift-preview"
           ];
           hooks = self.checks.${system}.pre-commit-check;
-          patchedBuck2Prelude =
-            pkgs.runCommand "buck2-prelude-patched"
-              {
-                nativeBuildInputs = [ pkgs.python3 ];
-              }
-              ''
-                cp -a ${buck2-prelude}/. "$out"
-                chmod -R u+w "$out"
-                python3 ${./build/patch-prelude.py} "$out"
-              '';
 
           # Sourcing from nushell for our commands
           mkCommand = name: help: category: {
@@ -524,33 +513,33 @@
               (mkCommand "rad-sync" "manually sync radicle repos" "utilities")
             ];
             devshell.startup.shellHook.text = ''
-                            # Patched prelude lives in the Nix store; just symlink it.
-                            ln -sfn ${patchedBuck2Prelude} "$PRJ_ROOT/prelude"
-                            # Write .buckconfig.local with absolute Nix store paths for Go and Java.
-                            # This survives daemon restarts (no PATH dependency) and is gitignored.
-                            cat > "$PRJ_ROOT/.buckconfig.local" <<'BCFG'
-              [go]
-                go_binary = ${pkgs.go}/bin/go
-              [java]
-                java_home = ${pkgs.jdk21_headless}
-              BCFG
-                            export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
-                            # sccache intercepts rustc --version as a non-compilation call and returns empty output,
-                            # breaking Buck2 build scripts (e.g. rustversion). Buck2 has its own caching.
-                            unset RUSTC_WRAPPER
-                            # Expose Go and Java binaries to the hermetic oracle sandbox PATH.
-                            # ToolchainSet::from_env() reads NUDOX_TOOLCHAIN_PATH (colon-separated) and
-                            # prepends it to the fixed hermetic PATH inside IsolatedCommand, so the Go oracle
-                            # (which internally invokes `go list`) and the Java oracle (which spawns `javadoc`)
-                            # can find their tools even under the sealed environment.
-                            export NUDOX_TOOLCHAIN_PATH="${pkgs.go}/bin:${pkgs.jdk21_headless}/bin"
-                            export NUDOX_TOOLCHAIN_JAVA_HOME="${pkgs.jdk21_headless}"
-                            ${hooks.shellHook}
-                            (
-                              # Use a lockfile to prevent multiple instances from stomping on Git
-                              flock -n 9 || exit 1
+              ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
+              # build/prelude-local is the patched prelude cell used by .buckconfig.
+              # Regenerate it whenever the pinned buck2-prelude store path changes.
+              _prelude_stamp="$PRJ_ROOT/build/prelude-local/.nix-source"
+              if [[ ! -f "$_prelude_stamp" || "$(cat "$_prelude_stamp")" != "${buck2-prelude}" ]]; then
+                bash "$PRJ_ROOT/build/setup-prelude.sh"
+                echo -n "${buck2-prelude}" > "$PRJ_ROOT/build/prelude-local/.nix-source"
+              fi
+              unset _prelude_stamp
+              # Write .buckconfig.local with absolute Nix store paths for Go and Java.
+              # This survives daemon restarts (no PATH dependency) and is gitignored.
+              cat > "$PRJ_ROOT/.buckconfig.local" <<'BCFG'
+[go]
+  go_binary = ${pkgs.go}/bin/go
+[java]
+  java_home = ${pkgs.jdk21_headless}
+BCFG
+              export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
+              # sccache intercepts rustc --version as a non-compilation call and returns empty output,
+              # breaking Buck2 build scripts (e.g. rustversion). Buck2 has its own caching.
+              unset RUSTC_WRAPPER
+              ${hooks.shellHook}
+              (
+                # Use a lockfile to prevent multiple instances from stomping on Git
+                flock -n 9 || exit 1
 
-                            ) 9>/tmp/nunu_sync.lock &
+              ) 9>/tmp/nunu_sync.lock &
             '';
           };
         }
