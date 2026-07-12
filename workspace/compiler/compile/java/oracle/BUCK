@@ -1,0 +1,7 @@
+prelude = native
+
+prelude.java_library(
+    name = "extractor",
+    srcs = glob(["**/*.java"]),
+    visibility = ["//workspace/compiler/..."],
+)
