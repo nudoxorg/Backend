@@ -1,0 +1,77 @@
+# ── crates: the cargo-like third-party tooling CLI ───────────────────────────
+#
+# `python_bootstrap_binary` / `python_bootstrap_library` / `command_alias` are
+# native prelude rules registered in prelude/rules_impl.bzl (like `alias`), so
+# they are available as globals with no `load()` — the `.bzl` module only
+# exports the impl fn + provider, not a loadable rule symbol.
+#
+# `python_bootstrap_binary` runs pure Python with the system interpreter (no
+# pip/venv), which is exactly what this network-y, self-contained tool needs.
+# Its `main` attr is a single source; every other module (the whole `nudox/`
+# package) is carried in via a `python_bootstrap_library` on `deps`. The binary
+# rule has no `srcs` attr, so the package MUST be a library dep.
+#
+#   buck2 run //build/third-party/tools:crates -- <verb> ...
+#
+# Ergonomic aliases (:add/:update/:check/:new) and the root-level //:add etc.
+# in the repo-root BUCK forward to this same binary.
+
+python_bootstrap_library(
+    name = "nudox-lib",
+    srcs = glob(["nudox/**/*.py"]),
+    visibility = ["PUBLIC"],
+)
+
+python_bootstrap_binary(
+    name = "crates",
+    main = "crates.py",
+    deps = [":nudox-lib"],
+    visibility = ["PUBLIC"],
+)
+
+# `command_alias` (a prelude/native rule) lets us bake the verb in as argv[1]
+# so `buck2 run //build/third-party/tools:add -- serde` works. The repo-root
+# BUCK exposes the same verbs at //:add etc. — those are the guaranteed
+# entrypoints; `buck2 run //build/third-party/tools:crates -- <verb>` is the
+# always-available fallback.
+command_alias(
+    name = "add",
+    exe = ":crates",
+    args = ["add"],
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "update",
+    exe = ":crates",
+    args = ["update"],
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "check",
+    exe = ":crates",
+    args = ["check"],
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "new",
+    exe = ":crates",
+    args = ["new"],
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "build",
+    exe = ":crates",
+    args = ["build"],
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "test",
+    exe = ":crates",
+    args = ["test"],
+    visibility = ["PUBLIC"],
+)

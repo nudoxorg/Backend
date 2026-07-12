@@ -1,0 +1,9 @@
+{
+    "rust-analyzer.linkedProjects": ["rust-project.json"],
+    "rust-analyzer.check.overrideCommand": [
+        "buck2", "bxl",
+        "prelude//rust/rust-analyzer:check.bxl:check",
+        "--", "--file", "${file}"
+    ],
+    "rust-analyzer.files.excludeDirs": ["buck-out", "prelude", "deno_doc", "target"]
+}

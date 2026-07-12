@@ -1,0 +1,20 @@
+load("//build:rust.bzl", "crate", "deps", "rust_crate", "rust_tests", "target")
+
+rust_crate(
+    name = "caching",
+    deps = deps([
+        crate("moka", features = ["sync", "future"]),
+        crate("tokio"),
+        crate("dashmap"),
+        crate("rand"),
+        crate("tracing"),
+    ]),
+)
+
+rust_tests(
+    prefix = "test",
+    deps = deps([
+        crate("tokio"),
+        target(":caching"),
+    ]),
+)

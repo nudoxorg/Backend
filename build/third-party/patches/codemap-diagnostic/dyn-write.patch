@@ -1,0 +1,29 @@
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -78,7 +78,7 @@
+     }
+ 
+     /// Creates an emitter wrapping a boxed `Write` trait object.
+-    pub fn new(dst: Box<Write + Send + 'a>, code_map: Option<&'a CodeMap>) -> Emitter<'a> {
++    pub fn new(dst: Box<dyn Write + Send + 'a>, code_map: Option<&'a CodeMap>) -> Emitter<'a> {
+         Emitter {
+             dst: Raw(dst),
+             cm: code_map,
+@@ -1001,7 +1001,7 @@
+ enum Destination<'a> {
+     Terminal(StandardStream),
+     Buffered(BufferWriter),
+-    Raw(Box<Write + Send + 'a>),
++    Raw(Box<dyn Write + Send + 'a>),
+ }
+ 
+ use self::Destination::*;
+@@ -1009,7 +1009,7 @@
+ enum WritableDst<'a, 'b> {
+     Terminal(&'b mut StandardStream),
+     Buffered(&'b mut BufferWriter, Buffer),
+-    Raw(&'b mut Box<Write + Send + 'a>),
++    Raw(&'b mut Box<dyn Write + Send + 'a>),
+ }
+ 
+ impl<'a> Destination<'a> {

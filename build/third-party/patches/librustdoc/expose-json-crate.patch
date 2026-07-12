@@ -1,0 +1,125 @@
+# Patch against src/librustdoc/json/mod.rs @ f46ec5218fe7829ac18323b5ee0b409a63169f27
+#
+# IMPORTANT: Line offsets are approximate. After running scripts/vendor-librustdoc.sh,
+# apply with:
+#   patch -p1 -d build/third-party/vendor/librustdoc \
+#       < build/third-party/patches/librustdoc/expose-json-crate.patch
+#
+# If the offsets are stale, use `patch --fuzz 3` or apply the hunks manually.
+# The semantic intent of each hunk is described in comments above it.
+#
+# What this patch does:
+#   1. Adds CAPTURE_MODE (AtomicBool) and CAPTURE_SLOT (Mutex<Option<Crate>>)
+#      module-level statics to json/mod.rs.
+#   2. In JsonRenderer::after_krate, after assembling the `types::Crate` value
+#      but BEFORE writing to disk: if CAPTURE_MODE is true, store the value into
+#      CAPTURE_SLOT and return early (skipping the BufWriter/serde_json::to_writer).
+#   3. Exposes `pub fn capture_crate(at_args: Vec<String>) -> Result<Vec<u8>, ...>`
+#      which sets the capture mode, drives run_from_commandline, and returns the
+#      assembled JSON bytes from memory — never touching the filesystem.
+#
+# The driver (workspace/rustdoc-driver/driver/src/main.rs) calls capture_crate
+# and immediately lowers the returned bytes via serde_json → rustdoc_types::Crate
+# → RustdocParser. No JSON file is ever written to or read from disk.
+
+--- a/json/mod.rs
++++ b/json/mod.rs
+@@ -1,9 +1,17 @@
+ //! Rustdoc's JSON backend.
+
++use std::sync::{
++    Mutex,
++    atomic::{AtomicBool, Ordering},
++};
++
+ use std::cell::RefCell;
+ use std::fs::File;
+ use std::io::BufWriter;
+ use std::path::PathBuf;
+ use std::rc::Rc;
+
++/// When true, after_krate stores the assembled Crate in CAPTURE_SLOT instead of
++/// writing JSON to disk.  Set only by capture_crate(); never mutated concurrently.
++static CAPTURE_MODE: AtomicBool = AtomicBool::new(false);
++
++/// Receives the assembled Crate when CAPTURE_MODE is true.
++static CAPTURE_SLOT: Mutex<Option<Vec<u8>>> = Mutex::new(None);
++
+ use rustc_data_structures::fx::FxHashMap;
+ use rustc_hir::def_id::DefId;
+ use rustc_middle::ty::TyCtxt;
+@@ -20,6 +28,42 @@ use crate::formats::renderer::FormatRenderer;
+ use crate::json::conversions::IntoJson;
+ pub(crate) use conversions::id_from_item_default;
+
++/// Run the full rustdoc JSON pass with `at_args` (identical to the argv that
++/// cargo passes to the system rustdoc), capture the assembled `Crate` value
++/// **in memory**, and return it serialised to JSON bytes.
++///
++/// No JSON file is written.  The caller (rustdoc-driver) deserialises the bytes
++/// into `rustdoc_types::Crate` and lowers directly to IR.
++///
++/// # Errors
++/// Returns an error string if the compilation or doc pass failed, or if the
++/// capture slot was unexpectedly empty after the run.
++pub fn capture_crate(
++    at_args: Vec<String>,
++) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
++    // Reset the slot from any previous call, then enable capture mode.
++    {
++        let mut slot = CAPTURE_SLOT.lock().map_err(|e| e.to_string())?;
++        *slot = None;
++    }
++    CAPTURE_MODE.store(true, Ordering::SeqCst);
++
++    // Drive the full rustdoc pipeline.  run_from_commandline is the same entry
++    // point cargo invokes; it returns the process exit code.
++    let dcx = rustc_errors::EarlyDiagCtxt::new(
++        rustc_session::config::ErrorOutputType::default(),
++    );
++    let exit_code = crate::run_from_commandline(at_args, &dcx);
++
++    CAPTURE_MODE.store(false, Ordering::SeqCst);
++
++    if exit_code != 0 {
++        return Err(format!("rustdoc exited with code {exit_code}").into());
++    }
++
++    let bytes = CAPTURE_SLOT
++        .lock()
++        .map_err(|e| e.to_string())?
++        .take()
++        .ok_or("capture_crate: slot empty after successful run")?;
++
++    Ok(bytes)
++}
++
+ #[derive(Clone)]
+ pub(crate) struct JsonRenderer<'tcx> {
+     tcx: TyCtxt<'tcx>,
+@@ -180,12 +224,24 @@ impl<'tcx> FormatRenderer<'tcx> for JsonRenderer<'tcx> {
+         // ... (existing code assembles `output: rustdoc_json_types::Crate`) ...
+         // The hunk below is inserted immediately after `output` is fully built
+         // and before the BufWriter / serde_json::to_writer block.
+
++        // ── in-process capture hook ──────────────────────────────────────────
++        if CAPTURE_MODE.load(Ordering::SeqCst) {
++            match serde_json::to_vec(&output) {
++                Ok(bytes) => {
++                    if let Ok(mut slot) = CAPTURE_SLOT.lock() {
++                        *slot = Some(bytes);
++                    }
++                }
++                Err(e) => {
++                    // Non-fatal: fall through to the normal file write so the
++                    // caller gets a clear error from the file path.
++                    tracing::error!("capture_crate: serialisation failed: {e}");
++                }
++            }
++            return Ok(());
++        }
++        // ── end capture hook ─────────────────────────────────────────────────
++
+         let p = self.out.with_extension("json");
+         let mut writer = BufWriter::new(
+             File::create(&p).map_err(|e| Error::new(e, &p))?,
