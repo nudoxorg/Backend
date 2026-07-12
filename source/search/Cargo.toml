@@ -13,6 +13,7 @@ tantivy = { workspace = true }
 tokio = { workspace = true }
 qdrant-client = { workspace = true }
 uuid = { workspace = true }
+wide = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
