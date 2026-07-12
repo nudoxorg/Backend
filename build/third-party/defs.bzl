@@ -282,8 +282,11 @@ def _git_crate(archive_name, crate_name, subdir, edition, deps, features, proc_m
         )
 
     src_ref = ":" + normalized + "-src"
-    deps = _gate_platform_deps(deps)
+    # Gate `bs_deps` from the *ungated* dep list — `_gate_platform_deps` returns
+    # a `select()` when platform-specific deps are present, and calling it again
+    # on that Select fails (`Operation (iter) not supported on type Select`).
     bs_deps = _gate_platform_deps(build_script_deps if build_script_deps != None else deps)
+    deps = _gate_platform_deps(deps)
 
     _ver_parts = version.split(".")
     _ver_major = _ver_parts[0] if len(_ver_parts) > 0 else "0"

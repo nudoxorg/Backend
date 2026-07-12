@@ -30,6 +30,29 @@ DENO_DOC_REV = "0.202.0"
 # (no `rkyv_0_8`, no `rustc-hash`) — deps are just serde + serde_derive.
 RUSTDOC_TYPES_REV = "v0.60.0"
 
+# OXC monorepo — the TypeScript producer's parse/semantic/isolated-declarations
+# substrate (replaces deno_doc; see OXC-PLAN.md). The oxc repo's *git tags*
+# track applications (oxlint_v*, editor releases), NOT the library crate
+# versions, so we CANNOT pin by tag. Instead we pin the exact commit SHA of the
+# lockstep 0.139.0 crates release.
+#
+#   Commit:            69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d
+#   PR/title:          release(crates): oxc v0.139.0 (#24218)
+#   Date:              2026-07-06
+#   Workspace version: every crates/oxc_* Cargo.toml has version = "0.139.0"
+#                      (verified in [workspace.dependencies] at this SHA).
+#
+# Found by walking the Cargo.toml commit history via the GitHub API
+# (`/repos/oxc-project/oxc/commits?path=Cargo.toml`) and taking the newest
+# `release(crates): oxc v0.139.0` commit. edition 2024, MSRV 1.94.0, no build.rs
+# in any crate (generated AST code is checked in under src/generated/).
+OXC_REV = "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+
+# oxc_resolver — ESM/CJS/`.d.ts` module resolution (resolve_dts). Separate repo
+# `oxc-project/oxc-resolver`; its tags DO track the crate version, so pin the
+# `v11.23.0` tag. Crate lives at the repo root (src/lib.rs). edition 2024.
+OXC_RESOLVER_REV = "v11.23.0"
+
 GIT = [
     # librustdoc is NOT fetched via http_archive (that would download ~300 MB of
     # rust-lang/rust). Instead, `scripts/vendor-librustdoc.sh` sparse-clones just
@@ -642,6 +665,324 @@ GIT = [
                     ":proc_macro2-1",
                     ":quote-1",
                     ":syn-1",
+                ],
+            },
+        ],
+    },
+    # ── OXC monorepo (workspace version 0.139.0 @ commit OXC_REV) ──────────────
+    # All crates share one tarball and reference each other as `:oxc_*` labels;
+    # registry deps use `:<label>` from registry.bzl. No build.rs anywhere.
+    # Feature flags per OXC-PLAN §2:
+    #   oxc_allocator: `bitset` (required by oxc_semantic)
+    #   oxc_ast:       NO `serialize`
+    #   oxc_semantic:  default + `jsdoc` (pulls oxc_jsdoc); NO `cfg`
+    #   oxc_syntax:    `to_js_string` (required by isolated_declarations; pulls
+    #                  dragonbox_ecma)
+    #   oxc_parser:    default (`regular_expression`)
+    {
+        "archive_name": "oxc-repo",
+        "urls": ["https://github.com/oxc-project/oxc/archive/" + OXC_REV + ".tar.gz"],
+        "sha256": "9481262a54bcfbf67feb66eaf0af15f1382dd7fb0701d9018ac383b1eab25567",
+        "strip_prefix": "oxc-" + OXC_REV,
+        "crates": [
+            {
+                "name": "oxc_ast_macros",
+                "subdir": "crates/oxc_ast_macros",
+                "edition": "2024",
+                "version": "0.139.0",
+                "proc_macro": True,
+                "deps": [
+                    ":phf-0_14",
+                    ":proc_macro2-1",
+                    ":quote-1",
+                    ":syn-2",
+                ],
+            },
+            {
+                "name": "oxc_estree",
+                "subdir": "crates/oxc_estree",
+                "edition": "2024",
+                "version": "0.139.0",
+                # default features only (serialize disabled) → no deps.
+                "deps": [],
+            },
+            {
+                "name": "oxc_data_structures",
+                "subdir": "crates/oxc_data_structures",
+                "edition": "2024",
+                "version": "0.139.0",
+                # Superset of features requested across consumers: assert_unchecked,
+                # code_buffer, fieldless_enum, inline_string, slice_iter, stack.
+                # `rope` (→ ropey) is NOT enabled by any consumer here.
+                "features": [
+                    "assert_unchecked",
+                    "code_buffer",
+                    "fieldless_enum",
+                    "inline_string",
+                    "slice_iter",
+                    "stack",
+                    "string_ext",
+                ],
+                "deps": [],
+            },
+            {
+                "name": "oxc_allocator",
+                "subdir": "crates/oxc_allocator",
+                "edition": "2024",
+                "version": "0.139.0",
+                "features": ["bitset"],
+                "deps": [
+                    ":oxc_data_structures",
+                    ":allocator_api2-0_2",
+                    ":hashbrown-0_17",
+                    ":rustc_hash-2",
+                ],
+            },
+            {
+                "name": "oxc_str",
+                "subdir": "crates/oxc_str",
+                "edition": "2024",
+                "version": "0.139.0",
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_estree",
+                    ":compact_str-0_9",
+                    ":hashbrown-0_17",
+                ],
+            },
+            {
+                "name": "oxc_span",
+                "subdir": "crates/oxc_span",
+                "edition": "2024",
+                "version": "0.139.0",
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast_macros",
+                    ":oxc_estree",
+                    ":oxc_str",
+                    ":compact_str-0_9",
+                    ":oxc_miette-3",
+                ],
+            },
+            {
+                "name": "oxc_diagnostics",
+                "subdir": "crates/oxc_diagnostics",
+                "edition": "2024",
+                "version": "0.139.0",
+                "deps": [
+                    ":cow_utils-0_1",
+                    ":oxc_miette-3",
+                    ":percent_encoding-2",
+                ],
+            },
+            {
+                "name": "oxc_syntax",
+                "subdir": "crates/oxc_syntax",
+                "edition": "2024",
+                "version": "0.139.0",
+                "features": ["to_js_string"],
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast_macros",
+                    ":oxc_estree",
+                    ":oxc_index-5",
+                    ":oxc_span",
+                    ":oxc_str",
+                    ":bitflags-2",
+                    ":cow_utils-0_1",
+                    ":nonmax-0_5",
+                    ":phf-0_14",
+                    ":unicode_id_start-1",
+                    ":dragonbox_ecma-0_1",
+                ],
+            },
+            {
+                "name": "oxc_regular_expression",
+                "subdir": "crates/oxc_regular_expression",
+                "edition": "2024",
+                "version": "0.139.0",
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast_macros",
+                    ":oxc_diagnostics",
+                    ":oxc_span",
+                    ":oxc_str",
+                    ":bitflags-2",
+                    ":phf-0_14",
+                    ":rustc_hash-2",
+                    ":unicode_id_start-1",
+                ],
+            },
+            {
+                "name": "oxc_ast",
+                "subdir": "crates/oxc_ast",
+                "edition": "2024",
+                "version": "0.139.0",
+                # NO `serialize` (default features = []).
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast_macros",
+                    ":oxc_data_structures",
+                    ":oxc_diagnostics",
+                    ":oxc_estree",
+                    ":oxc_regular_expression",
+                    ":oxc_span",
+                    ":oxc_str",
+                    ":oxc_syntax",
+                    ":bitflags-2",
+                ],
+            },
+            {
+                "name": "oxc_ast_visit",
+                "subdir": "crates/oxc_ast_visit",
+                "edition": "2024",
+                "version": "0.139.0",
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast",
+                    ":oxc_span",
+                    ":oxc_syntax",
+                ],
+            },
+            {
+                "name": "oxc_ecmascript",
+                "subdir": "crates/oxc_ecmascript",
+                "edition": "2024",
+                "version": "0.139.0",
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast",
+                    ":oxc_regular_expression",
+                    ":oxc_span",
+                    ":oxc_syntax",
+                    ":cow_utils-0_1",
+                    ":num_bigint-0_5",
+                    ":num_traits-0_2",
+                    ":smallvec-1",
+                ],
+            },
+            {
+                "name": "oxc_jsdoc",
+                "subdir": "crates/oxc_jsdoc",
+                "edition": "2024",
+                "version": "0.139.0",
+                "deps": [
+                    ":oxc_ast",
+                    ":oxc_span",
+                    ":rustc_hash-2",
+                ],
+            },
+            {
+                "name": "oxc_parser",
+                "subdir": "crates/oxc_parser",
+                "edition": "2024",
+                "version": "0.139.0",
+                # default feature `regular_expression` (→ dep:oxc_regular_expression).
+                "features": ["default", "regular_expression"],
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast",
+                    ":oxc_data_structures",
+                    ":oxc_diagnostics",
+                    ":oxc_ecmascript",
+                    ":oxc_regular_expression",
+                    ":oxc_span",
+                    ":oxc_str",
+                    ":oxc_syntax",
+                    ":bitflags-2",
+                    ":cow_utils-0_1",
+                    ":num_bigint-0_5",
+                    ":num_traits-0_2",
+                    ":rustc_hash-2",
+                    ":seq_macro-0_3",
+                    ":memchr-2",
+                ],
+            },
+            {
+                "name": "oxc_semantic",
+                "subdir": "crates/oxc_semantic",
+                "edition": "2024",
+                "version": "0.139.0",
+                # default + jsdoc; NO cfg (so no oxc_cfg/petgraph).
+                "features": ["jsdoc"],
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast",
+                    ":oxc_ast_visit",
+                    ":oxc_data_structures",
+                    ":oxc_diagnostics",
+                    ":oxc_ecmascript",
+                    ":oxc_index-5",
+                    ":oxc_jsdoc",
+                    ":oxc_span",
+                    ":oxc_str",
+                    ":oxc_syntax",
+                    ":itertools-0_15",
+                    ":memchr-2",
+                    ":rustc_hash-2",
+                    ":self_cell-1",
+                    ":smallvec-1",
+                ],
+            },
+            {
+                "name": "oxc_isolated_declarations",
+                "subdir": "crates/oxc_isolated_declarations",
+                "edition": "2024",
+                "version": "0.139.0",
+                "deps": [
+                    ":oxc_allocator",
+                    ":oxc_ast",
+                    ":oxc_ast_visit",
+                    ":oxc_diagnostics",
+                    ":oxc_ecmascript",
+                    ":oxc_span",
+                    ":oxc_str",
+                    ":oxc_syntax",
+                    ":bitflags-2",
+                    ":rustc_hash-2",
+                ],
+            },
+        ],
+    },
+    # ── oxc_resolver (tag v11.23.0) ───────────────────────────────────────────
+    # Crate lives at the repo root (src/lib.rs). Default features only (no
+    # yarn_pnp/pnp, no document-features). Platform-gated deps (windows) are
+    # gated by _gate_platform_deps in defs.bzl; simd-json/self_cell are
+    # little-endian-only in Cargo but all our targets are little-endian, so they
+    # are listed unconditionally. rustix is macos/linux-only in Cargo but not in
+    # defs.bzl's gate lists — harmless on our darwin/linux targets.
+    {
+        "archive_name": "oxc-resolver-repo",
+        "urls": ["https://github.com/oxc-project/oxc-resolver/archive/refs/tags/" + OXC_RESOLVER_REV + ".tar.gz"],
+        "sha256": "ea0f2aa63b4cc6ee706f56996ed68dde0dc29601bba76a43bb127e8add6b5473",
+        "strip_prefix": "oxc-resolver-" + OXC_RESOLVER_REV.lstrip("v"),
+        "crates": [
+            {
+                "name": "oxc_resolver",
+                "subdir": "",
+                "edition": "2024",
+                "version": "11.23.0",
+                "deps": [
+                    ":cfg_if-1",
+                    ":compact_str-0_9",
+                    ":fast_glob-1",
+                    ":indexmap-2",
+                    ":json_strip_comments-3",
+                    ":memchr-2",
+                    ":nodejs_built_in_modules-1",
+                    ":once_cell-1",
+                    ":dashmap-6",
+                    ":rustc_hash-2",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":simdutf8-0_1",
+                    ":thiserror-2",
+                    ":tracing-0_1",
+                    ":percent_encoding-2",
+                    ":rustix-1",
+                    ":simd_json-0_17",
+                    ":self_cell-1",
+                    ":windows-0_62",
                 ],
             },
         ],
