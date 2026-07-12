@@ -2186,12 +2186,12 @@ REGISTRY = [
         "edition": "2021",
         "label": "bincode-2",
         "alias": False,
-        # Features: default (std + derive) + serde (optional, needed by tsz-core).
-        # serde is an optional dep gated behind the `serde` feature; bincode_derive
-        # is optional, gated behind `derive` (part of default). The add-crate.py
-        # tool computed defaults only; serde dep added manually for tsz.
+        # tsz-core uses bincode only for its serde integration, NOT the derive
+        # macro — so drop the `derive`/`bincode_derive` features (which would else
+        # require vendoring the bincode_derive proc-macro). serde is an optional dep
+        # gated behind the `serde` feature; added manually for tsz.
         "deps": [":serde-1", ":unty-0_0"],
-        "features": ["alloc", "bincode_derive", "derive", "serde", "serde?/std", "std"],
+        "features": ["alloc", "serde", "serde?/std", "std"],
         "build_script": False,
         "proc_macro": False,
     },
