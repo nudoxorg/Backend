@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use qdrant_client::{
 	Qdrant,
-	qdrant::{
-		ListCollectionsResponse, QueryPointsBuilder, ScoredPoint, Value, value::Kind,
-	},
+	qdrant::{QueryPointsBuilder, ScoredPoint, Value, value::Kind},
 };
 
-use crate::config::{PipelineConfig, QdrantSettings};
+use crate::config::PipelineConfig;
 use crate::http::error::{AppError, QdrantError};
 use crate::ingest::embedding::{EmbeddingProvider, OpenAIEmbeddingProvider};
+
+use nudox_core::Score;
 
 use super::{SearchResponse, SearchResult};
 use super::{require_non_empty, require_qdrant};
@@ -36,51 +36,33 @@ pub(crate) async fn search_results(
 	let query = require_non_empty("q", query)?;
 	let embedding = provider.embed_text(query).await?;
 
-	let collections = backend_collections(client, qdrant).await?;
+	// Single global collection (see `ingest::symbols_collection_name`): one
+	// `query_points` against one HNSW graph, instead of listing and sequentially
+	// querying every per-package-version collection.
+	let collection = crate::ingest::symbols_collection_name(&qdrant.collection_prefix);
 
-	let mut results = Vec::new();
-	for collection in collections {
-		let response = client
-			.query(
-				QueryPointsBuilder::new(&collection)
-					.query(embedding.clone())
-					.limit(limit.max(1) as u64)
-					.with_payload(true),
-			)
-			.await
-			.map_err(|source| AppError::Qdrant(QdrantError::QueryFailed {
-				collection: collection.clone(),
-				source,
-			}))?;
-
-		results.extend(
-			response.result.into_iter().filter_map(|point| parse_search_result(point, &collection)),
-		);
-	}
-
-	results.sort_by(|left, right| right.score.total_cmp(&left.score));
-	results.truncate(limit.max(1));
-	Ok(results)
-}
-
-async fn backend_collections(
-	client: &Qdrant,
-	settings: &QdrantSettings,
-) -> Result<Vec<String>, AppError> {
-	let ListCollectionsResponse { collections, .. } =
-		client.list_collections().await.map_err(|source| AppError::Qdrant(QdrantError::ListCollectionsFailed {
-			prefix: settings.collection_prefix.clone(),
+	let response = client
+		.query(
+			QueryPointsBuilder::new(&collection)
+				.query(embedding)
+				.limit(limit.max(1) as u64)
+				.with_payload(true),
+		)
+		.await
+		.map_err(|source| AppError::Qdrant(QdrantError::QueryFailed {
+			collection: collection.clone(),
 			source,
 		}))?;
-	let prefix = format!("{}_", settings.collection_prefix);
 
-	let mut names: Vec<String> = collections
+	let mut results: Vec<SearchResult> = response
+		.result
 		.into_iter()
-		.map(|collection| collection.name)
-		.filter(|name| name.starts_with(&prefix))
+		.filter_map(|point| parse_search_result(point, &collection))
 		.collect();
-	names.sort();
-	Ok(names)
+
+	results.sort_by(|left, right| right.score.cmp(&left.score));
+	results.truncate(limit.max(1));
+	Ok(results)
 }
 
 fn parse_search_result(point: ScoredPoint, collection: &str) -> Option<SearchResult> {
@@ -89,7 +71,7 @@ fn parse_search_result(point: ScoredPoint, collection: &str) -> Option<SearchRes
 
 	Some(SearchResult {
 		uri,
-		score: point.score,
+		score: Score::new(point.score),
 		collection: collection.to_owned(),
 		fq_name: take_string(&mut payload, "fq_name"),
 		language: take_string(&mut payload, "language"),

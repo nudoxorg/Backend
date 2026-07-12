@@ -1,5 +1,8 @@
 pub mod schema;
 pub mod upload;
 
-pub use schema::{CrateInfo, DocCtx, DocStore, EmitJsonLD, URI, UriOps};
-pub use upload::{DocumentUploadProgress, TerminusConfig, upload_documents, upload_schema};
+pub use schema::{CrateInfo, DocCtx, DocSink, DocStore, DocumentUri, EmitError, EmitJsonLD, URI, UriOps};
+pub use upload::{
+	DocumentUploadProgress, PreparedCorpus, StreamingDocSink, TerminusConfig,
+	upload_prepared_documents, upload_schema,
+};

@@ -20,7 +20,7 @@ use semver::Version;
 use tokio::task::spawn_blocking;
 use tracing::info;
 
-use crate::{core::backend::LanguageBackend, config::{PipelineConfig, QdrantSettings}, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, emit::Runner, terminus::schema::{CrateInfo, DocCtx, DocStore}, search::text::SymbolTextIndex};
+use crate::{core::backend::LanguageBackend, config::PipelineConfig, http::error::AppError, ingest::{parsed_symbol::{Identity, PackageCoord, project}, sink::{OrchestratorSink, SinkId, SqliteRegisterSink, SymbolSink, TerminusSink, TextIndexSink, VectorSink, run_sinks}}, sync_progress::{PackageSyncPhase, ProgressReporter}, terminus::{schema::{CrateInfo, DocCtx}, upload::{PreparedCorpus, StreamingDocSink}}, search::text::SymbolTextIndex};
 
 #[derive(Debug, Clone)]
 pub struct IngestionSummary {
@@ -53,7 +53,7 @@ pub struct IngestTargets {
 	/// Local Tantivy full-text index backing `/text-search`.
 	pub text_index:   Option<Arc<SymbolTextIndex>>,
 	/// nudox-search orchestrator backing `/symbol-search`.
-	pub orchestrator: Option<Arc<orchestrator::Orchestrator>>,
+	pub orchestrator: Option<Arc<orchestrator::Orchestrator<orchestrator::WithSearcher>>>,
 }
 
 /// Generate IR for `package` off the async executor, project it once, and fan
@@ -86,7 +86,7 @@ pub async fn run_pipeline<B: LanguageBackend>(
 		.map_err(|source| AppError::TaskJoin { action: "IR generation", source })??;
 
 	let coord = PackageCoord::new(B::LANGUAGE, B::package_name(package), &version.to_string());
-	finalize_pipeline(coord, index, config, progress, targets, &source_map).await
+	finalize_pipeline(coord, index, config, progress, targets, source_map).await
 }
 
 async fn finalize_pipeline(
@@ -95,7 +95,7 @@ async fn finalize_pipeline(
 	config: &PipelineConfig,
 	progress: &ProgressReporter,
 	targets: &IngestTargets,
-	source_map: &HashMap<String, String>,
+	source_map: HashMap<String, String>,
 ) -> Result<IngestionSummary, AppError> {
 	let identity = match config.terminus.as_ref() {
 		Some(t) => Identity::Deterministic { instance: format!("{}/{}", t.org, t.db).into() },
@@ -103,13 +103,24 @@ async fn finalize_pipeline(
 	};
 	let entry_count = index.entries_by_path.len();
 
-	// The single parse-once projection. `project` borrows the index; the graph
-	// emission then consumes it. Both walk the same in-memory IR — neither
-	// re-parses the other's output.
-	let symbols = project(&coord, &index, source_map, &identity);
-	let doc_store =
-		emit_store(coord.language.as_str(), coord.package.as_ref(), coord.version.as_ref(), index);
-	let document_count = doc_store.docs.len();
+	// The single parse-once projection, run off the async reactor. `project`
+	// fans the IR out across a rayon worker pool (one core each); the graph
+	// emission then consumes the same in-memory `Index`. Both are CPU-bound and
+	// must not block the tokio reactor, so the whole projection+emission runs
+	// inside one `spawn_blocking`. Neither re-parses the other's output.
+	let coord_blocking = coord.clone();
+	let identity_blocking = identity.clone();
+	let lang = coord.language.as_str().to_owned();
+	let pkg = coord.package.to_string();
+	let ver = coord.version.to_string();
+	let (symbols, corpus) = spawn_blocking(move || {
+		let symbols = project(&coord_blocking, &index, &source_map, &identity_blocking);
+		let corpus = emit_store(&lang, &pkg, &ver, index);
+		(symbols, corpus)
+	})
+	.await
+	.map_err(|source| AppError::TaskJoin { action: "projection", source })?;
+	let document_count = corpus.len();
 
 	// Assemble non-consuming sinks (these borrow `&[ParsedSymbol]`).
 	let mut sinks: Vec<Box<dyn SymbolSink>> = Vec::new();
@@ -134,20 +145,15 @@ async fn finalize_pipeline(
 		} else {
 			None
 		};
-		sinks.push(Box::new(TerminusSink { config: terminus.clone(), schema, store: doc_store }));
+		sinks.push(Box::new(TerminusSink { config: terminus.clone(), schema, corpus }));
 	}
 
 	// Build the consuming vector sink separately — it drains `symbols` after all
 	// non-consuming sinks are done, moving `embedding_text`/`fq_name` instead of
 	// cloning them.
 	let vector_sink = config.qdrant.as_ref().map(|qdrant| {
-		let collection = collection_name(
-			qdrant,
-			coord.language.as_str(),
-			coord.package.as_ref(),
-			coord.version.as_ref(),
-		);
-		VectorSink { settings: qdrant.clone(), model: config.embedding_model.clone(), collection }
+		let collection = symbols_collection_name(&qdrant.collection_prefix);
+		VectorSink { settings: qdrant.clone(), model: config.embedding_model.to_string(), collection }
 	});
 
 	let report = run_sinks(&sinks, &symbols, &coord, progress).await?;
@@ -169,7 +175,11 @@ async fn finalize_pipeline(
 	})
 }
 
-fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -> DocStore {
+/// Emit the crate's IR straight into a streaming [`StreamingDocSink`], producing
+/// a dependency-ordered [`PreparedCorpus`] of serialized documents — without
+/// ever materializing the whole corpus as live `serde_json::Value` trees (the
+/// former `DocStore` path, still used by tests, did exactly that).
+fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -> PreparedCorpus {
 	let context_object = serde_json::json!({
 		"@type": "@context",
 		"@schema": "terminusdb:///schema#",
@@ -178,29 +188,28 @@ fn emit_store(language: &str, package_name: &str, version: &str, index: Index) -
 		"sys": "http://terminusdb.com/schema/sys#"
 	});
 
-	let mut runner = Runner::new(DocCtx::init(
+	let mut ctx = DocCtx::init(
 		CrateInfo::new(language.to_owned(), package_name.to_owned()),
 		context_object,
-	));
-	runner.run(index.entries_by_path.into_values());
-	let store = runner.into_docs();
-	info!(documents = store.docs.len(), package = package_name, version = %version, "emission complete");
-	store
+	);
+	let mut sink = StreamingDocSink::new();
+	let errors = document::emit::emit_all(&mut ctx, index.entries_by_path.into_values(), &mut sink);
+	if !errors.is_empty() {
+		tracing::warn!(count = errors.len(), package = package_name, "emit produced document errors");
+	}
+	let corpus = sink.into_corpus();
+	info!(documents = corpus.len(), package = package_name, version = %version, "emission complete");
+	corpus
 }
 
-fn collection_name(
-	settings: &QdrantSettings,
-	language: &str,
-	package_name: &str,
-	version: &str,
-) -> String {
-	format!(
-		"{}_{}_{}_{}",
-		sanitize_collection_segment(&settings.collection_prefix),
-		sanitize_collection_segment(language),
-		sanitize_collection_segment(package_name),
-		sanitize_collection_segment(version),
-	)
+/// The single Qdrant collection that holds every package-version's vectors.
+///
+/// Replaces the former collection-per-`{lang}_{pkg}_{ver}` scheme: scoping now
+/// lives in each point's payload (`language`/`package`/`version`), so search is
+/// one query against one global HNSW graph instead of an N-collection fan-out.
+/// Both the ingest vector sink and the `/search` read path must agree on this.
+pub(crate) fn symbols_collection_name(prefix: &str) -> String {
+	format!("{}_symbols", sanitize_collection_segment(prefix))
 }
 
 fn sanitize_collection_segment(value: &str) -> String { crate::util::slug::ascii_segment(value) }

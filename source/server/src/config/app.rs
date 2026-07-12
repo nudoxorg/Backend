@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
+use nudox_core::ModelId;
 use url::Url;
 
 use crate::terminus::upload::TerminusConfig;
@@ -25,7 +26,7 @@ pub struct AppConfig {
 pub struct PipelineConfig {
 	pub terminus:        Option<TerminusConfig>,
 	pub qdrant:          Option<QdrantSettings>,
-	pub embedding_model: String,
+	pub embedding_model: ModelId,
 	pub upload_schema:   bool,
 }
 

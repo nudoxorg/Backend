@@ -761,7 +761,7 @@ mod tests {
 		PipelineConfig {
 			terminus:        None,
 			qdrant:          None,
-			embedding_model: "text-embedding-3-small".to_owned(),
+			embedding_model: nudox_core::ModelId("text-embedding-3-small".to_owned()),
 			upload_schema:   false,
 		}
 	}

@@ -42,7 +42,8 @@ impl PipelineConfig {
 			terminus:        build_terminus_config()?,
 			qdrant:          build_qdrant_settings()?,
 			embedding_model: env::var("NUDOX_EMBEDDING_MODEL")
-				.unwrap_or_else(|_| "text-embedding-3-small".to_owned()),
+				.unwrap_or_else(|_| "text-embedding-3-small".to_owned())
+				.into(),
 			upload_schema:   parse_env_bool("NUDOX_UPLOAD_SCHEMA", false)?,
 		})
 	}

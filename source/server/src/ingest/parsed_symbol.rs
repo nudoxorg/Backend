@@ -9,11 +9,13 @@
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+use rayon::prelude::*;
+
 use ir::entry::{Entry, Index};
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, GlobalSymbolId, Language, LibRef, OccurrenceId, RepoId, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, ByteSpan, ChunkMetadata, Language, LibRef, OccurrenceId, RepoId, ResolutionState, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr};
 use pipeline::treesitter::parse_and_extract;
 
-use identity::{EntryUri, compute_symbol_id, path::{fq_name, nudox_path_to_str}};
+use identity::{EntryUri, TerminusInstance, compute_symbol_id, path::{fq_name, nudox_path_to_str}};
 use crate::ingest::embedding_types::{EmbeddingDocument, RecordKind, RepresentationKind, build_entry_embedding_text};
 
 /// Per-package coordinates shared by every symbol in one ingestion.
@@ -31,7 +33,7 @@ impl PackageCoord {
 
 	fn lib_ref(&self) -> LibRef { LibRef { name: self.package.to_string(), version: self.version.to_string() } }
 
-	fn repo_id(&self) -> RepoId { RepoId(format!("lib:{}:{}", self.package, self.version)) }
+	fn repo_id(&self) -> RepoId { RepoId::from(format!("lib:{}:{}", self.package, self.version)) }
 }
 
 /// Batch-level identity witness: known once before projection, shared by all symbols.
@@ -68,7 +70,7 @@ pub struct ParsedSymbol {
 	/// Text fed to the embedding provider and the full-text index.
 	pub embedding_text:  String,
 	/// Source for blob storage / tree-sitter (best-effort; empty when no source).
-	pub raw_code:        String,
+	pub raw_code:        Arc<str>,
 	pub treesitter_repr: Option<TreesitterRepr>,
 	pub symbol_span:     ByteSpan,
 }
@@ -85,10 +87,29 @@ pub fn project(
 	source_map: &HashMap<String, String>,
 	identity: &Identity,
 ) -> Vec<ParsedSymbol> {
+	// Compile-time witness that the parallel projection below is sound.
+	//
+	// rayon shares each `&Entry` across worker threads (requires `Entry: Sync`)
+	// and sends each produced `ParsedSymbol` back to the collector (requires
+	// `ParsedSymbol: Send`). The tree-sitter `Parser`/`Tree` never cross this
+	// boundary: `pipeline::treesitter::parse_and_extract` constructs and drops
+	// its parser(s) entirely inside one synchronous call on the worker thread, so
+	// their (lack of) `Send`/`Sync` is irrelevant to the fan-out — the
+	// `buffer_unordered`-of-`spawn_blocking` fallback the audit describes is
+	// therefore unnecessary.
+	fn assert_send<T: Send>() {}
+	fn assert_sync<T: Sync>() {}
+	assert_send::<ParsedSymbol>();
+	assert_sync::<Entry>();
+
+	// One Parser per rayon worker would require `parse_and_extract` to accept a
+	// `&mut Parser`; that lives in the out-of-scope `pipeline` crate, so each call
+	// still allocates its own. The parallelism (one rayon worker per core, each
+	// projecting a disjoint slice of entries) is the win captured here.
 	index
 		.entries_by_path
-		.values()
-		.map(|entry| project_entry(coord, entry, source_map, identity))
+		.par_iter()
+		.map(|(_path, entry)| project_entry(coord, entry, source_map, identity))
 		.collect()
 }
 
@@ -159,19 +180,19 @@ fn extract_source(
 ) -> SourceChunk {
 	match source_map.get(fq) {
 		Some(raw) => {
-			let span = ByteSpan { start: 0, end: raw.len() };
+			let span = ByteSpan::covering(0, raw.len());
 			let (snippet, snippet_span, treesitter_repr) =
 				parse_and_extract(raw, Language::Rust, span, 80);
 			let symbol_span =
-				ByteSpan { start: 0, end: snippet.len().saturating_sub(snippet_span.start) };
-			SourceChunk { raw_code: snippet, treesitter_repr, symbol_span }
+				ByteSpan::covering(0, snippet.len().saturating_sub(snippet_span.start()));
+			SourceChunk { raw_code: snippet.into(), treesitter_repr, symbol_span }
 		}
 		None => {
 			let len = embedding_text.len();
 			SourceChunk {
-				raw_code:        embedding_text.to_owned(),
+				raw_code:        embedding_text.into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 0, end: len },
+				symbol_span:     ByteSpan::covering(0, len),
 			}
 		}
 	}
@@ -185,20 +206,20 @@ impl ParsedSymbol {
 	/// `Local` falls back to a `Repo` origin so the no-Terminus `/symbol-search`
 	/// path still resolves and indexes immediately.
 	pub fn to_blob_info(&self, coord: &PackageCoord, identity: &Identity) -> BlobInfo {
-		let (symbol_origin, resolved_global_id): (SymbolOrigin, Option<GlobalSymbolId>) =
+		let (symbol_origin, resolution): (SymbolOrigin, ResolutionState) =
 			match identity {
 				Identity::Deterministic { instance } => (
 					SymbolOrigin::ExternalLib { lib: coord.lib_ref() },
-					Some(compute_symbol_id(instance, &self.entry_uri)),
+					ResolutionState::Resolved(compute_symbol_id(&TerminusInstance::new(instance.as_ref()), &self.entry_uri)),
 				),
-				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, None),
+				Identity::Local => (SymbolOrigin::Repo { repo_id: coord.repo_id() }, ResolutionState::Unresolved),
 			};
 
 		BlobInfo {
 			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
 			symbol_name: self.fq_name.clone(),
 			symbol_origin,
-			resolved_global_id,
+			resolution,
 			kind: Some(self.kind),
 			source: SourceChunk {
 				raw_code:        self.raw_code.clone(),
@@ -209,7 +230,7 @@ impl ParsedSymbol {
 			metadata: ChunkMetadata {
 				repo_id:             coord.repo_id(),
 				file_path:           PathBuf::from(self.entry_uri.to_string()),
-				file_span:           ByteSpan { start: 0, end: 0 },
+				file_span:           ByteSpan::covering(0, 0),
 				parsed_at:           chrono::Utc::now(),
 				lang:                coord.language,
 				lang_version:        None,

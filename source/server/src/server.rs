@@ -3,7 +3,7 @@ use std::sync::Arc;
 use blobstore::ObjectStoreBlobStore;
 use nudox_core::{BlobStore, Embedder, FutureParseQueue, GlobalSymbolStore, ModelType, SearchIndex, SearchQuery, VectorIndex, VectorQuery};
 use embed::{PlaceholderEmbedder, RemoteEmbedder};
-use orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
+use orchestrator::{Orchestrator, WithSearcher, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 use search::{InMemoryVectorIndex, QdrantVectorIndex, SymbolSearcher, TantivySearchIndex};
 use qdrant_client::Qdrant;
 use store::NudoxStore;
@@ -128,7 +128,7 @@ async fn shutdown_signal() { let _ = signal::ctrl_c().await; }
 async fn build_symbol_orchestrator(
 	config: &AppConfig,
 	store: Option<Arc<NudoxStore>>,
-) -> Option<Arc<Orchestrator>> {
+) -> Option<Arc<Orchestrator<WithSearcher>>> {
 	let index_dir = config.storage_root.join("nudox-symbol-index");
 	let blobs_dir = config.storage_root.join("nudox-blobs");
 
