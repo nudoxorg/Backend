@@ -52,6 +52,8 @@ pub fn lower_module(
 			aliases:       None,
 			visibility:    Visibility::Public,
 			documentation: catalog.module.as_ref().and_then(ParsedDocstring::documentation),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         Module { members: None },
 		}),
 	));
@@ -159,6 +161,8 @@ fn lower_binding(
 			aliases:       None,
 			visibility:    member_visibility(name),
 			documentation: doc.and_then(ParsedDocstring::documentation),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         ir_func,
 		}))
 	} else {
@@ -176,6 +180,8 @@ fn lower_binding(
 					aliases:       None,
 					visibility:    member_visibility(name),
 					documentation: doc.and_then(ParsedDocstring::documentation),
+					deprecation:   None,
+					doc_links:     None,
 					inner:         types::lower_type(ty),
 				}))
 			}
@@ -190,6 +196,8 @@ fn lower_binding(
 				aliases:       None,
 				visibility:    member_visibility(name),
 				documentation: doc.and_then(ParsedDocstring::documentation),
+				deprecation:   None,
+				doc_links:     None,
 				inner:         (),
 			})),
 		}
@@ -496,6 +504,8 @@ fn lower_class(
 			aliases:       None,
 			visibility:    member_visibility(name),
 			documentation: class_doc,
+			deprecation:   None,
+			doc_links:     None,
 			inner:         variants,
 		}));
 	}
@@ -537,6 +547,9 @@ fn lower_class(
 			provided_methods:   None,
 			required_constants: None,
 			attributes:         None,
+			object_safe:        None,
+			sealed:             None,
+			cfg:                None,
 			members:            None,
 		};
 		return Some(Entry::TraitDef(Symbol {
@@ -545,6 +558,8 @@ fn lower_class(
 			aliases:       None,
 			visibility:    member_visibility(name),
 			documentation: class_doc,
+			deprecation:   None,
+			doc_links:     None,
 			inner:         trait_def,
 		}));
 	}
@@ -589,6 +604,8 @@ fn lower_class(
 		aliases:       None,
 		visibility:    member_visibility(name),
 		documentation: class_doc,
+		deprecation:   None,
+		doc_links:     None,
 		inner:         Record {
 			name:                  Some(name.to_string()),
 			generics:              None,

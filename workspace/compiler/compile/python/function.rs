@@ -93,7 +93,6 @@ fn lower_single(name: &str, py_type: &Type) -> Function {
         implemented,
         members: None,
         implemented_protocols: None,
-        body: None,
     }
 }
 

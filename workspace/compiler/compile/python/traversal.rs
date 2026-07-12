@@ -24,8 +24,33 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-
+use version::{Constraint, TagContext, VersionGrammar, VersionRequest, resolve_from_tags};
 use uv_pep440::{Version, VersionSpecifiers};
+
+/// PEP 440 specifiers (`>=1.2,<2`) as the shared [`Constraint`] predicate:
+/// a version matches when the specifier set `contains` it. This is what lets
+/// Python carry its constraint as `VersionRequest::Constraint(..)` on the ONE
+/// shared vocabulary instead of a side-channel field plus an always-`Latest`
+/// request.
+///
+/// Both `Constraint` (from the `version` crate) and `VersionSpecifiers` (from
+/// `uv_pep440`) are foreign to this crate, so the impl must go through a local
+/// newtype to satisfy the orphan rules — mirroring Go's `GoPrefix` and Java's
+/// `PrefixConstraint`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pep440Constraint(pub VersionSpecifiers);
+
+impl Constraint<Version> for Pep440Constraint {
+    fn matches(&self, v: &Version) -> bool {
+        self.0.contains(v)
+    }
+}
+
+/// The shared [`version::VersionRequest`] specialised to a PEP 440 [`Version`]
+/// carrying [`VersionSpecifiers`] in its constraint case. Python only ever
+/// resolves with a specifier set (never a bare `Exact` pin here), so its use
+/// is `Constraint(specifiers)`.
+pub type PythonVersionRequest = VersionRequest<Version, Pep440Constraint>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PythonTraversalError {
@@ -199,36 +224,50 @@ pub fn select_best_release<'a>(
         .find(|r| r.is_sdist())
 }
 
+// ---------------------------------------------------------------------------
+// VersionGrammar implementation — wires uv_pep440::Version into the shared loop
+// ---------------------------------------------------------------------------
+
+/// Grammar adapter that makes [`resolve_from_tags`] work for Python/PEP 440.
+///
+/// `parse_tag` strips a single leading `v`/`V` and parses the remainder as a
+/// PEP 440 version. The `Constraint(VersionSpecifiers)` case of the shared
+/// request supplies the real filtering (via [`VersionSpecifiers::contains`]),
+/// so the default `matches_request` — which defers to the constraint's own
+/// [`Constraint::matches`] — is exactly right and needs no override.
+struct PythonTagGrammar;
+
+impl VersionGrammar for PythonTagGrammar {
+    type V = Version;
+    type C = Pep440Constraint;
+
+    fn parse_tag<'t>(&self, raw_tag: &'t str, _ctx: &TagContext<'_>) -> Option<(Version, &'t str)> {
+        let trimmed = raw_tag.strip_prefix(['v', 'V']).unwrap_or(raw_tag);
+        let version = Version::from_str(trimmed).ok()?;
+        Some((version, raw_tag))
+    }
+
+    fn is_prerelease(&self, v: &Version) -> bool {
+        v.any_prerelease()
+    }
+}
+
 /// Resolve a PEP 440 requirement against a set of git tags (e.g. `v1.2.0`,
 /// `1.3.0rc1`). Returns the *original tag string* of the newest satisfying
 /// version, so the caller can check that ref out.
 ///
 /// A single optional leading `v`/`V` is stripped before parsing; tags that
-/// don't parse as PEP 440 versions are ignored.
+/// don't parse as PEP 440 versions are ignored. The stable-before-prerelease
+/// selection loop is provided by [`version::resolve_from_tags`].
 pub fn resolve_version_from_tags<S: AsRef<str>>(
     tags: &[S],
     req: &VersionSpecifiers,
 ) -> Option<String> {
-    // (parsed version, original tag)
-    let mut parsed: Vec<(Version, &str)> = Vec::new();
-    for tag in tags {
-        let raw = tag.as_ref();
-        let trimmed = raw.strip_prefix(['v', 'V']).unwrap_or(raw);
-        if let Ok(version) = Version::from_str(trimmed) {
-            if req.contains(&version) {
-                parsed.push((version, raw));
-            }
-        }
-    }
-
-    // Same stable-before-prerelease preference as version selection.
-    let pick = parsed
-        .iter()
-        .filter(|(v, _)| !v.any_prerelease())
-        .max_by(|a, b| a.0.cmp(&b.0))
-        .or_else(|| parsed.iter().max_by(|a, b| a.0.cmp(&b.0)));
-
-    pick.map(|(_, tag)| (*tag).to_string())
+    let ctx = TagContext::default();
+    // Carry the PEP 440 specifiers as the shared `Constraint` case — no more
+    // side-channel field plus always-`Latest` bypass.
+    let request: PythonVersionRequest = VersionRequest::Constraint(Pep440Constraint(req.clone()));
+    resolve_from_tags(tags, &request, &ctx, &PythonTagGrammar)
 }
 
 // ---------------------------------------------------------------------------

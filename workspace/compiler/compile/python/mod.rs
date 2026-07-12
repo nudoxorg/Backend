@@ -15,5 +15,8 @@ pub mod function;
 pub mod item;
 pub mod module;
 pub mod package;
+pub mod producer;
 pub mod traversal;
 pub mod types;
+
+pub use producer::PythonProducer;
