@@ -27,6 +27,8 @@
 
 use std::cmp::Ordering;
 
+use version::{PrefixConstraint, TagContext, VersionGrammar, resolve_from_tags};
+
 use super::error::MavenVersionError;
 
 /// One token of a parsed Maven version.
@@ -258,15 +260,11 @@ fn strip_tag_prefix<'a>(tag: &'a str, artifact_prefix: Option<&str>) -> Option<&
 // ---------------------------------------------------------------------------
 
 /// What the caller is asking for.
-#[derive(Debug, Clone, PartialEq)]
-pub enum VersionRequest {
-	/// The newest release (stable preferred).
-	Latest,
-	/// An exact version (`1.4.2`, `2.0.0-rc.1`).
-	Exact(MavenVersion),
-	/// A numeric prefix (`1`, `1.4`): the newest match wins.
-	Prefix(Vec<u64>),
-}
+///
+/// Java's request is the shared [`version::VersionRequest`] specialised to
+/// [`MavenVersion`] with a [`PrefixConstraint`] for its numeric-prefix case
+/// (`1`, `1.4`): `Latest`, `Exact(MavenVersion)`, `Constraint(PrefixConstraint)`.
+pub type VersionRequest = version::VersionRequest<MavenVersion, PrefixConstraint>;
 
 /// Parse a requested version: empty / `latest` → newest; one or two bare
 /// numeric segments (`1`, `1.4`) → prefix query; anything else that parses
@@ -293,7 +291,7 @@ pub fn parse_requested(requested: &str) -> Result<VersionRequest, MavenVersionEr
 				})
 			})
 			.collect::<std::result::Result<Vec<_>, MavenVersionError>>()?;
-		return Ok(VersionRequest::Prefix(nums));
+		return Ok(VersionRequest::Constraint(PrefixConstraint(nums)));
 	}
 
 	match parse_version(trimmed) {
@@ -304,40 +302,72 @@ pub fn parse_requested(requested: &str) -> Result<VersionRequest, MavenVersionEr
 	}
 }
 
+// ---------------------------------------------------------------------------
+// VersionGrammar implementation — wires MavenVersion into the shared loop
+// ---------------------------------------------------------------------------
+
+/// Grammar adapter that makes [`resolve_from_tags`] work for Maven/Java.
+///
+/// `parse_tag` applies Maven's multi-prefix tag stripping
+/// (`artifactId-version`, `v/V`-prefixed, `release-`, bare numeric).
+/// `matches_request` translates the local [`VersionRequest`] into the
+/// shared `Latest`/`Exact`/`Prefix` semantics (grammars match exactly).
+struct MavenGrammar<'a> {
+	/// The Maven `artifactId`, when known, unlocks the
+	/// `artifactId-version` tag shape.
+	artifact_id: Option<&'a str>,
+}
+
+impl VersionGrammar for MavenGrammar<'_> {
+	type V = MavenVersion;
+	type C = PrefixConstraint;
+
+	fn parse_tag<'t>(&self, raw_tag: &'t str, _ctx: &TagContext<'_>) -> Option<(MavenVersion, &'t str)> {
+		let artifact_prefix = self.artifact_id.map(|a| format!("{a}-"));
+		let rest = strip_tag_prefix(raw_tag, artifact_prefix.as_deref())?;
+		let version = parse_version(rest)?;
+		Some((version, raw_tag))
+	}
+
+	fn is_prerelease(&self, v: &MavenVersion) -> bool {
+		v.is_prerelease()
+	}
+
+	/// Route the shared `Constraint(PrefixConstraint)` case through
+	/// [`prefix_matches`] (which consults [`numeric_prefix`]); a bare
+	/// `PrefixConstraint::matches` is inert on its own.
+	fn matches_request(
+		&self,
+		v: &MavenVersion,
+		request: &VersionRequest,
+		_ctx: &TagContext<'_>,
+	) -> bool {
+		match request {
+			VersionRequest::Latest => true,
+			VersionRequest::Exact(want) => v == want,
+			VersionRequest::Constraint(PrefixConstraint(prefix)) => self.prefix_matches(v, prefix),
+		}
+	}
+
+	fn numeric_prefix(&self, v: &MavenVersion) -> Vec<u64> {
+		v.numeric_prefix()
+	}
+}
+
 /// Resolve a version request against a repository's tags. Returns the
 /// original tag string of the winning version so the caller can check that
 /// ref out — mirroring the Go/Python producers.
+///
+/// The stable-before-prerelease selection loop is provided by
+/// [`version::resolve_from_tags`]; this function supplies the Maven grammar.
 pub fn resolve_version_from_tags<S: AsRef<str>>(
 	tags: &[S],
 	requested: &VersionRequest,
 	artifact_id: Option<&str>,
 ) -> Option<String> {
-	let candidates = candidate_tags(tags, artifact_id);
-
-	let matching: Vec<&TagMatch> = candidates
-		.iter()
-		.filter(|c| match requested {
-			VersionRequest::Latest => true,
-			VersionRequest::Exact(want) => c.version == *want,
-			VersionRequest::Prefix(prefix) => {
-				// Zero-padded so `1.0` matches a bare `1` tag.
-				let nums = c.version.numeric_prefix();
-				prefix
-					.iter()
-					.enumerate()
-					.all(|(i, p)| nums.get(i).copied().unwrap_or(0) == *p)
-			}
-		})
-		.collect();
-
-	// Stable-before-prerelease preference, then newest.
-	let pick = matching
-		.iter()
-		.filter(|c| !c.version.is_prerelease())
-		.max_by(|a, b| a.version.cmp(&b.version))
-		.or_else(|| matching.iter().max_by(|a, b| a.version.cmp(&b.version)));
-
-	pick.map(|c| c.tag.to_string())
+	let grammar = MavenGrammar { artifact_id };
+	let ctx = TagContext { identifier: artifact_id.unwrap_or(""), subdir: "" };
+	resolve_from_tags(tags, requested, &ctx, &grammar)
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +459,10 @@ mod tests {
 	fn requested_forms() {
 		assert_eq!(parse_requested("latest").unwrap(), VersionRequest::Latest);
 		assert_eq!(parse_requested("").unwrap(), VersionRequest::Latest);
-		assert_eq!(parse_requested("1.4").unwrap(), VersionRequest::Prefix(vec![1, 4]));
+		assert_eq!(
+			parse_requested("1.4").unwrap(),
+			VersionRequest::Constraint(PrefixConstraint(vec![1, 4]))
+		);
 		assert!(matches!(parse_requested("1.4.2").unwrap(), VersionRequest::Exact(_)));
 		assert!(matches!(
 			parse_requested("2.0.0-SNAPSHOT").unwrap(),
