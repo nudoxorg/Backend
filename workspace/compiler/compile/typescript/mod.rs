@@ -16,6 +16,8 @@ pub mod entry_point;
 pub mod error;
 pub mod function;
 pub mod item;
+// New full-OXC pipeline (OXC-PLAN.md); coexists with the deno stack until cutover.
+pub mod oxc;
 pub mod package;
 pub mod producer;
 pub mod traversal;
