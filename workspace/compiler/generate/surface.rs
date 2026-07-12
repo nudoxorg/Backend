@@ -1,118 +1,106 @@
 //! Generating the API surface resolution (the `ir::Index`) for a package.
 //!
-//! Dispatches on the package's ecosystem to the matching `crate::languages`
-//! backend, which drives that language's documentation/type oracle and lowers it
-//! into the shared IR.
+//! One dispatch path for all six languages (DAEMON-PLAN §2.3):
+//!
+//! ```text
+//! PackageInput → seal → run_producer (cas.get → cage/worker → cas.put)
+//! ```
 
 use heart::{Language, PackageVersion, RegistryOrigin};
-use ir::{entry::Index, pipeline::{Collected, Ir}};
+use ir::{
+	entry::Index,
+	pipeline::{Collected, Ir},
+};
 
-use crate::{error::GenerateError, generate::PackageInput, languages};
+use crate::compile::producer::{self, ForgeContext, Producer, SandboxKey};
+use crate::{
+	error::GenerateError,
+	generate::{PackageInput, parse_cache},
+	languages::{
+		go::GoProducer, java::JavaProducer, nix::NixProducer, python::PythonProducer,
+		rust::RustProducer, typescript::TypescriptProducer,
+	},
+};
 
 /// Lower a package's source into the collected IR, dispatching on ecosystem.
-pub fn collect(input: &PackageInput) -> Result<Ir<Collected>, GenerateError> {
-	match input.coordinates.ecosystem() {
-		Language::Python => {
-			if let Some(worker) = languages::isolate::try_worker_lower("python", &input.root) {
-				let body = worker.map_err(|e| {
-					GenerateError::Archive(std::io::Error::new(
-						std::io::ErrorKind::Other,
-						e.to_string(),
-					))
-				})?;
-				let index: ir::entry::Index = serde_json::from_str(&body).map_err(|e| {
-					GenerateError::Archive(std::io::Error::new(
-						std::io::ErrorKind::InvalidData,
-						e.to_string(),
-					))
-				})?;
-				return Ok(Ir::from_entries(index.entries_by_path.into_values().collect()));
-			}
-			let context = languages::python::context::PythonContext::new();
-			let index = context.lower_package(&input.root);
-			// lower_package indexes eagerly; re-enter the typestate at
-			// Collected so build() owns the (idempotent) indexing step.
-			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
-		}
-		Language::Rust => {
-			let PackageVersion::Cargo(version) = &input.coordinates.version else {
-				// Coordinates are ecosystem-validated at construction; a Rust
-				// package always carries a Cargo version.
-				return Err(GenerateError::UnsupportedRust);
-			};
-			// Registry tarballs document the public surface; direct repos
-			// (custom origins) also get the private-items + workspace pass.
-			let direct_repo = matches!(input.coordinates.origin, RegistryOrigin::Custom { .. });
-			let package = languages::rust::RustPackage {
-				name: input.coordinates.name.original().to_string(),
-				direct_repo,
-			};
-			let (collected, _sources) = package
-				.generate_ir_with_sources(&input.root, version)
-				.map_err(GenerateError::from)?;
-			Ok(collected)
-		}
-		Language::Typescript => {
-			let PackageVersion::Npm(_version) = &input.coordinates.version else {
-				// Coordinates are ecosystem-validated at construction; a
-				// TypeScript package always carries an npm version.
-				return Err(GenerateError::UnsupportedTypescript);
-			};
-			if let Some(worker) = languages::isolate::try_worker_lower("typescript", &input.root) {
-				let body = worker.map_err(|e| {
-					GenerateError::Archive(std::io::Error::new(
-						std::io::ErrorKind::Other,
-						e.to_string(),
-					))
-				})?;
-				let index: ir::entry::Index = serde_json::from_str(&body).map_err(|e| {
-					GenerateError::Archive(std::io::Error::new(
-						std::io::ErrorKind::InvalidData,
-						e.to_string(),
-					))
-				})?;
-				return Ok(Ir::from_entries(index.entries_by_path.into_values().collect()));
-			}
-			// The lowering documents the materialized root as-is; the version
-			// only selects which root gets materialized upstream.
-			let package = languages::typescript::TypescriptPackage {
-				name: input.coordinates.name.original().to_string(),
-			};
-			// Direct ? works because GenerateError::LowerTypescript(#[from] languages::typescript::Package)
-			// and the TS Package error now contains the full exploded taxonomy (Ts* subs + PathBufs + sources).
-			Ok(package.generate_ir(&input.root)?)
-		}
-		Language::Go => {
-			let index = languages::go::lower_package(&input.root)?;
-			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
-		}
-		Language::Java => {
-			let index = languages::java::package::lower_package(&input.root)?;
-			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
-		}
-		Language::Nix => {
-			if let Some(worker) = languages::isolate::try_worker_lower("nix", &input.root) {
-				let body = worker.map_err(|e| {
-					GenerateError::Archive(std::io::Error::new(
-						std::io::ErrorKind::Other,
-						e.to_string(),
-					))
-				})?;
-				let index: ir::entry::Index = serde_json::from_str(&body).map_err(|e| {
-					GenerateError::Archive(std::io::Error::new(
-						std::io::ErrorKind::InvalidData,
-						e.to_string(),
-					))
-				})?;
-				return Ok(Ir::from_entries(index.entries_by_path.into_values().collect()));
-			}
-			let index = languages::nix::lower_package(&input.root)?;
-			Ok(Ir::from_entries(index.entries_by_path.into_values().collect()))
-		}
-	}
+pub fn collect<C: ForgeContext>(
+	ctx: &C,
+	input: &PackageInput,
+) -> Result<Ir<Collected>, GenerateError> {
+	let out = run_producer(ctx, input)?;
+	Ok(Ir::from_entries(
+		out.index.entries_by_path.into_values().collect(),
+	))
 }
 
 /// Lower a package's source into the indexed API surface (the `ir::Index`).
-pub fn build(input: &PackageInput) -> Result<Index, GenerateError> {
-	Ok(collect(input)?.index().into_index())
+pub fn build<C: ForgeContext>(ctx: &C, input: &PackageInput) -> Result<Index, GenerateError> {
+	Ok(collect(ctx, input)?.index().into_index())
+}
+
+/// The per-package [`SandboxKey`] for override resolution.
+fn package_key(input: &PackageInput) -> SandboxKey {
+	SandboxKey::package(
+		input.coordinates.origin.token().into_owned(),
+		input.coordinates.name.original().to_string(),
+		input.coordinates.version.canonical(),
+	)
+}
+
+/// Seal + run the producer for the package's language — the only surface dispatch.
+///
+/// [`producer::run_producer`] is the sole cache client: the sealed input's job
+/// key drives `ctx.cas().get` (hit → decoded [`ProducerOutput`]) / miss (run,
+/// then `put`). Scratch lives in [`producer::SealedPackage`] (RAII).
+fn run_producer<C: ForgeContext>(
+	ctx: &C,
+	input: &PackageInput,
+) -> Result<producer::ProducerOutput, GenerateError> {
+	let source_hash = parse_cache::hash_source_tree(&input.root)
+		.unwrap_or_else(|_| heart::ContentHash::of_bytes(input.root.to_string_lossy().as_bytes()));
+	let dep_lock = parse_cache::hash_dep_lock(&input.root);
+	let package = package_key(input);
+
+	macro_rules! seal_and_run {
+		($p:expr) => {{
+			let p = $p;
+			let sealed = producer::seal_package(
+				ctx.toolchains(),
+				ctx.overrides(),
+				&input.root,
+				p.profile(),
+				p.tier(),
+				Some(&package),
+				source_hash,
+				dep_lock,
+			)?;
+			producer::run_producer(ctx, &p, sealed.input()).map_err(GenerateError::from)
+		}};
+	}
+
+	match input.coordinates.ecosystem() {
+		Language::Rust => {
+			let PackageVersion::Cargo(version) = &input.coordinates.version else {
+				return Err(GenerateError::UnsupportedRust);
+			};
+			let direct_repo = matches!(input.coordinates.origin, RegistryOrigin::Custom { .. });
+			seal_and_run!(RustProducer {
+				name: input.coordinates.name.original().to_string(),
+				version: version.clone(),
+				direct_repo,
+			})
+		}
+		Language::Go => seal_and_run!(GoProducer),
+		Language::Java => seal_and_run!(JavaProducer),
+		Language::Python => seal_and_run!(PythonProducer),
+		Language::Typescript => {
+			let PackageVersion::Npm(_) = &input.coordinates.version else {
+				return Err(GenerateError::UnsupportedTypescript);
+			};
+			seal_and_run!(TypescriptProducer {
+				name: input.coordinates.name.original().to_string(),
+			})
+		}
+		Language::Nix => seal_and_run!(NixProducer),
+	}
 }

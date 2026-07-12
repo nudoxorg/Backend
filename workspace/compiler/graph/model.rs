@@ -1020,15 +1020,20 @@ pub enum ReferenceKind {
     Import,
 }
 
-/// Reified `source refers to target` fact, harvested from tree-sitter-resolved
-/// function bodies — the call/use graph. Content-addressed (`value_hash`).
+/// Reified `source refers to target` fact, harvested from the resolved
+/// occurrence corpus — the call/use graph. Content-addressed (`value_hash`), so
+/// re-emission after a resolver improvement dedups instead of duplicating.
 #[derive(TerminusDBModel, Debug, Clone)]
 #[tdb(key = "value_hash")]
 pub struct Reference {
     pub source: TdbLazy<Symbol>,
     pub target: TdbLazy<Symbol>,
     pub kind: ReferenceKind,
-    /// Byte range of the use site within the source symbol's body.
+    /// Byte range of the use site within its source file.
     pub span_start: Option<i64>,
     pub span_end: Option<i64>,
+    /// Source file (relative to the package root) the use site lives in.
+    pub file: Option<String>,
+    /// The resolution tier that established `target` (`Index`/`Import`/`Oracle`).
+    pub confidence: Option<String>,
 }

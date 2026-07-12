@@ -22,6 +22,7 @@ use std::collections::BTreeSet;
 
 use ir::entry::{Index, NudoxPath};
 use ir::kind::Visibility as IrVis;
+use ir::syntax::OccurrenceSet;
 use terminusdb_schema::{EntityIDFor, TdbLazy};
 
 use super::link::{Linker, PackageCtx, package_iri, package_version_iri};
@@ -89,6 +90,33 @@ impl<'l> EmitCx<'l> {
 
 fn opt_slice<T>(o: &Option<Vec<T>>) -> &[T] {
     o.as_deref().unwrap_or(&[])
+}
+
+/// `Symbol.doc_links` (resolved intra-doc links) for any entry variant.
+fn entry_doc_links(
+    entry: &ir::kind::Entry,
+) -> Option<&rustc_hash::FxHashMap<String, NudoxPath>> {
+    use ir::kind::{Entry as E, Symbol};
+    fn links<T>(s: &Symbol<T>) -> Option<&rustc_hash::FxHashMap<String, NudoxPath>> {
+        s.doc_links.as_ref()
+    }
+    match entry {
+        E::Module(s) => links(s),
+        E::RecordType(s) => links(s),
+        E::Info(s) => links(s),
+        E::UnionType(s) => links(s),
+        E::TraitDef(s) => links(s),
+        E::TraitImpl(s) => links(s),
+        E::SumType(s) => links(s),
+        E::Function(s) => links(s),
+        E::TypeAlias(s) => links(s),
+        E::Constant(s) => links(s),
+        E::Variable(s) => links(s),
+        E::Macro(s) => links(s),
+        E::PrimitiveType(s) => links(s),
+        E::Field(s) => links(s),
+        E::Event(s) => links(s),
+    }
 }
 
 fn visibility(v: &IrVis) -> m::Visibility {
@@ -836,23 +864,29 @@ pub struct GraphCorpus {
 }
 
 /// Project one indexed package into its graph corpus.
-pub fn project(index: &Index, ctx: PackageCtx) -> GraphCorpus {
+///
+/// The reference corpus is built from the resolved `occurrences` (the tree-
+/// sitter-derived call/use graph), replacing the never-populated
+/// `Function.body` path retired in Phase 0.
+pub fn project(index: &Index, occurrences: &OccurrenceSet, ctx: PackageCtx) -> GraphCorpus {
     let linker = Linker::build(index, ctx.clone());
 
     let mut symbols = Vec::with_capacity(index.entries_by_path.len());
     let mut implementations = Vec::new();
-    let mut references = Vec::new();
 
     // Deterministic projection order (HashMap iteration is not).
     let mut entries: Vec<(&NudoxPath, &ir::kind::Entry)> = index.entries_by_path.iter().collect();
     entries.sort_by_key(|(_, e)| linker.iri_of(e.path()));
 
     for (_, entry) in entries {
-        let (symbol, impls, refs) = project_entry(&linker, entry);
+        let (symbol, impls) = project_entry(&linker, entry);
         symbols.push(symbol);
         implementations.extend(impls);
-        references.extend(refs);
     }
+
+    // References are a package-level projection of the occurrence corpus,
+    // resolved through the same linker so stubs dedup with signature edges.
+    let references = project_references(&linker, occurrences);
 
     // Per-version membership: the real (non-stub) symbols of this projection.
     let version = ctx.version.as_ref().map(|v| m::PackageVersion {
@@ -895,13 +929,12 @@ pub fn project(index: &Index, ctx: PackageCtx) -> GraphCorpus {
 fn project_entry(
     linker: &Linker,
     entry: &ir::kind::Entry,
-) -> (m::Symbol, Vec<m::Implementation>, Vec<m::Reference>) {
+) -> (m::Symbol, Vec<m::Implementation>) {
     use ir::kind::Entry as E;
 
     let iri = linker.iri_of(entry.path());
     let mut cx = EmitCx::new(linker);
     let mut implementations = Vec::new();
-    let mut references = Vec::new();
     let mut extends_names: Vec<String> = Vec::new();
     let mut protocols: &[NudoxPath] = &[];
 
@@ -974,17 +1007,6 @@ fn project_entry(
         ),
         E::Function(s) => {
             protocols = opt_slice(&s.inner.implemented_protocols);
-            if let Some(body) = &s.inner.body {
-                for r in &body.get().references {
-                    references.push(m::Reference {
-                        source: linker.lazy(&iri),
-                        target: linker.lazy(&linker.resolve_path(&r.target)),
-                        kind: reference_kind(&r.kind),
-                        span_start: Some(r.span.start as i64),
-                        span_end: Some(r.span.end as i64),
-                    });
-                }
-            }
             (
                 m::SymbolKind::Function,
                 Some(m::Shape::Function(function(&mut cx, &s.inner, true))),
@@ -1031,6 +1053,14 @@ fn project_entry(
         .map(|set| set.iter().map(|segs| segs.join("::")).collect())
         .unwrap_or_default();
 
+    // Resolved intra-doc links feed the `mentions` edge: each link target is a
+    // symbol this entry references in its documentation prose.
+    if let Some(links) = entry_doc_links(entry) {
+        for target in links.values() {
+            cx.mentions.insert(linker.resolve_path(target));
+        }
+    }
+
     let symbol = m::Symbol {
         id: EntityIDFor::new(&iri).expect("sanitized iri"),
         fq_name: path.join("::"),
@@ -1053,7 +1083,46 @@ fn project_entry(
         uri,
     };
 
-    (symbol, implementations, references)
+    (symbol, implementations)
+}
+
+/// Build the reference corpus from the resolved occurrences, applying the
+/// graph assertion policy (REFERENCES-PLAN §4.4): only `Reference`-role
+/// occurrences with a graph-worthy kind, confidence `>= Index`, and an
+/// anchored enclosing symbol are asserted. `VariableUse`/`FieldAccess` and
+/// suffix-confidence rows stay blob-only — the graph asserts, the blob records.
+fn project_references(linker: &Linker, occurrences: &OccurrenceSet) -> Vec<m::Reference> {
+    use ir::syntax::{Confidence, ReferenceKind as K, Role};
+
+    let mut references = Vec::new();
+    for file in &occurrences.files {
+        let file_str = file.path.to_string_lossy().into_owned();
+        for occ in &file.occurrences {
+            // Assertion policy.
+            if occ.role != Role::Reference || !occ.anchored || occ.confidence < Confidence::Index {
+                continue;
+            }
+            if !matches!(
+                occ.kind,
+                K::FunctionCall | K::MethodCall | K::TypeReference | K::MacroInvocation | K::Import
+            ) {
+                continue;
+            }
+            let Some(enclosing) = &occ.enclosing else {
+                continue; // module-top-level: no source symbol to hang the edge on
+            };
+            references.push(m::Reference {
+                source: linker.lazy(&linker.resolve_path(enclosing)),
+                target: linker.lazy(&linker.resolve_path(&occ.target)),
+                kind: reference_kind(&occ.kind),
+                span_start: Some(occ.span.start as i64),
+                span_end: Some(occ.span.end as i64),
+                file: Some(file_str.clone()),
+                confidence: Some(format!("{:?}", occ.confidence)),
+            });
+        }
+    }
+    references
 }
 
 #[cfg(test)]
@@ -1087,7 +1156,6 @@ mod tests {
             implemented: true,
             members: None,
             implemented_protocols: None,
-            body: None,
         });
         s.name = path.rsplit('/').next().unwrap().to_string();
         s.path = local(path);

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use ir::entry::Index;
+use ir::syntax::OccurrenceSet;
 use serde_json::Value;
 use terminusdb_schema::{ToJson, ToTDBInstance};
 
@@ -105,10 +106,11 @@ fn strip_edges(document: &mut Value) {
 /// the index describes (the projection mints every IRI under it).
 pub fn emit<S: DocumentSink>(
 	index: &Index,
+	occurrences: &OccurrenceSet,
 	ctx: PackageCtx,
 	sink: &mut S,
 ) -> Result<(), GenerateError> {
-	let corpus = project(index, ctx);
+	let corpus = project(index, occurrences, ctx);
 	let mut state = EmitState::default();
 
 	// Wave 1: package nodes — no symbol links.

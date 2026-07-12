@@ -19,3 +19,4 @@
 pub mod from_ir;
 pub mod link;
 pub mod model;
+pub mod symtab;

@@ -17,20 +17,27 @@
 pub mod blob_info;
 pub mod cst;
 pub mod linked_data;
+pub mod occurrences;
+pub mod parse_cache;
+pub mod resolve;
 pub mod source_archive;
 pub mod surface;
 pub mod tar;
 
 use std::path::PathBuf;
 
-use heart::{ContentHash, Toolchain};
+use heart::{ContentHash, JobKey, Toolchain};
 use registry::identity::PackageCoordinates;
 use ir::entry::Index;
+use ir::syntax::OccurrenceSet;
 
 pub use blob_info::BlobInfo;
 pub use cst::CstSet;
 pub use source_archive::{FileDigest, SourceArchive};
 
+use crate::generate::resolve::RESOLVER_VERSION;
+
+use crate::compile::producer::{self, ForgeContext, LocalForgeContext};
 use crate::error::GenerateError;
 
 /// A materialized package ready to generate from: its verified identity, the
@@ -55,6 +62,8 @@ pub struct GeneratedPackage {
 	pub surface: Index,
 	/// The per-file CST resolution (serializable reference spans).
 	pub cst: CstSet,
+	/// The resolved, attributed occurrence corpus (definitions + references).
+	pub occurrences: OccurrenceSet,
 	/// The content-addressed source archive.
 	pub archive: SourceArchive,
 	/// The assembled, sink-ready blob info (file digests + snapshot hash).
@@ -69,10 +78,47 @@ pub struct GeneratedPackage {
 ///
 /// CPU-bound and deterministic — the caller runs this on a blocking pool /
 /// worker, never on an async serving thread.
+///
+/// Re-indexing the same `(producer, toolchain, source, lock)` is a content-
+/// addressed cache hit (design §10), not a re-parse. Surface / CST / archive
+/// each live under their own CAS key so a hit can skip every tree walk.
 pub fn generate(input: &PackageInput) -> Result<GeneratedPackage, GenerateError> {
-	let surface = surface::build(input)?;
-	let cst = cst::extract(input)?;
-	let archive = source_archive::build(input)?;
+	// The bare entry point owns a local, per-call context (memory CAS + dev
+	// cage): no process globals. The server injects its own `ForgeRuntime`.
+	let ctx = LocalForgeContext::new();
+	generate_with(&ctx, input)
+}
+
+/// Run the full generation pipeline under an injected [`ForgeContext`].
+///
+/// Surface / CST / archive each live under their own CAS key so a hit skips the
+/// tree walk. All caching goes through the context's CAS — the sole cache client.
+pub fn generate_with<C: ForgeContext>(
+	ctx: &C,
+	input: &PackageInput,
+) -> Result<GeneratedPackage, GenerateError> {
+	let source_hash = parse_cache::hash_source_tree(&input.root)
+		.unwrap_or_else(|_| ContentHash::of_bytes(input.root.to_string_lossy().as_bytes()));
+	let dep_lock = parse_cache::hash_dep_lock(&input.root);
+
+	// The surface job key mirrors `seal_package`: producer version ‖ toolchain
+	// digest ‖ source ‖ lock. CST / archive derive child keys from it.
+	let job = JobKey::derive(
+		producer::PRODUCER_VERSION.as_bytes(),
+		ctx.toolchains().digest().as_bytes(),
+		source_hash.as_bytes(),
+		dep_lock.as_bytes(),
+	);
+
+	let surface = producer::cache_get_or_build(ctx, job.as_hash(), || surface::build(ctx, input))?;
+	let cst = producer::cache_get_or_build(ctx, job.with_tag(b"cst"), || cst::extract(input))?;
+	// Occurrences are surface-downstream: keyed on the job × resolver version so
+	// a classifier/ladder bump invalidates them without disturbing the surface.
+	let occurrences = producer::cache_get_or_build(ctx, job.with_tag(RESOLVER_VERSION.as_bytes()), || {
+		occurrences::build(input, &surface)
+	})?;
+	let archive =
+		producer::cache_get_or_build(ctx, job.with_tag(b"archive"), || source_archive::build(input))?;
 
 	// BlobInfo owns its archive copy (it travels to the sink independently of
 	// the GeneratedPackage), so the archive is cloned rather than split.
@@ -84,6 +130,7 @@ pub fn generate(input: &PackageInput) -> Result<GeneratedPackage, GenerateError>
 		toolchain: input.toolchain.clone(),
 		surface,
 		cst,
+		occurrences,
 		archive,
 		blob_info,
 		snapshot,
