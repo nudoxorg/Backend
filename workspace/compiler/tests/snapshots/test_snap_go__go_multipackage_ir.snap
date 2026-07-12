@@ -1,0 +1,562 @@
+---
+source: workspace/compiler/tests/snap_go.rs
+expression: sorted
+---
+{
+    "example.com/multipackage": Module(
+        Symbol {
+            name: "example.com/multipackage",
+            path: Local(
+                "example.com/multipackage",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Package multipackage is the root package of a multi-package module.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "example.com/multipackage::NewRegistry",
+                        ),
+                        Local(
+                            "example.com/multipackage::Registry.Set",
+                        ),
+                        Local(
+                            "example.com/multipackage::Registry.Get",
+                        ),
+                        Local(
+                            "example.com/multipackage::Registry",
+                        ),
+                        Local(
+                            "example.com/multipackage/sub",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "example.com/multipackage/sub": Module(
+        Symbol {
+            name: "example.com/multipackage/sub",
+            path: Local(
+                "example.com/multipackage/sub",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Package sub is a sub-package within the multipackage module.\n\nIt demonstrates that the context assembles multi-package modules correctly.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "example.com/multipackage/sub::Helper.Run",
+                        ),
+                        Local(
+                            "example.com/multipackage/sub::Helper.Describe",
+                        ),
+                        Local(
+                            "example.com/multipackage/sub::Helper",
+                        ),
+                        Local(
+                            "example.com/multipackage/sub::New",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "example.com/multipackage/sub::Helper": RecordType(
+        Symbol {
+            name: "Helper",
+            path: Local(
+                "example.com/multipackage/sub::Helper",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Helper provides utility operations for the parent module.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Helper",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Name",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "Name is the helper's identifier.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "example.com/multipackage/sub::Helper.Run",
+                        ),
+                        Local(
+                            "example.com/multipackage/sub::Helper.Describe",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/multipackage/sub::Helper.Describe": Function(
+        Symbol {
+            name: "Describe",
+            path: Local(
+                "example.com/multipackage/sub::Helper.Describe",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Describe returns a description string with a value receiver.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Owned,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/multipackage/sub::Helper.Run": Function(
+        Symbol {
+            name: "Run",
+            path: Local(
+                "example.com/multipackage/sub::Helper.Run",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Run executes the helper's primary action.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "error",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    MutRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/multipackage/sub::New": Function(
+        Symbol {
+            name: "New",
+            path: Local(
+                "example.com/multipackage/sub::New",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "New constructs a Helper.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    RawPointer {
+                                        is_mutable: true,
+                                        type: TypeReference(
+                                            TypeReference {
+                                                identifier: "example.com/multipackage/sub.Helper",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/multipackage::NewRegistry": Function(
+        Symbol {
+            name: "NewRegistry",
+            path: Local(
+                "example.com/multipackage::NewRegistry",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "NewRegistry creates an empty registry.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    RawPointer {
+                                        is_mutable: true,
+                                        type: TypeReference(
+                                            TypeReference {
+                                                identifier: "example.com/multipackage.Registry",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/multipackage::Registry": RecordType(
+        Symbol {
+            name: "Registry",
+            path: Local(
+                "example.com/multipackage::Registry",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Registry holds key-value entries.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Registry",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "entries",
+                            ),
+                            type: Some(
+                                RecordLiteral(
+                                    Record {
+                                        name: None,
+                                        generics: None,
+                                        fields: [
+                                            Pattern(
+                                                IndexSignature {
+                                                    key_type: Primitive(
+                                                        String,
+                                                    ),
+                                                    value_type: Primitive(
+                                                        String,
+                                                    ),
+                                                },
+                                            ),
+                                        ],
+                                        call_signatures: None,
+                                        constructors: None,
+                                        methods: None,
+                                        index_signatures: None,
+                                        super_types: None,
+                                        members: None,
+                                        implemented_protocols: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Package,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "example.com/multipackage::Registry.Set",
+                        ),
+                        Local(
+                            "example.com/multipackage::Registry.Get",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/multipackage::Registry.Get": Function(
+        Symbol {
+            name: "Get",
+            path: Local(
+                "example.com/multipackage::Registry.Get",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Get retrieves the value for key.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "key",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Bool,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    MutRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/multipackage::Registry.Set": Function(
+        Symbol {
+            name: "Set",
+            path: Local(
+                "example.com/multipackage::Registry.Set",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Set stores a value under key.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "key",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    MutRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

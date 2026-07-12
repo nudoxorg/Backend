@@ -1,0 +1,1164 @@
+---
+source: workspace/compiler/tests/snap_go.rs
+expression: sorted
+---
+{
+    "example.com/basics": Module(
+        Symbol {
+            name: "example.com/basics",
+            path: Local(
+                "example.com/basics",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Package basics exercises exported vs unexported identifiers, struct fields, named types, type aliases, slices, maps, channels, and pointers.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "example.com/basics::Celsius",
+                        ),
+                        Local(
+                            "example.com/basics::Chan",
+                        ),
+                        Local(
+                            "example.com/basics::Config.Close",
+                        ),
+                        Local(
+                            "example.com/basics::Config.Status",
+                        ),
+                        Local(
+                            "example.com/basics::Config",
+                        ),
+                        Local(
+                            "example.com/basics::Count",
+                        ),
+                        Local(
+                            "example.com/basics::Direction",
+                        ),
+                        Local(
+                            "example.com/basics::MaxRetries",
+                        ),
+                        Local(
+                            "example.com/basics::Process",
+                        ),
+                        Local(
+                            "example.com/basics::Ptr",
+                        ),
+                        Local(
+                            "example.com/basics::Server.Close",
+                        ),
+                        Local(
+                            "example.com/basics::Server.Status",
+                        ),
+                        Local(
+                            "example.com/basics::Server",
+                        ),
+                        Local(
+                            "example.com/basics::StringMap",
+                        ),
+                        Local(
+                            "example.com/basics::StringSlice",
+                        ),
+                        Local(
+                            "example.com/basics::Temperature",
+                        ),
+                        Local(
+                            "example.com/basics::Variadic",
+                        ),
+                        Local(
+                            "example.com/basics::defaultTimeout",
+                        ),
+                        Local(
+                            "example.com/basics::namedReturn",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "example.com/basics::Celsius": RecordType(
+        Symbol {
+            name: "Celsius",
+            path: Local(
+                "example.com/basics::Celsius",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Celsius is a named (defined) type over float64 (becomes a newtype RecordType).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Celsius",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Index(
+                                0,
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Float(
+                                        W64,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "underlying",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Chan": RecordType(
+        Symbol {
+            name: "Chan",
+            path: Local(
+                "example.com/basics::Chan",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Chan is a named type over a channel.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Chan",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Index(
+                                0,
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "chan",
+                                        type: Primitive(
+                                            String,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "underlying",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Config": RecordType(
+        Symbol {
+            name: "Config",
+            path: Local(
+                "example.com/basics::Config",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Config is an exported struct that embeds Server.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Config",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Server",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "example.com/basics.Server",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "embedded",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Name",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "tag:json:\"name\"",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "Name identifies the configuration.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "example.com/basics::Config.Close",
+                        ),
+                        Local(
+                            "example.com/basics::Config.Status",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Config.Close": Function(
+        Symbol {
+            name: "Close",
+            path: Local(
+                "example.com/basics::Config.Close",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Promoted from embedded `example.com/basics.Server`.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "error",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    MutRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Config.Status": Function(
+        Symbol {
+            name: "Status",
+            path: Local(
+                "example.com/basics::Config.Status",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Promoted from embedded `example.com/basics.Server`.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Owned,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Count": Variable(
+        Symbol {
+            name: "Count",
+            path: Local(
+                "example.com/basics::Count",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Count is an exported package-level variable.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "example.com/basics::Direction": SumType(
+        Symbol {
+            name: "Direction",
+            path: Local(
+                "example.com/basics::Direction",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Direction is an iota-based enum (Go convention: defined type + iota consts).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: [
+                SumVariant {
+                    name: "North",
+                    data: None,
+                    documentation: Some(
+                        "Value: `0`",
+                    ),
+                },
+                SumVariant {
+                    name: "East",
+                    data: None,
+                    documentation: Some(
+                        "Value: `1`",
+                    ),
+                },
+                SumVariant {
+                    name: "South",
+                    data: None,
+                    documentation: Some(
+                        "Value: `2`",
+                    ),
+                },
+                SumVariant {
+                    name: "West",
+                    data: None,
+                    documentation: Some(
+                        "Value: `3`",
+                    ),
+                },
+            ],
+        },
+    ),
+    "example.com/basics::MaxRetries": Constant(
+        Symbol {
+            name: "MaxRetries",
+            path: Local(
+                "example.com/basics::MaxRetries",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "MaxRetries is an exported constant.\n\nValue: `3`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "example.com/basics::Process": Function(
+        Symbol {
+            name: "Process",
+            path: Local(
+                "example.com/basics::Process",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Process is a top-level exported function: multiple params, multiple returns.\n\nIt accepts a name and a count and returns the processed string and an error.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "count",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            Arch,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "error",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Ptr": RecordType(
+        Symbol {
+            name: "Ptr",
+            path: Local(
+                "example.com/basics::Ptr",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Ptr is a named type over a pointer.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Ptr",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Index(
+                                0,
+                            ),
+                            type: Some(
+                                RawPointer {
+                                    is_mutable: true,
+                                    type: TypeReference(
+                                        TypeReference {
+                                            identifier: "example.com/basics.Server",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                },
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "underlying",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Server": RecordType(
+        Symbol {
+            name: "Server",
+            path: Local(
+                "example.com/basics::Server",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Server is an exported struct with mixed exported/unexported fields and struct tags.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Server",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Addr",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "tag:json:\"addr\"",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "Addr is the listen address.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Port",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        Arch,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "tag:json:\"port\"",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "Port is the port number.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "timeout",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "time.Duration",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Package,
+                            ),
+                            documentation: Some(
+                                "timeout is an unexported field.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "example.com/basics::Server.Close",
+                        ),
+                        Local(
+                            "example.com/basics::Server.Status",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Server.Close": Function(
+        Symbol {
+            name: "Close",
+            path: Local(
+                "example.com/basics::Server.Close",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Close shuts down the server with a pointer receiver.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "error",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    MutRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Server.Status": Function(
+        Symbol {
+            name: "Status",
+            path: Local(
+                "example.com/basics::Server.Status",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Status returns the current status string with a value receiver.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Owned,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::StringMap": RecordType(
+        Symbol {
+            name: "StringMap",
+            path: Local(
+                "example.com/basics::StringMap",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "StringMap is a named type over a map.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "StringMap",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Index(
+                                0,
+                            ),
+                            type: Some(
+                                RecordLiteral(
+                                    Record {
+                                        name: None,
+                                        generics: None,
+                                        fields: [
+                                            Pattern(
+                                                IndexSignature {
+                                                    key_type: Primitive(
+                                                        String,
+                                                    ),
+                                                    value_type: Primitive(
+                                                        String,
+                                                    ),
+                                                },
+                                            ),
+                                        ],
+                                        call_signatures: None,
+                                        constructors: None,
+                                        methods: None,
+                                        index_signatures: None,
+                                        super_types: None,
+                                        members: None,
+                                        implemented_protocols: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "underlying",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::StringSlice": RecordType(
+        Symbol {
+            name: "StringSlice",
+            path: Local(
+                "example.com/basics::StringSlice",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "StringSlice is a named type over a slice.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "StringSlice",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Index(
+                                0,
+                            ),
+                            type: Some(
+                                Slice(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "underlying",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::Temperature": TypeAlias(
+        Symbol {
+            name: "Temperature",
+            path: Local(
+                "example.com/basics::Temperature",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Temperature is a true type alias.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypeReference(
+                TypeReference {
+                    identifier: "example.com/basics.Celsius",
+                    generic_args: None,
+                },
+            ),
+        },
+    ),
+    "example.com/basics::Variadic": Function(
+        Symbol {
+            name: "Variadic",
+            path: Local(
+                "example.com/basics::Variadic",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Variadic accepts a variadic argument.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "prefix",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "items",
+                                type: Some(
+                                    Slice(
+                                        Primitive(
+                                            String,
+                                        ),
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Variadic,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Slice(
+                                        Primitive(
+                                            String,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: Some(
+                    [
+                        Variadic,
+                    ],
+                ),
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "example.com/basics::defaultTimeout": Constant(
+        Symbol {
+            name: "defaultTimeout",
+            path: Local(
+                "example.com/basics::defaultTimeout",
+            ),
+            aliases: None,
+            visibility: Package,
+            documentation: Some(
+                "defaultTimeout is an unexported constant.\n\nValue: `30`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "example.com/basics::namedReturn": Function(
+        Symbol {
+            name: "namedReturn",
+            path: Local(
+                "example.com/basics::namedReturn",
+            ),
+            aliases: None,
+            visibility: Package,
+            documentation: Some(
+                "namedReturn demonstrates named return values (unexported, for coverage).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "n",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            Arch,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "result",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "err",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "error",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}
