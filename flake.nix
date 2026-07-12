@@ -286,6 +286,7 @@
               pkgs.goreleaser
               pkgs.cuelsp
               pkgs.b3sum
+              pkgs.go # needed by system_go_toolchain for the Go oracle producer
               (mkBuck2 pkgs)
               (if pkgs.stdenv.isLinux then pkgs.wild-unwrapped else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.openssl else null) # Fast linker (RUST), only works with clang for now
