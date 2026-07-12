@@ -9,7 +9,7 @@ use axum::{body::Body, http::{Request, StatusCode}};
 use http_body_util::BodyExt;
 use nudox::{http::AppState, config::PipelineConfig, ingest::IngestTargets, registry::LocalRegistry, search::SessionStore, storage::StorageLayout};
 use blobstore::InMemoryBlobStore;
-use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, SearchIndex, SearchQuery, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr, VectorIndex, VectorQuery};
+use nudox_core::{BLOB_SCHEMA_VERSION, BlobInfo, BlobStore, ByteSpan, ChunkMetadata, Language, OccurrenceId, RepoId, ResolutionState, SearchIndex, SearchQuery, SourceChunk, SymbolKind, SymbolOrigin, TreesitterRepr, VectorIndex, VectorQuery};
 use embed::PlaceholderEmbedder;
 use orchestrator::{Orchestrator, memory::{InMemoryFutureParseQueue, InMemoryGlobalSymbolStore}};
 use search::{InMemoryVectorIndex, SymbolSearcher, TantivySearchIndex};
@@ -23,23 +23,23 @@ use tower::ServiceExt;
 fn make_blob(symbol_name: &str, lib: &str, kind: SymbolKind, raw_code: &str) -> BlobInfo {
 	// Use Repo origin so the orchestrator indexes the blob immediately.
 	// ExternalLib blobs are deferred until the library's global IDs are registered.
-	let repo_id = RepoId(format!("lib:{lib}"));
+	let repo_id = RepoId::from(format!("lib:{lib}"));
 	BlobInfo {
 		occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
 		symbol_name:        symbol_name.to_owned(),
 		symbol_origin:      SymbolOrigin::Repo { repo_id: repo_id.clone() },
-		resolved_global_id: None,
+		resolution:         ResolutionState::Unresolved,
 		kind:               Some(kind),
 		source:             SourceChunk {
-			raw_code:        raw_code.to_owned(),
+			raw_code:        raw_code.into(),
             treesitter_repr: Some(TreesitterRepr(vec![])),
-			symbol_span:     ByteSpan { start: 0, end: raw_code.len() },
+			symbol_span:     ByteSpan::covering(0, raw_code.len()),
 		},
 		embeddings:         vec![],
 		metadata:           ChunkMetadata {
 			repo_id,
 			file_path: "src/lib.rs".into(),
-			file_span: ByteSpan { start: 0, end: 0 },
+			file_span: ByteSpan::covering(0, 0),
 			parsed_at: chrono::Utc::now(),
 			lang: Language::Rust,
 			lang_version: None,
@@ -58,7 +58,7 @@ async fn build_state_with_orchestrator() -> (AppState, TempDir) {
 	let pipeline = PipelineConfig {
 		terminus:        None,
 		qdrant:          None,
-		embedding_model: "text-embedding-3-small".to_owned(),
+		embedding_model: nudox_core::ModelId::new("text-embedding-3-small"),
 		upload_schema:   false,
 	};
 
@@ -134,7 +134,7 @@ async fn post_symbol_search(state: AppState, body: Value) -> (StatusCode, Value)
 async fn empty_index_returns_empty_array() {
 	let (state, _tmp) = build_state_with_orchestrator().await;
 
-	let (status, body) = post_symbol_search(state, json!({"name_pattern": "Router"})).await;
+	let (status, body) = post_symbol_search(state, json!({"criteria": {"Name": "Router"}})).await;
 
 	assert_eq!(status, StatusCode::OK);
 	assert_eq!(body, json!([]));
@@ -148,7 +148,7 @@ async fn finds_ingested_symbol_by_name() {
 	ingest_blob(&state, blob).await;
 
 	let (status, body) =
-		post_symbol_search(state, json!({"name_pattern": "Router", "limit": 10})).await;
+		post_symbol_search(state, json!({"criteria": {"Name": "Router"}, "limit": 10})).await;
 
 	assert_eq!(status, StatusCode::OK);
 	let hits = body.as_array().unwrap();
@@ -185,7 +185,7 @@ async fn finds_multiple_symbols_by_partial_name() {
 	.await;
 
 	let (status, body) =
-		post_symbol_search(state, json!({"name_pattern": "spawn", "limit": 10})).await;
+		post_symbol_search(state, json!({"criteria": {"Name": "spawn"}, "limit": 10})).await;
 
 	assert_eq!(status, StatusCode::OK);
 	let hits = body.as_array().unwrap();
@@ -202,8 +202,8 @@ async fn body_query_returns_501_not_implemented() {
 	let (status, body) = post_symbol_search(
 		state,
 		json!({
-				"name_pattern": "Router",
-				"body_query":   { "NaturalLanguage": "HTTP routing handler" }
+			"criteria": {"Body": {"NaturalLanguage": "HTTP routing handler"}},
+			"limit": 10
 		}),
 	)
 	.await;
@@ -224,7 +224,7 @@ async fn missing_orchestrator_returns_500() {
 	let pipeline = PipelineConfig {
 		terminus:        None,
 		qdrant:          None,
-		embedding_model: "text-embedding-3-small".to_owned(),
+		embedding_model: nudox_core::ModelId::new("text-embedding-3-small"),
 		upload_schema:   false,
 	};
 	let registry =
@@ -241,7 +241,7 @@ async fn missing_orchestrator_returns_500() {
 		),
 	};
 
-	let (status, _) = post_symbol_search(state, json!({"name_pattern": "x"})).await;
+	let (status, _) = post_symbol_search(state, json!({"criteria": {"Name": "x"}})).await;
 	assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
@@ -262,7 +262,8 @@ async fn limit_is_respected() {
 		.await;
 	}
 
-	let (status, body) = post_symbol_search(state, json!({"name_pattern": "func", "limit": 3})).await;
+	let (status, body) =
+		post_symbol_search(state, json!({"criteria": {"Name": "func"}, "limit": 3})).await;
 
 	assert_eq!(status, StatusCode::OK);
 	assert_eq!(body.as_array().unwrap().len(), 3, "limit should cap results at 3");
@@ -276,7 +277,7 @@ async fn response_includes_snippet_field() {
 	ingest_blob(&state, make_blob("mylib::hello", "mylib", SymbolKind::Function, code)).await;
 
 	let (status, body) =
-		post_symbol_search(state, json!({"name_pattern": "hello", "limit": 1})).await;
+		post_symbol_search(state, json!({"criteria": {"Name": "hello"}, "limit": 1})).await;
 
 	assert_eq!(status, StatusCode::OK);
 	let hit = &body.as_array().unwrap()[0];
@@ -300,7 +301,8 @@ async fn kind_only_returns_matching_kinds() {
 	ingest_blob(&state, make_blob("mylib::Error", "mylib", SymbolKind::Enum, "pub enum Error {}"))
 		.await;
 
-	let (status, body) = post_symbol_search(state, json!({"kind": "Struct", "limit": 10})).await;
+	let (status, body) =
+		post_symbol_search(state, json!({"criteria": {"Name": ""}, "kind": "Struct", "limit": 10})).await;
 
 	assert_eq!(status, StatusCode::OK);
 	let hits = body.as_array().unwrap();

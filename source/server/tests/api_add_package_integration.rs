@@ -261,7 +261,7 @@ impl TestServer {
 			Arc::new(LocalRegistry::new(storage, Duration::from_secs(3600), PipelineConfig {
 				terminus:        None,
 				qdrant:          None,
-				embedding_model: "text-embedding-3-small".to_owned(),
+				embedding_model: nudox_core::ModelId::new("text-embedding-3-small"),
 				upload_schema:   false,
 			}));
 		let app = router(AppState {
@@ -269,7 +269,7 @@ impl TestServer {
 			pipeline: PipelineConfig {
 				terminus:        None,
 				qdrant:          None,
-				embedding_model: "text-embedding-3-small".to_owned(),
+				embedding_model: nudox_core::ModelId::new("text-embedding-3-small"),
 				upload_schema:   false,
 			}
 			.into(),
