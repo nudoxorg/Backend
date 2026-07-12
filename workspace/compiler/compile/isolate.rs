@@ -1,35 +1,22 @@
-//! Seam F: run producer toolchains inside the sandbox.
+//! Seam F: build isolation inputs for external producer toolchains.
 //!
-//! Producers keep their language-specific logic; this module is the only place
-//! that builds a [`sandbox::Spec`] for external toolchains (Rust/Java/Go) and
-//! for the in-process worker binary (Nix/TS/Python).
+//! Producers keep their language-specific logic; this module projects an
+//! [`IsolatedCommand`] builder into a [`sandbox::SealedCommand`] under the
+//! injected [`ForgeContext`]'s toolchains, and runs it through `ctx.cage()`.
+//!
+//! There are no process globals here anymore: toolchains, the cage, and the
+//! override table all arrive through the context.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Output as StdOutput;
 
 use sandbox::{
-	run, Env, KillReason, Mounts, Network, ProducerProfile, SandboxError, Spec,
+	CancelToken, Env, KillReason, LimitOverride, Mounts, Network, ProducerProfile, SealedCommand,
+	Sealer,
 };
 
-// `which` is re-exported transitively via sandbox; use std discovery if needed.
-mod which {
-	use std::path::{Path, PathBuf};
-	pub fn which(bin: &Path) -> Result<PathBuf, ()> {
-		if bin.is_absolute() && bin.exists() {
-			return Ok(bin.to_path_buf());
-		}
-		let name = bin.as_os_str();
-		let path = std::env::var_os("PATH").ok_or(())?;
-		for dir in std::env::split_paths(&path) {
-			let candidate = dir.join(name);
-			if candidate.is_file() {
-				return Ok(candidate);
-			}
-		}
-		Err(())
-	}
-}
+use crate::compile::producer::ForgeContext;
 
 /// Map a sandbox kill / denial into a displayable process-style failure.
 #[derive(Debug)]
@@ -66,6 +53,8 @@ impl std::fmt::Display for IsolatedFailure {
 	}
 }
 
+impl std::error::Error for IsolatedFailure {}
+
 impl std::fmt::Display for IsolatedFailureKind {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
@@ -78,6 +67,9 @@ impl std::fmt::Display for IsolatedFailureKind {
 }
 
 /// Inputs for an isolated toolchain invocation.
+///
+/// Thin builder over [`SealedCommand`]: familiar to producers; [`run_isolated`]
+/// / [`seal`] project it into a sealed command under a [`ForgeContext`].
 pub struct IsolatedCommand {
 	/// Program (name on PATH or absolute).
 	pub program: PathBuf,
@@ -93,6 +85,8 @@ pub struct IsolatedCommand {
 	pub writable: Vec<PathBuf>,
 	/// Limit profile.
 	pub profile: ProducerProfile,
+	/// Optional per-package overlay.
+	pub override_: LimitOverride,
 	/// Network (default off).
 	pub network: Network,
 }
@@ -108,6 +102,7 @@ impl IsolatedCommand {
 			read_only: Vec::new(),
 			writable: Vec::new(),
 			profile,
+			override_: LimitOverride::none(),
 			network: Network::Off,
 		}
 	}
@@ -157,10 +152,20 @@ impl IsolatedCommand {
 		self.network = n;
 		self
 	}
+
+	/// Per-package limit overlay.
+	pub fn limit_override(mut self, o: LimitOverride) -> Self {
+		self.override_ = o;
+		self
+	}
 }
 
-/// Run an isolated command; on success return a std-like [`StdOutput`].
-pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> {
+/// Run an isolated command through the context cage; on success return an
+/// [`StdOutput`]-shaped capture.
+pub fn run_isolated<C: ForgeContext>(
+	ctx: &C,
+	cmd: IsolatedCommand,
+) -> Result<StdOutput, IsolatedFailure> {
 	let command_label = format!(
 		"{} {}",
 		cmd.program.display(),
@@ -171,34 +176,82 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 			.join(" ")
 	);
 
-	let mut env = Env::empty().set(
-		"PATH",
-		std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
-	);
-	// Preserve a minimal locale so toolchains don't panic.
-	if let Ok(v) = std::env::var("LANG") {
-		env = env.set("LANG", v);
+	let sealed = seal(ctx, cmd);
+	match ctx.cage().run(sealed, &CancelToken::never()) {
+		Ok(out) => {
+			if out.success() {
+				let status = out.status().expect("success implies exited");
+				Ok(StdOutput {
+					status,
+					stdout: out.stdout,
+					stderr: out.stderr,
+				})
+			} else {
+				match out.end {
+					sandbox::ProcessEnd::Exited(status) => Err(IsolatedFailure {
+						command: command_label,
+						kind: IsolatedFailureKind::NonZero {
+							status: status.to_string(),
+						},
+						stdout: nonempty_utf8(&out.stdout),
+						stderr: nonempty_utf8(&out.stderr),
+					}),
+					sandbox::ProcessEnd::Killed(reason) => Err(IsolatedFailure {
+						command: command_label,
+						kind: IsolatedFailureKind::Resource(reason),
+						stdout: nonempty_utf8(&out.stdout),
+						stderr: nonempty_utf8(&out.stderr),
+					}),
+				}
+			}
+		}
+		Err(e) => Err(cage_error_to_isolated(e, &command_label)),
 	}
-	if let Ok(v) = std::env::var("LC_ALL") {
-		env = env.set("LC_ALL", v);
+}
+
+/// Map a [`sandbox::CageError`] into the displayable isolated failure.
+fn cage_error_to_isolated(e: sandbox::CageError, label: &str) -> IsolatedFailure {
+	use sandbox::CageError;
+	let kind = match e {
+		CageError::Killed { reason, .. } => IsolatedFailureKind::Resource(reason),
+		CageError::ToolchainMissing { program } | CageError::HelperMissing { program } => {
+			IsolatedFailureKind::ToolchainMissing(program)
+		}
+		other => IsolatedFailureKind::Sandbox(other.to_string()),
+	};
+	IsolatedFailure {
+		command: label.to_string(),
+		kind,
+		stdout: None,
+		stderr: None,
 	}
-	// Nix store / rustup when present (RO via ambient path visibility on
-	// passthrough/seatbelt; bwrap binds /nix).
-	if let Ok(v) = std::env::var("RUSTUP_HOME") {
-		env = env.set("RUSTUP_HOME", v);
-	}
-	if let Ok(v) = std::env::var("CARGO_HOME") {
-		env = env.set("CARGO_HOME", v);
-	}
-	if let Ok(v) = std::env::var("JAVA_HOME") {
-		env = env.set("JAVA_HOME", v);
-	}
-	if let Ok(v) = std::env::var("GOROOT") {
-		env = env.set("GOROOT", v);
-	}
-	if let Ok(v) = std::env::var("GOPATH") {
-		env = env.set("GOPATH", v);
-	}
+}
+
+fn nonempty_utf8(bytes: &[u8]) -> Option<String> {
+	let s = String::from_utf8_lossy(bytes).trim().to_string();
+	if s.is_empty() { None } else { Some(s) }
+}
+
+/// Project an [`IsolatedCommand`] into a [`SealedCommand`] under `ctx`.
+///
+/// The sealer boundary: reads no policy env. `PATH` is a fixed hermetic set;
+/// toolchain bindings come from `ctx.toolchains()`; limits from
+/// `ctx.overrides()`.
+pub fn seal<C: ForgeContext>(ctx: &C, cmd: IsolatedCommand) -> SealedCommand {
+	let sealer = Sealer::new();
+	let toolchains = ctx.toolchains();
+
+	// Fixed hermetic PATH, optionally prefixed with dev-only toolchain dirs
+	// (`NUDOX_TOOLCHAIN_PATH`, resolved in `ToolchainSet::from_env`) so hosts
+	// where `go`/`javadoc` live outside the hermetic set (e.g. a Nix devshell)
+	// can still find them. Empty by default → hermetic PATH unchanged.
+	const HERMETIC_PATH: &str = "/usr/bin:/bin:/nix/var/nix/profiles/default/bin";
+	let path = match toolchains.path_prefix() {
+		Some(prefix) => format!("{prefix}:{HERMETIC_PATH}"),
+		None => HERMETIC_PATH.to_string(),
+	};
+	let mut env = Env::empty().set("PATH", path);
+	env = toolchains.apply_env(env);
 	for (k, v) in cmd.env {
 		env = env.set(k, v);
 	}
@@ -207,84 +260,38 @@ pub fn run_isolated(cmd: IsolatedCommand) -> Result<StdOutput, IsolatedFailure> 
 	for p in &cmd.read_only {
 		mounts = mounts.ro(p);
 	}
+	for p in toolchains.ro_binds() {
+		mounts = mounts.ro(p);
+	}
 	for p in &cmd.writable {
 		mounts = mounts.rw(p);
 	}
-	// Nix store RO for absolute PT_INTERP / RPATH toolchains (bwrap also
-	// binds /nix/store globally; Landlock/seatbelt need the path listed).
+	// Nix store RO for absolute PT_INTERP / RPATH toolchains.
 	if Path::new("/nix/store").is_dir() {
 		mounts = mounts.ro("/nix/store");
 	}
-	// Always allow temp + home for toolchains that need caches; writable.
-	if let Ok(tmp) = std::env::temp_dir().canonicalize() {
-		mounts = mounts.rw(tmp);
-	}
-	if let Some(home) = std::env::var_os("HOME") {
-		mounts = mounts.rw(PathBuf::from(home));
-	}
-	if let Ok(cwd) = std::env::current_dir() {
-		mounts = mounts.ro(&cwd);
-	}
+	// Narrow scratch — never ambient $HOME. temp_dir is a cwd-style read, not policy.
+	let scratch = std::env::temp_dir();
+	mounts = mounts.rw(&scratch);
 	if let Some(ref cwd) = cmd.cwd {
 		mounts = mounts.rw(cwd);
 	}
 
-	let mut spec = Spec::new(cmd.program, cmd.profile.limits())
-		.args(cmd.args)
-		.env(env)
-		.mounts(mounts)
-		.network(cmd.network);
+	let mut limits = ctx.overrides().resolve(cmd.profile, None);
+	limits = cmd.override_.apply(limits);
+
+	let budget = sealer.budget_from_mounts(
+		mounts,
+		scratch,
+		sandbox::NetGrant::from(cmd.network),
+		env,
+		limits,
+	);
+	let mut sealed = sealer.seal_command(cmd.program, cmd.args, budget);
 	if let Some(cwd) = cmd.cwd {
-		spec = spec.cwd(cwd);
+		sealed = sealed.cwd(cwd);
 	}
-
-	match run(spec) {
-		Ok(out) => {
-			if out.success() {
-				Ok(StdOutput {
-					status: out.status,
-					stdout: out.stdout,
-					stderr: out.stderr,
-				})
-			} else {
-				Err(IsolatedFailure {
-					command: command_label,
-					kind: IsolatedFailureKind::NonZero {
-						status: out.status.to_string(),
-					},
-					stdout: nonempty_utf8(&out.stdout),
-					stderr: nonempty_utf8(&out.stderr),
-				})
-			}
-		}
-		Err(SandboxError::Killed { reason, .. }) => Err(IsolatedFailure {
-			command: command_label,
-			kind: IsolatedFailureKind::Resource(reason),
-			stdout: None,
-			stderr: None,
-		}),
-		Err(SandboxError::ToolchainMissing { program }) => Err(IsolatedFailure {
-			command: command_label,
-			kind: IsolatedFailureKind::ToolchainMissing(program),
-			stdout: None,
-			stderr: None,
-		}),
-		Err(e) => Err(IsolatedFailure {
-			command: command_label,
-			kind: IsolatedFailureKind::Sandbox(e.to_string()),
-			stdout: None,
-			stderr: None,
-		}),
-	}
-}
-
-fn nonempty_utf8(bytes: &[u8]) -> Option<String> {
-	let s = String::from_utf8_lossy(bytes).trim().to_string();
-	if s.is_empty() {
-		None
-	} else {
-		Some(s)
-	}
+	sealed
 }
 
 /// Collect ancestor directory binds so a package tree is visible.
@@ -296,34 +303,4 @@ pub fn package_tree_binds(root: &Path) -> Vec<PathBuf> {
 		out.push(root.to_path_buf());
 	}
 	out
-}
-
-/// Resolve the producer-worker binary, if configured.
-///
-/// Set `NUDOX_PRODUCER_WORKER` to an absolute path (or name on PATH) to force
-/// in-process languages (nix/ts/python) through a crash-isolated subprocess.
-pub fn producer_worker_bin() -> Option<PathBuf> {
-	let raw = std::env::var_os("NUDOX_PRODUCER_WORKER")?;
-	let path = PathBuf::from(raw);
-	if path.exists() {
-		return Some(path);
-	}
-	which::which(&path).ok()
-}
-
-/// Lower via the producer-worker when configured; otherwise `None` so callers
-/// fall back to in-process (dev). Returns the IR JSON body on success.
-pub fn try_worker_lower(lang: &str, root: &Path) -> Option<Result<String, IsolatedFailure>> {
-	let bin = producer_worker_bin()?;
-	let profile = match lang {
-		"nix" => ProducerProfile::Nix,
-		_ => ProducerProfile::StaticParser,
-	};
-	let cmd = IsolatedCommand::new(bin, profile)
-		.arg("lower")
-		.arg(lang)
-		.arg(root)
-		.ro(root)
-		.rw(std::env::temp_dir());
-	Some(run_isolated(cmd).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))
 }
