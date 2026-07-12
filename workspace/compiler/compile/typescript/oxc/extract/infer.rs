@@ -327,7 +327,7 @@ impl<'a> Extractor<'a> {
             // ── Await expressions → unwrap Promise<T> of inner inference ──────
 
             Expression::AwaitExpression(aw) => {
-                let inner = self.infer_type_from_expr(&aw.expression, is_const)?;
+                let inner = self.infer_type_from_expr(&aw.argument, is_const)?;
                 Some(unwrap_promise(inner))
             }
 
@@ -622,11 +622,11 @@ fn unnamed_output(ty: Type) -> Parameter {
 /// Extract a best-effort name string from a `BindingPattern` for use in
 /// anonymous arrow/function parameters.
 fn pattern_name(pat: &oxc_ast::ast::BindingPattern<'_>) -> String {
-    match &pat.kind {
-        oxc_ast::ast::BindingPatternKind::BindingIdentifier(id) => id.name.to_string(),
-        oxc_ast::ast::BindingPatternKind::ObjectPattern(_)      => "{…}".to_owned(),
-        oxc_ast::ast::BindingPatternKind::ArrayPattern(_)       => "[…]".to_owned(),
-        oxc_ast::ast::BindingPatternKind::AssignmentPattern(ap) => pattern_name(&ap.left),
+    match pat {
+        oxc_ast::ast::BindingPattern::BindingIdentifier(id) => id.name.to_string(),
+        oxc_ast::ast::BindingPattern::ObjectPattern(_)      => "{…}".to_owned(),
+        oxc_ast::ast::BindingPattern::ArrayPattern(_)       => "[…]".to_owned(),
+        oxc_ast::ast::BindingPattern::AssignmentPattern(ap) => pattern_name(&ap.left),
     }
 }
 

@@ -14,6 +14,7 @@ use oxc_ast::ast::{
     TSModuleDeclarationName, TSSignature, TSTypeAliasDeclaration, TSTypeName, VariableDeclaration,
     VariableDeclarationKind,
 };
+use oxc_span::GetSpan;
 
 use ir::{
     entry::NudoxPath,
@@ -267,7 +268,7 @@ impl<'a> Extractor<'a> {
                 for extra_decl in group
                     .declarations
                     .iter()
-                    .filter(|d| !std::ptr::eq(*d, primary))
+                    .filter(|d| !std::ptr::eq(**d as *const Declaration, primary as *const Declaration))
                 {
                     if let Declaration::TSModuleDeclaration(extra_ns) = extra_decl {
                         let mut extra = self.lower_namespace(name, extra_ns)?;
@@ -379,7 +380,7 @@ impl<'a> Extractor<'a> {
         let mut super_types: Vec<Type> = Vec::new();
         if let Some(extends_expr) = &cls.super_class {
             // Extract the identifier from the extends expression (Expression variant).
-            let id_str = match extends_expr.as_ref() {
+            let id_str = match extends_expr {
                 oxc_ast::ast::Expression::Identifier(id) => id.name.to_string(),
                 other => other.span().source_text(self.source).to_string(),
             };
@@ -706,7 +707,8 @@ impl<'a> Extractor<'a> {
                         PropertyFieldMetadata {
                             optional: prop.optional,
                             readonly: prop.readonly,
-                            is_static: prop.r#static,
+                            // Property signatures inside an interface are never static.
+                            is_static: false,
                             visibility: None,
                             documentation: None,
                             decorators: &decorators,
@@ -780,7 +782,7 @@ impl<'a> Extractor<'a> {
     pub(crate) fn lower_namespace(
         &mut self,
         parent_name: &str,
-        ns: &TSModuleDeclaration<'a>,
+        ns: &'a TSModuleDeclaration<'a>,
     ) -> Result<Vec<FactEntry>> {
         let mut member_entries: Vec<FactEntry> = Vec::new();
 
@@ -936,7 +938,7 @@ impl<'a> Extractor<'a> {
                     doc_links: None,
                     inner: ty,
                 };
-                (name, vec![FactEntry { entry: Entry::TypeAlias(sym), local_path: vec![name.clone()], type_refs }])
+                (name.clone(), vec![FactEntry { entry: Entry::TypeAlias(sym), local_path: vec![name], type_refs }])
             }
             Statement::TSInterfaceDeclaration(iface) => {
                 let name = iface.id.name.to_string();
@@ -954,7 +956,7 @@ impl<'a> Extractor<'a> {
                     doc_links: None,
                     inner: trait_def,
                 };
-                (name, vec![FactEntry { entry: Entry::TraitDef(sym), local_path: vec![name.clone()], type_refs }])
+                (name.clone(), vec![FactEntry { entry: Entry::TraitDef(sym), local_path: vec![name], type_refs }])
             }
             Statement::TSEnumDeclaration(en) => {
                 let name = en.id.name.to_string();
@@ -972,7 +974,7 @@ impl<'a> Extractor<'a> {
                     doc_links: None,
                     inner: variants,
                 };
-                (name, vec![FactEntry { entry: Entry::SumType(sym), local_path: vec![name.clone()], type_refs }])
+                (name.clone(), vec![FactEntry { entry: Entry::SumType(sym), local_path: vec![name], type_refs }])
             }
             Statement::TSModuleDeclaration(nested_ns) => {
                 let ns_name = match &nested_ns.id {

@@ -340,7 +340,8 @@ pub(crate) fn link(
     // -------------------------------------------------------------------------
     // Step 7 — assemble Index
     // -------------------------------------------------------------------------
-    let mut entries_by_path: HashMap<NudoxPath, Entry> = HashMap::new();
+    let mut entries_by_path: rustc_hash::FxHashMap<NudoxPath, Entry> =
+        rustc_hash::FxHashMap::default();
     let mut root_ids: Vec<NudoxPath> = Vec::new();
 
     for (_module_name, entries) in module_entries {
@@ -401,8 +402,8 @@ fn nudox_path_to_string(path: &NudoxPath) -> String {
 fn build_type_links_for_params(
     type_name_to_id: &HashMap<String, i64>,
     func: &Function,
-) -> Option<HashMap<String, i64>> {
-    let mut links: HashMap<String, i64> = HashMap::new();
+) -> Option<rustc_hash::FxHashMap<String, i64>> {
+    let mut links: rustc_hash::FxHashMap<String, i64> = rustc_hash::FxHashMap::default();
 
     if let Some(ref params) = func.input_parameters {
         for (idx, param) in params.iter().enumerate() {

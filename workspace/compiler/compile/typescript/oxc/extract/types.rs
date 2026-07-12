@@ -6,7 +6,7 @@
 //! stub declarations exactly.
 
 use oxc_ast::ast::{
-    BindingPatternKind, TSIndexSignature, TSLiteral, TSMappedTypeModifierOperator, TSSignature,
+    BindingPattern, TSIndexSignature, TSLiteral, TSMappedTypeModifierOperator, TSSignature,
     TSType, TSTypeLiteral, TSTypeName, TSTypeParameterDeclaration, TSTypePredicateName,
     TSTupleElement,
 };
@@ -129,7 +129,7 @@ impl<'a> Extractor<'a> {
             TSType::TSTypeReference(tr) => {
                 let identifier = ts_type_name_to_string(&tr.type_name);
                 let generic_args = tr
-                    .type_parameters
+                    .type_arguments
                     .as_ref()
                     .map(|tp| {
                         tp.params
@@ -369,7 +369,7 @@ impl<'a> Extractor<'a> {
             // Named tuple member — only valid inside TSTupleType; if somehow
             // encountered at top level, lower the element type.
             // ----------------------------------------------------------------
-            TSType::TSNamedTupleMember(n) => self.lower_ts_type(&n.element_type),
+            TSType::TSNamedTupleMember(n) => self.lower_tuple_element(&n.element_type),
 
             // ----------------------------------------------------------------
             // JSDoc types
@@ -523,7 +523,7 @@ impl<'a> Extractor<'a> {
             TSType::TSTypeReference(tr) => {
                 let name = ts_type_name_to_string(&tr.type_name);
                 let args = tr
-                    .type_parameters
+                    .type_arguments
                     .as_ref()
                     .map(|tp| {
                         tp.params
@@ -552,7 +552,7 @@ impl<'a> Extractor<'a> {
         &mut self,
         sig: &TSIndexSignature<'a>,
     ) -> Result<IndexSignature> {
-        use super::super::super::error::TsTypeError;
+        use super::super::error::TsTypeError;
 
         let key_param = sig
             .parameters
@@ -694,7 +694,7 @@ impl<'a> Extractor<'a> {
             }
             TSTupleElement::TSNamedTupleMember(n) => {
                 // Named member: label dropped in Tier A; lower element_type.
-                self.lower_ts_type(&n.element_type)
+                self.lower_tuple_element(&n.element_type)
             }
             // All remaining variants are `TSType` variants inherited via
             // the `#[ast] INHERIT(TSType<'a>)` mechanism. The generated
@@ -735,9 +735,8 @@ impl<'a> Extractor<'a> {
             let rest_name = rest
                 .rest
                 .argument
-                .kind
-                .get_identifier_name()
-                .map(|s| s.to_string())
+                .get_binding_identifier()
+                .map(|id| id.name.to_string())
                 .unwrap_or_default();
             result.push(Parameter::Literal(LiteralParameter {
                 name: rest_name,
@@ -758,16 +757,16 @@ impl<'a> Extractor<'a> {
         &mut self,
         param: &oxc_ast::ast::FormalParameter<'a>,
     ) -> Result<Parameter> {
-        let (name, attrs) = match &param.pattern.kind {
-            BindingPatternKind::BindingIdentifier(id) => {
+        let (name, attrs) = match &param.pattern {
+            BindingPattern::BindingIdentifier(id) => {
                 let attrs =
                     if param.optional { Some(vec![ParameterAttribute::Optional]) } else { None };
                 (id.name.to_string(), attrs)
             }
-            BindingPatternKind::AssignmentPattern(ap) => {
+            BindingPattern::AssignmentPattern(ap) => {
                 // Default parameter: optional = true, use inner binding name.
-                let inner_name = match &ap.left.kind {
-                    BindingPatternKind::BindingIdentifier(id) => id.name.to_string(),
+                let inner_name = match &ap.left {
+                    BindingPattern::BindingIdentifier(id) => id.name.to_string(),
                     _ => String::new(),
                 };
                 (inner_name, None)

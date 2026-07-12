@@ -237,7 +237,7 @@ pub fn extract_module<'a>(
 							name: sym_name.clone(),
 							is_default: false,
 							declarations: Vec::new(),
-							visibility: vis,
+							visibility: vis.clone(),
 						}
 					});
 					group.visibility = vis;
@@ -261,7 +261,7 @@ pub fn extract_module<'a>(
 							name: sym_name.clone(),
 							is_default: false,
 							declarations: Vec::new(),
-							visibility: vis,
+							visibility: vis.clone(),
 						}
 					});
 					group.declarations.push(decl_ref);
@@ -289,7 +289,7 @@ pub fn extract_module<'a>(
 								name: sym_name.clone(),
 								is_default: false,
 								declarations: Vec::new(),
-								visibility: vis,
+								visibility: vis.clone(),
 							}
 						});
 						group.declarations.push(decl_ref);
