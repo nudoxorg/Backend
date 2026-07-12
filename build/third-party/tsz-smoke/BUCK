@@ -1,0 +1,27 @@
+# Phase 0 THROWAWAY toolchain proof for the vendored tsz-core 0.1.9 crate set.
+# See OXC-PLAN.md / tsz vendoring decision notes in the oxc/typescript-producer branch.
+#
+# This target proves tsz-core (umbrella) + key sub-crates build and link under Buck2.
+# It link-checks:
+#   - tsz_core::create_scanner / ScannerState
+#   - tsz_core::create_parser / Parser  (parse + bind + check + emit pipeline)
+#   - tsz_core::create_program / WasmProgram
+#   - tsz_core::checker::CheckerState (re-export from tsz_checker)
+#
+# Delete once the real tsz TypeScript producer in workspace/compiler wires these up.
+#
+# Build/run:
+#   nix develop -c buck2 test //build/third-party/tsz-smoke:tsz_smoke
+
+native.rust_test(
+    name = "tsz_smoke",
+    srcs = ["tsz_smoke.rs"],
+    crate_root = "tsz_smoke.rs",
+    edition = "2024",
+    deps = [
+        "//build/third-party:tsz_core-0_1",
+        # serde_json is a direct dep of tsz_core but Buck2 requires explicit
+        # deps for crates used directly in our source.
+        "//build/third-party:serde_json-1",
+    ],
+)
