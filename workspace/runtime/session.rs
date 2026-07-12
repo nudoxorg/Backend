@@ -240,3 +240,158 @@ impl SessionStore for MemorySessionStore {
 		Ok(self.read_snapshot(session)?.map(Arc::new))
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PgSessionStore — a postgres-backed SessionStore for horizontally-scaled
+// gateways (DAEMON-PLAN §2.5: sessions → postgres so any replica serves any
+// session). Additive; `MemorySessionStore` remains the single-node default.
+// ─────────────────────────────────────────────────────────────────────────────
+
+use sqlx::Row as _;
+
+/// A postgres-backed [`SessionStore`]: each session's [`SessionGraph`] is one
+/// `jsonb` row keyed by session uuid, so **any** gateway replica can open or
+/// extend **any** session (replacing the node-local `MemorySessionStore`, whose
+/// state is invisible to sibling replicas).
+///
+/// Concurrency is correct without a CRDT-on-the-wire: [`merge_into`] does its
+/// read → merge → write inside one transaction under a `SELECT ... FOR UPDATE`
+/// row lock, so two replicas merging deltas into the same session **serialize**
+/// and neither delta is lost. Because [`SessionGraph::merge`] is a
+/// join-semilattice union (idempotent, commutative, associative), the serialized
+/// order is irrelevant — the result is the least upper bound either way. That is
+/// what makes the persisted store safe under concurrent replicas.
+///
+/// The single `sessions` table is created (`IF NOT EXISTS`) by
+/// [`PgSessionStore::migrate`]; it is intentionally self-contained so the runtime
+/// crate need not depend on the registry schema module.
+pub struct PgSessionStore {
+	pool: sqlx::PgPool,
+}
+
+impl PgSessionStore {
+	/// Wrap a postgres pool. Call [`migrate`](Self::migrate) once before use to
+	/// ensure the backing table exists.
+	pub fn new(pool: sqlx::PgPool) -> Self { Self { pool } }
+
+	/// Create the `sessions` table if absent (`id uuid PK`, `graph jsonb`,
+	/// `updated_at timestamptz`). Idempotent — safe to call on every boot.
+	pub async fn migrate(&self) -> Result<(), SessionError> {
+		sqlx::query(
+			"CREATE TABLE IF NOT EXISTS sessions (\
+			   id uuid PRIMARY KEY, \
+			   graph jsonb NOT NULL, \
+			   updated_at timestamptz NOT NULL DEFAULT now()\
+			 )",
+		)
+		.execute(&self.pool)
+		.await
+		.map_err(SessionError::Database)?;
+		Ok(())
+	}
+
+	/// Read a session's stored graph, if the row exists.
+	async fn read_row(&self, session: SessionId) -> Result<Option<SessionGraph>, SessionError> {
+		let row = sqlx::query("SELECT graph FROM sessions WHERE id = $1")
+			.bind(session.as_uuid())
+			.fetch_optional(&self.pool)
+			.await
+			.map_err(SessionError::Database)?;
+		match row {
+			Some(r) => {
+				let json: serde_json::Value = r.try_get(0).map_err(SessionError::Database)?;
+				let graph = serde_json::from_value(json).map_err(SessionError::Codec)?;
+				Ok(Some(graph))
+			}
+			None => Ok(None),
+		}
+	}
+}
+
+impl SessionStore for PgSessionStore {
+	async fn open(&self, session: SessionId) -> Result<Arc<SessionGraph>, SessionError> {
+		// Ensure a row exists (empty graph) and return the current graph. The
+		// upsert is `DO NOTHING` so a concurrent open never clobbers accumulated
+		// state; we then read the authoritative row back.
+		let empty = serde_json::to_value(SessionGraph::empty()).map_err(SessionError::Codec)?;
+		sqlx::query("INSERT INTO sessions (id, graph) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+			.bind(session.as_uuid())
+			.bind(&empty)
+			.execute(&self.pool)
+			.await
+			.map_err(SessionError::Database)?;
+		let graph = self.read_row(session).await?.unwrap_or_default();
+		Ok(Arc::new(graph))
+	}
+
+	async fn merge_into(
+		&self,
+		session: SessionId,
+		delta: SessionGraph,
+	) -> Result<Arc<SessionGraph>, SessionError> {
+		// Serialize concurrent merges on the same session with a row lock: read
+		// the current graph FOR UPDATE, union the delta, write it back — all in
+		// one transaction. Semilattice union makes the interleaving irrelevant;
+		// the lock only guarantees no lost update.
+		let mut tx = self.pool.begin().await.map_err(SessionError::Database)?;
+
+		// Ensure the row exists so `FOR UPDATE` has something to lock.
+		let empty = serde_json::to_value(SessionGraph::empty()).map_err(SessionError::Codec)?;
+		sqlx::query("INSERT INTO sessions (id, graph) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+			.bind(session.as_uuid())
+			.bind(&empty)
+			.execute(&mut *tx)
+			.await
+			.map_err(SessionError::Database)?;
+
+		let row = sqlx::query("SELECT graph FROM sessions WHERE id = $1 FOR UPDATE")
+			.bind(session.as_uuid())
+			.fetch_one(&mut *tx)
+			.await
+			.map_err(SessionError::Database)?;
+		let json: serde_json::Value = row.try_get(0).map_err(SessionError::Database)?;
+		let mut current: SessionGraph = serde_json::from_value(json).map_err(SessionError::Codec)?;
+
+		current.merge(delta);
+		let merged_json = serde_json::to_value(&current).map_err(SessionError::Codec)?;
+		sqlx::query("UPDATE sessions SET graph = $2, updated_at = now() WHERE id = $1")
+			.bind(session.as_uuid())
+			.bind(&merged_json)
+			.execute(&mut *tx)
+			.await
+			.map_err(SessionError::Database)?;
+
+		tx.commit().await.map_err(SessionError::Database)?;
+		Ok(Arc::new(current))
+	}
+
+	async fn snapshot(&self, session: SessionId) -> Result<Arc<SessionGraph>, SessionError> {
+		self.read_row(session).await?.map(Arc::new).ok_or(SessionError::NotFound)
+	}
+
+	async fn clear(&self, session: SessionId) -> Result<(), SessionError> {
+		// Reset the graph to empty rather than deleting the row, mirroring
+		// `MemorySessionStore::clear` (which keeps an empty session live).
+		let empty = serde_json::to_value(SessionGraph::empty()).map_err(SessionError::Codec)?;
+		sqlx::query(
+			"INSERT INTO sessions (id, graph) VALUES ($1, $2) \
+			 ON CONFLICT (id) DO UPDATE SET graph = $2, updated_at = now()",
+		)
+		.bind(session.as_uuid())
+		.bind(&empty)
+		.execute(&self.pool)
+		.await
+		.map_err(SessionError::Database)?;
+		Ok(())
+	}
+
+	async fn persist(&self, _session: SessionId) -> Result<(), SessionError> {
+		// Every mutation already commits durably to postgres, so there is no
+		// separate flush step — `persist` is a no-op for the pg-backed store.
+		Ok(())
+	}
+
+	async fn load(&self, session: SessionId) -> Result<Option<Arc<SessionGraph>>, SessionError> {
+		Ok(self.read_row(session).await?.map(Arc::new))
+	}
+}
