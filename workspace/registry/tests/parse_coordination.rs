@@ -9,8 +9,10 @@ mod common;
 
 use std::{collections::HashSet, num::NonZeroU32, time::Duration};
 
+use chrono::Utc;
+
 use heart::{Connect, ContentHash, FailureKind, Freshness, Phase, ResolutionState};
-use registry::queue::{Job, JobId, Queue, RetryDecision, RetryPolicy};
+use registry::queue::{JobId, LeasedJob, Queue, RetryDecision, RetryPolicy};
 
 /// The retry policy every gated spec runs under: generous lease, tight ceiling.
 fn policy() -> RetryPolicy {
@@ -53,8 +55,15 @@ async fn enqueue_fixtures(
 }
 
 /// The subset of `jobs` targeting packages in `ours`.
-fn claimed_of(jobs: &[Job], ours: &HashSet<heart::PackageId>) -> Vec<Job> {
-    jobs.iter().filter(|job| ours.contains(&job.package)).cloned().collect()
+///
+/// Returns references (not clones) because [`LeasedJob`] is intentionally
+/// not `Clone` — cloning a witness would break the "consumed on terminal
+/// operation" discipline.
+fn claimed_of<'a>(
+    jobs: &'a [LeasedJob],
+    ours: &HashSet<heart::PackageId>,
+) -> Vec<&'a LeasedJob> {
+    jobs.iter().filter(|job| ours.contains(&job.package())).collect()
 }
 
 /// Parse work is enqueued and drained in coordination order.
@@ -78,20 +87,26 @@ async fn parse_work_is_enqueued_and_drained() {
     let first_claimed = claimed_of(&first_worker, &ours);
     let second_claimed = claimed_of(&second_worker, &ours);
     let mut seen: HashSet<heart::PackageId> = HashSet::new();
-    for job in first_claimed.iter().chain(&second_claimed) {
+    for job in first_claimed.iter().chain(second_claimed.iter()) {
         assert!(
-            seen.insert(job.package),
+            seen.insert(job.package()),
             "package {} was handed to two workers (double-processing)",
-            job.package
+            job.package()
         );
-        assert!(job.lease_until.is_some(), "a claimed job must carry its lease");
+        // A claimed job always carries a lease deadline (must be in the future,
+        // with 1s of slop for slow test machines).
+        assert!(
+            job.lease_until() > Utc::now() - chrono::Duration::seconds(1),
+            "a claimed job must carry its lease"
+        );
     }
     assert_eq!(seen, ours, "every enqueued package must be drained exactly once");
 
     // Completion removes the work atomically — settling twice loses the row.
-    for job in &first_claimed {
+    // Drain first_worker (move each LeasedJob into complete, consuming the witness).
+    for job in first_worker.into_iter().filter(|j| ours.contains(&j.package())) {
         queue
-            .complete(job.id, &ResolutionState::Stored { hash: ContentHash::of_bytes(b"done") })
+            .complete(job, &ResolutionState::Stored { hash: ContentHash::of_bytes(b"done") })
             .await
             .expect("a leased job settles");
     }
@@ -173,9 +188,9 @@ async fn concurrent_parses_are_bounded() {
     let second = queue.dequeue_batch(BOUND, LEASE).await.expect("second bounded drain succeeds");
     assert!(second.len() <= BOUND);
 
-    let first_ids: HashSet<JobId> = first.iter().map(|job| job.id).collect();
+    let first_ids: HashSet<JobId> = first.iter().map(|job| job.id()).collect();
     assert!(
-        second.iter().all(|job| !first_ids.contains(&job.id)),
+        second.iter().all(|job| !first_ids.contains(&job.id())),
         "two concurrent bounded claims must be disjoint (SKIP LOCKED)"
     );
 }
@@ -249,17 +264,39 @@ async fn drain_is_scoped_per_library() {
         queue.enqueue(package.id()).await.expect("enqueue succeeds");
     }
 
-    let drained = queue.dequeue_batch(10_000, LEASE).await.expect("drain succeeds");
-    let claimed = claimed_of(&drained, &ours);
-    assert_eq!(claimed.len(), 2, "both libraries' jobs are claimable");
-    let job_of = |package: heart::PackageId| {
-        claimed.iter().find(|job| job.package == package).expect("claimed above").id
+    let mut drained = queue.dequeue_batch(10_000, LEASE).await.expect("drain succeeds");
+    // Partition drained into the two jobs we care about (by package id).
+    let tokio_idx = drained.iter().position(|j| j.package() == tokio_like.id())
+        .expect("tokio_like job was dequeued");
+    let serde_idx = drained.iter().position(|j| j.package() == serde_like.id())
+        .expect("serde_like job was dequeued");
+    assert_eq!(
+        drained.iter().filter(|j| ours.contains(&j.package())).count(),
+        2,
+        "both libraries' jobs are claimable"
+    );
+
+    // Record the second library's job id *before* settling the first, since
+    // `complete` consumes the witness and we need to compare ids.
+    let tokio_job_id = drained[tokio_idx].id();
+    // Remove in reverse-index order so indices stay valid.
+    let (first_idx, second_idx) = if serde_idx < tokio_idx {
+        (serde_idx, tokio_idx)
+    } else {
+        (tokio_idx, serde_idx)
+    };
+    let second_leased = drained.swap_remove(second_idx);
+    let first_leased = drained.swap_remove(first_idx);
+    let (serde_leased, tokio_leased) = if first_leased.package() == serde_like.id() {
+        (first_leased, second_leased)
+    } else {
+        (second_leased, first_leased)
     };
 
     // Settle only the first library's work...
     queue
         .complete(
-            job_of(serde_like.id()),
+            serde_leased,
             &ResolutionState::Stored { hash: ContentHash::of_bytes(b"a") },
         )
         .await
@@ -269,12 +306,12 @@ async fn drain_is_scoped_per_library() {
     let survivor = queue.enqueue(tokio_like.id()).await.expect("idempotent re-enqueue");
     assert_eq!(
         survivor,
-        job_of(tokio_like.id()),
+        tokio_job_id,
         "settling one library must not steal or disturb another library's work"
     );
     queue
         .complete(
-            job_of(tokio_like.id()),
+            tokio_leased,
             &ResolutionState::Stored { hash: ContentHash::of_bytes(b"b") },
         )
         .await

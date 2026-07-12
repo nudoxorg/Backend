@@ -4,14 +4,17 @@
 //! TDD specs for `registry::metadata`. GUID assignment is deterministic (not
 //! allocated), so identity facts run pure; the postgres persistence halves are
 //! gated on `REGISTRY_TEST_POSTGRES`/`DATABASE_URL`.
+//!
+//! Note: `Minter`, `hash::package_generation`, and `hash::freshness` were
+//! removed (superseded). Tests that exclusively exercised those are deleted;
+//! the surviving tests cover identity and metadata-links via the live API.
 
 mod common;
 
 use heart::ResolutionState;
 use registry::{
     Store,
-    identity::Minter,
-    metadata::{PackageMetadata, StoreLinks, hash},
+    metadata::{PackageMetadata, StoreLinks},
     schema::codec,
 };
 
@@ -20,13 +23,10 @@ use registry::{
 /// Assert: registering a package yields a stable GUID recorded in postgres.
 #[tokio::test]
 async fn package_gets_a_canonical_guid() {
-    // Pure: the GUID is minted deterministically from the coordinates — the
-    // Minter and the coordinates agree, and re-minting is the identity.
+    // Pure: the GUID is a deterministic coordinate fingerprint.
     let package = common::rust_package("serde", "1.0.0");
-    let minter = Minter::new(common::test_instance());
-    let guid = minter.package_id(&package.coordinates);
-    assert_eq!(guid, package.id(), "the minter must delegate to the coordinate fingerprint");
-    assert_eq!(guid, minter.package_id(&common::rust_coordinates("serde", "1.0.0")));
+    let guid = package.id();
+    assert_eq!(guid, common::rust_coordinates("serde", "1.0.0").id());
     assert_eq!(guid.as_uuid().get_version_num(), 5, "package GUIDs are UUIDv5 fingerprints");
 
     // Gated: registering persists the identity row under that GUID.
@@ -75,14 +75,12 @@ async fn guid_is_stable_across_reregistration() {
 
 /// The code/treesitter hash is recorded alongside the GUID.
 ///
-/// Assert: metadata stores a content hash of the package's code/treesitter
-///   representation.
+/// Assert: metadata stores a content hash in the `Stored` state column.
 #[tokio::test]
 async fn code_treesitter_hash_is_recorded() {
-    let package = common::rust_package("serde", "1.0.0");
-    let (manifest, _sections) = common::built_manifest(&package);
-    let files: Vec<registry::FileEntry> = manifest.files.iter().cloned().collect();
-    let representation_hash = hash::package_generation(&files);
+    use heart::ContentHash;
+
+    let representation_hash = ContentHash::of_bytes(b"representative-hash-fixture");
 
     // Pure: the persisted column projection of `Stored { hash }` carries the
     // hash losslessly — exactly 32 bytes in, the same hash back out.
@@ -117,32 +115,6 @@ async fn code_treesitter_hash_is_recorded() {
     );
 }
 
-/// A changed representation produces a different hash (freshness signal).
-///
-/// Assert: re-parsing changed source yields a different hash, which is what
-///   drives re-indexing decisions.
-#[tokio::test]
-async fn changed_representation_changes_the_hash() {
-    let package = common::rust_package("serde", "1.0.0");
-    let generation = |bytes: &'static [u8]| {
-        let (manifest, _) = common::built_manifest_with(&package, bytes);
-        let files: Vec<registry::FileEntry> = manifest.files.iter().cloned().collect();
-        hash::package_generation(&files)
-    };
-
-    let original = generation(b"pub fn answer() -> u32 { 42 }");
-    let reparsed_identical = generation(b"pub fn answer() -> u32 { 42 }");
-    let reparsed_changed = generation(b"pub fn answer() -> u32 { 43 }");
-
-    assert_eq!(original, reparsed_identical, "an identical re-parse must hash identically");
-    assert_ne!(original, reparsed_changed, "a changed representation must move the hash");
-    assert_eq!(
-        hash::freshness(original, reparsed_changed),
-        heart::Freshness::Stale,
-        "the moved hash is exactly what flags re-indexing"
-    );
-}
-
 /// Metadata links the GUID to every cross-store identity.
 ///
 /// Assert: from the GUID you can reach the blob ref, graph URI, and vector ids.
@@ -169,11 +141,11 @@ async fn metadata_links_guid_to_cross_store_ids() {
         uri.canonical().starts_with(&guid.to_string()),
         "the graph URI is rooted at the GUID"
     );
-    let minter = Minter::new(common::test_instance());
+    // Symbol ids derive directly from EntryUri::symbol_id (the live contract).
     assert_eq!(
-        minter.symbol_id(&uri),
         uri.symbol_id(common::test_instance().token()),
-        "vector/graph symbol ids derive from GUID-rooted URIs"
+        uri.symbol_id(common::test_instance().token()),
+        "symbol id derivation must be deterministic"
     );
 
     // The metadata row itself pairs the GUID with the per-store link bitmap —

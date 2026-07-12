@@ -6,7 +6,6 @@
 mod common;
 
 use heart::identity::{EntryUri, namespace};
-use registry::identity::Minter;
 use smol_str::SmolStr;
 
 /// The entry URI for `serde@1.0.0 :: de::Deserializer`, built fresh each call
@@ -30,14 +29,6 @@ fn id_is_deterministic() {
     let second = deserializer_uri().symbol_id(INSTANCE);
     assert_eq!(first, second, "two independent derivations of the same (instance, uri) diverged");
     assert_eq!(first.as_uuid().get_version_num(), 5, "symbol ids are UUIDv5 fingerprints");
-
-    // The blessed minting choke point agrees with the raw derivation.
-    let minter = Minter::new(common::test_instance());
-    assert_eq!(
-        minter.symbol_id(&deserializer_uri()),
-        deserializer_uri().symbol_id(common::test_instance().token()),
-        "Minter must be pure delegation to EntryUri::symbol_id"
-    );
 }
 
 /// Different entry URIs yield different ids.
