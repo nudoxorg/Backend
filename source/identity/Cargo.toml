@@ -8,3 +8,5 @@ license.workspace = true
 ir = { workspace = true }
 nudox-core = { path = "../core" }
 store = { path = "../store" }
+triomphe = { workspace = true }
+smol_str = { workspace = true }
