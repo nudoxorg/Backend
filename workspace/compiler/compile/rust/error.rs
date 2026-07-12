@@ -254,7 +254,7 @@ pub enum Parse {
 	PathParsing(String),
 }
 
-/// A failure while resolving/documenting a package (tooling, IO, JSON).
+/// A failure while resolving/documenting a package (tooling, IO, JSON, RA load).
 #[derive(Debug, Error)]
 pub enum Package {
 	#[error(transparent)]
@@ -274,6 +274,24 @@ pub enum Package {
 
 	#[error("version {0} not found")]
 	VersionNotFound(Version),
+
+	// ── rust-analyzer producer (P1+) ─────────────────────────────────────────
+
+	/// Workspace load / cargo-metadata / crate graph construction failed.
+	#[error("rust-analyzer workspace load failed: {0}")]
+	LoadFailed(String),
+
+	/// Salsa cancellation during load or walk — retryable.
+	#[error("rust-analyzer analysis cancelled")]
+	Cancelled,
+
+	/// Proc-macro server missing or ABI-mismatched; expansions degraded.
+	#[error("rust-analyzer proc-macro server degraded: {0}")]
+	ProcMacroDegraded(String),
+
+	/// Scaffolding / unfinished RA path surface.
+	#[error("rust-analyzer producer not implemented: {0}")]
+	NotImplemented(String),
 }
 
 #[derive(Debug, Error)]
