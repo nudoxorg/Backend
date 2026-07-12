@@ -1,4 +1,6 @@
-//! The search planner — the *only* place a [`SemanticGate`] is minted.
+//! The search planner — the only place a *user-facing* [`SemanticGate`] is
+//! minted via [`SemanticGate::issue`]. Store readiness probes use the separate
+//! [`SemanticGate::for_readiness`] constructor (see `runtime::vector::gate`).
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

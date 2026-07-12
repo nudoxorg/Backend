@@ -23,13 +23,15 @@
 //! generations has a sink not yet acknowledged" is the root-of-truth side of
 //! every derived store's story.
 //!
-//! KNOWN GAP: a *store-wide* orphan sweep (`cas/` objects no manifest
-//! references — the GC half of a full audit) needs an enumeration API on
-//! [`registry::Store`]. The old blob store had one (`list()` in
-//! `source/blobstore/src/lib.rs`) but it was never ported to
-//! `workspace/registry/store.rs`. Until it exists, auditing is per-package,
-//! from the manifest down: it can prove presence and integrity, but not the
-//! absence of garbage.
+//! STORE-WIDE ORPHAN AUDIT: the enumeration API that was missing —
+//! [`registry::Store::list_cas`] — now exists (Phase 4f), so `cas/` objects can
+//! be listed store-wide. The remaining piece before a *deletion* sweep is safe
+//! is the live-reference side: the set of section hashes reachable from every
+//! package's current manifest, plus a snapshot fence so the mark cannot race an
+//! in-flight `put_manifest` (see the closure/race analysis in
+//! [`crate::poll::cas_gc`]). Until that lands, per-package auditing here proves
+//! presence and integrity from the manifest down, and `list_cas()` powers a
+//! read-only stored-blob gauge — enumeration without reclamation.
 
 use heart::{ContentHash, PackageId, ResolutionState};
 use registry::{RegistryError, StoreError};
@@ -38,6 +40,7 @@ use registry::coordination::OutboxSeq;
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
+use crate::authz::AdminCap;
 use crate::error::{BadRequestReason, ServerError, ServerResult};
 
 use super::DerivedStore;
@@ -121,9 +124,10 @@ impl<M: EmbeddingModel> Server<M> {
 	/// Ports the old blob store's semantics that the content address doubles as
 	/// the integrity check (`source/blobstore`); the schema-version gate the old
 	/// `put`/`get` enforced is superseded by the hash-verified read itself.
-	#[tracing::instrument(skip(self), fields(%package))]
-	pub async fn verify_blobs(&self, package: PackageId) -> ServerResult<BlobAudit> {
-		self.authorize("save.verify_blobs")?;
+	///
+	/// The caller must hold an [`AdminCap`] proving authorization has occurred.
+	#[tracing::instrument(skip(self, _cap), fields(%package))]
+	pub async fn verify_blobs(&self, _cap: &AdminCap, package: PackageId) -> ServerResult<BlobAudit> {
 		let stores = self.base();
 
 		let recorded = self.recorded_snapshot(package).await?;
@@ -206,9 +210,10 @@ impl<M: EmbeddingModel> Server<M> {
 	/// [`Server::rebuild`] is the single-store form.
 	///
 	/// Returns the snapshot the intents were re-emitted at.
-	#[tracing::instrument(skip(self), fields(%package))]
-	pub async fn rebuild_from_blobs(&self, package: PackageId) -> ServerResult<ContentHash> {
-		self.authorize("save.rebuild_from_blobs")?;
+	///
+	/// The caller must hold an [`AdminCap`] proving authorization has occurred.
+	#[tracing::instrument(skip(self, _cap), fields(%package))]
+	pub async fn rebuild_from_blobs(&self, _cap: &AdminCap, package: PackageId) -> ServerResult<ContentHash> {
 		let stores = self.base();
 
 		let recorded = self.recorded_snapshot(package).await?;
