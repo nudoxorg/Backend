@@ -657,19 +657,6 @@ impl<'a> Extractor<'a> {
             None
         };
 
-        let record = Record {
-            name: Some(name.to_string()),
-            generics,
-            fields,
-            call_signatures: None,
-            constructors: None,
-            methods: None,
-            index_signatures: empty_to_none(index_signatures_ir),
-            super_types: empty_to_none(super_types),
-            implemented_protocols: None,
-            members: None, // filled by caller after member extraction
-        };
-
         // ── constructors ─────────────────────────────────────────────────
         let ctor_methods: Vec<_> = cls
             .body
@@ -749,7 +736,7 @@ impl<'a> Extractor<'a> {
             if let Some(ref ctor_body) = primary_ctor.value.body {
                 let mut synth_names: rustc_hash::FxHashSet<String> =
                     rustc_hash::FxHashSet::default();
-                for stmt in ctor_body.body.iter() {
+                for stmt in ctor_body.statements.iter() {
                     if let Statement::ExpressionStatement(expr_stmt) = stmt {
                         if let Expression::AssignmentExpression(assign) =
                             &expr_stmt.expression
@@ -797,6 +784,21 @@ impl<'a> Extractor<'a> {
                 }
             }
         }
+
+        // Build the record now that ctor-body `this.x` fields are synthesised
+        // (Upgrade 3 appends to `fields` above).
+        let record = Record {
+            name: Some(name.to_string()),
+            generics,
+            fields,
+            call_signatures: None,
+            constructors: None,
+            methods: None,
+            index_signatures: empty_to_none(index_signatures_ir),
+            super_types: empty_to_none(super_types),
+            implemented_protocols: None,
+            members: None, // filled by caller after member extraction
+        };
 
         // ── methods ───────────────────────────────────────────────────────
         // Group by method name (dedup by first occurrence, include all overloads).
