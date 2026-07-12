@@ -13,7 +13,8 @@ def _is_windows_dep(dep):
         label.startswith("windows-") or
         label.startswith("windows_") or
         label.startswith("winapi-") or
-        label.startswith("uv_windows-")
+        label.startswith("uv_windows-") or
+        label.startswith("miow-")
         # NB: deliberately excludes "winnow" (a parser crate, not Windows).
     )
 
@@ -22,7 +23,9 @@ def _is_linux_dep(dep):
     return (
         label.startswith("inotify-") or
         label.startswith("inotify_sys-") or
-        label.startswith("libredox-")
+        label.startswith("libredox-") or
+        label.startswith("perf_event-") or
+        label.startswith("perf_event_")
     )
 
 def _is_macos_dep(dep):
@@ -61,6 +64,42 @@ def _gate_platform_deps(deps):
             "DEFAULT": [],
         })
     return result
+
+def _cargo_dep_token(s):
+    """Normalize a Cargo `links` name or metadata key the way Cargo builds DEP_* vars.
+
+    Cargo uppercases the token and replaces every non-ASCII-alphanumeric character
+    with `_`. Example: `aws_lc_0_42_0` + `include` → `DEP_AWS_LC_0_42_0_INCLUDE`.
+    """
+    out = ""
+    for i in range(len(s)):
+        c = s[i]
+        if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9"):
+            out += c.upper()
+        else:
+            out += "_"
+    return out
+
+def _dep_env_from_import_links(import_links):
+    """Synthesize DEP_<LINKS>_* env vars for a buildscript that depends on `links` crates.
+
+    The stock buck2-prelude `buildscript_run` does not implement Cargo's
+    `package.links` metadata propagation. Without it, crates like aws-lc-rs
+    panic with `missing DEP_AWS_LC_ include` because they never see the
+    include path exported by aws-lc-sys.
+
+    We approximate the common -sys crate convention: headers are staged under
+    the dependency buildscript's OUT_DIR/include, and ROOT is OUT_DIR itself.
+    Location macros create the necessary action edges so OUT_DIR is materialised
+    before this buildscript runs.
+    """
+    env = {}
+    for links_name, dep_label in import_links.items():
+        token = _cargo_dep_token(links_name)
+        out_dir = "$(location :" + dep_label + "-build-script-run[out_dir])"
+        env["DEP_" + token + "_INCLUDE"] = out_dir + "/include"
+        env["DEP_" + token + "_ROOT"] = out_dir
+    return env
 
 def _registry_crate(name, version, sha256, edition, label, alias, deps, features, build_script, proc_macro, build_script_root = "build.rs", lib_root = "src/lib.rs", crate_name = None, named_deps = {}, extra_env = {}, links = None, import_links = {}, patch = None, patch_strip = 1):
     archive_name = name + "-" + version + ".crate"
@@ -150,13 +189,34 @@ def _registry_crate(name, version, sha256, edition, label, alias, deps, features
             }),
             rustc_flags = ["@$(location :" + label + "-build-script-run[rustc_flags])"],
         )
-        # The stock buck2-prelude `buildscript_run` rule does not declare
-        # `links` / `import_links` attrs. Passing them (even as None/{}) fails
-        # analysis. Only forward when non-empty *and* the rule accepts them —
-        # for now, omit always; C `links` crates that need import_links need a
-        # prelude bump (arborium path already vendors the tree-sitter glue).
-        _ = links
-        _ = import_links
+        # Stock buck2-prelude `buildscript_run` has no `links` / `import_links`
+        # attrs (passing them fails analysis). Propagate Cargo DEP_* metadata
+        # ourselves via env: import_links → DEP_<LINKS>_{INCLUDE,ROOT} pointing
+        # at each dependency's buildscript OUT_DIR (see _dep_env_from_import_links).
+        bs_env = {
+            "CARGO_PKG_VERSION_MAJOR": _ver_major,
+            "CARGO_PKG_VERSION_MINOR": _ver_minor,
+            "CARGO_PKG_VERSION_PATCH": _ver_patch,
+            "CARGO_PKG_VERSION_PRE": "",
+            "CARGO_PKG_AUTHORS": "",
+            "CARGO_PKG_DESCRIPTION": "",
+            "CARGO_PKG_HOMEPAGE": "",
+            "CARGO_PKG_REPOSITORY": "",
+            "CARGO_PKG_LICENSE": "",
+            "CARGO_PKG_LICENSE_FILE": "",
+            "CARGO_PKG_README": "",
+            "CARGO_CRATE_NAME": crate_name,
+            "OPT_LEVEL": "2",
+            "DEBUG": "false",
+            "PROFILE": "release",
+            "NUM_JOBS": "1",
+            "PATH": "/nix/store/80bnpqsff7ijx09jf08arj5pvc7m0vhp-NuNuShell-dir/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        }
+        bs_env.update(_dep_env_from_import_links(import_links))
+        if links:
+            bs_env["CARGO_MANIFEST_LINKS"] = links
+        # extra_env last so package-specific overrides win.
+        bs_env.update(extra_env)
         buildscript_run(
             name = label + "-build-script-run",
             package_name = name,
@@ -165,25 +225,7 @@ def _registry_crate(name, version, sha256, edition, label, alias, deps, features
             version = version,
             rustc_link_lib = True,
             rustc_link_search = True,
-            env = dict({
-                "CARGO_PKG_VERSION_MAJOR": _ver_major,
-                "CARGO_PKG_VERSION_MINOR": _ver_minor,
-                "CARGO_PKG_VERSION_PATCH": _ver_patch,
-                "CARGO_PKG_VERSION_PRE": "",
-                "CARGO_PKG_AUTHORS": "",
-                "CARGO_PKG_DESCRIPTION": "",
-                "CARGO_PKG_HOMEPAGE": "",
-                "CARGO_PKG_REPOSITORY": "",
-                "CARGO_PKG_LICENSE": "",
-                "CARGO_PKG_LICENSE_FILE": "",
-                "CARGO_PKG_README": "",
-                "CARGO_CRATE_NAME": crate_name,
-                "OPT_LEVEL": "2",
-                "DEBUG": "false",
-                "PROFILE": "release",
-                "NUM_JOBS": "1",
-                "PATH": "/nix/store/80bnpqsff7ijx09jf08arj5pvc7m0vhp-NuNuShell-dir/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            }, **extra_env),
+            env = bs_env,
         )
     else:
         cargo.rust_library(
