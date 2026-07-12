@@ -48,6 +48,30 @@ RUSTDOC_TYPES_REV = "v0.60.0"
 # in any crate (generated AST code is checked in under src/generated/).
 OXC_REV = "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
 
+# tsz TypeScript compiler — vendored from git main (NOT crates.io 0.1.9).
+# Git main has substantially higher TS conformance than 0.1.9; we pin the
+# exact commit used for the OXC-PLAN §tsz oracle integration.
+#
+#   Commit:     dff7690987e3183847545feebe9c45ab6b83a006
+#   Branch:     main
+#   Date:       2026-07-12 (pinned for OXC-PLAN §tsz integration)
+#   Workspace:  version = "0.1.48"
+#   Edition:    2024 (all crates use workspace.package.edition = "2024")
+#
+# Wasm decision: wasm-bindgen and serde-wasm-bindgen are HARD (unconditional)
+# deps in tsz-core, tsz-scanner, and tsz-parser — they are not behind any
+# feature flag. The existing registry.bzl already carries wasm_bindgen-0_2 and
+# serde_wasm_bindgen-0_6 (added by the prior agent). We keep them: native
+# builds link wasm_bindgen fine (it compiles to stubs for non-wasm targets).
+# tsz-wasm, tsz-cli, tsz-website, and conformance/ are NOT vendored here.
+#
+# build_script: tsz-common has a build.rs that only installs git hooks
+# when a .git directory is present; it is a no-op in hermetic Buck2 builds
+# (bails out immediately on CI=true or missing .git). Mark build_script:True
+# so Buck does not silently skip it if the Starlark layer requires it, but
+# it will produce no cargo metadata that affects compilation.
+TSZ_REV = "dff7690987e3183847545feebe9c45ab6b83a006"
+
 # oxc_resolver — ESM/CJS/`.d.ts` module resolution (resolve_dts). Separate repo
 # `oxc-project/oxc-resolver`; its tags DO track the crate version, so pin the
 # `v11.23.0` tag. Crate lives at the repo root (src/lib.rs). edition 2024.
@@ -983,6 +1007,239 @@ GIT = [
                     ":simd_json-0_17",
                     ":self_cell-1",
                     ":windows-0_62",
+                ],
+            },
+        ],
+    },
+    # ── tsz TypeScript compiler monorepo (git main @ TSZ_REV) ────────────────
+    # Replaces the prior crates.io 0.1.9 registry entries (tsz_*-0_1 labels).
+    # Library crates only; tsz-cli, tsz-wasm, tsz-website, conformance/ skipped.
+    # Label scheme: tsz_core, tsz_common, tsz_scanner, tsz_parser, tsz_binder,
+    #               tsz_solver, tsz_lowering, tsz_checker, tsz_emitter, tsz_lsp.
+    # Intra-workspace deps reference each other as :tsz_* (no version suffix).
+    # External deps use existing registry.bzl labels.
+    {
+        "archive_name": "tsz-repo",
+        "urls": ["https://github.com/tsz-org/tsz/archive/" + TSZ_REV + ".tar.gz"],
+        "sha256": "7180b171df202b2dd376b97899382ae85f547cf861a76e381955ae50f5ab21bc",
+        "strip_prefix": "tsz-" + TSZ_REV,
+        "crates": [
+            # tsz-common: foundation types, shared utilities.
+            # Has build.rs (installs git hooks — no-op in hermetic/CI builds).
+            # Hard deps: serde, serde_json, rustc-hash, memchr, web-time.
+            # No wasm deps here.
+            {
+                "name": "tsz_common",
+                "subdir": "crates/tsz-common",
+                "edition": "2024",
+                "build_script": True,
+                "deps": [
+                    ":memchr-2",
+                    ":rustc_hash-2",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":web_time-1",
+                ],
+            },
+            # tsz-scanner: TypeScript tokenizer.
+            # Hard deps: tsz-common, serde, unicode-ident, wasm-bindgen (unconditional).
+            {
+                "name": "tsz_scanner",
+                "subdir": "crates/tsz-scanner",
+                "edition": "2024",
+                "deps": [
+                    ":tsz_common",
+                    ":serde-1",
+                    ":unicode_ident-1",
+                    ":wasm_bindgen-0_2",
+                ],
+            },
+            # tsz-parser: AST / parse tree types.
+            # Hard deps: tsz-common, tsz-scanner, rustc-hash, serde, tracing,
+            #            wasm-bindgen (unconditional).
+            {
+                "name": "tsz_parser",
+                "subdir": "crates/tsz-parser",
+                "edition": "2024",
+                "deps": [
+                    ":tsz_common",
+                    ":tsz_scanner",
+                    ":rustc_hash-2",
+                    ":serde-1",
+                    ":tracing-0_1",
+                    ":wasm_bindgen-0_2",
+                ],
+            },
+            # tsz-binder: name resolution / symbol binding.
+            # Hard deps: tsz-common, tsz-scanner, tsz-parser, rustc-hash, serde,
+            #            serde_json, tracing, smallvec, stacker (stack-growth).
+            {
+                "name": "tsz_binder",
+                "subdir": "crates/tsz-binder",
+                "edition": "2024",
+                "deps": [
+                    ":tsz_common",
+                    ":tsz_scanner",
+                    ":tsz_parser",
+                    ":rustc_hash-2",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":smallvec-1",
+                    ":stacker-0_1",
+                    ":tracing-0_1",
+                ],
+            },
+            # tsz-solver: type inference / constraint solving.
+            # Hard deps: tsz-common, tsz-scanner, tsz-binder, rustc-hash, ena,
+            #            bitflags, tracing, smallvec, fixedbitset, dashmap,
+            #            serde, stacker.
+            {
+                "name": "tsz_solver",
+                "subdir": "crates/tsz-solver",
+                "edition": "2024",
+                "deps": [
+                    ":tsz_common",
+                    ":tsz_scanner",
+                    ":tsz_binder",
+                    ":bitflags-2",
+                    ":dashmap-6",
+                    ":ena-0_14",
+                    ":fixedbitset-0_5",
+                    ":rustc_hash-2",
+                    ":serde-1",
+                    ":smallvec-1",
+                    ":stacker-0_1",
+                    ":tracing-0_1",
+                ],
+            },
+            # tsz-lowering: AST-to-type lowering bridge.
+            # Hard deps: tsz-common, tsz-scanner, tsz-parser, tsz-solver,
+            #            tsz-binder, indexmap, rustc-hash, tracing.
+            {
+                "name": "tsz_lowering",
+                "subdir": "crates/tsz-lowering",
+                "edition": "2024",
+                "deps": [
+                    ":tsz_common",
+                    ":tsz_scanner",
+                    ":tsz_parser",
+                    ":tsz_binder",
+                    ":tsz_solver",
+                    ":indexmap-2",
+                    ":rustc_hash-2",
+                    ":tracing-0_1",
+                ],
+            },
+            # tsz-checker: type checker.
+            # Hard deps: tsz-common, tsz-scanner, tsz-parser, tsz-binder,
+            #            tsz-solver, tsz-lowering, rustc-hash, tracing,
+            #            smallvec, serde_json, dashmap, web-time, stacker.
+            {
+                "name": "tsz_checker",
+                "subdir": "crates/tsz-checker",
+                "edition": "2024",
+                "deps": [
+                    ":tsz_common",
+                    ":tsz_scanner",
+                    ":tsz_parser",
+                    ":tsz_binder",
+                    ":tsz_solver",
+                    ":tsz_lowering",
+                    ":dashmap-6",
+                    ":rustc_hash-2",
+                    ":serde_json-1",
+                    ":smallvec-1",
+                    ":stacker-0_1",
+                    ":tracing-0_1",
+                    ":web_time-1",
+                ],
+            },
+            # tsz-emitter: TS→JS emitter / transforms.
+            # Hard deps: tsz-common, tsz-scanner, tsz-parser, tsz-binder,
+            #            tsz-solver, rustc-hash, memchr, serde_json, tracing.
+            # NOTE: tsz-emitter does NOT depend on tsz-checker or tsz-lowering.
+            # Features: default = ["dts"] (dts = [] — no extra code paths).
+            {
+                "name": "tsz_emitter",
+                "subdir": "crates/tsz-emitter",
+                "edition": "2024",
+                "features": ["dts"],
+                "deps": [
+                    ":tsz_common",
+                    ":tsz_scanner",
+                    ":tsz_parser",
+                    ":tsz_binder",
+                    ":tsz_solver",
+                    ":memchr-2",
+                    ":rustc_hash-2",
+                    ":serde_json-1",
+                    ":tracing-0_1",
+                ],
+            },
+            # tsz-lsp: LSP server implementation.
+            # Hard deps: tsz-common, tsz-scanner, tsz-parser, tsz-binder,
+            #            tsz-solver, tsz-checker, rustc-hash, serde, serde_json,
+            #            json5, tracing, web-time, globset, regex, stacker.
+            # walkdir is cfg(not(target_arch = "wasm32")) — included for native.
+            {
+                "name": "tsz_lsp",
+                "subdir": "crates/tsz-lsp",
+                "edition": "2024",
+                "deps": [
+                    ":tsz_common",
+                    ":tsz_scanner",
+                    ":tsz_parser",
+                    ":tsz_binder",
+                    ":tsz_solver",
+                    ":tsz_checker",
+                    ":globset-0_4",
+                    ":json5-1",
+                    ":regex-1",
+                    ":rustc_hash-2",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":stacker-0_1",
+                    ":tracing-0_1",
+                    ":walkdir-2",
+                    ":web_time-1",
+                ],
+            },
+            # tsz-core: umbrella crate (re-exports full pipeline).
+            # Hard deps: all sub-crates + anyhow, wasm-bindgen, serde,
+            #            serde_json, serde-wasm-bindgen (all unconditional),
+            #            rustc-hash, indexmap, rayon, tracing, once_cell,
+            #            bincode (features: serde).
+            # Features: default = ["dts"] (pulls tsz-emitter/dts).
+            # NOTE: tsz-core does NOT depend on bitflags, dashmap, ena,
+            #       fixedbitset, memchr, or smallvec directly — those are
+            #       pulled in by sub-crates. The 0.1.9 registry entry listed
+            #       them as direct deps; main's Cargo.toml does not.
+            {
+                "name": "tsz_core",
+                "subdir": "crates/tsz-core",
+                "edition": "2024",
+                "features": ["dts"],
+                "deps": [
+                    ":tsz_common",
+                    ":tsz_scanner",
+                    ":tsz_parser",
+                    ":tsz_binder",
+                    ":tsz_solver",
+                    ":tsz_lowering",
+                    ":tsz_checker",
+                    ":tsz_emitter",
+                    ":tsz_lsp",
+                    ":anyhow-1",
+                    ":bincode-2",
+                    ":indexmap-2",
+                    ":once_cell-1",
+                    ":rayon-1",
+                    ":rustc_hash-2",
+                    ":serde-1",
+                    ":serde_json-1",
+                    ":serde_wasm_bindgen-0_6",
+                    ":tracing-0_1",
+                    ":wasm_bindgen-0_2",
                 ],
             },
         ],

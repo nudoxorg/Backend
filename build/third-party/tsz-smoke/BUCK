@@ -1,5 +1,9 @@
-# Phase 0 THROWAWAY toolchain proof for the vendored tsz-core 0.1.9 crate set.
+# Phase 0 THROWAWAY toolchain proof for the git-vendored tsz monorepo.
 # See OXC-PLAN.md / tsz vendoring decision notes in the oxc/typescript-producer branch.
+#
+# Vendored from git main @ dff7690987e3183847545feebe9c45ab6b83a006 (replaces
+# the prior crates.io 0.1.9 registry entries). The git-vendored labels have no
+# version suffix (e.g. tsz_core, not tsz_core-0_1).
 #
 # This target proves tsz-core (umbrella) + key sub-crates build and link under Buck2.
 # It link-checks:
@@ -19,7 +23,7 @@ native.rust_test(
     crate_root = "tsz_smoke.rs",
     edition = "2024",
     deps = [
-        "//build/third-party:tsz_core-0_1",
+        "//build/third-party:tsz_core",
         # serde_json is a direct dep of tsz_core but Buck2 requires explicit
         # deps for crates used directly in our source.
         "//build/third-party:serde_json-1",
