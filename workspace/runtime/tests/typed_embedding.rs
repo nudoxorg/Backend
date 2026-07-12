@@ -4,7 +4,7 @@
 
 use runtime::vector::{
 	embedding::Embedding,
-	model::{EmbeddingModel, ModelId, OpenAi3Large, OpenAi3Small},
+	model::{E5Small, EmbeddingModel, ModelId, OpenAi3Small},
 };
 
 /// An embedding knows its dimension from its brand, and validates length at the
@@ -31,10 +31,10 @@ fn wrong_length_is_rejected() {
 #[test]
 fn different_models_are_different_types() {
 	let small = Embedding::<OpenAi3Small>::zeroed();
-	let large = Embedding::<OpenAi3Large>::zeroed();
+	let tiny = Embedding::<E5Small>::zeroed();
 	assert_eq!(small.as_slice().len(), 1536);
-	assert_eq!(large.as_slice().len(), 3072);
-	// let _mismatch: Embedding<OpenAi3Small> = large; // <- type error
+	assert_eq!(tiny.as_slice().len(), 384);
+	// let _mismatch: Embedding<OpenAi3Small> = tiny; // <- type error
 }
 
 /// A blank model id is unconstructible (the qdrant collection key can never be

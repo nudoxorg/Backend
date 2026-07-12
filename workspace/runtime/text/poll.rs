@@ -69,6 +69,14 @@ pub struct Poller {
 impl Poller {
 	/// Configure a poller feeding the index that lives in `index_directory`,
 	/// persisting its watermark alongside it.
+	///
+	/// This is the public constructor the server builds a text catch-up loop from
+	/// (it owns the postgres pool + the replica's tantivy directory). The
+	/// per-intent fan-out materialization in the server upserts a package's
+	/// symbols into the same [`TextIndex`] directly (via
+	/// [`TextIndex::upsert_batch`], the exact write [`poll_once`](Self::poll_once)
+	/// performs), so a Text intent and a poll cycle converge to the same
+	/// upsert-by-id state.
 	pub fn new(pool: sqlx::PgPool, index_directory: &Path, interval: Duration) -> Self {
 		Self { pool, watermark_path: index_directory.join(WATERMARK_FILE), interval }
 	}

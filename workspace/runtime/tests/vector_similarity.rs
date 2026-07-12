@@ -13,7 +13,6 @@ use runtime::vector::{
     Embedding, EmbeddingPurpose,
     model::E5Small,
     similarity::cosine,
-    snippet::Snippet,
 };
 use support::{deterministic_embedding, symbol_id};
 
@@ -126,27 +125,6 @@ fn similarity_from_symbol_surfaces_neighbors() {
     );
 }
 
-/// Similarity from a snippet works without a stored symbol.
-///
-/// Act: extract a snippet, embed it, rank — the shape of
-///   `snippet::similar_to_snippet`.
-/// Assert: embeds the snippet and returns near symbols.
-#[test]
-fn similarity_from_snippet_embeds_then_searches() {
-    let source = "use std::io;\n\nfn read_all(path: &Path) -> io::Result<Vec<u8>> {\n\tstd::fs::read(path)\n}\n";
-    let needle = "fn read_all(path: &Path) -> io::Result<Vec<u8>> {";
-    let start = source.find(needle).expect("needle is in source");
-    let snippet = Snippet::extract(source, start..start + needle.len(), 1);
-    assert!(snippet.text.contains("read_all"));
-
-    let corpus: Corpus = vec![
-        (symbol_id(0), Language::Rust, embed_code(snippet.text.as_str())),
-        (symbol_id(1), Language::Rust, embed_code("html { margin: 0 }")),
-    ];
-    let hits = rank(&corpus, &embed_code(snippet.text.as_str()), 2);
-    assert_eq!(hits[0].value, symbol_id(0), "the symbol embedded from the same snippet wins");
-    assert!(hits[0].score > hits[1].score);
-}
 
 /// Language-scoped similarity restricts results to one language.
 ///
@@ -172,19 +150,6 @@ fn language_scoped_similarity_filters_by_language() {
     assert_eq!(hits.len(), 2, "only the scoped ecosystem's symbols are ranked");
     let ids: Vec<_> = hits.iter().map(|hit| hit.value).collect();
     assert_eq!(ids, [symbol_id(0), symbol_id(2)], "closer Rust symbols in cosine order");
-}
-
-/// Snippet extraction clips to the requested context and recomputes the
-/// highlight relative to the clip.
-#[test]
-fn snippet_extraction_clips_and_highlights() {
-    let source = "line one\nline two\nline three\nline four\nline five\n";
-    let start = source.find("three").expect("needle is in source");
-    let snippet = Snippet::extract(source, start..start + "three".len(), 1);
-
-    assert_eq!(snippet.text.as_str(), "line two\nline three\nline four");
-    assert_eq!(snippet.start_line, 2, "the clip starts on the 1-based second line");
-    assert_eq!(&snippet.text.as_str()[snippet.highlight.clone()], "three");
 }
 
 /// Cosine is symmetric, maximal on itself, and total on zero vectors.

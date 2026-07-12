@@ -1,13 +1,8 @@
-//! Vector similarity kernels and similarity-from-a-symbol queries.
+//! Vector similarity kernels.
 
-use std::num::NonZeroUsize;
+use heart::Score;
 
-use heart::{SymbolId, Score, Scored};
-
-use crate::{
-	error::VectorError,
-	vector::{Embedding, SemanticLive, gate::SemanticGate, model::EmbeddingModel},
-};
+use crate::vector::{Embedding, model::EmbeddingModel};
 
 /// Cosine similarity of two embeddings of the same model brand.
 ///
@@ -27,29 +22,3 @@ pub fn cosine<M: EmbeddingModel>(a: &Embedding<M>, b: &Embedding<M>) -> Score {
 	Score::try_new(value as f32).expect("a clamped cosine is finite by construction")
 }
 
-/// Find symbols semantically near a *stored* symbol.
-pub async fn similar_to<M: EmbeddingModel>(
-	store: &SemanticLive<M>,
-	gate: SemanticGate,
-	symbol: SymbolId,
-	limit: NonZeroUsize,
-) -> Result<Vec<Scored<SymbolId>>, VectorError> {
-	use futures::TryStreamExt;
-
-	// The query vector is the symbol's own stored point.
-	let Some(query) = store.stored_embedding(symbol).await? else {
-		// No stored vector means no meaningful neighborhood; an empty result is
-		// the honest answer (the symbol simply is not in the semantic surface).
-		tracing::warn!(%symbol, "similar_to on a symbol with no stored vector");
-		return Ok(Vec::new());
-	};
-	// Over-fetch by one: the symbol itself is (almost always) its own top hit.
-	let widened = NonZeroUsize::new(limit.get().saturating_add(1))
-		.expect("a nonzero limit plus one is nonzero");
-	let hits: Vec<_> = store
-		.search_with_filter(gate, &query, widened, None, None)
-		.await?
-		.try_collect()
-		.await?;
-	Ok(hits.into_iter().filter(|hit| hit.value != symbol).take(limit.get()).collect())
-}

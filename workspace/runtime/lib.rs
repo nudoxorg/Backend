@@ -27,6 +27,7 @@
 
 pub mod error;
 pub mod graph;
+pub(crate) mod pagination;
 pub mod session;
 pub mod text;
 pub mod vector;

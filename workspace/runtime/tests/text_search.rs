@@ -108,6 +108,10 @@ async fn index_persists_across_reopen() {
 }
 
 /// Keyset pagination resumes strictly after the cursor and never overlaps.
+///
+/// Uses [`heart::Cursor::mint_enforced`] to build the resume token — the caller
+/// (here the test harness) has just verified the live snapshot, so the enforced
+/// brand is correct.
 #[tokio::test]
 async fn cursor_resumes_without_overlap() {
     let directory = TempDir::new("text-cursor");
@@ -120,7 +124,8 @@ async fn cursor_resumes_without_overlap() {
     let first = run_search(&index, "Widget", 2).await;
     assert_eq!(first.len(), 2);
     let last = first.last().expect("page is non-empty");
-    let cursor = heart::Cursor::new(
+    // mint_enforced: we just ran the search against the live snapshot.
+    let cursor = heart::Cursor::mint_enforced(
         (last.score, last.value.id),
         index.snapshot().expect("snapshot hashes"),
     );
@@ -139,6 +144,10 @@ async fn cursor_resumes_without_overlap() {
 }
 
 /// A cursor minted against an older snapshot is flagged, not silently served.
+///
+/// The cursor is minted with [`heart::Cursor::mint_enforced`] against the
+/// snapshot at first-page time; after the index moves, the search must reject
+/// it with [`runtime::error::TextError::Cursor`].
 #[tokio::test]
 async fn stale_cursor_is_rejected() {
     let directory = TempDir::new("text-stale-cursor");
@@ -147,7 +156,8 @@ async fn stale_cursor_is_rejected() {
 
     let first = run_search(&index, "Router", 1).await;
     let last = first.last().expect("page is non-empty");
-    let cursor = heart::Cursor::new(
+    // Capture the snapshot before the index moves.
+    let cursor = heart::Cursor::mint_enforced(
         (last.score, last.value.id),
         index.snapshot().expect("snapshot hashes"),
     );

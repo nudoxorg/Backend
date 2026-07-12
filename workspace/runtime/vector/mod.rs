@@ -7,16 +7,6 @@
 //!   collection actually has that dimension;
 //! - semantic search is reachable only on a [`Live`] store AND only when handed
 //!   a [`SemanticGate`], so the heavy path is never taken implicitly.
-//!
-//! ## Model-migration playbook
-//! Vectors are only comparable within one model regime. Re-embedding in place
-//! would make the collection briefly incoherent (mixed models rank against each
-//! other), so migration is a **cutover**:
-//! 1. Create a *second* collection named for the new model (see
-//!    [`CollectionName::for_regime`]), same dimension.
-//! 2. Re-embed every symbol with the new model into the new collection.
-//! 3. Flip the read path to the new collection once backfill is complete.
-//! 4. Retire the old collection after a grace period.
 
 use std::{
 	future::Future,
@@ -29,7 +19,7 @@ use std::{
 
 use futures::Stream;
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, Cursor, Live, Retryable, Scored,
+	Advisory, BackendKind, Cold, Connect, ConnectError, Cursor, Live, Retryable, Scored,
 	Symbol, SymbolId,
 };
 use qdrant_client::Qdrant;
@@ -38,10 +28,8 @@ use serde::{Deserialize, Serialize};
 pub mod cache;
 pub mod embedding;
 pub mod gate;
-pub mod language;
 pub mod model;
 pub mod similarity;
-pub mod snippet;
 
 pub use cache::{EmbeddingCache, EmbeddingKey};
 pub use embedding::{Embedder, Embedding, EmbeddingPurpose};
@@ -53,6 +41,11 @@ use crate::error::VectorError;
 /// The keyset key a semantic-search [`Cursor`] resumes from: the last hit's
 /// score paired with its id (score alone is not unique). Ordered so pagination
 /// is stable across an eventually-consistent index.
+///
+/// Semantic cursors are explicitly [`Advisory`]: an ANN index has no cheap
+/// content hash, so snapshot freshness cannot be enforced. Callers see this
+/// in the type — `Cursor<SemanticCursorKey, Advisory>` — and understand that
+/// completeness is best-effort across index updates.
 pub type SemanticCursorKey = (heart::Score, SymbolId);
 
 /// A connected [`Semantic`] store — the form query methods live on.
@@ -102,18 +95,6 @@ impl CollectionName {
 		} else {
 			Err(CollectionNameError::Invalid { raw })
 		}
-	}
-
-	/// Derive the migration-collection name for a model regime: `sym-<model>`,
-	/// with any qdrant-illegal characters in the model id folded to `-`.
-	/// Deterministic, so the same model always cuts over to the same collection.
-	pub fn for_regime(model: &ModelId) -> Self {
-		let sanitized: String = model
-			.as_ref()
-			.chars()
-			.map(|character| if qdrant_legal(character) { character } else { '-' })
-			.collect();
-		Self(format!("sym-{sanitized}"))
 	}
 
 	/// The underlying name.
@@ -231,13 +212,17 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 	/// is access-checked against `scope`. `after` resumes a previous page via the
 	/// keyset [`Cursor`].
 	///
+	/// The cursor is [`Advisory`]: an ANN index has no cheap content hash, so
+	/// snapshot freshness is carried but not enforced. Pages may have minor
+	/// completeness gaps across concurrent index updates.
+	///
 	/// Returns a stream so large result sets are not materialized at once.
 	pub async fn search(
 		&self,
 		gate: SemanticGate,
 		query: &Embedding<M>,
 		limit: NonZeroUsize,
-		after: Option<Cursor<SemanticCursorKey>>,
+		after: Option<Cursor<SemanticCursorKey, Advisory>>,
 	) -> Result<impl Stream<Item = Result<Scored<SymbolId>, VectorError>> + Send, VectorError> {
 		self.search_with_filter(gate, query, limit, after, None).await
 	}
@@ -248,21 +233,21 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 	///
 	/// Keyset resume: qdrant cannot filter on the *computed* similarity score,
 	/// so pages after a cursor over-fetch (doubling, capped) and skip past the
-	/// `(score, id)` key client-side. The cursor's snapshot hash is advisory
-	/// here — an eventually-consistent ANN index has no cheap content hash — so
-	/// it is carried but not enforced.
+	/// `(score, id)` key client-side. The cursor is [`Advisory`] — an
+	/// eventually-consistent ANN index has no cheap content hash, so the
+	/// snapshot hash is carried as a best-effort hint, never enforced.
 	pub(crate) async fn search_with_filter(
 		&self,
 		gate: SemanticGate,
 		query: &Embedding<M>,
 		limit: NonZeroUsize,
-		after: Option<Cursor<SemanticCursorKey>>,
+		after: Option<Cursor<SemanticCursorKey, Advisory>>,
 		filter: Option<qdrant_client::qdrant::Filter>,
 	) -> Result<impl Stream<Item = Result<Scored<SymbolId>, VectorError>> + Send, VectorError> {
 		use qdrant_client::qdrant::SearchPointsBuilder;
 
 		/// The deepest a keyset resume will dig before truncating the page.
-		const MAX_FETCH: u64 = 4096;
+		const MAX_FETCH: usize = 4096;
 
 		tracing::debug!(
 			reason = gate.reason(),
@@ -273,80 +258,51 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 		);
 
 		let target = limit.get();
-		let mut fetch = match &after {
-			None => target as u64,
-			Some(_) => (target as u64 * 2).min(MAX_FETCH),
-		};
-		loop {
-			let mut request = SearchPointsBuilder::new(
-				self.collection.as_str(),
-				query.as_slice().to_vec(),
-				fetch,
-			)
-			.with_payload(false);
-			if let Some(filter) = filter.clone() {
-				request = request.filter(filter);
-			}
-			let reply =
-				self.client.search_points(request).await.map_err(VectorError::Transport)?;
+		let after_key = after.as_ref().map(|c| c.after);
+		let client = Arc::clone(&self.client);
+		let collection = self.collection.clone();
+		let query_vec = query.as_slice().to_vec();
 
-			let exhausted = (reply.result.len() as u64) < fetch;
-			let mut hits = reply
-				.result
-				.into_iter()
-				.map(scored_symbol)
-				.collect::<Result<Vec<_>, _>>()?;
-			// Stable keyset order: qdrant sorts by score; ties get an id tiebreak.
-			hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.value.cmp(&b.value)));
+		// Delegate the over-fetch / sort / filter loop to the shared helper.
+		// The fetch closure is async so the qdrant client drives normally.
+		let page = crate::pagination::keyset_page(
+			after_key,
+			target,
+			MAX_FETCH,
+			|id: &SymbolId| *id,
+			|fetch| {
+				let client = Arc::clone(&client);
+				let collection = collection.clone();
+				let query_vec = query_vec.clone();
+				let filter = filter.clone();
+				async move {
+					let mut request = SearchPointsBuilder::new(
+						collection.as_str(),
+						query_vec,
+						fetch as u64,
+					)
+					.with_payload(false);
+					if let Some(f) = filter {
+						request = request.filter(f);
+					}
+					let reply = client
+						.search_points(request)
+						.await
+						.map_err(VectorError::Transport)?;
 
-			let page: Vec<_> = hits
-				.into_iter()
-				.filter(|hit| {
-					after.as_ref().is_none_or(|cursor| {
-						let (score, id) = &cursor.after;
-						hit.score < *score || (hit.score == *score && hit.value > *id)
-					})
-				})
-				.take(target)
-				.collect();
-
-			if page.len() == target || exhausted || fetch >= MAX_FETCH {
-				if page.len() < target && !exhausted && fetch >= MAX_FETCH {
-					tracing::warn!(fetched = fetch, "keyset resume truncated at fetch ceiling");
+					let exhausted = reply.result.len() < fetch;
+					let hits = reply
+						.result
+						.into_iter()
+						.map(scored_symbol)
+						.collect::<Result<Vec<_>, _>>()?;
+					Ok((hits, exhausted))
 				}
-				return Ok(futures::stream::iter(page.into_iter().map(Ok)));
-			}
-			fetch = (fetch * 2).min(MAX_FETCH);
-		}
-	}
-
-	/// The stored embedding for `symbol`, if the collection holds its point —
-	/// the lookup behind similarity-from-a-symbol. Not gated: reading one point
-	/// back is cheap; only the k-NN scan is the heavy, gated operation.
-	pub(crate) async fn stored_embedding(
-		&self,
-		symbol: SymbolId,
-	) -> Result<Option<Embedding<M>>, VectorError> {
-		use qdrant_client::qdrant::{GetPointsBuilder, PointId, vectors_output::VectorsOptions};
-
-		let request = GetPointsBuilder::new(
-			self.collection.as_str(),
-			vec![PointId::from(symbol.as_uuid().to_string())],
+			},
 		)
-		.with_vectors(true);
-		let reply = self.client.get_points(request).await.map_err(VectorError::Transport)?;
+		.await?;
 
-		let Some(point) = reply.result.into_iter().next() else { return Ok(None) };
-		let values = match point.vectors.and_then(|vectors| vectors.vectors_options) {
-			Some(VectorsOptions::Vector(vector)) => vector.data,
-			Some(_) => {
-				return Err(payload_error(format_args!(
-					"point {symbol} stores named vectors, expected a single dense vector"
-				)));
-			}
-			None => return Ok(None),
-		};
-		Embedding::from_vec(values).map(Some).map_err(VectorError::Embed)
+		Ok(futures::stream::iter(page.into_iter().map(Ok)))
 	}
 
 	/// The tower [`Service`] for this store; use [`heart::sink::SinkExt`] methods
@@ -496,6 +452,38 @@ where
 	Semantic<M, Cold>: Connect<connect(..): Send>,
 {
 }
+
+impl<M: EmbeddingModel> heart::Probeable for Semantic<M, Live> {
+	fn backend(&self) -> BackendKind {
+		BackendKind::Qdrant
+	}
+
+	async fn probe(&self) -> heart::Probe {
+		use crate::error::VectorError;
+		heart::timed_probe(BackendKind::Qdrant, async {
+			// Cheap one-hit zero-vector query; connectivity is the signal.
+			// `for_readiness` is the documented non-planner issuance site.
+			let gate = SemanticGate::for_readiness();
+			let query = Embedding::<M>::zeroed();
+			match self
+				.search(gate, &query, NonZeroUsize::MIN, None)
+				.await
+			{
+				Ok(_) => None,
+				Err(error @ (VectorError::Connect(_) | VectorError::Transport(_))) => {
+					Some(error.to_string())
+				}
+				Err(_) => None,
+			}
+		})
+		.await
+	}
+}
+
+// Concrete brand for the Send RTN guard (any EmbeddingModel works).
+const _: fn() = || {
+	heart::assert_probe_future_send::<Semantic<crate::vector::models::OpenAi3Small, Live>>();
+};
 
 // Ensure the retry classification is wired: the sink machinery consults it.
 const _: fn() = || {

@@ -16,14 +16,6 @@ impl EmbeddingModel for E5Small {
 	fn id() -> ModelId { model_id("intfloat/e5-small-v2") }
 }
 
-/// `Qwen/Qwen3-Embedding` — 1024-dim.
-pub struct Qwen3;
-impl Sealed for Qwen3 {}
-impl EmbeddingModel for Qwen3 {
-	const DIMENSIONS: usize = 1024;
-	fn id() -> ModelId { model_id("Qwen/Qwen3-Embedding") }
-}
-
 /// OpenAI `text-embedding-3-small` — 1536-dim.
 pub struct OpenAi3Small;
 impl Sealed for OpenAi3Small {}
@@ -32,10 +24,3 @@ impl EmbeddingModel for OpenAi3Small {
 	fn id() -> ModelId { model_id("openai/text-embedding-3-small") }
 }
 
-/// OpenAI `text-embedding-3-large` — 3072-dim.
-pub struct OpenAi3Large;
-impl Sealed for OpenAi3Large {}
-impl EmbeddingModel for OpenAi3Large {
-	const DIMENSIONS: usize = 3072;
-	fn id() -> ModelId { model_id("openai/text-embedding-3-large") }
-}

@@ -5,6 +5,7 @@
 //! and CPU/disk-bound, so it runs on `spawn_blocking`.
 
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Mutex, MutexGuard};
 
 use tantivy::{
@@ -98,19 +99,12 @@ impl TextSchema {
 pub(crate) fn kind_token(kind: SymbolKind) -> String { kind.to_string() }
 
 /// Reconstruct a [`SymbolKind`] from its stored token.
+///
+/// Delegates to the `strum`-derived `FromStr` impl on [`SymbolKind`], which
+/// matches the same PascalCase variant names that `Display` (and `to_string()`)
+/// emits — encode/decode are guaranteed symmetric.
 pub(crate) fn parse_kind(token: &str) -> Option<SymbolKind> {
-	use SymbolKind::*;
-	match token {
-		"Function" => Some(Function),
-		"Type" => Some(Type),
-		"Module" => Some(Module),
-		"Constant" => Some(Constant),
-		"Variable" => Some(Variable),
-		"Trait" => Some(Trait),
-		"Impl" => Some(Impl),
-		"Other" => Some(Other),
-		_ => None,
-	}
+	SymbolKind::from_str(token).ok()
 }
 
 /// A replica-local tantivy index over [`Symbol`] records.

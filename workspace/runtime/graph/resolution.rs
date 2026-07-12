@@ -3,10 +3,9 @@
 
 use std::collections::BTreeSet;
 
-use futures::{Stream, TryFutureExt};
 use serde::{Deserialize, Serialize};
 
-use heart::{Symbol, SymbolId, PackageId, Scored};
+use heart::{Symbol, SymbolId, Scored};
 
 /// How an old symbol maps onto the next version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,8 +16,8 @@ pub enum Resolution {
 	Added(SymbolId),
 }
 
-/// The pure diff behind [`crate::graph::Graph::resolve_across`], factored out so
-/// the matching rules are testable without a live graph.
+/// The pure diff of two package symbol sets — matching rules are separated
+/// here so they are testable without a live graph.
 ///
 /// Rules, in precedence order:
 /// - same fully-qualified path in both versions → [`Resolution::Stable`],
@@ -98,26 +97,3 @@ fn path_similarity(previous: &str, next: &str) -> f32 {
 	previous.intersection(&next).count() as f32 / union as f32
 }
 
-impl crate::graph::Graph<heart::Live> {
-	pub fn resolve_across(
-		&self,
-		previous: PackageId,
-		next: PackageId,
-	) -> impl Stream<Item = Result<Resolution, crate::error::GraphError>> + Send {
-		async move {
-			let (previous, next) = futures::try_join!(
-				self.symbols_in_package(previous),
-				self.symbols_in_package(next),
-			)?;
-			let resolutions = diff(&previous, &next);
-			tracing::debug!(
-				previous = previous.len(),
-				next = next.len(),
-				resolutions = resolutions.len(),
-				"cross-version resolution computed"
-			);
-			Ok(futures::stream::iter(resolutions.into_iter().map(Ok)))
-		}
-		.try_flatten_stream()
-	}
-}
