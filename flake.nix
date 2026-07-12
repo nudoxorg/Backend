@@ -3,6 +3,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
+    # NuDox shared build library (input-less flake in the deploy repo). Gives
+    # lib.build.rustService so the production build recipe lives here rather
+    # than in nixos/nix/pkgs/backend.nix. Pinned by remote for reproducibility;
+    # for local iteration before it's pushed:
+    #   nix build --override-input nixos path:../nixos
+    nixos.url = "git+https://dev.nudox.org/git/Nudox/MachineConfigurations.git";
+
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -22,15 +29,29 @@
       url = "github:facebookincubator/buck2-prelude?rev=4b374e200a64838660463994b079899b5094689a";
       flake = false;
     };
+
+    # snowydeer — Buck2 → Nix store deploy boundary (Phase 4). NAR-packs a Buck2
+    # output, ripgrep reference-scans the closure, and imports it content-addressed
+    # via Lix >=2.95 `--references-list-json`/import_ca. Vendored as a source input
+    # so snowydeer/package.bzl + snowydeer/snowydeer.bxl can be wired against its
+    # upstream cells (`//toolchains//nix/nix_build.bzl`, `//constraints/link_style`,
+    # build_store_path.py). Not yet consumed by a Buck2 external cell — see the
+    # TODOs in snowydeer/snowydeer.bxl and PLANS.md for the remaining wiring.
+    snowydeer = {
+      url = "github:MercuryTechnologies/snowydeer";
+      flake = false;
+    };
   };
   outputs =
     {
       self,
       nixpkgs,
+      nixos,
       fenix,
       git-hooks,
       devshell,
       buck2-prelude,
+      snowydeer,
     }:
     let
       # Everything that Nix supports right now
@@ -40,6 +61,50 @@
         "x86_64-darwin"
         "x86_64-linux"
       ];
+
+      # Pre-built buck2 binaries pinned to the release matching our prelude.
+      # Avoids both buckle's runtime download and a full Rust source build.
+      buck2Version = "2026-07-01";
+      buck2Artifacts = {
+        "aarch64-darwin" = {
+          platform = "aarch64-apple-darwin";
+          hash = "sha256-cjgWmrQiLagv4lN3dgEl2l7wDmchntMGBgFyfztRLWA=";
+        };
+        "aarch64-linux" = {
+          platform = "aarch64-unknown-linux-gnu";
+          hash = "sha256-zMbZcliSzTyfdKxgxx5A1R3tibdHhAZLLdYNNJ6gu24=";
+        };
+        "x86_64-darwin" = {
+          platform = "x86_64-apple-darwin";
+          hash = "sha256-7czaJhavbkHkv/1JsXPbi3IeNptgZHMcGLdt14de2lU=";
+        };
+        "x86_64-linux" = {
+          platform = "x86_64-unknown-linux-gnu";
+          hash = "sha256-XQzRG7QQHId6nSNCcFsXme6j2oU8uqAOoNCoflPFwzg=";
+        };
+      };
+
+      mkBuck2 =
+        pkgs:
+        let
+          art = buck2Artifacts.${pkgs.stdenv.hostPlatform.system};
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "buck2";
+          version = buck2Version;
+          src = pkgs.fetchurl {
+            url = "https://github.com/facebook/buck2/releases/download/${buck2Version}/buck2-${art.platform}.zst";
+            hash = art.hash;
+          };
+          nativeBuildInputs = [ pkgs.zstd ];
+          dontUnpack = true;
+          installPhase = ''
+            mkdir -p $out/bin
+            zstd -d $src -o $out/bin/buck2
+            chmod +x $out/bin/buck2
+          '';
+          meta.mainProgram = "buck2";
+        };
 
       eachSystem =
         f:
@@ -53,6 +118,152 @@
         );
     in
     {
+      # Production build of the backend, exposed as a getFlake-consumable
+      # `packages.<system>.default`. Two build paths feed it:
+      #
+      #   * buck2/snowydeer (the real current build) — see apps.<system>.buck2
+      #     below. buck2 itself can't run inside a `nix build` sandbox (daemon,
+      #     network, mutable prelude FS), so we DON'T try to compile it here.
+      #     Instead the artifact is built imperatively (in CI, via the app),
+      #     imported content-addressed into the Nix store, and pushed to the
+      #     self-hosted Attic cache (cache.nudox.org). CI records the resulting
+      #     per-system store path in nix/buck2-artifact.json, and
+      #     `builtins.fetchClosure` below turns that cached path back into a
+      #     normal derivation — PURE eval, no buck2 at eval or build time, just
+      #     a signature-verified substitution. THIS is what makes the buck2
+      #     build getFlake-consumable by nixos/app-flakes.nix.
+      #
+      #   * cargo (rustService) — the legacy source build, kept as a fallback
+      #     on revs that still carry a committed Cargo.lock (pre-Buck2 revs, or
+      #     branches that scaffold the manifests). rustService wants a
+      #     fenix-overlaid pkgs.
+      #
+      # Precedence: prefer the pinned buck2 artifact; fall back to cargo when
+      # there's no pin for this system but a lockfile is present.
+      packages = eachSystem (
+        { system, ... }:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ fenix.overlays.default ];
+          };
+
+          # nix/buck2-artifact.json schema:
+          #   { "fromStore": "<attic substituter URL>",
+          #     "paths": { "<system>": "/nix/store/…-nudox_pkg", … } }
+          # Empty `paths` (the committed default) → no pin yet → buck2Artifact
+          # is null and the flake falls back to cargo, still evaluating cleanly.
+          # CI (nixos scripts.backendBuck2) rewrites this after `attic push`.
+          buck2Pin = builtins.fromJSON (builtins.readFile ./nix/buck2-artifact.json);
+          buck2Path = buck2Pin.paths.${system} or null;
+          buck2Artifact =
+            if buck2Path == null then
+              null
+            else
+              builtins.fetchClosure {
+                fromStore = buck2Pin.fromStore;
+                fromPath = buck2Path;
+                # snowydeer imports content-addressed (`nix store add-path`), so
+                # the bare CA form { fromStore, fromPath } applies. If a pin is
+                # ever input-addressed instead, that entry needs
+                # `inputAddressed = true`.
+              };
+
+          # This repo has migrated to Buck2: the Rust `Cargo.toml`/`Cargo.lock`
+          # are gitignored and scaffolded at runtime (see .gitignore), so they
+          # are absent from most revs' source trees. Only expose the cargo
+          # package on revs that actually carry a committed Cargo.lock —
+          # otherwise `nix flake check`/eval would fail reading a missing lock.
+          hasCargoLock = builtins.pathExists (./. + "/Cargo.lock");
+          cargoBackend = nixos.lib.build.rustService { inherit pkgs; } {
+            pname = "nudox-backend";
+            version = self.rev or "dev";
+            src = ./.;
+            cargoPackage = "nudox";
+            mainProgram = "nudox";
+            description = "NuDox backend compiler and ingestion API";
+          };
+        in
+        {
+          # Kept for `nix shell` compatibility.
+          devshell = self.devShells.${system}.default;
+        }
+        // nixpkgs.lib.optionalAttrs hasCargoLock {
+          # Source-compiled backend (only on revs that still carry Cargo.lock).
+          cargo = cargoBackend;
+        }
+        // nixpkgs.lib.optionalAttrs (buck2Path != null) {
+          # The real production artifact, substituted from Attic via the pin.
+          # NB: guard on buck2Path (a string), never on buck2Artifact — comparing
+          # the fetchClosure result to null would force it, contacting the
+          # substituter just to decide attribute presence.
+          buck2 = buck2Artifact;
+        }
+        // nixpkgs.lib.optionalAttrs (buck2Path != null || hasCargoLock) {
+          default = if buck2Path != null then buck2Artifact else cargoBackend;
+        }
+      );
+
+      # apps.buck2 — non-hermetic buck2/snowydeer build entry point.
+      #
+      # Run with:  nix run .#buck2
+      # (or from the nixos CI driver that knows about this app)
+      #
+      # The script must be run from the repo root. It:
+      #   1. Ensures the prelude symlink is in place (same logic as the devshell
+      #      shellHook) so buck2 can resolve the prelude cell.
+      #   2. Invokes the snowydeer BXL against //workspace/server:nudox_pkg.
+      #   3. Prints the resulting /nix/store/… path to stdout.
+      #
+      # This app is the PRODUCER of the artifact that `packages.default`
+      # consumes. In CI (nixos scripts.backendBuck2) the printed store path is
+      # pushed to the Attic cache and recorded in nix/buck2-artifact.json;
+      # packages.default then substitutes it purely via builtins.fetchClosure
+      # (see the packages block above). So the buck2 build IS getFlake-consumable
+      # — just through a build→push→pin→fetch handoff rather than a direct
+      # `nix build` (which a buck2 daemon + network + mutable prelude FS can't do
+      # inside a sandbox). The build is reproducible (same source → same
+      # content-addressed store path); CI runs this with Nix store write access
+      # and buck2 daemon privileges.
+      apps = eachSystem (
+        { pkgs, system, ... }:
+        let
+          buck2-bin = mkBuck2 pkgs;
+          # setup-prelude.sh does the one-time patching of load paths inside the
+          # prelude cell. We re-use the same script the devshell shellHook calls.
+          bxlScript = pkgs.writeShellApplication {
+            name = "nudox-buck2-build";
+            runtimeInputs = [ buck2-bin ];
+            text = ''
+              # Must be run from the repo root (where .buckconfig lives).
+              if [[ ! -f .buckconfig ]]; then
+                echo "ERROR: run from the Backend repo root (no .buckconfig found)" >&2
+                exit 1
+              fi
+
+              # Wire the prelude cell — mirrors the devshell shellHook logic.
+              ln -sfn ${buck2-prelude} prelude
+
+              _prelude_stamp="build/prelude-local/.nix-source"
+              if [[ ! -f "$_prelude_stamp" || "$(cat "$_prelude_stamp")" != "${buck2-prelude}" ]]; then
+                bash build/setup-prelude.sh
+                echo -n "${buck2-prelude}" > "$_prelude_stamp"
+              fi
+              unset _prelude_stamp
+
+              echo "nudox-buck2-build: invoking snowydeer BXL for //workspace/server:nudox_pkg" >&2
+              buck2 bxl //snowydeer:snowydeer.bxl:main -- --target //workspace/server:nudox_pkg
+            '';
+          };
+        in
+        {
+          buck2 = {
+            type = "app";
+            program = "${bxlScript}/bin/nudox-buck2-build";
+          };
+        }
+      );
+
       checks = eachSystem (
         {
           pkgs,
@@ -70,7 +281,15 @@
             "rustc-codegen-cranelift-preview"
           ];
         in
-        {
+        # `nix flake check` compiles the backend from source when a cargo build
+        # exists on this rev. It deliberately checks `cargo`, not `default`: the
+        # buck2 `default` is a fetchClosure of a pre-built Attic artifact, and
+        # `nix flake check` should exercise a real source build, not re-substitute
+        # a cached closure (which would also need network + the pin present).
+        nixpkgs.lib.optionalAttrs (self.packages.${system} ? cargo) {
+          package = self.packages.${system}.cargo;
+        }
+        // {
           pre-commit-check = git-hooks.lib.${system}.run {
             src = ./.;
             package = pkgs.prek; # Prek for parellelizism
@@ -149,14 +368,8 @@
             "rust-src"
             "rust-docs"
             "rustc"
-            # rustc-dev ships the compiler's own crates (rustc_driver,
-            # rustc_interface, rustc_hir, …) into the sysroot. It is the
-            # prerequisite for building `#![feature(rustc_private)]` code —
-            # i.e. vendoring librustdoc and driving it in-process so the Rust
-            # producer can obtain rustdoc's `Crate` without shelling out to
-            # `cargo rustdoc` and round-tripping through JSON.
-            "rustc-dev"
-            "llvm-tools"
+            # rust-analyzer component ships libexec/rust-analyzer-proc-macro-srv
+            # so ra_ap_load_cargo can use ProcMacroServerChoice::Sysroot.
             "rustfmt"
             "rustc-codegen-cranelift-preview"
           ];
@@ -235,8 +448,9 @@
               pkgs.goreleaser
               pkgs.cuelsp
               pkgs.b3sum
-              pkgs.buckle # Buck2 version launcher — reads .buckversion, downloads/caches the pinned binary
-              (pkgs.writeShellScriptBin "buck2" ''exec ${pkgs.buckle}/bin/buckle "$@"'')
+              pkgs.go # needed by system_go_toolchain for the Go oracle producer
+              pkgs.jdk21_headless # Java 21 — prelude javacd sources require SourceVersion.RELEASE_21
+              (mkBuck2 pkgs)
               (if pkgs.stdenv.isLinux then pkgs.wild-unwrapped else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.openssl else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.clang else null)
@@ -289,11 +503,33 @@
               (mkCommand "install" "Build and install binary to system" "installation")
               (mkCommand "install-force" "Force install binary" "installation")
 
+              # --- Buck2 --- #
+              (mkCommand "buck-build" "Build Buck2 targets (omit package for //..., or pass e.g. compiler)"
+                "buck2"
+              )
+              (mkCommand "buck-test" "Run Buck2 tests (omit package for //..., or pass e.g. compiler)" "buck2")
+
               # --- Utilities --- #
               (mkCommand "rad-sync" "manually sync radicle repos" "utilities")
             ];
             devshell.startup.shellHook.text = ''
               ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
+              # build/prelude-local is the patched prelude cell used by .buckconfig.
+              # Regenerate it whenever the pinned buck2-prelude store path changes.
+              _prelude_stamp="$PRJ_ROOT/build/prelude-local/.nix-source"
+              if [[ ! -f "$_prelude_stamp" || "$(cat "$_prelude_stamp")" != "${buck2-prelude}" ]]; then
+                bash "$PRJ_ROOT/build/setup-prelude.sh"
+                echo -n "${buck2-prelude}" > "$PRJ_ROOT/build/prelude-local/.nix-source"
+              fi
+              unset _prelude_stamp
+              # Write .buckconfig.local with absolute Nix store paths for Go and Java.
+              # This survives daemon restarts (no PATH dependency) and is gitignored.
+              cat > "$PRJ_ROOT/.buckconfig.local" <<'BCFG'
+[go]
+  go_binary = ${pkgs.go}/bin/go
+[java]
+  java_home = ${pkgs.jdk21_headless}
+BCFG
               export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
               # sccache intercepts rustc --version as a non-compilation call and returns empty output,
               # breaking Buck2 build scripts (e.g. rustversion). Buck2 has its own caching.
@@ -306,14 +542,6 @@
               ) 9>/tmp/nunu_sync.lock &
             '';
           };
-        }
-      );
-
-      # Expose devShell as a package for `nix shell` compatibility
-      packages = eachSystem (
-        { system, ... }:
-        {
-          default = self.devShells.${system}.default;
         }
       );
 
