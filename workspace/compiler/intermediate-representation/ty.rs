@@ -103,6 +103,71 @@ pub enum Type {
 
 	/// Type predicates such as `value is Foo` or `asserts this is Bar`.
 	Predicate(TypePredicate),
+
+	/// A literal type carrying its exact **value**, not just its kind.
+	/// Ex: `"foo"`, `42`, `true`, `10n`. (deno_doc collapsed these to the bare
+	/// keyword type, discarding the value — this preserves it.)
+	Literal(LiteralValue),
+
+	/// A template-literal type with its structure preserved: interleaved literal
+	/// string chunks (`quasis`) and embedded `types`.
+	/// Ex: `` `prefix-${T}-suffix` ``. (deno_doc flattened these to `string`.)
+	TemplateLiteral(TemplateLiteralType),
+
+	/// A `typeof x` query — the type of a value binding, kept as a first-class
+	/// query rather than a fake name reference (deno stringified it to a name).
+	TypeQuery(TypeQuery),
+
+	/// A tuple whose elements carry labels: `[first: string, ...rest: number[]]`.
+	/// (deno_doc dropped the labels; a plain [`Type::Tuple`] is used when there
+	/// are none.)
+	NamedTuple(Vec<TupleMember>),
+}
+
+/// The kind of a literal-type value.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum LiteralKind {
+	String,
+	Number,
+	Boolean,
+	BigInt,
+}
+
+/// A literal type plus its exact source spelling (`"foo"`, `42`, `10n`, `true`).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct LiteralValue {
+	pub kind:  LiteralKind,
+	/// Exact source text of the literal, value included.
+	pub value: String,
+}
+
+/// A structured template-literal type. `quasis` are the literal chunks between
+/// interpolations (`n + 1` of them for `n` embedded `types`).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TemplateLiteralType {
+	pub quasis: Vec<String>,
+	pub types:  Vec<Type>,
+}
+
+/// A `typeof x` type query: the dotted name of the queried binding plus any
+/// explicit type arguments.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TypeQuery {
+	pub name:         String,
+	pub generic_args: Option<Vec<GenericArg>>,
+}
+
+/// One element of a labelled tuple.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TupleMember {
+	/// The member label (`first` in `[first: string]`), if any.
+	pub label:  Option<String>,
+	pub r#type: Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]

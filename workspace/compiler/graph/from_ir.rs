@@ -387,6 +387,35 @@ fn type_(cx: &mut EmitCx, t: &ir::ty::Type) -> m::Type {
             },
             target: p.r#type.as_ref().map(|t| bx(cx, t)),
         }),
+        T::Literal(l) => m::Type::Literal(m::LiteralValue {
+            kind: match l.kind {
+                ir::ty::LiteralKind::String => m::LiteralKind::String,
+                ir::ty::LiteralKind::Number => m::LiteralKind::Number,
+                ir::ty::LiteralKind::Boolean => m::LiteralKind::Boolean,
+                ir::ty::LiteralKind::BigInt => m::LiteralKind::BigInt,
+            },
+            value: l.value.clone(),
+        }),
+        T::TemplateLiteral(t) => m::Type::TemplateLiteral(m::TemplateLiteralType {
+            quasis: t.quasis.clone(),
+            types: t.types.iter().map(|t| type_(cx, t)).collect(),
+        }),
+        T::TypeQuery(q) => m::Type::TypeQuery(m::TypeQuery {
+            name: q.name.clone(),
+            generic_args: opt_slice(&q.generic_args)
+                .iter()
+                .map(|a| generic_arg(cx, a))
+                .collect(),
+        }),
+        T::NamedTuple(members) => m::Type::NamedTuple(m::TyNamedTuple {
+            members: members
+                .iter()
+                .map(|mem| m::TupleMember {
+                    label: mem.label.clone(),
+                    ty: bx(cx, &mem.r#type),
+                })
+                .collect(),
+        }),
     }
 }
 

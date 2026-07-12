@@ -216,6 +216,10 @@ pub enum Type {
     Conditional(ConditionalType),
     Mapped(MappedType),
     Predicate(TypePredicate),
+    Literal(LiteralValue),
+    TemplateLiteral(TemplateLiteralType),
+    TypeQuery(TypeQuery),
+    NamedTuple(TyNamedTuple),
 }
 
 // Tuple / Union / Intersection each carry a `Vec<Type>` but, as tagged-union
@@ -383,6 +387,54 @@ pub struct TypePredicate {
     pub asserts: bool,
     pub subject: PredicateSubject,
     pub target: Option<Box<Type>>,
+}
+
+/// The kind of a literal-type value (mirror of `ir::ty::LiteralKind`).
+#[derive(TerminusDBModel, Debug, Clone)]
+pub enum LiteralKind {
+    String,
+    Number,
+    Boolean,
+    BigInt,
+}
+
+/// A literal type with its exact value preserved (`"foo"`, `42`, `10n`).
+#[derive(TerminusDBModel, Debug, Clone)]
+#[tdb(subdocument = true, key = "random")]
+pub struct LiteralValue {
+    pub kind: LiteralKind,
+    pub value: String,
+}
+
+/// A structured template-literal type: literal chunks interleaved with types.
+#[derive(TerminusDBModel, Debug, Clone)]
+#[tdb(subdocument = true, key = "random")]
+pub struct TemplateLiteralType {
+    pub quasis: Vec<String>,
+    pub types: Vec<Type>,
+}
+
+/// A `typeof x` type query.
+#[derive(TerminusDBModel, Debug, Clone)]
+#[tdb(subdocument = true, key = "random")]
+pub struct TypeQuery {
+    pub name: String,
+    pub generic_args: Vec<GenericArg>,
+}
+
+/// One labelled tuple element.
+#[derive(TerminusDBModel, Debug, Clone)]
+#[tdb(subdocument = true, key = "random")]
+pub struct TupleMember {
+    pub label: Option<String>,
+    pub ty: Box<Type>,
+}
+
+/// A tuple whose elements carry labels (mirror of `ir::ty::Type::NamedTuple`).
+#[derive(TerminusDBModel, Debug, Clone)]
+#[tdb(subdocument = true, key = "random")]
+pub struct TyNamedTuple {
+    pub members: Vec<TupleMember>,
 }
 
 // ───────────────────────── const expressions ─────────────────────────

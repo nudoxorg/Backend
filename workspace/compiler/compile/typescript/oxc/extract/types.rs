@@ -20,8 +20,9 @@ use ir::{
     primitives::{Primitive, Width},
     record::{Field, FieldAttributes, FieldKey, IndexSignature, KnownField, Record},
     ty::{
-        ConditionalType, FunctionPointer, MappedType, ModifierPrefix, PredicateSubject,
-        QualifiedPath, Type, TypeOperator, TypePredicate, TypeReference,
+        ConditionalType, FunctionPointer, LiteralKind, LiteralValue, MappedType, ModifierPrefix,
+        PredicateSubject, QualifiedPath, TemplateLiteralType, TupleMember, Type, TypeOperator,
+        TypePredicate, TypeQuery, TypeReference,
     },
 };
 
@@ -176,12 +177,27 @@ impl<'a> Extractor<'a> {
                 Ok(Type::Slice(Box::new(self.lower_ts_type(&arr.element_type)?)))
             }
             TSType::TSTupleType(tup) => {
-                let types = tup
+                // If any element is labelled, preserve labels via NamedTuple
+                // (deno dropped them); otherwise a plain positional Tuple.
+                let has_labels = tup
                     .element_types
                     .iter()
-                    .map(|elem| self.lower_tuple_element(elem))
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(Type::Tuple(types))
+                    .any(|e| matches!(e, TSTupleElement::TSNamedTupleMember(_)));
+                if has_labels {
+                    let members = tup
+                        .element_types
+                        .iter()
+                        .map(|elem| self.lower_tuple_member(elem))
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(Type::NamedTuple(members))
+                } else {
+                    let types = tup
+                        .element_types
+                        .iter()
+                        .map(|elem| self.lower_tuple_element(elem))
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(Type::Tuple(types))
+                }
             }
 
             // ----------------------------------------------------------------
@@ -259,12 +275,9 @@ impl<'a> Extractor<'a> {
                         .map(|q| import_qualifier_to_string(q))
                         .unwrap_or_else(|| import.source.value.to_string()),
                 };
-                // Tier B: `typeof x` is a structured type-level *query*, not a
-                // plain reference (deno flattened it to a bare name string).
-                // Model it as `TypeOperator { operator: "typeof", type }`, which
-                // reuses the existing structured operator variant and preserves
-                // any `typeof`-with-type-arguments as generic args on the inner
-                // reference.
+                // `typeof x` is a first-class type-level *query* (deno flattened
+                // it to a bare name string). Preserve the queried binding name
+                // plus any explicit type arguments.
                 let generic_args = q
                     .type_arguments
                     .as_ref()
@@ -276,13 +289,7 @@ impl<'a> Extractor<'a> {
                     })
                     .transpose()?
                     .filter(|v| !v.is_empty());
-                Ok(Type::TypeOperator(TypeOperator {
-                    operator: "typeof".to_string(),
-                    r#type: Box::new(Type::TypeReference(TypeReference {
-                        identifier: name,
-                        generic_args,
-                    })),
-                }))
+                Ok(Type::TypeQuery(TypeQuery { name, generic_args }))
             }
 
             // ----------------------------------------------------------------
@@ -402,24 +409,19 @@ impl<'a> Extractor<'a> {
             TSType::TSLiteralType(l) => Ok(self.literal_type(&l.literal)),
 
             // ----------------------------------------------------------------
-            // Template literal type: `foo-${T}` — Tier B: preserve the pattern.
-            // deno flattened this to `string`; instead we keep the raw template
-            // source as the reference name AND lower the interpolated types into
-            // `generic_args`, so both the shape and the embedded types survive.
+            // Template literal type: `foo-${T}` — first-class structured form.
+            // deno flattened this to `string`; instead we keep the interleaved
+            // literal chunks (`quasis`) AND the embedded interpolated `types`.
             // ----------------------------------------------------------------
             TSType::TSTemplateLiteralType(t) => {
-                let pattern = t.span().source_text(self.source).to_string();
-                let generic_args = if t.types.is_empty() {
-                    None
-                } else {
-                    Some(
-                        t.types
-                            .iter()
-                            .map(|ty| self.lower_ts_type(ty).map(GenericArg::Type))
-                            .collect::<Result<Vec<_>>>()?,
-                    )
-                };
-                Ok(Type::TypeReference(TypeReference { identifier: pattern, generic_args }))
+                let quasis =
+                    t.quasis.iter().map(|q| q.value.raw.to_string()).collect::<Vec<_>>();
+                let types = t
+                    .types
+                    .iter()
+                    .map(|ty| self.lower_ts_type(ty))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Type::TemplateLiteral(TemplateLiteralType { quasis, types }))
             }
 
             // ----------------------------------------------------------------
@@ -475,17 +477,26 @@ impl<'a> Extractor<'a> {
     // literal_type — TSLiteralType → primitive (Tier A)
     // -----------------------------------------------------------------------
 
-    /// Lower a `TSLiteralType`'s literal node into `ir::ty::Type`.
-    ///
-    /// Tier B: preserve the literal **value**, which deno_doc dropped (it kept
-    /// only the kind → `string`/`number`/`boolean`). The exact source text of
-    /// the literal becomes the reference identifier, so `"foo"`, `42`, `true`,
-    /// and `-42n` all survive into the IR distinct from the bare keyword types.
-    /// A future schema-coordinated pass can promote these to a dedicated
-    /// `Type::Literal(value)` variant (see the Tier-B follow-up note).
+    /// Lower a `TSLiteralType`'s literal node into a first-class
+    /// [`Type::Literal`], preserving the exact **value** deno_doc dropped (it
+    /// kept only the kind → `string`/`number`/`boolean`). `"foo"`, `42`, `true`,
+    /// and `-42n` each survive with their source spelling and a typed kind.
     pub(crate) fn literal_type(&mut self, lit: &TSLiteral<'a>) -> Type {
         let value = lit.span().source_text(self.source).to_string();
-        Type::TypeReference(TypeReference { identifier: value, generic_args: None })
+        let kind = match lit {
+            TSLiteral::BooleanLiteral(_) => LiteralKind::Boolean,
+            TSLiteral::NumericLiteral(_) => LiteralKind::Number,
+            TSLiteral::BigIntLiteral(_) => LiteralKind::BigInt,
+            TSLiteral::StringLiteral(_) => LiteralKind::String,
+            TSLiteral::TemplateLiteral(_) => LiteralKind::String,
+            // `-42` / `-42n` etc.: infer bigint from the `n` suffix.
+            TSLiteral::UnaryExpression(_) => {
+                if value.ends_with('n') { LiteralKind::BigInt } else { LiteralKind::Number }
+            }
+            // Null / RegExp / any future literal node: fall back to its spelling.
+            _ => LiteralKind::String,
+        };
+        Type::Literal(LiteralValue { kind, value })
     }
 
     // -----------------------------------------------------------------------
@@ -764,6 +775,18 @@ impl<'a> Extractor<'a> {
                 );
                 self.lower_ts_type(ts_ty)
             }
+        }
+    }
+
+    /// Lower a `TSTupleElement` into a labelled [`TupleMember`], preserving the
+    /// `TSNamedTupleMember` label that deno_doc discarded.
+    fn lower_tuple_member(&mut self, elem: &TSTupleElement<'a>) -> Result<TupleMember> {
+        match elem {
+            TSTupleElement::TSNamedTupleMember(n) => Ok(TupleMember {
+                label:  Some(n.label.name.to_string()),
+                r#type: self.lower_tuple_element(&n.element_type)?,
+            }),
+            other => Ok(TupleMember { label: None, r#type: self.lower_tuple_element(other)? }),
         }
     }
 
