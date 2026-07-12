@@ -379,8 +379,9 @@ impl<M: EmbeddingModel> Server<M> {
 	/// run the background pollers (queue workers + derived-store consumers) for
 	/// every source in the federation.
 	pub async fn serve(self: Arc<Self>) -> ServerResult<()> {
-		http::handlers::health::install_prometheus();
-
+		// The `metrics` recorder behind `/metrics` (fanned out to OTLP) is
+		// installed by `telemetry::init` in `main`, before any request or
+		// poller can emit a metric — no per-serve install here anymore.
 		let router = http::router::router(Arc::clone(&self));
 		let listener = tokio::net::TcpListener::bind(self.config.serving_address)
 			.await

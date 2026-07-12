@@ -14,6 +14,7 @@ _MEMBERS = {
     "sandbox":          "//workspace/util/sandbox:sandbox",
     "cas":              "//workspace/cas:cas",
     "version":          "//workspace/version:version",
+    "telemetry":        "//workspace/telemetry:telemetry",
     # nudox:members
 }
 

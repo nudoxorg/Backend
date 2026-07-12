@@ -108,7 +108,15 @@ impl<M: EmbeddingModel> Indexer<M> {
 				.map(|(path, bytes)| (path.clone(), bytes.clone()))
 				.collect();
 			let forge = Arc::clone(self.server.forge());
+			// `spawn_blocking` moves onto a separate OS thread, where `tracing`'s
+			// thread-local span context does not follow automatically — capture
+			// the current span explicitly and `.entered()` it inside the closure
+			// so the compile step's own events/spans still nest under this job's
+			// `run_indexing_job_on`/`drive_job` span (kept as one connected trace
+			// per OBSERVABILITY-PLAN.md §6, not orphaned on the blocking thread).
+			let span = tracing::Span::current();
 			tokio::task::spawn_blocking(move || {
+				let _entered = span.entered();
 				compile_package(&forge, coordinates, toolchain, files)
 			})
 				.await
