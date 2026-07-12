@@ -7,7 +7,6 @@ third_party(
     git_repos = GIT,
     patches = [
         "patches/terminusdb-schema/remove-rocket.patch",
-        "patches/deno-doc/deno_doc-0.202.0.patch",
         "patches/snix/snix-eval-50b41ae.patch",
         "patches/codemap-diagnostic/dyn-write.patch",
     ],
