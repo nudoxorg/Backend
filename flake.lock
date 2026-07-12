@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "buck2-nix": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1756462063,
+        "narHash": "sha256-FIGJSsPLYmQCVU620vD6t2uVg84G2YEWQzahJO00kVY=",
+        "owner": "tweag",
+        "repo": "buck2.nix",
+        "rev": "038b031b84846101030b9d081445003e82e3be5c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tweag",
+        "repo": "buck2.nix",
+        "rev": "038b031b84846101030b9d081445003e82e3be5c",
+        "type": "github"
+      }
+    },
     "buck2-prelude": {
       "flake": false,
       "locked": {
@@ -17,7 +34,7 @@
         "type": "github"
       }
     },
-    "devshell": {
+    "developmentShell": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
@@ -128,8 +145,9 @@
     },
     "root": {
       "inputs": {
+        "buck2-nix": "buck2-nix",
         "buck2-prelude": "buck2-prelude",
-        "devshell": "devshell",
+        "developmentShell": "developmentShell",
         "fenix": "fenix",
         "git-hooks": "git-hooks",
         "nixos": "nixos",

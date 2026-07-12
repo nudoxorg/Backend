@@ -123,7 +123,6 @@
 !**/BUCK
 !**/TARGETS
 /buck-out/
-/.buckconfig.local
 /.buckcredentials
 /rust-project.json
 /prelude

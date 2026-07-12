@@ -7,9 +7,6 @@ root = .
 prelude = build/prelude-local
 toolchains = build/toolchains
 none = none
-# nix is an external git cell (tweag/buck2.nix). The `none` path is a placeholder —
-# [external_cells] below overrides it with the fetched git content.
-# run `buck2 kill` after changing cells
 nix = none
 
 [cell_aliases]
@@ -19,32 +16,15 @@ fbcode = none
 fbsource = none
 buck = none
 
-# ── Nix toolchain integration (Tweag buck2.nix approach) ──────────────────
-# Hermetic Nix tools via buck2.nix are now the DEFAULT toolchain. The `nix`
-# external cell provides flake.package() + nix_rust_toolchain/nix_cxx_toolchain,
-# wired up in build/toolchains/BUCK. Toggle back to the system (fenix-on-PATH +
-# /usr/bin/clang) toolchains with `-c nix.toolchain=0`.
+# Nix toolchains are the DEFAULT. You can toggle back to the system toolchains with `-c nix.toolchain=0`.
 # See: https://github.com/tweag/buck2.nix and build/toolchains/nix/flake.nix
-# run `buck2 kill` after changing cells
-#
 [external_cells]
   nix = git
-
-[external_cell_nix]
-  git_origin = https://github.com/tweag/buck2.nix.git
-  commit_hash = 038b031b84846101030b9d081445003e82e3be5c
 
 [parser]
 target_platform_detector_spec = target:root//...->prelude//platforms:default \
   target:prelude//...->prelude//platforms:default \
   target:toolchains//...->prelude//platforms:default
-
-# Override java_home here if this doesn't match your machine.
-# NB: the Java source/target level is NOT a buckconfig key — it is set on the
-# javacd_toolchain in build/toolchains/BUCK (the prelude reads it from the
-# toolchain, not [java]).
-[java]
-  java_home = /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
 
 # The vendored javacd_toolchain (needed by java_library, e.g. the Java oracle
 # doclet) transitively depends on a `dex` toolchain, which in turn wants an
@@ -55,3 +35,19 @@ target_platform_detector_spec = target:root//...->prelude//platforms:default \
   sdk_path = build/toolchains/android-sdk-stub
   build_tools_version = stub
   compile_sdk_version = android-stub
+
+
+
+# BEGIN NIX-GENERATED — managed by flake.nix devshell, do not edit
+[external_cell_nix]
+  path = /nix/store/1bb6gi0lcfqfxp8gghjykkzbmcz86lgk-source
+
+[external_cells]
+  nix = path
+
+[go]
+  go_binary = /nix/store/38idfbqyw3p8xaslv6bnrig62pj7qy6i-go-1.26.4/bin/go
+
+[java]
+  java_home = /nix/store/adgxs4i9zn1v0wx3dxg1frqzdccdmdvj-zulu-ca-jdk-21.0.11
+# END NIX-GENERATED
