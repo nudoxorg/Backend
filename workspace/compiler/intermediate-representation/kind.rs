@@ -1,4 +1,4 @@
-use rustc_hash::FxHashSet as HashSet;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +19,20 @@ pub enum Visibility {
 	Package,
 }
 
+/// Deprecation marker for a documented entry (e.g. Rust `#[deprecated]`).
+///
+/// `since` / `note` mirror the `#[deprecated(since = "…", note = "…")]`
+/// payload; both are optional since a bare `#[deprecated]` carries neither, and
+/// some producers can only detect *that* an item is deprecated (not the text).
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Deprecation {
+	/// Version the item was deprecated in, if stated (`since = "1.2.0"`).
+	pub since: Option<String>,
+	/// Human-facing deprecation note, if stated (`note = "use X instead"`).
+	pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Symbol<T> {
@@ -27,6 +41,19 @@ pub struct Symbol<T> {
 	pub aliases:       Option<HashSet<Vec<String>>>,
 	pub visibility:    Visibility,
 	pub documentation: Option<String>,
+
+	/// Deprecation marker, when the source item is deprecated. Optional and
+	/// `#[serde(default)]` so older payloads (and producers that never set it)
+	/// deserialize unchanged.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub deprecation:   Option<Deprecation>,
+
+	/// Resolved intra-doc links: `link text → target path`. Feeds the
+	/// `mentions` edge in linked-data emit. Optional / `#[serde(default)]` so
+	/// producers that do not resolve doc links serialize unchanged.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub doc_links:     Option<HashMap<String, NudoxPath>>,
+
 	pub inner:         T,
 }
 
@@ -38,6 +65,8 @@ impl<T> Symbol<T> {
 			aliases: None,
 			visibility: Visibility::Public,
 			documentation: None,
+			deprecation: None,
+			doc_links: None,
 			inner,
 		}
 	}
@@ -49,6 +78,8 @@ impl<T> Symbol<T> {
 			aliases: self.aliases.clone(),
 			visibility: self.visibility.clone(),
 			documentation: self.documentation.clone(),
+			deprecation: self.deprecation.clone(),
+			doc_links: self.doc_links.clone(),
 			inner,
 		}
 	}
