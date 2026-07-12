@@ -89,7 +89,7 @@ async fn scope_filter_restricts_results() {
     request.filter = Filter {
         ecosystems: nonempty::NonEmpty::from_vec(vec![heart::Language::Rust]),
         packages: nonempty::NonEmpty::from_vec(vec![PackageSelector {
-            name: registry::package::PackageName::new(heart::Language::Rust, "serde")
+            name: server::registry::package::PackageName::new(heart::Language::Rust, "serde")
                 .expect("fixture names are valid"),
             version: None,
         }]),

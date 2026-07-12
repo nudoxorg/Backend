@@ -15,7 +15,7 @@ use axum::{
 };
 use futures::TryStreamExt;
 use heart::{Cursor, Page, Score, Scored, Sourced, Symbol, SymbolId};
-use registry::search::SearchKey;
+use crate::registry::search::SearchKey;
 use runtime::session::{SessionGraph, SessionId, SessionStore};
 
 use runtime::vector::EmbeddingModel;
@@ -60,7 +60,7 @@ pub async fn search_packages<M: EmbeddingModel>(
 	State(server): State<Arc<Server<M>>>,
 	principal: Principal,
 	Json(req): Json<SearchRequestDto>,
-) -> ServerResult<Json<Page<registry::GlobalPackage>>> {
+) -> ServerResult<Json<Page<crate::registry::GlobalPackage>>> {
 	let _cap = server.authorize_read(&principal, "search.packages")?;
 	let limit = req.limit.get() as usize;
 	let query =

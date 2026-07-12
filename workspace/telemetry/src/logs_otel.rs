@@ -6,7 +6,7 @@
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::logs::SdkLoggerProvider;
+use opentelemetry_sdk::logs::{SdkLogger, SdkLoggerProvider};
 
 use crate::config::TelemetryConfig;
 
@@ -32,9 +32,10 @@ pub(crate) fn build_provider(
 /// `tracing::info!`/`warn!`/etc. event flows through this layer *in addition
 /// to* the `fmt` (journal) layer — both read from the same `tracing` event,
 /// no double-instrumentation at call sites.
-pub(crate) fn layer<S>(provider: &SdkLoggerProvider) -> OpenTelemetryTracingBridge<SdkLoggerProvider, S>
-where
-	S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
-{
+///
+/// `OpenTelemetryTracingBridge<P, L>` is generic over the provider `P` and its
+/// associated logger `L`; the subscriber type `S` only appears in the blanket
+/// `Layer<S>` impl and is not a type parameter on the struct itself.
+pub(crate) fn layer(provider: &SdkLoggerProvider) -> OpenTelemetryTracingBridge<SdkLoggerProvider, SdkLogger> {
 	OpenTelemetryTracingBridge::new(provider)
 }

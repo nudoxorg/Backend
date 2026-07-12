@@ -1,0 +1,623 @@
+{
+  "buck": "workspace/compiler/BUCK",
+  "workspace_members": [
+    "cas",
+    "heart",
+    "ir",
+    "registry",
+    "sandbox",
+    "version"
+  ],
+  "third_party": {
+    "anyhow": {
+      "source": "crates.io",
+      "package": "anyhow",
+      "pin_only": false,
+      "version": "1.0.103"
+    },
+    "arborium": {
+      "source": "crates.io",
+      "package": "arborium",
+      "pin_only": false,
+      "version": "2.18.1",
+      "features": [
+        "lang-go",
+        "lang-java",
+        "lang-javascript",
+        "lang-nix",
+        "lang-python",
+        "lang-rust",
+        "lang-tsx",
+        "lang-typescript"
+      ]
+    },
+    "arborium_tree_sitter": {
+      "source": "crates.io",
+      "package": "arborium-tree-sitter",
+      "pin_only": false,
+      "version": "2.18.1",
+      "features": []
+    },
+    "bytes": {
+      "source": "crates.io",
+      "package": "bytes",
+      "pin_only": false,
+      "version": "1.12.0",
+      "features": []
+    },
+    "compact_str": {
+      "source": "crates.io",
+      "package": "compact_str",
+      "pin_only": true,
+      "version": "0.8.2",
+      "features": [
+        "serde"
+      ]
+    },
+    "decimal_rs": {
+      "source": "crates.io",
+      "package": "decimal-rs",
+      "pin_only": true,
+      "version": "0.1.43",
+      "features": [
+        "serde"
+      ]
+    },
+    "deno_error": {
+      "source": "crates.io",
+      "package": "deno_error",
+      "pin_only": true,
+      "version": "0.7.0",
+      "features": [
+        "serde",
+        "serde_json"
+      ]
+    },
+    "flate2": {
+      "source": "crates.io",
+      "package": "flate2",
+      "pin_only": false,
+      "version": "1.1.9"
+    },
+    "get_size2": {
+      "source": "crates.io",
+      "package": "get-size2",
+      "pin_only": true,
+      "version": "0.9.0",
+      "features": [
+        "compact-str",
+        "derive",
+        "hashbrown",
+        "ordermap",
+        "smallvec",
+        "thin-vec"
+      ]
+    },
+    "getrandom-0_2": {
+      "source": "crates.io",
+      "package": "getrandom",
+      "pin_only": true,
+      "version": "0.2.17",
+      "features": [
+        "std"
+      ]
+    },
+    "gix": {
+      "source": "crates.io",
+      "package": "gix",
+      "pin_only": false,
+      "version": "0.85.0",
+      "features": [
+        "blocking-http-transport-reqwest",
+        "blocking-network-client",
+        "sha1",
+        "worktree-mutation"
+      ]
+    },
+    "gix_object": {
+      "source": "crates.io",
+      "package": "gix-object",
+      "pin_only": false,
+      "version": "0.62.0"
+    },
+    "gix_ref": {
+      "source": "crates.io",
+      "package": "gix-ref",
+      "pin_only": false,
+      "version": "0.65.0"
+    },
+    "gix_worktree": {
+      "source": "crates.io",
+      "package": "gix-worktree",
+      "pin_only": false,
+      "version": "0.54.0"
+    },
+    "gix_worktree_state": {
+      "source": "crates.io",
+      "package": "gix-worktree-state",
+      "pin_only": false,
+      "version": "0.32.0"
+    },
+    "insta": {
+      "source": "crates.io",
+      "package": "insta",
+      "pin_only": false,
+      "version": "1.48.0"
+    },
+    "libc": {
+      "source": "crates.io",
+      "package": "libc",
+      "pin_only": false,
+      "version": "0.2.186"
+    },
+    "oxc_allocator": {
+      "source": "git",
+      "package": "oxc-allocator",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_ast": {
+      "source": "git",
+      "package": "oxc-ast",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_ast_visit": {
+      "source": "git",
+      "package": "oxc-ast-visit",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_diagnostics": {
+      "source": "git",
+      "package": "oxc-diagnostics",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_isolated_declarations": {
+      "source": "git",
+      "package": "oxc-isolated-declarations",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_jsdoc": {
+      "source": "git",
+      "package": "oxc-jsdoc",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_parser": {
+      "source": "git",
+      "package": "oxc-parser",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_resolver": {
+      "source": "git",
+      "package": "oxc-resolver",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc-resolver",
+      "rev": "v11.23.0"
+    },
+    "oxc_semantic": {
+      "source": "git",
+      "package": "oxc-semantic",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_span": {
+      "source": "git",
+      "package": "oxc-span",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "oxc_syntax": {
+      "source": "git",
+      "package": "oxc-syntax",
+      "pin_only": false,
+      "git": "https://github.com/oxc-project/oxc",
+      "rev": "69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d"
+    },
+    "par_core": {
+      "source": "crates.io",
+      "package": "par-core",
+      "pin_only": true,
+      "version": "2.0.0",
+      "features": [
+        "rayon"
+      ]
+    },
+    "postcard": {
+      "source": "crates.io",
+      "package": "postcard",
+      "pin_only": false,
+      "version": "1.1.3",
+      "features": [
+        "alloc"
+      ]
+    },
+    "pyrefly": {
+      "source": "git",
+      "package": "pyrefly",
+      "pin_only": false,
+      "git": "https://github.com/facebook/pyrefly",
+      "rev": "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
+    },
+    "pyrefly_build": {
+      "source": "git",
+      "package": "pyrefly-build",
+      "pin_only": false,
+      "git": "https://github.com/facebook/pyrefly",
+      "rev": "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
+    },
+    "pyrefly_config": {
+      "source": "git",
+      "package": "pyrefly-config",
+      "pin_only": false,
+      "git": "https://github.com/facebook/pyrefly",
+      "rev": "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
+    },
+    "pyrefly_python": {
+      "source": "git",
+      "package": "pyrefly-python",
+      "pin_only": false,
+      "git": "https://github.com/facebook/pyrefly",
+      "rev": "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
+    },
+    "pyrefly_types": {
+      "source": "git",
+      "package": "pyrefly-types",
+      "pin_only": false,
+      "git": "https://github.com/facebook/pyrefly",
+      "rev": "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
+    },
+    "pyrefly_util": {
+      "source": "git",
+      "package": "pyrefly-util",
+      "pin_only": false,
+      "git": "https://github.com/facebook/pyrefly",
+      "rev": "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
+    },
+    "ra_ap_base_db": {
+      "source": "crates.io",
+      "package": "ra_ap_base_db",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_cfg": {
+      "source": "crates.io",
+      "package": "ra_ap_cfg",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_hir": {
+      "source": "crates.io",
+      "package": "ra_ap_hir",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_ide_db": {
+      "source": "crates.io",
+      "package": "ra_ap_ide_db",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_load_cargo": {
+      "source": "crates.io",
+      "package": "ra_ap_load-cargo",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_paths": {
+      "source": "crates.io",
+      "package": "ra_ap_paths",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_proc_macro_api": {
+      "source": "crates.io",
+      "package": "ra_ap_proc_macro_api",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_project_model": {
+      "source": "crates.io",
+      "package": "ra_ap_project_model",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_syntax": {
+      "source": "crates.io",
+      "package": "ra_ap_syntax",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "ra_ap_vfs": {
+      "source": "crates.io",
+      "package": "ra_ap_vfs",
+      "pin_only": false,
+      "version": "0.0.341"
+    },
+    "reqwest": {
+      "source": "crates.io",
+      "package": "reqwest",
+      "pin_only": false,
+      "version": "0.12.28"
+    },
+    "rnix": {
+      "source": "crates.io",
+      "package": "rnix",
+      "pin_only": false,
+      "version": "0.11.0"
+    },
+    "rowan": {
+      "source": "crates.io",
+      "package": "rowan",
+      "pin_only": false,
+      "version": "0.15.10"
+    },
+    "ruff_python_ast": {
+      "source": "git",
+      "package": "ruff-python-ast",
+      "pin_only": false,
+      "git": "https://github.com/astral-sh/ruff",
+      "rev": "db5aa0a5f1b92cb91d910bf0866a967554dd94f5"
+    },
+    "rustc_hash": {
+      "source": "crates.io",
+      "package": "rustc-hash",
+      "pin_only": false,
+      "version": "1.1.0",
+      "features": []
+    },
+    "rustix": {
+      "source": "crates.io",
+      "package": "rustix",
+      "pin_only": true,
+      "version": "0.38.44",
+      "features": [
+        "use-libc"
+      ]
+    },
+    "semver": {
+      "source": "crates.io",
+      "package": "semver",
+      "pin_only": false,
+      "version": "1.0.28",
+      "features": []
+    },
+    "serde": {
+      "source": "crates.io",
+      "package": "serde",
+      "pin_only": false,
+      "version": "1.0.228",
+      "features": []
+    },
+    "serde_json": {
+      "source": "crates.io",
+      "package": "serde_json",
+      "pin_only": false,
+      "version": "1.0.150",
+      "features": []
+    },
+    "sha2": {
+      "source": "crates.io",
+      "package": "sha2",
+      "pin_only": false,
+      "version": "0.10.9"
+    },
+    "smol_str": {
+      "source": "crates.io",
+      "package": "smol_str",
+      "pin_only": false,
+      "version": "0.2.2",
+      "features": []
+    },
+    "snix_eval": {
+      "source": "git",
+      "package": "snix-eval",
+      "pin_only": false,
+      "git": "https://github.com/cachix/snix",
+      "rev": "50b41ae7e05b423a7525b4dda53d372a71931506",
+      "features": []
+    },
+    "static_interner": {
+      "source": "crates.io",
+      "package": "static_interner",
+      "pin_only": true,
+      "version": "0.1.3",
+      "features": [
+        "dupe"
+      ]
+    },
+    "syntect": {
+      "source": "crates.io",
+      "package": "syntect",
+      "pin_only": true,
+      "version": "5.0.0",
+      "features": [
+        "default-syntaxes",
+        "default-themes",
+        "dump-create",
+        "dump-load",
+        "html",
+        "parsing",
+        "regex-onig"
+      ]
+    },
+    "tar": {
+      "source": "crates.io",
+      "package": "tar",
+      "pin_only": false,
+      "version": "0.4.46"
+    },
+    "tempfile": {
+      "source": "crates.io",
+      "package": "tempfile",
+      "pin_only": false,
+      "version": "3.27.0",
+      "features": []
+    },
+    "terminusdb_schema": {
+      "source": "git",
+      "package": "terminusdb-schema",
+      "pin_only": false,
+      "git": "https://github.com/ParapluOU/terminusdb-rs",
+      "rev": "4fefb0434f65baa847af5af9fc00175b3e4d827b"
+    },
+    "terminusdb_schema_derive": {
+      "source": "git",
+      "package": "terminusdb-schema-derive",
+      "pin_only": false,
+      "git": "https://github.com/ParapluOU/terminusdb-rs",
+      "rev": "4fefb0434f65baa847af5af9fc00175b3e4d827b"
+    },
+    "thin_vec": {
+      "source": "crates.io",
+      "package": "thin-vec",
+      "pin_only": true,
+      "version": "0.2.18",
+      "features": [
+        "serde"
+      ]
+    },
+    "thiserror": {
+      "source": "crates.io",
+      "package": "thiserror",
+      "pin_only": false,
+      "version": "1.0.69"
+    },
+    "tokio": {
+      "source": "crates.io",
+      "package": "tokio",
+      "pin_only": false,
+      "version": "1.52.3"
+    },
+    "toml": {
+      "source": "crates.io",
+      "package": "toml",
+      "pin_only": false,
+      "version": "0.6.0"
+    },
+    "tracing": {
+      "source": "crates.io",
+      "package": "tracing",
+      "pin_only": false,
+      "version": "0.1.44"
+    },
+    "tracing_subscriber": {
+      "source": "crates.io",
+      "package": "tracing-subscriber",
+      "pin_only": true,
+      "version": "0.3.23",
+      "features": [
+        "alloc",
+        "env-filter",
+        "fmt",
+        "once_cell",
+        "registry",
+        "sharded-slab",
+        "smallvec",
+        "std",
+        "thread_local",
+        "tracing",
+        "tracing-log"
+      ]
+    },
+    "tsz_binder": {
+      "source": "git",
+      "package": "tsz-binder",
+      "pin_only": false,
+      "git": "https://github.com/tsz-org/tsz",
+      "rev": "dff7690987e3183847545feebe9c45ab6b83a006"
+    },
+    "tsz_common": {
+      "source": "git",
+      "package": "tsz-common",
+      "pin_only": false,
+      "git": "https://github.com/tsz-org/tsz",
+      "rev": "dff7690987e3183847545feebe9c45ab6b83a006"
+    },
+    "tsz_core": {
+      "source": "git",
+      "package": "tsz-core",
+      "pin_only": false,
+      "git": "https://github.com/tsz-org/tsz",
+      "rev": "dff7690987e3183847545feebe9c45ab6b83a006"
+    },
+    "tsz_emitter": {
+      "source": "git",
+      "package": "tsz-emitter",
+      "pin_only": false,
+      "git": "https://github.com/tsz-org/tsz",
+      "rev": "dff7690987e3183847545feebe9c45ab6b83a006"
+    },
+    "tsz_parser": {
+      "source": "git",
+      "package": "tsz-parser",
+      "pin_only": false,
+      "git": "https://github.com/tsz-org/tsz",
+      "rev": "dff7690987e3183847545feebe9c45ab6b83a006"
+    },
+    "tsz_solver": {
+      "source": "git",
+      "package": "tsz-solver",
+      "pin_only": false,
+      "git": "https://github.com/tsz-org/tsz",
+      "rev": "dff7690987e3183847545feebe9c45ab6b83a006"
+    },
+    "url": {
+      "source": "crates.io",
+      "package": "url",
+      "pin_only": false,
+      "version": "2.5.8",
+      "features": []
+    },
+    "uv_pep440": {
+      "source": "crates.io",
+      "package": "uv-pep440",
+      "pin_only": false,
+      "version": "0.0.59",
+      "features": [
+        "serde",
+        "version-ranges"
+      ]
+    },
+    "uv_pep508": {
+      "source": "crates.io",
+      "package": "uv-pep508",
+      "pin_only": false,
+      "version": "0.0.59"
+    },
+    "vec1": {
+      "source": "crates.io",
+      "package": "vec1",
+      "pin_only": true,
+      "version": "1.12.1",
+      "features": [
+        "serde"
+      ]
+    },
+    "xxhash_rust": {
+      "source": "crates.io",
+      "package": "xxhash-rust",
+      "pin_only": true,
+      "version": "0.8.15",
+      "features": [
+        "xxh64"
+      ]
+    }
+  },
+  "unresolved_aliases": [
+    "lexical-core"
+  ]
+}

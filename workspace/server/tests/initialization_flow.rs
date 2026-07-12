@@ -143,10 +143,10 @@ async fn usage_is_tracked_for_tiering() {
 
 /// Unique fixture coordinates, collision-free across runs against a shared
 /// database.
-fn fixture_coordinates() -> registry::package::Coordinates {
-    registry::package::Coordinates {
+fn fixture_coordinates() -> server::registry::package::Coordinates {
+    server::registry::package::Coordinates {
         origin: heart::RegistryOrigin::CratesIo,
-        name: registry::package::PackageName::new(
+        name: server::registry::package::PackageName::new(
             heart::Language::Rust,
             &format!("init-flow-{}", uuid::Uuid::new_v4().simple()),
         )

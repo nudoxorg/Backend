@@ -10,6 +10,7 @@ pub mod ecosystem;
 pub mod error;
 pub mod health;
 pub mod identity;
+pub mod package;
 pub mod progress;
 pub mod score;
 pub mod search;
@@ -29,8 +30,8 @@ pub use error::{
     Retryable, StoreError,
 };
 pub use identity::{
-    CargoVersionError, EntryUri, Id, NameError, NpmVersionError, Package, PackageId, PackageVersion,
-    PythonVersionError, RegistryOrigin, SymbolId, VersionError,
+    CargoVersionError, EntryUri, Id, NameError, NpmVersionError, Package, PackageId,
+    PackageCoordinates, PackageVersion, PythonVersionError, RegistryOrigin, SymbolId, VersionError,
 };
 pub use progress::{JobProgress, Percent, Progressive};
 pub use score::{Score, Scored};

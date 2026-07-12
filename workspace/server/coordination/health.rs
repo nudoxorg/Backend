@@ -5,7 +5,7 @@
 //! endpoint and load-balancer consult.
 
 use heart::{BackendKind, PackageId, Probeable, ResolutionState};
-use registry::error::IndexError;
+use crate::registry::error::IndexError;
 
 use runtime::vector::EmbeddingModel;
 use crate::error::ServerResult;
@@ -30,13 +30,13 @@ impl<M: EmbeddingModel> Server<M> {
 		let mut degraded = Vec::new();
 		for sourced in self.federation().in_precedence() {
 			let probes = probe_source(sourced.value).await;
-			match registry::health::aggregate(&probes) {
-				registry::health::Health::Ready => {}
-				registry::health::Health::Degraded(backends) => {
+			match crate::registry::health::aggregate(&probes) {
+				crate::registry::health::Health::Ready => {}
+				crate::registry::health::Health::Degraded(backends) => {
 					// A degraded source degrades the federation.
 					degraded.extend(backends);
 				}
-				registry::health::Health::Down => {
+				crate::registry::health::Health::Down => {
 					if sourced.role == heart::SourceRole::Definitive {
 						// The base is required; without it the server cannot serve.
 						return Health::Down;
@@ -57,7 +57,7 @@ impl<M: EmbeddingModel> Server<M> {
 		match self.global_store().get_state(package).await {
 			Ok(state) => Ok(Some(state)),
 			Err(IndexError::NotFound { .. }) => Ok(None),
-			Err(error) => Err(registry::RegistryError::from(error).into()),
+			Err(error) => Err(crate::registry::RegistryError::from(error).into()),
 		}
 	}
 }

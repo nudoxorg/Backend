@@ -54,6 +54,11 @@ pub struct ServerConfiguration {
 	#[serde(default)]
 	pub deployment: Deployment,
 
+	/// The HTTP endpoint of the compiler daemon.
+	/// Defaults to `http://127.0.0.1:9090`.
+	#[serde(default = "defaults::compiler_endpoint")]
+	pub compiler_endpoint: url::Url,
+
 	/// Directory that contains the metadata heuristics data files:
 	/// `tag-synonyms.csv`, `specific-keywords.txt`, and `bland-keywords.txt`.
 	///
@@ -244,6 +249,7 @@ impl Default for ServerConfiguration {
 			role: Role::default(),
 			deployment: Deployment::default(),
 			metadata_data_dir: None,
+			compiler_endpoint: defaults::compiler_endpoint(),
 		}
 	}
 }
@@ -472,6 +478,7 @@ mod defaults {
 	pub(super) fn job_deadline() -> std::time::Duration { std::time::Duration::from_secs(10 * 60) }
 	/// Graceful-drain bound for in-flight jobs at shutdown.
 	pub(super) fn drain_deadline() -> std::time::Duration { std::time::Duration::from_secs(30) }
+	pub(super) fn compiler_endpoint() -> url::Url { super::parse_static("http://127.0.0.1:8080") }
 }
 
 /// Why configuration failed to resolve.

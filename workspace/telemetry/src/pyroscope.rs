@@ -31,7 +31,7 @@ impl PyroscopeHandle {
 
 		let backend = pprof_backend(PprofConfig::new().sample_rate(100));
 
-		let build = PyroscopeAgent::builder(endpoint, config.service_name.clone())
+		let build = PyroscopeAgent::builder(endpoint, config.service_name.as_str())
 			.backend(backend)
 			.tags(vec![
 				("environment", config.environment.as_str()),

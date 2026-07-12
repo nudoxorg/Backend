@@ -70,7 +70,7 @@ pub async fn sync_package<M: EmbeddingModel>(
 	// recorded at the `Stored` transition.
 	let freshness = match &state {
 		ResolutionState::Stored { hash } => {
-			let recomputed = Indexer::new(Arc::clone(&server)).content_hash(package).await?;
+			let recomputed = Indexer::new(Arc::clone(&server), server.compiler_client().clone()).content_hash(package).await?;
 			Some(Freshness::compare(*hash, recomputed))
 		}
 		_ => None,
@@ -80,7 +80,7 @@ pub async fn sync_package<M: EmbeddingModel>(
 	let enqueued = matches!(decision, InitializationDecision::Enqueue);
 	if enqueued {
 		// Idempotent: the queue enforces one live job per package.
-		server.queue().enqueue(package).await.map_err(registry::RegistryError::from)?;
+		server.queue().enqueue(package).await.map_err(crate::registry::RegistryError::from)?;
 	}
 	tracing::info!(?freshness, ?decision, "sync decision");
 	Ok(Json(Initialized { package, state, enqueued }))

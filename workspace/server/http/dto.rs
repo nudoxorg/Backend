@@ -6,7 +6,7 @@ use std::sync::{Arc, LazyLock};
 
 use arc_swap::ArcSwap;
 use heart::{Language, PackageVersion, RegistryOrigin};
-use registry::package::{Coordinates as PackageCoordinates, PackageName};
+use crate::registry::package::{Coordinates as PackageCoordinates, PackageName};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use strum::IntoEnumIterator;

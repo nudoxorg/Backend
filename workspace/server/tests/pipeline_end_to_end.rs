@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use futures::TryStreamExt;
 use heart::{PackageId, ResolutionState, Scored, Symbol};
-use registry::coordination::{OutboxSeq, SinkKind};
+use server::registry::coordination::{OutboxSeq, SinkKind};
 use server::Server;
 
 /// The tiny, dependency-free fixture crate the pipeline chews through.
@@ -197,9 +197,9 @@ async fn track_and_await_stored(server: &Arc<Server<common::TestModel>>) -> Pack
 
 /// Ensure the fixture package is tracked (the queue worker picks it up).
 async fn ensure(server: &Arc<Server<common::TestModel>>) -> PackageId {
-    let coordinates = registry::package::Coordinates {
+    let coordinates = server::registry::package::Coordinates {
         origin: heart::RegistryOrigin::CratesIo,
-        name: registry::package::PackageName::new(heart::Language::Rust, FIXTURE_NAME)
+        name: server::registry::package::PackageName::new(heart::Language::Rust, FIXTURE_NAME)
             .expect("fixture names are valid"),
         version: heart::PackageVersion::try_from((heart::Language::Rust, FIXTURE_VERSION))
             .expect("fixture versions are valid"),

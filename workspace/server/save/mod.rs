@@ -10,8 +10,8 @@
 pub mod blobs;
 
 use heart::{ContentHash, PackageId, ResolutionState};
-use registry::RegistryError;
-use registry::blob::BlobManifest;
+use crate::registry::RegistryError;
+use crate::registry::blob::BlobManifest;
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;

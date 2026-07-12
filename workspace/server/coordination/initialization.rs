@@ -2,8 +2,8 @@
 //! caller serves against it.
 
 use heart::{Edition, Freshness, Language, PackageId, ResolutionState, Toolchain};
-use registry::identity::PackageCoordinates;
-use registry::{GlobalPackage, Package, RegistryError, error::IndexError};
+use crate::registry::identity::PackageCoordinates;
+use crate::registry::{GlobalPackage, Package, RegistryError, error::IndexError};
 use serde::{Deserialize, Serialize};
 
 use runtime::vector::EmbeddingModel;

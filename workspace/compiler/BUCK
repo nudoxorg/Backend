@@ -4,7 +4,7 @@ rust_crate(
     name = "compiler",
     srcs = native.glob(
         ["**/*.rs"],
-        exclude = ["intermediate-representation/**", "tests/**", "bin/**"],
+        exclude = ["tests/**", "bin/**"],
     ),
     resources = {
         "go-oracle": "//workspace/compiler/compile/go/oracle:oracle",
@@ -13,7 +13,7 @@ rust_crate(
     deps = deps([
         member("heart"),
         member("ir"),
-        member("registry"),
+        member("protocol"),
         member("sandbox"),
         member("cas"),
         member("version"),
@@ -134,6 +134,28 @@ rust_bin(
         member("sandbox"),
         crate("serde_json"),
         crate("libc"),
+    ]),
+)
+
+rust_bin(
+    name = "compiler-daemon",
+    srcs = ["bin/compiler_daemon.rs"],
+    crate_root = "bin/compiler_daemon.rs",
+    deps = deps([
+        target(":compiler"),
+        member("ir"),
+        member("protocol"),
+        member("heart"),
+        member("sandbox"),
+        member("cas"),
+        crate("axum"),
+        crate("tokio"),
+        crate("serde_json"),
+        crate("tempfile"),
+        crate("anyhow"),
+        crate("tracing"),
+        crate("tracing_subscriber", features = ["alloc", "env-filter", "fmt", "once_cell", "registry", "sharded-slab", "smallvec", "std", "thread_local", "tracing", "tracing-log"]),
+        crate("which"),
     ]),
 )
 

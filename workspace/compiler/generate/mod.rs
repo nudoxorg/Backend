@@ -27,7 +27,7 @@ pub mod tar;
 use std::path::PathBuf;
 
 use heart::{ContentHash, JobKey, Toolchain};
-use registry::identity::PackageCoordinates;
+use heart::package::Coordinates as PackageCoordinates;
 use ir::entry::Index;
 use ir::syntax::OccurrenceSet;
 

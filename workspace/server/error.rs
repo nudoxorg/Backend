@@ -19,15 +19,15 @@ pub enum ServerError {
 
     /// The registry tier failed.
     #[error(transparent)]
-    Registry(#[from] registry::RegistryError),
+    Registry(#[from] crate::registry::RegistryError),
 
     /// The runtime serving tier failed.
     #[error(transparent)]
     Runtime(#[from] runtime::RuntimeError),
 
-    /// The compiler generation pipeline (surface IR / CST / archive) failed.
+    /// The compiler daemon call failed (transport or remote rejection).
     #[error(transparent)]
-    Compile(#[from] compiler::error::GenerateError),
+    Compile(#[from] crate::compiler_client::CompilerClientError),
 
     /// The request was malformed or violated an invariant (→ 4xx).
     #[error(transparent)]

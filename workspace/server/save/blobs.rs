@@ -34,9 +34,9 @@
 //! read-only stored-blob gauge — enumeration without reclamation.
 
 use heart::{ContentHash, PackageId, ResolutionState};
-use registry::{RegistryError, StoreError};
-use registry::blob::ReferenceSet;
-use registry::coordination::OutboxSeq;
+use crate::registry::{RegistryError, StoreError};
+use crate::registry::blob::ReferenceSet;
+use crate::registry::coordination::OutboxSeq;
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;

@@ -5,7 +5,8 @@ _TP = "//build/third-party"
 
 _MEMBERS = {
     "heart":            "//workspace/heart:heart",
-    "ir":               "//workspace/compiler/intermediate-representation:ir",
+    "ir":               "//workspace/ir:ir",
+    "protocol":         "//workspace/protocol:protocol",
     "compiler":         "//workspace/compiler:compiler",
     "registry":         "//workspace/registry:registry",
     "runtime":          "//workspace/runtime:runtime",

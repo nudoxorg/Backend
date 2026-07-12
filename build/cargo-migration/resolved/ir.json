@@ -1,0 +1,43 @@
+{
+  "buck": "workspace/compiler/intermediate-representation/BUCK",
+  "workspace_members": [],
+  "third_party": {
+    "arborium_tree_sitter": {
+      "source": "crates.io",
+      "package": "arborium-tree-sitter",
+      "pin_only": false,
+      "version": "2.18.1"
+    },
+    "facet": {
+      "source": "crates.io",
+      "package": "facet",
+      "pin_only": false,
+      "version": "0.42.0"
+    },
+    "rustc_hash": {
+      "source": "crates.io",
+      "package": "rustc-hash",
+      "pin_only": false,
+      "version": "1.1.0"
+    },
+    "serde": {
+      "source": "crates.io",
+      "package": "serde",
+      "pin_only": false,
+      "version": "1.0.228"
+    },
+    "thiserror": {
+      "source": "crates.io",
+      "package": "thiserror",
+      "pin_only": false,
+      "version": "1.0.69"
+    },
+    "yoke": {
+      "source": "crates.io",
+      "package": "yoke",
+      "pin_only": false,
+      "version": "0.8.3"
+    }
+  },
+  "unresolved_aliases": []
+}

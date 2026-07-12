@@ -9,3 +9,7 @@ pub use package::{
     PythonVersionError, RegistryOrigin, VersionError,
 };
 pub use symbol::{EntryUri, SymbolId};
+
+/// Re-export so `heart::identity::PackageCoordinates` resolves (mirrors the
+/// alias used in `registry::identity`).
+pub use crate::package::Coordinates as PackageCoordinates;

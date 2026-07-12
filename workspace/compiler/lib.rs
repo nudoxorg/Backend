@@ -15,3 +15,4 @@ pub mod compile;
 pub use crate::compile as languages;
 pub mod render;
 pub mod treesitter;
+pub mod daemon;

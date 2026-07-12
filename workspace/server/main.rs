@@ -40,10 +40,9 @@ async fn main() -> anyhow::Result<()> {
 	let telemetry_config = telemetry::TelemetryConfig::resolve(service_version, "buck2-or-cargo");
 	let _guard = telemetry::init(&telemetry_config)?;
 
-	// The isolation boot gate, per-profile ceilings, and worker warmup all live
-	// inside `ForgeRuntime::assemble` now (built by `Server::assemble`): the cage
-	// is selected and verified there, overrides come from config, and the worker
-	// pools are warmed as the runtime is constructed. No process globals.
+	// The compile plane now runs as a separate daemon; `Server::assemble` only
+	// constructs a `CompilerClient` pointing at `config.compiler_endpoint`. No
+	// in-process cage, CAS, or worker pools.
 
 	// Access control for hosted deployments happens at the fronting proxy (see
 	// `heart::access`); in-process, everyone authenticated to reach us may act.

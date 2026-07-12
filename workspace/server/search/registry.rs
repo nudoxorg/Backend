@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use futures::Stream;
 use heart::{ContentHash, Cursor, Scored};
-use registry::GlobalPackage;
-use registry::search::{
+use crate::registry::GlobalPackage;
+use crate::registry::search::{
 	SearchKey, RegistryQuery, collect_ranked_hits,
 	tantivy::{PackageIndex, SyncWatermark},
 };
@@ -27,7 +27,7 @@ impl PackageSearchIndex {
 	/// Open (or create) the replica-local index at `directory`, hydrating from
 	/// the given postgres pool.
 	pub fn open(directory: &Path, pool: sqlx::PgPool) -> ServerResult<Self> {
-		let index = PackageIndex::open(directory).map_err(registry::RegistryError::from)?;
+		let index = PackageIndex::open(directory).map_err(crate::registry::RegistryError::from)?;
 		Ok(Self { index: tokio::sync::Mutex::new(index), pool })
 	}
 
@@ -35,7 +35,7 @@ impl PackageSearchIndex {
 	/// advancing the watermark. Idempotent and resumable; the sync poller's tick.
 	pub async fn synchronize(&self) -> ServerResult<SyncWatermark> {
 		let mut index = self.index.lock().await;
-		index.sync_from(&self.pool).await.map_err(|error| registry::RegistryError::from(error).into())
+		index.sync_from(&self.pool).await.map_err(|error| crate::registry::RegistryError::from(error).into())
 	}
 
 	/// One materialized page of scored packages for a free-text query,
@@ -47,7 +47,7 @@ impl PackageSearchIndex {
 	/// name bonus + diversity pass + representative pull-up + downloads bubble)
 	/// runs **once** over the whole over-fetched candidate set, producing a single
 	/// total order; each hit carries a strictly-descending rank score derived from
-	/// its ordinal in that order (see [`registry::search::collect_ranked_hits`]).
+	/// its ordinal in that order (see [`crate::registry::search::collect_ranked_hits`]).
 	/// Every page — first or resumed — is a slice of that one order, so the
 	/// `(score, id)` keyset cursor advances monotonically with no scoring seam at
 	/// the page boundary. There is no first-page/subsequent-page split.
@@ -69,7 +69,7 @@ impl PackageSearchIndex {
 
 		let hits = collect_ranked_hits(&index, &query)
 			.await
-			.map_err(registry::RegistryError::from)?;
+			.map_err(crate::registry::RegistryError::from)?;
 
 		// Resume strictly after the cursor key under (score desc, id asc).
 		let snapshot = ContentHash::of_bytes(&index.watermark().position.to_le_bytes());
@@ -137,7 +137,7 @@ impl RegistrySearchSurface {
 #[cfg(test)]
 mod tests {
 	use heart::{Edition, Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain};
-	use registry::{
+	use crate::registry::{
 		GlobalPackage, Package,
 		metadata::SearchFacets,
 		package::{Coordinates, PackageName},
@@ -219,7 +219,7 @@ mod tests {
 			after: None,
 		};
 
-		let page = registry::search::search_page(&index, &query)
+		let page = crate::registry::search::search_page(&index, &query)
 			.await
 			.expect("query executes");
 
@@ -287,7 +287,7 @@ mod tests {
 			after: None,
 		};
 
-		let page = registry::search::search_page(&index, &query)
+		let page = crate::registry::search::search_page(&index, &query)
 			.await
 			.expect("query executes");
 
@@ -316,7 +316,7 @@ mod tests {
 			after: None,
 		};
 
-		let page = registry::search::search_page(&index, &query)
+		let page = crate::registry::search::search_page(&index, &query)
 			.await
 			.expect("full ranking pipeline must not panic");
 

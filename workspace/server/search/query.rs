@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 
 use heart::{Cursor, Language, PackageVersion, Score};
 use nonempty::NonEmpty;
-use registry::package::PackageName;
+use crate::registry::package::PackageName;
 use serde::{Deserialize, Serialize};
 
 pub use crate::error::QueryError;

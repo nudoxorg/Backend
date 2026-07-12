@@ -1,0 +1,189 @@
+{
+  "buck": "workspace/runtime/BUCK",
+  "workspace_members": [
+    "heart",
+    "ir"
+  ],
+  "third_party": {
+    "anyhow": {
+      "source": "crates.io",
+      "package": "anyhow",
+      "pin_only": false,
+      "version": "1.0.103"
+    },
+    "bytes": {
+      "source": "crates.io",
+      "package": "bytes",
+      "pin_only": false,
+      "version": "1.12.0"
+    },
+    "futures-0_3": {
+      "source": "crates.io",
+      "package": "futures",
+      "pin_only": false,
+      "version": "0.3.32",
+      "features": [
+        "alloc",
+        "async-await",
+        "std"
+      ]
+    },
+    "futures_util": {
+      "source": "crates.io",
+      "package": "futures-util",
+      "pin_only": false,
+      "version": "0.3.32"
+    },
+    "governor": {
+      "source": "crates.io",
+      "package": "governor",
+      "pin_only": false,
+      "version": "0.7.0"
+    },
+    "libsqlite3_sys": {
+      "source": "crates.io",
+      "package": "libsqlite3-sys",
+      "pin_only": false,
+      "version": "0.30.1",
+      "features": [
+        "bundled"
+      ]
+    },
+    "moka": {
+      "source": "crates.io",
+      "package": "moka",
+      "pin_only": false,
+      "version": "0.12.15",
+      "features": [
+        "future",
+        "sync"
+      ]
+    },
+    "nonempty": {
+      "source": "crates.io",
+      "package": "nonempty",
+      "pin_only": false,
+      "version": "0.11.0"
+    },
+    "nutype": {
+      "source": "crates.io",
+      "package": "nutype",
+      "pin_only": false,
+      "version": "0.6.2"
+    },
+    "proptest": {
+      "source": "crates.io",
+      "package": "proptest",
+      "pin_only": false,
+      "version": "1.11.0"
+    },
+    "qdrant_client": {
+      "source": "crates.io",
+      "package": "qdrant-client",
+      "pin_only": false,
+      "version": "1.18.0"
+    },
+    "reqwest": {
+      "source": "crates.io",
+      "package": "reqwest",
+      "pin_only": false,
+      "version": "0.12.28"
+    },
+    "secrecy": {
+      "source": "crates.io",
+      "package": "secrecy",
+      "pin_only": false,
+      "version": "0.10.3"
+    },
+    "serde": {
+      "source": "crates.io",
+      "package": "serde",
+      "pin_only": false,
+      "version": "1.0.228"
+    },
+    "serde_json": {
+      "source": "crates.io",
+      "package": "serde_json",
+      "pin_only": false,
+      "version": "1.0.150",
+      "features": []
+    },
+    "smol_str": {
+      "source": "crates.io",
+      "package": "smol_str",
+      "pin_only": false,
+      "version": "0.2.2",
+      "features": []
+    },
+    "sqlx": {
+      "source": "crates.io",
+      "package": "sqlx",
+      "pin_only": false,
+      "version": "0.8.6"
+    },
+    "strum": {
+      "source": "crates.io",
+      "package": "strum",
+      "pin_only": false,
+      "version": "0.26.3"
+    },
+    "tantivy": {
+      "source": "crates.io",
+      "package": "tantivy",
+      "pin_only": false,
+      "version": "0.22.1",
+      "features": []
+    },
+    "tempfile": {
+      "source": "crates.io",
+      "package": "tempfile",
+      "pin_only": false,
+      "version": "3.27.0"
+    },
+    "thiserror": {
+      "source": "crates.io",
+      "package": "thiserror",
+      "pin_only": false,
+      "version": "1.0.69"
+    },
+    "tokio": {
+      "source": "crates.io",
+      "package": "tokio",
+      "pin_only": false,
+      "version": "1.52.3",
+      "features": []
+    },
+    "tokio_stream": {
+      "source": "crates.io",
+      "package": "tokio-stream",
+      "pin_only": false,
+      "version": "0.1.18"
+    },
+    "tower": {
+      "source": "crates.io",
+      "package": "tower",
+      "pin_only": false,
+      "version": "0.4.13"
+    },
+    "tracing": {
+      "source": "crates.io",
+      "package": "tracing",
+      "pin_only": false,
+      "version": "0.1.44",
+      "features": []
+    },
+    "url": {
+      "source": "crates.io",
+      "package": "url",
+      "pin_only": false,
+      "version": "2.5.8"
+    },
+    "uuid": {
+      "source": "crates.io",
+      "package": "uuid",
+      "pin_only": false,
+      "version": "1.23.4"
+    }
+  },
+  "unresolved_aliases": []
+}

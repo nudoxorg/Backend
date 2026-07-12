@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use registry::coordination::{OutboxEntry, SinkKind};
+use crate::registry::coordination::{OutboxEntry, SinkKind};
 use runtime::vector::{
 	EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose, SymbolPoint,
 };
@@ -43,7 +43,8 @@ pub(crate) async fn queue_worker<M: EmbeddingModel>(
 	server: Arc<Server<M>>,
 	drain: sandbox::CancelToken,
 ) {
-	let indexer = Indexer::new(server);
+	let compiler = server.compiler_client().clone();
+	let indexer = Indexer::new(Arc::clone(&server), compiler);
 	loop {
 		match indexer.run_worker_until(&drain).await {
 			// A clean return means a drain was requested: stop supervising.
@@ -118,19 +119,19 @@ async fn consume_once<M: EmbeddingModel>(
 	stores: &SourceStores<M>,
 	sink: SinkKind,
 ) -> ServerResult<usize> {
-	let watermark = stores.outbox.read_watermark(sink).await.map_err(registry::RegistryError::from)?;
+	let watermark = stores.outbox.read_watermark(sink).await.map_err(crate::registry::RegistryError::from)?;
 	let entries = stores
 		.outbox
 		.read_since(sink, watermark, OUTBOX_BATCH)
 		.await
-		.map_err(registry::RegistryError::from)?;
+		.map_err(crate::registry::RegistryError::from)?;
 	for entry in &entries {
 		materialize(server, stores, entry).await?;
 		stores
 			.outbox
 			.advance_watermark(sink, entry.id)
 			.await
-			.map_err(registry::RegistryError::from)?;
+			.map_err(crate::registry::RegistryError::from)?;
 	}
 	Ok(entries.len())
 }
@@ -164,7 +165,7 @@ async fn materialize<M: EmbeddingModel>(
 		.global_store
 		.symbols_for(entry.package)
 		.await
-		.map_err(registry::RegistryError::from)?;
+		.map_err(crate::registry::RegistryError::from)?;
 
 	match entry.kind {
 		SinkKind::Text => materialize_text(stores, &symbols)?,
@@ -373,7 +374,7 @@ pub(crate) async fn text_index_poller<M: EmbeddingModel>(server: Arc<Server<M>>)
 			let lag = async {
 				let head = outbox.head(SinkKind::Text).await?;
 				let consumed = outbox.read_watermark(SinkKind::Text).await?;
-				Ok::<i64, registry::error::OutboxError>((head.0 - consumed.0).max(0))
+				Ok::<i64, crate::registry::error::OutboxError>((head.0 - consumed.0).max(0))
 			};
 			match lag.await {
 				Ok(pending) => {

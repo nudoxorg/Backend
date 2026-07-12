@@ -11,7 +11,7 @@ mod common;
 use std::sync::Arc;
 
 use heart::ResolutionState;
-use registry::coordination::{OutboxSeq, SinkKind};
+use server::registry::coordination::{OutboxSeq, SinkKind};
 use server::coordination::indexing::Indexer;
 
 /// The tiny, dependency-free fixture crate one job indexes.
@@ -129,9 +129,9 @@ async fn one_parse_fans_out_to_all_stores() {
 async fn ensured_job(
     server: &Arc<server::Server<common::TestModel>>,
 ) -> (heart::PackageId, Indexer<common::TestModel>) {
-    let coordinates = registry::package::Coordinates {
+    let coordinates = server::registry::package::Coordinates {
         origin: heart::RegistryOrigin::CratesIo,
-        name: registry::package::PackageName::new(heart::Language::Rust, FIXTURE_NAME)
+        name: server::registry::package::PackageName::new(heart::Language::Rust, FIXTURE_NAME)
             .expect("fixture names are valid"),
         version: heart::PackageVersion::try_from((heart::Language::Rust, FIXTURE_VERSION))
             .expect("fixture versions are valid"),
@@ -141,5 +141,8 @@ async fn ensured_job(
         .ensure_initialized(&cap, &coordinates)
         .await
         .expect("the fixture package ensures cleanly");
-    (initialized.package, Indexer::new(Arc::clone(server)))
+    let compiler_client = server::compiler_client::CompilerClient::new(
+        "http://127.0.0.1:8080".parse().expect("dummy URL is valid"),
+    );
+    (initialized.package, Indexer::new(Arc::clone(server), compiler_client))
 }

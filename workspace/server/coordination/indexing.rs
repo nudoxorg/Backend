@@ -21,12 +21,13 @@ use heart::{
 	ContentHash, FailureKind, JobProgress, PackageId, Percent, Phase, Progressive,
 	ResolutionState, Retryable,
 };
-use registry::identity::PackageCoordinates;
-use registry::ingest::{ArchiveFormat, EntryAllowlist, ExtractionLimits, ingest_archive};
-use registry::queue::LeasedJob;
-use registry::{RegistryError, error::ResolveError};
+use crate::registry::identity::PackageCoordinates;
+use crate::registry::ingest::{ArchiveFormat, EntryAllowlist, ExtractionLimits, ingest_archive};
+use crate::registry::queue::LeasedJob;
+use crate::registry::{RegistryError, error::ResolveError};
 use runtime::vector::EmbeddingModel;
 
+use crate::compiler_client::CompilerClient;
 use crate::error::{BadRequestReason, InternalError, ServerError, ServerResult};
 use crate::{Server, SourceStores};
 
@@ -39,6 +40,9 @@ const MIN_HEARTBEAT: Duration = Duration::from_secs(5);
 pub struct Indexer<M: EmbeddingModel> {
 	server: Arc<Server<M>>,
 
+	/// The HTTP client for the compiler daemon.
+	compiler: CompilerClient,
+
 	/// The archive-acquisition client.
 	acquisition: reqwest::Client,
 
@@ -47,9 +51,14 @@ pub struct Indexer<M: EmbeddingModel> {
 }
 
 impl<M: EmbeddingModel> Indexer<M> {
-	/// Build an indexer over the assembled server.
-	pub fn new(server: Arc<Server<M>>) -> Self {
-		Self { server, acquisition: reqwest::Client::new(), fractions: Mutex::new(HashMap::new()) }
+	/// Build an indexer over the assembled server and compiler client.
+	pub fn new(server: Arc<Server<M>>, compiler: CompilerClient) -> Self {
+		Self {
+			server,
+			compiler,
+			acquisition: reqwest::Client::new(),
+			fractions: Mutex::new(HashMap::new()),
+		}
 	}
 
 	/// The server this indexer drives.
@@ -59,7 +68,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// 1. **Acquire** the source archive (via the resolved origin);
 	/// 2. **Extract** it through the sanitizing extractor into a content-addressed
 	///    blob (bounded memory, spawn_blocking);
-	/// 3. **Compile** source → IR (spawn_blocking; drives the compiler);
+	/// 3. **Compile** source → IR (HTTP call to the compiler daemon);
 	/// 4. **Emit** the manifest to the object store and append fan-out intents to
 	///    the outbox — all transactional with the `Stored { hash }` transition.
 	///
@@ -97,39 +106,40 @@ impl<M: EmbeddingModel> Indexer<M> {
 
 		// ── Compile ────────────────────────────────────────────────────────────
 		self.advance(stores, package, &progressing(Phase::Compiling)).await?;
-		// Materialize the sanitized tree, run the language producers → IR + CST
-		// pipeline on a blocking thread, then attach the serialized sections.
-		// CPU-bound and deterministic; never on the async runtime.
-		let compile = {
-			let coordinates = coordinates.clone();
-			let toolchain = builder.toolchain().clone();
-			let files: Vec<(smol_str::SmolStr, bytes::Bytes)> = builder
-				.source_files()
-				.map(|(path, bytes)| (path.clone(), bytes.clone()))
-				.collect();
-			let forge = Arc::clone(self.server.forge());
-			// `spawn_blocking` moves onto a separate OS thread, where `tracing`'s
-			// thread-local span context does not follow automatically — capture
-			// the current span explicitly and `.entered()` it inside the closure
-			// so the compile step's own events/spans still nest under this job's
-			// `run_indexing_job_on`/`drive_job` span (kept as one connected trace
-			// per OBSERVABILITY-PLAN.md §6, not orphaned on the blocking thread).
-			let span = tracing::Span::current();
-			tokio::task::spawn_blocking(move || {
-				let _entered = span.entered();
-				compile_package(&forge, coordinates, toolchain, files)
+		let files: Vec<protocol::FileBytes> = builder
+			.source_files()
+			.map(|(path, bytes)| protocol::FileBytes {
+				path: path.to_string(),
+				bytes: bytes.to_vec(),
 			})
-				.await
-				.map_err(|join| {
-					ServerError::Internal(InternalError::Other {
-						message: format!("compile task join failed: {join}"),
-					})
-				})??
+			.collect();
+		let req = protocol::CompileRequest {
+			coordinates: coordinates.clone(),
+			toolchain: builder.toolchain().clone(),
+			files,
 		};
-		builder.set_ir(compile.ir_bytes).map_err(RegistryError::from)?;
+		let compile_resp = self
+			.compiler
+			.compile(req)
+			.await
+			.map_err(ServerError::Compile)?;
+
+		let (ir_bytes, references, identifiers) = match compile_resp {
+			protocol::CompileResponse::Ok { surface, references, identifiers } => {
+				let ir_bytes = bytes::Bytes::from(surface);
+				let ref_set = wire_references_to_reference_set(references)?;
+				(ir_bytes, ref_set, identifiers)
+			}
+			protocol::CompileResponse::Err { kind, message } => {
+				return Err(ServerError::Compile(
+					crate::compiler_client::CompilerClientError::RemoteError { kind, message },
+				));
+			}
+		};
+		builder.set_ir(ir_bytes).map_err(crate::registry::RegistryError::from)?;
 		builder
-			.set_references(&compile.references)
-			.map_err(RegistryError::from)?;
+			.set_references(&references)
+			.map_err(crate::registry::RegistryError::from)?;
 
 		// ── Emit ───────────────────────────────────────────────────────────────
 		self.advance(stores, package, &progressing(Phase::Emitting)).await?;
@@ -142,9 +152,9 @@ impl<M: EmbeddingModel> Indexer<M> {
 		// Non-fatal by construction: a missing/unparseable manifest yields `None`
 		// and ingest proceeds — search metadata must never fail a store.
 		let facets =
-			extract_facets(&coordinates, &manifest, &sections, &compile.identifiers, self.server.heuristics());
+			extract_facets(&coordinates, &manifest, &sections, &identifiers, self.server.heuristics());
 
-		let emitted = registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
+		let emitted = crate::registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
 			.await
 			.map_err(RegistryError::from)?;
 
@@ -298,14 +308,14 @@ impl<M: EmbeddingModel> Indexer<M> {
 
 	/// Beat this job's lease every [`heartbeat_interval`](Self::heartbeat_interval)
 	/// for as long as it runs. Returns only when the lease can no longer be
-	/// renewed — i.e. it lapsed and was reclaimed ([`registry::QueueError::LeaseLost`])
+	/// renewed — i.e. it lapsed and was reclaimed ([`crate::registry::QueueError::LeaseLost`])
 	/// — signaling the driver to abandon the orphaned run. Transient renew faults
 	/// (a blip against postgres) are logged and retried on the next beat rather
 	/// than abandoning a still-valid claim. Never returns while the lease holds,
 	/// so [`drive_job`](Self::drive_job) can `select!` it against the job future.
 	///
 	/// Takes a `&LeasedJob` witness: the heartbeat can only keep alive a claim
-	/// that THIS worker holds (enforced by [`registry::queue::Queue::renew_lease`]).
+	/// that THIS worker holds (enforced by [`crate::registry::queue::Queue::renew_lease`]).
 	async fn beat_lease(&self, stores: &SourceStores<M>, leased: &LeasedJob) {
 		let interval = self.heartbeat_interval();
 		let lease = self.job_lease();
@@ -316,7 +326,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 				Ok(()) => {
 					tracing::trace!(%package, "job lease renewed");
 				}
-				Err(registry::QueueError::LeaseLost { .. }) => {
+				Err(crate::registry::QueueError::LeaseLost { .. }) => {
 					tracing::warn!(%package, "job lease lost to reclaimer; abandoning run");
 					return;
 				}
@@ -538,6 +548,35 @@ pub fn classify_failure(error: &ServerError) -> FailureKind {
 	}
 }
 
+/// Convert a list of [`protocol::WireFile`] references into the registry's
+/// [`crate::registry::blob::ReferenceSet`].
+fn wire_references_to_reference_set(
+	wire_files: Vec<protocol::WireFile>,
+) -> ServerResult<crate::registry::blob::ReferenceSet> {
+	use crate::registry::blob::{FileReferences, ReferenceSet};
+	let by_file = wire_files
+		.into_iter()
+		.map(|wf| {
+			let references = wf
+				.references
+				.into_iter()
+				.map(|wr| {
+					wr.into_reference().map_err(|_e| {
+						ServerError::Internal(crate::error::InternalError::Other {
+							message: "wire reference decode failed".to_owned(),
+						})
+					})
+				})
+				.collect::<Result<Vec<_>, _>>()?;
+			Ok(FileReferences {
+				path: smol_str::SmolStr::from(wf.path),
+				references,
+			})
+		})
+		.collect::<ServerResult<Vec<_>>>()?;
+	Ok(ReferenceSet { by_file })
+}
+
 /// A fresh `Progressing` view for a phase, at zero fraction.
 fn progressing(phase: Phase) -> JobProgress {
 	JobProgress { state: ResolutionState::Progressing(phase), phase_fraction: zero_percent() }
@@ -546,136 +585,6 @@ fn progressing(phase: Phase) -> JobProgress {
 /// Zero percent (provably valid).
 fn zero_percent() -> Percent {
 	Percent::try_new(Percent::ZERO).expect("zero is a valid percentage")
-}
-
-/// Output of one compile phase: the blob sections plus the public identifiers
-/// harvested for search facets.
-struct CompileOutput {
-	ir_bytes: bytes::Bytes,
-	references: registry::blob::ReferenceSet,
-	identifiers: Vec<String>,
-}
-
-/// Materialize the staged source files into a temporary tree, run
-/// [`compiler::generate`], and produce the IR + reference sections the blob
-/// layer stores. Pure sync work — call from `spawn_blocking`.
-fn compile_package(
-	forge: &crate::forge::ForgeRuntime,
-	coordinates: PackageCoordinates,
-	toolchain: heart::Toolchain,
-	files: Vec<(smol_str::SmolStr, bytes::Bytes)>,
-) -> ServerResult<CompileOutput> {
-	let temp = tempfile::tempdir().map_err(|source| {
-		ServerError::Internal(InternalError::MaterializeForCompile { source })
-	})?;
-	for (path, bytes) in &files {
-		let dest = temp.path().join(path.as_str());
-		if let Some(parent) = dest.parent() {
-			std::fs::create_dir_all(parent).map_err(|source| {
-				ServerError::Internal(InternalError::MaterializeForCompile { source })
-			})?;
-		}
-		std::fs::write(&dest, bytes).map_err(|source| {
-			ServerError::Internal(InternalError::MaterializeForCompile { source })
-		})?;
-	}
-
-	// crates.io / npm / PyPI tarballs wrap the package in a single top-level
-	// directory (`either-1.15.0/…`). Peel it so the language producers see
-	// their expected package root (Cargo.toml / package.json / …).
-	let root = peel_single_top_level(temp.path()).map_err(|source| {
-		ServerError::Internal(InternalError::MaterializeForCompile { source })
-	})?;
-
-	let input = compiler::generate::PackageInput {
-		coordinates: coordinates.clone(),
-		toolchain,
-		root,
-	};
-	let generated = compiler::generate::generate_with(forge, &input)?;
-
-	let ir_bytes = serde_json::to_vec(&generated.surface)
-		.map(bytes::Bytes::from)
-		.map_err(|source| ServerError::Internal(InternalError::IrSerializationFailed { source }))?;
-
-	let references = reference_set_from_cst(&generated.cst);
-	let identifiers = identifiers_from_index(&generated.surface);
-
-	Ok(CompileOutput { ir_bytes, references, identifiers })
-}
-
-/// If `root` contains exactly one child directory and no files, return that
-/// child (the package root inside a registry tarball). Otherwise return `root`.
-fn peel_single_top_level(root: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
-	let mut only_dir: Option<std::path::PathBuf> = None;
-	let mut file_count = 0usize;
-	for entry in std::fs::read_dir(root)? {
-		let entry = entry?;
-		let file_type = entry.file_type()?;
-		if file_type.is_dir() {
-			if entry.file_name() == ".git" {
-				continue;
-			}
-			if only_dir.is_some() {
-				// Multiple top-level dirs → keep the extract root.
-				return Ok(root.to_path_buf());
-			}
-			only_dir = Some(entry.path());
-		} else if file_type.is_file() {
-			file_count += 1;
-		}
-	}
-	Ok(match (only_dir, file_count) {
-		(Some(dir), 0) => dir,
-		_ => root.to_path_buf(),
-	})
-}
-
-/// Project a [`compiler::generate::CstSet`] into the registry's serializable
-/// [`registry::blob::ReferenceSet`].
-fn reference_set_from_cst(cst: &compiler::generate::CstSet) -> registry::blob::ReferenceSet {
-	use registry::blob::{FileReferences, ReferenceSet};
-	let by_file = cst
-		.files
-		.iter()
-		.map(|file| FileReferences {
-			path: smol_str::SmolStr::from(file.path.to_string_lossy().as_ref()),
-			references: file.references.clone(),
-		})
-		.collect();
-	ReferenceSet { by_file }
-}
-
-/// Harvest public symbol names from the surface IR for search facets.
-fn identifiers_from_index(index: &ir::entry::Index) -> Vec<String> {
-	use ir::kind::{Entry, Visibility};
-	let mut names: Vec<String> = index
-		.entries_by_path
-		.values()
-		.filter_map(|entry| {
-			let (name, visibility) = match entry {
-				Entry::Module(s) => (&s.name, &s.visibility),
-				Entry::RecordType(s) => (&s.name, &s.visibility),
-				Entry::Info(s) => (&s.name, &s.visibility),
-				Entry::UnionType(s) => (&s.name, &s.visibility),
-				Entry::TraitDef(s) => (&s.name, &s.visibility),
-				Entry::TraitImpl(s) => (&s.name, &s.visibility),
-				Entry::SumType(s) => (&s.name, &s.visibility),
-				Entry::Function(s) => (&s.name, &s.visibility),
-				Entry::TypeAlias(s) => (&s.name, &s.visibility),
-				Entry::Constant(s) => (&s.name, &s.visibility),
-				Entry::Variable(s) => (&s.name, &s.visibility),
-				Entry::Macro(s) => (&s.name, &s.visibility),
-				Entry::PrimitiveType(s) => (&s.name, &s.visibility),
-				Entry::Field(s) => (&s.name, &s.visibility),
-				Entry::Event(s) => (&s.name, &s.visibility),
-			};
-			matches!(visibility, Visibility::Public).then(|| name.clone())
-		})
-		.collect();
-	names.sort();
-	names.dedup();
-	names
 }
 
 /// A registry lookup/transport fault, carried with its typed source.
@@ -701,13 +610,13 @@ fn ensure_trailing_slash(url: &url::Url) -> String {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Facet extraction — turn the emitted snapshot's manifest + README into the
-// searchable [`registry::metadata::SearchFacets`] that ride the stored record.
+// searchable [`crate::registry::metadata::SearchFacets`] that ride the stored record.
 // ─────────────────────────────────────────────────────────────────────────────
 
-use registry::blob::{BlobManifest, FileEntry};
-use registry::blob::creation::PendingSection;
-use registry::metadata::SearchFacets;
-use registry::metadata::rich::{self, ExtractionInput};
+use crate::registry::blob::{BlobManifest, FileEntry};
+use crate::registry::blob::creation::PendingSection;
+use crate::registry::metadata::SearchFacets;
+use crate::registry::metadata::rich::{self, ExtractionInput};
 
 /// The owned inputs a `Cargo.toml` yields for [`rich::extract`]. Separated from
 /// the borrowing [`ExtractionInput`] so the parse is a *pure*, unit-testable
