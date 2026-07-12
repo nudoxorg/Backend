@@ -37,7 +37,24 @@ pub struct Symbol {
 }
 
 /// What kind of code entity a symbol represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
+///
+/// The `Display` token for each variant is its PascalCase name (e.g. `"Function"`).
+/// `EnumString` matches the same tokens so `from_str` is the exact inverse of
+/// `to_string()` — no manual match table needed.  `VariantNames::VARIANTS` is
+/// the static slice the schema CHECK constraint is derived from.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::Display,
+    strum::EnumString,
+    strum::VariantNames,
+)]
 pub enum SymbolKind {
     Function,
     Type,

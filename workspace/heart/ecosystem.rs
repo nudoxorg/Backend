@@ -4,6 +4,10 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 /// The world the code belongs to.
+///
+/// The wire token for each variant is its lowercase name (`"rust"`, `"typescript"`,
+/// etc.), matching the postgres `CHECK` domain.  `VariantNames::VARIANTS` is
+/// the single source the schema CHECK constraint is derived from.
 #[derive(
 	Debug,
 	Clone,
@@ -21,6 +25,7 @@ use serde::{Deserialize, Serialize};
 	strum::EnumIter,
 	strum::AsRefStr,
 	strum::IntoStaticStr,
+	strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]
 #[serde(rename_all = "lowercase")]

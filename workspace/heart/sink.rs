@@ -14,6 +14,10 @@ use tower::{
 use crate::error::Retryable;
 
 /// Which derived store a record fans out to.
+///
+/// The wire token for each variant is its lowercase name (`"vector"`, `"graph"`,
+/// `"text"`), matching the postgres `CHECK` domain.  `VariantNames::VARIANTS`
+/// is used to derive that domain from one source.
 #[derive(
     Debug,
     Clone,
@@ -26,7 +30,9 @@ use crate::error::Retryable;
     strum::Display,
     strum::EnumString,
     strum::EnumIter,
+    strum::VariantNames,
 )]
+#[strum(serialize_all = "lowercase")]
 pub enum DerivedStore {
     Vector,
     Graph,
