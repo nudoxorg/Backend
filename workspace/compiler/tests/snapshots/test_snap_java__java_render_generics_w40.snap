@@ -1,0 +1,79 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/**
+ * A generic container holding a single value.
+ * 
+ * Type parameters:
+ * - `T` — the type of the contained value
+ */
+public class Box<T> {
+    private T value;
+}
+
+// ---
+
+/**
+ * Returns the value wrapped in an Optional.
+ */
+public Optional<T> asOptional();
+
+// ---
+
+/**
+ * Returns the contained value.
+ */
+public T get();
+
+// ---
+
+/**
+ * Wraps each element of the list in a Box.
+ * 
+ * Type parameters:
+ * - `E` — the element type
+ * 
+ * Declared: `static`
+ */
+public <
+    E
+> List<E> wrapAll(List<E> list);
+
+// ---
+
+/**
+ * An ordered pair of two values where both types must be `Comparable`.
+ * 
+ * Type parameters:
+ * - `T` — the type of both elements; must be `Comparable` to itself
+ */
+public class SortedPair<T> {
+    private T first;
+    private T second;
+}
+
+// ---
+
+/**
+ * Computes the distance between the two elements using `Comparable#compareTo`.
+ */
+public int distance();
+
+// ---
+
+/**
+ * Returns the smaller element.
+ */
+public T getFirst();
+
+// ---
+
+/**
+ * Returns the larger element.
+ */
+public T getSecond();

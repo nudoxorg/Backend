@@ -1,0 +1,59 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/**
+ * Utility class for common mathematical operations.
+ * 
+ * All methods are static; this class cannot be instantiated.
+ * 
+ * Since: 1.0
+ * 
+ * Authors: example-author
+ */
+public class MathUtils {}
+
+// ---
+
+/**
+ * Clamps `value` to the range `[min, max]`.
+ * 
+ * Declared: `static`
+ */
+public int clamp(int value, int min, int max);
+
+// ---
+
+/**
+ * Returns the factorial of `n`.
+ * 
+ * Uses iterative computation to avoid stack overflow.
+ * 
+ * Throws (undeclared):
+ * - `java.lang.IllegalArgumentException` — if `n` is negative
+ * 
+ * Declared: `static`
+ */
+public long factorial(int n);
+
+// ---
+
+/**
+ * Returns `true` if `n` is a prime number.
+ * 
+ * Declared: `static`
+ */
+public boolean isPrime(long n);
+
+// ---
+
+/**
+ * Joins an array of integers into a comma-separated string.
+ * 
+ * Declared: `static`
+ */
+public String joinInts(int[] values);

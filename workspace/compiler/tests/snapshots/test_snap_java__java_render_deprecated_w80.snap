@@ -1,0 +1,36 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/**
+ * A class with deprecated members, to exercise `@Deprecated` lowering.
+ * 
+ * Deprecated: Use `ModernApi` instead.
+ * 
+ * Annotations: `@java.lang.Deprecated`
+ */
+public class LegacyApi {
+    public int oLDMAX;
+}
+
+// ---
+
+/**
+ * The replacement method (not deprecated).
+ */
+public String newProcess(String input);
+
+// ---
+
+/**
+ * A deprecated method.
+ * 
+ * Deprecated: Use `newProcess(String)` instead.
+ * 
+ * Annotations: `@java.lang.Deprecated`
+ */
+public String oldProcess(String input);

@@ -1,0 +1,312 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: sorted
+---
+{
+    "com.example": Module(
+        Symbol {
+            name: "com.example",
+            path: Local(
+                "com.example",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Visibility",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "com.example::Visibility": RecordType(
+        Symbol {
+            name: "Visibility",
+            path: Local(
+                "com.example::Visibility",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Exercises all four Java visibility modifiers.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Visibility",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "publicField",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "Public field — visible everywhere.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "protectedField",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Protected,
+                            ),
+                            documentation: Some(
+                                "Protected field — visible to subclasses and same package.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "packageField",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Package,
+                            ),
+                            documentation: Some(
+                                "Package-private field — visible only in the same package.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "privateField",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "Private field — visible only within this class.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: None,
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Visibility.publicMethod",
+                        ),
+                        Local(
+                            "com.example::Visibility.protectedMethod",
+                        ),
+                        Local(
+                            "com.example::Visibility.packageMethod",
+                        ),
+                        Local(
+                            "com.example::Visibility.privateMethod",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Visibility.packageMethod": Function(
+        Symbol {
+            name: "packageMethod",
+            path: Local(
+                "com.example::Visibility.packageMethod",
+            ),
+            aliases: None,
+            visibility: Package,
+            documentation: Some(
+                "Package-private method.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Visibility.privateMethod": Function(
+        Symbol {
+            name: "privateMethod",
+            path: Local(
+                "com.example::Visibility.privateMethod",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "Private method.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Visibility.protectedMethod": Function(
+        Symbol {
+            name: "protectedMethod",
+            path: Local(
+                "com.example::Visibility.protectedMethod",
+            ),
+            aliases: None,
+            visibility: Protected,
+            documentation: Some(
+                "Protected method.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Visibility.publicMethod": Function(
+        Symbol {
+            name: "publicMethod",
+            path: Local(
+                "com.example::Visibility.publicMethod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Public method.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

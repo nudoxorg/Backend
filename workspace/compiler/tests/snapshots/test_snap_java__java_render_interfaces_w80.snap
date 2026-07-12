@@ -1,0 +1,30 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/**
+ * Anything that can be drawn to a canvas.
+ * 
+ * Implementors must supply `#draw(String)` and `#resize(double)`.
+ *  The `#clear(String)` method has a default no-op implementation.
+ */
+public interface Drawable {
+    void draw(String canvas);
+    void resize(double factor);
+    double area();
+    void clear(String canvas);
+}
+
+// ---
+
+/**
+ * Objects that can be serialized to and from bytes.
+ */
+public interface Serializable {
+    byte[] toBytes();
+    Serializable fromBytes(byte[] data);
+}

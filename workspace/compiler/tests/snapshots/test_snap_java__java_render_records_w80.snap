@@ -1,0 +1,114 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/**
+ * A named, labeled 2D point — a record with a generic label type.
+ * 
+ * Type parameters:
+ * - `L` — the label type
+ */
+public class NamedPoint<L> {
+    public L label;
+    public double x;
+    public double y;
+}
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public boolean equals(Object o);
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public int hashCode();
+
+// ---
+
+public L label();
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public String toString();
+
+// ---
+
+/**
+ * Returns a new point translated by the given deltas.
+ */
+public NamedPoint<L> translate(double dx, double dy);
+
+// ---
+
+public double x();
+
+// ---
+
+public double y();
+
+// ---
+
+/**
+ * An immutable 2D point (Java 16+ record).
+ */
+public class Point {
+    public double x;
+    public double y;
+}
+
+// ---
+
+/**
+ * Returns the Euclidean distance from this point to another.
+ */
+public double distanceTo(Point other);
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public boolean equals(Object o);
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public int hashCode();
+
+// ---
+
+/**
+ * Returns the origin (0, 0).
+ * 
+ * Declared: `static`
+ */
+public Point origin();
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public String toString();
+
+// ---
+
+public double x();
+
+// ---
+
+public double y();

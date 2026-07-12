@@ -1,0 +1,403 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: sorted
+---
+{
+    "com.example": Module(
+        Symbol {
+            name: "com.example",
+            path: Local(
+                "com.example",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "com.example::MathUtils",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "com.example::MathUtils": RecordType(
+        Symbol {
+            name: "MathUtils",
+            path: Local(
+                "com.example::MathUtils",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Utility class for common mathematical operations.\n\nAll methods are static; this class cannot be instantiated.\n\nSince: 1.0\n\nAuthors: example-author",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "MathUtils",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: None,
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::MathUtils.factorial",
+                        ),
+                        Local(
+                            "com.example::MathUtils.clamp",
+                        ),
+                        Local(
+                            "com.example::MathUtils.isPrime",
+                        ),
+                        Local(
+                            "com.example::MathUtils.joinInts",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::MathUtils.clamp": Function(
+        Symbol {
+            name: "clamp",
+            path: Local(
+                "com.example::MathUtils.clamp",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Clamps `value` to the range `[min, max]`.\n\nDeclared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the value to clamp",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "min",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the lower bound (inclusive)",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "max",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the upper bound (inclusive)",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "`value` if in range, otherwise the nearest bound",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::MathUtils.factorial": Function(
+        Symbol {
+            name: "factorial",
+            path: Local(
+                "com.example::MathUtils.factorial",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the factorial of `n`.\n\nUses iterative computation to avoid stack overflow.\n\nThrows (undeclared):\n- `java.lang.IllegalArgumentException` — if `n` is negative\n\nDeclared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "n",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the input; must be `>= 0`",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "`n!`",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::MathUtils.isPrime": Function(
+        Symbol {
+            name: "isPrime",
+            path: Local(
+                "com.example::MathUtils.isPrime",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns `true` if `n` is a prime number.\n\nDeclared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "n",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the candidate (may be negative)",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Bool,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "`true` iff `n` is prime",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::MathUtils.joinInts": Function(
+        Symbol {
+            name: "joinInts",
+            path: Local(
+                "com.example::MathUtils.joinInts",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Joins an array of integers into a comma-separated string.\n\nDeclared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "values",
+                                type: Some(
+                                    Slice(
+                                        Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Variadic,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: Some(
+                                    "zero or more integers to join",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "a comma-separated string, or `\"\"` if no values given",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: Some(
+                    [
+                        Variadic,
+                    ],
+                ),
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}
