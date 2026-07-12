@@ -52,4 +52,13 @@ dotenvy = "0.15"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid"] }
 tokio-test = "0.4"
 insta = { version = "1", features = ["json", "redactions"] }
+# Perf phases 4/5/7 — staged centrally so parallel work doesn't fight over manifests.
+rayon = "1"
+futures = "0.3"
+simd-json = "0.14"
+memmap2 = "0.9"
+wide = "0.7"
+im = "15"
+triomphe = "0.1"
+smol_str = "0.3"
 
