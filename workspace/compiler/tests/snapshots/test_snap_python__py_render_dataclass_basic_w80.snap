@@ -1,0 +1,13 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+@dataclass
+class Point:
+    x: int
+    y: int
+    label: str

@@ -1,0 +1,87 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: sorted
+---
+{
+    "snap_enum.py": Module(
+        Symbol {
+            name: "snap_enum",
+            path: Local(
+                "snap_enum.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: None,
+            },
+        },
+    ),
+    "snap_enum::Direction": SumType(
+        Symbol {
+            name: "Direction",
+            path: Local(
+                "snap_enum::Direction",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: [
+                SumVariant {
+                    name: "NORTH",
+                    data: None,
+                    documentation: None,
+                },
+                SumVariant {
+                    name: "SOUTH",
+                    data: None,
+                    documentation: None,
+                },
+                SumVariant {
+                    name: "EAST",
+                    data: None,
+                    documentation: None,
+                },
+                SumVariant {
+                    name: "WEST",
+                    data: None,
+                    documentation: None,
+                },
+            ],
+        },
+    ),
+    "snap_enum::Status": SumType(
+        Symbol {
+            name: "Status",
+            path: Local(
+                "snap_enum::Status",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: [
+                SumVariant {
+                    name: "PENDING",
+                    data: None,
+                    documentation: None,
+                },
+                SumVariant {
+                    name: "ACTIVE",
+                    data: None,
+                    documentation: None,
+                },
+                SumVariant {
+                    name: "INACTIVE",
+                    data: None,
+                    documentation: None,
+                },
+            ],
+        },
+    ),
+}

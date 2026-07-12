@@ -1,0 +1,23 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+def configure(
+    kwargs: int,
+) -> NoneType: ...
+
+# ---
+
+def log(messages: str) -> NoneType: ...
+
+# ---
+
+def mixed(
+    first: int,
+    rest: str,
+    options: bool,
+) -> str: ...

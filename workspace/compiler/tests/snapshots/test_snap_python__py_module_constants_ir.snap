@@ -1,0 +1,78 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: sorted
+---
+{
+    "snap_constants.py": Module(
+        Symbol {
+            name: "snap_constants",
+            path: Local(
+                "snap_constants.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: None,
+            },
+        },
+    ),
+    "snap_constants::DEFAULT_NAME": Constant(
+        Symbol {
+            name: "DEFAULT_NAME",
+            path: Local(
+                "snap_constants::DEFAULT_NAME",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "snap_constants::ENABLED": Constant(
+        Symbol {
+            name: "ENABLED",
+            path: Local(
+                "snap_constants::ENABLED",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "snap_constants::MAX_SIZE": Constant(
+        Symbol {
+            name: "MAX_SIZE",
+            path: Local(
+                "snap_constants::MAX_SIZE",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "snap_constants::PI": Constant(
+        Symbol {
+            name: "PI",
+            path: Local(
+                "snap_constants::PI",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+}

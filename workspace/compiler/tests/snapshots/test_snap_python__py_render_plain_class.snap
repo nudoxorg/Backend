@@ -1,0 +1,14 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+"""
+A simple counter.
+"""
+@dataclass
+class Counter:
+    count: int

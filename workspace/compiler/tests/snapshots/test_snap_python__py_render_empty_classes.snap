@@ -1,0 +1,18 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+@dataclass
+class Empty: ...
+
+# ---
+
+"""
+This class has only a docstring.
+"""
+@dataclass
+class JustDoc: ...

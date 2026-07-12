@@ -1,0 +1,24 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+"""
+Module docstring.
+"""
+// <unrendered module>
+
+# ---
+
+"""
+A well-documented class.
+"""
+@dataclass
+class Documented:
+    value: int
+
+# ---
+
+"""
+Check if x converts to y.
+"""
+def documented_func(x: int, y: str) -> bool: ...

@@ -1,0 +1,266 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: sorted
+---
+{
+    "snap_nested_types.py": Module(
+        Symbol {
+            name: "snap_nested_types",
+            path: Local(
+                "snap_nested_types.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: None,
+            },
+        },
+    ),
+    "snap_nested_types::LinkedList": RecordType(
+        Symbol {
+            name: "LinkedList",
+            path: Local(
+                "snap_nested_types::LinkedList",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "LinkedList",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "head",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.int",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "tail",
+                            ),
+                            type: Some(
+                                Union(
+                                    [
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "snap_nested_types.LinkedList",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "builtins.NoneType",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_nested_types::Optional": Constant(
+        Symbol {
+            name: "Optional",
+            path: Local(
+                "snap_nested_types::Optional",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "snap_nested_types::TreeNode": RecordType(
+        Symbol {
+            name: "TreeNode",
+            path: Local(
+                "snap_nested_types::TreeNode",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "TreeNode",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "value",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.int",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "left",
+                            ),
+                            type: Some(
+                                Union(
+                                    [
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "snap_nested_types.TreeNode",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "builtins.NoneType",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "right",
+                            ),
+                            type: Some(
+                                Union(
+                                    [
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "snap_nested_types.TreeNode",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "builtins.NoneType",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_nested_types::annotations": Constant(
+        Symbol {
+            name: "annotations",
+            path: Local(
+                "snap_nested_types::annotations",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+}
