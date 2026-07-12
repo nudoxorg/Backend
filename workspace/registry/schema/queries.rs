@@ -291,6 +291,37 @@ pub mod index {
 			)
 			.build_sqlx(PG)
 	}
+
+	/// `SELECT s.id, s.package_id, s.fq_name, s.kind, p.language FROM symbols s
+	/// JOIN packages p ON p.id = s.package_id WHERE s.package_id = $1` — read a
+	/// single package's serving-projection symbols back out.
+	///
+	/// The symmetric read of [`upsert_symbol`]: it returns exactly the columns
+	/// upsert wrote (id, package, fq_name, kind), joined with the owning
+	/// package's `language` so a full [`heart::Symbol`] (which carries the
+	/// ecosystem) can be rebuilt. Same shape as the text poller's `SYMBOLS_SQL`,
+	/// scoped to one package rather than a batch.
+	pub fn symbols_for(package: PackageId) -> (String, SqlxValues) {
+		Query::select()
+			.columns([
+				(Symbols::Table, Symbols::Id),
+				(Symbols::Table, Symbols::PackageId),
+				(Symbols::Table, Symbols::FqName),
+				(Symbols::Table, Symbols::Kind),
+			])
+			.column((Packages::Table, Packages::Language))
+			.from(Symbols::Table)
+			.inner_join(
+				Packages::Table,
+				Expr::col((Packages::Table, Packages::Id))
+					.equals((Symbols::Table, Symbols::PackageId)),
+			)
+			.and_where(
+				Expr::col((Symbols::Table, Symbols::PackageId))
+					.eq(codec::package_id_to_uuid(package)),
+			)
+			.build_sqlx(PG)
+	}
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -449,6 +480,21 @@ pub mod queue {
 			.build_sqlx(PG)
 	}
 
+	/// `UPDATE jobs SET lease_until = $next WHERE id = $1 AND <lease still held>
+	/// RETURNING id` — the lease heartbeat: push a live claim's deadline forward
+	/// without touching `attempts` or `state`. Guarded on the lease still being
+	/// held so a worker whose lease already lapsed and was reclaimed cannot
+	/// resurrect its claim; an empty `RETURNING` is `LeaseLost`.
+	pub fn renew_lease(job_id: i64, next_lease_until: DateTime<Utc>) -> (String, SqlxValues) {
+		Query::update()
+			.table(Jobs::Table)
+			.value(Jobs::LeaseUntil, next_lease_until)
+			.and_where(Expr::col(Jobs::Id).eq(job_id))
+			.and_where(lease_still_held())
+			.returning_col(Jobs::Id)
+			.build_sqlx(PG)
+	}
+
 	/// `UPDATE jobs SET lease_until = NULL WHERE lease_until < now()` — return
 	/// jobs whose owning worker died mid-flight to the runnable set. Run by the
 	/// periodic sweeper.
@@ -591,6 +637,44 @@ pub mod outbox {
 			.build_sqlx(PG)
 	}
 
+	/// A stable, collision-resistant advisory-lock key for one sink. Two-int form
+	/// (`pg_try_advisory_lock(classid, objid)`): a fixed namespace `classid`
+	/// scopes these locks away from any other advisory-lock user in the database,
+	/// and the sink's iteration index is the `objid`. Using the ordinal (not a
+	/// hash) keeps the key set tiny and human-auditable.
+	pub const ADVISORY_LOCK_CLASS_OUTBOX_SINK: i32 = 0x0B0B_0001u32 as i32;
+
+	fn sink_lock_objid(kind: SinkKind) -> i32 {
+		// Position in the canonical `SinkKind` iteration order — small, stable.
+		SinkKind::iter().position(|k| k == kind).unwrap_or(0) as i32
+	}
+
+	/// `SELECT pg_try_advisory_lock($class, $objid)` — a **non-blocking** attempt
+	/// to claim the session-scoped advisory lock for one sink. Returns a single
+	/// `bool` row: `true` iff this session now holds the lock (no other replica is
+	/// draining this sink). The lock is held on the *connection* until
+	/// [`advisory_unlock`] runs (or the connection drops), so the caller must run
+	/// the lock, the drain, and the unlock on one pinned connection.
+	pub fn try_advisory_lock(kind: SinkKind) -> (String, SqlxValues) {
+		let sql = "SELECT pg_try_advisory_lock($1, $2)".to_string();
+		let values = SqlxValues(sea_query::Values(vec![
+			sea_query::Value::Int(Some(ADVISORY_LOCK_CLASS_OUTBOX_SINK)),
+			sea_query::Value::Int(Some(sink_lock_objid(kind))),
+		]));
+		(sql, values)
+	}
+
+	/// `SELECT pg_advisory_unlock($class, $objid)` — release the per-sink lock
+	/// claimed by [`try_advisory_lock`] on this same connection.
+	pub fn advisory_unlock(kind: SinkKind) -> (String, SqlxValues) {
+		let sql = "SELECT pg_advisory_unlock($1, $2)".to_string();
+		let values = SqlxValues(sea_query::Values(vec![
+			sea_query::Value::Int(Some(ADVISORY_LOCK_CLASS_OUTBOX_SINK)),
+			sea_query::Value::Int(Some(sink_lock_objid(kind))),
+		]));
+		(sql, values)
+	}
+
 	/// `SELECT last_seq FROM sink_watermarks WHERE sink_kind = $1` — read a
 	/// consumer's current cursor (0 if never advanced / absent).
 	pub fn read_watermark(kind: SinkKind) -> (String, SqlxValues) {
@@ -599,6 +683,68 @@ pub mod outbox {
 			.from(SinkWatermarks::Table)
 			.and_where(Expr::col(SinkWatermarks::SinkKind).eq(codec::sink_kind_token(kind)))
 			.build_sqlx(PG)
+	}
+
+	/// The number of distinct sinks the fan-out records an intent for — one per
+	/// [`SinkKind`]. The GC's safety hinges on this: an outbox row is only
+	/// reclaimable once **every** sink has consumed it, so a min-watermark taken
+	/// over fewer than this many watermark rows is *not* a safe floor (a sink
+	/// that has never advanced has no row yet and must be treated as `0`).
+	pub fn sink_count() -> usize {
+		SinkKind::iter().count()
+	}
+
+	/// The conservative outbox-GC floor: the minimum durable watermark across
+	/// **all** sinks, but only once every sink has a watermark row — otherwise the
+	/// floor is `0` (a sink that has never advanced could still need any row, so
+	/// nothing is reclaimable yet).
+	///
+	/// ```sql
+	/// SELECT CASE WHEN count(*) = $sink_count THEN COALESCE(min(last_seq),0) ELSE 0 END
+	/// FROM sink_watermarks
+	/// ```
+	///
+	/// The `CASE` collapses to `0` whenever a sink is missing its row, so a caller
+	/// can delete `outbox` rows with `seq <= floor` and never outrun a sink that
+	/// has not yet been created. Returns a single `bigint` row.
+	pub fn min_consumed_watermark() -> (String, SqlxValues) {
+		// count(*) over the watermark table, compared to the sink count; when they
+		// match, every sink has acked and min(last_seq) is a true floor.
+		let sql = format!(
+			"SELECT CASE WHEN count(*) = {n} THEN COALESCE(min(last_seq), 0) ELSE 0 END \
+			 FROM sink_watermarks",
+			n = sink_count()
+		);
+		(sql, SqlxValues(sea_query::Values(vec![])))
+	}
+
+	/// `DELETE FROM outbox WHERE seq <= $1` — reclaim outbox rows that every sink
+	/// has already consumed. The caller passes the floor computed by
+	/// [`min_consumed_watermark`]; a floor of `0` deletes nothing (`seq` is a
+	/// `bigserial` starting at 1), so an un-acked sink is never outrun.
+	pub fn delete_consumed_below(floor: i64) -> (String, SqlxValues) {
+		Query::delete()
+			.from_table(Outbox::Table)
+			.and_where(Expr::col(Outbox::Seq).lte(floor))
+			.build_sqlx(PG)
+	}
+
+	/// The pure decision the `CASE` in [`min_consumed_watermark`] encodes, factored
+	/// out so it can be unit-tested without postgres: the safe GC floor given the
+	/// per-sink watermarks that currently have rows.
+	///
+	/// - Fewer watermark rows than sinks ⇒ some sink has never acked ⇒ floor `0`
+	///   (reclaim nothing).
+	/// - Otherwise ⇒ the minimum watermark across all sinks (every row at or below
+	///   it is consumed by every sink).
+	///
+	/// `total_sinks` is [`sink_count`]; `watermarks` are the `last_seq` values of
+	/// the sinks that have a `sink_watermarks` row.
+	pub fn gc_floor(total_sinks: usize, watermarks: &[i64]) -> i64 {
+		if watermarks.len() < total_sinks {
+			return 0;
+		}
+		watermarks.iter().copied().min().unwrap_or(0).max(0)
 	}
 }
 
@@ -698,4 +844,37 @@ pub mod persist {
 #[allow(dead_code)]
 fn _select_all() -> SelectStatement {
 	Query::select().column(Asterisk).from(Packages::Table).take()
+}
+
+#[cfg(test)]
+mod gc_tests {
+	use super::outbox::{gc_floor, sink_count};
+
+	#[test]
+	fn floor_is_zero_when_a_sink_has_no_watermark_row() {
+		let n = sink_count();
+		assert!(n >= 2, "there is more than one derived sink");
+		// One sink missing its row: nothing is reclaimable, however high the others.
+		let missing_one = vec![100i64; n - 1];
+		assert_eq!(gc_floor(n, &missing_one), 0);
+		// No rows at all: floor 0.
+		assert_eq!(gc_floor(n, &[]), 0);
+	}
+
+	#[test]
+	fn floor_is_min_watermark_when_every_sink_acked() {
+		let n = sink_count();
+		let mut wms: Vec<i64> = (0..n as i64).map(|i| 10 + i).collect();
+		// The min is the safe floor: every row <= it is consumed by all sinks.
+		assert_eq!(gc_floor(n, &wms), 10);
+		wms[0] = 3;
+		assert_eq!(gc_floor(n, &wms), 3);
+	}
+
+	#[test]
+	fn floor_never_goes_negative() {
+		let n = sink_count();
+		let wms = vec![-5i64; n];
+		assert_eq!(gc_floor(n, &wms), 0, "a negative watermark clamps to 0");
+	}
 }
