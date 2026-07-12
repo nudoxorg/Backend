@@ -5,7 +5,21 @@ use deno_doc::{Declaration, DeclarationDef, class::ClassConstructorDef, function
 use ir::{function::{Attribute, Function}, generics::ConstExpr, parameter::{LiteralParameter, Parameter, ParameterAttribute}, pipeline::{output_parameters_from_type, parameter_link_key}, protocols::ReceiverKind};
 use rustc_hash::FxHashMap as HashMap;
 
-use super::{Result, TsDocParser, empty_to_none, is_function_declaration};
+use deno_doc::class::ClassConstructorDef;
+use deno_doc::ts_type::{CallSignatureDef, IndexSignatureDef, MethodDef};
+use deno_doc::{Declaration, DeclarationDef, params::{ParamDef, ParamPatternDef}};
+use deno_doc::function::FunctionDef;
+use ir::entry::NudoxPath;
+use ir::function::{Attribute, Function};
+use ir::kind::Entry;
+use ir::parameter::{Parameter, ParameterAttribute};
+use ir::generics::ConstExpr;
+use ir::protocols::ReceiverKind;
+use ir::pipeline::{output_parameters_from_type, parameter_link_key};
+
+use super::{error::Parse, Result, TsDocParser, TsParseContext, TsParseState};
+use super::{is_function_declaration, pick_primary_declaration};
+use crate::empty_to_none;
 
 impl TsDocParser {
 	pub(super) fn function_overloads(

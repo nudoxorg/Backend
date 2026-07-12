@@ -241,7 +241,16 @@ pub fn seal<C: ForgeContext>(ctx: &C, cmd: IsolatedCommand) -> SealedCommand {
 	let sealer = Sealer::new();
 	let toolchains = ctx.toolchains();
 
-	let mut env = Env::empty().set("PATH", "/usr/bin:/bin:/nix/var/nix/profiles/default/bin");
+	// Fixed hermetic PATH, optionally prefixed with dev-only toolchain dirs
+	// (`NUDOX_TOOLCHAIN_PATH`, resolved in `ToolchainSet::from_env`) so hosts
+	// where `go`/`javadoc` live outside the hermetic set (e.g. a Nix devshell)
+	// can still find them. Empty by default → hermetic PATH unchanged.
+	const HERMETIC_PATH: &str = "/usr/bin:/bin:/nix/var/nix/profiles/default/bin";
+	let path = match toolchains.path_prefix() {
+		Some(prefix) => format!("{prefix}:{HERMETIC_PATH}"),
+		None => HERMETIC_PATH.to_string(),
+	};
+	let mut env = Env::empty().set("PATH", path);
 	env = toolchains.apply_env(env);
 	for (k, v) in cmd.env {
 		env = env.set(k, v);

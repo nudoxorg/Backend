@@ -8,7 +8,26 @@ use deno_doc::{Declaration, DeclarationDef, class::{ClassConstructorDef, ClassDe
 use ir::{entry::NudoxPath, generics::{GenericArg, TraitRef}, kind::{Entry, Visibility}, module::Module, protocols::{ReceiverKind, TraitDef, TraitMethod}, record::{Record, SumVariant}, ty::{Type, TypeReference}};
 use rustc_hash::FxHashSet as HashSet;
 
-use super::{PropertyFieldMetadata, Result, TsDocParser, accessibility_to_visibility, declaration_kind_to_visibility, empty_to_none, error::{Parse, TsDeclarationError}, extract_doc, path_to_id, pick_primary_declaration};
+use deno_ast::swc::ast::{Accessibility, VarDeclKind};
+use deno_doc::class::{ClassConstructorDef, ClassDef, ClassMethodDef};
+use deno_doc::r#enum::EnumDef;
+use deno_doc::interface::InterfaceDef;
+use deno_doc::js_doc::JsDoc;
+use deno_doc::node::{DeclarationKind, NamespaceDef, Symbol};
+use deno_doc::ts_type::{CallSignatureDef, IndexSignatureDef, MethodDef};
+use deno_doc::{Declaration, DeclarationDef, Document};
+use ir::entry::NudoxPath;
+use ir::function::Function;
+use ir::generics::{GenericArg, *};
+use ir::kind::Entry;
+use ir::kind::Visibility;
+use ir::protocols::{ReceiverKind, TraitDef, TraitMethod};
+use ir::record::{Record, SumVariant};
+use ir::ty::{Type, TypeReference};
+
+use super::{error::Parse, PropertyFieldMetadata, Result, TsDocParser};
+use super::{accessibility_to_visibility, declaration_kind_to_visibility, extract_doc, path_to_id, pick_primary_declaration};
+use crate::empty_to_none;
 
 impl TsDocParser {
 	pub(super) fn item_at_path(&mut self, path: &[String]) -> Result<Vec<Entry>> {
@@ -69,9 +88,7 @@ impl TsDocParser {
 			aliases: None,
 			visibility: Visibility::Public,
 			documentation,
-			deprecation: None,
-			doc_links: None,
-			inner: Module { members: empty_to_none(members) },
+			inner: ir::module::Module { members: empty_to_none(members) },
 		}))
 	}
 

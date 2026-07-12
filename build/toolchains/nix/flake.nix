@@ -148,6 +148,16 @@
               makeWrapper "$NIX_CC/bin/$CXX" "$out/bin/c++" "''${MAPFILE[@]}"
             '';
           };
+
+          # ── snowydeer Phase 4 — ripgrep NAR ref-scanner ────────────────────
+          # Used by snowydeer/build_store_path.py to reference-scan the NAR of
+          # the deploy binary, implementing Dolstra thesis §5.12 scanForReferences.
+          # Exposed to Buck2 as toolchains//:ripgrep (build/toolchains/BUCK).
+          #
+          # TODO(human): run `nix flake lock build/toolchains/nix` after this
+          # change to pin ripgrep in flake.lock, then commit the updated lock
+          # file so the Buck2 action cache key is deterministic cross-machine.
+          ripgrep = pkgs.ripgrep;
         }
       );
     };

@@ -18,13 +18,12 @@ load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
 load("@prelude//toolchains:zip_file.bzl", "zip_file_toolchain")
 load("@prelude//toolchains/go:system_go_bootstrap_toolchain.bzl", "system_go_bootstrap_toolchain")
 load("@prelude//toolchains/go:system_go_toolchain.bzl", "system_go_toolchain")
-load(":defs.bzl", "absolute_clang_tools")
+load(":defs.bzl", "absolute_clang_tools", "nix_cxx_toolchain")
 
 # buck2.nix external cell (see .buckconfig [external_cells] nix = git). Provides
 # hermetic Nix-built toolchains via flake.package(). Run `buck2 kill` after the
 # cell config changes.
 load("@nix//:flake.bzl", "flake")
-load("@nix//toolchains:cxx.bzl", "nix_cxx_toolchain")
 load("@nix//toolchains:rust.bzl", "nix_rust_toolchain")
 
 # ── Toolchain selection toggle ───────────────────────────────────────────────
@@ -38,8 +37,8 @@ load("@nix//toolchains:rust.bzl", "nix_rust_toolchain")
 _use_nix = read_config("nix", "toolchain", "1") in ("1", "true", "True")
 
 # `flake.package` runs `nix build path:<dir>#packages.<system>.<pkg>.out` as a
-# Buck2 action; the building host just needs `nix` on PATH. `//build/toolchains/nix:flake`
-# is the filegroup exposing flake.nix + flake.lock.
+# Buck2 action; the building host just needs `nix` on PATH. `//nix:flake`
+# (toolchains-cell-relative) is the filegroup exposing flake.nix + flake.lock.
 _TARGET_MAPPING = [
     select({k: k for k in [
         "config//os:linux",
@@ -68,7 +67,7 @@ flake.package(
         "strip",
     ],
     package = "cxx",
-    path = "//build/toolchains/nix:flake",
+    path = "//nix:flake",
     target_compatible_with = _TARGET_MAPPING,
 )
 
@@ -93,8 +92,8 @@ cxx_tools_info_toolchain(
     visibility = ["PUBLIC"],
 )
 
-# Canonical public cxx toolchain — alias to the selected concrete target.
-alias(
+# Canonical public cxx toolchain — toolchain_alias forwards is_toolchain_rule.
+toolchain_alias(
     name = "cxx",
     actual = ":cxx_nix" if _use_nix else ":cxx_system",
     visibility = ["PUBLIC"],
@@ -110,7 +109,7 @@ flake.package(
     name = "rustc",
     binary = "rustc",
     binaries = ["rustdoc"],
-    path = "//build/toolchains/nix:flake",
+    path = "//nix:flake",
     target_compatible_with = _TARGET_MAPPING,
 )
 
@@ -118,7 +117,7 @@ flake.package(
     name = "clippy",
     binary = "clippy-driver",
     package = "clippy",
-    path = "//build/toolchains/nix:flake",
+    path = "//nix:flake",
     target_compatible_with = _TARGET_MAPPING,
 )
 
@@ -144,8 +143,8 @@ system_rust_toolchain(
     visibility = ["PUBLIC"],
 )
 
-# Canonical public rust toolchain — alias to the selected concrete target.
-alias(
+# Canonical public rust toolchain — toolchain_alias forwards is_toolchain_rule.
+toolchain_alias(
     name = "rust",
     actual = ":rust_nix" if _use_nix else ":rust_system",
     visibility = ["PUBLIC"],
@@ -156,13 +155,20 @@ alias(
 # Zero-config: auto-detects `go` on PATH and materializes GOROOT. Used to
 # build the Go oracle producer (workspace/compiler/compile/go/oracle).
 
+# `read_config` is legal here (target-instantiation time) but not during rule
+# analysis, so the optional `[go] go_binary` override is resolved here and
+# passed to the toolchain rules as an attr. Empty => the rule's platform default.
+_go_binary = read_config("go", "go_binary", "")
+
 system_go_toolchain(
     name = "go",
+    go_binary = _go_binary,
     visibility = ["PUBLIC"],
 )
 
 system_go_bootstrap_toolchain(
     name = "go_bootstrap",
+    go_binary = _go_binary,
     visibility = ["PUBLIC"],
 )
 
@@ -221,6 +227,11 @@ javacd_toolchain(
     jlink = ":jlink_tool",
     jmod = ":jmod_tool",
     jrt_fs_jar = ":jrt_fs_jar",
+    # The Java oracle doclet (workspace/compiler/compile/java/oracle) uses
+    # Java 16+ syntax (pattern-matching instanceof, switch rules); the prelude
+    # default is 8. The pinned JDK is Zulu 21, so 17 is safe.
+    source_level = "17",
+    target_level = "17",
     visibility = ["PUBLIC"],
 )
 
