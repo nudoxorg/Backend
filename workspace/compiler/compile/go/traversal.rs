@@ -25,8 +25,9 @@
 
 use std::cmp::Ordering;
 
+use version::{Constraint, TagContext, VersionGrammar, resolve_from_tags};
+
 use super::error::{GoError, Result};
-use super::package;
 
 /// A parsed strict-semver version (Go module flavor).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,16 +217,31 @@ pub fn candidate_tags<'a, S: AsRef<str>>(tags: &'a [S], module_rel_dir: &str) ->
 		.collect()
 }
 
-/// What the caller is asking for.
+/// Go's numeric-prefix constraint: a major or major.minor prefix (`v1`, `1.4`).
+///
+/// Carried as the `Constraint` case of the shared [`version::VersionRequest`].
+/// The actual major-discipline filtering (which majors a `/vN` module admits,
+/// `+incompatible` unlocking, etc.) lives in [`GoGrammar::matches_request`],
+/// which reads this constraint directly — so `Constraint::matches` below is a
+/// simple structural test used only when a grammar evaluates it generically.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VersionRequest {
-	/// The newest version compatible with the module path's major.
-	Latest,
-	/// An exact version (`v1.2.3` / `1.2.3`).
-	Exact(GoVersion),
-	/// A major or major.minor prefix (`v1`, `1.4`): newest match wins.
-	Prefix { major: u64, minor: Option<u64> },
+pub struct GoPrefix {
+	pub major: u64,
+	pub minor: Option<u64>,
 }
+
+impl Constraint<GoVersion> for GoPrefix {
+	fn matches(&self, v: &GoVersion) -> bool {
+		v.major == self.major && self.minor.map_or(true, |m| v.minor == m)
+	}
+}
+
+/// What the caller is asking for.
+///
+/// The shared [`version::VersionRequest`] specialised to [`GoVersion`] with
+/// Go's [`GoPrefix`] as its constraint case (`v1`, `1.4`). Go's major-version
+/// discipline is applied on top in [`GoGrammar::matches_request`].
+pub type VersionRequest = version::VersionRequest<GoVersion, GoPrefix>;
 
 /// Parse a requested version string: `latest`/empty → newest; full
 /// semver → exact; `v1` / `1.4` → prefix query.
@@ -254,7 +270,87 @@ pub fn parse_requested(requested: &str) -> Result<VersionRequest> {
 	if parts.next().is_some() {
 		return Err(GoError::UnparseableVersionRequest { requested: requested.to_string() });
 	}
-	Ok(VersionRequest::Prefix { major, minor })
+	Ok(VersionRequest::Constraint(GoPrefix { major, minor }))
+}
+
+// ---------------------------------------------------------------------------
+// VersionGrammar implementation — wires GoVersion into the shared loop
+// ---------------------------------------------------------------------------
+
+/// Grammar adapter that makes [`resolve_from_tags`] work for Go modules.
+///
+/// * `parse_tag` strips the subdirectory prefix and strict-semver-parses the
+///   remainder (via [`candidate_tags`]'s logic inlined here).
+/// * `matches_request` encodes Go's major-version discipline on top of the
+///   default `Latest`/`Exact`/`Prefix` semantics.
+struct GoGrammar<'a> {
+	/// Module path, used to extract the expected major via [`module_path_major`].
+	module_path: &'a str,
+	/// Repository-relative subdirectory prefix for this module's tags.
+	module_rel_dir: &'a str,
+}
+
+impl VersionGrammar for GoGrammar<'_> {
+	type V = GoVersion;
+	type C = GoPrefix;
+
+	fn parse_tag<'t>(&self, raw_tag: &'t str, _ctx: &TagContext<'_>) -> Option<(GoVersion, &'t str)> {
+		let prefix = tag_prefix(self.module_rel_dir);
+		let rest = raw_tag.strip_prefix(prefix.as_str())?;
+		// Root-module tags must not accidentally include a nested-module slash.
+		if prefix.is_empty() && rest.contains('/') {
+			return None;
+		}
+		let version = parse_semver(rest, true)?;
+		Some((version, raw_tag))
+	}
+
+	fn is_prerelease(&self, v: &GoVersion) -> bool {
+		v.is_prerelease()
+	}
+
+	/// Extend the shared request-matching with Go's major-version discipline.
+	///
+	/// For a `/vN` (N≥2) module only major-N tags are accepted.
+	/// For an unversioned module major-0/1 are preferred; major-≥2
+	/// (`+incompatible`) are only admitted when the caller explicitly named
+	/// that major (an `Exact`/`Constraint` request, never a bare `Latest`).
+	fn matches_request(
+		&self,
+		v: &GoVersion,
+		request: &VersionRequest,
+		_ctx: &TagContext<'_>,
+	) -> bool {
+		let module_major = module_path_major(self.module_path);
+
+		let major_allowed = |major: u64, explicitly: bool| -> bool {
+			if module_major >= 2 {
+				major == module_major
+			} else {
+				major <= 1 || explicitly
+			}
+		};
+
+		match request {
+			VersionRequest::Latest => major_allowed(v.major, false),
+			VersionRequest::Exact(want) => {
+				major_allowed(v.major, true)
+					&& v.major == want.major
+					&& v.minor == want.minor
+					&& v.patch == want.patch
+					&& v.prerelease == want.prerelease
+			}
+			VersionRequest::Constraint(GoPrefix { major, minor }) => {
+				major_allowed(v.major, true)
+					&& v.major == *major
+					&& minor.map_or(true, |m| v.minor == m)
+			}
+		}
+	}
+
+	fn numeric_prefix(&self, v: &GoVersion) -> Vec<u64> {
+		vec![v.major, v.minor, v.patch]
+	}
 }
 
 /// Resolve a version request against a repository's tags for the module
@@ -267,50 +363,18 @@ pub fn parse_requested(requested: &str) -> Result<VersionRequest> {
 /// suffix-less module prefers majors 0/1; majors ≥ 2 (the
 /// `+incompatible` regime) are considered only when the request names
 /// them explicitly.
+///
+/// The stable-before-prerelease selection loop is provided by
+/// [`version::resolve_from_tags`]; this function supplies the Go grammar.
 pub fn resolve_version_from_tags<S: AsRef<str>>(
 	tags: &[S],
 	requested: &VersionRequest,
 	module_path: &str,
 	module_rel_dir: &str,
 ) -> Option<String> {
-	let module_major = module_path_major(module_path);
-	let candidates = candidate_tags(tags, module_rel_dir);
-
-	let major_allowed = |major: u64, explicitly_requested: bool| -> bool {
-		if module_major >= 2 {
-			major == module_major
-		} else {
-			major <= 1 || explicitly_requested
-		}
-	};
-
-	let matching: Vec<&TagMatch> = candidates
-		.iter()
-		.filter(|c| match requested {
-			VersionRequest::Latest => major_allowed(c.version.major, false),
-			VersionRequest::Exact(want) => {
-				major_allowed(c.version.major, true)
-					&& c.version.major == want.major
-					&& c.version.minor == want.minor
-					&& c.version.patch == want.patch
-					&& c.version.prerelease == want.prerelease
-			}
-			VersionRequest::Prefix { major, minor } => {
-				major_allowed(c.version.major, true)
-					&& c.version.major == *major
-					&& minor.map_or(true, |m| c.version.minor == m)
-			}
-		})
-		.collect();
-
-	// Stable-before-prerelease preference, then newest.
-	let pick = matching
-		.iter()
-		.filter(|c| !c.version.is_prerelease())
-		.max_by(|a, b| a.version.cmp(&b.version))
-		.or_else(|| matching.iter().max_by(|a, b| a.version.cmp(&b.version)));
-
-	pick.map(|c| c.tag.to_string())
+	let grammar = GoGrammar { module_path, module_rel_dir };
+	let ctx = TagContext { identifier: module_path, subdir: module_rel_dir };
+	resolve_from_tags(tags, requested, &ctx, &grammar)
 }
 
 // ---------------------------------------------------------------------------

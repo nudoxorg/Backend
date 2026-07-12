@@ -7,32 +7,27 @@
 //! over the tree.
 //!
 //! ## Oracle invocation
-//! The oracle sources are embedded into this binary at compile time and
-//! materialized into a content-addressed temp directory on first use, so
-//! the producer works identically under cargo, buck, or a bare binary —
-//! no assumptions about a source checkout at runtime. Invocation is
-//! `go run . <target>` from that directory with `GOWORK=off` (so a
-//! surrounding workspace never rewires resolution) and `GOFLAGS=-mod=mod`
-//! (so the oracle's own dependencies resolve from the module cache).
+//! The oracle (`//workspace/compiler/compile/go/oracle:oracle`) is built
+//! ahead of time by Buck2 and shipped as a `resources` artifact alongside
+//! this binary — see `producer::buck_resource`. Invocation runs the
+//! prebuilt binary directly against the target module root; there is no
+//! runtime compile step.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::compile::isolate::{self, IsolatedCommand, IsolatedFailureKind};
+use crate::compile::producer;
 use sandbox::ProducerProfile;
 
 use super::error::{GoError, Result};
 
 use super::oracle;
 
-/// The embedded oracle program, written out verbatim before `go run`.
-const ORACLE_FILES: &[(&str, &str)] = &[
-	("main.go", include_str!("oracle/main.go")),
-	("serialize.go", include_str!("oracle/serialize.go")),
-	("docs.go", include_str!("oracle/docs.go")),
-	("go.mod", include_str!("oracle/go.mod")),
-	("go.sum", include_str!("oracle/go.sum")),
-];
+/// Resolve the Buck2-built oracle binary shipped alongside this executable.
+pub fn oracle_binary() -> Result<PathBuf> {
+	producer::buck_resource("go-oracle").map_err(|source| GoError::ResourceNotFound { source })
+}
 
 /// go.mod-derived metadata for a module on disk.
 #[derive(Debug, Clone)]
@@ -109,31 +104,41 @@ fn strip_line_comment(line: &str) -> &str {
 /// Run the vendored oracle over the module rooted at `module_root` and
 /// deserialize its JSON document.
 ///
-/// The `go` binary is taken from `PATH`. Diagnostics stream to the
-/// oracle's stderr and are surfaced in the error on failure; load errors
-/// that still produced a document are carried in [`oracle::Output::errors`].
-pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
-	let oracle_dir = materialize_oracle()?;
+/// The oracle is the Buck2-built binary shipped as a resource alongside this
+/// executable (see [`oracle_binary`]). Diagnostics stream to the oracle's
+/// stderr and are surfaced in the error on failure; load errors that still
+/// produced a document are carried in [`oracle::Output::errors`].
+pub fn run_oracle<C: crate::compile::producer::ForgeContext>(
+	ctx: &C,
+	module_root: &Path,
+) -> Result<oracle::Output> {
+	let bin = oracle_binary()?;
 	let target = module_root
 		.canonicalize()
 		.map_err(|source| GoError::ResolveModuleRoot { root: module_root.to_path_buf(), source })?;
 
-	// Network off + GOPROXY=off: deps must already be in the module cache
-	// (P-fetch materialised them). GOFLAGS=-mod=mod still allows reading the
-	// cache; combined with empty netns this is the docs.rs pattern.
+	// Network off + GOPROXY=off: the oracle's own deps were compiled in by
+	// Buck2; at runtime it only needs to read the target module's own cache.
+	//
+	// The sealed env has no ambient `$HOME`, so `go` cannot derive its default
+	// `GOCACHE`/`GOPATH` and aborts ("build cache is required"). Point both (and
+	// `HOME`) at scratch under the temp dir, which is already an RW mount.
+	let scratch = std::env::temp_dir();
+	let go_cache = scratch.join("nudox-go-build-cache");
+	let go_path = scratch.join("nudox-go-path");
 	let output = isolate::run_isolated(
-		IsolatedCommand::new("go", ProducerProfile::Go)
-			.arg("run")
-			.arg(".")
+		ctx,
+		IsolatedCommand::new(&bin, ProducerProfile::Go)
 			.arg(&target)
-			.cwd(&oracle_dir)
 			.env("GOWORK", "off")
 			.env("GOFLAGS", "-mod=mod")
 			.env("GOPROXY", "off")
-			.ro(&oracle_dir)
+			.env("GOCACHE", go_cache)
+			.env("GOPATH", go_path)
+			.env("HOME", scratch.clone())
+			.ro(&bin)
 			.ro(&target)
-			.rw(&oracle_dir)
-			.rw(std::env::temp_dir()),
+			.rw(scratch),
 	)
 	.map_err(|e| match e.kind {
 		IsolatedFailureKind::ToolchainMissing(_) | IsolatedFailureKind::Sandbox(_) => {
@@ -160,36 +165,4 @@ pub fn run_oracle(module_root: &Path) -> Result<oracle::Output> {
 		source,
 		stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
 	})
-}
-
-/// Write the embedded oracle sources into a stable, content-addressed
-/// temp directory and return it. Idempotent: an existing up-to-date copy
-/// is reused, which also lets the Go build cache do its job across runs.
-pub fn materialize_oracle() -> Result<PathBuf> {
-	let dir = std::env::temp_dir().join(format!("nudox-go-oracle-{:016x}", oracle_hash()));
-	fs::create_dir_all(&dir)
-		.map_err(|source| GoError::MaterializeOracleDir { dir: dir.clone(), source })?;
-
-	for (name, contents) in ORACLE_FILES {
-		let path = dir.join(name);
-		// The directory is content-addressed, so present == current.
-		if !path.is_file() {
-			fs::write(&path, contents)
-				.map_err(|source| GoError::WriteOracleSource { path: path.clone(), source })?;
-		}
-	}
-	Ok(dir)
-}
-
-/// Stable FNV-1a hash over the embedded oracle sources, keying the
-/// materialization directory to the exact vendored revision.
-fn oracle_hash() -> u64 {
-	let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-	for (name, contents) in ORACLE_FILES {
-		for byte in name.bytes().chain(contents.bytes()) {
-			hash ^= byte as u64;
-			hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-		}
-	}
-	hash
 }

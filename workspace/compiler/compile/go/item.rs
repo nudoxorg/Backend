@@ -60,6 +60,8 @@ pub fn lower_package(pkg: &oracle::Package) -> Vec<(NudoxPath, Entry)> {
 			aliases:       None,
 			visibility:    Visibility::Public,
 			documentation: doc_of(&pkg.doc),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         Module { members: None },
 		}),
 	));
@@ -203,6 +205,8 @@ fn lower_type_decl(
 				aliases:       None,
 				visibility:    types::visibility(decl.exported),
 				documentation: doc_of(&decl.doc),
+				deprecation:   None,
+				doc_links:     None,
 				inner:         variants.iter().map(|c| sum_variant(c)).collect(),
 			}),
 		));
@@ -269,6 +273,8 @@ fn push_method_entries(
 				aliases:       None,
 				visibility:    types::visibility(method.exported),
 				documentation: doc_of(&method.doc),
+				deprecation:   None,
+				doc_links:     None,
 				inner:         function::lower_method(method),
 			}),
 		));
@@ -285,6 +291,8 @@ fn push_method_entries(
 				aliases:       None,
 				visibility:    types::visibility(method.exported),
 				documentation: promoted_doc(method),
+				deprecation:   None,
+				doc_links:     None,
 				inner:         function::lower_method(method),
 			}),
 		));
@@ -339,6 +347,8 @@ fn struct_entry(
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
 			documentation: doc_of(&decl.doc),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         record,
 		}),
 	)
@@ -426,6 +436,9 @@ fn interface_entry(decl: &oracle::Decl, path: NudoxPath) -> (NudoxPath, Entry) {
 		provided_methods:   None,
 		required_constants: None,
 		attributes:         if attributes.is_empty() { None } else { Some(attributes) },
+		object_safe:        None,
+		sealed:             None,
+		cfg:                None,
 		members:            None,
 	};
 
@@ -437,6 +450,8 @@ fn interface_entry(decl: &oracle::Decl, path: NudoxPath) -> (NudoxPath, Entry) {
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
 			documentation: doc_of(&decl.doc),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         trait_def,
 		}),
 	)
@@ -499,6 +514,8 @@ fn newtype_entry(
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
 			documentation: doc_of(&decl.doc),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         record,
 		}),
 	)
@@ -516,6 +533,8 @@ fn lower_alias(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry)
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
 			documentation: doc_of(&decl.doc),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         target,
 		}),
 	)
@@ -532,6 +551,8 @@ fn lower_func(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry) 
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
 			documentation: doc_of(&decl.doc),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         function::lower_func_decl(decl),
 		}),
 	)
@@ -550,6 +571,8 @@ fn lower_const(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry)
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
 			documentation: with_value_note(doc_of(&decl.doc), &decl.value),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         (),
 		}),
 	)
@@ -566,6 +589,8 @@ fn lower_var(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry) {
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
 			documentation: doc_of(&decl.doc),
+			deprecation:   None,
+			doc_links:     None,
 			inner:         (),
 		}),
 	)
