@@ -54,3 +54,53 @@ fn tsz_oracle_recovers_inferred_return_type() {
         "compute's inferred return type should lower to a primitive (number); got {outputs:?}"
     );
 }
+
+/// An `async` function with NO return annotation infers `Promise<number>`; the
+/// checker path must recover it and lower it to a `Promise` type reference
+/// (the syntactic pass has no return type at all).
+#[test]
+fn tsz_oracle_recovers_async_promise_return() {
+    let dir = TempDir::new().expect("tempdir");
+    write(
+        dir.path(),
+        "mod.ts",
+        "export async function load(n: number) { return n * 2; }\n",
+    );
+    write(dir.path(), "package.json", r#"{"name":"tszasync","types":"mod.ts"}"#);
+
+    let index = match tsz::normalize(dir.path(), "tszasync") {
+        Ok(i) => i,
+        // Producer honesty: if tsz can't handle it, don't fail the suite hard —
+        // but this trivial async fn should check cleanly.
+        Err(e) => panic!("tsz oracle normalize failed for trivial async fn: {e}"),
+    };
+
+    let load = index
+        .entries_by_path
+        .values()
+        .find(|e| e.name() == "load")
+        .expect("no `load` entry");
+
+    let func = match load {
+        Entry::Function(sym) => &sym.inner,
+        other => panic!("load should be Entry::Function, got {other}"),
+    };
+
+    let outputs = func
+        .output_parameters
+        .as_ref()
+        .expect("async inferred return type must be present");
+
+    // The recovered return type should reference `Promise` (Promise<number>).
+    let is_promise = outputs.iter().any(|p| matches!(
+        p,
+        Parameter::Literal(l) if matches!(
+            &l.r#type,
+            Some(Type::TypeReference(tr)) if tr.identifier.contains("Promise")
+        )
+    ));
+    assert!(
+        is_promise,
+        "load's inferred async return should lower to a Promise<...> reference; got {outputs:?}"
+    );
+}

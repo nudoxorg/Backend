@@ -1,15 +1,20 @@
 //! Tier C · in-process `tsz` TypeScript checker oracle.
 //!
-//! For a source-only package we drive the git-vendored `tsz` compiler
-//! (pure Rust) in-process: build a multi-file program, run binding + checking,
-//! and emit inference-accurate `.d.ts` per module via the declaration emitter.
-//! Those declarations carry checker-INFERRED return types, evaluated object
-//! shapes, `Promise<T>` unwrapping, and resolved re-exports that the purely
-//! syntactic OXC pass cannot recover. We then re-run the OXC Tier-A extractor
-//! over the emitted `.d.ts` (the API-Extractor pattern).
+//! For a source-only package we drive the git-vendored `tsz` compiler (pure
+//! Rust) in-process: build a multi-file program, run binding + checking, then
+//! query the CHECKER directly (node/symbol → `TypeId` → structured `TypeData`)
+//! for the inference-accurate types the purely syntactic OXC pass cannot
+//! recover — checker-inferred return types, evaluated object shapes,
+//! `Promise<T>` unwrapping, and cross-module type resolution.
+//!
+//! Unlike the earlier design, this NO LONGER emits `.d.ts` text and re-parses
+//! it. The OXC Tier-A pass gives structure + syntactic types; we then walk the
+//! resulting [`Index`] and ENRICH the entries whose types are missing/opaque by
+//! splicing in the checker's answer. Mode 1 (inferred types) and Mode 2
+//! (cross-module resolution) collapse into this one enrichment pass.
 //!
 //! Producer honesty: this NEVER breaks the producer. Any failure (`tsz` is
-//! pre-release — unsupported syntax, empty emit, panic-free error paths)
+//! pre-release — unsupported syntax, empty check, panic-guarded error paths)
 //! returns `Err(reason)` and the caller falls back to the syntactic OXC pass.
 //! It is opt-in at runtime via [`ORACLE_ENV`]; unset (the default) means
 //! behavior is byte-identical to the Tier-A/B pipeline.
@@ -20,30 +25,33 @@
 //!
 //! 1. [`tsz_core::parallel::ensure_rayon_global_pool`] — installs a
 //!    large-stack process-global Rayon pool (the checker recurses deeply;
-//!    default thread stacks overflow). `parse_and_libs.rs:356`.
+//!    default thread stacks overflow).
 //! 2. [`tsz_core::parallel::compile_files`] — parse + bind + merge into a
-//!    [`MergedProgram`] (`checking.rs:26`). This does NOT run the checker.
+//!    [`MergedProgram`]. This does NOT run the checker.
 //! 3. Per file: build a per-file binder
-//!    ([`tsz_core::parallel::create_binder_from_bound_file`], `checking.rs:1042`),
-//!    a shared [`QueryCache`] over `program.type_interner`, a
-//!    [`CheckerState`] (`state.rs:230`), run `check_source_file`
-//!    (`check.rs:1527`) and pull the populated [`TypeCache`] out with
-//!    `extract_cache` (`state.rs:873`).
-//! 4. Per file: build a [`TypeCacheView`] from the `TypeCache` (public
-//!    struct-literal fields; `tsz-cli/.../emit.rs:35`) and drive
-//!    [`DeclarationEmitter::with_type_info`] (`setup.rs:137`) →
-//!    `emit(source_file)` (`emit_declarations.rs:12`) for the `.d.ts` text.
+//!    ([`tsz_core::parallel::create_binder_from_bound_file`]), a shared
+//!    [`QueryCache`] over `program.type_interner`, a [`CheckerState`], run
+//!    `check_source_file`, then query top-level symbols' types via
+//!    `get_type_of_node` / `get_type_of_symbol` and map [`TypeData`] →
+//!    [`ir::ty::Type`] (see [`super::tsz_types`]).
+//! 4. Splice the recovered types into the OXC-produced [`Index`].
 
 use std::path::{Path, PathBuf};
 
 use ir::entry::Index;
+use ir::kind::Entry;
+use ir::parameter::Parameter;
+use ir::pipeline::output_parameters_from_type;
+use ir::ty::Type;
 
-use tsz_core::checker::{CheckerState, TypeCache};
-use tsz_core::declaration_emitter::DeclarationEmitter;
+use tsz_binder::state::BinderState;
+use tsz_core::checker::CheckerState;
 use tsz_core::parallel::{
-	self, BoundFile, MergedProgram, create_binder_from_bound_file, ensure_rayon_global_pool,
+	self, MergedProgram, create_binder_from_bound_file, ensure_rayon_global_pool,
 };
 use tsz_solver::construction::QueryCache;
+
+use super::tsz_types;
 
 /// Runtime opt-in switch. The oracle runs only when this is set to `1`/`true`.
 pub const ORACLE_ENV: &str = "NUDOX_TYPESCRIPT_ORACLE";
@@ -74,9 +82,6 @@ fn already_has_declarations(root: &Path) -> bool {
 }
 
 /// Is this a TypeScript source file we should feed to the checker?
-///
-/// Includes `.ts`/`.tsx`/`.mts`/`.cts` and existing `.d.ts` (as type context),
-/// excludes plain JS and non-source dirs.
 fn is_ts_source(path: &Path) -> bool {
 	let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
 		return false;
@@ -127,147 +132,233 @@ fn discover_ts_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 	Ok(out)
 }
 
-/// Build the emitter-local [`TypeCacheView`] from a checker-produced
-/// [`TypeCache`]. Mirrors `tsz-cli/src/driver/emit.rs::type_cache_view`
-/// verbatim (the `TypeCacheView` struct has no constructor — it is built by
-/// its public fields).
-fn type_cache_view(cache: &TypeCache) -> tsz_emitter::type_cache_view::TypeCacheView {
-	tsz_emitter::type_cache_view::TypeCacheView {
-		node_types: cache.node_types.to_hash_map(),
-		symbol_types: cache.symbol_types.to_hash_map(),
-		def_to_symbol: cache.def_to_symbol.clone(),
-		def_types: cache.def_types.clone(),
-		def_type_params: cache.def_type_params.clone(),
-		boxed_types: cache.boxed_types.clone(),
-		boxed_def_ids: cache.boxed_def_ids.clone(),
-		well_known_symbol_names: cache.well_known_symbol_names.clone(),
-		def_to_name: cache.def_to_name.clone(),
+/// Strip a TypeScript-like extension off a filename to get its module stem.
+/// `foo.ts` → `foo`, `bar.d.ts` → `bar`, `mod.tsx` → `mod`.
+fn file_stem(name: &str) -> String {
+	for suf in [
+		".d.ts", ".d.mts", ".d.cts", ".tsx", ".mts", ".cts", ".ts",
+	] {
+		if let Some(base) = name.strip_suffix(suf) {
+			return base.to_string();
+		}
 	}
+	name.to_string()
 }
 
-/// Type-check every file in the merged program and return the per-file
-/// [`TypeCache`] keyed by file index (parallel to `program.files`).
+/// The inferred type recovered from the checker for one top-level symbol.
+struct RecoveredType {
+	/// The symbol's own inferred type (e.g. the object shape of a `const`,
+	/// the arrow type of a function, the value type of a variable).
+	own: Type,
+	/// For functions/callables, the inferred RETURN type (`R` in `() => R`);
+	/// `None` for non-callable symbols.
+	ret: Option<Type>,
+}
+
+/// Type-check every file and collect, per top-level exported/local name, the
+/// checker-recovered types. Keyed both by `(file_stem, name)` (precise) and by
+/// bare `name` (used only when globally unique) for tolerant correlation with
+/// the OXC-produced [`Index`] paths, whose module segment is derived from the
+/// file basename.
 ///
-/// A [`QueryCache`] is shared across all files (memoized subtype/evaluate
-/// queries over the one program-wide `TypeInterner`); each file gets its own
-/// per-file binder + [`CheckerState`]. This matches the CLI driver's cold
-/// build (`tsz-cli/src/driver/check.rs:517,1527`).
-fn check_program(program: &MergedProgram) -> Vec<TypeCache> {
-	// One QueryCache over the program's interner + shared definition store, so
-	// cross-file `Lazy(DefId)` references resolve coherently (check.rs:517).
+/// A [`QueryCache`] is shared across all files so cross-file `Lazy(DefId)`
+/// references resolve coherently (Mode 2).
+fn recover_types(
+	program: &MergedProgram,
+) -> (
+	rustc_hash::FxHashMap<(String, String), RecoveredType>,
+	rustc_hash::FxHashMap<String, usize>,
+) {
+	use rustc_hash::FxHashMap;
+
 	let query_cache =
 		QueryCache::new(&program.type_interner).with_definition_store(&program.definition_store);
 
-	let mut caches = Vec::with_capacity(program.files.len());
+	let interner: &dyn tsz_solver::construction::TypeDatabase = &program.type_interner;
+
+	let mut by_key: FxHashMap<(String, String), RecoveredType> = FxHashMap::default();
+	// Count of distinct owners per bare name, for uniqueness gating.
+	let mut name_counts: FxHashMap<String, usize> = FxHashMap::default();
+
 	for (file_idx, file) in program.files.iter().enumerate() {
-		let binder = create_binder_from_bound_file(file, program, file_idx);
+		// Per-file binder (borrowed by the CheckerState for its whole lifetime).
+		let binder: BinderState = create_binder_from_bound_file(file, program, file_idx);
+
+		let base = file
+			.file_name
+			.rsplit(['/', '\\'])
+			.next()
+			.unwrap_or(file.file_name.as_str());
+		let stem = file_stem(base);
+
 		let mut checker = CheckerState::new(
 			&file.arena,
 			&binder,
 			&query_cache,
 			file.file_name.clone(),
-			// CheckerOptions: Default (matches the checker's own defaults;
-			// checker.rs:226). Package-tuned strictness is not needed for
-			// declaration emit — we only want inferred public-surface types.
 			Default::default(),
 		);
 		checker.check_source_file(file.source_file);
-		caches.push(checker.extract_cache());
-	}
-	caches
-}
 
-/// Emit an inference-accurate `.d.ts` for one bound file, or `None` if the
-/// declaration emitter produced no output (empty or emit-blocked).
-fn emit_declaration(program: &MergedProgram, file: &BoundFile, file_idx: usize, cache: &TypeCache) -> Option<String> {
-	// Per-file binder + shared TypeCacheView feed the emitter's inference-aware
-	// path (emit.rs:611). Both must outlive `emit()`.
-	let binder = create_binder_from_bound_file(file, program, file_idx);
-	let view = type_cache_view(cache);
+		// Snapshot the top-level names first so the immutable borrow of
+		// `binder.file_locals` doesn't overlap the `&mut checker` queries.
+		let names: Vec<(String, tsz_binder::SymbolId)> = binder
+			.file_locals
+			.iter()
+			.map(|(name, id)| (name.clone(), *id))
+			.collect();
 
-	let mut emitter =
-		DeclarationEmitter::with_type_info(&file.arena, view, &program.type_interner, &binder);
-	// Ground the emitter in the current file (foreign-symbol/import resolution).
-	emitter.set_current_arena(std::sync::Arc::clone(&file.arena), file.file_name.clone());
+		for (name, sym_id) in names {
+			// Prefer symbol-based queries; for variable-like bindings the LSP
+			// hover pattern queries the declaration node instead. We keep it
+			// simple and robust: query the symbol type, which resolves to the
+			// value type for variables and the arrow type for functions.
+			let type_id = checker.get_type_of_symbol(sym_id);
 
-	let contents = emitter.emit(file.source_file);
+			// Map the symbol's own type + (for callables) its return type.
+			// `format_type` (an `&self` method) renders the printed spelling for
+			// the re-parse fallback inside the mapper.
+			let own = tsz_types::type_id_to_ir(interner, type_id, &|id| checker.format_type(id));
+			let ret = tsz_types::return_type_of(interner, type_id)
+				.map(|rid| tsz_types::type_id_to_ir(interner, rid, &|id| checker.format_type(id)));
 
-	// #972-analogue: a declaration emit blocked by an isolated-declarations /
-	// portability error carries an Error-category diagnostic; treat as no emit.
-	let blocked = emitter.take_diagnostics().iter().any(|d| {
-		d.category == tsz_common::diagnostics::DiagnosticCategory::Error
-	});
-	if blocked || contents.trim().is_empty() {
-		None
-	} else {
-		Some(contents)
-	}
-}
-
-/// The emitted `.d.ts` path for a source file, mirroring the source tree layout
-/// under `out_dir`: `root/a/b/foo.ts` → `out_dir/a/b/foo.d.ts`.
-fn dts_output_path(root: &Path, out_dir: &Path, src: &Path) -> PathBuf {
-	let rel = src.strip_prefix(root).unwrap_or(src);
-	let mut out = out_dir.join(rel);
-	// Replace the final `.ts`/`.tsx`/`.mts`/`.cts` (or `.d.ts`) with `.d.ts`.
-	let stem = out
-		.file_name()
-		.and_then(|n| n.to_str())
-		.map(|n| {
-			let base = n
-				.strip_suffix(".d.ts")
-				.or_else(|| n.strip_suffix(".tsx"))
-				.or_else(|| n.strip_suffix(".mts"))
-				.or_else(|| n.strip_suffix(".cts"))
-				.or_else(|| n.strip_suffix(".ts"))
-				.unwrap_or(n);
-			format!("{base}.d.ts")
-		})
-		.unwrap_or_else(|| "index.d.ts".to_string());
-	out.set_file_name(stem);
-	out
-}
-
-/// Rewrite a package.json entry-field value (`types`/`main`/…) so its extension
-/// points at the emitted declaration: any TS/JS-ish source extension (or none)
-/// becomes `.d.ts`, mirroring [`dts_output_path`]. `mod.ts` → `mod.d.ts`,
-/// `./src/index.ts` → `./src/index.d.ts`, `mod` → `mod.d.ts`.
-fn rewrite_ext_to_dts(s: &str) -> String {
-	if s.ends_with(".d.ts") {
-		return s.to_string();
-	}
-	for suf in [".tsx", ".mts", ".cts", ".ts", ".jsx", ".mjs", ".cjs", ".js"] {
-		if let Some(base) = s.strip_suffix(suf) {
-			return format!("{base}.d.ts");
+			by_key.insert((stem.clone(), name.clone()), RecoveredType { own, ret });
+			*name_counts.entry(name).or_insert(0) += 1;
 		}
 	}
-	format!("{s}.d.ts")
+
+	(by_key, name_counts)
 }
 
-/// Run the in-process tsz check + declaration-emit oracle over the package at
-/// `root`, then re-extract IR from the emitted `.d.ts`.
+/// Look up a recovered type for an entry by its leaf name, using the module
+/// segment of its path as the file stem when available, falling back to a
+/// globally-unique bare-name match.
+fn recovered_for<'a>(
+	by_key: &'a rustc_hash::FxHashMap<(String, String), RecoveredType>,
+	name_counts: &rustc_hash::FxHashMap<String, usize>,
+	stem_hint: Option<&str>,
+	leaf: &str,
+) -> Option<&'a RecoveredType> {
+	if let Some(stem) = stem_hint {
+		if let Some(r) = by_key.get(&(stem.to_string(), leaf.to_string())) {
+			return Some(r);
+		}
+	}
+	// Bare-name fallback: only if exactly one owner has this name (avoids
+	// cross-module collisions silently mislabeling a type).
+	if name_counts.get(leaf).copied() == Some(1) {
+		return by_key
+			.iter()
+			.find(|((_, n), _)| n == leaf)
+			.map(|(_, r)| r);
+	}
+	None
+}
+
+/// Derive the module-stem hint for an entry from its `NudoxPath`. The OXC
+/// linker names modules `stem::leaf` (dotted `::`-joined), so the segment just
+/// before the leaf is (in the common flat case) the file stem.
+fn stem_hint_for(entry: &Entry) -> Option<String> {
+	use ir::entry::NudoxPath;
+	let path = match entry.path() {
+		NudoxPath::Local(p) => p.to_string_lossy().into_owned(),
+		NudoxPath::External { path, .. } => path.to_string_lossy().into_owned(),
+	};
+	let segs: Vec<&str> = path.split("::").filter(|s| !s.is_empty()).collect();
+	if segs.len() >= 2 {
+		Some(segs[segs.len() - 2].to_string())
+	} else {
+		None
+	}
+}
+
+/// Does an `output_parameters` slot lack a concrete inferred type — i.e. it is
+/// absent, or its single output is `Any`/unit — such that the checker's answer
+/// would enrich it?
+fn outputs_need_enrichment(outputs: &Option<Vec<Parameter>>) -> bool {
+	match outputs {
+		None => true,
+		Some(params) => params.iter().all(|p| match p {
+			Parameter::Literal(l) => matches!(
+				l.r#type,
+				None | Some(Type::Any) | Some(Type::Infer)
+			),
+			_ => false,
+		}),
+	}
+}
+
+/// Walk the OXC-produced [`Index`] and splice in checker-recovered types where
+/// the syntactic pass left a gap.
+fn enrich_index(
+	index: &mut Index,
+	by_key: &rustc_hash::FxHashMap<(String, String), RecoveredType>,
+	name_counts: &rustc_hash::FxHashMap<String, usize>,
+) {
+	for entry in index.entries_by_path.values_mut() {
+		let stem = stem_hint_for(entry);
+		let leaf = entry.name().to_string();
+		let Some(recovered) = recovered_for(by_key, name_counts, stem.as_deref(), &leaf) else {
+			continue;
+		};
+
+		match entry {
+			// Functions: fill an absent/opaque return type from the checker's
+			// inferred return (Mode 1). Only touch it when the syntactic pass
+			// had nothing concrete — never clobber a real source annotation.
+			Entry::Function(sym) => {
+				if outputs_need_enrichment(&sym.inner.output_parameters) {
+					if let Some(ret) = &recovered.ret {
+						sym.inner.output_parameters =
+							output_parameters_from_type(ret.clone());
+					}
+				}
+			}
+
+			// Type aliases: replace an opaque/`Any` alias body with the
+			// checker's resolved type (Mode 2 — cross-module resolution).
+			Entry::TypeAlias(sym) => {
+				if matches!(sym.inner, Type::Any | Type::Infer) {
+					sym.inner = recovered.own.clone();
+				}
+			}
+
+			// Constants / Variables carry no type payload in the IR
+			// (`Symbol<()>`), so there is nothing to splice here; their types
+			// live in linked-data emit and are recovered elsewhere. Left as a
+			// no-op intentionally.
+			_ => {}
+		}
+	}
+}
+
+/// Run the in-process tsz check oracle over the package at `root`: extract
+/// structure via the OXC pipeline, then enrich it with checker-recovered types.
 ///
-/// On success returns the checker-normalized [`Index`]. On ANY failure returns
+/// On success returns the enriched [`Index`]. On ANY failure returns
 /// `Err(reason)` — the caller must fall back to the syntactic pass.
 pub fn normalize(root: &Path, name: &str) -> Result<Index, String> {
 	if already_has_declarations(root) {
 		return Err("package already ships .d.ts; syntactic pass suffices".to_string());
 	}
 
-	// The checker recurses deeply — install the large-stack Rayon pool FIRST
-	// (parse_and_libs.rs:356). Idempotent; safe to call every run.
+	// The checker recurses deeply — install the large-stack Rayon pool FIRST.
+	// Idempotent; safe to call every run.
 	ensure_rayon_global_pool();
 
 	let target = root
 		.canonicalize()
 		.map_err(|e| format!("canonicalize package root: {e}"))?;
 
+	// (a) Structure + syntactic types from the OXC Tier-A pipeline.
+	let mut index = super::super::oxc::generate_ir(&target, name)
+		.map_err(|e| format!("oxc structure pass: {e}"))?;
+
+	// (b) Discover + read the same source files for the checker.
 	let src_files = discover_ts_files(&target)?;
 	if src_files.is_empty() {
 		return Err("no TypeScript source files found".to_string());
 	}
-
-	// (file_name, source_text) pairs for the multi-file program.
 	let mut inputs: Vec<(String, String)> = Vec::with_capacity(src_files.len());
 	for path in &src_files {
 		let text = std::fs::read_to_string(path)
@@ -275,81 +366,21 @@ pub fn normalize(root: &Path, name: &str) -> Result<Index, String> {
 		inputs.push((path.to_string_lossy().into_owned(), text));
 	}
 
-	// Parse + bind + merge (checking.rs:26). tsz drives its own libs.
-	let program: MergedProgram = parallel::compile_files(inputs);
+	// (c) Parse + bind + merge, then check every file and recover types.
+	//     Guarded so any checker panic degrades to Tier-A rather than aborting.
+	let recovered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		let program: MergedProgram = parallel::compile_files(inputs);
+		recover_types(&program)
+	}))
+	.map_err(|_| "tsz checker panicked; falling back to syntactic".to_string())?;
 
-	// Check every file → per-file TypeCache (parallel to program.files).
-	let caches = check_program(&program);
+	let (by_key, name_counts) = recovered;
+	if by_key.is_empty() {
+		return Err("tsz recovered no types (unsupported syntax or empty surface)".to_string());
+	}
 
-	// Per-run tmp dir mirroring the source tree for emitted declarations.
-	let out_dir = std::env::temp_dir().join(format!(
-		"nudox-tsz-{}-{}",
-		std::process::id(),
-		name.replace(['/', '\\', '@'], "_")
-	));
-	let _ = std::fs::remove_dir_all(&out_dir);
-	std::fs::create_dir_all(&out_dir).map_err(|e| format!("create tsz outDir: {e}"))?;
+	// (d) Splice recovered types into the syntactic IR.
+	enrich_index(&mut index, &by_key, &name_counts);
 
-	let result = (|| {
-		let mut emitted_any = false;
-		for (file_idx, file) in program.files.iter().enumerate() {
-			// Only emit for the package's own source files (skip any lib/ambient
-			// files tsz injected, which are not under `target`).
-			let file_path = PathBuf::from(&file.file_name);
-			if !file_path.starts_with(&target) {
-				continue;
-			}
-			let Some(cache) = caches.get(file_idx) else {
-				continue;
-			};
-			let Some(contents) = emit_declaration(&program, file, file_idx, cache) else {
-				continue;
-			};
-
-			let dts_path = dts_output_path(&target, &out_dir, &file_path);
-			if let Some(parent) = dts_path.parent() {
-				std::fs::create_dir_all(parent)
-					.map_err(|e| format!("create dts dir {}: {e}", parent.display()))?;
-			}
-			std::fs::write(&dts_path, contents)
-				.map_err(|e| format!("write {}: {e}", dts_path.display()))?;
-			emitted_any = true;
-		}
-
-		if !emitted_any {
-			return Err("tsz emitted no .d.ts (unsupported syntax or empty surface)".to_string());
-		}
-
-		// A package.json (if present) helps entry discovery pick the same root —
-		// but its entry fields point at the SOURCE (`mod.ts`), while the emitted
-		// tree has `mod.d.ts`. Rewrite `types`/`typings`/`main`/`module` to the
-		// `.d.ts` names so `generate_ir` resolves the emitted declarations.
-		let pkg = target.join("package.json");
-		if pkg.is_file() {
-			if let Ok(text) = std::fs::read_to_string(&pkg) {
-				let rewritten = match serde_json::from_str::<serde_json::Value>(&text) {
-					Ok(mut v) => {
-						if let Some(obj) = v.as_object_mut() {
-							for key in ["types", "typings", "main", "module"] {
-								if let Some(serde_json::Value::String(s)) = obj.get(key) {
-									let dts = rewrite_ext_to_dts(s);
-									obj.insert(key.to_string(), serde_json::Value::String(dts));
-								}
-							}
-						}
-						v.to_string()
-					}
-					Err(_) => text,
-				};
-				let _ = std::fs::write(out_dir.join("package.json"), rewritten);
-			}
-		}
-
-		// Re-extract via the OXC Tier-A pipeline over the emitted declarations.
-		super::super::oxc::generate_ir(&out_dir, name)
-			.map_err(|e| format!("re-extract emitted .d.ts: {e}"))
-	})();
-
-	let _ = std::fs::remove_dir_all(&out_dir);
-	result
+	Ok(index)
 }
