@@ -1,0 +1,51 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+expression: stubs
+---
+{
+    "app": EntryStub {
+        kind: "module",
+        name: "app",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "app::main": EntryStub {
+        kind: "function",
+        name: "main",
+        visibility: "pub(crate)",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "corelib": EntryStub {
+        kind: "module",
+        name: "corelib",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "corelib::CoreCounter": EntryStub {
+        kind: "record",
+        name: "CoreCounter",
+        visibility: "pub",
+        sealed: None,
+        method_count: Some(
+            2,
+        ),
+        protocols: Some(
+            [],
+        ),
+        deprecation: None,
+    },
+}

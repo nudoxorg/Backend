@@ -1,0 +1,77 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+expression: stubs
+---
+{
+    "odd_duck": EntryStub {
+        kind: "module",
+        name: "odd_duck",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "odd_duck::<impl Behavior>": EntryStub {
+        kind: "trait_impl",
+        name: "<impl Behavior>",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "odd_duck::<impl Clone>": EntryStub {
+        kind: "trait_impl",
+        name: "<impl Clone>",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "odd_duck::<impl Copy>": EntryStub {
+        kind: "trait_impl",
+        name: "<impl Copy>",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "odd_duck::Behavior": EntryStub {
+        kind: "trait_def",
+        name: "Behavior",
+        visibility: "pub",
+        sealed: Some(
+            Some(
+                false,
+            ),
+        ),
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "odd_duck::Mode": EntryStub {
+        kind: "sum_type",
+        name: "Mode",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "odd_duck::Widget": EntryStub {
+        kind: "record",
+        name: "Widget",
+        visibility: "pub",
+        sealed: None,
+        method_count: Some(
+            2,
+        ),
+        protocols: Some(
+            [],
+        ),
+        deprecation: None,
+    },
+}
