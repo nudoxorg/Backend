@@ -132,52 +132,20 @@ pub fn extract_module<'a>(
 	let mut groups: HashMap<String, SymbolGroup<'a>> = HashMap::default();
 	// Track insertion order so we emit entries in source order.
 	let mut order: Vec<String> = Vec::new();
+	// Tier B: `export default <decl>` declarations, lowered after grouping.
+	let mut default_exports: Vec<&'a ExportDefaultDeclarationKind<'a>> = Vec::new();
 
 	for stmt in program.body.iter() {
 		match stmt {
 			// ── export default: function/class/interface ─────────────────
+			// Tier B: deno_doc dropped default-exported declarations entirely.
+			// We collect the declaration kind and lower it after grouping (its
+			// payload is a bare `Function`/`Class`/`TSInterfaceDeclaration`, not a
+			// `Declaration`, so it can't join the name-grouped `SymbolGroup` path).
+			// `export default <expression>` is resolved by link.rs via
+			// `ExportTable.default`.
 			Statement::ExportDefaultDeclaration(exp) => {
-				let name = "default".to_string();
-				// Extract the inner declaration if it has one.
-				let decl: Option<&'a Declaration<'a>> = match &exp.declaration {
-					ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
-						// The function is wrapped in ExportDefaultDeclarationKind —
-						// we need a &Declaration. Since Statement::ExportDefaultDeclaration
-						// carries a Box<Function> which is the same payload as
-						// Declaration::FunctionDeclaration, we can synthesise via re-pattern.
-						// Use a safe approach: build the SymbolGroup via the `lower_*` methods.
-						// For now, record the function as the primary "declaration" via a
-						// pointer into the ExportDefaultDeclarationKind payload.
-						// We use ExportNamedDeclaration's `declaration` field — but here we
-						// have a direct Function. We cannot get a &Declaration without unsafe.
-						// Safe path: skip and handle this in link.rs via ExportTable.default.
-						let _ = f;
-						None
-					}
-					ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-						let _ = c;
-						None
-					}
-					ExportDefaultDeclarationKind::TSInterfaceDeclaration(i) => {
-						let _ = i;
-						None
-					}
-					_ => None,
-				};
-
-				if let Some(d) = decl {
-					let group = groups.entry(name.clone()).or_insert_with(|| {
-						order.push(name.clone());
-						SymbolGroup {
-							name: name.clone(),
-							is_default: true,
-							declarations: Vec::new(),
-							visibility: ir::kind::Visibility::Public,
-						}
-					});
-					group.declarations.push(d);
-				}
-				// Expressions (export default someExpr) are handled by link.rs.
+				default_exports.push(&exp.declaration);
 			}
 
 			// ── export { x } — named export with declaration ─────────────
@@ -362,6 +330,12 @@ pub fn extract_module<'a>(
 			let entries = extractor.lower_symbol(group)?;
 			all_entries.extend(entries);
 		}
+	}
+
+	// ── Step 3b: Lower default-exported declarations (Tier B) ────────────────
+	for kind in default_exports {
+		let entries = extractor.lower_default_export(kind)?;
+		all_entries.extend(entries);
 	}
 
 	// ── Step 4: Build ExportTable from ModuleRecord ───────────────────────────

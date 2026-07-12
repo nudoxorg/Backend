@@ -10,6 +10,7 @@ use oxc_ast::ast::{
     TSType, TSTypeLiteral, TSTypeName, TSTypeParameterDeclaration, TSTypePredicateName,
     TSTupleElement,
 };
+use oxc_span::GetSpan;
 
 use ir::{
     generics::{Constraint, GenericArg, Generics, Kind, TraitRef, TypeExpr, Variance},
@@ -83,6 +84,18 @@ fn property_key_name<'a>(
     key: &'a oxc_ast::ast::PropertyKey<'_>,
 ) -> Option<String> {
     key.static_name().map(|s| s.into_owned())
+}
+
+/// Derive a readable name for an indexed-access index type (`T[K]`), replacing
+/// deno's `format!("{:?}")` stringification. The structured index type is kept
+/// separately in `QualifiedPath.generic_arguments`; this is only the label.
+fn index_access_name(index: &Type) -> String {
+    match index {
+        Type::TypeReference(tr) => tr.identifier.clone(),
+        Type::Primitive(p) => format!("{p:?}"),
+        Type::TypeOperator(op) => op.operator.clone(),
+        _ => "index".to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +259,30 @@ impl<'a> Extractor<'a> {
                         .map(|q| import_qualifier_to_string(q))
                         .unwrap_or_else(|| import.source.value.to_string()),
                 };
-                Ok(Type::TypeReference(TypeReference { identifier: name, generic_args: None }))
+                // Tier B: `typeof x` is a structured type-level *query*, not a
+                // plain reference (deno flattened it to a bare name string).
+                // Model it as `TypeOperator { operator: "typeof", type }`, which
+                // reuses the existing structured operator variant and preserves
+                // any `typeof`-with-type-arguments as generic args on the inner
+                // reference.
+                let generic_args = q
+                    .type_arguments
+                    .as_ref()
+                    .map(|ta| {
+                        ta.params
+                            .iter()
+                            .map(|t| self.lower_ts_type(t).map(GenericArg::Type))
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .filter(|v| !v.is_empty());
+                Ok(Type::TypeOperator(TypeOperator {
+                    operator: "typeof".to_string(),
+                    r#type: Box::new(Type::TypeReference(TypeReference {
+                        identifier: name,
+                        generic_args,
+                    })),
+                }))
             }
 
             // ----------------------------------------------------------------
@@ -272,10 +308,15 @@ impl<'a> Extractor<'a> {
             // ----------------------------------------------------------------
             TSType::TSIndexedAccessType(ia) => {
                 let self_type = Box::new(self.lower_ts_type(&ia.object_type)?);
-                let index_repr = format!("{:?}", self.lower_ts_type(&ia.index_type)?);
+                let index_ty = self.lower_ts_type(&ia.index_type)?;
+                // Tier B: a real lowering of `T[K]`. deno stringified the index
+                // via `format!("{:?}")`; instead we derive a readable name and
+                // preserve the *structured* index type in `generic_arguments`
+                // so consumers can recover it exactly.
+                let name = index_access_name(&index_ty);
                 Ok(Type::QualifiedPath(QualifiedPath {
-                    name: index_repr,
-                    generic_arguments: None,
+                    name,
+                    generic_arguments: Some(vec![GenericArg::Type(index_ty)]),
                     self_type,
                     tr: None,
                 }))
@@ -361,9 +402,25 @@ impl<'a> Extractor<'a> {
             TSType::TSLiteralType(l) => Ok(self.literal_type(&l.literal)),
 
             // ----------------------------------------------------------------
-            // Template literal type: `foo-${T}` — Tier A: string primitive.
+            // Template literal type: `foo-${T}` — Tier B: preserve the pattern.
+            // deno flattened this to `string`; instead we keep the raw template
+            // source as the reference name AND lower the interpolated types into
+            // `generic_args`, so both the shape and the embedded types survive.
             // ----------------------------------------------------------------
-            TSType::TSTemplateLiteralType(_) => Ok(Type::Primitive(Primitive::String)),
+            TSType::TSTemplateLiteralType(t) => {
+                let pattern = t.span().source_text(self.source).to_string();
+                let generic_args = if t.types.is_empty() {
+                    None
+                } else {
+                    Some(
+                        t.types
+                            .iter()
+                            .map(|ty| self.lower_ts_type(ty).map(GenericArg::Type))
+                            .collect::<Result<Vec<_>>>()?,
+                    )
+                };
+                Ok(Type::TypeReference(TypeReference { identifier: pattern, generic_args }))
+            }
 
             // ----------------------------------------------------------------
             // Named tuple member — only valid inside TSTupleType; if somehow
@@ -420,24 +477,15 @@ impl<'a> Extractor<'a> {
 
     /// Lower a `TSLiteralType`'s literal node into `ir::ty::Type`.
     ///
-    /// Tier A: kind → primitive only (values not carried until Tier B).
-    /// `UnaryExpression` covers negative numeric/bigint literals (deno had none).
+    /// Tier B: preserve the literal **value**, which deno_doc dropped (it kept
+    /// only the kind → `string`/`number`/`boolean`). The exact source text of
+    /// the literal becomes the reference identifier, so `"foo"`, `42`, `true`,
+    /// and `-42n` all survive into the IR distinct from the bare keyword types.
+    /// A future schema-coordinated pass can promote these to a dedicated
+    /// `Type::Literal(value)` variant (see the Tier-B follow-up note).
     pub(crate) fn literal_type(&mut self, lit: &TSLiteral<'a>) -> Type {
-        use oxc_ast::ast::Expression;
-        match lit {
-            TSLiteral::StringLiteral(_) => Type::Primitive(Primitive::String),
-            TSLiteral::NumericLiteral(_) => Type::Primitive(Primitive::Float(Width::W64)),
-            TSLiteral::BooleanLiteral(_) => Type::Primitive(Primitive::Bool),
-            TSLiteral::BigIntLiteral(_) => Type::Primitive(Primitive::Int(Width::W128)),
-            TSLiteral::TemplateLiteral(_) => Type::Primitive(Primitive::String),
-            TSLiteral::UnaryExpression(u) => {
-                // `-42` → Float; `-42n` → Int
-                match &u.argument {
-                    Expression::BigIntLiteral(_) => Type::Primitive(Primitive::Int(Width::W128)),
-                    _ => Type::Primitive(Primitive::Float(Width::W64)),
-                }
-            }
-        }
+        let value = lit.span().source_text(self.source).to_string();
+        Type::TypeReference(TypeReference { identifier: value, generic_args: None })
     }
 
     // -----------------------------------------------------------------------
@@ -465,10 +513,19 @@ impl<'a> Extractor<'a> {
                 .transpose()?
                 .map(|ty| self.type_to_expr(&ty));
 
+            // Tier B: honour explicit `in`/`out` variance annotations
+            // (`type Foo<in out T>`), which deno hardcoded to `Invariant`.
+            let variance = match (p.r#in, p.r#out) {
+                (true, true) => Variance::Invariant,
+                (true, false) => Variance::Contravariant,
+                (false, true) => Variance::Covariant,
+                (false, false) => Variance::Invariant,
+            };
+
             type_params.push(Parameter::Type(TypeParam {
                 name: Some(p.name.name.to_string()),
                 kind: Kind::Type,
-                variance: Variance::Invariant,
+                variance,
                 default_type,
                 params: None,
                 origin: TypeParamOrigin::Free,

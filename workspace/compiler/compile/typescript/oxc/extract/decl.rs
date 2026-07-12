@@ -327,6 +327,107 @@ impl<'a> Extractor<'a> {
 
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// Lower an `export default <decl>` into real [`FactEntry`]s. deno_doc
+    /// dropped the symbol entirely for default-exported *declarations*; we
+    /// surface it under its own name (or `default` when anonymous). The payload
+    /// is a bare `Function`/`Class`/`TSInterfaceDeclaration` (not a
+    /// `Declaration`), so this bypasses the name-grouped `lower_symbol` path.
+    /// `export default <expression>` returns no entries (link.rs resolves it via
+    /// `ExportTable.default`).
+    pub(crate) fn lower_default_export(
+        &mut self,
+        kind: &oxc_ast::ast::ExportDefaultDeclarationKind<'a>,
+    ) -> Result<Vec<FactEntry>> {
+        use oxc_ast::ast::ExportDefaultDeclarationKind as K;
+
+        let placeholder = NudoxPath::Local(PathBuf::from(""));
+        let mut entries = Vec::new();
+
+        match kind {
+            K::FunctionDeclaration(func) => {
+                self.type_ref_scratch.clear();
+                let ir_func = self.lower_function(func)?;
+                let type_refs = std::mem::take(&mut self.type_ref_scratch);
+                let nm = func
+                    .id
+                    .as_ref()
+                    .map(|id| id.name.to_string())
+                    .unwrap_or_else(|| "default".to_string());
+                entries.push(FactEntry {
+                    entry: Entry::Function(Symbol {
+                        name: nm.clone(),
+                        path: placeholder.clone(),
+                        aliases: None,
+                        visibility: Visibility::Public,
+                        documentation: None,
+                        deprecation: None,
+                        doc_links: None,
+                        inner: ir_func,
+                    }),
+                    local_path: vec![nm],
+                    type_refs,
+                });
+            }
+            K::ClassDeclaration(cls) => {
+                let nm = cls
+                    .id
+                    .as_ref()
+                    .map(|id| id.name.to_string())
+                    .unwrap_or_else(|| "default".to_string());
+                self.type_ref_scratch.clear();
+                let (mut record, mut member_entries) = self.lower_class(&nm, cls)?;
+                let type_refs = std::mem::take(&mut self.type_ref_scratch);
+                let member_refs: Vec<NudoxPath> = member_entries
+                    .iter()
+                    .map(|fe| NudoxPath::Local(PathBuf::from(fe.local_path.join("::"))))
+                    .collect();
+                record.members = empty_to_none(member_refs);
+                entries.push(FactEntry {
+                    entry: Entry::RecordType(Symbol {
+                        name: nm.clone(),
+                        path: placeholder.clone(),
+                        aliases: None,
+                        visibility: Visibility::Public,
+                        documentation: None,
+                        deprecation: None,
+                        doc_links: None,
+                        inner: record,
+                    }),
+                    local_path: vec![nm],
+                    type_refs,
+                });
+                entries.append(&mut member_entries);
+            }
+            K::TSInterfaceDeclaration(iface) => {
+                self.type_ref_scratch.clear();
+                let nm = iface.id.name.to_string();
+                let trait_def = self.lower_interface(&nm, iface)?;
+                let type_refs = std::mem::take(&mut self.type_ref_scratch);
+                entries.push(FactEntry {
+                    entry: Entry::TraitDef(Symbol {
+                        name: nm.clone(),
+                        path: placeholder.clone(),
+                        aliases: None,
+                        visibility: Visibility::Public,
+                        documentation: None,
+                        deprecation: None,
+                        doc_links: None,
+                        inner: trait_def,
+                    }),
+                    local_path: vec![nm],
+                    type_refs,
+                });
+            }
+            // `export default <expression>` — resolved by link.rs via
+            // `ExportTable.default`; nothing to lower here.
+            _ => {}
+        }
+
+        Ok(entries)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     /// Lower a class into its `Record` plus separated constructor/method member
     /// entries (member paths recorded on the record).
     pub(crate) fn lower_class(
