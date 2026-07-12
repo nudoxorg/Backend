@@ -158,47 +158,6 @@
           # change to pin ripgrep in flake.lock, then commit the updated lock
           # file so the Buck2 action cache key is deterministic cross-machine.
           ripgrep = pkgs.ripgrep;
-
-          # ── Tier C — tsgo (TypeScript 7 native checker) ────────────────────
-          # The OXC TypeScript producer's checker oracle (OXC-PLAN §Phase 6).
-          # Microsoft ships the native (Go) compiler as per-platform npm packages
-          # `@typescript/native-preview-<platform>` (Apache-2.0). It is a *noembed*
-          # build: `tsgo` resolves its bundled `lib.*.d.ts` relative to the real
-          # executable path, so the binary and libs MUST live in the same dir —
-          # we install both into $out/lib and wrap $out/bin/tsgo (the wrapper
-          # execs the real $out/lib/tsgo, whose siblings are the libs).
-          # Exposed to Buck2 as toolchains//:tsgo (build/toolchains/BUCK).
-          tsgo =
-            let
-              sys = pkgs.stdenv.hostPlatform.system;
-              version = "7.0.0-dev.20260707.2";
-              plat =
-                if sys == "aarch64-darwin" then
-                  { npm = "darwin-arm64"; hash = "sha256-ptC0bXE1jbLWAjJMVTNmpY+h0DH136EsCaNba+F/5QM="; }
-                else if sys == "x86_64-linux" then
-                  { npm = "linux-x64"; hash = "sha256-Xm7hBSGQUmrgrCd7L7UroMfogGGSAUk71TQpdqCzPrY="; }
-                else
-                  throw "tsgo: unsupported system ${sys}";
-            in
-            pkgs.stdenvNoCC.mkDerivation {
-              pname = "tsgo";
-              inherit version;
-              src = pkgs.fetchurl {
-                url = "https://registry.npmjs.org/@typescript/native-preview-${plat.npm}/-/native-preview-${plat.npm}-${version}.tgz";
-                inherit (plat) hash;
-              };
-              nativeBuildInputs = [ pkgs.makeWrapper ];
-              dontStrip = true;
-              installPhase = ''
-                runHook preInstall
-                mkdir -p $out/lib $out/bin
-                cp -R ./lib/. $out/lib/
-                chmod +x $out/lib/tsgo
-                makeWrapper $out/lib/tsgo $out/bin/tsgo
-                runHook postInstall
-              '';
-              meta.mainProgram = "tsgo";
-            };
         }
       );
     };

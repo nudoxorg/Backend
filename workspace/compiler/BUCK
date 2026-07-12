@@ -9,11 +9,6 @@ rust_crate(
     resources = {
         "go-oracle": "//workspace/compiler/compile/go/oracle:oracle",
         "java-oracle.jar": "//workspace/compiler/compile/java/oracle:extractor",
-        # Tier C — tsgo (TypeScript 7) checker oracle, vendored hermetically via Nix
-        # (build/toolchains/nix/flake.nix `tsgo`). Store dir ($out with bin/tsgo +
-        # lib/); runtime lookup via producer::buck_resource("tsgo"), graceful Tier-A
-        # fallback if absent (opt-in via NUDOX_TYPESCRIPT_ORACLE).
-        "tsgo": "toolchains//:tsgo",
     },
     deps = deps([
         member("heart"),
@@ -103,6 +98,17 @@ rust_crate(
         crate("oxc_isolated_declarations"),
         crate("oxc_jsdoc"),
         crate("oxc_resolver"),
+        # Tier C — in-process tsz TypeScript checker oracle (git-vendored tsz
+        # monorepo @ TSZ_REV; see build/third-party/git.bzl). Drives multi-file
+        # check + inference-accurate .d.ts emit, then re-extracts via the OXC
+        # Tier-A pipeline. Opt-in via NUDOX_TYPESCRIPT_ORACLE; graceful Tier-A
+        # fallback on any failure (tsz is pre-release).
+        crate("tsz_core"),
+        crate("tsz_emitter"),
+        crate("tsz_binder"),
+        crate("tsz_parser"),
+        crate("tsz_solver"),
+        crate("tsz_common"),
         crate("gix", features = ["sha1", "worktree-mutation", "blocking-network-client", "blocking-http-transport-reqwest"]),
         crate("gix_object"),
         crate("gix_ref"),
