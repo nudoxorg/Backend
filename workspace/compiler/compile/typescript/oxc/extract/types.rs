@@ -907,7 +907,6 @@ impl<'a> Extractor<'a> {
             implemented: false,
             members: None,
             implemented_protocols: None,
-            body: None,
         })
     }
 }

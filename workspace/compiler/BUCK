@@ -139,40 +139,6 @@ rust_bin(
 
 rust_tests(
     prefix = "test",
-    deps = deps([
-        member("heart"),
-        member("ir"),
-        member("registry"),
-        member("sandbox"),
-        member("cas"),
-        member("version"),
-        crate("tempfile"),
-        crate("serde"),
-        crate("serde_json"),
-        crate("rustc_hash"),
-        crate("uv_pep440"),
-        crate("semver"),
-        crate("url"),
-        crate("tempfile"),
-        crate("postcard", features = ["alloc"]),
-    ]),
-)
-
-rust_bin(
-    name = "producer-worker",
-    srcs = ["bin/producer_worker.rs"],
-    crate_root = "bin/producer_worker.rs",
-    deps = deps([
-        target(":compiler"),
-        member("ir"),
-        member("sandbox"),
-        crate("serde_json"),
-        crate("libc"),
-    ]),
-)
-
-rust_tests(
-    prefix = "test",
     # The Go and Java snapshot tests drive producers that shell out to the
     # vendored oracles; the test binaries need the same resources the
     # `compiler` lib target declares so `buck_resource(..)` resolves at runtime.
@@ -209,6 +175,7 @@ rust_tests(
             "lang-nix",
         ]),
         crate("arborium_tree_sitter"),
+        crate("postcard", features = ["alloc"]),
         target(":compiler"),
     ]),
 )

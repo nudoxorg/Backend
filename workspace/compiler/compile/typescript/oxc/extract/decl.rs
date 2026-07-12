@@ -583,7 +583,6 @@ impl<'a> Extractor<'a> {
                         implemented: true,
                         members: None,
                         implemented_protocols: None,
-                        body: None,
                     };
                     let static_sym = Symbol {
                         name: block_name.clone(),

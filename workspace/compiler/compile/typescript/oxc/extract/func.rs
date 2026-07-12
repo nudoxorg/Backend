@@ -102,7 +102,6 @@ impl<'a> Extractor<'a> {
             implemented: func.body.is_some(),
             members: None,
             implemented_protocols: None,
-            body: None,
         })
     }
 
@@ -309,7 +308,6 @@ impl<'a> Extractor<'a> {
             implemented: ctor.body.is_some(),
             members: None,
             implemented_protocols: None,
-            body: None,
         })
     }
 
@@ -347,7 +345,6 @@ impl<'a> Extractor<'a> {
             implemented: false,
             members: None,
             implemented_protocols: None,
-            body: None,
         })
     }
 
@@ -385,7 +382,6 @@ impl<'a> Extractor<'a> {
             implemented: false,
             members: None,
             implemented_protocols: None,
-            body: None,
         })
     }
 }

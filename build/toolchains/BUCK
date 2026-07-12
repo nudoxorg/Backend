@@ -155,20 +155,13 @@ toolchain_alias(
 # Zero-config: auto-detects `go` on PATH and materializes GOROOT. Used to
 # build the Go oracle producer (workspace/compiler/compile/go/oracle).
 
-# `read_config` is legal here (target-instantiation time) but not during rule
-# analysis, so the optional `[go] go_binary` override is resolved here and
-# passed to the toolchain rules as an attr. Empty => the rule's platform default.
-_go_binary = read_config("go", "go_binary", "")
-
 system_go_toolchain(
     name = "go",
-    go_binary = _go_binary,
     visibility = ["PUBLIC"],
 )
 
 system_go_bootstrap_toolchain(
     name = "go_bootstrap",
-    go_binary = _go_binary,
     visibility = ["PUBLIC"],
 )
 
@@ -227,11 +220,6 @@ javacd_toolchain(
     jlink = ":jlink_tool",
     jmod = ":jmod_tool",
     jrt_fs_jar = ":jrt_fs_jar",
-    # The Java oracle doclet (workspace/compiler/compile/java/oracle) uses
-    # Java 16+ syntax (pattern-matching instanceof, switch rules); the prelude
-    # default is 8. The pinned JDK is Zulu 21, so 17 is safe.
-    source_level = "17",
-    target_level = "17",
     visibility = ["PUBLIC"],
 )
 
