@@ -20,67 +20,132 @@ impl ObjectStoreBlobStore {
 	/// Create a local-filesystem-backed blob store rooted at `root`.
 	/// Creates the directory if it does not already exist.
 	pub fn local(root: PathBuf) -> Result<Self> {
-		std::fs::create_dir_all(&root)
-			.map_err(|e| BlobStoreError::CreateDir(Box::new(e)))?;
+		std::fs::create_dir_all(&root).map_err(|e| BlobStoreError::CreateDir(Box::new(e)))?;
 		let fs = LocalFileSystem::new_with_prefix(&root)
 			.map_err(|e| BlobStoreError::Filesystem(Box::new(e)))?;
 		Ok(Self { store: Arc::new(fs) })
 	}
 }
 
-fn path_for(blob_ref: &BlobRef) -> ObjPath { ObjPath::from(format!("blobs/{}.json", blob_ref.0)) }
+/// Path of the immutable, content-addressed blob body (binary `bincode`).
+fn blob_path(blob_ref: &BlobRef) -> ObjPath {
+	ObjPath::from(format!("blobs/{}.blob", blob_ref.as_str()))
+}
+
+/// Path of the small mutable resolution sidecar holding the `GlobalSymbolId`.
+/// Kept separate so the blob body itself is write-once.
+fn resolution_path(blob_ref: &BlobRef) -> ObjPath {
+	ObjPath::from(format!("blobs/{}.res", blob_ref.as_str()))
+}
+
+impl ObjectStoreBlobStore {
+	/// Write (or overwrite) the tiny resolution sidecar for a blob.
+	async fn write_resolution(&self, blob_ref: &BlobRef, global_id: GlobalSymbolId) -> Result<()> {
+		let bytes =
+			bincode::serialize(&global_id).map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
+		self
+			.store
+			.put(&resolution_path(blob_ref), bytes.into())
+			.await
+			.map_err(|e| BlobStoreError::Put(Box::new(e)))?;
+		Ok(())
+	}
+
+	/// Read the resolution sidecar, returning `None` when none has been written.
+	async fn read_resolution(&self, blob_ref: &BlobRef) -> Result<Option<GlobalSymbolId>> {
+		match self.store.get(&resolution_path(blob_ref)).await {
+			Ok(result) => {
+				let bytes = result.bytes().await.map_err(|e| BlobStoreError::Get(Box::new(e)))?;
+				let global_id =
+					bincode::deserialize(&bytes).map_err(|e| BlobStoreError::Deserialize(Box::new(e)))?;
+				Ok(Some(global_id))
+			}
+			Err(object_store::Error::NotFound { .. }) => Ok(None),
+			Err(e) => Err(BlobStoreError::Get(Box::new(e)).into()),
+		}
+	}
+}
 
 #[async_trait]
 impl BlobStore for ObjectStoreBlobStore {
 	#[tracing::instrument(skip(self, info), fields(occurrence_id = %info.occurrence_id))]
 	async fn put(&self, info: &BlobInfo) -> Result<BlobRef> {
 		if info.metadata.blob_schema_version != BLOB_SCHEMA_VERSION {
-			return Err(BlobStoreError::SchemaVersionMismatch {
-				expected: BLOB_SCHEMA_VERSION,
-				got:      info.metadata.blob_schema_version,
-			}
-			.into());
+			return Err(
+				BlobStoreError::SchemaVersionMismatch {
+					expected: BLOB_SCHEMA_VERSION,
+					got:      info.metadata.blob_schema_version,
+				}
+				.into(),
+			);
 		}
-		let id = uuid::Uuid::new_v4().to_string();
-		let blob_ref = BlobRef(id);
-		let path = path_for(&blob_ref);
+
+		// The blob body is the *immutable* content. `Resolved` state is mutable
+		// and lives in the sidecar; strip it to `Unresolved` before hashing so
+		// re-resolving never rewrites or re-keys the blob.  `Deferred(lib)` IS
+		// part of the immutable content (it is set before put() and identifies
+		// which library this occurrence is waiting for).
+		let mut canonical = info.clone();
+		let global_id = if let nudox_core::ResolutionState::Resolved(gid) = canonical.resolution {
+			canonical.resolution = nudox_core::ResolutionState::Unresolved;
+			Some(gid)
+		} else {
+			None
+		};
+
 		let bytes =
-			serde_json::to_vec(info).map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
-		self.store.put(&path, bytes.into()).await.map_err(|e| BlobStoreError::Put(Box::new(e)))?;
+			bincode::serialize(&canonical).map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
+
+		// Content address: identical content yields the same ref, so puts are
+		// idempotent and the ref doubles as an integrity check.
+		let blob_ref = BlobRef::from(blake3::hash(&bytes).to_hex().to_string());
+
+		self
+			.store
+			.put(&blob_path(&blob_ref), bytes.into())
+			.await
+			.map_err(|e| BlobStoreError::Put(Box::new(e)))?;
+
+		if let Some(gid) = global_id {
+			self.write_resolution(&blob_ref, gid).await?;
+		}
+
 		Ok(blob_ref)
 	}
 
 	#[tracing::instrument(skip(self), fields(blob_ref = %blob_ref))]
 	async fn get(&self, blob_ref: &BlobRef) -> Result<BlobInfo> {
-		let path = path_for(blob_ref);
-		let get_result =
-			self.store.get(&path).await.map_err(|e| BlobStoreError::Get(Box::new(e)))?;
-		let bytes = get_result.bytes().await.map_err(|e| BlobStoreError::Get(Box::new(e)))?;
-		let info: BlobInfo =
-			serde_json::from_slice(&bytes).map_err(|e| BlobStoreError::Deserialize(Box::new(e)))?;
+		let result = match self.store.get(&blob_path(blob_ref)).await {
+			Ok(result) => result,
+			Err(object_store::Error::NotFound { .. }) => return Err(BlobStoreError::NotFound.into()),
+			Err(e) => return Err(BlobStoreError::Get(Box::new(e)).into()),
+		};
+		let bytes = result.bytes().await.map_err(|e| BlobStoreError::Get(Box::new(e)))?;
+		let mut info: BlobInfo =
+			bincode::deserialize(&bytes).map_err(|e| BlobStoreError::Deserialize(Box::new(e)))?;
 		if info.metadata.blob_schema_version != BLOB_SCHEMA_VERSION {
-			return Err(BlobStoreError::SchemaVersionMismatch {
-				expected: BLOB_SCHEMA_VERSION,
-				got:      info.metadata.blob_schema_version,
-			}
-			.into());
+			return Err(
+				BlobStoreError::SchemaVersionMismatch {
+					expected: BLOB_SCHEMA_VERSION,
+					got:      info.metadata.blob_schema_version,
+				}
+				.into(),
+			);
 		}
+
+		// Overlay the mutable resolution sidecar: if present, the blob is Resolved
+		// regardless of what the body says (Deferred/Unresolved gets upgraded here).
+		if let Some(global_id) = self.read_resolution(blob_ref).await? {
+			info.resolution = nudox_core::ResolutionState::Resolved(global_id);
+		}
+
 		Ok(info)
 	}
 
 	#[tracing::instrument(skip(self), fields(blob_ref = %blob_ref, global_id = %global_id))]
 	async fn update_resolution(&self, blob_ref: &BlobRef, global_id: GlobalSymbolId) -> Result<()> {
-		let mut info = self.get(blob_ref).await?;
-		info.resolved_global_id = Some(global_id);
-		let path = path_for(blob_ref);
-		let bytes =
-			serde_json::to_vec(&info).map_err(|e| BlobStoreError::Serialize(Box::new(e)))?;
-		self
-			.store
-			.put(&path, bytes.into())
-			.await
-			.map_err(|e| BlobStoreError::Put(Box::new(e)))?;
-		Ok(())
+		// Sidecar write only — no read-modify-write of the (large) blob body.
+		self.write_resolution(blob_ref, global_id).await
 	}
 
 	async fn list(&self) -> Result<Vec<BlobRef>> {
@@ -97,8 +162,8 @@ impl BlobStore for ObjectStoreBlobStore {
 				meta
 					.location
 					.filename()
-					.and_then(|name| name.strip_suffix(".json"))
-					.map(|uuid| BlobRef(uuid.to_string()))
+					.and_then(|name| name.strip_suffix(".blob"))
+					.map(|hash| BlobRef::from(hash.to_string()))
 			})
 			.collect();
 		Ok(refs)
@@ -114,21 +179,21 @@ mod object_store_tests {
 
 	fn make_blob(symbol_name: &str, schema_version: u32) -> BlobInfo {
 		BlobInfo {
-			occurrence_id:      OccurrenceId(uuid::Uuid::new_v4()),
-			symbol_name:        symbol_name.into(),
-			symbol_origin:      SymbolOrigin::Repo { repo_id: RepoId("test-repo".into()) },
-			resolved_global_id: None,
-			kind:               None,
-			source:             SourceChunk {
+			occurrence_id: OccurrenceId(uuid::Uuid::new_v4()),
+			symbol_name:   symbol_name.into(),
+			symbol_origin: SymbolOrigin::Repo { repo_id: RepoId::from("test-repo") },
+			resolution:    nudox_core::ResolutionState::Unresolved,
+			kind:          None,
+			source:        SourceChunk {
 				raw_code:        "fn x() {}".into(),
 				treesitter_repr: None,
-				symbol_span:     ByteSpan { start: 3, end: 4 },
+				symbol_span:     ByteSpan::covering(3, 4),
 			},
-			embeddings:         vec![],
-			metadata:           ChunkMetadata {
-				repo_id:             RepoId("test-repo".into()),
+			embeddings:    vec![],
+			metadata:      ChunkMetadata {
+				repo_id:             RepoId::from("test-repo"),
 				file_path:           "src/lib.rs".into(),
-				file_span:           ByteSpan { start: 0, end: 9 },
+				file_span:           ByteSpan::covering(0, 9),
 				parsed_at:           chrono::Utc::now(),
 				lang:                Language::Rust,
 				lang_version:        None,
@@ -158,14 +223,14 @@ mod object_store_tests {
 		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
 		store.update_resolution(&blob_ref, gid).await.unwrap();
 		let got = store.get(&blob_ref).await.unwrap();
-		assert_eq!(got.resolved_global_id.map(|g| g.0), Some(gid.0));
+		assert_eq!(got.resolution.resolved_id().map(|g| g.0), Some(gid.0));
 	}
 
 	#[tokio::test]
 	async fn get_missing_returns_err() {
 		let tmp = TempDir::new().unwrap();
 		let store = ObjectStoreBlobStore::local(tmp.path().to_path_buf()).unwrap();
-		let result = store.get(&BlobRef("nonexistent".into())).await;
+		let result = store.get(&BlobRef::from("nonexistent")).await;
 		assert!(result.is_err());
 	}
 
@@ -187,9 +252,9 @@ mod object_store_tests {
 		let r1 = store.put(&make_blob("a", BLOB_SCHEMA_VERSION)).await.unwrap();
 		let r2 = store.put(&make_blob("b", BLOB_SCHEMA_VERSION)).await.unwrap();
 		let mut refs = store.list().await.unwrap();
-		refs.sort_by_key(|r| r.0.clone());
+		refs.sort();
 		let mut expected = vec![r1, r2];
-		expected.sort_by_key(|r| r.0.clone());
+		expected.sort();
 		assert_eq!(refs, expected);
 	}
 
@@ -211,9 +276,82 @@ mod object_store_tests {
 		let got = store2.get(&blob_ref).await.unwrap();
 		assert_eq!(got.symbol_name, "persistent_fn");
 		assert_eq!(got.occurrence_id.0, occurrence_id.0);
-		assert_eq!(got.resolved_global_id.map(|g| g.0), Some(gid.0));
+		assert_eq!(got.resolution.resolved_id().map(|g| g.0), Some(gid.0));
 		let refs = store2.list().await.unwrap();
 		assert_eq!(refs.len(), 1);
 		assert_eq!(refs[0], blob_ref);
+	}
+
+	#[tokio::test]
+	async fn put_is_content_addressed_and_idempotent() {
+		let tmp = TempDir::new().unwrap();
+		let store = ObjectStoreBlobStore::local(tmp.path().to_path_buf()).unwrap();
+		let info = make_blob("dup", BLOB_SCHEMA_VERSION);
+
+		let r1 = store.put(&info).await.unwrap();
+		let r2 = store.put(&info).await.unwrap();
+
+		assert_eq!(r1, r2, "identical content must yield the same blob ref");
+		assert_eq!(r1.as_str().len(), 64, "ref is a blake3 hex digest");
+		assert!(r1.as_str().bytes().all(|b| b.is_ascii_hexdigit()));
+		assert_eq!(store.list().await.unwrap().len(), 1, "idempotent put must not duplicate");
+	}
+
+	#[tokio::test]
+	async fn resolution_is_excluded_from_the_content_address() {
+		// Same content with vs. without a precomputed resolution must hash the
+		// same, so re-resolving a blob never re-keys it.
+		let tmp = TempDir::new().unwrap();
+		let store = ObjectStoreBlobStore::local(tmp.path().to_path_buf()).unwrap();
+		let mut info = make_blob("res", BLOB_SCHEMA_VERSION);
+
+		let unresolved = store.put(&info).await.unwrap();
+		info.resolution = nudox_core::ResolutionState::Resolved(GlobalSymbolId(uuid::Uuid::new_v4()));
+		let resolved = store.put(&info).await.unwrap();
+
+		assert_eq!(unresolved, resolved);
+	}
+
+	#[tokio::test]
+	async fn update_resolution_leaves_the_blob_body_write_once() {
+		let tmp = TempDir::new().unwrap();
+		let store = ObjectStoreBlobStore::local(tmp.path().to_path_buf()).unwrap();
+		let blob_ref = store.put(&make_blob("body", BLOB_SCHEMA_VERSION)).await.unwrap();
+
+		let body_before = store.store.get(&blob_path(&blob_ref)).await.unwrap().bytes().await.unwrap();
+		assert!(
+			store.store.get(&resolution_path(&blob_ref)).await.is_err(),
+			"no sidecar before resolution"
+		);
+
+		let gid = GlobalSymbolId(uuid::Uuid::new_v4());
+		store.update_resolution(&blob_ref, gid).await.unwrap();
+
+		let body_after = store.store.get(&blob_path(&blob_ref)).await.unwrap().bytes().await.unwrap();
+		assert_eq!(body_before, body_after, "the blob body must not be rewritten");
+		let got = store.get(&blob_ref).await.unwrap();
+		assert_eq!(got.resolution.resolved_id().map(|g| g.0), Some(gid.0));
+	}
+
+	#[tokio::test]
+	async fn round_trips_a_blob_with_embeddings() {
+		use nudox_core::{Embedding, EmbeddingPurpose, EmbeddingRecord, ModelId, ModelType};
+
+		let tmp = TempDir::new().unwrap();
+		let store = ObjectStoreBlobStore::local(tmp.path().to_path_buf()).unwrap();
+		let mut info = make_blob("vecsym", BLOB_SCHEMA_VERSION);
+		info.embeddings = vec![EmbeddingRecord {
+			model_type: ModelType::Openai,
+			model:      ModelId::new("text-embedding-3-small"),
+			purpose:    EmbeddingPurpose::Code,
+			vector:     Embedding::new(vec![0.1, -0.2, 0.333, 4.0]).unwrap(),
+		}];
+
+		let blob_ref = store.put(&info).await.unwrap();
+		let got = store.get(&blob_ref).await.unwrap();
+
+		assert_eq!(got.embeddings.len(), 1);
+		assert_eq!(got.embeddings[0].vector, vec![0.1, -0.2, 0.333, 4.0]);
+		assert_eq!(got.embeddings[0].model, "text-embedding-3-small");
 	}
 }
