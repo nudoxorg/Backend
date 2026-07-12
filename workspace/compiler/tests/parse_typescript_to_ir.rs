@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use compiler::languages::typescript::generate_ir;
 use ir::entry::{Index, NudoxPath};
 use ir::kind::{Entry, Visibility};
-use ir::ty::Type;
+use ir::record::{Field, FieldKey};
+use ir::ty::{LiteralKind, Type};
 use tempfile::TempDir;
 
 // ─── Fixture plumbing ────────────────────────────────────────────────────────
@@ -309,5 +310,352 @@ fn ts_kind_mapping_is_correct_for_every_construct() {
         matches!(entry_by_name(&index, "utils"), Entry::Module(_)),
         "namespace utils must lower as Entry::Module; got {:?}",
         entry_by_name(&index, "utils")
+    );
+}
+
+// ─── "exceed deno" regression suite ─────────────────────────────────────────
+//
+// Each test below pins an IR capability that deno_doc could not express.
+// The fixture lives in `tests/fixtures/typescript/exceed/mod.ts`.
+
+/// String literal type preserves the exact value `"foo"`.
+///
+/// deno_doc could not express this: it collapsed all string literal types to
+/// the bare `string` keyword, discarding the value entirely.
+#[test]
+fn literal_string_type_preserves_value() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    match type_alias_type(&index, "Lit") {
+        Type::Literal(lit) => {
+            assert_eq!(
+                lit.kind,
+                LiteralKind::String,
+                "Lit: expected LiteralKind::String, got {:?}",
+                lit.kind
+            );
+            assert_eq!(
+                lit.value, "\"foo\"",
+                "Lit: expected value == \"\\\"foo\\\"\", got {:?}",
+                lit.value
+            );
+        }
+        other => panic!(
+            "type Lit should lower to Type::Literal, got {other:?}\n\
+             (deno_doc could not express this — it collapsed to bare `string`)"
+        ),
+    }
+}
+
+/// Numeric literal type preserves the exact value `42`.
+///
+/// deno_doc could not express this: it collapsed all numeric literal types to
+/// the bare `number` keyword, discarding the value entirely.
+#[test]
+fn literal_number_type_preserves_value() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    match type_alias_type(&index, "Num") {
+        Type::Literal(lit) => {
+            assert_eq!(
+                lit.kind,
+                LiteralKind::Number,
+                "Num: expected LiteralKind::Number, got {:?}",
+                lit.kind
+            );
+            assert_eq!(
+                lit.value, "42",
+                "Num: expected value == \"42\", got {:?}",
+                lit.value
+            );
+        }
+        other => panic!(
+            "type Num should lower to Type::Literal, got {other:?}\n\
+             (deno_doc could not express this — it collapsed to bare `number`)"
+        ),
+    }
+}
+
+/// Boolean literal type preserves the exact value `true`.
+///
+/// deno_doc could not express this: it collapsed all boolean literal types to
+/// the bare `boolean` keyword, discarding the value entirely.
+#[test]
+fn literal_boolean_type_preserves_value() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    match type_alias_type(&index, "Flag") {
+        Type::Literal(lit) => {
+            assert_eq!(
+                lit.kind,
+                LiteralKind::Boolean,
+                "Flag: expected LiteralKind::Boolean, got {:?}",
+                lit.kind
+            );
+            assert_eq!(
+                lit.value, "true",
+                "Flag: expected value == \"true\", got {:?}",
+                lit.value
+            );
+        }
+        other => panic!(
+            "type Flag should lower to Type::Literal, got {other:?}\n\
+             (deno_doc could not express this — it collapsed to bare `boolean`)"
+        ),
+    }
+}
+
+/// Template-literal type lowers to `Type::TemplateLiteral`, not `Primitive(String)`.
+///
+/// deno_doc could not express this: it flattened all template-literal types to
+/// the plain `string` primitive, losing the structural interpolation.
+#[test]
+fn template_literal_type_is_first_class() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    match type_alias_type(&index, "Tmpl") {
+        Type::TemplateLiteral(tl) => {
+            // `id-${string}` → quasis = ["id-", ""], types = [Primitive(String)]
+            assert!(
+                !tl.quasis.is_empty(),
+                "Tmpl: TemplateLiteralType must carry at least one quasi, got {:?}",
+                tl.quasis
+            );
+            assert!(
+                !tl.types.is_empty(),
+                "Tmpl: TemplateLiteralType must carry at least one interpolated type, got {:?}",
+                tl.types
+            );
+        }
+        other => panic!(
+            "type Tmpl should lower to Type::TemplateLiteral, got {other:?}\n\
+             (deno_doc could not express this — it flattened to `string`)"
+        ),
+    }
+}
+
+/// `typeof base` lowers to `Type::TypeQuery` carrying the binding name.
+///
+/// deno_doc could not express this: it stringified `typeof x` to a plain
+/// `TypeReference` whose identifier happened to spell out the source text,
+/// losing the `typeof` semantics.
+#[test]
+fn typeof_query_is_first_class() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    match type_alias_type(&index, "Q") {
+        Type::TypeQuery(tq) => {
+            assert_eq!(
+                tq.name, "base",
+                "Q: TypeQuery name should be \"base\", got {:?}",
+                tq.name
+            );
+        }
+        other => panic!(
+            "type Q should lower to Type::TypeQuery, got {other:?}\n\
+             (deno_doc could not express this — it emitted a fake TypeReference)"
+        ),
+    }
+}
+
+/// Named-tuple labels are preserved in `Type::NamedTuple`.
+///
+/// deno_doc could not express this: it dropped tuple element labels and emitted
+/// a plain `Type::Tuple`, making `[first: string, second: number]` and
+/// `[string, number]` indistinguishable.
+#[test]
+fn named_tuple_labels_are_preserved() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    match type_alias_type(&index, "Pair") {
+        Type::NamedTuple(members) => {
+            assert_eq!(
+                members.len(),
+                2,
+                "Pair: expected 2 named-tuple members, got {} — members: {:?}",
+                members.len(),
+                members.iter().map(|m| &m.label).collect::<Vec<_>>()
+            );
+            let labels: Vec<Option<&str>> =
+                members.iter().map(|m| m.label.as_deref()).collect();
+            assert_eq!(
+                labels,
+                vec![Some("first"), Some("second")],
+                "Pair: expected labels [Some(\"first\"), Some(\"second\")], got {:?}",
+                labels
+            );
+        }
+        other => panic!(
+            "type Pair should lower to Type::NamedTuple, got {other:?}\n\
+             (deno_doc could not express this — it dropped labels into a plain Tuple)"
+        ),
+    }
+}
+
+/// Class `Rich` surfaces the TC39 `accessor y` as a field with the `accessor` decorator.
+///
+/// deno_doc could not express this: it had no knowledge of the TC39
+/// `accessor` keyword and silently skipped `AccessorProperty` nodes.
+#[test]
+fn class_accessor_property_is_surfaced() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    let rich = match entry_by_name(&index, "Rich") {
+        Entry::RecordType(sym) => sym,
+        other => panic!("expected Entry::RecordType for Rich, got {other:?}"),
+    };
+
+    let accessor_field = rich.inner.fields.iter().find(|f| {
+        if let Field::Known(kf) = f {
+            if let FieldKey::Ident(ref name) = kf.key {
+                return name == "y";
+            }
+        }
+        false
+    });
+    let kf = match accessor_field {
+        Some(Field::Known(kf)) => kf,
+        _ => panic!(
+            "Rich: expected a field named `y` (accessor) in fields {:?}\n\
+             (deno_doc could not express this — AccessorProperty nodes were silently skipped)",
+            rich.inner
+                .fields
+                .iter()
+                .filter_map(|f| {
+                    if let Field::Known(kf) = f {
+                        if let FieldKey::Ident(ref s) = kf.key { Some(s.clone()) } else { None }
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        ),
+    };
+    assert!(
+        kf.attributes.decorators.iter().any(|d| d == "accessor"),
+        "Rich.y: field must carry the \"accessor\" decorator, got {:?}",
+        kf.attributes.decorators
+    );
+}
+
+/// Class `Rich` emits a synthetic `__static` entry for its static-initialiser block.
+///
+/// deno_doc could not express this: `static { }` blocks have no type-level
+/// surface and were silently dropped, making them invisible in the IR.
+#[test]
+fn class_static_block_is_synthesised() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    // The synthetic entry is named `__static` and lives as an Entry::Function
+    // in the index (member of Rich).
+    let has_static = index
+        .entries_by_path
+        .values()
+        .any(|e| e.name() == "__static" && matches!(e, Entry::Function(_)));
+
+    assert!(
+        has_static,
+        "Rich: a synthetic Entry::Function named `__static` must be present for the static block;\
+         found entries: {:?}\n\
+         (deno_doc could not express this — static {{ }} blocks were silently dropped)",
+        index
+            .entries_by_path
+            .values()
+            .map(|e| e.name())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Constructor-body `this.z = 1` is synthesised as a field on class `Rich`.
+///
+/// deno_doc could not express this: only `PropertyDefinition` nodes were
+/// scanned for fields; bare `this.x = …` assignments in the constructor body
+/// were invisible to the type extractor.
+#[test]
+fn constructor_this_assignment_synthesises_field() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    let rich = match entry_by_name(&index, "Rich") {
+        Entry::RecordType(sym) => sym,
+        other => panic!("expected Entry::RecordType for Rich, got {other:?}"),
+    };
+
+    let has_z = rich.inner.fields.iter().any(|f| {
+        if let Field::Known(kf) = f {
+            if let FieldKey::Ident(ref name) = kf.key {
+                return name == "z";
+            }
+        }
+        false
+    });
+    assert!(
+        has_z,
+        "Rich: synthesised field `z` (from `this.z = 1` in constructor) must be present;\
+         actual fields: {:?}\n\
+         (deno_doc could not express this — constructor-body this-assignments were invisible)",
+        rich.inner
+            .fields
+            .iter()
+            .filter_map(|f| {
+                if let Field::Known(kf) = f {
+                    if let FieldKey::Ident(ref s) = kf.key { Some(s.clone()) } else { None }
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `get x()` getter is lowered as an `Entry::Function` member named `x` on `Rich`.
+///
+/// deno_doc surfaced getters inconsistently; the OXC producer treats them as
+/// regular `MethodDefinition` entries with kind `Get`, lowered to `Entry::Function`.
+#[test]
+fn class_getter_is_lowered_as_function() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    // The getter `x` should be present as a member entry (local_path = ["Rich", "x"]).
+    let has_getter = index
+        .entries_by_path
+        .values()
+        .any(|e| e.name() == "x" && matches!(e, Entry::Function(_)));
+
+    assert!(
+        has_getter,
+        "Rich: getter `x` must lower to Entry::Function;\
+         found function entries: {:?}",
+        index
+            .entries_by_path
+            .values()
+            .filter(|e| matches!(e, Entry::Function(_)))
+            .map(|e| e.name())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `export default function run()` surfaces as a named entry (`run` or `default`).
+///
+/// deno_doc could not express this: default-exported named function declarations
+/// were silently dropped — neither `run` nor `default` appeared in its output.
+#[test]
+fn default_export_function_is_present() {
+    let (index, _dir) = lower("exceed", "exceed");
+
+    let has_default_fn = index
+        .entries_by_path
+        .values()
+        .any(|e| (e.name() == "run" || e.name() == "default") && matches!(e, Entry::Function(_)));
+
+    assert!(
+        has_default_fn,
+        "exceed: default-exported function `run` must be present as Entry::Function \
+         under name \"run\" or \"default\"; found: {:?}\n\
+         (deno_doc could not express this — default-exported declarations were silently dropped)",
+        index
+            .entries_by_path
+            .values()
+            .map(|e| e.name())
+            .collect::<Vec<_>>()
     );
 }
