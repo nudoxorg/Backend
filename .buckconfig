@@ -32,17 +32,25 @@ buck = none
 
 [external_cell_nix]
   git_origin = https://github.com/tweag/buck2.nix.git
+  # Refreshed from `git ls-remote https://github.com/tweag/buck2.nix.git HEAD`
+  # on 2026-07-11 (was the stale accae8c…). This is tweag/buck2.nix default branch.
   commit_hash = 038b031b84846101030b9d081445003e82e3be5c
+# ──────────────────────────────────────────────────────────────────────────
 
 [parser]
 target_platform_detector_spec = target:root//...->prelude//platforms:default \
   target:prelude//...->prelude//platforms:default \
   target:toolchains//...->prelude//platforms:default
 
-# Override java_home here if this doesn't match your machine.
-[java]
-  java_home = /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
+# ── Java toolchain ──────────────────────────────────────────────────────────
+# Defaults to /usr/local/java-runtime/impl/17 (see build/toolchains/BUCK).
+# Override in .buckconfig.local with your JDK 17+ install if that doesn't
+# match your machine, e.g.:
+#
+# [java]
+#   java_home = /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
 
+# ── Android SDK stub ─────────────────────────────────────────────────────────
 # The vendored javacd_toolchain (needed by java_library, e.g. the Java oracle
 # doclet) transitively depends on a `dex` toolchain, which in turn wants an
 # Android SDK. We have no actual Android code — this points at empty

@@ -448,8 +448,6 @@
               pkgs.goreleaser
               pkgs.cuelsp
               pkgs.b3sum
-              pkgs.go # needed by system_go_toolchain for the Go oracle producer
-              pkgs.jdk21_headless # Java 21 — prelude javacd sources require SourceVersion.RELEASE_21
               (mkBuck2 pkgs)
               (if pkgs.stdenv.isLinux then pkgs.wild-unwrapped else null) # Fast linker (RUST), only works with clang for now
               (if pkgs.stdenv.isLinux then pkgs.openssl else null) # Fast linker (RUST), only works with clang for now
@@ -522,14 +520,6 @@
                 echo -n "${buck2-prelude}" > "$PRJ_ROOT/build/prelude-local/.nix-source"
               fi
               unset _prelude_stamp
-              # Write .buckconfig.local with absolute Nix store paths for Go and Java.
-              # This survives daemon restarts (no PATH dependency) and is gitignored.
-              cat > "$PRJ_ROOT/.buckconfig.local" <<'BCFG'
-[go]
-  go_binary = ${pkgs.go}/bin/go
-[java]
-  java_home = ${pkgs.jdk21_headless}
-BCFG
               export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
               # sccache intercepts rustc --version as a non-compilation call and returns empty output,
               # breaking Buck2 build scripts (e.g. rustversion). Buck2 has its own caching.

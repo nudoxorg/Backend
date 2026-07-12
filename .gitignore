@@ -64,12 +64,6 @@
 !/workspace/compiler/tests/fixtures/**/package.json
 !/workspace/compiler/tests/fixtures/**/*.nix
 
-# insta snapshot expectations (accepted `.snap` files) for the producer /
-# renderer snapshot tests. These are the committed test baselines; insta's
-# transient `.snap.new` pending files end in `.new` so this glob leaves them
-# ignored.
-!/**/*.snap
-
 # Patch files for Buck2 genrules
 !/**/*.patch
 
