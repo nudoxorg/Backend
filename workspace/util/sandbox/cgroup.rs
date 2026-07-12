@@ -8,7 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::error::SandboxError;
+use crate::error::{CageError, SandboxError};
 use crate::limits::Limits;
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
@@ -30,10 +30,17 @@ impl Cgroup {
 			return Ok(None);
 		};
 
-		let name = format!("nudox-job-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed));
+		let name = format!(
+			"nudox-job-{}-{}",
+			std::process::id(),
+			SEQ.fetch_add(1, Ordering::Relaxed)
+		);
 		let path = parent.join(&name);
 		fs::create_dir(&path).map_err(|e| {
-			SandboxError::Backend(format!("cgroup create {}: {e}", path.display()))
+			SandboxError::from(CageError::CgroupWrite {
+				path: path.clone(),
+				message: format!("create: {e}"),
+			})
 		})?;
 
 		let cg = Self { path };
@@ -45,7 +52,10 @@ impl Cgroup {
 	}
 
 	fn apply(&self, limits: &Limits) -> Result<(), SandboxError> {
-		write_file(self.path.join("memory.max"), &limits.mem_bytes.get().to_string())?;
+		write_file(
+			self.path.join("memory.max"),
+			&limits.mem_bytes.get().to_string(),
+		)?;
 		// Pin swap so memory.max is a real RAM ceiling.
 		let _ = write_file(self.path.join("memory.swap.max"), "0");
 		// cpu.max: quota period — 100ms period, one full CPU of quota scaled by...
@@ -66,6 +76,22 @@ impl Cgroup {
 		self.path.join("cgroup.procs")
 	}
 
+	/// Write `cgroup.kill` to stop every process in this cgroup (kernel ≥ 5.14).
+	///
+	/// Used for cancellation and hung-worker recovery. Best-effort: returns
+	/// `Ok` when the file is missing (older kernels) after a silent skip.
+	pub fn kill_all(&self) -> Result<(), SandboxError> {
+		let path = self.path.join("cgroup.kill");
+		match fs::write(&path, "1") {
+			Ok(()) => Ok(()),
+			Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+			Err(e) => Err(SandboxError::from(CageError::CgroupWrite {
+				path,
+				message: e.to_string(),
+			})),
+		}
+	}
+
 	/// Read `memory.peak` when present (kernel ≥ 5.19).
 	pub fn peak_mem(&self) -> Option<u64> {
 		fs::read_to_string(self.path.join("memory.peak"))
@@ -82,16 +108,26 @@ impl Cgroup {
 impl Drop for Cgroup {
 	fn drop(&mut self) {
 		// Best-effort: kill remaining procs (kernel 5.14+), then remove.
-		let _ = write_file(self.path.join("cgroup.kill"), "1");
-		// Give the kernel a moment is not needed if empty; try remove.
+		// Callers that own a live job (see `WorkerSlot`) should kill+wait the
+		// primary PID first so `cgroup.procs` is empty; a non-empty cgroup can
+		// leave the directory behind after a single `remove_dir`.
+		let _ = self.kill_all();
 		let _ = fs::remove_dir(&self.path);
 	}
 }
 
 fn write_file(path: PathBuf, contents: &str) -> Result<(), SandboxError> {
 	fs::write(&path, contents).map_err(|e| {
-		SandboxError::Backend(format!("cgroup write {}: {e}", path.display()))
+		SandboxError::from(CageError::CgroupWrite {
+			path,
+			message: e.to_string(),
+		})
 	})
+}
+
+/// Whether a writable cgroup v2 parent exists (for probes / admission).
+pub fn has_writable_parent() -> bool {
+	discover_writable_parent().is_some()
 }
 
 fn discover_writable_parent() -> Option<PathBuf> {

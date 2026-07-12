@@ -1,16 +1,14 @@
 //! Process isolation for untrusted producer execution.
 //!
-//! Two isolation problems, two mechanisms (see design §3–6):
+//! # One cage (DAEMON-PLAN §2.2)
 //!
-//! 1. **Compile-heavy, code-executing producers** (Rust, Java, Go) run as
-//!    external toolchains under a namespace cage ([`LinuxBwrap`] or a future
-//!    Nix derivation backend).
-//! 2. **In-process interpreters/parsers** (snix, deno_doc, pyrefly) move out
-//!    of the indexer address space into sandboxed worker subprocesses
-//!    ([`worker`]).
+//! Isolation is the [`Cage`] trait: run a [`SealedCommand`] under a
+//! [`CapabilityBudget`], with cooperative [`CancelToken`]. Production:
+//! [`LinuxNamespaces`] (bwrap + cgroup + seccomp). Dev: [`DevPassthrough`]
+//! (constructible only under [`Policy::Development`]).
 //!
-//! Network discipline is uniform: resolve/fetch may use the network (hash-pinned);
-//! parse always runs with [`Network::Off`].
+//! [`WorkerPool`] is **cage-internal** for library-form producers (nix/ts/python),
+//! not a peer of the Backend enum. Real parallelism equals pool size.
 //!
 //! # Layering (Linux production path)
 //!
@@ -28,26 +26,29 @@
 //! # Invariants encoded in the type system
 //!
 //! - [`Env`] is *only* an allowlist — ambient host environment is never inherited.
-//! - [`Network`] is explicit; the default is off.
+//! - [`Network`] / [`NetGrant`] is explicit; the default is off.
 //! - [`Limits`] requires every ceiling (no silent "unlimited" field).
-//! - [`Backend`] selection is probe-based; [`Passthrough`] refuses production.
-//!
-//! # Backends
-//!
-//! | Backend | Platform | Role |
-//! |---------|----------|------|
-//! | [`LinuxBwrap`] | Linux | Primary: bwrap + `--seccomp` + cgroups |
-//! | [`MacSeatbelt`] | macOS | Opt-in (`NUDOX_SANDBOX=seatbelt`); not boundary of record |
-//! | [`Passthrough`] | any | Dev default on macOS; gated out of production |
+//! - [`LimitOverride`] is sparse — zeros are unrepresentable via `NonZero*`.
+//! - [`DevPassthrough`] cannot be constructed under [`Policy::Production`].
 
 #![deny(missing_docs)]
 
 pub mod backend;
+pub mod budget;
+pub mod cage;
+pub mod cancel;
 pub mod cgroup;
 pub mod error;
+pub mod job;
 pub mod limits;
+pub mod node;
+pub mod observer;
+pub mod overrides;
+pub mod probe;
 pub mod profiles;
+pub mod seal;
 pub mod spec;
+pub mod toolchains;
 pub mod worker;
 
 /// Landlock LSM helpers (Linux only).
@@ -57,29 +58,25 @@ pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
 
-pub use backend::{
-	select, Backend, Capabilities, LinuxBwrap, MacSeatbelt, Passthrough, Selected,
-};
-pub use error::{KillReason, SandboxError};
-pub use limits::{Limits, Network};
+pub use budget::{CapabilityBudget, FsGrant, NetGrant, ThreatTier};
+pub use cage::{Cage, CageCaps, CageId, DevPassthrough, LinuxBwrap, LinuxNamespaces, Policy, run_sealed};
+pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget};
+pub use cancel::CancelToken;
+pub use error::{CageError, KillReason, SandboxError, to_io_error};
+pub use limits::{LimitOverride, Limits, Network};
+pub use node::NodeId;
+pub use observer::{CountingObserver, ForgeObserver, NullObserver};
+pub use overrides::{OverrideTable, SandboxKey};
+pub use probe::{HostIsolation, IsolationPolicy, LandlockAbi, require as require_isolation};
 pub use profiles::ProducerProfile;
-pub use spec::{Env, Mounts, Output, Spec};
-pub use worker::{JobRequest, JobResponse, WorkerPool, WorkerPoolConfig};
+pub use seal::{SealedCommand, SealedInput, Sealer};
+pub use toolchains::ToolchainSet;
+pub use spec::{Env, Mounts, Output, ProcessEnd, Spec};
+/// Type alias kept for external crates; new code should use [`Output`] directly.
+pub type Captured = Output;
+pub use worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConfig};
 
-use std::sync::OnceLock;
-
-/// Process-wide default backend, selected once via [`select`].
-fn global_backend() -> &'static dyn Backend {
-	static BACKEND: OnceLock<Selected> = OnceLock::new();
-	BACKEND.get_or_init(select).as_ref()
-}
-
-/// Run `spec` on the process-wide default backend.
-pub fn run(spec: Spec) -> Result<Output, SandboxError> {
-	global_backend().run(spec)
-}
-
-/// Run `spec` on an explicitly chosen backend.
-pub fn run_with(backend: &dyn Backend, spec: Spec) -> Result<Output, SandboxError> {
-	backend.run(spec)
+/// Probe host isolation and enforce policy from the environment.
+pub fn boot_check() -> Result<HostIsolation, SandboxError> {
+	require_isolation(IsolationPolicy::from_env())
 }

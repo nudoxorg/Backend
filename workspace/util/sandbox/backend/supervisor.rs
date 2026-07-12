@@ -4,13 +4,23 @@ use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::cancel::CancelToken;
 use crate::cgroup::Cgroup;
 use crate::error::{KillReason, SandboxError};
 use crate::limits::Limits;
 use crate::spec::Output;
 
 /// Drive a spawned child to completion under `limits`.
-pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> Result<Output, SandboxError> {
+///
+/// Honors `cancel` each poll iteration: writes `cgroup.kill` (when a cgroup is
+/// owned) then kills the direct child. Forced kills (wall, output cap, cancel)
+/// always go through [`force_kill`].
+pub(crate) fn supervise(
+	mut child: Child,
+	limits: &Limits,
+	cgroup: Option<Cgroup>,
+	cancel: &CancelToken,
+) -> Result<Output, SandboxError> {
 	if let Some(ref cg) = cgroup {
 		if let Err(e) = cg.add_pid(child.id()) {
 			tracing::warn!(error = %e, "cgroup attach failed; relying on rlimits");
@@ -26,18 +36,21 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 	let mut stderr_done = false;
 
 	// Non-blocking-ish drain with deadline: use try_wait + read with short sleeps.
-	// For simplicity and correctness under small tools, we set pipes nonblocking
-	// via a short polling loop.
 	make_nonblocking(child.stdout.as_mut());
 	make_nonblocking(child.stderr.as_mut());
 
 	loop {
+		if cancel.is_cancelled() {
+			force_kill(&mut child, cgroup.as_ref());
+			return Err(SandboxError::Cancelled);
+		}
+
 		if Instant::now() >= deadline {
-			let _ = child.kill();
-			let _ = child.wait();
+			force_kill(&mut child, cgroup.as_ref());
+			let wall = start.elapsed();
 			return Err(SandboxError::Killed {
 				reason: KillReason::Wall,
-				wall: start.elapsed(),
+				wall,
 			});
 		}
 
@@ -47,11 +60,11 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 					Drain::WouldBlock => {}
 					Drain::Eof => stdout_done = true,
 					Drain::Capped => {
-						let _ = child.kill();
-						let _ = child.wait();
+						force_kill(&mut child, cgroup.as_ref());
+						let wall = start.elapsed();
 						return Err(SandboxError::Killed {
 							reason: KillReason::OutputCap,
-							wall: start.elapsed(),
+							wall,
 						});
 					}
 					Drain::Err(e) => return Err(SandboxError::Io(e)),
@@ -67,11 +80,11 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 					Drain::WouldBlock => {}
 					Drain::Eof => stderr_done = true,
 					Drain::Capped => {
-						let _ = child.kill();
-						let _ = child.wait();
+						force_kill(&mut child, cgroup.as_ref());
+						let wall = start.elapsed();
 						return Err(SandboxError::Killed {
 							reason: KillReason::OutputCap,
-							wall: start.elapsed(),
+							wall,
 						});
 					}
 					Drain::Err(e) => return Err(SandboxError::Io(e)),
@@ -99,30 +112,32 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 						if let Some(ref cg) = cgroup {
 							if let Some(peak) = cg.peak_mem() {
 								if peak >= limits.mem_bytes.get().saturating_mul(9) / 10 {
+									let wall = start.elapsed();
 									return Err(SandboxError::Killed {
 										reason: KillReason::Oom,
-										wall: start.elapsed(),
+										wall,
 									});
 								}
 							}
 						}
 					}
 					if status.signal() == Some(libc::SIGXCPU) {
+						let wall = start.elapsed();
 						return Err(SandboxError::Killed {
 							reason: KillReason::CpuTime,
-							wall: start.elapsed(),
+							wall,
 						});
 					}
 				}
 
 				let peak_mem = cgroup.as_ref().and_then(|c| c.peak_mem());
+				let wall = start.elapsed();
 				return Ok(Output {
 					stdout: stdout_buf,
 					stderr: stderr_buf,
-					status,
-					wall: start.elapsed(),
+					end: crate::spec::ProcessEnd::Exited(status),
+					wall,
 					peak_mem,
-					killed: None,
 				});
 			}
 			Ok(None) => {
@@ -131,6 +146,16 @@ pub fn supervise(mut child: Child, limits: &Limits, cgroup: Option<Cgroup>) -> R
 			Err(e) => return Err(SandboxError::Io(e)),
 		}
 	}
+}
+
+/// Kill the process tree: cgroup.kill first (covers forked guests), then the
+/// direct child, then wait.
+fn force_kill(child: &mut Child, cgroup: Option<&Cgroup>) {
+	if let Some(cg) = cgroup {
+		let _ = cg.kill_all();
+	}
+	let _ = child.kill();
+	let _ = child.wait();
 }
 
 enum Drain {
@@ -191,7 +216,7 @@ fn make_nonblocking(pipe: Option<&mut impl std::os::fd::AsFd>) {
 /// jemalloc). We set AS to **4×** `mem_bytes` as headroom so rustc is not
 /// killed for legitimate mappings while still bounding runaway mmap.
 /// soft==hard so the guest cannot raise its own budget.
-pub fn apply_rlimits(limits: &Limits) -> Result<(), SandboxError> {
+pub(crate) fn apply_rlimits(limits: &Limits) -> Result<(), SandboxError> {
 	#[cfg(unix)]
 	{
 		use rlimit::Resource;
@@ -216,7 +241,7 @@ pub fn apply_rlimits(limits: &Limits) -> Result<(), SandboxError> {
 }
 
 /// Shared setup: pipes, clear inherit.
-pub fn base_command(program: &std::path::Path) -> Command {
+pub(crate) fn base_command(program: &std::path::Path) -> Command {
 	let mut cmd = Command::new(program);
 	cmd.stdin(Stdio::null())
 		.stdout(Stdio::piped())
@@ -227,6 +252,6 @@ pub fn base_command(program: &std::path::Path) -> Command {
 
 /// Write a seatbelt / debug helper — unused placeholder for status fd.
 #[allow(dead_code)]
-pub fn write_all(w: &mut impl Write, data: &[u8]) -> Result<(), SandboxError> {
+pub(crate) fn write_all(w: &mut impl Write, data: &[u8]) -> Result<(), SandboxError> {
 	w.write_all(data).map_err(SandboxError::Io)
 }

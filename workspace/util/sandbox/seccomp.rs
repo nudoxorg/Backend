@@ -5,8 +5,6 @@
 //!
 //! ## Where to install
 //!
-//! - **Direct spawn** (`run_direct_hardened`): `apply_denylist()` last in
-//!   `pre_exec` (after rlimits + Landlock).
 //! - **bwrap**: never install on the bwrap process itself — that breaks
 //!   `unshare`/`mount` setup. Pass the compiled cBPF via `bwrap --seccomp FD`
 //!   so the filter attaches **after** namespace construction (research finding).

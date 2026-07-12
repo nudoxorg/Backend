@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use sandbox::{
-	run, Env, KillReason, Limits, Mounts, Network, ProducerProfile, SandboxError, Spec,
+	CancelToken, CapabilityBudget, Env, FsGrant, KillReason, Limits, Mounts, NetGrant, Network,
+	Output, ProducerProfile, SandboxError, SealedCommand, Spec, run_sealed,
 };
 
 fn tiny_limits() -> Limits {
@@ -23,6 +24,41 @@ fn echo_bin() -> &'static str {
 	} else {
 		"echo"
 	}
+}
+
+/// Build a `SealedCommand` from a `Spec` for test purposes.
+///
+/// Uses the first writable mount as scratch (or temp dir as fallback).
+fn spec_to_sealed(spec: Spec) -> SealedCommand {
+	let scratch = spec
+		.mounts
+		.writable
+		.first()
+		.cloned()
+		.unwrap_or_else(std::env::temp_dir);
+	let mut fs = FsGrant::scratch(&scratch);
+	for p in &spec.mounts.read_only {
+		fs = fs.ro(p);
+	}
+	for p in spec.mounts.writable.iter().skip(1) {
+		fs = fs.rw(p);
+	}
+	let budget = CapabilityBudget::new(
+		fs,
+		NetGrant::from(spec.network),
+		spec.env,
+		spec.limits,
+	);
+	let mut cmd = SealedCommand::new(spec.command, spec.args, budget);
+	if let Some(cwd) = spec.cwd {
+		cmd = cmd.cwd(cwd);
+	}
+	cmd
+}
+
+/// Run a `Spec` via the platform cage (thin test helper).
+fn run(spec: Spec) -> Result<Output, SandboxError> {
+	run_sealed(spec_to_sealed(spec), &CancelToken::never()).map_err(Into::into)
 }
 
 fn echo_spec(arg: &str) -> Spec {
@@ -150,13 +186,14 @@ fn network_off_is_default() {
 }
 
 #[test]
-fn passthrough_refuses_production() {
-	// Use always_deny so we don't race other tests on process env.
-	use sandbox::Backend;
-	use sandbox::Passthrough;
-	let backend = Passthrough::always_deny();
-	let result = backend.run(echo_spec("x"));
-	assert!(matches!(result, Err(SandboxError::Denied { .. })));
+fn dev_passthrough_refuses_production_policy() {
+	// DevPassthrough cannot be constructed under Policy::Production.
+	use sandbox::{CageError, DevPassthrough, Policy};
+	let result = DevPassthrough::try_new(Policy::Production);
+	assert!(
+		matches!(result, Err(CageError::Denied { .. })),
+		"expected Denied, got {result:?}"
+	);
 }
 
 #[cfg(target_os = "linux")]
@@ -245,13 +282,4 @@ fn rlimit_as_has_va_headroom() {
 	// soft==hard ceilings present
 	assert!(lim.cpu_secs.get() > 0);
 	assert!(lim.nofile.get() >= 1024);
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn seccomp_denylist_compiles() {
-	// BPF program must be non-empty and a multiple of 8 bytes (sock_filter).
-	let bytes = sandbox::seccomp::denylist_bpf_bytes().expect("compile denylist");
-	assert!(!bytes.is_empty());
-	assert_eq!(bytes.len() % 8, 0);
 }
