@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
+use crate::authz::WriteCap;
 use crate::error::ServerResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,11 +83,14 @@ fn provisional_toolchain(ecosystem: Language) -> Toolchain {
 }
 
 impl<M: EmbeddingModel> Server<M> {
+	/// Ensure a package is initialized and enqueue it if needed.
+	///
+	/// The caller must hold a [`WriteCap`] proving authorization has occurred.
 	pub async fn ensure_initialized(
 		&self,
+		_cap: &WriteCap,
 		coordinates: &PackageCoordinates,
 	) -> ServerResult<Initialized> {
-		self.authorize("packages.ensure_initialized")?;
 		let stores = self.base();
 		let package = coordinates.id();
 

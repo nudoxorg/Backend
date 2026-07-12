@@ -14,9 +14,11 @@
 
 #![feature(return_type_notation)]
 
+pub mod authz;
 pub mod config;
 pub mod coordination;
 pub mod error;
+pub mod forge;
 pub mod http;
 mod poll;
 pub mod save;
@@ -26,22 +28,23 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use heart::{BackendKind, ConnectError, ConnectFailure, Connect, Federation, Live, access::AccessPolicy};
+use heart::{BackendKind, Cold, ConnectError, ConnectFailure, Connect, Federation, Live};
 use registry::{
 	Store,
 	coordination::Outbox,
 	index::{GlobalStore, TerminusInstance},
+	metadata::{Specifics, Synonyms},
 	queue::{Queue, RetryPolicy},
 };
 use runtime::{
 	graph::{Credentials, Database, Graph, Organization},
-	session::{MemorySessionStore, Persistence},
+	session::PgSessionStore,
 	text::TextIndex,
 	vector::{CollectionName, EmbeddingCache, EmbeddingModel, Semantic},
 };
 use secrecy::ExposeSecret;
 
-pub use config::{Endpoints, Limits, ServerConfiguration, SourceConfig};
+pub use config::{Deployment, Endpoints, Limits, Role, ServerConfiguration, SourceConfig};
 pub use error::{ServerError, ServerResult};
 use error::InternalError;
 
@@ -58,13 +61,6 @@ const INDEXING_RETRY_POLICY: RetryPolicy = RetryPolicy {
 
 /// How many query-text embeddings the in-process cache retains.
 const EMBEDDING_CACHE_CAPACITY: u64 = 65_536;
-
-/// The default access policy: everyone may read and write. Access control for
-/// hosted deployments happens at the proxy in front of this server (see
-/// [`heart::access`]); this policy is the honest name for that arrangement.
-pub struct UnrestrictedAccess;
-
-impl AccessPolicy for UnrestrictedAccess {}
 
 /// The full set of connected backing stores for one federated source. Every
 /// source — definitive or overlay — is a complete, independently-verified stack.
@@ -99,10 +95,9 @@ pub struct Server<M: EmbeddingModel> {
 	/// connected stack. Reads resolve overlay-first (override), then base.
 	federation: Federation<SourceStores<M>>,
 
-	/// The access-control policy every read/write is checked through.
-	policy: Arc<dyn AccessPolicy>,
-
-	/// The query planner — the only place a semantic gate is minted.
+	/// The query planner — the only place a *user-facing* semantic gate is
+	/// minted ([`runtime::vector::SemanticGate::issue`]). Store readiness uses
+	/// the separate [`runtime::vector::SemanticGate::for_readiness`] constructor.
 	planner: crate::search::SearchPlanner,
 
 	/// The (model-branded) query embedder behind the gated semantic path.
@@ -111,18 +106,55 @@ pub struct Server<M: EmbeddingModel> {
 	/// The content-addressed embedding cache in front of the embedder.
 	embedding_cache: EmbeddingCache<M>,
 
-	/// Per-session exploration graphs (join-semilattice merge).
-	sessions: MemorySessionStore,
+	/// Per-session exploration graphs (join-semilattice merge), backed by
+	/// postgres so **any** gateway replica can serve **any** session (the
+	/// node-local `MemorySessionStore` is invisible to sibling replicas). The
+	/// backing `sessions` table is created at boot via [`PgSessionStore::migrate`].
+	sessions: PgSessionStore,
+
+	/// The owned compile-plane runtime (cage + CAS + toolchains + overrides +
+	/// observer), replacing every former compile-plane process global.
+	forge: Arc<crate::forge::ForgeRuntime>,
+
+	/// Keyword-normalization heuristics (synonyms + specifics), loaded once from
+	/// `config.metadata_data_dir`. `None` disables them (the extractor then runs
+	/// with `(None, None)`, name/identifier facets only). Loaded once because the
+	/// tables are expensive to parse and immutable for the process lifetime.
+	heuristics: Option<Heuristics>,
+}
+
+/// The metadata keyword-normalization tables, loaded once at assembly and shared
+/// (read-only) across every facet extraction. Bundling both keeps the "either
+/// both wired or neither" invariant the extractor expects.
+pub struct Heuristics {
+	synonyms: Synonyms,
+	specifics: Specifics,
+}
+
+impl Heuristics {
+	/// Load both heuristics tables from `dir` (expects `tag-synonyms.csv`,
+	/// `specific-keywords.txt`, `bland-keywords.txt`). Fails loudly if the
+	/// directory is configured but the files cannot be parsed — no silent
+	/// half-wired state (parse, don't validate).
+	pub fn load(dir: &std::path::Path) -> std::io::Result<Self> {
+		Ok(Self { synonyms: Synonyms::new(dir)?, specifics: Specifics::new(dir)? })
+	}
+
+	/// The synonym table, ready to pass to `registry::metadata::rich::extract`.
+	pub fn synonyms(&self) -> &Synonyms { &self.synonyms }
+
+	/// The specifics table, ready to pass to `registry::metadata::rich::extract`.
+	pub fn specifics(&self) -> &Specifics { &self.specifics }
 }
 
 impl<M: EmbeddingModel> Server<M> {
 	/// Assemble a server: connect the definitive base and every overlay
 	/// concurrently, then materialize the federation. Any single connection
 	/// failure of any source aborts assembly with a context-rich [`ServerError`].
-	pub async fn assemble(
-		config: ServerConfiguration,
-		policy: Arc<dyn AccessPolicy>,
-	) -> ServerResult<Self> {
+	///
+	/// Access control for hosted deployments is enforced at the fronting proxy
+	/// (see [`heart::access`]); there is no in-process policy trait yet.
+	pub async fn assemble(config: ServerConfiguration) -> ServerResult<Self> {
 		config.validate()?;
 		http::dto::register_custom_registries(&config.custom_registries);
 
@@ -142,20 +174,92 @@ impl<M: EmbeddingModel> Server<M> {
 			endpoints.embeddings_api_key.clone(),
 		);
 		let embedding_cache = EmbeddingCache::new(EMBEDDING_CACHE_CAPACITY);
-		let sessions = MemorySessionStore::new(Persistence::Directory(
-			config.definitive.data_directory().join("sessions"),
-		));
+
+		// Sessions live in postgres so any gateway replica serves any session. The
+		// pool is built the same way every other pg-backed store of the definitive
+		// source is (`connect_lazy` — no I/O until first use), from the definitive
+		// source's postgres endpoint. `migrate()` creates the `sessions` table
+		// (`IF NOT EXISTS`, idempotent). We reach the definitive source's stores
+		// (already connected above) only for their liveness; the pool here is its
+		// own lazy handle onto the same database.
+		let session_pool = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(8)
+			.connect_lazy(config.definitive.endpoints.postgres.expose_secret())
+			.map_err(|error| {
+				ConnectError::new(BackendKind::Postgres, ConnectFailure::Other(error.into()))
+			})?;
+		let sessions = PgSessionStore::new(session_pool);
+		sessions
+			.migrate()
+			.await
+			.map_err(|error| ServerError::Runtime(error.into()))?;
+
+		// Assemble the compile-plane runtime once. Policy is resolved from the
+		// isolation gate; a `Production` policy refuses to build without a
+		// production-grade cage (Cold→Ready typestate).
+		//
+		// L3 wiring: build a dedicated `Store` for the forge by constructing a
+		// second handle against the same object-store URL as the definitive
+		// source's blob store. The `object_store` layer is stateless — multiple
+		// handles sharing the same URL are safe — so no locking or coordination
+		// with the federation's `Store<Live>` is needed.
+		let forge_l3 = {
+			let backend =
+				object_store_backend(&config.definitive.endpoints.object_store)?;
+			let store_cold: Store<Cold> = Store::new(backend);
+			let store_live: Store<Live> = store_cold.connect().await.map_err(|e| {
+				ServerError::Internal(InternalError::Other {
+					message: format!("forge L3 store connect failed: {e}"),
+				})
+			})?;
+			Some(registry::StoreCas::new(std::sync::Arc::new(store_live)))
+		};
+		let policy = sandbox::Policy::from_env();
+		let forge_cfg = crate::forge::ForgeConfig {
+			node: None,
+			overrides: config.limits.sandbox_overrides.clone(),
+			cas_root: Some(config.definitive.data_directory().join("cas")),
+			observer: std::sync::Arc::new(sandbox::NullObserver),
+			l3: forge_l3,
+		};
+		let forge = std::sync::Arc::new(
+			crate::forge::ForgeRuntime::assemble(policy, forge_cfg, tokio::runtime::Handle::current())
+				.map_err(|e| {
+					ServerError::Internal(InternalError::Other {
+						message: format!("forge assembly failed: {e}"),
+					})
+				})?,
+		);
+
+		// Load keyword-normalization heuristics once, if a data dir is configured.
+		// A configured-but-unloadable dir aborts assembly rather than silently
+		// degrading to name-only facets.
+		let heuristics = match &config.metadata_data_dir {
+			Some(dir) => Some(Heuristics::load(dir).map_err(|error| {
+				invalid_configuration(format!(
+					"metadata_data_dir {} configured but heuristics failed to load: {error}",
+					dir.display()
+				))
+			})?),
+			None => None,
+		};
 
 		Ok(Self {
 			config,
 			federation,
-			policy,
 			planner: crate::search::SearchPlanner::new(),
 			embedder,
 			embedding_cache,
 			sessions,
+			forge,
+			heuristics,
 		})
 	}
+
+	/// The keyword-normalization heuristics, if a `metadata_data_dir` was
+	/// configured. `None` means facet extraction runs without synonym/specifics
+	/// normalization.
+	pub(crate) fn heuristics(&self) -> Option<&Heuristics> { self.heuristics.as_ref() }
 
 	/// Build and connect the full store stack for one configured source, bringing
 	/// its backends up concurrently.
@@ -258,20 +362,18 @@ impl<M: EmbeddingModel> Server<M> {
 	/// The definitive base's text index.
 	pub fn text(&self) -> &TextIndex { &self.base().text }
 
-	/// The per-session exploration graphs.
-	pub fn sessions(&self) -> &MemorySessionStore { &self.sessions }
+	/// The model-branded query embedder behind the gated semantic path — also the
+	/// embedder the vector fan-out consumer drives to materialize symbol points.
+	pub(crate) fn embedder(&self) -> &HttpEmbedder<M> { &self.embedder }
 
-	/// The single choke point every read/write flow authorizes through.
-	///
-	/// [`heart::access::AccessPolicy`] currently exposes no deny surface (hosted
-	/// deployments gate at the fronting proxy), so today this is an audit trace
-	/// plus the structural guarantee that every flow *has* an authorization
-	/// point to grow into.
-	pub(crate) fn authorize(&self, action: &'static str) -> ServerResult<()> {
-		let _ = &self.policy;
-		tracing::trace!(action, "access granted");
-		Ok(())
-	}
+	/// The content-addressed embedding cache in front of the embedder.
+	pub(crate) fn embedding_cache(&self) -> &EmbeddingCache<M> { &self.embedding_cache }
+
+	/// The per-session exploration graphs (postgres-backed; replica-shared).
+	pub fn sessions(&self) -> &PgSessionStore { &self.sessions }
+
+	/// The owned compile-plane runtime (cage + CAS + toolchains + overrides).
+	pub fn forge(&self) -> &Arc<crate::forge::ForgeRuntime> { &self.forge }
 
 	/// Serve until shutdown: bind the HTTP router to `config.serving_address` and
 	/// run the background pollers (queue workers + derived-store consumers) for
@@ -290,23 +392,64 @@ impl<M: EmbeddingModel> Server<M> {
 			})?;
 		tracing::info!(address = %self.config.serving_address, "serving");
 
-		// Supervised background pollers: one queue worker, one outbox consumer per
-		// derived sink, plus the replica-local index sync/watermark loops.
+		// Supervised background pollers, gated by this node's role. The compile
+		// worker runs on forge nodes; the derived-store fan-out consumers and the
+		// replica-local index sync/watermark loops run on gateway nodes. `All`
+		// (the default) runs both; every role still serves the HTTP surface.
+		let role = self.config.role;
 		let mut pollers = tokio::task::JoinSet::new();
-		pollers.spawn(poll::queue_worker(Arc::clone(&self)));
-		for sink in <heart::DerivedStore as strum::IntoEnumIterator>::iter() {
-			pollers.spawn(poll::outbox_consumer(Arc::clone(&self), sink));
+
+		// Graceful-drain signal for the compile worker: on shutdown we fire it,
+		// let the worker stop dequeuing new jobs and finish in-flight ones (up to
+		// a bounded deadline), then abort whatever remains. The forge worker's
+		// join handle is tracked separately so we can `await` its clean drain.
+		let drain = sandbox::CancelToken::new();
+		let mut forge_worker: Option<tokio::task::JoinHandle<()>> = None;
+		if role.runs_forge() {
+			forge_worker = Some(tokio::spawn(poll::queue_worker(Arc::clone(&self), drain.clone())));
 		}
-		pollers.spawn(poll::package_index_poller(Arc::clone(&self)));
-		pollers.spawn(poll::text_index_poller(Arc::clone(&self)));
+		if role.runs_gateway() {
+			for sink in <heart::DerivedStore as strum::IntoEnumIterator>::iter() {
+				pollers.spawn(poll::outbox_consumer(Arc::clone(&self), sink));
+			}
+			pollers.spawn(poll::package_index_poller(Arc::clone(&self)));
+			pollers.spawn(poll::text_index_poller(Arc::clone(&self)));
+			// Storage reclamation (CAS GC): purge consumed outbox rows below every
+			// sink's watermark. The delete is idempotent, so overlapping replicas
+			// are harmless — no advisory lock needed. Blob GC is a documented TODO
+			// (see `poll::cas_gc`) pending a safe live-reference oracle.
+			pollers.spawn(poll::cas_gc(Arc::clone(&self)));
+		}
+		tracing::info!(?role, "background pollers started");
 
 		axum::serve(listener, router)
 			.with_graceful_shutdown(shutdown_signal())
 			.await
 			.map_err(|source| ServerError::Internal(InternalError::ServeFailed { source }))?;
 
-		// The listener has drained; wind the pollers down at their next await
-		// point and reap them so nothing outlives the server.
+		// The HTTP listener has drained. Wind down in two phases:
+		//
+		// 1. **Graceful drain of the forge worker.** Signal it to stop dequeuing;
+		//    its in-flight jobs run to completion (or their own deadline). We wait
+		//    at most `drain_deadline` for the worker's clean return before forcing
+		//    it — a wedged job cannot hold shutdown open forever. Idempotent job
+		//    settling means a forced abort here re-delivers rather than corrupts.
+		if let Some(handle) = forge_worker {
+			tracing::info!("draining forge worker (no new jobs; finishing in-flight)");
+			drain.cancel();
+			let deadline = self.config.limits.drain_deadline;
+			match tokio::time::timeout(deadline, handle).await {
+				Ok(Ok(())) => tracing::info!("forge worker drained cleanly"),
+				Ok(Err(join)) => tracing::warn!(error = %join, "forge worker task ended abnormally"),
+				Err(_) => tracing::warn!(?deadline, "drain deadline exceeded; forcing forge worker down"),
+				// `handle` is dropped on timeout, aborting the still-running task at
+				// its next await point — the same idempotent-abort semantics as below.
+			}
+		}
+
+		// 2. **Abort the remaining (gateway) pollers** at their next await point
+		//    and reap them so nothing outlives the server. Every unit of poller
+		//    work is idempotent, so an abort mid-tick is safe.
 		tracing::info!("shutting background pollers down");
 		pollers.abort_all();
 		while pollers.join_next().await.is_some() {}

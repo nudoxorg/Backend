@@ -13,6 +13,7 @@ use heart::{Freshness, PackageId, ResolutionState};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
+use crate::authz::Principal;
 use crate::coordination::indexing::Indexer;
 use crate::coordination::initialization::{
 	InitializationDecision, Initialized, initialization_decision,
@@ -26,12 +27,14 @@ use crate::http::dto::AddPackageDto;
 #[tracing::instrument(skip_all, fields(ecosystem = %req.ecosystem, name = %req.name, version = %req.version))]
 pub async fn add_package<M: EmbeddingModel>(
 	State(server): State<Arc<Server<M>>>,
+	principal: Principal,
 	Json(req): Json<AddPackageDto>,
 ) -> ServerResult<Json<Initialized>> {
+	let cap = server.authorize_write(&principal, "packages.ensure_initialized")?;
 	// Parse + validate the wire request into typed coordinates (this is where the
 	// version is consumed, so the derived id is correct).
 	let coordinates = req.into_coordinates()?;
-	let initialized = server.ensure_initialized(&coordinates).await?;
+	let initialized = server.ensure_initialized(&cap, &coordinates).await?;
 	tracing::info!(
 		package = %initialized.package,
 		enqueued = initialized.enqueued,
@@ -55,8 +58,10 @@ pub async fn get_package<M: EmbeddingModel>(
 #[tracing::instrument(skip_all, fields(package = %id))]
 pub async fn sync_package<M: EmbeddingModel>(
 	State(server): State<Arc<Server<M>>>,
+	principal: Principal,
 	Path(id): Path<uuid::Uuid>,
 ) -> ServerResult<Json<Initialized>> {
+	let _cap = server.authorize_write(&principal, "packages.sync")?;
 	let package = PackageId::from_uuid(id);
 	let state = server.parse_status(package).await?.ok_or(ServerError::NotFound)?;
 

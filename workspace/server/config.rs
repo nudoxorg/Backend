@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use url::Url;
@@ -41,6 +41,82 @@ pub struct ServerConfiguration {
 
 	/// Operational limits (timeouts, body sizes, concurrency).
 	pub limits: Limits,
+
+	/// This node's role in a horizontally-scaled deployment (`NUDOX_ROLE`).
+	/// Governs which background loops run; the HTTP surface (health/metrics)
+	/// is always served. Defaults to [`Role::All`] (single-node).
+	#[serde(default)]
+	pub role: Role,
+
+	/// The deployment tier (`NUDOX_DEPLOYMENT`). When `production`, the boot
+	/// guard rejects default/well-known credentials before any network
+	/// connection is opened. Defaults to [`Deployment::Development`].
+	#[serde(default)]
+	pub deployment: Deployment,
+
+	/// Directory that contains the metadata heuristics data files:
+	/// `tag-synonyms.csv`, `specific-keywords.txt`, and `bland-keywords.txt`.
+	///
+	/// When `Some`, [`registry::metadata::heuristics::Synonyms`] and
+	/// [`registry::metadata::heuristics::Specifics`] are loaded **once** at
+	/// startup and threaded into every `rich::extract` call, enabling full
+	/// keyword normalization. Loading fails **loudly** at startup if the
+	/// directory is present but the files cannot be parsed — no silent
+	/// half-wired state.
+	///
+	/// When `None` (the default), heuristics are disabled and the extractor
+	/// receives `(None, None)` as today.
+	///
+	/// Configure via `NUDOX_METADATA_DATA_DIR=/path/to/workspace/data` or the
+	/// `metadata_data_dir` key in the TOML config file.
+	#[serde(default)]
+	pub metadata_data_dir: Option<PathBuf>,
+}
+
+/// The deployment tier this node is running in.
+///
+/// In `Production` the boot guard enforces that default / well-known
+/// credentials are rejected before the server opens any network connection.
+/// `Development` (the default) relaxes that check so a `cargo run` / `buck2
+/// run` with stock localhost services works out of the box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Deployment {
+	/// Local-development / CI: default credentials are allowed.
+	#[default]
+	Development,
+	/// Production: default credentials are a hard boot error.
+	Production,
+}
+
+/// A node's role in the daemon fleet. Every node consumes the same postgres
+/// queue and writes the same CAS; a role only selects which background loops
+/// this process runs (DAEMON-PLAN §Phase 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+	/// HTTP ingress + derived-store fan-out consumers + index pollers.
+	/// Serves reads and keeps search stores fresh; does not compile.
+	Gateway,
+	/// The compile worker: drains the indexing queue and produces IR/blobs.
+	/// Does not run the fan-out consumers or index pollers.
+	Forge,
+	/// Everything — the default single-node deployment.
+	#[default]
+	All,
+}
+
+impl Role {
+	/// Whether this role runs the indexing queue compile worker.
+	pub fn runs_forge(self) -> bool {
+		matches!(self, Role::Forge | Role::All)
+	}
+
+	/// Whether this role runs the fan-out consumers + replica-local index
+	/// sync/watermark pollers (the read-serving/materialization loops).
+	pub fn runs_gateway(self) -> bool {
+		matches!(self, Role::Gateway | Role::All)
+	}
 }
 
 /// A named, operator-configured registry origin (self-hosted npm proxy,
@@ -111,7 +187,7 @@ pub struct Endpoints {
 }
 
 /// Operational limits that bound resource use and blast radius.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
 	/// How long to wait on a single document upload before giving up.
 	pub upload_timeout: std::time::Duration,
@@ -122,6 +198,33 @@ pub struct Limits {
 	/// How often the background pollers (queue, outbox, index sync) tick.
 	#[serde(default = "defaults::poll_interval")]
 	pub poll_interval: std::time::Duration,
+
+	/// How long a freshly-claimed job's lease lasts before the reclaimer may
+	/// return it to the runnable set. A live worker beats a heartbeat every
+	/// `job_lease / 3` (see [`crate::coordination::indexing`]) so it never lapses,
+	/// letting this be *short* (~2 min) — a crashed node's job is then reclaimed
+	/// in minutes, not the old 15. Additive: absent in config → the 2-min default.
+	#[serde(default = "defaults::job_lease")]
+	pub job_lease: std::time::Duration,
+
+	/// The end-to-end hard deadline for one indexing job. Bounds a hung producer;
+	/// must comfortably exceed a normal compile but stay under an operator's
+	/// patience. Independent of `job_lease` now that the lease is heartbeat-kept.
+	#[serde(default = "defaults::job_deadline")]
+	pub job_deadline: std::time::Duration,
+
+	/// The bound on how long graceful shutdown waits for in-flight jobs to finish
+	/// after new dequeues stop, before the pollers are aborted. Keeps a stuck job
+	/// from wedging shutdown forever while still letting a nearly-done one commit.
+	#[serde(default = "defaults::drain_deadline")]
+	pub drain_deadline: std::time::Duration,
+
+	/// Sandbox ceilings: profile name → sparse overlay (design §13 / P5).
+	///
+	/// Keys are lowercase profile names (`rust`, `java`, `go`, `nix`,
+	/// `static_parser`) or package coordinates (`crates.io/serde@1.0.0`).
+	#[serde(default)]
+	pub sandbox_overrides: std::collections::HashMap<String, sandbox::LimitOverride>,
 }
 
 impl Default for ServerConfiguration {
@@ -138,6 +241,9 @@ impl Default for ServerConfiguration {
 			overlays: Vec::new(),
 			custom_registries: Vec::new(),
 			limits: Limits::default(),
+			role: Role::default(),
+			deployment: Deployment::default(),
+			metadata_data_dir: None,
 		}
 	}
 }
@@ -202,6 +308,11 @@ impl ServerConfiguration {
 
 	/// Structural validation of the merged configuration: source names must be
 	/// non-empty and unique (they seed the deterministic source identities).
+	///
+	/// **Boot guard**: when [`Deployment::Production`] any source whose postgres
+	/// URL or TerminusDB password is still the well-known development default is
+	/// a hard error — the server refuses to start rather than silently connecting
+	/// a production graph store with publicly-known credentials.
 	pub fn validate(&self) -> Result<(), ConfigError> {
 		let mut names = std::collections::HashSet::new();
 		for source in std::iter::once(&self.definitive).chain(&self.overlays) {
@@ -212,6 +323,10 @@ impl ServerConfiguration {
 				return Err(ConfigError::Validation(ConfigValidationError::DuplicateSourceName {
 					name: source.name.clone(),
 				}));
+			}
+
+			if self.deployment == Deployment::Production {
+				source.endpoints.assert_not_default_credentials()?;
 			}
 		}
 		Ok(())
@@ -225,6 +340,10 @@ impl Default for Limits {
 			max_request_bytes: 256 * 1024 * 1024,
 			max_inflight_jobs: 16,
 			poll_interval: defaults::poll_interval(),
+			job_lease: defaults::job_lease(),
+			job_deadline: defaults::job_deadline(),
+			drain_deadline: defaults::drain_deadline(),
+			sandbox_overrides: std::collections::HashMap::new(),
 		}
 	}
 }
@@ -251,6 +370,33 @@ impl Endpoints {
 	/// salt for every deterministic symbol id minted against this source.
 	pub fn terminus_instance(&self) -> String {
 		format!("{}/{}", self.terminus_organization, self.terminus_database)
+	}
+
+	/// In production, reject well-known default credentials before any network
+	/// connection is opened.
+	///
+	/// The postgres URL default is `postgres://nudox:nudox@127.0.0.1:5432/nudox`
+	/// and the TerminusDB password default is `root` — both are public, so they
+	/// must not be used in a production deployment.
+	fn assert_not_default_credentials(&self) -> Result<(), ConfigError> {
+		const DEFAULT_POSTGRES: &str = "postgres://nudox:nudox@127.0.0.1:5432/nudox";
+		const DEFAULT_TERMINUS_PASSWORD: &str = "root";
+
+		if self.postgres.expose_secret() == DEFAULT_POSTGRES {
+			return Err(ConfigError::Validation(
+				ConfigValidationError::DefaultCredentialInProduction {
+					field: "endpoints.postgres",
+				},
+			));
+		}
+		if self.terminus_password.expose_secret() == DEFAULT_TERMINUS_PASSWORD {
+			return Err(ConfigError::Validation(
+				ConfigValidationError::DefaultCredentialInProduction {
+					field: "endpoints.terminus_password",
+				},
+			));
+		}
+		Ok(())
 	}
 }
 
@@ -320,6 +466,12 @@ mod defaults {
 	pub(super) fn qdrant_collection() -> SmolStr { SmolStr::new_static("symbols") }
 	pub(super) fn embeddings() -> Url { super::parse_static("http://127.0.0.1:11434/v1/embeddings") }
 	pub(super) fn poll_interval() -> std::time::Duration { std::time::Duration::from_secs(2) }
+	/// Shortened, heartbeat-kept lease (DAEMON-PLAN §2.5: "~2 min").
+	pub(super) fn job_lease() -> std::time::Duration { std::time::Duration::from_secs(120) }
+	/// End-to-end job deadline (was the module const `JOB_DEADLINE`).
+	pub(super) fn job_deadline() -> std::time::Duration { std::time::Duration::from_secs(10 * 60) }
+	/// Graceful-drain bound for in-flight jobs at shutdown.
+	pub(super) fn drain_deadline() -> std::time::Duration { std::time::Duration::from_secs(30) }
 }
 
 /// Why configuration failed to resolve.
@@ -384,6 +536,17 @@ pub enum ConfigValidationError {
 	#[error("invalid qdrant collection name")]
 	InvalidQdrantCollection(#[from] runtime::vector::CollectionNameError),
 
+	/// A well-known default credential is present in a production deployment.
+	///
+	/// The named `field` still holds its development default value; the server
+	/// refuses to start so an operator configuration mistake never silently opens
+	/// a production store with publicly-known credentials.
+	#[error(
+		"production deployment must not use default credentials for `{field}`; \
+		 set it to a non-default value via config file or environment variable"
+	)]
+	DefaultCredentialInProduction { field: &'static str },
+
 	/// Generic other validation problem (use only when no more specific variant
 	/// fits; prefer extending the enum).
 	#[error("invalid configuration: {detail}")]
@@ -396,11 +559,11 @@ mod secret_url {
 	use secrecy::{ExposeSecret, SecretString};
 	use serde::{Deserialize, Deserializer, Serializer};
 
-	pub fn serialize<S: Serializer>(value: &SecretString, s: S) -> Result<S::Ok, S::Error> {
+	pub(crate) fn serialize<S: Serializer>(value: &SecretString, s: S) -> Result<S::Ok, S::Error> {
 		s.serialize_str(value.expose_secret())
 	}
 
-	pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
+	pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
 		Ok(SecretString::from(String::deserialize(d)?))
 	}
 }
@@ -410,7 +573,7 @@ mod optional_secret {
 	use secrecy::{ExposeSecret, SecretString};
 	use serde::{Deserialize, Deserializer, Serializer};
 
-	pub fn serialize<S: Serializer>(
+	pub(crate) fn serialize<S: Serializer>(
 		value: &Option<SecretString>,
 		s: S,
 	) -> Result<S::Ok, S::Error> {
@@ -420,7 +583,7 @@ mod optional_secret {
 		}
 	}
 
-	pub fn deserialize<'de, D: Deserializer<'de>>(
+	pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
 		d: D,
 	) -> Result<Option<SecretString>, D::Error> {
 		Ok(Option::<String>::deserialize(d)?.map(SecretString::from))

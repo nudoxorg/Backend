@@ -23,19 +23,16 @@ use heart::{
 };
 use registry::identity::PackageCoordinates;
 use registry::ingest::{ArchiveFormat, EntryAllowlist, ExtractionLimits, ingest_archive};
-use registry::queue::Job;
+use registry::queue::LeasedJob;
 use registry::{RegistryError, error::ResolveError};
 use runtime::vector::EmbeddingModel;
 
 use crate::error::{BadRequestReason, InternalError, ServerError, ServerResult};
 use crate::{Server, SourceStores};
 
-/// How long a claimed job's lease lasts — comfortably above the job deadline so
-/// a live worker never loses a race with the reclaimer.
-const JOB_LEASE: Duration = Duration::from_secs(15 * 60);
-
-/// The hard deadline for one job, end to end.
-const JOB_DEADLINE: Duration = Duration::from_secs(10 * 60);
+/// The floor on the lease heartbeat interval, so a pathologically small
+/// configured `job_lease` cannot spin the renew loop.
+const MIN_HEARTBEAT: Duration = Duration::from_secs(5);
 
 /// The indexing service: owns a handle to the assembled [`Server`] and drives
 /// packages through the pipeline.
@@ -110,7 +107,10 @@ impl<M: EmbeddingModel> Indexer<M> {
 				.source_files()
 				.map(|(path, bytes)| (path.clone(), bytes.clone()))
 				.collect();
-			tokio::task::spawn_blocking(move || compile_package(coordinates, toolchain, files))
+			let forge = Arc::clone(self.server.forge());
+			tokio::task::spawn_blocking(move || {
+				compile_package(&forge, coordinates, toolchain, files)
+			})
 				.await
 				.map_err(|join| {
 					ServerError::Internal(InternalError::Other {
@@ -133,7 +133,8 @@ impl<M: EmbeddingModel> Indexer<M> {
 		// `Cargo.toml` + README straight from them (no post-emit blob round-trip).
 		// Non-fatal by construction: a missing/unparseable manifest yields `None`
 		// and ingest proceeds — search metadata must never fail a store.
-		let facets = extract_facets(&coordinates, &manifest, &sections, &compile.identifiers);
+		let facets =
+			extract_facets(&coordinates, &manifest, &sections, &compile.identifiers, self.server.heuristics());
 
 		let emitted = registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
 			.await
@@ -226,8 +227,23 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// `max_inflight_jobs`. (Replaces the old stateless `IndexingWorker`; the
 	/// server handle now lives on the indexer itself.)
 	pub async fn run_worker(&self) -> ServerResult<()> {
-		let limits = self.server.config().limits;
+		self.run_worker_until(&sandbox::CancelToken::never()).await
+	}
+
+	/// The worker loop with an explicit drain signal. While `drain` is
+	/// un-cancelled it dequeues and drives jobs as normal; once `drain` fires it
+	/// stops pulling *new* jobs and returns cleanly, letting the caller wait for
+	/// the in-flight `drive_job` futures (already awaited each tick) to settle.
+	/// [`run_worker`](Self::run_worker) is this with a never-cancelled token.
+	pub async fn run_worker_until(&self, drain: &sandbox::CancelToken) -> ServerResult<()> {
+		let lease = self.job_lease();
 		loop {
+			if drain.is_cancelled() {
+				tracing::info!("queue worker draining: no longer dequeuing new jobs");
+				return Ok(());
+			}
+			let max_inflight = self.server.config().limits.max_inflight_jobs;
+			let poll_interval = self.server.config().limits.poll_interval;
 			for sourced in self.server.federation().in_precedence() {
 				let stores = sourced.value;
 
@@ -241,18 +257,66 @@ impl<M: EmbeddingModel> Indexer<M> {
 					tracing::warn!(source = %sourced.source, reclaimed, "reclaimed expired job leases");
 				}
 
+				// Stop pulling new work the moment a drain is requested; jobs
+				// already dequeued below still run to completion.
+				if drain.is_cancelled() {
+					return Ok(());
+				}
+
 				let jobs = stores
 					.queue
-					.dequeue_batch(limits.max_inflight_jobs, JOB_LEASE)
+					.dequeue_batch(max_inflight, lease)
 					.await
 					.map_err(RegistryError::from)?;
 				futures::stream::iter(jobs)
-					.for_each_concurrent(limits.max_inflight_jobs, |job| {
+					.for_each_concurrent(max_inflight, |job| {
 						self.drive_job(stores, job)
 					})
 					.await;
 			}
-			tokio::time::sleep(limits.poll_interval).await;
+			tokio::time::sleep(poll_interval).await;
+		}
+	}
+
+	/// The configured claim lease (shortened, heartbeat-kept — DAEMON-PLAN §2.5).
+	fn job_lease(&self) -> Duration { self.server.config().limits.job_lease }
+
+	/// The configured end-to-end job deadline.
+	fn job_deadline(&self) -> Duration { self.server.config().limits.job_deadline }
+
+	/// The lease-heartbeat interval: a third of the lease (so two heartbeats can
+	/// be missed before a lapse), floored at [`MIN_HEARTBEAT`].
+	fn heartbeat_interval(&self) -> Duration { (self.job_lease() / 3).max(MIN_HEARTBEAT) }
+
+	/// Beat this job's lease every [`heartbeat_interval`](Self::heartbeat_interval)
+	/// for as long as it runs. Returns only when the lease can no longer be
+	/// renewed — i.e. it lapsed and was reclaimed ([`registry::QueueError::LeaseLost`])
+	/// — signaling the driver to abandon the orphaned run. Transient renew faults
+	/// (a blip against postgres) are logged and retried on the next beat rather
+	/// than abandoning a still-valid claim. Never returns while the lease holds,
+	/// so [`drive_job`](Self::drive_job) can `select!` it against the job future.
+	///
+	/// Takes a `&LeasedJob` witness: the heartbeat can only keep alive a claim
+	/// that THIS worker holds (enforced by [`registry::queue::Queue::renew_lease`]).
+	async fn beat_lease(&self, stores: &SourceStores<M>, leased: &LeasedJob) {
+		let interval = self.heartbeat_interval();
+		let lease = self.job_lease();
+		let package = leased.package();
+		loop {
+			tokio::time::sleep(interval).await;
+			match stores.queue.renew_lease(leased, lease).await {
+				Ok(()) => {
+					tracing::trace!(%package, "job lease renewed");
+				}
+				Err(registry::QueueError::LeaseLost { .. }) => {
+					tracing::warn!(%package, "job lease lost to reclaimer; abandoning run");
+					return;
+				}
+				Err(error) => {
+					// Transient DB fault: keep the run going and try again next beat.
+					tracing::warn!(%package, error = %error, "lease heartbeat failed; will retry");
+				}
+			}
 		}
 	}
 
@@ -260,22 +324,44 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// queue row — completion on success, retry-or-dead-letter on failure. Job
 	/// failures are contained here; only queue/store faults escape to the
 	/// supervisor.
-	async fn drive_job(&self, stores: &SourceStores<M>, job: Job) {
-		let package = job.package;
-		let outcome = match tokio::time::timeout(
-			JOB_DEADLINE,
-			self.run_indexing_job_on(stores, package),
-		)
-		.await
-		{
-			Ok(outcome) => outcome,
-			Err(_) => Err(ServerError::Internal(InternalError::IndexingDeadlineExceeded)),
+	///
+	/// Takes a [`LeasedJob`] witness: the terminal operations (`complete` and
+	/// `fail`) require and consume this witness, making "settle a job you never
+	/// dequeued" unrepresentable at the call site.
+	async fn drive_job(&self, stores: &SourceStores<M>, leased: LeasedJob) {
+		let package = leased.package();
+		let attempts = leased.attempts();
+
+		// Race the deadline-bounded pipeline against a lease heartbeat. The
+		// shortened lease (config `job_lease`, ~2 min) is kept alive by renewing
+		// every `heartbeat_interval` while the job runs, so a live worker never
+		// loses its claim to the reclaimer even though the lease is far shorter
+		// than the job deadline. `select!` biases to the job branch; the heartbeat
+		// loop never resolves on its own (it either keeps beating or the job
+		// finishes first and cancels it).
+		//
+		// `beat_lease` borrows `&leased`; the select arms run sequentially (only
+		// one wins), so after the select `leased` is no longer borrowed and we
+		// can move it into the terminal operation.
+		let job_fut = tokio::time::timeout(self.job_deadline(), self.run_indexing_job_on(stores, package));
+		let heartbeat = self.beat_lease(stores, &leased);
+		let outcome = tokio::select! {
+			biased;
+			result = job_fut => match result {
+				Ok(outcome) => outcome,
+				Err(_) => Err(ServerError::Internal(InternalError::IndexingDeadlineExceeded)),
+			},
+			// The heartbeat only completes if the lease was lost (reclaimed out
+			// from under us): abandon the run rather than commit a result we can
+			// no longer own.
+			() = heartbeat => Err(ServerError::Internal(InternalError::IndexingDeadlineExceeded)),
 		};
 
 		match outcome {
 			Ok(snapshot) => {
 				let stored = ResolutionState::Stored { hash: snapshot };
-				if let Err(error) = stores.queue.complete(job.id, &stored).await {
+				// Consume the witness — the job is terminal after this point.
+				if let Err(error) = stores.queue.complete(leased, &stored).await {
 					tracing::warn!(%package, error = %error, "job completed but settling raced");
 				}
 			}
@@ -290,7 +376,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 					_ => Phase::Acquiring,
 				};
 				let failure = heart::Failure {
-					attempts: job.attempts,
+					attempts,
 					phase,
 					message: message.clone(),
 					cause: Some(heart::ErrorDetails::Message(message.clone())),
@@ -300,7 +386,9 @@ impl<M: EmbeddingModel> Indexer<M> {
 				if let Err(state_error) = stores.global_store.set_state(package, &failed).await {
 					tracing::error!(%package, error = %state_error, "failed to persist failure state");
 				}
-				match stores.queue.fail(job.id, kind, message).await {
+				// Consume the witness — fail is terminal (retry or dead-letter,
+				// either way this worker's claim is done).
+				match stores.queue.fail(leased, kind, message).await {
 					Ok(decision) => {
 						tracing::info!(%package, ?decision, "retry policy applied");
 					}
@@ -319,7 +407,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 		let response = self
 			.acquisition
 			.get(url)
-			.timeout(JOB_DEADLINE / 2)
+			.timeout(self.job_deadline() / 2)
 			.send()
 			.await
 			.map_err(lookup_failure)?;
@@ -464,6 +552,7 @@ struct CompileOutput {
 /// [`compiler::generate`], and produce the IR + reference sections the blob
 /// layer stores. Pure sync work — call from `spawn_blocking`.
 fn compile_package(
+	forge: &crate::forge::ForgeRuntime,
 	coordinates: PackageCoordinates,
 	toolchain: heart::Toolchain,
 	files: Vec<(smol_str::SmolStr, bytes::Bytes)>,
@@ -495,7 +584,7 @@ fn compile_package(
 		toolchain,
 		root,
 	};
-	let generated = compiler::generate::generate(&input)?;
+	let generated = compiler::generate::generate_with(forge, &input)?;
 
 	let ir_bytes = serde_json::to_vec(&generated.surface)
 		.map(bytes::Bytes::from)
@@ -680,7 +769,12 @@ fn extract_facets(
 	manifest: &BlobManifest,
 	sections: &[PendingSection],
 	identifiers: &[String],
+	heuristics: Option<&crate::Heuristics>,
 ) -> Option<SearchFacets> {
+	let (synonyms, specifics) = match heuristics {
+		Some(h) => (Some(h.synonyms()), Some(h.specifics())),
+		None => (None, None),
+	};
 	// Bytes of a manifest file are fetched from `sections` by content hash — the
 	// same hash the `FileEntry` records — so no post-emit blob round-trip is
 	// needed.
@@ -712,7 +806,7 @@ fn extract_facets(
 			identifiers,
 			..Default::default()
 		};
-		let rich = rich::extract(&input, None, None);
+		let rich = rich::extract(&input, synonyms, specifics);
 		let facets = SearchFacets::from_rich(&rich);
 		tracing::debug!(package = %manifest.package, "non-Rust ecosystem: name + identifier facets");
 		return Some(facets);
@@ -757,7 +851,6 @@ fn extract_facets(
 		loc,
 	};
 
-	// TODO: load Synonyms/Specifics from the config data dir; `None` for now.
-	let rich = rich::extract(&input, None, None);
+	let rich = rich::extract(&input, synonyms, specifics);
 	Some(SearchFacets::from_rich(&rich))
 }

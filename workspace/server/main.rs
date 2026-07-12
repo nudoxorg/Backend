@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use server::{Server, ServerConfiguration, UnrestrictedAccess};
+use server::{Server, ServerConfiguration};
 
 /// The compiled-in embedding model. The whole server is monomorphized over this
 /// brand, so a store built for a *different model* (not merely a different
@@ -25,11 +25,14 @@ async fn main() -> anyhow::Result<()> {
 
 	let config = ServerConfiguration::resolve()?;
 
+	// The isolation boot gate, per-profile ceilings, and worker warmup all live
+	// inside `ForgeRuntime::assemble` now (built by `Server::assemble`): the cage
+	// is selected and verified there, overrides come from config, and the worker
+	// pools are warmed as the runtime is constructed. No process globals.
+
 	// Access control for hosted deployments happens at the fronting proxy (see
 	// `heart::access`); in-process, everyone authenticated to reach us may act.
-	let policy = Arc::new(UnrestrictedAccess);
-
-	let server = Arc::new(Server::<EmbedModel>::assemble(config, policy).await?);
+	let server = Arc::new(Server::<EmbedModel>::assemble(config).await?);
 	server.serve().await?;
 	Ok(())
 }

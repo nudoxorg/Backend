@@ -8,6 +8,7 @@ use heart::{SymbolId, Scored, Sourced, Symbol};
 
 use runtime::vector::EmbeddingModel;
 use crate::Server;
+use crate::authz::ReadCap;
 use crate::error::{BadRequestReason, InternalError, ServerError};
 use crate::search::planner::Plan;
 use crate::search::query::{Query, Search};
@@ -15,11 +16,13 @@ use crate::search::semantic::SemanticSurface;
 use crate::search::{SearchTarget, SearchPlanner, SymbolStore, merge_overlay_first};
 
 impl<M: EmbeddingModel> Server<M> {
+	/// Search for symbols. The caller must hold a [`ReadCap`] proving that
+	/// authorization has already occurred at the HTTP boundary.
 	pub async fn search_symbols<'a>(
 		&'a self,
+		_cap: &ReadCap,
 		request: &'a Search<'a>,
 	) -> Result<impl Stream<Item = Result<Scored<Symbol>, ServerError>> + Send + 'a, ServerError> {
-		self.authorize("search.symbols")?;
 		let hits = match self.planner().plan(request) {
 			Plan::Precise => self.precise_hits(request).await?,
 			Plan::Semantic(gate) => self.semantic_hits(gate, request).await?,
@@ -27,11 +30,12 @@ impl<M: EmbeddingModel> Server<M> {
 		Ok(futures::stream::iter(hits.into_iter().map(Ok)))
 	}
 
+	/// Resolve a symbol by id. The caller must hold a [`ReadCap`].
 	pub async fn resolve_symbol(
 		&self,
+		_cap: &ReadCap,
 		id: SymbolId,
 	) -> Result<Option<Sourced<Symbol>>, ServerError> {
-		self.authorize("search.resolve_symbol")?;
 		for sourced in self.federation().in_precedence() {
 			if let Some(symbol) = sourced.value.symbol_by_id(id).await? {
 				return Ok(Some(sourced.map(|_| symbol)));
@@ -40,11 +44,12 @@ impl<M: EmbeddingModel> Server<M> {
 		Ok(None)
 	}
 
+	/// Expand graph neighbours of a symbol. The caller must hold a [`ReadCap`].
 	pub async fn expand(
 		&self,
+		_cap: &ReadCap,
 		hit: &Scored<Symbol>,
 	) -> Result<Vec<Scored<Symbol>>, ServerError> {
-		self.authorize("search.expand")?;
 		let mut groups = Vec::new();
 		for sourced in self.federation().in_precedence() {
 			groups.push(sourced.value.related_hits(hit).await?);
@@ -88,7 +93,7 @@ impl<M: EmbeddingModel> Server<M> {
 			.after
 			.as_deref()
 			.map(|token| {
-				heart::Cursor::decode(token)
+				heart::Cursor::<_, heart::Advisory>::decode(token)
 					.map_err(|source| BadRequestReason::InvalidCursor {
 				token: token.to_owned(),
 				source,
