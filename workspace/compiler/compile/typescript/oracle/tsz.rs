@@ -228,6 +228,22 @@ fn dts_output_path(root: &Path, out_dir: &Path, src: &Path) -> PathBuf {
 	out
 }
 
+/// Rewrite a package.json entry-field value (`types`/`main`/…) so its extension
+/// points at the emitted declaration: any TS/JS-ish source extension (or none)
+/// becomes `.d.ts`, mirroring [`dts_output_path`]. `mod.ts` → `mod.d.ts`,
+/// `./src/index.ts` → `./src/index.d.ts`, `mod` → `mod.d.ts`.
+fn rewrite_ext_to_dts(s: &str) -> String {
+	if s.ends_with(".d.ts") {
+		return s.to_string();
+	}
+	for suf in [".tsx", ".mts", ".cts", ".ts", ".jsx", ".mjs", ".cjs", ".js"] {
+		if let Some(base) = s.strip_suffix(suf) {
+			return format!("{base}.d.ts");
+		}
+	}
+	format!("{s}.d.ts")
+}
+
 /// Run the in-process tsz check + declaration-emit oracle over the package at
 /// `root`, then re-extract IR from the emitted `.d.ts`.
 ///
@@ -304,10 +320,29 @@ pub fn normalize(root: &Path, name: &str) -> Result<Index, String> {
 			return Err("tsz emitted no .d.ts (unsupported syntax or empty surface)".to_string());
 		}
 
-		// A package.json (if present) helps entry discovery pick the same root.
+		// A package.json (if present) helps entry discovery pick the same root —
+		// but its entry fields point at the SOURCE (`mod.ts`), while the emitted
+		// tree has `mod.d.ts`. Rewrite `types`/`typings`/`main`/`module` to the
+		// `.d.ts` names so `generate_ir` resolves the emitted declarations.
 		let pkg = target.join("package.json");
 		if pkg.is_file() {
-			let _ = std::fs::copy(&pkg, out_dir.join("package.json"));
+			if let Ok(text) = std::fs::read_to_string(&pkg) {
+				let rewritten = match serde_json::from_str::<serde_json::Value>(&text) {
+					Ok(mut v) => {
+						if let Some(obj) = v.as_object_mut() {
+							for key in ["types", "typings", "main", "module"] {
+								if let Some(serde_json::Value::String(s)) = obj.get(key) {
+									let dts = rewrite_ext_to_dts(s);
+									obj.insert(key.to_string(), serde_json::Value::String(dts));
+								}
+							}
+						}
+						v.to_string()
+					}
+					Err(_) => text,
+				};
+				let _ = std::fs::write(out_dir.join("package.json"), rewritten);
+			}
 		}
 
 		// Re-extract via the OXC Tier-A pipeline over the emitted declarations.
