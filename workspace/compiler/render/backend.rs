@@ -16,7 +16,7 @@
 
 use ir::function::Function;
 use ir::generics::Generics;
-use ir::kind::{Entry, Visibility};
+use ir::kind::{Deprecation, Entry, Symbol, Visibility};
 use ir::protocols::TraitDef;
 use ir::record::{Record, SumVariant};
 use ir::ty::Type;
@@ -195,9 +195,87 @@ pub fn render_entry_doc(entry: &Entry, cx: &RenderCtx) -> Rendered {
         Entry::UnionType(s) => union_alias_doc(be, &s.name, &s.inner, cx),
         other => Doc::text(format!("// <unrendered {}>", other.kind_tag())),
     };
+    let body = match deprecation_of(entry) {
+        Some(dep) => deprecation_marker(dep, cx) + Doc::hardline() + body,
+        None => body,
+    };
     match (cx.options.show_docs, entry.documentation()) {
         (true, Some(doc)) if !doc.is_empty() => be.doc_comment(doc) + Doc::hardline() + body,
         _ => body,
+    }
+}
+
+/// The `Symbol.deprecation` of any top-level entry, if set.
+fn deprecation_of(entry: &Entry) -> Option<&Deprecation> {
+    fn dep<T>(s: &Symbol<T>) -> Option<&Deprecation> {
+        s.deprecation.as_ref()
+    }
+    match entry {
+        Entry::Module(s) => dep(s),
+        Entry::RecordType(s) => dep(s),
+        Entry::Info(s) => dep(s),
+        Entry::UnionType(s) => dep(s),
+        Entry::TraitDef(s) => dep(s),
+        Entry::TraitImpl(s) => dep(s),
+        Entry::SumType(s) => dep(s),
+        Entry::Function(s) => dep(s),
+        Entry::TypeAlias(s) => dep(s),
+        Entry::Constant(s) => dep(s),
+        Entry::Variable(s) => dep(s),
+        Entry::Macro(s) => dep(s),
+        Entry::PrimitiveType(s) => dep(s),
+        Entry::Field(s) => dep(s),
+        Entry::Event(s) => dep(s),
+    }
+}
+
+/// Render a deprecation marker in the target language's surface syntax:
+/// Rust `#[deprecated(...)]`, other languages an idiomatic comment/annotation.
+/// `since` / `note`, when present, are woven into the marker.
+fn deprecation_marker(dep: &Deprecation, cx: &RenderCtx) -> Rendered {
+    let args: Vec<String> = [
+        dep.since.as_ref().map(|s| format!("since = \"{s}\"")),
+        dep.note.as_ref().map(|n| format!("note = \"{n}\"")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    match cx.language {
+        Language::Rust => {
+            let inner = if args.is_empty() {
+                String::new()
+            } else {
+                format!("({})", args.join(", "))
+            };
+            punct(&format!("#[deprecated{inner}]"))
+        }
+        Language::Java => {
+            let note = dep
+                .note
+                .as_ref()
+                .map(|n| format!(" // {n}"))
+                .unwrap_or_default();
+            punct(&format!("@Deprecated{note}"))
+        }
+        Language::TypeScript | Language::Go => {
+            let detail = args.is_empty().then(String::new).unwrap_or_else(|| {
+                format!(" ({})", args.join(", "))
+            });
+            txt(&format!("// @deprecated{detail}")).annotate(Annotation::Comment)
+        }
+        Language::Python => {
+            let detail = args.is_empty().then(String::new).unwrap_or_else(|| {
+                format!(" ({})", args.join(", "))
+            });
+            txt(&format!("# deprecated{detail}")).annotate(Annotation::Comment)
+        }
+        Language::Nix => {
+            let detail = args.is_empty().then(String::new).unwrap_or_else(|| {
+                format!(" ({})", args.join(", "))
+            });
+            txt(&format!("# deprecated{detail}")).annotate(Annotation::Comment)
+        }
     }
 }
 

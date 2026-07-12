@@ -129,14 +129,17 @@ impl Backend for Nix {
     /// When all parameters are simple (no defaults), use curried form:
     /// ```nix
     /// # Type :: A -> B -> Result
-    /// name = a: b: <body-placeholder>;
+    /// name = a: b: null;
     /// ```
     ///
     /// When any parameter has a default value, use attrset-pattern form:
     /// ```nix
     /// # Type :: { a :: A, b :: B } -> Result
-    /// name = { a, b ? <default>, ... }: <body-placeholder>;
+    /// name = { a, b ? null, ... }: null;
     /// ```
+    ///
+    /// `null` is Nix's canonical "absent value" and is the idiomatic stub for a
+    /// documentation-surface binding whose body is not available from the IR.
     fn function(&self, name: &str, f: &Function, _vis: &Visibility, cx: &RenderCtx) -> Rendered {
         let literal_params: Vec<_> = f
             .input_parameters
@@ -154,16 +157,22 @@ impl Backend for Nix {
         // Build `# Type :: <sig>` annotation line.
         let type_sig = type_signature_comment(f, cx);
 
-        let body_placeholder = txt("<body>");
+        // `null` is Nix's canonical absent-value literal; it is the correct stub
+        // for a documentation-surface binding whose implementation is not carried
+        // in the IR.  Never emit a literal HTML tag like `<body>` here.
+        let body_stub = kw("null");
 
         let binding = if has_defaults || literal_params.is_empty() && f.input_parameters.is_some() {
-            // Attrset-pattern form: `{ a, b ? default, ... }: body`
+            // Attrset-pattern form: `{ a, b ? null, ... }: null`
             let mut members: Vec<Rendered> = literal_params
                 .iter()
                 .map(|lp| {
                     let base = ident(&lp.name);
                     if lp.default_value.is_some() {
-                        base + sp() + punct("?") + sp() + txt("<default>")
+                        // The IR carries a `default_value` token but not a
+                        // rendered Nix expression; `null` is the correct
+                        // documentation-surface stub for an unknown default.
+                        base + sp() + punct("?") + sp() + kw("null")
                     } else {
                         base
                     }
@@ -181,15 +190,15 @@ impl Backend for Nix {
                 + pattern
                 + punct(":")
                 + sp()
-                + body_placeholder
+                + body_stub
                 + punct(";")
         } else {
-            // Curried form: `name = a: b: body`
+            // Curried form: `name = a: b: null`
             let mut lhs = ident(name) + sp() + punct("=");
             for lp in &literal_params {
                 lhs = lhs + sp() + ident(&lp.name) + punct(":");
             }
-            lhs + sp() + body_placeholder + punct(";")
+            lhs + sp() + body_stub + punct(";")
         };
 
         type_sig + Doc::hardline() + binding

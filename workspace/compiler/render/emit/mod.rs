@@ -37,12 +37,12 @@ pub(crate) struct GenericInfo {
 }
 
 impl GenericInfo {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.lifetimes.is_empty() && self.types.is_empty() && self.consts.is_empty()
     }
 
     /// Every simple bound attached to `param`.
-    pub fn bounds_of<'a>(&'a self, param: &'a str) -> impl Iterator<Item = &'a str> {
+    pub(crate) fn bounds_of<'a>(&'a self, param: &'a str) -> impl Iterator<Item = &'a str> {
         self.bounds.iter().filter(move |(p, _)| p == param).map(|(_, t)| t.as_str())
     }
 }

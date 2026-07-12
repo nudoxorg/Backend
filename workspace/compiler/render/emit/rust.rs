@@ -732,7 +732,6 @@ mod tests {
             implemented: true,
             members: None,
             implemented_protocols: None,
-            body: None,
         };
         let result = Rust
             .function("fetch", &function, &Visibility::Public, &cx())
@@ -777,6 +776,9 @@ mod tests {
             }]),
             required_constants: None,
             attributes: None,
+            object_safe: None,
+            sealed: None,
+            cfg: None,
             members: None,
         };
         let result = Rust
