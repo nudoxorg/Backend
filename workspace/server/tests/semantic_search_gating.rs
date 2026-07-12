@@ -68,10 +68,11 @@ async fn semantic_search_with_gate_runs() {
     else {
         return;
     };
+    let cap = common::read_cap(&server);
     let hits: Vec<_> = {
         use futures::StreamExt;
         let stream = server
-            .search_symbols(&request)
+            .search_symbols(&cap, &request)
             .await
             .expect("a gated semantic search over an empty corpus answers cleanly");
         stream.collect().await

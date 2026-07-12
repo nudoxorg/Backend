@@ -58,8 +58,9 @@ async fn related_hits_walks_and_scores_relationships() {
     let symbol = common::rust_symbol(package, "Deserialize", "serde::Deserialize", SymbolKind::Trait);
     let hit = Scored::new(symbol, heart::Score::try_new(1.0).expect("one is finite"));
 
+    let cap = common::read_cap(&server);
     let related = server
-        .expand(&hit)
+        .expand(&cap, &hit)
         .await
         .expect("expanding an unknown symbol is an empty neighbourhood, not a failure");
     assert!(

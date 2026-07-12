@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use heart::{EntryUri, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
 use runtime::text::TextIndex;
+use server::authz::{AdminCap, Principal, ReadCap, WriteCap};
 use server::search::query::{Filter, Pagination, Query, Search};
-use server::{Server, ServerConfiguration, UnrestrictedAccess};
+use server::{Server, ServerConfiguration};
 use smol_str::SmolStr;
 
 /// The embedding-model brand every test monomorphizes over. Small and local —
@@ -60,6 +61,20 @@ pub fn populated_text_index(dir: &Path, symbols: &[Symbol]) -> TextIndex {
     index.upsert_batch(symbols).expect("fixture symbols index cleanly");
     index.commit().expect("the fixture commit succeeds");
     index
+}
+
+/// A test read capability — mints a read cap from the anonymous principal.
+pub fn read_cap<M: runtime::vector::EmbeddingModel>(server: &Server<M>) -> ReadCap {
+    server
+        .authorize_read(&Principal::anonymous(), "test.read")
+        .expect("allow-all policy always grants a read cap in tests")
+}
+
+/// A test write capability — mints a write cap from the anonymous principal.
+pub fn write_cap<M: runtime::vector::EmbeddingModel>(server: &Server<M>) -> WriteCap {
+    server
+        .authorize_write(&Principal::anonymous(), "test.write")
+        .expect("allow-all policy always grants a write cap in tests")
 }
 
 /// A literal search request over `query` with an unbounded filter.
@@ -125,7 +140,7 @@ pub async fn assembled_server(test: &str) -> Option<(Arc<Server<TestModel>>, Tem
     let mut configuration = ServerConfiguration::resolve().expect("test configuration resolves");
     configuration.definitive.data_directory = Some(data_directory.path().to_path_buf());
     configuration.serving_address = free_loopback_address();
-    match Server::assemble(configuration, Arc::new(UnrestrictedAccess)).await {
+    match Server::assemble(configuration).await {
         Ok(server) => Some((Arc::new(server), data_directory)),
         Err(error) => {
             eprintln!("skipping {test}: backends opted in but unreachable: {error}");

@@ -136,8 +136,9 @@ async fn ensured_job(
         version: heart::PackageVersion::try_from((heart::Language::Rust, FIXTURE_VERSION))
             .expect("fixture versions are valid"),
     };
+    let cap = common::write_cap(server);
     let initialized = server
-        .ensure_initialized(&coordinates)
+        .ensure_initialized(&cap, &coordinates)
         .await
         .expect("the fixture package ensures cleanly");
     (initialized.package, Indexer::new(Arc::clone(server)))
