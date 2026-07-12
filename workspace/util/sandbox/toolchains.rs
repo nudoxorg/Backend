@@ -29,12 +29,6 @@ pub struct ToolchainSet {
 	pub go_root: Option<PathBuf>,
 	/// GOPATH (scratch-like; optional).
 	pub go_path: Option<PathBuf>,
-	/// Extra directories to prepend to the sealed `PATH`, from
-	/// `NUDOX_TOOLCHAIN_PATH` (colon-separated). Empty by default, so the
-	/// hermetic PATH is unchanged unless explicitly opted in. Intended for dev
-	/// hosts where the toolchain binaries (`go`, `javadoc`) live outside the
-	/// fixed hermetic PATH (e.g. a Nix devshell store path).
-	pub path_dirs: Vec<PathBuf>,
 }
 
 impl ToolchainSet {
@@ -53,27 +47,13 @@ impl ToolchainSet {
 				.find_map(|k| std::env::var_os(k).map(PathBuf::from))
 				.filter(|p| !p.as_os_str().is_empty())
 		}
-		let path_dirs = std::env::var_os("NUDOX_TOOLCHAIN_PATH")
-			.map(|v| std::env::split_paths(&v).filter(|p| !p.as_os_str().is_empty()).collect())
-			.unwrap_or_default();
 		Self {
 			rustup_home: first(&["NUDOX_TOOLCHAIN_RUSTUP_HOME", "RUSTUP_HOME"]),
 			cargo_home: first(&["NUDOX_TOOLCHAIN_CARGO_HOME", "CARGO_HOME"]),
 			java_home: first(&["NUDOX_TOOLCHAIN_JAVA_HOME", "JAVA_HOME"]),
 			go_root: first(&["NUDOX_TOOLCHAIN_GOROOT", "GOROOT"]),
 			go_path: first(&["NUDOX_TOOLCHAIN_GOPATH", "GOPATH"]),
-			path_dirs,
 		}
-	}
-
-	/// The extra PATH dirs joined for prepending, if any (`dir1:dir2`).
-	pub fn path_prefix(&self) -> Option<String> {
-		if self.path_dirs.is_empty() {
-			return None;
-		}
-		std::env::join_paths(&self.path_dirs)
-			.ok()
-			.map(|s| s.to_string_lossy().into_owned())
 	}
 
 	/// Overlay the toolchain env bindings onto an allowlist.
@@ -106,7 +86,6 @@ impl ToolchainSet {
 		]
 		.into_iter()
 		.filter_map(|p| p.clone())
-		.chain(self.path_dirs.iter().cloned())
 		.filter(|p| p.exists())
 		.collect()
 	}
@@ -129,12 +108,6 @@ impl ToolchainSet {
 			if let Some(p) = path {
 				h.update(p.as_os_str().as_encoded_bytes());
 			}
-			h.update(&[0]);
-		}
-		h.update(b"path_dirs");
-		h.update(&[0]);
-		for p in &self.path_dirs {
-			h.update(p.as_os_str().as_encoded_bytes());
 			h.update(&[0]);
 		}
 		h.finalize()
