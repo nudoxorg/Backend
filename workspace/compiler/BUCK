@@ -2,19 +2,21 @@ load("//build:rust.bzl", "crate", "dep_pins", "deps", "member", "rust_bin", "rus
 
 rust_crate(
     name = "compiler",
-    srcs = (
-        native.glob(
-            ["**/*.rs"],
-            exclude = ["intermediate-representation/**", "tests/**", "bin/**"],
-        )
-        + native.glob(["compile/go/oracle/**"])
-        + native.glob(["compile/java/oracle/**"])
+    srcs = native.glob(
+        ["**/*.rs"],
+        exclude = ["intermediate-representation/**", "tests/**", "bin/**"],
     ),
+    resources = {
+        "go-oracle": "//workspace/compiler/compile/go/oracle:oracle",
+        "java-oracle.jar": "//workspace/compiler/compile/java/oracle:extractor",
+    },
     deps = deps([
         member("heart"),
         member("ir"),
         member("registry"),
         member("sandbox"),
+        member("cas"),
+        member("version"),
         crate("deno_error", features = ["serde", "serde_json"], pin_only = True),
         crate("get_size2", features = ["compact-str", "derive", "hashbrown", "ordermap", "smallvec", "thin-vec"], pin_only = True),
         crate("static_interner", features = ["dupe"], pin_only = True),
@@ -47,8 +49,20 @@ rust_crate(
         crate("tar"),
         crate("reqwest"),
         crate("rustc_hash"),
-        crate("rustdoc_types"),
         crate("semver"),
+        crate("smol_str"),
+        # rust-analyzer producer (ra_ap_* 0.0.341; see RUST-ANALYZER-PLAN.md)
+        crate("ra_ap_load_cargo"),
+        crate("ra_ap_project_model"),
+        crate("ra_ap_hir"),
+        crate("ra_ap_ide_db"),
+        crate("ra_ap_base_db"),
+        crate("ra_ap_vfs"),
+        crate("ra_ap_syntax"),
+        crate("ra_ap_paths"),
+        crate("ra_ap_cfg"),
+        crate("ra_ap_proc_macro_api"),
+
         crate("arborium", features = [
             "lang-rust",
             "lang-python",
@@ -85,6 +99,8 @@ rust_crate(
         crate("toml"),
         crate("rowan"),
         crate("url"),
+        crate("tempfile"),
+        crate("postcard", features = ["alloc"]),
     ]),
 )
 
@@ -97,16 +113,26 @@ rust_bin(
         member("ir"),
         member("sandbox"),
         crate("serde_json"),
+        crate("libc"),
     ]),
 )
 
 rust_tests(
     prefix = "test",
+    # The Go and Java snapshot tests drive producers that shell out to the
+    # vendored oracles; the test binaries need the same resources the
+    # `compiler` lib target declares so `buck_resource(..)` resolves at runtime.
+    resources = {
+        "go-oracle": "//workspace/compiler/compile/go/oracle:oracle",
+        "java-oracle.jar": "//workspace/compiler/compile/java/oracle:extractor",
+    },
     deps = deps([
         member("heart"),
         member("ir"),
         member("registry"),
         member("sandbox"),
+        member("cas"),
+        member("version"),
         crate("tempfile"),
         crate("serde"),
         crate("serde_json"),
@@ -114,6 +140,21 @@ rust_tests(
         crate("uv_pep440"),
         crate("semver"),
         crate("url"),
+        crate("snix_eval"),
+        crate("bytes"),
+        crate("smol_str"),
+        crate("insta"),
+        crate("arborium", features = [
+            "lang-rust",
+            "lang-python",
+            "lang-typescript",
+            "lang-tsx",
+            "lang-javascript",
+            "lang-go",
+            "lang-java",
+            "lang-nix",
+        ]),
+        crate("arborium_tree_sitter"),
         target(":compiler"),
     ]),
 )
