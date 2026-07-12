@@ -134,7 +134,6 @@ fn render_function_emits_type_comment_and_binding() {
         implemented:           true,
         members:               None,
         implemented_protocols: None,
-        body:                  None,
     };
 
     let entry = Entry::Function(Symbol {

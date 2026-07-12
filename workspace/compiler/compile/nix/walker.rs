@@ -518,7 +518,6 @@ fn runtime_only_function(value: &Value) -> Function {
         implemented:           true,
         members:               None,
         implemented_protocols: None,
-        body:                  None,
     }
 }
 

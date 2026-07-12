@@ -17,7 +17,9 @@
 pub mod blob_info;
 pub mod cst;
 pub mod linked_data;
+pub mod occurrences;
 pub mod parse_cache;
+pub mod resolve;
 pub mod source_archive;
 pub mod surface;
 pub mod tar;
@@ -27,10 +29,13 @@ use std::path::PathBuf;
 use heart::{ContentHash, JobKey, Toolchain};
 use registry::identity::PackageCoordinates;
 use ir::entry::Index;
+use ir::syntax::OccurrenceSet;
 
 pub use blob_info::BlobInfo;
 pub use cst::CstSet;
 pub use source_archive::{FileDigest, SourceArchive};
+
+use crate::generate::resolve::RESOLVER_VERSION;
 
 use crate::compile::producer::{self, ForgeContext, LocalForgeContext};
 use crate::error::GenerateError;
@@ -57,6 +62,8 @@ pub struct GeneratedPackage {
 	pub surface: Index,
 	/// The per-file CST resolution (serializable reference spans).
 	pub cst: CstSet,
+	/// The resolved, attributed occurrence corpus (definitions + references).
+	pub occurrences: OccurrenceSet,
 	/// The content-addressed source archive.
 	pub archive: SourceArchive,
 	/// The assembled, sink-ready blob info (file digests + snapshot hash).
@@ -105,6 +112,11 @@ pub fn generate_with<C: ForgeContext>(
 
 	let surface = producer::cache_get_or_build(ctx, job.as_hash(), || surface::build(ctx, input))?;
 	let cst = producer::cache_get_or_build(ctx, job.with_tag(b"cst"), || cst::extract(input))?;
+	// Occurrences are surface-downstream: keyed on the job × resolver version so
+	// a classifier/ladder bump invalidates them without disturbing the surface.
+	let occurrences = producer::cache_get_or_build(ctx, job.with_tag(RESOLVER_VERSION.as_bytes()), || {
+		occurrences::build(input, &surface)
+	})?;
 	let archive =
 		producer::cache_get_or_build(ctx, job.with_tag(b"archive"), || source_archive::build(input))?;
 
@@ -118,6 +130,7 @@ pub fn generate_with<C: ForgeContext>(
 		toolchain: input.toolchain.clone(),
 		surface,
 		cst,
+		occurrences,
 		archive,
 		blob_info,
 		snapshot,

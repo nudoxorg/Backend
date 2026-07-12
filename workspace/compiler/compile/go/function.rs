@@ -77,7 +77,6 @@ fn build_function(
 		implemented:           true,
 		members:               None,
 		implemented_protocols: None,
-		body:                  None,
 	}
 }
 

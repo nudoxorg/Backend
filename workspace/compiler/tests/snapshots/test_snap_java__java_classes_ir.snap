@@ -1,0 +1,767 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: sorted
+---
+{
+    "com.example": Module(
+        Symbol {
+            name: "com.example",
+            path: Local(
+                "com.example",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Animal",
+                        ),
+                        Local(
+                            "com.example::Dog",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "com.example::Animal": RecordType(
+        Symbol {
+            name: "Animal",
+            path: Local(
+                "com.example::Animal",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "An abstract base class representing an animal.\n\nAll animals have a name and can make a sound.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Animal",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "name",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "The animal's name.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "age",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Protected,
+                            ),
+                            documentation: Some(
+                                "The animal's age in years.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "name",
+                                            type: Some(
+                                                Primitive(
+                                                    String,
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "the animal's name",
+                                            ),
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "age",
+                                            type: Some(
+                                                Primitive(
+                                                    Int(
+                                                        W32,
+                                                    ),
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "the animal's age",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Animal.getName",
+                        ),
+                        Local(
+                            "com.example::Animal.getAge",
+                        ),
+                        Local(
+                            "com.example::Animal.sound",
+                        ),
+                        Local(
+                            "com.example::Animal.describe",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Animal.describe": Function(
+        Symbol {
+            name: "describe",
+            path: Local(
+                "com.example::Animal.describe",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns a human-readable description.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "verbose",
+                                type: Some(
+                                    Primitive(
+                                        Bool,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "include extra detail when `true`",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "description string",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Animal.getAge": Function(
+        Symbol {
+            name: "getAge",
+            path: Local(
+                "com.example::Animal.getAge",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns this animal's age.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Animal.getName": Function(
+        Symbol {
+            name: "getName",
+            path: Local(
+                "com.example::Animal.getName",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns this animal's name.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Animal.sound": Function(
+        Symbol {
+            name: "sound",
+            path: Local(
+                "com.example::Animal.sound",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the sound this animal makes.\n\nDeclared: `abstract`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the sound string",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: false,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Dog": RecordType(
+        Symbol {
+            name: "Dog",
+            path: Local(
+                "com.example::Dog",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A concrete dog, extending `Animal`.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Dog",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "breed",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "The dog's breed.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "trained",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Bool,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Package,
+                            ),
+                            documentation: Some(
+                                "Whether this dog is trained.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "name",
+                                            type: Some(
+                                                Primitive(
+                                                    String,
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "the dog's name",
+                                            ),
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "age",
+                                            type: Some(
+                                                Primitive(
+                                                    Int(
+                                                        W32,
+                                                    ),
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "the dog's age",
+                                            ),
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "breed",
+                                            type: Some(
+                                                Primitive(
+                                                    String,
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "the dog's breed",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: Some(
+                    [
+                        TypeReference(
+                            TypeReference {
+                                identifier: "com.example.Animal",
+                                generic_args: None,
+                            },
+                        ),
+                    ],
+                ),
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Dog.getBreed",
+                        ),
+                        Local(
+                            "com.example::Dog.sound",
+                        ),
+                        Local(
+                            "com.example::Dog.learnTrick",
+                        ),
+                        Local(
+                            "com.example::Dog.internalReset",
+                        ),
+                        Local(
+                            "com.example::Dog.bark",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Dog.bark": Function(
+        Symbol {
+            name: "bark",
+            path: Local(
+                "com.example::Dog.bark",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "Private implementation detail.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "times",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Dog.getBreed": Function(
+        Symbol {
+            name: "getBreed",
+            path: Local(
+                "com.example::Dog.getBreed",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the breed.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Dog.internalReset": Function(
+        Symbol {
+            name: "internalReset",
+            path: Local(
+                "com.example::Dog.internalReset",
+            ),
+            aliases: None,
+            visibility: Package,
+            documentation: Some(
+                "A package-private helper.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Dog.learnTrick": Function(
+        Symbol {
+            name: "learnTrick",
+            path: Local(
+                "com.example::Dog.learnTrick",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Teaches the dog a trick.\n\nThrows (undeclared):\n- `java.lang.IllegalArgumentException` — if the trick name is blank",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "trick",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the name of the trick to learn",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Dog.sound": Function(
+        Symbol {
+            name: "sound",
+            path: Local(
+                "com.example::Dog.sound",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Annotations: `@java.lang.Override`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

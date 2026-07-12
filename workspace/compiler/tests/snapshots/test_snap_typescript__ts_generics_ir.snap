@@ -1,0 +1,949 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::Box",
+                        ),
+                        Local(
+                            "mod::Stack",
+                        ),
+                        Local(
+                            "mod::Store",
+                        ),
+                        Local(
+                            "mod::TagSet",
+                        ),
+                        Local(
+                            "mod::process",
+                        ),
+                        Local(
+                            "mod::merge",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::Box": RecordType(
+        Symbol {
+            name: "Box",
+            path: Local(
+                "mod::Box",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A generic box wrapping a single value.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Box",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "value",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "T",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The contained value.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "mod::Box::constructor",
+                        ),
+                        Local(
+                            "mod::Box::unwrap",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Box::constructor": Function(
+        Symbol {
+            name: "constructor",
+            path: Local(
+                "mod::Box::constructor",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "v",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "T",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Box::unwrap": Function(
+        Symbol {
+            name: "unwrap",
+            path: Local(
+                "mod::Box::unwrap",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Unwrap the value.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "T",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Stack": TraitDef(
+        Symbol {
+            name: "Stack",
+            path: Local(
+                "mod::Stack",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A generic stack built on an array (Vec<T> analogue).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                super_traits: None,
+                associated_types: None,
+                properties: Some(
+                    [
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "size",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [
+                                        "readonly",
+                                    ],
+                                    is_mutable: false,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: Some(
+                                    "Number of elements in the stack.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "push",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "item",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "T",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Tuple(
+                                    [],
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Push an element.",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "pop",
+                            parameters: None,
+                            return_type: Some(
+                                Union(
+                                    [
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "T",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                        Tuple(
+                                            [],
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Pop the top element.",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "peek",
+                            parameters: None,
+                            return_type: Some(
+                                Union(
+                                    [
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "T",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                        Tuple(
+                                            [],
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Peek without removing.",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::Store": TraitDef(
+        Symbol {
+            name: "Store",
+            path: Local(
+                "mod::Store",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A key/value store (HashMap<K,V> analogue).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "K",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "V",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "get",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "key",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "K",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Union(
+                                    [
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "V",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                        Tuple(
+                                            [],
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "set",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "key",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "K",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "value",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "V",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Tuple(
+                                    [],
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "delete",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "key",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "K",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Primitive(
+                                    Bool,
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::TagSet": TraitDef(
+        Symbol {
+            name: "TagSet",
+            path: Local(
+                "mod::TagSet",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Tag set (HashSet<T> analogue).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "add",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "tag",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "T",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Tuple(
+                                    [],
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "has",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "tag",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "T",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Primitive(
+                                    Bool,
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "remove",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "tag",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "T",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                Primitive(
+                                    Bool,
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::merge": Function(
+        Symbol {
+            name: "merge",
+            path: Local(
+                "mod::merge",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A variadic (rest-param) helper.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "...sources\u{1b}[0m\u{1b}[35m\u{1b}[0m: \u{1b}[0m\u{1b}[38;5;12mT\u{1b}[0m[][]",
+                                type: Some(
+                                    Slice(
+                                        Slice(
+                                            TypeReference(
+                                                TypeReference {
+                                                    identifier: "T",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Variadic,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Slice(
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "T",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::process": Function(
+        Symbol {
+            name: "process",
+            path: Local(
+                "mod::process",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A function accepting an optional parameter and returning a tuple-like type.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "items",
+                                type: Some(
+                                    Slice(
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "T",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "limit",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Tuple(
+                                        [
+                                            Slice(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "T",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            Primitive(
+                                                Float(
+                                                    W64,
+                                                ),
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

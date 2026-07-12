@@ -1,0 +1,41 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+"""
+A generic container.
+"""
+@dataclass
+class Box:
+    value: Any
+
+# ---
+
+// <unrendered constant>
+
+# ---
+
+// <unrendered constant>
+
+# ---
+
+@dataclass
+class Pair:
+    first: Any
+    second: Any
+
+# ---
+
+// <unrendered constant>
+
+# ---
+
+// <unrendered constant>
+
+# ---
+
+def identity(x: Any) -> Any: ...

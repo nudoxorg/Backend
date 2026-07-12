@@ -309,6 +309,7 @@ async fn materialize_graph<M: EmbeddingModel>(
 /// transactional blob-reference count (or a snapshot-fenced mark-sweep) exists;
 /// see the closure/race notes above for exactly why the naive list-and-delete is
 /// unsafe. The `list_cas()` gauge below is the read-only, race-free half.
+#[tracing::instrument(skip_all, name = "cas_gc")]
 pub(crate) async fn cas_gc<M: EmbeddingModel>(server: Arc<Server<M>>) {
 	loop {
 		for sourced in server.federation().in_precedence() {
@@ -347,6 +348,7 @@ pub(crate) async fn cas_gc<M: EmbeddingModel>(server: Arc<Server<M>>) {
 }
 
 /// Keep every source's replica-local package index caught up to postgres.
+#[tracing::instrument(skip_all, name = "package_index_poller")]
 pub(crate) async fn package_index_poller<M: EmbeddingModel>(server: Arc<Server<M>>) {
 	let interval = server.config().limits.poll_interval;
 	loop {
@@ -362,6 +364,7 @@ pub(crate) async fn package_index_poller<M: EmbeddingModel>(server: Arc<Server<M
 /// Watch each source's text-sink watermark lag (outbox head minus consumed
 /// position) and surface it as a gauge, so a stalled text index is visible
 /// before users notice stale search.
+#[tracing::instrument(skip_all, name = "text_index_poller")]
 pub(crate) async fn text_index_poller<M: EmbeddingModel>(server: Arc<Server<M>>) {
 	let interval = server.config().limits.poll_interval;
 	loop {

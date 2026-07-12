@@ -42,7 +42,6 @@ pub(crate) fn lower_function(ctx: &mut LowerCtx<'_>, f: HirFunction) -> Option<F
 		type_links,
 		implemented_protocols: None,
 		members: None,
-		body: None,
 	})
 }
 

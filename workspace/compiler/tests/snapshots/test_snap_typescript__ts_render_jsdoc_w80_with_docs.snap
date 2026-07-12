@@ -1,0 +1,29 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: rendered
+---
+// <unrendered module>
+
+/**
+ * A geographic coordinate pair.
+ * 
+ * Latitude must be in [-90, 90] and longitude in [-180, 180].
+ */
+export interface Coordinate {}
+
+/**
+ * A named geographic location.
+ * 
+ * Bundles a human-readable label with its coordinates.
+ */
+export interface Location {}
+
+/**
+ * Format a coordinate as a human-readable string.
+ */
+export function formatCoord(coord: Coordinate, precision: number): string;
+
+/**
+ * Calculate the Haversine distance between two coordinates (in kilometres).
+ */
+export function haversine(from: Coordinate, to: Coordinate): number;

@@ -1,0 +1,232 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: sorted
+---
+{
+    "snap_dataclass_complex_fields.py": Module(
+        Symbol {
+            name: "snap_dataclass_complex_fields",
+            path: Local(
+                "snap_dataclass_complex_fields.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: None,
+            },
+        },
+    ),
+    "snap_dataclass_complex_fields::Container": RecordType(
+        Symbol {
+            name: "Container",
+            path: Local(
+                "snap_dataclass_complex_fields::Container",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Container",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "items",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.list",
+                                        generic_args: Some(
+                                            [
+                                                Type(
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "builtins.int",
+                                                            generic_args: None,
+                                                        },
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "mapping",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.dict",
+                                        generic_args: Some(
+                                            [
+                                                Type(
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "builtins.str",
+                                                            generic_args: None,
+                                                        },
+                                                    ),
+                                                ),
+                                                Type(
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "builtins.int",
+                                                            generic_args: None,
+                                                        },
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "maybe",
+                            ),
+                            type: Some(
+                                Union(
+                                    [
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "builtins.str",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "builtins.NoneType",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "union_none",
+                            ),
+                            type: Some(
+                                Union(
+                                    [
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "builtins.str",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "builtins.NoneType",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_dataclass_complex_fields::Optional": Constant(
+        Symbol {
+            name: "Optional",
+            path: Local(
+                "snap_dataclass_complex_fields::Optional",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "snap_dataclass_complex_fields::annotations": Constant(
+        Symbol {
+            name: "annotations",
+            path: Local(
+                "snap_dataclass_complex_fields::annotations",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+}

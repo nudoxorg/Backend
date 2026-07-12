@@ -1,0 +1,15 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: rendered
+---
+// <unrendered module>
+
+/**
+ * A greeter interface carrying an ordinary method plus a call signature and
+ * an index signature.
+ */
+export interface Greeter {
+    greet(name: string): string;
+    Call(name: string): string;
+    Index(key: string): any;
+}

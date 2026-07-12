@@ -1,0 +1,13 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: rendered
+---
+// <unrendered module>
+
+export interface Coordinate {}
+
+export interface Location {}
+
+export function formatCoord(coord: Coordinate, precision: number): string;
+
+export function haversine(from: Coordinate, to: Coordinate): number;

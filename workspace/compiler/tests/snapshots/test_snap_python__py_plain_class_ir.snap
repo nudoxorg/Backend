@@ -1,0 +1,222 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: sorted
+---
+{
+    "snap_plain_class.py": Module(
+        Symbol {
+            name: "snap_plain_class",
+            path: Local(
+                "snap_plain_class.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: None,
+            },
+        },
+    ),
+    "snap_plain_class::Counter": RecordType(
+        Symbol {
+            name: "Counter",
+            path: Local(
+                "snap_plain_class::Counter",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A simple counter.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Counter",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "count",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.int",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "self",
+                                            type: Some(
+                                                SelfType,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "builtins.NoneType",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "self",
+                                            type: Some(
+                                                SelfType,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "builtins.NoneType",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "self",
+                                            type: Some(
+                                                SelfType,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "builtins.int",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

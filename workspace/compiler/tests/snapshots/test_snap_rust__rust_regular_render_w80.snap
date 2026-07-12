@@ -1,0 +1,42 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+expression: rendered
+---
+// calculator::BlanketView
+pub trait BlanketView {
+    fn view(&self) -> &View;
+}
+
+// calculator::Counter
+pub struct Counter {
+    pub(crate) value: isize,
+}
+
+// calculator::OpenTrait
+/// An open trait: its only supertrait is public, so it is not sealed.
+pub trait OpenTrait {
+    fn kind(&self) -> u8;
+}
+
+// calculator::SealedTrait
+/// A sealed trait: downstream crates cannot implement it because its `Sealed`
+/// supertrait lives in a private module.
+pub trait SealedTrait {
+    fn describe(&self) -> &''static String;
+}
+
+// calculator::add
+pub fn add(left: isize, right: isize) -> isize;
+
+// calculator::internals::HiddenCounter
+pub(crate) struct HiddenCounter {
+    pub(super) value: isize,
+}
+
+// calculator::legacy_add
+/// Superseded arithmetic helper.
+#[deprecated(since = "0.1.0", note = "use add instead")]
+pub fn legacy_add(left: isize, right: isize) -> isize;
+
+// calculator::sealed_marker::Sealed
+pub trait Sealed {}

@@ -1,0 +1,247 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: sorted
+---
+{
+    "com.example": Module(
+        Symbol {
+            name: "com.example",
+            path: Local(
+                "com.example",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "com.example::LegacyApi",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "com.example::LegacyApi": RecordType(
+        Symbol {
+            name: "LegacyApi",
+            path: Local(
+                "com.example::LegacyApi",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A class with deprecated members, to exercise `@Deprecated` lowering.\n\nDeprecated: Use `ModernApi` instead.\n\nAnnotations: `@java.lang.Deprecated`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "LegacyApi",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "OLD_MAX",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: Some(
+                                Int(
+                                    100,
+                                ),
+                            ),
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "@java.lang.Deprecated",
+                                    "static",
+                                    "final",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: true,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "A deprecated constant.\n\nDeprecated: No longer meaningful.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: None,
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::LegacyApi.oldProcess",
+                        ),
+                        Local(
+                            "com.example::LegacyApi.newProcess",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::LegacyApi.newProcess": Function(
+        Symbol {
+            name: "newProcess",
+            path: Local(
+                "com.example::LegacyApi.newProcess",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "The replacement method (not deprecated).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "input",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the input string",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the processed result",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::LegacyApi.oldProcess": Function(
+        Symbol {
+            name: "oldProcess",
+            path: Local(
+                "com.example::LegacyApi.oldProcess",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A deprecated method.\n\nDeprecated: Use `newProcess(String)` instead.\n\nAnnotations: `@java.lang.Deprecated`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "input",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the input string",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the processed result",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

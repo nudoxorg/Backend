@@ -1,0 +1,34 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+@dataclass
+class NORTH: ...
+
+@dataclass
+class SOUTH: ...
+
+@dataclass
+class EAST: ...
+
+@dataclass
+class WEST: ...
+
+Direction = NORTH | SOUTH | EAST | WEST
+
+# ---
+
+@dataclass
+class PENDING: ...
+
+@dataclass
+class ACTIVE: ...
+
+@dataclass
+class INACTIVE: ...
+
+Status = PENDING | ACTIVE | INACTIVE

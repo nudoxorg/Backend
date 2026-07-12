@@ -165,7 +165,8 @@ fn generates_linked_data_documents() {
         package: "calculator".into(),
         version: Some("0.1.0".into()),
     };
-    emit(&generated.surface, ctx, &mut sink).expect("linked-data emission succeeds");
+    emit(&generated.surface, &generated.occurrences, ctx, &mut sink)
+        .expect("linked-data emission succeeds");
     assert!(sink.flushed, "emit must flush the sink once at the end");
 
     let packages: Vec<&Value> = sink.docs.iter().filter(|d| d["@type"] == "Package").collect();

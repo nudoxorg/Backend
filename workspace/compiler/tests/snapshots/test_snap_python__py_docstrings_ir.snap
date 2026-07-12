@@ -1,0 +1,215 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: sorted
+---
+{
+    "snap_docstrings.py": Module(
+        Symbol {
+            name: "snap_docstrings",
+            path: Local(
+                "snap_docstrings.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Module docstring.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: None,
+            },
+        },
+    ),
+    "snap_docstrings::Documented": RecordType(
+        Symbol {
+            name: "Documented",
+            path: Local(
+                "snap_docstrings::Documented",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A well-documented class.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Documented",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "value",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.int",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "self",
+                                            type: Some(
+                                                SelfType,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "builtins.str",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_docstrings::documented_func": Function(
+        Symbol {
+            name: "documented_func",
+            path: Local(
+                "snap_docstrings::documented_func",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Check if x converts to y.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "x",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.int",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the integer to convert.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "y",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the expected string form.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.bool",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

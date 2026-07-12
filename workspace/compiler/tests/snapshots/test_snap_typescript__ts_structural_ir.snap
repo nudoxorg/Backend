@@ -1,0 +1,224 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::Person",
+                        ),
+                        Local(
+                            "mod::PersonKeys",
+                        ),
+                        Local(
+                            "mod::ReadonlyPerson",
+                        ),
+                        Local(
+                            "mod::IsString",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::IsString": TypeAlias(
+        Symbol {
+            name: "IsString",
+            path: Local(
+                "mod::IsString",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A conditional type lowers to `Type::Conditional`.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Conditional(
+                ConditionalType {
+                    check_type: TypeReference(
+                        TypeReference {
+                            identifier: "T",
+                            generic_args: None,
+                        },
+                    ),
+                    extends_type: Primitive(
+                        String,
+                    ),
+                    true_type: Primitive(
+                        Bool,
+                    ),
+                    false_type: Primitive(
+                        Bool,
+                    ),
+                },
+            ),
+        },
+    ),
+    "mod::Person": TraitDef(
+        Symbol {
+            name: "Person",
+            path: Local(
+                "mod::Person",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A plain record used as the basis for the structural type aliases.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: Some(
+                    [
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "name",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [],
+                                    is_mutable: true,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: None,
+                            },
+                        ),
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "age",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [],
+                                    is_mutable: true,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: None,
+                            },
+                        ),
+                    ],
+                ),
+                required_methods: None,
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::PersonKeys": TypeAlias(
+        Symbol {
+            name: "PersonKeys",
+            path: Local(
+                "mod::PersonKeys",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "`keyof` lowers to a `Type::TypeOperator`.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypeOperator(
+                TypeOperator {
+                    operator: "keyof",
+                    type: TypeReference(
+                        TypeReference {
+                            identifier: "Person",
+                            generic_args: None,
+                        },
+                    ),
+                },
+            ),
+        },
+    ),
+    "mod::ReadonlyPerson": TypeAlias(
+        Symbol {
+            name: "ReadonlyPerson",
+            path: Local(
+                "mod::ReadonlyPerson",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A mapped type lowers to `Type::Mapped`.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Mapped(
+                MappedType {
+                    readonly: Some(
+                        Preserve,
+                    ),
+                    optional: None,
+                    parameter: "K",
+                    source_type: TypeOperator(
+                        TypeOperator {
+                            operator: "keyof",
+                            type: TypeReference(
+                                TypeReference {
+                                    identifier: "Person",
+                                    generic_args: None,
+                                },
+                            ),
+                        },
+                    ),
+                    name_type: None,
+                    value_type: Some(
+                        QualifiedPath(
+                            QualifiedPath {
+                                name: "TypeReference(TypeReference { identifier: \"K\", generic_args: None })",
+                                generic_arguments: None,
+                                self_type: TypeReference(
+                                    TypeReference {
+                                        identifier: "Person",
+                                        generic_args: None,
+                                    },
+                                ),
+                                tr: None,
+                            },
+                        ),
+                    ),
+                },
+            ),
+        },
+    ),
+}

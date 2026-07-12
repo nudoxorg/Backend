@@ -119,6 +119,13 @@ pub fn run_oracle<C: crate::compile::producer::ForgeContext>(
 
 	// Network off + GOPROXY=off: the oracle's own deps were compiled in by
 	// Buck2; at runtime it only needs to read the target module's own cache.
+	//
+	// The sealed env has no ambient `$HOME`, so `go` cannot derive its default
+	// `GOCACHE`/`GOPATH` and aborts ("build cache is required"). Point both (and
+	// `HOME`) at scratch under the temp dir, which is already an RW mount.
+	let scratch = std::env::temp_dir();
+	let go_cache = scratch.join("nudox-go-build-cache");
+	let go_path = scratch.join("nudox-go-path");
 	let output = isolate::run_isolated(
 		ctx,
 		IsolatedCommand::new(&bin, ProducerProfile::Go)
@@ -126,9 +133,12 @@ pub fn run_oracle<C: crate::compile::producer::ForgeContext>(
 			.env("GOWORK", "off")
 			.env("GOFLAGS", "-mod=mod")
 			.env("GOPROXY", "off")
+			.env("GOCACHE", go_cache)
+			.env("GOPATH", go_path)
+			.env("HOME", scratch.clone())
 			.ro(&bin)
 			.ro(&target)
-			.rw(std::env::temp_dir()),
+			.rw(scratch),
 	)
 	.map_err(|e| match e.kind {
 		IsolatedFailureKind::ToolchainMissing(_) | IsolatedFailureKind::Sandbox(_) => {

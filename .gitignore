@@ -37,6 +37,10 @@
 # Nix
 !/flake.nix
 !/flake.lock
+# CI-maintained pin recording the Attic store path of the buck2/snowydeer
+# artifact that packages.default fetchClosure's (see flake.nix). Must be tracked
+# so it's part of the flake source snapshot.
+!/nix/buck2-artifact.json
 
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
@@ -74,6 +78,12 @@
 !/workspace/compiler/tests/fixtures/**/*.java
 !/workspace/compiler/tests/fixtures/**/go.mod
 !/workspace/compiler/tests/fixtures/**/go.sum
+
+# insta snapshot expectations (accepted `.snap` files) for the producer /
+# renderer snapshot tests. These are the committed test baselines; insta's
+# transient `.snap.new` pending files end in `.new` so this glob leaves them
+# ignored.
+!/**/*.snap
 
 # Patch files for Buck2 genrules
 !/**/*.patch

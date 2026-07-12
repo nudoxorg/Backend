@@ -180,14 +180,21 @@ fn run_doclet<C: crate::compile::producer::ForgeContext>(
 }
 
 /// A unique per-run scratch directory under the system temp dir.
+///
+/// The name mixes pid, a nanosecond clock, and a process-global atomic counter
+/// so concurrent runs in one process (e.g. parallel producer jobs) can never
+/// collide on the same dir even if the clock reads the same nanosecond twice.
 fn tempdir_for_run() -> Result<PathBuf, JavadocError> {
+	use std::sync::atomic::{AtomicU64, Ordering};
+	static SEQ: AtomicU64 = AtomicU64::new(0);
 	let dir = std::env::temp_dir().join(format!(
-		"nudox-java-run-{}-{:x}",
+		"nudox-java-run-{}-{:x}-{}",
 		std::process::id(),
 		std::time::SystemTime::now()
 			.duration_since(std::time::UNIX_EPOCH)
 			.map(|d| d.as_nanos())
-			.unwrap_or(0)
+			.unwrap_or(0),
+		SEQ.fetch_add(1, Ordering::Relaxed),
 	));
 	fs::create_dir_all(&dir).map_err(|source| JavadocError::TempDirFailed {
 		path: dir.clone(),

@@ -1,0 +1,158 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/**
+ * A sealed hierarchy of geometric shapes.
+ * 
+ * Only the listed subtypes are permitted.
+ */
+public interface Shape {
+    double area();
+    double perimeter();
+}
+
+// ---
+
+/**
+ * A circle defined by its radius.
+ */
+public class Circle {
+    public double radius;
+}
+
+// ---
+
+public double area();
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public boolean equals(Object o);
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public int hashCode();
+
+// ---
+
+public double perimeter();
+
+// ---
+
+public double radius();
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public String toString();
+
+// ---
+
+/**
+ * An axis-aligned rectangle.
+ */
+public class Rectangle {
+    public double width;
+    public double height;
+}
+
+// ---
+
+public double area();
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public boolean equals(Object o);
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public int hashCode();
+
+// ---
+
+public double height();
+
+// ---
+
+public double perimeter();
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public String toString();
+
+// ---
+
+public double width();
+
+// ---
+
+/**
+ * A triangle defined by three side lengths (validated by the triangle inequality).
+ */
+public class Triangle {
+    public double a;
+    public double b;
+    public double c;
+}
+
+// ---
+
+public double a();
+
+// ---
+
+public double area();
+
+// ---
+
+public double b();
+
+// ---
+
+public double c();
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public boolean equals(Object o);
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public int hashCode();
+
+// ---
+
+public double perimeter();
+
+// ---
+
+/**
+ * Declared: `final`
+ */
+public String toString();

@@ -1,0 +1,7 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+expression: rendered
+---
+pub struct CoreCounter {
+    pub(crate) value: isize,
+}

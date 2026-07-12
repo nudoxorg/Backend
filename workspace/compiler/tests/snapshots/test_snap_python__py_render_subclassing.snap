@@ -1,0 +1,23 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+@dataclass
+class Animal:
+    name: str
+
+# ---
+
+@dataclass
+class Cat:
+    indoor: bool
+
+# ---
+
+@dataclass
+class Dog:
+    breed: str

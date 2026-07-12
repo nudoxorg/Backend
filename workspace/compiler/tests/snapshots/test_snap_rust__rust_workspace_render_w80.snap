@@ -1,0 +1,19 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+expression: rendered
+---
+// odd_duck::Behavior
+pub trait Behavior {
+    fn describe(&self) -> &''static String;
+}
+
+// odd_duck::Mode
+pub enum Mode {
+    Fast,
+    Careful,
+}
+
+// odd_duck::Widget
+pub struct Widget<T> {
+    pub(crate) inner: T,
+}

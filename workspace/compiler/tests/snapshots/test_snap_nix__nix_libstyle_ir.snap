@@ -1,0 +1,2783 @@
+---
+source: workspace/compiler/tests/snap_nix.rs
+expression: sorted
+---
+{
+    "": Module(
+        Symbol {
+            name: "flake",
+            path: Local(
+                "",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "attrsets",
+                        ),
+                        Local(
+                            "builtins",
+                        ),
+                        Local(
+                            "concatStringsSep",
+                        ),
+                        Local(
+                            "makeWrapper",
+                        ),
+                        Local(
+                            "mapAttrs",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "attrsets": Constant(
+        Symbol {
+            name: "attrsets",
+            path: Local(
+                "attrsets",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "The canonical nixpkgs `lib.attrsets` namespace re-exports `mapAttrs`\nas an inherit alias so both `mapAttrs` and `attrsets.mapAttrs` resolve.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "attrsets/mapAttrs": Function(
+        Symbol {
+            name: "mapAttrs",
+            path: Local(
+                "attrsets/mapAttrs",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "Map a function over every value of an attribute set, returning a new\nattribute set with the same keys.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "f",
+                                type: Some(
+                                    FunctionPointer(
+                                        FunctionPointer {
+                                            inputs: Some(
+                                                [
+                                                    Literal(
+                                                        LiteralParameter {
+                                                            name: "",
+                                                            type: Some(
+                                                                Primitive(
+                                                                    String,
+                                                                ),
+                                                            ),
+                                                            attributes: None,
+                                                            default_value: None,
+                                                            description: None,
+                                                        },
+                                                    ),
+                                                ],
+                                            ),
+                                            outputs: Some(
+                                                [
+                                                    Literal(
+                                                        LiteralParameter {
+                                                            name: "",
+                                                            type: Some(
+                                                                FunctionPointer(
+                                                                    FunctionPointer {
+                                                                        inputs: Some(
+                                                                            [
+                                                                                Literal(
+                                                                                    LiteralParameter {
+                                                                                        name: "",
+                                                                                        type: Some(
+                                                                                            GenericParam(
+                                                                                                GenericParam {
+                                                                                                    name: "a",
+                                                                                                    kind: None,
+                                                                                                },
+                                                                                            ),
+                                                                                        ),
+                                                                                        attributes: None,
+                                                                                        default_value: None,
+                                                                                        description: None,
+                                                                                    },
+                                                                                ),
+                                                                            ],
+                                                                        ),
+                                                                        outputs: Some(
+                                                                            [
+                                                                                Literal(
+                                                                                    LiteralParameter {
+                                                                                        name: "",
+                                                                                        type: Some(
+                                                                                            GenericParam(
+                                                                                                GenericParam {
+                                                                                                    name: "b",
+                                                                                                    kind: None,
+                                                                                                },
+                                                                                            ),
+                                                                                        ),
+                                                                                        attributes: None,
+                                                                                        default_value: None,
+                                                                                        description: None,
+                                                                                    },
+                                                                                ),
+                                                                            ],
+                                                                        ),
+                                                                        attributes: None,
+                                                                    },
+                                                                ),
+                                                            ),
+                                                            attributes: None,
+                                                            default_value: None,
+                                                            description: None,
+                                                        },
+                                                    ),
+                                                ],
+                                            ),
+                                            attributes: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The function applied to each `name` / `value` pair.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "set",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "AttrSet",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        GenericParam(
+                                                            GenericParam {
+                                                                name: "a",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The attribute set to map over.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "AttrSet",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        GenericParam(
+                                                            GenericParam {
+                                                                name: "b",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins": Module(
+        Symbol {
+            name: "builtins",
+            path: Local(
+                "builtins",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Nix built-in functions (the `builtins` set).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "builtins/abort",
+                        ),
+                        Local(
+                            "builtins/add",
+                        ),
+                        Local(
+                            "builtins/all",
+                        ),
+                        Local(
+                            "builtins/any",
+                        ),
+                        Local(
+                            "builtins/appendContext",
+                        ),
+                        Local(
+                            "builtins/attrNames",
+                        ),
+                        Local(
+                            "builtins/attrValues",
+                        ),
+                        Local(
+                            "builtins/baseNameOf",
+                        ),
+                        Local(
+                            "builtins/bitAnd",
+                        ),
+                        Local(
+                            "builtins/bitOr",
+                        ),
+                        Local(
+                            "builtins/bitXor",
+                        ),
+                        Local(
+                            "builtins/catAttrs",
+                        ),
+                        Local(
+                            "builtins/ceil",
+                        ),
+                        Local(
+                            "builtins/compareVersions",
+                        ),
+                        Local(
+                            "builtins/concatLists",
+                        ),
+                        Local(
+                            "builtins/concatMap",
+                        ),
+                        Local(
+                            "builtins/concatStringsSep",
+                        ),
+                        Local(
+                            "builtins/deepSeq",
+                        ),
+                        Local(
+                            "builtins/dirOf",
+                        ),
+                        Local(
+                            "builtins/div",
+                        ),
+                        Local(
+                            "builtins/elem",
+                        ),
+                        Local(
+                            "builtins/elemAt",
+                        ),
+                        Local(
+                            "builtins/filter",
+                        ),
+                        Local(
+                            "builtins/floor",
+                        ),
+                        Local(
+                            "builtins/foldl'",
+                        ),
+                        Local(
+                            "builtins/fromJSON",
+                        ),
+                        Local(
+                            "builtins/fromTOML",
+                        ),
+                        Local(
+                            "builtins/functionArgs",
+                        ),
+                        Local(
+                            "builtins/genList",
+                        ),
+                        Local(
+                            "builtins/genericClosure",
+                        ),
+                        Local(
+                            "builtins/getAttr",
+                        ),
+                        Local(
+                            "builtins/getContext",
+                        ),
+                        Local(
+                            "builtins/groupBy",
+                        ),
+                        Local(
+                            "builtins/hasAttr",
+                        ),
+                        Local(
+                            "builtins/hasContext",
+                        ),
+                        Local(
+                            "builtins/hashString",
+                        ),
+                        Local(
+                            "builtins/head",
+                        ),
+                        Local(
+                            "builtins/intersectAttrs",
+                        ),
+                        Local(
+                            "builtins/isAttrs",
+                        ),
+                        Local(
+                            "builtins/isBool",
+                        ),
+                        Local(
+                            "builtins/isFloat",
+                        ),
+                        Local(
+                            "builtins/isFunction",
+                        ),
+                        Local(
+                            "builtins/isInt",
+                        ),
+                        Local(
+                            "builtins/isList",
+                        ),
+                        Local(
+                            "builtins/isNull",
+                        ),
+                        Local(
+                            "builtins/isPath",
+                        ),
+                        Local(
+                            "builtins/isString",
+                        ),
+                        Local(
+                            "builtins/length",
+                        ),
+                        Local(
+                            "builtins/lessThan",
+                        ),
+                        Local(
+                            "builtins/listToAttrs",
+                        ),
+                        Local(
+                            "builtins/map",
+                        ),
+                        Local(
+                            "builtins/mapAttrs",
+                        ),
+                        Local(
+                            "builtins/match",
+                        ),
+                        Local(
+                            "builtins/mul",
+                        ),
+                        Local(
+                            "builtins/parseDrvName",
+                        ),
+                        Local(
+                            "builtins/partition",
+                        ),
+                        Local(
+                            "builtins/removeAttrs",
+                        ),
+                        Local(
+                            "builtins/replaceStrings",
+                        ),
+                        Local(
+                            "builtins/seq",
+                        ),
+                        Local(
+                            "builtins/sort",
+                        ),
+                        Local(
+                            "builtins/split",
+                        ),
+                        Local(
+                            "builtins/splitVersion",
+                        ),
+                        Local(
+                            "builtins/stringLength",
+                        ),
+                        Local(
+                            "builtins/sub",
+                        ),
+                        Local(
+                            "builtins/substring",
+                        ),
+                        Local(
+                            "builtins/tail",
+                        ),
+                        Local(
+                            "builtins/throw",
+                        ),
+                        Local(
+                            "builtins/toJSON",
+                        ),
+                        Local(
+                            "builtins/toPath",
+                        ),
+                        Local(
+                            "builtins/toString",
+                        ),
+                        Local(
+                            "builtins/toXML",
+                        ),
+                        Local(
+                            "builtins/trace",
+                        ),
+                        Local(
+                            "builtins/tryEval",
+                        ),
+                        Local(
+                            "builtins/typeOf",
+                        ),
+                        Local(
+                            "builtins/zipAttrsWith",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "builtins/abort": Function(
+        Symbol {
+            name: "abort",
+            path: Local(
+                "builtins/abort",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/add": Function(
+        Symbol {
+            name: "add",
+            path: Local(
+                "builtins/add",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/all": Function(
+        Symbol {
+            name: "all",
+            path: Local(
+                "builtins/all",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/any": Function(
+        Symbol {
+            name: "any",
+            path: Local(
+                "builtins/any",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/appendContext": Function(
+        Symbol {
+            name: "appendContext",
+            path: Local(
+                "builtins/appendContext",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/attrNames": Function(
+        Symbol {
+            name: "attrNames",
+            path: Local(
+                "builtins/attrNames",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/attrValues": Function(
+        Symbol {
+            name: "attrValues",
+            path: Local(
+                "builtins/attrValues",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/baseNameOf": Function(
+        Symbol {
+            name: "baseNameOf",
+            path: Local(
+                "builtins/baseNameOf",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/bitAnd": Function(
+        Symbol {
+            name: "bitAnd",
+            path: Local(
+                "builtins/bitAnd",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/bitOr": Function(
+        Symbol {
+            name: "bitOr",
+            path: Local(
+                "builtins/bitOr",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/bitXor": Function(
+        Symbol {
+            name: "bitXor",
+            path: Local(
+                "builtins/bitXor",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/catAttrs": Function(
+        Symbol {
+            name: "catAttrs",
+            path: Local(
+                "builtins/catAttrs",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/ceil": Function(
+        Symbol {
+            name: "ceil",
+            path: Local(
+                "builtins/ceil",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/compareVersions": Function(
+        Symbol {
+            name: "compareVersions",
+            path: Local(
+                "builtins/compareVersions",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/concatLists": Function(
+        Symbol {
+            name: "concatLists",
+            path: Local(
+                "builtins/concatLists",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/concatMap": Function(
+        Symbol {
+            name: "concatMap",
+            path: Local(
+                "builtins/concatMap",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/concatStringsSep": Function(
+        Symbol {
+            name: "concatStringsSep",
+            path: Local(
+                "builtins/concatStringsSep",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/deepSeq": Function(
+        Symbol {
+            name: "deepSeq",
+            path: Local(
+                "builtins/deepSeq",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/dirOf": Function(
+        Symbol {
+            name: "dirOf",
+            path: Local(
+                "builtins/dirOf",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/div": Function(
+        Symbol {
+            name: "div",
+            path: Local(
+                "builtins/div",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/elem": Function(
+        Symbol {
+            name: "elem",
+            path: Local(
+                "builtins/elem",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/elemAt": Function(
+        Symbol {
+            name: "elemAt",
+            path: Local(
+                "builtins/elemAt",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/filter": Function(
+        Symbol {
+            name: "filter",
+            path: Local(
+                "builtins/filter",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/floor": Function(
+        Symbol {
+            name: "floor",
+            path: Local(
+                "builtins/floor",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/foldl'": Function(
+        Symbol {
+            name: "foldl'",
+            path: Local(
+                "builtins/foldl'",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/fromJSON": Function(
+        Symbol {
+            name: "fromJSON",
+            path: Local(
+                "builtins/fromJSON",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/fromTOML": Function(
+        Symbol {
+            name: "fromTOML",
+            path: Local(
+                "builtins/fromTOML",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/functionArgs": Function(
+        Symbol {
+            name: "functionArgs",
+            path: Local(
+                "builtins/functionArgs",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/genList": Function(
+        Symbol {
+            name: "genList",
+            path: Local(
+                "builtins/genList",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/genericClosure": Function(
+        Symbol {
+            name: "genericClosure",
+            path: Local(
+                "builtins/genericClosure",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/getAttr": Function(
+        Symbol {
+            name: "getAttr",
+            path: Local(
+                "builtins/getAttr",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/getContext": Function(
+        Symbol {
+            name: "getContext",
+            path: Local(
+                "builtins/getContext",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/groupBy": Function(
+        Symbol {
+            name: "groupBy",
+            path: Local(
+                "builtins/groupBy",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/hasAttr": Function(
+        Symbol {
+            name: "hasAttr",
+            path: Local(
+                "builtins/hasAttr",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/hasContext": Function(
+        Symbol {
+            name: "hasContext",
+            path: Local(
+                "builtins/hasContext",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/hashString": Function(
+        Symbol {
+            name: "hashString",
+            path: Local(
+                "builtins/hashString",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/head": Function(
+        Symbol {
+            name: "head",
+            path: Local(
+                "builtins/head",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/intersectAttrs": Function(
+        Symbol {
+            name: "intersectAttrs",
+            path: Local(
+                "builtins/intersectAttrs",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isAttrs": Function(
+        Symbol {
+            name: "isAttrs",
+            path: Local(
+                "builtins/isAttrs",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isBool": Function(
+        Symbol {
+            name: "isBool",
+            path: Local(
+                "builtins/isBool",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isFloat": Function(
+        Symbol {
+            name: "isFloat",
+            path: Local(
+                "builtins/isFloat",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isFunction": Function(
+        Symbol {
+            name: "isFunction",
+            path: Local(
+                "builtins/isFunction",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isInt": Function(
+        Symbol {
+            name: "isInt",
+            path: Local(
+                "builtins/isInt",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isList": Function(
+        Symbol {
+            name: "isList",
+            path: Local(
+                "builtins/isList",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isNull": Function(
+        Symbol {
+            name: "isNull",
+            path: Local(
+                "builtins/isNull",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isPath": Function(
+        Symbol {
+            name: "isPath",
+            path: Local(
+                "builtins/isPath",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/isString": Function(
+        Symbol {
+            name: "isString",
+            path: Local(
+                "builtins/isString",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/length": Function(
+        Symbol {
+            name: "length",
+            path: Local(
+                "builtins/length",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/lessThan": Function(
+        Symbol {
+            name: "lessThan",
+            path: Local(
+                "builtins/lessThan",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/listToAttrs": Function(
+        Symbol {
+            name: "listToAttrs",
+            path: Local(
+                "builtins/listToAttrs",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/map": Function(
+        Symbol {
+            name: "map",
+            path: Local(
+                "builtins/map",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/mapAttrs": Function(
+        Symbol {
+            name: "mapAttrs",
+            path: Local(
+                "builtins/mapAttrs",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/match": Function(
+        Symbol {
+            name: "match",
+            path: Local(
+                "builtins/match",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/mul": Function(
+        Symbol {
+            name: "mul",
+            path: Local(
+                "builtins/mul",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/parseDrvName": Function(
+        Symbol {
+            name: "parseDrvName",
+            path: Local(
+                "builtins/parseDrvName",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/partition": Function(
+        Symbol {
+            name: "partition",
+            path: Local(
+                "builtins/partition",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/removeAttrs": Function(
+        Symbol {
+            name: "removeAttrs",
+            path: Local(
+                "builtins/removeAttrs",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/replaceStrings": Function(
+        Symbol {
+            name: "replaceStrings",
+            path: Local(
+                "builtins/replaceStrings",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/seq": Function(
+        Symbol {
+            name: "seq",
+            path: Local(
+                "builtins/seq",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/sort": Function(
+        Symbol {
+            name: "sort",
+            path: Local(
+                "builtins/sort",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/split": Function(
+        Symbol {
+            name: "split",
+            path: Local(
+                "builtins/split",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/splitVersion": Function(
+        Symbol {
+            name: "splitVersion",
+            path: Local(
+                "builtins/splitVersion",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/stringLength": Function(
+        Symbol {
+            name: "stringLength",
+            path: Local(
+                "builtins/stringLength",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/sub": Function(
+        Symbol {
+            name: "sub",
+            path: Local(
+                "builtins/sub",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/substring": Function(
+        Symbol {
+            name: "substring",
+            path: Local(
+                "builtins/substring",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/tail": Function(
+        Symbol {
+            name: "tail",
+            path: Local(
+                "builtins/tail",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/throw": Function(
+        Symbol {
+            name: "throw",
+            path: Local(
+                "builtins/throw",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/toJSON": Function(
+        Symbol {
+            name: "toJSON",
+            path: Local(
+                "builtins/toJSON",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/toPath": Function(
+        Symbol {
+            name: "toPath",
+            path: Local(
+                "builtins/toPath",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/toString": Function(
+        Symbol {
+            name: "toString",
+            path: Local(
+                "builtins/toString",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/toXML": Function(
+        Symbol {
+            name: "toXML",
+            path: Local(
+                "builtins/toXML",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/trace": Function(
+        Symbol {
+            name: "trace",
+            path: Local(
+                "builtins/trace",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/tryEval": Function(
+        Symbol {
+            name: "tryEval",
+            path: Local(
+                "builtins/tryEval",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/typeOf": Function(
+        Symbol {
+            name: "typeOf",
+            path: Local(
+                "builtins/typeOf",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "builtins/zipAttrsWith": Function(
+        Symbol {
+            name: "zipAttrsWith",
+            path: Local(
+                "builtins/zipAttrsWith",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "concatStringsSep": Function(
+        Symbol {
+            name: "concatStringsSep",
+            path: Local(
+                "concatStringsSep",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "Concatenate a list of strings, inserting a separator between each\n    element.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "sep",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "strings",
+                                type: Some(
+                                    Slice(
+                                        Primitive(
+                                            String,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "makeWrapper": Function(
+        Symbol {
+            name: "makeWrapper",
+            path: Local(
+                "makeWrapper",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "Build a wrapper derivation around an existing program.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "version",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: Some(
+                                    Str(
+                                        "\"0.0.0\"",
+                                    ),
+                                ),
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "...",
+                                type: None,
+                                attributes: Some(
+                                    [
+                                        Variadic,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: Some(
+                                    "Additional attributes accepted via pattern ellipsis.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Derivation",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "makeWrapper/builder": Constant(
+        Symbol {
+            name: "builder",
+            path: Local(
+                "makeWrapper/builder",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "makeWrapper/name": Constant(
+        Symbol {
+            name: "name",
+            path: Local(
+                "makeWrapper/name",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "makeWrapper/system": Constant(
+        Symbol {
+            name: "system",
+            path: Local(
+                "makeWrapper/system",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "mapAttrs": Function(
+        Symbol {
+            name: "mapAttrs",
+            path: Local(
+                "mapAttrs",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "Map a function over every value of an attribute set, returning a new\nattribute set with the same keys.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "f",
+                                type: Some(
+                                    FunctionPointer(
+                                        FunctionPointer {
+                                            inputs: Some(
+                                                [
+                                                    Literal(
+                                                        LiteralParameter {
+                                                            name: "",
+                                                            type: Some(
+                                                                Primitive(
+                                                                    String,
+                                                                ),
+                                                            ),
+                                                            attributes: None,
+                                                            default_value: None,
+                                                            description: None,
+                                                        },
+                                                    ),
+                                                ],
+                                            ),
+                                            outputs: Some(
+                                                [
+                                                    Literal(
+                                                        LiteralParameter {
+                                                            name: "",
+                                                            type: Some(
+                                                                FunctionPointer(
+                                                                    FunctionPointer {
+                                                                        inputs: Some(
+                                                                            [
+                                                                                Literal(
+                                                                                    LiteralParameter {
+                                                                                        name: "",
+                                                                                        type: Some(
+                                                                                            GenericParam(
+                                                                                                GenericParam {
+                                                                                                    name: "a",
+                                                                                                    kind: None,
+                                                                                                },
+                                                                                            ),
+                                                                                        ),
+                                                                                        attributes: None,
+                                                                                        default_value: None,
+                                                                                        description: None,
+                                                                                    },
+                                                                                ),
+                                                                            ],
+                                                                        ),
+                                                                        outputs: Some(
+                                                                            [
+                                                                                Literal(
+                                                                                    LiteralParameter {
+                                                                                        name: "",
+                                                                                        type: Some(
+                                                                                            GenericParam(
+                                                                                                GenericParam {
+                                                                                                    name: "b",
+                                                                                                    kind: None,
+                                                                                                },
+                                                                                            ),
+                                                                                        ),
+                                                                                        attributes: None,
+                                                                                        default_value: None,
+                                                                                        description: None,
+                                                                                    },
+                                                                                ),
+                                                                            ],
+                                                                        ),
+                                                                        attributes: None,
+                                                                    },
+                                                                ),
+                                                            ),
+                                                            attributes: None,
+                                                            default_value: None,
+                                                            description: None,
+                                                        },
+                                                    ),
+                                                ],
+                                            ),
+                                            attributes: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The function applied to each `name` / `value` pair.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "set",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "AttrSet",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        GenericParam(
+                                                            GenericParam {
+                                                                name: "a",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The attribute set to map over.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "AttrSet",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        GenericParam(
+                                                            GenericParam {
+                                                                name: "b",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mapAttrs/name": Constant(
+        Symbol {
+            name: "name",
+            path: Local(
+                "mapAttrs/name",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "mapAttrs/value": Constant(
+        Symbol {
+            name: "value",
+            path: Local(
+                "mapAttrs/value",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+}

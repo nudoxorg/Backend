@@ -1,0 +1,78 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: sorted
+---
+{
+    "snap_empty_classes.py": Module(
+        Symbol {
+            name: "snap_empty_classes",
+            path: Local(
+                "snap_empty_classes.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: None,
+            },
+        },
+    ),
+    "snap_empty_classes::Empty": RecordType(
+        Symbol {
+            name: "Empty",
+            path: Local(
+                "snap_empty_classes::Empty",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Empty",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_empty_classes::JustDoc": RecordType(
+        Symbol {
+            name: "JustDoc",
+            path: Local(
+                "snap_empty_classes::JustDoc",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "This class has only a docstring.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "JustDoc",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

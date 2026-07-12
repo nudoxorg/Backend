@@ -3,6 +3,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
+    # NuDox shared build library (input-less flake in the deploy repo). Gives
+    # lib.build.rustService so the production build recipe lives here rather
+    # than in nixos/nix/pkgs/backend.nix. Pinned by remote for reproducibility;
+    # for local iteration before it's pushed:
+    #   nix build --override-input nixos path:../nixos
+    nixos.url = "git+https://dev.nudox.org/git/Nudox/MachineConfigurations.git";
+
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -39,6 +46,7 @@
     {
       self,
       nixpkgs,
+      nixos,
       fenix,
       git-hooks,
       devshell,
@@ -110,6 +118,152 @@
         );
     in
     {
+      # Production build of the backend, exposed as a getFlake-consumable
+      # `packages.<system>.default`. Two build paths feed it:
+      #
+      #   * buck2/snowydeer (the real current build) — see apps.<system>.buck2
+      #     below. buck2 itself can't run inside a `nix build` sandbox (daemon,
+      #     network, mutable prelude FS), so we DON'T try to compile it here.
+      #     Instead the artifact is built imperatively (in CI, via the app),
+      #     imported content-addressed into the Nix store, and pushed to the
+      #     self-hosted Attic cache (cache.nudox.org). CI records the resulting
+      #     per-system store path in nix/buck2-artifact.json, and
+      #     `builtins.fetchClosure` below turns that cached path back into a
+      #     normal derivation — PURE eval, no buck2 at eval or build time, just
+      #     a signature-verified substitution. THIS is what makes the buck2
+      #     build getFlake-consumable by nixos/app-flakes.nix.
+      #
+      #   * cargo (rustService) — the legacy source build, kept as a fallback
+      #     on revs that still carry a committed Cargo.lock (pre-Buck2 revs, or
+      #     branches that scaffold the manifests). rustService wants a
+      #     fenix-overlaid pkgs.
+      #
+      # Precedence: prefer the pinned buck2 artifact; fall back to cargo when
+      # there's no pin for this system but a lockfile is present.
+      packages = eachSystem (
+        { system, ... }:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ fenix.overlays.default ];
+          };
+
+          # nix/buck2-artifact.json schema:
+          #   { "fromStore": "<attic substituter URL>",
+          #     "paths": { "<system>": "/nix/store/…-nudox_pkg", … } }
+          # Empty `paths` (the committed default) → no pin yet → buck2Artifact
+          # is null and the flake falls back to cargo, still evaluating cleanly.
+          # CI (nixos scripts.backendBuck2) rewrites this after `attic push`.
+          buck2Pin = builtins.fromJSON (builtins.readFile ./nix/buck2-artifact.json);
+          buck2Path = buck2Pin.paths.${system} or null;
+          buck2Artifact =
+            if buck2Path == null then
+              null
+            else
+              builtins.fetchClosure {
+                fromStore = buck2Pin.fromStore;
+                fromPath = buck2Path;
+                # snowydeer imports content-addressed (`nix store add-path`), so
+                # the bare CA form { fromStore, fromPath } applies. If a pin is
+                # ever input-addressed instead, that entry needs
+                # `inputAddressed = true`.
+              };
+
+          # This repo has migrated to Buck2: the Rust `Cargo.toml`/`Cargo.lock`
+          # are gitignored and scaffolded at runtime (see .gitignore), so they
+          # are absent from most revs' source trees. Only expose the cargo
+          # package on revs that actually carry a committed Cargo.lock —
+          # otherwise `nix flake check`/eval would fail reading a missing lock.
+          hasCargoLock = builtins.pathExists (./. + "/Cargo.lock");
+          cargoBackend = nixos.lib.build.rustService { inherit pkgs; } {
+            pname = "nudox-backend";
+            version = self.rev or "dev";
+            src = ./.;
+            cargoPackage = "nudox";
+            mainProgram = "nudox";
+            description = "NuDox backend compiler and ingestion API";
+          };
+        in
+        {
+          # Kept for `nix shell` compatibility.
+          devshell = self.devShells.${system}.default;
+        }
+        // nixpkgs.lib.optionalAttrs hasCargoLock {
+          # Source-compiled backend (only on revs that still carry Cargo.lock).
+          cargo = cargoBackend;
+        }
+        // nixpkgs.lib.optionalAttrs (buck2Path != null) {
+          # The real production artifact, substituted from Attic via the pin.
+          # NB: guard on buck2Path (a string), never on buck2Artifact — comparing
+          # the fetchClosure result to null would force it, contacting the
+          # substituter just to decide attribute presence.
+          buck2 = buck2Artifact;
+        }
+        // nixpkgs.lib.optionalAttrs (buck2Path != null || hasCargoLock) {
+          default = if buck2Path != null then buck2Artifact else cargoBackend;
+        }
+      );
+
+      # apps.buck2 — non-hermetic buck2/snowydeer build entry point.
+      #
+      # Run with:  nix run .#buck2
+      # (or from the nixos CI driver that knows about this app)
+      #
+      # The script must be run from the repo root. It:
+      #   1. Ensures the prelude symlink is in place (same logic as the devshell
+      #      shellHook) so buck2 can resolve the prelude cell.
+      #   2. Invokes the snowydeer BXL against //workspace/server:nudox_pkg.
+      #   3. Prints the resulting /nix/store/… path to stdout.
+      #
+      # This app is the PRODUCER of the artifact that `packages.default`
+      # consumes. In CI (nixos scripts.backendBuck2) the printed store path is
+      # pushed to the Attic cache and recorded in nix/buck2-artifact.json;
+      # packages.default then substitutes it purely via builtins.fetchClosure
+      # (see the packages block above). So the buck2 build IS getFlake-consumable
+      # — just through a build→push→pin→fetch handoff rather than a direct
+      # `nix build` (which a buck2 daemon + network + mutable prelude FS can't do
+      # inside a sandbox). The build is reproducible (same source → same
+      # content-addressed store path); CI runs this with Nix store write access
+      # and buck2 daemon privileges.
+      apps = eachSystem (
+        { pkgs, system, ... }:
+        let
+          buck2-bin = mkBuck2 pkgs;
+          # setup-prelude.sh does the one-time patching of load paths inside the
+          # prelude cell. We re-use the same script the devshell shellHook calls.
+          bxlScript = pkgs.writeShellApplication {
+            name = "nudox-buck2-build";
+            runtimeInputs = [ buck2-bin ];
+            text = ''
+              # Must be run from the repo root (where .buckconfig lives).
+              if [[ ! -f .buckconfig ]]; then
+                echo "ERROR: run from the Backend repo root (no .buckconfig found)" >&2
+                exit 1
+              fi
+
+              # Wire the prelude cell — mirrors the devshell shellHook logic.
+              ln -sfn ${buck2-prelude} prelude
+
+              _prelude_stamp="build/prelude-local/.nix-source"
+              if [[ ! -f "$_prelude_stamp" || "$(cat "$_prelude_stamp")" != "${buck2-prelude}" ]]; then
+                bash build/setup-prelude.sh
+                echo -n "${buck2-prelude}" > "$_prelude_stamp"
+              fi
+              unset _prelude_stamp
+
+              echo "nudox-buck2-build: invoking snowydeer BXL for //workspace/server:nudox_pkg" >&2
+              buck2 bxl //snowydeer:snowydeer.bxl:main -- --target //workspace/server:nudox_pkg
+            '';
+          };
+        in
+        {
+          buck2 = {
+            type = "app";
+            program = "${bxlScript}/bin/nudox-buck2-build";
+          };
+        }
+      );
+
       checks = eachSystem (
         {
           pkgs,
@@ -127,7 +281,15 @@
             "rustc-codegen-cranelift-preview"
           ];
         in
-        {
+        # `nix flake check` compiles the backend from source when a cargo build
+        # exists on this rev. It deliberately checks `cargo`, not `default`: the
+        # buck2 `default` is a fetchClosure of a pre-built Attic artifact, and
+        # `nix flake check` should exercise a real source build, not re-substitute
+        # a cached closure (which would also need network + the pin present).
+        nixpkgs.lib.optionalAttrs (self.packages.${system} ? cargo) {
+          package = self.packages.${system}.cargo;
+        }
+        // {
           pre-commit-check = git-hooks.lib.${system}.run {
             src = ./.;
             package = pkgs.prek; # Prek for parellelizism
@@ -380,14 +542,6 @@ BCFG
               ) 9>/tmp/nunu_sync.lock &
             '';
           };
-        }
-      );
-
-      # Expose devShell as a package for `nix shell` compatibility
-      packages = eachSystem (
-        { system, ... }:
-        {
-          default = self.devShells.${system}.default;
         }
       );
 

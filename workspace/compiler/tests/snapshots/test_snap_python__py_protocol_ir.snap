@@ -1,0 +1,278 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: sorted
+---
+{
+    "snap_protocol.py": Module(
+        Symbol {
+            name: "snap_protocol",
+            path: Local(
+                "snap_protocol.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: None,
+            },
+        },
+    ),
+    "snap_protocol::Drawable": TraitDef(
+        Symbol {
+            name: "Drawable",
+            path: Local(
+                "snap_protocol::Drawable",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Anything that can be drawn.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "draw",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "self",
+                                            type: Some(
+                                                SelfType,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "canvas",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "builtins.str",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.NoneType",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "resize",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "self",
+                                            type: Some(
+                                                SelfType,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "factor",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "builtins.float",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.NoneType",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "snap_protocol::Protocol": Constant(
+        Symbol {
+            name: "Protocol",
+            path: Local(
+                "snap_protocol::Protocol",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: (),
+        },
+    ),
+    "snap_protocol::Serializable": TraitDef(
+        Symbol {
+            name: "Serializable",
+            path: Local(
+                "snap_protocol::Serializable",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "to_bytes",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "self",
+                                            type: Some(
+                                                SelfType,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.bytes",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "from_bytes",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "self",
+                                            type: Some(
+                                                SelfType,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "data",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "builtins.bytes",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "builtins.NoneType",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+}

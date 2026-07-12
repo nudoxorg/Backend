@@ -1,0 +1,65 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+expression: rendered
+---
+// <unrendered module>
+
+export function identity<T>(x: T): T;
+
+/**
+ * An enum → Entry::SumType.
+ */
+export type Direction =
+    | {
+        tag: "Up";
+    }
+    | {
+        tag: "Down";
+    }
+    | {
+        tag: "Left";
+    }
+    | {
+        tag: "Right";
+    };
+
+/**
+ * A const declaration → Entry::Constant.
+ */
+// <unrendered constant>
+
+/**
+ * An interface → Entry::TraitDef.
+ */
+export interface Printable {
+    print(): ;
+}
+
+/**
+ * A type alias → Entry::TypeAlias.
+ */
+type StringOrNumber = string | number;
+
+/**
+ * A class → Entry::RecordType.
+ */
+export interface Widget {}
+
+export function constructor(id: string): void;
+
+/**
+ * A let declaration → Entry::Variable.
+ */
+// <unrendered variable>
+
+/**
+ * A plain function → Entry::Function.
+ */
+export function doWork(x: number): number;
+
+/**
+ * A namespace → Entry::Module.
+ */
+// <unrendered module>
+
+export function identity<T>(x: T): T;

@@ -6,17 +6,20 @@
 //! path with ingest. Both planes share the `Arc<Server<M>>` application state.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::{
 	Router,
 	error_handling::HandleErrorLayer,
-	extract::{DefaultBodyLimit, Request},
+	extract::{DefaultBodyLimit, MatchedPath, Request},
 	http::StatusCode,
 	middleware::{self, Next},
 	response::Response,
 	routing::{get, post},
 };
+use tower_http::classify::ServerErrorsFailureClass;
+use tower_http::trace::TraceLayer;
+use tracing::Span;
 
 use runtime::vector::EmbeddingModel;
 use crate::config::Limits;
@@ -35,17 +38,129 @@ const WRITE_PLANE_BODY_CEILING: usize = 64 * 1024;
 /// Build the full application router over a shared server handle.
 ///
 /// Layers cross-cutting middleware via `tower`/axum: request tracing on both
-/// planes, per-plane body limits (stricter on the write plane), and a request
-/// timeout on the admin mutations. The vendored `tower-http` build carries no
-/// middleware features, so tracing rides a lean `axum::middleware::from_fn`.
+/// planes (via [`tower_http::trace::TraceLayer`] — OBSERVABILITY-PLAN.md §6:
+/// every route now gets one server span carrying `http.route`,
+/// `http.request.method`, and `http.response.status_code` automatically,
+/// replacing the previous hand-rolled `trace_request` middleware), per-plane
+/// body limits (stricter on the write plane), and a request timeout on the
+/// admin mutations. Existing per-handler `#[tracing::instrument]` spans
+/// (e.g. `health::readyz`) nest under this request span unchanged — this
+/// layer only adds the outer span, it does not replace inner instrumentation.
 pub fn router<M: EmbeddingModel>(server: Arc<Server<M>>) -> Router {
 	let limits = &server.config().limits;
 	Router::new()
 		.merge(read_plane().layer(DefaultBodyLimit::max(READ_PLANE_BODY_CEILING)))
 		.merge(write_plane(limits))
 		.merge(admin_plane(limits))
-		.layer(middleware::from_fn(trace_request))
+		// RED metrics via `route_layer` (not `layer`): it runs *after* route
+		// matching, so `MatchedPath` is populated and the `http_route` label is
+		// the low-cardinality template (`/symbols/:id`) rather than the raw path
+		// — the difference between a bounded metric and a per-id series
+		// explosion. It also skips unmatched 404s, the desired RED denominator.
+		// The trace layer below stays `.layer` so it still spans unmatched
+		// requests.
+		.route_layer(middleware::from_fn(record_http_metrics))
+		.layer(request_trace_layer())
 		.with_state(server)
+}
+
+/// RED (Rate / Errors / Duration) HTTP metrics, emitted through the `metrics`
+/// facade so they reach both the Prometheus `/metrics` exposition (scraped by
+/// VictoriaMetrics as `job="backend"`) and the OTLP pipeline via the fan-out
+/// recorder in `workspace/telemetry`.
+///
+/// Metric + label names are the contract the nixos-side Grafana dashboard and
+/// vmalert rules query, so they are fixed here:
+///   - counter `http_requests`   → renders `http_requests_total` (the exporter
+///     appends `_total`); labels `http_route`, `method`, `status`.
+///   - histogram `http_request_duration_seconds` → renders
+///     `http_request_duration_seconds_bucket`/`_sum`/`_count` (the telemetry
+///     recorder configures `_seconds` buckets); same labels.
+///
+/// `http_route` comes from `MatchedPath` (the route template) — see the
+/// `route_layer` note at the call site for why that is available here.
+async fn record_http_metrics(request: Request, next: Next) -> Response {
+	let method = request.method().as_str().to_owned();
+	let route = request
+		.extensions()
+		.get::<MatchedPath>()
+		.map(|matched| matched.as_str().to_owned())
+		.unwrap_or_else(|| request.uri().path().to_owned());
+	let started = Instant::now();
+
+	let response = next.run(request).await;
+
+	let status = response.status().as_u16().to_string();
+	metrics::counter!(
+		"http_requests",
+		"http_route" => route.clone(),
+		"method" => method.clone(),
+		"status" => status.clone(),
+	)
+	.increment(1);
+	metrics::histogram!(
+		"http_request_duration_seconds",
+		"http_route" => route,
+		"method" => method,
+		"status" => status,
+	)
+	.record(started.elapsed().as_secs_f64());
+
+	response
+}
+
+/// The `TraceLayer` shared by every route. `make_span_with` opens one span per
+/// request, carrying the OTel HTTP semantic-convention field names
+/// (`http.route` prefers the *matched* route template over the raw path, so
+/// e.g. `/symbols/:id` groups instead of fragmenting per id — the grouping
+/// `tracing_opentelemetry` needs to keep span cardinality sane).
+/// `on_response`/`on_failure` fill in the status code and latency on that same
+/// span once the response is known, so the eventual OTel span carries all the
+/// fields the plan asks for on one record rather than scattered log events.
+/// Bodies/headers are never logged (no `on_body_chunk` customization),
+/// preserving the previous `trace_request`'s guarantee.
+fn request_trace_layer() -> TraceLayer<
+	tower_http::classify::SharedClassifier<tower_http::classify::ServerErrorsAsFailures>,
+	impl Fn(&Request) -> Span + Clone,
+	tower_http::trace::DefaultOnRequest,
+	impl Fn(&Response, Duration, &Span) + Clone,
+	tower_http::trace::DefaultOnBodyChunk,
+	tower_http::trace::DefaultOnEos,
+	impl Fn(ServerErrorsFailureClass, Duration, &Span) + Clone,
+> {
+	TraceLayer::new_for_http()
+		.make_span_with(|request: &Request| {
+			let route = request
+				.extensions()
+				.get::<MatchedPath>()
+				.map(MatchedPath::as_str)
+				.unwrap_or_else(|| request.uri().path());
+			tracing::info_span!(
+				"http.server.request",
+				"http.route" = %route,
+				"http.request.method" = %request.method(),
+				"http.response.status_code" = tracing::field::Empty,
+				"otel.name" = %format!("{} {}", request.method(), route),
+				"otel.kind" = "server",
+			)
+		})
+		.on_response(|response: &Response, latency: Duration, span: &Span| {
+			span.record("http.response.status_code", response.status().as_u16());
+			tracing::info!(
+				parent: span,
+				status = response.status().as_u16(),
+				elapsed_ms = latency.as_millis() as u64,
+				"request served"
+			);
+		})
+		.on_failure(|error: ServerErrorsFailureClass, latency: Duration, span: &Span| {
+			tracing::warn!(
+				parent: span,
+				?error,
+				elapsed_ms = latency.as_millis() as u64,
+				"request failed"
+			);
+		})
 }
 
 /// The read plane: `/search`, `/search/semantic`, `/packages/search`,
@@ -105,22 +220,4 @@ fn admin_plane<M: EmbeddingModel>(limits: &Limits) -> Router<Arc<Server<M>>> {
 /// `limits.upload_timeout` answers `504` rather than hanging the client.
 async fn admission_timed_out(error: tower::BoxError) -> (StatusCode, String) {
 	(StatusCode::GATEWAY_TIMEOUT, format!("request timed out: {error}"))
-}
-
-/// Cross-cutting request tracing: method, path, status, latency — on every
-/// route of both planes. Bodies and headers (which may carry secrets) are
-/// never logged.
-async fn trace_request(request: Request, next: Next) -> Response {
-	let method = request.method().clone();
-	let path = request.uri().path().to_owned();
-	let started = Instant::now();
-	let response = next.run(request).await;
-	tracing::info!(
-		%method,
-		path = %path,
-		status = response.status().as_u16(),
-		elapsed_ms = started.elapsed().as_millis() as u64,
-		"request served"
-	);
-	response
 }

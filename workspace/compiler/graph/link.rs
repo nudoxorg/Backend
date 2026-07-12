@@ -16,6 +16,7 @@ use ir::entry::{Index, NudoxPath};
 use terminusdb_schema::{EntityIDFor, TdbLazy};
 
 use super::model as m;
+use super::symtab::SymbolTable;
 
 /// The pseudo-package for names whose owning package is unknown (bare
 /// identifiers in signatures that resolve nowhere). References with a known
@@ -107,12 +108,11 @@ struct StubSeed {
 
 pub struct Linker {
     ctx: PackageCtx,
-    /// fq name (and every alias spelling) → IRI, for entries in the index.
-    exact: HashMap<String, String>,
+    /// Shared name-resolution table (fq/suffix → path); IRIs are encoded on
+    /// demand so this and the occurrence resolver never drift.
+    symtab: SymbolTable,
     /// Every IRI that belongs to a real index entry.
     known: std::collections::HashSet<String>,
-    /// last path segment → IRI, iff unambiguous across the index.
-    suffix: HashMap<String, Option<String>>,
     /// child IRI → parent IRI, inverted from the IR's parent-side `members`.
     parent_of: HashMap<String, String>,
     /// Stub symbols minted during resolution, keyed by IRI.
@@ -123,40 +123,14 @@ pub struct Linker {
 
 impl Linker {
     pub fn build(index: &Index, ctx: PackageCtx) -> Self {
-        let mut exact = HashMap::new();
+        let symtab = SymbolTable::build(index);
         let mut known = std::collections::HashSet::new();
-        let mut suffix: HashMap<String, Option<String>> = HashMap::new();
         let mut parent_of = HashMap::new();
-
-        let mut note_suffix = |name: &str, iri: &str| match suffix.entry(name.to_string()) {
-            std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(Some(iri.to_string()));
-            }
-            std::collections::hash_map::Entry::Occupied(mut o) => {
-                if o.get().as_deref() != Some(iri) {
-                    *o.get_mut() = None; // ambiguous
-                }
-            }
-        };
 
         for (path, entry) in &index.entries_by_path {
             let (package, segments) = coordinates(path, &ctx);
-            let fq = segments.join("::");
-            let iri = symbol_iri(&ctx.language, &package, &fq);
-
-            exact.insert(fq, iri.clone());
+            let iri = symbol_iri(&ctx.language, &package, &segments.join("::"));
             known.insert(iri.clone());
-            if let Some(last) = segments.last() {
-                note_suffix(last, &iri);
-            }
-            if let Some(aliases) = entry.aliases() {
-                for alias in aliases {
-                    exact.insert(alias.join("::"), iri.clone());
-                    if let Some(last) = alias.last() {
-                        note_suffix(last, &iri);
-                    }
-                }
-            }
 
             let members = match entry {
                 ir::kind::Entry::Module(s) => s.inner.members.as_deref(),
@@ -176,13 +150,17 @@ impl Linker {
 
         Self {
             ctx,
-            exact,
+            symtab,
             known,
-            suffix,
             parent_of,
             stubs: RefCell::new(BTreeMap::new()),
             extern_packages: RefCell::new(BTreeSet::new()),
         }
+    }
+
+    /// The shared symbol table this linker resolves against.
+    pub fn symtab(&self) -> &SymbolTable {
+        &self.symtab
     }
 
     pub fn ctx(&self) -> &PackageCtx {
@@ -221,13 +199,13 @@ impl Linker {
         } else {
             identifier.replace('.', "::")
         };
-        if let Some(iri) = self.exact.get(&normalized) {
-            return iri.clone();
+        if let Some(path) = self.symtab.resolve_exact(&normalized) {
+            return self.iri_of(path);
         }
         let segments: Vec<String> = normalized.split("::").map(str::to_string).collect();
         if let Some(last) = segments.last() {
-            if let Some(Some(iri)) = self.suffix.get(last) {
-                return iri.clone();
+            if let Some(path) = self.symtab.resolve_suffix(last) {
+                return self.iri_of(path);
             }
         }
         let iri = symbol_iri(&self.ctx.language, EXTERN_PACKAGE, &normalized);

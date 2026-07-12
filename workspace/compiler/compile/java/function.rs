@@ -104,7 +104,6 @@ fn build_function(
 		implemented: !types::has_modifier(&m.modifiers, "abstract"),
 		members: None,
 		implemented_protocols: None,
-		body: None,
 	}
 }
 
