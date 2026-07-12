@@ -230,9 +230,7 @@ pub fn extract_module<'a>(
 					// SAFETY: `Statement::FunctionDeclaration(Box<Function>)` is layout-
 					// compatible with `Declaration::FunctionDeclaration(Box<Function>)`
 					// as documented in oxc's inherit_variants.rs generated TryFrom impls.
-					let decl_ref: &'a Declaration<'a> = unsafe {
-						&*(stmt as *const Statement<'a> as *const Declaration<'a>)
-					};
+					let decl_ref: &'a Declaration<'a> = stmt.as_declaration().expect("statement is a declaration");
 					let group = groups.entry(sym_name.clone()).or_insert_with(|| {
 						order.push(sym_name.clone());
 						SymbolGroup {
@@ -256,9 +254,7 @@ pub fn extract_module<'a>(
 					} else {
 						ir::kind::Visibility::Private
 					};
-					let decl_ref: &'a Declaration<'a> = unsafe {
-						&*(stmt as *const Statement<'a> as *const Declaration<'a>)
-					};
+					let decl_ref: &'a Declaration<'a> = stmt.as_declaration().expect("statement is a declaration");
 					let group = groups.entry(sym_name.clone()).or_insert_with(|| {
 						order.push(sym_name.clone());
 						SymbolGroup {
@@ -286,9 +282,7 @@ pub fn extract_module<'a>(
 						} else {
 							ir::kind::Visibility::Private
 						};
-						let decl_ref: &'a Declaration<'a> = unsafe {
-							&*(stmt as *const Statement<'a> as *const Declaration<'a>)
-						};
+						let decl_ref: &'a Declaration<'a> = stmt.as_declaration().expect("statement is a declaration");
 						let group = groups.entry(sym_name.clone()).or_insert_with(|| {
 							order.push(sym_name.clone());
 							SymbolGroup {
@@ -307,9 +301,7 @@ pub fn extract_module<'a>(
 				let sym_name = a.id.name.to_string();
 				let is_exported = exported_names.contains(&sym_name);
 				let vis = if is_exported { ir::kind::Visibility::Public } else { ir::kind::Visibility::Private };
-				let decl_ref: &'a Declaration<'a> = unsafe {
-					&*(stmt as *const Statement<'a> as *const Declaration<'a>)
-				};
+				let decl_ref: &'a Declaration<'a> = stmt.as_declaration().expect("statement is a declaration");
 				let group = groups.entry(sym_name.clone()).or_insert_with(|| {
 					order.push(sym_name.clone());
 					SymbolGroup { name: sym_name.clone(), is_default: false, declarations: Vec::new(), visibility: vis }
@@ -321,9 +313,7 @@ pub fn extract_module<'a>(
 				let sym_name = i.id.name.to_string();
 				let is_exported = exported_names.contains(&sym_name);
 				let vis = if is_exported { ir::kind::Visibility::Public } else { ir::kind::Visibility::Private };
-				let decl_ref: &'a Declaration<'a> = unsafe {
-					&*(stmt as *const Statement<'a> as *const Declaration<'a>)
-				};
+				let decl_ref: &'a Declaration<'a> = stmt.as_declaration().expect("statement is a declaration");
 				let group = groups.entry(sym_name.clone()).or_insert_with(|| {
 					order.push(sym_name.clone());
 					SymbolGroup { name: sym_name.clone(), is_default: false, declarations: Vec::new(), visibility: vis }
@@ -335,9 +325,7 @@ pub fn extract_module<'a>(
 				let sym_name = e.id.name.to_string();
 				let is_exported = exported_names.contains(&sym_name);
 				let vis = if is_exported { ir::kind::Visibility::Public } else { ir::kind::Visibility::Private };
-				let decl_ref: &'a Declaration<'a> = unsafe {
-					&*(stmt as *const Statement<'a> as *const Declaration<'a>)
-				};
+				let decl_ref: &'a Declaration<'a> = stmt.as_declaration().expect("statement is a declaration");
 				let group = groups.entry(sym_name.clone()).or_insert_with(|| {
 					order.push(sym_name.clone());
 					SymbolGroup { name: sym_name.clone(), is_default: false, declarations: Vec::new(), visibility: vis }
@@ -352,9 +340,7 @@ pub fn extract_module<'a>(
 				};
 				let is_exported = exported_names.contains(&sym_name) || m.declare;
 				let vis = if is_exported { ir::kind::Visibility::Public } else { ir::kind::Visibility::Private };
-				let decl_ref: &'a Declaration<'a> = unsafe {
-					&*(stmt as *const Statement<'a> as *const Declaration<'a>)
-				};
+				let decl_ref: &'a Declaration<'a> = stmt.as_declaration().expect("statement is a declaration");
 				let group = groups.entry(sym_name.clone()).or_insert_with(|| {
 					order.push(sym_name.clone());
 					SymbolGroup { name: sym_name.clone(), is_default: false, declarations: Vec::new(), visibility: vis }

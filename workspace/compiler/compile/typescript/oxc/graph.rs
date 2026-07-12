@@ -195,7 +195,7 @@ pub(crate) fn build_and_extract(roots: Vec<PathBuf>) -> Result<Vec<ModuleFacts>,
                 // Skip bare node builtin shorthand (e.g. "node:fs", "fs") —
                 // the resolver will classify these as `Builtin` anyway, but
                 // skipping early avoids the syscall.
-                match resolver.resolve_dts(containing_dir, spec) {
+                match resolver.resolve_dts(path, spec) {
                     Ok(resolution) => {
                         let resolved = resolution.into_path_buf();
                         let canon = canonicalize_best_effort(&resolved);
