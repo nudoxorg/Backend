@@ -8,11 +8,11 @@
 use std::path::PathBuf;
 
 use oxc_ast::ast::{
-    Class, ClassElement, Declaration, Function, MethodDefinitionKind, PropertyDefinitionType,
-    PropertyKey, Statement, TSAccessibility, TSEnumDeclaration, TSEnumMemberName,
-    TSInterfaceDeclaration, TSModuleDeclaration, TSModuleDeclarationBody,
-    TSModuleDeclarationName, TSSignature, TSTypeAliasDeclaration, TSTypeName, VariableDeclaration,
-    VariableDeclarationKind,
+    AssignmentTarget, Class, ClassElement, Declaration, Expression, Function,
+    MethodDefinitionKind, PropertyDefinitionType, PropertyKey, Statement, TSAccessibility,
+    TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration, TSModuleDeclaration,
+    TSModuleDeclarationBody, TSModuleDeclarationName, TSSignature, TSTypeAliasDeclaration,
+    TSTypeName, VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_span::GetSpan;
 
@@ -23,13 +23,24 @@ use ir::{
     kind::{Entry, Symbol, Visibility},
     module::Module,
     protocols::{ReceiverKind, TraitDef, TraitMethod},
-    record::{Record, SumVariant},
+    record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant},
     ty::Type,
 };
 
 use super::{
     types::PropertyFieldMetadata, Extractor, FactEntry, Result, SymbolGroup,
 };
+
+// ── free inline helper for FieldAttributes construction ──────────────────────
+
+fn field_attrs(is_static: bool, readonly: bool, optional: bool) -> FieldAttributes {
+    FieldAttributes {
+        decorators: Vec::new(),
+        is_mutable: !readonly,
+        is_optional: optional,
+        is_static,
+    }
+}
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -428,6 +439,46 @@ impl<'a> Extractor<'a> {
 
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// Upgrade 4: Lower a `export = <expr>` assignment.
+    ///
+    /// When the expression is a plain identifier (`export = Foo`), we emit a
+    /// `Symbol<()>` Constant entry named after the identifier and mark it as
+    /// the module's default-equivalent export (link.rs re-resolves via the
+    /// ExportTable). When the expression is anything else, we fall back to the
+    /// generic "default" name — same convention as `export default <expr>`.
+    ///
+    /// No IR schema change is needed: we reuse `Entry::Constant` (the symbol
+    /// name acts as the re-export alias that link.rs will resolve).
+    pub(crate) fn lower_ts_export_assignment(
+        &mut self,
+        expr: &Expression<'a>,
+    ) -> Result<Vec<FactEntry>> {
+        let placeholder = NudoxPath::Local(PathBuf::from(""));
+
+        let nm = match expr {
+            Expression::Identifier(id) => id.name.to_string(),
+            // For `export = { ... }` or other expressions, use "default".
+            _ => "default".to_string(),
+        };
+
+        Ok(vec![FactEntry {
+            entry: Entry::Constant(Symbol {
+                name: nm.clone(),
+                path: placeholder,
+                aliases: None,
+                visibility: Visibility::Public,
+                documentation: None,
+                deprecation: None,
+                doc_links: None,
+                inner: (),
+            }),
+            local_path: vec![nm],
+            type_refs: Vec::new(),
+        }])
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     /// Lower a class into its `Record` plus separated constructor/method member
     /// entries (member paths recorded on the record).
     pub(crate) fn lower_class(
@@ -439,6 +490,8 @@ impl<'a> Extractor<'a> {
         let mut fields = Vec::new();
         let mut index_signatures_ir = Vec::new();
         let mut extra_entries: Vec<FactEntry> = Vec::new();
+        // Upgrade 2: counter for static { } blocks (named __static, __static_1, …)
+        let mut static_block_count: usize = 0;
 
         for elem in cls.body.body.iter() {
             match elem {
@@ -473,6 +526,82 @@ impl<'a> Extractor<'a> {
                 ClassElement::TSIndexSignature(sig) => {
                     index_signatures_ir.push(self.index_signature(sig)?);
                 }
+
+                // ── Upgrade 1: AccessorProperty (`accessor x: T`) ─────────────
+                // The TC39 `accessor` keyword auto-creates a getter/setter pair.
+                // We surface it as a field (same shape as a PropertyDefinition).
+                ClassElement::AccessorProperty(ap) => {
+                    let prop_name = property_key_name(&ap.key, self.source);
+                    let mut decorators: Vec<String> = ap
+                        .decorators
+                        .iter()
+                        .map(|d| d.span.source_text(self.source).to_string())
+                        .collect();
+                    decorators.push("accessor".to_string());
+                    if ap.r#type
+                        == oxc_ast::ast::AccessorPropertyType::TSAbstractAccessorProperty
+                    {
+                        decorators.push("abstract".to_string());
+                    }
+                    let ty_opt =
+                        ap.type_annotation.as_ref().map(|ann| &ann.type_annotation);
+                    let field = self.property_field(
+                        &prop_name,
+                        ty_opt,
+                        PropertyFieldMetadata {
+                            optional: false,
+                            readonly: false, // accessor is read+write
+                            is_static: ap.r#static,
+                            visibility: Some(accessibility_to_visibility(ap.accessibility)),
+                            documentation: None,
+                            decorators: &decorators,
+                        },
+                    )?;
+                    fields.push(field);
+                }
+
+                // ── Upgrade 2: StaticBlock → synthetic __static function ───────
+                // `static { … }` initializer blocks have no type-level surface
+                // but are part of the class contract. We emit one synthetic
+                // Entry::Function per block (named `__static`, `__static_1`, …)
+                // so they are not silently dropped.
+                ClassElement::StaticBlock(_sb) => {
+                    let block_name = if static_block_count == 0 {
+                        "__static".to_string()
+                    } else {
+                        format!("__static_{}", static_block_count)
+                    };
+                    static_block_count += 1;
+                    let static_func = IrFunction {
+                        input_parameters: None,
+                        output_parameters: None,
+                        type_links: None,
+                        attributes: None,
+                        generics: None,
+                        receiver: Some(ReceiverKind::Static),
+                        overloads: None,
+                        implemented: true,
+                        members: None,
+                        implemented_protocols: None,
+                        body: None,
+                    };
+                    let static_sym = Symbol {
+                        name: block_name.clone(),
+                        path: NudoxPath::Local(PathBuf::from("")),
+                        aliases: None,
+                        visibility: Visibility::Private, // not addressable
+                        documentation: None,
+                        deprecation: None,
+                        doc_links: None,
+                        inner: static_func,
+                    };
+                    extra_entries.push(FactEntry {
+                        entry: Entry::Function(static_sym),
+                        local_path: vec![name.to_string(), block_name],
+                        type_refs: Vec::new(),
+                    });
+                }
+
                 _ => {}
             }
         }
@@ -594,6 +723,79 @@ impl<'a> Extractor<'a> {
                 local_path: vec![name.to_string(), "constructor".to_string()],
                 type_refs,
             });
+
+            // ── Upgrade 3: constructor-body `this.x = …` property synthesis ──
+            // Walk the primary constructor's body for ExpressionStatement whose
+            // expression is an AssignmentExpression with a StaticMemberExpression
+            // lhs whose object is `this`. Any distinct `this.<name>` assignment
+            // that is NOT already declared as a PropertyDefinition (or
+            // AccessorProperty) becomes a synthesised Field::Known on the Record.
+            //
+            // `fields` is already populated with PropertyDefinition names at
+            // this point, so we can de-duplicate against it.
+            let existing_field_names: rustc_hash::FxHashSet<String> = fields
+                .iter()
+                .filter_map(|f| {
+                    if let Field::Known(kf) = f {
+                        if let FieldKey::Ident(ref s) = kf.key {
+                            return Some(s.clone());
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            // Collect `this.x = rhs` assignments from the primary constructor body.
+            if let Some(ref ctor_body) = primary_ctor.value.body {
+                let mut synth_names: rustc_hash::FxHashSet<String> =
+                    rustc_hash::FxHashSet::default();
+                for stmt in ctor_body.body.iter() {
+                    if let Statement::ExpressionStatement(expr_stmt) = stmt {
+                        if let Expression::AssignmentExpression(assign) =
+                            &expr_stmt.expression
+                        {
+                            // Only plain `=` assignments (not `+=` etc.).
+                            if assign.operator
+                                == oxc_ast::ast::AssignmentOperator::Assign
+                            {
+                                // LHS must be `this.<name>`.
+                                if let AssignmentTarget::StaticMemberExpression(mem) =
+                                    &assign.left
+                                {
+                                    if matches!(
+                                        &mem.object,
+                                        Expression::ThisExpression(_)
+                                    ) {
+                                        let prop_name =
+                                            mem.property.name.to_string();
+                                        if !existing_field_names
+                                            .contains(&prop_name)
+                                            && synth_names.insert(prop_name.clone())
+                                        {
+                                            // Infer type from RHS if easy.
+                                            let inferred_ty = self
+                                                .infer_type_from_expr(
+                                                    &assign.right,
+                                                    false,
+                                                );
+                                            fields.push(Field::Known(KnownField {
+                                                key: FieldKey::Ident(prop_name),
+                                                r#type: inferred_ty.map(Box::new),
+                                                default_value: None,
+                                                attributes: field_attrs(
+                                                    false, false, false,
+                                                ),
+                                                visibility: None,
+                                                documentation: None,
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // ── methods ───────────────────────────────────────────────────────

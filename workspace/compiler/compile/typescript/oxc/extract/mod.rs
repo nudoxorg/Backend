@@ -134,6 +134,9 @@ pub fn extract_module<'a>(
 	let mut order: Vec<String> = Vec::new();
 	// Tier B: `export default <decl>` declarations, lowered after grouping.
 	let mut default_exports: Vec<&'a ExportDefaultDeclarationKind<'a>> = Vec::new();
+	// Upgrade 4: `export = <expr>` (CJS/UMD interop via TSExportAssignment).
+	// Collect the expression(s); typically there is at most one per module.
+	let mut ts_export_assignments: Vec<&'a oxc_ast::ast::Expression<'a>> = Vec::new();
 
 	for stmt in program.body.iter() {
 		match stmt {
@@ -302,11 +305,17 @@ pub fn extract_module<'a>(
 			}
 
 			Statement::TSModuleDeclaration(m) => {
+				// Upgrade 5: string-literal id = ambient module (`declare module "path"`).
+				// String-literal module ids are always ambient/public — the `declare`
+				// flag may be absent in bare `.d.ts` context so we also check the id
+				// kind as a fallback. Regular (identifier) namespaces use `m.declare`
+				// or exported_bindings as before.
 				let sym_name = match &m.id {
 					TSModuleDeclarationName::Identifier(id) => id.name.to_string(),
 					TSModuleDeclarationName::StringLiteral(s) => s.value.to_string(),
 				};
-				let is_exported = exported_names.contains(&sym_name) || m.declare;
+				let is_string_literal_id = matches!(&m.id, TSModuleDeclarationName::StringLiteral(_));
+				let is_exported = exported_names.contains(&sym_name) || m.declare || is_string_literal_id;
 				let vis = if is_exported { ir::kind::Visibility::Public } else { ir::kind::Visibility::Private };
 				let decl_ref: &'a Declaration<'a> = stmt.as_declaration().expect("statement is a declaration");
 				let group = groups.entry(sym_name.clone()).or_insert_with(|| {
@@ -314,6 +323,13 @@ pub fn extract_module<'a>(
 					SymbolGroup { name: sym_name.clone(), is_default: false, declarations: Vec::new(), visibility: vis }
 				});
 				group.declarations.push(decl_ref);
+			}
+
+			// ── Upgrade 4: `export = <expr>` (TSExportAssignment) ───────────
+			// CommonJS-style `export = foo` or `export = { ... }`. Collect the
+			// expression for lowering after the group step (below).
+			Statement::TSExportAssignment(ts_exp) => {
+				ts_export_assignments.push(&ts_exp.expression);
 			}
 
 			// All other statements (imports, bare expressions, etc.) are ignored here.
@@ -335,6 +351,17 @@ pub fn extract_module<'a>(
 	// ── Step 3b: Lower default-exported declarations (Tier B) ────────────────
 	for kind in default_exports {
 		let entries = extractor.lower_default_export(kind)?;
+		all_entries.extend(entries);
+	}
+
+	// ── Step 3c: Lower `export = <expr>` assignments (Upgrade 4) ─────────────
+	// `export = Foo` is the TypeScript CJS re-export. We treat the referenced
+	// name as the module's primary export, analogous to `export default`. When
+	// the expression is an identifier, we tag the referenced symbol by name
+	// so link.rs can resolve it; when it is a complex expression we record it
+	// under the synthetic name "default" (same as `export default <expr>`).
+	for expr in ts_export_assignments {
+		let entries = extractor.lower_ts_export_assignment(expr)?;
 		all_entries.extend(entries);
 	}
 
