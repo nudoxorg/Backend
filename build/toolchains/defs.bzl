@@ -179,3 +179,19 @@ nix_cxx_toolchain = rule(
     },
     is_toolchain_rule = True,
 )
+
+def _system_binary_impl(ctx: AnalysisContext) -> list[Provider]:
+    return [
+        DefaultInfo(),
+        RunInfo(args = cmd_args(ctx.attrs.binary)),
+    ]
+
+# Wraps a system binary (found on PATH at runtime) as a Buck2 executable
+# target.  Used as a non-Nix fallback for targets that are normally built
+# hermetically via flake.package() when [nix] toolchain = 0.
+system_binary = rule(
+    impl = _system_binary_impl,
+    attrs = {
+        "binary": attrs.string(doc = "Binary name or absolute path; resolved via PATH at runtime"),
+    },
+)

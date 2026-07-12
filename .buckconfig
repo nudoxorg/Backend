@@ -7,7 +7,7 @@ root = .
 prelude = build/prelude-local
 toolchains = build/toolchains
 none = none
-nix = none
+nix = build/nix-stub
 
 [cell_aliases]
 config = prelude
@@ -15,11 +15,6 @@ ovr_config = prelude
 fbcode = none
 fbsource = none
 buck = none
-
-# Nix toolchains are the DEFAULT. You can toggle back to the system toolchains with `-c nix.toolchain=0`.
-# See: https://github.com/tweag/buck2.nix and build/toolchains/nix/flake.nix
-[external_cells]
-  nix = git
 
 [parser]
 target_platform_detector_spec = target:root//...->prelude//platforms:default \
@@ -36,6 +31,12 @@ target_platform_detector_spec = target:root//...->prelude//platforms:default \
   build_tools_version = stub
   compile_sdk_version = android-stub
 
+# Default: system toolchains, no Nix required.
+# The devshell startup hook (flake.nix) appends [nix] toolchain = 1 in the
+# NIX-GENERATED block below, which overrides this value when Nix is active.
+[nix]
+  toolchain = 0
+
 
 
 # BEGIN NIX-GENERATED — managed by flake.nix devshell, do not edit
@@ -50,4 +51,7 @@ target_platform_detector_spec = target:root//...->prelude//platforms:default \
 
 [java]
   java_home = /nix/store/adgxs4i9zn1v0wx3dxg1frqzdccdmdvj-zulu-ca-jdk-21.0.11
+
+[nix]
+  toolchain = 1
 # END NIX-GENERATED

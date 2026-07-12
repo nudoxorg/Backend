@@ -18,7 +18,7 @@ load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
 load("@prelude//toolchains:zip_file.bzl", "zip_file_toolchain")
 load("@prelude//toolchains/go:system_go_bootstrap_toolchain.bzl", "system_go_bootstrap_toolchain")
 load("@prelude//toolchains/go:system_go_toolchain.bzl", "system_go_toolchain")
-load(":defs.bzl", "absolute_clang_tools", "nix_cxx_toolchain")
+load(":defs.bzl", "absolute_clang_tools", "nix_cxx_toolchain", "system_binary")
 
 # buck2.nix external cell (see .buckconfig [external_cells] nix = git). Provides
 # hermetic Nix-built toolchains via flake.package(). Run `buck2 kill` after the
@@ -28,13 +28,18 @@ load("@nix//toolchains:rust.bzl", "nix_rust_toolchain")
 
 # ── Toolchain selection toggle ───────────────────────────────────────────────
 #
-# DEFAULT = hermetic Nix toolchains (buck2.nix). Action cache keys then depend on
-# pinned Nix store closures (flake.lock) rather than ambient machine state, so
-# results are reproducible and shareable cross-machine via the Attic cache.
+# Controlled by [nix] toolchain in .buckconfig (set by the devshell hook):
+#   0 (default) — system toolchains; @nix cell resolves to build/nix-stub stubs.
+#   1           — hermetic Nix toolchains via buck2.nix; action cache keys depend
+#                 on pinned Nix store closures rather than ambient machine state,
+#                 so results are reproducible and shareable via the Attic cache.
 #
-# Escape hatch: `-c nix.toolchain=0` restores the legacy SYSTEM toolchains
-# (fenix rustc on PATH + /usr/bin/clang), preserving today's behavior exactly.
-_use_nix = read_config("nix", "toolchain", "1") in ("1", "true", "True")
+# The Nix devshell startup hook in flake.nix appends a NIX-GENERATED block to
+# .buckconfig that sets `[nix] toolchain = 1` and overrides the @nix cell to
+# the real buck2.nix source via `[external_cells] nix = path`.  Without the
+# devshell, this block is absent and system toolchains are used automatically.
+# Opt out even inside the devshell: `buck2 build -c nix.toolchain=0 //...`
+_use_nix = read_config("nix", "toolchain", "0") in ("1", "true", "True")
 
 # `flake.package` runs `nix build path:<dir>#packages.<system>.<pkg>.out` as a
 # Buck2 action; the building host just needs `nix` on PATH. `//nix:flake`
@@ -314,20 +319,25 @@ zip_file_toolchain(
 
 # ── snowydeer Phase 4 — ripgrep NAR ref-scanner ───────────────────────────────
 #
-# build_store_path.py (snowydeer/build_store_path.py) uses ripgrep to implement
-# Dolstra-thesis §5.12 scanForReferences: it binary-scans the NAR of the deploy
-# artifact for 32-character Nix store hash fragments to determine the actual
-# runtime closure. This target provides the hermetic ripgrep binary via the same
-# Nix toolchains flake that vends rustc/cxx.
+# build_store_path.py uses ripgrep to implement Dolstra-thesis §5.12
+# scanForReferences: it binary-scans the NAR of the deploy artifact for
+# 32-character Nix store hash fragments to determine the runtime closure.
 #
-# After adding `ripgrep = pkgs.ripgrep;` to build/toolchains/nix/flake.nix, run:
-#   nix flake lock build/toolchains/nix
-# to update build/toolchains/nix/flake.lock and commit the updated lock file.
-flake.package(
-    name = "ripgrep",
-    binary = "rg",
-    package = "ripgrep",
-    path = "//nix:flake",
-    target_compatible_with = _TARGET_MAPPING,
-    visibility = ["PUBLIC"],
-)
+# NIX set (default): hermetic ripgrep built as a Buck2 action via flake.package.
+# SYSTEM fallback: thin system_binary wrapper that invokes `rg` from PATH.
+# snowydeer targets are Nix-specific; on non-Nix hosts `rg` must be on PATH.
+if _use_nix:
+    flake.package(
+        name = "ripgrep",
+        binary = "rg",
+        package = "ripgrep",
+        path = "//nix:flake",
+        target_compatible_with = _TARGET_MAPPING,
+        visibility = ["PUBLIC"],
+    )
+else:
+    system_binary(
+        name = "ripgrep",
+        binary = "rg",
+        visibility = ["PUBLIC"],
+    )

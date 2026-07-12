@@ -272,6 +272,14 @@
                 mkKeyValue = k: v: "  ${k} = ${v}";
               }
               {
+                # Enable Nix toolchains; overrides [nix] toolchain = 0 in the base
+                # .buckconfig (which is the non-Nix default).  The @nix cell is
+                # overridden below by [external_cells] to use the real buck2.nix
+                # source instead of the build/nix-stub fallback.
+                # See: https://github.com/tweag/buck2.nix and build/toolchains/nix/flake.nix
+                nix = {
+                  toolchain = "1";
+                };
                 external_cells = {
                   nix = "path";
                 };
