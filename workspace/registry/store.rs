@@ -21,9 +21,10 @@
 
 use std::sync::Arc;
 
+use futures::TryStreamExt as _;
 use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId,
-	content::ContentHash,
+	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId, Probeable,
+	content::ContentHash, timed_probe,
 };
 use crate::package::Coordinates as PackageCoordinates;
 use object_store::{ObjectStore, path::Path};
@@ -167,9 +168,13 @@ impl Store<Live> {
 		manifest: &BlobManifest,
 	) -> Result<ContentHash, StoreError> {
 		manifest.validate().map_err(|e| StoreError::Blob(Box::new(e)))?;
+		// Use the single canonical CAS-key derivation (Hash ②) so this site and
+		// any future reader share exactly one encoding path.  See the two-hash
+		// doc comment in `blob/mod.rs` for why this is distinct from the
+		// generation-stamp (Hash ①) produced by `identity_bytes`.
+		let hash = manifest.manifest_cas_key().map_err(|e| StoreError::Blob(Box::new(e)))?;
 		let bytes = postcard::to_allocvec(manifest)
 			.map_err(|e| StoreError::Blob(Box::new(BlobError::Codec(e))))?;
-		let hash = ContentHash::of_bytes(&bytes);
 
 		// The manifest itself is content-addressed (idempotent put)...
 		self.put_section(&PendingSection { hash, bytes: bytes.into() }).await?;
@@ -215,7 +220,72 @@ impl Store<Live> {
 		}
 	}
 
+	/// Enumerate every content-addressed section currently held in the `cas/`
+	/// key space.
+	///
+	/// Returns the set of [`ContentHash`]es whose `cas/{hex}` objects exist in
+	/// the backend. Keys that do not parse as 32-byte BLAKE3 hex (e.g. the
+	/// reachability-probe sentinel) are silently skipped — they are not CAS
+	/// sections.
+	///
+	/// This is a read-only enumeration. It is used by audit / orphan-detection
+	/// paths to compute which stored blobs no live manifest references; it does
+	/// **not** delete anything.
+	///
+	/// # Pagination
+	/// `object_store::ObjectStore::list` returns a stream that the backend paginates
+	/// internally (S3 list pages, GCS list pages, local readdir batches). We drive
+	/// the stream to completion with `try_collect`, so all pages are consumed and
+	/// the result is the complete key set.
+	pub async fn list_cas(&self) -> Result<Vec<ContentHash>, StoreError> {
+		let cas_prefix = Path::from("cas");
+		let metas: Vec<object_store::ObjectMeta> =
+			self.backend.list(Some(&cas_prefix)).try_collect().await?;
+
+		let mut hashes = Vec::with_capacity(metas.len());
+		for meta in metas {
+			// Strip the "cas/" prefix to get the hex leaf.
+			let path_str = meta.location.as_ref();
+			let hex = match path_str.strip_prefix("cas/") {
+				Some(h) => h,
+				None => continue, // Shouldn't happen, but skip malformed keys.
+			};
+			// Skip the sentinel and any non-CAS entries (not 64 hex chars = 32 bytes).
+			if hex.len() != 64 {
+				continue;
+			}
+			let mut raw = [0u8; 32];
+			if data_encoding::HEXLOWER.decode_mut(hex.as_bytes(), &mut raw).is_err() {
+				tracing::debug!(key = path_str, "skipping non-hex cas key during list");
+				continue;
+			}
+			hashes.push(ContentHash::from_bytes(raw));
+		}
+		Ok(hashes)
+	}
+
 	/// Resolve a package's coordinates to its deterministic id (pure delegation
 	/// to heart; kept here so callers don't re-derive the layout key twice).
 	pub fn id_of(package: &PackageCoordinates) -> PackageId { package.id() }
 }
+
+impl Probeable for Store<Live> {
+	fn backend(&self) -> BackendKind {
+		BackendKind::ObjectStore
+	}
+
+	async fn probe(&self) -> heart::Probe {
+		timed_probe(BackendKind::ObjectStore, async {
+			let sentinel = ContentHash::of_bytes(b"nudox readiness sentinel");
+			match self.get_section(sentinel).await {
+				Ok(_) | Err(StoreError::NotFound { .. }) => None,
+				Err(error) => Some(error.to_string()),
+			}
+		})
+		.await
+	}
+}
+
+const _: fn() = || {
+	heart::assert_probe_future_send::<Store<Live>>();
+};

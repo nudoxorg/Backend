@@ -20,7 +20,7 @@ use heart::{
 use sqlx::{Row, postgres::PgRow};
 
 use crate::{
-	error::{IndexError, OutboxError},
+	error::OutboxError,
 	index::GlobalStore,
 	schema::{codec, queries},
 };
@@ -92,7 +92,7 @@ fn row_to_entry(row: &PgRow) -> Result<OutboxEntry, OutboxError> {
 	let kind_tok: String = row.try_get(3).map_err(OutboxError::Database)?;
 	let created_at: DateTime<Utc> = row.try_get(4).map_err(OutboxError::Database)?;
 
-	let kind = codec::sink_kind_from_token(&kind_tok).map_err(codec_to_outbox)?;
+	let kind = codec::sink_kind_from_token(&kind_tok).map_err(OutboxError::Codec)?;
 
 	Ok(OutboxEntry {
 		id: OutboxSeq(seq),
@@ -100,16 +100,6 @@ fn row_to_entry(row: &PgRow) -> Result<OutboxEntry, OutboxError> {
 		kind,
 		created_at,
 	})
-}
-
-/// A codec failure while decoding an outbox row is a corrupt-row / internal
-/// invariant break, surfaced as a database decode error. (We keep Database for
-/// outbox surface; full Codec would be added if we expand OutboxError more.)
-fn codec_to_outbox(e: codec::CodecError) -> OutboxError {
-	OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
-		std::io::ErrorKind::InvalidData,
-		format!("codec: {e}"),
-	))))
 }
 
 impl Outbox<Live> {
@@ -167,14 +157,14 @@ impl Outbox<Live> {
 		let stored = ResolutionState::Stored { hash: snapshot };
 		GlobalStore::set_state_tx(&mut tx, package, &stored)
 			.await
-			.map_err(index_to_outbox)?;
+			.map_err(OutboxError::Index)?;
 
 		// 2. Persist the derived search facets on the same lifecycle row, in the
 		//    same txn — the facets analog of the `failure` jsonb write. Runs after
 		//    the `set_state` upsert has guaranteed the row exists, and never
 		//    disturbs the state/phase/hash columns.
 		let (facets_sql, facets_vals) =
-			queries::index::set_facets(package, facets).map_err(codec_to_outbox)?;
+			queries::index::set_facets(package, facets).map_err(OutboxError::Codec)?;
 		sqlx::query_with(&facets_sql, facets_vals)
 			.execute(&mut *tx)
 			.await
@@ -231,6 +221,72 @@ impl Outbox<Live> {
 		Ok(())
 	}
 
+	/// Try to become the sole fleet-wide drainer of `kind` via a postgres
+	/// **session-level advisory lock** (`pg_try_advisory_lock`), returning a
+	/// [`SinkLockGuard`] iff this replica won the lock.
+	///
+	/// This is the replica-safety fix for outbox consumption (DAEMON-PLAN §2.5 /
+	/// §6.1): without it, two gateway replicas polling the same sink race on the
+	/// shared watermark and can double-materialize. With it, exactly one replica
+	/// drains a given sink at a time; the others get `None` and skip this tick,
+	/// retrying next poll (so failover is automatic when the holder dies and its
+	/// connection — and thus its lock — drops). Consumers are idempotent
+	/// upserts, so even a brief overlap on failover is safe.
+	///
+	/// The lock lives on the guard's pinned connection and is released when the
+	/// guard is dropped (explicit `pg_advisory_unlock`, plus the backstop that
+	/// dropping the connection frees all its session locks).
+	pub async fn try_lock_sink(&self, kind: SinkKind) -> Result<Option<SinkLockGuard>, OutboxError> {
+		let mut conn = self.pool.acquire().await.map_err(OutboxError::Database)?;
+		let (sql, vals) = queries::outbox::try_advisory_lock(kind);
+		let row = sqlx::query_with(&sql, vals)
+			.fetch_one(&mut *conn)
+			.await
+			.map_err(OutboxError::Database)?;
+		let acquired: bool = row.try_get(0).map_err(OutboxError::Database)?;
+		if acquired {
+			Ok(Some(SinkLockGuard { conn: Some(conn), kind }))
+		} else {
+			// Not ours this tick — drop the connection back to the pool untouched.
+			Ok(None)
+		}
+	}
+
+	/// Reclaim consumed outbox rows: delete every intent at or below the minimum
+	/// durable watermark across **all** sinks — i.e. every row that every sink has
+	/// already materialized. Returns the number of rows deleted.
+	///
+	/// This is the conservative half of the CAS GC duty (DAEMON-PLAN §5-ops). The
+	/// floor is computed by [`queries::outbox::min_consumed_watermark`], which
+	/// returns `0` unless **every** sink has a watermark row — so a sink that has
+	/// never advanced (no row yet) forces the floor to `0` and nothing is deleted.
+	/// Because `seq` is a `bigserial` starting at 1, a floor of `0` matches no row.
+	/// The net effect: an outbox row is only ever purged once it is provably below
+	/// every sink's consumed position, so re-delivery is never needed for it again.
+	///
+	/// The delete runs as a single statement; a crash mid-GC simply leaves the
+	/// remaining consumed rows for the next tick (the operation is idempotent —
+	/// re-running deletes nothing new once the floor is stable).
+	pub async fn gc_consumed(&self) -> Result<u64, OutboxError> {
+		let (floor_sql, floor_vals) = queries::outbox::min_consumed_watermark();
+		let row = sqlx::query_with(&floor_sql, floor_vals)
+			.fetch_one(&self.pool)
+			.await
+			.map_err(OutboxError::Database)?;
+		let floor: i64 = row.try_get(0).map_err(OutboxError::Database)?;
+		if floor <= 0 {
+			// No sink-wide floor yet (a sink without a watermark row, or nothing
+			// consumed): reclaim nothing this tick.
+			return Ok(0);
+		}
+		let (del_sql, del_vals) = queries::outbox::delete_consumed_below(floor);
+		let result = sqlx::query_with(&del_sql, del_vals)
+			.execute(&self.pool)
+			.await
+			.map_err(OutboxError::Database)?;
+		Ok(result.rows_affected())
+	}
+
 	/// Read a consumer's durable watermark (0 if never advanced).
 	pub async fn read_watermark(&self, kind: SinkKind) -> Result<OutboxSeq, OutboxError> {
 		let (sql, vals) = queries::outbox::read_watermark(kind);
@@ -248,18 +304,54 @@ impl Outbox<Live> {
 	}
 }
 
-/// An index error surfacing inside an outbox transaction (the state-transition
-/// half of [`Outbox::record_stored`]).
-fn index_to_outbox(e: IndexError) -> OutboxError {
-	match e {
-		IndexError::Database(db) => OutboxError::Database(db),
-		IndexError::Codec(c) => OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
-			std::io::ErrorKind::Other,
-			format!("codec: {c}"),
-		)))),
-		other => OutboxError::Database(sqlx::Error::Decode(Box::new(std::io::Error::new(
-			std::io::ErrorKind::Other,
-			format!("index: {other}"),
-		)))),
+/// Proof-of-ownership guard for a per-sink outbox drain (see
+/// [`Outbox::try_lock_sink`]). While it lives, this replica holds the sink's
+/// postgres session-level advisory lock, so no other replica will drain the same
+/// sink. Dropping it releases the lock.
+///
+/// Release happens two ways, belt-and-suspenders:
+/// - [`SinkLockGuard::release`] runs `pg_advisory_unlock` explicitly (the clean
+///   path, so the connection returns to the pool lock-free and reusable);
+/// - `Drop` (best-effort) returns the pinned connection to the pool; postgres
+///   frees every session-level advisory lock a connection held when it is reset
+///   for reuse, so the lock never leaks even if `release` was skipped.
+///
+/// Prefer `release().await` at the end of a drain; `Drop` is the crash/early-exit
+/// backstop.
+pub struct SinkLockGuard {
+	// `Option` so `release` can take the connection out and unlock explicitly,
+	// leaving `Drop` a no-op on the clean path.
+	conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+	kind: SinkKind,
+}
+
+impl SinkLockGuard {
+	/// Explicitly release the advisory lock (`pg_advisory_unlock`) on the pinned
+	/// connection, then return it to the pool. The clean shutdown of a drain tick.
+	pub async fn release(mut self) -> Result<(), OutboxError> {
+		if let Some(mut conn) = self.conn.take() {
+			let (sql, vals) = queries::outbox::advisory_unlock(self.kind);
+			sqlx::query_with(&sql, vals)
+				.execute(&mut *conn)
+				.await
+				.map_err(OutboxError::Database)?;
+		}
+		Ok(())
+	}
+
+	/// The sink this guard holds the drain lock for.
+	pub fn kind(&self) -> SinkKind { self.kind }
+}
+
+impl Drop for SinkLockGuard {
+	fn drop(&mut self) {
+		// If `release` was not called, just drop the pinned connection. postgres
+		// releases session-level advisory locks when the backing connection is
+		// reset on return to the pool, so the lock is freed either way — we cannot
+		// run an async `pg_advisory_unlock` from a sync `Drop`.
+		if self.conn.take().is_some() {
+			tracing::debug!(sink = %self.kind, "sink drain lock dropped without explicit release");
+		}
 	}
 }
+

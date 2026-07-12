@@ -455,6 +455,10 @@ pub enum IndexError {
 	#[error("index row decode failed")]
 	RowDecode { column: &'static str, #[source] source: sqlx::Error },
 
+	/// A stored `symbols.kind` token did not match any known [`heart::SymbolKind`].
+	#[error("unknown symbol kind token in symbols row: {token}")]
+	UnknownSymbolKind { token: String },
+
 	/// Codec failures (e.g. from schema rows) now carried with concrete source
 	/// so trace is not lost to to_string + Decode.
 	#[error("index codec failure")]
@@ -494,6 +498,16 @@ pub enum OutboxError {
 
 	#[error("outbox append failed")]
 	AppendFailed { package: PackageId, #[source] source: sqlx::Error },
+
+	/// A codec failure while decoding an outbox / facets row (corrupt data or
+	/// schema drift) — not a transport fault, not retryable.
+	#[error("outbox codec failure")]
+	Codec(#[from] codec::CodecError),
+
+	/// An index error surfaced inside an outbox transaction (state transition
+	/// half of `record_stored`). Retryable when the index error is.
+	#[error("outbox index operation failed")]
+	Index(#[from] IndexError),
 }
 
 impl Retryable for OutboxError {
@@ -502,7 +516,8 @@ impl Retryable for OutboxError {
 			OutboxError::Database(e) => is_sqlx_retryable(e),
 			OutboxError::BeginTx(e) => is_sqlx_retryable(e),
 			OutboxError::AppendFailed { source, .. } => is_sqlx_retryable(source),
-			_ => false,
+			OutboxError::Index(e) => e.is_retryable(),
+			OutboxError::Codec(_) | OutboxError::Duplicate { .. } => false,
 		}
 	}
 }

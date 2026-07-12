@@ -149,6 +149,56 @@ pub fn rank_with<T>(
 	candidates: Vec<Candidate<T>>,
 	limit: usize,
 ) -> Vec<Candidate<T>> {
+	// Classic single-page behaviour: truncate to `limit` at the pull-up (so the
+	// tail-bubble runs over the truncated list, exactly as before).
+	rank_pipeline(cfg, query, candidates, limit, limit)
+}
+
+/// Run the full five-stage pipeline over **all** `candidates` and return them in
+/// the pipeline's total order **without truncating**.
+///
+/// This is the single, page-independent ranking used by keyset pagination: the
+/// caller materializes this one total order once per `(query, snapshot)` and
+/// pages over it by slicing, so page 1 and page N are slices of the *identical*
+/// order — there is no scoring seam at the page boundary.
+///
+/// `limit` still tunes the position-sensitive stages (representative pull-up's
+/// `take`/`better_half`, the bubble tail) exactly as [`rank`] does, so the first
+/// `limit` entries of the returned order are byte-for-byte what [`rank`] would
+/// have produced.  The difference is only that the tail beyond `limit` is
+/// retained (already ordered by fused score + diversity) so later pages have a
+/// stable continuation to slice.
+///
+/// Pure and deterministic: repeated calls on the same input yield identical
+/// output.
+pub fn rank_full<T>(query: &str, candidates: Vec<Candidate<T>>, limit: usize) -> Vec<Candidate<T>> {
+	rank_full_with(&RankingConfig::default(), query, candidates, limit)
+}
+
+/// Like [`rank_full`] but accepts explicit tuning knobs.
+pub fn rank_full_with<T>(
+	cfg: &RankingConfig,
+	query: &str,
+	candidates: Vec<Candidate<T>>,
+	limit: usize,
+) -> Vec<Candidate<T>> {
+	// `retain = usize::MAX` keeps the whole order (nothing is truncated); `limit`
+	// still tunes the position-sensitive stages exactly as the single-page path.
+	rank_pipeline(cfg, query, candidates, limit, usize::MAX)
+}
+
+/// The shared five-stage pipeline. `limit` tunes the position-sensitive stages
+/// (pull-up `take`/`better_half`, the bubble tail); `retain` is the length the
+/// reordered list is truncated to at the pull-up. The single-page [`rank_with`]
+/// passes `retain == limit` (classic truncation); the paginated [`rank_full_with`]
+/// passes `retain == usize::MAX` (keep the whole order to slice pages from).
+fn rank_pipeline<T>(
+	cfg: &RankingConfig,
+	query: &str,
+	candidates: Vec<Candidate<T>>,
+	limit: usize,
+	retain: usize,
+) -> Vec<Candidate<T>> {
 	if candidates.is_empty() || limit == 0 {
 		return Vec::new();
 	}
@@ -181,7 +231,11 @@ pub fn rank_with<T>(
 	diversity_pass(cfg, &mut sorted, &mut scores);
 
 	// ── Stage (d): representative crate pull-up ───────────────────────────────
-	pull_up_representatives(cfg, &mut sorted, limit);
+	// The pull-up is a *prefix* operation (it prepends the pulled representatives
+	// to the retained remainder). `retain` decides whether the tail is kept
+	// (pagination: `usize::MAX`) or dropped to a single page (`limit`); `limit`
+	// tunes eligibility either way.
+	pull_up_representatives(cfg, &mut sorted, limit, retain);
 
 	// ── Stage (e): downloads bubble-sort on the tail ──────────────────────────
 	if sorted.len() > 5 {
@@ -189,34 +243,7 @@ pub fn rank_with<T>(
 		downloads_bubble(cfg, &mut sorted[5..]);
 	}
 
-	// ── Stage (f): truncate ───────────────────────────────────────────────────
-	sorted.truncate(limit);
 	sorted
-}
-
-/// The **pagination-safe** subset of ranking: the per-candidate fused score —
-/// BM25 × quality (with the "+1 kink") plus the exact/contains name bonus —
-/// returned aligned to `candidates` by index, *without* the positional
-/// post-processing stages (diversity, representative pull-up, downloads-bubble).
-///
-/// Those stages reorder results in ways that are not a monotonic function of a
-/// single score, which is incompatible with the registry's keyset `(score, id)`
-/// pagination: a resumed page must be able to skip "everything at or before this
-/// score/id", and a positional shuffle breaks that. So a keyset-paginated caller
-/// fuses scores here and sorts by them, while a future first-page / non-paginated
-/// surface can call [`rank`] for the full treatment. Ports lib.rs `tweak_score`
-/// in isolation.
-pub fn fused_scores<T>(query: &str, candidates: &[Candidate<T>]) -> Vec<f32> {
-	fuse_scores(&RankingConfig::default(), query, candidates)
-}
-
-/// Like [`fused_scores`], with explicit tuning knobs.
-pub fn fused_scores_with<T>(
-	cfg: &RankingConfig,
-	query: &str,
-	candidates: &[Candidate<T>],
-) -> Vec<f32> {
-	fuse_scores(cfg, query, candidates)
 }
 
 // ── Stage (a): score fusion ───────────────────────────────────────────────────
@@ -419,17 +446,28 @@ fn diversity_pass<T>(cfg: &RankingConfig, candidates: &mut [Candidate<T>], score
 ///   - Pull up ≤3 (minus already pulled) items whose
 ///     `downloads >= max(max_downloads*0.9, 100_000)` and `quality >= 0.55`.
 /// - Re-sort the pulled set by a mixed quality×downloads score.
-/// - Prepend to the remaining (truncated) list.
-fn pull_up_representatives<T>(cfg: &RankingConfig, candidates: &mut Vec<Candidate<T>>, limit: usize) {
+/// - Prepend to the remaining list, truncated to `retain`.
+///
+/// `limit` tunes the eligibility (`take`, `better_half`) exactly as lib.rs does;
+/// `retain` is the length the reordered list is truncated to.  Passing a `retain`
+/// at least `candidates.len()` (e.g. `usize::MAX`) keeps the whole order (used by
+/// keyset pagination, which pages over the full order); passing `retain == limit`
+/// reproduces the classic single-page truncation.
+fn pull_up_representatives<T>(
+	cfg: &RankingConfig,
+	candidates: &mut Vec<Candidate<T>>,
+	limit: usize,
+	retain: usize,
+) {
 	let n = candidates.len();
 	if n < 7 {
-		candidates.truncate(limit);
+		candidates.truncate(retain);
 		return;
 	}
 
 	let better_half = (n / 3).min(50);
 	if better_half <= 5 {
-		candidates.truncate(limit);
+		candidates.truncate(retain);
 		return;
 	}
 
@@ -503,7 +541,7 @@ fn pull_up_representatives<T>(cfg: &RankingConfig, candidates: &mut Vec<Candidat
 	});
 
 	// Truncate remaining, prepend top crates.
-	candidates.truncate(limit.saturating_sub(top_crates.len()));
+	candidates.truncate(retain.saturating_sub(top_crates.len()));
 	let tail = std::mem::take(candidates);
 	candidates.extend(top_crates);
 	candidates.extend(tail);

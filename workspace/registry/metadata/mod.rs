@@ -1,15 +1,12 @@
 //! Package metadata — the postgres-backed record tying a package's canonical
 //! identity to its content hash and cross-store links.
 //!
-//! [`guid`] wraps heart's deterministic id minting with this instance's token;
 //! [`hash`] re-exports heart's content-addressing vocabulary (which moved to
-//! heart) and adds the *package-level* canonical hashing this crate owns.
-//! [`heuristics`] provides keyword-normalization and synonym/specifics tables
-//! ported from the lib.rs upstream.
+//! heart). [`heuristics`] provides keyword-normalization and synonym/specifics
+//! tables ported from the lib.rs upstream.
 
 use heart::identity::PackageId;
 
-pub mod guid;
 pub mod hash;
 pub mod heuristics;
 pub mod rich;

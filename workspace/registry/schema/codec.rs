@@ -13,8 +13,10 @@
 //! enforce, so the database rejects precisely what [`state_from_token`] et al.
 //! would fail to decode.
 
+use std::str::FromStr;
+
 use heart::{
-	Failure, Phase, ResolutionState,
+	Failure, OwnerKind, Phase, ResolutionState, Visibility,
 	content::ContentHash,
 	ecosystem::Language,
 	identity::{SymbolId, PackageId},
@@ -43,6 +45,12 @@ pub enum CodecError {
 
 	#[error("unknown state discriminant")]
 	UnknownStateDiscriminant { token: String },
+
+	#[error("unknown owner kind discriminant")]
+	UnknownOwnerKindDiscriminant { token: String },
+
+	#[error("unknown visibility discriminant")]
+	UnknownVisibilityDiscriminant { token: String },
 
 	/// A `bytea` content hash was not exactly 32 bytes.
 	#[error("content hash must be 32 bytes, got {0}")]
@@ -98,6 +106,17 @@ pub fn package_id_from_uuid(uuid: Uuid) -> PackageId {
 
 /// The raw uuid backing a [`SymbolId`].
 pub fn symbol_id_to_uuid(id: SymbolId) -> Uuid { *id.as_uuid() }
+
+/// Reconstruct a [`SymbolId`] from a `uuid` column.
+///
+/// Mirrors [`package_id_from_uuid`]: `SymbolId` wraps a private id with no
+/// public constructor, but round-trips through serde as its bare uuid, so
+/// re-branding a value minted deterministically before it was stored is
+/// panic-free. Postgres uuids are always well-formed.
+pub fn symbol_id_from_uuid(uuid: Uuid) -> SymbolId {
+	serde_json::from_value(serde_json::Value::String(uuid.to_string()))
+		.expect("a valid uuid always deserializes into a SymbolId")
+}
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -362,4 +381,50 @@ pub fn coordinates_from_columns(
 	let version = heart::PackageVersion::try_from((ecosystem, version_canonical))
 		.map_err(CodecError::Version)?;
 	Ok(crate::package::Coordinates { origin, name, version })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// owner_kind / visibility ↔ text
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The stable lowercase token for an [`OwnerKind`].
+///
+/// Delegates to the strum-derived `IntoStaticStr` on [`heart::OwnerKind`], so the
+/// token spelling is the single source shared with the schema CHECK domain and
+/// can never drift from the decoder below.
+pub fn owner_kind_token(k: OwnerKind) -> &'static str {
+	k.into()
+}
+
+/// Reconstruct an [`OwnerKind`] from its stored token.
+///
+/// Routes through the strum-derived `FromStr` on [`heart::OwnerKind`] — the exact
+/// inverse of [`owner_kind_token`] — mapping any token not in the
+/// `packages.owner_kind` CHECK domain to a typed
+/// [`CodecError::UnknownOwnerKindDiscriminant`], the same guard the DB enforces,
+/// so corrupt rows fail with a rich error rather than silently propagating garbage.
+pub fn owner_kind_from_token(token: &str) -> Result<OwnerKind, CodecError> {
+	OwnerKind::from_str(token)
+		.map_err(|_| CodecError::UnknownOwnerKindDiscriminant { token: token.to_owned() })
+}
+
+/// The stable lowercase token for a [`Visibility`].
+///
+/// Delegates to the strum-derived `IntoStaticStr` on [`heart::Visibility`], so the
+/// token spelling is the single source shared with the schema CHECK domain and
+/// can never drift from the decoder below.
+pub fn visibility_token(v: Visibility) -> &'static str {
+	v.into()
+}
+
+/// Reconstruct a [`Visibility`] from its stored token.
+///
+/// Routes through the strum-derived `FromStr` on [`heart::Visibility`] — the exact
+/// inverse of [`visibility_token`] — mapping any token not in the
+/// `packages.visibility` CHECK domain to a typed
+/// [`CodecError::UnknownVisibilityDiscriminant`], the same guard the DB enforces,
+/// so corrupt rows fail with a rich error rather than silently propagating garbage.
+pub fn visibility_from_token(token: &str) -> Result<Visibility, CodecError> {
+	Visibility::from_str(token)
+		.map_err(|_| CodecError::UnknownVisibilityDiscriminant { token: token.to_owned() })
 }

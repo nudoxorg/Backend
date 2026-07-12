@@ -28,6 +28,8 @@
 pub mod codec;
 pub mod queries;
 
+use strum::VariantNames;
+
 use sea_query::{
 	ColumnDef, ForeignKey, ForeignKeyAction, Index, IndexCreateStatement, PostgresQueryBuilder,
 	Table, TableCreateStatement, TableDropStatement,
@@ -185,21 +187,64 @@ pub const IDX_OUTBOX_SINK_SEQ: &str = "idx_outbox_sink_seq";
 pub const IDX_SYMBOLS_PACKAGE: &str = "idx_symbols_package";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Allowed discriminant sets — the CHECK-constraint domains. Kept aligned with
-// [`crate::schema::codec`] so the DB rejects exactly what the codec can't parse.
+// Allowed discriminant sets — the CHECK-constraint domains.
+//
+// Where a corresponding Rust enum exists these are derived from
+// `strum::VariantNames::VARIANTS` so the schema CHECK constraint and the codec
+// can never drift: adding a variant without updating the enum (not this array)
+// is sufficient to extend both simultaneously.
+//
+// The `const _: () = assert!(...)` guards below are lockstep compile-time
+// checks: if you add/remove a variant the assert fires immediately, pointing
+// you to the right enum rather than a silent runtime mismatch.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `parse_status.state` / `jobs.state` domain.
+///
+/// `ResolutionState` is a non-unit enum with associated data and
+/// irregular tokens (`DeadLettered` → `"deadlettered"`), so this cannot be
+/// derived automatically.  The lockstep assert below guards the count.
 pub const STATE_VALUES: [&str; 5] =
 	["unindexed", "progressing", "stored", "failed", "deadlettered"];
-/// `parse_status.phase` domain.
-pub const PHASE_VALUES: [&str; 4] = ["acquiring", "extracting", "compiling", "emitting"];
-/// `outbox.sink_kind` / `sink_watermarks.sink_kind` domain.
-pub const SINK_KIND_VALUES: [&str; 3] = ["vector", "graph", "text"];
-/// `packages.owner_kind` domain.
-pub const OWNER_KIND_VALUES: [&str; 2] = ["individual", "enterprise"];
-/// `packages.visibility` domain.
-pub const VISIBILITY_VALUES: [&str; 3] = ["personal", "private", "public"];
+
+/// `parse_status.phase` domain — derived from [`heart::Phase::VARIANTS`].
+///
+/// `heart::Phase` has `#[strum(serialize_all = "lowercase")]` so VARIANTS
+/// produces the exact SQL tokens.
+pub const PHASE_VALUES: &[&str] = heart::Phase::VARIANTS;
+
+/// `outbox.sink_kind` / `sink_watermarks.sink_kind` domain — derived from
+/// [`heart::DerivedStore::VARIANTS`].
+///
+/// `heart::DerivedStore` has `#[strum(serialize_all = "lowercase")]` so
+/// VARIANTS produces the exact SQL tokens.
+pub const SINK_KIND_VALUES: &[&str] = heart::DerivedStore::VARIANTS;
+
+/// `symbols.kind` domain — derived from [`heart::SymbolKind::VARIANTS`].
+///
+/// `heart::SymbolKind` uses default (PascalCase) variant names, which are
+/// exactly what `Display`/`to_string()` emits for storage.
+pub const SYMBOL_KIND_VALUES: &[&str] = heart::SymbolKind::VARIANTS;
+
+/// `packages.language` domain — derived from [`heart::Language::VARIANTS`].
+///
+/// `heart::Language` has `#[strum(serialize_all = "lowercase")]` so VARIANTS
+/// produces the exact SQL tokens.
+pub const LANGUAGE_VALUES: &[&str] = heart::Language::VARIANTS;
+
+/// `packages.owner_kind` domain — derived from [`heart::OwnerKind::VARIANTS`].
+///
+/// `heart::OwnerKind` has `#[strum(serialize_all = "lowercase")]` so VARIANTS
+/// produces the exact SQL tokens.
+pub const OWNER_KIND_VALUES: &[&str] = heart::OwnerKind::VARIANTS;
+/// `packages.visibility` domain — derived from [`heart::Visibility::VARIANTS`].
+///
+/// `heart::Visibility` has `#[strum(serialize_all = "lowercase")]` so VARIANTS
+/// produces the exact SQL tokens.
+pub const VISIBILITY_VALUES: &[&str] = heart::Visibility::VARIANTS;
+
+// Lockstep compile-time guard: if variants are added/removed the assert fires.
+const _: () = assert!(STATE_VALUES.len() == 5, "STATE_VALUES out of sync with ResolutionState");
 
 /// Render a `col IN ('a','b',...)` SQL fragment for a text CHECK constraint.
 fn check_in(col: &str, values: &[&str]) -> String {
@@ -217,7 +262,12 @@ pub fn create_packages() -> TableCreateStatement {
 		.table(Packages::Table)
 		.if_not_exists()
 		.col(ColumnDef::new(Packages::Id).uuid().not_null().primary_key())
-		.col(ColumnDef::new(Packages::Language).text().not_null())
+		.col(
+			ColumnDef::new(Packages::Language)
+				.text()
+				.not_null()
+				.check(sea_query::Expr::cust(check_in("language", LANGUAGE_VALUES))),
+		)
 		.col(ColumnDef::new(Packages::OriginToken).text().not_null())
 		.col(ColumnDef::new(Packages::NameCanonical).text().not_null())
 		.col(ColumnDef::new(Packages::NameOriginal).text().not_null())
@@ -226,14 +276,14 @@ pub fn create_packages() -> TableCreateStatement {
 			ColumnDef::new(Packages::Visibility)
 				.text()
 				.not_null()
-				.check(sea_query::Expr::cust(check_in("visibility", &VISIBILITY_VALUES))),
+				.check(sea_query::Expr::cust(check_in("visibility", VISIBILITY_VALUES))),
 		)
 		.col(ColumnDef::new(Packages::OwnerTenant).uuid().not_null())
 		.col(
 			ColumnDef::new(Packages::OwnerKind)
 				.text()
 				.not_null()
-				.check(sea_query::Expr::cust(check_in("owner_kind", &OWNER_KIND_VALUES))),
+				.check(sea_query::Expr::cust(check_in("owner_kind", OWNER_KIND_VALUES))),
 		)
 		.col(ColumnDef::new(Packages::Toolchain).json_binary().not_null())
 		.col(
@@ -269,7 +319,7 @@ pub fn create_parse_status() -> TableCreateStatement {
 				.null()
 				.check(sea_query::Expr::cust(format!(
 					"phase IS NULL OR {}",
-					check_in("phase", &PHASE_VALUES)
+					check_in("phase", PHASE_VALUES)
 				))),
 		)
 		.col(ColumnDef::new(ParseStatus::ContentHash).binary().null())
@@ -337,7 +387,7 @@ pub fn create_outbox() -> TableCreateStatement {
 			ColumnDef::new(Outbox::SinkKind)
 				.text()
 				.not_null()
-				.check(sea_query::Expr::cust(check_in("sink_kind", &SINK_KIND_VALUES))),
+				.check(sea_query::Expr::cust(check_in("sink_kind", SINK_KIND_VALUES))),
 		)
 		.col(
 			ColumnDef::new(Outbox::CreatedAt)
@@ -365,7 +415,7 @@ pub fn create_sink_watermarks() -> TableCreateStatement {
 				.text()
 				.not_null()
 				.primary_key()
-				.check(sea_query::Expr::cust(check_in("sink_kind", &SINK_KIND_VALUES))),
+				.check(sea_query::Expr::cust(check_in("sink_kind", SINK_KIND_VALUES))),
 		)
 		.col(ColumnDef::new(SinkWatermarks::LastSeq).big_integer().not_null().default(0))
 		.col(
@@ -385,7 +435,12 @@ pub fn create_symbols() -> TableCreateStatement {
 		.col(ColumnDef::new(Symbols::Id).uuid().not_null().primary_key())
 		.col(ColumnDef::new(Symbols::PackageId).uuid().not_null())
 		.col(ColumnDef::new(Symbols::FqName).text().not_null())
-		.col(ColumnDef::new(Symbols::Kind).text().not_null())
+		.col(
+			ColumnDef::new(Symbols::Kind)
+				.text()
+				.not_null()
+				.check(sea_query::Expr::cust(check_in("kind", SYMBOL_KIND_VALUES))),
+		)
 		.col(ColumnDef::new(Symbols::Generation).binary().not_null())
 		.foreign_key(
 			ForeignKey::create()

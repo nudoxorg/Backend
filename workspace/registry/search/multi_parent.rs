@@ -1,51 +1,33 @@
 //! Multi-parent de-duplication.
 //!
 //! The same logical package can be reachable through more than one parent —
-//! several federated [`RegistryOrigin`]s, a mirror plus the public index, a
+//! several federated registry origins, a mirror plus the public index, a
 //! vendored fork — producing multiple distinct [`GlobalPackage`] records that a
 //! naive search would surface as duplicates. This module folds that fan-in into
 //! a single coherent [`Scored`] view, so callers never see the multi-parent
 //! structure.
 //!
 //! The merge is *identity-aware*: records that share a canonical
-//! ([`PackageName`], [`PackageVersion`]) are collapsed even when their
-//! [`PackageId`]s differ (because origin is part of the id), keeping the
-//! highest-scored representative and recording the alternates as provenance.
+//! `(name, version)` are collapsed even when their package ids differ (because
+//! origin is part of the id), keeping the highest-scored representative.
 
-use heart::{
-	Scored,
-	identity::{PackageId, RegistryOrigin},
-};
+use heart::Scored;
 
 use crate::GlobalPackage;
 
-/// A merged search result: one representative package plus the alternate
-/// origins the same logical package was also reachable through.
+/// A merged search result: the highest-scored representative of the logical
+/// package after de-duplicating multi-parent reachability.
 #[derive(Debug, Clone)]
 pub struct Merged {
 	/// The highest-scored representative of the logical package.
 	pub representative: Scored<GlobalPackage>,
-
-	/// The other origins the same (name, version) was reachable through, for
-	/// provenance / "also available from" surfacing.
-	pub alternates: Vec<Alternate>,
-}
-
-/// One alternate reachability path for a merged package.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Alternate {
-	/// The alternate origin.
-	pub origin: RegistryOrigin,
-
-	/// The distinct package id under that origin.
-	pub id: PackageId,
 }
 
 /// Collapse a scored, possibly-duplicated result set into de-duplicated
 /// [`Merged`] views.
 ///
-/// Groups by canonical `(name, version)` (origin-independent), keeps the
-/// best-scored record as representative, and folds the rest into `alternates`.
+/// Groups by canonical `(name, version)` (origin-independent) and keeps the
+/// best-scored record as representative.
 /// Stable: input order breaks ties so pagination stays deterministic.
 pub fn merge(results: Vec<Scored<GlobalPackage>>) -> Vec<Merged> {
 	use std::collections::{HashMap, hash_map::Entry};
@@ -60,10 +42,6 @@ pub fn merge(results: Vec<Scored<GlobalPackage>>) -> Vec<Merged> {
 			coordinates.version.canonical(),
 		)
 	};
-	let provenance = |package: &GlobalPackage| Alternate {
-		origin: package.package.coordinates.origin.clone(),
-		id: package.id,
-	};
 
 	let mut merged: Vec<Merged> = Vec::new();
 	let mut groups: HashMap<_, usize> = HashMap::new();
@@ -72,17 +50,14 @@ pub fn merge(results: Vec<Scored<GlobalPackage>>) -> Vec<Merged> {
 		match groups.entry(key(&scored.value)) {
 			Entry::Vacant(slot) => {
 				slot.insert(merged.len());
-				merged.push(Merged { representative: scored, alternates: Vec::new() });
+				merged.push(Merged { representative: scored });
 			}
 			Entry::Occupied(slot) => {
 				let group = &mut merged[*slot.get()];
 				// A strictly better score dethrones the representative; ties
 				// keep the earlier arrival so pagination stays deterministic.
 				if scored.score > group.representative.score {
-					let dethroned = std::mem::replace(&mut group.representative, scored);
-					group.alternates.push(provenance(&dethroned.value));
-				} else {
-					group.alternates.push(provenance(&scored.value));
+					group.representative = scored;
 				}
 			}
 		}

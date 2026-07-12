@@ -10,4 +10,3 @@
 
 pub use heart::identity::{EntryUri, SymbolId, PackageId, namespace};
 pub use crate::package::Coordinates as PackageCoordinates;
-pub use crate::metadata::guid::Minter;
