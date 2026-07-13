@@ -20,6 +20,7 @@ impl<T> TypedEntry<T> {
 	pub fn kind(&self) -> &Kind { &self.inner.kind }
 }
 
+#[expect(private_bounds)]
 impl<T: EntryKind> TypedEntry<T> {
 	pub(super) fn new(entry: &Entry) -> &Self {
 		// Safety: `TypedEntry` is `repr(transparent)` and there are no possibilities

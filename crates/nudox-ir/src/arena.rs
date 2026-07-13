@@ -4,24 +4,37 @@ mod idx;
 mod node;
 mod typed;
 
+use std::collections::HashSet;
+
 pub use self::{build::EntryBuilder, entry::Entry, idx::{EntryIdx, RawEntryIdx}, node::Node, typed::TypedEntry};
-use crate::{kind::EntryKind, symbol::Symbol};
+use crate::{kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
 
 #[derive(Default)]
 pub struct EntryArena {
 	entries: Vec<Entry>,
+	links:   HashSet<EntryLink>,
+}
+
+// TODO: figure out how to make this cleanly two-way?
+//       or decide if we support directed edges
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct EntryLink {
+	a: (RawEntryIdx, KindDiscriminant),
+	b: (RawEntryIdx, KindDiscriminant),
 }
 
 impl EntryArena {
-	pub const fn new() -> Self { EntryArena { entries: Vec::new() } }
+	pub fn new() -> Self { EntryArena { entries: Vec::new(), links: HashSet::new() } }
 
+	#[expect(private_bounds)]
 	pub fn create_top_level<T>(&mut self, sym: Symbol, build: impl FnOnce(&mut EntryBuilder) -> T)
 	where
 		T: EntryKind,
 	{
-		let entries = EntryBuilder::root(self.len(), sym).build(build);
+		let (entries, links) = EntryBuilder::build(self.len(), sym, None, build);
 
 		self.entries.extend(entries.iter());
+		self.links.extend(links.iter());
 	}
 
 	pub fn len(&self) -> usize { self.entries.len() }

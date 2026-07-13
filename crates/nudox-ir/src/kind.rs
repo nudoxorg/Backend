@@ -14,8 +14,12 @@ register_kinds! {
 	Type,
 }
 
-pub trait EntryKind: Any {
+pub(crate) trait EntryKind: Any {
 	fn into_kind(self) -> Kind
+	where
+		Self: Sized;
+
+	fn discriminant() -> KindDiscriminant
 	where
 		Self: Sized;
 }
@@ -40,11 +44,19 @@ macro_rules! register_kinds {
 			}
 		}
 
+		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+		pub(crate) enum KindDiscriminant {
+			$(
+			$(#[$meta])*
+			$kind,
+			)*
+		}
+
 		$(
 		impl EntryKind for $kind {
-			fn into_kind(self) -> Kind {
-				Kind::$kind(self)
-			}
+			fn into_kind(self) -> Kind { Kind::$kind(self) }
+
+			fn discriminant() -> KindDiscriminant { KindDiscriminant::$kind }
 		}
 		)*
 	};

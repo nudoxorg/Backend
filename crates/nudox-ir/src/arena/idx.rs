@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData};
+use std::{fmt, hash, marker::PhantomData};
 
 use nonmax::NonMaxUsize;
 
@@ -32,6 +32,10 @@ impl<T> PartialEq for EntryIdx<T> {
 }
 
 impl<T> Eq for EntryIdx<T> {}
+
+impl<T> hash::Hash for EntryIdx<T> {
+	fn hash<H: hash::Hasher>(&self, state: &mut H) { self.index.hash(state); }
+}
 
 pub type RawEntryIdx = EntryIdx<private::UntypedMarker>;
 
