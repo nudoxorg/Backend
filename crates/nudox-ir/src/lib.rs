@@ -6,6 +6,7 @@ pub mod kind;
 pub mod module;
 pub mod primitive;
 pub mod record;
+pub mod registry;
 pub mod symbol;
 pub mod ty;
 

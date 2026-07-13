@@ -3,7 +3,7 @@ mod build;
 use std::collections::HashSet;
 
 pub use self::build::EntryBuilder;
-use crate::{entry::{Entry, TypedEntry}, idx::{EntryIdx, RawEntryIdx}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
+use crate::{entry::Entry, idx::{EntryIdx, RawEntryIdx}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
 
 #[derive(Default)]
 pub struct EntryArena {
@@ -39,14 +39,8 @@ impl EntryArena {
 	}
 
 	pub fn len(&self) -> usize { self.entries.len() }
-}
 
-impl<T: EntryKind> std::ops::Index<EntryIdx<T>> for EntryArena {
-	type Output = TypedEntry<T>;
-
-	fn index(&self, index: EntryIdx<T>) -> &Self::Output {
-		TypedEntry::new(&self.entries[index.index()])
-	}
+	pub(crate) fn resolve(&self, index: usize) -> &Entry { &self.entries[index] }
 }
 
 #[cfg(test)]
