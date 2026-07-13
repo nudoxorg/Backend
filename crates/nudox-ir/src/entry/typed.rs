@@ -1,7 +1,7 @@
 use std::{any::Any, marker::PhantomData};
 
-use super::Entry;
-use crate::{kind::{EntryKind, Kind}, symbol::Symbol};
+use super::{Entry, EntryInner};
+use crate::{kind::{EntryKind, Kind}, registry::Registry, symbol::Symbol};
 
 #[repr(transparent)]
 pub struct TypedEntry<T> {
@@ -15,9 +15,6 @@ impl<T> TypedEntry<T> {
 
 	/// the entry's symbol
 	pub fn sym(&self) -> &Symbol { &self.inner.sym }
-
-	/// the entry's raw kind enum
-	pub fn kind(&self) -> &Kind { &self.inner.kind }
 }
 
 #[expect(private_bounds)]
@@ -29,9 +26,17 @@ impl<T: EntryKind> TypedEntry<T> {
 		unsafe { &*std::ptr::from_ref(entry).cast() }
 	}
 
+	/// the entry's raw kind enum
+	pub fn kind<'a>(&'a self, r: &'a impl Registry) -> &'a Kind {
+		match &self.inner.kind {
+			EntryInner::Owned(kind) => &kind,
+			EntryInner::Reference(idx) => r.resolve(idx.typed::<T>()).kind(r),
+		}
+	}
+
 	// TODO: do we want to impl Deref and make this more like a smart pointer?
-	pub fn get(&self) -> &T {
-		kind_as_dyn_any(&self.inner.kind).downcast_ref().expect("using TypedEntry with incorrect type")
+	pub fn get<'a>(&'a self, r: &'a impl Registry) -> &'a T {
+		kind_as_dyn_any(self.kind(r)).downcast_ref().expect("using TypedEntry with incorrect type")
 	}
 }
 
@@ -42,28 +47,19 @@ fn kind_as_dyn_any(kind: &Kind) -> &dyn Any { kind.variant_as_dyn() }
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
-
 	use super::*;
-	use crate::{entry::{Entry, Node}, kind::Kind, module::Module, symbol::{NudoxPath, Symbol, Visibility}};
+	use crate::{entry::{Entry, Node}, kind::Kind, module::Module, test_helpers::*};
 
 	#[test]
 	fn get_allows_typed_access() {
-		let entry = Entry {
-			node: Node { parent: None, children: Vec::new() },
-			sym:  Symbol {
-				name:          "test_sym".into(),
-				path:          NudoxPath,
-				visibility:    Visibility::Public,
-				documentation: None,
-				source:        PathBuf::new(),
-				span:          std::range::Range { start: 0, end: 0 },
-			},
-			kind: Kind::Module(Module {}),
-		};
+		let entry = Entry::new(
+			dummy_symbol("test_sym"),
+			Node { parent: None, children: Vec::new() },
+			Kind::Module(Module {}),
+		);
 
 		let entry = TypedEntry::new(&entry);
 
-		let _module: &Module = entry.get();
+		let _module: &Module = entry.get(&DummyRegistry);
 	}
 }

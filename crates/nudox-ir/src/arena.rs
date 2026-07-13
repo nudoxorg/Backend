@@ -54,25 +54,25 @@ mod tests {
 
 		arena.create_top_level(dummy_symbol("module"), |_| Module {});
 
-		assert_eq!(arena.entries, [Entry {
-			node: Node { parent: None, children: Vec::new() },
-			sym:  dummy_symbol("module"),
-			kind: Kind::Module(Module {}),
-		}]);
+		assert_eq!(arena.entries, [Entry::new(
+			dummy_symbol("module"),
+			Node { parent: None, children: Vec::new() },
+			Kind::Module(Module {})
+		)]);
 
 		arena.create_top_level(dummy_symbol("module_2"), |_| Module {});
 
 		assert_eq!(arena.entries, [
-			Entry {
-				node: Node { parent: None, children: Vec::new() },
-				sym:  dummy_symbol("module"),
-				kind: Kind::Module(Module {}),
-			},
-			Entry {
-				node: Node { parent: None, children: Vec::new() },
-				sym:  dummy_symbol("module_2"),
-				kind: Kind::Module(Module {}),
-			}
+			Entry::new(
+				dummy_symbol("module"),
+				Node { parent: None, children: Vec::new() },
+				Kind::Module(Module {})
+			),
+			Entry::new(
+				dummy_symbol("module_2"),
+				Node { parent: None, children: Vec::new() },
+				Kind::Module(Module {})
+			)
 		])
 	}
 }

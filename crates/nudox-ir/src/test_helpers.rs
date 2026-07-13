@@ -1,6 +1,6 @@
 use std::{path::PathBuf, range::Range};
 
-use crate::symbol::{NudoxPath, Symbol, Visibility};
+use crate::{registry::Registry, symbol::{NudoxPath, Symbol, Visibility}};
 
 pub fn dummy_symbol(name: &str) -> Symbol {
 	Symbol {
@@ -11,4 +11,10 @@ pub fn dummy_symbol(name: &str) -> Symbol {
 		source:        PathBuf::new(),
 		span:          Range { start: 0, end: 0 },
 	}
+}
+
+pub struct DummyRegistry;
+
+impl Registry for DummyRegistry {
+	fn resolve_package(&self, _: usize) -> &crate::arena::EntryArena { unimplemented!() }
 }
