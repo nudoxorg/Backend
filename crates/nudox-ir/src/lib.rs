@@ -1,5 +1,7 @@
 pub mod arena;
+pub mod entry;
 pub mod function;
+pub mod idx;
 pub mod kind;
 pub mod module;
 pub mod primitive;

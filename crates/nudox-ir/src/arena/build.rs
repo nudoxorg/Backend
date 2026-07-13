@@ -1,5 +1,5 @@
-use super::{Entry, EntryIdx, EntryLink, Node, RawEntryIdx};
-use crate::{kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
+use super::EntryLink;
+use crate::{entry::{Entry, Node}, idx::{EntryIdx, RawEntryIdx}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
 
 pub struct EntryBuilder {
 	sym:      Symbol,
@@ -20,7 +20,8 @@ impl EntryBuilder {
 	where
 		T: EntryKind,
 	{
-		let (entries, links) = Self::build(self.next_idx, sym, Some(self.idx), build);
+		let (entries, links) =
+			Self::build(EntryIdx::new(self.idx.package(), self.next_idx), sym, Some(self.idx), build);
 
 		let idx = entries.idx;
 
@@ -28,7 +29,7 @@ impl EntryBuilder {
 		self.children.push(entries);
 		self.links.extend(links.iter());
 
-		EntryIdx::new(idx.index())
+		idx.typed()
 	}
 
 	/// Emits a link between the currently-being-built entry and another entity.
@@ -55,7 +56,7 @@ impl EntryBuilder {
 
 impl EntryBuilder {
 	pub(super) fn build<T>(
-		index: usize,
+		idx: RawEntryIdx,
 		sym: Symbol,
 		parent: Option<RawEntryIdx>,
 		build: impl FnOnce(&mut Self) -> T,
@@ -65,8 +66,8 @@ impl EntryBuilder {
 	{
 		let mut this = EntryBuilder {
 			sym,
-			idx: RawEntryIdx::new(index),
-			next_idx: index + 1,
+			idx,
+			next_idx: idx.index() + 1,
 			parent,
 			children: Vec::new(),
 			kind: T::discriminant(),
@@ -136,8 +137,10 @@ mod tests {
 	use super::*;
 	use crate::{kind::Kind, module::Module, record::{Field, Record}, test_helpers::dummy_symbol};
 
+	fn idx<T>(index: usize) -> EntryIdx<T> { EntryIdx::new(0, index) }
+
 	fn build<T>(
-		index: usize,
+		index: RawEntryIdx,
 		sym: &str,
 		build: impl FnOnce(&mut EntryBuilder) -> T,
 	) -> (BuiltEntries, BuiltLinks)
@@ -149,9 +152,9 @@ mod tests {
 
 	#[test]
 	fn built_entries_single_entry_indices() {
-		let (built, _links) = build(0x100, "mod42", |_| Module {});
+		let (built, _links) = build(idx(0x100), "mod42", |_| Module {});
 
-		itertools::assert_equal(built.enumerate(), [(RawEntryIdx::new(0x100), Entry {
+		itertools::assert_equal(built.enumerate(), [(idx(0x100), Entry {
 			node: Node { parent: None, children: Vec::new() },
 			sym:  dummy_symbol("mod42"),
 			kind: Kind::Module(Module {}),
@@ -160,7 +163,7 @@ mod tests {
 
 	#[test]
 	fn built_entries_with_children() {
-		let (built, _links) = build(0x10, "struct67", |b| {
+		let (built, _links) = build(idx(0x10), "struct67", |b| {
 			let fields = ["field1", "field2", "field3"]
 				.map(dummy_symbol)
 				.map(|field| b.create(field, |_| Field {}))
@@ -171,28 +174,23 @@ mod tests {
 		});
 
 		itertools::assert_equal(built.enumerate(), [
-			(RawEntryIdx::new(0x10), Entry {
-				node: Node {
-					parent:   None,
-					children: vec![RawEntryIdx::new(0x11), RawEntryIdx::new(0x12), RawEntryIdx::new(0x13)],
-				},
+			(idx(0x10), Entry {
+				node: Node { parent: None, children: vec![idx(0x11), idx(0x12), idx(0x13)] },
 				sym:  dummy_symbol("struct67"),
-				kind: Kind::Record(Record {
-					fields: vec![EntryIdx::new(0x11), EntryIdx::new(0x12), EntryIdx::new(0x13)],
-				}),
+				kind: Kind::Record(Record { fields: vec![idx(0x11), idx(0x12), idx(0x13)] }),
 			}),
-			(RawEntryIdx::new(0x11), Entry {
-				node: Node { parent: Some(RawEntryIdx::new(0x10)), children: Vec::new() },
+			(idx(0x11), Entry {
+				node: Node { parent: Some(idx(0x10)), children: Vec::new() },
 				sym:  dummy_symbol("field1"),
 				kind: Kind::Field(Field {}),
 			}),
-			(RawEntryIdx::new(0x12), Entry {
-				node: Node { parent: Some(RawEntryIdx::new(0x10)), children: Vec::new() },
+			(idx(0x12), Entry {
+				node: Node { parent: Some(idx(0x10)), children: Vec::new() },
 				sym:  dummy_symbol("field2"),
 				kind: Kind::Field(Field {}),
 			}),
-			(RawEntryIdx::new(0x13), Entry {
-				node: Node { parent: Some(RawEntryIdx::new(0x10)), children: Vec::new() },
+			(idx(0x13), Entry {
+				node: Node { parent: Some(idx(0x10)), children: Vec::new() },
 				sym:  dummy_symbol("field3"),
 				kind: Kind::Field(Field {}),
 			}),
@@ -201,7 +199,7 @@ mod tests {
 
 	#[test]
 	fn links_emitted_correctly() {
-		let (_entries, links) = build(0, "root", |b| {
+		let (_entries, links) = build(idx(0), "root", |b| {
 			let struct_idx_1: EntryIdx<Record> = b.create(dummy_symbol("struct1"), |b| {
 				let f1 = b.create(dummy_symbol("f1"), |_| Field {});
 				b.link(f1);
@@ -221,22 +219,10 @@ mod tests {
 		});
 
 		itertools::assert_equal(links.iter(), [
-			EntryLink {
-				a: (RawEntryIdx::new(1), KindDiscriminant::Record),
-				b: (RawEntryIdx::new(2), KindDiscriminant::Field),
-			},
-			EntryLink {
-				a: (RawEntryIdx::new(0), KindDiscriminant::Module),
-				b: (RawEntryIdx::new(1), KindDiscriminant::Record),
-			},
-			EntryLink {
-				a: (RawEntryIdx::new(0), KindDiscriminant::Module),
-				b: (RawEntryIdx::new(3), KindDiscriminant::Record),
-			},
-			EntryLink {
-				a: (RawEntryIdx::new(1), KindDiscriminant::Record),
-				b: (RawEntryIdx::new(3), KindDiscriminant::Record),
-			},
+			EntryLink { a: (idx(1), KindDiscriminant::Record), b: (idx(2), KindDiscriminant::Field) },
+			EntryLink { a: (idx(0), KindDiscriminant::Module), b: (idx(1), KindDiscriminant::Record) },
+			EntryLink { a: (idx(0), KindDiscriminant::Module), b: (idx(3), KindDiscriminant::Record) },
+			EntryLink { a: (idx(1), KindDiscriminant::Record), b: (idx(3), KindDiscriminant::Record) },
 		]);
 	}
 }

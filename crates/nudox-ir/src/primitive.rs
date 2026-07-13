@@ -1,4 +1,4 @@
-use crate::{arena::EntryIdx, ty::Type};
+use crate::{idx::EntryIdx, ty::Type};
 
 /// A language-level primitive type, independent of any target architecture.
 #[derive(Debug, Clone, PartialEq, Eq)]

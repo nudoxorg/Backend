@@ -22,7 +22,7 @@ impl<T> TypedEntry<T> {
 
 #[expect(private_bounds)]
 impl<T: EntryKind> TypedEntry<T> {
-	pub(super) fn new(entry: &Entry) -> &Self {
+	pub(crate) fn new(entry: &Entry) -> &Self {
 		// Safety: `TypedEntry` is `repr(transparent)` and there are no possibilities
 		// for UB as all operations are checked before accessing the inner Kind
 		// variant regardless
@@ -45,7 +45,7 @@ mod tests {
 	use std::path::PathBuf;
 
 	use super::*;
-	use crate::{arena::{Entry, Node}, kind::Kind, module::Module, symbol::{NudoxPath, Symbol, Visibility}};
+	use crate::{entry::{Entry, Node}, kind::Kind, module::Module, symbol::{NudoxPath, Symbol, Visibility}};
 
 	#[test]
 	fn get_allows_typed_access() {

@@ -23,7 +23,6 @@ arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
 
 itertools = "0.15"
-nonmax = "0.5"
 
 # nudox-occurrences shared deps
 async-trait = "0.1"

@@ -1,4 +1,4 @@
-use crate::arena::RawEntryIdx;
+use crate::idx::RawEntryIdx;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Node {

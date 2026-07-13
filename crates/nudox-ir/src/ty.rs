@@ -1,4 +1,4 @@
-use crate::{arena::EntryIdx, primitive::Primitive};
+use crate::{idx::EntryIdx, primitive::Primitive};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Type {
