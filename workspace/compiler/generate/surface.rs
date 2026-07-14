@@ -17,8 +17,8 @@ use crate::{
 	error::GenerateError,
 	generate::{PackageInput, parse_cache},
 	languages::{
-		go::GoProducer, java::JavaProducer, nix::NixProducer, python::PythonProducer,
-		rust::RustProducer, typescript::TypescriptProducer,
+		csharp::CSharpProducer, go::GoProducer, java::JavaProducer, nix::NixProducer,
+		python::PythonProducer, rust::RustProducer, typescript::TypescriptProducer,
 	},
 };
 
@@ -92,6 +92,7 @@ fn run_producer<C: ForgeContext>(
 		}
 		Language::Go => seal_and_run!(GoProducer),
 		Language::Java => seal_and_run!(JavaProducer),
+		Language::CSharp => seal_and_run!(CSharpProducer),
 		Language::Python => seal_and_run!(PythonProducer),
 		Language::Typescript => {
 			let PackageVersion::Npm(_) = &input.coordinates.version else {

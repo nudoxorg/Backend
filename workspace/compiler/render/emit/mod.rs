@@ -321,6 +321,7 @@ pub(crate) fn known_type(short_name: &str, args: &[Rendered], lang: Language) ->
             punct("(") + args[0].clone() + punct(", ") + tyname("error") + punct(")"),
         ),
         ("result", 2, Language::Java) => Some(args[0].clone()),
+        ("result", 2, Language::CSharp) => Some(args[0].clone()),
         ("result", 2, Language::TypeScript) => Some(args[0].clone()),
         ("result", 2, Language::Python) => Some(args[0].clone()),
 

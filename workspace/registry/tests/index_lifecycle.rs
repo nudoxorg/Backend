@@ -7,7 +7,8 @@
 mod common;
 
 use heart::{
-    ContentHash, JobProgress, Percent, Phase, Progressive, ResolutionState,
+    ContentHash, JobProgress, Language, Percent, Phase, Progressive, RegistryOrigin,
+    ResolutionState,
 };
 use registry::schema::codec;
 
@@ -167,5 +168,52 @@ fn reindex_mutates_state_in_place() {
     assert!(
         sql.contains("ON CONFLICT (\"package_id\")") && sql.contains("UPDATE"),
         "set_state must upsert the one lifecycle row in place, got: {sql}"
+    );
+}
+
+/// A NuGet-origin C# package is a first-class lifecycle entry.
+///
+/// Assert: a C# / NuGet coordinate set produces a valid package id, its
+/// lifecycle states round-trip through the codec, and the `set_state` upsert
+/// targets the same single-row slot (origin is baked into the id hash, so a
+/// NuGet package never aliases a crates.io package with the same name).
+#[test]
+fn nuget_csharp_package_is_a_first_class_lifecycle_entry() {
+    // Newtonsoft.Json — a widely-known NuGet package; its name uses the same
+    // dotted-namespace convention as C# type names.
+    let package = common::csharp_package("Newtonsoft.Json", "13.0.3");
+    assert_eq!(package.coordinates.ecosystem(), Language::CSharp);
+    assert_eq!(package.coordinates.origin, RegistryOrigin::NuGet);
+
+    // The lifecycle states all round-trip for a CSharp package just as they
+    // do for Rust — codec is origin-agnostic.
+    let hash = ContentHash::of_bytes(b"nuget-snapshot");
+    for state in [
+        ResolutionState::Unindexed { needed: false },
+        ResolutionState::Progressing(Phase::Acquiring),
+        ResolutionState::Stored { hash },
+    ] {
+        let columns =
+            codec::state_to_columns(&state).expect("every state has a column projection");
+        let decoded = codec::state_from_columns(
+            columns.state,
+            columns.phase,
+            columns.content_hash.as_deref(),
+            columns.needed,
+            columns.failure.as_ref(),
+        )
+        .expect("the column projection decodes back");
+        assert_eq!(decoded, state, "lifecycle state must round-trip for a NuGet package");
+    }
+
+    // The `set_state` upsert targets the one lifecycle row keyed on the package
+    // id — for NuGet, the id encodes the origin, so NuGet Newtonsoft.Json never
+    // aliases a hypothetical crates.io package of the same name.
+    let progressing = ResolutionState::Progressing(Phase::Extracting);
+    let (sql, _values) = registry::schema::queries::index::set_state(package.id(), &progressing)
+        .expect("set_state builds for a NuGet package");
+    assert!(
+        sql.contains("ON CONFLICT (\"package_id\")") && sql.contains("UPDATE"),
+        "set_state must upsert in place for NuGet packages too, got: {sql}"
     );
 }

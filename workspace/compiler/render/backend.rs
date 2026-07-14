@@ -33,6 +33,7 @@ pub enum Language {
     Rust,
     Go,
     Java,
+    CSharp,
     TypeScript,
     Python,
     Nix,
@@ -40,10 +41,11 @@ pub enum Language {
 
 impl Language {
     /// Every supported target, in a stable order (handy for demos and tests).
-    pub const ALL: [Language; 6] = [
+    pub const ALL: [Language; 7] = [
         Language::Rust,
         Language::Go,
         Language::Java,
+        Language::CSharp,
         Language::TypeScript,
         Language::Python,
         Language::Nix,
@@ -55,6 +57,7 @@ impl Language {
             Language::Rust => "Rust",
             Language::Go => "Go",
             Language::Java => "Java",
+            Language::CSharp => "C#",
             Language::TypeScript => "TypeScript",
             Language::Python => "Python",
             Language::Nix => "Nix",
@@ -132,6 +135,7 @@ impl RenderCtx {
             Language::Rust => &emit::rust::Rust,
             Language::Go => &emit::go::Go,
             Language::Java => &emit::java::Java,
+            Language::CSharp => &emit::csharp::CSharp,
             Language::TypeScript => &emit::typescript::TypeScript,
             Language::Python => &emit::python::Python,
             Language::Nix => &emit::nix::Nix,
@@ -258,6 +262,15 @@ fn deprecation_marker(dep: &Deprecation, cx: &RenderCtx) -> Rendered {
                 .unwrap_or_default();
             punct(&format!("@Deprecated{note}"))
         }
+        Language::CSharp => {
+            // C# uses [Obsolete("message")] on a separate line.
+            let msg = dep
+                .note
+                .as_ref()
+                .map(|n| format!("(\"{n}\")"))
+                .unwrap_or_default();
+            punct(&format!("[Obsolete{msg}]"))
+        }
         Language::TypeScript | Language::Go => {
             let detail = args.is_empty().then(String::new).unwrap_or_else(|| {
                 format!(" ({})", args.join(", "))
@@ -306,6 +319,10 @@ fn alias_doc(be: &dyn Backend, name: &str, ty: &Type, cx: &RenderCtx) -> Rendere
                 + txt(" = ").annotate(Comment)
                 + be.ty(ty, cx)
         }
+        Language::CSharp => {
+            // C# 10+ supports `using Name = Type;` at the file level.
+            kw("using") + sp() + ident(name) + sp() + punct("=") + sp() + be.ty(ty, cx) + punct(";")
+        }
         Language::Nix => {
             // Nix has no type aliases; document as a `# type` comment.
             txt("# type ").annotate(Comment)
@@ -333,6 +350,11 @@ fn alias_doc_from_rendered(name: &str, rendered: Rendered, cx: &RenderCtx) -> Re
                 + ident(name)
                 + txt(" = ").annotate(Annotation::Comment)
                 + rendered
+        }
+        Language::CSharp => {
+            // C# 10+ using alias; for union types this renders `using Name = T1 | T2`
+            // which is not legal C#, but it's the least-lossy approximation.
+            kw("using") + sp() + ident(name) + sp() + punct("=") + sp() + rendered + punct(";")
         }
         Language::Nix => {
             txt("# type ").annotate(Annotation::Comment)

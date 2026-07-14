@@ -40,6 +40,7 @@ fn grammar_for_extension(lang: Language, ext: &str) -> Option<&'static str> {
 		Language::Go if ext == "go" => Some("go"),
 		Language::Java if ext == "java" => Some("java"),
 		Language::Nix if ext == "nix" => Some("nix"),
+		Language::CSharp if ext == "cs" => Some("c-sharp"),
 		_ => None,
 	}
 }

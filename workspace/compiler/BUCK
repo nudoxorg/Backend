@@ -9,6 +9,9 @@ rust_crate(
     resources = {
         "go-oracle": "//workspace/compiler/compile/go/oracle:oracle",
         "java-oracle.jar": "//workspace/compiler/compile/java/oracle:extractor",
+        # Pulls in the dotnet-published oracle.dll directory (CSHARP-PLAN §1.3).
+        # `buck_resource("csharp-oracle")` in producer.rs resolves this at runtime.
+        "csharp-oracle": "//workspace/compiler/compile/csharp/oracle:oracle",
     },
     deps = deps([
         member("heart"),
@@ -132,12 +135,15 @@ rust_bin(
 
 rust_tests(
     prefix = "test",
-    # The Go and Java snapshot tests drive producers that shell out to the
+    # The Go, Java, and C# snapshot tests drive producers that shell out to the
     # vendored oracles; the test binaries need the same resources the
     # `compiler` lib target declares so `buck_resource(..)` resolves at runtime.
     resources = {
         "go-oracle": "//workspace/compiler/compile/go/oracle:oracle",
         "java-oracle.jar": "//workspace/compiler/compile/java/oracle:extractor",
+        # Pulls in the dotnet-published oracle.dll directory (CSHARP-PLAN §1.3).
+        # `buck_resource("csharp-oracle")` in snap_csharp.rs resolves this at runtime.
+        "csharp-oracle": "//workspace/compiler/compile/csharp/oracle:oracle",
     },
     deps = deps([
         member("heart"),

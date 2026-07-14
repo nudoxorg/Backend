@@ -644,12 +644,21 @@ cargo.rust_library(
     crate = "arborium",
     crate_root = "vendor/arborium/src/lib.rs",
     edition = "2024",
-    features = ["default"],
+    features = [
+        "default",
+        # Enable the C# grammar so `arborium::get_language("c-sharp")` returns
+        # Some(...) at runtime.  The feature activates dep:arborium-c-sharp
+        # (see vendor/arborium/Cargo.toml [features]).  Mirror of how lang-java
+        # / lang-go / lang-python would be enabled if those grammars were needed.
+        "lang-c-sharp",
+    ],
     visibility = [],
     deps = [
         ":arborium-highlight-2",
         ":arborium-theme-2",
         ":arborium-tree-sitter-2",
+        # Required by the lang-c-sharp feature (dep:arborium-c-sharp).
+        ":arborium-c-sharp-2",
     ],
 )
 

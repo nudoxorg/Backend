@@ -27,6 +27,12 @@
 //! on an [`Index`] with [`register`] — tantivy tokenizers live in a per-index
 //! manager and must be re-registered on every open, which is why this is a
 //! function called from `open_or_create`, not global state.
+//!
+//! **C# / .NET note**: the CLR metadata format encodes generic arity with a
+//! backtick suffix (e.g. `` List`1 ``, `` Dictionary`2 ``). The tokenizer strips
+//! the `` `<digits> `` suffix before splitting so `` List`1 `` tokenizes as
+//! `list`, not `list` + `1`. The digit following the backtick is suppressed
+//! entirely; the meaningful subword is the base name only.
 
 use tantivy::{
 	Index,
@@ -41,12 +47,38 @@ pub const IDENT_TOKENIZER: &str = "ident";
 /// identifier blowing up the term dictionary. Real symbol names are far shorter.
 const MAX_TOKEN_CHARS: usize = 64;
 
+/// Strip the CLR generic-arity suffix `` `<digits> `` from a word if present.
+///
+/// C# / .NET metadata names encode the number of type parameters as a trailing
+/// `` `N `` (e.g. `` List`1 ``, `` Dictionary`2 ``). The digits carry no search
+/// value — the base name is what users query — so we drop the suffix before
+/// handing the word to [`split_identifier`].
+///
+/// Only strips when the pattern is `` ` `` followed by one or more ASCII digits
+/// at the *end* of the word; mid-word backticks are left for the generic
+/// separator logic.
+#[inline]
+fn strip_arity_suffix(word: &str) -> &str {
+	// Fast path: backtick must appear for any stripping to occur.
+	if let Some(tick) = word.rfind('`') {
+		let tail = &word[tick + 1..];
+		if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+			return &word[..tick];
+		}
+	}
+	word
+}
+
 /// Byte spans of the sub-words inside one identifier `word`.
 ///
 /// Boundaries: any non-alphanumeric char (dropped as a separator), a
 /// lower→Upper camel hump, the tail of an acronym run (`UpperUpperlower`), and a
 /// digit↔letter transition. Empty spans (runs of separators) are skipped.
+///
+/// The input is pre-processed by [`strip_arity_suffix`] so C# generic names
+/// (`` List`1 ``, `` Dictionary`2 ``) lose their arity before splitting.
 pub(crate) fn split_identifier(word: &str) -> Vec<(usize, usize)> {
+	let word = strip_arity_suffix(word);
 	let chars: Vec<(usize, char)> = word.char_indices().collect();
 	let byte_end = word.len();
 

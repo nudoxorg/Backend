@@ -4,6 +4,8 @@
 //!
 //! [`producer`] is the shared shape (DAEMON-PLAN §2.3): plan → cage/worker → decode.
 
+/// C# (.NET / NuGet) producer: Roslyn oracle → IR.
+pub mod csharp;
 pub mod go;
 /// Sandbox seam for external toolchains and worker-isolated interpreters.
 pub mod isolate;

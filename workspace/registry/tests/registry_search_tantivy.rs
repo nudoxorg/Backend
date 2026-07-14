@@ -204,6 +204,65 @@ async fn registry_search_respects_access_scope() {
     assert_eq!(page.items[0].value.package.coordinates.ecosystem(), Language::Python);
 }
 
+/// NuGet-origin C# packages are searchable and scope correctly.
+///
+/// Arrange: a NuGet C# package (`Newtonsoft.Json`) alongside a Rust package
+/// (`serde`) that would not match a CSharp-scoped search.  Uses a C#-flavoured
+/// namespaced name and an `IEnumerable`-style symbol name in the keyword facets
+/// to exercise the tokenizer's dot-separator and arity-stripping paths through
+/// the full search stack.
+///
+/// Assert:
+/// 1. An unscoped search for the package name finds it together with any
+///    same-named records.
+/// 2. A `Language::CSharp`-scoped search returns only the NuGet record.
+/// 3. The returned record carries `RegistryOrigin::NuGet` and the correct
+///    ecosystem.
+#[tokio::test]
+async fn nuget_csharp_package_is_searchable_and_scopes_correctly() {
+    let directory = common::TempDir::new("nuget-csharp-search");
+
+    // Newtonsoft.Json — a dotted C# package name; the tokenizer splits on `.`
+    // so searches for "newtonsoft" or "json" both reach it.
+    let nuget_side = {
+        let package = common::csharp_package("Newtonsoft.Json", "13.0.3");
+        let id = package.id();
+        let facets = Some(SearchFacets {
+            // Keyword drawn from a C# type name: the interface prefix and
+            // dotted namespace both flow through the ident tokenizer.
+            keywords: vec![SmolStr::new("serialization"), SmolStr::new("json")],
+            quality_ppm: 800_000,
+        });
+        GlobalPackage { id, package, state: ResolutionState::Unindexed { needed: false }, facets }
+    };
+    let rust_side = rust_record("serde");
+
+    let index = searchable_index(&directory, &[nuget_side.clone(), rust_side]);
+
+    // Unscoped: both ecosystems contribute results for "json".
+    let open = search_page(&index, &query("json")).await.expect("the query executes");
+    assert!(
+        open.items.iter().any(|s| s.value.id == nuget_side.id),
+        "Newtonsoft.Json must appear in unscoped search for 'json'"
+    );
+
+    // CSharp-scoped: only the NuGet record surfaces.
+    let scoped = RegistryQuery { ecosystem: Some(Language::CSharp), ..query("json") };
+    let page = search_page(&index, &scoped).await.expect("the scoped query executes");
+    assert_eq!(page.items.len(), 1, "the CSharp scope must exclude non-C# packages");
+    assert_eq!(page.items[0].value.id, nuget_side.id, "the NuGet record must surface");
+    assert_eq!(
+        page.items[0].value.package.coordinates.ecosystem(),
+        Language::CSharp,
+        "the hit must carry the CSharp ecosystem"
+    );
+    assert_eq!(
+        page.items[0].value.package.coordinates.origin,
+        heart::RegistryOrigin::NuGet,
+        "the hit must carry RegistryOrigin::NuGet"
+    );
+}
+
 /// Fused ranking: the exact-name match outranks a higher-BM25 non-exact match.
 ///
 /// Arrange:

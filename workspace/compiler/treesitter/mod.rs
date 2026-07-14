@@ -12,6 +12,7 @@
 
 pub mod spec;
 
+pub mod csharp;
 pub mod go;
 pub mod java;
 pub mod nix;
@@ -38,6 +39,7 @@ pub fn spec_for(lang: Language) -> &'static dyn spec::LanguageSpec {
 		Language::Go => &go::GoSpec,
 		Language::Java => &java::JavaSpec,
 		Language::Nix => &nix::NixSpec,
+		Language::CSharp => &csharp::CSharpSpec,
 	}
 }
 
@@ -141,6 +143,10 @@ fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
 		Language::Go => arborium::get_language("go"),
 		Language::Java => arborium::get_language("java"),
 		Language::Nix => arborium::get_language("nix"),
+		// The arborium grammar key for C# is "c-sharp" (with a hyphen).
+		// Requires the `lang-c-sharp` feature on the arborium crate; the
+		// `arborium-c-sharp` crate is vendored at build/third-party/vendor/.
+		Language::CSharp => arborium::get_language("c-sharp"),
 	}
 }
 
@@ -335,6 +341,41 @@ pub(crate) fn classify_nix(
 	Some(local_ref(name, span, ref_kind))
 }
 
+// ─── C# ──────────────────────────────────────────────────────────────────────
+//
+// Flat (kind, parent_kind) classifier for the legacy snippet path.
+// The richer structured extraction lives in csharp::CSharpSpec.
+
+fn categorize_csharp(kind: &str, parent: Option<&str>) -> Option<ReferenceKind> {
+	match (kind, parent) {
+		// Method or function call: the callee identifier inside an invocation.
+		("identifier", Some("invocation_expression")) => Some(ReferenceKind::FunctionCall),
+		// Member access on an object: `foo.Bar` — the field/property name.
+		("identifier", Some("member_access_expression")) => Some(ReferenceKind::FieldAccess),
+		// Type identifiers in non-call positions.
+		("identifier", Some("object_creation_expression")) => Some(ReferenceKind::TypeReference),
+		// `using` directive — the imported namespace or type name.
+		("identifier", Some("using_directive" | "qualified_name")) => {
+			Some(ReferenceKind::Import)
+		}
+		// Bare identifier — variable use or unknown.
+		("identifier", _) => Some(ReferenceKind::VariableUse),
+		// Qualified names used as type references.
+		("qualified_name", _) => Some(ReferenceKind::TypeReference),
+		_ => None,
+	}
+}
+
+pub(crate) fn classify_csharp(
+	name: &str,
+	kind: &str,
+	parent_kind: Option<&str>,
+	span: Range<usize>,
+) -> Option<ResolvedReference> {
+	let ref_kind = categorize_csharp(kind, parent_kind)?;
+	Some(local_ref(name, span, ref_kind))
+}
+
 // ─── Classifier dispatch ─────────────────────────────────────────────────────
 
 /// Select the language-specific reference classifier for `lang`.
@@ -348,6 +389,7 @@ pub(crate) fn classify_for(
 		Language::Go => classify_go,
 		Language::Java => classify_java,
 		Language::Nix => classify_nix,
+		Language::CSharp => classify_csharp,
 	}
 }
 
@@ -373,9 +415,12 @@ fn is_function_like(kind: &str) -> bool {
 			// Go
 			| "method_declaration"
 			| "func_literal"
-			// Java
+			// Java / C# (shared node kinds)
 			| "constructor_declaration"
 			| "lambda_expression"
+			// C# — anonymous methods and local functions
+			| "anonymous_method_expression"
+			| "local_function_statement"
 			// Nix (long and short names used by different grammar revisions)
 			| "function"
 	)

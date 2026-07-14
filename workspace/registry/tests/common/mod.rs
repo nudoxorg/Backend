@@ -71,6 +71,18 @@ pub fn python_package(name: &str, version: &str) -> Package {
     Package { coordinates, toolchain }
 }
 
+/// A validated NuGet coordinate tuple + package (for C# / NuGet ecosystem specs).
+pub fn csharp_package(name: &str, version: &str) -> Package {
+    let coordinates = Coordinates {
+        origin: RegistryOrigin::NuGet,
+        name: PackageName::new(Language::CSharp, name).expect("fixture names are valid"),
+        version: PackageVersion::try_from((Language::CSharp, version))
+            .expect("fixture versions are valid"),
+    };
+    let toolchain = Toolchain::CSharp { sdk: semver::Version::new(10, 0, 0) };
+    Package { coordinates, toolchain }
+}
+
 /// A collision-free crates.io package name: `prefix` plus a fresh uuid, so
 /// postgres-backed tests never trip over rows a previous run left behind.
 pub fn unique_rust_name(prefix: &str) -> String {

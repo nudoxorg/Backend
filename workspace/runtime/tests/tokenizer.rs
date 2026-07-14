@@ -82,3 +82,41 @@ fn subtoken_query_finds_names_by_their_parts() {
 	assert!(hits("\"get user\"").contains(&"getUserById".to_string()));
 	assert!(!hits("user").contains(&"unrelated_symbol".to_string()));
 }
+
+/// C# / .NET names tokenize without the metadata arity backtick pollution.
+///
+/// CLR generic names carry a `` `N `` suffix (`List`1`, `Dictionary`2`) that
+/// must be stripped before word-boundary splitting so arity digits never appear
+/// as standalone search tokens.  The other C# patterns (PascalCase interface
+/// prefix, operator names, namespaced types) fall naturally out of the existing
+/// camelCase / snake_case / dot-separator logic.
+#[test]
+fn csharp_identifiers_tokenize_without_arity_digits() {
+	// Generic arity suffix is stripped; only the base name's sub-words index.
+	assert_eq!(analyze("List`1"), ["list"], "arity digit must not become a token");
+	assert_eq!(analyze("Dictionary`2"), ["dictionary"], "arity digit must not become a token");
+	assert_eq!(
+		analyze("IEnumerable`1"),
+		["i", "enumerable"],
+		"interface-prefix I stays, arity stripped"
+	);
+
+	// C# interface convention: leading I + PascalCase body.
+	// The `I` splits from the body word at the camelCase hump.
+	assert_eq!(analyze("IEnumerable"), ["i", "enumerable"]);
+	assert_eq!(analyze("IDisposable"), ["i", "disposable"]);
+
+	// Operator method names use snake_case (op_Addition, op_Implicit, …).
+	assert_eq!(analyze("op_Addition"), ["op", "addition"]);
+	assert_eq!(analyze("op_Implicit"), ["op", "implicit"]);
+
+	// Fully-qualified C# names use dot separators, mirroring Java.
+	assert_eq!(
+		analyze("System.Collections.Generic"),
+		["system", "collections", "generic"]
+	);
+	assert_eq!(
+		analyze("Microsoft.Extensions.DependencyInjection"),
+		["microsoft", "extensions", "dependency", "injection"]
+	);
+}

@@ -310,6 +310,23 @@
                 java = {
                   java_home = toString nixPackages.jdk21_headless;
                 };
+                # TODO(csharp): csharp.nuget_packages should point at a Nix-materialized
+                # offline NuGet folder feed built from
+                # workspace/compiler/compile/csharp/oracle/packages.lock.json.
+                # Once `packages.lock.json` is regenerated with a real SDK
+                # (`dotnet restore --force-evaluate`), replace the empty string with
+                # a fixed-output derivation such as:
+                #
+                #   nixPackages.fetchurl (or stdenvNoCC.mkDerivation) that runs
+                #   `dotnet restore --packages $out --locked-mode` in a FOD sandbox,
+                #   hash = "sha256-...";  # fill after first build
+                #
+                # Until then, the empty string lets the genrule fall back to an
+                # online restore (dev-only; will fail in CI without internet).
+                csharp = {
+                  dotnet = "${nixPackages.dotnetCorePackages.sdk_10_0}/bin/dotnet";
+                  nuget_packages = "";
+                };
               }
           );
         in
@@ -350,6 +367,26 @@
                 name = "OPENSSL_INCLUDE_DIR";
                 value = "${nixPackages.openssl.dev}/include";
               }
+              # .NET SDK environment — suppress telemetry and first-run extraction;
+              # DOTNET_CLI_HOME must be writable ($TMPDIR is always writable) because
+              # dotnet writes SDKs/tools there at startup. Same class of fix as the
+              # GOCACHE sandbox-PATH issue from the Go/Java snapshot-test drive.
+              {
+                name = "DOTNET_CLI_TELEMETRY_OPTOUT";
+                value = "1";
+              }
+              {
+                name = "DOTNET_NOLOGO";
+                value = "1";
+              }
+              {
+                name = "DOTNET_SKIP_FIRST_TIME_EXPERIENCE";
+                value = "1";
+              }
+              {
+                name = "DOTNET_CLI_HOME";
+                value = "$TMPDIR/dotnet";
+              }
             ];
 
             motd = ''
@@ -383,6 +420,7 @@
               b3sum
               go
               jdk21_headless
+              dotnetCorePackages.sdk_10_0
             ])
             ++ (
               with nixPackages.lib;

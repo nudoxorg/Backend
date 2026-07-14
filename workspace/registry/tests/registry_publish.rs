@@ -6,7 +6,7 @@
 //! which Phase 2 wires into the live search path.
 mod common;
 
-use heart::{ResolutionState, Score, Scored};
+use heart::{Language, RegistryOrigin, ResolutionState, Score, Scored};
 use registry::search::multi_parent;
 
 /// A provably-finite score.
@@ -51,5 +51,52 @@ async fn rank_applies_a_ranking_policy() {
         ranked(0.3, 0.9),
         mirror_copy.id,
         "a changed ranking policy must change which record search surfaces"
+    );
+}
+
+/// A NuGet-origin C# package participates correctly in multi-parent ranking.
+///
+/// Assert: a NuGet package and a custom-mirror copy of the same NuGet package
+/// collapse to one logical result via `multi_parent::merge`, with the
+/// higher-scored record winning as representative — exactly the same policy
+/// as crates.io vs mirror above.
+#[tokio::test]
+async fn nuget_csharp_package_participates_in_multi_parent_ranking() {
+    // System.Text.Json — a NuGet package with a C#-flavoured namespaced name.
+    let nuget_copy = common::global_package(
+        common::csharp_package("System.Text.Json", "9.0.0"),
+        ResolutionState::Unindexed { needed: false },
+    );
+    let mirror_copy = {
+        let mut package = common::csharp_package("System.Text.Json", "9.0.0");
+        package.coordinates.origin = RegistryOrigin::Custom {
+            name: "nuget-mirror.example".into(),
+            url: url::Url::parse("https://nuget-mirror.example").expect("fixture url parses"),
+        };
+        common::global_package(package, ResolutionState::Unindexed { needed: false })
+    };
+
+    // The two copies are distinct registry records (origin is part of identity)...
+    assert_ne!(nuget_copy.id, mirror_copy.id, "distinct origins → distinct ids");
+    // ...but both are C# / NuGet-ecosystem packages.
+    assert_eq!(nuget_copy.package.coordinates.ecosystem(), Language::CSharp);
+    assert_eq!(nuget_copy.package.coordinates.origin, RegistryOrigin::NuGet);
+
+    let ranked = |nuget_score: f32, mirror_score: f32| {
+        let merged = multi_parent::merge(vec![
+            Scored::new(nuget_copy.clone(), score(nuget_score)),
+            Scored::new(mirror_copy.clone(), score(mirror_score)),
+        ]);
+        assert_eq!(merged.len(), 1, "one logical NuGet package must merge to one result");
+        merged.into_iter().next().expect("asserted non-empty").representative.value.id
+    };
+
+    // The canonical NuGet source outranks the mirror when scored higher.
+    assert_eq!(ranked(0.9, 0.3), nuget_copy.id);
+    // Score inversion makes the mirror win — policy change propagates correctly.
+    assert_eq!(
+        ranked(0.3, 0.9),
+        mirror_copy.id,
+        "a changed ranking policy must surface the mirror NuGet copy"
     );
 }
