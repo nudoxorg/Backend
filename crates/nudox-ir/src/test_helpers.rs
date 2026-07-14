@@ -1,11 +1,10 @@
 use std::{convert::Infallible, path::PathBuf, range::Range};
 
-use crate::{registry::Registry, symbol::{NudoxPath, Symbol, Visibility}};
+use crate::{registry::Registry, symbol::{Symbol, Visibility}};
 
 pub fn dummy_symbol(name: &str) -> Symbol {
 	Symbol {
 		name:          name.into(),
-		path:          NudoxPath,
 		visibility:    Visibility::Public,
 		documentation: None,
 		source:        PathBuf::new(),
