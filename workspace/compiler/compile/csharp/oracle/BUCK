@@ -47,10 +47,13 @@ prelude.genrule(
       export DOTNET_CLI_TELEMETRY_OPTOUT=1
       export DOTNET_NOLOGO=1
       export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
-      mkdir -p "$HOME"
+      OUT_ABS=`pwd`/$OUT
+      mkdir -p "$HOME" "$TMP/src"
       # Copy sources into scratch (genrule srcs are read-only and dotnet writes
-      # obj/ next to the project).
-      cp -R "$SRCDIR"/. "$TMP/src"
+      # obj/ next to the project file).
+      # shellcheck disable=SC2206
+      srcs=($SRCS)
+      cp "${{srcs[@]}}" "$TMP/src/"
       cd "$TMP/src"
       NUGET_FEED="{nuget_packages}"
       if [ -n "$NUGET_FEED" ]; then
@@ -65,7 +68,7 @@ prelude.genrule(
         --no-self-contained \
         /p:PublishReadyToRun=true \
         $LOCKED \
-        -o "$OUT"
+        -o "$OUT_ABS"
     """.format(dotnet = _dotnet, nuget_packages = _nuget_packages),
     visibility = ["//workspace/compiler/..."],
 )

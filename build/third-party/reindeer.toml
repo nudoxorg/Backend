@@ -1,6 +1,6 @@
 # reindeer.toml — Buck2 third-party crate configuration
 # Run via: sync-deps  (see .config/scripts/sync-deps.nu)
-# manifest_path defaults to Cargo.toml in this directory (build/third-party/Cargo.toml).
+# manifest_path defaults to Cargo.toml in --third-party-dir (build/third-party/Cargo.toml).
 
 [vendor]
 # Crate sources are vendored into vendor/ (gitignored); BUCK is committed.
@@ -11,8 +11,9 @@ file_name = "BUCK"
 # cargo.rust_binary / cargo.buildscript_run are in scope.
 buckfile_imports = """
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 load("//build/third-party:git-helpers.bzl", "setup_all_git_repos")
 """
 rust_library = "cargo.rust_library"
 rust_binary = "cargo.rust_binary"
-buildscript_genrule = "cargo.buildscript_run"
+buildscript_genrule = "buildscript_run"

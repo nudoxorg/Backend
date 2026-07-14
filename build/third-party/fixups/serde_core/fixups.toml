@@ -1,0 +1,5 @@
+# Remove precise_srcs so reindeer globs all .rs files including macro-gated ones
+# like de/, ser/, format.rs, private/ (included via crate_root!() macro)
+
+[buildscript]
+run = true

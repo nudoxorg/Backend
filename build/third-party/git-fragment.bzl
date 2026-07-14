@@ -7,10 +7,10 @@
 # These map the ":label-version" format used in the GIT dep lists below
 # to the names reindeer generates (single-version crates drop the suffix).
 # Re-check after a reindeer run if any target-not-found errors appear.
+native.alias(name = "bytes", actual = ":bytes-1", visibility = ["PUBLIC"])
 native.alias(name = "allocator_api2-0_2", actual = ":allocator-api2", visibility = ["PUBLIC"])
 native.alias(name = "arborium_tree_sitter", actual = ":arborium-tree-sitter", visibility = ["PUBLIC"])
 native.alias(name = "async_compression", actual = ":async-compression", visibility = ["PUBLIC"])
-native.alias(name = "bytes", actual = ":bytes-1", visibility = ["PUBLIC"])
 native.alias(name = "data_encoding", actual = ":data-encoding", visibility = ["PUBLIC"])
 native.alias(name = "futures-0_3", actual = ":futures-0.3", visibility = ["PUBLIC"])
 native.alias(name = "futures_util", actual = ":futures-util", visibility = ["PUBLIC"])

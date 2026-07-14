@@ -1,0 +1,7 @@
+# Remove precise_srcs so reindeer globs all .rs files including macro-gated ones
+# like types.rs (included by prelude!() macro in macros.rs)
+
+cargo_env = true
+
+[buildscript]
+run = true

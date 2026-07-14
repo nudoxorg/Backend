@@ -1,0 +1,3 @@
+extra_srcs = [
+    "src/../debug_metadata/tinyvec.natvis",
+]

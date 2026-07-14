@@ -1,0 +1,6 @@
+extra_srcs = [
+    "CHANGELOG.md",
+    "COMPARE.md",
+    "DESIGN.md",
+    "PLATFORM.md",
+]

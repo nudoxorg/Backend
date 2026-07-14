@@ -165,9 +165,6 @@ atomic-waker = { version = "1.1.2" }
 attribute-derive = { version = "0.10.5" }
 attribute-derive-macro = { version = "0.10.5" }
 autocfg = { version = "1.5.1" }
-aws-lc-fips-sys = { version = "0.13.1" }
-aws-lc-rs = { version = "1.17.1" }
-aws-lc-sys = { version = "0.42.0" }
 axum = { version = "0.7.9" }
 axum-0-8 = { package = "axum", version = "0.8.9" }
 axum-core = { version = "0.4.5" }
@@ -381,7 +378,7 @@ generativity = { version = "1.2.1" }
 generator = { version = "0.7.5" }
 generic-array = { version = "0.14.7" }
 get-size-derive2 = { version = "0.9.0" }
-get-size2 = { version = "0.9.0" }
+get-size2 = { version = "0.9.0", features = ["derive"] }
 getopts = { version = "0.2.24" }
 getrandom = { version = "0.2.17" }
 getrandom-0-3 = { package = "getrandom", version = "0.3.4" }
@@ -486,7 +483,7 @@ human_format = { version = "1.0.3" }
 humantime = { version = "2.3.0" }
 hyper = { version = "0.14.32" }
 hyper-1 = { package = "hyper", version = "1.10.1" }
-hyper-rustls = { version = "0.27.9" }
+hyper-rustls = { version = "0.27.9", default-features = false, features = ["ring", "native-tokio", "http1", "tls12", "logging"] }
 hyper-timeout = { version = "0.5.2" }
 hyper-util = { version = "0.1.20" }
 iana-time-zone = { version = "0.1.65" }
@@ -591,7 +588,7 @@ memoffset = { version = "0.6.5" }
 memoffset-0-9 = { package = "memoffset", version = "0.9.1" }
 memory-stats = { version = "1.2.0" }
 metrics = { version = "0.24.6" }
-metrics-exporter-prometheus = { version = "0.16.2" }
+metrics-exporter-prometheus = { version = "0.16.2", default-features = false }
 metrics-util = { version = "0.19.1" }
 mimalloc = { version = "0.1.52" }
 mime = { version = "0.3.17" }
@@ -599,7 +596,7 @@ minimal-lexical = { version = "0.2.1" }
 miniz_oxide = { version = "0.8.9" }
 mio = { version = "1.2.1" }
 miow = { version = "0.6.1" }
-moka = { version = "0.12.15" }
+moka = { version = "0.12.15", features = ["sync"] }
 monch = { version = "0.6.0" }
 multer = { version = "3.1.0" }
 multihash = { version = "0.19.5" }
@@ -647,10 +644,10 @@ os_str_bytes = { version = "6.6.0" }
 os-str-bytes-7 = { package = "os_str_bytes", version = "7.2.0" }
 ownedbytes = { version = "0.7.0" }
 owo-colors = { version = "4.3.0" }
-oxc-miette = { version = "3.0.0" }
+oxc-miette = { version = "3.0.0", features = ["fancy-no-syscall"] }
 oxc-miette-derive = { version = "3.0.0" }
 oxc_index = { version = "5.0.0" }
-par-core = { version = "2.0.0" }
+par-core = { version = "2.0.0", default-features = false }
 parking = { version = "2.2.1" }
 parking_lot = { version = "0.12.5" }
 parking_lot_core = { version = "0.9.12" }
@@ -675,7 +672,7 @@ pest_meta = { version = "2.8.6" }
 petgraph = { version = "0.8.3" }
 phf = { version = "0.11.3" }
 phf-0-13 = { package = "phf", version = "0.13.1" }
-phf-0-14 = { package = "phf", version = "0.14.0" }
+phf-0-14 = { package = "phf", version = "0.14.0", features = ["macros"] }
 phf_codegen = { version = "0.11.3" }
 phf-codegen-0-13 = { package = "phf_codegen", version = "0.13.1" }
 phf_generator = { version = "0.11.3" }
@@ -814,7 +811,7 @@ rustc_apfloat = { version = "0.2.3+llvm-462a31f5a5ab" }
 rustc_version = { version = "0.4.1" }
 rustix = { version = "0.38.44" }
 rustix-1 = { package = "rustix", version = "1.1.4" }
-rustls = { version = "0.23.41" }
+rustls = { version = "0.23.41", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-native-certs = { version = "0.8.4" }
 rustls-pemfile = { version = "2.2.0" }
 rustls-pki-types = { version = "1.14.1" }
@@ -961,7 +958,7 @@ tinyvec = { version = "1.11.0" }
 tinyvec_macros = { version = "0.1.1" }
 tokio = { version = "1.52.3" }
 tokio-macros = { version = "2.7.0" }
-tokio-rustls = { version = "0.26.4" }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12", "logging"] }
 tokio-stream = { version = "0.1.18" }
 tokio-test = { version = "0.4.5" }
 tokio-util = { version = "0.6.10" }
@@ -1156,4 +1153,4 @@ zlib-rs = { version = "0.6.5" }
 zmij = { version = "1.0.21" }
 zstd = { version = "0.13.3" }
 zstd-safe = { version = "7.2.4" }
-zstd-sys = { version = "2.0.16+zstd.1.5.7" }
+zstd-sys = { version = "2.0.16+zstd.1.5.7", default-features = false, features = ["std", "legacy", "zdict_builder"] }

@@ -84,6 +84,10 @@ target_platform_detector_spec = target:root//...->prelude//platforms:default \
 [cells]
   nix = build/nix-cell
 
+[csharp]
+  dotnet = /nix/store/wrxc8cd103657zxklsgj5iy725x9iacy-dotnet-sdk-wrapped-10.0.301/bin/dotnet
+  nuget_packages = 
+
 [go]
   go_binary = /nix/store/38idfbqyw3p8xaslv6bnrig62pj7qy6i-go-1.26.4/bin/go
 
