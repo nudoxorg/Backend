@@ -19,8 +19,6 @@
 //! fingerprints — never hand-rolled here. This crate never re-defines
 //! `PackageId`, `SymbolId`, `ContentHash`, or the lifecycle states; it
 //! composes them.
-#![feature(adt_const_params)]
-#![feature(return_type_notation)]
 
 pub mod blob;
 pub mod cas;

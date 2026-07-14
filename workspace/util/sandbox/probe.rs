@@ -3,7 +3,9 @@
 //! Call once at process start. [`IsolationPolicy::RequireProduction`] fails
 //! closed when the host cannot provide a production-grade cage.
 
-use crate::cage::{CageCaps, LinuxNamespaces, DevPassthrough, Policy, Cage};
+use crate::cage::{CageCaps, DevPassthrough, Policy, Cage};
+#[cfg(target_os = "linux")]
+use crate::cage::LinuxNamespaces;
 use crate::error::SandboxError;
 
 /// Snapshot of what this host can enforce.

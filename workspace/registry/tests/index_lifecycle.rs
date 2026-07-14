@@ -154,6 +154,7 @@ fn reindex_mutates_state_in_place() {
 
     // The state machine has one mutable slot per package: the same binding
     // moves Stored → Progressing; there is no second "outcome" value.
+    #[allow(unused_assignments)]
     let mut state = ResolutionState::Stored { hash: ContentHash::of_bytes(b"old snapshot") };
     state = ResolutionState::Progressing(Phase::Acquiring);
     assert_eq!(state, ResolutionState::Progressing(Phase::Acquiring));

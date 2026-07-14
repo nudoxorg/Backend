@@ -56,11 +56,10 @@ fn hostname() -> Option<String> {
 		let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
 		if rc == 0 {
 			let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-			if let Ok(s) = std::str::from_utf8(&buf[..end]) {
-				if !s.is_empty() {
+			if let Ok(s) = std::str::from_utf8(&buf[..end])
+				&& !s.is_empty() {
 					return Some(s.to_string());
 				}
-			}
 		}
 		None
 	}

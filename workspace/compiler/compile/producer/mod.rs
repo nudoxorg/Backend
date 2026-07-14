@@ -190,6 +190,7 @@ pub trait Producer: Send + Sync {
 			Language::Rust => ProducerProfile::Rust,
 			Language::Go => ProducerProfile::Go,
 			Language::Java => ProducerProfile::Java,
+			Language::CSharp => ProducerProfile::CSharp,
 			Language::Nix => ProducerProfile::Nix,
 			Language::Python | Language::Typescript => ProducerProfile::StaticParser,
 		}

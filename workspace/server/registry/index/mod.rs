@@ -20,7 +20,6 @@ use heart::{
 use crate::registry::package::Coordinates as PackageCoordinates;
 use sqlx::{Row, postgres::PgRow};
 
-use std::io;
 use std::str::FromStr;
 
 use crate::registry::{

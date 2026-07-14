@@ -33,6 +33,7 @@ impl PackageName {
             Language::Python => canonicalize_pep503(&original),
             Language::Go => canonicalize_go_module(&original),
             Language::Java => canonicalize_maven_artifact(&original),
+            Language::CSharp => canonicalize_csharp(&original),
             Language::Nix => canonicalize_nix_flake(&original),
         }
         .ok_or_else(|| {
@@ -63,6 +64,7 @@ const fn length_limit(ecosystem: Language) -> usize {
         Language::Rust => 64,
         Language::Typescript | Language::Python => 214,
         Language::Go | Language::Java => 256, // generous for module/artifact
+        Language::CSharp => 256,              // NuGet IDs (dotted, up to ~100)
         Language::Nix => 256,                 // FlakeHub `org/project` slugs
     }
 }
@@ -78,6 +80,7 @@ fn is_valid_char_for(ecosystem: Language, c: char) -> bool {
         Language::Go | Language::Java => {
             c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')
         }
+        Language::CSharp => c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'),
         // FlakeHub `org/project`: GitHub-style slugs on both sides of the slash.
         Language::Nix => c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'),
     }
@@ -141,6 +144,17 @@ fn canonicalize_go_module(raw: &str) -> Option<String> {
 
 /// Java/Maven: artifactId similar to npm, group etc.
 fn canonicalize_maven_artifact(raw: &str) -> Option<String> {
+    let valid = raw.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && raw.ends_with(|c: char| c.is_ascii_alphanumeric())
+        && raw.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    valid.then(|| raw.to_ascii_lowercase())
+}
+
+/// NuGet: package IDs are case-insensitive dotted identifiers
+/// (`Newtonsoft.Json`), alphanumerics plus `.`/`-`/`_`, bounded by
+/// alphanumerics. The canonical (identity) form folds case, matching the
+/// lowercase normalization the flat-container feed itself uses.
+fn canonicalize_csharp(raw: &str) -> Option<String> {
     let valid = raw.starts_with(|c: char| c.is_ascii_alphanumeric())
         && raw.ends_with(|c: char| c.is_ascii_alphanumeric())
         && raw.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));

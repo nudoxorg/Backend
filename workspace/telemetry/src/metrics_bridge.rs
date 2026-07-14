@@ -222,11 +222,10 @@ impl CounterFn for OtelCounter {
 
 	fn absolute(&self, value: u64) {
 		let previous = self.last_absolute.swap(value, Ordering::Relaxed);
-		if let Some(delta) = value.checked_sub(previous) {
-			if delta > 0 {
+		if let Some(delta) = value.checked_sub(previous)
+			&& delta > 0 {
 				self.instrument.add(delta, &self.attributes);
 			}
-		}
 	}
 }
 

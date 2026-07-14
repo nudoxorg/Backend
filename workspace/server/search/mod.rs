@@ -78,7 +78,7 @@ where
 			}
 		}
 	}
-	merged.sort_by(|left, right| right.score.cmp(&left.score));
+	merged.sort_by_key(|left| std::cmp::Reverse(left.score));
 	merged.truncate(limit);
 	merged
 }
@@ -178,7 +178,7 @@ impl<M: EmbeddingModel> SymbolStore for SourceStores<M> {
 				related.push(Scored::new(symbol, edge.target.score));
 			}
 		}
-		related.sort_by(|left, right| right.score.cmp(&left.score));
+		related.sort_by_key(|left| std::cmp::Reverse(left.score));
 		Ok(related)
 	}
 }

@@ -62,10 +62,9 @@ impl PyroscopeHandle {
 	/// Stop the agent, if running. Best-effort: logs and swallows a stop
 	/// error rather than panicking during shutdown/drop.
 	pub(crate) fn stop(self) {
-		if let Some(agent) = self.agent {
-			if let Err(error) = agent.stop() {
+		if let Some(agent) = self.agent
+			&& let Err(error) = agent.stop() {
 				tracing::warn!(%error, "pyroscope agent stop failed");
 			}
-		}
 	}
 }

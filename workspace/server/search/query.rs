@@ -118,7 +118,7 @@ impl PackageSelector {
 			&& symbol
 				.name
 				.fully_qualified
-				.split(|separator| separator == ':' || separator == '.' || separator == '/')
+				.split([':', '.', '/'])
 				.next()
 				.is_some_and(|root| root == self.name.canonical())
 	}

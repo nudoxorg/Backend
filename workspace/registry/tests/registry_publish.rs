@@ -4,8 +4,6 @@
 //! `PackageHandle` were deleted (superseded by the postgres-backed `Store`).
 //! The ranking policy test is kept because it exercises `multi_parent::merge`,
 //! which Phase 2 wires into the live search path.
-#![feature(adt_const_params)]
-
 mod common;
 
 use heart::{ResolutionState, Score, Scored};

@@ -29,7 +29,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use heart::{BackendKind, Cold, ConnectError, ConnectFailure, Connect, Federation, Live};
+use heart::{BackendKind, ConnectError, ConnectFailure, Connect, Federation, Live};
 use crate::registry::{
 	Store,
 	coordination::Outbox,
@@ -432,13 +432,12 @@ impl<M: EmbeddingModel> Server<M> {
 /// anything else names the scheme.
 fn object_store_backend(url: &url::Url) -> ServerResult<Arc<dyn object_store::ObjectStore>> {
 	// A local blob root must exist before the store will accept writes.
-	if url.scheme() == "file" {
-		if let Ok(path) = url.to_file_path() {
+	if url.scheme() == "file"
+		&& let Ok(path) = url.to_file_path() {
 			std::fs::create_dir_all(&path).map_err(|error| {
 				ConnectError::new(BackendKind::ObjectStore, ConnectFailure::Other(error.into()))
 			})?;
 		}
-	}
 	let (backend, prefix) = object_store::parse_url(url).map_err(|error| {
 		ConnectError::new(BackendKind::ObjectStore, ConnectFailure::Other(error.into()))
 	})?;

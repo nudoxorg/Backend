@@ -6,13 +6,14 @@
 //! cage-internal for library-form producers, not a top-level backend peer.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use crate::backend::supervisor::{self, apply_rlimits};
 use crate::budget::NetGrant;
 use crate::cancel::CancelToken;
 use crate::cgroup::Cgroup;
-use crate::error::{CageError, SandboxError};
+use crate::error::CageError;
+#[cfg(target_os = "linux")]
+use crate::error::SandboxError;
 use crate::seal::SealedCommand;
 use crate::spec::Output;
 
@@ -110,6 +111,7 @@ impl LinuxNamespaces {
 		self.bwrap.is_some()
 	}
 
+	#[allow(clippy::vec_init_then_push)]
 	fn build_bwrap_args(
 		&self,
 		cmd: &SealedCommand,
@@ -285,8 +287,10 @@ impl LinuxNamespaces {
 		#[cfg(unix)]
 		{
 			use std::os::unix::process::CommandExt;
+			#[allow(clippy::redundant_locals)]
 			let limits = limits;
 			let bpf_path = bpf_path.clone();
+			#[allow(clippy::redundant_locals)]
 			let cgroup_procs = cgroup_procs;
 			unsafe {
 				proc.pre_exec(move || {
@@ -353,6 +357,7 @@ fn ro_bind_if(args: &mut Vec<std::ffi::OsString>, src: &str, dst: &str) {
 
 /// Compile denylist BPF once on **success**; failures are not cached so a
 /// later retry can still install the filter.
+#[cfg(target_os = "linux")]
 fn seccomp_bpf_path() -> Result<PathBuf, CageError> {
 	static PATH: OnceLock<PathBuf> = OnceLock::new();
 	if let Some(p) = PATH.get() {
@@ -363,6 +368,7 @@ fn seccomp_bpf_path() -> Result<PathBuf, CageError> {
 	Ok(p)
 }
 
+#[cfg(target_os = "linux")]
 fn compile_seccomp_path() -> Result<PathBuf, CageError> {
 	#[cfg(target_os = "linux")]
 	{
@@ -527,6 +533,7 @@ impl Cage for DevPassthrough {
 		#[cfg(unix)]
 		{
 			use std::os::unix::process::CommandExt;
+			#[allow(clippy::redundant_locals)]
 			let limits = limits;
 			unsafe {
 				proc.pre_exec(move || {

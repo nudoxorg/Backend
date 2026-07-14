@@ -2,7 +2,7 @@
 
 use std::num::NonZeroUsize;
 
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt};
 use heart::{Cursor, Enforced, Scored, Symbol, SymbolId, SymbolKind};
 use runtime::text::{TextIndex, TextQuery};
 

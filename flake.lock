@@ -151,8 +151,7 @@
         "fenix": "fenix",
         "git-hooks": "git-hooks",
         "nixos": "nixos",
-        "nixpkgs": "nixpkgs",
-        "snowydeer": "snowydeer"
+        "nixpkgs": "nixpkgs"
       }
     },
     "rust-analyzer-src": {
@@ -169,22 +168,6 @@
         "owner": "rust-lang",
         "ref": "nightly",
         "repo": "rust-analyzer",
-        "type": "github"
-      }
-    },
-    "snowydeer": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1782248191,
-        "narHash": "sha256-TJhJK+GoZEwwe/LnKPvaNkT+ZjmleqVX2gNVeY9SP+M=",
-        "owner": "MercuryTechnologies",
-        "repo": "snowydeer",
-        "rev": "5435d7763f428cc47a690617bbb67d5e34f4cb51",
-        "type": "github"
-      },
-      "original": {
-        "owner": "MercuryTechnologies",
-        "repo": "snowydeer",
         "type": "github"
       }
     }

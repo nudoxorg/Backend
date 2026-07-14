@@ -148,11 +148,10 @@ impl TelemetryConfig {
 			.or_else(|| std::env::var("NUDOX_DEPLOYMENT").ok())
 			.unwrap_or_else(|| "development".to_owned());
 
-		if !resource_attributes.iter().any(|(k, _)| k == "host.name") {
-			if let Some(host) = hostname_best_effort() {
+		if !resource_attributes.iter().any(|(k, _)| k == "host.name")
+			&& let Some(host) = hostname_best_effort() {
 				resource_attributes.push(("host.name".to_owned(), host));
 			}
-		}
 
 		if !resource_attributes.iter().any(|(k, _)| k == "nudox.build_system") {
 			resource_attributes.push(("nudox.build_system".to_owned(), build_system.to_owned()));
@@ -217,11 +216,10 @@ fn hostname_best_effort() -> Option<String> {
 		// env var systemd/most shells export, falling back to `uname -n` only
 		// if that's unset (kept dependency-free per the plan's "dependency
 		// light" placement note).
-		if let Ok(host) = std::env::var("HOSTNAME") {
-			if !host.is_empty() {
+		if let Ok(host) = std::env::var("HOSTNAME")
+			&& !host.is_empty() {
 				return Some(host);
 			}
-		}
 		std::process::Command::new("uname")
 			.arg("-n")
 			.output()

@@ -106,7 +106,7 @@ impl Score {
 	#[track_caller]
 	pub fn frac(&mut self, for_what: &'static str, max_score: u32, n: impl Into<f64>) -> ScoreAdj<'_> {
 		let n = n.into();
-		assert!(n >= 0. && n <= 1., "frac n={n} out of 0..=1");
+		assert!((0. ..=1.).contains(&n), "frac n={n} out of 0..=1");
 		let max = f64::from(max_score);
 		self.score_f(for_what, max, n * max)
 	}
@@ -263,7 +263,7 @@ fn prose_words(text: &str, weight: f32) -> Vec<(SmolStr, f32)> {
 			|| matches!(c, '.' | ',' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | ';' | '!' | '?')
 	})
 	.filter(|w| w.len() >= 2)
-	.map(|w| normalize_keyword(w))
+	.map(normalize_keyword)
 	.filter(|w| !w.is_empty() && w.len() >= 2)
 	.filter(|w| !is_stopword(w.as_str()))
 	.map(|w| (w, weight))
@@ -298,7 +298,7 @@ fn ident_words(ident: &str, weight: f32) -> Vec<(SmolStr, f32)> {
 
 	s.split('_')
 		.filter(|w| w.len() >= 2)
-		.map(|w| normalize_keyword(w))
+		.map(normalize_keyword)
 		.filter(|w| !w.is_empty() && w.len() >= 2)
 		.filter(|w| !is_ident_stopword(w.as_str()))
 		.map(|w| (w, weight))
@@ -469,11 +469,10 @@ fn apply_synonyms_and_specifics(
 			}
 		}
 
-		if let Some(sp) = specifics {
-			if sp.is_bland(current.as_str()).is_some() {
+		if let Some(sp) = specifics
+			&& sp.is_bland(current.as_str()).is_some() {
 				current_w *= 0.3;
 			}
-		}
 
 		if current != *kw || (current_w - w).abs() > 1e-6 {
 			remap.push((kw.clone(), current, current_w));
@@ -577,13 +576,12 @@ pub fn extract(
 	keywords.truncate(20);
 
 	// Normalize so the top keyword = 1.0.
-	if let Some(&(top_w, _)) = keywords.first() {
-		if top_w > 0.0 {
+	if let Some(&(top_w, _)) = keywords.first()
+		&& top_w > 0.0 {
 			for (w, _) in &mut keywords {
 				*w = (*w / top_w).clamp(0.0, 1.0);
 			}
 		}
-	}
 
 	// Categories: from manifest, else infer from keywords.
 	let categories = derive_categories(input, &keywords);

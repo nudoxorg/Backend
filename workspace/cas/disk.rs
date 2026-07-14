@@ -172,5 +172,3 @@ fn strip_envelope(bytes: &[u8]) -> Option<Vec<u8>> {
 	Some(value.to_vec())
 }
 
-#[cfg(test)]
-pub(crate) fn envelope_for_test(value: &[u8]) -> Vec<u8> { envelope(value) }

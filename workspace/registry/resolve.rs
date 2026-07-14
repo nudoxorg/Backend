@@ -62,6 +62,11 @@ impl Constraint<PackageVersion> for RangeConstraint {
 						.is_ok_and(|specifiers| specifiers.contains(version)),
 					_ => false,
 				},
+				// NuGet interval notation (`[1.0,2.0)`, bare `1.2.3` = "≥ min").
+				Language::CSharp => match candidate {
+					PackageVersion::CSharp(version) => nuget::range_matches(spec, version),
+					_ => false,
+				},
 				// Go/Java resolve via git tags, not this registry range path.
 				Language::Go | Language::Java => false,
 			},
@@ -135,6 +140,11 @@ pub fn select(
 						spec.parse::<uv_pep440::VersionSpecifiers>()
 							.map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
 					}
+					Language::CSharp => {
+						if !nuget::spec_is_valid(spec) {
+							return Err(ResolveError::MalformedRequest { spec: spec.clone() });
+						}
+					}
 					Language::Go | Language::Java => {}
 				}
 			}
@@ -199,6 +209,10 @@ fn package_version_is_prerelease(v: &PackageVersion) -> bool {
 		PackageVersion::Go(s) | PackageVersion::Java(s) => {
 			s.contains('-') || s.chars().any(|c| c.is_ascii_alphabetic())
 		}
+		// NuGet prerelease: a `-label` suffix on the numeric core.
+		PackageVersion::CSharp(s) => nuget::NuGetVersion::parse(s)
+			.map(|v| v.is_prerelease())
+			.unwrap_or_else(|| s.contains('-')),
 	}
 }
 
@@ -210,8 +224,8 @@ fn semver_matches(range: &semver::VersionReq, candidate: &PackageVersion) -> boo
 		| PackageVersion::Npm(version)
 		| PackageVersion::Nix(version) => range.matches(version),
 		PackageVersion::Python(_) => false,
-		PackageVersion::Go(_) | PackageVersion::Java(_) => false, // not via semver range here
-
+		// Go/Java via git tags; NuGet via interval notation, not semver range.
+		PackageVersion::Go(_) | PackageVersion::Java(_) | PackageVersion::CSharp(_) => false,
 	}
 }
 
@@ -225,19 +239,18 @@ fn grammar_order(a: &&PackageVersion, b: &&PackageVersion) -> std::cmp::Ordering
 		(PackageVersion::Go(x), PackageVersion::Go(y))
 		| (PackageVersion::Java(x), PackageVersion::Java(y)) => x.cmp(y),
 		(PackageVersion::Nix(x), PackageVersion::Nix(y)) => x.cmp(y),
+		// NuGet ordering (4-part + prerelease); unparseable strays compare by
+		// raw string so selection stays total.
+		(PackageVersion::CSharp(x), PackageVersion::CSharp(y)) => {
+			match (nuget::NuGetVersion::parse(x), nuget::NuGetVersion::parse(y)) {
+				(Some(a), Some(b)) => a.cmp(&b),
+				_ => x.cmp(y),
+			}
+		}
 		_ => std::cmp::Ordering::Equal, // mixed not happen
 	}
 }
 
-/// The human form of a request, for error messages.
-fn request_display(request: &VersionRequest) -> String {
-	match request {
-		VersionRequest::Latest => String::from("latest"),
-		VersionRequest::Exact(version) => version.canonical(),
-		VersionRequest::Constraint(RangeConstraint::Semver(range)) => range.to_string(),
-		VersionRequest::Constraint(RangeConstraint::Range { spec, .. }) => spec.clone(),
-	}
-}
 
 /// Fetch the published version set for `name` from `origin`, parsed under the
 /// ecosystem's grammar (unparseable strays are skipped with a debug log, not
@@ -280,6 +293,7 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		RegistryOrigin::NpmPublic => String::from("https://registry.npmjs.org"),
 		RegistryOrigin::PyPi => String::from("https://pypi.org"),
 		RegistryOrigin::FlakeHub => String::from("https://api.flakehub.com"),
+		RegistryOrigin::NuGet => String::from("https://api.nuget.org"),
 		RegistryOrigin::Custom { url, .. } => url.as_str().trim_end_matches('/').to_owned(),
 	};
 	match name.ecosystem() {
@@ -288,6 +302,11 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		Language::Python => format!("{base}/pypi/{}/json", name.canonical()),
 		Language::Go => format!("{base}/{}", name.canonical()),
 		Language::Java => format!("{base}/{}", name.canonical()),
+		// NuGet flat-container version index (ids lowercased — `canonical`
+		// already folds case).
+		Language::CSharp => {
+			format!("{base}/v3-flatcontainer/{}/index.json", name.canonical())
+		}
 		// FlakeHub resolution has bespoke semantics handled by the Nix
 		// producer's `traversal` module, not this generic registry path.
 		Language::Nix => format!("{base}/f/{}/releases", name.canonical()),
@@ -316,7 +335,251 @@ fn raw_versions(ecosystem: Language, body: &serde_json::Value) -> Vec<String> {
 			.into_iter()
 			.flat_map(|releases| releases.keys().cloned())
 			.collect(),
+		// NuGet flat-container `index.json`: `{"versions":[...]}`. Includes
+		// unlisted versions (registration `listed` flag cross-checks elsewhere).
+		Language::CSharp => body["versions"]
+			.as_array()
+			.into_iter()
+			.flatten()
+			.filter_map(|version| version.as_str().map(str::to_owned))
+			.collect(),
 		Language::Go | Language::Java => vec![], // not via this registry resolve path yet
 		Language::Nix => vec![],                 // resolved via FlakeHub in the Nix producer
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NuGet version grammar + interval-notation range matching
+// ---------------------------------------------------------------------------
+
+/// NuGet versioning: SemVer2 with an optional legacy 4th numeric part, plus
+/// interval-notation version ranges (`[1.0,2.0)`). NuGet versions are *not*
+/// SemVer (`1.0.0.5` is legal), so `semver` cannot be used — this is a faithful
+/// subset of NuGet's own `NuGetVersion` / `VersionRange` semantics.
+pub mod nuget {
+	use std::cmp::Ordering;
+
+	/// A parsed NuGet version: up to four numeric parts, an optional
+	/// dot-separated prerelease, and (dropped) build metadata.
+	#[derive(Debug, Clone, PartialEq, Eq)]
+	pub struct NuGetVersion {
+		parts: [u64; 4],
+		/// Lowercased prerelease labels (`-alpha.1` → `["alpha", "1"]`); empty
+		/// for a release version.
+		pre: Vec<String>,
+	}
+
+	impl NuGetVersion {
+		/// Parse a NuGet version string, or `None` if it isn't numeric-led.
+		pub fn parse(text: &str) -> Option<Self> {
+			let text = text.trim();
+			// Drop build metadata (`+sha`) — ignored in ordering.
+			let core = text.split('+').next().unwrap_or(text);
+			let (numeric, pre_str) = match core.split_once('-') {
+				Some((n, p)) => (n, Some(p)),
+				None => (core, None),
+			};
+			let mut parts = [0u64; 4];
+			let mut count = 0usize;
+			for (i, seg) in numeric.split('.').enumerate() {
+				if i >= 4 || seg.is_empty() {
+					return None;
+				}
+				parts[i] = seg.parse::<u64>().ok()?;
+				count = i + 1;
+			}
+			if count == 0 {
+				return None;
+			}
+			let pre = pre_str
+				.map(|p| p.split('.').map(|s| s.to_ascii_lowercase()).collect())
+				.unwrap_or_default();
+			Some(NuGetVersion { parts, pre })
+		}
+
+		/// Whether this version carries a prerelease label.
+		pub fn is_prerelease(&self) -> bool {
+			!self.pre.is_empty()
+		}
+	}
+
+	impl Ord for NuGetVersion {
+		fn cmp(&self, other: &Self) -> Ordering {
+			match self.parts.cmp(&other.parts) {
+				Ordering::Equal => {}
+				ord => return ord,
+			}
+			// A release outranks any prerelease of the same numeric core.
+			match (self.pre.is_empty(), other.pre.is_empty()) {
+				(true, true) => Ordering::Equal,
+				(true, false) => Ordering::Greater,
+				(false, true) => Ordering::Less,
+				(false, false) => cmp_pre(&self.pre, &other.pre),
+			}
+		}
+	}
+
+	impl PartialOrd for NuGetVersion {
+		fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+			Some(self.cmp(other))
+		}
+	}
+
+	/// Compare prerelease label lists dot-segment-wise (numeric segments
+	/// numerically, else case-insensitive lexically; numeric < alphanumeric).
+	fn cmp_pre(a: &[String], b: &[String]) -> Ordering {
+		for i in 0..a.len().max(b.len()) {
+			let ord = match (a.get(i), b.get(i)) {
+				(Some(x), Some(y)) => cmp_pre_seg(x, y),
+				(Some(_), None) => Ordering::Greater,
+				(None, Some(_)) => Ordering::Less,
+				(None, None) => Ordering::Equal,
+			};
+			if ord != Ordering::Equal {
+				return ord;
+			}
+		}
+		Ordering::Equal
+	}
+
+	fn cmp_pre_seg(x: &str, y: &str) -> Ordering {
+		match (x.parse::<u64>(), y.parse::<u64>()) {
+			(Ok(nx), Ok(ny)) => nx.cmp(&ny),
+			(Ok(_), Err(_)) => Ordering::Less,
+			(Err(_), Ok(_)) => Ordering::Greater,
+			(Err(_), Err(_)) => x.cmp(y),
+		}
+	}
+
+	/// One end of a NuGet interval.
+	struct Bound {
+		version: Option<NuGetVersion>,
+		inclusive: bool,
+	}
+
+	/// A parsed NuGet version range.
+	struct Range {
+		lower: Bound,
+		upper: Bound,
+	}
+
+	/// Parse a NuGet version-range spec. Supports interval notation
+	/// (`[1.0]`, `[1.0,2.0)`, `(1.0,)`, `(,2.0]`) and a bare version
+	/// (`1.2.3` = "≥ 1.2.3, the *minimum*", NOT exact — the documented rule).
+	fn parse_range(spec: &str) -> Option<Range> {
+		let spec = spec.trim();
+		if spec.is_empty() {
+			return None;
+		}
+		let first = spec.chars().next().unwrap();
+		let last = spec.chars().last().unwrap();
+		let is_interval = matches!(first, '[' | '(') && matches!(last, ']' | ')');
+		if !is_interval {
+			// Bare version: minimum inclusive, unbounded above.
+			let v = NuGetVersion::parse(spec)?;
+			return Some(Range {
+				lower: Bound { version: Some(v), inclusive: true },
+				upper: Bound { version: None, inclusive: false },
+			});
+		}
+		let inner = &spec[1..spec.len() - 1];
+		let (lo_str, hi_str) = match inner.split_once(',') {
+			Some((lo, hi)) => (lo.trim(), hi.trim()),
+			// `[1.0]` — an exact single version.
+			None => {
+				let v = NuGetVersion::parse(inner.trim())?;
+				return Some(Range {
+					lower: Bound { version: Some(v.clone()), inclusive: true },
+					upper: Bound { version: Some(v), inclusive: true },
+				});
+			}
+		};
+		let lower = Bound {
+			version: if lo_str.is_empty() { None } else { Some(NuGetVersion::parse(lo_str)?) },
+			inclusive: first == '[',
+		};
+		let upper = Bound {
+			version: if hi_str.is_empty() { None } else { Some(NuGetVersion::parse(hi_str)?) },
+			inclusive: last == ']',
+		};
+		Some(Range { lower, upper })
+	}
+
+	/// Whether `spec` is a well-formed NuGet range.
+	pub fn spec_is_valid(spec: &str) -> bool {
+		parse_range(spec).is_some()
+	}
+
+	/// Whether `candidate` (a raw NuGet version string) satisfies `spec`.
+	pub fn range_matches(spec: &str, candidate: &str) -> bool {
+		let Some(range) = parse_range(spec) else {
+			return false;
+		};
+		let Some(v) = NuGetVersion::parse(candidate) else {
+			return false;
+		};
+		if let Some(lo) = &range.lower.version {
+			match v.cmp(lo) {
+				Ordering::Less => return false,
+				Ordering::Equal if !range.lower.inclusive => return false,
+				_ => {}
+			}
+		}
+		if let Some(hi) = &range.upper.version {
+			match v.cmp(hi) {
+				Ordering::Greater => return false,
+				Ordering::Equal if !range.upper.inclusive => return false,
+				_ => {}
+			}
+		}
+		true
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+
+		fn v(s: &str) -> NuGetVersion {
+			NuGetVersion::parse(s).expect("parses")
+		}
+
+		#[test]
+		fn four_part_and_prerelease_ordering() {
+			assert!(v("1.0.0.5") > v("1.0.0"));
+			assert!(v("1.0.0") > v("1.0.0-rc.1"));
+			assert!(v("1.0.0-alpha") < v("1.0.0-beta"));
+			assert!(v("1.0.0-alpha.1") < v("1.0.0-alpha.2"));
+			// Case-insensitive prerelease.
+			assert_eq!(v("1.0.0-Alpha"), v("1.0.0-alpha"));
+			// Build metadata dropped.
+			assert_eq!(v("1.0.0+abc"), v("1.0.0+def"));
+		}
+
+		#[test]
+		fn interval_notation() {
+			assert!(range_matches("[1.0,2.0)", "1.5.0"));
+			assert!(!range_matches("[1.0,2.0)", "2.0.0"));
+			assert!(range_matches("[1.0,2.0]", "2.0.0"));
+			assert!(!range_matches("(1.0,2.0)", "1.0.0"));
+			assert!(range_matches("(1.0,)", "5.0.0"));
+			assert!(range_matches("(,2.0]", "1.0.0"));
+			assert!(range_matches("[1.0]", "1.0.0"));
+			assert!(!range_matches("[1.0]", "1.0.1"));
+		}
+
+		#[test]
+		fn bare_version_is_minimum_not_exact() {
+			assert!(range_matches("1.2.3", "1.2.3"));
+			assert!(range_matches("1.2.3", "2.0.0"));
+			assert!(!range_matches("1.2.3", "1.0.0"));
+		}
+
+		#[test]
+		fn malformed_specs_rejected() {
+			assert!(!spec_is_valid("not-a-version"));
+			assert!(!spec_is_valid(""));
+			assert!(spec_is_valid("[1.0,2.0)"));
+			assert!(spec_is_valid("1.2.3"));
+		}
 	}
 }

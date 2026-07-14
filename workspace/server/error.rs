@@ -6,7 +6,7 @@
 //! subsystem's own [`Retryable`]. Only the outward [`ServerError::status`]
 //! projection decides what the client sees.
 
-use heart::{cursor::CursorError, ConnectError, NameError, PackageId, Retryable};
+use heart::{ConnectError, NameError, PackageId, Retryable};
 
 
 

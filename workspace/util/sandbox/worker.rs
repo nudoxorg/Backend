@@ -23,7 +23,7 @@ use crate::cancel::CancelToken;
 use crate::error::{CageError, KillReason, SandboxError};
 use crate::limits::Limits;
 use crate::profiles::ProducerProfile;
-use crate::spec::{Env, Mounts, Spec};
+use crate::spec::Env;
 
 /// Languages the worker binary can lower (closed set — no free strings at the
 /// isolate boundary).
@@ -317,17 +317,14 @@ impl WorkerPool {
 		let wall = self.config.limits.wall;
 		match call_worker(slot, req, wall, cancel) {
 			Ok(resp) => {
-				if !matches!(req, JobRequest::Ping | JobRequest::Shutdown) {
-					if let Ok(JobResponse::Pong { rss: Some(rss) }) =
+				if !matches!(req, JobRequest::Ping | JobRequest::Shutdown)
+					&& let Ok(JobResponse::Pong { rss: Some(rss) }) =
 						call_worker(slot, &JobRequest::Ping, Duration::from_secs(5), cancel)
-					{
-						if rss > self.config.memory_watermark {
+						&& rss > self.config.memory_watermark {
 							tracing::debug!("worker restart: rss_watermark");
 							slot.kill_tree();
 							*slot = spawn_worker(&self.config)?;
 						}
-					}
-				}
 				Ok(resp)
 			}
 			Err(e) => {

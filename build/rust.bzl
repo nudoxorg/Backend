@@ -1,6 +1,3 @@
-load("//build/third-party:registry.bzl", "REGISTRY")
-load("//build/third-party:git.bzl", "GIT")
-
 _TP = "//build/third-party"
 
 _MEMBERS = {
@@ -16,62 +13,11 @@ _MEMBERS = {
     "cas":              "//workspace/cas:cas",
     "version":          "//workspace/version:version",
     "telemetry":        "//workspace/telemetry:telemetry",
-    # nudox:members
 }
 
-_VALID_CRATES = dict(
-    [
-        ((e["crate_name"] if e.get("crate_name") else e["name"].replace("-", "_")), True)
-        for e in REGISTRY
-        if e["alias"]
-    ] + [
-        (c["name"].replace("-", "_"), True)
-        for repo in GIT
-        for c in repo["crates"]
-    ],
-)
-
-_VALID_LABELS = dict([(e["label"], True) for e in REGISTRY])
-
-def _crate_target(n):
-    if n not in _VALID_CRATES:
-        fail("unknown third-party crate '{}'. Vendor it with:  buck2 run //:add -- {}".format(n, n))
-    return _TP + ":" + n
-
-def _label_target(label):
-    if label not in _VALID_LABELS:
-        fail("unknown registry label '{}'. Vendor the crate with:  buck2 run //:add -- <crate>".format(label))
-    return _TP + ":" + label
-
-def _resolve_crate_dep(name):
-    """Map a crate alias or registry label to a buck target label."""
-    if name in _VALID_CRATES:
-        return _crate_target(name)
-    if name in _VALID_LABELS:
-        return _label_target(name)
-    fail("unknown crate '{}'. Use an alias (e.g. \"sqlx\") or registry label (e.g. \"futures-0_3\"). Vendor with:  buck2 run //:add -- <crate>".format(name))
-
-def crate(name, features = None, pin_only = False):
-    """Declare a third-party crate in a ``deps([...])`` list.
-
-    One call covers the dep edge and optional feature flags — no duplicate
-    ``"sqlx"`` string alongside ``crate("sqlx", features = [...])``::
-
-        crate("sqlx", features = ["postgres", "runtime-tokio-rustls"])
-        crate("futures-0_3", features = ["std"])   # registry label, not alias
-        crate("deno_error", features = ["serde"], pin_only = True)  # features only
-
-    ``name`` is either a vendored alias (``"sqlx"``) or a registry label
-    (``"futures-0_3"``, ``"http-1"``) when the alias points at another version.
-    """
-    if not pin_only and name not in _VALID_CRATES and name not in _VALID_LABELS:
-        fail("unknown crate '{}'. Vendor it with:  buck2 run //:add -- <crate>".format(name))
-    entry = {"crate": name}
-    if features != None:
-        entry["features"] = features
-    if pin_only:
-        entry["pin_only"] = True
-    return entry
+def crate(name):
+    """Declare a third-party crate dep. Returns the Buck target label."""
+    return _TP + ":" + name
 
 def _member_target(m):
     if m not in _MEMBERS:
@@ -88,21 +34,17 @@ def target(label):
     """Same-package or relative buck target (e.g. test crate → library under test)."""
     return {"target": label}
 
-def dep_pins(pins):
-    """Per-edge version pins consumed by ``gen-registry``."""
-    return {"pins": pins}
-
 def workspace(n):
     return _member_target(n)
 
-def _parse_dep_entry(entry, crate_targets, members, local_targets, features, dep_pins):
+def _parse_dep_entry(entry, crate_targets, members, local_targets):
     t = type(entry)
     if t == type(""):
-        crate_targets.append(_resolve_crate_dep(entry))
+        crate_targets.append(entry)
         return
 
     if t != type({}):
-        fail("deps entry must be a string or dict, got {}".format(t))
+        fail("deps entry must be a string (from crate()) or dict (from member()/target()), got {}".format(t))
 
     if entry.get("member") != None:
         members.append(entry["member"])
@@ -116,58 +58,28 @@ def _parse_dep_entry(entry, crate_targets, members, local_targets, features, dep
         local_targets.append(entry["raw"])
         return
 
-    if entry.get("pins") != None:
-        for consumer, edges in entry["pins"].items():
-            dep_pins.setdefault(consumer, {}).update(edges)
-        return
+    fail("deps entry must be from crate(), member(), or target() — got {}".format(entry))
 
-    crate_name = entry.get("crate")
-    if crate_name != None:
-        feat_list = entry.get("features")
-        if feat_list:
-            features.setdefault(crate_name, []).extend(feat_list)
-        if not entry.get("pin_only"):
-            crate_targets.append(_resolve_crate_dep(crate_name))
-        return
+def deps(spec = None, crates = None, members = None, raw = None):
+    """Declare dependencies as a list.
 
-    if entry.get("features") != None:
-        for crate_name, feat_list in entry["features"].items():
-            features.setdefault(crate_name, []).extend(feat_list)
-        return
-
-    fail("deps entry must be from crate(), member(), target(), or dep_pins() — got {}".format(entry))
-
-def deps(spec = None, crates = None, members = None, raw = None, features = None, dep_pins = None):
-    """Declare dependencies as a cargo.toml-shaped list.
-
-    Use ``crate()`` for every third-party dep (with optional ``features``).
-    Use ``member()`` for workspace crates.  Use ``target()`` for same-package
-    edges (tests → library).  Versions live in ``registry.bzl``::
+    Use ``crate()`` for every third-party dep, ``member()`` for workspace crates,
+    and ``target()`` for same-package edges (e.g. tests → library)::
 
         deps([
-            crate("sqlx", features = ["postgres", "runtime-tokio-rustls"]),
-            crate("futures-0_3", features = ["std"]),
+            crate("sqlx"),
+            crate("futures-0_3"),
             member("heart"),
             target(":registry"),
         ])
-
-    Legacy kwargs (``crates``, ``members``, ``raw``, ``features``, ``dep_pins``)
-    are still accepted and merged with ``spec``.
     """
-    crate_targets = [_crate_target(c) for c in (crates or [])]
+    crate_targets = [_TP + ":" + c for c in (crates or [])]
     _members = list(members or [])
     local_targets = list(raw or [])
-    _features = {}
-    _dep_pins = {}
-
-    for crate_name, feat_list in (features or {}).items():
-        _features.setdefault(crate_name, []).extend(feat_list)
-    for consumer, edges in (dep_pins or {}).items():
-        _dep_pins.setdefault(consumer, {}).update(edges)
 
     if spec != None:
         for entry in spec:
-            _parse_dep_entry(entry, crate_targets, _members, local_targets, _features, _dep_pins)
+            _parse_dep_entry(entry, crate_targets, _members, local_targets)
 
     return crate_targets + [_member_target(m) for m in _members] + local_targets
 

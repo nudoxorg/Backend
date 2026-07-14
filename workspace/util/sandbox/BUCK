@@ -17,7 +17,7 @@ rust_crate(
         crate("tracing"),
         crate("rlimit"),
         crate("which"),
-        crate("serde", features = ["derive"]),
+        crate("serde"),
         crate("serde_json"),
         crate("libc"),
         crate("tempfile"),

@@ -92,6 +92,9 @@ pub enum PackageVersion {
     Go(String),
     /// Java/Maven version string.
     Java(String),
+    /// NuGet version string (SemVer2 with an optional legacy 4th part;
+    /// case-insensitive prerelease, build metadata dropped in ordering).
+    CSharp(String),
     /// Nix flake version — FlakeHub Cargo-semver (`X.Y.Z+rev-{sha}`); the
     /// `+rev` build metadata is preserved but ignored in ordering (FlakeHub
     /// patch numbers are monotonic commit counts, so ordering stays correct).
@@ -121,6 +124,7 @@ impl TryFrom<(Language, &str)> for PackageVersion {
             }
             Language::Go => Ok(Self::Go(raw.to_owned())),
             Language::Java => Ok(Self::Java(raw.to_owned())),
+            Language::CSharp => Ok(Self::CSharp(raw.to_owned())),
             Language::Nix => {
                 let v = semver::Version::parse(raw)
                     .map_err(|source| NixVersionError { raw: raw.to_owned(), source })?;
@@ -138,7 +142,9 @@ impl PackageVersion {
                 v.to_string()
             }
             PackageVersion::Python(v) => v.to_string(),
-            PackageVersion::Go(v) | PackageVersion::Java(v) => v.clone(),
+            PackageVersion::Go(v) | PackageVersion::Java(v) | PackageVersion::CSharp(v) => {
+                v.clone()
+            }
         }
     }
 }
@@ -151,6 +157,7 @@ impl From<&PackageVersion> for Language {
             PackageVersion::Python(_) => Language::Python,
             PackageVersion::Go(_) => Language::Go,
             PackageVersion::Java(_) => Language::Java,
+            PackageVersion::CSharp(_) => Language::CSharp,
             PackageVersion::Nix(_) => Language::Nix,
         }
     }
@@ -165,6 +172,8 @@ pub enum RegistryOrigin {
     /// FlakeHub — a first-class origin (bespoke resolution semantics), not a
     /// `Custom` registry.
     FlakeHub,
+    /// nuget.org — the public NuGet gallery / flat-container feed.
+    NuGet,
     Custom { name: SmolStr, url: url::Url },
 }
 
@@ -175,6 +184,7 @@ impl RegistryOrigin {
             RegistryOrigin::NpmPublic => Cow::Borrowed("npm"),
             RegistryOrigin::PyPi => Cow::Borrowed("pypi"),
             RegistryOrigin::FlakeHub => Cow::Borrowed("flakehub"),
+            RegistryOrigin::NuGet => Cow::Borrowed("nuget"),
             RegistryOrigin::Custom { name, .. } => Cow::Owned(name.to_string()),
         }
     }

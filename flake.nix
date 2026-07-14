@@ -25,11 +25,6 @@
       flake = false;
     };
 
-    snowydeer = {
-      url = "github:MercuryTechnologies/snowydeer";
-      flake = false;
-    };
-
     # tweag/buck2.nix — provides flake.package() + nix_rust_toolchain/nix_cxx_toolchain.
     # Fetched as a plain source input so the devshell can wire it as a `path`-type
     # external cell in .buckconfig, avoiding a git fetch at Buck2 build time.
@@ -48,7 +43,6 @@
       git-hooks,
       developmentShell,
       buck2-prelude,
-      snowydeer,
       buck2-nix,
     }:
     let
@@ -58,6 +52,48 @@
         "x86_64-darwin"
         "x86_64-linux"
       ];
+
+      reindeerVersion = "v2026.07.13.00";
+      reindeerArtifactDetails = {
+        "aarch64-darwin" = {
+          platform = "aarch64-apple-darwin";
+          hash = "sha256-SL2EJ5B+90i3O3Pw4NAcI4wnyUMp29yl0qo4wmM7jsg=";
+        };
+        "aarch64-linux" = {
+          platform = "aarch64-unknown-linux-gnu";
+          hash = "sha256-capEdrcgi4+Z17BPpKunlyKE6C1eUyGubIYn/Y2efwk=";
+        };
+        "x86_64-darwin" = {
+          platform = "x86_64-apple-darwin";
+          hash = "sha256-AScqudALl5webUyMJ2v/Lw0CCU+q7nJ1JrrAAQP2CSo=";
+        };
+        "x86_64-linux" = {
+          platform = "x86_64-unknown-linux-gnu";
+          hash = "sha256-IIfm1olh7P7VJOPiJM156g5wkdDgSE1DIH93/1UkE2k=";
+        };
+      };
+
+      makeReindeerBinaryDerivation =
+        nixPackages:
+        let
+          artifactDetails = reindeerArtifactDetails.${nixPackages.stdenv.hostPlatform.system};
+        in
+        nixPackages.stdenvNoCC.mkDerivation {
+          pname = "reindeer";
+          version = reindeerVersion;
+          src = nixPackages.fetchurl {
+            url = "https://github.com/facebookincubator/reindeer/releases/download/${reindeerVersion}/reindeer-${artifactDetails.platform}.zst";
+            hash = artifactDetails.hash;
+          };
+          nativeBuildInputs = [ nixPackages.zstd ];
+          dontUnpack = true;
+          installPhase = ''
+            mkdir -p $out/bin
+            zstd -d $src -o $out/bin/reindeer
+            chmod +x $out/bin/reindeer
+          '';
+          meta.mainProgram = "reindeer";
+        };
 
       buck2Version = "2026-07-01";
       buck2ArtifactDetails = {
@@ -119,51 +155,15 @@
     {
       packages = generateForEverySystem (
         { systemArchitecture, nixPackages, ... }:
-        let
-          buck2PinningData = builtins.fromJSON (builtins.readFile ./nix/buck2-artifact.json);
-          buck2StorePath = buck2PinningData.paths.${systemArchitecture} or null;
-        in
         {
           developmentShell = self.devShells.${systemArchitecture}.default;
-        }
-        // nixpkgs.lib.optionalAttrs (buck2StorePath != null) {
-          default = builtins.fetchClosure {
-            fromStore = buck2PinningData.fromStore;
-            fromPath = buck2StorePath;
-          };
-        }
-      );
-
-      apps = generateForEverySystem (
-        { nixPackages, ... }:
-        let
-          buck2Binary = makeBuck2BinaryDerivation nixPackages;
-          buckExtensionScript = nixPackages.writeShellApplication {
-            name = "nudox-buck2-build";
-            runtimeInputs = [ buck2Binary ];
-            text = ''
-              if [[ ! -f .buckconfig ]]; then
-                echo "ERROR: run from the Backend repo root (no .buckconfig found)" >&2
-                exit 1
-              fi
-
-              ln -sfn ${buck2-prelude} prelude
-              preludeStampFile="build/prelude-local/.nix-source"
-
-              if [[ ! -f "$preludeStampFile" || "$(cat "$preludeStampFile")" != "${buck2-prelude}" ]]; then
-                bash build/setup-prelude.sh
-                echo -n "${buck2-prelude}" > "$preludeStampFile"
-              fi
-
-              echo "nudox-buck2-build: invoking snowydeer BXL for //workspace/server:nudox_pkg" >&2
-              buck2 bxl //snowydeer:snowydeer.bxl:main -- --target //workspace/server:nudox_pkg
-            '';
-          };
-        in
-        {
-          buck2 = {
-            type = "app";
-            program = "${buckExtensionScript}/bin/nudox-buck2-build";
+          default = (nixos.lib.build.rustService { pkgs = nixPackages; }) {
+            pname = "nudox-backend";
+            version = self.rev or "unknown";
+            src = ./.;
+            cargoPackage = "server";
+            mainProgram = "server";
+            description = "NuDox backend server";
           };
         }
       );
@@ -266,25 +266,43 @@
             command = "cd $PRJ_ROOT && nu .config/scripts/${commandName}.nu \"$@\"";
           };
 
+          # Build script PATH: fenix rustc + nix package manager + system paths.
+          # Consumed by build/third-party/defs.bzl via read_config("build","devshell_bin").
+          # Must include `rustc` (system-toolchain build script shims call it by bare
+          # name) and `nix` (flake.package() actions call `nix build`).
+          devshellBin = nixPackages.lib.concatStringsSep ":" [
+            "${rustNightlyToolchain}/bin"
+            "${nixPackages.nix}/bin"
+            "/usr/bin"
+            "/bin"
+            "/usr/sbin"
+            "/sbin"
+          ];
+
           nixBuckconfigFragment = nixPackages.writeText "buckconfig-nix-generated" (
             nixPackages.lib.generators.toINI
               {
                 mkKeyValue = k: v: "  ${k} = ${v}";
               }
               {
+                # Override the nix cell to the real buck2.nix source via a
+                # repo-relative symlink (build/nix-cell → nix store path).
+                # Buck2 requires relative cell paths; absolute nix store paths
+                # are rejected at cell-resolver time. The devshell hook below
+                # creates/refreshes the symlink on every shell entry.
+                # Base .buckconfig keeps nix = build/nix-stub for non-Nix hosts.
+                cells = {
+                  nix = "build/nix-cell";
+                };
                 # Enable Nix toolchains; overrides [nix] toolchain = 0 in the base
-                # .buckconfig (which is the non-Nix default).  The @nix cell is
-                # overridden below by [external_cells] to use the real buck2.nix
-                # source instead of the build/nix-stub fallback.
-                # See: https://github.com/tweag/buck2.nix and build/toolchains/nix/flake.nix
+                # .buckconfig (which is the non-Nix default).
                 nix = {
                   toolchain = "1";
                 };
-                external_cells = {
-                  nix = "path";
-                };
-                external_cell_nix = {
-                  path = toString buck2-nix;
+                build = {
+                  # Used by build/third-party/defs.bzl to set build script PATH.
+                  # Avoids hardcoding the Nix store hash that changes on devshell rebuild.
+                  devshell_bin = devshellBin;
                 };
                 go = {
                   go_binary = "${nixPackages.go}/bin/go";
@@ -306,7 +324,7 @@
               }
               {
                 name = "LIBRARY_PATH";
-                value = "$(nix eval --raw nixpkgs#libiconv.outPath)/lib";
+                value = "${nixPackages.libiconv}/lib";
               }
               {
                 name = "MAIN_PACKAGE";
@@ -341,6 +359,7 @@
             packages = [
               rustNightlyToolchain
               (makeBuck2BinaryDerivation nixPackages)
+              (makeReindeerBinaryDerivation nixPackages)
             ]
             ++ (with nixPackages; [
               git
@@ -351,8 +370,6 @@
               tombi
               typos
               hongdown
-              radicle-node
-              radicle-tui
               kittysay
               marksman
               taplo
@@ -413,13 +430,18 @@
               (makeNushellCommand "patch" "Update or create a patch from a branch" "maintenance")
               (makeNushellCommand "install" "Build and install binary to system" "installation")
               (makeNushellCommand "install-force" "Force install binary" "installation")
+              (makeNushellCommand "test-all" "Run Cargo workspace tests + Buck2 compiler tests" "testing")
+              (makeNushellCommand "sync-deps"
+                "Sync Cargo deps into Buck2 third-party registry after Cargo.toml changes"
+                "maintenance"
+              )
               (makeNushellCommand "buck-build" "Build Buck2 targets" "buck2")
               (makeNushellCommand "buck-test" "Run Buck2 tests" "buck2")
-              (makeNushellCommand "rad-sync" "manually sync radicle repos" "utilities")
             ];
 
             devshell.startup.shellHook.text = ''
               ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
+              ln -sfn ${buck2-nix} "$PRJ_ROOT/build/nix-cell"
               preludeStampFile="$PRJ_ROOT/build/prelude-local/.nix-source"
 
               if [[ ! -f "$preludeStampFile" || "$(cat "$preludeStampFile")" != "${buck2-prelude}" ]]; then
@@ -433,7 +455,7 @@
                 "$PRJ_ROOT/.buckconfig" > "$PRJ_ROOT/.buckconfig.tmp"
               mv "$PRJ_ROOT/.buckconfig.tmp" "$PRJ_ROOT/.buckconfig"
               {
-                printf '\n# BEGIN NIX-GENERATED — managed by flake.nix devshell, do not edit\n'
+                printf '# BEGIN NIX-GENERATED — managed by flake.nix devshell, do not edit\n'
                 cat "${nixBuckconfigFragment}"
                 printf '# END NIX-GENERATED\n'
               } >> "$PRJ_ROOT/.buckconfig"

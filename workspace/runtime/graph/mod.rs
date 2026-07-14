@@ -17,7 +17,6 @@ pub mod resolution;
 pub mod structure;
 
 use std::marker::PhantomData;
-use std::str::FromStr;
 
 use futures::Stream;
 use secrecy::SecretString;

@@ -78,21 +78,18 @@ impl Drop for TelemetryGuard {
 		if let Some(pyroscope) = self.pyroscope.take() {
 			pyroscope.stop();
 		}
-		if let Some(provider) = self.logger_provider.take() {
-			if let Err(error) = provider.shutdown() {
+		if let Some(provider) = self.logger_provider.take()
+			&& let Err(error) = provider.shutdown() {
 				eprintln!("telemetry: logger provider shutdown failed: {error}");
 			}
-		}
-		if let Some(provider) = self.meter_provider.take() {
-			if let Err(error) = provider.shutdown() {
+		if let Some(provider) = self.meter_provider.take()
+			&& let Err(error) = provider.shutdown() {
 				eprintln!("telemetry: meter provider shutdown failed: {error}");
 			}
-		}
-		if let Some(provider) = self.tracer_provider.take() {
-			if let Err(error) = provider.shutdown() {
+		if let Some(provider) = self.tracer_provider.take()
+			&& let Err(error) = provider.shutdown() {
 				eprintln!("telemetry: tracer provider shutdown failed: {error}");
 			}
-		}
 	}
 }
 

@@ -326,18 +326,24 @@ zip_file_toolchain(
 # NIX set (default): hermetic ripgrep built as a Buck2 action via flake.package.
 # SYSTEM fallback: thin system_binary wrapper that invokes `rg` from PATH.
 # snowydeer targets are Nix-specific; on non-Nix hosts `rg` must be on PATH.
-if _use_nix:
-    flake.package(
-        name = "ripgrep",
-        binary = "rg",
-        package = "ripgrep",
-        path = "//nix:flake",
-        target_compatible_with = _TARGET_MAPPING,
-        visibility = ["PUBLIC"],
-    )
-else:
-    system_binary(
-        name = "ripgrep",
-        binary = "rg",
-        visibility = ["PUBLIC"],
-    )
+#
+# Top-level `if` is not valid in the BUCK dialect — define both variants then
+# alias to select between them (same pattern as :cxx and :rust above).
+flake.package(
+    name = "ripgrep_nix",
+    binary = "rg",
+    package = "ripgrep",
+    path = "//nix:flake",
+    target_compatible_with = _TARGET_MAPPING,
+)
+
+system_binary(
+    name = "ripgrep_system",
+    binary = "rg",
+)
+
+alias(
+    name = "ripgrep",
+    actual = ":ripgrep_nix" if _use_nix else ":ripgrep_system",
+    visibility = ["PUBLIC"],
+)

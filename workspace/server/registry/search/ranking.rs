@@ -557,8 +557,8 @@ fn pull_up_representatives<T>(
 /// Swap condition: `b.downloads > bubble_min && b.downloads < bubble_max &&
 /// a.downloads * ratio < b.downloads`.
 fn downloads_bubble<T>(cfg: &RankingConfig, slice: &mut [Candidate<T>]) {
-	for pair in slice.chunks_exact_mut(2) {
-		let [a, b] = pair else { continue };
+	for pair in slice.as_chunks_mut::<2>().0 {
+		let [a, b] = pair;
 		if b.downloads > cfg.bubble_downloads_min
 			&& b.downloads < cfg.bubble_downloads_max
 			&& a.downloads.saturating_mul(cfg.bubble_ratio) < b.downloads

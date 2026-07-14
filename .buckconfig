@@ -49,12 +49,40 @@ target_platform_detector_spec = target:root//...->prelude//platforms:default \
 
 
 
-# BEGIN NIX-GENERATED — managed by flake.nix devshell, do not edit
-[external_cell_nix]
-  path = /nix/store/1bb6gi0lcfqfxp8gghjykkzbmcz86lgk-source
 
-[external_cells]
-  nix = path
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# BEGIN NIX-GENERATED — managed by flake.nix devshell, do not edit
+[build]
+  devshell_bin = /nix/store/ssm0sjf2rdsiyijcz03q564ap5a7wkmn-rust-nightly-complete-with-components-2026-07-11/bin:/nix/store/mc6l4fv1rjlgzp9cd46v8aqq7nrb4jag-nix-2.34.8/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+[cells]
+  nix = build/nix-cell
 
 [go]
   go_binary = /nix/store/38idfbqyw3p8xaslv6bnrig62pj7qy6i-go-1.26.4/bin/go

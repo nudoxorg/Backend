@@ -8,11 +8,10 @@
 
 mod common;
 
-use heart::{Edition, Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain};
+use heart::{Language, ResolutionState};
 use registry::{
-    GlobalPackage, Package,
+    GlobalPackage,
     metadata::SearchFacets,
-    package::{Coordinates, PackageName},
     search::{RegistryQuery, search_page, tantivy::PackageIndex},
 };
 use smol_str::SmolStr;

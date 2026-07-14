@@ -109,6 +109,7 @@ fn required_or_default_origin(ecosystem: Language) -> Result<RegistryOrigin, Ser
 		Language::Typescript => Ok(RegistryOrigin::NpmPublic),
 		Language::Python => Ok(RegistryOrigin::PyPi),
 		Language::Nix => Ok(RegistryOrigin::FlakeHub),
+		Language::CSharp => Ok(RegistryOrigin::NuGet),
 		Language::Go | Language::Java => {
 			Err(BadRequestReason::MissingField { field: "origin" }.into())
 		}

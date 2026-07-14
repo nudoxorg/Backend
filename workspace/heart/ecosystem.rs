@@ -48,6 +48,10 @@ pub enum Language {
 	/// <https://nix.dev/>. Flakes, packages, NixOS modules, and lib functions,
 	/// acquired from FlakeHub and evaluated in-process.
 	Nix,
+
+	/// <https://dotnet.microsoft.com/>. .NET / NuGet packages, extracted from
+	/// compiled assemblies (metadata) or source via a Roslyn oracle.
+	CSharp,
 }
 
 impl Language {
@@ -90,6 +94,9 @@ pub enum Toolchain {
 	/// The vendored Nix evaluator (snix) revision/version the flake was
 	/// evaluated and statically analyzed against.
 	Nix { evaluator: Version },
+
+	/// The .NET SDK version whose Roslyn the oracle ran as.
+	CSharp { sdk: Version },
 }
 
 impl From<&Toolchain> for Language {
@@ -102,6 +109,7 @@ impl From<&Toolchain> for Language {
 			Toolchain::Go { .. } => Language::Go,
 			Toolchain::Java { .. } => Language::Java,
 			Toolchain::Nix { .. } => Language::Nix,
+			Toolchain::CSharp { .. } => Language::CSharp,
 		}
 	}
 }

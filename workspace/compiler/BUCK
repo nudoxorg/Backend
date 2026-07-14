@@ -1,4 +1,4 @@
-load("//build:rust.bzl", "crate", "dep_pins", "deps", "member", "rust_bin", "rust_crate", "rust_tests", "target")
+load("//build:rust.bzl", "crate", "deps", "member", "rust_bin", "rust_crate", "rust_tests", "target")
 
 rust_crate(
     name = "compiler",
@@ -17,27 +17,6 @@ rust_crate(
         member("sandbox"),
         member("cas"),
         member("version"),
-        crate("deno_error", features = ["serde", "serde_json"], pin_only = True),
-        crate("get_size2", features = ["compact-str", "derive", "hashbrown", "ordermap", "smallvec", "thin-vec"], pin_only = True),
-        crate("static_interner", features = ["dupe"], pin_only = True),
-        crate("vec1", features = ["serde"], pin_only = True),
-        crate("rustix", features = ["use-libc"], pin_only = True),
-        crate("decimal_rs", features = ["serde"], pin_only = True),
-        crate("par_core", features = ["rayon"], pin_only = True),
-        crate("lexical-core", features = ["format", "parse-floats", "write", "write-floats", "write-integers"], pin_only = True),
-        crate("compact_str", features = ["serde"], pin_only = True),
-        crate("thin_vec", features = ["serde"], pin_only = True),
-        crate("tracing_subscriber", features = ["alloc", "env-filter", "fmt", "once_cell", "registry", "sharded-slab", "smallvec", "std", "thread_local", "tracing", "tracing-log"], pin_only = True),
-        crate("getrandom-0_2", features = ["std"], pin_only = True),
-        crate("syntect", features = ["default-themes", "default-syntaxes", "dump-create", "dump-load", "html", "parsing", "regex-onig"], pin_only = True),
-        crate("xxhash_rust", features = ["xxh64"], pin_only = True),
-        dep_pins({
-            "wit_bindgen_rust_macro": {
-                "prettyplease": "prettyplease-0_2",
-                "wit-bindgen-core": "wit_bindgen_core-0_57",
-                "wit-bindgen-rust": "wit_bindgen_rust-0_57",
-            },
-        }),
         crate("serde"),
         crate("serde_json"),
         crate("anyhow"),
@@ -63,18 +42,9 @@ rust_crate(
         crate("ra_ap_cfg"),
         crate("ra_ap_proc_macro_api"),
 
-        crate("arborium", features = [
-            "lang-rust",
-            "lang-python",
-            "lang-typescript",
-            "lang-tsx",
-            "lang-javascript",
-            "lang-go",
-            "lang-java",
-            "lang-nix",
-        ]),
+        crate("arborium"),
         crate("arborium_tree_sitter"),
-        crate("uv_pep440", features = ["version-ranges", "serde"]),
+        crate("uv_pep440"),
         crate("uv_pep508"),
         crate("terminusdb_schema"),
         crate("terminusdb_schema_derive"),
@@ -109,7 +79,7 @@ rust_crate(
         crate("tsz_parser"),
         crate("tsz_solver"),
         crate("tsz_common"),
-        crate("gix", features = ["sha1", "worktree-mutation", "blocking-network-client", "blocking-http-transport-reqwest"]),
+        crate("gix"),
         crate("gix_object"),
         crate("gix_ref"),
         crate("gix_worktree_state"),
@@ -120,7 +90,8 @@ rust_crate(
         crate("rowan"),
         crate("url"),
         crate("tempfile"),
-        crate("postcard", features = ["alloc"]),
+        crate("postcard"),
+        crate("which"),
     ]),
 )
 
@@ -154,7 +125,7 @@ rust_bin(
         crate("tempfile"),
         crate("anyhow"),
         crate("tracing"),
-        crate("tracing_subscriber", features = ["alloc", "env-filter", "fmt", "once_cell", "registry", "sharded-slab", "smallvec", "std", "thread_local", "tracing", "tracing-log"]),
+        crate("tracing_subscriber"),
         crate("which"),
     ]),
 )
@@ -186,18 +157,9 @@ rust_tests(
         crate("bytes"),
         crate("smol_str"),
         crate("insta"),
-        crate("arborium", features = [
-            "lang-rust",
-            "lang-python",
-            "lang-typescript",
-            "lang-tsx",
-            "lang-javascript",
-            "lang-go",
-            "lang-java",
-            "lang-nix",
-        ]),
+        crate("arborium"),
         crate("arborium_tree_sitter"),
-        crate("postcard", features = ["alloc"]),
+        crate("postcard"),
         target(":compiler"),
     ]),
 )

@@ -6,6 +6,7 @@
 //! type, how generics and doc comments are written — and share the layout
 //! decisions entirely, because those live in the document algebra.
 
+pub mod csharp;
 pub mod go;
 pub mod java;
 pub mod nix;
@@ -232,6 +233,9 @@ pub(crate) fn known_type(short_name: &str, args: &[Rendered], lang: Language) ->
         ("vec", 1, Language::Java) => {
             Some(tyname("List") + punct("<") + args[0].clone() + punct(">"))
         }
+        ("vec", 1, Language::CSharp) => {
+            Some(tyname("List") + punct("<") + args[0].clone() + punct(">"))
+        }
         ("vec", 1, Language::TypeScript) => Some(args[0].clone() + punct("[]")),
         ("vec", 1, Language::Python) => {
             Some(tyname("list") + punct("[") + args[0].clone() + punct("]"))
@@ -242,6 +246,7 @@ pub(crate) fn known_type(short_name: &str, args: &[Rendered], lang: Language) ->
         ("option", 1, Language::Java) => {
             Some(tyname("Optional") + punct("<") + args[0].clone() + punct(">"))
         }
+        ("option", 1, Language::CSharp) => Some(args[0].clone() + punct("?")),
         ("option", 1, Language::TypeScript) => {
             Some(args[0].clone() + punct(" | ") + tyname("null"))
         }
@@ -255,6 +260,14 @@ pub(crate) fn known_type(short_name: &str, args: &[Rendered], lang: Language) ->
         ),
         ("hashmap" | "btreemap", 2, Language::Java) => Some(
             tyname("Map")
+                + punct("<")
+                + args[0].clone()
+                + punct(", ")
+                + args[1].clone()
+                + punct(">"),
+        ),
+        ("hashmap" | "btreemap", 2, Language::CSharp) => Some(
+            tyname("Dictionary")
                 + punct("<")
                 + args[0].clone()
                 + punct(", ")
@@ -285,6 +298,9 @@ pub(crate) fn known_type(short_name: &str, args: &[Rendered], lang: Language) ->
         ("hashset" | "btreeset", 1, Language::Java) => {
             Some(tyname("Set") + punct("<") + args[0].clone() + punct(">"))
         }
+        ("hashset" | "btreeset", 1, Language::CSharp) => {
+            Some(tyname("HashSet") + punct("<") + args[0].clone() + punct(">"))
+        }
         ("hashset" | "btreeset", 1, Language::TypeScript) => {
             Some(tyname("Set") + punct("<") + args[0].clone() + punct(">"))
         }
@@ -296,6 +312,7 @@ pub(crate) fn known_type(short_name: &str, args: &[Rendered], lang: Language) ->
         // Rust keeps the wrapper as-is (None → normal path).
         ("box" | "rc" | "arc", 1, Language::Go) => Some(punct("*") + args[0].clone()),
         ("box" | "rc" | "arc", 1, Language::Java) => Some(args[0].clone()),
+        ("box" | "rc" | "arc", 1, Language::CSharp) => Some(args[0].clone()),
         ("box" | "rc" | "arc", 1, Language::TypeScript) => Some(args[0].clone()),
         ("box" | "rc" | "arc", 1, Language::Python) => Some(args[0].clone()),
 

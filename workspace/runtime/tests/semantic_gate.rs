@@ -22,6 +22,7 @@ trait NoCloneFallback {
 }
 impl<T> NoCloneFallback for Probe<T> {}
 impl<T: Clone> Probe<T> {
+    #[allow(dead_code)]
     const CLONEABLE: bool = true;
 }
 

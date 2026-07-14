@@ -17,11 +17,11 @@ use heart::{
 	identity::{EntryUri, SymbolId, PackageId},
 	timed_probe,
 };
+use std::str::FromStr;
+
 use crate::package::Coordinates as PackageCoordinates;
 use sqlx::{Row, postgres::PgRow};
 
-use std::io;
-use std::str::FromStr;
 
 use crate::{
 	GlobalPackage,

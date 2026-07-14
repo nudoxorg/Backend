@@ -21,11 +21,10 @@ pub(crate) fn supervise(
 	cgroup: Option<Cgroup>,
 	cancel: &CancelToken,
 ) -> Result<Output, SandboxError> {
-	if let Some(ref cg) = cgroup {
-		if let Err(e) = cg.add_pid(child.id()) {
+	if let Some(ref cg) = cgroup
+		&& let Err(e) = cg.add_pid(child.id()) {
 			tracing::warn!(error = %e, "cgroup attach failed; relying on rlimits");
 		}
-	}
 
 	let start = Instant::now();
 	let deadline = start + limits.wall;
@@ -109,17 +108,15 @@ pub(crate) fn supervise(
 					use std::os::unix::process::ExitStatusExt;
 					if status.signal() == Some(libc::SIGKILL) {
 						// Could be OOM killer or our kill — if cgroup peak near max, call it OOM.
-						if let Some(ref cg) = cgroup {
-							if let Some(peak) = cg.peak_mem() {
-								if peak >= limits.mem_bytes.get().saturating_mul(9) / 10 {
+						if let Some(ref cg) = cgroup
+							&& let Some(peak) = cg.peak_mem()
+								&& peak >= limits.mem_bytes.get().saturating_mul(9) / 10 {
 									let wall = start.elapsed();
 									return Err(SandboxError::Killed {
 										reason: KillReason::Oom,
 										wall,
 									});
 								}
-							}
-						}
 					}
 					if status.signal() == Some(libc::SIGXCPU) {
 						let wall = start.elapsed();

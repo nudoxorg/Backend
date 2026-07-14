@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 use futures::{Stream, TryFutureExt};
 use serde::{Deserialize, Serialize};
 
-use heart::{Cursor, Enforced, Language, Score, Scored, Symbol, SymbolId, SymbolKind};
+use heart::{Cursor, Enforced, Language, Score, Scored, Symbol, SymbolKind};
 
 use tantivy::{
     IndexReader, TantivyDocument,
@@ -157,11 +157,10 @@ async fn search_async(
 
     // A cursor minted against an older snapshot no longer addresses this
     // ranking; reject it so the caller can restart cleanly.
-    if let Some(cursor) = &after {
-        if cursor.snapshot != live_snapshot {
+    if let Some(cursor) = &after
+        && cursor.snapshot != live_snapshot {
             return Err(TextError::Cursor(heart::CursorError::StaleSnapshot));
         }
-    }
 
     let target = limit.get();
     let after_key = after.as_ref().map(|c| c.after);

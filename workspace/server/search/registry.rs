@@ -305,7 +305,7 @@ mod tests {
 	async fn fused_ranking_pipeline_runs_without_panic_on_real_corpus() {
 		let dir = TempDir::new("pipeline");
 		let records: Vec<GlobalPackage> = (0..30_u32)
-			.map(|i| make_package(&format!("crate{i:02}"), i * 30_000, &["async"]))
+			.map(|i| make_package(&format!("crate-{i:02}"), i * 30_000, &["async"]))
 			.collect();
 		let index = build_index(&dir, &records);
 

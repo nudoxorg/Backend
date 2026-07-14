@@ -13,7 +13,7 @@ use strum::IntoEnumIterator;
 use super::{BlobManifest, creation::PendingSection};
 use crate::registry::{
 	coordination::{Outbox, SinkKind},
-	error::{BlobError, OutboxError, StoreError},
+	error::BlobError,
 	store::Store,
 };
 

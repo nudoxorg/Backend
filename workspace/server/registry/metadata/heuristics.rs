@@ -146,13 +146,12 @@ pub fn normalize_keyword(k_input: &str) -> SmolStr {
 	// TODO: deunicode fallback
 	let mut res = SmolStr::from(kebab.trim_matches('-'));
 
-	if res.len() > 65 {
-		if let Some(truncated) = res.get(..55) {
+	if res.len() > 65
+		&& let Some(truncated) = res.get(..55) {
 			let mut s = truncated.to_string();
 			s.push('…');
 			res = SmolStr::from(s);
 		}
-	}
 
 	res
 }
@@ -324,15 +323,14 @@ impl Synonyms {
 				};
 			}
 		}
-		if has_multiple_hyphens {
-			if let Some((start, end)) = keyword.rsplit_once('-') {
+		if has_multiple_hyphens
+			&& let Some((start, end)) = keyword.rsplit_once('-') {
 				let start2 = self.max_normalize_inner(start, depth);
 				let end2 = self.max_normalize_inner(end, depth);
 				if start2 != start || end2 != end {
 					keyword = format!("{start2}-{end2}").into();
 				}
 			}
-		}
 		keyword
 	}
 

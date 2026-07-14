@@ -45,8 +45,6 @@ use crate::error::{BadRequestReason, ServerError, ServerResult};
 
 use super::DerivedStore;
 
-/// How many outbox intents one drain scan reads per page.
-const DRAIN_SCAN_BATCH: usize = 256;
 
 /// The findings of one per-package blob audit. Transport faults abort the audit
 /// with an error; *content* findings (missing, corrupt, inconsistent) are
@@ -248,6 +246,7 @@ impl<M: EmbeddingModel> Server<M> {
 	}
 
 	/// One sink's position against the emission log (head vs watermark).
+	#[allow(dead_code)]
 	pub(crate) async fn sink_drain_state(&self, sink: DerivedStore) -> ServerResult<SinkDrainState> {
 		let stores = self.base();
 		let head = stores.outbox.head(sink).await.map_err(RegistryError::from)?;
@@ -258,6 +257,7 @@ impl<M: EmbeddingModel> Server<M> {
 	/// Whether every emitted intent for `package` on `sink` has been consumed:
 	/// scan the sink's *pending* window (watermark → head) and look for the
 	/// package. Bounded by the sink's lag, not the outbox's history.
+	#[allow(dead_code)]
 	pub(crate) async fn sink_drained_for(
 		&self,
 		package: PackageId,
@@ -269,14 +269,14 @@ impl<M: EmbeddingModel> Server<M> {
 		loop {
 			let entries = stores
 				.outbox
-				.read_since(sink, cursor, DRAIN_SCAN_BATCH)
+				.read_since(sink, cursor, 256)
 				.await
 				.map_err(RegistryError::from)?;
 			if entries.iter().any(|entry| entry.package == package) {
 				return Ok(false);
 			}
 			match entries.last() {
-				Some(last) if entries.len() == DRAIN_SCAN_BATCH => cursor = last.id,
+				Some(last) if entries.len() == 256 => cursor = last.id,
 				_ => return Ok(true),
 			}
 		}
@@ -290,6 +290,7 @@ impl<M: EmbeddingModel> Server<M> {
 	/// the store's actual documents/points against blob-derived expectations)
 	/// is gapped per store — see each sibling module's docs for exactly which
 	/// missing API unlocks it.
+	#[allow(dead_code)]
 	pub(crate) async fn derived_store_current(
 		&self,
 		package: PackageId,

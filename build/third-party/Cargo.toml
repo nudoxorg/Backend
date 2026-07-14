@@ -1,0 +1,1159 @@
+[workspace]
+
+[package]
+name = "third-party"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+adler2 = { version = "2.0.1" }
+ahash = { version = "0.7.8" }
+aho-corasick = { version = "1.1.4" }
+alloc-no-stdlib = { version = "2.0.4" }
+alloc-stdlib = { version = "0.2.4" }
+allocative = { version = "0.3.6" }
+allocative_derive = { version = "0.3.6" }
+allocator-api2 = { version = "0.2.21" }
+android_system_properties = { version = "0.1.5" }
+anstream = { version = "0.6.21" }
+anstream-1 = { package = "anstream", version = "1.0.0" }
+anstyle = { version = "1.0.14" }
+anstyle-parse = { version = "0.2.7" }
+anstyle-parse-1 = { package = "anstyle-parse", version = "1.0.0" }
+anstyle-query = { version = "1.1.5" }
+anstyle-wincon = { version = "3.0.11" }
+anyhow = { version = "1.0.103" }
+append-only-vec = { version = "0.1.8" }
+arborium = { version = "2.18.1" }
+arborium-ada = { version = "2.18.1" }
+arborium-agda = { version = "2.18.1" }
+arborium-asciidoc = { version = "2.18.1" }
+arborium-asm = { version = "2.18.1" }
+arborium-awk = { version = "2.18.1" }
+arborium-bash = { version = "2.18.1" }
+arborium-batch = { version = "2.18.1" }
+arborium-c = { version = "2.18.1" }
+arborium-c-sharp = { version = "2.18.1" }
+arborium-caddy = { version = "2.18.1" }
+arborium-capnp = { version = "2.18.1" }
+arborium-cedar = { version = "2.18.1" }
+arborium-cedarschema = { version = "2.18.1" }
+arborium-clojure = { version = "2.18.1" }
+arborium-cmake = { version = "2.18.1" }
+arborium-cobol = { version = "2.18.1" }
+arborium-commonlisp = { version = "2.18.1" }
+arborium-cpp = { version = "2.18.1" }
+arborium-css = { version = "2.18.1" }
+arborium-d = { version = "2.18.1" }
+arborium-dart = { version = "2.18.1" }
+arborium-devicetree = { version = "2.18.1" }
+arborium-diff = { version = "2.18.1" }
+arborium-dockerfile = { version = "2.18.1" }
+arborium-dot = { version = "2.18.1" }
+arborium-elisp = { version = "2.18.1" }
+arborium-elixir = { version = "2.18.1" }
+arborium-elm = { version = "2.18.1" }
+arborium-erlang = { version = "2.18.1" }
+arborium-fish = { version = "2.18.1" }
+arborium-fsharp = { version = "2.18.1" }
+arborium-gitattributes = { version = "2.18.1" }
+arborium-gleam = { version = "2.18.1" }
+arborium-glsl = { version = "2.18.1" }
+arborium-go = { version = "2.18.1" }
+arborium-graphql = { version = "2.18.1" }
+arborium-groovy = { version = "2.18.1" }
+arborium-haskell = { version = "2.18.1" }
+arborium-hcl = { version = "2.18.1" }
+arborium-highlight = { version = "2.18.1" }
+arborium-hlsl = { version = "2.18.1" }
+arborium-html = { version = "2.18.1" }
+arborium-idris = { version = "2.18.1" }
+arborium-ini = { version = "2.18.1" }
+arborium-java = { version = "2.18.1" }
+arborium-javascript = { version = "2.18.1" }
+arborium-jinja2 = { version = "2.18.1" }
+arborium-jq = { version = "2.18.1" }
+arborium-jsdoc = { version = "2.18.1" }
+arborium-json = { version = "2.18.1" }
+arborium-julia = { version = "2.18.1" }
+arborium-just = { version = "2.18.1" }
+arborium-kconfig = { version = "2.18.1" }
+arborium-kdl = { version = "2.18.1" }
+arborium-kotlin = { version = "2.18.1" }
+arborium-lean = { version = "2.18.1" }
+arborium-lua = { version = "2.18.1" }
+arborium-make = { version = "2.18.1" }
+arborium-markdown = { version = "2.18.1" }
+arborium-matlab = { version = "2.18.1" }
+arborium-meson = { version = "2.18.1" }
+arborium-nginx = { version = "2.18.1" }
+arborium-ninja = { version = "2.18.1" }
+arborium-nix = { version = "2.18.1" }
+arborium-objc = { version = "2.18.1" }
+arborium-ocaml = { version = "2.18.1" }
+arborium-odin = { version = "2.18.1" }
+arborium-perl = { version = "2.18.1" }
+arborium-php = { version = "2.18.1" }
+arborium-postscript = { version = "2.18.1" }
+arborium-powershell = { version = "2.18.1" }
+arborium-prolog = { version = "2.18.1" }
+arborium-proto = { version = "2.18.1" }
+arborium-python = { version = "2.18.1" }
+arborium-query = { version = "2.18.1" }
+arborium-r = { version = "2.18.1" }
+arborium-regex = { version = "2.18.1" }
+arborium-rego = { version = "2.18.1" }
+arborium-rescript = { version = "2.18.1" }
+arborium-ron = { version = "2.18.1" }
+arborium-ruby = { version = "2.18.1" }
+arborium-rust = { version = "2.18.1" }
+arborium-scala = { version = "2.18.1" }
+arborium-scheme = { version = "2.18.1" }
+arborium-scss = { version = "2.18.1" }
+arborium-solidity = { version = "2.18.1" }
+arborium-sparql = { version = "2.18.1" }
+arborium-sql = { version = "2.18.1" }
+arborium-ssh-config = { version = "2.18.1" }
+arborium-starlark = { version = "2.18.1" }
+arborium-styx = { version = "2.18.1" }
+arborium-svelte = { version = "2.18.1" }
+arborium-swift = { version = "2.18.1" }
+arborium-sysroot = { version = "2.18.1" }
+arborium-textproto = { version = "2.18.1" }
+arborium-theme = { version = "2.18.1" }
+arborium-thrift = { version = "2.18.1" }
+arborium-tlaplus = { version = "2.18.1" }
+arborium-toml = { version = "2.18.1" }
+arborium-tree-sitter = { version = "2.18.1" }
+arborium-tsx = { version = "2.18.1" }
+arborium-typescript = { version = "2.18.1" }
+arborium-typst = { version = "2.18.1" }
+arborium-uiua = { version = "2.18.1" }
+arborium-vb = { version = "2.18.1" }
+arborium-verilog = { version = "2.18.1" }
+arborium-vhdl = { version = "2.18.1" }
+arborium-vim = { version = "2.18.1" }
+arborium-vue = { version = "2.18.1" }
+arborium-wit = { version = "2.18.1" }
+arborium-x86asm = { version = "2.18.1" }
+arborium-xml = { version = "2.18.1" }
+arborium-yaml = { version = "2.18.1" }
+arborium-yuri = { version = "2.18.1" }
+arborium-zig = { version = "2.18.1" }
+arborium-zsh = { version = "2.18.1" }
+arc-swap = { version = "1.9.2" }
+arcstr = { version = "1.2.0" }
+argfile = { version = "0.2.1" }
+arrayref = { version = "0.3.9" }
+arrayvec-0-7-8 = { package = "arrayvec", version = "0.7.8" }
+assert-json-diff = { version = "2.0.2" }
+ast_node = { version = "5.0.0" }
+astral-version-ranges = { version = "0.2.0" }
+async-compression = { version = "0.4.42" }
+async-lock = { version = "3.4.2" }
+async-stream = { version = "0.3.6" }
+async-stream-impl = { version = "0.3.6" }
+async-trait = { version = "0.1.89" }
+atoi = { version = "2.0.0" }
+atomic = { version = "0.5.3" }
+atomic-0-6 = { package = "atomic", version = "0.6.1" }
+atomic-polyfill = { version = "1.0.3" }
+atomic-waker = { version = "1.1.2" }
+attribute-derive = { version = "0.10.5" }
+attribute-derive-macro = { version = "0.10.5" }
+autocfg = { version = "1.5.1" }
+aws-lc-fips-sys = { version = "0.13.1" }
+aws-lc-rs = { version = "1.17.1" }
+aws-lc-sys = { version = "0.42.0" }
+axum = { version = "0.7.9" }
+axum-0-8 = { package = "axum", version = "0.8.9" }
+axum-core = { version = "0.4.5" }
+axum-core-0-5 = { package = "axum-core", version = "0.5.6" }
+axum-macros = { version = "0.5.1" }
+backon = { version = "1.6.0" }
+base64 = { version = "0.22.1" }
+base64ct = { version = "1.8.3" }
+better_scoped_tls = { version = "1.0.1" }
+binascii = { version = "0.1.4" }
+bincode = { version = "1.3.3" }
+bincode-2 = { package = "bincode", version = "2.0.1" }
+bit-set = { version = "0.8.0" }
+bit-vec = { version = "0.8.0" }
+bitflags = { version = "1.3.2" }
+bitflags-2 = { package = "bitflags", version = "2.13.0" }
+bitpacking = { version = "0.9.3" }
+blake3 = { version = "1.8.2" }
+block-buffer = { version = "0.10.4" }
+borsh = { version = "1.7.0" }
+borsh-derive = { version = "1.7.0" }
+boxcar = { version = "0.2.14" }
+boxed_error = { version = "0.2.3" }
+brotli = { version = "8.0.4" }
+brotli-decompressor = { version = "5.0.3" }
+bs58 = { version = "0.5.1" }
+bstr = { version = "1.12.3" }
+bumpalo = { version = "3.20.3" }
+bytecheck = { version = "0.8.2" }
+bytecheck_derive = { version = "0.8.2" }
+bytemuck = { version = "1.25.0" }
+bytemuck_derive = { version = "1.10.2" }
+byteorder = { version = "1.5.0" }
+bytes-1-1 = { package = "bytes", version = "1.12.1" }
+bytes-str = { version = "0.2.8" }
+bytesize = { version = "2.0.1" }
+camino = { version = "1.2.4" }
+capacity_builder = { version = "0.5.0" }
+capacity_builder_macros = { version = "0.3.0" }
+capnp = { version = "0.25.6" }
+cargo-platform = { version = "0.3.3" }
+cargo_metadata = { version = "0.23.1" }
+caseless = { version = "0.2.2" }
+castaway = { version = "0.2.4" }
+cc = { version = "1.2.65" }
+census = { version = "0.4.2" }
+cfg-if = { version = "1.0.4" }
+cfg_aliases = { version = "0.2.1" }
+chacha20 = { version = "0.10.1" }
+chrono = { version = "0.4.45" }
+clap = { version = "4.6.1" }
+clap_builder = { version = "4.6.0" }
+clap_derive = { version = "4.6.1" }
+clap_lex = { version = "1.1.0" }
+clru = { version = "0.6.1" }
+cmake = { version = "0.1.58" }
+cobs = { version = "0.3.0" }
+codemap = { version = "0.1.3" }
+codemap-diagnostic = { version = "0.1.2" }
+collection_literals = { version = "1.0.3" }
+colorchoice = { version = "1.0.5" }
+command-fds = { version = "0.3.3" }
+compact_str = { version = "0.8.2" }
+compact-str-0-9 = { package = "compact_str", version = "0.9.1" }
+compression-codecs = { version = "0.4.38" }
+compression-core = { version = "0.4.32" }
+comrak = { version = "0.29.0" }
+comrak-0-53 = { package = "comrak", version = "0.53.0" }
+concurrent-queue = { version = "2.5.0" }
+configparser = { version = "3.2.0" }
+console = { version = "0.16.3" }
+const-oid = { version = "0.9.6" }
+const_format = { version = "0.2.36" }
+const_format_proc_macros = { version = "0.2.34" }
+constant_time_eq = { version = "0.3.1" }
+convert_case = { version = "0.11.0" }
+convert-case-0-6 = { package = "convert_case", version = "0.6.0" }
+cookie = { version = "0.18.1" }
+core-foundation = { version = "0.10.1" }
+core-foundation-sys = { version = "0.8.7" }
+countme = { version = "2.0.0" }
+countme-3 = { package = "countme", version = "3.0.1" }
+cov-mark = { version = "2.2.0" }
+cow-utils = { version = "0.1.3" }
+cpufeatures = { version = "0.2.17" }
+cpufeatures-0-3 = { package = "cpufeatures", version = "0.3.0" }
+crc = { version = "3.4.0" }
+crc-catalog = { version = "2.5.0" }
+crc32fast = { version = "1.5.0" }
+critical-section = { version = "1.2.0" }
+crossbeam-channel-0-5-16 = { package = "crossbeam-channel", version = "0.5.16" }
+crossbeam-deque-0-8-7 = { package = "crossbeam-deque", version = "0.8.7" }
+crossbeam-epoch-0-9-20 = { package = "crossbeam-epoch", version = "0.9.20" }
+crossbeam-queue-0-3-13 = { package = "crossbeam-queue", version = "0.3.13" }
+crossbeam-utils-0-8-22 = { package = "crossbeam-utils", version = "0.8.22" }
+crunchy = { version = "0.2.4" }
+crypto-common = { version = "0.1.7" }
+ctor = { version = "1.0.7" }
+custom_derive = { version = "0.1.7" }
+darling = { version = "0.20.11" }
+darling-0-23 = { package = "darling", version = "0.23.0" }
+darling_core = { version = "0.20.11" }
+darling-core-0-23 = { package = "darling_core", version = "0.23.0" }
+darling_macro = { version = "0.20.11" }
+darling-macro-0-23 = { package = "darling_macro", version = "0.23.0" }
+dashmap = { version = "6.2.1" }
+data-encoding = { version = "2.11.0" }
+data-url = { version = "0.3.0" }
+deadpool = { version = "0.12.3" }
+deadpool-runtime = { version = "0.1.4" }
+decimal-rs = { version = "0.1.43" }
+deno_error = { version = "0.7.0" }
+deno_error_macro = { version = "0.7.0" }
+der = { version = "0.7.10" }
+deranged = { version = "0.5.8" }
+derivative = { version = "2.2.0" }
+derive-where = { version = "1.6.1" }
+derive_builder = { version = "0.20.2" }
+derive_builder_core = { version = "0.20.2" }
+derive_builder_macro = { version = "0.20.2" }
+devise = { version = "0.4.2" }
+devise_codegen = { version = "0.4.2" }
+devise_core = { version = "0.4.2" }
+diff = { version = "0.1.13" }
+digest = { version = "0.10.7" }
+dirs = { version = "4.0.0" }
+dirs-sys = { version = "0.3.6" }
+displaydoc = { version = "0.2.6" }
+dissimilar = { version = "1.0.11" }
+dlmalloc = { version = "0.2.14" }
+dotenvy = { version = "0.15.7" }
+downcast-rs = { version = "1.2.1" }
+dragonbox_ecma = { version = "0.1.12" }
+drop_bomb = { version = "0.1.5" }
+dunce = { version = "1.0.5" }
+dupe = { version = "0.9.1" }
+dupe_derive = { version = "0.9.1" }
+ecow = { version = "0.2.3" }
+either = { version = "1.16.0" }
+embedded-io = { version = "0.4.0" }
+embedded-io-0-6 = { package = "embedded-io", version = "0.6.1" }
+embedded-io-0-7 = { package = "embedded-io", version = "0.7.1" }
+ena = { version = "0.14.4" }
+encode_unicode = { version = "1.0.0" }
+encoding_rs = { version = "0.8.35" }
+encoding_rs_io = { version = "0.1.7" }
+
+enum-iterator = { version = "2.3.0" }
+enum-iterator-derive = { version = "1.5.0" }
+enum_derive = { version = "0.1.7" }
+enum_variant_macros = { version = "0.3.0" }
+enum_variant_macros_macros = { version = "0.3.1" }
+enumflags2 = { version = "0.7.12" }
+enumflags2_derive = { version = "0.7.12" }
+equivalent = { version = "1.0.2" }
+errno = { version = "0.3.14" }
+etcetera = { version = "0.8.0" }
+event-listener = { version = "5.4.1" }
+event-listener-strategy = { version = "0.5.4" }
+exec_time = { version = "0.1.7" }
+facet = { version = "0.42.0" }
+facet-core = { version = "0.42.0" }
+facet-macro-parse = { version = "0.42.0" }
+facet-macro-types = { version = "0.42.0" }
+facet-macros = { version = "0.42.0" }
+facet-macros-impl = { version = "0.42.0" }
+facet-reflect = { version = "0.42.0" }
+fast-glob = { version = "1.0.1" }
+fastbloom = { version = "0.17.0" }
+fastdivide = { version = "0.4.2" }
+faster-hex = { version = "0.10.0" }
+faster-hex-0-6 = { package = "faster-hex", version = "0.6.1" }
+fastrand = { version = "2.4.1" }
+figment = { version = "0.10.19" }
+filetime = { version = "0.2.29" }
+find-msvc-tools = { version = "0.1.9" }
+finl_unicode = { version = "1.4.0" }
+fixedbitset = { version = "0.5.7" }
+flate2 = { version = "1.1.9" }
+float-cmp = { version = "0.10.0" }
+flume = { version = "0.11.1" }
+fnv = { version = "1.0.7" }
+foldhash = { version = "0.1.5" }
+foldhash-0-2 = { package = "foldhash", version = "0.2.0" }
+form_urlencoded = { version = "1.2.2" }
+from_variant = { version = "3.0.0" }
+fs-err = { version = "2.11.0" }
+fs-err-3 = { package = "fs-err", version = "3.3.0" }
+fs4 = { version = "0.8.4" }
+fs_extra = { version = "1.3.0" }
+fsevent-sys = { version = "4.1.0" }
+fst = { version = "0.4.7" }
+futures = { version = "0.1.31" }
+futures-0-3 = { package = "futures", version = "0.3.32" }
+futures-channel = { version = "0.3.32" }
+futures-core = { version = "0.3.32" }
+futures-executor = { version = "0.3.32" }
+futures-intrusive = { version = "0.5.0" }
+futures-io = { version = "0.3.32" }
+futures-macro = { version = "0.3.32" }
+futures-sink = { version = "0.3.32" }
+futures-task = { version = "0.3.32" }
+futures-timer = { version = "3.0.4" }
+futures-util = { version = "0.3.32" }
+fuzzy-matcher = { version = "0.3.7" }
+fxhash = { version = "0.2.1" }
+genawaiter = { version = "0.99.1" }
+genawaiter-macro = { version = "0.99.1" }
+genawaiter-proc-macro = { version = "0.99.1" }
+generativity = { version = "1.2.1" }
+generator = { version = "0.7.5" }
+generic-array = { version = "0.14.7" }
+get-size-derive2 = { version = "0.9.0" }
+get-size2 = { version = "0.9.0" }
+getopts = { version = "0.2.24" }
+getrandom = { version = "0.2.17" }
+getrandom-0-3 = { package = "getrandom", version = "0.3.4" }
+getrandom-0-4 = { package = "getrandom", version = "0.4.3" }
+gix = { version = "0.85.0" }
+gix-actor = { version = "0.41.1" }
+gix-archive = { version = "0.34.0" }
+gix-attributes = { version = "0.33.2" }
+gix-bitmap = { version = "0.3.2" }
+gix-blame = { version = "0.15.0" }
+gix-chunk = { version = "0.7.2" }
+gix-command = { version = "0.9.1" }
+gix-commitgraph = { version = "0.37.1" }
+gix-config = { version = "0.58.0" }
+gix-config-value = { version = "0.18.1" }
+gix-credentials = { version = "0.38.1" }
+gix-date = { version = "0.15.4" }
+gix-diff = { version = "0.65.0" }
+gix-dir = { version = "0.27.0" }
+gix-discover = { version = "0.53.0" }
+gix-error = { version = "0.2.4" }
+gix-features = { version = "0.48.1" }
+gix-filter = { version = "0.32.0" }
+gix-fs = { version = "0.21.2" }
+gix-glob = { version = "0.26.1" }
+gix-hash = { version = "0.25.1" }
+gix-hashtable = { version = "0.15.2" }
+gix-ignore = { version = "0.21.1" }
+gix-imara-diff = { version = "0.2.3" }
+gix-index = { version = "0.53.0" }
+gix-lock = { version = "23.0.0" }
+gix-mailmap = { version = "0.33.1" }
+gix-merge = { version = "0.18.0" }
+gix-negotiate = { version = "0.33.0" }
+gix-object = { version = "0.62.0" }
+gix-odb = { version = "0.82.0" }
+gix-pack = { version = "0.72.0" }
+gix-packetline = { version = "0.21.5" }
+gix-path = { version = "0.12.1" }
+gix-pathspec = { version = "0.18.1" }
+gix-prompt = { version = "0.15.1" }
+gix-protocol = { version = "0.63.0" }
+gix-quote = { version = "0.7.2" }
+gix-ref = { version = "0.65.0" }
+gix-refspec = { version = "0.43.0" }
+gix-revision = { version = "0.47.0" }
+gix-revwalk = { version = "0.33.0" }
+gix-sec = { version = "0.14.1" }
+gix-shallow = { version = "0.12.1" }
+gix-status = { version = "0.32.0" }
+gix-submodule = { version = "0.32.0" }
+gix-tempfile = { version = "23.0.0" }
+gix-trace = { version = "0.1.20" }
+gix-transport = { version = "0.57.2" }
+gix-traverse = { version = "0.59.0" }
+gix-url = { version = "0.36.1" }
+gix-utils = { version = "0.3.3" }
+gix-validate = { version = "0.11.2" }
+gix-worktree = { version = "0.54.0" }
+gix-worktree-state = { version = "0.32.0" }
+gix-worktree-stream = { version = "0.34.0" }
+glob = { version = "0.3.3" }
+globset = { version = "0.4.18" }
+gloo-timers = { version = "0.3.0" }
+governor = { version = "0.7.0" }
+h2 = { version = "0.3.27" }
+h2-0-4 = { package = "h2", version = "0.4.15" }
+halfbrown = { version = "0.4.0" }
+handlebars = { version = "6.4.2" }
+hash32 = { version = "0.2.1" }
+hashable = { version = "0.0.0" }
+hashbrown = { version = "0.12.3" }
+hashbrown-0-14 = { package = "hashbrown", version = "0.14.5" }
+hashbrown-0-15 = { package = "hashbrown", version = "0.15.5" }
+hashbrown-0-16 = { package = "hashbrown", version = "0.16.1" }
+hashbrown-0-17 = { package = "hashbrown", version = "0.17.1" }
+hashlink = { version = "0.10.0" }
+hashlink-0-12 = { package = "hashlink", version = "0.12.1" }
+hdrhistogram = { version = "7.5.4" }
+heapless = { version = "0.7.17" }
+heck = { version = "0.3.3" }
+heck-0-4 = { package = "heck", version = "0.4.1" }
+heck-0-5 = { package = "heck", version = "0.5.0" }
+hermit-abi = { version = "0.5.2" }
+hex = { version = "0.4.3" }
+hipstr = { version = "0.8.0" }
+hkdf = { version = "0.12.4" }
+hmac = { version = "0.12.1" }
+home = { version = "0.5.12" }
+hstr = { version = "3.0.2" }
+html-escape = { version = "0.2.14" }
+htmlescape = { version = "0.3.1" }
+http = { version = "0.2.12" }
+http-1 = { package = "http", version = "1.4.2" }
+http-body = { version = "0.4.6" }
+http-body-1 = { package = "http-body", version = "1.0.1" }
+http-body-util = { version = "0.1.3" }
+httparse = { version = "1.10.1" }
+httpdate = { version = "1.0.3" }
+human_bytes = { version = "0.4.3" }
+human_format = { version = "1.0.3" }
+humantime = { version = "2.3.0" }
+hyper = { version = "0.14.32" }
+hyper-1 = { package = "hyper", version = "1.10.1" }
+hyper-rustls = { version = "0.27.9" }
+hyper-timeout = { version = "0.5.2" }
+hyper-util = { version = "0.1.20" }
+iana-time-zone = { version = "0.1.65" }
+iana-time-zone-haiku = { version = "0.1.2" }
+icu_collections = { version = "2.2.0" }
+icu_locale_core = { version = "2.2.0" }
+icu_normalizer = { version = "2.2.0" }
+icu_normalizer_data = { version = "2.2.0" }
+icu_properties = { version = "2.2.0" }
+icu_properties_data = { version = "2.2.0" }
+icu_provider = { version = "2.2.0" }
+id-arena = { version = "2.3.0" }
+ident_case = { version = "1.0.1" }
+idna = { version = "1.1.0" }
+idna_adapter = { version = "1.2.2" }
+ignore = { version = "0.4.26" }
+impls = { version = "1.0.3" }
+index_vec = { version = "0.1.4" }
+indexmap = { version = "1.9.3" }
+indexmap-2 = { package = "indexmap", version = "2.14.0" }
+indicatif = { version = "0.18.5" }
+inherent = { version = "1.0.13" }
+inlinable_string = { version = "0.1.15" }
+inotify-0-11-4 = { package = "inotify", version = "0.11.4" }
+inotify-sys-0-1-8 = { package = "inotify-sys", version = "0.1.8" }
+insta = { version = "1.48.0" }
+instant = { version = "0.1.13" }
+interpolator = { version = "0.5.0" }
+intrusive-collections = { version = "0.10.2" }
+inventory = { version = "0.3.24" }
+io-close = { version = "0.3.7" }
+ipnet = { version = "2.12.0" }
+is-macro = { version = "0.3.7" }
+is-terminal = { version = "0.4.17" }
+is_terminal_polyfill = { version = "1.70.2" }
+itertools = { version = "0.10.5" }
+itertools-0-12 = { package = "itertools", version = "0.12.1" }
+itertools-0-13 = { package = "itertools", version = "0.13.0" }
+itertools-0-14 = { package = "itertools", version = "0.14.0" }
+itertools-0-15 = { package = "itertools", version = "0.15.0" }
+itoa = { version = "0.4.8" }
+itoa-1 = { package = "itoa", version = "1.0.18" }
+jetscii = { version = "0.5.3" }
+jiff = { version = "0.2.24" }
+jiff-tzdb = { version = "0.1.6" }
+jobserver = { version = "0.1.34" }
+jod-thread = { version = "1.0.0" }
+js-sys = { version = "0.3.103" }
+json-strip-comments = { version = "3.1.1" }
+json5 = { version = "1.3.1" }
+junction = { version = "2.0.0" }
+kinded = { version = "0.3.0" }
+kinded_macros = { version = "0.3.0" }
+konst = { version = "0.2.20" }
+konst_macro_rules = { version = "0.2.19" }
+konst_proc_macros = { version = "0.2.11" }
+kqueue = { version = "1.2.0" }
+kqueue-sys = { version = "1.1.2" }
+kstring = { version = "2.0.0" }
+la-arena = { version = "0.3.1" }
+landlock = { version = "0.4.5" }
+lazy_static = { version = "1.5.0" }
+leb128fmt = { version = "0.1.0" }
+levenshtein_automata = { version = "0.2.1" }
+lexical-core = { version = "0.8.5" }
+lexical-parse-float = { version = "0.8.5" }
+lexical-parse-integer = { version = "0.8.5" }
+lexical-util = { version = "0.8.5" }
+lexical-write-float = { version = "0.8.5" }
+lexical-write-integer = { version = "0.8.5" }
+libc = { version = "0.2.186" }
+libm = { version = "0.2.16" }
+libmimalloc-sys = { version = "0.1.49" }
+libredox = { version = "0.1.17" }
+libsqlite3-sys = { version = "0.30.1" }
+line-index = { version = "0.1.2" }
+link-section = { version = "0.18.3" }
+linktime-proc-macro = { version = "0.2.0" }
+linux-raw-sys = { version = "0.12.1" }
+linux-raw-sys-0-4 = { package = "linux-raw-sys", version = "0.4.15" }
+litemap = { version = "0.8.2" }
+lock_api = { version = "0.4.14" }
+lock_free_hashtable = { version = "0.1.4" }
+log = { version = "0.4.33" }
+loom = { version = "0.5.6" }
+lru = { version = "0.12.5" }
+lru-slab = { version = "0.1.2" }
+lsp-server = { version = "0.7.9" }
+lz4_flex = { version = "0.11.6" }
+manyhow = { version = "0.11.4" }
+manyhow-macros = { version = "0.11.4" }
+maplit = { version = "1.0.2" }
+matchers = { version = "0.2.0" }
+matchit = { version = "0.7.3" }
+matchit-0-8 = { package = "matchit", version = "0.8.4" }
+maybe-async = { version = "0.2.11" }
+md-5 = { version = "0.10.6" }
+measure_time = { version = "0.8.3" }
+memchr-2-3 = { package = "memchr", version = "2.8.3" }
+memmap2 = { version = "0.9.11" }
+memoffset = { version = "0.6.5" }
+memoffset-0-9 = { package = "memoffset", version = "0.9.1" }
+memory-stats = { version = "1.2.0" }
+metrics = { version = "0.24.6" }
+metrics-exporter-prometheus = { version = "0.16.2" }
+metrics-util = { version = "0.19.1" }
+mimalloc = { version = "0.1.52" }
+mime = { version = "0.3.17" }
+minimal-lexical = { version = "0.2.1" }
+miniz_oxide = { version = "0.8.9" }
+mio = { version = "1.2.1" }
+miow = { version = "0.6.1" }
+moka = { version = "0.12.15" }
+monch = { version = "0.6.0" }
+multer = { version = "3.1.0" }
+multihash = { version = "0.19.5" }
+munge = { version = "0.4.7" }
+munge_macro = { version = "0.4.7" }
+murmurhash32 = { version = "0.3.1" }
+mutants = { version = "0.0.3" }
+new_debug_unreachable = { version = "1.0.6" }
+nix = { version = "0.31.2" }
+no-std-compat = { version = "0.4.1" }
+nodejs-built-in-modules = { version = "1.0.0" }
+nohash-hasher = { version = "0.2.0" }
+nom = { version = "7.1.3" }
+nom8 = { version = "0.2.0" }
+nonempty = { version = "0.11.0" }
+nonmax = { version = "0.5.5" }
+nonzero_ext = { version = "0.3.0" }
+notify = { version = "8.2.0" }
+notify-types = { version = "2.1.0" }
+nu-ansi-term = { version = "0.50.3" }
+num-bigint = { version = "0.4.6" }
+num-bigint-0-5 = { package = "num-bigint", version = "0.5.0" }
+num-bigint-dig = { version = "0.8.6" }
+num-conv = { version = "0.2.2" }
+num-integer = { version = "0.1.46" }
+num-iter = { version = "0.1.45" }
+num-modular = { version = "0.6.1" }
+num-order = { version = "1.2.0" }
+num-traits = { version = "0.2.19" }
+num_cpus = { version = "1.17.0" }
+num_threads = { version = "0.1.7" }
+nutype = { version = "0.6.2" }
+nutype_macros = { version = "0.6.2" }
+object_store = { version = "0.11.2" }
+once_cell = { version = "1.21.4" }
+once_cell_polyfill = { version = "1.70.2" }
+oneshot = { version = "0.1.13" }
+onig = { version = "6.5.1" }
+onig_sys = { version = "69.9.1" }
+oorandom = { version = "11.1.5" }
+openssl-probe = { version = "0.2.1" }
+ordered-float = { version = "4.6.0" }
+ordermap = { version = "1.2.0" }
+os_str_bytes = { version = "6.6.0" }
+os-str-bytes-7 = { package = "os_str_bytes", version = "7.2.0" }
+ownedbytes = { version = "0.7.0" }
+owo-colors = { version = "4.3.0" }
+oxc-miette = { version = "3.0.0" }
+oxc-miette-derive = { version = "3.0.0" }
+oxc_index = { version = "5.0.0" }
+par-core = { version = "2.0.0" }
+parking = { version = "2.2.1" }
+parking_lot = { version = "0.12.5" }
+parking_lot_core = { version = "0.9.12" }
+parse-display = { version = "0.8.2" }
+parse-display-derive = { version = "0.8.2" }
+paste = { version = "1.0.15" }
+path-absolutize = { version = "3.1.1" }
+path-clean = { version = "0.1.0" }
+path-dedot = { version = "3.1.1" }
+path-slash = { version = "0.2.1" }
+pathdiff = { version = "0.2.3" }
+pear = { version = "0.2.9" }
+pear_codegen = { version = "0.2.9" }
+pem-rfc7468 = { version = "0.7.0" }
+percent-encoding = { version = "2.3.2" }
+perf-event = { version = "0.4.8" }
+perf-event-open-sys = { version = "4.0.0" }
+pest = { version = "2.8.6" }
+pest_derive = { version = "2.8.6" }
+pest_generator = { version = "2.8.6" }
+pest_meta = { version = "2.8.6" }
+petgraph = { version = "0.8.3" }
+phf = { version = "0.11.3" }
+phf-0-13 = { package = "phf", version = "0.13.1" }
+phf-0-14 = { package = "phf", version = "0.14.0" }
+phf_codegen = { version = "0.11.3" }
+phf-codegen-0-13 = { package = "phf_codegen", version = "0.13.1" }
+phf_generator = { version = "0.11.3" }
+phf-generator-0-14 = { package = "phf_generator", version = "0.14.0" }
+phf_macros = { version = "0.11.3" }
+phf-macros-0-14 = { package = "phf_macros", version = "0.14.0" }
+phf_shared = { version = "0.11.3" }
+phf-shared-0-14 = { package = "phf_shared", version = "0.14.0" }
+pin-project = { version = "1.1.13" }
+pin-project-internal = { version = "1.1.13" }
+pin-project-lite = { version = "0.2.17" }
+pkcs1 = { version = "0.7.5" }
+pkcs8 = { version = "0.10.2" }
+pkg-config = { version = "0.3.33" }
+plain = { version = "0.2.3" }
+portable-atomic = { version = "1.13.1" }
+postcard = { version = "1.1.3" }
+potential_utf = { version = "0.1.5" }
+powerfmt = { version = "0.2.0" }
+ppv-lite86 = { version = "0.2.21" }
+pretty_assertions = { version = "1.4.1" }
+prettyplease-0-2-37 = { package = "prettyplease", version = "0.2.37" }
+proc-macro-crate = { version = "3.5.0" }
+proc-macro-error = { version = "1.0.4" }
+proc-macro-error-attr = { version = "1.0.4" }
+proc-macro-hack = { version = "0.5.20+deprecated" }
+proc-macro-utils = { version = "0.10.0" }
+proc-macro2 = { version = "1.0.106" }
+proc-macro2-diagnostics = { version = "0.10.1" }
+prodash = { version = "31.0.0" }
+proptest = { version = "1.11.0" }
+prost = { version = "0.13.5" }
+prost-derive = { version = "0.13.5" }
+prost-types = { version = "0.13.5" }
+pseudonym = { version = "0.2.3" }
+psm = { version = "0.1.7" }
+ptr_meta = { version = "0.3.1" }
+ptr_meta_derive = { version = "0.3.1" }
+qdrant-client = { version = "1.18.0" }
+quanta = { version = "0.12.6" }
+quick-error = { version = "1.2.3" }
+quick-xml = { version = "0.37.5" }
+quinn = { version = "0.11.11" }
+quinn-proto = { version = "0.11.15" }
+quinn-udp = { version = "0.5.14" }
+quote = { version = "1.0.46" }
+quote-use = { version = "0.8.4" }
+quote-use-macros = { version = "0.8.4" }
+r-efi = { version = "5.3.0" }
+r-efi-6 = { package = "r-efi", version = "6.0.0" }
+ra-ap-rustc_abi = { version = "0.165.0" }
+ra-ap-rustc_ast_ir = { version = "0.165.0" }
+ra-ap-rustc_hashes = { version = "0.165.0" }
+ra-ap-rustc_index = { version = "0.165.0" }
+ra-ap-rustc_index_macros = { version = "0.165.0" }
+ra-ap-rustc_lexer = { version = "0.165.0" }
+ra-ap-rustc_next_trait_solver = { version = "0.165.0" }
+ra-ap-rustc_parse_format = { version = "0.165.0" }
+ra-ap-rustc_pattern_analysis = { version = "0.165.0" }
+ra-ap-rustc_type_ir = { version = "0.165.0" }
+ra-ap-rustc_type_ir_macros = { version = "0.165.0" }
+ra_ap_base_db = { version = "0.0.341" }
+ra_ap_cfg = { version = "0.0.341" }
+ra_ap_edition = { version = "0.0.341" }
+ra_ap_hir = { version = "0.0.341" }
+ra_ap_hir_def = { version = "0.0.341" }
+ra_ap_hir_expand = { version = "0.0.341" }
+ra_ap_hir_ty = { version = "0.0.341" }
+ra_ap_ide_db = { version = "0.0.341" }
+ra_ap_intern = { version = "0.0.341" }
+ra_ap_load-cargo = { version = "0.0.341" }
+ra_ap_macros = { version = "0.0.341" }
+ra_ap_mbe = { version = "0.0.341" }
+ra_ap_parser = { version = "0.0.341" }
+ra_ap_paths = { version = "0.0.341" }
+ra_ap_proc_macro_api = { version = "0.0.341" }
+ra_ap_profile = { version = "0.0.341" }
+ra_ap_project_model = { version = "0.0.341" }
+ra_ap_query-group-macro = { version = "0.0.341" }
+ra_ap_span = { version = "0.0.341" }
+ra_ap_stdx = { version = "0.0.341" }
+ra_ap_syntax = { version = "0.0.341" }
+ra_ap_syntax-bridge = { version = "0.0.341" }
+ra_ap_test_fixture = { version = "0.0.341" }
+ra_ap_test_utils = { version = "0.0.341" }
+ra_ap_toolchain = { version = "0.0.341" }
+ra_ap_tt = { version = "0.0.341" }
+ra_ap_vfs = { version = "0.0.341" }
+ra_ap_vfs-notify = { version = "0.0.341" }
+rancor = { version = "0.1.1" }
+rand = { version = "0.10.1" }
+rand-0-8 = { package = "rand", version = "0.8.6" }
+rand-0-9 = { package = "rand", version = "0.9.4" }
+rand_chacha = { version = "0.3.1" }
+rand-chacha-0-9 = { package = "rand_chacha", version = "0.9.0" }
+rand_core = { version = "0.10.1" }
+rand-core-0-6 = { package = "rand_core", version = "0.6.4" }
+rand-core-0-9 = { package = "rand_core", version = "0.9.5" }
+rand_distr = { version = "0.4.3" }
+rand_xorshift = { version = "0.4.0" }
+rand_xoshiro = { version = "0.7.0" }
+rapidhash = { version = "4.4.2" }
+raw-cpuid = { version = "11.6.0" }
+rayon = { version = "1.12.0" }
+rayon-core = { version = "1.13.0" }
+redox_syscall = { version = "0.5.18" }
+redox-syscall-0-8 = { package = "redox_syscall", version = "0.8.1" }
+ref-cast = { version = "1.0.25" }
+ref-cast-impl = { version = "1.0.25" }
+refined = { version = "0.3.1" }
+reflink-copy = { version = "0.1.30" }
+regex = { version = "1.12.4" }
+regex-automata = { version = "0.4.14" }
+regex-syntax = { version = "0.7.5" }
+regex-syntax-0-8 = { package = "regex-syntax", version = "0.8.11" }
+regexm = { version = "0.2.1" }
+rend = { version = "0.5.3" }
+reqwest = { version = "0.12.28" }
+ring = { version = "0.17.14" }
+rkyv = { version = "0.8.16" }
+rkyv_derive = { version = "0.8.16" }
+rlimit = { version = "0.11.0" }
+rnix = { version = "0.11.0" }
+rnix-0-14 = { package = "rnix", version = "0.14.0" }
+rocket = { version = "0.5.1" }
+rocket_codegen = { version = "0.5.1" }
+rocket_http = { version = "0.5.1" }
+rowan-0-15-19 = { package = "rowan", version = "0.15.19" }
+rsa = { version = "0.9.10" }
+rust-stemmers = { version = "1.2.0" }
+rustc-hash = { version = "1.1.0" }
+rustc-hash-2-3 = { package = "rustc-hash", version = "2.1.3" }
+rustc-literal-escaper = { version = "0.0.7" }
+rustc-stable-hash = { version = "0.1.2" }
+rustc_apfloat = { version = "0.2.3+llvm-462a31f5a5ab" }
+rustc_version = { version = "0.4.1" }
+rustix = { version = "0.38.44" }
+rustix-1 = { package = "rustix", version = "1.1.4" }
+rustls = { version = "0.23.41" }
+rustls-native-certs = { version = "0.8.4" }
+rustls-pemfile = { version = "2.2.0" }
+rustls-pki-types = { version = "1.14.1" }
+rustls-webpki = { version = "0.103.13" }
+rustversion-1-23 = { package = "rustversion", version = "1.0.23" }
+rusty-fork = { version = "0.3.1" }
+ryu = { version = "0.2.8" }
+ryu-1 = { package = "ryu", version = "1.0.23" }
+ryu-js = { version = "1.0.2" }
+salsa = { version = "0.27.2" }
+salsa-macro-rules = { version = "0.27.2" }
+salsa-macros = { version = "0.27.2" }
+same-file = { version = "1.0.6" }
+schannel = { version = "0.1.29" }
+scoped-tls = { version = "1.0.1" }
+scopeguard = { version = "1.2.0" }
+sea-query = { version = "0.32.7" }
+sea-query-binder = { version = "0.7.0" }
+sea-query-derive = { version = "0.4.3" }
+seahash = { version = "4.1.0" }
+seccompiler = { version = "0.5.0" }
+secrecy = { version = "0.10.3" }
+security-framework = { version = "3.7.0" }
+security-framework-sys = { version = "2.17.0" }
+self-replace = { version = "1.5.0" }
+self_cell = { version = "1.2.2" }
+semver = { version = "1.0.28" }
+seq-macro = { version = "0.3.6" }
+serde = { version = "1.0.228" }
+serde-wasm-bindgen = { version = "0.6.5" }
+serde_bser = { version = "0.4.0" }
+serde_bytes = { version = "0.11.19" }
+serde_canonical_json = { version = "1.0.0" }
+serde_core = { version = "1.0.228" }
+serde_derive = { version = "1.0.228" }
+serde_json = { version = "1.0.150" }
+serde_jsonrc = { version = "0.1.0" }
+serde_path_to_error = { version = "0.1.20" }
+serde_repr = { version = "0.1.20" }
+serde_spanned = { version = "0.6.9" }
+serde-spanned-1 = { package = "serde_spanned", version = "1.1.1" }
+serde_urlencoded = { version = "0.7.1" }
+serde_with = { version = "3.21.0" }
+serde_with_macros = { version = "3.21.0" }
+sha1 = { version = "0.10.6" }
+sha1-checked = { version = "0.10.0" }
+sha1_smol = { version = "1.0.1" }
+sha2 = { version = "0.10.9" }
+sharded-slab = { version = "0.1.7" }
+shell-words = { version = "1.1.1" }
+shlex = { version = "2.0.1" }
+signal-hook-registry = { version = "1.4.8" }
+signature = { version = "2.2.0" }
+signature_derive = { version = "2.1.0" }
+simd-adler32 = { version = "0.3.9" }
+simd-json = { version = "0.17.0" }
+simdutf8 = { version = "0.1.5" }
+similar = { version = "2.7.0" }
+siphasher = { version = "1.0.3" }
+sketches-ddsketch = { version = "0.2.2" }
+sketches-ddsketch-0-3 = { package = "sketches-ddsketch", version = "0.3.1" }
+slab = { version = "0.4.12" }
+slug = { version = "0.1.4" }
+smallvec = { version = "1.15.2" }
+smartstring = { version = "1.0.1" }
+smawk = { version = "0.3.3" }
+smol_str = { version = "0.2.2" }
+smol-str-0-3 = { package = "smol_str", version = "0.3.6" }
+snafu = { version = "0.8.9" }
+snafu-derive = { version = "0.8.9" }
+socket2 = { version = "0.5.10" }
+socket2-0-6 = { package = "socket2", version = "0.6.4" }
+spin = { version = "0.9.8" }
+spinning_top = { version = "0.3.0" }
+spki = { version = "0.7.3" }
+sqlx = { version = "0.8.6" }
+sqlx-core = { version = "0.8.6" }
+sqlx-macros = { version = "0.8.6" }
+sqlx-macros-core = { version = "0.8.6" }
+sqlx-mysql = { version = "0.8.6" }
+sqlx-postgres = { version = "0.8.6" }
+sqlx-sqlite = { version = "0.8.6" }
+stable-pattern = { version = "0.1.0" }
+stable_deref_trait = { version = "1.2.1" }
+stack-buf = { version = "0.1.6" }
+stacker = { version = "0.1.23" }
+starlark_map = { version = "0.14.2" }
+state = { version = "0.6.0" }
+static_assertions = { version = "1.1.0" }
+static_interner = { version = "0.1.3" }
+streaming-iterator = { version = "0.1.9" }
+string_enum = { version = "1.0.2" }
+stringprep = { version = "0.1.5" }
+strong_hash = { version = "0.1.0" }
+strong_hash_derive = { version = "0.1.0" }
+strsim = { version = "0.11.1" }
+structmeta = { version = "0.2.0" }
+structmeta-derive = { version = "0.2.0" }
+strum = { version = "0.26.3" }
+strum_macros = { version = "0.26.4" }
+subtle = { version = "2.6.1" }
+syn = { version = "1.0.109" }
+syn-2 = { package = "syn", version = "2.0.118" }
+sync_wrapper = { version = "1.0.2" }
+synstructure = { version = "0.13.2" }
+syntect = { version = "5.0.0" }
+sys_traits = { version = "0.1.28" }
+sys_traits_macros = { version = "0.1.0" }
+tabwriter = { version = "1.4.0" }
+tagptr = { version = "0.2.0" }
+tantivy = { version = "0.22.1" }
+tantivy-bitpacker = { version = "0.6.0" }
+tantivy-columnar = { version = "0.3.0" }
+tantivy-common = { version = "0.7.0" }
+tantivy-fst = { version = "0.5.0" }
+tantivy-query-grammar = { version = "0.22.0" }
+tantivy-sstable = { version = "0.3.0" }
+tantivy-stacker = { version = "0.3.0" }
+tantivy-tokenizer-api = { version = "0.3.0" }
+tap = { version = "1.0.1" }
+tar = { version = "0.4.46" }
+target-triple = { version = "1.0.0" }
+temp-dir = { version = "0.2.0" }
+temp-env = { version = "0.3.6" }
+tempfile = { version = "3.27.0" }
+termcolor = { version = "1.4.1" }
+terminal_size = { version = "0.4.4" }
+text-size-1-1 = { package = "text-size", version = "1.1.1" }
+text_lines = { version = "0.6.0" }
+textwrap = { version = "0.16.2" }
+thin-vec = { version = "0.2.18" }
+thiserror = { version = "1.0.69" }
+thiserror-2 = { package = "thiserror", version = "2.0.18" }
+thiserror-impl = { version = "1.0.69" }
+thiserror-impl-2 = { package = "thiserror-impl", version = "2.0.18" }
+thread_local = { version = "1.1.9" }
+tikv-jemalloc-sys = { version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7" }
+tikv-jemallocator = { version = "0.6.1" }
+time-0-3-53 = { package = "time", version = "0.3.53" }
+time-core = { version = "0.1.9" }
+time-macros = { version = "0.2.31" }
+tinystr = { version = "0.8.3" }
+tinyvec = { version = "1.11.0" }
+tinyvec_macros = { version = "0.1.1" }
+tokio = { version = "1.52.3" }
+tokio-macros = { version = "2.7.0" }
+tokio-rustls = { version = "0.26.4" }
+tokio-stream = { version = "0.1.18" }
+tokio-test = { version = "0.4.5" }
+tokio-util = { version = "0.6.10" }
+tokio-util-0-7 = { package = "tokio-util", version = "0.7.18" }
+toml = { version = "0.6.0" }
+toml-0-8 = { package = "toml", version = "0.8.23" }
+toml-1 = { package = "toml", version = "1.1.2+spec-1.1.0" }
+toml_datetime = { version = "0.5.1" }
+toml-datetime-0-6 = { package = "toml_datetime", version = "0.6.11" }
+toml-datetime-1 = { package = "toml_datetime", version = "1.1.1+spec-1.1.0" }
+toml_edit = { version = "0.18.1" }
+toml-edit-0-22 = { package = "toml_edit", version = "0.22.27" }
+toml-edit-0-25 = { package = "toml_edit", version = "0.25.12+spec-1.1.0" }
+toml_parser = { version = "1.1.2+spec-1.1.0" }
+toml_write = { version = "0.1.2" }
+toml_writer = { version = "1.1.1+spec-1.1.0" }
+tonic = { version = "0.12.3" }
+tower = { version = "0.4.13" }
+tower-0-5 = { package = "tower", version = "0.5.3" }
+tower-http = { version = "0.6.11" }
+tower-layer = { version = "0.3.3" }
+tower-service = { version = "0.3.3" }
+tracing = { version = "0.1.44" }
+tracing-attributes = { version = "0.1.31" }
+tracing-core = { version = "0.1.36" }
+tracing-log = { version = "0.2.0" }
+tracing-serde = { version = "0.2.0" }
+tracing-subscriber = { version = "0.3.23" }
+tracing-tree = { version = "0.4.1" }
+tree-sitter-language = { version = "0.1.7" }
+triomphe = { version = "0.1.16" }
+try-lock = { version = "0.2.5" }
+trybuild = { version = "1.0.117" }
+typed-arena = { version = "2.0.2" }
+typeid = { version = "1.0.3" }
+typenum = { version = "1.20.1" }
+ubyte = { version = "0.10.4" }
+ucd-trie = { version = "0.1.7" }
+uluru = { version = "3.0.0" }
+unarray = { version = "0.1.4" }
+uncased = { version = "0.9.10" }
+unicase = { version = "2.9.0" }
+unicode-bidi = { version = "0.3.18" }
+unicode-bom = { version = "2.0.3" }
+unicode-id-start = { version = "1.4.0" }
+unicode-ident = { version = "1.0.24" }
+unicode-linebreak = { version = "0.1.5" }
+unicode-normalization = { version = "0.1.25" }
+unicode-properties = { version = "0.1.4" }
+unicode-segmentation = { version = "1.13.3" }
+unicode-width = { version = "0.2.2" }
+unicode-xid = { version = "0.2.6" }
+unicode_categories = { version = "0.1.1" }
+unicode_names2 = { version = "1.3.0" }
+unicode_names2_generator = { version = "1.3.0" }
+unit-prefix = { version = "0.5.2" }
+unscanny = { version = "0.1.0" }
+unsigned-varint = { version = "0.8.0" }
+unsynn = { version = "0.3.0" }
+untrusted = { version = "0.9.0" }
+unty = { version = "0.0.4" }
+url = { version = "2.5.8" }
+urlencoding = { version = "2.1.3" }
+utf8-ranges = { version = "1.0.5" }
+utf8_iter = { version = "1.0.4" }
+utf8parse = { version = "0.2.2" }
+uuid = { version = "1.23.4" }
+uuid-rng-internal = { version = "1.23.4" }
+uv-cache-key = { version = "0.0.59" }
+uv-errors = { version = "0.0.59" }
+uv-fs = { version = "0.0.59" }
+uv-macros = { version = "0.0.59" }
+uv-normalize = { version = "0.0.59" }
+uv-pep440 = { version = "0.0.59" }
+uv-pep508 = { version = "0.0.59" }
+uv-redacted = { version = "0.0.59" }
+uv-small-str = { version = "0.0.59" }
+uv-static = { version = "0.0.59" }
+uv-warnings = { version = "0.0.59" }
+uv-windows = { version = "0.0.59" }
+valuable = { version = "0.1.1" }
+valuable-derive = { version = "0.1.1" }
+value-trait = { version = "0.12.2" }
+vcpkg = { version = "0.2.15" }
+vec1 = { version = "1.12.1" }
+version_check = { version = "0.9.5" }
+vu128 = { version = "1.1.0" }
+wait-timeout = { version = "0.2.1" }
+walkdir = { version = "2.5.0" }
+want = { version = "0.3.1" }
+wasi = { version = "0.11.1+wasi-snapshot-preview1" }
+wasip2 = { version = "1.0.4+wasi-0.2.12" }
+wasite = { version = "0.1.0" }
+wasm-bindgen = { version = "0.2.126" }
+wasm-bindgen-futures = { version = "0.4.76" }
+wasm-bindgen-macro = { version = "0.2.126" }
+wasm-bindgen-macro-support = { version = "0.2.126" }
+wasm-bindgen-shared = { version = "0.2.126" }
+wasm-encoder = { version = "0.253.0" }
+wasm-metadata = { version = "0.253.0" }
+wasm-streams = { version = "0.4.2" }
+wasm_dep_analyzer = { version = "0.4.0" }
+wasmparser = { version = "0.253.0" }
+watchman_client = { version = "0.9.0" }
+web-sys = { version = "0.3.103" }
+web-time = { version = "1.1.0" }
+webpki-roots = { version = "0.26.11" }
+webpki-roots-1 = { package = "webpki-roots", version = "1.0.8" }
+which = { version = "4.4.2" }
+whoami = { version = "1.6.1" }
+winapi = { version = "0.3.9" }
+winapi-i686-pc-windows-gnu = { version = "0.4.0" }
+winapi-util = { version = "0.1.11" }
+winapi-x86_64-pc-windows-gnu = { version = "0.4.0" }
+windows = { version = "0.48.0" }
+windows-0-61 = { package = "windows", version = "0.61.3" }
+windows-0-62 = { package = "windows", version = "0.62.2" }
+windows-collections = { version = "0.2.0" }
+windows-collections-0-3 = { package = "windows-collections", version = "0.3.2" }
+windows-core = { version = "0.61.2" }
+windows-core-0-62 = { package = "windows-core", version = "0.62.2" }
+windows-future = { version = "0.2.1" }
+windows-future-0-3 = { package = "windows-future", version = "0.3.2" }
+windows-implement = { version = "0.60.2" }
+windows-interface = { version = "0.59.3" }
+windows-link = { version = "0.1.3" }
+windows-link-0-2 = { package = "windows-link", version = "0.2.1" }
+windows-numerics = { version = "0.2.0" }
+windows-numerics-0-3 = { package = "windows-numerics", version = "0.3.1" }
+windows-result = { version = "0.3.4" }
+windows-result-0-4 = { package = "windows-result", version = "0.4.1" }
+windows-strings = { version = "0.4.2" }
+windows-strings-0-5 = { package = "windows-strings", version = "0.5.1" }
+windows-sys = { version = "0.48.0" }
+windows-sys-0-52 = { package = "windows-sys", version = "0.52.0" }
+windows-sys-0-60 = { package = "windows-sys", version = "0.60.2" }
+windows-sys-0-61 = { package = "windows-sys", version = "0.61.2" }
+windows-targets = { version = "0.48.5" }
+windows-targets-0-52 = { package = "windows-targets", version = "0.52.6" }
+windows-targets-0-53 = { package = "windows-targets", version = "0.53.5" }
+windows-threading = { version = "0.1.0" }
+windows-threading-0-2 = { package = "windows-threading", version = "0.2.1" }
+windows_aarch64_gnullvm = { version = "0.48.5" }
+windows-aarch64-gnullvm-0-52 = { package = "windows_aarch64_gnullvm", version = "0.52.6" }
+windows-aarch64-gnullvm-0-53 = { package = "windows_aarch64_gnullvm", version = "0.53.1" }
+windows_aarch64_msvc = { version = "0.48.5" }
+windows-aarch64-msvc-0-52 = { package = "windows_aarch64_msvc", version = "0.52.6" }
+windows-aarch64-msvc-0-53 = { package = "windows_aarch64_msvc", version = "0.53.1" }
+windows_i686_gnu = { version = "0.48.5" }
+windows-i686-gnu-0-52 = { package = "windows_i686_gnu", version = "0.52.6" }
+windows-i686-gnu-0-53 = { package = "windows_i686_gnu", version = "0.53.1" }
+windows_i686_gnullvm = { version = "0.52.6" }
+windows-i686-gnullvm-0-53 = { package = "windows_i686_gnullvm", version = "0.53.1" }
+windows_i686_msvc = { version = "0.48.5" }
+windows-i686-msvc-0-52 = { package = "windows_i686_msvc", version = "0.52.6" }
+windows-i686-msvc-0-53 = { package = "windows_i686_msvc", version = "0.53.1" }
+windows_x86_64_gnu = { version = "0.48.5" }
+windows-x86-64-gnu-0-52 = { package = "windows_x86_64_gnu", version = "0.52.6" }
+windows-x86-64-gnu-0-53 = { package = "windows_x86_64_gnu", version = "0.53.1" }
+windows_x86_64_gnullvm = { version = "0.48.5" }
+windows-x86-64-gnullvm-0-52 = { package = "windows_x86_64_gnullvm", version = "0.52.6" }
+windows-x86-64-gnullvm-0-53 = { package = "windows_x86_64_gnullvm", version = "0.53.1" }
+windows_x86_64_msvc = { version = "0.48.5" }
+windows-x86-64-msvc-0-52 = { package = "windows_x86_64_msvc", version = "0.52.6" }
+windows-x86-64-msvc-0-53 = { package = "windows_x86_64_msvc", version = "0.53.1" }
+winnow = { version = "0.7.15" }
+winnow-1 = { package = "winnow", version = "1.0.3" }
+wiremock = { version = "0.6.5" }
+wit-bindgen = { version = "0.57.1" }
+wit-bindgen-core = { version = "0.57.1" }
+wit-bindgen-core-0-59 = { package = "wit-bindgen-core", version = "0.59.0" }
+wit-bindgen-rust = { version = "0.57.1" }
+wit-bindgen-rust-0-59 = { package = "wit-bindgen-rust", version = "0.59.0" }
+wit-bindgen-rust-macro = { version = "0.57.1" }
+wit-component = { version = "0.253.0" }
+wit-parser = { version = "0.253.0" }
+writeable = { version = "0.6.3" }
+xattr = { version = "1.6.1" }
+xxhash-rust = { version = "0.8.15" }
+yansi = { version = "1.0.1" }
+yoke = { version = "0.8.3" }
+yoke-derive = { version = "0.8.2" }
+zerocopy = { version = "0.8.52" }
+zerocopy-derive = { version = "0.8.52" }
+zerofrom = { version = "0.1.8" }
+zerofrom-derive = { version = "0.1.7" }
+zeroize = { version = "1.9.0" }
+zerotrie = { version = "0.2.4" }
+zerovec = { version = "0.11.6" }
+zerovec-derive = { version = "0.11.3" }
+zlib-rs = { version = "0.6.5" }
+zmij = { version = "1.0.21" }
+zstd = { version = "0.13.3" }
+zstd-safe = { version = "7.2.4" }
+zstd-sys = { version = "2.0.16+zstd.1.5.7" }

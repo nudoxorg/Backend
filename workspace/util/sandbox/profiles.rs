@@ -20,6 +20,10 @@ pub enum ProducerProfile {
 	Go,
 	/// snix-eval worker — HIGH-bounded interpreter.
 	Nix,
+	/// `dotnet` Roslyn oracle — HIGH; large-package compilations are hungry.
+	/// Source mode runs no user code (Roslyn only parses), but analyzers /
+	/// source-generators in packages are a code-exec vector — treat like Java.
+	CSharp,
 	/// deno_doc / pyrefly workers — LOW static parsers.
 	StaticParser,
 	/// Escape tests / trivial commands.
@@ -97,6 +101,18 @@ impl ProducerProfile {
 				1024 * 1024 * 1024,
 				2048,
 			),
+			// mem 4 GiB, wall 10 min, cpu 600s, pids 256
+			// Roslyn compilations of large packages exceed javadoc's 2 GiB.
+			Self::CSharp => Limits::from_const(
+				4 * 1024 * 1024 * 1024,
+				600,
+				10 * 60,
+				256,
+				8 * 1024 * 1024,
+				256 * 1024,
+				2 * 1024 * 1024 * 1024,
+				2048,
+			),
 			// mem 2 GiB, wall 5 min
 			Self::Go => Limits::from_const(
 				2 * 1024 * 1024 * 1024,
@@ -156,6 +172,7 @@ impl ProducerProfile {
 			Self::Rust => "rust",
 			Self::Java => "java",
 			Self::Go => "go",
+			Self::CSharp => "csharp",
 			Self::Nix => "nix",
 			Self::StaticParser => "static_parser",
 			Self::Tiny => "tiny",

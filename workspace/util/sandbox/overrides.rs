@@ -74,11 +74,10 @@ impl OverrideTable {
 	pub fn resolve(&self, profile: ProducerProfile, package: Option<&SandboxKey>) -> Limits {
 		let base = profile.base_limits();
 		let mut overlay = LimitOverride::none();
-		if let Some(key) = package {
-			if let Some(o) = self.map.get(&key.wire()) {
+		if let Some(key) = package
+			&& let Some(o) = self.map.get(&key.wire()) {
 				overlay = merge(overlay, *o);
 			}
-		}
 		if let Some(o) = self.map.get(profile.wire_name()) {
 			overlay = merge(overlay, *o);
 		}

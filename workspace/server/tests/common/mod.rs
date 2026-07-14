@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use heart::{EntryUri, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
 use runtime::text::TextIndex;
-use server::authz::{AdminCap, Principal, ReadCap, WriteCap};
+use server::authz::{Principal, ReadCap, WriteCap};
 use server::search::query::{Filter, Pagination, Query, Search};
 use server::{Server, ServerConfiguration};
 use smol_str::SmolStr;

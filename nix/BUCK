@@ -1,0 +1,14 @@
+# Exposes the toolchain sub-flake as a Buck2 artifact for flake.package().
+#
+# build/toolchains/BUCK references this as `path = "//nix:flake"`. Buck2
+# materialises both files into a single directory artifact; flake.package()
+# then runs `nix build path:<dir>#packages.<system>.<name>` as a hermetic
+# local-only action.
+filegroup(
+    name = "flake",
+    srcs = [
+        "flake.lock",
+        "flake.nix",
+    ],
+    visibility = ["PUBLIC"],
+)

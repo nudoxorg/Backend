@@ -119,6 +119,7 @@ async fn record_http_metrics(request: Request, next: Next) -> Response {
 /// fields the plan asks for on one record rather than scattered log events.
 /// Bodies/headers are never logged (no `on_body_chunk` customization),
 /// preserving the previous `trace_request`'s guarantee.
+#[allow(clippy::type_complexity)]
 fn request_trace_layer() -> TraceLayer<
 	tower_http::classify::SharedClassifier<tower_http::classify::ServerErrorsAsFailures>,
 	impl Fn(&Request) -> Span + Clone,

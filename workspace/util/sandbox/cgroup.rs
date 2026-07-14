@@ -132,11 +132,10 @@ pub fn has_writable_parent() -> bool {
 
 fn discover_writable_parent() -> Option<PathBuf> {
 	// Prefer our own cgroup (user delegation under systemd).
-	if let Some(own) = read_own_cgroup_path() {
-		if dir_is_writable(&own) {
+	if let Some(own) = read_own_cgroup_path()
+		&& dir_is_writable(&own) {
 			return Some(own);
 		}
-	}
 	// Fallback: /sys/fs/cgroup if writable (rare for unprivileged).
 	let root = PathBuf::from("/sys/fs/cgroup");
 	if dir_is_writable(&root) {

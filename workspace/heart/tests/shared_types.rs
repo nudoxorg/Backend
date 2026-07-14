@@ -115,7 +115,7 @@ async fn sink_deliver_retries_transient_failures() {
             self.attempts.fetch_add(1, Ordering::SeqCst);
             if self
                 .fails_left
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok()
             {
                 ready(Result::Err(TestErr { retryable: true }))

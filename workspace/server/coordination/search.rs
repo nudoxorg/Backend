@@ -121,11 +121,10 @@ impl<M: EmbeddingModel> Server<M> {
 			let mut collected = Vec::new();
 			while let Some(scored_identity) = identities.next().await {
 				let scored_identity = scored_identity?;
-				if let Some(symbol) = sourced.value.symbol_by_id(scored_identity.value).await? {
-					if request.filter.admits(&symbol) {
+				if let Some(symbol) = sourced.value.symbol_by_id(scored_identity.value).await?
+					&& request.filter.admits(&symbol) {
 						collected.push(Scored::new(symbol, scored_identity.score));
 					}
-				}
 			}
 			groups.push(collected);
 		}

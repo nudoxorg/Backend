@@ -1,3 +1,139 @@
+# git-fragment.bzl — appended to reindeer-generated BUCK by sync-deps.nu
+# Helper functions (_git_crate, _git_repo) live in git-helpers.bzl and are
+# loaded into BUCK via reindeer.toml buckfile_imports (no load() needed here).
+# Hand-maintained: update when adding new git repos or changing their deps.
+
+# ── Compat aliases: old registry.bzl labels → reindeer-generated target names ─
+# These map the ":label-version" format used in the GIT dep lists below
+# to the names reindeer generates (single-version crates drop the suffix).
+# Re-check after a reindeer run if any target-not-found errors appear.
+native.alias(name = "allocator_api2-0_2", actual = ":allocator-api2", visibility = ["PUBLIC"])
+native.alias(name = "arborium_tree_sitter", actual = ":arborium-tree-sitter", visibility = ["PUBLIC"])
+native.alias(name = "async_compression", actual = ":async-compression", visibility = ["PUBLIC"])
+native.alias(name = "bytes", actual = ":bytes-1", visibility = ["PUBLIC"])
+native.alias(name = "data_encoding", actual = ":data-encoding", visibility = ["PUBLIC"])
+native.alias(name = "futures-0_3", actual = ":futures-0.3", visibility = ["PUBLIC"])
+native.alias(name = "futures_util", actual = ":futures-util", visibility = ["PUBLIC"])
+native.alias(name = "gix_object", actual = ":gix-object", visibility = ["PUBLIC"])
+native.alias(name = "gix_ref", actual = ":gix-ref", visibility = ["PUBLIC"])
+native.alias(name = "gix_worktree", actual = ":gix-worktree", visibility = ["PUBLIC"])
+native.alias(name = "gix_worktree_state", actual = ":gix-worktree-state", visibility = ["PUBLIC"])
+native.alias(name = "libsqlite3_sys", actual = ":libsqlite3-sys", visibility = ["PUBLIC"])
+native.alias(name = "aho_corasick", actual = ":aho-corasick", visibility = ["PUBLIC"])
+native.alias(name = "decimal_rs", actual = ":decimal-rs", visibility = ["PUBLIC"])
+native.alias(name = "thin_vec", actual = ":thin-vec", visibility = ["PUBLIC"])
+native.alias(name = "unicode_ident", actual = ":unicode-ident", visibility = ["PUBLIC"])
+native.alias(name = "unicode_normalization", actual = ":unicode-normalization", visibility = ["PUBLIC"])
+native.alias(name = "unicode_width", actual = ":unicode-width", visibility = ["PUBLIC"])
+native.alias(name = "get_size2", actual = ":get-size2", visibility = ["PUBLIC"])
+native.alias(name = "is_macro", actual = ":is-macro", visibility = ["PUBLIC"])
+native.alias(name = "memchr", actual = ":memchr-2", visibility = ["PUBLIC"])
+native.alias(name = "ordered_float", actual = ":ordered-float", visibility = ["PUBLIC"])
+native.alias(name = "par_core", actual = ":par-core", visibility = ["PUBLIC"])
+native.alias(name = "ra_ap_load_cargo", actual = ":ra_ap_load-cargo", visibility = ["PUBLIC"])
+native.alias(name = "rowan", actual = ":rowan-0.15", visibility = ["PUBLIC"])
+native.alias(name = "rustc_hash", actual = ":rustc-hash", visibility = ["PUBLIC"])
+native.alias(name = "sea_query", actual = ":sea-query", visibility = ["PUBLIC"])
+native.alias(name = "sea_query_binder", actual = ":sea-query-binder", visibility = ["PUBLIC"])
+native.alias(name = "tokio_stream", actual = ":tokio-stream", visibility = ["PUBLIC"])
+native.alias(name = "tokio_util", actual = ":tokio-util", visibility = ["PUBLIC"])
+native.alias(name = "tracing_subscriber", actual = ":tracing-subscriber", visibility = ["PUBLIC"])
+native.alias(name = "uv_pep440", actual = ":uv-pep440", visibility = ["PUBLIC"])
+native.alias(name = "uv_pep508", actual = ":uv-pep508", visibility = ["PUBLIC"])
+native.alias(name = "anstream-0_6", actual = ":anstream-0.6", visibility = ["PUBLIC"])
+native.alias(name = "append_only_vec-0_1", actual = ":append-only-vec", visibility = ["PUBLIC"])
+native.alias(name = "arc_swap-1", actual = ":arc-swap", visibility = ["PUBLIC"])
+native.alias(name = "argfile-0_2", actual = ":argfile", visibility = ["PUBLIC"])
+native.alias(name = "capnp-0_25", actual = ":capnp", visibility = ["PUBLIC"])
+native.alias(name = "cfg_if-1", actual = ":cfg-if", visibility = ["PUBLIC"])
+native.alias(name = "codemap-0_1", actual = ":codemap", visibility = ["PUBLIC"])
+native.alias(name = "codemap_diagnostic-0_1", actual = ":codemap-diagnostic", visibility = ["PUBLIC"])
+native.alias(name = "compact_str-0_9", actual = ":compact_str-0.9", visibility = ["PUBLIC"])
+native.alias(name = "convert_case-0_11", actual = ":convert_case-0.11", visibility = ["PUBLIC"])
+native.alias(name = "cow_utils-0_1", actual = ":cow-utils", visibility = ["PUBLIC"])
+native.alias(name = "crossbeam_channel-0_5", actual = ":crossbeam-channel-0.5", visibility = ["PUBLIC"])
+native.alias(name = "data_encoding-2", actual = ":data-encoding", visibility = ["PUBLIC"])
+native.alias(name = "dragonbox_ecma-0_1", actual = ":dragonbox_ecma", visibility = ["PUBLIC"])
+native.alias(name = "dupe-0_9", actual = ":dupe", visibility = ["PUBLIC"])
+native.alias(name = "ena-0_14", actual = ":ena", visibility = ["PUBLIC"])
+native.alias(name = "enum_iterator-2", actual = ":enum-iterator", visibility = ["PUBLIC"])
+native.alias(name = "fast_glob-1", actual = ":fast-glob", visibility = ["PUBLIC"])
+native.alias(name = "faster_hex-0_6", actual = ":faster-hex-0.6", visibility = ["PUBLIC"])
+native.alias(name = "fixedbitset-0_5", actual = ":fixedbitset", visibility = ["PUBLIC"])
+native.alias(name = "fuzzy_matcher-0_3", actual = ":fuzzy-matcher", visibility = ["PUBLIC"])
+native.alias(name = "fxhash-0_2", actual = ":fxhash", visibility = ["PUBLIC"])
+native.alias(name = "genawaiter-0_99", actual = ":genawaiter", visibility = ["PUBLIC"])
+native.alias(name = "glob-0_3", actual = ":glob", visibility = ["PUBLIC"])
+native.alias(name = "globset-0_4", actual = ":globset", visibility = ["PUBLIC"])
+native.alias(name = "hashbrown-0_15", actual = ":hashbrown-0.15", visibility = ["PUBLIC"])
+native.alias(name = "hashbrown-0_17", actual = ":hashbrown-0.17", visibility = ["PUBLIC"])
+native.alias(name = "heck-0_5", actual = ":heck-0.5", visibility = ["PUBLIC"])
+native.alias(name = "human_bytes-0_4", actual = ":human_bytes", visibility = ["PUBLIC"])
+native.alias(name = "ignore-0_4", actual = ":ignore", visibility = ["PUBLIC"])
+native.alias(name = "index_vec-0_1", actual = ":index_vec", visibility = ["PUBLIC"])
+native.alias(name = "indicatif-0_18", actual = ":indicatif", visibility = ["PUBLIC"])
+native.alias(name = "itertools-0_12", actual = ":itertools-0.12", visibility = ["PUBLIC"])
+native.alias(name = "itertools-0_14", actual = ":itertools-0.14", visibility = ["PUBLIC"])
+native.alias(name = "itertools-0_15", actual = ":itertools-0.15", visibility = ["PUBLIC"])
+native.alias(name = "json_strip_comments-3", actual = ":json-strip-comments", visibility = ["PUBLIC"])
+native.alias(name = "lexical_core-0_8", actual = ":lexical-core", visibility = ["PUBLIC"])
+native.alias(name = "lock_free_hashtable-0_1", actual = ":lock_free_hashtable", visibility = ["PUBLIC"])
+native.alias(name = "lsp_server-0_7", actual = ":lsp-server", visibility = ["PUBLIC"])
+native.alias(name = "md_5-0_10", actual = ":md-5", visibility = ["PUBLIC"])
+native.alias(name = "memory_stats-1", actual = ":memory-stats", visibility = ["PUBLIC"])
+native.alias(name = "nodejs_built_in_modules-1", actual = ":nodejs-built-in-modules", visibility = ["PUBLIC"])
+native.alias(name = "nonmax-0_5", actual = ":nonmax", visibility = ["PUBLIC"])
+native.alias(name = "num_bigint-0_4", actual = ":num-bigint-0.4", visibility = ["PUBLIC"])
+native.alias(name = "num_bigint-0_5", actual = ":num-bigint-0.5", visibility = ["PUBLIC"])
+native.alias(name = "num_traits-0_2", actual = ":num-traits", visibility = ["PUBLIC"])
+native.alias(name = "oxc_miette-3", actual = ":oxc-miette", visibility = ["PUBLIC"])
+native.alias(name = "parse_display-0_8", actual = ":parse-display", visibility = ["PUBLIC"])
+native.alias(name = "path_absolutize-3", actual = ":path-absolutize", visibility = ["PUBLIC"])
+native.alias(name = "path_clean-0_1", actual = ":path-clean", visibility = ["PUBLIC"])
+native.alias(name = "pathdiff-0_2", actual = ":pathdiff", visibility = ["PUBLIC"])
+native.alias(name = "percent_encoding-2", actual = ":percent-encoding", visibility = ["PUBLIC"])
+native.alias(name = "phf-0_14", actual = ":phf-0.14", visibility = ["PUBLIC"])
+native.alias(name = "proc_macro2", actual = ":proc-macro2", visibility = ["PUBLIC"])
+native.alias(name = "proc_macro2-1", actual = ":proc-macro2", visibility = ["PUBLIC"])
+native.alias(name = "rand-0_10", actual = ":rand-0.10", visibility = ["PUBLIC"])
+native.alias(name = "regex_syntax-0_8", actual = ":regex-syntax-0.8", visibility = ["PUBLIC"])
+native.alias(name = "rnix-0_11", actual = ":rnix-0.11", visibility = ["PUBLIC"])
+native.alias(name = "rowan-0_15", actual = ":rowan-0.15", visibility = ["PUBLIC"])
+native.alias(name = "rustc_hash-2", actual = ":rustc-hash-2", visibility = ["PUBLIC"])
+native.alias(name = "seq_macro-0_3", actual = ":seq-macro", visibility = ["PUBLIC"])
+native.alias(name = "serde_jsonrc-0_1", actual = ":serde_jsonrc", visibility = ["PUBLIC"])
+native.alias(name = "serde_repr-0_1", actual = ":serde_repr", visibility = ["PUBLIC"])
+native.alias(name = "serde_wasm_bindgen-0_6", actual = ":serde-wasm-bindgen", visibility = ["PUBLIC"])
+native.alias(name = "sha1-0_10", actual = ":sha1", visibility = ["PUBLIC"])
+native.alias(name = "sha2-0_10", actual = ":sha2", visibility = ["PUBLIC"])
+native.alias(name = "simd_json-0_17", actual = ":simd-json", visibility = ["PUBLIC"])
+native.alias(name = "simdutf8-0_1", actual = ":simdutf8", visibility = ["PUBLIC"])
+native.alias(name = "smol_str-0_2", actual = ":smol_str-0.2", visibility = ["PUBLIC"])
+native.alias(name = "stacker-0_1", actual = ":stacker", visibility = ["PUBLIC"])
+native.alias(name = "starlark_map-0_14", actual = ":starlark_map", visibility = ["PUBLIC"])
+native.alias(name = "static_interner-0_1", actual = ":static_interner", visibility = ["PUBLIC"])
+native.alias(name = "strsim-0_11", actual = ":strsim", visibility = ["PUBLIC"])
+native.alias(name = "tar-0_4", actual = ":tar", visibility = ["PUBLIC"])
+native.alias(name = "thin_vec-0_2", actual = ":thin-vec", visibility = ["PUBLIC"])
+native.alias(name = "toml-0_6", actual = ":toml-0.6", visibility = ["PUBLIC"])
+native.alias(name = "toml_edit-0_25", actual = ":toml_edit-0.25", visibility = ["PUBLIC"])
+native.alias(name = "tracing-0_1", actual = ":tracing", visibility = ["PUBLIC"])
+native.alias(name = "tracing_subscriber-0_3", actual = ":tracing-subscriber", visibility = ["PUBLIC"])
+native.alias(name = "unicode_id_start-1", actual = ":unicode-id-start", visibility = ["PUBLIC"])
+native.alias(name = "unicode_ident-1", actual = ":unicode-ident", visibility = ["PUBLIC"])
+native.alias(name = "wasm_bindgen-0_2", actual = ":wasm-bindgen", visibility = ["PUBLIC"])
+native.alias(name = "watchman_client-0_9", actual = ":watchman_client", visibility = ["PUBLIC"])
+native.alias(name = "web_time-1", actual = ":web-time", visibility = ["PUBLIC"])
+native.alias(name = "windows-0_62", actual = ":windows-0.62", visibility = ["PUBLIC"])
+native.alias(name = "xxhash_rust-0_8", actual = ":xxhash-rust", visibility = ["PUBLIC"])
+native.alias(name = "zstd-0_13", actual = ":zstd", visibility = ["PUBLIC"])
+
+# ── Patch files (exported for genrule consumers) ─────────────────────────────
+native.export_file(name = "remove-rocket.patch", src = "patches/terminusdb-schema/remove-rocket.patch", visibility = ["PUBLIC"])
+native.export_file(name = "snix-eval-50b41ae.patch", src = "patches/snix/snix-eval-50b41ae.patch", visibility = ["PUBLIC"])
+native.export_file(name = "dyn-write.patch", src = "patches/codemap-diagnostic/dyn-write.patch", visibility = ["PUBLIC"])
+
+# ── Git repo constants ────────────────────────────────────────────────────────
 # Pinned to nightly toolchain commit (see flake.nix fenix-complete).
 # The tarball is large (~300 MB); sha256 must be filled in after downloading:
 #   nix-prefetch-url --unpack \
@@ -77,7 +213,8 @@ TSZ_REV = "dff7690987e3183847545feebe9c45ab6b83a006"
 # `v11.23.0` tag. Crate lives at the repo root (src/lib.rs). edition 2024.
 OXC_RESOLVER_REV = "v11.23.0"
 
-GIT = [
+# ── Git crate definitions ────────────────────────────────────────────────────
+_GIT = [
     # librustdoc is NOT fetched via http_archive (that would download ~300 MB of
     # rust-lang/rust). Instead, `scripts/vendor-librustdoc.sh` sparse-clones just
     # src/librustdoc into build/third-party/vendor/librustdoc/, applies the patch,
@@ -1205,3 +1342,5 @@ GIT = [
         ],
     },
 ]
+
+setup_all_git_repos(_GIT)

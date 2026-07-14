@@ -122,7 +122,7 @@ impl<L3: Cas> Cas for Tiered<L3> {
 				},
 				Ok(None) => {},
 				// Integrity errors already deleted the blob; treat as miss.
-				Err(e) if matches!(e, CasError::Integrity { .. }) => {},
+				Err(CasError::Integrity { .. }) => {},
 				Err(e) => return Err(e),
 			}
 		}
@@ -172,11 +172,10 @@ impl<L3: Cas> Cas for Tiered<L3> {
 		} else if self.l1.get(&key).await.is_none() {
 			// Durable tier already held the key; promote *that* value into L1
 			// so we never let a losing concurrent put poison L1.
-			if let Some(l2) = &self.l2 {
-				if let Ok(Some(existing)) = l2.get(key).await {
+			if let Some(l2) = &self.l2
+				&& let Ok(Some(existing)) = l2.get(key).await {
 					self.l1.insert(key, existing, PROMOTE_COST).await;
 				}
-			}
 		}
 
 		Ok(novel)

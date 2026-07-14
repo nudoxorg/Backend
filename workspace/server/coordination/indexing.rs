@@ -434,14 +434,13 @@ impl<M: EmbeddingModel> Indexer<M> {
 		}
 		let response = response.error_for_status().map_err(lookup_failure)?;
 
-		if let Some(length) = response.content_length() {
-			if length > ExtractionLimits::DEFAULT.max_total_bytes {
+		if let Some(length) = response.content_length()
+			&& length > ExtractionLimits::DEFAULT.max_total_bytes {
 				return Err(ServerError::BadRequest(BadRequestReason::ArchiveTooLarge {
 					actual: length,
 					limit: ExtractionLimits::DEFAULT.max_total_bytes,
 				}));
 			}
-		}
 		let archive = response.bytes().await.map_err(lookup_failure)?;
 		if archive.len() as u64 > ExtractionLimits::DEFAULT.max_total_bytes {
 			return Err(ServerError::BadRequest(BadRequestReason::ArchiveExceedsLimit));
@@ -466,6 +465,12 @@ impl<M: EmbeddingModel> Indexer<M> {
 				format!("https://registry.npmjs.org/{name}/-/{leaf}-{version}.tgz")
 			}
 			RegistryOrigin::PyPi => return self.pypi_sdist_url(name, &version).await,
+			RegistryOrigin::NuGet => {
+				// Flat-container nupkg (a zip): ids + versions are lowercased.
+				let id = name.to_ascii_lowercase();
+				let ver = version.to_ascii_lowercase();
+				format!("https://api.nuget.org/v3-flatcontainer/{id}/{ver}/{id}.{ver}.nupkg")
+			}
 			RegistryOrigin::FlakeHub => {
 				// FlakeHub's tarball endpoint 307-redirects to a pinned,
 				// CloudFront-signed URL; the Nix producer's `traversal` module
