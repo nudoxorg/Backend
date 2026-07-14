@@ -32,7 +32,7 @@ impl EntryBuilder {
 		idx.typed()
 	}
 
-	/// Emits a link between the currently-being-built entry and another entity.
+	/// Emits a link between the currently-being-built entry and another entry.
 	#[expect(private_bounds)]
 	pub fn link<T>(&mut self, idx: EntryIdx<T>)
 	where
@@ -41,7 +41,7 @@ impl EntryBuilder {
 		self.links.push(EntryLink { a: (self.idx, self.kind), b: (idx.into(), T::discriminant()) });
 	}
 
-	/// Emits a link between two entities
+	/// Emits a link between two entry
 	#[expect(private_bounds)]
 	pub fn link_between<T, U>(&mut self, a: EntryIdx<T>, b: EntryIdx<U>)
 	where
