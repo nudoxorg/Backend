@@ -1,5 +1,9 @@
 # Remove precise_srcs so reindeer globs all .rs files including macro-gated ones
 # like de/, ser/, format.rs, private/ (included via crate_root!() macro)
 
+# The build script does `env::var("CARGO_PKG_VERSION_PATCH").unwrap()`; cargo_env
+# emits the full CARGO_PKG_* set into the target so it doesn't panic under Buck2.
+cargo_env = true
+
 [buildscript]
 run = true

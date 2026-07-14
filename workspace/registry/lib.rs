@@ -19,9 +19,14 @@
 //! fingerprints — never hand-rolled here. This crate never re-defines
 //! `PackageId`, `SymbolId`, `ContentHash`, or the lifecycle states; it
 //! composes them.
+//!
+//! ## Read plane
+//! The former standalone `runtime` crate — the read plane backing all search
+//! (tantivy / qdrant / terminus / per-session state) — is folded in as the
+//! [`runtime`] module, so the registry is now the single serving crate.
+#![feature(return_type_notation)]
 
 pub mod blob;
-pub mod cas;
 pub mod coordination;
 pub mod error;
 pub mod health;
@@ -31,8 +36,10 @@ pub mod ingest;
 pub mod metadata;
 pub mod package;
 pub mod persist;
+pub mod protocol;
 pub mod queue;
 pub mod resolve;
+pub mod runtime;
 pub mod schema;
 pub mod search;
 pub mod store;
@@ -41,7 +48,6 @@ use heart::{PackageId, ResolutionState, Toolchain};
 use serde::{Deserialize, Serialize};
 
 pub use blob::{BlobBuilder, BlobManifest, FileEntry};
-pub use cas::StoreCas;
 pub use error::{BlobError, IngestError, QueueError, RegistryError, StoreError};
 pub use store::Store;
 

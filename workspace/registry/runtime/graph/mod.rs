@@ -29,7 +29,7 @@ use heart::{
 	StoreError,
 };
 
-use crate::error::GraphError;
+use crate::runtime::error::GraphError;
 
 /// The kind of edge two symbols share. `are_related` returns the specific kind,
 /// so callers can branch on *how* two symbols connect, not merely *whether*.
@@ -484,7 +484,7 @@ impl Graph<Live> {
 		let status = reply.status();
 		let bytes = reply.bytes().await.map_err(GraphError::Transport)?;
 		if !status.is_success() {
-			return Err(GraphError::Query(crate::error::GraphQueryError::HttpStatus {
+			return Err(GraphError::Query(crate::runtime::error::GraphQueryError::HttpStatus {
 				status,
 				body: String::from_utf8_lossy(&bytes).into_owned(),
 			}));
@@ -519,7 +519,7 @@ impl Graph<Live> {
 		let status = reply.status();
 		let bytes = reply.bytes().await.map_err(GraphError::Transport)?;
 		if !status.is_success() {
-			return Err(GraphError::Query(crate::error::GraphQueryError::HttpStatus {
+			return Err(GraphError::Query(crate::runtime::error::GraphQueryError::HttpStatus {
 				status,
 				body: String::from_utf8_lossy(&bytes).into_owned(),
 			}));
@@ -644,7 +644,7 @@ impl heart::Probeable for Graph<Live> {
 	}
 
 	async fn probe(&self) -> heart::Probe {
-		use crate::error::GraphError;
+		use crate::runtime::error::GraphError;
 		heart::timed_probe(BackendKind::Terminus, async {
 			let nobody = SymbolId::from_uuid(heart::Guid::nil());
 			match self.are_related(nobody, nobody).await {

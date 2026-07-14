@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 
 use futures::{Stream, StreamExt};
 use heart::{Cursor, Enforced, Scored, Symbol, SymbolId, SymbolKind};
-use runtime::text::{TextIndex, TextQuery};
+use registry::runtime::text::{TextIndex, TextQuery};
 
 use crate::error::{BadRequestReason, ServerError};
 use crate::search::query::{Filter, LiteralQuery, Pagination};
@@ -79,7 +79,7 @@ impl<'a> SymbolTextSurface<'a> {
 	fn decode_cursor(
 		&self,
 		page: &Pagination,
-	) -> Result<Option<Cursor<runtime::text::TextCursorKey, Enforced>>, ServerError> {
+	) -> Result<Option<Cursor<registry::runtime::text::TextCursorKey, Enforced>>, ServerError> {
 		let Some(token) = page.after.as_deref() else {
 			return Ok(None);
 		};
@@ -87,7 +87,7 @@ impl<'a> SymbolTextSurface<'a> {
 			.index
 			.snapshot()
 			.map_err(|error| ServerError::Runtime(error.into()))?;
-		Cursor::<runtime::text::TextCursorKey, Enforced>::decode(token, live)
+		Cursor::<registry::runtime::text::TextCursorKey, Enforced>::decode(token, live)
 			.map(Some)
 			.map_err(|source| {
 				ServerError::from(BadRequestReason::InvalidCursor {

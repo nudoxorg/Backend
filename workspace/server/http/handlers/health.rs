@@ -9,7 +9,7 @@ use axum::{
 	response::{IntoResponse, Response},
 };
 
-use runtime::vector::EmbeddingModel;
+use registry::runtime::vector::EmbeddingModel;
 use crate::Server;
 use crate::coordination::health::Health;
 use crate::http::dto::HealthDto;
@@ -36,11 +36,11 @@ pub async fn readyz<M: EmbeddingModel>(State(server): State<Arc<Server<M>>>) -> 
 }
 
 /// `GET /metrics` — the prometheus exposition text. The recorder (and its
-/// render handle) is installed once by `telemetry::init` in `main`, fanned out
+/// render handle) is installed once by `heart::telemetry::init` in `main`, fanned out
 /// to the OTLP pipeline; here we just render it. `503` until it is installed
 /// or if some other recorder won the global-recorder race.
 pub async fn metrics() -> Response {
-	match telemetry::render_prometheus() {
+	match heart::telemetry::render_prometheus() {
 		Some(body) => body.into_response(),
 		None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
 	}

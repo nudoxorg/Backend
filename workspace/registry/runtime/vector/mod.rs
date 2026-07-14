@@ -36,7 +36,7 @@ pub use embedding::{Embedder, Embedding, EmbeddingPurpose};
 pub use gate::SemanticGate;
 pub use model::{EmbeddingModel, ModelId, catalog as models};
 
-use crate::error::VectorError;
+use crate::runtime::error::VectorError;
 
 /// The keyset key a semantic-search [`Cursor`] resumes from: the last hit's
 /// score paired with its id (score alone is not unique). Ordered so pagination
@@ -265,7 +265,7 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 
 		// Delegate the over-fetch / sort / filter loop to the shared helper.
 		// The fetch closure is async so the qdrant client drives normally.
-		let page = crate::pagination::keyset_page(
+		let page = crate::runtime::pagination::keyset_page(
 			after_key,
 			target,
 			MAX_FETCH,
@@ -459,7 +459,7 @@ impl<M: EmbeddingModel> heart::Probeable for Semantic<M, Live> {
 	}
 
 	async fn probe(&self) -> heart::Probe {
-		use crate::error::VectorError;
+		use crate::runtime::error::VectorError;
 		heart::timed_probe(BackendKind::Qdrant, async {
 			// Cheap one-hit zero-vector query; connectivity is the signal.
 			// `for_readiness` is the documented non-planner issuance site.
@@ -482,7 +482,7 @@ impl<M: EmbeddingModel> heart::Probeable for Semantic<M, Live> {
 
 // Concrete brand for the Send RTN guard (any EmbeddingModel works).
 const _: fn() = || {
-	heart::assert_probe_future_send::<Semantic<crate::vector::models::OpenAi3Small, Live>>();
+	heart::assert_probe_future_send::<Semantic<crate::runtime::vector::models::OpenAi3Small, Live>>();
 };
 
 // Ensure the retry classification is wired: the sink machinery consults it.

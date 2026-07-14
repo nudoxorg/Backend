@@ -41,8 +41,8 @@ impl CompilerClient {
     /// POST a compile request to `{base}/compile` and return the response.
     pub async fn compile(
         &self,
-        req: protocol::CompileRequest,
-    ) -> Result<protocol::CompileResponse, CompilerClientError> {
+        req: registry::protocol::CompileRequest,
+    ) -> Result<registry::protocol::CompileResponse, CompilerClientError> {
         let url = self
             .base
             .join("/compile")
@@ -53,15 +53,15 @@ impl CompilerClient {
             let body = response.text().await.unwrap_or_default();
             return Err(CompilerClientError::NonSuccess { status, body });
         }
-        let resp: protocol::CompileResponse = response.json().await?;
+        let resp: registry::protocol::CompileResponse = response.json().await?;
         match &resp {
-            protocol::CompileResponse::Err { kind, message } => {
+            registry::protocol::CompileResponse::Err { kind, message } => {
                 Err(CompilerClientError::RemoteError {
                     kind: kind.clone(),
                     message: message.clone(),
                 })
             }
-            protocol::CompileResponse::Ok { .. } => Ok(resp),
+            registry::protocol::CompileResponse::Ok { .. } => Ok(resp),
         }
     }
 }

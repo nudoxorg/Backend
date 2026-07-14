@@ -16,8 +16,8 @@ use std::num::NonZeroUsize;
 
 use futures::Stream;
 use heart::{SymbolId, Scored, StoreError, Symbol};
-use runtime::graph::{GraphStore, RelationKind, expansion::ExpansionBounds};
-use runtime::vector::EmbeddingModel;
+use crate::registry::runtime::graph::{GraphStore, RelationKind, expansion::ExpansionBounds};
+use crate::registry::runtime::vector::EmbeddingModel;
 
 pub use planner::SearchPlanner;
 pub use query::{AbstractQuery, Filter, Pagination, Query, Search, SymbolCursor};
@@ -126,7 +126,7 @@ impl<M: EmbeddingModel> SearchTarget for SourceStores<M> {
 }
 
 impl<M: EmbeddingModel> GraphStore for SourceStores<M> {
-	type Error = runtime::error::GraphError;
+	type Error = crate::registry::runtime::error::GraphError;
 
 	fn get_occurrences(
 		&self,
@@ -168,7 +168,7 @@ impl<M: EmbeddingModel> SymbolStore for SourceStores<M> {
 				Ok(edge) => edge,
 				// A symbol absent from this source's graph is an empty
 				// neighbourhood, not a failure.
-				Err(runtime::error::GraphError::NotFound) => break,
+				Err(crate::registry::runtime::error::GraphError::NotFound) => break,
 				Err(error) => return Err(ServerError::Runtime(error.into())),
 			};
 			if !visited.insert(edge.target.value) {

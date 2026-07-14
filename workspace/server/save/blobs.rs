@@ -38,7 +38,7 @@ use crate::registry::{RegistryError, StoreError};
 use crate::registry::blob::ReferenceSet;
 use crate::registry::coordination::OutboxSeq;
 
-use runtime::vector::EmbeddingModel;
+use registry::runtime::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::AdminCap;
 use crate::error::{BadRequestReason, ServerError, ServerResult};

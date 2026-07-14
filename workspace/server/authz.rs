@@ -22,7 +22,7 @@ use axum::{
     extract::FromRequestParts,
     http::request::Parts,
 };
-use runtime::vector::EmbeddingModel;
+use registry::runtime::vector::EmbeddingModel;
 
 use crate::Server;
 use crate::error::{ForbiddenReason, ServerError};

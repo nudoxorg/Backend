@@ -1,0 +1,14 @@
+load("//build:rust.bzl", "crate", "deps", "member", "rust_crate")
+
+rust_crate(
+    name = "protocol",
+    deps = deps([
+        member("heart"),
+        member("ir"),
+        crate("serde"),
+        crate("postcard"),
+        crate("bytes"),
+        crate("smol_str"),
+        crate("thiserror"),
+    ]),
+)

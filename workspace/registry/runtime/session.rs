@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use heart::{SymbolId, Id};
 
-use crate::{error::SessionError, graph::RelationKind};
+use crate::runtime::{error::SessionError, graph::RelationKind};
 
 /// A directed, kinded edge between two symbols in a session graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

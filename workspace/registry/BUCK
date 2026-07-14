@@ -6,8 +6,14 @@ rust_crate(
     deps = deps([
         member("heart"),
         member("ir"),
-        member("cas"),
-        member("version"),
+        # Read-plane (folded-in `runtime` module) + version logic now in
+        # heart::version; `cas`/`version` are no longer separate deps.
+        crate("qdrant-client"),
+        crate("moka"),
+        crate("secrecy"),
+        crate("nutype"),
+        crate("governor"),
+        crate("tower"),
         crate("libsqlite3_sys"),
         crate("strum"),
         crate("postcard"),
@@ -51,7 +57,6 @@ rust_tests(
     prefix = "test",
     deps = deps([
         member("heart"),
-        member("cas"),
         crate("object_store"),
         crate("sqlx"),
         crate("tantivy"),

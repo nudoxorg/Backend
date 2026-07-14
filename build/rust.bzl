@@ -1,18 +1,21 @@
 _TP = "//build/third-party"
 
+# After the streamlining consolidation:
+#   - `version` + `telemetry` folded into `heart` (heart::version / heart::telemetry).
+#   - `runtime` folded into `registry`; `protocol` folded into `registry` for the
+#     Cargo build but kept as a buck-only crate here (the compiler daemon's copy).
+#   - `cas` kept as a buck-only crate (the compiler's local Tiered build cache).
+#   - `caching` moved under heart/, `sandbox` moved under compiler/.
+#   - `server` is Cargo-only (no BUCK target).
 _MEMBERS = {
     "heart":            "//workspace/heart:heart",
     "ir":               "//workspace/ir:ir",
     "protocol":         "//workspace/protocol:protocol",
     "compiler":         "//workspace/compiler:compiler",
     "registry":         "//workspace/registry:registry",
-    "runtime":          "//workspace/runtime:runtime",
-    "server":           "//workspace/server:server-lib",
-    "caching":          "//workspace/util/caching:caching",
-    "sandbox":          "//workspace/util/sandbox:sandbox",
+    "caching":          "//workspace/heart/caching:caching",
+    "sandbox":          "//workspace/compiler/sandbox:sandbox",
     "cas":              "//workspace/cas:cas",
-    "version":          "//workspace/version:version",
-    "telemetry":        "//workspace/telemetry:telemetry",
 }
 
 def crate(name):

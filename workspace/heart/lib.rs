@@ -19,6 +19,14 @@ pub mod symbol;
 pub mod tenant;
 pub mod version;
 
+/// Unified observability (OTLP traces/logs/metrics + Pyroscope profiling).
+///
+/// Gated behind the optional `telemetry` feature so the heavy OpenTelemetry
+/// stack is pulled in only by the crate that actually installs it (`server`);
+/// every other `heart` consumer — and the Buck build — stays lean.
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
+
 pub use access::{Federation, Source, SourceId, SourceRole, Sourced};
 pub use health::{assert_probe_future_send, timed as timed_probe, Probe, Probeable};
 pub use connection::{Cold, Connect, Live};

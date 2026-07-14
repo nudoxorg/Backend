@@ -2,7 +2,7 @@
 
 use heart::Score;
 
-use crate::vector::{Embedding, model::EmbeddingModel};
+use crate::runtime::vector::{Embedding, model::EmbeddingModel};
 
 /// Cosine similarity of two embeddings of the same model brand.
 ///

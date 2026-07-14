@@ -1,6 +1,6 @@
 # Cache configuration lives in its own file; pull it in explicitly (Buck2 does
-# not auto-load buckconfig.d/). See buckconfig.d/cache.buckconfig.
-<file:buckconfig.d/cache.buckconfig>
+# not auto-load buckconfig.d/). See build/buckconfig.d/cache.buckconfig.
+<file:build/buckconfig.d/cache.buckconfig>
 
 [cells]
 root = .

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use heart::{SymbolId, Symbol, SymbolKind};
 
-use crate::graph::RelationKind;
+use crate::runtime::graph::RelationKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructureNode {

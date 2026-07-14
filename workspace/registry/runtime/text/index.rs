@@ -16,8 +16,8 @@ use tantivy::{
 
 use heart::{ContentHash, SymbolId, Symbol, SymbolKind};
 
-use crate::error::TextError;
-use crate::text::tokenizer;
+use crate::runtime::error::TextError;
+use crate::runtime::text::tokenizer;
 
 /// Heap budget for the single writer — modest, since symbol documents are tiny.
 const WRITER_MEMORY_BYTES: usize = 50_000_000;

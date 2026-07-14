@@ -13,7 +13,7 @@
 use heart::ContentHash;
 use moka::future::Cache;
 
-use crate::{
+use crate::runtime::{
 	error::EmbedError,
 	vector::{
 		embedding::{Embedder, Embedding, EmbeddingPurpose},

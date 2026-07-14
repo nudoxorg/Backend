@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::registry::coordination::{OutboxEntry, SinkKind};
-use runtime::vector::{
+use registry::runtime::vector::{
 	EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose, SymbolPoint,
 };
 
@@ -41,7 +41,7 @@ const GC_INTERVAL: Duration = Duration::from_secs(3600);
 /// in-flight work to settle before aborting the remaining pollers.
 pub(crate) async fn queue_worker<M: EmbeddingModel>(
 	server: Arc<Server<M>>,
-	drain: sandbox::CancelToken,
+	drain: tokio_util::sync::CancellationToken,
 ) {
 	let compiler = server.compiler_client().clone();
 	let indexer = Indexer::new(Arc::clone(&server), compiler);
@@ -151,7 +151,7 @@ async fn consume_once<M: EmbeddingModel>(
 /// Every write is idempotent (upsert-by-id / replace-by-key), so the outbox is
 /// free to re-deliver on crash without duplicating or corrupting the projection.
 ///
-/// [`Poller`]: runtime::text::Poller
+/// [`Poller`]: registry::runtime::text::Poller
 /// [`GlobalStore::symbols_for`]: registry::index::GlobalStore::symbols_for
 async fn materialize<M: EmbeddingModel>(
 	server: &Server<M>,
@@ -189,7 +189,7 @@ async fn materialize<M: EmbeddingModel>(
 /// Upsert-by-id and a single commit — exactly the write the text [`Poller`]
 /// performs, so replay is a no-op.
 ///
-/// [`Poller`]: runtime::text::Poller
+/// [`Poller`]: registry::runtime::text::Poller
 fn materialize_text<M: EmbeddingModel>(
 	stores: &SourceStores<M>,
 	symbols: &[heart::Symbol],

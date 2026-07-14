@@ -15,8 +15,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    developmentShell = {
-      url = "github:numtide/devshell";
+    nuenv = {
+      url = "github:philocalyst/nuenv";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -32,6 +32,11 @@
       url = "github:tweag/buck2.nix/038b031b84846101030b9d081445003e82e3be5c";
       flake = false;
     };
+
+    nix2container = {
+      url = "github:nlewo/nix2container";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -41,9 +46,10 @@
       nixos,
       fenix,
       git-hooks,
-      developmentShell,
+      nuenv,
       buck2-prelude,
       buck2-nix,
+      nix2container,
     }:
     let
       supportedSystemArchitectures = [
@@ -145,7 +151,10 @@
             systemArchitecture = systemArchitecture;
             nixPackages = import nixpkgs {
               system = systemArchitecture;
-              overlays = [ fenix.overlays.default ];
+              overlays = [
+                fenix.overlays.default
+                nuenv.overlays.default
+              ];
             };
             fenixPackages = fenix.packages.${systemArchitecture};
           }
@@ -155,8 +164,10 @@
     {
       packages = generateForEverySystem (
         { systemArchitecture, nixPackages, ... }:
+        let
+          buildImage = nix2container.packages.${systemArchitecture}.nix2container.buildImage;
+        in
         {
-          developmentShell = self.devShells.${systemArchitecture}.default;
           default = (nixos.lib.build.rustService { pkgs = nixPackages; }) {
             pname = "nudox-backend";
             version = self.rev or "unknown";
@@ -164,6 +175,56 @@
             cargoPackage = "server";
             mainProgram = "server";
             description = "NuDox backend server";
+          };
+
+          backend = (nixos.lib.build.rustService { pkgs = nixPackages; }) {
+            pname = "nudox-backend";
+            version = self.rev or "unknown";
+            src = ./.;
+            cargoPackage = "server";
+            mainProgram = "server";
+            description = "NuDox backend server";
+          };
+
+          registry = ((nixos.lib.build.rustService { pkgs = nixPackages; }) {
+            pname = "nudox-registry";
+            version = self.rev or "unknown";
+            src = ./.;
+            cargoPackage = "registry";
+            mainProgram = "";
+            description = "NuDox registry library";
+          }).overrideAttrs {
+            postFixup = "";
+          };
+
+          compiler-daemon = nixPackages.callPackage ./build/nix/compiler.nix {
+            # All paths are read from env vars at evaluation time.  In pure eval
+            # (no --impure), builtins.getEnv returns "" so every path is null and
+            # placeholder scripts are emitted.  When --impure is used with the
+            # snowydeer-imported store paths set, the real binaries are wired in.
+            #
+            # The same pattern extends to the optional oracle resource paths.
+            compilerDaemon =
+              let p = builtins.getEnv "NUDOX_COMPILER_DAEMON_PATH";
+              in if p != "" then builtins.storePath p else null;
+            producerWorker =
+              let p = builtins.getEnv "NUDOX_PRODUCER_WORKER_PATH";
+              in if p != "" then builtins.storePath p else null;
+            goOracle =
+              let p = builtins.getEnv "NUDOX_GO_ORACLE_PATH";
+              in if p != "" then builtins.storePath p else null;
+            javaOracle =
+              let p = builtins.getEnv "NUDOX_JAVA_ORACLE_PATH";
+              in if p != "" then builtins.storePath p else null;
+            csharpOracle =
+              let p = builtins.getEnv "NUDOX_CSHARP_ORACLE_PATH";
+              in if p != "" then builtins.storePath p else null;
+          };
+
+          compilerImage = nixPackages.callPackage ./build/nix/compiler-image.nix {
+            inherit buildImage;
+            compiler = self.packages.${systemArchitecture}.compiler-daemon;
+            bwrap = if builtins.hasAttr "bwrap" nixPackages then nixPackages.bwrap else null;
           };
         }
       );
@@ -259,17 +320,8 @@
 
           gitHookConfiguration = self.checks.${systemArchitecture}.preCommitGitHooks;
 
-          makeNushellCommand = commandName: commandHelpText: commandCategory: {
-            name = commandName;
-            help = commandHelpText;
-            category = commandCategory;
-            command = "cd $PRJ_ROOT && nu .config/scripts/${commandName}.nu \"$@\"";
-          };
-
           # Build script PATH: fenix rustc + nix package manager + system paths.
           # Consumed by build/third-party/defs.bzl via read_config("build","devshell_bin").
-          # Must include `rustc` (system-toolchain build script shims call it by bare
-          # name) and `nix` (flake.package() actions call `nix build`).
           devshellBin = nixPackages.lib.concatStringsSep ":" [
             "${rustNightlyToolchain}/bin"
             "${nixPackages.nix}/bin"
@@ -285,23 +337,13 @@
                 mkKeyValue = k: v: "  ${k} = ${v}";
               }
               {
-                # Override the nix cell to the real buck2.nix source via a
-                # repo-relative symlink (build/nix-cell → nix store path).
-                # Buck2 requires relative cell paths; absolute nix store paths
-                # are rejected at cell-resolver time. The devshell hook below
-                # creates/refreshes the symlink on every shell entry.
-                # Base .buckconfig keeps nix = build/nix-stub for non-Nix hosts.
                 cells = {
                   nix = "build/nix-cell";
                 };
-                # Enable Nix toolchains; overrides [nix] toolchain = 0 in the base
-                # .buckconfig (which is the non-Nix default).
                 nix = {
                   toolchain = "1";
                 };
                 build = {
-                  # Used by build/third-party/defs.bzl to set build script PATH.
-                  # Avoids hardcoding the Nix store hash that changes on devshell rebuild.
                   devshell_bin = devshellBin;
                 };
                 go = {
@@ -310,174 +352,88 @@
                 java = {
                   java_home = toString nixPackages.jdk21_headless;
                 };
-                # TODO(csharp): csharp.nuget_packages should point at a Nix-materialized
-                # offline NuGet folder feed built from
-                # workspace/compiler/compile/csharp/oracle/packages.lock.json.
-                # Once `packages.lock.json` is regenerated with a real SDK
-                # (`dotnet restore --force-evaluate`), replace the empty string with
-                # a fixed-output derivation such as:
-                #
-                #   nixPackages.fetchurl (or stdenvNoCC.mkDerivation) that runs
-                #   `dotnet restore --packages $out --locked-mode` in a FOD sandbox,
-                #   hash = "sha256-...";  # fill after first build
-                #
-                # Until then, the empty string lets the genrule fall back to an
-                # online restore (dev-only; will fail in CI without internet).
                 csharp = {
                   dotnet = "${nixPackages.dotnetCorePackages.sdk_10_0}/bin/dotnet";
                   nuget_packages = "";
                 };
               }
           );
+
+          # ── Devshell command wrappers ────────────────────────────────────
+          # Create a thin bash wrapper for each .nu script that cds to the
+          # project root before running, matching the previous devshell
+          # behaviour.
+          mkDevshellCommand = cmdName: nixPackages.writeTextFile {
+            name = "${cmdName}-nuenv";
+            destination = "/bin/${cmdName}";
+            executable = true;
+            text = ''
+              #!/bin/sh
+              cd "$PRJ_ROOT" && exec ${nixPackages.nushell}/bin/nu .config/scripts/${cmdName}.nu "$@"
+            '';
+          };
+
+          nuScriptCommands = [
+            "build" "build-release" "check" "clean" "create-notes"
+            "doc" "doc-open" "fmt" "fmt-check" "install" "install-force"
+            "lint" "lint-fix" "patch" "release" "run" "run-release"
+            "sync-deps" "test" "test-with" "test-all" "update"
+            "buck-build" "buck-test" "ra-index"
+            "snowydeer-import" "build-compiler-image"
+          ];
+
+          commandPackages = map mkDevshellCommand nuScriptCommands;
         in
         {
-          default = (developmentShell.legacyPackages.${systemArchitecture}.mkShell) {
+          default = nixPackages.mkShell {
             name = "NuNuShell";
 
-            env = [
-              {
-                name = "RUSTC_BOOTSTRAP";
-                value = "1";
-              }
-              {
-                name = "LIBRARY_PATH";
-                value = "${nixPackages.libiconv}/lib";
-              }
-              {
-                name = "MAIN_PACKAGE";
-                value = "nudox";
-              }
-              {
-                name = "OUTPUT_DIRECTORY";
-                value = "dist";
-              }
-              {
-                name = "LD_LIBRARY_PATH";
-                value = "${nixPackages.openssl.out}/lib:$LD_LIBRARY_PATH";
-              }
-              {
-                name = "OPENSSL_DIR";
-                value = "${nixPackages.openssl.dev}";
-              }
-              {
-                name = "OPENSSL_LIB_DIR";
-                value = "${nixPackages.openssl.out}/lib";
-              }
-              {
-                name = "OPENSSL_INCLUDE_DIR";
-                value = "${nixPackages.openssl.dev}/include";
-              }
-              # .NET SDK environment — suppress telemetry and first-run extraction;
-              # DOTNET_CLI_HOME must be writable ($TMPDIR is always writable) because
-              # dotnet writes SDKs/tools there at startup. Same class of fix as the
-              # GOCACHE sandbox-PATH issue from the Go/Java snapshot-test drive.
-              {
-                name = "DOTNET_CLI_TELEMETRY_OPTOUT";
-                value = "1";
-              }
-              {
-                name = "DOTNET_NOLOGO";
-                value = "1";
-              }
-              {
-                name = "DOTNET_SKIP_FIRST_TIME_EXPERIENCE";
-                value = "1";
-              }
-              {
-                name = "DOTNET_CLI_HOME";
-                value = "$TMPDIR/dotnet";
-              }
-            ];
+            # ── Simple environment variables ────────────────────────────────
+            RUSTC_BOOTSTRAP = "1";
+            LIBRARY_PATH = "${nixPackages.libiconv}/lib";
+            MAIN_PACKAGE = "nudox";
+            OUTPUT_DIRECTORY = "dist";
+            OPENSSL_DIR = "${nixPackages.openssl.dev}";
+            OPENSSL_LIB_DIR = "${nixPackages.openssl.out}/lib";
+            OPENSSL_INCLUDE_DIR = "${nixPackages.openssl.dev}/include";
+            DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+            DOTNET_NOLOGO = "1";
+            DOTNET_SKIP_FIRST_TIME_EXPERIENCE = "1";
 
-            motd = ''
-              $($(type -p kittysay) --think "the nu is the now" | dotacat)
-            '';
-
-            packages = [
+            # ── Packages available in the shell ─────────────────────────────
+            packages = commandPackages ++ [
               rustNightlyToolchain
               (makeBuck2BinaryDerivation nixPackages)
               (makeReindeerBinaryDerivation nixPackages)
             ]
             ++ (with nixPackages; [
-              git
-              cargo-bump
-              rust-analyzer
-              flock
-              nixfmt-rfc-style
-              tombi
-              typos
-              hongdown
-              kittysay
-              marksman
-              taplo
-              cargo-nextest
-              libiconv
-              nil
-              jsonfmt
-              dotacat
-              goreleaser
-              cuelsp
-              b3sum
-              go
-              jdk21_headless
-              dotnetCorePackages.sdk_10_0
+              git cargo-bump rust-analyzer flock nixfmt-rfc-style
+              tombi typos hongdown kittysay marksman taplo
+              cargo-nextest libiconv nil jsonfmt dotacat goreleaser
+              cuelsp b3sum go jdk21_headless dotnetCorePackages.sdk_10_0
             ])
             ++ (
               with nixPackages.lib;
               optionals nixPackages.stdenv.isLinux (
                 with nixPackages;
-                [
-                  wild-unwrapped
-                  openssl
-                  clang
-                ]
+                [ wild-unwrapped openssl clang ]
               )
             );
 
-            commands = [
-              (makeNushellCommand "check" "Check workspace for compilation and syntax errors" "build")
-              (makeNushellCommand "build" "Build workspace in debug mode" "build")
-              (makeNushellCommand "build-release" "Build workspace in release mode" "build")
-              {
-                name = "ra-index";
-                help = "Generate rust-project.json for rust-analyzer";
-                category = "build";
-                command = "bash build/gen-rust-project.sh";
-              }
-              {
-                name = "release";
-                help = "Complete release pipeline using GoReleaser";
-                category = "packaging";
-                command = "nu .config/scripts/release.nu";
-              }
-              (makeNushellCommand "run" "Run application in debug mode" "execution")
-              (makeNushellCommand "run-release" "Run application in release mode" "execution")
-              (makeNushellCommand "test" "Run all workspace tests" "testing")
-              (makeNushellCommand "test-with" "Run workspace tests with additional arguments" "testing")
-              (makeNushellCommand "fmt" "Format all Rust code in the workspace" "quality")
-              (makeNushellCommand "fmt-check" "Check if Rust code is properly formatted" "quality")
-              (makeNushellCommand "lint" "Lint code with Clippy in debug mode" "quality")
-              (makeNushellCommand "lint-fix" "Automatically fix Clippy lints where possible" "quality")
-              (makeNushellCommand "doc" "Generate project documentation" "documentation")
-              (makeNushellCommand "doc-open" "Generate and open project documentation in browser" "documentation")
-              (makeNushellCommand "create-notes" "Extract release notes from changelog for specified tag"
-                "maintenance"
-              )
-              (makeNushellCommand "update" "Update Cargo dependencies" "maintenance")
-              (makeNushellCommand "clean" "Clean build artifacts" "maintenance")
-              (makeNushellCommand "patch" "Update or create a patch from a branch" "maintenance")
-              (makeNushellCommand "install" "Build and install binary to system" "installation")
-              (makeNushellCommand "install-force" "Force install binary" "installation")
-              (makeNushellCommand "test-all" "Run Cargo workspace tests + Buck2 compiler tests" "testing")
-              (makeNushellCommand "sync-deps"
-                "Sync Cargo deps into Buck2 third-party registry after Cargo.toml changes"
-                "maintenance"
-              )
-              (makeNushellCommand "buck-build" "Build Buck2 targets" "buck2")
-              (makeNushellCommand "buck-test" "Run Buck2 tests" "buck2")
-            ];
+            # ── Shell hook ─────────────────────────────────────────────────
+            shellHook = ''
+              export PRJ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 
-            devshell.startup.shellHook.text = ''
+              # Environment vars that need shell expansion
+              export LD_LIBRARY_PATH="${nixPackages.openssl.out}/lib:$LD_LIBRARY_PATH"
+              export DOTNET_CLI_HOME="$TMPDIR/dotnet"
+
+              # MotD
+              if command -v kittysay > /dev/null 2>&1; then
+                kittysay --think "the nu is the now" | dotacat
+              fi
+
+              # Prelude setup
               ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
               ln -sfn ${buck2-nix} "$PRJ_ROOT/build/nix-cell"
               preludeStampFile="$PRJ_ROOT/build/prelude-local/.nix-source"
@@ -487,8 +443,7 @@
                 echo -n "${buck2-prelude}" > "$preludeStampFile"
               fi
 
-              # Strip any previous NIX-GENERATED block then append a fresh one.
-              # Idempotent: safe to run on every shell entry.
+              # Update .buckconfig — strip old NIX-GENERATED block, append fresh one
               awk '/^# BEGIN NIX-GENERATED/{skip=1;next} /^# END NIX-GENERATED/{skip=0;next} !skip{print}' \
                 "$PRJ_ROOT/.buckconfig" > "$PRJ_ROOT/.buckconfig.tmp"
               mv "$PRJ_ROOT/.buckconfig.tmp" "$PRJ_ROOT/.buckconfig"

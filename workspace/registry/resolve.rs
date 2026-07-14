@@ -17,17 +17,17 @@ use crate::package::{Coordinates as PackageCoordinates, PackageName};
 use crate::error::ResolveError;
 
 // The shared version vocabulary: the request enum, its constraint predicate,
-// and the pick_best selection primitive.
-use version::{Constraint, pick_best};
+// and the pick_best selection primitive (folded into `heart::version`).
+use heart::version::{Constraint, pick_best};
 
 /// A version request against a package.
 ///
-/// This is the shared [`version::VersionRequest`] specialised to
+/// This is the shared [`heart::version::VersionRequest`] specialised to
 /// [`PackageVersion`] with [`RangeConstraint`] as its constraint case — so a
 /// SemVer range and a raw PEP 440 (or other ecosystem) range both fold into the
 /// single `Constraint` arm rather than living as bespoke variants. `Latest` and
 /// `Exact` keep their distinct selection semantics.
-pub type VersionRequest = version::VersionRequest<PackageVersion, RangeConstraint>;
+pub type VersionRequest = heart::version::VersionRequest<PackageVersion, RangeConstraint>;
 
 /// The range constraint a registry request can carry: either a parsed SemVer
 /// range, or a raw ecosystem range string parsed lazily under that ecosystem's

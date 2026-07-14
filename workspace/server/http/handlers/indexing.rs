@@ -11,7 +11,7 @@ use axum::{
 };
 use heart::{Freshness, PackageId, ResolutionState};
 
-use runtime::vector::EmbeddingModel;
+use registry::runtime::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::Principal;
 use crate::coordination::indexing::Indexer;

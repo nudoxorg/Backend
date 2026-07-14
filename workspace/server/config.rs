@@ -223,13 +223,6 @@ pub struct Limits {
 	/// from wedging shutdown forever while still letting a nearly-done one commit.
 	#[serde(default = "defaults::drain_deadline")]
 	pub drain_deadline: std::time::Duration,
-
-	/// Sandbox ceilings: profile name → sparse overlay (design §13 / P5).
-	///
-	/// Keys are lowercase profile names (`rust`, `java`, `go`, `nix`,
-	/// `static_parser`) or package coordinates (`crates.io/serde@1.0.0`).
-	#[serde(default)]
-	pub sandbox_overrides: std::collections::HashMap<String, sandbox::LimitOverride>,
 }
 
 impl Default for ServerConfiguration {
@@ -349,7 +342,6 @@ impl Default for Limits {
 			job_lease: defaults::job_lease(),
 			job_deadline: defaults::job_deadline(),
 			drain_deadline: defaults::drain_deadline(),
-			sandbox_overrides: std::collections::HashMap::new(),
 		}
 	}
 }
@@ -532,16 +524,16 @@ pub enum ConfigValidationError {
 	/// Terminus organization name failed validation (carries the rich GraphNameError
 	/// with position, length, char details etc.).
 	#[error("invalid terminus organization")]
-	InvalidTerminusOrganization(runtime::graph::GraphNameError),
+	InvalidTerminusOrganization(registry::runtime::graph::GraphNameError),
 
 	/// Terminus database name failed validation.
 	#[error("invalid terminus database")]
 	// Same source type as organization; no #[from] so From is not ambiguous.
-	InvalidTerminusDatabase(runtime::graph::GraphNameError),
+	InvalidTerminusDatabase(registry::runtime::graph::GraphNameError),
 
 	/// A Qdrant collection name failed validation (carries the rich CollectionNameError).
 	#[error("invalid qdrant collection name")]
-	InvalidQdrantCollection(#[from] runtime::vector::CollectionNameError),
+	InvalidQdrantCollection(#[from] registry::runtime::vector::CollectionNameError),
 
 	/// A well-known default credential is present in a production deployment.
 	///

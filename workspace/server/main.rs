@@ -10,7 +10,7 @@ use server::{Server, ServerConfiguration};
 /// brand, so a store built for a *different model* (not merely a different
 /// dimension) cannot be wired in. Switching models is a deliberate recompile +
 /// migration.
-type EmbedModel = runtime::vector::models::OpenAi3Small;
+type EmbedModel = registry::runtime::vector::models::OpenAi3Small;
 
 /// Fast general-purpose allocator for the serving path.
 #[global_allocator]
@@ -37,8 +37,8 @@ async fn main() -> anyhow::Result<()> {
 	// invoking package; under Buck2 it resolves to the literal string. Both
 	// are honest placeholders pending a real build-version injection (TODO).
 	let service_version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown").to_owned();
-	let telemetry_config = telemetry::TelemetryConfig::resolve(service_version, "buck2-or-cargo");
-	let _guard = telemetry::init(&telemetry_config)?;
+	let telemetry_config = heart::telemetry::TelemetryConfig::resolve(service_version, "buck2-or-cargo");
+	let _guard = heart::telemetry::init(&telemetry_config)?;
 
 	// The compile plane now runs as a separate daemon; `Server::assemble` only
 	// constructs a `CompilerClient` pointing at `config.compiler_endpoint`. No

@@ -16,9 +16,9 @@ use axum::{
 use futures::TryStreamExt;
 use heart::{Cursor, Page, Score, Scored, Sourced, Symbol, SymbolId};
 use crate::registry::search::SearchKey;
-use runtime::session::{SessionGraph, SessionId, SessionStore};
+use registry::runtime::session::{SessionGraph, SessionId, SessionStore};
 
-use runtime::vector::EmbeddingModel;
+use registry::runtime::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::Principal;
 use crate::error::{BadRequestReason, ServerError, ServerResult};

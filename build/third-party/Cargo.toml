@@ -214,7 +214,7 @@ census = { version = "0.4.2" }
 cfg-if = { version = "1.0.4" }
 cfg_aliases = { version = "0.2.1" }
 chacha20 = { version = "0.10.1" }
-chrono = { version = "0.4.45" }
+chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.1" }
 clap_builder = { version = "4.6.0" }
 clap_derive = { version = "4.6.1" }
@@ -227,7 +227,7 @@ codemap-diagnostic = { version = "0.1.2" }
 collection_literals = { version = "1.0.3" }
 colorchoice = { version = "1.0.5" }
 command-fds = { version = "0.3.3" }
-compact_str = { version = "0.8.2" }
+compact_str = { version = "0.8.2", features = ["serde"] }
 compact-str-0-9 = { package = "compact_str", version = "0.9.1" }
 compression-codecs = { version = "0.4.38" }
 compression-core = { version = "0.4.32" }
@@ -596,7 +596,7 @@ minimal-lexical = { version = "0.2.1" }
 miniz_oxide = { version = "0.8.9" }
 mio = { version = "1.2.1" }
 miow = { version = "0.6.1" }
-moka = { version = "0.12.15", features = ["sync"] }
+moka = { version = "0.12.15", features = ["sync", "future"] }
 monch = { version = "0.6.0" }
 multer = { version = "3.1.0" }
 multihash = { version = "0.19.5" }
@@ -628,7 +628,7 @@ num-order = { version = "1.2.0" }
 num-traits = { version = "0.2.19" }
 num_cpus = { version = "1.17.0" }
 num_threads = { version = "0.1.7" }
-nutype = { version = "0.6.2" }
+nutype = { version = "0.6.2", features = ["serde"] }
 nutype_macros = { version = "0.6.2" }
 object_store = { version = "0.11.2" }
 once_cell = { version = "1.21.4" }
@@ -638,7 +638,7 @@ onig = { version = "6.5.1" }
 onig_sys = { version = "69.9.1" }
 oorandom = { version = "11.1.5" }
 openssl-probe = { version = "0.2.1" }
-ordered-float = { version = "4.6.0" }
+ordered-float = { version = "4.6.0", features = ["serde"] }
 ordermap = { version = "1.2.0" }
 os_str_bytes = { version = "6.6.0" }
 os-str-bytes-7 = { package = "os_str_bytes", version = "7.2.0" }
@@ -689,7 +689,7 @@ pkcs8 = { version = "0.10.2" }
 pkg-config = { version = "0.3.33" }
 plain = { version = "0.2.3" }
 portable-atomic = { version = "1.13.1" }
-postcard = { version = "1.1.3" }
+postcard = { version = "1.1.3", features = ["alloc"] }
 potential_utf = { version = "0.1.5" }
 powerfmt = { version = "0.2.0" }
 ppv-lite86 = { version = "0.2.21" }
@@ -838,9 +838,9 @@ security-framework = { version = "3.7.0" }
 security-framework-sys = { version = "2.17.0" }
 self-replace = { version = "1.5.0" }
 self_cell = { version = "1.2.2" }
-semver = { version = "1.0.28" }
+semver = { version = "1.0.28", features = ["serde"] }
 seq-macro = { version = "0.3.6" }
-serde = { version = "1.0.228" }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde-wasm-bindgen = { version = "0.6.5" }
 serde_bser = { version = "0.4.0" }
 serde_bytes = { version = "0.11.19" }
@@ -878,7 +878,7 @@ slug = { version = "0.1.4" }
 smallvec = { version = "1.15.2" }
 smartstring = { version = "1.0.1" }
 smawk = { version = "0.3.3" }
-smol_str = { version = "0.2.2" }
+smol_str = { version = "0.2.2", features = ["serde"] }
 smol-str-0-3 = { package = "smol_str", version = "0.3.6" }
 snafu = { version = "0.8.9" }
 snafu-derive = { version = "0.8.9" }
@@ -910,7 +910,7 @@ strong_hash_derive = { version = "0.1.0" }
 strsim = { version = "0.11.1" }
 structmeta = { version = "0.2.0" }
 structmeta-derive = { version = "0.2.0" }
-strum = { version = "0.26.3" }
+strum = { version = "0.26.3", features = ["derive"] }
 strum_macros = { version = "0.26.4" }
 subtle = { version = "2.6.1" }
 syn = { version = "1.0.109" }
@@ -976,7 +976,7 @@ toml_parser = { version = "1.1.2+spec-1.1.0" }
 toml_write = { version = "0.1.2" }
 toml_writer = { version = "1.1.1+spec-1.1.0" }
 tonic = { version = "0.12.3" }
-tower = { version = "0.4.13" }
+tower = { version = "0.4.13", features = ["retry", "util", "timeout"] }
 tower-0-5 = { package = "tower", version = "0.5.3" }
 tower-http = { version = "0.6.11" }
 tower-layer = { version = "0.3.3" }
@@ -1020,19 +1020,19 @@ unsigned-varint = { version = "0.8.0" }
 unsynn = { version = "0.3.0" }
 untrusted = { version = "0.9.0" }
 unty = { version = "0.0.4" }
-url = { version = "2.5.8" }
+url = { version = "2.5.8", features = ["serde"] }
 urlencoding = { version = "2.1.3" }
 utf8-ranges = { version = "1.0.5" }
 utf8_iter = { version = "1.0.4" }
 utf8parse = { version = "0.2.2" }
-uuid = { version = "1.23.4" }
+uuid = { version = "1.23.4", features = ["v4", "v5", "serde"] }
 uuid-rng-internal = { version = "1.23.4" }
 uv-cache-key = { version = "0.0.59" }
 uv-errors = { version = "0.0.59" }
 uv-fs = { version = "0.0.59" }
 uv-macros = { version = "0.0.59" }
 uv-normalize = { version = "0.0.59" }
-uv-pep440 = { version = "0.0.59" }
+uv-pep440 = { version = "0.0.59", features = ["serde", "version-ranges"] }
 uv-pep508 = { version = "0.0.59" }
 uv-redacted = { version = "0.0.59" }
 uv-small-str = { version = "0.0.59" }

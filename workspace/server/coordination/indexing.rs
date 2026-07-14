@@ -25,7 +25,7 @@ use crate::registry::identity::PackageCoordinates;
 use crate::registry::ingest::{ArchiveFormat, EntryAllowlist, ExtractionLimits, ingest_archive};
 use crate::registry::queue::LeasedJob;
 use crate::registry::{RegistryError, error::ResolveError};
-use runtime::vector::EmbeddingModel;
+use registry::runtime::vector::EmbeddingModel;
 
 use crate::compiler_client::CompilerClient;
 use crate::error::{BadRequestReason, InternalError, ServerError, ServerResult};
@@ -106,14 +106,14 @@ impl<M: EmbeddingModel> Indexer<M> {
 
 		// ── Compile ────────────────────────────────────────────────────────────
 		self.advance(stores, package, &progressing(Phase::Compiling)).await?;
-		let files: Vec<protocol::FileBytes> = builder
+		let files: Vec<registry::protocol::FileBytes> = builder
 			.source_files()
-			.map(|(path, bytes)| protocol::FileBytes {
+			.map(|(path, bytes)| registry::protocol::FileBytes {
 				path: path.to_string(),
 				bytes: bytes.to_vec(),
 			})
 			.collect();
-		let req = protocol::CompileRequest {
+		let req = registry::protocol::CompileRequest {
 			coordinates: coordinates.clone(),
 			toolchain: builder.toolchain().clone(),
 			files,
@@ -125,12 +125,12 @@ impl<M: EmbeddingModel> Indexer<M> {
 			.map_err(ServerError::Compile)?;
 
 		let (ir_bytes, references, identifiers) = match compile_resp {
-			protocol::CompileResponse::Ok { surface, references, identifiers } => {
+			registry::protocol::CompileResponse::Ok { surface, references, identifiers } => {
 				let ir_bytes = bytes::Bytes::from(surface);
 				let ref_set = wire_references_to_reference_set(references)?;
 				(ir_bytes, ref_set, identifiers)
 			}
-			protocol::CompileResponse::Err { kind, message } => {
+			registry::protocol::CompileResponse::Err { kind, message } => {
 				return Err(ServerError::Compile(
 					crate::compiler_client::CompilerClientError::RemoteError { kind, message },
 				));
@@ -245,7 +245,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// `max_inflight_jobs`. (Replaces the old stateless `IndexingWorker`; the
 	/// server handle now lives on the indexer itself.)
 	pub async fn run_worker(&self) -> ServerResult<()> {
-		self.run_worker_until(&sandbox::CancelToken::never()).await
+		self.run_worker_until(&tokio_util::sync::CancellationToken::new()).await
 	}
 
 	/// The worker loop with an explicit drain signal. While `drain` is
@@ -253,7 +253,7 @@ impl<M: EmbeddingModel> Indexer<M> {
 	/// stops pulling *new* jobs and returns cleanly, letting the caller wait for
 	/// the in-flight `drive_job` futures (already awaited each tick) to settle.
 	/// [`run_worker`](Self::run_worker) is this with a never-cancelled token.
-	pub async fn run_worker_until(&self, drain: &sandbox::CancelToken) -> ServerResult<()> {
+	pub async fn run_worker_until(&self, drain: &tokio_util::sync::CancellationToken) -> ServerResult<()> {
 		let lease = self.job_lease();
 		loop {
 			if drain.is_cancelled() {
@@ -553,10 +553,10 @@ pub fn classify_failure(error: &ServerError) -> FailureKind {
 	}
 }
 
-/// Convert a list of [`protocol::WireFile`] references into the registry's
+/// Convert a list of [`registry::protocol::WireFile`] references into the registry's
 /// [`crate::registry::blob::ReferenceSet`].
 fn wire_references_to_reference_set(
-	wire_files: Vec<protocol::WireFile>,
+	wire_files: Vec<registry::protocol::WireFile>,
 ) -> ServerResult<crate::registry::blob::ReferenceSet> {
 	use crate::registry::blob::{FileReferences, ReferenceSet};
 	let by_file = wire_files

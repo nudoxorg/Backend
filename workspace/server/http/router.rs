@@ -21,7 +21,7 @@ use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 
-use runtime::vector::EmbeddingModel;
+use registry::runtime::vector::EmbeddingModel;
 use crate::config::Limits;
 use crate::Server;
 use crate::http::handlers::{admin, health, indexing, search};

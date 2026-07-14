@@ -13,7 +13,7 @@ use heart::{ContentHash, PackageId, ResolutionState};
 use crate::registry::RegistryError;
 use crate::registry::blob::BlobManifest;
 
-use runtime::vector::EmbeddingModel;
+use registry::runtime::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::AdminCap;
 use crate::error::{BadRequestReason, ServerResult};

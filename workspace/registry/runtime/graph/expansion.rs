@@ -7,7 +7,7 @@ use futures::{Future, Stream, TryFutureExt};
 use heart::{SymbolId, Scored};
 use serde::{Deserialize, Serialize};
 
-use crate::{error::GraphError, graph::RelationKind};
+use crate::runtime::{error::GraphError, graph::RelationKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpansionBounds {
@@ -23,7 +23,7 @@ pub struct ExpandedEdge {
 	pub depth:    std::num::NonZeroUsize,
 }
 
-/// The pure BFS behind [`crate::graph::Graph::expand`], generic over how a
+/// The pure BFS behind [`crate::runtime::graph::Graph::expand`], generic over how a
 /// node's outgoing edges are fetched so it is testable without a live graph.
 ///
 /// Honors the bounds exactly: at most `bounds.depth` levels, at most
@@ -64,7 +64,7 @@ where
 	Ok(edges)
 }
 
-impl crate::graph::Graph<heart::Live> {
+impl crate::runtime::graph::Graph<heart::Live> {
 	pub fn expand(
 		&self,
 		origin: SymbolId,

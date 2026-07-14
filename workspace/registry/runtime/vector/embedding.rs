@@ -21,7 +21,7 @@ use std::{marker::PhantomData, sync::Arc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::model::{EmbeddingModel, ModelId};
-use crate::error::EmbedError;
+use crate::runtime::error::EmbedError;
 
 /// What a piece of text is being embedded *as*. The same text embedded under two
 /// purposes yields two distinct vectors, so code-vs-doc search stay separable in

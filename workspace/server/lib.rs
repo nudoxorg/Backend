@@ -21,9 +21,13 @@ pub mod coordination;
 pub mod error;
 pub mod http;
 mod poll;
-pub mod registry;
 pub mod save;
 pub mod search;
+
+// The registry is now THE service crate; server's former in-tree copy was a
+// stale duplicate. Re-export the crate as `crate::registry` so existing
+// `crate::registry::…` paths keep resolving against the single source of truth.
+pub use ::registry;
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -37,7 +41,7 @@ use crate::registry::{
 	metadata::{Specifics, Synonyms},
 	queue::{Queue, RetryPolicy},
 };
-use runtime::{
+use registry::runtime::{
 	graph::{Credentials, Database, Graph, Organization},
 	session::PgSessionStore,
 	text::TextIndex,
@@ -97,8 +101,8 @@ pub struct Server<M: EmbeddingModel> {
 	federation: Federation<SourceStores<M>>,
 
 	/// The query planner — the only place a *user-facing* semantic gate is
-	/// minted ([`runtime::vector::SemanticGate::issue`]). Store readiness uses
-	/// the separate [`runtime::vector::SemanticGate::for_readiness`] constructor.
+	/// minted ([`registry::runtime::vector::SemanticGate::issue`]). Store readiness uses
+	/// the separate [`registry::runtime::vector::SemanticGate::for_readiness`] constructor.
 	planner: crate::search::SearchPlanner,
 
 	/// The (model-branded) query embedder behind the gated semantic path.
@@ -284,14 +288,14 @@ impl<M: EmbeddingModel> Server<M> {
 		// postgres watermark, not "connected".
 		let text_dir: std::path::PathBuf = cfg.text_index_directory();
 		std::fs::create_dir_all(&text_dir)
-			.map_err(|error| ServerError::Runtime(runtime::error::TextError::Io(error).into()))?;
+			.map_err(|error| ServerError::Runtime(registry::runtime::error::TextError::Io(error).into()))?;
 		let text =
 			TextIndex::open_or_create(&text_dir).map_err(|e| ServerError::Runtime(e.into()))?;
 
 		// So is the package-search index, fed by the sync poller off the same pool.
 		let packages_dir = cfg.package_index_directory();
 		std::fs::create_dir_all(&packages_dir)
-			.map_err(|error| ServerError::Runtime(runtime::error::TextError::Io(error).into()))?;
+			.map_err(|error| ServerError::Runtime(registry::runtime::error::TextError::Io(error).into()))?;
 		let packages = Arc::new(PackageSearchIndex::open(&packages_dir, pool)?);
 
 		Ok(SourceStores { global_store, blobs, queue, outbox, graph, semantics, text, packages })
@@ -349,7 +353,7 @@ impl<M: EmbeddingModel> Server<M> {
 	/// every source in the federation.
 	pub async fn serve(self: Arc<Self>) -> ServerResult<()> {
 		// The `metrics` recorder behind `/metrics` (fanned out to OTLP) is
-		// installed by `telemetry::init` in `main`, before any request or
+		// installed by `heart::telemetry::init` in `main`, before any request or
 		// poller can emit a metric — no per-serve install here anymore.
 		let router = http::router::router(Arc::clone(&self));
 		let listener = tokio::net::TcpListener::bind(self.config.serving_address)
@@ -372,7 +376,7 @@ impl<M: EmbeddingModel> Server<M> {
 		// Graceful-drain signal for the queue worker: on shutdown we fire it,
 		// let the worker stop dequeuing new jobs and finish in-flight ones (up to
 		// a bounded deadline), then abort whatever remains.
-		let drain = sandbox::CancelToken::new();
+		let drain = tokio_util::sync::CancellationToken::new();
 		let mut queue_worker: Option<tokio::task::JoinHandle<()>> = None;
 		if role.runs_forge() {
 			queue_worker = Some(tokio::spawn(poll::queue_worker(Arc::clone(&self), drain.clone())));

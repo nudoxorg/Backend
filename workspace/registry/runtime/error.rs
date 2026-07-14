@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use heart::{ConnectError, Retryable};
 
-use crate::vector::CollectionNameError;
+use crate::runtime::vector::CollectionNameError;
 
 /// Classified reasons why a graph (Terminus/WOQL) query was rejected or failed
 /// to execute. Carries structured data (never a bare string) so callers can
@@ -321,7 +321,7 @@ pub enum SessionError {
 	Codec(#[source] serde_json::Error),
 
 	/// The postgres-backed session store's query failed (only the
-	/// [`crate::session::PgSessionStore`] path).
+	/// [`crate::runtime::session::PgSessionStore`] path).
 	#[error("session database operation failed")]
 	Database(#[source] sqlx::Error),
 
@@ -343,7 +343,7 @@ impl Retryable for SessionError {
 	}
 }
 
-/// Failures from an [`crate::vector::Embedder`] — a network model can fail,
+/// Failures from an [`crate::runtime::vector::Embedder`] — a network model can fail,
 /// time out, or rate-limit, so embedding is fallible and batched.
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {

@@ -23,7 +23,7 @@ pub enum ServerError {
 
     /// The runtime serving tier failed.
     #[error(transparent)]
-    Runtime(#[from] runtime::RuntimeError),
+    Runtime(#[from] registry::runtime::RuntimeError),
 
     /// The compiler daemon call failed (transport or remote rejection).
     #[error(transparent)]

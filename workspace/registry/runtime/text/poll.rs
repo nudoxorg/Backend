@@ -14,7 +14,7 @@ use sqlx::Row;
 
 use heart::Retryable;
 
-use crate::{error::{RowDecodeError, TextError}, text::index::TextIndex};
+use crate::runtime::{error::{RowDecodeError, TextError}, text::index::TextIndex};
 
 /// A durable pointer into postgres marking how far the local index has been
 /// caught up. Persisted alongside the tantivy directory so a restarted replica
@@ -207,7 +207,7 @@ fn symbol_from_row(row: &sqlx::postgres::PgRow) -> Result<heart::Symbol, TextErr
 			plain: plain_name(&fq_name).into(),
 			fully_qualified: fq_name.as_str().into(),
 		},
-		kind: crate::text::index::parse_kind(&kind)
+		kind: crate::runtime::text::index::parse_kind(&kind)
 			.ok_or_else(|| TextError::Row(RowDecodeError::UnknownSymbolKind { raw: kind }))?,
 	})
 }

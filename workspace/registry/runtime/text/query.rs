@@ -16,7 +16,7 @@ use tantivy::{
     Term,
 };
 
-use crate::{
+use crate::runtime::{
     error::{TextError, TextQueryError},
     pagination,
     text::{
@@ -105,7 +105,7 @@ impl TextIndex {
     ///
     /// The snapshot check and the keyset pagination loop share the same
     /// backing function as the vector (qdrant) path via
-    /// [`crate::pagination::keyset_page`], keeping the over-fetch / sort /
+    /// [`crate::runtime::pagination::keyset_page`], keeping the over-fetch / sort /
     /// filter logic in one place.
     pub fn search(
         &self,
