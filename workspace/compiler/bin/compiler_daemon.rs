@@ -1,5 +1,5 @@
-//! Compiler daemon — an HTTP service that accepts [`protocol::CompileRequest`]
-//! and returns [`protocol::CompileResponse`].
+//! Compiler daemon — an HTTP service that accepts [`compiler::protocol::CompileRequest`]
+//! and returns [`compiler::protocol::CompileResponse`].
 //!
 //! Bind address: `NUDOX_COMPILER_ADDR` env var, defaulting to `0.0.0.0:8080`.
 //!
@@ -18,7 +18,7 @@ use axum::{
     routing::{get, post},
 };
 use compiler::daemon::forge::{ForgeConfig, ForgeRuntime};
-use protocol::{CompileRequest, CompileResponse, WireFile, WireReference};
+use compiler::protocol::{CompileRequest, CompileResponse, WireFile, WireReference};
 use sandbox::Policy;
 use tracing::info;
 

@@ -1,8 +1,9 @@
 //! Wire contract between the Cargo-side `server` and the Buck2 compiler daemon.
 //!
-//! This crate is **dual-built**: it has both a `Cargo.toml` (used by `server`)
-//! and a `BUCK` file (used by the Buck2 `compiler` daemon).  The `.rs` source
-//! is shared verbatim by both build systems.
+//! The Buck2-side copy of the wire types, owned by the `compiler` crate and used
+//! by its daemon binary (`bin/compiler_daemon.rs`). The Cargo consumer (`server`)
+//! reaches the identical source through `registry::protocol`; the two copies are
+//! kept byte-identical on purpose so both ends agree on the postcard layout.
 //!
 //! ## Wire layout stability
 //!

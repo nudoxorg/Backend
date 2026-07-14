@@ -10,6 +10,9 @@
 
 pub mod error;
 pub mod generate;
+/// Wire contract with the Cargo-side `server` (formerly the standalone
+/// `protocol` crate; its Cargo-side twin lives at `registry::protocol`).
+pub mod protocol;
 pub mod graph;
 pub mod compile;
 pub use crate::compile as languages;

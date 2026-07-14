@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
-use heart::ContentHash;
+use crate::ContentHash;
 
-use crate::{Cas, CasError, EvictableCas};
+use super::{Cas, CasError, EvictableCas};
 
 /// Directory of blake3-named files.
 #[derive(Debug, Clone)]

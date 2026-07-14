@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use heart::ContentHash;
+use crate::ContentHash;
 
-use crate::{Cas, CasError, EvictableCas};
+use super::{Cas, CasError, EvictableCas};
 
 /// Mutex-backed map. No durability — unit tests and ephemeral L1 fill.
 #[derive(Default)]

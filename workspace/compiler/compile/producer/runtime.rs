@@ -10,7 +10,7 @@
 //! the boundary.
 
 use bytes::Bytes;
-use cas::{Cas, EvictableCas, Tiered};
+use heart::cache::{Cas, EvictableCas, Tiered};
 use heart::ContentHash;
 use sandbox::{
 	Cage, ForgeObserver, NodeId, OverrideTable, SealedInput, ToolchainSet, WorkerLang,
@@ -208,7 +208,7 @@ pub fn execute_plan<C: ForgeContext, P: Producer + ?Sized>(
 pub struct LocalForgeContext {
 	node: NodeId,
 	cage: sandbox::DevPassthrough,
-	cas: Tiered<cas::NoL3>,
+	cas: Tiered<heart::cache::NoL3>,
 	toolchains: ToolchainSet,
 	overrides: OverrideTable,
 	observer: sandbox::NullObserver,
@@ -265,7 +265,7 @@ impl Drop for LocalForgeContext {
 }
 
 impl ForgeContext for LocalForgeContext {
-	type Cas = Tiered<cas::NoL3>;
+	type Cas = Tiered<heart::cache::NoL3>;
 
 	fn node(&self) -> &NodeId {
 		&self.node
@@ -273,7 +273,7 @@ impl ForgeContext for LocalForgeContext {
 	fn cage(&self) -> &dyn Cage {
 		&self.cage
 	}
-	fn cas(&self) -> &Tiered<cas::NoL3> {
+	fn cas(&self) -> &Tiered<heart::cache::NoL3> {
 		&self.cas
 	}
 	fn toolchains(&self) -> &ToolchainSet {

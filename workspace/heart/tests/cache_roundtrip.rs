@@ -1,7 +1,7 @@
 //! put/get roundtrip, second-get hit, integrity, invalidate, generic L3.
 
 use bytes::Bytes;
-use cas::{Cas, ContentHash, DiskCas, EvictableCas, MemoryCas, NoL3, Tiered};
+use heart::cache::{Cas, ContentHash, DiskCas, EvictableCas, MemoryCas, NoL3, Tiered};
 
 #[tokio::test]
 async fn memory_put_get_roundtrip() {
@@ -50,7 +50,7 @@ async fn disk_corrupt_envelope_is_integrity_error_and_removed() {
 	std::fs::write(&path, b"not-an-envelope").unwrap();
 
 	let err = cas.get(key).await.unwrap_err();
-	assert!(matches!(err, cas::CasError::Integrity { .. }));
+	assert!(matches!(err, heart::cache::CasError::Integrity { .. }));
 	assert!(!path.exists(), "corrupt blob must be deleted");
 	assert_eq!(cas.get(key).await.unwrap(), None);
 }

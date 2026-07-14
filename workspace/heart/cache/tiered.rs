@@ -3,11 +3,11 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use caching::StampedeCache;
-use heart::ContentHash;
+use super::StampedeCache;
+use crate::ContentHash;
 
-use crate::disk::DiskCas;
-use crate::{Cas, CasError, EvictableCas};
+use super::disk::DiskCas;
+use super::{Cas, CasError, EvictableCas};
 
 /// Assumed recompute cost when seeding L1 from a lower tier (XFetch bookkeeping).
 const PROMOTE_COST: Duration = Duration::from_millis(1);

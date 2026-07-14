@@ -3,6 +3,7 @@
 #![feature(return_type_notation)]
 
 pub mod access;
+pub mod cache;
 pub mod connection;
 pub mod content;
 pub mod cursor;

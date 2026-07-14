@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cas::{Cas, CasError, ContentHash, DiskCas, Tiered};
+use heart::cache::{Cas, CasError, ContentHash, DiskCas, Tiered};
 use sandbox::{
     Cage, CageError, DevPassthrough, ForgeObserver, LinuxNamespaces, NodeId, NullObserver,
     OverrideTable, Policy, ToolchainSet, WorkerLang, WorkerPool, WorkerPoolConfig,
@@ -102,7 +102,7 @@ pub enum ForgeError {
 
     /// CAS open failed.
     #[error("cas open failed")]
-    Cas(#[from] cas::CasError),
+    Cas(#[from] heart::cache::CasError),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ impl ForgeRuntime<Cold> {
 
         let l3 = DaemonL3::None;
         let l2 = match cfg.cas_root.as_deref() {
-            Some(root) => Some(cas::DiskCas::open(root)?),
+            Some(root) => Some(heart::cache::DiskCas::open(root)?),
             None => None,
         };
         let cas: Arc<Tiered<DaemonL3>> = Arc::new(Tiered::with_l3(256, l2, l3));

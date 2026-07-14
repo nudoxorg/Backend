@@ -11,7 +11,7 @@ use std::{
 	time::Duration,
 };
 
-use caching::{StampedeCache, jittered};
+use heart::cache::{StampedeCache, jittered};
 
 /// A non-`Clone` error, to prove the coalescer/cache never require `E: Clone` —
 /// the property that makes the embedding cache avoid moka's `try_get_with`.

@@ -16,9 +16,7 @@ rust_crate(
     deps = deps([
         member("heart"),
         member("ir"),
-        member("protocol"),
         member("sandbox"),
-        member("cas"),
         member("version"),
         crate("serde"),
         crate("serde_json"),
@@ -118,10 +116,8 @@ rust_bin(
     deps = deps([
         target(":compiler"),
         member("ir"),
-        member("protocol"),
         member("heart"),
         member("sandbox"),
-        member("cas"),
         crate("axum"),
         crate("tokio"),
         crate("serde_json"),
@@ -150,7 +146,6 @@ rust_tests(
         member("ir"),
         member("registry"),
         member("sandbox"),
-        member("cas"),
         member("version"),
         crate("tempfile"),
         crate("serde"),

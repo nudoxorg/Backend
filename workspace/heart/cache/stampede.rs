@@ -28,7 +28,7 @@ use std::{
 
 use moka::future::Cache;
 
-use crate::single_flight::{SingleFlight, Ticket};
+use super::single_flight::{SingleFlight, Ticket};
 
 /// A cached value plus the timing metadata that drives probabilistic refresh.
 #[derive(Clone)]
