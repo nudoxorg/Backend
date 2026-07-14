@@ -1,4 +1,4 @@
-use std::{path::PathBuf, range::Range};
+use std::{convert::Infallible, path::PathBuf, range::Range};
 
 use crate::{registry::Registry, symbol::{NudoxPath, Symbol, Visibility}};
 
@@ -16,5 +16,9 @@ pub fn dummy_symbol(name: &str) -> Symbol {
 pub struct DummyRegistry;
 
 impl Registry for DummyRegistry {
+	type EntryId = Infallible;
+
+	fn idx_from_entry_id<T>(&self, _: Self::EntryId) -> crate::idx::EntryIdx<T> { unimplemented!() }
+
 	fn resolve_package(&self, _: usize) -> &crate::arena::EntryArena { unimplemented!() }
 }
