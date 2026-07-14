@@ -149,3 +149,5 @@
 /.agent-wt
 /build/third-party/.cargo
 /build/third-party/.cargo-tmp
+
+!/cargo.lock
