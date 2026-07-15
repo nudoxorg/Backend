@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 617
 expression: rendered
 ---
 """
@@ -15,6 +16,13 @@ A well-documented class.
 @dataclass
 class Documented:
     value: int
+
+# ---
+
+"""
+Return a description.
+"""
+def describe(self, self: Self) -> str: ...
 
 # ---
 

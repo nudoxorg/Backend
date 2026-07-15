@@ -16,6 +16,16 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+/// The oracle emits `null` for many absent string fields. `#[serde(default)]`
+/// only covers *missing* keys — present-null still fails. This accepts both.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: Default + Deserialize<'de>,
+{
+	Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// The whole oracle output: one document per invocation.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,13 +33,13 @@ pub struct Extraction {
 	/// Schema version stamped by the oracle (currently `1`).
 	pub format: u32,
 	/// The .NET runtime version the oracle ran on (`"10.0"`).
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub dotnet_version: String,
 	/// The Roslyn version (`"5.6.0"`).
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub roslyn: String,
 	/// `"metadata"` or `"source"`.
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub mode: String,
 	/// The extracted assembly's identity + facade metadata.
 	pub assembly: Assembly,
@@ -50,7 +60,7 @@ pub struct Extraction {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Assembly {
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub name: String,
 	pub version: Option<String>,
 	pub tfm: Option<String>,
@@ -88,7 +98,7 @@ pub struct Namespace {
 pub struct TypeDecl {
 	/// The Roslyn documentation-comment id (`T:System.String`) — the join key
 	/// for cref/doc-link resolution and future occurrence work.
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub doc_id: String,
 	/// Fully qualified metadata name with arity backticks kept
 	/// (`System.Collections.Generic.List\`1`).
@@ -98,7 +108,7 @@ pub struct TypeDecl {
 	/// `RECORD_STRUCT`.
 	pub kind: String,
 	/// The declaring namespace (empty string for the global namespace).
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub namespace: String,
 	/// The enclosing type's qualified name / doc-id, for nested declarations.
 	pub enclosing: Option<String>,
@@ -174,7 +184,7 @@ pub struct Members {
 pub struct TypeParam {
 	pub name: String,
 	/// `"none"` | `"in"` (contravariant) | `"out"` (covariant).
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub variance: String,
 	#[serde(default)]
 	pub constraints: TypeParamConstraints,
@@ -215,7 +225,7 @@ pub struct Param {
 	#[serde(rename = "type")]
 	pub ty: TypeSig,
 	/// `"none"` | `"ref"` | `"out"` | `"in"` | `"refReadonly"`.
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub ref_kind: String,
 	#[serde(default)]
 	pub is_params: bool,
@@ -233,11 +243,11 @@ pub struct Param {
 #[serde(rename_all = "camelCase")]
 pub struct Field {
 	pub name: String,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub doc_id: String,
 	#[serde(rename = "type")]
 	pub ty: TypeSig,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub accessibility: String,
 	#[serde(default)]
 	pub is_const: bool,
@@ -268,18 +278,18 @@ pub struct Field {
 #[serde(rename_all = "camelCase")]
 pub struct Property {
 	pub name: String,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub doc_id: String,
 	#[serde(rename = "type")]
 	pub ty: TypeSig,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub accessibility: String,
 	/// The getter's own accessibility, when it differs (asymmetric accessors).
 	pub get_accessibility: Option<String>,
 	/// The setter's own accessibility, when it differs.
 	pub set_accessibility: Option<String>,
 	/// `"none"` (read-only) | `"set"` | `"init"`.
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub set_kind: String,
 	#[serde(default)]
 	pub is_required: bool,
@@ -310,12 +320,12 @@ pub struct Property {
 #[serde(rename_all = "camelCase")]
 pub struct Event {
 	pub name: String,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub doc_id: String,
 	/// The event's delegate type.
 	#[serde(rename = "type")]
 	pub ty: TypeSig,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub accessibility: String,
 	pub add_accessibility: Option<String>,
 	pub remove_accessibility: Option<String>,
@@ -338,13 +348,13 @@ pub struct Event {
 pub struct Method {
 	/// The metadata name (`.ctor`, `op_Addition`, `get_Item`, `M`).
 	pub name: String,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub doc_id: String,
 	/// Roslyn `MethodKind` (`Ordinary`, `Constructor`, `UserDefinedOperator`,
 	/// `Conversion`, `ExplicitInterfaceImplementation`, …).
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub method_kind: String,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub accessibility: String,
 	#[serde(default)]
 	pub is_static: bool,
@@ -379,7 +389,8 @@ pub struct Method {
 	/// The explicitly-implemented interface member (`IFoo.Bar`), if any.
 	pub explicit_interface: Option<String>,
 	/// `"none"` | `"implicit"` | `"explicit"` | `"checked"` (conversions/ops).
-	#[serde(default)]
+	/// Oracle emits JSON `null` for non-operators; treat as default (empty/`none`).
+	#[serde(default, deserialize_with = "null_as_default")]
 	pub operator_kind: String,
 	#[serde(default)]
 	pub attributes: Vec<Attr>,

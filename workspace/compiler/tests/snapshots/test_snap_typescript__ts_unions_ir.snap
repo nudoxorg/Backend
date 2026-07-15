@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 280
 expression: sorted
 ---
 {
@@ -112,16 +113,22 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: Union(
-                [
-                    Primitive(
-                        String,
-                    ),
-                    Tuple(
-                        [],
-                    ),
-                ],
-            ),
+            inner: TypeAliasBody {
+                generics: None,
+                target: Union(
+                    [
+                        Primitive(
+                            String,
+                        ),
+                        TypeReference(
+                            TypeReference {
+                                identifier: "null",
+                                generic_args: None,
+                            },
+                        ),
+                    ],
+                ),
+            },
         },
     ),
     "mod::Named": TraitDef(
@@ -190,22 +197,25 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: Intersection(
-                [
-                    TypeReference(
-                        TypeReference {
-                            identifier: "Named",
-                            generic_args: None,
-                        },
-                    ),
-                    TypeReference(
-                        TypeReference {
-                            identifier: "Aged",
-                            generic_args: None,
-                        },
-                    ),
-                ],
-            ),
+            inner: TypeAliasBody {
+                generics: None,
+                target: Intersection(
+                    [
+                        TypeReference(
+                            TypeReference {
+                                identifier: "Named",
+                                generic_args: None,
+                            },
+                        ),
+                        TypeReference(
+                            TypeReference {
+                                identifier: "Aged",
+                                generic_args: None,
+                            },
+                        ),
+                    ],
+                ),
+            },
         },
     ),
     "mod::StringOrNumber": TypeAlias(
@@ -221,18 +231,21 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: Union(
-                [
-                    Primitive(
-                        String,
-                    ),
-                    Primitive(
-                        Float(
-                            W64,
+            inner: TypeAliasBody {
+                generics: None,
+                target: Union(
+                    [
+                        Primitive(
+                            String,
                         ),
-                    ),
-                ],
-            ),
+                        Primitive(
+                            Float(
+                                W64,
+                            ),
+                        ),
+                    ],
+                ),
+            },
         },
     ),
     "mod::Tristate": TypeAlias(
@@ -248,19 +261,31 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: Union(
-                [
-                    Primitive(
-                        String,
-                    ),
-                    Primitive(
-                        String,
-                    ),
-                    Primitive(
-                        String,
-                    ),
-                ],
-            ),
+            inner: TypeAliasBody {
+                generics: None,
+                target: Union(
+                    [
+                        Literal(
+                            LiteralValue {
+                                kind: String,
+                                value: "\"on\"",
+                            },
+                        ),
+                        Literal(
+                            LiteralValue {
+                                kind: String,
+                                value: "\"off\"",
+                            },
+                        ),
+                        Literal(
+                            LiteralValue {
+                                kind: String,
+                                value: "\"unknown\"",
+                            },
+                        ),
+                    ],
+                ),
+            },
         },
     ),
     "mod::classify": Function(
@@ -272,7 +297,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "Long union signature used for two-width render snapshots (40 vs 100 cols).\n\nThis signature is intentionally verbose to trigger line-breaking at 40 cols\nwhile fitting on one line at 100 cols.",
+                "Long union signature used for two-width render snapshots (40 vs 100 cols).\nThis signature is intentionally verbose to trigger line-breaking at 40 cols\nwhile fitting on one line at 100 cols.",
             ),
             deprecation: None,
             doc_links: None,
@@ -296,11 +321,17 @@ expression: sorted
                                             Primitive(
                                                 Bool,
                                             ),
-                                            Tuple(
-                                                [],
+                                            TypeReference(
+                                                TypeReference {
+                                                    identifier: "null",
+                                                    generic_args: None,
+                                                },
                                             ),
-                                            Tuple(
-                                                [],
+                                            TypeReference(
+                                                TypeReference {
+                                                    identifier: "undefined",
+                                                    generic_args: None,
+                                                },
                                             ),
                                         ],
                                     ),
@@ -320,17 +351,29 @@ expression: sorted
                                 type: Some(
                                     Union(
                                         [
-                                            Primitive(
-                                                String,
+                                            Literal(
+                                                LiteralValue {
+                                                    kind: String,
+                                                    value: "\"string\"",
+                                                },
                                             ),
-                                            Primitive(
-                                                String,
+                                            Literal(
+                                                LiteralValue {
+                                                    kind: String,
+                                                    value: "\"number\"",
+                                                },
                                             ),
-                                            Primitive(
-                                                String,
+                                            Literal(
+                                                LiteralValue {
+                                                    kind: String,
+                                                    value: "\"boolean\"",
+                                                },
                                             ),
-                                            Primitive(
-                                                String,
+                                            Literal(
+                                                LiteralValue {
+                                                    kind: String,
+                                                    value: "\"nil\"",
+                                                },
                                             ),
                                         ],
                                     ),
@@ -362,7 +405,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "A function that accepts a union-typed parameter and returns an inline-object.\n\nThe inline return object type exercises structural/anonymous object rendering.",
+                "A function that accepts a union-typed parameter and returns an inline-object.\nThe inline return object type exercises structural/anonymous object rendering.",
             ),
             deprecation: None,
             doc_links: None,

@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 319
 expression: sorted
 ---
 {
@@ -15,7 +16,13 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_overloads::process",
+                        ),
+                    ],
+                ),
             },
         },
     ),

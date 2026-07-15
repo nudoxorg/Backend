@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 167
 expression: sorted
 ---
 {
@@ -105,9 +106,7 @@ expression: sorted
                             ),
                             generics: None,
                             attributes: None,
-                            documentation: Some(
-                                "A call signature: `greeter(name)`.",
-                            ),
+                            documentation: None,
                             receiver: Some(
                                 SharedRef,
                             ),
@@ -133,13 +132,16 @@ expression: sorted
                                 ],
                             ),
                             return_type: Some(
-                                Any,
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "unknown",
+                                        generic_args: None,
+                                    },
+                                ),
                             ),
                             generics: None,
                             attributes: None,
-                            documentation: Some(
-                                "An index signature: `greeter[\"key\"]`.",
-                            ),
+                            documentation: None,
                             receiver: Some(
                                 SharedRef,
                             ),

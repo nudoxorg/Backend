@@ -104,11 +104,10 @@ fn lower(lang: WorkerLang, root: &std::path::Path) -> Result<String, String> {
 			let name = root
 				.file_name()
 				.and_then(|s| s.to_str())
-				.unwrap_or("package")
-				.to_string();
-			let package = compiler::languages::typescript::TypescriptPackage { name };
-			let collected = package.generate_ir(root).map_err(|e| e.to_string())?;
-			collected.index().into_index()
+				.unwrap_or("package");
+			// OXC pipeline returns an Index directly (deno-era TypescriptPackage
+			// + Ir<Collected> wrapper was removed with the pure-OXC migration).
+			compiler::languages::typescript::generate_ir(root, name).map_err(|e| e.to_string())?
 		}
 		WorkerLang::Python => {
 			let ctx = compiler::languages::python::context::PythonContext::new();

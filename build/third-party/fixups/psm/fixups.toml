@@ -1,4 +1,8 @@
 cargo_env = true
 
-[buildscript]
-run = true
+[buildscript.run]
+# Build script produces libpsm_s.a in OUT_DIR and emits cargo:rustc-link-lib /
+# cargo:rustc-link-search. Without these, the -lpsm_s flag reaches the final
+# binary linker with no -L path and fails ("library not found for -lpsm_s").
+rustc_link_lib = true
+rustc_link_search = true

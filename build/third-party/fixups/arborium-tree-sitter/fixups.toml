@@ -5,5 +5,8 @@ extra_srcs = [
     "src/parser.h",
 ]
 
-[buildscript]
-run = true
+[buildscript.run]
+# Build script produces libtree-sitter.a in OUT_DIR. Propagate link flags so
+# final binaries resolve _ts_parser_* / _ts_tree_* symbols.
+rustc_link_lib = true
+rustc_link_search = true

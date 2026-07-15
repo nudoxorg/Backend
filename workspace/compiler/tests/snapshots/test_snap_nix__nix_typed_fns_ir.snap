@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 136
 expression: sorted
 ---
 {
@@ -56,7 +57,7 @@ expression: sorted
                 "applyTo",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Apply a polymorphic function to a value (generic type variables).",
             ),
@@ -2297,7 +2298,7 @@ expression: sorted
                 "getOr",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Look up a key in an attribute set, returning null when absent.",
             ),
@@ -2382,7 +2383,7 @@ expression: sorted
                 "identity",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "No type annotation at all — exercises the untyped path.",
             ),
@@ -2421,7 +2422,7 @@ expression: sorted
                 "isPositive",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Check whether a number is positive.",
             ),
@@ -2482,7 +2483,7 @@ expression: sorted
                 "joinWith",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Join a list of strings with a separator.",
             ),
@@ -2556,7 +2557,7 @@ expression: sorted
                 "mkPackage",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Build a package from a closed record of metadata.",
             ),
@@ -2651,7 +2652,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "/bin/sh",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "/bin/sh",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "mkPackage/name": Constant(
@@ -2665,7 +2683,11 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: None,
+                value: None,
+                mutable: None,
+            },
         },
     ),
     "mkPackage/src": Constant(
@@ -2679,7 +2701,11 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: None,
+                value: None,
+                mutable: None,
+            },
         },
     ),
     "mkPackage/system": Constant(
@@ -2693,7 +2719,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "x86_64-linux",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "x86_64-linux",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "mkPackageOpen": Function(
@@ -2703,7 +2746,7 @@ expression: sorted
                 "mkPackageOpen",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Build a package from an open record (unknown extra keys allowed).",
             ),
@@ -2784,7 +2827,11 @@ expression: sorted
                     ],
                 ),
                 type_links: None,
-                attributes: None,
+                attributes: Some(
+                    [
+                        Variadic,
+                    ],
+                ),
                 generics: None,
                 receiver: None,
                 overloads: None,
@@ -2805,7 +2852,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "/bin/sh",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "/bin/sh",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "mkPackageOpen/name": Constant(
@@ -2819,7 +2883,11 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: None,
+                value: None,
+                mutable: None,
+            },
         },
     ),
     "mkPackageOpen/system": Constant(
@@ -2833,7 +2901,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "x86_64-linux",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "x86_64-linux",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "transformAttrs": Function(
@@ -2843,7 +2928,7 @@ expression: sorted
                 "transformAttrs",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Transform every value in an attribute set by applying f.",
             ),
@@ -3025,7 +3110,11 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: None,
+                value: None,
+                mutable: None,
+            },
         },
     ),
     "transformAttrs/value": Constant(
@@ -3039,7 +3128,11 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: None,
+                value: None,
+                mutable: None,
+            },
         },
     ),
 }

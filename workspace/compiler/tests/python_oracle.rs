@@ -20,7 +20,7 @@ use ir::entry::Index;
 use ir::function::Function;
 use ir::kind::Entry;
 use ir::parameter::Parameter;
-use ir::ty::Type;
+use ir::ty::{LiteralKind, Type};
 
 const SNIPPET: &str = "\
 def add(a: int, b: int) -> int:
@@ -32,12 +32,15 @@ def make():
 ";
 
 /// A type counts as "really resolved" when Pyrefly handed us a concrete class
-/// reference (e.g. `builtins.int`) or a primitive — as opposed to the `Any` /
-/// `Infer` fallbacks we'd see if inference results never reached lowering.
+/// reference (e.g. `builtins.int`), a primitive, or a literal — as opposed to
+/// the `Any` / `Infer` fallbacks we'd see if inference results never reached
+/// lowering. Literals (e.g. `Literal["hi"]` for `return "hi"`) are stronger
+/// than a bare `str` reference and still prove the oracle ran.
 fn is_resolved(ty: &Type) -> bool {
     match ty {
         Type::Primitive(_) => true,
         Type::TypeReference(r) => !r.identifier.is_empty(),
+        Type::Literal(_) => true,
         _ => false,
     }
 }
@@ -117,10 +120,14 @@ fn pyrefly_oracle_resolves_annotated_and_inferred_types() {
         is_resolved(make_ret),
         "inferred return of `make` is not a resolved type (Any leak?), got: {make_ret:?}"
     );
-    // It must resolve to `str` specifically — proving real inference, not a
-    // coincidental non-Any placeholder.
+    // It must resolve to `str` (or a string literal, which is more precise) —
+    // proving real inference, not a coincidental non-Any placeholder.
     match make_ret {
         Type::Primitive(_) => {}
+        Type::Literal(lit) => assert!(
+            matches!(lit.kind, LiteralKind::String),
+            "inferred return of `make` should be a string literal, got: {lit:?}"
+        ),
         Type::TypeReference(r) => assert!(
             r.identifier.contains("str"),
             "inferred return of `make` should be `str`, got reference `{}`",

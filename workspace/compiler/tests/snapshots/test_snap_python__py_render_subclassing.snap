@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 526
 expression: rendered
 ---
 // <unrendered module>
@@ -12,6 +13,10 @@ class Animal:
 
 # ---
 
+def sound(self, self: Self) -> str: ...
+
+# ---
+
 @dataclass
 class Cat:
     indoor: bool
@@ -21,3 +26,7 @@ class Cat:
 @dataclass
 class Dog:
     breed: str
+
+# ---
+
+def sound(self, self: Self) -> str: ...

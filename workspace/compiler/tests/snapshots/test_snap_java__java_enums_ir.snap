@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 179
 expression: sorted
 ---
 {
@@ -41,36 +42,60 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: [
-                SumVariant {
-                    name: "NORTH",
-                    data: None,
-                    documentation: Some(
-                        "True north.",
-                    ),
-                },
-                SumVariant {
-                    name: "SOUTH",
-                    data: None,
-                    documentation: Some(
-                        "Due south.",
-                    ),
-                },
-                SumVariant {
-                    name: "EAST",
-                    data: None,
-                    documentation: Some(
-                        "Due east.",
-                    ),
-                },
-                SumVariant {
-                    name: "WEST",
-                    data: None,
-                    documentation: Some(
-                        "Due west.",
-                    ),
-                },
-            ],
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "NORTH",
+                        data: None,
+                        documentation: Some(
+                            "True north.",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "SOUTH",
+                        data: None,
+                        documentation: Some(
+                            "Due south.",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "EAST",
+                        data: None,
+                        documentation: Some(
+                            "Due east.",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "WEST",
+                        data: None,
+                        documentation: Some(
+                            "Due west.",
+                        ),
+                        discriminant: None,
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Direction.values",
+                        ),
+                        Local(
+                            "com.example::Direction.valueOf",
+                        ),
+                        Local(
+                            "com.example::Direction.opposite",
+                        ),
+                    ],
+                ),
+                underlying: None,
+            },
         },
     ),
     "com.example::Direction.opposite": Function(
@@ -250,28 +275,52 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: [
-                SumVariant {
-                    name: "PENDING",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "ACTIVE",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "INACTIVE",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "DELETED",
-                    data: None,
-                    documentation: None,
-                },
-            ],
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "PENDING",
+                        data: None,
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "ACTIVE",
+                        data: None,
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "INACTIVE",
+                        data: None,
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "DELETED",
+                        data: None,
+                        documentation: None,
+                        discriminant: None,
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Status.values",
+                        ),
+                        Local(
+                            "com.example::Status.valueOf",
+                        ),
+                        Local(
+                            "com.example::Status.isTerminal",
+                        ),
+                    ],
+                ),
+                underlying: None,
+            },
         },
     ),
     "com.example::Status.isTerminal": Function(

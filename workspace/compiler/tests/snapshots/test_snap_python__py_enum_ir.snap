@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 220
 expression: sorted
 ---
 {
@@ -15,7 +16,16 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_enum::Direction",
+                        ),
+                        Local(
+                            "snap_enum::Status",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -30,28 +40,92 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: [
-                SumVariant {
-                    name: "NORTH",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "SOUTH",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "EAST",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "WEST",
-                    data: None,
-                    documentation: None,
-                },
-            ],
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "NORTH",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: String,
+                                            value: "N",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "value = Str(\"N\")",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "SOUTH",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: String,
+                                            value: "S",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "value = Str(\"S\")",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "EAST",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: String,
+                                            value: "E",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "value = Str(\"E\")",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "WEST",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: String,
+                                            value: "W",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "value = Str(\"W\")",
+                        ),
+                        discriminant: None,
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: None,
+                underlying: None,
+            },
         },
     ),
     "snap_enum::Status": SumType(
@@ -65,23 +139,73 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: [
-                SumVariant {
-                    name: "PENDING",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "ACTIVE",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "INACTIVE",
-                    data: None,
-                    documentation: None,
-                },
-            ],
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "PENDING",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: Number,
+                                            value: "0",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "value = Int(0)",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "ACTIVE",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: Number,
+                                            value: "1",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "value = Int(1)",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "INACTIVE",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: Number,
+                                            value: "2",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "value = Int(2)",
+                        ),
+                        discriminant: None,
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: None,
+                underlying: None,
+            },
         },
     ),
 }

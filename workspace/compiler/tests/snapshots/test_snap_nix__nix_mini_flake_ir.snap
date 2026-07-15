@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 168
 expression: sorted
 ---
 {
@@ -2161,11 +2162,28 @@ expression: sorted
                 "description",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "A self-contained mini flake with no inputs",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "A self-contained mini flake with no inputs",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "outputs": Function(
@@ -2175,7 +2193,7 @@ expression: sorted
                 "outputs",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: None,
             deprecation: None,
             doc_links: None,
@@ -2210,7 +2228,11 @@ expression: sorted
                 ),
                 output_parameters: None,
                 type_links: None,
-                attributes: None,
+                attributes: Some(
+                    [
+                        Variadic,
+                    ],
+                ),
                 generics: None,
                 receiver: None,
                 overloads: None,
@@ -2220,7 +2242,7 @@ expression: sorted
             },
         },
     ),
-    "outputs/lib": Constant(
+    "outputs/lib": Module(
         Symbol {
             name: "lib",
             path: Local(
@@ -2231,7 +2253,15 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "outputs/lib/double",
+                        ),
+                    ],
+                ),
+            },
         },
     ),
     "outputs/lib/double": Function(
@@ -2297,6 +2327,28 @@ expression: sorted
             },
         },
     ),
+    "outputs/nixosModules": Module(
+        Symbol {
+            name: "nixosModules",
+            path: Local(
+                "outputs/nixosModules",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "outputs/nixosModules/default",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
     "outputs/nixosModules/default": Function(
         Symbol {
             name: "default",
@@ -2357,7 +2409,11 @@ expression: sorted
                 ),
                 output_parameters: None,
                 type_links: None,
-                attributes: None,
+                attributes: Some(
+                    [
+                        Variadic,
+                    ],
+                ),
                 generics: None,
                 receiver: None,
                 overloads: None,
@@ -2367,7 +2423,7 @@ expression: sorted
             },
         },
     ),
-    "outputs/nixosModules/default/config": Constant(
+    "outputs/nixosModules/default/config": Module(
         Symbol {
             name: "config",
             path: Local(
@@ -2378,10 +2434,12 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: Module {
+                members: None,
+            },
         },
     ),
-    "outputs/nixosModules/default/options": Constant(
+    "outputs/nixosModules/default/options": Module(
         Symbol {
             name: "options",
             path: Local(
@@ -2392,10 +2450,56 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: Module {
+                members: None,
+            },
         },
     ),
-    "outputs/packages/x86_64-linux/hello": Constant(
+    "outputs/packages": Module(
+        Symbol {
+            name: "packages",
+            path: Local(
+                "outputs/packages",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "outputs/packages/x86_64-linux",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "outputs/packages/x86_64-linux": Module(
+        Symbol {
+            name: "x86_64-linux",
+            path: Local(
+                "outputs/packages/x86_64-linux",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "outputs/packages/x86_64-linux/hello",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "outputs/packages/x86_64-linux/hello": Module(
         Symbol {
             name: "hello",
             path: Local(
@@ -2406,7 +2510,21 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "outputs/packages/x86_64-linux/hello/builder",
+                        ),
+                        Local(
+                            "outputs/packages/x86_64-linux/hello/name",
+                        ),
+                        Local(
+                            "outputs/packages/x86_64-linux/hello/system",
+                        ),
+                    ],
+                ),
+            },
         },
     ),
     "outputs/packages/x86_64-linux/hello/builder": Constant(
@@ -2420,7 +2538,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "/bin/sh",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "/bin/sh",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "outputs/packages/x86_64-linux/hello/name": Constant(
@@ -2434,7 +2569,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "hello",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "hello",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "outputs/packages/x86_64-linux/hello/system": Constant(
@@ -2448,7 +2600,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "x86_64-linux",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "x86_64-linux",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
 }

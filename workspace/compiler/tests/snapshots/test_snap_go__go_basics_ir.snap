@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_go.rs
+assertion_line: 155
 expression: sorted
 ---
 {
@@ -298,7 +299,26 @@ expression: sorted
             path: Local(
                 "example.com/basics::Config.Close",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "example.com/basics",
+                        "Config.Close",
+                    ],
+                    [
+                        "Config.Close",
+                    ],
+                    [
+                        "Config",
+                        "Close",
+                    ],
+                    [
+                        "example.com/basics",
+                        "Config",
+                        "Close",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Promoted from embedded `example.com/basics.Server`.",
@@ -327,7 +347,11 @@ expression: sorted
                         ),
                     ],
                 ),
-                type_links: None,
+                type_links: Some(
+                    {
+                        "out:0/1": -9179183488513656728,
+                    },
+                ),
                 attributes: None,
                 generics: None,
                 receiver: Some(
@@ -346,7 +370,26 @@ expression: sorted
             path: Local(
                 "example.com/basics::Config.Status",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "Config",
+                        "Status",
+                    ],
+                    [
+                        "example.com/basics",
+                        "Config",
+                        "Status",
+                    ],
+                    [
+                        "Config.Status",
+                    ],
+                    [
+                        "example.com/basics",
+                        "Config.Status",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Promoted from embedded `example.com/basics.Server`.",
@@ -398,7 +441,19 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        Int(
+                            Arch,
+                        ),
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    true,
+                ),
+            },
         },
     ),
     "example.com/basics::Direction": SumType(
@@ -410,40 +465,118 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "Direction is an iota-based enum (Go convention: defined type + iota consts).",
+                "Direction is an iota-based enum (Go convention: defined type + iota consts).\n\nUnderlying: `int`",
             ),
             deprecation: None,
             doc_links: None,
-            inner: [
-                SumVariant {
-                    name: "North",
-                    data: None,
-                    documentation: Some(
-                        "Value: `0`",
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "North",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: Number,
+                                            value: "0",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "Value: `0`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                0,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "East",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: Number,
+                                            value: "1",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "Value: `1`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                1,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "South",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: Number,
+                                            value: "2",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "Value: `2`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                2,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "West",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Literal(
+                                        LiteralValue {
+                                            kind: Number,
+                                            value: "3",
+                                        },
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "Value: `3`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                3,
+                            ),
+                        ),
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: None,
+                underlying: Some(
+                    Primitive(
+                        Int(
+                            Arch,
+                        ),
                     ),
-                },
-                SumVariant {
-                    name: "East",
-                    data: None,
-                    documentation: Some(
-                        "Value: `1`",
-                    ),
-                },
-                SumVariant {
-                    name: "South",
-                    data: None,
-                    documentation: Some(
-                        "Value: `2`",
-                    ),
-                },
-                SumVariant {
-                    name: "West",
-                    data: None,
-                    documentation: Some(
-                        "Value: `3`",
-                    ),
-                },
-            ],
+                ),
+            },
         },
     ),
     "example.com/basics::MaxRetries": Constant(
@@ -459,7 +592,23 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        Int(
+                            Arch,
+                        ),
+                    ),
+                ),
+                value: Some(
+                    Int(
+                        3,
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "example.com/basics::Process": Function(
@@ -541,7 +690,11 @@ expression: sorted
                         ),
                     ],
                 ),
-                type_links: None,
+                type_links: Some(
+                    {
+                        "out:1/2": -9179183488513656728,
+                    },
+                ),
                 attributes: None,
                 generics: None,
                 receiver: None,
@@ -742,7 +895,26 @@ expression: sorted
             path: Local(
                 "example.com/basics::Server.Close",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "Server",
+                        "Close",
+                    ],
+                    [
+                        "example.com/basics",
+                        "Server",
+                        "Close",
+                    ],
+                    [
+                        "example.com/basics",
+                        "Server.Close",
+                    ],
+                    [
+                        "Server.Close",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Close shuts down the server with a pointer receiver.",
@@ -771,7 +943,11 @@ expression: sorted
                         ),
                     ],
                 ),
-                type_links: None,
+                type_links: Some(
+                    {
+                        "out:0/1": -9179183488513656728,
+                    },
+                ),
                 attributes: None,
                 generics: None,
                 receiver: Some(
@@ -790,7 +966,26 @@ expression: sorted
             path: Local(
                 "example.com/basics::Server.Status",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "Server.Status",
+                    ],
+                    [
+                        "Server",
+                        "Status",
+                    ],
+                    [
+                        "example.com/basics",
+                        "Server",
+                        "Status",
+                    ],
+                    [
+                        "example.com/basics",
+                        "Server.Status",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Status returns the current status string with a value receiver.",
@@ -854,29 +1049,19 @@ expression: sorted
                                 0,
                             ),
                             type: Some(
-                                RecordLiteral(
-                                    Record {
-                                        name: None,
-                                        generics: None,
-                                        fields: [
-                                            Pattern(
-                                                IndexSignature {
-                                                    key_type: Primitive(
-                                                        String,
-                                                    ),
-                                                    value_type: Primitive(
-                                                        String,
-                                                    ),
-                                                },
-                                            ),
-                                        ],
-                                        call_signatures: None,
-                                        constructors: None,
-                                        methods: None,
-                                        index_signatures: None,
-                                        super_types: None,
-                                        members: None,
-                                        implemented_protocols: None,
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "map",
+                                        type: Tuple(
+                                            [
+                                                Primitive(
+                                                    String,
+                                                ),
+                                                Primitive(
+                                                    String,
+                                                ),
+                                            ],
+                                        ),
                                     },
                                 ),
                             ),
@@ -976,12 +1161,15 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: TypeReference(
-                TypeReference {
-                    identifier: "example.com/basics.Celsius",
-                    generic_args: None,
-                },
-            ),
+            inner: TypeAliasBody {
+                generics: None,
+                target: TypeReference(
+                    TypeReference {
+                        identifier: "example.com/basics.Celsius",
+                        generic_args: None,
+                    },
+                ),
+            },
         },
     ),
     "example.com/basics::Variadic": Function(
@@ -1081,7 +1269,23 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        Int(
+                            Arch,
+                        ),
+                    ),
+                ),
+                value: Some(
+                    Int(
+                        30,
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "example.com/basics::namedReturn": Function(
@@ -1150,7 +1354,11 @@ expression: sorted
                         ),
                     ],
                 ),
-                type_links: None,
+                type_links: Some(
+                    {
+                        "out:1/2:err": -9179183488513656728,
+                    },
+                ),
                 attributes: None,
                 generics: None,
                 receiver: None,

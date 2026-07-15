@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 246
 expression: sorted
 ---
 {
@@ -15,7 +16,31 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_protocol::Drawable",
+                        ),
+                        Local(
+                            "snap_protocol::Drawable.draw",
+                        ),
+                        Local(
+                            "snap_protocol::Drawable.resize",
+                        ),
+                        Local(
+                            "snap_protocol::Protocol",
+                        ),
+                        Local(
+                            "snap_protocol::Serializable",
+                        ),
+                        Local(
+                            "snap_protocol::Serializable.from_bytes",
+                        ),
+                        Local(
+                            "snap_protocol::Serializable.to_bytes",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -145,7 +170,168 @@ expression: sorted
                 object_safe: None,
                 sealed: None,
                 cfg: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_protocol::Drawable.draw",
+                        ),
+                        Local(
+                            "snap_protocol::Drawable.resize",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "snap_protocol::Drawable.draw": Function(
+        Symbol {
+            name: "draw",
+            path: Local(
+                "snap_protocol::Drawable.draw",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "self",
+                                type: Some(
+                                    SelfType,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "canvas",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.NoneType",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: false,
                 members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_protocol::Drawable.resize": Function(
+        Symbol {
+            name: "resize",
+            path: Local(
+                "snap_protocol::Drawable.resize",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "self",
+                                type: Some(
+                                    SelfType,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "factor",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.float",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.NoneType",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: false,
+                members: None,
+                implemented_protocols: None,
             },
         },
     ),
@@ -160,7 +346,30 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "typing.Type",
+                            generic_args: Some(
+                                [
+                                    Type(
+                                        Any,
+                                    ),
+                                ],
+                            ),
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "type[Protocol]",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "snap_protocol::Serializable": TraitDef(
@@ -271,7 +480,152 @@ expression: sorted
                 object_safe: None,
                 sealed: None,
                 cfg: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_protocol::Serializable.to_bytes",
+                        ),
+                        Local(
+                            "snap_protocol::Serializable.from_bytes",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "snap_protocol::Serializable.from_bytes": Function(
+        Symbol {
+            name: "from_bytes",
+            path: Local(
+                "snap_protocol::Serializable.from_bytes",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "self",
+                                type: Some(
+                                    SelfType,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "data",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.bytes",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.NoneType",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: false,
                 members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_protocol::Serializable.to_bytes": Function(
+        Symbol {
+            name: "to_bytes",
+            path: Local(
+                "snap_protocol::Serializable.to_bytes",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "self",
+                                type: Some(
+                                    SelfType,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.bytes",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: false,
+                members: None,
+                implemented_protocols: None,
             },
         },
     ),

@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 207
 expression: sorted
 ---
 {
@@ -47,25 +48,52 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: Conditional(
-                ConditionalType {
-                    check_type: TypeReference(
-                        TypeReference {
-                            identifier: "T",
-                            generic_args: None,
-                        },
-                    ),
-                    extends_type: Primitive(
-                        String,
-                    ),
-                    true_type: Primitive(
-                        Bool,
-                    ),
-                    false_type: Primitive(
-                        Bool,
-                    ),
-                },
-            ),
+            inner: TypeAliasBody {
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                target: Conditional(
+                    ConditionalType {
+                        check_type: TypeReference(
+                            TypeReference {
+                                identifier: "T",
+                                generic_args: None,
+                            },
+                        ),
+                        extends_type: Primitive(
+                            String,
+                        ),
+                        true_type: Literal(
+                            LiteralValue {
+                                kind: Boolean,
+                                value: "true",
+                            },
+                        ),
+                        false_type: Literal(
+                            LiteralValue {
+                                kind: Boolean,
+                                value: "false",
+                            },
+                        ),
+                    },
+                ),
+            },
         },
     ),
     "mod::Person": TraitDef(
@@ -157,17 +185,20 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: TypeOperator(
-                TypeOperator {
-                    operator: "keyof",
-                    type: TypeReference(
-                        TypeReference {
-                            identifier: "Person",
-                            generic_args: None,
-                        },
-                    ),
-                },
-            ),
+            inner: TypeAliasBody {
+                generics: None,
+                target: TypeOperator(
+                    TypeOperator {
+                        operator: "keyof",
+                        type: TypeReference(
+                            TypeReference {
+                                identifier: "Person",
+                                generic_args: None,
+                            },
+                        ),
+                    },
+                ),
+            },
         },
     ),
     "mod::ReadonlyPerson": TypeAlias(
@@ -183,42 +214,57 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: Mapped(
-                MappedType {
-                    readonly: Some(
-                        Preserve,
-                    ),
-                    optional: None,
-                    parameter: "K",
-                    source_type: TypeOperator(
-                        TypeOperator {
-                            operator: "keyof",
-                            type: TypeReference(
-                                TypeReference {
-                                    identifier: "Person",
-                                    generic_args: None,
-                                },
-                            ),
-                        },
-                    ),
-                    name_type: None,
-                    value_type: Some(
-                        QualifiedPath(
-                            QualifiedPath {
-                                name: "TypeReference(TypeReference { identifier: \"K\", generic_args: None })",
-                                generic_arguments: None,
-                                self_type: TypeReference(
+            inner: TypeAliasBody {
+                generics: None,
+                target: Mapped(
+                    MappedType {
+                        readonly: Some(
+                            Preserve,
+                        ),
+                        optional: None,
+                        parameter: "K",
+                        source_type: TypeOperator(
+                            TypeOperator {
+                                operator: "keyof",
+                                type: TypeReference(
                                     TypeReference {
                                         identifier: "Person",
                                         generic_args: None,
                                     },
                                 ),
-                                tr: None,
                             },
                         ),
-                    ),
-                },
-            ),
+                        name_type: None,
+                        value_type: Some(
+                            TypeReference(
+                                TypeReference {
+                                    identifier: "Person[K]",
+                                    generic_args: Some(
+                                        [
+                                            Type(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "Person",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            Type(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "K",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                        ],
+                                    ),
+                                },
+                            ),
+                        ),
+                    },
+                ),
+            },
         },
     ),
 }

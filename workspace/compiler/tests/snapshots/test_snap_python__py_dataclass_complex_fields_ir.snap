@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 130
 expression: sorted
 ---
 {
@@ -15,7 +16,19 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_dataclass_complex_fields::Container",
+                        ),
+                        Local(
+                            "snap_dataclass_complex_fields::Optional",
+                        ),
+                        Local(
+                            "snap_dataclass_complex_fields::annotations",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -212,7 +225,30 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "typing.Type",
+                            generic_args: Some(
+                                [
+                                    Type(
+                                        Any,
+                                    ),
+                                ],
+                            ),
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "type[Optional]",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "snap_dataclass_complex_fields::annotations": Constant(
@@ -226,7 +262,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "__future__._Feature",
+                            generic_args: None,
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "_Feature",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
 }

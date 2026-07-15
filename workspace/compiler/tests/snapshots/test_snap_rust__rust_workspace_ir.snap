@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_rust.rs
+assertion_line: 343
 expression: stubs
 ---
 {
@@ -12,27 +13,9 @@ expression: stubs
         protocols: None,
         deprecation: None,
     },
-    "odd_duck::<impl Behavior>": EntryStub {
+    "odd_duck::<impl Behavior for Mode>": EntryStub {
         kind: "trait_impl",
-        name: "<impl Behavior>",
-        visibility: "pub",
-        sealed: None,
-        method_count: None,
-        protocols: None,
-        deprecation: None,
-    },
-    "odd_duck::<impl Clone>": EntryStub {
-        kind: "trait_impl",
-        name: "<impl Clone>",
-        visibility: "pub",
-        sealed: None,
-        method_count: None,
-        protocols: None,
-        deprecation: None,
-    },
-    "odd_duck::<impl Copy>": EntryStub {
-        kind: "trait_impl",
-        name: "<impl Copy>",
+        name: "<impl Behavior for Mode>",
         visibility: "pub",
         sealed: None,
         method_count: None,
@@ -52,6 +35,20 @@ expression: stubs
         protocols: None,
         deprecation: None,
     },
+    "odd_duck::Behavior::describe": EntryStub {
+        kind: "function",
+        name: "describe",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
     "odd_duck::Mode": EntryStub {
         kind: "sum_type",
         name: "Mode",
@@ -60,6 +57,20 @@ expression: stubs
         method_count: None,
         protocols: None,
         deprecation: None,
+    },
+    "odd_duck::Mode::describe": EntryStub {
+        kind: "function",
+        name: "describe",
+        visibility: "priv",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
     },
     "odd_duck::Widget": EntryStub {
         kind: "record",
@@ -73,5 +84,33 @@ expression: stubs
             [],
         ),
         deprecation: None,
+    },
+    "odd_duck::Widget::echo": EntryStub {
+        kind: "function",
+        name: "echo",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "odd_duck::Widget::new": EntryStub {
+        kind: "function",
+        name: "new",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
     },
 }

@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 189
 expression: sorted
 ---
 {
@@ -24,6 +25,12 @@ expression: sorted
                             "mod::Widget",
                         ),
                         Local(
+                            "mod::VoidOnly",
+                        ),
+                        Local(
+                            "mod::NullOnly",
+                        ),
+                        Local(
                             "mod::Printable",
                         ),
                         Local(
@@ -31,6 +38,9 @@ expression: sorted
                         ),
                         Local(
                             "mod::Direction",
+                        ),
+                        Local(
+                            "mod::HttpStatus",
                         ),
                         Local(
                             "mod::MAX_SIZE",
@@ -43,87 +53,6 @@ expression: sorted
                         ),
                     ],
                 ),
-            },
-        },
-    ),
-    "mod.utils::identity": Function(
-        Symbol {
-            name: "identity",
-            path: Local(
-                "mod.utils::identity",
-            ),
-            aliases: None,
-            visibility: Public,
-            documentation: None,
-            deprecation: None,
-            doc_links: None,
-            inner: Function {
-                input_parameters: Some(
-                    [
-                        Literal(
-                            LiteralParameter {
-                                name: "x",
-                                type: Some(
-                                    TypeReference(
-                                        TypeReference {
-                                            identifier: "T",
-                                            generic_args: None,
-                                        },
-                                    ),
-                                ),
-                                attributes: None,
-                                default_value: None,
-                                description: None,
-                            },
-                        ),
-                    ],
-                ),
-                output_parameters: Some(
-                    [
-                        Literal(
-                            LiteralParameter {
-                                name: "",
-                                type: Some(
-                                    TypeReference(
-                                        TypeReference {
-                                            identifier: "T",
-                                            generic_args: None,
-                                        },
-                                    ),
-                                ),
-                                attributes: None,
-                                default_value: None,
-                                description: None,
-                            },
-                        ),
-                    ],
-                ),
-                type_links: None,
-                attributes: None,
-                generics: Some(
-                    Generics {
-                        params: [
-                            Type(
-                                TypeParam {
-                                    name: Some(
-                                        "T",
-                                    ),
-                                    kind: Type,
-                                    variance: Invariant,
-                                    default_type: None,
-                                    params: None,
-                                    origin: Free,
-                                },
-                            ),
-                        ],
-                        constraints: [],
-                    },
-                ),
-                receiver: None,
-                overloads: None,
-                implemented: true,
-                members: None,
-                implemented_protocols: None,
             },
         },
     ),
@@ -140,28 +69,141 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: [
-                SumVariant {
-                    name: "Up",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "Down",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "Left",
-                    data: None,
-                    documentation: None,
-                },
-                SumVariant {
-                    name: "Right",
-                    data: None,
-                    documentation: None,
-                },
-            ],
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "Up",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "Down",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "Left",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "Right",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: None,
+                        discriminant: None,
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: None,
+                underlying: None,
+            },
+        },
+    ),
+    "mod::HttpStatus": SumType(
+        Symbol {
+            name: "HttpStatus",
+            path: Local(
+                "mod::HttpStatus",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A const enum — variants flagged `[const]` in documentation.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "Ok",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "[const]",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "NotFound",
+                        data: Some(
+                            Tuple(
+                                [
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                        documentation: Some(
+                            "[const]",
+                        ),
+                        discriminant: None,
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: None,
+                underlying: None,
+            },
         },
     ),
     "mod::MAX_SIZE": Constant(
@@ -177,7 +219,41 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        Float(
+                            W64,
+                        ),
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
+        },
+    ),
+    "mod::NullOnly": TypeAlias(
+        Symbol {
+            name: "NullOnly",
+            path: Local(
+                "mod::NullOnly",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: TypeAliasBody {
+                generics: None,
+                target: TypeReference(
+                    TypeReference {
+                        identifier: "null",
+                        generic_args: None,
+                    },
+                ),
+            },
         },
     ),
     "mod::Printable": TraitDef(
@@ -241,18 +317,42 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: Union(
-                [
-                    Primitive(
-                        String,
-                    ),
-                    Primitive(
-                        Float(
-                            W64,
+            inner: TypeAliasBody {
+                generics: None,
+                target: Union(
+                    [
+                        Primitive(
+                            String,
                         ),
-                    ),
-                ],
+                        Primitive(
+                            Float(
+                                W64,
+                            ),
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::VoidOnly": TypeAlias(
+        Symbol {
+            name: "VoidOnly",
+            path: Local(
+                "mod::VoidOnly",
             ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "void is unit Tuple; null is a named reference — they must not collapse.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypeAliasBody {
+                generics: None,
+                target: Tuple(
+                    [],
+                ),
+            },
         },
     ),
     "mod::Widget": RecordType(
@@ -273,7 +373,56 @@ expression: sorted
                     "Widget",
                 ),
                 generics: None,
-                fields: [],
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "#brand",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "Private brand field — must keep `#` prefix + Private visibility.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "id",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
                 call_signatures: None,
                 constructors: None,
                 methods: None,
@@ -282,7 +431,7 @@ expression: sorted
                 members: Some(
                     [
                         Local(
-                            "mod::Widget::constructor",
+                            "Widget::constructor",
                         ),
                     ],
                 ),
@@ -346,7 +495,19 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        Float(
+                            W64,
+                        ),
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    true,
+                ),
+            },
         },
     ),
     "mod::doWork": Function(
@@ -429,7 +590,7 @@ expression: sorted
                 members: Some(
                     [
                         Local(
-                            "mod::utils::identity",
+                            "utils::identity",
                         ),
                     ],
                 ),

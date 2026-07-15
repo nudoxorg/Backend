@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 430
 expression: rendered
 ---
 // <unrendered module>
@@ -8,6 +9,9 @@ expression: rendered
  * A generic box wrapping a single value.
  */
 export interface Box<T> {
+    /**
+     * The contained value.
+     */
     value: T;
 }
 
@@ -22,17 +26,30 @@ export function unwrap(): T;
  * A generic stack built on an array (Vec<T> analogue).
  */
 export interface Stack<T> {
-    push(item: T): ;
-    pop(): T | ;
-    peek(): T | ;
+    /**
+     * Number of elements in the stack.
+     */
+    readonly size: number;
+    /**
+     * Push an element.
+     */
+    push(item: T): void;
+    /**
+     * Pop the top element.
+     */
+    pop(): T | null;
+    /**
+     * Peek without removing.
+     */
+    peek(): T | null;
 }
 
 /**
  * A key/value store (HashMap<K,V> analogue).
  */
 export interface Store<K, V> {
-    get(key: K): V | ;
-    set(key: K, value: V): ;
+    get(key: K): V | null;
+    set(key: K, value: V): void;
     delete(key: K): boolean;
 }
 
@@ -40,7 +57,7 @@ export interface Store<K, V> {
  * Tag set (HashSet<T> analogue).
  */
 export interface TagSet<T> {
-    add(tag: T): ;
+    add(tag: T): void;
     has(tag: T): boolean;
     remove(tag: T): boolean;
 }
@@ -48,11 +65,9 @@ export interface TagSet<T> {
 /**
  * A variadic (rest-param) helper.
  */
-export function merge<
-    T
->(...sources[0m[35m[0m: [0m[38;5;12mT[0m[][]: T[][]): T[];
+export function merge<T>(sources: T[][]): T[];
 
 /**
  * A function accepting an optional parameter and returning a tuple-like type.
  */
-export function process<T>(items: T[], limit: number): [T[], number];
+export function process<T>(items: T[], limit?: number): [T[], number];

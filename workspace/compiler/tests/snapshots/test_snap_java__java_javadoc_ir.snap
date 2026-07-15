@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 269
 expression: sorted
 ---
 {
@@ -34,7 +35,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "Utility class for common mathematical operations.\n\nAll methods are static; this class cannot be instantiated.\n\nSince: 1.0\n\nAuthors: example-author",
+                "Utility class for common mathematical operations.\n\nAll methods are static; this class cannot be instantiated.\n\nSince: 1.0\n\nAuthors: example-author\n\nDeclared: `final`",
             ),
             deprecation: None,
             doc_links: None,

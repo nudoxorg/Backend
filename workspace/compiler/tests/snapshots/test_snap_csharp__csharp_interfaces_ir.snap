@@ -1,0 +1,624 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 204
+expression: sorted
+---
+{
+    "CSharpFixtures.Interfaces": Module(
+        Symbol {
+            name: "CSharpFixtures.Interfaces",
+            path: Local(
+                "CSharpFixtures.Interfaces",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Interfaces::IDrawable",
+                        ),
+                        Local(
+                            "CSharpFixtures.Interfaces::IRepository`2",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Interfaces::IDrawable": TraitDef(
+        Symbol {
+            name: "IDrawable",
+            path: Local(
+                "CSharpFixtures.Interfaces::IDrawable",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Interfaces.IDrawable",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Anything that can be drawn onto a canvas surface.\n\nImplementors must supply `Draw` and\n`Resize`. The `Clear` method has a\ndefault no-op implementation (a C# default interface member).\n\n`ScaleTo` is a static abstract member (generic\nmath / C# 11+): implementors must supply a static factory that scales a\nshape to a target bounding box.\n\nDeclared: `interface`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "M:CSharpFixtures.Interfaces.IDrawable.Resize(System.Double)": Local(
+                        "M:CSharpFixtures.Interfaces.IDrawable.Resize(System.Double)",
+                    ),
+                    "M:CSharpFixtures.Interfaces.IDrawable.Clear(System.String)": Local(
+                        "M:CSharpFixtures.Interfaces.IDrawable.Clear(System.String)",
+                    ),
+                    "M:CSharpFixtures.Interfaces.IDrawable.Draw(System.String)": Local(
+                        "M:CSharpFixtures.Interfaces.IDrawable.Draw(System.String)",
+                    ),
+                    "M:CSharpFixtures.Interfaces.IDrawable.ScaleTo(System.Double,System.Double)": Local(
+                        "M:CSharpFixtures.Interfaces.IDrawable.ScaleTo(System.Double,System.Double)",
+                    ),
+                },
+            ),
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "Draw",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "canvas",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            String,
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The target canvas identifier.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: None,
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Draws this shape on the named canvas.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "Resize",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "factor",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            Float(
+                                                                W64,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "Must be strictly positive.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: None,
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Resizes this shape by the given scale factor.\n\nThrows:\n- `ArgumentOutOfRangeException` — Thrown when `factor` is ≤ 0.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "Area",
+                            parameters: None,
+                            return_type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Float(
+                                                W64,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Returns the bounding area of this shape in square pixels.\n\nReturns: The area.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "ScaleTo",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "width",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            Float(
+                                                                W64,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "Target width in pixels.",
+                                            ),
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "height",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            Float(
+                                                                W64,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "Target height in pixels.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: TypeReference(
+                                            TypeReference {
+                                                identifier: "CSharpFixtures.Interfaces.IDrawable",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Static abstract: create a new instance scaled to fit a\n`width` × `height` bounding box.\n\nReturns: A scaled shape instance.\n\nDeclared: `static abstract`",
+                            ),
+                            receiver: Some(
+                                Static,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "Clear",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "canvas",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            String,
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: None,
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Declared: `virtual`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: true,
+                        },
+                        TraitMethod {
+                            name: "ShapeKind",
+                            parameters: None,
+                            return_type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            String,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Declared: `virtual`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: true,
+                        },
+                    ],
+                ),
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Interfaces::IRepository`2": TraitDef(
+        Symbol {
+            name: "IRepository",
+            path: Local(
+                "CSharpFixtures.Interfaces::IRepository`2",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Interfaces.IRepository`2",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A generic repository abstraction for CRUD operations on entities of type\n`T` identified by `TKey`.\n\nType parameters:\n- `TKey` — The primary-key type.\n- `T` — The entity type.\n\nDeclared: `interface`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "TKey",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [
+                            TraitBound {
+                                param: "T",
+                                trait_ref: TraitRef {
+                                    name: "csharp:class",
+                                    args: [],
+                                },
+                            },
+                            TraitBound {
+                                param: "TKey",
+                                trait_ref: TraitRef {
+                                    name: "csharp:notnull",
+                                    args: [],
+                                },
+                            },
+                        ],
+                    },
+                ),
+                super_traits: None,
+                associated_types: None,
+                properties: Some(
+                    [
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "Count",
+                                ),
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [
+                                        "get",
+                                        "accessibility:public",
+                                    ],
+                                    is_mutable: false,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: Some(
+                                    Public,
+                                ),
+                                documentation: Some(
+                                    "Returns the number of entities currently in the repository.\n\nDeclared: `public`",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "GetById",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "id",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: GenericParam(
+                                                            GenericParam {
+                                                                name: "TKey",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The primary key.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "?",
+                                        type: GenericParam(
+                                            GenericParam {
+                                                name: "T",
+                                                kind: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Retrieves the entity with the given `id`.\n\nReturns: The entity, or `null` when not found.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "GetAll",
+                            parameters: None,
+                            return_type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: TypeReference(
+                                            TypeReference {
+                                                identifier: "System.Collections.Generic.IEnumerable",
+                                                generic_args: Some(
+                                                    [
+                                                        Type(
+                                                            TypeOperator(
+                                                                TypeOperator {
+                                                                    operator: "!",
+                                                                    type: GenericParam(
+                                                                        GenericParam {
+                                                                            name: "T",
+                                                                            kind: None,
+                                                                        },
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        ),
+                                                    ],
+                                                ),
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Returns all entities in the repository.\n\nReturns: A snapshot collection of all entities.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "Add",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "entity",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: GenericParam(
+                                                            GenericParam {
+                                                                name: "T",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The entity to add.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: None,
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Persists a new entity to the repository.\n\nThrows:\n- `ArgumentNullException` — Thrown when `entity` is `null`.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                        TraitMethod {
+                            name: "Remove",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "id",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: GenericParam(
+                                                            GenericParam {
+                                                                name: "TKey",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The primary key of the entity to remove.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Bool,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Removes the entity with the given `id` from the repository.\n\nReturns: `true` if the entity was found and removed;\n`false` otherwise.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+}

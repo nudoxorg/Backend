@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 404
 expression: rendered
 ---
 // <unrendered module>
@@ -20,6 +21,8 @@ public interface Shape {
 
 /**
  * A circle defined by its radius.
+ * 
+ * Declared: `static final record`
  */
 public class Circle {
     public double radius;
@@ -62,6 +65,8 @@ public String toString();
 
 /**
  * An axis-aligned rectangle.
+ * 
+ * Declared: `static final record`
  */
 public class Rectangle {
     public double width;
@@ -109,6 +114,8 @@ public double width();
 
 /**
  * A triangle defined by three side lengths (validated by the triangle inequality).
+ * 
+ * Declared: `static final record`
  */
 public class Triangle {
     public double a;
@@ -156,3 +163,21 @@ public double perimeter();
  * Declared: `final`
  */
 public String toString();
+
+// ---
+
+/**
+ * Returns the area of this shape.
+ * 
+ * Declared: `abstract`
+ */
+public double area();
+
+// ---
+
+/**
+ * Returns the perimeter of this shape.
+ * 
+ * Declared: `abstract`
+ */
+public double perimeter();

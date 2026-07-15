@@ -10,6 +10,7 @@ use ir::entry::Index;
 pub mod oracle;
 pub mod oxc;
 pub mod producer;
+pub mod traversal;
 
 pub use self::{
 	oxc::error::{Package, Parse, TsDeclarationError, TsInterfaceError, TsTypeError},

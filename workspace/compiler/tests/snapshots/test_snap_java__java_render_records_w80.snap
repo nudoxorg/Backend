@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 390
 expression: rendered
 ---
 // <unrendered module>
@@ -11,6 +12,8 @@ expression: rendered
  * 
  * Type parameters:
  * - `L` — the label type
+ * 
+ * Declared: `final record`
  */
 public class NamedPoint<L> {
     public L label;
@@ -62,6 +65,8 @@ public double y();
 
 /**
  * An immutable 2D point (Java 16+ record).
+ * 
+ * Declared: `final record`
  */
 public class Point {
     public double x;

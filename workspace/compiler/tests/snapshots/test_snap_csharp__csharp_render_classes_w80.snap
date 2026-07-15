@@ -1,0 +1,103 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 475
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// An abstract base class representing an animal.
+/// All animals have a name and can make a sound.
+/// 
+/// Declared: `abstract class`
+/// 
+/// Declared: `internal`
+internal class Animal {
+    private string Name { get; set; }
+    protected int Age { get; set; }
+}
+
+// ---
+
+/// Returns a human-readable description of this animal.
+/// 
+/// Declared: `virtual`
+/// 
+/// Declared: `public`
+public string Describe(bool verbose);
+
+// ---
+
+/// Returns this animal's age.
+/// 
+/// Declared: `public`
+public int GetAge();
+
+// ---
+
+/// Returns this animal's name.
+/// 
+/// Declared: `public`
+public string GetName();
+
+// ---
+
+/// Returns the sound this animal makes.
+/// 
+/// Declared: `abstract`
+/// 
+/// Declared: `public`
+public string Sound();
+
+// ---
+
+/// A concrete dog: extends `Animal` and adds breed-specific
+/// behaviour.
+/// 
+/// Declared: `sealed class`
+/// 
+/// Declared: `internal`
+internal class Dog : Animal {
+    private int TrickCount { get; set; }
+    public string Breed { get; set; }
+}
+
+// ---
+
+/// Makes the dog bark a given number of times.
+/// 
+/// Declared: `public`
+public string Bark(int times);
+
+// ---
+
+/// Internal state reset — not part of the public contract.
+/// 
+/// Declared: `private`
+private void InternalReset();
+
+// ---
+
+/// Teaches the dog one or more tricks.
+/// 
+/// Each call increments the internal trick counter.
+/// 
+/// Declared: `public`
+public void LearnTrick(string[] tricks);
+
+// ---
+
+/// Returns the sound this animal makes.
+/// 
+/// Declared: `override`
+/// 
+/// Declared: `public`
+public string Sound();
+
+// ---
+
+/// Returns the number of tricks this dog has learned.
+/// 
+/// Declared: `public`
+public int TrickCount();

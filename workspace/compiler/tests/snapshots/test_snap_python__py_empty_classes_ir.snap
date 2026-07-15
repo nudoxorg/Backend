@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 430
 expression: sorted
 ---
 {
@@ -15,7 +16,16 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_empty_classes::Empty",
+                        ),
+                        Local(
+                            "snap_empty_classes::JustDoc",
+                        ),
+                    ],
+                ),
             },
         },
     ),

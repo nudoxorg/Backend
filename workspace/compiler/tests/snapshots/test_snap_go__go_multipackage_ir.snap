@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_go.rs
+assertion_line: 190
 expression: sorted
 ---
 {
@@ -142,7 +143,26 @@ expression: sorted
             path: Local(
                 "example.com/multipackage/sub::Helper.Describe",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "Helper",
+                        "Describe",
+                    ],
+                    [
+                        "example.com/multipackage/sub",
+                        "Helper.Describe",
+                    ],
+                    [
+                        "example.com/multipackage/sub",
+                        "Helper",
+                        "Describe",
+                    ],
+                    [
+                        "Helper.Describe",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Describe returns a description string with a value receiver.",
@@ -187,7 +207,26 @@ expression: sorted
             path: Local(
                 "example.com/multipackage/sub::Helper.Run",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "Helper.Run",
+                    ],
+                    [
+                        "Helper",
+                        "Run",
+                    ],
+                    [
+                        "example.com/multipackage/sub",
+                        "Helper.Run",
+                    ],
+                    [
+                        "example.com/multipackage/sub",
+                        "Helper",
+                        "Run",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Run executes the helper's primary action.",
@@ -216,7 +255,11 @@ expression: sorted
                         ),
                     ],
                 ),
-                type_links: None,
+                type_links: Some(
+                    {
+                        "out:0/1": -9179183488513656728,
+                    },
+                ),
                 attributes: None,
                 generics: None,
                 receiver: Some(
@@ -283,7 +326,11 @@ expression: sorted
                         ),
                     ],
                 ),
-                type_links: None,
+                type_links: Some(
+                    {
+                        "out:0/1": -8769650246879342509,
+                    },
+                ),
                 attributes: None,
                 generics: None,
                 receiver: None,
@@ -332,7 +379,11 @@ expression: sorted
                         ),
                     ],
                 ),
-                type_links: None,
+                type_links: Some(
+                    {
+                        "out:0/1": -5669356647696749760,
+                    },
+                ),
                 attributes: None,
                 generics: None,
                 receiver: None,
@@ -368,29 +419,19 @@ expression: sorted
                                 "entries",
                             ),
                             type: Some(
-                                RecordLiteral(
-                                    Record {
-                                        name: None,
-                                        generics: None,
-                                        fields: [
-                                            Pattern(
-                                                IndexSignature {
-                                                    key_type: Primitive(
-                                                        String,
-                                                    ),
-                                                    value_type: Primitive(
-                                                        String,
-                                                    ),
-                                                },
-                                            ),
-                                        ],
-                                        call_signatures: None,
-                                        constructors: None,
-                                        methods: None,
-                                        index_signatures: None,
-                                        super_types: None,
-                                        members: None,
-                                        implemented_protocols: None,
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "map",
+                                        type: Tuple(
+                                            [
+                                                Primitive(
+                                                    String,
+                                                ),
+                                                Primitive(
+                                                    String,
+                                                ),
+                                            ],
+                                        ),
                                     },
                                 ),
                             ),
@@ -433,7 +474,26 @@ expression: sorted
             path: Local(
                 "example.com/multipackage::Registry.Get",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "example.com/multipackage",
+                        "Registry",
+                        "Get",
+                    ],
+                    [
+                        "Registry",
+                        "Get",
+                    ],
+                    [
+                        "Registry.Get",
+                    ],
+                    [
+                        "example.com/multipackage",
+                        "Registry.Get",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Get retrieves the value for key.",
@@ -507,7 +567,26 @@ expression: sorted
             path: Local(
                 "example.com/multipackage::Registry.Set",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "Registry.Set",
+                    ],
+                    [
+                        "example.com/multipackage",
+                        "Registry",
+                        "Set",
+                    ],
+                    [
+                        "Registry",
+                        "Set",
+                    ],
+                    [
+                        "example.com/multipackage",
+                        "Registry.Set",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Set stores a value under key.",

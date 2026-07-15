@@ -1,0 +1,57 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 518
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// Anything that can be drawn onto a canvas surface.
+/// 
+/// Implementors must supply `Draw` and
+/// `Resize`. The `Clear` method has a
+/// default no-op implementation (a C# default interface member).
+/// 
+/// `ScaleTo` is a static abstract member (generic
+/// math / C# 11+): implementors must supply a static factory that scales a
+/// shape to a target bounding box.
+/// 
+/// Declared: `interface`
+/// 
+/// Declared: `internal`
+internal interface IDrawable {
+    void Draw(string canvas);
+    void Resize(double factor);
+    double Area();
+    IDrawable ScaleTo(
+        double width,
+        double height,
+    );
+    void Clear(
+        string canvas,
+    ) => throw new NotImplementedException();
+    string ShapeKind() => throw new NotImplementedException();
+}
+
+// ---
+
+/// A generic repository abstraction for CRUD operations on entities of type
+/// `T` identified by `TKey`.
+/// 
+/// Type parameters:
+/// - `TKey` — The primary-key type.
+/// - `T` — The entity type.
+/// 
+/// Declared: `interface`
+/// 
+/// Declared: `internal`
+internal interface IRepository<
+    T,
+    TKey
+> {
+    T? GetById(TKey id);
+    IEnumerable<T> GetAll();
+    void Add(T entity);
+    bool Remove(TKey id);
+}

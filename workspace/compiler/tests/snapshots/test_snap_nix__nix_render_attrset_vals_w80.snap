@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 233
 expression: rendered
 ---
 // <unrendered module>
@@ -242,7 +243,7 @@ zipAttrsWith = null;
 /**
   String utility functions.
 */
-// <unrendered constant>
+// <unrendered module>
 
 /**
   Pad a string to at least `width` characters on the right.
@@ -259,6 +260,10 @@ trim = s: null;
 /**
   Re-export via inherit so utils.trim is an alias of strings.trim.
 */
-// <unrendered constant>
+// <unrendered module>
 
-// <unrendered constant>
+/**
+  Strip leading and trailing whitespace.
+*/
+# Type :: String -> String
+trim = s: null;

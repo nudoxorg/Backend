@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 386
 expression: rendered
 ---
 // <unrendered module>
@@ -7,19 +8,22 @@ expression: rendered
 /**
  * A conditional type lowers to `Type::Conditional`.
  */
-type IsString = unknown;
+type IsString<T> = T extends string ? true : false;
 
 /**
  * A plain record used as the basis for the structural type aliases.
  */
-export interface Person {}
+export interface Person {
+    name: string;
+    age: number;
+}
 
 /**
  * `keyof` lowers to a `Type::TypeOperator`.
  */
-type PersonKeys = unknown;
+type PersonKeys = keyof Person;
 
 /**
  * A mapped type lowers to `Type::Mapped`.
  */
-type ReadonlyPerson = unknown;
+type ReadonlyPerson = { readonly [K in keyof Person]: Person[K]<Person, K> };

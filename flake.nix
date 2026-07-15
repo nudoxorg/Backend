@@ -428,6 +428,11 @@
               export LD_LIBRARY_PATH="${nixPackages.openssl.out}/lib:$LD_LIBRARY_PATH"
               export DOTNET_CLI_HOME="$TMPDIR/dotnet"
 
+              # Sealed-producer PATH prefix (see sandbox::ToolchainSet). Hermetic
+              # PATH alone is /usr/bin:/bin:/nix/var/nix/profiles/default/bin —
+              # language oracles need go/javadoc/dotnet from the Nix store.
+              export NUDOX_TOOLCHAIN_PATH="${nixPackages.go}/bin:${nixPackages.jdk21_headless}/bin:${nixPackages.dotnetCorePackages.sdk_10_0}/bin''${NUDOX_TOOLCHAIN_PATH:+:$NUDOX_TOOLCHAIN_PATH}"
+
               # MotD
               if command -v kittysay > /dev/null 2>&1; then
                 kittysay --think "the nu is the now" | dotacat

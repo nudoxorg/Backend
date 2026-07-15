@@ -1,0 +1,212 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 622
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// A fixed-point number with two decimal places, stored as a scaled
+/// `Int64`. Demonstrates arithmetic operators (standard and
+/// `checked`), comparison operators, and implicit/explicit conversions.
+/// 
+/// Declared: `readonly struct`
+/// 
+/// Declared: `internal`
+internal class Money : IEquatable, IComparable {
+    private long Scale { get; set; }
+    public long Raw { get; set; }
+}
+
+// ---
+
+/// Declared: `readonly`
+/// 
+/// Declared: `public`
+public int CompareTo(Money other);
+
+// ---
+
+/// Declared: `readonly`
+/// 
+/// Declared: `public`
+public bool Equals(Money other);
+
+// ---
+
+/// Declared: `override readonly`
+/// 
+/// Declared: `public`
+public int GetHashCode();
+
+// ---
+
+/// Declared: `override readonly`
+/// 
+/// Declared: `public`
+public string ToString();
+
+// ---
+
+/// Adds two `Money` values.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static Money OpAddition(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Checked addition — throws `OverflowException` on overflow.
+/// 
+/// Declared: `static checked operator`
+/// 
+/// Declared: `public`
+public static Money OpCheckedAddition(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Checked explicit conversion to `Int32` (minor units).
+/// 
+/// Declared: `static checked operator`
+/// 
+/// Declared: `public`
+public static int OpCheckedExplicit(
+    Money m,
+);
+
+// ---
+
+/// Checked subtraction — throws `OverflowException` on overflow.
+/// 
+/// Declared: `static checked operator`
+/// 
+/// Declared: `public`
+public static Money OpCheckedSubtraction(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Equality comparison.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static bool OpEquality(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Explicitly converts a `Money` back to a `Decimal`.
+/// 
+/// Declared: `static explicit operator`
+/// 
+/// Declared: `public`
+public static Decimal OpExplicit(
+    Money m,
+);
+
+// ---
+
+/// Greater-than comparison.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static bool OpGreaterThan(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Greater-than-or-equal comparison.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static bool OpGreaterThanOrEqual(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Implicitly converts a `Decimal` to `Money`.
+/// 
+/// Declared: `static implicit operator`
+/// 
+/// Declared: `public`
+public static Money OpImplicit(
+    Decimal value,
+);
+
+// ---
+
+/// Inequality comparison.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static bool OpInequality(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Less-than comparison.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static bool OpLessThan(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Less-than-or-equal comparison.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static bool OpLessThanOrEqual(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Subtracts `b` from `a`.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static Money OpSubtraction(
+    Money a,
+    Money b,
+);
+
+// ---
+
+/// Negates a `Money` value.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static Money OpUnaryNegation(
+    Money m,
+);

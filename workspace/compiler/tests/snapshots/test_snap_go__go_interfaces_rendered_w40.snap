@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_go.rs
+assertion_line: 233
 expression: rendered
 ---
 // example.com/interfaces
@@ -27,7 +28,7 @@ type Container[
 // example.com/interfaces::Map
 // Map is a named type over a generic map, demonstrating type params on a named type.
 type Map[K comparable, V any] struct {
-    Field0 any
+    Field0 map[K]V
 }
 
 // example.com/interfaces::Ordered
@@ -38,15 +39,15 @@ type Ordered interface {}
 // ReadWriteCloser embeds all three.
 type ReadWriteCloser interface {
     Close() error
-    Read(p []uint8) Tuple[int, error]
-    Write(p []uint8) Tuple[int, error]
+    Read(p []byte) (n int, err error)
+    Write(p []byte) (n int, err error)
 }
 
 // example.com/interfaces::ReadWriter
 // ReadWriter embeds both Reader and Writer (method-set union via embedding).
 type ReadWriter interface {
-    Read(p []uint8) Tuple[int, error]
-    Write(p []uint8) Tuple[int, error]
+    Read(p []byte) (n int, err error)
+    Write(p []byte) (n int, err error)
 }
 
 // example.com/interfaces::Reader
@@ -54,7 +55,7 @@ type ReadWriter interface {
 // 
 // It has one required method with a single parameter.
 type Reader interface {
-    Read(p []uint8) Tuple[int, error]
+    Read(p []byte) (n int, err error)
 }
 
 // example.com/interfaces::Stack
@@ -91,7 +92,7 @@ func Transform[
 // example.com/interfaces::Writer
 // Writer is a complementary interface.
 type Writer interface {
-    Write(p []uint8) Tuple[int, error]
+    Write(p []byte) (n int, err error)
 }
 
 // example.com/interfaces::unexportedHelper

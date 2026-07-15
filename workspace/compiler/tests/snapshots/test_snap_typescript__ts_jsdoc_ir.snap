@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 297
 expression: sorted
 ---
 {
@@ -43,7 +44,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "A geographic coordinate pair.\n\nLatitude must be in [-90, 90] and longitude in [-180, 180].",
+                "A geographic coordinate pair.\nLatitude must be in [-90, 90] and longitude in [-180, 180].",
             ),
             deprecation: None,
             doc_links: None,
@@ -129,7 +130,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "A named geographic location.\n\nBundles a human-readable label with its coordinates.",
+                "A named geographic location.\nBundles a human-readable label with its coordinates.",
             ),
             deprecation: None,
             doc_links: None,
@@ -233,7 +234,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "Format a coordinate as a human-readable string.\n",
+                "Format a coordinate as a human-readable string.",
             ),
             deprecation: None,
             doc_links: None,
@@ -318,7 +319,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "Calculate the Haversine distance between two coordinates (in kilometres).\n",
+                "Calculate the Haversine distance between two coordinates (in kilometres).",
             ),
             deprecation: None,
             doc_links: None,

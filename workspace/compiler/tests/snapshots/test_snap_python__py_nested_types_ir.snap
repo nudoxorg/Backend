@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 460
 expression: sorted
 ---
 {
@@ -15,7 +16,22 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_nested_types::LinkedList",
+                        ),
+                        Local(
+                            "snap_nested_types::Optional",
+                        ),
+                        Local(
+                            "snap_nested_types::TreeNode",
+                        ),
+                        Local(
+                            "snap_nested_types::annotations",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -120,7 +136,30 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "typing.Type",
+                            generic_args: Some(
+                                [
+                                    Type(
+                                        Any,
+                                    ),
+                                ],
+                            ),
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "type[Optional]",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "snap_nested_types::TreeNode": RecordType(
@@ -260,7 +299,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "__future__._Feature",
+                            generic_args: None,
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "_Feature",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
 }

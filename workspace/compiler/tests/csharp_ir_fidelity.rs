@@ -518,19 +518,20 @@ fn nullability_three_states_distinguishable() {
 	let n = lower_type(&not_ann);
 	let o = lower_type(&oblivious);
 
-	let op = |t: &IrType| -> &str {
+	// Named fn (not a closure) so lifetime elision ties the returned &str to `t`.
+	fn type_operator(t: &IrType) -> &str {
 		match t {
 			IrType::TypeOperator(op) => op.operator.as_str(),
 			_ => panic!("expected TypeOperator, got {t:?}"),
 		}
-	};
+	}
 
-	assert_eq!(op(&a), "?", "annotated → ?");
-	assert_eq!(op(&n), "!", "notAnnotated → !");
-	assert_eq!(op(&o), "~", "oblivious → ~");
-	assert_ne!(op(&a), op(&n));
-	assert_ne!(op(&n), op(&o));
-	assert_ne!(op(&a), op(&o));
+	assert_eq!(type_operator(&a), "?", "annotated → ?");
+	assert_eq!(type_operator(&n), "!", "notAnnotated → !");
+	assert_eq!(type_operator(&o), "~", "oblivious → ~");
+	assert_ne!(type_operator(&a), type_operator(&n));
+	assert_ne!(type_operator(&n), type_operator(&o));
+	assert_ne!(type_operator(&a), type_operator(&o));
 }
 
 // ===========================================================================

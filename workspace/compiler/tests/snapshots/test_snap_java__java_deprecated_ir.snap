@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 288
 expression: sorted
 ---
 {
@@ -36,7 +37,14 @@ expression: sorted
             documentation: Some(
                 "A class with deprecated members, to exercise `@Deprecated` lowering.\n\nDeprecated: Use `ModernApi` instead.\n\nAnnotations: `@java.lang.Deprecated`",
             ),
-            deprecation: None,
+            deprecation: Some(
+                Deprecation {
+                    since: None,
+                    note: Some(
+                        "Use `ModernApi` instead.",
+                    ),
+                },
+            ),
             doc_links: None,
             inner: Record {
                 name: Some(
@@ -190,7 +198,14 @@ expression: sorted
             documentation: Some(
                 "A deprecated method.\n\nDeprecated: Use `newProcess(String)` instead.\n\nAnnotations: `@java.lang.Deprecated`",
             ),
-            deprecation: None,
+            deprecation: Some(
+                Deprecation {
+                    since: None,
+                    note: Some(
+                        "Use `newProcess(String)` instead.",
+                    ),
+                },
+            ),
             doc_links: None,
             inner: Function {
                 input_parameters: Some(

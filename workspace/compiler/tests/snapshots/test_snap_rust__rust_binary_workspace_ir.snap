@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_rust.rs
+assertion_line: 354
 expression: stubs
 ---
 {
@@ -15,7 +16,7 @@ expression: stubs
     "app::main": EntryStub {
         kind: "function",
         name: "main",
-        visibility: "pub(crate)",
+        visibility: "priv",
         sealed: None,
         method_count: None,
         protocols: None,
@@ -47,5 +48,33 @@ expression: stubs
             [],
         ),
         deprecation: None,
+    },
+    "corelib::CoreCounter::new": EntryStub {
+        kind: "function",
+        name: "new",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "corelib::CoreCounter::value": EntryStub {
+        kind: "function",
+        name: "value",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
     },
 }

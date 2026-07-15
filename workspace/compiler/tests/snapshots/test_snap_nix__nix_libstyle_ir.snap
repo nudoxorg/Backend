@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 120
 expression: sorted
 ---
 {
@@ -37,20 +38,28 @@ expression: sorted
             },
         },
     ),
-    "attrsets": Constant(
+    "attrsets": Module(
         Symbol {
             name: "attrsets",
             path: Local(
                 "attrsets",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "The canonical nixpkgs `lib.attrsets` namespace re-exports `mapAttrs`\nas an inherit alias so both `mapAttrs` and `attrsets.mapAttrs` resolve.",
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "attrsets/mapAttrs",
+                        ),
+                    ],
+                ),
+            },
         },
     ),
     "attrsets/mapAttrs": Function(
@@ -2363,9 +2372,9 @@ expression: sorted
                 "concatStringsSep",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
-                "Concatenate a list of strings, inserting a separator between each\n    element.",
+                "Concatenate a list of strings, inserting a separator between each\n    element.\n\n## Examples\n\n```nix\nconcatStringsSep \"-\" [ \"a\" \"b\" \"c\" ]\n      => \"a-b-c\"\n```",
             ),
             deprecation: None,
             doc_links: None,
@@ -2437,7 +2446,7 @@ expression: sorted
                 "makeWrapper",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Build a wrapper derivation around an existing program.",
             ),
@@ -2518,7 +2527,11 @@ expression: sorted
                     ],
                 ),
                 type_links: None,
-                attributes: None,
+                attributes: Some(
+                    [
+                        Variadic,
+                    ],
+                ),
                 generics: None,
                 receiver: None,
                 overloads: None,
@@ -2539,7 +2552,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "/bin/sh",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "/bin/sh",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "makeWrapper/name": Constant(
@@ -2553,7 +2583,11 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: None,
+                value: None,
+                mutable: None,
+            },
         },
     ),
     "makeWrapper/system": Constant(
@@ -2567,7 +2601,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Literal(
+                        LiteralValue {
+                            kind: String,
+                            value: "x86_64-linux",
+                        },
+                    ),
+                ),
+                value: Some(
+                    Str(
+                        "x86_64-linux",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "mapAttrs": Function(
@@ -2577,7 +2628,7 @@ expression: sorted
                 "mapAttrs",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Map a function over every value of an attribute set, returning a new\nattribute set with the same keys.",
             ),
@@ -2763,7 +2814,11 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: None,
+                value: None,
+                mutable: None,
+            },
         },
     ),
     "mapAttrs/value": Constant(
@@ -2777,7 +2832,11 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: None,
+                value: None,
+                mutable: None,
+            },
         },
     ),
 }

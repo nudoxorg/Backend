@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 603
 expression: rendered
 ---
 // <unrendered module>
@@ -10,12 +11,8 @@ expression: rendered
 A generic container.
 """
 @dataclass
-class Box:
-    value: Any
-
-# ---
-
-// <unrendered constant>
+class Box[T]:
+    value: T
 
 # ---
 
@@ -24,18 +21,10 @@ class Box:
 # ---
 
 @dataclass
-class Pair:
-    first: Any
-    second: Any
+class Pair[K, V]:
+    first: K
+    second: V
 
 # ---
 
-// <unrendered constant>
-
-# ---
-
-// <unrendered constant>
-
-# ---
-
-def identity(x: Any) -> Any: ...
+def identity[T](x: T) -> T: ...

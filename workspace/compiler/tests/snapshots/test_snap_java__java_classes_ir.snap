@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 144
 expression: sorted
 ---
 {
@@ -37,7 +38,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "An abstract base class representing an animal.\n\nAll animals have a name and can make a sound.",
+                "An abstract base class representing an animal.\n\nAll animals have a name and can make a sound.\n\nDeclared: `abstract`",
             ),
             deprecation: None,
             doc_links: None,
@@ -391,7 +392,13 @@ expression: sorted
                 "A concrete dog, extending `Animal`.",
             ),
             deprecation: None,
-            doc_links: None,
+            doc_links: Some(
+                {
+                    "com.example.Animal": Local(
+                        "com.example::Animal",
+                    ),
+                },
+            ),
             inner: Record {
                 name: Some(
                     "Dog",

@@ -317,12 +317,14 @@ fn method_path_resolve_exact_via_symtab() {
 	assert_eq!(via_dotted_short, &canonical);
 
 	// path_segments of the canonical key also lands in the exact table.
-	// For Local("example.com/fidelity::Widget.Close") the segments become
-	// example / com / fidelity / Widget / Close after :: and dot splits.
-	let via_segments = table.resolve_exact("example::com::fidelity::Widget::Close");
-	assert!(
-		via_segments == Some(&canonical) || via_segments.is_some(),
-		"segmented form should resolve; got {via_segments:?}"
+	// Local("example.com/fidelity::Widget.Close") expands to
+	// `example.com::fidelity::Widget::Close` (import path keeps its dots;
+	// only the post-`::` tail is further split on `.`).
+	let via_segments = table.resolve_exact("example.com::fidelity::Widget::Close");
+	assert_eq!(
+		via_segments,
+		Some(&canonical),
+		"segmented form should resolve to the canonical method key"
 	);
 
 	// Suffix resolve of the unique method leaf.

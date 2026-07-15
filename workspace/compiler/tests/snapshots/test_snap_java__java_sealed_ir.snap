@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 233
 expression: sorted
 ---
 {
@@ -105,10 +106,18 @@ expression: sorted
                     ],
                 ),
                 object_safe: None,
-                sealed: None,
+                sealed: Some(
+                    true,
+                ),
                 cfg: None,
                 members: Some(
                     [
+                        Local(
+                            "com.example::Shape.area",
+                        ),
+                        Local(
+                            "com.example::Shape.perimeter",
+                        ),
                         Local(
                             "com.example::Shape.Circle",
                         ),
@@ -132,7 +141,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "A circle defined by its radius.",
+                "A circle defined by its radius.\n\nDeclared: `static final record`",
             ),
             deprecation: None,
             doc_links: None,
@@ -544,7 +553,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "An axis-aligned rectangle.",
+                "An axis-aligned rectangle.\n\nDeclared: `static final record`",
             ),
             deprecation: None,
             doc_links: None,
@@ -1046,7 +1055,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "A triangle defined by three side lengths (validated by the triangle inequality).",
+                "A triangle defined by three side lengths (validated by the triangle inequality).\n\nDeclared: `static final record`",
             ),
             deprecation: None,
             doc_links: None,
@@ -1624,6 +1633,104 @@ expression: sorted
                 ),
                 overloads: None,
                 implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Shape.area": Function(
+        Symbol {
+            name: "area",
+            path: Local(
+                "com.example::Shape.area",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the area of this shape.\n\nDeclared: `abstract`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the area in square units",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: false,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Shape.perimeter": Function(
+        Symbol {
+            name: "perimeter",
+            path: Local(
+                "com.example::Shape.perimeter",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the perimeter of this shape.\n\nDeclared: `abstract`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the perimeter in linear units",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: false,
                 members: None,
                 implemented_protocols: None,
             },

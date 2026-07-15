@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 554
 expression: rendered
 ---
 // <unrendered module>
@@ -15,6 +16,14 @@ class Drawable(Protocol):
 
 # ---
 
+def draw(self, self: Self, canvas: str) -> NoneType: ...
+
+# ---
+
+def resize(self, self: Self, factor: float) -> NoneType: ...
+
+# ---
+
 // <unrendered constant>
 
 # ---
@@ -22,3 +31,11 @@ class Drawable(Protocol):
 class Serializable(Protocol):
     def to_bytes(self, self: Self) -> bytes: ...
     def from_bytes(self, self: Self, data: bytes) -> NoneType: ...
+
+# ---
+
+def from_bytes(self, self: Self, data: bytes) -> NoneType: ...
+
+# ---
+
+def to_bytes(self, self: Self) -> bytes: ...

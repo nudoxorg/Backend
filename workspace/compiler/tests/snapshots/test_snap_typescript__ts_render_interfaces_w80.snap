@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 342
 expression: rendered
 ---
 // <unrendered module>
@@ -9,7 +10,10 @@ expression: rendered
  * an index signature.
  */
 export interface Greeter {
+    /**
+     * An ordinary required method.
+     */
     greet(name: string): string;
     Call(name: string): string;
-    Index(key: string): any;
+    Index(key: string): unknown;
 }

@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 269
 expression: sorted
 ---
 {
@@ -15,7 +16,19 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_functions::add",
+                        ),
+                        Local(
+                            "snap_functions::greet",
+                        ),
+                        Local(
+                            "snap_functions::maybe",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -139,8 +152,16 @@ expression: sorted
                                         },
                                     ),
                                 ),
-                                attributes: None,
-                                default_value: None,
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: Some(
+                                    Var(
+                                        "1",
+                                    ),
+                                ),
                                 description: None,
                             },
                         ),
@@ -218,8 +239,16 @@ expression: sorted
                                         },
                                     ),
                                 ),
-                                attributes: None,
-                                default_value: None,
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: Some(
+                                    Str(
+                                        "none",
+                                    ),
+                                ),
                                 description: None,
                             },
                         ),

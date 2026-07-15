@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 242
 expression: sorted
 ---
 {
@@ -41,7 +42,17 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        String,
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "mod::fromTypesField": Function(

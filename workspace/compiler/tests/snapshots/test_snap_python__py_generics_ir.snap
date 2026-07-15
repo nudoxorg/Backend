@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 351
 expression: sorted
 ---
 {
@@ -15,7 +16,22 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_generics::Box",
+                        ),
+                        Local(
+                            "snap_generics::Generic",
+                        ),
+                        Local(
+                            "snap_generics::Pair",
+                        ),
+                        Local(
+                            "snap_generics::identity",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -36,7 +52,25 @@ expression: sorted
                 name: Some(
                     "Box",
                 ),
-                generics: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
                 fields: [
                     Known(
                         KnownField {
@@ -44,7 +78,12 @@ expression: sorted
                                 "value",
                             ),
                             type: Some(
-                                Any,
+                                GenericParam(
+                                    GenericParam {
+                                        name: "T",
+                                        kind: None,
+                                    },
+                                ),
                             ),
                             default_value: None,
                             attributes: FieldAttributes {
@@ -81,21 +120,30 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
-        },
-    ),
-    "snap_generics::K": Constant(
-        Symbol {
-            name: "K",
-            path: Local(
-                "snap_generics::K",
-            ),
-            aliases: None,
-            visibility: Public,
-            documentation: None,
-            deprecation: None,
-            doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "typing.Type",
+                            generic_args: Some(
+                                [
+                                    Type(
+                                        Any,
+                                    ),
+                                ],
+                            ),
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "type[Generic]",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "snap_generics::Pair": RecordType(
@@ -113,7 +161,37 @@ expression: sorted
                 name: Some(
                     "Pair",
                 ),
-                generics: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "K",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "V",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
                 fields: [
                     Known(
                         KnownField {
@@ -121,7 +199,12 @@ expression: sorted
                                 "first",
                             ),
                             type: Some(
-                                Any,
+                                GenericParam(
+                                    GenericParam {
+                                        name: "K",
+                                        kind: None,
+                                    },
+                                ),
                             ),
                             default_value: None,
                             attributes: FieldAttributes {
@@ -142,7 +225,12 @@ expression: sorted
                                 "second",
                             ),
                             type: Some(
-                                Any,
+                                GenericParam(
+                                    GenericParam {
+                                        name: "V",
+                                        kind: None,
+                                    },
+                                ),
                             ),
                             default_value: None,
                             attributes: FieldAttributes {
@@ -168,34 +256,6 @@ expression: sorted
             },
         },
     ),
-    "snap_generics::T": Constant(
-        Symbol {
-            name: "T",
-            path: Local(
-                "snap_generics::T",
-            ),
-            aliases: None,
-            visibility: Public,
-            documentation: None,
-            deprecation: None,
-            doc_links: None,
-            inner: (),
-        },
-    ),
-    "snap_generics::V": Constant(
-        Symbol {
-            name: "V",
-            path: Local(
-                "snap_generics::V",
-            ),
-            aliases: None,
-            visibility: Public,
-            documentation: None,
-            deprecation: None,
-            doc_links: None,
-            inner: (),
-        },
-    ),
     "snap_generics::identity": Function(
         Symbol {
             name: "identity",
@@ -214,7 +274,12 @@ expression: sorted
                             LiteralParameter {
                                 name: "x",
                                 type: Some(
-                                    Any,
+                                    GenericParam(
+                                        GenericParam {
+                                            name: "T",
+                                            kind: None,
+                                        },
+                                    ),
                                 ),
                                 attributes: None,
                                 default_value: None,
@@ -229,7 +294,12 @@ expression: sorted
                             LiteralParameter {
                                 name: "",
                                 type: Some(
-                                    Any,
+                                    GenericParam(
+                                        GenericParam {
+                                            name: "T",
+                                            kind: None,
+                                        },
+                                    ),
                                 ),
                                 attributes: None,
                                 default_value: None,
@@ -240,7 +310,25 @@ expression: sorted
                 ),
                 type_links: None,
                 attributes: None,
-                generics: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
                 receiver: None,
                 overloads: None,
                 implemented: true,

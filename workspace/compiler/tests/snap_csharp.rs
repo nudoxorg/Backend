@@ -86,8 +86,18 @@ fn lower(fixture_name: &str) -> (Index, TempDir) {
     copy_tree(&fixture_root().join(fixture_name), dir.path())
         .expect("fixture copy should succeed");
     let ctx = LocalForgeContext::default();
-    let index = lower_package(&ctx, dir.path())
-        .unwrap_or_else(|e| panic!("lower_package failed for fixture {fixture_name:?}: {e}"));
+    let index = lower_package(&ctx, dir.path()).unwrap_or_else(|e| {
+        // Print the full thiserror chain — top-level OracleExtractFailed alone
+        // hides SpawnDotnetFailed / PublishError / etc. (same pattern as snap_go).
+        use std::error::Error;
+        let mut chain = format!("lower_package failed for fixture {fixture_name:?}: {e}");
+        let mut src = e.source();
+        while let Some(s) = src {
+            chain.push_str(&format!("\n  caused by: {s}"));
+            src = s.source();
+        }
+        panic!("{chain}");
+    });
     (index, dir)
 }
 

@@ -1,0 +1,76 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 606
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// Demonstrates an explicit-implementation event (add/remove backed by a
+/// private field with a custom accessor pair).
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class ExplicitEventHost : IObservable {
+    private Nullable<EventHandler> ValueChanged { get; set; }
+}
+
+// ---
+
+/// Explicit backing for a custom-locked event.
+/// 
+/// Declared: `event`
+/// 
+/// Declared: `public`
+// <unrendered event>
+
+// ---
+
+/// Event arguments carrying a status code and a message.
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class StatusChangedEventArgs : EventArgs {
+    public int StatusCode { get; set; }
+    public string? Message { get; set; }
+}
+
+// ---
+
+/// A service that emits lifecycle events as its status changes.
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class StatusService {
+    private int Status { get; set; }
+    public int Status { get; set; }
+}
+
+// ---
+
+/// Raised when the service encounters a fatal error.
+/// 
+/// Declared: `event`
+/// 
+/// Declared: `public`
+// <unrendered event>
+
+// ---
+
+/// Reports a fatal error, raising `ErrorOccurred`.
+/// 
+/// Declared: `public`
+public void ReportError(Exception ex);
+
+// ---
+
+/// Raised each time the service status changes.
+/// 
+/// Declared: `event`
+/// 
+/// Declared: `public`
+// <unrendered event>

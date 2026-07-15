@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 152
 expression: sorted
 ---
 {
@@ -2162,29 +2163,56 @@ expression: sorted
                 "defaultWidth",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "A simple constant (not a function) — exercises the Constant IR path.",
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        Int(
+                            W64,
+                        ),
+                    ),
+                ),
+                value: Some(
+                    Int(
+                        80,
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
-    "strings": Constant(
+    "strings": Module(
         Symbol {
             name: "strings",
             path: Local(
                 "strings",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "String utility functions.",
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "strings/pad",
+                        ),
+                        Local(
+                            "strings/trim",
+                        ),
+                    ],
+                ),
+            },
         },
     ),
     "strings/pad": Function(
@@ -2320,23 +2348,31 @@ expression: sorted
             },
         },
     ),
-    "utils": Constant(
+    "utils": Module(
         Symbol {
             name: "utils",
             path: Local(
                 "utils",
             ),
             aliases: None,
-            visibility: Private,
+            visibility: Public,
             documentation: Some(
                 "Re-export via inherit so utils.trim is an alias of strings.trim.",
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "utils/trim",
+                        ),
+                    ],
+                ),
+            },
         },
     ),
-    "utils/trim": Constant(
+    "utils/trim": Function(
         Symbol {
             name: "trim",
             path: Local(
@@ -2344,10 +2380,55 @@ expression: sorted
             ),
             aliases: None,
             visibility: Private,
-            documentation: None,
+            documentation: Some(
+                "Strip leading and trailing whitespace.",
+            ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "s",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
         },
     ),
 }

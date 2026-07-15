@@ -1,10 +1,11 @@
 ---
 source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 266
 expression: rendered
 ---
 // <unrendered module>
 
-// <unrendered constant>
+// <unrendered module>
 
 # Type :: String -> a -> b -> AttrSet a -> AttrSet b
 mapAttrs = f: set: null;

@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 370
 expression: sorted
 ---
 {
@@ -15,7 +16,22 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_constants::DEFAULT_NAME",
+                        ),
+                        Local(
+                            "snap_constants::ENABLED",
+                        ),
+                        Local(
+                            "snap_constants::MAX_SIZE",
+                        ),
+                        Local(
+                            "snap_constants::PI",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -30,7 +46,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "builtins.str",
+                            generic_args: None,
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "str",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "snap_constants::ENABLED": Constant(
@@ -44,7 +77,20 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "builtins.bool",
+                            generic_args: None,
+                        },
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "snap_constants::MAX_SIZE": Constant(
@@ -58,7 +104,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "builtins.int",
+                            generic_args: None,
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "int",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "snap_constants::PI": Constant(
@@ -72,7 +135,24 @@ expression: sorted
             documentation: None,
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "builtins.float",
+                            generic_args: None,
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "float",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
 }

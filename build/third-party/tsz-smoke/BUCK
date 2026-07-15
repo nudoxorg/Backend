@@ -26,6 +26,6 @@ native.rust_test(
         "//build/third-party:tsz_core",
         # serde_json is a direct dep of tsz_core but Buck2 requires explicit
         # deps for crates used directly in our source.
-        "//build/third-party:serde_json-1",
+        "//build/third-party:serde_json",
     ],
 )

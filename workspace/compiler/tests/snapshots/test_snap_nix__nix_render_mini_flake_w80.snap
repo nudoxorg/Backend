@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 249
 expression: rendered
 ---
 /**
@@ -242,7 +243,7 @@ zipAttrsWith = null;
 # Type :: Null
 outputs = self: ...: null;
 
-// <unrendered constant>
+// <unrendered module>
 
 /**
   Double an integer.
@@ -250,14 +251,20 @@ outputs = self: ...: null;
 # Type :: Int -> Int
 double = x: null;
 
+// <unrendered module>
+
 # Type :: Null
 default = config: lib: pkgs: ...: null;
 
-// <unrendered constant>
+// <unrendered module>
 
-// <unrendered constant>
+// <unrendered module>
 
-// <unrendered constant>
+// <unrendered module>
+
+// <unrendered module>
+
+// <unrendered module>
 
 // <unrendered constant>
 

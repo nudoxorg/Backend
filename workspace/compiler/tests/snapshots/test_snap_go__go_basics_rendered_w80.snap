@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_go.rs
+assertion_line: 199
 expression: rendered
 ---
 // example.com/basics
@@ -15,7 +16,7 @@ type Celsius struct {
 // example.com/basics::Chan
 // Chan is a named type over a channel.
 type Chan struct {
-    Field0 any
+    Field0 chan string
 }
 
 // example.com/basics::Config
@@ -39,20 +40,30 @@ func Status() string
 
 // example.com/basics::Direction
 // Direction is an iota-based enum (Go convention: defined type + iota consts).
+// 
+// Underlying: `int`
 type Direction interface {
     isDirection()
 }
 
-type DirectionNorth struct {}
+type DirectionNorth struct {
+    Field0 any
+}
 func (DirectionNorth) isDirection() {}
 
-type DirectionEast struct {}
+type DirectionEast struct {
+    Field0 any
+}
 func (DirectionEast) isDirection() {}
 
-type DirectionSouth struct {}
+type DirectionSouth struct {
+    Field0 any
+}
 func (DirectionSouth) isDirection() {}
 
-type DirectionWest struct {}
+type DirectionWest struct {
+    Field0 any
+}
 func (DirectionWest) isDirection() {}
 
 // example.com/basics::MaxRetries
@@ -92,7 +103,7 @@ func Status() string
 // example.com/basics::StringMap
 // StringMap is a named type over a map.
 type StringMap struct {
-    Field0 any
+    Field0 map[string]string
 }
 
 // example.com/basics::StringSlice

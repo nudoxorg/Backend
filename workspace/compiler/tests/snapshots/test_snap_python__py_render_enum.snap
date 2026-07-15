@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 540
 expression: rendered
 ---
 // <unrendered module>
@@ -7,28 +8,35 @@ expression: rendered
 # ---
 
 @dataclass
-class NORTH: ...
+class NORTH:
+    field0: Any
 
 @dataclass
-class SOUTH: ...
+class SOUTH:
+    field0: Any
 
 @dataclass
-class EAST: ...
+class EAST:
+    field0: Any
 
 @dataclass
-class WEST: ...
+class WEST:
+    field0: Any
 
 Direction = NORTH | SOUTH | EAST | WEST
 
 # ---
 
 @dataclass
-class PENDING: ...
+class PENDING:
+    field0: Any
 
 @dataclass
-class ACTIVE: ...
+class ACTIVE:
+    field0: Any
 
 @dataclass
-class INACTIVE: ...
+class INACTIVE:
+    field0: Any
 
 Status = PENDING | ACTIVE | INACTIVE

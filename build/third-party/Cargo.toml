@@ -27,7 +27,19 @@ anstyle-query = { version = "1.1.5" }
 anstyle-wincon = { version = "3.0.11" }
 anyhow = { version = "1.0.103" }
 append-only-vec = { version = "0.1.8" }
-arborium = { version = "2.18.1" }
+# Language features required by workspace/compiler treesitter (get_language).
+# Upstream default = []; without lang-* every grammar returns None.
+arborium = { version = "2.18.1", features = [
+    "lang-c-sharp",
+    "lang-go",
+    "lang-java",
+    "lang-javascript",
+    "lang-nix",
+    "lang-python",
+    "lang-rust",
+    "lang-tsx",
+    "lang-typescript",
+] }
 arborium-ada = { version = "2.18.1" }
 arborium-agda = { version = "2.18.1" }
 arborium-asciidoc = { version = "2.18.1" }
@@ -714,7 +726,8 @@ ptr_meta_derive = { version = "0.3.1" }
 qdrant-client = { version = "1.18.0" }
 quanta = { version = "0.12.6" }
 quick-error = { version = "1.2.3" }
-quick-xml = { version = "0.37.5" }
+# 0.41: Event::GeneralRef + BytesText::decode used by csharp/xmldoc.rs
+quick-xml = { version = "0.41.0" }
 quinn = { version = "0.11.11" }
 quinn-proto = { version = "0.11.15" }
 quinn-udp = { version = "0.5.14" }
@@ -828,8 +841,8 @@ same-file = { version = "1.0.6" }
 schannel = { version = "0.1.29" }
 scoped-tls = { version = "1.0.1" }
 scopeguard = { version = "1.2.0" }
-sea-query = { version = "0.32.7", features = ["with-chrono", "thread-safe"] }
-sea-query-binder = { version = "0.7.0", features = ["sqlx-postgres", "with-chrono", "runtime-tokio"] }
+sea-query = { version = "0.32.7", features = ["with-chrono", "with-uuid", "with-json", "thread-safe"] }
+sea-query-binder = { version = "0.7.0", features = ["sqlx-postgres", "with-chrono", "with-uuid", "with-json", "runtime-tokio"] }
 sea-query-derive = { version = "0.4.3" }
 seahash = { version = "4.1.0" }
 seccompiler = { version = "0.5.0" }
@@ -887,7 +900,7 @@ socket2-0-6 = { package = "socket2", version = "0.6.4" }
 spin = { version = "0.9.8" }
 spinning_top = { version = "0.3.0" }
 spki = { version = "0.7.3" }
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "chrono", "json", "migrate", "macros"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "chrono", "json", "migrate", "macros", "uuid"] }
 sqlx-core = { version = "0.8.6" }
 sqlx-macros = { version = "0.8.6" }
 sqlx-macros-core = { version = "0.8.6" }

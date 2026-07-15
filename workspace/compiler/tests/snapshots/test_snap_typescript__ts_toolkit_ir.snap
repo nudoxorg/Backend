@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 225
 expression: sorted
 ---
 {
@@ -24,69 +25,10 @@ expression: sorted
                             "mod::Builder",
                         ),
                         Local(
-                            "mod::default",
+                            "mod::install",
                         ),
                     ],
                 ),
-            },
-        },
-    ),
-    "mod.toolkit::VERSION": Constant(
-        Symbol {
-            name: "VERSION",
-            path: Local(
-                "mod.toolkit::VERSION",
-            ),
-            aliases: None,
-            visibility: Public,
-            documentation: Some(
-                "The toolkit version.",
-            ),
-            deprecation: None,
-            doc_links: None,
-            inner: (),
-        },
-    ),
-    "mod.toolkit::help": Function(
-        Symbol {
-            name: "help",
-            path: Local(
-                "mod.toolkit::help",
-            ),
-            aliases: None,
-            visibility: Public,
-            documentation: Some(
-                "A helper reachable through the namespace.",
-            ),
-            deprecation: None,
-            doc_links: None,
-            inner: Function {
-                input_parameters: None,
-                output_parameters: Some(
-                    [
-                        Literal(
-                            LiteralParameter {
-                                name: "",
-                                type: Some(
-                                    Primitive(
-                                        String,
-                                    ),
-                                ),
-                                attributes: None,
-                                default_value: None,
-                                description: None,
-                            },
-                        ),
-                    ],
-                ),
-                type_links: None,
-                attributes: None,
-                generics: None,
-                receiver: None,
-                overloads: None,
-                implemented: true,
-                members: None,
-                implemented_protocols: None,
             },
         },
     ),
@@ -108,7 +50,33 @@ expression: sorted
                     "Builder",
                 ),
                 generics: None,
-                fields: [],
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "#segments",
+                            ),
+                            type: Some(
+                                Slice(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
                 call_signatures: None,
                 constructors: None,
                 methods: None,
@@ -117,10 +85,10 @@ expression: sorted
                 members: Some(
                     [
                         Local(
-                            "mod::Builder::push",
+                            "Builder::push",
                         ),
                         Local(
-                            "mod::Builder::build",
+                            "Builder::build",
                         ),
                     ],
                 ),
@@ -228,17 +196,15 @@ expression: sorted
             },
         },
     ),
-    "mod::default": Function(
+    "mod::install": Function(
         Symbol {
-            name: "default",
+            name: "install",
             path: Local(
-                "mod::default",
+                "mod::install",
             ),
             aliases: None,
-            visibility: Public,
-            documentation: Some(
-                "Install the toolkit (default export).",
-            ),
+            visibility: Private,
+            documentation: None,
             deprecation: None,
             doc_links: None,
             inner: Function {
@@ -288,10 +254,10 @@ expression: sorted
                 members: Some(
                     [
                         Local(
-                            "mod::toolkit::VERSION",
+                            "toolkit::VERSION",
                         ),
                         Local(
-                            "mod::toolkit::help",
+                            "toolkit::help",
                         ),
                     ],
                 ),
@@ -311,7 +277,17 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        String,
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "mod::toolkit::help": Function(

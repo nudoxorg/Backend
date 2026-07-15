@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 337
 expression: rendered
 ---
 // <unrendered module>
@@ -22,9 +23,65 @@ public interface Drawable {
 // ---
 
 /**
+ * Returns the bounding area of this shape.
+ * 
+ * Declared: `abstract`
+ */
+public double area();
+
+// ---
+
+/**
+ * Clears this shape from the canvas.
+ * 
+ * Default implementation does nothing.
+ * 
+ * Declared: `default`
+ */
+public void clear(String canvas);
+
+// ---
+
+/**
+ * Draws this shape on the given canvas.
+ * 
+ * Declared: `abstract`
+ */
+public void draw(String canvas);
+
+// ---
+
+/**
+ * Resizes this shape by the given factor.
+ * 
+ * Declared: `abstract`
+ */
+public void resize(double factor);
+
+// ---
+
+/**
  * Objects that can be serialized to and from bytes.
  */
 public interface Serializable {
     byte[] toBytes();
     Serializable fromBytes(byte[] data);
 }
+
+// ---
+
+/**
+ * Deserialize from a byte array.
+ * 
+ * Declared: `abstract`
+ */
+public Serializable fromBytes(byte[] data);
+
+// ---
+
+/**
+ * Serialize this object to a byte array.
+ * 
+ * Declared: `abstract`
+ */
+public byte[] toBytes();

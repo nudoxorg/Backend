@@ -1,23 +1,16 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 406
 expression: rendered
 ---
 // <unrendered module>
 
 /**
- * The toolkit version.
- */
-// <unrendered constant>
-
-/**
- * A helper reachable through the namespace.
- */
-export function help(): string;
-
-/**
  * Incrementally assembles a path from segments.
  */
-export interface Builder {}
+export interface Builder {
+    #segments: string[];
+}
 
 /**
  * Materialize the accumulated path.
@@ -29,10 +22,7 @@ export function build(): string;
  */
 export function push(segment: string): this;
 
-/**
- * Install the toolkit (default export).
- */
-export function default(): ;
+export function install(): void;
 
 /**
  * A namespace grouping toolkit helpers.

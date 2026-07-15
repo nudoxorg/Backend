@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_go.rs
+assertion_line: 217
 expression: rendered
 ---
 // example.com/multipackage
@@ -37,7 +38,7 @@ func NewRegistry() *example.com/multipackage.Registry
 // example.com/multipackage::Registry
 // Registry holds key-value entries.
 type Registry struct {
-    Entries any
+    Entries map[string]string
 }
 
 // example.com/multipackage::Registry.Get

@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 186
 expression: rendered
 ---
 // <unrendered module>
@@ -8,7 +9,7 @@ expression: rendered
   The canonical nixpkgs `lib.attrsets` namespace re-exports `mapAttrs`
   as an inherit alias so both `mapAttrs` and `attrsets.mapAttrs` resolve.
 */
-// <unrendered constant>
+// <unrendered module>
 
 /**
   Map a function over every value of an attribute set, returning a new
@@ -250,6 +251,13 @@ zipAttrsWith = null;
 /**
   Concatenate a list of strings, inserting a separator between each
       element.
+  
+  ## Examples
+  
+  ```nix
+  concatStringsSep "-" [ "a" "b" "c" ]
+        => "a-b-c"
+  ```
 */
 # Type :: String -> [String] -> String
 concatStringsSep = sep: strings: null;

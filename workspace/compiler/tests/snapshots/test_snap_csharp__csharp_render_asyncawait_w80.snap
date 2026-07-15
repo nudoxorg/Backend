@@ -1,0 +1,85 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 726
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// A minimal HTTP-style client that exercises `async`/`await`
+/// patterns and iterator methods with `yield`.
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class DataClient {
+    private string BaseUrl { get; set; }
+}
+
+// ---
+
+/// Fetches a resource by `id` asynchronously.
+/// 
+/// Declared: `public`
+public async Task FetchAsync(string id, CancellationToken cancellationToken);
+
+// ---
+
+/// Posts `payload` to the service and returns the
+/// created resource's identifier.
+/// 
+/// Declared: `public`
+public async Task PostAsync(
+    string payload,
+    CancellationToken cancellationToken,
+);
+
+// ---
+
+/// Utility methods that return iterator sequences via `yield return`.
+/// 
+/// Declared: `static class`
+/// 
+/// Declared: `internal`
+internal class Sequences {}
+
+// ---
+
+/// Generates an infinite Fibonacci sequence.
+/// 
+/// Because this is an iterator (`yield return`), the caller controls
+/// evaluation via LINQ operators such as "/>.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static IEnumerable<long> Fibonacci();
+
+// ---
+
+/// Yields integers in [`start`, `end`)
+/// that satisfy `predicate`.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static IEnumerable<int> Filter(int start, int end, Func predicate);
+
+// ---
+
+/// Asynchronously streams integers from `start` to
+/// `end` exclusive, yielding after each with a small
+/// artificial delay (simulates I/O-paced streaming).
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static async IAsyncEnumerable<
+    int
+> StreamAsync(
+    int start,
+    int end,
+    int delayMs,
+    CancellationToken cancellationToken,
+);

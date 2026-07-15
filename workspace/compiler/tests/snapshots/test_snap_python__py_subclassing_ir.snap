@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 193
 expression: sorted
 ---
 {
@@ -15,7 +16,25 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_subclassing::Animal",
+                        ),
+                        Local(
+                            "snap_subclassing::Animal.sound",
+                        ),
+                        Local(
+                            "snap_subclassing::Cat",
+                        ),
+                        Local(
+                            "snap_subclassing::Dog",
+                        ),
+                        Local(
+                            "snap_subclassing::Dog.sound",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -118,6 +137,72 @@ expression: sorted
                 ),
                 index_signatures: None,
                 super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_subclassing::Animal.sound",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_subclassing::Animal.sound": Function(
+        Symbol {
+            name: "sound",
+            path: Local(
+                "snap_subclassing::Animal.sound",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "self",
+                                type: Some(
+                                    SelfType,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
                 members: None,
                 implemented_protocols: None,
             },
@@ -294,6 +379,72 @@ expression: sorted
                         ),
                     ],
                 ),
+                members: Some(
+                    [
+                        Local(
+                            "snap_subclassing::Dog.sound",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_subclassing::Dog.sound": Function(
+        Symbol {
+            name: "sound",
+            path: Local(
+                "snap_subclassing::Dog.sound",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "self",
+                                type: Some(
+                                    SelfType,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
                 members: None,
                 implemented_protocols: None,
             },

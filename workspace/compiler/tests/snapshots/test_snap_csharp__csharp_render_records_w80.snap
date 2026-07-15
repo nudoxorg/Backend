@@ -1,0 +1,71 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 501
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// A labelled 2-D point: a generic positional record combining a label of type
+/// `L` with Cartesian coordinates.
+/// 
+/// Type parameters:
+/// - `L` — The label type.
+/// 
+/// Declared: `record class`
+/// 
+/// Declared: `internal`
+internal class NamedPoint<L> : IEquatable<NamedPoint<L>> {
+    public L Label { get; set; }
+    public double X { get; set; }
+    public double Y { get; set; }
+}
+
+// ---
+
+/// Creates a `NamedPoint` at the origin.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static NamedPoint<L> AtOrigin(L label);
+
+// ---
+
+/// Projects this named point onto its unlabelled `Point`
+/// counterpart.
+/// 
+/// Declared: `public`
+public Point ToPoint();
+
+// ---
+
+/// An immutable 2-D point represented as a positional record.
+/// The compiler synthesises `Equals`, `GetHashCode`, `ToString`,
+/// `Deconstruct`, and a copy constructor automatically.
+/// 
+/// Declared: `record class`
+/// 
+/// Declared: `internal`
+internal class Point : IEquatable<Point> {
+    public Point Origin { get; set; }
+    public double X { get; set; }
+    public double Y { get; set; }
+}
+
+// ---
+
+/// Returns the Euclidean distance from this point to `other`.
+/// 
+/// Declared: `public`
+public double DistanceTo(Point other);
+
+// ---
+
+/// Creates a point from polar coordinates.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static Point FromPolar(double r, double theta);

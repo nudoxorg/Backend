@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 408
 expression: sorted
 ---
 {
@@ -17,7 +18,19 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_docstrings::Documented",
+                        ),
+                        Local(
+                            "snap_docstrings::Documented.describe",
+                        ),
+                        Local(
+                            "snap_docstrings::documented_func",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -122,6 +135,74 @@ expression: sorted
                 ),
                 index_signatures: None,
                 super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_docstrings::Documented.describe",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_docstrings::Documented.describe": Function(
+        Symbol {
+            name: "describe",
+            path: Local(
+                "snap_docstrings::Documented.describe",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Return a description.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "self",
+                                type: Some(
+                                    SelfType,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
                 members: None,
                 implemented_protocols: None,
             },
@@ -196,7 +277,9 @@ expression: sorted
                                 ),
                                 attributes: None,
                                 default_value: None,
-                                description: None,
+                                description: Some(
+                                    "True if str(x) == y.",
+                                ),
                             },
                         ),
                     ],

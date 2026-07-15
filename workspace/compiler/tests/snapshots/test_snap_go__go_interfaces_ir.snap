@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_go.rs
+assertion_line: 175
 expression: sorted
 ---
 {
@@ -316,35 +317,25 @@ expression: sorted
                                 0,
                             ),
                             type: Some(
-                                RecordLiteral(
-                                    Record {
-                                        name: None,
-                                        generics: None,
-                                        fields: [
-                                            Pattern(
-                                                IndexSignature {
-                                                    key_type: GenericParam(
-                                                        GenericParam {
-                                                            name: "K",
-                                                            kind: None,
-                                                        },
-                                                    ),
-                                                    value_type: GenericParam(
-                                                        GenericParam {
-                                                            name: "V",
-                                                            kind: None,
-                                                        },
-                                                    ),
-                                                },
-                                            ),
-                                        ],
-                                        call_signatures: None,
-                                        constructors: None,
-                                        methods: None,
-                                        index_signatures: None,
-                                        super_types: None,
-                                        members: None,
-                                        implemented_protocols: None,
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "map",
+                                        type: Tuple(
+                                            [
+                                                GenericParam(
+                                                    GenericParam {
+                                                        name: "K",
+                                                        kind: None,
+                                                    },
+                                                ),
+                                                GenericParam(
+                                                    GenericParam {
+                                                        name: "V",
+                                                        kind: None,
+                                                    },
+                                                ),
+                                            ],
+                                        ),
                                     },
                                 ),
                             ),
@@ -391,7 +382,166 @@ expression: sorted
                 generics: None,
                 super_traits: None,
                 associated_types: None,
-                properties: None,
+                properties: Some(
+                    [
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "type_set",
+                                ),
+                                type: Some(
+                                    Union(
+                                        [
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        Int(
+                                                            Arch,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        Int(
+                                                            W8,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        Int(
+                                                            W16,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        Int(
+                                                            W32,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        Int(
+                                                            W64,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        UInt(
+                                                            Arch,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        UInt(
+                                                            W8,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        UInt(
+                                                            W16,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        UInt(
+                                                            W32,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        UInt(
+                                                            W64,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        Float(
+                                                            W32,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        Float(
+                                                            W64,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "~",
+                                                    type: Primitive(
+                                                        String,
+                                                    ),
+                                                },
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [
+                                        "go:type_set",
+                                    ],
+                                    is_mutable: false,
+                                    is_optional: false,
+                                    is_static: true,
+                                },
+                                visibility: Some(
+                                    Public,
+                                ),
+                                documentation: Some(
+                                    "Constraint type set (structural Union / ~ terms).",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
                 required_methods: None,
                 provided_methods: None,
                 required_constants: None,
@@ -489,10 +639,11 @@ expression: sorted
                                             name: "p",
                                             type: Some(
                                                 Slice(
-                                                    Primitive(
-                                                        UInt(
-                                                            W8,
-                                                        ),
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "byte",
+                                                            generic_args: None,
+                                                        },
                                                     ),
                                                 ),
                                             ),
@@ -504,19 +655,29 @@ expression: sorted
                                 ],
                             ),
                             return_type: Some(
-                                Tuple(
+                                NamedTuple(
                                     [
-                                        Primitive(
-                                            Int(
-                                                Arch,
+                                        TupleMember {
+                                            label: Some(
+                                                "n",
                                             ),
-                                        ),
-                                        TypeReference(
-                                            TypeReference {
-                                                identifier: "error",
-                                                generic_args: None,
-                                            },
-                                        ),
+                                            type: Primitive(
+                                                Int(
+                                                    Arch,
+                                                ),
+                                            ),
+                                        },
+                                        TupleMember {
+                                            label: Some(
+                                                "err",
+                                            ),
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "error",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        },
                                     ],
                                 ),
                             ),
@@ -537,10 +698,11 @@ expression: sorted
                                             name: "p",
                                             type: Some(
                                                 Slice(
-                                                    Primitive(
-                                                        UInt(
-                                                            W8,
-                                                        ),
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "byte",
+                                                            generic_args: None,
+                                                        },
                                                     ),
                                                 ),
                                             ),
@@ -552,19 +714,29 @@ expression: sorted
                                 ],
                             ),
                             return_type: Some(
-                                Tuple(
+                                NamedTuple(
                                     [
-                                        Primitive(
-                                            Int(
-                                                Arch,
+                                        TupleMember {
+                                            label: Some(
+                                                "n",
                                             ),
-                                        ),
-                                        TypeReference(
-                                            TypeReference {
-                                                identifier: "error",
-                                                generic_args: None,
-                                            },
-                                        ),
+                                            type: Primitive(
+                                                Int(
+                                                    Arch,
+                                                ),
+                                            ),
+                                        },
+                                        TupleMember {
+                                            label: Some(
+                                                "err",
+                                            ),
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "error",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        },
                                     ],
                                 ),
                             ),
@@ -628,10 +800,11 @@ expression: sorted
                                             name: "p",
                                             type: Some(
                                                 Slice(
-                                                    Primitive(
-                                                        UInt(
-                                                            W8,
-                                                        ),
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "byte",
+                                                            generic_args: None,
+                                                        },
                                                     ),
                                                 ),
                                             ),
@@ -643,19 +816,29 @@ expression: sorted
                                 ],
                             ),
                             return_type: Some(
-                                Tuple(
+                                NamedTuple(
                                     [
-                                        Primitive(
-                                            Int(
-                                                Arch,
+                                        TupleMember {
+                                            label: Some(
+                                                "n",
                                             ),
-                                        ),
-                                        TypeReference(
-                                            TypeReference {
-                                                identifier: "error",
-                                                generic_args: None,
-                                            },
-                                        ),
+                                            type: Primitive(
+                                                Int(
+                                                    Arch,
+                                                ),
+                                            ),
+                                        },
+                                        TupleMember {
+                                            label: Some(
+                                                "err",
+                                            ),
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "error",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        },
                                     ],
                                 ),
                             ),
@@ -676,10 +859,11 @@ expression: sorted
                                             name: "p",
                                             type: Some(
                                                 Slice(
-                                                    Primitive(
-                                                        UInt(
-                                                            W8,
-                                                        ),
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "byte",
+                                                            generic_args: None,
+                                                        },
                                                     ),
                                                 ),
                                             ),
@@ -691,19 +875,29 @@ expression: sorted
                                 ],
                             ),
                             return_type: Some(
-                                Tuple(
+                                NamedTuple(
                                     [
-                                        Primitive(
-                                            Int(
-                                                Arch,
+                                        TupleMember {
+                                            label: Some(
+                                                "n",
                                             ),
-                                        ),
-                                        TypeReference(
-                                            TypeReference {
-                                                identifier: "error",
-                                                generic_args: None,
-                                            },
-                                        ),
+                                            type: Primitive(
+                                                Int(
+                                                    Arch,
+                                                ),
+                                            ),
+                                        },
+                                        TupleMember {
+                                            label: Some(
+                                                "err",
+                                            ),
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "error",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        },
                                     ],
                                 ),
                             ),
@@ -756,10 +950,11 @@ expression: sorted
                                             name: "p",
                                             type: Some(
                                                 Slice(
-                                                    Primitive(
-                                                        UInt(
-                                                            W8,
-                                                        ),
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "byte",
+                                                            generic_args: None,
+                                                        },
                                                     ),
                                                 ),
                                             ),
@@ -771,19 +966,29 @@ expression: sorted
                                 ],
                             ),
                             return_type: Some(
-                                Tuple(
+                                NamedTuple(
                                     [
-                                        Primitive(
-                                            Int(
-                                                Arch,
+                                        TupleMember {
+                                            label: Some(
+                                                "n",
                                             ),
-                                        ),
-                                        TypeReference(
-                                            TypeReference {
-                                                identifier: "error",
-                                                generic_args: None,
-                                            },
-                                        ),
+                                            type: Primitive(
+                                                Int(
+                                                    Arch,
+                                                ),
+                                            ),
+                                        },
+                                        TupleMember {
+                                            label: Some(
+                                                "err",
+                                            ),
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "error",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        },
                                     ],
                                 ),
                             ),
@@ -898,7 +1103,26 @@ expression: sorted
             path: Local(
                 "example.com/interfaces::Stack.Pop",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "Stack.Pop",
+                    ],
+                    [
+                        "example.com/interfaces",
+                        "Stack.Pop",
+                    ],
+                    [
+                        "example.com/interfaces",
+                        "Stack",
+                        "Pop",
+                    ],
+                    [
+                        "Stack",
+                        "Pop",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Pop removes and returns the top item, and whether it was present.",
@@ -977,7 +1201,26 @@ expression: sorted
             path: Local(
                 "example.com/interfaces::Stack.Push",
             ),
-            aliases: None,
+            aliases: Some(
+                {
+                    [
+                        "Stack",
+                        "Push",
+                    ],
+                    [
+                        "example.com/interfaces",
+                        "Stack",
+                        "Push",
+                    ],
+                    [
+                        "Stack.Push",
+                    ],
+                    [
+                        "example.com/interfaces",
+                        "Stack.Push",
+                    ],
+                },
+            ),
             visibility: Public,
             documentation: Some(
                 "Push adds an item to the top of the stack with a pointer receiver.",
@@ -1266,10 +1509,11 @@ expression: sorted
                                             name: "p",
                                             type: Some(
                                                 Slice(
-                                                    Primitive(
-                                                        UInt(
-                                                            W8,
-                                                        ),
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "byte",
+                                                            generic_args: None,
+                                                        },
                                                     ),
                                                 ),
                                             ),
@@ -1281,19 +1525,29 @@ expression: sorted
                                 ],
                             ),
                             return_type: Some(
-                                Tuple(
+                                NamedTuple(
                                     [
-                                        Primitive(
-                                            Int(
-                                                Arch,
+                                        TupleMember {
+                                            label: Some(
+                                                "n",
                                             ),
-                                        ),
-                                        TypeReference(
-                                            TypeReference {
-                                                identifier: "error",
-                                                generic_args: None,
-                                            },
-                                        ),
+                                            type: Primitive(
+                                                Int(
+                                                    Arch,
+                                                ),
+                                            ),
+                                        },
+                                        TupleMember {
+                                            label: Some(
+                                                "err",
+                                            ),
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "error",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        },
                                     ],
                                 ),
                             ),

@@ -1,0 +1,87 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 644
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// C# 14 extension block: additional methods for `String`.
+/// Unlike classic extension methods, these are declared inside an
+/// `extension(string)` block rather than as static methods on a helper
+/// class.
+/// 
+/// Extension block for `System.String`.
+/// 
+/// Declared: `sealed class`
+/// 
+/// Declared: `internal`
+internal class  {}
+
+// ---
+
+/// Counts the number of occurrences of `ch` in the
+/// extended string.
+/// 
+/// Declared: `public`
+public int CountOccurrences(char ch);
+
+// ---
+
+/// Repeats the extended string `times` times, joined by
+/// `separator`.
+/// 
+/// Declared: `public`
+public string Repeat(int times, string separator);
+
+// ---
+
+/// Returns a static label for the extension receiver type.
+/// Exercises a static extension member (C# 14).
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static string TypeLabel();
+
+// ---
+
+/// Classic (pre-C# 14) extension methods for `String`.
+/// These live in a static class and the receiver is the first parameter.
+/// 
+/// Declared: `static class`
+/// 
+/// Declared: `internal`
+internal class StringExtensions {}
+
+// ---
+
+/// Returns `true` if `value` is
+/// `null`, empty, or consists only of white-space characters.
+/// 
+/// Declared: `static extension`
+/// 
+/// Declared: `public`
+public static bool IsBlank(string? value);
+
+// ---
+
+/// Converts the string to title case (first letter of each word
+/// capitalised, rest lowercased).
+/// 
+/// Declared: `static extension`
+/// 
+/// Declared: `public`
+public static string ToTitleCase(string value);
+
+// ---
+
+/// Truncates `value` to at most
+/// `maxLength` characters, appending an ellipsis when
+/// truncation occurs.
+/// 
+/// Declared: `static extension`
+/// 
+/// Declared: `public`
+public static string Truncate(string value, int maxLength, string ellipsis);

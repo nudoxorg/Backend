@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 215
 expression: sorted
 ---
 {
@@ -37,7 +38,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "A named, labeled 2D point — a record with a generic label type.\n\nType parameters:\n- `L` — the label type",
+                "A named, labeled 2D point — a record with a generic label type.\n\nType parameters:\n- `L` — the label type\n\nDeclared: `final record`",
             ),
             deprecation: None,
             doc_links: None,
@@ -640,7 +641,7 @@ expression: sorted
             aliases: None,
             visibility: Public,
             documentation: Some(
-                "An immutable 2D point (Java 16+ record).",
+                "An immutable 2D point (Java 16+ record).\n\nDeclared: `final record`",
             ),
             deprecation: None,
             doc_links: None,

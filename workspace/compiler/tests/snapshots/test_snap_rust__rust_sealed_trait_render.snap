@@ -1,9 +1,10 @@
 ---
 source: workspace/compiler/tests/snap_rust.rs
+assertion_line: 420
 expression: rendered
 ---
 /// A sealed trait: downstream crates cannot implement it because its `Sealed`
 /// supertrait lives in a private module.
 pub trait SealedTrait {
-    fn describe(&self) -> &''static String;
+    fn describe(&self) -> &''static str;
 }

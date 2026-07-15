@@ -1,0 +1,543 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 282
+expression: sorted
+---
+{
+    "CSharpFixtures.Properties": Module(
+        Symbol {
+            name: "CSharpFixtures.Properties",
+            path: Local(
+                "CSharpFixtures.Properties",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Properties::KeyedStore`1",
+                        ),
+                        Local(
+                            "CSharpFixtures.Properties::Product",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Properties::KeyedStore`1": RecordType(
+        Symbol {
+            name: "KeyedStore",
+            path: Local(
+                "CSharpFixtures.Properties::KeyedStore`1",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Properties.KeyedStore`1",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A keyed collection that exposes an indexer.\n\nType parameters:\n- `TValue` — The value type.\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "KeyedStore",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "TValue",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "_store",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "Dictionary",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "readonly",
+                                    "accessibility:private",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "Declared: `private`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Count",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The number of entries in the store.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "this[]",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: GenericParam(
+                                            GenericParam {
+                                                name: "TValue",
+                                                kind: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;set",
+                                    "indexer[System.String key]",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "Gets or sets the value associated with `key`.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Properties::Product": RecordType(
+        Symbol {
+            name: "Product",
+            path: Local(
+                "CSharpFixtures.Properties::Product",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Properties.Product",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A product in an inventory system.\nExercises a wide range of C# property forms: auto-properties with\nasymmetric accessors, `init`-only setters, `required` members,\nand a computed property.\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Product",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Sku",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            String,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;init",
+                                    "required",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The product SKU. `required` — must be set in an object initialiser.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Name",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            String,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;private set",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The display name of the product.\n\nPublicly readable; only the owning class may set it after construction.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Stock",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;internal set",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The stock quantity. The setter is `internal` — only the same\nassembly may restock.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Price",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: TypeReference(
+                                            TypeReference {
+                                                identifier: "System.Decimal",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;protected set",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The unit price in minor currency units (e.g., cents).\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "IsAvailable",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Bool,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "Whether the product is currently available (Stock > 0).\nThis property is computed and has no setter.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "name",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            String,
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The display name.",
+                                            ),
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "stock",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            Int(
+                                                                W32,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The initial stock level.",
+                                            ),
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "price",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: TypeReference(
+                                                            TypeReference {
+                                                                identifier: "System.Decimal",
+                                                                generic_args: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The unit price.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Properties::Product.Rename",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Properties::Product.Rename": Function(
+        Symbol {
+            name: "Rename",
+            path: Local(
+                "CSharpFixtures.Properties::Product.Rename",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Properties.Product.Rename(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Updates the display name.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "newName",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The replacement name.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

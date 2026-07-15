@@ -110,6 +110,63 @@ def _with_workspace_lints(kw):
     out["rustc_flags"] = merged
     return out
 
+def _dirname(path):
+    """POSIX parent directory of an absolute path string."""
+    cleaned = path.rstrip("/") if path else ""
+    i = cleaned.rfind("/")
+    if i <= 0:
+        return ""
+    return cleaned[:i]
+
+def nudox_toolchain_test_env():
+    """Env for sealed-producer integration tests under Buck.
+
+    Buck hermetic test runs do not inherit the devshell's ``NUDOX_TOOLCHAIN_PATH``.
+    Sealed producers install a fixed PATH (``/usr/bin:/bin:/nix/var/nix/...``)
+    and only prepend dirs from ``ToolchainSet::from_env()`` (see
+    ``sandbox/toolchains.rs`` + ``compile/isolate.rs``). Without this env, live
+    Go/Java/C# oracles fail with ``go``/``javadoc``/``dotnet`` not found.
+
+    Derives bin dirs from the NIX-GENERATED ``.buckconfig`` sections written by
+    the flake devshell (``[go] go_binary``, ``[java] java_home``,
+    ``[csharp] dotnet``). Empty when those keys are unset (non-Nix hosts).
+
+    Shared by Go/Java/C# snap agents — keep go + java + csharp bins together.
+    """
+    # Prefer root-cell config (NIX-GENERATED block lives on the root .buckconfig).
+    path_dirs = []
+    go_bin = read_root_config("go", "go_binary", "")
+    if go_bin:
+        d = _dirname(go_bin)
+        if d:
+            path_dirs.append(d)
+    java_home = read_root_config("java", "java_home", "")
+    if java_home:
+        path_dirs.append(java_home.rstrip("/") + "/bin")
+    # csharp.dotnet is an absolute path to the `dotnet` binary (not its dir).
+    dotnet = read_root_config("csharp", "dotnet", "")
+    if dotnet:
+        d = _dirname(dotnet)
+        if d:
+            path_dirs.append(d)
+
+    # De-dupe while preserving order (go/dotnet may share a bin dir in theory).
+    seen = {}
+    unique = []
+    for d in path_dirs:
+        if d not in seen:
+            seen[d] = True
+            unique.append(d)
+
+    env = {}
+    if unique:
+        env["NUDOX_TOOLCHAIN_PATH"] = ":".join(unique)
+    # JAVA_HOME is required by some JDK tools beyond bare PATH (e.g. javadoc).
+    if java_home:
+        env["NUDOX_TOOLCHAIN_JAVA_HOME"] = java_home
+        env["JAVA_HOME"] = java_home
+    return env
+
 def rust_crate(name, deps = [], crate_root = "lib.rs", edition = "2024",
                srcs = None, features = None, visibility = None, **kw):
     kw = _with_workspace_lints(kw)

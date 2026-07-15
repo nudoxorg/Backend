@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_java.rs
+assertion_line: 443
 expression: rendered
 ---
 // <unrendered module>
@@ -14,6 +15,8 @@ expression: rendered
  * Since: 1.0
  * 
  * Authors: example-author
+ * 
+ * Declared: `final`
  */
 public class MathUtils {}
 

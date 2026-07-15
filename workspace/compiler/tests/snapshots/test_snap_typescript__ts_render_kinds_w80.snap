@@ -1,10 +1,9 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 365
 expression: rendered
 ---
 // <unrendered module>
-
-export function identity<T>(x: T): T;
 
 /**
  * An enum → Entry::SumType.
@@ -12,15 +11,32 @@ export function identity<T>(x: T): T;
 export type Direction =
     | {
         tag: "Up";
+        field0: number;
     }
     | {
         tag: "Down";
+        field0: number;
     }
     | {
         tag: "Left";
+        field0: number;
     }
     | {
         tag: "Right";
+        field0: number;
+    };
+
+/**
+ * A const enum — variants flagged `[const]` in documentation.
+ */
+export type HttpStatus =
+    | {
+        tag: "Ok";
+        field0: number;
+    }
+    | {
+        tag: "NotFound";
+        field0: number;
     };
 
 /**
@@ -28,11 +44,13 @@ export type Direction =
  */
 // <unrendered constant>
 
+type NullOnly = null;
+
 /**
  * An interface → Entry::TraitDef.
  */
 export interface Printable {
-    print(): ;
+    print(): void;
 }
 
 /**
@@ -41,9 +59,20 @@ export interface Printable {
 type StringOrNumber = string | number;
 
 /**
+ * void is unit Tuple; null is a named reference — they must not collapse.
+ */
+type VoidOnly = void;
+
+/**
  * A class → Entry::RecordType.
  */
-export interface Widget {}
+export interface Widget {
+    /**
+     * Private brand field — must keep `#` prefix + Private visibility.
+     */
+    #brand: string;
+    readonly id: string;
+}
 
 export function constructor(id: string): void;
 

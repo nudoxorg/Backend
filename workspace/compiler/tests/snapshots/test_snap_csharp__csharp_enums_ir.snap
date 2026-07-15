@@ -1,0 +1,490 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 223
+expression: sorted
+---
+{
+    "CSharpFixtures.Enums": Module(
+        Symbol {
+            name: "CSharpFixtures.Enums",
+            path: Local(
+                "CSharpFixtures.Enums",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Enums::Direction",
+                        ),
+                        Local(
+                            "CSharpFixtures.Enums::DirectionExtensions",
+                        ),
+                        Local(
+                            "CSharpFixtures.Enums::FilePermissions",
+                        ),
+                        Local(
+                            "CSharpFixtures.Enums::JobStatus",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Enums::Direction": SumType(
+        Symbol {
+            name: "Direction",
+            path: Local(
+                "CSharpFixtures.Enums::Direction",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Enums.Direction",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "The four cardinal compass directions.\n\nUnderlying type: `System.Byte`.\n\nDeclared: `enum`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "North",
+                        data: None,
+                        documentation: Some(
+                            "Due north.\n\nValue: `0`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                0,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "East",
+                        data: None,
+                        documentation: Some(
+                            "Due east.\n\nValue: `1`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                1,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "South",
+                        data: None,
+                        documentation: Some(
+                            "Due south.\n\nValue: `2`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                2,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "West",
+                        data: None,
+                        documentation: Some(
+                            "Due west.\n\nValue: `3`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                3,
+                            ),
+                        ),
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: None,
+                underlying: Some(
+                    TypeOperator(
+                        TypeOperator {
+                            operator: "!",
+                            type: Primitive(
+                                UInt(
+                                    W8,
+                                ),
+                            ),
+                        },
+                    ),
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Enums::DirectionExtensions": RecordType(
+        Symbol {
+            name: "DirectionExtensions",
+            path: Local(
+                "CSharpFixtures.Enums::DirectionExtensions",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Enums.DirectionExtensions",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Extension helpers for `Direction`.\n\nDeclared: `static class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:CSharpFixtures.Enums.Direction": Local(
+                        "CSharpFixtures.Enums::Direction",
+                    ),
+                },
+            ),
+            inner: Record {
+                name: Some(
+                    "DirectionExtensions",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Enums::DirectionExtensions.Opposite",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Enums::DirectionExtensions.Opposite": Function(
+        Symbol {
+            name: "Opposite",
+            path: Local(
+                "CSharpFixtures.Enums::DirectionExtensions.Opposite",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Enums.DirectionExtensions.Opposite(CSharpFixtures.Enums.Direction)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Returns the direction exactly opposite to `d`.\n\nDeclared: `static extension`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:CSharpFixtures.Enums.Direction": Local(
+                        "CSharpFixtures.Enums::Direction",
+                    ),
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "d",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "CSharpFixtures.Enums.Direction",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "(extension) The input direction.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "CSharpFixtures.Enums.Direction",
+                                                    generic_args: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The opposite `Direction`.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Enums::FilePermissions": SumType(
+        Symbol {
+            name: "FilePermissions",
+            path: Local(
+                "CSharpFixtures.Enums::FilePermissions",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Enums.FilePermissions",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Bit-flag permissions for a file-system entry.\n\nThe `FlagsAttribute` marks this as a combinable flags enum.\nIndividual bits should always be powers of two (or zero for `None`).\n\nDeclared: `enum`\n\nDeclared: `internal`\n\nAttributes: `[Flags]`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "F:CSharpFixtures.Enums.FilePermissions.None": Local(
+                        "F:CSharpFixtures.Enums.FilePermissions.None",
+                    ),
+                },
+            ),
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "None",
+                        data: None,
+                        documentation: Some(
+                            "No permissions granted.\n\nValue: `0`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                0,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "Read",
+                        data: None,
+                        documentation: Some(
+                            "The entry may be read.\n\nValue: `1`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                1,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "Write",
+                        data: None,
+                        documentation: Some(
+                            "The entry may be written.\n\nValue: `2`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                2,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "Execute",
+                        data: None,
+                        documentation: Some(
+                            "The entry may be executed.\n\nValue: `4`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                4,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "ReadWrite",
+                        data: None,
+                        documentation: Some(
+                            "Read and write access.\n\nValue: `3`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                3,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "All",
+                        data: None,
+                        documentation: Some(
+                            "Full access: read, write, and execute.\n\nValue: `7`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                7,
+                            ),
+                        ),
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: None,
+                underlying: Some(
+                    TypeOperator(
+                        TypeOperator {
+                            operator: "!",
+                            type: Primitive(
+                                Int(
+                                    W32,
+                                ),
+                            ),
+                        },
+                    ),
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Enums::JobStatus": SumType(
+        Symbol {
+            name: "JobStatus",
+            path: Local(
+                "CSharpFixtures.Enums::JobStatus",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Enums.JobStatus",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "The current lifecycle status of an asynchronous job.\n\nDeclared: `enum`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "Pending",
+                        data: None,
+                        documentation: Some(
+                            "The job is waiting to be dispatched.\n\nValue: `0`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                0,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "Running",
+                        data: None,
+                        documentation: Some(
+                            "The job is actively running.\n\nValue: `1`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                1,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "Succeeded",
+                        data: None,
+                        documentation: Some(
+                            "The job finished successfully.\n\nValue: `2`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                2,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "Failed",
+                        data: None,
+                        documentation: Some(
+                            "The job finished with an error.\n\nValue: `3`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                3,
+                            ),
+                        ),
+                    },
+                    SumVariant {
+                        name: "Cancelled",
+                        data: None,
+                        documentation: Some(
+                            "The job was cancelled before it could finish.\n\nValue: `4`",
+                        ),
+                        discriminant: Some(
+                            Int(
+                                4,
+                            ),
+                        ),
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: None,
+                underlying: Some(
+                    TypeOperator(
+                        TypeOperator {
+                            operator: "!",
+                            type: Primitive(
+                                Int(
+                                    W32,
+                                ),
+                            ),
+                        },
+                    ),
+                ),
+            },
+        },
+    ),
+}

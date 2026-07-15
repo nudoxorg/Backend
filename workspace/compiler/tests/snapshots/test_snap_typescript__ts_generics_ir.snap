@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 262
 expression: sorted
 ---
 {
@@ -114,10 +115,10 @@ expression: sorted
                 members: Some(
                     [
                         Local(
-                            "mod::Box::constructor",
+                            "Box::constructor",
                         ),
                         Local(
-                            "mod::Box::unwrap",
+                            "Box::unwrap",
                         ),
                     ],
                 ),
@@ -334,8 +335,11 @@ expression: sorted
                                                 generic_args: None,
                                             },
                                         ),
-                                        Tuple(
-                                            [],
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "null",
+                                                generic_args: None,
+                                            },
                                         ),
                                     ],
                                 ),
@@ -362,8 +366,11 @@ expression: sorted
                                                 generic_args: None,
                                             },
                                         ),
-                                        Tuple(
-                                            [],
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "null",
+                                                generic_args: None,
+                                            },
                                         ),
                                     ],
                                 ),
@@ -471,8 +478,11 @@ expression: sorted
                                                 generic_args: None,
                                             },
                                         ),
-                                        Tuple(
-                                            [],
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "null",
+                                                generic_args: None,
+                                            },
                                         ),
                                     ],
                                 ),
@@ -756,7 +766,7 @@ expression: sorted
                     [
                         Literal(
                             LiteralParameter {
-                                name: "...sources\u{1b}[0m\u{1b}[35m\u{1b}[0m: \u{1b}[0m\u{1b}[38;5;12mT\u{1b}[0m[][]",
+                                name: "sources",
                                 type: Some(
                                     Slice(
                                         Slice(

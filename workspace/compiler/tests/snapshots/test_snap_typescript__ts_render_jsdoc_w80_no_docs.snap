@@ -1,13 +1,21 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 498
 expression: rendered
 ---
 // <unrendered module>
 
-export interface Coordinate {}
+export interface Coordinate {
+    readonly lat: number;
+    readonly lng: number;
+}
 
-export interface Location {}
+export interface Location {
+    name: string;
+    coords: Coordinate;
+    description?: string;
+}
 
-export function formatCoord(coord: Coordinate, precision: number): string;
+export function formatCoord(coord: Coordinate, precision?: number): string;
 
 export function haversine(from: Coordinate, to: Coordinate): number;

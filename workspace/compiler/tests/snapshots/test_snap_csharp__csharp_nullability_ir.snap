@@ -1,0 +1,587 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 359
+expression: sorted
+---
+{
+    "CSharpFixtures.Nullability": Module(
+        Symbol {
+            name: "CSharpFixtures.Nullability",
+            path: Local(
+                "CSharpFixtures.Nullability",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Nullability::AnnotatedStore",
+                        ),
+                        Local(
+                            "CSharpFixtures.Nullability::ObliviousStore",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Nullability::AnnotatedStore": RecordType(
+        Symbol {
+            name: "AnnotatedStore",
+            path: Local(
+                "CSharpFixtures.Nullability::AnnotatedStore",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Nullability.AnnotatedStore",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A name-value store that exercises the three nullability states:\nfully-annotated nullable (`string?`), non-nullable (`string`),\nand nullable value types (`int?` / `Nullable<int>`).\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "AnnotatedStore",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Label",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            String,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The display label — never `null`.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Description",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "?",
+                                        type: Primitive(
+                                            String,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;set",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "An optional description — may be `null`.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "TimeoutSeconds",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "System.Nullable",
+                                        generic_args: Some(
+                                            [
+                                                Type(
+                                                    TypeOperator(
+                                                        TypeOperator {
+                                                            operator: "!",
+                                                            type: Primitive(
+                                                                Int(
+                                                                    W32,
+                                                                ),
+                                                            ),
+                                                        },
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;set",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "An optional integer timeout in seconds.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "label",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            String,
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The label; must not be `null`.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Nullability::AnnotatedStore.GetDescription",
+                        ),
+                        Local(
+                            "CSharpFixtures.Nullability::AnnotatedStore.TryParseInt",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Nullability::AnnotatedStore.GetDescription": Function(
+        Symbol {
+            name: "GetDescription",
+            path: Local(
+                "CSharpFixtures.Nullability::AnnotatedStore.GetDescription",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Nullability.AnnotatedStore.GetDescription(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Returns the description, or a fallback when absent.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "P:CSharpFixtures.Nullability.AnnotatedStore.Description": Local(
+                        "P:CSharpFixtures.Nullability.AnnotatedStore.Description",
+                    ),
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "fallback",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "Returned when `Description` is `null`.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "A non-null string.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Nullability::AnnotatedStore.TryParseInt": Function(
+        Symbol {
+            name: "TryParseInt",
+            path: Local(
+                "CSharpFixtures.Nullability::AnnotatedStore.TryParseInt",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Nullability.AnnotatedStore.TryParseInt(System.String,System.Nullable{System.Int32}@)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Tries to parse `input` as an integer.\n\nDeclared: `static`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "input",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "?",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The string to parse; may be `null`.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "result",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "System.Nullable",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        TypeOperator(
+                                                            TypeOperator {
+                                                                operator: "!",
+                                                                type: Primitive(
+                                                                    Int(
+                                                                        W32,
+                                                                    ),
+                                                                ),
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Inout,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: Some(
+                                    "(out) Set to the parsed value, or `null` on failure.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Bool,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "`true` when parsing succeeded.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Nullability::ObliviousStore": RecordType(
+        Symbol {
+            name: "ObliviousStore",
+            path: Local(
+                "CSharpFixtures.Nullability::ObliviousStore",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Nullability.ObliviousStore",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A class declared WITHOUT a `#nullable enable` banner.\nIts reference-type members are in the oblivious nullability context\n(neither annotated nullable nor annotated non-nullable).\nThe oracle records these as `nullable: \"none\"` (oblivious).\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "ObliviousStore",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Tag",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "~",
+                                        type: Primitive(
+                                            String,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "Oblivious string field — nullability context is unknown.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Nullability::ObliviousStore.Echo",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Nullability::ObliviousStore.Echo": Function(
+        Symbol {
+            name: "Echo",
+            path: Local(
+                "CSharpFixtures.Nullability::ObliviousStore.Echo",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Nullability.ObliviousStore.Echo(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Oblivious string parameter and return value.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "tag",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "~",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The tag value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "~",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The tag echo.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

@@ -39,7 +39,14 @@ load("@nix//toolchains:rust.bzl", "nix_rust_toolchain")
 # the real buck2.nix source via `[external_cells] nix = path`.  Without the
 # devshell, this block is absent and system toolchains are used automatically.
 # Opt out even inside the devshell: `buck2 build -c nix.toolchain=0 //...`
-_use_nix = read_config("nix", "toolchain", "0") in ("1", "true", "True")
+#
+# Must use read_root_config: this file lives in the `toolchains` cell, and
+# `read_config` only sees that cell's own buckconfig (which has no [nix]
+# section). The devshell writes `[nix] toolchain = 1` into the root
+# .buckconfig; without root-config lookup we silently fall back to the
+# system rustc on PATH (often an older rustup nightly), which breaks
+# pipelined builds via -Zno-codegen SVH mismatches (E0460/E0463).
+_use_nix = read_root_config("nix", "toolchain", "0") in ("1", "true", "True")
 
 # `flake.package` runs `nix build path:<dir>#packages.<system>.<pkg>.out` as a
 # Buck2 action; the building host just needs `nix` on PATH. `//nix:flake`

@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_python.rs
+assertion_line: 293
 expression: sorted
 ---
 {
@@ -15,7 +16,19 @@ expression: sorted
             deprecation: None,
             doc_links: None,
             inner: Module {
-                members: None,
+                members: Some(
+                    [
+                        Local(
+                            "snap_variadic_functions::configure",
+                        ),
+                        Local(
+                            "snap_variadic_functions::log",
+                        ),
+                        Local(
+                            "snap_variadic_functions::mixed",
+                        ),
+                    ],
+                ),
             },
         },
     ),
@@ -46,7 +59,7 @@ expression: sorted
                                 ),
                                 attributes: Some(
                                     [
-                                        Variadic,
+                                        KwVariadic,
                                     ],
                                 ),
                                 default_value: None,
@@ -216,7 +229,7 @@ expression: sorted
                                 ),
                                 attributes: Some(
                                     [
-                                        Variadic,
+                                        KwVariadic,
                                     ],
                                 ),
                                 default_value: None,

@@ -1,4 +1,4 @@
-load("//build:rust.bzl", "crate", "deps", "member", "rust_bin", "rust_crate", "rust_tests", "target")
+load("//build:rust.bzl", "crate", "deps", "member", "nudox_toolchain_test_env", "rust_bin", "rust_crate", "rust_tests", "target")
 
 rust_crate(
     name = "compiler",
@@ -132,6 +132,9 @@ rust_bin(
 
 rust_tests(
     prefix = "test",
+    # Sealed producers need go/javadoc/dotnet on PATH; Buck tests do not inherit
+    # the devshell's NUDOX_TOOLCHAIN_PATH. Derive bin dirs from .buckconfig.
+    env = nudox_toolchain_test_env(),
     # The Go, Java, and C# snapshot tests drive producers that shell out to the
     # vendored oracles; the test binaries need the same resources the
     # `compiler` lib target declares so `buck_resource(..)` resolves at runtime.

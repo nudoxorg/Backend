@@ -17,8 +17,18 @@ def main [] {
     log info "Vendoring crates with reindeer..."
     reindeer --third-party-dir build/third-party vendor
 
-    log info "Removing vendor BUCK files (Meta-internal sub-packages that block our package)..."
+    log info "Removing vendor/registry BUCK files (Meta-internal sub-packages that block our package)..."
+    # Crates that ship Meta-internal BUCK files (e.g. strong_hash) break analysis
+    # with missing //tools/build_defs/rust_library.bzl. Strip from both vendor/
+    # and the cargo registry cache (.cargo is gitignored but still on disk).
     glob build/third-party/vendor/**/BUCK | each { |f| rm $f }
+    glob build/third-party/.cargo/registry/**/BUCK | each { |f| rm $f }
+
+    # arborium language crates: env!("CARGO_MANIFEST_DIR") → std::env::var so
+    # grammar/** is found under Buck's runtime package materialization. See
+    # build/third-party/patches/arborium/fix-build-rs-manifest-dir.sh.
+    log info "Applying arborium build.rs CARGO_MANIFEST_DIR patch..."
+    ^bash build/third-party/patches/arborium/fix-build-rs-manifest-dir.sh
 
     log info "Generating BUCK with reindeer buckify..."
     reindeer --third-party-dir build/third-party buckify

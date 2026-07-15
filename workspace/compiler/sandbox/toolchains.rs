@@ -47,6 +47,11 @@ impl ToolchainSet {
 	///
 	/// The single sanctioned toolchain-env read (the sealer boundary). Called
 	/// once at `ForgeRuntime::assemble`, never from the compiler.
+	///
+	/// Language oracles (Go/Java/C#) still shell out to host SDKs after the
+	/// sealer installs a hermetic PATH. Those SDK dirs must be injected here
+	/// via `NUDOX_TOOLCHAIN_PATH` (devshell) or an assembled [`ToolchainSet`]
+	/// (server) — never ambient `which` discovery.
 	pub fn from_env() -> Self {
 		fn first(keys: &[&str]) -> Option<PathBuf> {
 			keys.iter()

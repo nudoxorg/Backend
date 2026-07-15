@@ -1,5 +1,6 @@
 ---
 source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 149
 expression: sorted
 ---
 {
@@ -21,13 +22,13 @@ expression: sorted
                             "mod::DEFAULT_GREETING",
                         ),
                         Local(
+                            "mod::SECRET_GREETING",
+                        ),
+                        Local(
                             "mod::greet",
                         ),
                         Local(
                             "mod::Greeter",
-                        ),
-                        Local(
-                            "mod::SECRET_GREETING",
                         ),
                         Local(
                             "mod::WhisperGreeter",
@@ -50,7 +51,17 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        String,
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "mod::Greeter": RecordType(
@@ -71,7 +82,31 @@ expression: sorted
                     "Greeter",
                 ),
                 generics: None,
-                fields: [],
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "prefix",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
                 call_signatures: None,
                 constructors: None,
                 methods: None,
@@ -80,10 +115,10 @@ expression: sorted
                 members: Some(
                     [
                         Local(
-                            "mod::Greeter::constructor",
+                            "Greeter::constructor",
                         ),
                         Local(
-                            "mod::Greeter::greet",
+                            "Greeter::greet",
                         ),
                     ],
                 ),
@@ -113,7 +148,11 @@ expression: sorted
                                         String,
                                     ),
                                 ),
-                                attributes: None,
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
                                 default_value: Some(
                                     Var(
                                         "DEFAULT_GREETING",
@@ -208,7 +247,17 @@ expression: sorted
             ),
             deprecation: None,
             doc_links: None,
-            inner: (),
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        String,
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
         },
     ),
     "mod::WhisperGreeter": RecordType(
@@ -238,7 +287,7 @@ expression: sorted
                 members: Some(
                     [
                         Local(
-                            "mod::WhisperGreeter::whisper",
+                            "WhisperGreeter::whisper",
                         ),
                     ],
                 ),
@@ -253,7 +302,7 @@ expression: sorted
                 "mod::WhisperGreeter::whisper",
             ),
             aliases: None,
-            visibility: Public,
+            visibility: Private,
             documentation: None,
             deprecation: None,
             doc_links: None,
