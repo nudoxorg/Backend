@@ -1,4 +1,4 @@
-use crate::{idx::EntryIdx, primitive::Primitive};
+use crate::{primitive::Primitive, registry::EntryIdx};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Type {

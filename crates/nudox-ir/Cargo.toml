@@ -5,8 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+erased-serde = { workspace = true }
+serde = { workspace = true }
+serde_context = { workspace = true }
 
 [dev-dependencies]
+bimap = { workspace = true }
 itertools = { workspace = true }
-
-[features]
+serde_json = { workspace = true }

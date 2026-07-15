@@ -1,6 +1,6 @@
-use std::{convert::Infallible, path::PathBuf, range::Range};
+use std::{path::PathBuf, range::Range};
 
-use crate::{registry::Registry, symbol::{Symbol, Visibility}};
+use crate::{registry::{EntryArena, RawEntryIdx, Registry}, symbol::{Symbol, Visibility}};
 
 pub fn dummy_symbol(name: &str) -> Symbol {
 	Symbol {
@@ -15,9 +15,9 @@ pub fn dummy_symbol(name: &str) -> Symbol {
 pub struct DummyRegistry;
 
 impl Registry for DummyRegistry {
-	type EntryId = Infallible;
+	type EntryId = ();
 
-	fn idx_from_entry_id<T>(&self, _: Self::EntryId) -> crate::idx::EntryIdx<T> { unimplemented!() }
-
-	fn resolve_package(&self, _: usize) -> &crate::arena::EntryArena { unimplemented!() }
+	fn idx_from_entry_id(&self, _: Self::EntryId) -> RawEntryIdx { unimplemented!() }
+	fn entry_id_from_idx(&self, _: RawEntryIdx) -> Self::EntryId { unimplemented!() }
+	fn resolve_package(&self, _: usize) -> &EntryArena { unimplemented!() }
 }

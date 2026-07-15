@@ -1,4 +1,4 @@
-use crate::idx::EntryIdx;
+use crate::registry::EntryIdx;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {

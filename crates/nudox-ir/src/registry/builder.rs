@@ -1,5 +1,5 @@
 use super::EntryLink;
-use crate::{entry::{Entry, Node}, idx::{EntryIdx, RawEntryIdx}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
+use crate::{entry::{Entry, Node}, kind::{EntryKind, KindDiscriminant}, registry::idx::{EntryIdx, RawEntryIdx}, symbol::Symbol};
 
 pub struct EntryBuilder {
 	sym:      Symbol,

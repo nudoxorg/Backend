@@ -1,9 +1,7 @@
-mod build;
-
 use std::collections::HashSet;
 
-pub use self::build::EntryBuilder;
-use crate::{entry::Entry, idx::{EntryIdx, RawEntryIdx}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
+use super::{EntryBuilder, EntryIdx, RawEntryIdx};
+use crate::{entry::Entry, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
 
 #[derive(Default)]
 pub struct EntryArena {
@@ -16,8 +14,8 @@ pub struct EntryArena {
 //       or decide if we support directed edges
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct EntryLink {
-	a: (RawEntryIdx, KindDiscriminant),
-	b: (RawEntryIdx, KindDiscriminant),
+	pub(super) a: (RawEntryIdx, KindDiscriminant),
+	pub(super) b: (RawEntryIdx, KindDiscriminant),
 }
 
 impl EntryArena {
@@ -41,6 +39,9 @@ impl EntryArena {
 	pub fn len(&self) -> usize { self.entries.len() }
 
 	pub(crate) fn resolve(&self, index: usize) -> &Entry { &self.entries[index] }
+
+	#[cfg_attr(not(test), expect(unused))]
+	pub(crate) fn iter(&self) -> impl Iterator<Item = &Entry> { self.entries.iter() }
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use crate::{idx::EntryIdx, ty::Type};
+use crate::{registry::EntryIdx, ty::Type};
 
 /// A language-level primitive type, independent of any target architecture.
 #[derive(Debug, Clone, PartialEq, Eq)]

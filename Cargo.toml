@@ -26,11 +26,14 @@ itertools = "0.15"
 
 # nudox-occurrences shared deps
 async-trait = "0.1"
+bimap = "0.6"
 thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+serde_context = "0.1"
+erased-serde = "0.4"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"

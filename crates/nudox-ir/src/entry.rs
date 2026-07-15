@@ -2,7 +2,7 @@ mod node;
 mod typed;
 
 pub use self::{node::Node, typed::TypedEntry};
-use crate::{idx::RawEntryIdx, kind::Kind, symbol::Symbol};
+use crate::{kind::Kind, registry::RawEntryIdx, symbol::Symbol};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Entry {
