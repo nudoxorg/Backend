@@ -1,10 +1,13 @@
-use super::EntryLink;
-use crate::{entry::{Entry, Node}, kind::{EntryKind, KindDiscriminant}, registry::idx::{EntryIdx, RawEntryIdx}, symbol::Symbol};
+#![expect(unused)]
+
+use super::{EntryIdx, EntryLink, RawEntryIdx};
+
+use crate::{entry::{Entry, Node}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
 
 pub struct EntryBuilder {
 	sym:      Symbol,
 	idx:      RawEntryIdx,
-	next_idx: usize,
+	next_idx: RawEntryIdx,
 	parent:   Option<RawEntryIdx>,
 	children: Vec<BuiltEntries>,
 	kind:     KindDiscriminant,
@@ -19,12 +22,11 @@ impl EntryBuilder {
 	where
 		T: EntryKind,
 	{
-		let (entries, links) =
-			Self::build(EntryIdx::new(self.idx.package(), self.next_idx), sym, Some(self.idx), build);
+		let (entries, links) = Self::build(self.next_idx, sym, Some(self.idx), build);
 
 		let idx = entries.idx;
 
-		self.next_idx += entries.count();
+		self.next_idx = self.next_idx.inc_arena_idx(entries.count());
 		self.children.push(entries);
 		self.links.extend(links.iter());
 
@@ -36,7 +38,8 @@ impl EntryBuilder {
 	where
 		T: EntryKind,
 	{
-		self.links.push(EntryLink { a: (self.idx, self.kind), b: (idx.into(), T::discriminant()) });
+		let link = EntryLink::new((self.idx, self.kind), (idx.into(), T::discriminant()));
+		self.links.push(link);
 	}
 
 	/// Emits a link between two entry
@@ -45,9 +48,7 @@ impl EntryBuilder {
 		T: EntryKind,
 		U: EntryKind,
 	{
-		self
-			.links
-			.push(EntryLink { a: (a.into(), T::discriminant()), b: (b.into(), U::discriminant()) });
+		self.links.push(EntryLink::typed(a, b));
 	}
 }
 
@@ -64,7 +65,7 @@ impl EntryBuilder {
 		let mut this = EntryBuilder {
 			sym,
 			idx,
-			next_idx: idx.index() + 1,
+			next_idx: idx.inc_arena_idx(1),
 			parent,
 			children: Vec::new(),
 			kind: T::discriminant(),
@@ -201,10 +202,10 @@ mod tests {
 		});
 
 		itertools::assert_equal(links.iter(), [
-			EntryLink { a: (idx(1), KindDiscriminant::Record), b: (idx(2), KindDiscriminant::Field) },
-			EntryLink { a: (idx(0), KindDiscriminant::Module), b: (idx(1), KindDiscriminant::Record) },
-			EntryLink { a: (idx(0), KindDiscriminant::Module), b: (idx(3), KindDiscriminant::Record) },
-			EntryLink { a: (idx(1), KindDiscriminant::Record), b: (idx(3), KindDiscriminant::Record) },
+			EntryLink::typed(idx::<Record>(1), idx::<Field>(2)),
+			EntryLink::typed(idx::<Module>(0), idx::<Record>(1)),
+			EntryLink::typed(idx::<Module>(0), idx::<Record>(3)),
+			EntryLink::typed(idx::<Record>(1), idx::<Record>(3)),
 		]);
 	}
 }

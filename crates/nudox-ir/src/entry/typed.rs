@@ -28,7 +28,7 @@ impl<T: EntryKind> TypedEntry<T> {
 	/// the entry's raw kind enum
 	pub fn kind<'a>(&'a self, r: &'a impl RegistryResolver) -> &'a Kind {
 		match &self.inner.kind {
-			EntryInner::Owned(kind) => &kind,
+			EntryInner::Owned(kind) => kind,
 			EntryInner::Reference(idx) => r.resolve(idx.typed::<T>()).kind(r),
 		}
 	}

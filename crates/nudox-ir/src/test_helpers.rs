@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use crate::{entry::{Entry, Node}, kind::EntryKind, registry::{EntryArena, EntryIdx, RawEntryIdx, RegistryResolver}, symbol::{Symbol, Visibility}};
+use crate::{entry::{Entry, Node}, kind::EntryKind, registry::{ArenaIdx, EntryArena, EntryIdx, PackageIdx, RawEntryIdx, RegistryResolver}, symbol::{Symbol, Visibility}};
+
 pub use crate::{module::Module, record::{Field, Record}};
 
 pub fn entry<T>(name: &str, node: Node, kind: T) -> Entry
@@ -31,7 +32,9 @@ pub mod n {
 	pub fn leaf(parent: RawEntryIdx) -> Node { Node::leaf(parent) }
 }
 
-pub fn idx<T>(index: usize) -> EntryIdx<T> { EntryIdx::new(0, index) }
+pub fn idx<T>(index: usize) -> EntryIdx<T> {
+	EntryIdx::new(PackageIdx::new(0), ArenaIdx::new(index))
+}
 
 pub struct DummyRegistry;
 

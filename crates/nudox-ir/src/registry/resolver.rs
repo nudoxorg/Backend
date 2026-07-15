@@ -19,14 +19,16 @@ pub trait RegistryResolver: DynRegistryResolver {
 	/// resolves an EntryIdx to it's unique internal `EntryId`
 	fn entry_id_from_idx(&self, idx: RawEntryIdx) -> Self::EntryId;
 
+	// TODO: unique package identifier too?
 	fn resolve_package(&self, package_index: usize) -> &EntryArena;
 
 	fn resolve<T>(&self, index: EntryIdx<T>) -> &TypedEntry<T>
 	where
 		T: EntryKind,
 	{
-		let package = self.resolve_package(index.package());
-		let entry = package.resolve(index.index());
+		// TODO
+		let package = self.resolve_package(index.package_idx().index());
+		let entry = package.resolve(index.arena_idx());
 
 		TypedEntry::new(entry)
 	}

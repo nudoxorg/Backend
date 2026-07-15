@@ -1,43 +1,30 @@
-use std::collections::HashSet;
-
-use super::{EntryBuilder, EntryIdx, RawEntryIdx};
-use crate::{entry::Entry, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
+use super::ArenaIdx;
+use crate::entry::Entry;
 
 #[derive(Default)]
 pub struct EntryArena {
-	package: usize,
 	entries: Vec<Entry>,
-	links:   HashSet<EntryLink>,
-}
-
-// TODO: figure out how to make this cleanly two-way?
-//       or decide if we support directed edges
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct EntryLink {
-	pub(super) a: (RawEntryIdx, KindDiscriminant),
-	pub(super) b: (RawEntryIdx, KindDiscriminant),
 }
 
 impl EntryArena {
 	#[cfg_attr(not(test), expect(unused))]
-	pub(crate) fn new(package: usize) -> Self {
-		EntryArena { package, entries: Vec::new(), links: HashSet::new() }
-	}
+	pub(super) fn new() -> Self { EntryArena { entries: Vec::new() } }
 
-	pub fn create_top_level<T>(&mut self, sym: Symbol, build: impl FnOnce(&mut EntryBuilder) -> T)
-	where
-		T: EntryKind,
-	{
-		let (entries, links) =
-			EntryBuilder::build(EntryIdx::new(self.package, self.len()), sym, None, build);
+	// pub fn create_top_level<T>(&mut self, sym: Symbol, build: impl FnOnce(&mut
+	// EntryBuilder) -> T) where
+	// 	T: EntryKind,
+	// {
+	// 	let (entries, links) =
+	// 		EntryBuilder::build(EntryIdx::new(self.package, self.len()), sym, None,
+	// build);
 
-		self.entries.extend(entries.iter());
-		self.links.extend(links.iter());
-	}
+	// 	self.entries.extend(entries.iter());
+	// 	self.links.extend(links.iter());
+	// }
 
 	pub fn len(&self) -> usize { self.entries.len() }
 
-	pub(crate) fn resolve(&self, index: usize) -> &Entry { &self.entries[index] }
+	pub(crate) fn resolve(&self, index: ArenaIdx) -> &Entry { &self.entries[index.index()] }
 
 	#[cfg_attr(not(test), expect(unused))]
 	pub(crate) fn iter(&self) -> impl Iterator<Item = &Entry> { self.entries.iter() }
@@ -45,22 +32,22 @@ impl EntryArena {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::{module::Module, test_helpers::*};
+	// use super::*;
+	// use crate::{module::Module, test_helpers::*};
 
-	#[test]
-	fn create_top_level_module() {
-		let mut arena = EntryArena::new(0);
+	// #[test]
+	// fn create_top_level_module() {
+	// 	let mut arena = EntryArena::new();
 
-		arena.create_top_level(dummy_symbol("module"), |_| Module);
+	// 	arena.create_top_level(dummy_symbol("module"), |_| Module);
 
-		assert_eq!(arena.entries, [entry("module", n::root(vec![]), Module)]);
+	// 	assert_eq!(arena.entries, [entry("module", n::root(vec![]), Module)]);
 
-		arena.create_top_level(dummy_symbol("module_2"), |_| Module);
+	// 	arena.create_top_level(dummy_symbol("module_2"), |_| Module);
 
-		assert_eq!(arena.entries, [
-			entry("module", n::root(vec![]), Module),
-			entry("module_2", n::root(vec![]), Module)
-		])
-	}
+	// 	assert_eq!(arena.entries, [
+	// 		entry("module", n::root(vec![]), Module),
+	// 		entry("module_2", n::root(vec![]), Module)
+	// 	])
+	// }
 }
