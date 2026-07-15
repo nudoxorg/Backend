@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{registry::{EntryArena, RawEntryIdx, Registry}, symbol::{Symbol, Visibility}};
+use crate::{registry::{EntryArena, RawEntryIdx, RegistryResolver}, symbol::{Symbol, Visibility}};
 
 pub fn dummy_symbol(name: &str) -> Symbol {
 	Symbol {
@@ -14,7 +14,7 @@ pub fn dummy_symbol(name: &str) -> Symbol {
 
 pub struct DummyRegistry;
 
-impl Registry for DummyRegistry {
+impl RegistryResolver for DummyRegistry {
 	type EntryId = ();
 
 	fn idx_from_entry_id(&self, _: Self::EntryId) -> RawEntryIdx { unimplemented!() }
