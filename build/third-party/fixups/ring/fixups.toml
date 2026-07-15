@@ -8,5 +8,6 @@ extra_srcs = [
     "src/rsa/signature_rsa_example_public_key.der",
 ]
 
-[buildscript]
-run = true
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

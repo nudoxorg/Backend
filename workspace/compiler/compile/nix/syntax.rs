@@ -96,6 +96,35 @@ pub struct LambdaInfo {
     pub doc:      Option<String>,
 }
 
+/// Coarse classification of a binding's RHS expression, recovered from the
+/// CST without evaluation. Drives typed constants and Module-vs-Constant
+/// emission in the static layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueShape {
+    /// Integer literal (`80`, `-1`).
+    Integer,
+    /// Float literal (`3.14`).
+    Float,
+    /// Boolean literal (`true` / `false`).
+    Bool(bool),
+    /// Null literal.
+    Null,
+    /// String literal (`"…"`, `''…''`) with no dynamic interpolation, or
+    /// any string we could not further classify.
+    String,
+    /// Path literal (`./foo`, `/abs`).
+    Path,
+    /// List expression (`[ … ]`).
+    List,
+    /// Attrset / rec-attrset (`{ … }` / `rec { … }`). Nested bindings under
+    /// this path should make the entry an `Entry::Module`.
+    AttrSet { recursive: bool },
+    /// Lambda / curried lambda.
+    Lambda,
+    /// Anything else (select, apply, let-in, if, …).
+    Other,
+}
+
 /// A `name = value;` binding recovered from the CST.
 #[derive(Debug, Clone)]
 pub struct Binding {
@@ -107,6 +136,8 @@ pub struct Binding {
     pub doc:       Option<String>,
     /// Index into [`StaticFile::lambdas`] when the value is a lambda.
     pub lambda:    Option<usize>,
+    /// Coarse RHS shape for typed-constant / Module emission.
+    pub value_shape: ValueShape,
 }
 
 impl Binding {
@@ -239,20 +270,34 @@ pub fn parse_file(rel_path: PathBuf, source: String) -> Result<StaticFile> {
 
             let doc = docs::raw_doc_for(&node);
             let lambda = lambda_index.get(&value_span.start).copied();
+            let value_shape = if lambda.is_some() {
+                ValueShape::Lambda
+            } else {
+                classify_value_shape(&value)
+            };
 
-            file.bindings.push(Binding { attrpath, value_span, doc, lambda });
+            file.bindings.push(Binding {
+                attrpath,
+                value_span,
+                doc,
+                lambda,
+                value_shape,
+            });
         }
     }
 
     // Third pass: bare / `inherit (from)` attrs. Bare `inherit mapAttrs` inside
     // a nested set is how nixpkgs exposes aliases (`attrsets.mapAttrs`); without
-    // this pass the static layer only sees the original binding.
+    // this pass the static layer only sees the original binding. For
+    // `inherit (from) name` we statically resolve when `from` is a simple
+    // ident or select chain (`strings`, `lib.attrsets`).
     let existing = file.bindings.clone();
     for node in root_node.descendants() {
         let Some(inh) = ast::Inherit::cast(node.clone()) else { continue };
-        // `inherit (expr) …` — we cannot resolve the source lambda statically;
-        // still mint Constant-shaped bindings so the attrpath surface is visible.
-        let from_expr = inh.from().is_some();
+        let from_path = inh
+            .from()
+            .and_then(|f| f.expr())
+            .and_then(|e| simple_select_path(&e));
         let prefix = enclosing_attrpath_prefix(&node);
         let inherit_span = node_span(&node);
         let doc = docs::raw_doc_for(&node);
@@ -277,10 +322,23 @@ pub fn parse_file(rel_path: PathBuf, source: String) -> Result<StaticFile> {
                 continue;
             }
 
-            let lambda = if from_expr {
-                None
-            } else {
-                resolve_bare_inherit_lambda(&existing, &name)
+            let lambda = match &from_path {
+                Some(from_segs) => {
+                    resolve_inherit_from_lambda(&existing, from_segs, &name)
+                }
+                None if inh.from().is_some() => {
+                    // Dynamic / complex `from` — surface the attrpath only.
+                    None
+                }
+                None => resolve_bare_inherit_lambda(&existing, &name),
+            };
+
+            // Prefer the source binding's shape when we can resolve it.
+            let value_shape = match &from_path {
+                Some(from_segs) => resolve_inherit_from_shape(&existing, from_segs, &name)
+                    .unwrap_or(ValueShape::Other),
+                None if lambda.is_some() => ValueShape::Lambda,
+                None => ValueShape::Other,
             };
 
             file.bindings.push(Binding {
@@ -288,6 +346,7 @@ pub fn parse_file(rel_path: PathBuf, source: String) -> Result<StaticFile> {
                 value_span: inherit_span,
                 doc: doc.clone(),
                 lambda,
+                value_shape,
             });
         }
     }
@@ -349,6 +408,122 @@ fn resolve_bare_inherit_lambda(bindings: &[Binding], name: &str) -> Option<usize
                 })
                 .find_map(|b| b.lambda)
         })
+}
+
+/// Resolve `inherit (from) name` when `from` is a static select/ident path.
+/// Looks up the binding at `from ++ [name]` (or `from` if `name` is already
+/// the leaf of a re-export).
+fn resolve_inherit_from_lambda(
+    bindings: &[Binding],
+    from_segs: &[String],
+    name: &str,
+) -> Option<usize> {
+    let mut full = from_segs.to_vec();
+    full.push(name.to_string());
+    bindings
+        .iter()
+        .find(|b| b.is_fully_static() && b.path_strings() == full)
+        .and_then(|b| b.lambda)
+        .or_else(|| {
+            // Fall back: last segment match under the from-prefix.
+            bindings
+                .iter()
+                .filter(|b| {
+                    if !b.is_fully_static() {
+                        return false;
+                    }
+                    let segs = b.path_strings();
+                    segs.starts_with(from_segs)
+                        && segs.last().map(|s| s.as_str()) == Some(name)
+                })
+                .find_map(|b| b.lambda)
+        })
+}
+
+fn resolve_inherit_from_shape(
+    bindings: &[Binding],
+    from_segs: &[String],
+    name: &str,
+) -> Option<ValueShape> {
+    let mut full = from_segs.to_vec();
+    full.push(name.to_string());
+    bindings
+        .iter()
+        .find(|b| b.is_fully_static() && b.path_strings() == full)
+        .map(|b| {
+            if b.lambda.is_some() {
+                ValueShape::Lambda
+            } else {
+                b.value_shape.clone()
+            }
+        })
+}
+
+/// Recover a static select/ident path from an expression (`strings`,
+/// `lib.attrsets`). Returns `None` for dynamic / complex expressions.
+fn simple_select_path(expr: &ast::Expr) -> Option<Vec<String>> {
+    match expr {
+        ast::Expr::Ident(id) => Some(vec![ident_text(id)]),
+        ast::Expr::Select(sel) => {
+            let base = sel.expr()?;
+            let mut segs = simple_select_path(&base)?;
+            let attrpath = sel.attrpath()?;
+            for attr in attrpath.attrs() {
+                segs.push(attr_static_name(&attr)?);
+            }
+            // Bail if the select has an `or` default — not a pure path.
+            if sel.or_token().is_some() {
+                return None;
+            }
+            Some(segs)
+        }
+        ast::Expr::Paren(p) => p.expr().and_then(|e| simple_select_path(&e)),
+        _ => None,
+    }
+}
+
+/// Classify a value expression into a [`ValueShape`] for typed emission.
+fn classify_value_shape(value: &ast::Expr) -> ValueShape {
+    match value {
+        ast::Expr::Lambda(_) => ValueShape::Lambda,
+        ast::Expr::AttrSet(set) => ValueShape::AttrSet {
+            recursive: set.rec_token().is_some(),
+        },
+        ast::Expr::List(_) => ValueShape::List,
+        ast::Expr::Path(_) => ValueShape::Path,
+        ast::Expr::Str(_) => ValueShape::String,
+        ast::Expr::Literal(lit) => match lit.kind() {
+            ast::LiteralKind::Integer(_) => ValueShape::Integer,
+            ast::LiteralKind::Float(_) => ValueShape::Float,
+            ast::LiteralKind::Uri(_) => ValueShape::Path,
+        },
+        ast::Expr::Ident(id) => {
+            let name = ident_text(id);
+            match name.as_str() {
+                "true" => ValueShape::Bool(true),
+                "false" => ValueShape::Bool(false),
+                "null" => ValueShape::Null,
+                _ => ValueShape::Other,
+            }
+        }
+        ast::Expr::UnaryOp(u) => {
+            // Unary minus on an integer still counts as integer-shaped.
+            if let Some(inner) = u.expr() {
+                match classify_value_shape(&inner) {
+                    ValueShape::Integer => ValueShape::Integer,
+                    ValueShape::Float => ValueShape::Float,
+                    other => other,
+                }
+            } else {
+                ValueShape::Other
+            }
+        }
+        ast::Expr::Paren(p) => p
+            .expr()
+            .map(|e| classify_value_shape(&e))
+            .unwrap_or(ValueShape::Other),
+        _ => ValueShape::Other,
+    }
 }
 
 /// The local attrpath components of one `AttrpathValue`.

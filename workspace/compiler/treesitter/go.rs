@@ -17,12 +17,16 @@
 //! ## `Type.Method` normalization
 //!
 //! The Go producer (`compile/go/item.rs`) keys methods as
-//! `import/path::Type.Method`.  To match that scheme the method extractor
-//! here emits the method with `kind: DefKind::Method` and `name` = the bare
-//! method name (e.g. `"Println"`), and synthesises a parent `DefKind::Type`
-//! frame named after the receiver type (stripped of any `*` pointer marker).
-//! The resolver rebuilds `Type.Method` by joining the parent `Type` frame
-//! name with the child method name via `.`.
+//! `import/path::Type.Method` (canonical) and also registers symtab aliases
+//! for the double-colon spelling `import/path::Type::Method` plus short
+//! forms `Type.Method` / `Type::Method`.  To match that scheme the method
+//! extractor here emits the method with `kind: DefKind::Method` and
+//! `name` = the bare method name (e.g. `"Println"`), and synthesises a
+//! parent `DefKind::Type` frame named after the receiver type (stripped of
+//! any `*` pointer marker). The resolver rebuilds `Type.Method` /
+//! `Type::Method` by joining the parent `Type` frame name with the child
+//! method name; both spellings hit the producer's alias table for Index
+//! confidence.
 //!
 //! ## Dot-import (`import . "pkg"`)
 //!

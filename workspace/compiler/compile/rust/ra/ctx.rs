@@ -42,6 +42,14 @@ pub(crate) struct LowerCtx<'db> {
 
 	pub(crate) visiting: FxHashSet<PathKey>,
 	pub(crate) cache: FxHashMap<PathKey, Entry>,
+
+	/// Extra index entries produced while lowering a primary def (trait assoc
+	/// items dual-emitted under `Trait::item`, method paths under `Adt::method`).
+	/// Drained by the walk after each lower / second-pass attach.
+	pub(crate) deferred: Vec<Entry>,
+
+	/// Source-map rows for dual-emitted methods (`fq → source text`).
+	pub(crate) deferred_sources: Vec<(String, String)>,
 }
 
 /// Bucketed impls for inherent methods + trait protocol membership.
@@ -108,7 +116,19 @@ impl<'db> LowerCtx<'db> {
 			lines: FxHashMap::default(),
 			visiting: FxHashSet::default(),
 			cache: FxHashMap::default(),
+			deferred: Vec::new(),
+			deferred_sources: Vec::new(),
 		}
+	}
+
+	/// Drain deferred index entries produced by the last lower/attach step.
+	pub(crate) fn take_deferred(&mut self) -> Vec<Entry> {
+		std::mem::take(&mut self.deferred)
+	}
+
+	/// Drain deferred source-map rows for dual-emitted methods.
+	pub(crate) fn take_deferred_sources(&mut self) -> Vec<(String, String)> {
+		std::mem::take(&mut self.deferred_sources)
 	}
 
 	/// Visibility gate: public-only unless `document_private`.
@@ -127,17 +147,22 @@ impl<'db> LowerCtx<'db> {
 	/// | RA | IR |
 	/// |---|---|
 	/// | `Public` | `Public` |
-	/// | `PubCrate` / `Module(crate_root, _)` | `Internal` (`pub(crate)`) |
-	/// | other `Module(..)` | `Package` (`pub(super)` / `pub(in …)`) |
+	/// | `PubCrate` | `Internal` (`pub(crate)`) |
+	/// | `Module(_, Implicit)` | `Private` (no `pub` / default) |
+	/// | `Module(crate_root, Explicit)` | `Internal` (explicit `pub(crate)` form) |
+	/// | other `Module(_, Explicit)` | `Package` (`pub(super)` / `pub(in …)`) |
 	///
-	/// Default (private) items are `Module(parent, Implicit)`. At crate root
-	/// that collapses to `Internal`; nested private modules become `Package`.
-	/// Tests accept `Internal | Private` for private/`pub(crate)` items.
+	/// Unmarked private items must stay [`IrVisibility::Private`], not
+	/// `Internal` — the latter is reserved for crate-visible bindings.
 	pub(crate) fn visibility(&self, def: impl HasVisibility) -> IrVisibility {
 		match def.visibility(self.db) {
 			Visibility::Public => IrVisibility::Public,
 			Visibility::PubCrate(_) => IrVisibility::Internal,
-			Visibility::Module(m, _) => {
+			Visibility::Module(m, expl) => {
+				// Implicit = no visibility keyword → truly private.
+				if !expl.is_explicit() {
+					return IrVisibility::Private;
+				}
 				let module = Module::from(m);
 				if module.is_crate_root(self.db) {
 					IrVisibility::Internal

@@ -17,7 +17,6 @@ rust_crate(
         member("heart"),
         member("ir"),
         member("sandbox"),
-        member("version"),
         crate("serde"),
         crate("serde_json"),
         crate("anyhow"),
@@ -31,6 +30,8 @@ rust_crate(
         crate("rustc_hash"),
         crate("semver"),
         crate("smol_str"),
+        # C# XML-doc parsing (replaces hand-rolled element scanner).
+        crate("quick-xml"),
         # rust-analyzer producer (ra_ap_* 0.0.341; see RUST-ANALYZER-PLAN.md)
         crate("ra_ap_load_cargo"),
         crate("ra_ap_project_model"),
@@ -146,7 +147,6 @@ rust_tests(
         member("ir"),
         member("registry"),
         member("sandbox"),
-        member("version"),
         crate("tempfile"),
         crate("serde"),
         crate("serde_json"),

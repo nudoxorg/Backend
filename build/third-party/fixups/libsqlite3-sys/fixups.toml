@@ -1,4 +1,5 @@
 cargo_env = true
 
-[buildscript]
-run = true
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

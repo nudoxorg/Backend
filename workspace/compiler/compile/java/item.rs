@@ -16,11 +16,15 @@
 //!   `required_methods`; `default`, `static`, and `private` methods (all
 //!   body-bearing) → `provided_methods` with
 //!   `has_default_implementation: true` — the receiver distinguishes
-//!   `static` from `default`. Interface constants → `properties`
-//!   (`Field::Known`, static + immutable, value in `default_value`) rather
-//!   than `required_constants`, which has no documentation slot — Java
-//!   interface constants are *provided*, and this keeps their docs,
-//!   annotations, and values. Super-interfaces → `super_traits`.
+//!   `static` from `default`. The same method groups are also emitted as
+//!   standalone `Entry::Function` symbols (via `push_method_entries`) and
+//!   listed in `TraitDef.members` so Index/SymbolTable resolution can find
+//!   them by path (`pkg::Iface.method`). Interface constants →
+//!   `properties` (`Field::Known`, static + immutable, value in
+//!   `default_value`) rather than `required_constants`, which has no
+//!   documentation slot — Java interface constants are *provided*, and this
+//!   keeps their docs, annotations, and values. Super-interfaces →
+//!   `super_traits`.
 //! * **enum** → `Entry::SumType` over its constants. Constructor arguments
 //!   and constant class bodies exist only in source; the oracle ships a
 //!   raw declaration window per constant and [`parse_constant_source`]
@@ -43,13 +47,26 @@
 //!   `has_default_implementation` (and noted as `Default:` text — the
 //!   trait vocabulary has no default-value slot for methods).
 //! * **sealed** — a sealed *interface* is fully structural:
-//!   `TraitAttribute::Sealed` plus a `Custom("permits", [...])` attribute
-//!   carrying the qualified permitted subtypes. A sealed *class/record*
-//!   has no attribute slot on `Record`, so its permitted subtypes ride the
-//!   documentation (`Sealed; permits: ...`) — a documented lossy spot.
+//!   `TraitDef.sealed = Some(true)`, `TraitAttribute::Sealed`, plus a
+//!   `Custom("permits", [...])` attribute carrying the qualified permitted
+//!   subtypes. A sealed *class/record* has no attribute slot on `Record`, so
+//!   its permitted subtypes ride documentation (`Sealed; permitted subtypes:`
+//!   and machine-parseable `Custom(permits): […]`); class modifiers
+//!   (`abstract`/`final`/`static`/`sealed`/`non-sealed`/`record`) ride a
+//!   `Declared:` documentation section for the same reason.
 //! * **type-level annotations** → structural `TraitAttribute::Custom` on
 //!   traits; a labelled `Annotations:` documentation section on records
 //!   (no slot). `@FunctionalInterface` → `TraitAttribute::Functional`.
+//! * **interface methods** → both `TraitMethod` lists (protocol fidelity)
+//!   *and* standalone `Entry::Function` Index paths via
+//!   `push_method_entries`, listed in `TraitDef.members` alongside nested
+//!   types — without the Index paths, SymbolTable resolution cannot find
+//!   interface methods.
+//! * **deprecation** → structured `Symbol.deprecation` from the element
+//!   flag / `@Deprecated(since=…)` / `@deprecated` tag, *and* a prose
+//!   `Deprecated:` documentation section.
+//! * **doc links** → `Symbol.doc_links` maps resolved `{@link}` targets to
+//!   in-extraction `NudoxPath`s when the type/member is known.
 //! * **visibility** — `public`/`protected`/`private`/none →
 //!   `Public`/`Protected`/`Private`/`Package` (see `types::visibility`).
 //!
@@ -57,9 +74,11 @@
 //! members (default constructors, enum `values`/`valueOf`, record members)
 //! are kept — they are real, callable API.
 
+use rustc_hash::FxHashMap;
+
 use ir::entry::NudoxPath;
 use ir::generics::TraitRef;
-use ir::kind::{Entry, Symbol, Visibility};
+use ir::kind::{Deprecation, Entry, Symbol, TypedBinding, Visibility};
 use ir::protocols::{TraitAttribute, TraitDef};
 use ir::record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant};
 
@@ -95,12 +114,16 @@ fn parse_decl_doc(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Option<ParsedJ
 
 /// Assemble a type entry's documentation: prose, tag sections preserved
 /// from the parse (`@since`/`@author`/`@version`/`@see`), deprecation, and
-/// — where the entry kind has no structural slot — annotations and sealing.
+/// — where the entry kind has no structural slot — annotations, class
+/// modifiers, and sealing. `Record` has no attribute slot, so class-level
+/// modifiers / permits are dual-emitted as labelled, machine-parseable
+/// documentation sections (`Declared:`, `Custom(permits):`).
 fn type_documentation(
 	decl: &schema::TypeDecl,
 	parsed: Option<&ParsedJavadoc>,
 	include_annotations: bool,
 	include_permits: bool,
+	include_class_modifiers: bool,
 ) -> Option<String> {
 	let mut sections: Vec<String> = Vec::new();
 
@@ -119,6 +142,12 @@ fn type_documentation(
 		sections.push(section);
 	}
 
+	if include_class_modifiers {
+		if let Some(section) = class_declared_section(decl) {
+			sections.push(section);
+		}
+	}
+
 	if include_annotations && !decl.annotations.is_empty() {
 		let rendered: Vec<String> = decl
 			.annotations
@@ -134,10 +163,40 @@ fn type_documentation(
 			.iter()
 			.map(|p| format!("`{}`", types::type_expr(p).name))
 			.collect();
+		// Human-readable form.
 		sections.push(format!("Sealed; permitted subtypes: {}", names.join(", ")));
+		// Machine-parseable Custom-style note (Record has no attribute slot).
+		let bare: Vec<String> =
+			decl.permits.iter().map(|p| types::type_expr(p).name).collect();
+		sections.push(format!("Custom(permits): [{}]", bare.join(", ")));
 	}
 
 	if sections.is_empty() { None } else { Some(sections.join("\n\n")) }
+}
+
+/// Class/record non-access modifiers as a `Declared:` documentation section.
+/// `Record` has no attribute slot; this is the stable, machine-parseable home
+/// for `abstract`/`final`/`static`/`sealed`/`non-sealed`/`record`.
+fn class_declared_section(decl: &schema::TypeDecl) -> Option<String> {
+	let mut mods: Vec<&str> = decl
+		.modifiers
+		.iter()
+		.map(String::as_str)
+		.filter(|m| {
+			matches!(
+				*m,
+				"abstract" | "final" | "static" | "sealed" | "non-sealed" | "strictfp"
+			)
+		})
+		.collect();
+	if decl.kind == "RECORD" {
+		mods.push("record");
+	}
+	if mods.is_empty() {
+		None
+	} else {
+		Some(format!("Declared: `{}`", mods.join(" ")))
+	}
 }
 
 /// `@since` / `@version` / `@author` / `@see` have no structural `Symbol`
@@ -170,9 +229,92 @@ fn deprecation_section(flagged: bool, parsed: Option<&ParsedJavadoc>) -> Option<
 	}
 }
 
+/// Structured [`Deprecation`] from the element flag, `@Deprecated(since=…)`
+/// annotation value, and/or the `@deprecated` javadoc tag text. The prose
+/// deprecation section is still emitted separately so renderers keep a
+/// human-facing note.
+fn make_deprecation(
+	flagged: bool,
+	annotations: &[schema::Annotation],
+	parsed: Option<&ParsedJavadoc>,
+) -> Option<Deprecation> {
+	let tag = parsed.and_then(|p| p.deprecated.as_ref());
+	if !flagged && tag.is_none() {
+		return None;
+	}
+	let note = tag.cloned().filter(|s| !s.is_empty());
+	let since = deprecated_since(annotations);
+	Some(Deprecation { since, note })
+}
+
+/// `since` argument of a `@java.lang.Deprecated` (or simple-named) annotation.
+fn deprecated_since(annotations: &[schema::Annotation]) -> Option<String> {
+	annotations
+		.iter()
+		.find(|a| a.ty == "java.lang.Deprecated" || a.ty.ends_with(".Deprecated"))
+		.and_then(|a| a.values.get("since"))
+		.and_then(|v| match v {
+			schema::Value::String { value } => Some(value.clone()),
+			_ => None,
+		})
+}
+
+/// Resolve parsed `{@link}` / `@see` targets to in-index [`NudoxPath`]s when
+/// the referenced type (and optional member) is part of the extraction.
+fn make_doc_links(
+	ctx: &Lowering<'_>,
+	parsed: Option<&ParsedJavadoc>,
+) -> Option<FxHashMap<String, NudoxPath>> {
+	let parsed = parsed?;
+	if parsed.links.is_empty() {
+		return None;
+	}
+	let mut out: FxHashMap<String, NudoxPath> = FxHashMap::default();
+	for link in &parsed.links {
+		if let Some(path) = resolve_doc_link(ctx, link) {
+			out.insert(link.clone(), path);
+		}
+	}
+	if out.is_empty() { None } else { Some(out) }
+}
+
+/// Map one javadoc element reference (`pkg.Type`, `pkg.Type#member(args)`) to
+/// an Index path when the target is known.
+fn resolve_doc_link(ctx: &Lowering<'_>, reference: &str) -> Option<NudoxPath> {
+	let (type_part, member) = match reference.split_once('#') {
+		Some((t, m)) => (t, Some(m)),
+		None => (reference, None),
+	};
+	if type_part.is_empty() {
+		return None;
+	}
+	let decl = ctx.decl(type_part)?;
+	match member {
+		None => Some(ctx.type_key(decl)),
+		Some(m) => {
+			// Strip signature args: `draw(String)` → `draw`.
+			let name = m.split('(').next().unwrap_or(m);
+			if name.is_empty() {
+				return None;
+			}
+			Some(ctx.member_key(decl, name))
+		}
+	}
+}
+
 /// Whether a member origin marks a compiler artifact to drop.
 fn is_synthetic(origin: Option<&str>) -> bool {
 	origin == Some("SYNTHETIC")
+}
+
+/// Display form of an Index path for documentation notes.
+fn path_display(path: &NudoxPath) -> String {
+	match path {
+		NudoxPath::Local(p) => p.display().to_string(),
+		NudoxPath::External { path, dependency } => {
+			format!("{}::{}", dependency, path.display())
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +436,9 @@ fn push_method_entries(
 		let path = ctx.member_key(decl, name);
 		paths.push(path.clone());
 
-		// The primary signature also names the symbol's docs/visibility.
+		// The primary signature also names the symbol's docs/visibility/
+		// deprecation; secondary overloads contribute documentation sections
+		// so their javadocs are not dropped when folded into one Function.
 		let primary = group[0];
 		let parsed = ctx.parse_doc(
 			primary.doc.as_deref(),
@@ -323,6 +467,46 @@ fn push_method_entries(
 		}
 		doc_sections.extend(function::declaration_notes(primary));
 
+		// Merge secondary-overload javadocs (and their deprecation notes)
+		// into labelled sections so they survive overload folding.
+		let mut all_links: Vec<String> =
+			parsed.as_ref().map(|p| p.links.clone()).unwrap_or_default();
+		for (i, overload) in group.iter().enumerate().skip(1) {
+			let oparsed = ctx.parse_doc(
+				overload.doc.as_deref(),
+				overload.doc_kind.as_deref(),
+				Some(&decl.qualified_name),
+			);
+			if let Some(op) = &oparsed {
+				all_links.extend(op.links.iter().cloned());
+			}
+			let mut overload_bits: Vec<String> = Vec::new();
+			if let Some(text) = oparsed.as_ref().and_then(ParsedJavadoc::documentation) {
+				overload_bits.push(text);
+			}
+			if let Some(section) =
+				deprecation_section(overload.deprecated, oparsed.as_ref())
+			{
+				overload_bits.push(section);
+			}
+			if !overload_bits.is_empty() {
+				let sig = overload_signature_label(overload);
+				doc_sections.push(format!(
+					"Overload {} ({sig}):\n{}",
+					i + 1,
+					overload_bits.join("\n\n")
+				));
+			}
+		}
+
+		// Aggregate link targets from every overload for doc_links resolution.
+		let links_view = ParsedJavadoc {
+			links: all_links,
+			..Default::default()
+		};
+		let doc_links = make_doc_links(ctx, Some(&links_view))
+			.or_else(|| make_doc_links(ctx, parsed.as_ref()));
+
 		let lowered: Vec<ir::function::Function> = group
 			.iter()
 			.map(|m| function::lower_method(ctx, &decl.qualified_name, m))
@@ -340,14 +524,24 @@ fn push_method_entries(
 				} else {
 					Some(doc_sections.join("\n\n"))
 				},
-				deprecation:   None,
-				doc_links:     None,
+				deprecation:   make_deprecation(
+					primary.deprecated,
+					&primary.annotations,
+					parsed.as_ref(),
+				),
+				doc_links,
 				inner:         function::fold_overloads(lowered),
 			}),
 		));
 	}
 
 	paths
+}
+
+/// Compact parameter-type list for labelling an overload documentation section.
+fn overload_signature_label(m: &schema::Method) -> String {
+	let params: Vec<String> = m.params.iter().map(|p| types::type_display(&p.ty)).collect();
+	format!("{}({})", m.name, params.join(", "))
 }
 
 /// The nested member types that survive lowering, as paths for `members`.
@@ -459,10 +653,21 @@ fn lower_class_like(
 			path,
 			aliases: None,
 			visibility: types::visibility(&decl.modifiers),
-			// Record has no annotation/sealing slots → both ride the docs.
-			documentation: type_documentation(decl, parsed.as_ref(), true, true),
-			deprecation: None,
-			doc_links: None,
+			// Record has no annotation/sealing/modifier slots → all ride docs
+			// (Declared:, Annotations:, Sealed/Custom(permits):).
+			documentation: type_documentation(
+				decl,
+				parsed.as_ref(),
+				true,  /* annotations */
+				true,  /* permits */
+				true,  /* class modifiers */
+			),
+			deprecation: make_deprecation(
+				decl.deprecated,
+				&decl.annotations,
+				parsed.as_ref(),
+			),
+			doc_links: make_doc_links(ctx, parsed.as_ref()),
 			inner: record,
 		}),
 	));
@@ -548,8 +753,14 @@ fn lower_interface(
 		});
 	}
 
-	// --- Nested member types. ----------------------------------------------------
-	let members = nested_paths(ctx, decl);
+	// --- Method Index paths + nested member types. -------------------------------
+	// Interface methods also need standalone Entry::Function symbols so path
+	// resolution (SymbolTable / mentions) can find them — classes already did
+	// this; the TraitMethod lists alone are not indexed.
+	let mut members = push_method_entries(ctx, decl, &mut entries);
+	members.extend(nested_paths(ctx, decl));
+
+	let is_sealed = types::has_modifier(&decl.modifiers, "sealed");
 
 	let trait_def = TraitDef {
 		generics: types::lower_type_params(&decl.type_params),
@@ -561,7 +772,9 @@ fn lower_interface(
 		required_constants: None,
 		attributes: if attributes.is_empty() { None } else { Some(attributes) },
 		object_safe: None,
-		sealed: None,
+		// Structural sealed flag (attributes still carry TraitAttribute::Sealed
+		// + Custom("permits") for permitted subtypes).
+		sealed: if is_sealed { Some(true) } else { None },
 		cfg: None,
 		members: if members.is_empty() { None } else { Some(members) },
 	};
@@ -575,9 +788,19 @@ fn lower_interface(
 			visibility: types::visibility(&decl.modifiers),
 			// Annotations and sealing are structural attributes here, so the
 			// docs carry only prose + tags + deprecation.
-			documentation: type_documentation(decl, parsed.as_ref(), false, false),
-			deprecation: None,
-			doc_links: None,
+			documentation: type_documentation(
+				decl,
+				parsed.as_ref(),
+				false, /* annotations (structural) */
+				false, /* permits (structural) */
+				false, /* class modifiers N/A */
+			),
+			deprecation: make_deprecation(
+				decl.deprecated,
+				&decl.annotations,
+				parsed.as_ref(),
+			),
+			doc_links: make_doc_links(ctx, parsed.as_ref()),
 			inner: trait_def,
 		}),
 	));
@@ -600,15 +823,46 @@ fn lower_enum(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPath, En
 		.map(|c| lower_enum_constant(ctx, decl, c))
 		.collect();
 
-	// SumType has no member slots: methods and (non-constant) fields become
-	// standalone entries alongside the sum.
-	push_method_entries(ctx, decl, &mut entries);
+	// Dual-emit methods/fields as standalone entries, and also hang them off
+	// the SumType container so consumers don't need free-floating lookups.
+	let method_paths = push_method_entries(ctx, decl, &mut entries);
+	let mut field_paths = Vec::new();
 	for f in &decl.fields {
 		if is_synthetic(f.origin.as_deref()) {
 			continue;
 		}
-		entries.push(enum_field_entry(ctx, decl, f));
+		let (fpath, entry) = enum_field_entry(ctx, decl, f);
+		field_paths.push(fpath.clone());
+		entries.push((fpath, entry));
 	}
+
+	let documentation = type_documentation(
+		decl,
+		parsed.as_ref(),
+		true,  /* annotations */
+		false, /* permits */
+		false, /* class modifiers */
+	);
+
+	// Structural supers + protocols (no longer docs-only).
+	let super_types: Vec<ir::ty::Type> =
+		decl.interfaces.iter().map(|i| types::lower_type(i)).collect();
+	let protocols: Vec<NudoxPath> = decl
+		.interfaces
+		.iter()
+		.filter_map(|i| i.declared_name())
+		.filter_map(|name| ctx.decl(name))
+		.map(|target| ctx.type_key(target))
+		.collect();
+
+	let mut members = method_paths;
+	members.extend(field_paths);
+
+	let mut sum = ir::record::SumType::from_variants(variants);
+	sum.super_types = if super_types.is_empty() { None } else { Some(super_types) };
+	sum.implemented_protocols = if protocols.is_empty() { None } else { Some(protocols) };
+	sum.members = if members.is_empty() { None } else { Some(members) };
+	sum.generics = types::lower_type_params(&decl.type_params);
 
 	entries.push((
 		path.clone(),
@@ -617,10 +871,14 @@ fn lower_enum(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPath, En
 			path,
 			aliases: None,
 			visibility: types::visibility(&decl.modifiers),
-			documentation: type_documentation(decl, parsed.as_ref(), true, false),
-			deprecation: None,
-			doc_links: None,
-			inner: variants,
+			documentation,
+			deprecation: make_deprecation(
+				decl.deprecated,
+				&decl.annotations,
+				parsed.as_ref(),
+			),
+			doc_links: make_doc_links(ctx, parsed.as_ref()),
+			inner: sum,
 		}),
 	));
 
@@ -667,11 +925,13 @@ fn lower_enum_constant(
 		name:          c.name.clone(),
 		data:          None,
 		documentation: if sections.is_empty() { None } else { Some(sections.join("\n\n")) },
+		discriminant: None,
 	}
 }
 
-/// An enum's field, emitted standalone (`Entry::Field` carries no payload,
-/// so the type is preserved as a `Type:` documentation note).
+/// An enum's field, emitted standalone as `Entry::Field` with a
+/// [`TypedBinding`] payload for the field type / constant value. A `Type:`
+/// documentation note is retained for renderers that only read docs.
 fn enum_field_entry(
 	ctx: &Lowering<'_>,
 	decl: &schema::TypeDecl,
@@ -701,9 +961,13 @@ fn enum_field_entry(
 			aliases: None,
 			visibility: types::visibility(&f.modifiers),
 			documentation: Some(sections.join("\n\n")),
-			deprecation: None,
-			doc_links: None,
-			inner: (),
+			deprecation: make_deprecation(f.deprecated, &f.annotations, parsed.as_ref()),
+			doc_links: make_doc_links(ctx, parsed.as_ref()),
+			inner: TypedBinding {
+				ty: Some(types::lower_type(&f.ty)),
+				value: f.constant.as_ref().map(types::lower_value),
+				mutable: Some(!types::has_modifier(&f.modifiers, "final")),
+			},
 		}),
 	)
 }

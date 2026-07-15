@@ -317,16 +317,26 @@ fn enrich_index(
 
 			// Type aliases: replace an opaque/`Any` alias body with the
 			// checker's resolved type (Mode 2 — cross-module resolution).
+			// Generics on TypeAliasBody are preserved (only `target` is swapped).
 			Entry::TypeAlias(sym) => {
-				if matches!(sym.inner, Type::Any | Type::Infer) {
-					sym.inner = recovered.own.clone();
+				if matches!(sym.inner.target, Type::Any | Type::Infer) {
+					sym.inner.target = recovered.own.clone();
 				}
 			}
 
-			// Constants / Variables carry no type payload in the IR
-			// (`Symbol<()>`), so there is nothing to splice here; their types
-			// live in linked-data emit and are recovered elsewhere. Left as a
-			// no-op intentionally.
+			// Constants / Variables: fill TypedBinding.ty when the syntactic
+			// pass left it empty/opaque and the checker recovered a type.
+			Entry::Constant(sym) | Entry::Variable(sym) => {
+				let needs = match &sym.inner.ty {
+					None => true,
+					Some(Type::Any) | Some(Type::Infer) => true,
+					_ => false,
+				};
+				if needs {
+					sym.inner.ty = Some(recovered.own.clone());
+				}
+			}
+
 			_ => {}
 		}
 	}

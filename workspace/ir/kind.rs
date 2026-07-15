@@ -2,7 +2,65 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{entry::NudoxPath, function::Function, module::Module, protocols::{TraitDef, TraitImpl}, record::{Record, SumVariant}, ty::Type};
+use crate::{
+	entry::NudoxPath,
+	function::Function,
+	generics::{ConstExpr, Generics},
+	module::Module,
+	protocols::{TraitDef, TraitImpl},
+	record::{Record, SumType},
+	ty::Type,
+};
+
+/// Typed payload for constants and variables — type and optional value so
+/// resolution and docs retain the binding's contract (not just the name).
+///
+/// Producers that cannot yet recover a type leave both fields `None`; that is
+/// equivalent to the historical empty `()` payload.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TypedBinding {
+	/// The binding's type, when known.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub ty: Option<Type>,
+	/// Compile-time value (literals, simple expressions), when known.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub value: Option<ConstExpr>,
+	/// Whether the binding is mutable (`let mut`, `static mut`, Python non-Final, …).
+	/// `None` when the producer does not distinguish mutability.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub mutable: Option<bool>,
+}
+
+/// Payload for type aliases / typedefs, preserving declaration-site generics.
+///
+/// Historical `Entry::TypeAlias(Symbol<Type>)` only stored the RHS; generic
+/// parameters on `type Foo<T> = …` / `type IsString<T> = …` were discarded.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TypeAliasBody {
+	/// Generic parameters on the alias declaration, if any.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub generics: Option<Generics>,
+	/// The right-hand side type.
+	pub target: Type,
+}
+
+impl From<Type> for TypeAliasBody {
+	fn from(target: Type) -> Self {
+		Self { generics: None, target }
+	}
+}
+
+impl TypeAliasBody {
+	pub fn plain(target: Type) -> Self {
+		Self { generics: None, target }
+	}
+
+	pub fn with_generics(generics: Option<Generics>, target: Type) -> Self {
+		Self { generics, target }
+	}
+}
 
 /// The visibility of an entry in the source language.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,19 +167,23 @@ pub enum Entry {
 	TraitImpl(Symbol<TraitImpl>),
 
 	/// An algebraic sum type: enum, discriminated union, or sealed class.
-	SumType(Symbol<Vec<SumVariant>>),
+	///
+	/// Payload is a full [`SumType`] container (variants **plus** methods,
+	/// supers, generics, underlying type) so resolution is not lost to
+	/// free-floating dual-emits alone.
+	SumType(Symbol<SumType>),
 
 	/// A function, method, or lambda with its full signature.
 	Function(Symbol<Function>),
 
 	/// A type alias, typedef, or `using` alias.
-	TypeAlias(Symbol<Type>),
+	TypeAlias(Symbol<TypeAliasBody>),
 
 	/// A named constant or immutable global binding.
-	Constant(Symbol<()>),
+	Constant(Symbol<TypedBinding>),
 
 	/// A mutable global or static variable.
-	Variable(Symbol<()>),
+	Variable(Symbol<TypedBinding>),
 
 	/// A macro, template, or code-generation hook.
 	Macro(Symbol<()>),
@@ -130,10 +192,15 @@ pub enum Entry {
 	PrimitiveType(Symbol<()>),
 
 	/// A field or property of a containing type.
-	Field(Symbol<()>),
+	///
+	/// When the producer recovers a type it lives on [`TypedBinding::ty`]; the
+	/// historical unit payload left field types only in documentation.
+	Field(Symbol<TypedBinding>),
 
 	/// An event, signal, or callback definition.
-	Event(Symbol<()>),
+	///
+	/// The delegate / handler type is stored on [`TypedBinding::ty`] when known.
+	Event(Symbol<TypedBinding>),
 }
 
 impl Entry {

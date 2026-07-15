@@ -8,8 +8,9 @@
 //! - **Imports** — `using` directives (ordinary, static, and alias forms).
 //! - **References** — method invocations (qualified and bare), member accesses,
 //!   type references, and object creation expressions.
-//! - **module_path** — derived from the relative file path under conventional
-//!   C# project layouts.
+//! - **module_path** — prefer the namespace declared in the parse tree
+//!   (`namespace Foo.Bar;` / block form); fall back to directory segments under
+//!   conventional C# project layouts when no namespace is present.
 //!
 //! # Grammar version
 //!
@@ -50,8 +51,8 @@ use arborium_tree_sitter as tree_sitter;
 use ir::syntax::ReferenceKind;
 
 use super::spec::{
-	DefKind, ImportBinding, ImportSource, LanguageSpec, PackageLayout, RawDefinition,
-	RawReference, ReceiverShape, node_text, walk_preorder,
+	DefKind, ImportBinding, ImportPrefix, ImportSource, LanguageSpec, PackageLayout,
+	RawDefinition, RawReference, ReceiverShape, node_text, walk_preorder,
 };
 
 // ─── Grammar node-kind constants ────────────────────────────────────────────
@@ -217,12 +218,32 @@ fn invoc_segments(
 	}
 }
 
+/// Well-known BCL / framework namespace roots that must **not** be treated as
+/// NuGet package dependency names. `using System.Collections.Generic;` is a
+/// namespace import, not an external dep called `"System"`.
+const BCL_ROOTS: &[&str] = &[
+	"System",
+	"Microsoft",
+	"Windows",
+	"MS",
+	"Internal",
+	"FxResources",
+	"Accessibility",
+];
+
+/// Whether the first segment of a using path is a known BCL/framework root.
+fn is_bcl_root(seg: &str) -> bool {
+	BCL_ROOTS.iter().any(|r| *r == seg)
+}
+
 /// Build an [`ImportSource`] from a parsed `using_directive` node.
 ///
 /// Handles:
-/// - `using Foo.Bar;`                → `External{dependency:"Foo", path:["Bar"]}`
-/// - `using static Foo.Bar.Baz;`     → `External{dependency:"Foo", path:["Bar","Baz"]}`
-/// - `using Alias = Foo.Bar;`        → `External{…}` with local `"Alias"`
+/// - `using Foo.Bar;`                → namespace glob (Internal full path, or
+///                                     Glob with `dependency: None`); BCL roots
+///                                     never become `External{dependency:"System"}`
+/// - `using static Foo.Bar.Baz;`     → last segment bound; same source rules
+/// - `using Alias = Foo.Bar;`        → alias local + source for the target
 /// - `using Foo.*;` (non-standard)   → `Glob(…)` if the grammar emits it
 fn using_to_binding(node: tree_sitter::Node, src: &str) -> Option<ImportBinding> {
 	let span = node.byte_range();
@@ -256,27 +277,57 @@ fn using_to_binding(node: tree_sitter::Node, src: &str) -> Option<ImportBinding>
 		return None;
 	}
 
-	let local = if let Some(a) = alias {
-		a
+	// Ordinary C# `using Ns.Sub;` is a namespace import that brings every type
+	// in that namespace into scope — model as a Glob with no package dependency.
+	// Alias / static forms bind a single local name.
+	let (local, source) = if let Some(a) = alias {
+		// `using Alias = Foo.Bar;` — bind Alias to the target path.
+		(a, segments_to_using_source(&segs, /*is_namespace_import=*/ false))
 	} else if is_static {
 		// `using static System.Math;` — the bound name is the last segment.
-		segs.last().cloned().unwrap_or_default()
+		let local = segs.last().cloned().unwrap_or_default();
+		(local, segments_to_using_source(&segs, /*is_namespace_import=*/ false))
 	} else {
-		// `using System.Collections.Generic;` — common convention: use last segment
-		// as local shorthand, though C# doesn't actually introduce a local name.
-		segs.last().cloned().unwrap_or_default()
-	};
-
-	let source = if segs.len() == 1 {
-		// Single-segment: treat as internal (e.g. project-root namespace).
-		ImportSource::Internal(segs)
-	} else {
-		let dependency = segs[0].clone();
-		let path = segs[1..].to_vec();
-		ImportSource::External { dependency, path }
+		// Namespace import: no local name (types resolve by simple name via glob).
+		(
+			String::new(),
+			segments_to_using_source(&segs, /*is_namespace_import=*/ true),
+		)
 	};
 
 	Some(ImportBinding { local, source, span })
+}
+
+/// Classify a multi-segment using path.
+///
+/// - BCL roots (`System`, `Microsoft`, …) → full path kept as
+///   `Internal` / `Glob{dependency:None}` so they never become a fake package.
+/// - Other multi-segment paths keep `External` only when they look like a
+///   package-style root *and* this is not a pure namespace import; namespace
+///   imports always use `Glob{dependency:None, path: full}` so the first
+///   segment is never misread as a NuGet id.
+fn segments_to_using_source(segs: &[String], is_namespace_import: bool) -> ImportSource {
+	if segs.is_empty() {
+		return ImportSource::Internal(Vec::new());
+	}
+	if is_namespace_import {
+		// Namespace usings are globs over the full namespace path.
+		return ImportSource::Glob(ImportPrefix {
+			dependency: None,
+			path:       segs.to_vec(),
+		});
+	}
+	// Alias / static: point at the exact type/namespace path.
+	if segs.len() == 1 || is_bcl_root(&segs[0]) {
+		ImportSource::Internal(segs.to_vec())
+	} else {
+		// Non-BCL multi-segment target of an alias — first segment may be a
+		// package/root name, rest is the path inside it.
+		ImportSource::External {
+			dependency: segs[0].clone(),
+			path:       segs[1..].to_vec(),
+		}
+	}
 }
 
 // ─── Definitions ─────────────────────────────────────────────────────────────
@@ -460,7 +511,7 @@ impl LanguageSpec for CSharpSpec {
 		out
 	}
 
-	/// Derive the C# namespace path from the file's relative path.
+	/// Path-based fallback when the parse tree has no namespace declaration.
 	///
 	/// Algorithm:
 	/// 1. Try to strip conventional source-root prefixes (`src/`, `Source/`,
@@ -470,49 +521,187 @@ impl LanguageSpec for CSharpSpec {
 	///
 	/// Example: `src/MyApp/Services/Foo.cs` → `["MyApp", "Services"]`.
 	///
-	/// For projects using file-scoped namespaces the parse tree would give a
-	/// more accurate result; this path-based fallback is used when the tree is
-	/// not available (consistent with the Java module_path approach).
+	/// Prefer [`extract`](LanguageSpec::extract), which pulls the namespace
+	/// from the tree when present.
 	fn module_path(&self, rel: &Path, _layout: &PackageLayout) -> Vec<String> {
-		let components: Vec<&str> = rel
-			.components()
-			.filter_map(|c| c.as_os_str().to_str())
-			.filter(|s| !s.is_empty())
-			.collect();
+		module_path_from_rel(rel)
+	}
 
-		if components.is_empty() {
-			return Vec::new();
+	/// Prefer the namespace from the parse tree; fall back to directory path.
+	fn extract(
+		&self,
+		tree: &tree_sitter::Tree,
+		src: &str,
+		rel: &Path,
+		layout: &PackageLayout,
+	) -> super::spec::Extraction {
+		let module_path = namespace_from_tree(tree, src)
+			.unwrap_or_else(|| self.module_path(rel, layout));
+		super::spec::Extraction {
+			definitions: self.definitions(tree, src),
+			imports:     self.imports(tree, src),
+			references:  self.references(tree, src),
+			module_path,
 		}
+	}
+}
 
-		// Strip a well-known source-root prefix.
-		const PREFIXES: &[&[&str]] = &[
-			&["src"],
-			&["Source"],
-			&["lib"],
-			&["Src"],
-		];
+/// Directory-segment fallback for [`CSharpSpec::module_path`].
+fn module_path_from_rel(rel: &Path) -> Vec<String> {
+	let components: Vec<&str> = rel
+		.components()
+		.filter_map(|c| c.as_os_str().to_str())
+		.filter(|s| !s.is_empty())
+		.collect();
 
-		let stripped: &[&str] = 'strip: {
-			for prefix in PREFIXES {
-				if components.len() > prefix.len()
-					&& components[..prefix.len()]
-						.iter()
-						.zip(*prefix)
-						.all(|(a, b)| a == b)
-				{
-					break 'strip &components[prefix.len()..];
+	if components.is_empty() {
+		return Vec::new();
+	}
+
+	const PREFIXES: &[&[&str]] = &[&["src"], &["Source"], &["lib"], &["Src"]];
+
+	let stripped: &[&str] = 'strip: {
+		for prefix in PREFIXES {
+			if components.len() > prefix.len()
+				&& components[..prefix.len()]
+					.iter()
+					.zip(*prefix)
+					.all(|(a, b)| a == b)
+			{
+				break 'strip &components[prefix.len()..];
+			}
+		}
+		&components[..]
+	};
+
+	if stripped.len() <= 1 {
+		return Vec::new();
+	}
+	stripped[..stripped.len() - 1]
+		.iter()
+		.map(|s| s.to_string())
+		.collect()
+}
+
+/// Extract the first file-scoped or block namespace declaration's segments
+/// from the parse tree (`namespace Foo.Bar;` / `namespace Foo.Bar { … }`).
+fn namespace_from_tree(tree: &tree_sitter::Tree, src: &str) -> Option<Vec<String>> {
+	let mut found: Option<Vec<String>> = None;
+	walk_preorder(tree, |node, _depth| {
+		if found.is_some() {
+			return;
+		}
+		if matches!(node.kind(), K_NS_DECL | K_FILE_NS_DECL) {
+			if let Some(name) = node.child_by_field_name("name") {
+				let segs = qualified_name_segments(name, src);
+				if !segs.is_empty() {
+					found = Some(segs);
 				}
 			}
-			&components[..]
-		};
-
-		// Drop the last component (the filename).
-		if stripped.len() <= 1 {
-			return Vec::new();
 		}
-		stripped[..stripped.len() - 1]
-			.iter()
-			.map(|s| s.to_string())
-			.collect()
+	});
+	found
+}
+
+// ─── Unit tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+	use std::path::Path;
+
+	use arborium_tree_sitter as tree_sitter;
+
+	use super::*;
+	use super::super::spec::{ImportSource, LanguageSpec, PackageLayout};
+
+	fn parse(src: &str) -> tree_sitter::Tree {
+		let lang = arborium::get_language("c-sharp").expect("c-sharp grammar");
+		let mut parser = tree_sitter::Parser::new();
+		parser.set_language(&lang).unwrap();
+		parser.parse(src.as_bytes(), None).unwrap()
+	}
+
+	fn layout() -> PackageLayout {
+		PackageLayout { package: "Test".into() }
+	}
+
+	#[test]
+	fn module_path_prefers_file_scoped_namespace() {
+		let src = "namespace CSharpFixtures.Nested;\npublic class Outer {}\n";
+		let tree = parse(src);
+		// Path would suggest something wrong; tree must win.
+		let ext = CSharpSpec.extract(
+			&tree,
+			src,
+			Path::new("wrong/dir/Outer.cs"),
+			&layout(),
+		);
+		assert_eq!(
+			ext.module_path,
+			vec!["CSharpFixtures".to_string(), "Nested".to_string()],
+			"module_path must come from the namespace declaration"
+		);
+	}
+
+	#[test]
+	fn module_path_prefers_block_namespace() {
+		let src = "namespace Foo.Bar { class C {} }\n";
+		let tree = parse(src);
+		let ext = CSharpSpec.extract(&tree, src, Path::new("src/X/C.cs"), &layout());
+		assert_eq!(ext.module_path, vec!["Foo".to_string(), "Bar".to_string()]);
+	}
+
+	#[test]
+	fn using_system_is_not_external_dep_system() {
+		let src = "using System.Collections.Generic;\nclass C {}\n";
+		let tree = parse(src);
+		let imps = CSharpSpec.imports(&tree, src);
+		assert!(!imps.is_empty(), "expected a using binding");
+		for imp in &imps {
+			match &imp.source {
+				ImportSource::External { dependency, .. } => {
+					panic!(
+						"BCL using must not be External dep {dependency:?}; got {imp:?}"
+					);
+				}
+				ImportSource::Glob(prefix) => {
+					assert!(prefix.dependency.is_none(), "BCL glob has no package dep");
+					assert_eq!(
+						prefix.path,
+						vec![
+							"System".to_string(),
+							"Collections".to_string(),
+							"Generic".to_string()
+						]
+					);
+				}
+				ImportSource::Internal(path) => {
+					assert!(
+						path.first().map(|s| s.as_str()) == Some("System"),
+						"internal path should start with System: {path:?}"
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn using_static_bcl_is_internal() {
+		let src = "using static System.Math;\nclass C {}\n";
+		let tree = parse(src);
+		let imps = CSharpSpec.imports(&tree, src);
+		let math = imps.iter().find(|i| i.local == "Math").expect("Math binding");
+		match &math.source {
+			ImportSource::Internal(p) => {
+				assert_eq!(p.as_slice(), ["System", "Math"]);
+			}
+			other => panic!("using static System.Math → Internal; got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn module_path_fallback_from_directory() {
+		let path = CSharpSpec.module_path(Path::new("src/MyApp/Services/Foo.cs"), &layout());
+		assert_eq!(path, vec!["MyApp".to_string(), "Services".to_string()]);
 	}
 }

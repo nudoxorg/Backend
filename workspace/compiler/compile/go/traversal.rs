@@ -25,7 +25,7 @@
 
 use std::cmp::Ordering;
 
-use version::{Constraint, TagContext, VersionGrammar, resolve_from_tags};
+use heart::version::{Constraint, TagContext, VersionGrammar, resolve_from_tags};
 
 use super::error::{GoError, Result};
 
@@ -241,7 +241,7 @@ impl Constraint<GoVersion> for GoPrefix {
 /// The shared [`version::VersionRequest`] specialised to [`GoVersion`] with
 /// Go's [`GoPrefix`] as its constraint case (`v1`, `1.4`). Go's major-version
 /// discipline is applied on top in [`GoGrammar::matches_request`].
-pub type VersionRequest = version::VersionRequest<GoVersion, GoPrefix>;
+pub type VersionRequest = heart::version::VersionRequest<GoVersion, GoPrefix>;
 
 /// Parse a requested version string: `latest`/empty → newest; full
 /// semver → exact; `v1` / `1.4` → prefix query.

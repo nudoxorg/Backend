@@ -37,8 +37,10 @@ pub fn lower_package(root: &Path) -> Result<Index> {
 
     // 3. Dynamic layer — best-effort. Fused entries override their static
     //    counterparts (same NudoxPath) and carry alias groups + runtime facts.
+    let mut had_dynamic = false;
     match eval::produce(root, &table, &meta) {
         Ok(Some(surface)) => {
+            had_dynamic = !surface.entries.is_empty() || !surface.roots.is_empty();
             for (path, entry) in surface.entries {
                 by_path.insert(path, entry);
             }
@@ -54,6 +56,13 @@ pub fn lower_package(root: &Path) -> Result<Index> {
         Err(error) => {
             tracing::warn!(%error, "nix: dynamic evaluation failed; falling back to static layer");
         }
+    }
+
+    // 3b. When no dynamic surface landed, promote top-level static bindings to
+    //     Public so export roots of plain `.nix` trees / static-only flakes are
+    //     visible without requiring evaluation.
+    if !had_dynamic {
+        item::promote_export_roots(&mut by_path);
     }
 
     // 4. Builtins — a standing synthetic package, the best builtins reference

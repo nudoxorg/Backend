@@ -1,3 +1,2 @@
-extra_srcs = [
-    "README.md",
-]
+features = ["serde"]
+extra_srcs = ["README.md"]

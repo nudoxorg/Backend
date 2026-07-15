@@ -11,7 +11,7 @@ use ir::parameter::Parameter;
 use ir::primitives::{Primitive, Width};
 use ir::protocols::{TraitDef, TraitMethod};
 use ir::record::{Field, FieldKey, Record, SumField, SumVariant};
-use ir::ty::{Type, TypeReference};
+use ir::ty::{Type, TypeOperator, TypeReference};
 
 use super::super::backend::*;
 use super::super::doc::Doc;
@@ -213,8 +213,58 @@ fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
         Type::RawPointer { r#type, .. } => punct("*") + ty(r#type, cx),
         Type::Tuple(ts) if ts.is_empty() => kw("struct") + punct("{}"),
         Type::Tuple(ts) => tyname("Tuple") + generic_args_raw(ts.iter().map(|t| ty(t, cx))),
+        Type::NamedTuple(ms) => {
+            let parts: Vec<Rendered> = ms
+                .iter()
+                .map(|m| match &m.label {
+                    Some(label) if !label.is_empty() => {
+                        ident(label) + sp() + ty(&m.r#type, cx)
+                    }
+                    _ => ty(&m.r#type, cx),
+                })
+                .collect();
+            arglist("(", parts, ")")
+        }
+        Type::TypeOperator(op) => type_operator(op, cx),
+        // Index-signature record used historically for maps: `map[K]V`.
+        Type::RecordLiteral(rec) if rec.fields.len() == 1 => {
+            if let Some(Field::Pattern(idx)) = rec.fields.first() {
+                return kw("map")
+                    + punct("[")
+                    + ty(&idx.key_type, cx)
+                    + punct("]")
+                    + ty(&idx.value_type, cx);
+            }
+            kw("any")
+        }
         Type::Any | Type::Infer => kw("any"),
         Type::Variadic(inner) => punct("...") + ty(inner, cx),
+        _ => kw("any"),
+    }
+}
+
+/// Render first-class Go type operators emitted by the lowerer:
+/// `map` over `Tuple([K, V])`, and `chan` / `chan<-` / `<-chan` over the
+/// element type. Unknown operators fall back to `any` rather than
+/// inventing syntax.
+fn type_operator(op: &TypeOperator, cx: &RenderCtx) -> Rendered {
+    match op.operator.as_str() {
+        "map" => match op.r#type.as_ref() {
+            Type::Tuple(parts) if parts.len() == 2 => {
+                kw("map")
+                    + punct("[")
+                    + ty(&parts[0], cx)
+                    + punct("]")
+                    + ty(&parts[1], cx)
+            }
+            _ => kw("map") + punct("[") + kw("any") + punct("]") + kw("any"),
+        },
+        "chan" => kw("chan") + sp() + ty(&op.r#type, cx),
+        "chan<-" => kw("chan") + punct("<-") + sp() + ty(&op.r#type, cx),
+        "<-chan" => punct("<-") + kw("chan") + sp() + ty(&op.r#type, cx),
+        // Approximation terms from constraint type sets — not surface Go
+        // outside a constraint, so render the inner type alone.
+        "~" => ty(&op.r#type, cx),
         _ => kw("any"),
     }
 }

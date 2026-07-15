@@ -1,2 +1,1 @@
-
-cargo_env = true
+features = ["blocking"]

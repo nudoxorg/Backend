@@ -16,7 +16,6 @@ use pyrefly_util::thread_pool::ThreadCount;
 
 use super::item;
 use super::package;
-use super::types;
 use ir::entry::{Index, NudoxPath};
 use ir::kind::Entry;
 
@@ -104,6 +103,11 @@ impl PythonContext {
     /// Lower a previously-checked handle into an `ir::Index`.
     ///
     /// Runs a fresh transaction to read bindings, answers, and errors.
+    ///
+    /// After inserting every entry, wires the module's `members` list from the
+    /// `Local("qualname::name")` child-path scheme (same post-process as
+    /// [`Self::lower_package`]) so single-snippet consumers see a fully linked
+    /// module graph.
     pub fn lower_handle(&self, handle: &Handle) -> Index {
         let tx = self.state.transaction();
 
@@ -118,12 +122,24 @@ impl PythonContext {
             let path = module_path_to_nudox(&module_info);
             let module_entry = item::lower_module(handle, &tx, &path);
 
+            // Map this module's qualname → its Module entry path so
+            // `wire_members` can populate `Module.members` (same post-process
+            // used by `lower_package`).
+            let mut module_key_by_qualname: HashMap<String, NudoxPath> = HashMap::new();
+            let qualname = handle.module().as_str().to_string();
+
             if let Some(module_nudox) = module_info_path(&module_info) {
-                index.root_ids.push(module_nudox);
+                index.root_ids.push(module_nudox.clone());
+                module_key_by_qualname.insert(qualname.clone(), module_nudox);
             }
             for (child_path, entry) in module_entry {
+                if matches!(entry, Entry::Module(_)) {
+                    module_key_by_qualname.insert(qualname.clone(), child_path.clone());
+                }
                 index.entries_by_path.insert(child_path, entry);
             }
+
+            wire_members(&mut index, &module_key_by_qualname);
         }
 
         index

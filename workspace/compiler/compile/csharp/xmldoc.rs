@@ -7,11 +7,15 @@
 //! blocks, and `<seealso>` references. Inline tags (`<see>`, `<paramref>`,
 //! `<c>`, `<code>`, `<para>`, `<list>`) lower to Markdown.
 //!
-//! The workspace has no XML dependency (mirroring `java::javadoc`), so this is
-//! a small hand-rolled element scanner. It is deliberately lenient: unknown
-//! tags degrade to their text content rather than failing.
+//! Parsing uses **`quick-xml`** for well-formed element walks and entity
+//! decoding; unknown tags still degrade to their text content rather than
+//! failing (doc comments are often slightly broken).
 
 use std::collections::HashMap;
+use std::io::Cursor;
+
+use quick_xml::events::Event;
+use quick_xml::Reader;
 
 /// A parsed C# doc comment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -158,86 +162,129 @@ fn attr(attrs: &str, name: &str) -> Option<String> {
 	Some(decode_entities(&rest[..end]))
 }
 
-/// Scan `xml` for top-level elements, returning `(tag, attrs, inner)` for each.
-/// Text outside any element is ignored (doc XML always tags its sections).
+/// Scan `xml` for top-level elements via `quick-xml`, returning
+/// `(tag, attrs, inner_xml)` for each. Text outside any element is ignored.
+///
+/// Nesting is tracked so `<summary>…<c>…</c>…</summary>` yields one summary
+/// whose `inner` still contains the nested tags for the Markdown pass.
 fn top_level_elements(xml: &str) -> Vec<(String, String, String)> {
-	let bytes = xml.as_bytes();
-	let mut out = Vec::new();
-	let mut i = 0usize;
+	let mut reader = Reader::from_reader(Cursor::new(xml.as_bytes()));
+	reader.config_mut().trim_text(false);
+	// Doc comments are often slightly ill-formed; keep going.
+	reader.config_mut().check_end_names = false;
 
-	while i < xml.len() {
-		let Some(lt) = xml[i..].find('<').map(|o| i + o) else {
-			break;
-		};
-		// Skip comments / declarations.
-		if xml[lt..].starts_with("<!--") {
-			match xml[lt + 4..].find("-->") {
-				Some(end) => {
-					i = lt + 4 + end + 3;
-					continue;
+	let mut out = Vec::new();
+	let mut buf = Vec::new();
+	// Stack of open elements: (name, attrs, accumulated inner source spans
+	// reconstructed as text).
+	let mut stack: Vec<(String, String, String)> = Vec::new();
+
+	loop {
+		match reader.read_event_into(&mut buf) {
+			Ok(Event::Start(e)) => {
+				let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+				let attrs = attrs_to_string(&e);
+				if stack.is_empty() {
+					stack.push((name, attrs, String::new()));
+				} else {
+					// Nested open: re-emit into parent inner so markdown sees it.
+					let open = format!("<{name}{attrs}>");
+					if let Some((_, _, inner)) = stack.last_mut() {
+						inner.push_str(&open);
+					}
+					stack.push((name, attrs, String::new()));
 				}
-				None => break,
 			}
-		}
-		let Some(gt) = xml[lt..].find('>').map(|o| lt + o) else {
-			break;
-		};
-		let tag_body = &xml[lt + 1..gt];
-		// A closing or self-closing top-level element carries no inner content.
-		if tag_body.starts_with('/') {
-			i = gt + 1;
-			continue;
-		}
-		let self_closing = tag_body.ends_with('/');
-		let (name, attrs) = split_tag(tag_body.trim_end_matches('/'));
-		if name.is_empty() {
-			i = gt + 1;
-			continue;
-		}
-		if self_closing {
-			out.push((name, attrs, String::new()));
-			i = gt + 1;
-			continue;
-		}
-		// Find the matching close tag, tracking nesting of the same tag name.
-		let close = format!("</{name}>");
-		let open_prefix = format!("<{name}");
-		let mut depth = 1usize;
-		let mut scan = gt + 1;
-		let content_start = gt + 1;
-		let inner_end;
-		loop {
-			let next_close = xml[scan..].find(&close).map(|o| scan + o);
-			let Some(nc) = next_close else {
-				inner_end = xml.len();
-				break;
-			};
-			// Count same-name opens strictly before this close.
-			let mut opens = 0usize;
-			let mut probe = scan;
-			while let Some(rel) = xml[probe..nc].find(&open_prefix) {
-				let at = probe + rel;
-				// Ensure it's a real element open (`<name` followed by space/>//).
-				let after = bytes.get(at + open_prefix.len()).copied();
-				if matches!(after, Some(b' ') | Some(b'>') | Some(b'/') | Some(b'\t') | Some(b'\n')) {
-					opens += 1;
+			Ok(Event::Empty(e)) => {
+				let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+				let attrs = attrs_to_string(&e);
+				if stack.is_empty() {
+					out.push((name, attrs, String::new()));
+				} else if let Some((_, _, inner)) = stack.last_mut() {
+					inner.push_str(&format!("<{name}{attrs}/>"));
 				}
-				probe = at + open_prefix.len();
 			}
-			depth += opens;
-			depth -= 1;
-			if depth == 0 {
-				inner_end = nc;
-				scan = nc + close.len();
-				break;
+			Ok(Event::End(e)) => {
+				let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+				if let Some((open_name, attrs, inner)) = stack.pop() {
+					if stack.is_empty() {
+						// Top-level close.
+						out.push((open_name, attrs, inner));
+					} else if let Some((_, _, parent_inner)) = stack.last_mut() {
+						// Nested close: fold child back into parent.
+						parent_inner.push_str(&inner);
+						parent_inner.push_str(&format!("</{name}>"));
+						let _ = open_name;
+						let _ = attrs;
+					}
+				}
 			}
-			scan = nc + close.len();
+			Ok(Event::Text(t)) => {
+				// quick-xml 0.41: `BytesText::unescape` was removed; decode
+				// bytes then expand the five XML named entities (and numeric
+				// forms via `quick_xml::escape::unescape`).
+				let raw = t
+					.decode()
+					.map(|c| c.into_owned())
+					.unwrap_or_else(|_| String::from_utf8_lossy(t.as_ref()).into_owned());
+				let text = decode_entities(&raw);
+				if let Some((_, _, inner)) = stack.last_mut() {
+					inner.push_str(&text);
+				}
+			}
+			Ok(Event::CData(t)) => {
+				let text = String::from_utf8_lossy(&t).into_owned();
+				if let Some((_, _, inner)) = stack.last_mut() {
+					inner.push_str(&text);
+				}
+			}
+			Ok(Event::GeneralRef(t)) => {
+				// Named entity reference not expanded by unescape above.
+				let raw = String::from_utf8_lossy(t.as_ref());
+				let expanded = match raw.as_ref() {
+					"lt" => "<".to_string(),
+					"gt" => ">".to_string(),
+					"amp" => "&".to_string(),
+					"quot" => "\"".to_string(),
+					"apos" => "'".to_string(),
+					other => format!("&{other};"),
+				};
+				if let Some((_, _, inner)) = stack.last_mut() {
+					inner.push_str(&expanded);
+				}
+			}
+			Ok(Event::Eof) => break,
+			Ok(_) => {}
+			Err(_) => break,
 		}
-		let inner = xml[content_start..inner_end].to_string();
-		out.push((name, attrs, inner));
-		i = scan.max(gt + 1);
+		buf.clear();
 	}
 
+	// Unclosed top-level elements still emit what we captured.
+	while let Some((name, attrs, inner)) = stack.pop() {
+		if stack.is_empty() {
+			out.push((name, attrs, inner));
+		}
+	}
+
+	out
+}
+
+/// Serialize start-tag attributes as a leading-space string (` name="v"`).
+fn attrs_to_string(e: &quick_xml::events::BytesStart<'_>) -> String {
+	let mut out = String::new();
+	for a in e.attributes().flatten() {
+		let key = String::from_utf8_lossy(a.key.as_ref());
+		let val = a
+			.unescape_value()
+			.map(|c| c.into_owned())
+			.unwrap_or_else(|_| String::from_utf8_lossy(&a.value).into_owned());
+		out.push(' ');
+		out.push_str(&key);
+		out.push_str("=\"");
+		out.push_str(&val);
+		out.push('"');
+	}
 	out
 }
 
@@ -378,12 +425,19 @@ fn collapse_whitespace(s: &str) -> String {
 }
 
 /// Decode the XML entities that appear in doc comments.
+///
+/// Prefers `quick_xml::escape::unescape` (handles numeric entities too);
+/// falls back to the five XML named entities on error.
 fn decode_entities(text: &str) -> String {
-	text.replace("&lt;", "<")
-		.replace("&gt;", ">")
-		.replace("&quot;", "\"")
-		.replace("&apos;", "'")
-		.replace("&amp;", "&")
+	match quick_xml::escape::unescape(text) {
+		Ok(cow) => cow.into_owned(),
+		Err(_) => text
+			.replace("&lt;", "<")
+			.replace("&gt;", ">")
+			.replace("&quot;", "\"")
+			.replace("&apos;", "'")
+			.replace("&amp;", "&"),
+	}
 }
 
 // ---------------------------------------------------------------------------

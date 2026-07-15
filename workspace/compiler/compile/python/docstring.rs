@@ -617,39 +617,58 @@ impl DocCatalog {
 }
 
 /// Walk a module's Ruff AST and parse docstrings for the module, its top-level
-/// defs/classes, and their methods, resolving literal text via `module.code_at`.
+/// defs/classes, nested classes (dotted keys like `Outer.Inner`), and methods,
+/// resolving literal text via `module.code_at`.
 pub fn build_catalog(body: &[Stmt], module: &Module) -> DocCatalog {
     let mut catalog = DocCatalog::default();
 
     catalog.module = raw_doc(body, module).map(|raw| parse(&raw));
+    collect_items(body, module, None, &mut catalog);
+    catalog
+}
 
+/// Recursively collect function/class/method docstrings.
+///
+/// `prefix` is the dotted owner path for nested classes (`Some("Outer")` when
+/// walking inside `class Outer`), so nested classes land as `Outer.Inner` items
+/// and their methods as members of that key.
+fn collect_items(
+    body: &[Stmt],
+    module: &Module,
+    prefix: Option<&str>,
+    catalog: &mut DocCatalog,
+) {
     for stmt in body {
         match stmt {
             Stmt::FunctionDef(func) => {
                 if let Some(parsed) = raw_doc(&func.body, module).map(|raw| parse(&raw)) {
-                    catalog.items.insert(func.name.as_str().to_string(), parsed);
-                }
-            }
-            Stmt::ClassDef(class) => {
-                let class_name = class.name.as_str().to_string();
-                if let Some(parsed) = raw_doc(&class.body, module).map(|raw| parse(&raw)) {
-                    catalog.items.insert(class_name.clone(), parsed);
-                }
-                for member in &class.body {
-                    if let Stmt::FunctionDef(method) = member {
-                        if let Some(parsed) = raw_doc(&method.body, module).map(|raw| parse(&raw)) {
+                    match prefix {
+                        Some(owner) => {
                             catalog
                                 .members
-                                .insert((class_name.clone(), method.name.as_str().to_string()), parsed);
+                                .insert((owner.to_string(), func.name.as_str().to_string()), parsed);
+                        }
+                        None => {
+                            catalog.items.insert(func.name.as_str().to_string(), parsed);
                         }
                     }
                 }
             }
+            Stmt::ClassDef(class) => {
+                let simple = class.name.as_str();
+                let class_name = match prefix {
+                    Some(p) => format!("{p}.{simple}"),
+                    None => simple.to_string(),
+                };
+                if let Some(parsed) = raw_doc(&class.body, module).map(|raw| parse(&raw)) {
+                    catalog.items.insert(class_name.clone(), parsed);
+                }
+                // Methods + nested classes under this class.
+                collect_items(&class.body, module, Some(&class_name), catalog);
+            }
             _ => {}
         }
     }
-
-    catalog
 }
 
 /// Resolve the raw source text of the docstring statement leading `body`, if any.

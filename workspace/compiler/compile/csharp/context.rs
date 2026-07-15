@@ -53,6 +53,18 @@ impl<'a> Lowering<'a> {
 		self.types_by_name.get(qualified).copied()
 	}
 
+	/// Look a type declaration up by its documentation-comment id (`T:…`).
+	pub fn decl_by_doc_id(&self, doc_id: &str) -> Option<&'a schema::TypeDecl> {
+		self.types_by_doc_id.get(doc_id).copied()
+	}
+
+	/// Resolve a nested-member reference: the oracle emits **doc-ids**
+	/// (`T:Ns.Outer+Inner`) in `members.nested`, falling back to the
+	/// metadata qualified name when the id is absent.
+	pub fn resolve_type_ref(&self, key: &str) -> Option<&'a schema::TypeDecl> {
+		self.decl_by_doc_id(key).or_else(|| self.decl(key))
+	}
+
 	/// The `Index` key of a type declaration.
 	pub fn type_key(&self, decl: &schema::TypeDecl) -> NudoxPath {
 		item_key(&decl.namespace, &relative_name(decl))
@@ -66,7 +78,7 @@ impl<'a> Lowering<'a> {
 	/// Best-effort resolution of a documentation-comment id to a path: type
 	/// doc-ids resolve to the type's key; anything else stays a literal path.
 	pub fn doc_id_to_path(&self, doc_id: &str) -> NudoxPath {
-		if let Some(decl) = self.types_by_doc_id.get(doc_id) {
+		if let Some(decl) = self.decl_by_doc_id(doc_id) {
 			return self.type_key(decl);
 		}
 		NudoxPath::Local(PathBuf::from(doc_id))

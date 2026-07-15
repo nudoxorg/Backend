@@ -20,8 +20,8 @@ use ir::{
     primitives::{Primitive, Width},
     record::{Field, FieldAttributes, FieldKey, IndexSignature, KnownField, Record},
     ty::{
-        ConditionalType, FunctionPointer, LiteralKind, LiteralValue, MappedType, ModifierPrefix,
-        PredicateSubject, QualifiedPath, TemplateLiteralType, TupleMember, Type, TypeOperator,
+        ConditionalType, FunctionPointer, GenericParam, LiteralKind, LiteralValue, MappedType,
+        ModifierPrefix, PredicateSubject, TemplateLiteralType, TupleMember, Type, TypeOperator,
         TypePredicate, TypeQuery, TypeReference,
     },
 };
@@ -87,14 +87,23 @@ fn property_key_name<'a>(
     key.static_name().map(|s| s.into_owned())
 }
 
-/// Derive a readable name for an indexed-access index type (`T[K]`), replacing
-/// deno's `format!("{:?}")` stringification. The structured index type is kept
-/// separately in `QualifiedPath.generic_arguments`; this is only the label.
-fn index_access_name(index: &Type) -> String {
-    match index {
+/// Derive a readable name fragment for indexed-access `T[K]` identifiers.
+fn index_access_name(ty: &Type) -> String {
+    match ty {
         Type::TypeReference(tr) => tr.identifier.clone(),
+        Type::GenericParam(g) => g.name.clone(),
+        Type::Primitive(Primitive::String) => "string".to_string(),
+        Type::Primitive(Primitive::Bool) => "boolean".to_string(),
+        Type::Primitive(Primitive::Float(_) | Primitive::Int(_) | Primitive::UInt(_)) => {
+            "number".to_string()
+        }
         Type::Primitive(p) => format!("{p:?}"),
-        Type::TypeOperator(op) => op.operator.clone(),
+        Type::TypeOperator(op) => format!("{} {}", op.operator, index_access_name(&op.r#type)),
+        Type::Literal(lit) => lit.value.clone(),
+        Type::SelfType => "this".to_string(),
+        Type::Any => "any".to_string(),
+        Type::Never => "never".to_string(),
+        Type::Tuple(t) if t.is_empty() => "void".to_string(),
         _ => "index".to_string(),
     }
 }
@@ -115,8 +124,10 @@ impl<'a> Extractor<'a> {
     /// this variant cannot appear in practice. An unwrap branch is included for
     /// safety.
     ///
-    /// **type_ref_scratch**: NOT populated here per Phase-3.4 design. That is
-    /// func.rs's responsibility when building parameter/return type-link keys.
+    /// **type_ref_scratch**: Type references encountered while lowering are
+    /// recorded as [`super::facts::RefTarget::Unresolved`] so pass-2 can
+    /// resolve them into `Function.type_links` (Tier A name match uses the
+    /// same names; Tier B can walk the structured facts).
     pub(crate) fn lower_ts_type(&mut self, ty: &TSType<'a>) -> Result<Type> {
         match ty {
             // ----------------------------------------------------------------
@@ -153,6 +164,11 @@ impl<'a> Extractor<'a> {
                     })
                     .transpose()?
                     .filter(|v| !v.is_empty());
+                // Record for pass-2 type_links resolution.
+                self.type_ref_scratch.push(super::facts::TypeRefFact {
+                    link_key: identifier.clone(),
+                    target: super::facts::RefTarget::Unresolved(identifier.clone()),
+                });
                 Ok(Type::TypeReference(TypeReference { identifier, generic_args }))
             }
 
@@ -303,29 +319,33 @@ impl<'a> Extractor<'a> {
             })),
 
             // ----------------------------------------------------------------
-            // infer T
+            // infer T — preserve the type-parameter name as GenericParam.
             // ----------------------------------------------------------------
-            TSType::TSInferType(_) => Ok(Type::Infer),
+            TSType::TSInferType(inf) => {
+                let name = inf.type_parameter.name.name.to_string();
+                Ok(Type::GenericParam(GenericParam { name, kind: None }))
+            }
 
             // ----------------------------------------------------------------
             // Indexed access: T[K]
-            // Tier A: format!("{:?}", lowered index) as name (matches old
-            // types.rs:243 for Tier-A parity). Tier B will produce a real
-            // QualifiedPath lowering.
+            // Prefer a clear TypeReference identifier `T[K]` with both the
+            // object and index types in generic_args — avoids abusing
+            // QualifiedPath (Rust `<T as Trait>::Assoc`) for a TS construct.
             // ----------------------------------------------------------------
             TSType::TSIndexedAccessType(ia) => {
-                let self_type = Box::new(self.lower_ts_type(&ia.object_type)?);
+                let object_ty = self.lower_ts_type(&ia.object_type)?;
                 let index_ty = self.lower_ts_type(&ia.index_type)?;
-                // Tier B: a real lowering of `T[K]`. deno stringified the index
-                // via `format!("{:?}")`; instead we derive a readable name and
-                // preserve the *structured* index type in `generic_arguments`
-                // so consumers can recover it exactly.
-                let name = index_access_name(&index_ty);
-                Ok(Type::QualifiedPath(QualifiedPath {
-                    name,
-                    generic_arguments: Some(vec![GenericArg::Type(index_ty)]),
-                    self_type,
-                    tr: None,
+                let identifier = format!(
+                    "{}[{}]",
+                    index_access_name(&object_ty),
+                    index_access_name(&index_ty)
+                );
+                Ok(Type::TypeReference(TypeReference {
+                    identifier,
+                    generic_args: Some(vec![
+                        GenericArg::Type(object_ty),
+                        GenericArg::Type(index_ty),
+                    ]),
                 }))
             }
 
@@ -444,15 +464,33 @@ impl<'a> Extractor<'a> {
     // -----------------------------------------------------------------------
 
     /// Map a keyword spelling to its `ir` primitive / reference.
+    ///
+    /// Fidelity rules:
+    /// - `any` → [`Type::Any`]; `unknown` stays a distinct TypeReference so
+    ///   producers/renderers can tell them apart (they are not interchangeable).
+    /// - `null` / `undefined` → TypeReference of that name (NOT empty Tuple).
+    /// - `void` → empty Tuple (unit), and only void.
     pub(crate) fn keyword_type(&self, keyword: &str) -> Type {
         match keyword {
             "string" => Type::Primitive(Primitive::String),
             "number" => Type::Primitive(Primitive::Float(Width::W64)),
             "boolean" => Type::Primitive(Primitive::Bool),
             "bigint" => Type::Primitive(Primitive::Int(Width::W128)),
-            "null" | "undefined" | "void" => Type::Tuple(vec![]),
+            "void" => Type::Tuple(vec![]),
+            "null" => Type::TypeReference(TypeReference {
+                identifier: "null".to_string(),
+                generic_args: None,
+            }),
+            "undefined" => Type::TypeReference(TypeReference {
+                identifier: "undefined".to_string(),
+                generic_args: None,
+            }),
             "never" => Type::Never,
-            "any" | "unknown" => Type::Any,
+            "any" => Type::Any,
+            "unknown" => Type::TypeReference(TypeReference {
+                identifier: "unknown".to_string(),
+                generic_args: None,
+            }),
             "this" => Type::SelfType,
             "object" => Type::TypeReference(TypeReference {
                 identifier: "object".to_string(),
@@ -672,7 +710,7 @@ impl<'a> Extractor<'a> {
                                 is_static: false,
                             },
                             visibility: None,
-                            documentation: None,
+                            documentation: self.jsdoc_for_span(prop.span).doc,
                         }));
                     }
                     // Computed property keys are skipped (cannot produce a

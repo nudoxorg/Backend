@@ -76,6 +76,44 @@ fn empty_to_none<T>(v: Vec<T>) -> Option<Vec<T>> {
     if v.is_empty() { None } else { Some(v) }
 }
 
+/// Collect bound field names from a constructor parameter binding pattern.
+///
+/// Supports plain identifiers, nested object/array destructuring, and
+/// assignment patterns (`{ x = 1 }`). Rest elements contribute their bound
+/// name when present.
+fn binding_pattern_field_names(pat: &oxc_ast::ast::BindingPattern<'_>) -> Vec<String> {
+    use oxc_ast::ast::BindingPattern;
+    let mut names = Vec::new();
+    collect_binding_names(pat, &mut names);
+    names
+}
+
+fn collect_binding_names(pat: &oxc_ast::ast::BindingPattern<'_>, out: &mut Vec<String>) {
+    use oxc_ast::ast::BindingPattern;
+    match pat {
+        BindingPattern::BindingIdentifier(id) => out.push(id.name.to_string()),
+        BindingPattern::AssignmentPattern(ap) => collect_binding_names(&ap.left, out),
+        BindingPattern::ObjectPattern(obj) => {
+            for prop in &obj.properties {
+                collect_binding_names(&prop.value, out);
+            }
+            if let Some(rest) = &obj.rest {
+                collect_binding_names(&rest.argument, out);
+            }
+        }
+        BindingPattern::ArrayPattern(arr) => {
+            for elem in &arr.elements {
+                if let Some(el) = elem {
+                    collect_binding_names(el, out);
+                }
+            }
+            if let Some(rest) = &arr.rest {
+                collect_binding_names(&rest.argument, out);
+            }
+        }
+    }
+}
+
 /// Flatten a `TSTypeName` to a dotted string (`A.B.C`).
 fn ts_type_name_to_string(name: &TSTypeName<'_>) -> String {
     match name {
@@ -88,12 +126,20 @@ fn ts_type_name_to_string(name: &TSTypeName<'_>) -> String {
 }
 
 /// Name string from a `PropertyKey`.
+///
+/// Private identifiers keep the `#` prefix (`#secret`) so they are never
+/// confused with a public field of the same bare name.
 fn property_key_name<'a>(key: &PropertyKey<'a>, source: &'a str) -> String {
     match key {
         PropertyKey::StaticIdentifier(id) => id.name.to_string(),
-        PropertyKey::PrivateIdentifier(id) => id.name.to_string(),
+        PropertyKey::PrivateIdentifier(id) => format!("#{}", id.name),
         _ => key.span().source_text(source).to_string(),
     }
+}
+
+/// True when the property key is a private `#ident`.
+fn is_private_key(key: &PropertyKey<'_>) -> bool {
+    matches!(key, PropertyKey::PrivateIdentifier(_))
 }
 
 // ─── impl block ───────────────────────────────────────────────────────────────
@@ -170,6 +216,11 @@ impl<'a> Extractor<'a> {
             // ─── TypeAlias ────────────────────────────────────────────────
             Declaration::TSTypeAliasDeclaration(alias) => {
                 self.type_ref_scratch.clear();
+                let generics = if let Some(tp) = &alias.type_parameters {
+                    self.lower_type_params(tp)?
+                } else {
+                    None
+                };
                 let ty = self.lower_type_alias(alias)?;
                 let type_refs = std::mem::take(&mut self.type_ref_scratch);
 
@@ -181,7 +232,7 @@ impl<'a> Extractor<'a> {
                     documentation,
                     deprecation,
                     doc_links: None,
-                    inner: ty,
+                    inner: ir::kind::TypeAliasBody::with_generics(generics, ty),
                 };
                 entries.push(FactEntry {
                     entry: Entry::TypeAlias(sym),
@@ -204,7 +255,7 @@ impl<'a> Extractor<'a> {
                     documentation,
                     deprecation,
                     doc_links: None,
-                    inner: variants,
+                    inner: ir::record::SumType::from_variants(variants),
                 };
                 entries.push(FactEntry {
                     entry: Entry::SumType(sym),
@@ -247,9 +298,19 @@ impl<'a> Extractor<'a> {
             }
 
             // ─── Interface / TraitDef ─────────────────────────────────────
+            // Declaration merging: same-named interfaces contribute members.
             Declaration::TSInterfaceDeclaration(iface) => {
                 self.type_ref_scratch.clear();
-                let trait_def = self.lower_interface(name, iface)?;
+                let mut trait_def = self.lower_interface(name, iface)?;
+                for extra in group.declarations.iter() {
+                    if std::ptr::eq(*extra as *const Declaration, primary as *const Declaration) {
+                        continue;
+                    }
+                    if let Declaration::TSInterfaceDeclaration(extra_iface) = extra {
+                        let extra_def = self.lower_interface(name, extra_iface)?;
+                        merge_trait_defs(&mut trait_def, extra_def);
+                    }
+                }
                 let type_refs = std::mem::take(&mut self.type_ref_scratch);
 
                 let sym = Symbol {
@@ -470,7 +531,7 @@ impl<'a> Extractor<'a> {
                 documentation: None,
                 deprecation: None,
                 doc_links: None,
-                inner: (),
+                inner: ir::kind::TypedBinding::default(),
             }),
             local_path: vec![nm],
             type_refs: Vec::new(),
@@ -509,6 +570,14 @@ impl<'a> Extractor<'a> {
                         decorators.push("abstract".to_string());
                     }
                     let ty_opt = prop.type_annotation.as_ref().map(|ann| &ann.type_annotation);
+                    // Private `#fields` are always Visibility::Private; also
+                    // prefer explicit TS accessibility when present.
+                    let vis = if is_private_key(&prop.key) {
+                        Visibility::Private
+                    } else {
+                        accessibility_to_visibility(prop.accessibility)
+                    };
+                    let docs = self.jsdoc_for_span(prop.span).doc;
                     let field = self.property_field(
                         &prop_name,
                         ty_opt,
@@ -516,8 +585,8 @@ impl<'a> Extractor<'a> {
                             optional: prop.optional,
                             readonly: prop.readonly,
                             is_static: prop.r#static,
-                            visibility: Some(accessibility_to_visibility(prop.accessibility)),
-                            documentation: None, // JSDoc via node_id on property would need semantic
+                            visibility: Some(vis),
+                            documentation: docs,
                             decorators: &decorators,
                         },
                     )?;
@@ -694,13 +763,14 @@ impl<'a> Extractor<'a> {
             ctor_func.overloads = empty_to_none(overloads);
 
             let ctor_visibility = accessibility_to_visibility(primary_ctor.accessibility);
+            let ctor_docs = self.jsdoc_for_span(primary_ctor.span);
             let ctor_sym = Symbol {
                 name: "constructor".to_string(),
                 path: NudoxPath::Local(PathBuf::from("")),
                 aliases: None,
                 visibility: ctor_visibility,
-                documentation: None,
-                deprecation: None,
+                documentation: ctor_docs.doc,
+                deprecation: ctor_docs.deprecation,
                 doc_links: None,
                 inner: ctor_func,
             };
@@ -710,16 +780,8 @@ impl<'a> Extractor<'a> {
                 type_refs,
             });
 
-            // ── Upgrade 3: constructor-body `this.x = …` property synthesis ──
-            // Walk the primary constructor's body for ExpressionStatement whose
-            // expression is an AssignmentExpression with a StaticMemberExpression
-            // lhs whose object is `this`. Any distinct `this.<name>` assignment
-            // that is NOT already declared as a PropertyDefinition (or
-            // AccessorProperty) becomes a synthesised Field::Known on the Record.
-            //
-            // `fields` is already populated with PropertyDefinition names at
-            // this point, so we can de-duplicate against it.
-            let existing_field_names: rustc_hash::FxHashSet<String> = fields
+            // Existing field names for de-dup of parameter-property + this.x synth.
+            let mut existing_field_names: rustc_hash::FxHashSet<String> = fields
                 .iter()
                 .filter_map(|f| {
                     if let Field::Known(kf) = f {
@@ -731,7 +793,48 @@ impl<'a> Extractor<'a> {
                 })
                 .collect();
 
-            // Collect `this.x = rhs` assignments from the primary constructor body.
+            // ── Parameter properties ──────────────────────────────────────
+            // `constructor(public readonly id: string)` synthesises a class
+            // Field::Known with the parameter's visibility / readonly / type.
+            // Destructured forms (`public { x, y }: Point`, `public [a, b]: T`)
+            // expand to one field per bound identifier; the annotation type
+            // is shared across them (TS does the same surface-level thing).
+            for param in primary_ctor.value.params.items.iter() {
+                if param.accessibility.is_none() && !param.readonly {
+                    continue;
+                }
+                let prop_names = binding_pattern_field_names(&param.pattern);
+                if prop_names.is_empty() {
+                    continue;
+                }
+                let ty = param
+                    .type_annotation
+                    .as_ref()
+                    .map(|ann| self.lower_ts_type(&ann.type_annotation))
+                    .transpose()?;
+                let vis = accessibility_to_visibility(param.accessibility);
+                let docs = self.jsdoc_for_span(param.span).doc;
+                for prop_name in prop_names {
+                    if !existing_field_names.insert(prop_name.clone()) {
+                        continue;
+                    }
+                    fields.push(Field::Known(KnownField {
+                        key: FieldKey::Ident(prop_name),
+                        r#type: ty.clone().map(Box::new),
+                        default_value: None,
+                        attributes: field_attrs(false, param.readonly, param.optional),
+                        visibility: Some(vis.clone()),
+                        documentation: docs.clone(),
+                    }));
+                }
+            }
+
+            // ── Upgrade 3: constructor-body `this.x = …` property synthesis ──
+            // Walk the primary constructor's body for ExpressionStatement whose
+            // expression is an AssignmentExpression with a StaticMemberExpression
+            // lhs whose object is `this`. Any distinct `this.<name>` assignment
+            // that is NOT already declared as a PropertyDefinition /
+            // parameter property becomes a synthesised Field::Known.
             if let Some(ref ctor_body) = primary_ctor.value.body {
                 let mut synth_names: rustc_hash::FxHashSet<String> =
                     rustc_hash::FxHashSet::default();
@@ -847,15 +950,19 @@ impl<'a> Extractor<'a> {
             let overloads = overloads?;
             method_func.overloads = empty_to_none(overloads);
 
-            let method_visibility =
-                accessibility_to_visibility(primary_method.accessibility);
+            let method_visibility = if is_private_key(&primary_method.key) {
+                Visibility::Private
+            } else {
+                accessibility_to_visibility(primary_method.accessibility)
+            };
+            let method_docs = self.jsdoc_for_span(primary_method.span);
             let method_sym = Symbol {
                 name: method_name.clone(),
                 path: NudoxPath::Local(PathBuf::from("")),
                 aliases: None,
                 visibility: method_visibility,
-                documentation: None,
-                deprecation: None,
+                documentation: method_docs.doc,
+                deprecation: method_docs.deprecation,
                 doc_links: None,
                 inner: method_func,
             };
@@ -931,7 +1038,7 @@ impl<'a> Extractor<'a> {
                         return_type,
                         generics,
                         attributes: None,
-                        documentation: None,
+                        documentation: self.jsdoc_for_span(m.span).doc,
                         receiver,
                         has_default_implementation: false,
                     });
@@ -1014,22 +1121,33 @@ impl<'a> Extractor<'a> {
                             // Property signatures inside an interface are never static.
                             is_static: false,
                             visibility: None,
-                            documentation: None,
+                            documentation: self.jsdoc_for_span(prop.span).doc,
                             decorators: &decorators,
                         },
                     )?;
                     properties.push(field);
                 }
-                TSSignature::TSConstructSignatureDeclaration(_cs) => {
-                    // Construct signatures: lower as `new` method (optional enhancement).
-                    // For now, map to a trait method named `new`.
+                TSSignature::TSConstructSignatureDeclaration(cs) => {
+                    // Full construct-signature lower: params, return type, generics.
+                    let generics = if let Some(tp) = &cs.type_parameters {
+                        self.lower_type_params(tp)?
+                    } else {
+                        None
+                    };
+                    let (_, parameters) = self
+                        .lower_params_with_receiver(cs.params.as_ref(), Some(ReceiverKind::Static))?;
+                    let return_type = cs
+                        .return_type
+                        .as_ref()
+                        .map(|ann| self.lower_ts_type(&ann.type_annotation).map(Box::new))
+                        .transpose()?;
                     required_methods.push(TraitMethod {
                         name: "new".to_string(),
-                        parameters: None,
-                        return_type: None,
-                        generics: None,
+                        parameters,
+                        return_type,
+                        generics,
                         attributes: None,
-                        documentation: None,
+                        documentation: self.jsdoc_for_span(cs.span).doc,
                         receiver: Some(ReceiverKind::Static),
                         has_default_implementation: false,
                     });
@@ -1056,27 +1174,49 @@ impl<'a> Extractor<'a> {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Lower an enum into its `SumVariant`s.
+    ///
+    /// - Member initializers (`Up = 1`, `Label = "x"`) become
+    ///   `data: Some(SumField::Tuple([Literal|inferred]))`.
+    /// - `const enum` members are flagged via documentation prefix `[const]`
+    ///   (IR has no dedicated const-enum bit on [`SumVariant`]).
     pub(crate) fn lower_enum(&mut self, en: &TSEnumDeclaration<'a>) -> Result<Vec<SumVariant>> {
-        let variants = en
-            .body
-            .members
-            .iter()
-            .map(|member| {
-                let member_name = match &member.id {
-                    TSEnumMemberName::Identifier(id) => id.name.to_string(),
-                    TSEnumMemberName::String(s) => s.value.to_string(),
-                    TSEnumMemberName::ComputedString(s) => s.value.to_string(),
-                    TSEnumMemberName::ComputedTemplateString(t) => {
-                        t.span.source_text(self.source).to_string()
-                    }
-                };
-                SumVariant {
-                    name: member_name,
-                    data: None,
-                    documentation: None,
+        let is_const = en.r#const;
+        let mut variants = Vec::with_capacity(en.body.members.len());
+        for member in en.body.members.iter() {
+            let member_name = match &member.id {
+                TSEnumMemberName::Identifier(id) => id.name.to_string(),
+                TSEnumMemberName::String(s) => s.value.to_string(),
+                TSEnumMemberName::ComputedString(s) => s.value.to_string(),
+                TSEnumMemberName::ComputedTemplateString(t) => {
+                    t.span.source_text(self.source).to_string()
                 }
-            })
-            .collect();
+            };
+            let data = if let Some(init) = &member.initializer {
+                let ty = self
+                    .infer_type_from_expr(init, true)
+                    .unwrap_or_else(|| {
+                        Type::Literal(ir::ty::LiteralValue {
+                            kind: ir::ty::LiteralKind::String,
+                            value: init.span().source_text(self.source).to_string(),
+                        })
+                    });
+                Some(ir::record::SumField::Tuple(vec![ty]))
+            } else {
+                None
+            };
+            let docs = self.jsdoc_for_span(member.span);
+            let documentation = match (is_const, docs.doc) {
+                (true, Some(d)) => Some(format!("[const] {d}")),
+                (true, None) => Some("[const]".to_string()),
+                (false, d) => d,
+            };
+            variants.push(SumVariant {
+                name: member_name,
+                data,
+                documentation,
+            discriminant: None,
+            });
+        }
         Ok(variants)
     }
 
@@ -1230,17 +1370,23 @@ impl<'a> Extractor<'a> {
                 let name = alias.id.name.to_string();
                 let vis = if is_exported { Visibility::Public } else { Visibility::Private };
                 self.type_ref_scratch.clear();
+                let generics = if let Some(tp) = &alias.type_parameters {
+                    self.lower_type_params(tp)?
+                } else {
+                    None
+                };
                 let ty = self.lower_type_alias(alias)?;
                 let type_refs = std::mem::take(&mut self.type_ref_scratch);
+                let docs = self.jsdoc_for_span(alias.span);
                 let sym = Symbol {
                     name: name.clone(),
                     path: NudoxPath::Local(PathBuf::from("")),
                     aliases: None,
                     visibility: vis,
-                    documentation: None,
-                    deprecation: None,
+                    documentation: docs.doc,
+                    deprecation: docs.deprecation,
                     doc_links: None,
-                    inner: ty,
+                    inner: ir::kind::TypeAliasBody::with_generics(generics, ty),
                 };
                 (name.clone(), vec![FactEntry { entry: Entry::TypeAlias(sym), local_path: vec![name], type_refs }])
             }
@@ -1276,7 +1422,7 @@ impl<'a> Extractor<'a> {
                     documentation: None,
                     deprecation: None,
                     doc_links: None,
-                    inner: variants,
+                    inner: ir::record::SumType::from_variants(variants),
                 };
                 (name.clone(), vec![FactEntry { entry: Entry::SumType(sym), local_path: vec![name], type_refs }])
             }
@@ -1346,7 +1492,7 @@ impl<'a> Extractor<'a> {
 
             // Type: explicit annotation → referenced-symbol → initializer inference.
             self.type_ref_scratch.clear();
-            let _inferred_type: Option<Type> =
+            let inferred_type: Option<Type> =
                 if let Some(ann) = &declarator.type_annotation {
                     Some(self.lower_ts_type(&ann.type_annotation)?)
                 } else if let Some(init) = &declarator.init {
@@ -1356,7 +1502,7 @@ impl<'a> Extractor<'a> {
                 };
             let type_refs = std::mem::take(&mut self.type_ref_scratch);
 
-            let sym: Symbol<()> = Symbol {
+            let sym = Symbol {
                 name: var_name.clone(),
                 path: NudoxPath::Local(PathBuf::from("")),
                 aliases: None,
@@ -1364,7 +1510,11 @@ impl<'a> Extractor<'a> {
                 documentation: None,
                 deprecation: None,
                 doc_links: None,
-                inner: (),
+                inner: ir::kind::TypedBinding {
+                    ty: inferred_type,
+                    value: None,
+                    mutable: Some(!is_const),
+                },
             };
 
             let entry = if is_const {
@@ -1423,19 +1573,66 @@ impl<'a> Extractor<'a> {
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Get DocFacts for a top-level declaration by probing the node's attached JSDoc.
+    /// Get DocFacts for a top-level declaration by probing the node's attached
+    /// JSDoc, with span-based fallbacks (critical for TS kinds + `export …`
+    /// wrappers that oxc attaches docs to instead of the inner declaration).
     fn doc_facts_for_declaration(&self, decl: &Declaration<'a>) -> super::DocFacts {
-        let node_id = match decl {
-            Declaration::FunctionDeclaration(f) => f.node_id.get(),
-            Declaration::ClassDeclaration(c) => c.node_id.get(),
-            Declaration::VariableDeclaration(v) => v.node_id.get(),
-            Declaration::TSTypeAliasDeclaration(a) => a.node_id.get(),
-            Declaration::TSInterfaceDeclaration(i) => i.node_id.get(),
-            Declaration::TSEnumDeclaration(e) => e.node_id.get(),
-            Declaration::TSModuleDeclaration(m) => m.node_id.get(),
+        let (node_id, span) = match decl {
+            Declaration::FunctionDeclaration(f) => (f.node_id.get(), f.span),
+            Declaration::ClassDeclaration(c) => (c.node_id.get(), c.span),
+            Declaration::VariableDeclaration(v) => (v.node_id.get(), v.span),
+            Declaration::TSTypeAliasDeclaration(a) => (a.node_id.get(), a.span),
+            Declaration::TSInterfaceDeclaration(i) => (i.node_id.get(), i.span),
+            Declaration::TSEnumDeclaration(e) => (e.node_id.get(), e.span),
+            Declaration::TSModuleDeclaration(m) => (m.node_id.get(), m.span),
             _ => return super::DocFacts::default(),
         };
-        self.jsdoc_for_node(node_id)
+        // Prefer the node-id path (works for Function/Class when flagged), then
+        // always fall through to span-based recovery for TS-only kinds / export
+        // wrappers. `jsdoc_for_node` already spans when the finder misses; we
+        // still call `jsdoc_for_span` when the node_id is dummy.
+        let by_node = self.jsdoc_for_node(node_id);
+        if by_node.doc.is_some() || by_node.deprecation.is_some() || by_node.ignore {
+            return by_node;
+        }
+        self.jsdoc_for_span(span)
+    }
+}
+
+/// Merge members from `extra` into `base` (TypeScript interface declaration merging).
+fn merge_trait_defs(base: &mut TraitDef, extra: TraitDef) {
+    // Generics: keep base; if base has none, take extra's.
+    if base.generics.is_none() {
+        base.generics = extra.generics;
+    }
+    // Super-traits: append unique by name.
+    match (&mut base.super_traits, extra.super_traits) {
+        (Some(base_st), Some(extra_st)) => {
+            for tr in extra_st {
+                if !base_st.iter().any(|b| b.name == tr.name) {
+                    base_st.push(tr);
+                }
+            }
+        }
+        (slot @ None, Some(extra_st)) => *slot = Some(extra_st),
+        _ => {}
+    }
+    // Properties: append (later declarations add/override by append order).
+    match (&mut base.properties, extra.properties) {
+        (Some(base_p), Some(extra_p)) => base_p.extend(extra_p),
+        (slot @ None, Some(extra_p)) => *slot = Some(extra_p),
+        _ => {}
+    }
+    // Required methods: append.
+    match (&mut base.required_methods, extra.required_methods) {
+        (Some(base_m), Some(extra_m)) => base_m.extend(extra_m),
+        (slot @ None, Some(extra_m)) => *slot = Some(extra_m),
+        _ => {}
+    }
+    match (&mut base.provided_methods, extra.provided_methods) {
+        (Some(base_m), Some(extra_m)) => base_m.extend(extra_m),
+        (slot @ None, Some(extra_m)) => *slot = Some(extra_m),
+        _ => {}
     }
 }
 

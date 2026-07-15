@@ -503,11 +503,15 @@ fn type_operator(op: &str, inner: &Type, cx: &RenderCtx) -> Rendered {
 	match op {
 		// Nullable reference: `T?`
 		"?" => ty(inner, cx) + punct("?"),
+		// NRT non-null annotation (IR fidelity marker) — surface is bare `T`.
+		"!" => ty(inner, cx),
+		// Oblivious nullability (no NRT context) — surface is bare `T`.
+		"~" | "oblivious" => ty(inner, cx),
 		// Multi-dimensional arrays
 		"[,]" => ty(inner, cx) + punct("[,]"),
 		"[,,]" => ty(inner, cx) + punct("[,,]"),
 		"[,,,]" => ty(inner, cx) + punct("[,,,]"),
-		// Fallback: render operator as a comment
+		// Fallback: render the inner type (unknown operators are doc-only).
 		_ => ty(inner, cx),
 	}
 }

@@ -167,6 +167,12 @@ pub struct Decl {
 	/// Whether that const block uses `iota`.
 	#[serde(default)]
 	pub group_has_iota: bool,
+
+	/// In-package interfaces this named type satisfies (method-set
+	/// inclusion via `types.Implements`). Only populated for `kind`
+	/// type declarations that are not themselves interfaces.
+	#[serde(default)]
+	pub implements: Vec<Type>,
 }
 
 /// A method attached to a named type (declared or promoted).
@@ -236,7 +242,7 @@ pub struct Pos {
 }
 
 /// The discriminator for [`Type`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TypeKind {
 	Basic,
@@ -253,11 +259,12 @@ pub enum TypeKind {
 	Interface,
 	Union,
 	Tuple,
+	#[default]
 	Invalid,
 }
 
 /// The recursive structural type tree, discriminated by [`TypeKind`].
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Type {
 	/// The node discriminator.

@@ -27,7 +27,7 @@
 
 use std::cmp::Ordering;
 
-use version::{PrefixConstraint, TagContext, VersionGrammar, resolve_from_tags};
+use heart::version::{PrefixConstraint, TagContext, VersionGrammar, resolve_from_tags};
 
 use super::error::MavenVersionError;
 
@@ -264,7 +264,7 @@ fn strip_tag_prefix<'a>(tag: &'a str, artifact_prefix: Option<&str>) -> Option<&
 /// Java's request is the shared [`version::VersionRequest`] specialised to
 /// [`MavenVersion`] with a [`PrefixConstraint`] for its numeric-prefix case
 /// (`1`, `1.4`): `Latest`, `Exact(MavenVersion)`, `Constraint(PrefixConstraint)`.
-pub type VersionRequest = version::VersionRequest<MavenVersion, PrefixConstraint>;
+pub type VersionRequest = heart::version::VersionRequest<MavenVersion, PrefixConstraint>;
 
 /// Parse a requested version: empty / `latest` → newest; one or two bare
 /// numeric segments (`1`, `1.4`) → prefix query; anything else that parses

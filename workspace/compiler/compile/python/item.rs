@@ -1,10 +1,35 @@
 use std::collections::HashMap as StdHashMap;
+use std::sync::Arc;
 
-use ir::{entry::NudoxPath, function::Function, generics::GenericArg, kind::{Entry, Symbol, Visibility}, module::Module, parameter::Parameter as IrParameter, protocols::{TraitDef, TraitMethod}, record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant}, ty::{Type as IrType, TypeReference}};
-use pyrefly::{alt::answers::Answers, binding::{binding::{KeyClassField, KeyClassMetadata}, bindings::Bindings}, state::state::Transaction};
+use ir::{
+	entry::NudoxPath,
+	function::Function,
+	generics::{GenericArg, TraitRef},
+	kind::{Deprecation, Entry, Symbol, TypedBinding, TypeAliasBody, Visibility},
+	module::Module,
+	parameter::Parameter as IrParameter,
+	protocols::{TraitDef, TraitMethod},
+	record::{
+		Field, FieldAttributes, FieldKey, KnownField, Record, SumField, SumVariant,
+	},
+	ty::{Type as IrType, TypeReference},
+};
+use pyrefly::{
+	alt::answers::Answers,
+	binding::{
+		binding::{KeyClassField, KeyClassMetadata, KeyTParams},
+		bindings::Bindings,
+	},
+	state::state::Transaction,
+};
 use pyrefly_build::handle::Handle;
 use pyrefly_python::module_name::ModuleName;
-use pyrefly_types::{callable::{FuncMetadata, FunctionKind}, class::{Class, ClassFields}, literal::Lit, types::{Forallable, Type as PyType}};
+use pyrefly_types::{
+	callable::{FuncMetadata, FunctionKind},
+	class::{Class, ClassFields},
+	literal::Lit,
+	types::{Forallable, TParams, Type as PyType},
+};
 
 use super::docstring::{DocCatalog, ParsedDocstring};
 use super::{docstring, function, types};
@@ -52,7 +77,7 @@ pub fn lower_module(
 			aliases:       None,
 			visibility:    Visibility::Public,
 			documentation: catalog.module.as_ref().and_then(ParsedDocstring::documentation),
-			deprecation:   None,
+			deprecation:   catalog.module.as_ref().and_then(deprecation_from_doc),
 			doc_links:     None,
 			inner:         Module { members: None },
 		}),
@@ -80,11 +105,15 @@ pub fn lower_module(
 			continue;
 		}
 
-		let entry = lower_binding(&export_name, ty, handle, tx, &bindings, &answers, &catalog);
-
-		if let Some((path, entry)) = entry {
-			entries.push((path, entry));
-		}
+		entries.extend(lower_binding(
+			&export_name,
+			ty,
+			handle,
+			tx,
+			&bindings,
+			&answers,
+			&catalog,
+		));
 	}
 
 	// Phase 3 #4: best-effort intra-module type linking.
@@ -122,6 +151,10 @@ fn is_local_definition(ty: &PyType, handle: &Handle) -> bool {
 		PyType::Module(_) => false,
 		// `from typing import Protocol/Final/...` — typing special forms.
 		PyType::SpecialForm(_) => false,
+		// Module-level `T = TypeVar("T")` is a local binding, but not a useful
+		// public API surface for documentation IR — skip TypeVar/ParamSpec/
+		// TypeVarTuple *values* so they don't pollute the index as Constants.
+		PyType::TypeVar(_) | PyType::ParamSpec(_) | PyType::TypeVarTuple(_) => false,
 		_ => true,
 	}
 }
@@ -143,67 +176,92 @@ fn lower_binding(
 	bindings: &Bindings,
 	answers: &Answers,
 	catalog: &DocCatalog,
-) -> Option<(NudoxPath, Entry)> {
+) -> Vec<(NudoxPath, Entry)> {
 	let path =
 		NudoxPath::Local(std::path::PathBuf::from(format!("{}::{}", handle.module().as_str(), name)));
 
 	// Phase 3 #2/#3: docstring + decorator-derived shape for top-level callables.
 	let doc = catalog.item(name);
 
-	let entry = if is_function_like(ty) {
+	if is_function_like(ty) {
 		let mut ir_func = function::lower_function(handle, tx, bindings, answers, name, ty);
 		if let Some(doc) = doc {
 			apply_param_docs(&mut ir_func, &doc.params);
+			apply_return_doc(&mut ir_func, doc.returns.as_deref());
 		}
-		Some(Entry::Function(Symbol {
-			name:          name.to_string(),
-			path:          path.clone(),
-			aliases:       None,
-			visibility:    member_visibility(name),
-			documentation: doc.and_then(ParsedDocstring::documentation),
-			deprecation:   None,
-			doc_links:     None,
-			inner:         ir_func,
-		}))
-	} else {
-		match ty {
-			// Class definition — extract fields and methods
-			pyrefly_types::types::Type::ClassDef(cls) => {
-				lower_class(name, cls, handle, tx, bindings, answers, &path, catalog)
-			}
-
-			// Type alias
-			pyrefly_types::types::Type::TypeAlias(_) | pyrefly_types::types::Type::UntypedAlias(_) => {
-				Some(Entry::TypeAlias(Symbol {
-					name:          name.to_string(),
-					path:          path.clone(),
-					aliases:       None,
-					visibility:    member_visibility(name),
-					documentation: doc.and_then(ParsedDocstring::documentation),
-					deprecation:   None,
-					doc_links:     None,
-					inner:         types::lower_type(ty),
-				}))
-			}
-
-			// Module-level constant (immutable)
-			_ if name.starts_with('_') && name != "__init__" => None,
-
-			// Everything else — treat as a constant or variable
-			_ => Some(Entry::Constant(Symbol {
+		let deprecation = function::deprecation_from_flags(ty)
+			.or_else(|| doc.and_then(deprecation_from_doc));
+		return vec![(
+			path.clone(),
+			Entry::Function(Symbol {
 				name:          name.to_string(),
-				path:          path.clone(),
+				path,
 				aliases:       None,
 				visibility:    member_visibility(name),
 				documentation: doc.and_then(ParsedDocstring::documentation),
-				deprecation:   None,
+				deprecation,
 				doc_links:     None,
-				inner:         (),
-			})),
-		}
-	};
+				inner:         ir_func,
+			}),
+		)];
+	}
 
-	entry.map(|e| (path, e))
+	match ty {
+		// Class definition — extract fields, methods (as index entries), nested classes.
+		pyrefly_types::types::Type::ClassDef(cls) => {
+			lower_class(name, cls, handle, tx, bindings, answers, &path, catalog, None)
+		}
+
+		// Type alias
+		pyrefly_types::types::Type::TypeAlias(alias)
+		| pyrefly_types::types::Type::UntypedAlias(alias) => {
+			// Prefer declaration-site generics when the alias is a Forall wrapper.
+			// TypeAlias / UntypedAlias payloads do not currently expose tparams
+			// separately from the RHS, so we only store the target type.
+			let _ = alias;
+			vec![(
+				path.clone(),
+				Entry::TypeAlias(Symbol {
+					name:          name.to_string(),
+					path,
+					aliases:       None,
+					visibility:    member_visibility(name),
+					documentation: doc.and_then(ParsedDocstring::documentation),
+					deprecation:   doc.and_then(deprecation_from_doc),
+					doc_links:     None,
+					inner:         TypeAliasBody::plain(types::lower_type(ty)),
+				}),
+			)]
+		}
+
+		// Leading-underscore module names are private; skip (except dunder init).
+		_ if name.starts_with('_') && name != "__init__" => Vec::new(),
+
+		// Everything else — treat as a constant or variable (typed payload).
+		_ => {
+			let value = types::const_expr_from_type(ty);
+			vec![(
+				path.clone(),
+				Entry::Constant(Symbol {
+					name:          name.to_string(),
+					path,
+					aliases:       None,
+					visibility:    member_visibility(name),
+					documentation: doc.and_then(ParsedDocstring::documentation),
+					deprecation:   doc.and_then(deprecation_from_doc),
+					doc_links:     None,
+					inner: TypedBinding {
+						ty: Some(types::lower_type(ty)),
+						value,
+						// Module-level annotated bindings are treated as constants
+						// (immutable); Python has no true const, but ALL_CAPS and
+						// Final annotations conventionally are.
+						mutable: Some(false),
+					},
+				}),
+			)]
+		}
+	}
 }
 
 /// Whether a resolved type should be lowered as a function entry. Covers plain
@@ -226,6 +284,19 @@ fn apply_param_docs(func: &mut Function, params: &StdHashMap<String, String>) {
 	apply_param_descs(&mut func.input_parameters, params);
 }
 
+/// Attach a `Returns:` docstring description onto the function's first output
+/// parameter (the conventional single return slot).
+fn apply_return_doc(func: &mut Function, returns: Option<&str>) {
+	let Some(desc) = returns else { return };
+	if let Some(outs) = func.output_parameters.as_mut() {
+		if let Some(IrParameter::Literal(lp)) = outs.first_mut() {
+			if lp.description.is_none() {
+				lp.description = Some(desc.to_string());
+			}
+		}
+	}
+}
+
 /// Attach per-parameter docstring descriptions to a parameter list (matched by
 /// name). Shared by free functions, record methods, and protocol methods.
 fn apply_param_descs(
@@ -244,6 +315,58 @@ fn apply_param_descs(
 			}
 		}
 	}
+}
+
+/// Detect a deprecation marker from docstring prose (`Deprecated: …` /
+/// `.. deprecated::` / bare `Deprecated`).
+fn deprecation_from_doc(doc: &ParsedDocstring) -> Option<Deprecation> {
+	let text = doc.documentation()?;
+	// Sphinx `.. deprecated:: 1.2` style.
+	if let Some(rest) = text.split(".. deprecated::").nth(1) {
+		let mut lines = rest.lines();
+		let first = lines.next().unwrap_or("").trim();
+		let (since, note_start): (Option<String>, String) = if first.is_empty() {
+			(None, rest.to_string())
+		} else if first
+			.chars()
+			.next()
+			.is_some_and(|c| c.is_ascii_digit())
+		{
+			let mut parts = first.splitn(2, char::is_whitespace);
+			let ver = parts.next().map(str::to_string);
+			let rest_note = parts.next().unwrap_or("").trim();
+			let body: String = std::iter::once(rest_note)
+				.chain(lines.map(str::trim))
+				.filter(|s| !s.is_empty())
+				.collect::<Vec<_>>()
+				.join(" ");
+			(ver, body)
+		} else {
+			(None, first.to_string())
+		};
+		let note = {
+			let n = note_start.trim();
+			if n.is_empty() { None } else { Some(n.to_string()) }
+		};
+		return Some(Deprecation { since, note });
+	}
+	// Google / prose: line starting with "Deprecated".
+	for line in text.lines() {
+		let t = line.trim();
+		if let Some(rest) = t.strip_prefix("Deprecated:") {
+			return Some(Deprecation {
+				since: None,
+				note:  Some(rest.trim().to_string()),
+			});
+		}
+		if t == "Deprecated" || t.starts_with("Deprecated ") {
+			return Some(Deprecation {
+				since: None,
+				note:  Some(t.to_string()),
+			});
+		}
+	}
+	None
 }
 
 /// Phase 3 #4 — best-effort intra-module type linking.
@@ -371,30 +494,50 @@ fn member_visibility(name: &str) -> Visibility {
 /// one of pyrefly's callable type variants. Note: a data attribute explicitly
 /// annotated with a `Callable[...]` type is (cheaply) indistinguishable here
 /// and will be routed as a method — acceptable for this phase.
+///
+/// `Forall` is only treated as callable when it wraps a function (not a
+/// type-alias body).
 fn is_callable_type(ty: &PyType) -> bool {
-	matches!(
-		ty,
+	match ty {
 		PyType::Function(_)
-			| PyType::Callable(_)
-			| PyType::BoundMethod(_)
-			| PyType::Overload(_)
-			| PyType::Forall(_)
-	)
+		| PyType::Callable(_)
+		| PyType::BoundMethod(_)
+		| PyType::Overload(_) => true,
+		PyType::Forall(f) => matches!(&f.body, Forallable::Function(_)),
+		_ => false,
+	}
 }
 
-/// Build a `KnownField` for a class data attribute. `has_default` marks fields
-/// initialized in the class body (`x: int = 0`) as optional.
-fn build_field(name: &str, ty: Option<IrType>, has_default: bool) -> Field {
+/// Build a `KnownField` for a class data attribute.
+fn build_field(
+	name: &str,
+	ty: Option<IrType>,
+	has_default: bool,
+	is_class_var: bool,
+	is_final: bool,
+	is_property: bool,
+) -> Field {
+	let mut decorators = Vec::new();
+	if is_class_var {
+		decorators.push("ClassVar".into());
+	}
+	if is_final {
+		decorators.push("Final".into());
+	}
+	if is_property {
+		decorators.push("property".into());
+	}
 	Field::Known(KnownField {
 		key:           FieldKey::Ident(name.to_string()),
 		r#type:        ty.map(Box::new),
 		default_value: None,
 		attributes:    FieldAttributes {
-			// Python instance attributes are mutable by default.
-			is_mutable:  true,
+			// Final / ClassVar are immutable at the type level; other
+			// instance attributes remain mutable by default.
+			is_mutable:  !(is_final || is_class_var),
 			is_optional: has_default,
-			is_static:   false,
-			decorators:  Vec::new(),
+			is_static:   is_class_var,
+			decorators,
 		},
 		visibility:    Some(member_visibility(name)),
 		documentation: None,
@@ -417,7 +560,7 @@ fn function_to_trait_method(name: &str, func: Function) -> TraitMethod {
 		name: name.to_string(),
 		parameters: func.input_parameters,
 		return_type,
-		generics: None,
+		generics: func.generics,
 		attributes: func.attributes,
 		documentation: None,
 		receiver: func.receiver,
@@ -426,6 +569,42 @@ fn function_to_trait_method(name: &str, func: Function) -> TraitMethod {
 	}
 }
 
+/// Resolve the class's declaration-site type parameters.
+fn resolve_class_tparams(
+	cls: &Class,
+	bindings: &Bindings,
+	answers: &Answers,
+) -> Option<Arc<TParams>> {
+	if let Some(tp) = cls.precomputed_tparams() {
+		return Some(tp.clone());
+	}
+	// Legacy TypeVar Generic[T] — solved via KeyTParams.
+	for idx in bindings.keys::<KeyTParams>() {
+		let key = bindings.idx_to_key(idx);
+		if key.0 == cls.index() {
+			// `get_idx` already returns `Option<Arc<TParams>>`.
+			return answers.get_idx(idx);
+		}
+	}
+	None
+}
+
+/// Member path under a class: `module::Class.member` (dot after the class,
+/// matching Java/C# member-key minting so `path_segments` expands cleanly).
+fn member_path(class_path: &NudoxPath, member: &str) -> NudoxPath {
+	let base = match class_path {
+		NudoxPath::Local(p) => p.display().to_string(),
+		NudoxPath::External { path, dependency } => {
+			format!("{}::{}", dependency, path.display())
+		}
+	};
+	NudoxPath::Local(std::path::PathBuf::from(format!("{base}.{member}")))
+}
+
+/// Lower a class (and its methods / nested classes) into one or more index entries.
+///
+/// `owner_path` is the path of this class (`module::Name` or `module::Outer.Inner`).
+/// `parent_class_name` is used for docstring catalog lookups of nested members.
 fn lower_class(
 	name: &str,
 	cls: &Class,
@@ -435,16 +614,30 @@ fn lower_class(
 	_answers: &Answers,
 	path: &NudoxPath,
 	catalog: &DocCatalog,
-) -> Option<Entry> {
+	// Fully-qualified class name used for docstring member lookups. For
+	// top-level classes this is just `name`; for nested classes it is the
+	// dotted chain (`Outer.Inner`).
+	doc_class_name: Option<&str>,
+) -> Vec<(NudoxPath, Entry)> {
+	let mut out: Vec<(NudoxPath, Entry)> = Vec::new();
+	let doc_key = doc_class_name.unwrap_or(name);
+
 	// Class-level docstring (shared by the Record / SumType / TraitDef shapes).
-	let class_doc = catalog.item(name).and_then(ParsedDocstring::documentation);
+	let class_doc_parsed = catalog.item(doc_key);
+	let class_doc = class_doc_parsed.and_then(ParsedDocstring::documentation);
+	let class_deprecation = class_doc_parsed.and_then(deprecation_from_doc);
+
 	// Resolve bindings/answers for the class's *defining* module, so imported
 	// classes resolve against the right tables. Mirrors `Transaction::
 	// get_class_fields`, which keys a fresh `Handle` off the class's qname.
 	let cls_handle =
 		Handle::new(cls.module_name(), cls.module_path().clone(), handle.sys_info().clone());
-	let bindings = tx.get_bindings(&cls_handle)?;
-	let answers = tx.get_answers(&cls_handle)?;
+	let Some(bindings) = tx.get_bindings(&cls_handle) else {
+		return out;
+	};
+	let Some(answers) = tx.get_answers(&cls_handle) else {
+		return out;
+	};
 
 	// Solved class metadata: kind flags (enum/protocol/...) + direct base classes.
 	let metadata = answers.get_idx(bindings.key_to_idx(&KeyClassMetadata(cls.index())));
@@ -466,18 +659,33 @@ fn lower_class(
 		})
 		.unwrap_or_default();
 
+	// Protocol inheritance → super_traits (TraitRef form).
+	let super_traits: Vec<TraitRef> = super_types
+		.iter()
+		.filter_map(|t| match t {
+			IrType::TypeReference(r) => Some(TraitRef {
+				name: r.identifier.clone(),
+				args: Vec::new(),
+			}),
+			_ => None,
+		})
+		.collect();
+
 	let is_enum = metadata.as_ref().is_some_and(|m| m.is_enum());
 	let is_protocol = metadata.as_ref().is_some_and(|m| m.is_protocol());
+
+	let generics = resolve_class_tparams(cls, &bindings, &answers)
+		.as_ref()
+		.and_then(|tp| types::lower_tparams(tp.as_ref()));
 
 	// The declared (non-synthesized) fields of the class, with their properties.
 	let empty_fields = ClassFields::empty();
 	let class_fields = bindings.get_class_fields(cls.index()).unwrap_or(&empty_fields);
 
-	// Resolve a single field's pyrefly-inferred `Type` (the resolved attribute
-	// or method type) via the per-field `KeyClassField` answer.
-	let resolve_ty = |fname: &_| -> Option<PyType> {
+	// Resolve a single field's pyrefly ClassField answer (type + flags).
+	let resolve_field = |fname: &_| {
 		let idx = bindings.key_to_idx(&KeyClassField(cls.index(), Clone::clone(fname)));
-		answers.get_idx(idx).map(|field| field.ty())
+		answers.get_idx(idx)
 	};
 
 	// --- enum.Enum subclass → SumType ------------------------------------
@@ -486,61 +694,120 @@ fn lower_class(
 		for fname in class_fields.names() {
 			// Enum members resolve to an enum *literal* type (`Literal[E.X]`);
 			// methods/`_ignore_`/etc. do not, and are skipped.
+			let field = resolve_field(fname);
+			let ty = field.as_ref().map(|f| f.ty());
 			let is_member = matches!(
-					resolve_ty(fname),
-					Some(PyType::Literal(lit)) if matches!(&lit.value, Lit::Enum(_))
+				&ty,
+				Some(PyType::Literal(lit)) if matches!(&lit.value, Lit::Enum(_))
 			);
 			if is_member {
+				// Capture the member's assigned value from Lit::Enum.ty metadata.
+				let (data, documentation) = match &ty {
+					Some(PyType::Literal(lit)) => {
+						if let Lit::Enum(e) = &lit.value {
+							let value_ty = types::lower_type(&e.ty);
+							let data = Some(SumField::Tuple(vec![value_ty]));
+							let documentation = types::const_expr_from_type(&e.ty)
+								.map(|c| format!("value = {c:?}"));
+							(data, documentation)
+						} else {
+							(None, None)
+						}
+					}
+					_ => (None, None),
+				};
 				variants.push(SumVariant {
-					name:          fname.to_string(),
-					data:          None,
-					documentation: None,
+					name: fname.to_string(),
+					data,
+					documentation,
+				discriminant: None,
 				});
 			}
 		}
-		return Some(Entry::SumType(Symbol {
-			name:          name.to_string(),
-			path:          path.clone(),
-			aliases:       None,
-			visibility:    member_visibility(name),
-			documentation: class_doc,
-			deprecation:   None,
-			doc_links:     None,
-			inner:         variants,
-		}));
+		out.push((
+			path.clone(),
+			Entry::SumType(Symbol {
+				name:          name.to_string(),
+				path:          path.clone(),
+				aliases:       None,
+				visibility:    member_visibility(name),
+				documentation: class_doc,
+				deprecation:   class_deprecation,
+				doc_links:     None,
+				inner: ir::record::SumType::from_variants(variants),
+			}),
+		));
+		return out;
 	}
 
 	// --- typing.Protocol → TraitDef --------------------------------------
 	if is_protocol {
 		let mut required_methods = Vec::new();
 		let mut properties = Vec::new();
+		let mut members: Vec<NudoxPath> = Vec::new();
+
 		for fname in class_fields.names() {
 			let fname_s = fname.to_string();
-			match resolve_ty(fname) {
-				Some(ty) if is_callable_type(&ty) => {
+			let field = resolve_field(fname);
+			let ty = field.as_ref().map(|f| f.ty());
+			match ty {
+				Some(ref t) if is_callable_type(t) => {
 					let func =
-						function::lower_method(handle, tx, &bindings, &answers, &fname_s, &ty, class_fields);
+						function::lower_method(handle, tx, &bindings, &answers, &fname_s, t, class_fields);
 					let mut method = function_to_trait_method(&fname_s, func);
 					// Phase 3 #2: method docstring + per-parameter descriptions.
-					if let Some(mdoc) = catalog.member(name, &fname_s) {
+					if let Some(mdoc) = catalog.member(doc_key, &fname_s) {
 						method.documentation = mdoc.documentation();
 						apply_param_descs(&mut method.parameters, &mdoc.params);
 					}
+					// Also emit a standalone Function entry for resolution.
+					let mpath = member_path(path, &fname_s);
+					let mut ir_func =
+						function::lower_method(handle, tx, &bindings, &answers, &fname_s, t, class_fields);
+					let mdoc = catalog.member(doc_key, &fname_s);
+					if let Some(md) = mdoc {
+						apply_param_docs(&mut ir_func, &md.params);
+						apply_return_doc(&mut ir_func, md.returns.as_deref());
+					}
+					members.push(mpath.clone());
+					out.push((
+						mpath.clone(),
+						Entry::Function(Symbol {
+							name:          fname_s.clone(),
+							path:          mpath,
+							aliases:       None,
+							visibility:    member_visibility(&fname_s),
+							documentation: mdoc.and_then(ParsedDocstring::documentation),
+							deprecation:   function::deprecation_from_flags(t)
+								.or_else(|| mdoc.and_then(deprecation_from_doc)),
+							doc_links:     None,
+							inner:         ir_func,
+						}),
+					));
 					required_methods.push(method);
 				}
 				other => {
 					let irt = other.as_ref().map(types::lower_type);
+					let is_class_var = field.as_ref().is_some_and(|f| f.is_class_var());
+					let is_final = field.as_ref().is_some_and(|f| f.is_final());
+					let is_property = field.as_ref().is_some_and(|f| {
+						// Property fields carry a property-decorated type.
+						f.ty().is_property_getter() || f.ty().is_cached_property()
+					});
 					properties.push(build_field(
 						&fname_s,
 						irt,
 						class_fields.is_field_initialized_on_class(fname),
+						is_class_var,
+						is_final,
+						is_property,
 					));
 				}
 			}
 		}
 		let trait_def = TraitDef {
-			generics:           None,
-			super_traits:       None,
+			generics,
+			super_traits:       if super_traits.is_empty() { None } else { Some(super_traits) },
 			associated_types:   None,
 			properties:         if properties.is_empty() { None } else { Some(properties) },
 			required_methods:   if required_methods.is_empty() { None } else { Some(required_methods) },
@@ -550,73 +817,156 @@ fn lower_class(
 			object_safe:        None,
 			sealed:             None,
 			cfg:                None,
-			members:            None,
+			members:            if members.is_empty() { None } else { Some(members) },
 		};
-		return Some(Entry::TraitDef(Symbol {
-			name:          name.to_string(),
-			path:          path.clone(),
-			aliases:       None,
-			visibility:    member_visibility(name),
-			documentation: class_doc,
-			deprecation:   None,
-			doc_links:     None,
-			inner:         trait_def,
-		}));
+		out.push((
+			path.clone(),
+			Entry::TraitDef(Symbol {
+				name:          name.to_string(),
+				path:          path.clone(),
+				aliases:       None,
+				visibility:    member_visibility(name),
+				documentation: class_doc,
+				deprecation:   class_deprecation,
+				doc_links:     None,
+				inner:         trait_def,
+			}),
+		));
+		return out;
 	}
 
 	// --- plain class / @dataclass / NamedTuple / TypedDict → RecordType ---
 	let mut ir_fields = Vec::new();
 	let mut ir_methods = Vec::new();
 	let mut ir_constructors = Vec::new();
+	let mut members: Vec<NudoxPath> = Vec::new();
 
 	for fname in class_fields.names() {
 		let fname_s = fname.to_string();
-		match resolve_ty(fname) {
-			Some(ty) if is_callable_type(&ty) => {
+		let field = resolve_field(fname);
+		let ty = field.as_ref().map(|f| f.ty());
+
+		// Nested class definitions → separate Record/Sum/Trait entries under members.
+		if let Some(PyType::ClassDef(nested_cls)) = &ty {
+			let nested_path = member_path(path, &fname_s);
+			let nested_doc_key = format!("{doc_key}.{fname_s}");
+			let nested_entries = lower_class(
+				&fname_s,
+				nested_cls,
+				handle,
+				tx,
+				&bindings,
+				&answers,
+				&nested_path,
+				catalog,
+				Some(&nested_doc_key),
+			);
+			if !nested_entries.is_empty() {
+				members.push(nested_path);
+				out.extend(nested_entries);
+			}
+			continue;
+		}
+
+		match ty {
+			Some(ref t) if is_callable_type(t) => {
 				let mut func =
-					function::lower_method(handle, tx, &bindings, &answers, &fname_s, &ty, class_fields);
-				// Phase 3 #2: `Record` methods are bare `Function`s with no
-				// documentation slot, so only per-parameter descriptions can be
-				// attached here (the method summary has nowhere to live).
-				if let Some(mdoc) = catalog.member(name, &fname_s) {
-					apply_param_docs(&mut func, &mdoc.params);
+					function::lower_method(handle, tx, &bindings, &answers, &fname_s, t, class_fields);
+				let mdoc = catalog.member(doc_key, &fname_s);
+				if let Some(md) = mdoc {
+					apply_param_docs(&mut func, &md.params);
+					apply_return_doc(&mut func, md.returns.as_deref());
 				}
-				if fname_s == "__init__" || fname_s == "__new__" {
-					ir_constructors.push(func);
+
+				// Emit a standalone Function index entry so SymbolTable can
+				// resolve `Class.method`. Keep a shape copy on the Record too.
+				let mpath = member_path(path, &fname_s);
+				let is_ctor = fname_s == "__init__" || fname_s == "__new__";
+				if !is_ctor {
+					members.push(mpath.clone());
+					out.push((
+						mpath.clone(),
+						Entry::Function(Symbol {
+							name:          fname_s.clone(),
+							path:          mpath,
+							aliases:       None,
+							visibility:    member_visibility(&fname_s),
+							documentation: mdoc.and_then(ParsedDocstring::documentation),
+							deprecation:   function::deprecation_from_flags(t)
+								.or_else(|| mdoc.and_then(deprecation_from_doc)),
+							doc_links:     None,
+							inner:         func.clone(),
+						}),
+					));
+					// Properties also surface as fields with a `property` marker
+					// so consumers that walk fields still see them.
+					if t.is_property_getter() || t.is_cached_property() {
+						let ret = func
+							.output_parameters
+							.as_ref()
+							.and_then(|o| o.first())
+							.and_then(|p| match p {
+								IrParameter::Literal(lp) => lp.r#type.clone(),
+								_ => None,
+							});
+						ir_fields.push(build_field(
+							&fname_s,
+							ret,
+							false,
+							false,
+							function::func_flags(t).is_some_and(|f| f.has_final_decoration),
+							true,
+						));
+					} else {
+						ir_methods.push(func);
+					}
 				} else {
-					ir_methods.push(func);
+					ir_constructors.push(func);
 				}
 			}
 			other => {
 				let irt = other.as_ref().map(types::lower_type);
+				let is_class_var = field.as_ref().is_some_and(|f| f.is_class_var());
+				let is_final = field.as_ref().is_some_and(|f| f.is_final());
 				ir_fields.push(build_field(
 					&fname_s,
 					irt,
 					class_fields.is_field_initialized_on_class(fname),
+					is_class_var,
+					is_final,
+					false,
 				));
 			}
 		}
 	}
 
-	Some(Entry::RecordType(Symbol {
-		name:          name.to_string(),
-		path:          path.clone(),
-		aliases:       None,
-		visibility:    member_visibility(name),
-		documentation: class_doc,
-		deprecation:   None,
-		doc_links:     None,
-		inner:         Record {
-			name:                  Some(name.to_string()),
-			generics:              None,
-			fields:                ir_fields,
-			call_signatures:       None,
-			constructors:          if ir_constructors.is_empty() { None } else { Some(ir_constructors) },
-			methods:               if ir_methods.is_empty() { None } else { Some(ir_methods) },
-			index_signatures:      None,
-			super_types:           if super_types.is_empty() { None } else { Some(super_types) },
-			members:               None,
-			implemented_protocols: None,
-		},
-	}))
+	out.push((
+		path.clone(),
+		Entry::RecordType(Symbol {
+			name:          name.to_string(),
+			path:          path.clone(),
+			aliases:       None,
+			visibility:    member_visibility(name),
+			documentation: class_doc,
+			deprecation:   class_deprecation,
+			doc_links:     None,
+			inner:         Record {
+				name:                  Some(name.to_string()),
+				generics,
+				fields:                ir_fields,
+				call_signatures:       None,
+				constructors:          if ir_constructors.is_empty() {
+					None
+				} else {
+					Some(ir_constructors)
+				},
+				methods:               if ir_methods.is_empty() { None } else { Some(ir_methods) },
+				index_signatures:      None,
+				super_types:           if super_types.is_empty() { None } else { Some(super_types) },
+				members:               if members.is_empty() { None } else { Some(members) },
+				implemented_protocols: None,
+			},
+		}),
+	));
+	out
 }

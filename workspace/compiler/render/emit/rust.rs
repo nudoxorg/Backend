@@ -677,6 +677,7 @@ mod tests {
                 name: "Unit".to_string(),
                 data: None,
                 documentation: None,
+                discriminant: None,
             },
             SumVariant {
                 name: "Tup".to_string(),
@@ -685,6 +686,7 @@ mod tests {
                     ty_ref("alloc::string::String"),
                 ])),
                 documentation: None,
+                discriminant: None,
             },
             SumVariant {
                 name: "Rec".to_string(),
@@ -695,6 +697,7 @@ mod tests {
                     None,
                 )])),
                 documentation: None,
+                discriminant: None,
             },
         ];
         let result = Rust

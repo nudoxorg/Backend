@@ -9,9 +9,10 @@
 //! * `*T` → `RawPointer { is_mutable: true }` — Go pointers are freely
 //!   mutable and carry no borrow/lifetime semantics, so `BorrowedRef`
 //!   would over-claim;
-//! * `map[K]V` → an anonymous `RecordLiteral` holding one
-//!   `Field::Pattern` index signature (`[K]: V`) — the IR has no map
-//!   primitive and an index signature is exactly a map shape;
+//! * `map[K]V` → `TypeOperator { operator: "map", type: Tuple([K, V]) }` —
+//!   first-class operator so K/V are not collapsed to `any` by renderers
+//!   that special-case the operator (the previous index-signature
+//!   `RecordLiteral` encoding remains recoverable as structure);
 //! * `chan T` → `TypeOperator { operator: "chan"|"chan<-"|"<-chan" }` —
 //!   the IR has no channel type; direction is preserved in the operator
 //!   (lossy in kind, lossless in information);
@@ -35,12 +36,14 @@ use std::collections::HashMap;
 use ir::function::Attribute;
 
 use super::error::{GoError, Result};
-use super::package;
-use ir::generics::{Constraint, GenericArg, Generics, Kind, Predicate, Term, TraitRef, TypeExpr, Variance};
+use ir::generics::{
+	ConstExpr, Constraint, GenericArg, Generics, Kind, Predicate, Term, TraitRef, TypeExpr, UnaryOp,
+	Variance,
+};
 use ir::kind::Visibility;
 use ir::parameter::{LiteralParameter, Parameter as IrParameter, ParameterAttribute, TypeParam, TypeParamOrigin};
 use ir::primitives::{Primitive, Width};
-use ir::record::{Field, FieldAttributes, FieldKey, IndexSignature, KnownField, Record};
+use ir::record::{Field, FieldAttributes, FieldKey, KnownField, Record};
 use ir::ty::{FunctionPointer, GenericParam, Type as IrType, TypeOperator, TypeReference};
 
 use super::oracle::{self, TypeKind};
@@ -109,14 +112,15 @@ fn lower_type_depth(t: &oracle::Type, depth: usize) -> IrType {
 			length: t.len.max(0) as usize,
 		},
 
-		// The IR has no map primitive; a record with a single index
-		// signature (`[K]: V`) is the same structural shape.
-		TypeKind::Map => IrType::RecordLiteral(Box::new(record_shell(vec![Field::Pattern(
-			IndexSignature {
-				key_type:   Box::new(lower_elem(&t.key, depth)),
-				value_type: Box::new(lower_elem(&t.value, depth)),
-			},
-		)]))),
+		// First-class map: operator "map" over a 2-tuple (K, V). Keeps
+		// both type arguments structural (renderers special-case "map").
+		TypeKind::Map => IrType::TypeOperator(TypeOperator {
+			operator: "map".to_string(),
+			r#type:   Box::new(IrType::Tuple(vec![
+				lower_elem(&t.key, depth),
+				lower_elem(&t.value, depth),
+			])),
+		}),
 
 		// The IR has no channel type. `TypeOperator` keeps the element
 		// structural and records the directionality in the operator —
@@ -146,8 +150,12 @@ fn lower_type_depth(t: &oracle::Type, depth: usize) -> IrType {
 
 /// Map a Go basic-type name onto the IR primitive algebra.
 ///
-/// `rune` and `byte` keep their alias identities (the oracle preserves
-/// the universe alias names): `rune` → `Char`, `byte` → `UInt(W8)`.
+/// Identity-preserving universe aliases:
+/// * `byte` → `TypeReference("byte")` (not collapsed into `uint8`/`UInt(W8)`)
+/// * `rune` → `Char` (Go's conventional code-point alias)
+/// * `unsafe.Pointer` → `TypeReference("unsafe.Pointer")` (not `Address`/
+///   `uintptr` — those are a different Go type)
+///
 /// `complex64`/`complex128` have no `Primitive` counterpart and fall
 /// back to `TypeReference` — a documented loss.
 fn lower_basic(name: &str) -> IrType {
@@ -163,7 +171,13 @@ fn lower_basic(name: &str) -> IrType {
 		"int32" => IrType::Primitive(Primitive::Int(Width::W32)),
 		"int64" => IrType::Primitive(Primitive::Int(Width::W64)),
 		"uint" => IrType::Primitive(Primitive::UInt(Width::Arch)),
-		"uint8" | "byte" => IrType::Primitive(Primitive::UInt(Width::W8)),
+		// `uint8` is the primitive; `byte` is a distinct universe alias
+		// spelling that must remain distinguishable in the IR.
+		"uint8" => IrType::Primitive(Primitive::UInt(Width::W8)),
+		"byte" => IrType::TypeReference(TypeReference {
+			identifier:   "byte".to_string(),
+			generic_args: None,
+		}),
 		"uint16" => IrType::Primitive(Primitive::UInt(Width::W16)),
 		"uint32" => IrType::Primitive(Primitive::UInt(Width::W32)),
 		"uint64" => IrType::Primitive(Primitive::UInt(Width::W64)),
@@ -174,7 +188,11 @@ fn lower_basic(name: &str) -> IrType {
 		// An untyped float constant defaults to float64.
 		"float32" => IrType::Primitive(Primitive::Float(Width::W32)),
 		"float64" | "float" => IrType::Primitive(Primitive::Float(Width::W64)),
-		"unsafe.Pointer" => IrType::Primitive(Primitive::Address),
+		// Distinct from uintptr / Primitive::Address.
+		"unsafe.Pointer" => IrType::TypeReference(TypeReference {
+			identifier:   "unsafe.Pointer".to_string(),
+			generic_args: None,
+		}),
 		// No complex primitive in the IR — keep the name referable.
 		other => IrType::TypeReference(TypeReference {
 			identifier:   other.to_string(),
@@ -586,5 +604,222 @@ pub fn validate(t: &oracle::Type) -> Result<()> {
 			return Err(GoError::OracleSchema { detail: "oracle map node missing `key`/`value`" });
 		}
 		_ => Ok(()),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Constant values
+// ---------------------------------------------------------------------------
+
+/// Parse a go/constant `ExactString` into a structured [`ConstExpr`].
+///
+/// Covers the common cases the oracle emits for package-level consts:
+/// booleans, string literals (double-quoted or raw backticks), integer
+/// and floating-point literals (including leading `+`/`-`), and the
+/// rational form `num/den` that go/constant uses for untyped floats.
+/// Everything else falls back to [`ConstExpr::Var`] with the original
+/// spelling so no information is dropped.
+pub fn parse_const_value(raw: &str) -> Option<ConstExpr> {
+	let s = raw.trim();
+	if s.is_empty() {
+		return None;
+	}
+
+	match s {
+		"true" => return Some(ConstExpr::Bool(true)),
+		"false" => return Some(ConstExpr::Bool(false)),
+		_ => {}
+	}
+
+	if let Some(inner) = strip_go_string(s) {
+		return Some(ConstExpr::Str(inner));
+	}
+
+	// Leading unary + / −.
+	if let Some(rest) = s.strip_prefix('+') {
+		return parse_const_value(rest);
+	}
+	if let Some(rest) = s.strip_prefix('-') {
+		return parse_const_value(rest).map(|inner| match inner {
+			ConstExpr::Int(n) => ConstExpr::Int(-n),
+			ConstExpr::Float(f) => ConstExpr::Float(-f),
+			other => ConstExpr::UnaryOp { op: UnaryOp::Neg, operand: Box::new(other) },
+		});
+	}
+
+	// go/constant rationals for untyped floats: "1/2", "22/7".
+	if let Some((num, den)) = s.split_once('/') {
+		if let (Ok(n), Ok(d)) = (num.trim().parse::<f64>(), den.trim().parse::<f64>()) {
+			if d != 0.0 {
+				return Some(ConstExpr::Float(n / d));
+			}
+		}
+	}
+
+	if let Ok(n) = s.parse::<i64>() {
+		return Some(ConstExpr::Int(n));
+	}
+	// Decimal / hex / octal / binary integers that don't fit the simple
+	// parse above (e.g. "0xff") — try radix-aware parse via Go-like prefixes.
+	if let Some(n) = parse_go_int(s) {
+		return Some(ConstExpr::Int(n));
+	}
+	if let Ok(f) = s.parse::<f64>() {
+		return Some(ConstExpr::Float(f));
+	}
+
+	// Named reference / unevaluated expression (iota expressions already
+	// reduced by go/constant when ExactString is used).
+	Some(ConstExpr::Var(s.to_string()))
+}
+
+/// Strip surrounding Go string quotes and return the unescaped content.
+/// Handles `"…"` (interpreted) and `` `…` `` (raw); minimal unescape for
+/// common interpreted escapes.
+fn strip_go_string(s: &str) -> Option<String> {
+	if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+		let inner = &s[1..s.len() - 1];
+		return Some(unescape_go_double(inner));
+	}
+	if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
+		return Some(s[1..s.len() - 1].to_string());
+	}
+	// Single-quoted rune literal → one-char string (or keep as int via Var).
+	if s.len() >= 3 && s.starts_with('\'') && s.ends_with('\'') {
+		let inner = &s[1..s.len() - 1];
+		return Some(unescape_go_double(inner));
+	}
+	None
+}
+
+fn unescape_go_double(s: &str) -> String {
+	let mut out = String::with_capacity(s.len());
+	let mut chars = s.chars().peekable();
+	while let Some(c) = chars.next() {
+		if c != '\\' {
+			out.push(c);
+			continue;
+		}
+		match chars.next() {
+			Some('n') => out.push('\n'),
+			Some('t') => out.push('\t'),
+			Some('r') => out.push('\r'),
+			Some('\\') => out.push('\\'),
+			Some('"') => out.push('"'),
+			Some('\'') => out.push('\''),
+			Some('0') => out.push('\0'),
+			Some(other) => {
+				out.push('\\');
+				out.push(other);
+			}
+			None => out.push('\\'),
+		}
+	}
+	out
+}
+
+/// Parse Go integer spellings: `0x…`, `0o…`, `0b…`, bare decimal.
+fn parse_go_int(s: &str) -> Option<i64> {
+	let (radix, digits) = if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+		(16, rest)
+	} else if let Some(rest) = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")) {
+		(8, rest)
+	} else if let Some(rest) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+		(2, rest)
+	} else {
+		return None;
+	};
+	// Drop underscores allowed in Go numeric literals.
+	let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
+	i64::from_str_radix(&cleaned, radix).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn byte_and_uint8_are_distinct() {
+		let byte = lower_basic("byte");
+		let uint8 = lower_basic("uint8");
+		assert_ne!(byte, uint8, "byte must not collapse to uint8");
+		assert!(
+			matches!(
+				byte,
+				IrType::TypeReference(TypeReference { ref identifier, .. }) if identifier == "byte"
+			),
+			"byte → TypeReference(byte), got {byte:?}"
+		);
+		assert!(
+			matches!(uint8, IrType::Primitive(Primitive::UInt(Width::W8))),
+			"uint8 → UInt(W8), got {uint8:?}"
+		);
+	}
+
+	#[test]
+	fn unsafe_pointer_is_type_reference() {
+		let t = lower_basic("unsafe.Pointer");
+		assert!(
+			matches!(
+				t,
+				IrType::TypeReference(TypeReference { ref identifier, .. })
+					if identifier == "unsafe.Pointer"
+			),
+			"unsafe.Pointer must not become Address/uintptr, got {t:?}"
+		);
+	}
+
+	#[test]
+	fn map_is_type_operator_with_kv_tuple() {
+		let t = oracle::Type {
+			kind: TypeKind::Map,
+			key: Some(Box::new(oracle::Type {
+				kind: TypeKind::Basic,
+				name: "string".into(),
+				..Default::default()
+			})),
+			value: Some(Box::new(oracle::Type {
+				kind: TypeKind::Basic,
+				name: "int".into(),
+				..Default::default()
+			})),
+			..Default::default()
+		};
+		let lowered = lower_type(&t);
+		match lowered {
+			IrType::TypeOperator(op) => {
+				assert_eq!(op.operator, "map");
+				match *op.r#type {
+					IrType::Tuple(parts) => {
+						assert_eq!(parts.len(), 2);
+						assert!(matches!(parts[0], IrType::Primitive(Primitive::String)));
+						assert!(matches!(parts[1], IrType::Primitive(Primitive::Int(_))));
+					}
+					other => panic!("map payload should be Tuple, got {other:?}"),
+				}
+			}
+			other => panic!("map should be TypeOperator, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn parse_const_int_string_bool() {
+		assert_eq!(parse_const_value("3"), Some(ConstExpr::Int(3)));
+		assert_eq!(parse_const_value("-7"), Some(ConstExpr::Int(-7)));
+		assert_eq!(parse_const_value("true"), Some(ConstExpr::Bool(true)));
+		assert_eq!(
+			parse_const_value(r#""hello""#),
+			Some(ConstExpr::Str("hello".into()))
+		);
+		assert_eq!(parse_const_value("0xff"), Some(ConstExpr::Int(255)));
+		assert_eq!(parse_const_value("1/2"), Some(ConstExpr::Float(0.5)));
+		assert_eq!(
+			parse_const_value("SomeName"),
+			Some(ConstExpr::Var("SomeName".into()))
+		);
 	}
 }

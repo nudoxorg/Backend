@@ -1,3 +1,2 @@
-extra_srcs = [
-    "src/lib.md",
-]
+features = ["derive", "thin-vec", "compact-str"]
+extra_srcs = ["src/**/*.md", "src/*.md"]

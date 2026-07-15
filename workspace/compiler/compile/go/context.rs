@@ -18,11 +18,12 @@
 //! this module assembles them into the index and then wires the tree
 //! structure the flat pairs cannot see on their own:
 //!
-//! * every entry minted for a package (items AND standalone method
-//!   entries) becomes a `members` child of that package's
+//! * every entry minted for a package (items, standalone methods,
+//!   TraitImpls, …) becomes a `members` child of that package's
 //!   `Entry::Module` — the path scheme (`import/path::Name`,
-//!   `import/path::Type.Method`) makes ownership derivable by splitting
-//!   on the first `::`, which never occurs in an import path;
+//!   `import/path::Type.Method`, with `Type::Method` aliases for
+//!   symtab) makes ownership derivable by splitting on the first `::`,
+//!   which never occurs in an import path;
 //! * each package module becomes a `members` child of its *nearest
 //!   discovered ancestor* package (Go trees routinely skip directory
 //!   levels that contain no `.go` files);

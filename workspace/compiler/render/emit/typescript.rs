@@ -79,14 +79,21 @@ impl Backend for TypeScript {
     fn interface(&self, name: &str, def: &TraitDef, _vis: &Visibility, cx: &RenderCtx) -> Rendered {
         let info = analyze_generics(def.generics.as_ref());
         let header = kw("export interface") + sp() + tyname(name) + generics_decl(&info);
-        let methods: Vec<Rendered> = def
-            .required_methods
+        // Properties first (interface fields), then method signatures.
+        let mut members: Vec<Rendered> = def
+            .properties
             .iter()
             .flatten()
-            .chain(def.provided_methods.iter().flatten())
-            .map(|m| method_sig(m, cx))
+            .filter_map(|f| field(f, cx))
             .collect();
-        header + sp() + block("{", methods, "}")
+        members.extend(
+            def.required_methods
+                .iter()
+                .flatten()
+                .chain(def.provided_methods.iter().flatten())
+                .map(|m| method_sig(m, cx)),
+        );
+        header + sp() + block("{", members, "}")
     }
 }
 
@@ -127,7 +134,15 @@ fn field(f: &Field, cx: &RenderCtx) -> Option<Rendered> {
         .as_ref()
         .map(|t| ty(t, cx))
         .unwrap_or_else(|| tyname("unknown"));
-    Some(readonly + ident(&name) + opt + punct(": ") + t + punct(";"))
+    let body = readonly + ident(&name) + opt + punct(": ") + t + punct(";");
+    // Member-level JSDoc when docs are enabled.
+    if cx.options.show_docs {
+        if let Some(doc) = kf.documentation.as_deref().filter(|d| !d.is_empty()) {
+            let comment = TypeScript.doc_comment(doc);
+            return Some(comment + Doc::hardline() + body);
+        }
+    }
+    Some(body)
 }
 
 fn variant_object(v: &SumVariant, cx: &RenderCtx) -> Rendered {
@@ -153,6 +168,7 @@ fn variant_object(v: &SumVariant, cx: &RenderCtx) -> Rendered {
 }
 
 fn value_params(inputs: Option<&[Parameter]>, cx: &RenderCtx) -> Vec<Rendered> {
+    use ir::parameter::ParameterAttribute;
     inputs
         .into_iter()
         .flatten()
@@ -163,7 +179,13 @@ fn value_params(inputs: Option<&[Parameter]>, cx: &RenderCtx) -> Vec<Rendered> {
                     .as_ref()
                     .map(|t| ty(t, cx))
                     .unwrap_or_else(|| tyname("unknown"));
-                Some(ident(&lp.name) + punct(": ") + t)
+                let optional = lp
+                    .attributes
+                    .as_ref()
+                    .map(|attrs| attrs.iter().any(|a| matches!(a, ParameterAttribute::Optional)))
+                    .unwrap_or(false);
+                let opt = if optional { punct("?") } else { Doc::nil() };
+                Some(ident(&lp.name) + opt + punct(": ") + t)
             }
             _ => None,
         })
@@ -195,15 +217,25 @@ fn method_sig(m: &TraitMethod, cx: &RenderCtx) -> Rendered {
         .map(|t| ty(t, cx))
         .unwrap_or_else(|| kw("void"));
     let method_name = super::to_camel_case(&m.name);
-    ident(&method_name)
+    let body = ident(&method_name)
         + generics_decl(&info)
         + arglist("(", params, ")")
         + punct(": ")
         + ret
-        + punct(";")
+        + punct(";");
+    if cx.options.show_docs {
+        if let Some(doc) = m.documentation.as_deref().filter(|d| !d.is_empty()) {
+            return TypeScript.doc_comment(doc) + Doc::hardline() + body;
+        }
+    }
+    body
 }
 
 fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
+    use ir::ty::{
+        ConditionalType, LiteralKind, MappedType, ModifierPrefix, PredicateSubject, TypeOperator,
+        TypePredicate, TypeQuery,
+    };
     match t {
         Type::TypeReference(r) => type_reference(r, cx),
         Type::Primitive(p) => tyname(primitive(p)),
@@ -211,14 +243,157 @@ fn ty(t: &Type, cx: &RenderCtx) -> Rendered {
         Type::SelfType => kw("this"),
         Type::Slice(inner) | Type::Array { r#type: inner, .. } => ty(inner, cx) + punct("[]"),
         Type::BorrowedRef { r#type, .. } | Type::RawPointer { r#type, .. } => ty(r#type, cx),
+        Type::Tuple(ts) if ts.is_empty() => kw("void"),
         Type::Tuple(ts) => generic_list("[", ts.iter().map(|t| ty(t, cx)).collect(), "]"),
+        Type::NamedTuple(members) => {
+            let items: Vec<Rendered> = members
+                .iter()
+                .map(|m| match &m.label {
+                    Some(label) => ident(label) + punct(": ") + ty(&m.r#type, cx),
+                    None => ty(&m.r#type, cx),
+                })
+                .collect();
+            generic_list("[", items, "]")
+        }
         Type::Union(ts) => Doc::join(punct(" | "), ts.iter().map(|t| ty(t, cx))),
         Type::Intersection(ts) => Doc::join(punct(" & "), ts.iter().map(|t| ty(t, cx))),
         Type::Any => kw("any"),
-        Type::Infer => kw("unknown"),
+        Type::Infer => kw("infer"),
         Type::Never => kw("never"),
         Type::Variadic(inner) => punct("...") + ty(inner, cx) + punct("[]"),
-        _ => kw("unknown"),
+        Type::TypeOperator(TypeOperator { operator, r#type }) => {
+            kw(operator) + sp() + ty(r#type, cx)
+        }
+        Type::Conditional(ConditionalType {
+            check_type,
+            extends_type,
+            true_type,
+            false_type,
+        }) => {
+            ty(check_type, cx)
+                + sp()
+                + kw("extends")
+                + sp()
+                + ty(extends_type, cx)
+                + sp()
+                + punct("? ")
+                + ty(true_type, cx)
+                + sp()
+                + punct(": ")
+                + ty(false_type, cx)
+        }
+        Type::Mapped(MappedType {
+            readonly,
+            optional,
+            parameter,
+            source_type,
+            name_type,
+            value_type,
+        }) => {
+            let ro = match readonly {
+                Some(ModifierPrefix::Add) => punct("+") + kw("readonly") + sp(),
+                Some(ModifierPrefix::Remove) => punct("-") + kw("readonly") + sp(),
+                Some(ModifierPrefix::Preserve) => kw("readonly") + sp(),
+                None => Doc::nil(),
+            };
+            let opt = match optional {
+                Some(ModifierPrefix::Add) => punct("+?"),
+                Some(ModifierPrefix::Remove) => punct("-?"),
+                Some(ModifierPrefix::Preserve) => punct("?"),
+                None => Doc::nil(),
+            };
+            let key = match name_type {
+                Some(nt) => {
+                    ident(parameter)
+                        + sp()
+                        + kw("in")
+                        + sp()
+                        + ty(source_type, cx)
+                        + sp()
+                        + kw("as")
+                        + sp()
+                        + ty(nt, cx)
+                }
+                None => ident(parameter) + sp() + kw("in") + sp() + ty(source_type, cx),
+            };
+            let val = value_type
+                .as_ref()
+                .map(|v| ty(v, cx))
+                .unwrap_or_else(|| kw("unknown"));
+            punct("{ ") + ro + punct("[") + key + punct("]") + opt + punct(": ") + val + punct(" }")
+        }
+        Type::Literal(lit) => match lit.kind {
+            LiteralKind::String | LiteralKind::Number | LiteralKind::Boolean | LiteralKind::BigInt => {
+                txt(&lit.value).annotate(Annotation::Type)
+            }
+        },
+        Type::TemplateLiteral(tmpl) => {
+            // Reconstruct `` `q0${T0}q1${T1}…` ``
+            let mut parts: Vec<Rendered> = Vec::new();
+            parts.push(punct("`"));
+            for (i, quasi) in tmpl.quasis.iter().enumerate() {
+                parts.push(txt(quasi));
+                if let Some(t) = tmpl.types.get(i) {
+                    parts.push(punct("${"));
+                    parts.push(ty(t, cx));
+                    parts.push(punct("}"));
+                }
+            }
+            parts.push(punct("`"));
+            Doc::concat(parts).annotate(Annotation::Type)
+        }
+        Type::TypeQuery(TypeQuery { name, generic_args }) => {
+            let base = kw("typeof") + sp() + tyname(name);
+            match generic_args {
+                Some(args) if !args.is_empty() => {
+                    let items: Vec<Rendered> = args
+                        .iter()
+                        .filter_map(|a| match a {
+                            GenericArg::Type(t) => Some(ty(t, cx)),
+                            _ => None,
+                        })
+                        .collect();
+                    base + generic_list("<", items, ">")
+                }
+                _ => base,
+            }
+        }
+        Type::Predicate(TypePredicate {
+            asserts,
+            subject,
+            r#type,
+        }) => {
+            let head = if *asserts {
+                kw("asserts") + sp()
+            } else {
+                Doc::nil()
+            };
+            let subj = match subject {
+                PredicateSubject::This => kw("this"),
+                PredicateSubject::Identifier(id) => ident(id),
+            };
+            match r#type {
+                Some(t) => head + subj + sp() + kw("is") + sp() + ty(t, cx),
+                None => head + subj,
+            }
+        }
+        Type::FunctionPointer(fp) => {
+            let params = value_params(fp.inputs.as_deref(), cx);
+            arglist("(", params, ")")
+                + sp()
+                + punct("=>")
+                + sp()
+                + return_type(fp.outputs.as_deref(), cx)
+        }
+        Type::RecordLiteral(rec) => {
+            let fields: Vec<Rendered> = rec.fields.iter().filter_map(|f| field(f, cx)).collect();
+            block("{", fields, "}")
+        }
+        Type::QualifiedPath(qp) => {
+            // Fallback rendering: `SelfType["name"]` style when used as indexed-access legacy.
+            ty(&qp.self_type, cx) + punct("[") + txt(&qp.name).annotate(Annotation::Type) + punct("]")
+        }
+        Type::DynTrait(_) | Type::ImplTrait(_) | Type::Sum(_) => kw("unknown"),
     }
 }
 

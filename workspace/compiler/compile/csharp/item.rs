@@ -3,14 +3,15 @@
 //! Shape decisions (C# form → IR form):
 //!
 //! * **class / struct / record / record struct** → `Entry::RecordType`.
-//!   Fields, properties (accessor asymmetry as decorators), and events (as
-//!   `event`-decorated fields) stay inline `Record.fields`; constructors fill
-//!   `Record.constructors`; methods / operators / conversions become
-//!   standalone `Entry::Function` symbols (overloads folded) listed in
-//!   `Record.members` alongside nested types. Base type + interfaces land in
-//!   `super_types`; interfaces resolving in-extraction also wire
-//!   `implemented_protocols`. Struct-ness / sealed / abstract / static /
-//!   readonly / ref ride a `Declared:` doc note (no structural slot).
+//!   Fields and properties (accessor asymmetry as decorators) stay inline
+//!   `Record.fields`; events become standalone `Entry::Event` symbols (delegate
+//!   type on `TypedBinding.ty`); constructors fill `Record.constructors`;
+//!   methods / operators / conversions become standalone `Entry::Function`
+//!   symbols (overloads folded) listed in `Record.members` alongside nested
+//!   types and events. Base type + interfaces land in `super_types`; interfaces
+//!   resolving in-extraction also wire `implemented_protocols`. The C# form
+//!   keyword (class/struct/record/record struct) plus sealed / abstract /
+//!   static / readonly / ref ride a `Declared:` doc note (no structural slot).
 //! * **interface** → `Entry::TraitDef`. Abstract members → `required_methods`;
 //!   default interface members → `provided_methods`; properties →
 //!   `TraitDef.properties`; variance + constraints → `Generics`; base
@@ -25,7 +26,7 @@ use std::collections::BTreeMap;
 use ir::entry::{Entry, NudoxPath};
 use ir::function::Function;
 use ir::generics::TraitRef;
-use ir::kind::Symbol;
+use ir::kind::{Deprecation, Symbol, TypedBinding};
 use ir::parameter::Parameter as IrParameter;
 use ir::protocols::{TraitAttribute, TraitDef};
 use ir::record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant};
@@ -65,7 +66,7 @@ fn doc_id_alias(doc_id: &str) -> Option<HashSet<Vec<String>>> {
 	Some(set)
 }
 
-/// A deprecation section from an `[Obsolete]` marker.
+/// A deprecation section from an `[Obsolete]` marker (prose for docs).
 fn deprecation_section(dep: Option<&schema::Deprecated>) -> Option<String> {
 	let dep = dep?;
 	let label = if dep.is_error { "Deprecated (error)" } else { "Deprecated" };
@@ -75,20 +76,62 @@ fn deprecation_section(dep: Option<&schema::Deprecated>) -> Option<String> {
 	}
 }
 
-/// The non-access modifier note for a type (`Declared: sealed abstract`).
-fn declared_note(modifiers: &[String]) -> Option<String> {
+/// Map oracle `[Obsolete]` onto the IR [`Deprecation`] field.
+///
+/// There is no structural slot for `is_error`, so an error-level Obsolete
+/// prefixes the note with `"error: "` when a message is present, or sets the
+/// note to `"error"` alone when bare.
+pub fn deprecation_of(dep: Option<&schema::Deprecated>) -> Option<Deprecation> {
+	let dep = dep?;
+	let note = match (&dep.message, dep.is_error) {
+		(Some(msg), true) if !msg.is_empty() => Some(format!("error: {msg}")),
+		(Some(msg), false) if !msg.is_empty() => Some(msg.clone()),
+		(_, true) => Some("error".to_string()),
+		(_, false) => None,
+	};
+	Some(Deprecation { note, since: None })
+}
+
+/// C# form keyword recovered from the oracle `kind` token.
+fn form_keyword(kind: &str) -> &'static str {
+	match kind {
+		"STRUCT" => "struct",
+		"RECORD" => "record class",
+		"RECORD_STRUCT" => "record struct",
+		"INTERFACE" => "interface",
+		"ENUM" => "enum",
+		"DELEGATE" => "delegate",
+		// CLASS and unknown → class
+		_ => "class",
+	}
+}
+
+/// The form + non-access modifier note for a type
+/// (`Declared: sealed abstract class` / `Declared: readonly struct`).
+///
+/// Always includes the C# form keyword so CLASS/STRUCT/RECORD/RECORD_STRUCT
+/// remain recoverable (they all lower to `Entry::RecordType`).
+fn declared_note(kind: &str, modifiers: &[String]) -> Option<String> {
 	const INTERESTING: &[&str] =
 		&["static", "sealed", "abstract", "readonly", "ref", "partial", "unsafe", "new"];
-	let picked: Vec<&str> = modifiers
+	let mut parts: Vec<&str> = modifiers
 		.iter()
 		.map(String::as_str)
 		.filter(|m| INTERESTING.contains(m))
 		.collect();
-	if picked.is_empty() {
-		None
-	} else {
-		Some(format!("Declared: `{}`", picked.join(" ")))
+	parts.push(form_keyword(kind));
+	Some(format!("Declared: `{}`", parts.join(" ")))
+}
+
+/// Source accessibility as a `Declared:` note so collapsed visibility pairs
+/// (`protectedInternal` → Protected, `privateProtected` → Package) stay
+/// recoverable from documentation.
+fn accessibility_declared_note(accessibility: &str) -> Option<String> {
+	if accessibility.is_empty() {
+		return None;
 	}
+	// Always stamp the original oracle token (camelCase) for fidelity.
+	Some(format!("Declared: `{accessibility}`"))
 }
 
 /// Assemble a type entry's documentation: prose, declaration modifiers,
@@ -121,7 +164,11 @@ fn type_documentation(
 
 	sections.extend(extra.iter().cloned());
 
-	if let Some(note) = declared_note(&decl.modifiers) {
+	if let Some(note) = declared_note(&decl.kind, &decl.modifiers) {
+		sections.push(note);
+	}
+	// Always stamp original accessibility so collapsed pairs stay recoverable.
+	if let Some(note) = accessibility_declared_note(&type_accessibility(decl)) {
 		sections.push(note);
 	}
 	if !decl.attributes.is_empty() {
@@ -180,6 +227,10 @@ fn lower_field(f: &schema::Field) -> Field {
 	if f.is_required {
 		decorators.push("required".to_string());
 	}
+	// Stamp original accessibility so collapsed pairs stay recoverable.
+	if !f.accessibility.is_empty() {
+		decorators.push(format!("accessibility:{}", f.accessibility));
+	}
 
 	Field::Known(KnownField {
 		key:           FieldKey::Ident(f.name.clone()),
@@ -193,7 +244,12 @@ fn lower_field(f: &schema::Field) -> Field {
 			is_static:   f.is_static || f.is_const,
 		},
 		visibility:    Some(types::visibility(&f.accessibility)),
-		documentation: field_doc(parsed.as_ref(), f.deprecated.as_ref(), f.hidden),
+		documentation: field_doc(
+			parsed.as_ref(),
+			f.deprecated.as_ref(),
+			f.hidden,
+			Some(&f.accessibility),
+		),
 	})
 }
 
@@ -220,6 +276,9 @@ fn lower_property(p: &schema::Property) -> Field {
 	}
 	if p.returns_by_ref {
 		decorators.push(if p.returns_by_ref_readonly { "ref readonly".to_string() } else { "ref".to_string() });
+	}
+	if !p.accessibility.is_empty() {
+		decorators.push(format!("accessibility:{}", p.accessibility));
 	}
 
 	// A property with no setter is immutable from the outside.
@@ -266,38 +325,79 @@ fn accessor_decorator(p: &schema::Property) -> String {
 	parts.join(";")
 }
 
-/// Lower an event into an `event`-decorated inline field (the IR `Entry::Event`
-/// is payloadless — Track A rides the delegate type as the field type).
-fn lower_event(e: &schema::Event) -> Field {
+/// Lower an event into a standalone `Entry::Event` whose `TypedBinding.ty`
+/// carries the delegate type (C5). Returns the minted path for the parent
+/// `members` list.
+fn push_event_entry(
+	ctx: &Lowering<'_>,
+	decl: &schema::TypeDecl,
+	e: &schema::Event,
+	entries: &mut Vec<(NudoxPath, Entry)>,
+) -> NudoxPath {
+	let path = ctx.member_key(decl, &e.name);
 	let parsed = xmldoc::parse_opt(e.doc.as_deref());
-	let mut decorators: Vec<String> =
-		e.attributes.iter().map(types::render_attribute).collect();
-	decorators.push("event".to_string());
+	let mut doc_sections: Vec<String> = Vec::new();
+	if let Some(text) = parsed.as_ref().and_then(ParsedDoc::documentation) {
+		doc_sections.push(text);
+	}
+	doc_sections.push("Declared: `event`".to_string());
+	if e.is_static {
+		doc_sections.push("Declared: `static`".to_string());
+	}
+	if let Some(note) = accessibility_declared_note(&e.accessibility) {
+		doc_sections.push(note);
+	}
+	if !e.attributes.is_empty() {
+		let rendered: Vec<String> =
+			e.attributes.iter().map(|a| format!("`{}`", types::render_attribute(a))).collect();
+		doc_sections.push(format!("Attributes: {}", rendered.join(", ")));
+	}
+	if e.hidden {
+		doc_sections.push("Hidden (`EditorBrowsable(Never)`).".to_string());
+	}
+	if let Some(section) = deprecation_section(e.deprecated.as_ref()) {
+		doc_sections.push(section);
+	}
 
-	Field::Known(KnownField {
-		key:           FieldKey::Ident(e.name.clone()),
-		r#type:        Some(Box::new(types::lower_type(&e.ty))),
-		default_value: None,
-		attributes:    FieldAttributes {
-			decorators,
-			is_mutable:  true,
-			is_optional: false,
-			is_static:   e.is_static,
-		},
-		visibility:    Some(types::visibility(&e.accessibility)),
-		documentation: field_doc(parsed.as_ref(), e.deprecated.as_ref(), e.hidden),
-	})
+	entries.push((
+		path.clone(),
+		Entry::Event(Symbol {
+			name:          e.name.clone(),
+			path:          path.clone(),
+			aliases:       doc_id_alias(&e.doc_id),
+			visibility:    types::visibility(&e.accessibility),
+			documentation: if doc_sections.is_empty() {
+				None
+			} else {
+				Some(doc_sections.join("\n\n"))
+			},
+			deprecation:   deprecation_of(e.deprecated.as_ref()),
+			doc_links:     make_doc_links(ctx, &e.doc_links),
+			inner:         TypedBinding {
+				ty:      Some(types::lower_type(&e.ty)),
+				value:   None,
+				mutable: Some(true),
+			},
+		}),
+	));
+	path
 }
 
-/// Documentation for a field/event: prose + hidden/deprecation.
+/// Documentation for a field: prose + accessibility + hidden/deprecation.
 fn field_doc(
 	parsed: Option<&ParsedDoc>,
 	deprecated: Option<&schema::Deprecated>,
 	hidden: bool,
+	accessibility: Option<&str>,
 ) -> Option<String> {
 	let mut sections: Vec<String> = Vec::new();
 	if let Some(text) = parsed.and_then(ParsedDoc::documentation) {
 		sections.push(text);
+	}
+	if let Some(acc) = accessibility {
+		if let Some(note) = accessibility_declared_note(acc) {
+			sections.push(note);
+		}
 	}
 	if hidden {
 		sections.push("Hidden (`EditorBrowsable(Never)`).".to_string());
@@ -308,7 +408,7 @@ fn field_doc(
 	if sections.is_empty() { None } else { Some(sections.join("\n\n")) }
 }
 
-/// Documentation for a property: prose (+ `<value>`) + hidden/deprecation.
+/// Documentation for a property: prose (+ `<value>`) + accessibility + hidden/deprecation.
 fn property_doc(parsed: Option<&ParsedDoc>, p: &schema::Property) -> Option<String> {
 	let mut sections: Vec<String> = Vec::new();
 	if let Some(text) = parsed.and_then(ParsedDoc::documentation) {
@@ -316,6 +416,9 @@ fn property_doc(parsed: Option<&ParsedDoc>, p: &schema::Property) -> Option<Stri
 	}
 	if let Some(value) = parsed.and_then(|d| d.value.clone()) {
 		sections.push(format!("Value: {value}"));
+	}
+	if let Some(note) = accessibility_declared_note(&p.accessibility) {
+		sections.push(note);
 	}
 	if p.hidden {
 		sections.push("Hidden (`EditorBrowsable(Never)`).".to_string());
@@ -375,6 +478,9 @@ fn push_method_entries(
 			}
 		}
 		doc_sections.extend(function::declaration_notes(primary));
+		if let Some(note) = accessibility_declared_note(&primary.accessibility) {
+			doc_sections.push(note);
+		}
 		if primary.hidden {
 			doc_sections.push("Hidden (`EditorBrowsable(Never)`).".to_string());
 		}
@@ -397,7 +503,7 @@ fn push_method_entries(
 				} else {
 					Some(doc_sections.join("\n\n"))
 				},
-				deprecation:   None,
+				deprecation:   deprecation_of(primary.deprecated.as_ref()),
 				doc_links:     make_doc_links(ctx, &primary.doc_links),
 				inner:         function::fold_overloads(lowered),
 			}),
@@ -408,11 +514,14 @@ fn push_method_entries(
 }
 
 /// The nested member types that survive lowering, as paths for `members`.
+///
+/// Oracle `members.nested` is a list of **doc-ids** (`T:Ns.Outer+Inner`), so
+/// resolution tries `types_by_doc_id` first and falls back to qualified name.
 fn nested_paths(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<NudoxPath> {
 	decl.members
 		.nested
 		.iter()
-		.filter_map(|qualified| ctx.decl(qualified))
+		.filter_map(|key| ctx.resolve_type_ref(key))
 		.map(|nested| ctx.type_key(nested))
 		.collect()
 }
@@ -435,7 +544,7 @@ fn lower_class_like(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPa
 	let path = ctx.type_key(decl);
 	let parsed = xmldoc::parse_opt(decl.doc.as_deref());
 
-	// --- Fields, properties, events, indexers → inline fields. -------------
+	// --- Fields, properties, indexers → inline fields. ---------------------
 	let mut fields: Vec<Field> = Vec::new();
 	for f in &decl.members.fields {
 		fields.push(lower_field(f));
@@ -445,9 +554,6 @@ fn lower_class_like(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPa
 	}
 	for idx in &decl.members.indexers {
 		fields.push(lower_property(idx));
-	}
-	for e in &decl.members.events {
-		fields.push(lower_event(e));
 	}
 
 	// --- Constructors. -----------------------------------------------------
@@ -464,6 +570,13 @@ fn lower_class_like(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPa
 	all_methods.extend(decl.members.operators.iter().cloned());
 	all_methods.extend(decl.members.conversions.iter().cloned());
 	let mut members = push_method_entries(ctx, decl, &all_methods, &mut entries);
+
+	// --- Events → standalone Entry::Event members (delegate type on ty). ---
+	for e in &decl.members.events {
+		members.push(push_event_entry(ctx, decl, e, &mut entries));
+	}
+
+	// Nested types (oracle emits doc-ids).
 	members.extend(nested_paths(ctx, decl));
 
 	// --- Supertypes. -------------------------------------------------------
@@ -518,7 +631,7 @@ fn lower_class_like(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPa
 			aliases: doc_id_alias(&decl.doc_id),
 			visibility: types::visibility(&type_accessibility(decl)),
 			documentation: type_documentation(decl, parsed.as_ref(), &extra),
-			deprecation: None,
+			deprecation: deprecation_of(decl.deprecated.as_ref()),
 			doc_links: make_doc_links(ctx, &decl.doc_links),
 			inner: record,
 		}),
@@ -576,9 +689,6 @@ fn lower_interface(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPat
 	for idx in &decl.members.indexers {
 		properties.push(lower_property(idx));
 	}
-	for e in &decl.members.events {
-		properties.push(lower_event(e));
-	}
 
 	let super_traits: Vec<TraitRef> = decl.interfaces.iter().map(types::trait_ref).collect();
 
@@ -588,7 +698,12 @@ fn lower_interface(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPat
 		attributes.push(TraitAttribute::Custom { name: rendered, args: None });
 	}
 
-	let members = nested_paths(ctx, decl);
+	// Events as standalone members; nested types via doc-id resolution.
+	let mut members = Vec::new();
+	for e in &decl.members.events {
+		members.push(push_event_entry(ctx, decl, e, &mut entries));
+	}
+	members.extend(nested_paths(ctx, decl));
 
 	let trait_def = TraitDef {
 		generics: types::lower_type_params(&decl.type_params),
@@ -613,7 +728,7 @@ fn lower_interface(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPat
 			aliases: doc_id_alias(&decl.doc_id),
 			visibility: types::visibility(&type_accessibility(decl)),
 			documentation: type_documentation(decl, parsed.as_ref(), &[]),
-			deprecation: None,
+			deprecation: deprecation_of(decl.deprecated.as_ref()),
 			doc_links: make_doc_links(ctx, &decl.doc_links),
 			inner: trait_def,
 		}),
@@ -639,15 +754,16 @@ fn lower_enum(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPath, En
 		.map(lower_enum_member)
 		.collect();
 
-	// SumType has no member slots: enum methods (rare) become standalone.
+	// Dual-emit methods and hang them on the SumType container.
 	let mut all_methods: Vec<schema::Method> = Vec::new();
 	all_methods.extend(decl.members.methods.iter().cloned());
-	push_method_entries(ctx, decl, &all_methods, &mut entries);
+	let method_paths = push_method_entries(ctx, decl, &all_methods, &mut entries);
 
-	// Underlying type + [Flags] ride the type doc.
+	// Underlying type + [Flags] still noted in docs; also structural on SumType.
 	let mut extra: Vec<String> = Vec::new();
-	if let Some(underlying) = &decl.enum_underlying {
-		let name = types::type_display(underlying);
+	let underlying = decl.enum_underlying.as_ref().map(types::lower_type);
+	if let Some(underlying_sig) = &decl.enum_underlying {
+		let name = types::type_display(underlying_sig);
 		if name != "System.Int32" && name != "Int32" {
 			extra.push(format!("Underlying type: `{name}`."));
 		}
@@ -655,6 +771,14 @@ fn lower_enum(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPath, En
 	if decl.attributes.iter().any(|a| a.ty.ends_with("FlagsAttribute")) {
 		extra.push("`[Flags]` — a bit-field enumeration.".to_string());
 	}
+
+	let mut sum = ir::record::SumType::from_variants(variants);
+	sum.underlying = underlying;
+	sum.members = if method_paths.is_empty() {
+		None
+	} else {
+		Some(method_paths)
+	};
 
 	entries.push((
 		path.clone(),
@@ -664,9 +788,9 @@ fn lower_enum(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPath, En
 			aliases: doc_id_alias(&decl.doc_id),
 			visibility: types::visibility(&type_accessibility(decl)),
 			documentation: type_documentation(decl, parsed.as_ref(), &extra),
-			deprecation: None,
+			deprecation: deprecation_of(decl.deprecated.as_ref()),
 			doc_links: make_doc_links(ctx, &decl.doc_links),
-			inner: variants,
+			inner: sum,
 		}),
 	));
 
@@ -687,10 +811,28 @@ fn lower_enum_member(f: &schema::Field) -> SumVariant {
 		sections.push(section);
 	}
 
+	let discriminant = f.constant.as_ref().and_then(|v| {
+		// Prefer structured int/bool/string; else keep the spelling as Var.
+		if let Ok(n) = v.replace('_', "").parse::<i64>() {
+			return Some(ir::generics::ConstExpr::Int(n));
+		}
+		if v == "true" {
+			return Some(ir::generics::ConstExpr::Bool(true));
+		}
+		if v == "false" {
+			return Some(ir::generics::ConstExpr::Bool(false));
+		}
+		if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+			return Some(ir::generics::ConstExpr::Str(v[1..v.len() - 1].to_string()));
+		}
+		Some(ir::generics::ConstExpr::Var(v.clone()))
+	});
+
 	SumVariant {
 		name:          f.name.clone(),
 		data:          None,
 		documentation: if sections.is_empty() { None } else { Some(sections.join("\n\n")) },
+		discriminant,
 	}
 }
 
@@ -737,9 +879,9 @@ fn lower_delegate(ctx: &Lowering<'_>, decl: &schema::TypeDecl) -> Vec<(NudoxPath
 			aliases: doc_id_alias(&decl.doc_id),
 			visibility: types::visibility(&type_accessibility(decl)),
 			documentation: type_documentation(decl, parsed.as_ref(), &["A `delegate` type.".to_string()]),
-			deprecation: None,
+			deprecation: deprecation_of(decl.deprecated.as_ref()),
 			doc_links: make_doc_links(ctx, &decl.doc_links),
-			inner: fnptr,
+			inner: ir::kind::TypeAliasBody::plain(fnptr),
 		}),
 	)]
 }

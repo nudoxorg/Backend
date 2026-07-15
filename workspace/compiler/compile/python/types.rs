@@ -4,22 +4,29 @@
 //! Callable, TypedDict, TypeVar, ParamSpec, …) to the language-agnostic
 //! IR type representation.
 
-use pyrefly_types::callable::{Callable, FuncMetadata, Function, FunctionKind, Param, ParamList, Params};
+use pyrefly_types::callable::{Callable, DefaultValue, Function, Param, Params, Required};
 use pyrefly_types::callable_residual::CallableResidualKind;
 use pyrefly_types::class::ClassType;
 use pyrefly_types::literal::Lit;
 use pyrefly_types::quantified::{Quantified, QuantifiedKind};
 use pyrefly_types::tuple::Tuple;
 use pyrefly_types::type_alias::TypeAliasData;
-use pyrefly_types::type_var::Restriction;
+use pyrefly_types::type_var::{PreInferenceVariance, Restriction};
 use pyrefly_types::typed_dict::TypedDict;
-use pyrefly_types::types::{BoundMethodType, Forallable, NeverStyle, Type, Union};
+use pyrefly_types::types::{BoundMethodType, NeverStyle, TParams, Type};
 
 use ir::function::Attribute;
-use ir::generics::GenericArg;
-use ir::parameter::{LiteralParameter, Parameter as IrParameter, ParameterAttribute};
+use ir::generics::{
+    Constraint, ConstExpr, GenericArg, Generics, Kind, TraitRef, TypeExpr, Variance,
+};
+use ir::parameter::{
+    LiteralParameter, Parameter as IrParameter, ParameterAttribute, TypeParam, TypeParamOrigin,
+};
 use ir::primitives::{Primitive, Width};
-use ir::ty::{GenericParam, FunctionPointer, TypeReference};
+use ir::ty::{
+    FunctionPointer, GenericParam, LiteralKind, LiteralValue, PredicateSubject, TypeOperator,
+    TypePredicate, TypeReference,
+};
 
 /// Strip the trailing `@line:col-col` source-location suffix that pyrefly's
 /// `QName` / `Class` `Display` appends to a fully-qualified name
@@ -66,18 +73,21 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
             // ClassDef is the definition; represent as `Type[ClassName]`.
             let qname = strip_loc(&format!("{}", cls.qname()));
             ir::ty::Type::TypeReference(TypeReference {
-                identifier: format!("typing.Type"),
-                generic_args: Some(vec![GenericArg::Type(
-                    ir::ty::Type::TypeReference(TypeReference {
+                identifier: "typing.Type".into(),
+                generic_args: Some(vec![GenericArg::Type(ir::ty::Type::TypeReference(
+                    TypeReference {
                         identifier: qname,
                         generic_args: None,
-                    }),
-                )]),
+                    },
+                ))]),
             })
         }
         Type::Function(func) => lower_function_type(func),
         Type::Callable(callable) => lower_callable_type(callable),
         Type::BoundMethod(bm) => lower_bound_method(&bm.func),
+        // Forall is declaration-site quantification; the *body* type is what
+        // consumers need in type positions. Declaration-site params are
+        // extracted separately via [`lower_tparams`] / [`extract_forall_tparams`].
         Type::Forall(forall) => {
             let body = forall.body.clone().as_type();
             lower_type(&body)
@@ -113,9 +123,33 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
             generic_args: None,
         }),
         Type::TypeAlias(alias) | Type::UntypedAlias(alias) => lower_type_alias(alias),
-        Type::TypeGuard(inner) => lower_type(inner),
-        Type::TypeIs(inner) => lower_type(inner),
-        Type::Annotated(inner, _) => lower_type(inner),
+        // TypeGuard / TypeIs are type predicates (PEP 647 / PEP 742).
+        Type::TypeGuard(inner) => ir::ty::Type::Predicate(TypePredicate {
+            asserts: false,
+            subject: PredicateSubject::Identifier(String::new()),
+            r#type: Some(Box::new(lower_type(inner))),
+        }),
+        Type::TypeIs(inner) => ir::ty::Type::Predicate(TypePredicate {
+            asserts: false,
+            subject: PredicateSubject::Identifier(String::new()),
+            r#type: Some(Box::new(lower_type(inner))),
+        }),
+        // Annotated[T, meta...] — keep form via TypeOperator so the annotation
+        // is not silently stripped to the bare inner type. Metadata items (the
+        // `...` in `Annotated[T, ...]`) are preserved in the operator spelling
+        // when present so consumers can still recover them.
+        Type::Annotated(inner, meta) => {
+            let operator = if meta.is_empty() {
+                "Annotated".into()
+            } else {
+                let meta_spelling: Vec<String> = meta.iter().map(|m| format!("{m}")).collect();
+                format!("Annotated[{}]", meta_spelling.join(", "))
+            };
+            ir::ty::Type::TypeOperator(TypeOperator {
+                operator,
+                r#type: Box::new(lower_type(inner)),
+            })
+        }
         Type::Unpack(inner) => ir::ty::Type::Variadic(Box::new(lower_type(inner))),
         Type::Concatenate(prefix, ps) => {
             // ParamSpec concatenation — lower as a generic function.
@@ -144,7 +178,7 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
                 attributes: None,
             })
         }
-        Type::SelfType(ct) => ir::ty::Type::SelfType,
+        Type::SelfType(_ct) => ir::ty::Type::SelfType,
         Type::CallableResidual(residual) => match &residual.kind {
             CallableResidualKind::Generic { quantified } => lower_quantified(quantified),
             CallableResidualKind::Overload { branches, .. } => {
@@ -204,13 +238,334 @@ pub fn lower_type(py_type: &Type) -> ir::ty::Type {
             ]),
         }),
         Type::ParamSpecValue(params) => ir::ty::Type::FunctionPointer(FunctionPointer {
-            inputs: Some(params.items().iter().map(lower_param_to_ir).collect()),
+            inputs: Some(params.items().iter().map(lower_param).collect()),
             outputs: None,
             attributes: None,
         }),
         Type::Sentinel(_) => ir::ty::Type::Any,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Declaration-site generics
+// ---------------------------------------------------------------------------
+
+/// Lower a pyrefly `TParams` list into IR [`Generics`].
+///
+/// Each quantified becomes a `Parameter::Type` entry; bounds/constraints are
+/// recorded on `Generics.constraints` so the parameter name is never lost
+/// (unlike the historical path that collapsed bounded vars to their bound).
+pub fn lower_tparams(tparams: &TParams) -> Option<Generics> {
+    if tparams.is_empty() {
+        return None;
+    }
+
+    let mut params = Vec::new();
+    let mut constraints = Vec::new();
+
+    for q in tparams.iter() {
+        let name = q.name.to_string();
+        let variance = match q.variance() {
+            PreInferenceVariance::Covariant => Variance::Covariant,
+            PreInferenceVariance::Contravariant => Variance::Contravariant,
+            PreInferenceVariance::Invariant | PreInferenceVariance::Undefined => {
+                Variance::Invariant
+            }
+        };
+        let kind = match q.kind() {
+            QuantifiedKind::TypeVar => Kind::Type,
+            // ParamSpec is a higher-kinded callable-params constructor.
+            QuantifiedKind::ParamSpec => {
+                Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Constraint))
+            }
+            QuantifiedKind::TypeVarTuple => Kind::Type,
+        };
+        let default_type = q.default().map(|t| type_expr_of(&lower_type(t)));
+
+        params.push(IrParameter::Type(TypeParam {
+            name: Some(name.clone()),
+            kind,
+            variance,
+            default_type,
+            params: None,
+            origin: TypeParamOrigin::Free,
+        }));
+
+        match q.restriction() {
+            Restriction::Bound(bound) => {
+                constraints.push(Constraint::TraitBound {
+                    param: name,
+                    trait_ref: trait_ref_of(&lower_type(bound)),
+                });
+            }
+            Restriction::Constraints(cs) => {
+                for c in cs {
+                    constraints.push(Constraint::TraitBound {
+                        param: name.clone(),
+                        trait_ref: trait_ref_of(&lower_type(c)),
+                    });
+                }
+            }
+            Restriction::Unrestricted => {}
+        }
+    }
+
+    Some(Generics { params, constraints })
+}
+
+/// Extract declaration-site type parameters from a callable-shaped type
+/// (`Type::Forall` wrapping a function / bound method).
+pub fn extract_forall_tparams(py_type: &Type) -> Option<Generics> {
+    match py_type {
+        Type::Forall(forall) => lower_tparams(&forall.tparams),
+        Type::BoundMethod(bm) => match &bm.func {
+            BoundMethodType::Forall(fa) => lower_tparams(&fa.tparams),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Synthesize a [`Generics`] list from free `GenericParam` names mentioned in
+/// already-lowered parameter types. Used when a function is *not* wrapped in
+/// `Type::Forall` but still references TypeVars in its signature.
+pub fn generics_from_free_params(
+    inputs: &[IrParameter],
+    outputs: &Option<IrParameter>,
+) -> Option<Generics> {
+    let mut names: Vec<String> = Vec::new();
+    let mut push = |ty: &ir::ty::Type| collect_generic_param_names(ty, &mut names);
+    for p in inputs {
+        if let IrParameter::Literal(lp) = p {
+            if let Some(ty) = &lp.r#type {
+                push(ty);
+            }
+        }
+    }
+    if let Some(IrParameter::Literal(lp)) = outputs {
+        if let Some(ty) = &lp.r#type {
+            push(ty);
+        }
+    }
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        return None;
+    }
+    let params = names
+        .into_iter()
+        .map(|name| {
+            IrParameter::Type(TypeParam {
+                name: Some(name),
+                kind: Kind::Type,
+                variance: Variance::Invariant,
+                default_type: None,
+                params: None,
+                origin: TypeParamOrigin::Free,
+            })
+        })
+        .collect();
+    Some(Generics {
+        params,
+        constraints: Vec::new(),
+    })
+}
+
+fn collect_generic_param_names(ty: &ir::ty::Type, acc: &mut Vec<String>) {
+    match ty {
+        ir::ty::Type::GenericParam(g) => acc.push(g.name.clone()),
+        ir::ty::Type::Union(v) | ir::ty::Type::Intersection(v) | ir::ty::Type::Tuple(v) => {
+            v.iter().for_each(|t| collect_generic_param_names(t, acc));
+        }
+        ir::ty::Type::Slice(b) | ir::ty::Type::Variadic(b) => collect_generic_param_names(b, acc),
+        ir::ty::Type::TypeReference(r) => {
+            if let Some(args) = &r.generic_args {
+                for a in args {
+                    if let GenericArg::Type(t) = a {
+                        collect_generic_param_names(t, acc);
+                    }
+                }
+            }
+        }
+        ir::ty::Type::FunctionPointer(fp) => {
+            for list in [&fp.inputs, &fp.outputs] {
+                if let Some(params) = list {
+                    for p in params {
+                        if let IrParameter::Literal(lp) = p {
+                            if let Some(t) = &lp.r#type {
+                                collect_generic_param_names(t, acc);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ir::ty::Type::TypeOperator(op) => collect_generic_param_names(&op.r#type, acc),
+        ir::ty::Type::Predicate(p) => {
+            if let Some(t) = &p.r#type {
+                collect_generic_param_names(t, acc);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn type_expr_of(ty: &ir::ty::Type) -> TypeExpr {
+    match ty {
+        ir::ty::Type::TypeReference(r) => TypeExpr {
+            name: r.identifier.clone(),
+            args: r
+                .generic_args
+                .as_ref()
+                .map(|args| {
+                    args.iter()
+                        .filter_map(|a| match a {
+                            GenericArg::Type(t) => Some(type_expr_of(t)),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        },
+        ir::ty::Type::GenericParam(g) => TypeExpr {
+            name: g.name.clone(),
+            args: Vec::new(),
+        },
+        ir::ty::Type::Primitive(p) => TypeExpr {
+            name: format!("{p:?}"),
+            args: Vec::new(),
+        },
+        ir::ty::Type::Any => TypeExpr {
+            name: "Any".into(),
+            args: Vec::new(),
+        },
+        other => TypeExpr {
+            name: format!("{other:?}"),
+            args: Vec::new(),
+        },
+    }
+}
+
+fn trait_ref_of(ty: &ir::ty::Type) -> TraitRef {
+    let expr = type_expr_of(ty);
+    TraitRef {
+        name: expr.name,
+        args: expr.args,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parameters
+// ---------------------------------------------------------------------------
+
+/// Lower a pyrefly [`Param`] into an IR value parameter, preserving:
+/// - positional-only / keyword-only / `*args` / `**kwargs` distinction
+/// - requiredness and default values
+pub fn lower_param(param: &Param) -> IrParameter {
+    fn opt_name<N: ToString>(n: &Option<N>) -> String {
+        n.as_ref().map(|n| n.to_string()).unwrap_or_default()
+    }
+
+    let (name, ty, mut attrs, required) = match param {
+        Param::PosOnly(name, ty, req) => (
+            opt_name(name),
+            ty,
+            vec![ParameterAttribute::PositionalOnly],
+            req,
+        ),
+        Param::Pos(name, ty, req) => (name.to_string(), ty, vec![], req),
+        Param::Varargs(name, ty) => (
+            opt_name(name),
+            ty,
+            vec![ParameterAttribute::Variadic],
+            &Required::Required,
+        ),
+        Param::KwOnly(name, ty, req) => (
+            name.to_string(),
+            ty,
+            vec![ParameterAttribute::KeywordOnly],
+            req,
+        ),
+        Param::Kwargs(name, ty) => (
+            opt_name(name),
+            ty,
+            vec![ParameterAttribute::KwVariadic],
+            &Required::Required,
+        ),
+    };
+
+    let (default_value, optional) = match required {
+        Required::Required => (None, false),
+        Required::Optional(dv) => (dv.as_ref().and_then(default_to_const_expr), true),
+    };
+    if optional {
+        attrs.push(ParameterAttribute::Optional);
+    }
+
+    IrParameter::Literal(LiteralParameter {
+        name,
+        r#type: Some(lower_type(ty)),
+        attributes: if attrs.is_empty() { None } else { Some(attrs) },
+        default_value,
+        description: None,
+    })
+}
+
+/// Map a pyrefly optional-parameter default into an IR [`ConstExpr`].
+pub fn default_to_const_expr(dv: &DefaultValue) -> Option<ConstExpr> {
+    // Prefer the display string when present (floats etc. lose precision as types).
+    if let Some(display) = &dv.display {
+        return Some(ConstExpr::Var(display.clone()));
+    }
+    const_expr_from_type(&dv.ty)
+}
+
+/// Best-effort compile-time value extraction from a pyrefly type (literals).
+pub fn const_expr_from_type(ty: &Type) -> Option<ConstExpr> {
+    match ty {
+        Type::Literal(lit) => match &lit.value {
+            Lit::Int(i) => i.as_i64().map(ConstExpr::Int),
+            Lit::Bool(b) => Some(ConstExpr::Bool(*b)),
+            Lit::Str(s) => Some(ConstExpr::Str(s.to_string())),
+            Lit::Bytes(b) => {
+                // Represent bytes defaults as a Python-ish `b'...'` string form.
+                Some(ConstExpr::Str(format!("b'{:?}'", b)))
+            }
+            Lit::Enum(e) => Some(ConstExpr::Var(format!(
+                "{}.{}",
+                e.class.name(),
+                e.member
+            ))),
+        },
+        Type::None => Some(ConstExpr::Var("None".into())),
+        Type::ClassType(ct) if ct.class_object().is_builtin("bool") => {
+            // Bare `bool` without a literal value — no recoverable constant.
+            None
+        }
+        _ => {
+            // Fall back to a stable display of the type as a Var name so the
+            // default slot is still non-empty for consumers that only care
+            // that *some* default exists. Prefer Display; Debug as last resort.
+            let s = format!("{ty}");
+            if s.is_empty() || s == "()" {
+                None
+            } else {
+                Some(ConstExpr::Var(s))
+            }
+        }
+    }
+}
+
+fn callable_param_types(params: &Params) -> Vec<IrParameter> {
+    match params {
+        Params::List(params) => params.items().iter().map(lower_param).collect(),
+        _ => Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Class / callable / tuple helpers
+// ---------------------------------------------------------------------------
 
 fn lower_class_type(ct: &ClassType) -> ir::ty::Type {
     let qname = strip_loc(&format!("{}", ct.qname()));
@@ -312,12 +667,43 @@ fn lower_typed_dict(td: &TypedDict) -> ir::ty::Type {
     }
 }
 
+/// Lower a pyrefly literal type, **preserving the value** as [`Type::Literal`].
 fn lower_literal(lit: &pyrefly_types::literal::Literal) -> ir::ty::Type {
     match &lit.value {
-        Lit::Int(i) => ir::ty::Type::Primitive(Primitive::Int(Width::W64)),
-        Lit::Bool(b) => ir::ty::Type::Primitive(Primitive::Bool),
-        Lit::Str(_) => ir::ty::Type::Primitive(Primitive::String),
-        Lit::Bytes(_) => ir::ty::Type::Primitive(Primitive::Bytes),
+        Lit::Int(i) => ir::ty::Type::Literal(LiteralValue {
+            kind: LiteralKind::Number,
+            value: i.to_string(),
+        }),
+        Lit::Bool(b) => ir::ty::Type::Literal(LiteralValue {
+            kind: LiteralKind::Boolean,
+            value: if *b { "True".into() } else { "False".into() },
+        }),
+        Lit::Str(s) => ir::ty::Type::Literal(LiteralValue {
+            kind: LiteralKind::String,
+            // Keep the unquoted content so consumers can re-quote as needed;
+            // the source spelling is recoverable via Display of Lit when needed.
+            value: s.to_string(),
+        }),
+        Lit::Bytes(bytes) => {
+            // Bytes are not a first-class LiteralKind; surface as a string form.
+            let mut escaped = String::from("b'");
+            for &byte in bytes.iter() {
+                match byte {
+                    b'\t' => escaped.push_str("\\t"),
+                    b'\n' => escaped.push_str("\\n"),
+                    b'\r' => escaped.push_str("\\r"),
+                    b'\\' => escaped.push_str("\\\\"),
+                    b'\'' => escaped.push_str("\\'"),
+                    0x20..=0x7e => escaped.push(byte as char),
+                    _ => escaped.push_str(&format!("\\x{byte:02x}")),
+                }
+            }
+            escaped.push('\'');
+            ir::ty::Type::Literal(LiteralValue {
+                kind: LiteralKind::String,
+                value: escaped,
+            })
+        }
         Lit::Enum(enum_lit) => ir::ty::Type::TypeReference(TypeReference {
             identifier: format!(
                 "{}.{}",
@@ -329,21 +715,21 @@ fn lower_literal(lit: &pyrefly_types::literal::Literal) -> ir::ty::Type {
     }
 }
 
+/// Lower a quantified type variable **always** as [`Type::GenericParam`],
+/// never collapsing to its bound or `Any`. Bounds live on the enclosing
+/// declaration's `generics` field (see [`lower_tparams`]).
 fn lower_quantified(q: &Quantified) -> ir::ty::Type {
-    match &q.restriction {
-        Restriction::Bound(bound) => lower_type(bound),
-        Restriction::Constraints(constraints) => {
-            ir::ty::Type::Union(constraints.iter().map(lower_type).collect())
-        }
-        Restriction::Unrestricted => ir::ty::Type::Any,
-    }
+    ir::ty::Type::GenericParam(GenericParam {
+        name: q.name.to_string(),
+        kind: None,
+    })
 }
 
 fn lower_type_alias(alias: &TypeAliasData) -> ir::ty::Type {
     match alias {
         TypeAliasData::Value(value) => lower_type(&value.as_type()),
         TypeAliasData::Ref(r#ref) => {
-            let mut ident = format!("{}.{}", r#ref.module_name, r#ref.name);
+            let ident = format!("{}.{}", r#ref.module_name, r#ref.name);
             ir::ty::Type::TypeReference(TypeReference {
                 identifier: ident,
                 generic_args: r#ref.args.as_ref().map(|args| {
@@ -357,38 +743,3 @@ fn lower_type_alias(alias: &TypeAliasData) -> ir::ty::Type {
     }
 }
 
-fn lower_param_to_ir(param: &Param) -> IrParameter {
-    fn opt_name<N: ToString>(n: &Option<N>) -> String {
-        n.as_ref().map(|n| n.to_string()).unwrap_or_default()
-    }
-    let (name, ty, attrs) = match param {
-        Param::PosOnly(name, ty, _) => (opt_name(name), ty, vec![]),
-        Param::Pos(name, ty, _) => (name.to_string(), ty, vec![]),
-        Param::Varargs(name, ty) => (
-            opt_name(name),
-            ty,
-            vec![ParameterAttribute::Variadic],
-        ),
-        Param::KwOnly(name, ty, _) => (name.to_string(), ty, vec![]),
-        Param::Kwargs(name, ty) => (
-            opt_name(name),
-            ty,
-            vec![ParameterAttribute::Variadic],
-        ),
-    };
-
-    IrParameter::Literal(LiteralParameter {
-        name,
-        r#type: Some(lower_type(ty)),
-        attributes: if attrs.is_empty() { None } else { Some(attrs) },
-        default_value: None,
-        description: None,
-    })
-}
-
-fn callable_param_types(params: &Params) -> Vec<IrParameter> {
-    match params {
-        Params::List(params) => params.items().iter().map(lower_param_to_ir).collect(),
-        _ => Vec::new(),
-    }
-}

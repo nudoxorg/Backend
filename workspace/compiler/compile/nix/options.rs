@@ -147,7 +147,7 @@ fn lower_option_type(ty: &Value) -> Type {
             Type::Primitive(ir::primitives::Primitive::Int(ir::primitives::Width::W64))
         }
         "float" => Type::Primitive(ir::primitives::Primitive::Float(ir::primitives::Width::W64)),
-        "str" | "string" | "path" | "package" | "lines" | "singleLineStr" => {
+        "str" | "string" | "lines" | "singleLineStr" | "passwdEntry" | "commas" => {
             Type::Primitive(ir::primitives::Primitive::String)
         }
         "listOf" => {
@@ -167,10 +167,16 @@ fn lower_option_type(ty: &Value) -> Type {
         ]),
         "enum" => {
             // Enum values live under `functor.payload` or `values`; render each
-            // as a literal reference, unioned.
+            // as a `Type::Literal` (string spelling), unioned — not opaque
+            // TypeReferences, so the renderer / docs can show the exact values.
             let members = enum_members(ty)
                 .into_iter()
-                .map(|v| Type::TypeReference(TypeReference { identifier: v, generic_args: None }))
+                .map(|v| {
+                    Type::Literal(ir::ty::LiteralValue {
+                        kind:  ir::ty::LiteralKind::String,
+                        value: v,
+                    })
+                })
                 .collect::<Vec<_>>();
             if members.is_empty() {
                 Type::Any
@@ -178,6 +184,44 @@ fn lower_option_type(ty: &Value) -> Type {
                 Type::Union(members)
             }
         }
+        // Additional lib.types mappings used heavily by NixOS modules.
+        "package" => Type::TypeReference(TypeReference {
+            identifier:   "Derivation".to_string(),
+            generic_args: None,
+        }),
+        "path" => Type::TypeReference(TypeReference {
+            identifier:   "Path".to_string(),
+            generic_args: None,
+        }),
+        "uniq" | "unique" => nested_type(ty),
+        "either" => {
+            // `either a b` stashes both under nestedTypes.
+            let left = select(ty, "nestedTypes")
+                .and_then(|n| select(&n, "left"))
+                .map(|t| lower_option_type(&t))
+                .unwrap_or(Type::Any);
+            let right = select(ty, "nestedTypes")
+                .and_then(|n| select(&n, "right"))
+                .map(|t| lower_option_type(&t))
+                .unwrap_or(Type::Any);
+            Type::Union(vec![left, right])
+        }
+        "oneOf" => {
+            // `oneOf [ t1 t2 … ]` — payload list of nested types.
+            let members = select(ty, "functor")
+                .and_then(|f| select(&f, "payload"))
+                .and_then(|p| as_list_values(&p))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| lower_option_type(&t))
+                .collect::<Vec<_>>();
+            if members.is_empty() {
+                Type::Any
+            } else {
+                Type::Union(members)
+            }
+        }
+        "raw" | "unspecified" => Type::Any,
         "submodule" => {
             // A nested module: represent as an (opaque) record reference.
             Type::TypeReference(TypeReference { identifier: "Submodule".to_string(), generic_args: None })
@@ -256,6 +300,13 @@ fn as_list_strings(value: &Value) -> Option<Vec<String>> {
                 })
                 .collect(),
         ),
+        _ => None,
+    }
+}
+
+fn as_list_values(value: &Value) -> Option<Vec<Value>> {
+    match value {
+        Value::List(list) => Some(list.iter().cloned().collect()),
         _ => None,
     }
 }

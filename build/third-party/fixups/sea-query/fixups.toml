@@ -1,0 +1,2 @@
+features = ["with-chrono", "thread-safe"]
+extra_deps = [":chrono-0.4"]

@@ -289,6 +289,12 @@ fn lower_path_type(ctx: &mut LowerCtx<'_>, path_ty: &ast::PathType) -> Type {
 				if let Some(prim) = primitive_from_str(&name) {
 					return Type::Primitive(prim);
 				}
+				// Non-primitive builtins (notably `str`) stay TypeReference so
+				// unsized `str` is never collapsed into Primitive::String.
+				return Type::TypeReference(TypeReference {
+					identifier:   name,
+					generic_args: None,
+				});
 			}
 			PathResolution::Def(def) => {
 				let identifier = def_path_string(ctx, def)
@@ -754,27 +760,35 @@ pub(crate) fn lower_generic_arg_list(
 	out
 }
 
-// ── primitives (width map mirrors compile/rust/types.rs) ─────────────────────
+// ── primitives ───────────────────────────────────────────────────────────────
 
-/// Map a primitive type name to IR [`Primitive`]. Same width table as the
-/// rustdoc path (`i32`/`isize` → `Int(Arch)`, `u32`/`usize` → `UInt(Arch)`, …).
+/// Map a fixed-width / arch primitive name to IR [`Primitive`].
+///
+/// Widths are exact: `i32` → `Int(W32)`, `isize` → `Int(Arch)`, etc.
+/// `str` is intentionally **not** mapped — callers leave it as
+/// [`Type::TypeReference`] with identifier `"str"` so unsized `str` is not
+/// collapsed into owned [`Primitive::String`] (which would make `&str` look
+/// like a string primitive).
 pub(crate) fn primitive_from_str(prim: &str) -> Option<Primitive> {
 	Some(match prim {
 		"i8" => Primitive::Int(Width::W8),
 		"i16" => Primitive::Int(Width::W16),
-		"i32" | "isize" => Primitive::Int(Width::Arch),
+		"i32" => Primitive::Int(Width::W32),
 		"i64" => Primitive::Int(Width::W64),
 		"i128" => Primitive::Int(Width::W128),
+		"isize" => Primitive::Int(Width::Arch),
 		"u8" => Primitive::UInt(Width::W8),
 		"u16" => Primitive::UInt(Width::W16),
-		"u32" | "usize" => Primitive::UInt(Width::Arch),
+		"u32" => Primitive::UInt(Width::W32),
 		"u64" => Primitive::UInt(Width::W64),
 		"u128" => Primitive::UInt(Width::W128),
+		"usize" => Primitive::UInt(Width::Arch),
 		"f16" => Primitive::Float(Width::W16),
 		"f32" => Primitive::Float(Width::W32),
-		"f64" | "f128" => Primitive::Float(Width::W64),
+		"f64" => Primitive::Float(Width::W64),
+		"f128" => Primitive::Float(Width::W128),
 		"bool" => Primitive::Bool,
-		"str" => Primitive::String,
+		// `str` stays a TypeReference — do not map to Primitive::String.
 		"char" => Primitive::Char,
 		_ => return None,
 	})
@@ -917,22 +931,51 @@ fn primitive_name(p: &Primitive) -> &'static str {
 	match p {
 		Primitive::Int(Width::W8) => "i8",
 		Primitive::Int(Width::W16) => "i16",
-		Primitive::Int(Width::Arch | Width::W32) => "i32",
+		Primitive::Int(Width::W32) => "i32",
 		Primitive::Int(Width::W64) => "i64",
 		Primitive::Int(Width::W128) => "i128",
+		Primitive::Int(Width::Arch) => "isize",
 		Primitive::UInt(Width::W8) => "u8",
 		Primitive::UInt(Width::W16) => "u16",
-		Primitive::UInt(Width::Arch | Width::W32) => "u32",
+		Primitive::UInt(Width::W32) => "u32",
 		Primitive::UInt(Width::W64) => "u64",
 		Primitive::UInt(Width::W128) => "u128",
+		Primitive::UInt(Width::Arch) => "usize",
 		Primitive::Float(Width::W8 | Width::W16) => "f16",
 		Primitive::Float(Width::W32) => "f32",
-		Primitive::Float(Width::W64 | Width::W128 | Width::Arch) => "f64",
+		Primitive::Float(Width::W64) => "f64",
+		Primitive::Float(Width::W128) => "f128",
+		Primitive::Float(Width::Arch) => "f64",
 		Primitive::Bool => "bool",
-		Primitive::String => "str",
+		// Owned string encoding only — bare `str` is a TypeReference, not this.
+		Primitive::String => "String",
 		Primitive::Char => "char",
 		Primitive::Bytes => "bytes",
 		Primitive::Date => "date",
 		Primitive::Address => "address",
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn primitive_widths_are_exact() {
+		assert_eq!(primitive_from_str("i32"), Some(Primitive::Int(Width::W32)));
+		assert_eq!(primitive_from_str("isize"), Some(Primitive::Int(Width::Arch)));
+		assert_eq!(primitive_from_str("u32"), Some(Primitive::UInt(Width::W32)));
+		assert_eq!(primitive_from_str("usize"), Some(Primitive::UInt(Width::Arch)));
+		assert_eq!(primitive_from_str("f64"), Some(Primitive::Float(Width::W64)));
+		assert_eq!(primitive_from_str("f128"), Some(Primitive::Float(Width::W128)));
+	}
+
+	#[test]
+	fn str_is_not_a_primitive() {
+		assert_eq!(
+			primitive_from_str("str"),
+			None,
+			"str must stay TypeReference, not Primitive::String"
+		);
 	}
 }

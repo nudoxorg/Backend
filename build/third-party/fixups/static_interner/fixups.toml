@@ -1,0 +1,2 @@
+features = ["dupe"]
+extra_deps = [":dupe-0.9"]

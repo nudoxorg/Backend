@@ -140,11 +140,24 @@ fn intrinsic_to_ir(kind: IntrinsicKind) -> Type {
         IntrinsicKind::String => Type::Primitive(Primitive::String),
         IntrinsicKind::Boolean => Type::Primitive(Primitive::Bool),
         IntrinsicKind::Bigint => Type::Primitive(Primitive::Int(Width::W128)),
-        // null / undefined / void collapse to the Unit type (empty tuple),
-        // matching keyword_type("null"|"undefined"|"void").
-        IntrinsicKind::Null | IntrinsicKind::Undefined | IntrinsicKind::Void => Type::Tuple(vec![]),
+        // void → empty Tuple (unit); null/undefined stay named references so
+        // they remain distinguishable from void (and from each other).
+        IntrinsicKind::Void => Type::Tuple(vec![]),
+        IntrinsicKind::Null => Type::TypeReference(TypeReference {
+            identifier: "null".to_string(),
+            generic_args: None,
+        }),
+        IntrinsicKind::Undefined => Type::TypeReference(TypeReference {
+            identifier: "undefined".to_string(),
+            generic_args: None,
+        }),
         IntrinsicKind::Never => Type::Never,
-        IntrinsicKind::Any | IntrinsicKind::Unknown => Type::Any,
+        // any vs unknown stay separate — unknown is NOT Type::Any.
+        IntrinsicKind::Any => Type::Any,
+        IntrinsicKind::Unknown => Type::TypeReference(TypeReference {
+            identifier: "unknown".to_string(),
+            generic_args: None,
+        }),
         IntrinsicKind::Object => Type::TypeReference(TypeReference {
             identifier: "object".to_string(),
             generic_args: None,

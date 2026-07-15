@@ -1,5 +1,2 @@
-extra_srcs = [
-    "README.md",
-]
-
-cargo_env = true
+features = ["env", "cargo", "unicode", "string", "wrap_help"]
+extra_deps = [":unicase-2", ":unicode-width-0.2"]

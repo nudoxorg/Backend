@@ -8,39 +8,64 @@
 //!   standalone `Entry::Function` symbols listed in `Record::members`
 //!   (the inline `Record::methods` slot holds nameless `Function`s and
 //!   would drop the method names); promoted methods are included with
-//!   their embedding origin recorded.
+//!   their embedding origin recorded. Interfaces satisfied in-package
+//!   land on `Record.implemented_protocols` and as `Entry::TraitImpl`.
 //! * **interface type** → `Entry::TraitDef`. Embedded named interfaces
 //!   become `super_traits`; `required_methods` carries the FULL expanded
 //!   method set, inherited methods annotated with their declaring
-//!   package (provenance). Constraint-only content (type-set unions,
-//!   comparability) is preserved as `TraitAttribute::Custom` entries.
+//!   package (provenance). Constraint type sets lower structurally as a
+//!   `properties` field of type `Union`/`TypeOperator("~")` (not only a
+//!   stringified custom attribute).
 //! * **iota enum convention** — a defined non-struct, non-interface type
 //!   with at least one same-package `const` block of that type using
-//!   `iota` → `Entry::SumType`; the participating constants become
-//!   `SumVariant`s (value recorded in the variant documentation, the IR
-//!   variant having no value slot) instead of `Entry::Constant`s.
+//!   `iota` → `Entry::SumType`; the underlying type is recorded in the
+//!   sum's documentation; variant values prefer structured notes with
+//!   parsed `ConstExpr` spellings (the IR `SumVariant` has no value slot).
 //! * **other defined types** (`type Celsius float64`, `type Handler
 //!   func(...)`) → a single-field *newtype* `Entry::RecordType` (field
 //!   key `Index(0)`, Rust-tuple-struct style), which preserves
 //!   defined-type identity — a `TypeAlias` entry would erase the
 //!   alias/defined distinction Go draws.
-//! * **true alias** (`type A = B`) → `Entry::TypeAlias`.
-//! * **const/var** → `Entry::Constant` / `Entry::Variable`. The IR
-//!   payload for both is `Symbol<()>`; the exact constant value (which
-//!   has no structural slot) is appended to the documentation.
+//! * **true alias** (`type A = B`) → `Entry::TypeAlias` with
+//!   [`TypeAliasBody`] (generics preserved when the oracle supplies them).
+//! * **const/var** → `Entry::Constant` / `Entry::Variable` with
+//!   [`TypedBinding`] (`ty` + parsed `value` + mutability).
+//!
+//! ## Path scheme
+//!
+//! | Kind   | Canonical path                         | Alias spellings (symtab) |
+//! |--------|----------------------------------------|---------------------------|
+//! | Module | `import/path`                          | — |
+//! | Item   | `import/path::Name`                    | — |
+//! | Method | `import/path::Type.Method`             | `import/path::Type::Method`, `Type.Method`, `Type::Method` |
+//!
+//! Treesitter (`treesitter/go.rs`) emits method frames with parent
+//! `Type` + child bare method name; the resolver rebuilds
+//! `Type.Method` / `Type::Method` via segment join. Symtab
+//! [`path_segments`](crate::graph::symtab::path_segments) splits `::`
+//! and dots inside components (but **not** `/` in Go import paths —
+//! those stay filesystem path components). Method entries therefore
+//! register both dotted and double-colon alias segmentations so
+//! `resolve_exact` succeeds under either spelling.
+//!
+//! Go import paths use `/` as the segment separator at the `PathBuf`
+//! layer (`example.com/m` → components `example.com`, `m`); do not
+//! invent slash-splitting on top of that.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use ir::entry::NudoxPath;
-use ir::generics::TraitRef;
-use ir::kind::{Entry, Symbol, Visibility};
+use ir::generics::{ConstExpr, TraitRef};
+use ir::kind::{Deprecation, Entry, Symbol, TypeAliasBody, TypedBinding, Visibility};
 use ir::module::Module;
-use ir::protocols::{TraitAttribute, TraitDef};
-use ir::record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumVariant};
-use ir::ty::Type as IrType;
+use ir::protocols::{TraitAttribute, TraitDef, TraitImpl};
+use ir::record::{Field, FieldAttributes, FieldKey, KnownField, Record, SumField, SumVariant};
+use ir::ty::{Type as IrType, TypeReference};
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 
-use super::docstring;
+use super::docstring::{self, GoDoc};
 use super::function;
 use super::oracle::{self, DeclKind, TypeKind};
 use super::types;
@@ -52,6 +77,7 @@ pub fn lower_package(pkg: &oracle::Package) -> Vec<(NudoxPath, Entry)> {
 	let mut entries: Vec<(NudoxPath, Entry)> = Vec::new();
 
 	let module_key = package_key(&pkg.import_path);
+	let pkg_doc = parse_docs(&pkg.doc);
 	entries.push((
 		module_key.clone(),
 		Entry::Module(Symbol {
@@ -59,9 +85,9 @@ pub fn lower_package(pkg: &oracle::Package) -> Vec<(NudoxPath, Entry)> {
 			path:          module_key,
 			aliases:       None,
 			visibility:    Visibility::Public,
-			documentation: doc_of(&pkg.doc),
-			deprecation:   None,
-			doc_links:     None,
+			documentation: pkg_doc.documentation(),
+			deprecation:   deprecation_of(&pkg_doc),
+			doc_links:     doc_links_of(&pkg_doc),
 			inner:         Module { members: None },
 		}),
 	));
@@ -100,14 +126,46 @@ pub fn item_key(import_path: &str, name: &str) -> NudoxPath {
 	NudoxPath::Local(PathBuf::from(format!("{import_path}::{name}")))
 }
 
-/// A method is keyed `import/path::Type.Method`.
+/// A method is keyed `import/path::Type.Method` (dotted receiver form).
+///
+/// See module docs for the alias spellings registered alongside this
+/// canonical key so symtab / treesitter can `resolve_exact` either form.
 pub fn method_key(import_path: &str, type_name: &str, method: &str) -> NudoxPath {
 	NudoxPath::Local(PathBuf::from(format!("{import_path}::{type_name}.{method}")))
+}
+
+/// Symtab alias segmentations for a method so both dotted and
+/// double-colon spellings resolve.
+///
+/// Produces:
+/// * `[import/path, Type, Method]` → `import/path::Type::Method`
+/// * `[Type, Method]` → `Type::Method` (module-relative / treesitter)
+/// * `[Type.Method]` → `Type.Method`
+/// * `[import/path, Type.Method]` → `import/path::Type.Method`
+fn method_aliases(import_path: &str, type_name: &str, method: &str) -> FxHashSet<Vec<String>> {
+	let mut set = FxHashSet::default();
+	set.insert(vec![
+		import_path.to_string(),
+		type_name.to_string(),
+		method.to_string(),
+	]);
+	set.insert(vec![type_name.to_string(), method.to_string()]);
+	set.insert(vec![format!("{type_name}.{method}")]);
+	set.insert(vec![import_path.to_string(), format!("{type_name}.{method}")]);
+	set
 }
 
 // ---------------------------------------------------------------------------
 // Docs
 // ---------------------------------------------------------------------------
+
+fn parse_docs(raw: &str) -> GoDoc {
+	if raw.trim().is_empty() {
+		GoDoc::default()
+	} else {
+		docstring::parse(raw)
+	}
+}
 
 /// Parse a raw oracle doc comment into `Symbol.documentation` text.
 fn doc_of(raw: &str) -> Option<String> {
@@ -115,6 +173,63 @@ fn doc_of(raw: &str) -> Option<String> {
 		return None;
 	}
 	docstring::parse(raw).documentation()
+}
+
+fn deprecation_of(doc: &GoDoc) -> Option<Deprecation> {
+	doc.deprecated.as_ref().map(|note| Deprecation {
+		since: None,
+		note:  Some(note.clone()),
+	})
+}
+
+/// Map GoDoc link definitions (`[Name]: URL`) onto `Symbol.doc_links`.
+///
+/// External URLs become [`NudoxPath::External`] with the URL as the
+/// dependency key (no path segments); bare identifiers that look like
+/// import paths become local paths so in-package mentions can resolve.
+fn doc_links_of(doc: &GoDoc) -> Option<FxHashMap<String, NudoxPath>> {
+	if doc.links.is_empty() {
+		return None;
+	}
+	let mut out = FxHashMap::default();
+	for (name, url) in &doc.links {
+		let path = if url.starts_with("http://") || url.starts_with("https://") {
+			NudoxPath::External {
+				dependency: url.clone(),
+				path:       PathBuf::new(),
+			}
+		} else {
+			NudoxPath::Local(PathBuf::from(url))
+		};
+		out.insert(name.clone(), path);
+	}
+	Some(out)
+}
+
+/// Shared Symbol scaffolding from a declaration's doc comment.
+struct DocMeta {
+	documentation: Option<String>,
+	deprecation:   Option<Deprecation>,
+	doc_links:     Option<FxHashMap<String, NudoxPath>>,
+}
+
+impl DocMeta {
+	fn from_raw(raw: &str) -> Self {
+		let doc = parse_docs(raw);
+		Self {
+			documentation: doc.documentation(),
+			deprecation:   deprecation_of(&doc),
+			doc_links:     doc_links_of(&doc),
+		}
+	}
+
+	fn from_go_doc(doc: GoDoc) -> Self {
+		Self {
+			documentation: doc.documentation(),
+			deprecation:   deprecation_of(&doc),
+			doc_links:     doc_links_of(&doc),
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -195,8 +310,29 @@ fn lower_type_decl(
 	entries: &mut Vec<(NudoxPath, Entry)>,
 ) {
 	let path = item_key(&pkg.import_path, &decl.name);
+	let docs = DocMeta::from_raw(&decl.doc);
 
 	if let Some(variants) = enums.variants_by_type.get(&decl.name) {
+		let underlying_note = decl
+			.underlying
+			.as_ref()
+			.map(|u| format!("Underlying: `{}`", types::type_expr(u).name));
+		let documentation = match (docs.documentation, underlying_note) {
+			(Some(text), Some(note)) => Some(format!("{text}\n\n{note}")),
+			(None, Some(note)) => Some(note),
+			(doc, None) => doc,
+		};
+		// Dual-emit methods first so their paths can hang on the sum container.
+		let method_paths = push_method_entries(pkg, decl, entries);
+		let mut sum = ir::record::SumType::from_variants(
+			variants.iter().map(|c| sum_variant(c)).collect(),
+		);
+		sum.underlying = decl.underlying.as_ref().map(types::lower_type);
+		sum.members = if method_paths.is_empty() {
+			None
+		} else {
+			Some(method_paths)
+		};
 		entries.push((
 			path.clone(),
 			Entry::SumType(Symbol {
@@ -204,40 +340,61 @@ fn lower_type_decl(
 				path,
 				aliases:       None,
 				visibility:    types::visibility(decl.exported),
-				documentation: doc_of(&decl.doc),
-				deprecation:   None,
-				doc_links:     None,
-				inner:         variants.iter().map(|c| sum_variant(c)).collect(),
+				documentation,
+				deprecation:   docs.deprecation,
+				doc_links:     docs.doc_links,
+				inner:         sum,
 			}),
 		));
-		// SumType has no member/method slots; the type's methods become
-		// standalone entries alongside it.
-		push_method_entries(pkg, decl, entries);
 		return;
 	}
 
 	match decl.underlying.as_ref().map(|u| u.kind) {
 		Some(TypeKind::Struct) => {
 			let method_paths = push_method_entries(pkg, decl, entries);
-			entries.push(struct_entry(decl, path, method_paths));
+			let (entry, impls) = struct_entry(pkg, decl, path, method_paths, docs);
+			entries.push(entry);
+			entries.extend(impls);
 		}
 		Some(TypeKind::Interface) => {
-			entries.push(interface_entry(decl, path));
+			entries.push(interface_entry(decl, path, docs));
 		}
 		_ => {
 			let method_paths = push_method_entries(pkg, decl, entries);
-			entries.push(newtype_entry(decl, path, method_paths));
+			let (entry, impls) = newtype_entry(pkg, decl, path, method_paths, docs);
+			entries.push(entry);
+			entries.extend(impls);
 		}
 	}
 }
 
-/// A variant constant → `SumVariant`. The IR variant has no value slot,
-/// so the exact constant value is recorded in the documentation.
+/// A variant constant → `SumVariant`. Values ride in documentation
+/// (parsed spelling) and, when a simple typed value is available, as a
+/// single-element tuple of a literal type so structured consumers can
+/// recover the constant.
 fn sum_variant(decl: &oracle::Decl) -> SumVariant {
+	let value_expr = types::parse_const_value(&decl.value);
+	let documentation = with_value_note(doc_of(&decl.doc), &decl.value);
+	let data = value_expr.as_ref().and_then(|expr| match expr {
+		ConstExpr::Int(n) => Some(SumField::Tuple(vec![IrType::Literal(ir::ty::LiteralValue {
+			kind:  ir::ty::LiteralKind::Number,
+			value: n.to_string(),
+		})])),
+		ConstExpr::Bool(b) => Some(SumField::Tuple(vec![IrType::Literal(ir::ty::LiteralValue {
+			kind:  ir::ty::LiteralKind::Boolean,
+			value: b.to_string(),
+		})])),
+		ConstExpr::Str(s) => Some(SumField::Tuple(vec![IrType::Literal(ir::ty::LiteralValue {
+			kind:  ir::ty::LiteralKind::String,
+			value: s.clone(),
+		})])),
+		_ => None,
+	});
 	SumVariant {
 		name:          decl.name.clone(),
-		data:          None,
-		documentation: with_value_note(doc_of(&decl.doc), &decl.value),
+		data,
+		documentation,
+		discriminant:  value_expr,
 	}
 }
 
@@ -265,16 +422,17 @@ fn push_method_entries(
 	for method in &decl.methods {
 		let path = method_key(&pkg.import_path, &decl.name, &method.name);
 		paths.push(path.clone());
+		let docs = DocMeta::from_raw(&method.doc);
 		entries.push((
 			path.clone(),
 			Entry::Function(Symbol {
 				name:          method.name.clone(),
 				path,
-				aliases:       None,
+				aliases:       Some(method_aliases(&pkg.import_path, &decl.name, &method.name)),
 				visibility:    types::visibility(method.exported),
-				documentation: doc_of(&method.doc),
-				deprecation:   None,
-				doc_links:     None,
+				documentation: docs.documentation,
+				deprecation:   docs.deprecation,
+				doc_links:     docs.doc_links,
 				inner:         function::lower_method(method),
 			}),
 		));
@@ -283,16 +441,18 @@ fn push_method_entries(
 	for method in &decl.promoted_methods {
 		let path = method_key(&pkg.import_path, &decl.name, &method.name);
 		paths.push(path.clone());
+		let mut docs = DocMeta::from_raw(&method.doc);
+		docs.documentation = promoted_doc(method);
 		entries.push((
 			path.clone(),
 			Entry::Function(Symbol {
 				name:          method.name.clone(),
 				path,
-				aliases:       None,
+				aliases:       Some(method_aliases(&pkg.import_path, &decl.name, &method.name)),
 				visibility:    types::visibility(method.exported),
-				documentation: promoted_doc(method),
-				deprecation:   None,
-				doc_links:     None,
+				documentation: docs.documentation,
+				deprecation:   docs.deprecation,
+				doc_links:     docs.doc_links,
 				inner:         function::lower_method(method),
 			}),
 		));
@@ -314,17 +474,95 @@ fn promoted_doc(method: &oracle::Method) -> Option<String> {
 	})
 }
 
-/// `type T struct { ... }` → `Entry::RecordType`.
+/// Resolve oracle `implements` entries into protocol paths (same package
+/// preferred; fully-qualified named types accepted).
+fn protocol_paths(pkg: &oracle::Package, implements: &[oracle::Type]) -> Vec<NudoxPath> {
+	implements
+		.iter()
+		.filter(|iface| matches!(iface.kind, TypeKind::Named | TypeKind::Alias))
+		.map(|iface| {
+			let import = if iface.pkg.is_empty() {
+				pkg.import_path.as_str()
+			} else {
+				iface.pkg.as_str()
+			};
+			item_key(import, &iface.name)
+		})
+		.collect()
+}
+
+/// Build `Entry::TraitImpl` symbols for each satisfied interface.
+fn trait_impl_entries(
+	pkg: &oracle::Package,
+	decl: &oracle::Decl,
+	implements: &[oracle::Type],
+) -> Vec<(NudoxPath, Entry)> {
+	let for_type = IrType::TypeReference(TypeReference {
+		identifier:   types::qualify(&pkg.import_path, &decl.name),
+		generic_args: None,
+	});
+	implements
+		.iter()
+		.filter(|iface| matches!(iface.kind, TypeKind::Named | TypeKind::Alias))
+		.map(|iface| {
+			let iface_pkg = if iface.pkg.is_empty() {
+				pkg.import_path.as_str()
+			} else {
+				iface.pkg.as_str()
+			};
+			// Path: import/path::Type:Iface (colon avoids clashing with methods).
+			let path = NudoxPath::Local(PathBuf::from(format!(
+				"{}::{}:{}",
+				pkg.import_path, decl.name, iface.name
+			)));
+			(
+				path.clone(),
+				Entry::TraitImpl(Symbol {
+					name:          format!("{}:{}", decl.name, iface.name),
+					path,
+					aliases:       None,
+					visibility:    types::visibility(decl.exported),
+					documentation: None,
+					deprecation:   None,
+					doc_links:     None,
+					inner:         TraitImpl {
+						tr: TraitRef {
+							name: types::qualify(iface_pkg, &iface.name),
+							args: iface.type_args.iter().map(types::type_expr).collect(),
+						},
+						for_type:             Box::new(for_type.clone()),
+						generics:             types::lower_generics(&decl.type_params),
+						where_constraints:    None,
+						methods:              None,
+						associated_types:     None,
+						associated_constants: None,
+						is_negative:          false,
+						is_blanket:           false,
+						is_unsafe:            false,
+						members:              None,
+					},
+				}),
+			)
+		})
+		.collect()
+}
+
+/// `type T struct { ... }` → `Entry::RecordType` (+ TraitImpls).
 fn struct_entry(
+	pkg: &oracle::Package,
 	decl: &oracle::Decl,
 	path: NudoxPath,
 	method_paths: Vec<NudoxPath>,
-) -> (NudoxPath, Entry) {
+	docs: DocMeta,
+) -> ((NudoxPath, Entry), Vec<(NudoxPath, Entry)>) {
 	let fields = decl
 		.underlying
 		.as_ref()
 		.map(|u| types::lower_struct_fields(&u.fields, Some(&decl.field_docs)))
 		.unwrap_or_default();
+
+	let protocols = protocol_paths(pkg, &decl.implements);
+	let impls = trait_impl_entries(pkg, decl, &decl.implements);
 
 	let record = Record {
 		name: Some(decl.name.clone()),
@@ -336,30 +574,34 @@ fn struct_entry(
 		index_signatures: None,
 		super_types: None,
 		members: if method_paths.is_empty() { None } else { Some(method_paths) },
-		implemented_protocols: None,
+		implemented_protocols: if protocols.is_empty() { None } else { Some(protocols) },
 	};
 
 	(
-		path.clone(),
-		Entry::RecordType(Symbol {
-			name:          decl.name.clone(),
-			path,
-			aliases:       None,
-			visibility:    types::visibility(decl.exported),
-			documentation: doc_of(&decl.doc),
-			deprecation:   None,
-			doc_links:     None,
-			inner:         record,
-		}),
+		(
+			path.clone(),
+			Entry::RecordType(Symbol {
+				name:          decl.name.clone(),
+				path,
+				aliases:       None,
+				visibility:    types::visibility(decl.exported),
+				documentation: docs.documentation,
+				deprecation:   docs.deprecation,
+				doc_links:     docs.doc_links,
+				inner:         record,
+			}),
+		),
+		impls,
 	)
 }
 
 /// `type T interface { ... }` → `Entry::TraitDef`.
-fn interface_entry(decl: &oracle::Decl, path: NudoxPath) -> (NudoxPath, Entry) {
+fn interface_entry(decl: &oracle::Decl, path: NudoxPath, docs: DocMeta) -> (NudoxPath, Entry) {
 	let underlying = decl.underlying.as_ref();
 
 	let mut super_traits: Vec<TraitRef> = Vec::new();
 	let mut attributes: Vec<TraitAttribute> = Vec::new();
+	let mut properties: Vec<Field> = Vec::new();
 	let mut explicit_names: HashSet<&str> = HashSet::new();
 	let mut required_methods = Vec::new();
 
@@ -375,12 +617,26 @@ fn interface_entry(decl: &oracle::Decl, path: NudoxPath) -> (NudoxPath, Entry) {
 					let expr = types::type_expr(embedded);
 					super_traits.push(TraitRef { name: expr.name, args: expr.args });
 				}
-				// A constraint type set: the IR trait vocabulary has no
-				// type-set slot, so it is preserved as a custom
-				// attribute over the term names (`~` marking
-				// approximation) — the terms themselves also remain
-				// fully structural in `types::lower_type` positions.
+				// Constraint type set: keep a structural Union on the
+				// trait as a synthetic property, and a compact custom
+				// attribute for name-only consumers.
 				TypeKind::Union => {
+					let structural = types::lower_type(embedded);
+					properties.push(Field::Known(KnownField {
+						key:           FieldKey::Ident("type_set".to_string()),
+						r#type:        Some(Box::new(structural)),
+						default_value: None,
+						attributes:    FieldAttributes {
+							decorators:  vec!["go:type_set".to_string()],
+							is_mutable:  false,
+							is_optional: false,
+							is_static:   true,
+						},
+						visibility:    Some(types::visibility(decl.exported)),
+						documentation: Some(
+							"Constraint type set (structural Union / ~ terms).".to_string(),
+						),
+					}));
 					let terms: Vec<String> = embedded
 						.terms
 						.iter()
@@ -418,7 +674,7 @@ fn interface_entry(decl: &oracle::Decl, path: NudoxPath) -> (NudoxPath, Entry) {
 		// harvested docs; inherited methods carry provenance.
 		for sig in &iface.all_methods {
 			let documentation = if explicit_names.contains(sig.name.as_str()) {
-				decl.method_docs.get(&sig.name).map(|raw| doc_of(raw)).flatten()
+				decl.method_docs.get(&sig.name).and_then(|raw| doc_of(raw))
 			} else {
 				Some(inherited_note(sig))
 			};
@@ -430,7 +686,7 @@ fn interface_entry(decl: &oracle::Decl, path: NudoxPath) -> (NudoxPath, Entry) {
 		generics:           types::lower_generics(&decl.type_params),
 		super_traits:       if super_traits.is_empty() { None } else { Some(super_traits) },
 		associated_types:   None,
-		properties:         None,
+		properties:         if properties.is_empty() { None } else { Some(properties) },
 		required_methods:   if required_methods.is_empty() { None } else { Some(required_methods) },
 		// Go interfaces cannot provide default bodies.
 		provided_methods:   None,
@@ -449,9 +705,9 @@ fn interface_entry(decl: &oracle::Decl, path: NudoxPath) -> (NudoxPath, Entry) {
 			path,
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
-			documentation: doc_of(&decl.doc),
-			deprecation:   None,
-			doc_links:     None,
+			documentation: docs.documentation,
+			deprecation:   docs.deprecation,
+			doc_links:     docs.doc_links,
 			inner:         trait_def,
 		}),
 	)
@@ -471,15 +727,20 @@ fn inherited_note(sig: &oracle::MethodSig) -> String {
 /// single-field newtype record (field key `Index(0)`), preserving the
 /// defined-type identity that separates it from a mere alias.
 fn newtype_entry(
+	pkg: &oracle::Package,
 	decl: &oracle::Decl,
 	path: NudoxPath,
 	method_paths: Vec<NudoxPath>,
-) -> (NudoxPath, Entry) {
+	docs: DocMeta,
+) -> ((NudoxPath, Entry), Vec<(NudoxPath, Entry)>) {
 	let underlying_type = decl
 		.underlying
 		.as_ref()
 		.map(types::lower_type)
 		.unwrap_or(IrType::Infer);
+
+	let protocols = protocol_paths(pkg, &decl.implements);
+	let impls = trait_impl_entries(pkg, decl, &decl.implements);
 
 	let record = Record {
 		name: Some(decl.name.clone()),
@@ -503,28 +764,33 @@ fn newtype_entry(
 		index_signatures: None,
 		super_types: None,
 		members: if method_paths.is_empty() { None } else { Some(method_paths) },
-		implemented_protocols: None,
+		implemented_protocols: if protocols.is_empty() { None } else { Some(protocols) },
 	};
 
 	(
-		path.clone(),
-		Entry::RecordType(Symbol {
-			name:          decl.name.clone(),
-			path,
-			aliases:       None,
-			visibility:    types::visibility(decl.exported),
-			documentation: doc_of(&decl.doc),
-			deprecation:   None,
-			doc_links:     None,
-			inner:         record,
-		}),
+		(
+			path.clone(),
+			Entry::RecordType(Symbol {
+				name:          decl.name.clone(),
+				path,
+				aliases:       None,
+				visibility:    types::visibility(decl.exported),
+				documentation: docs.documentation,
+				deprecation:   docs.deprecation,
+				doc_links:     docs.doc_links,
+				inner:         record,
+			}),
+		),
+		impls,
 	)
 }
 
-/// `type A = B` → `Entry::TypeAlias`.
+/// `type A = B` → `Entry::TypeAlias` with optional generics.
 fn lower_alias(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry) {
 	let path = item_key(&pkg.import_path, &decl.name);
 	let target = decl.target.as_ref().map(types::lower_type).unwrap_or(IrType::Infer);
+	let generics = types::lower_generics(&decl.type_params);
+	let docs = DocMeta::from_raw(&decl.doc);
 	(
 		path.clone(),
 		Entry::TypeAlias(Symbol {
@@ -532,10 +798,10 @@ fn lower_alias(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry)
 			path,
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
-			documentation: doc_of(&decl.doc),
-			deprecation:   None,
-			doc_links:     None,
-			inner:         target,
+			documentation: docs.documentation,
+			deprecation:   docs.deprecation,
+			doc_links:     docs.doc_links,
+			inner:         TypeAliasBody::with_generics(generics, target),
 		}),
 	)
 }
@@ -543,6 +809,7 @@ fn lower_alias(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry)
 /// A package-level `func` → `Entry::Function`.
 fn lower_func(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry) {
 	let path = item_key(&pkg.import_path, &decl.name);
+	let docs = DocMeta::from_raw(&decl.doc);
 	(
 		path.clone(),
 		Entry::Function(Symbol {
@@ -550,19 +817,24 @@ fn lower_func(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry) 
 			path,
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
-			documentation: doc_of(&decl.doc),
-			deprecation:   None,
-			doc_links:     None,
+			documentation: docs.documentation,
+			deprecation:   docs.deprecation,
+			doc_links:     docs.doc_links,
 			inner:         function::lower_func_decl(decl),
 		}),
 	)
 }
 
-/// A non-variant constant → `Entry::Constant`. `Symbol<()>` has no
-/// type/value payload, so the exact value is preserved in the
-/// documentation (a documented IR limitation).
+/// A non-variant constant → `Entry::Constant` with typed binding payload.
+/// The exact value also remains in documentation for consumers that only
+/// read prose.
 fn lower_const(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry) {
 	let path = item_key(&pkg.import_path, &decl.name);
+	let ty = decl.r#type.as_ref().map(types::lower_type);
+	let value = types::parse_const_value(&decl.value);
+	let parsed = parse_docs(&decl.doc);
+	let mut docs = DocMeta::from_go_doc(parsed);
+	docs.documentation = with_value_note(docs.documentation, &decl.value);
 	(
 		path.clone(),
 		Entry::Constant(Symbol {
@@ -570,17 +842,23 @@ fn lower_const(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry)
 			path,
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
-			documentation: with_value_note(doc_of(&decl.doc), &decl.value),
-			deprecation:   None,
-			doc_links:     None,
-			inner:         (),
+			documentation: docs.documentation,
+			deprecation:   docs.deprecation,
+			doc_links:     docs.doc_links,
+			inner: TypedBinding {
+				ty,
+				value,
+				mutable: Some(false),
+			},
 		}),
 	)
 }
 
-/// A package-level `var` → `Entry::Variable`.
+/// A package-level `var` → `Entry::Variable` with typed binding payload.
 fn lower_var(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry) {
 	let path = item_key(&pkg.import_path, &decl.name);
+	let ty = decl.r#type.as_ref().map(types::lower_type);
+	let docs = DocMeta::from_raw(&decl.doc);
 	(
 		path.clone(),
 		Entry::Variable(Symbol {
@@ -588,10 +866,14 @@ fn lower_var(pkg: &oracle::Package, decl: &oracle::Decl) -> (NudoxPath, Entry) {
 			path,
 			aliases:       None,
 			visibility:    types::visibility(decl.exported),
-			documentation: doc_of(&decl.doc),
-			deprecation:   None,
-			doc_links:     None,
-			inner:         (),
+			documentation: docs.documentation,
+			deprecation:   docs.deprecation,
+			doc_links:     docs.doc_links,
+			inner: TypedBinding {
+				ty,
+				value: None,
+				mutable: Some(true),
+			},
 		}),
 	)
 }

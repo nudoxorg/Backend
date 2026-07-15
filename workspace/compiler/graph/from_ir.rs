@@ -177,6 +177,9 @@ fn param_attr(a: &ir::parameter::ParameterAttribute) -> m::ParameterAttribute {
         P::Borrowing => m::ParameterAttribute::Borrowing,
         P::Isolated => m::ParameterAttribute::Isolated,
         P::Variadic => m::ParameterAttribute::Variadic,
+        P::KwVariadic => m::ParameterAttribute::KwVariadic,
+        P::PositionalOnly => m::ParameterAttribute::PositionalOnly,
+        P::KeywordOnly => m::ParameterAttribute::KeywordOnly,
         P::Optional => m::ParameterAttribute::Optional,
     }
 }
@@ -1030,7 +1033,7 @@ fn project_entry(
         E::SumType(s) => (
             m::SymbolKind::SumType,
             Some(m::Shape::Sum(m::SumShape {
-                variants: s.inner.iter().map(|v| sum_variant(&mut cx, v)).collect(),
+                variants: s.inner.variants.iter().map(|v| sum_variant(&mut cx, v)).collect(),
             })),
             &s.visibility,
         ),
@@ -1045,16 +1048,44 @@ fn project_entry(
         E::TypeAlias(s) => (
             m::SymbolKind::TypeAlias,
             Some(m::Shape::Alias(m::AliasShape {
-                aliased: type_(&mut cx, &s.inner),
+                aliased: type_(&mut cx, &s.inner.target),
             })),
             &s.visibility,
         ),
-        E::Constant(s) => (m::SymbolKind::Constant, None, &s.visibility),
-        E::Variable(s) => (m::SymbolKind::Variable, None, &s.visibility),
+        E::Constant(s) => {
+            let shape = s.inner.ty.as_ref().map(|t| {
+                m::Shape::Alias(m::AliasShape {
+                    aliased: type_(&mut cx, t),
+                })
+            });
+            (m::SymbolKind::Constant, shape, &s.visibility)
+        }
+        E::Variable(s) => {
+            let shape = s.inner.ty.as_ref().map(|t| {
+                m::Shape::Alias(m::AliasShape {
+                    aliased: type_(&mut cx, t),
+                })
+            });
+            (m::SymbolKind::Variable, shape, &s.visibility)
+        }
         E::Macro(s) => (m::SymbolKind::Macro, None, &s.visibility),
         E::PrimitiveType(s) => (m::SymbolKind::PrimitiveType, None, &s.visibility),
-        E::Field(s) => (m::SymbolKind::Field, None, &s.visibility),
-        E::Event(s) => (m::SymbolKind::Event, None, &s.visibility),
+        E::Field(s) => {
+            let shape = s.inner.ty.as_ref().map(|t| {
+                m::Shape::Alias(m::AliasShape {
+                    aliased: type_(&mut cx, t),
+                })
+            });
+            (m::SymbolKind::Field, shape, &s.visibility)
+        }
+        E::Event(s) => {
+            let shape = s.inner.ty.as_ref().map(|t| {
+                m::Shape::Alias(m::AliasShape {
+                    aliased: type_(&mut cx, t),
+                })
+            });
+            (m::SymbolKind::Event, shape, &s.visibility)
+        }
     };
 
     let implements: Vec<TdbLazy<m::Symbol>> = protocols

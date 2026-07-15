@@ -129,11 +129,16 @@ pub struct NixSpec;
 
 impl LanguageSpec for NixSpec {
 	/// Walk all `binding` nodes in every `binding_set` and emit one
-	/// [`RawDefinition`] per attrpath leaf.
+	/// [`RawDefinition`] per attrpath segment.
 	///
 	/// Nesting is recovered via body-span containment: the definitions vec is
 	/// built in pre-order; a stack of `(body_end_byte, def_index)` tracks the
 	/// innermost definition that is still open at each new binding site.
+	///
+	/// Multi-segment attrpaths (`a.b.c = 1`) emit intermediate `Module`
+	/// definitions for each prefix so the occurrence FQN (`a::b::c`) matches
+	/// the IR NudoxPath (`a/b/c` → segments `["a","b","c"]`). Nested attrset
+	/// values continue to use the body-span parent stack.
 	fn definitions(&self, tree: &tree_sitter::Tree, src: &str) -> Vec<RawDefinition> {
 		let mut defs: Vec<RawDefinition> = Vec::new();
 		// Stack of (body_end_byte, definition_index).
@@ -164,30 +169,47 @@ impl LanguageSpec for NixSpec {
 				return;
 			}
 
-			// The definition name is the last segment of the attrpath.
-			let name = segments.last().unwrap().clone();
-
-			// The name_span is the span of the last identifier attr in the attrpath.
-			let name_span = last_identifier_span(attrpath_node);
-
-			// Classify the definition kind from the bound value.
-			let def_kind = classify_value_kind(value_node);
-
+			// Identifier spans aligned with each segment (best-effort).
+			let id_spans = identifier_spans(attrpath_node);
 			let body_span = node.byte_range();
-			let parent = stack.last().map(|(_, idx)| *idx);
+			let leaf_kind = classify_value_kind(value_node);
 
-			let idx = defs.len();
-			defs.push(RawDefinition {
-				name,
-				kind: def_kind,
-				name_span,
-				body_span: body_span.clone(),
-				parent,
-			});
+			// Outer parent from the nested-attrset body stack.
+			let mut parent = stack.last().map(|(_, idx)| *idx);
 
-			// Push this binding as a potential parent for nested bindings
+			// Emit intermediate segments as Module so FQN mirrors IR paths.
+			// For `a.b.c = …` we emit a, a.b (Module), a.b.c (leaf kind).
+			for (i, seg) in segments.iter().enumerate() {
+				let is_leaf = i + 1 == segments.len();
+				let kind = if is_leaf { leaf_kind.clone() } else { DefKind::Module };
+				let name_span = id_spans
+					.get(i)
+					.cloned()
+					.unwrap_or_else(|| {
+						if is_leaf {
+							last_identifier_span(attrpath_node)
+						} else {
+							attrpath_node.byte_range()
+						}
+					});
+				let idx = defs.len();
+				defs.push(RawDefinition {
+					name: seg.clone(),
+					kind,
+					name_span,
+					// Intermediate prefixes share the binding body so nested
+					// containment still attributes references correctly.
+					body_span: body_span.clone(),
+					parent,
+				});
+				parent = Some(idx);
+			}
+
+			// Push the leaf as a potential parent for nested bindings
 			// (relevant when the value is an attrset with its own binding_set).
-			stack.push((body_span.end, idx));
+			if let Some(leaf_idx) = parent {
+				stack.push((body_span.end, leaf_idx));
+			}
 		});
 
 		defs
@@ -356,52 +378,17 @@ impl LanguageSpec for NixSpec {
 
 	/// Derive the module path from a `.nix` file's relative path.
 	///
-	/// Rules:
-	/// - `default.nix` → its parent directory segments (the directory is the
-	///   module; e.g. `pkgs/default.nix` → `["pkgs"]`).
-	/// - Any other `.nix` file → parent segments + file stem (e.g.
-	///   `lib/strings.nix` → `["lib", "strings"]`).
-	/// - No `.nix` extension → all path components as-is.
-	/// - The package name from `layout` is not prepended (Nix files are not
-	///   strongly crate-scoped; the resolver joins package context separately).
-	fn module_path(&self, rel: &Path, _layout: &PackageLayout) -> Vec<String> {
-		let components: Vec<&str> = rel
-			.components()
-			.filter_map(|c| {
-				if let std::path::Component::Normal(s) = c {
-					s.to_str()
-				} else {
-					None
-				}
-			})
-			.collect();
-
-		if components.is_empty() {
-			return Vec::new();
-		}
-
-		let last = *components.last().unwrap();
-
-		if last == "default.nix" {
-			// Drop `default.nix`; the parent directory represents the module.
-			return components[..components.len() - 1]
-				.iter()
-				.map(|s| s.to_string())
-				.collect();
-		}
-
-		// Strip `.nix` extension from leaf.
-		let mut out: Vec<String> = components[..components.len() - 1]
-			.iter()
-			.map(|s| s.to_string())
-			.collect();
-
-		let stem = if let Some(s) = last.strip_suffix(".nix") { s } else { last };
-		if !stem.is_empty() {
-			out.push(stem.to_string());
-		}
-
-		out
+	/// **IR alignment:** the Nix producer mints pure attrpath NudoxPaths
+	/// (`strings/trim`, `lib/attrsets/mapAttrs`) with **no** file-path prefix.
+	/// Returning a non-empty module path here would make occurrence FQNs like
+	/// `lib::strings::trim` fail to anchor against index paths
+	/// `strings/trim` → `strings::trim`. File identity is carried by the
+	/// occurrence's own path field; attrpath nesting is recovered via the
+	/// definition parent chain.
+	///
+	/// Therefore `module_path` is always empty for Nix.
+	fn module_path(&self, _rel: &Path, _layout: &PackageLayout) -> Vec<String> {
+		Vec::new()
 	}
 }
 
@@ -428,14 +415,22 @@ fn collect_attrpath_segments<'s>(attrpath: tree_sitter::Node<'_>, src: &'s str) 
 /// (e.g. a pure dynamic-key attrpath, which `collect_attrpath_segments` would
 /// have already returned empty for).
 fn last_identifier_span(attrpath: tree_sitter::Node<'_>) -> std::ops::Range<usize> {
-	let mut last: Option<std::ops::Range<usize>> = None;
+	identifier_spans(attrpath)
+		.into_iter()
+		.last()
+		.unwrap_or_else(|| attrpath.byte_range())
+}
+
+/// Spans of every `identifier` child inside an `attrpath`, in source order.
+fn identifier_spans(attrpath: tree_sitter::Node<'_>) -> Vec<std::ops::Range<usize>> {
+	let mut spans = Vec::new();
 	let mut cursor = attrpath.walk();
 	for child in attrpath.children(&mut cursor) {
 		if child.kind() == K_IDENTIFIER {
-			last = Some(child.byte_range());
+			spans.push(child.byte_range());
 		}
 	}
-	last.unwrap_or_else(|| attrpath.byte_range())
+	spans
 }
 
 /// Choose a [`DefKind`] for a definition based on its bound value's node kind.
@@ -868,50 +863,43 @@ mod tests {
 
 	// ── Module path tests ────────────────────────────────────────────────────────
 
-	/// `pkgs/default.nix` → `["pkgs"]` (directory is the module).
+	/// Nix IR paths are pure attrpaths — module_path is always empty so
+	/// occurrence FQNs (`strings::trim`) match NudoxPath segments.
 	#[test]
-	fn module_path_default_nix() {
-		let path = NixSpec.module_path(Path::new("pkgs/default.nix"), &layout());
-		assert_eq!(path, vec!["pkgs".to_string()]);
-	}
-
-	/// `lib/strings.nix` → `["lib", "strings"]`.
-	#[test]
-	fn module_path_regular_nix() {
-		let path = NixSpec.module_path(Path::new("lib/strings.nix"), &layout());
-		assert_eq!(path, vec!["lib".to_string(), "strings".to_string()]);
-	}
-
-	/// `flake.nix` at root → `["flake"]`.
-	#[test]
-	fn module_path_root_flake() {
-		let path = NixSpec.module_path(Path::new("flake.nix"), &layout());
-		assert_eq!(path, vec!["flake".to_string()]);
-	}
-
-	/// `default.nix` at root → `[]` (root module).
-	#[test]
-	fn module_path_root_default() {
-		let path = NixSpec.module_path(Path::new("default.nix"), &layout());
-		assert_eq!(path, Vec::<String>::new());
-	}
-
-	/// `pkgs/development/python-modules/requests/default.nix`
-	/// → `["pkgs", "development", "python-modules", "requests"]`.
-	#[test]
-	fn module_path_deep_default_nix() {
-		let path = NixSpec.module_path(
-			Path::new("pkgs/development/python-modules/requests/default.nix"),
-			&layout(),
+	fn module_path_always_empty_for_attrpath_alignment() {
+		assert_eq!(
+			NixSpec.module_path(Path::new("pkgs/default.nix"), &layout()),
+			Vec::<String>::new()
 		);
 		assert_eq!(
-			path,
-			vec![
-				"pkgs".to_string(),
-				"development".to_string(),
-				"python-modules".to_string(),
-				"requests".to_string(),
-			]
+			NixSpec.module_path(Path::new("lib/strings.nix"), &layout()),
+			Vec::<String>::new()
 		);
+		assert_eq!(
+			NixSpec.module_path(Path::new("flake.nix"), &layout()),
+			Vec::<String>::new()
+		);
+		assert_eq!(
+			NixSpec.module_path(Path::new("default.nix"), &layout()),
+			Vec::<String>::new()
+		);
+	}
+
+	/// Multi-segment attrpath `a.b = 1` emits intermediate Module `a` plus
+	/// leaf `b`, so FQN is `a::b` matching IR `a/b`.
+	#[test]
+	fn multi_segment_attrpath_emits_prefix_modules() {
+		let src = "{ a.b = 1; }";
+		let tree = parse(src);
+		let defs = NixSpec.definitions(&tree, src);
+		let a = defs.iter().find(|d| d.name == "a");
+		let b = defs.iter().find(|d| d.name == "b");
+		assert!(a.is_some(), "expected intermediate 'a', got {defs:?}");
+		assert!(b.is_some(), "expected leaf 'b', got {defs:?}");
+		assert_eq!(a.unwrap().kind, DefKind::Module);
+		assert_eq!(b.unwrap().kind, DefKind::Type);
+		// b's parent should be a.
+		let a_idx = defs.iter().position(|d| d.name == "a");
+		assert_eq!(b.unwrap().parent, a_idx);
 	}
 }

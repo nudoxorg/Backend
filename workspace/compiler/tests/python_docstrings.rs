@@ -79,4 +79,20 @@ fn function_docstring_and_param_descriptions_are_populated() {
         count_desc.contains("how many times"),
         "param `count` description wrong, got: {count_desc:?}"
     );
+
+    // C9: Returns: section lands on the output parameter's description.
+    let ret_desc = greet
+        .inner
+        .output_parameters
+        .as_ref()
+        .and_then(|outs| outs.first())
+        .and_then(|p| match p {
+            Parameter::Literal(lp) => lp.description.as_deref(),
+            _ => None,
+        })
+        .expect("`greet` return description missing");
+    assert!(
+        ret_desc.contains("assembled greeting"),
+        "return description wrong, got: {ret_desc:?}"
+    );
 }

@@ -111,7 +111,7 @@ fn dataclass_lowers_to_record_with_resolved_fields_methods_and_supertypes() {
         println!("Dog.{fname} : {ty:?}");
     }
 
-    // --- a method came through ---
+    // --- a method came through (shape list + standalone Function index entry) ---
     let methods = dog
         .methods
         .as_ref()
@@ -121,6 +121,31 @@ fn dataclass_lowers_to_record_with_resolved_fields_methods_and_supertypes() {
         "Dog should have at least one method"
     );
     println!("Dog methods: {}", methods.len());
+
+    // C2: methods must also be Index Function entries under Class.method so
+    // SymbolTable / resolution can find them by path.
+    let speak_entry = index.entries_by_path.iter().find(|(p, e)| {
+        matches!(e, Entry::Function(s) if s.name == "speak")
+            && match p {
+                ir::entry::NudoxPath::Local(pb) => {
+                    pb.display().to_string().contains("Dog.speak")
+                }
+                _ => false,
+            }
+    });
+    assert!(
+        speak_entry.is_some(),
+        "Dog.speak should be a standalone Function entry; entries: {}",
+        dump(&index)
+    );
+    let members = dog
+        .members
+        .as_ref()
+        .expect("Dog.members should list method paths");
+    assert!(
+        !members.is_empty(),
+        "Dog.members should be non-empty after method index emission"
+    );
 
     // --- super_types populated for the subclass (references `Animal`) ---
     let supers = dog
@@ -144,7 +169,7 @@ fn enum_lowers_to_sumtype_with_variants() {
         .entries_by_path
         .values()
         .find_map(|e| match e {
-            Entry::SumType(sym) if sym.name == "Color" => Some(&sym.inner),
+            Entry::SumType(sym) if sym.name == "Color" => Some(&sym.inner.variants),
             _ => None,
         })
         .unwrap_or_else(|| panic!("SumType `Color` not found; entries: {}", dump(&index)));

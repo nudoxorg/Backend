@@ -72,6 +72,12 @@ type Decl struct {
 	ConstGroup int `json:"constGroup,omitempty"`
 	// GroupHasIota reports whether the const group uses iota.
 	GroupHasIota bool `json:"groupHasIota,omitempty"`
+
+	// Implements lists in-package interfaces this named type satisfies
+	// (method-set inclusion via types.Implements). Only populated for
+	// kind == "type" declarations that are not themselves interfaces.
+	// Each entry is a named/alias type reference.
+	Implements []*Type `json:"implements,omitempty"`
 }
 
 // Method is a method attached to a named type (declared or promoted).
@@ -476,6 +482,36 @@ func (s *serializer) promotedMethods(named *types.Named) []*Method {
 			_, m.PointerRecv = recv.Type().(*types.Pointer)
 		}
 		out = append(out, m)
+	}
+	return out
+}
+
+// implementsInterfaces returns in-package non-empty interfaces that
+// named (or *named) satisfies, via types.Implements. Empty interfaces
+// (any / interface{}) are skipped — every type implements them.
+func (s *serializer) implementsInterfaces(named *types.Named, pkg *types.Package) []*Type {
+	if named == nil || pkg == nil {
+		return nil
+	}
+	scope := pkg.Scope()
+	var out []*Type
+	ptr := types.NewPointer(named)
+	for _, name := range scope.Names() {
+		obj, ok := scope.Lookup(name).(*types.TypeName)
+		if !ok || obj == named.Obj() {
+			continue
+		}
+		iface, ok := obj.Type().Underlying().(*types.Interface)
+		if !ok {
+			continue
+		}
+		iface = iface.Complete()
+		if iface.Empty() {
+			continue
+		}
+		if types.Implements(named, iface) || types.Implements(ptr, iface) {
+			out = append(out, s.typ(obj.Type()))
+		}
 	}
 	return out
 }

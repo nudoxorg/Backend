@@ -79,7 +79,7 @@ fn visibility_of(entry: &Entry) -> &Visibility {
 
 fn type_alias_type<'i>(index: &'i Index, name: &str) -> &'i Type {
     match entry_by_name(index, name) {
-        Entry::TypeAlias(symbol) => &symbol.inner,
+        Entry::TypeAlias(symbol) => &symbol.inner.target,
         other => panic!("expected TypeAlias {name}, got {other}"),
     }
 }

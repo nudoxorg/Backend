@@ -1,10 +1,10 @@
 //! Lowering the oracle's structural [`schema::TypeSig`] tree into
 //! `ir::ty::Type` at full fidelity — no stringified types (CSHARP-PLAN §3.5).
 //!
-//! Track A: everything maps onto the existing IR. The notable Track-A lossy
-//! spots are documented at their arms — 3-state nullability collapses the
-//! oblivious case to a bare type, and `decimal` rides a `TypeReference`
-//! (there is no `Primitive::Decimal` yet — Track B item 1).
+//! Track A: everything maps onto the existing IR. Three-state NRT nullability
+//! is preserved via TypeOperators (`?` annotated, `!` not-annotated, `~`
+//! oblivious). `decimal` rides a `TypeReference` (there is no
+//! `Primitive::Decimal` yet — Track B item 1).
 
 use ir::generics::{ConstExpr, Constraint, GenericArg, Generics, Kind, TraitRef, TypeExpr, Variance};
 use ir::kind::Visibility;
@@ -22,7 +22,8 @@ const MAX_DEPTH: usize = 64;
 
 /// Map a Roslyn accessibility token onto the IR visibility vocabulary
 /// (CSHARP-PLAN §3.6). `protected internal` widens to `Protected`;
-/// `private protected` narrows to `Package`; both keep a doc note upstream.
+/// `private protected` narrows to `Package`; callers always stamp the original
+/// oracle token as a `Declared:` note so the pair stays recoverable.
 pub fn visibility(accessibility: &str) -> Visibility {
 	match accessibility {
 		"public" => Visibility::Public,
@@ -237,16 +238,33 @@ fn lower_primitive(name: &str) -> Option<IrType> {
 	Some(prim)
 }
 
-/// Apply 3-state nullability to a lowered base type: an *annotated* reference
-/// type becomes `T?` (a `"?"` TypeOperator); non-null and oblivious stay bare
-/// (oblivious→bare is the documented Track-A lossy spot — pitfall #6/#10).
+/// Apply 3-state nullability so annotated / not-annotated / oblivious stay
+/// distinguishable (pitfall #6/#10):
+///
+/// | oracle token   | IR form                                      |
+/// |----------------|----------------------------------------------|
+/// | `annotated`    | `TypeOperator "?"`  (`string?`)              |
+/// | `notAnnotated` | `TypeOperator "!"`  (NRT non-null `string`)  |
+/// | `none`/other   | bare type **or** `TypeOperator "~"`          |
+///
+/// Oblivious uses `"~"` so a pure bare type can only mean "producer did not
+/// attach nullability" (e.g. pointers). For ordinary Named/TypeParam/Array/
+/// Tuple nodes the oracle always emits a token, so `"~"` is the oblivious
+/// marker.
 fn apply_nullable(base: IrType, nullable: &str) -> IrType {
 	match Nullability::parse(nullable) {
 		Nullability::Annotated => IrType::TypeOperator(TypeOperator {
 			operator: "?".to_string(),
 			r#type:   Box::new(base),
 		}),
-		Nullability::NotAnnotated | Nullability::Oblivious => base,
+		Nullability::NotAnnotated => IrType::TypeOperator(TypeOperator {
+			operator: "!".to_string(),
+			r#type:   Box::new(base),
+		}),
+		Nullability::Oblivious => IrType::TypeOperator(TypeOperator {
+			operator: "~".to_string(),
+			r#type:   Box::new(base),
+		}),
 	}
 }
 
@@ -267,7 +285,8 @@ fn lower_type_args(args: &[TypeSig], depth: usize) -> Option<Vec<GenericArg>> {
 /// each parameter carries its variance. Type constraints (`where T : Base`)
 /// become `TraitBound`s; the special constraints (`class`, `struct`, `new()`,
 /// `notnull`, `unmanaged`, `allows ref struct`) have no structural IR slot, so
-/// they ride as synthetic trait bounds (Track A) — the least-lossy fit.
+/// they ride as synthetic trait bounds prefixed `csharp:` so they are never
+/// confused with real interface names (H6).
 pub fn lower_type_params(type_params: &[schema::TypeParam]) -> Option<Generics> {
 	if type_params.is_empty() {
 		return None;
@@ -288,19 +307,19 @@ pub fn lower_type_params(type_params: &[schema::TypeParam]) -> Option<Generics> 
 
 		let c = &tp.constraints;
 		if c.reference_type {
-			constraints.push(synthetic_bound(&tp.name, "class"));
+			constraints.push(synthetic_bound(&tp.name, "csharp:class"));
 		}
 		if c.value_type {
-			constraints.push(synthetic_bound(&tp.name, "struct"));
+			constraints.push(synthetic_bound(&tp.name, "csharp:struct"));
 		}
 		if c.not_null {
-			constraints.push(synthetic_bound(&tp.name, "notnull"));
+			constraints.push(synthetic_bound(&tp.name, "csharp:notnull"));
 		}
 		if c.unmanaged {
-			constraints.push(synthetic_bound(&tp.name, "unmanaged"));
+			constraints.push(synthetic_bound(&tp.name, "csharp:unmanaged"));
 		}
 		if c.allows_ref_like {
-			constraints.push(synthetic_bound(&tp.name, "allows ref struct"));
+			constraints.push(synthetic_bound(&tp.name, "csharp:allows ref struct"));
 		}
 		for bound in &c.types {
 			constraints.push(Constraint::TraitBound {
@@ -309,7 +328,7 @@ pub fn lower_type_params(type_params: &[schema::TypeParam]) -> Option<Generics> 
 			});
 		}
 		if c.constructor {
-			constraints.push(synthetic_bound(&tp.name, "new()"));
+			constraints.push(synthetic_bound(&tp.name, "csharp:new()"));
 		}
 	}
 
@@ -326,7 +345,9 @@ fn variance_of(variance: &str) -> Variance {
 }
 
 /// A synthetic trait bound for a special constraint keyword (no structural
-/// slot exists for `class`/`struct`/`new()`/…).
+/// slot exists for `class`/`struct`/`new()`/…). The keyword is already
+/// `csharp:`-prefixed by the caller so it cannot be confused with a real
+/// interface FQN.
 fn synthetic_bound(param: &str, keyword: &str) -> Constraint {
 	Constraint::TraitBound {
 		param:     param.to_string(),
@@ -450,24 +471,53 @@ mod tests {
 			name:      name.to_string(),
 			args:      Vec::new(),
 			owner:     None,
+			// Tests that assert bare primitives strip the nullability wrapper
+			// after lower; use `inner` to reach the underlying type.
 			nullable:  "none".to_string(),
 			type_kind: String::new(),
 		}
 	}
 
+	fn unwrap_nullability(t: IrType) -> IrType {
+		match t {
+			IrType::TypeOperator(op) if matches!(op.operator.as_str(), "?" | "!" | "~") => {
+				*op.r#type
+			}
+			other => other,
+		}
+	}
+
 	#[test]
 	fn primitives_map_to_width() {
-		assert_eq!(lower_type(&named("System.Int64")), IrType::Primitive(Primitive::Int(Width::W64)));
-		assert_eq!(lower_type(&named("System.Byte")), IrType::Primitive(Primitive::UInt(Width::W8)));
-		assert_eq!(lower_type(&named("System.Char")), IrType::Primitive(Primitive::Char));
-		assert_eq!(lower_type(&named("nint")), IrType::Primitive(Primitive::Int(Width::Arch)));
+		assert_eq!(
+			unwrap_nullability(lower_type(&named("System.Int64"))),
+			IrType::Primitive(Primitive::Int(Width::W64))
+		);
+		assert_eq!(
+			unwrap_nullability(lower_type(&named("System.Byte"))),
+			IrType::Primitive(Primitive::UInt(Width::W8))
+		);
+		assert_eq!(
+			unwrap_nullability(lower_type(&named("System.Char"))),
+			IrType::Primitive(Primitive::Char)
+		);
+		assert_eq!(
+			unwrap_nullability(lower_type(&named("nint"))),
+			IrType::Primitive(Primitive::Int(Width::Arch))
+		);
 	}
 
 	#[test]
 	fn object_string_void_are_special() {
-		assert_eq!(lower_type(&named("System.Object")), IrType::Any);
-		assert_eq!(lower_type(&named("System.String")), IrType::Primitive(Primitive::String));
-		assert_eq!(lower_type(&named("System.Void")), IrType::Tuple(Vec::new()));
+		assert_eq!(unwrap_nullability(lower_type(&named("System.Object"))), IrType::Any);
+		assert_eq!(
+			unwrap_nullability(lower_type(&named("System.String"))),
+			IrType::Primitive(Primitive::String)
+		);
+		assert_eq!(
+			unwrap_nullability(lower_type(&named("System.Void"))),
+			IrType::Tuple(Vec::new())
+		);
 	}
 
 	#[test]
@@ -495,19 +545,39 @@ mod tests {
 	}
 
 	#[test]
+	fn nullability_three_states_are_distinguishable() {
+		let mk = |nullable: &str| TypeSig::Named {
+			name:      "System.String".to_string(),
+			args:      Vec::new(),
+			owner:     None,
+			nullable:  nullable.to_string(),
+			type_kind: String::new(),
+		};
+		let op = |t: IrType| match t {
+			IrType::TypeOperator(op) => op.operator,
+			other => panic!("expected TypeOperator, got {other:?}"),
+		};
+		assert_eq!(op(lower_type(&mk("annotated"))), "?");
+		assert_eq!(op(lower_type(&mk("notAnnotated"))), "!");
+		assert_eq!(op(lower_type(&mk("none"))), "~");
+		assert_eq!(op(lower_type(&mk(""))), "~");
+	}
+
+	#[test]
 	fn sz_array_is_slice_multidim_is_operator() {
 		let sz = TypeSig::Array {
 			element:  Box::new(named("System.Int32")),
 			rank:     1,
 			nullable: "none".to_string(),
 		};
-		assert!(matches!(lower_type(&sz), IrType::Slice(_)));
+		// Array nullability wraps the Slice / rank operator.
+		assert!(matches!(unwrap_nullability(lower_type(&sz)), IrType::Slice(_)));
 		let md = TypeSig::Array {
 			element:  Box::new(named("System.Int32")),
 			rank:     3,
 			nullable: "none".to_string(),
 		};
-		match lower_type(&md) {
+		match unwrap_nullability(lower_type(&md)) {
 			IrType::TypeOperator(op) => assert_eq!(op.operator, "[,,]"),
 			other => panic!("expected TypeOperator, got {other:?}"),
 		}

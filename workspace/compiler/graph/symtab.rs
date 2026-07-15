@@ -17,12 +17,38 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 /// `External` paths the fq spelling is the `PathBuf` components joined with
 /// `::`; the owning package lives elsewhere in the `NudoxPath` and does not
 /// enter the fq key.
+///
+/// Many producers mint single-component paths that already embed `::`
+/// separators (`"crate::Type::method"`, `"com.example::Foo.bar"`,
+/// `"pkg.mod::name"`). Those are expanded so suffix resolution and
+/// module-member tables see real leaf segments. A component that mixes
+/// language module dots with a trailing `::name` is split as
+/// `a.b::c` → `["a", "b", "c"]` so treesitter module paths align.
 pub fn path_segments(path: &NudoxPath) -> Vec<String> {
 	let pb = match path {
 		NudoxPath::Local(pb) => pb,
 		NudoxPath::External { path, .. } => path,
 	};
-	pb.iter().map(|c| c.to_string_lossy().into_owned()).collect()
+	let mut out = Vec::new();
+	for c in pb.iter() {
+		let s = c.to_string_lossy();
+		if s.contains("::") {
+			for part in s.split("::") {
+				if part.is_empty() {
+					continue;
+				}
+				// Module segments often use `.` (Python/Java/C#/Go import paths).
+				if part.contains('.') && !part.contains('/') {
+					out.extend(part.split('.').filter(|p| !p.is_empty()).map(str::to_owned));
+				} else {
+					out.push(part.to_owned());
+				}
+			}
+		} else {
+			out.push(s.into_owned());
+		}
+	}
+	out
 }
 
 /// Name-resolution index over one package's [`Index`].

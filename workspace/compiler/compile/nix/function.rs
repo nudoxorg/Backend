@@ -40,8 +40,11 @@ use super::syntax::{LambdaInfo, ParamKind, StaticParam};
 /// (`{ name :: String; … } -> Ret`) paired with record-pattern formals is
 /// expanded by field name so each formal gets its declared field type.
 ///
-/// An ellipsis (`...`) on the outermost pattern appends a synthetic
-/// variadic parameter named `"..."` with [`ParameterAttribute::Variadic`].
+/// An `args@` / `@args` bind is emitted first as a parameter named after the
+/// bind (description notes the full-attrs capture). An ellipsis (`...`) on
+/// the outermost pattern appends a synthetic variadic parameter named
+/// `"..."` with [`ParameterAttribute::Variadic`], and marks the function
+/// itself [`Attribute::Variadic`].
 ///
 /// The output parameter list is built from `sig.ret` when a signature is
 /// present; otherwise `output_parameters` is `None`.
@@ -51,6 +54,22 @@ pub fn lower_lambda(
 	sig:  Option<&Signature>,
 ) -> Function {
 	let mut inputs: Vec<Parameter> = Vec::new();
+
+	// `args@` / `@args` — the full attribute set bound under a name.
+	if let Some(bind) = &lam.args_bind {
+		inputs.push(Parameter::Literal(LiteralParameter {
+			name:          bind.clone(),
+			r#type:        Some(Type::TypeReference(ir::ty::TypeReference {
+				identifier:   "AttrSet".into(),
+				generic_args: None,
+			})),
+			attributes:    None,
+			default_value: None,
+			description:   Some(format!(
+				"Full attribute-set argument bound via `{bind}@` pattern."
+			)),
+		}));
+	}
 
 	for (i, param) in lam.params.iter().enumerate() {
 		// Type: field-matched for record patterns, else positional from sig.
@@ -109,11 +128,17 @@ pub fn lower_lambda(
 		})]
 	});
 
+	let attributes = if lam.ellipsis {
+		Some(vec![ir::function::Attribute::Variadic])
+	} else {
+		None
+	};
+
 	Function {
 		input_parameters:      if inputs.is_empty() { None } else { Some(inputs) },
 		output_parameters,
 		type_links:            None,
-		attributes:            None,
+		attributes,
 		generics:              None,
 		receiver:              None,
 		overloads:             None,

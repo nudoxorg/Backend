@@ -82,8 +82,19 @@ pub enum ParameterAttribute {
 	/// Isolated to a particular actor or concurrency domain.
 	Isolated,
 
-	/// Accepts zero or more trailing arguments of the same type.
+	/// Accepts zero or more trailing positional arguments of the same type
+	/// (e.g. Python `*args`, C/Go `...`, TypeScript rest).
 	Variadic,
+
+	/// Accepts zero or more trailing *keyword* arguments (Python `**kwargs`).
+	/// Distinct from [`Variadic`] so consumers can round-trip `*args` vs `**kwargs`.
+	KwVariadic,
+
+	/// Positional-only parameter (Python `/` separator, PEP 570).
+	PositionalOnly,
+
+	/// Keyword-only parameter (Python `*` separator).
+	KeywordOnly,
 
 	/// The argument may be omitted entirely at call-sites.
 	Optional,

@@ -8,6 +8,8 @@ prelude = build/prelude-local
 toolchains = build/toolchains
 none = none
 nix = build/nix-stub
+# snowydeer packaging (vendored under build/nix/snowydeer; labels are //snowydeer:…)
+snowydeer = build/nix/snowydeer
 
 [cell_aliases]
 config = prelude

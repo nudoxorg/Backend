@@ -29,7 +29,7 @@ fn render_type(ty: &Type) -> String {
         documentation: None,
         deprecation:   None,
         doc_links:     None,
-        inner:         ty.clone(),
+        inner:         ir::kind::TypeAliasBody::plain(ty.clone()),
     });
     render_entry(&entry, &nix_ctx())
 }

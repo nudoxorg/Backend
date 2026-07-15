@@ -97,6 +97,9 @@ pub enum ParameterAttribute {
     Borrowing,
     Isolated,
     Variadic,
+    KwVariadic,
+    PositionalOnly,
+    KeywordOnly,
     Optional,
 }
 

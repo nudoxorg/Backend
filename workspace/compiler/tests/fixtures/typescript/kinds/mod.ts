@@ -13,8 +13,14 @@ export function doWork(x: number): number {
 
 /** A class → Entry::RecordType. */
 export class Widget {
+  /** Private brand field — must keep `#` prefix + Private visibility. */
+  #brand: string = "w";
   constructor(public readonly id: string) {}
 }
+
+/** void is unit Tuple; null is a named reference — they must not collapse. */
+export type VoidOnly = void;
+export type NullOnly = null;
 
 /** An interface → Entry::TraitDef. */
 export interface Printable {
@@ -26,10 +32,16 @@ export type StringOrNumber = string | number;
 
 /** An enum → Entry::SumType. */
 export enum Direction {
-  Up,
-  Down,
-  Left,
-  Right,
+  Up = 0,
+  Down = 1,
+  Left = 2,
+  Right = 3,
+}
+
+/** A const enum — variants flagged `[const]` in documentation. */
+export const enum HttpStatus {
+  Ok = 200,
+  NotFound = 404,
 }
 
 /** A const declaration → Entry::Constant. */

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use pyrefly::alt::answers::Answers;
 use pyrefly::binding::bindings::Bindings;
 use pyrefly::state::state::Transaction;
@@ -10,12 +8,8 @@ use pyrefly_types::types::{BoundMethodType, Forallable, Overload, Type};
 
 use super::types;
 use ir::function::{Attribute, Function};
-use ir::generics::{ConstExpr, Generics};
-use ir::parameter::{
-    LiteralParameter, Parameter as IrParameter, ParameterAttribute,
-};
+use ir::parameter::{LiteralParameter, Parameter as IrParameter};
 use ir::protocols::ReceiverKind;
-use ir::ty::{self, FunctionPointer};
 
 /// Lower a single Python function definition into `ir::function::Function`.
 ///
@@ -42,7 +36,8 @@ pub fn lower_function(
 }
 
 /// Lower a single (non-overloaded) callable type, honoring decorator-derived
-/// `FuncFlags` (async / static / classmethod / abstract / stub body).
+/// `FuncFlags` (async / static / classmethod / abstract / stub body) and
+/// declaration-site generics on `Type::Forall`.
 fn lower_single(name: &str, py_type: &Type) -> Function {
     let _ = name;
     let mut attrs = Vec::new();
@@ -50,6 +45,12 @@ fn lower_single(name: &str, py_type: &Type) -> Function {
     let output_params = extract_outputs(py_type);
     let mut receiver = detect_receiver(&input_params);
     let mut implemented = true;
+    // Prefer declaration-site Forall tparams; if the callable is not wrapped
+    // in Forall but still mentions free quantified vars in its signature,
+    // synthesize a Generics list from those names so consumers still see a
+    // non-empty `generics` field (legacy TypeVar functions).
+    let generics = types::extract_forall_tparams(py_type)
+        .or_else(|| types::generics_from_free_params(&input_params, &output_params));
 
     // Decorators surface as flags on the function metadata; Pyrefly resolves
     // them for us, so we never need to read the decorator AST here. See
@@ -71,11 +72,8 @@ fn lower_single(name: &str, py_type: &Type) -> Function {
         if flags.is_abstract_method || flags.lacks_implementation {
             implemented = false;
         }
-        // `@property`: kept as a `Function`; the getter's return type already
-        // flows through `extract_outputs` and the receiver stays `self`. There
-        // is no dedicated IR marker for properties at this revision.
-        // `@final` (`flags.has_final_decoration`): no `Function`-level slot in
-        // the IR, so it is not represented here.
+        // `@property` / `@final` are recorded on the enclosing field / Symbol
+        // (see `item.rs`); Function has no dedicated slot for either.
     }
 
     Function {
@@ -87,7 +85,7 @@ fn lower_single(name: &str, py_type: &Type) -> Function {
         output_parameters: output_params.map(|v| vec![v]),
         type_links: None,
         attributes: if attrs.is_empty() { None } else { Some(attrs) },
-        generics: None,
+        generics,
         receiver,
         overloads: None,
         implemented,
@@ -127,7 +125,7 @@ fn lower_overload(name: &str, overload: &Overload) -> Function {
 }
 
 /// Extract the decorator-derived `FuncFlags` from any callable-shaped type.
-fn func_flags(py_type: &Type) -> Option<&FuncFlags> {
+pub fn func_flags(py_type: &Type) -> Option<&FuncFlags> {
     match py_type {
         Type::Function(f) => Some(&f.metadata.flags),
         Type::Overload(o) => Some(&o.metadata.flags),
@@ -142,6 +140,17 @@ fn func_flags(py_type: &Type) -> Option<&FuncFlags> {
         },
         _ => None,
     }
+}
+
+/// Deprecation note from `@warnings.deprecated` / `@typing_extensions.deprecated`
+/// when Pyrefly recorded it on the function's `FuncFlags`.
+pub fn deprecation_from_flags(py_type: &Type) -> Option<ir::kind::Deprecation> {
+    let flags = func_flags(py_type)?;
+    let dep = flags.deprecation.as_ref()?;
+    Some(ir::kind::Deprecation {
+        since: None,
+        note: dep.message.clone(),
+    })
 }
 
 /// Lower a class constructor (`__init__`) or method into a function.
@@ -179,7 +188,11 @@ fn extract_inputs(py_type: &Type) -> Vec<IrParameter> {
         Type::Callable(c) => params_as_slice(&c.params),
         Type::BoundMethod(bm) => match &bm.func {
             BoundMethodType::Function(f) => params_as_slice(&f.signature.params),
-            _ => return Vec::new(),
+            BoundMethodType::Forall(fa) => params_as_slice(&fa.body.signature.params),
+            BoundMethodType::Overload(o) => {
+                // Prefer the first overload's params for the primary surface.
+                return extract_inputs(&o.signatures.first().as_type());
+            }
         },
         Type::Forall(f) => match &f.body {
             Forallable::Function(func) => params_as_slice(&func.signature.params),
@@ -188,32 +201,7 @@ fn extract_inputs(py_type: &Type) -> Vec<IrParameter> {
         _ => return Vec::new(),
     };
 
-    params
-        .iter()
-        .map(|p| {
-            let (name, ty, attrs) = match p {
-                Param::PosOnly(n, t, _) => (opt_name(n), t, vec![]),
-                Param::Pos(n, t, _) => (n.to_string(), t, vec![]),
-                Param::Varargs(n, t) => (opt_name(n), t, vec![ParameterAttribute::Variadic]),
-                Param::KwOnly(n, t, _) => (n.to_string(), t, vec![]),
-                Param::Kwargs(n, t) => (opt_name(n), t, vec![ParameterAttribute::Variadic]),
-            };
-
-            IrParameter::Literal(LiteralParameter {
-                name,
-                r#type: Some(types::lower_type(ty)),
-                attributes: if attrs.is_empty() { None } else { Some(attrs) },
-                default_value: None,
-                description: None,
-            })
-        })
-        .collect()
-}
-
-/// Render an optional parameter name (anonymous positional-only / `*args` /
-/// `**kwargs` slots may carry no name) into a `String`.
-fn opt_name<N: ToString>(name: &Option<N>) -> String {
-    name.as_ref().map(|n| n.to_string()).unwrap_or_default()
+    params.iter().map(types::lower_param).collect()
 }
 
 fn extract_outputs(py_type: &Type) -> Option<IrParameter> {
@@ -222,7 +210,10 @@ fn extract_outputs(py_type: &Type) -> Option<IrParameter> {
         Type::Callable(c) => Some(&c.ret),
         Type::BoundMethod(bm) => match &bm.func {
             BoundMethodType::Function(f) => Some(&f.signature.ret),
-            _ => None,
+            BoundMethodType::Forall(fa) => Some(&fa.body.signature.ret),
+            BoundMethodType::Overload(o) => {
+                return extract_outputs(&o.signatures.first().as_type());
+            }
         },
         Type::Forall(f) => match &f.body {
             Forallable::Function(func) => Some(&func.signature.ret),

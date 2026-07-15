@@ -42,6 +42,10 @@
 //!   spot, kept referable rather than dropped.
 //! * **the null type** → `TypeReference("null")` (JLS §4.1's null type has
 //!   no IR primitive; `Never` would misstate its single inhabitant).
+//! * **type-use annotations** → nested [`TypeOperator`] wrappers whose
+//!   `operator` is the rendered annotation (`@pkg.NonNull`), outermost
+//!   first. Parameter declaration annotations are applied the same way by
+//!   callers via [`apply_annotations`].
 //!
 //! Also here: modifier→`Visibility` mapping, `Value`→`ConstExpr` constants,
 //! declaration-site type-parameter lowering into `Generics`, and the
@@ -83,8 +87,39 @@ pub fn has_modifier(modifiers: &[String], name: &str) -> bool {
 }
 
 /// Lower an oracle type mirror into the IR type algebra.
+///
+/// Type-use annotations (`@NonNull String`, `String @Interned []`, …) are
+/// preserved as nested [`TypeOperator`] wrappers (`operator = "@…"`) around
+/// the underlying type so they are not dropped.
 pub fn lower_type(t: &schema::TypeMirror) -> IrType {
 	lower_type_depth(t, 0)
+}
+
+/// Wrap `ty` with one [`TypeOperator`] per declaration/use annotation, outer-
+/// most first. Used for both type-use annotations on a mirror and for formal
+/// parameter declaration annotations (which have no parameter-attribute slot).
+pub fn apply_annotations(ty: IrType, annotations: &[schema::Annotation]) -> IrType {
+	if annotations.is_empty() {
+		return ty;
+	}
+	// Outer-first: first annotation is the outermost operator.
+	annotations.iter().rev().fold(ty, |inner, a| {
+		IrType::TypeOperator(TypeOperator {
+			operator: render_annotation(a),
+			r#type:   Box::new(inner),
+		})
+	})
+}
+
+/// Type-use annotations carried on a mirror, when the variant has them.
+fn type_use_annotations(t: &schema::TypeMirror) -> &[schema::Annotation] {
+	match t {
+		schema::TypeMirror::Primitive { annotations, .. }
+		| schema::TypeMirror::Declared { annotations, .. }
+		| schema::TypeMirror::Array { annotations, .. }
+		| schema::TypeMirror::Typevar { annotations, .. } => annotations,
+		_ => &[],
+	}
 }
 
 fn lower_type_depth(t: &schema::TypeMirror, depth: usize) -> IrType {
@@ -92,7 +127,7 @@ fn lower_type_depth(t: &schema::TypeMirror, depth: usize) -> IrType {
 		return IrType::Infer;
 	}
 
-	match t {
+	let base = match t {
 		schema::TypeMirror::Primitive { name, .. } => lower_primitive(name),
 
 		// Unit in the IR is the empty tuple.
@@ -101,26 +136,26 @@ fn lower_type_depth(t: &schema::TypeMirror, depth: usize) -> IrType {
 		schema::TypeMirror::Declared { name, args, owner, .. } => {
 			// The IR's top type documents itself as Java's `Object`.
 			if name == "java.lang.Object" {
-				return IrType::Any;
-			}
-			if name == "java.lang.String" {
-				return IrType::Primitive(Primitive::String);
-			}
-			let generic_args = lower_type_args(args, depth);
-			match owner {
-				// `Outer<T>.Inner` — the owner carries type arguments of
-				// its own; project the member type out of the fully
-				// lowered owner so nothing is dropped.
-				Some(owner_mirror) => IrType::QualifiedPath(QualifiedPath {
-					name:              simple_name(name).to_string(),
-					generic_arguments: generic_args,
-					self_type:         Box::new(lower_type_depth(owner_mirror, depth + 1)),
-					tr:                None,
-				}),
-				None => IrType::TypeReference(TypeReference {
-					identifier: name.clone(),
-					generic_args,
-				}),
+				IrType::Any
+			} else if name == "java.lang.String" {
+				IrType::Primitive(Primitive::String)
+			} else {
+				let generic_args = lower_type_args(args, depth);
+				match owner {
+					// `Outer<T>.Inner` — the owner carries type arguments of
+					// its own; project the member type out of the fully
+					// lowered owner so nothing is dropped.
+					Some(owner_mirror) => IrType::QualifiedPath(QualifiedPath {
+						name:              simple_name(name).to_string(),
+						generic_arguments: generic_args,
+						self_type:         Box::new(lower_type_depth(owner_mirror, depth + 1)),
+						tr:                None,
+					}),
+					None => IrType::TypeReference(TypeReference {
+						identifier: name.clone(),
+						generic_args,
+					}),
+				}
 			}
 		}
 
@@ -184,7 +219,9 @@ fn lower_type_depth(t: &schema::TypeMirror, depth: usize) -> IrType {
 			identifier:   repr.clone(),
 			generic_args: None,
 		}),
-	}
+	};
+
+	apply_annotations(base, type_use_annotations(t))
 }
 
 /// The primitive algebra. See the module doc for the `char` decision.
@@ -550,6 +587,50 @@ mod tests {
 				assert_eq!(args.len(), 2);
 			}
 			other => panic!("expected Call, got {other:?}"),
+		}
+	}
+
+	#[test]
+	#[test]
+	fn type_use_annotations_become_operators() {
+		let annotated = schema::TypeMirror::Declared {
+			name: "java.lang.String".to_string(),
+			args: Vec::new(),
+			owner: None,
+			annotations: vec![schema::Annotation {
+				ty: "org.jspecify.annotations.NonNull".to_string(),
+				values: Default::default(),
+			}],
+		};
+		match lower_type(&annotated) {
+			IrType::TypeOperator(op) => {
+				assert_eq!(op.operator, "@org.jspecify.annotations.NonNull");
+				assert_eq!(*op.r#type, IrType::Primitive(Primitive::String));
+			}
+			other => panic!("expected TypeOperator, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn apply_annotations_wraps_outer_first() {
+		use std::collections::BTreeMap;
+		let base = IrType::Primitive(Primitive::Int(Width::W32));
+		let anns = vec![
+			schema::Annotation { ty: "A".to_string(), values: BTreeMap::new() },
+			schema::Annotation { ty: "B".to_string(), values: BTreeMap::new() },
+		];
+		match apply_annotations(base, &anns) {
+			IrType::TypeOperator(outer) => {
+				assert_eq!(outer.operator, "@A");
+				match *outer.r#type {
+					IrType::TypeOperator(inner) => {
+						assert_eq!(inner.operator, "@B");
+						assert_eq!(*inner.r#type, IrType::Primitive(Primitive::Int(Width::W32)));
+					}
+					other => panic!("expected inner TypeOperator, got {other:?}"),
+				}
+			}
+			other => panic!("expected TypeOperator, got {other:?}"),
 		}
 	}
 }

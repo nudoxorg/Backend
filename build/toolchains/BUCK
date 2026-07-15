@@ -130,12 +130,18 @@ flake.package(
 # system set stays at 2021 (today's behavior) to avoid changing it under the
 # escape hatch. rust_crate() in build/rust.bzl defaults each crate to edition
 # 2024 already, so this toolchain default only affects targets that don't set one.
+# OPT_LEVEL for cargo buildscripts (cc-rs, thiserror probes, …). cargo_buildscript.bzl
+# only sets OPT_LEVEL when it finds a digit -Copt-level=N in toolchain rustc_flags;
+# without it, every cc-using buildscript dies with "OPT_LEVEL not defined".
+_RUSTC_FLAGS = ["-Copt-level=0"]
+
 nix_rust_toolchain(
     name = "rust_nix",
     rustc = ":rustc",
     rustdoc = ":rustc[rustdoc]",
     clippy = ":clippy",
     default_edition = "2024",
+    rustc_flags = _RUSTC_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -145,6 +151,7 @@ nix_rust_toolchain(
 system_rust_toolchain(
     name = "rust_system",
     default_edition = "2021",
+    rustc_flags = _RUSTC_FLAGS,
     visibility = ["PUBLIC"],
 )
 

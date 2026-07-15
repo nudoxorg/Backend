@@ -32,7 +32,8 @@ native.alias(name = "ordered_float", actual = ":ordered-float", visibility = ["P
 native.alias(name = "par_core", actual = ":par-core", visibility = ["PUBLIC"])
 native.alias(name = "ra_ap_load_cargo", actual = ":ra_ap_load-cargo", visibility = ["PUBLIC"])
 native.alias(name = "rowan", actual = ":rowan-0.15", visibility = ["PUBLIC"])
-native.alias(name = "rustc_hash", actual = ":rustc-hash", visibility = ["PUBLIC"])
+# Point at rustc-hash 2.x (FxBuildHasher); reindeer's default alias is still 1.x.
+native.alias(name = "rustc_hash", actual = ":rustc-hash-2", visibility = ["PUBLIC"])
 native.alias(name = "sea_query", actual = ":sea-query", visibility = ["PUBLIC"])
 native.alias(name = "sea_query_binder", actual = ":sea-query-binder", visibility = ["PUBLIC"])
 native.alias(name = "tokio_stream", actual = ":tokio-stream", visibility = ["PUBLIC"])

@@ -131,6 +131,64 @@ pub struct FieldAttributes {
 	pub is_static: bool,
 }
 
+/// Algebraic sum / enum / sealed hierarchy as a first-class IR surface.
+///
+/// Historical `Entry::SumType(Symbol<Vec<SumVariant>>)` could only carry
+/// variants — methods, supers, generics, and underlying types were lost or
+/// dual-emitted only as free-floating entries. This container keeps that
+/// structure on the sum itself (mirroring [`Record`]).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SumType {
+	/// Enum / ADT variants in declaration order.
+	pub variants: Vec<SumVariant>,
+
+	/// Declaration-site type parameters (`enum E<T> { … }`, Java/C# generic enums).
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub generics: Option<Generics>,
+
+	/// Methods attached to the sum (Rust `impl Enum`, Java enum methods, …).
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub methods: Option<Vec<Function>>,
+
+	/// Protocols / interfaces / traits this sum implements.
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub implemented_protocols: Option<Vec<NudoxPath>>,
+
+	/// Super types (extends / implements / sealed permits targets as types).
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub super_types: Option<Vec<Type>>,
+
+	/// Child entry paths (methods, nested types, dual-emitted functions).
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub members: Option<Vec<NudoxPath>>,
+
+	/// Underlying representation (Go iota `type T int`, C# enum `: byte`, …).
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub underlying: Option<Type>,
+}
+
+impl SumType {
+	/// Build a sum that only has variants (legacy producers / inline ADTs).
+	pub fn from_variants(variants: Vec<SumVariant>) -> Self {
+		Self {
+			variants,
+			generics: None,
+			methods: None,
+			implemented_protocols: None,
+			super_types: None,
+			members: None,
+			underlying: None,
+		}
+	}
+}
+
+impl From<Vec<SumVariant>> for SumType {
+	fn from(variants: Vec<SumVariant>) -> Self {
+		Self::from_variants(variants)
+	}
+}
+
 /// Adding sum variants here for historical reasons
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -143,6 +201,10 @@ pub struct SumVariant {
 
 	/// Variant-level documentation strings.
 	pub documentation: Option<String>,
+
+	/// Explicit discriminant / constant value when known (`Foo = 1`, iota value).
+	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+	pub discriminant: Option<ConstExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

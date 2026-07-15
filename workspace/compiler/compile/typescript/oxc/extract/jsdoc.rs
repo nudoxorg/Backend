@@ -15,14 +15,20 @@
 //! `comment.attached_to` field (also a start offset), set during the semantic walk via
 //! `retrieve_attached_jsdoc` which is called only for `should_attach_jsdoc` node kinds.
 //!
-//! Our `jsdoc_for_node` path:
-//!   1. Primary: `semantic.jsdoc().get_one_by_node(semantic.nodes(), nodes.get_node(node_id))`.
-//!   2. Fallback: manual scan of `semantic.comments()` filtered by `is_jsdoc()` and
-//!      `attached_to == node_span_start`, re-parsed via `JSDoc::new`. Needed for node
-//!      kinds not listed in `should_attach_jsdoc` (e.g. some TS-specific declarations).
+//! **Critical gap:** oxc's `should_attach_jsdoc` list does **not** include any
+//! TypeScript-only kinds (`TSInterfaceDeclaration`, `TSTypeAliasDeclaration`,
+//! `TSPropertySignature`, `TSEnumDeclaration`, …). JSDoc on those forms is either
+//! attached to the wrapping `ExportNamedDeclaration` / `ExportDefaultDeclaration`
+//! (which *are* listed) or left in `not_attached` / only recoverable via the raw
+//! comment's `attached_to` field.
 //!
-//! For `module_doc` there is no declaration node to key from; we scan `program.comments`
-//! for the first `/**` block whose parsed tags contain `@module` (deno_doc semantics).
+//! Our resolution path therefore:
+//!   1. Primary: `semantic.jsdoc().get_one_by_node(…)` when the node is flagged.
+//!   2. Span map: `get_all_by_span` on the node's span start.
+//!   3. Comment table: any `is_jsdoc()` comment with `attached_to == span.start`.
+//!   4. Leading-trivia scan: nearest preceding JSDoc whose gap to the node is only
+//!      whitespace + `export`/`default`/`declare`/`async`/`abstract` keywords
+//!      (covers `/** … */ export interface Foo`).
 
 use oxc_ast::ast::Program;
 use oxc_jsdoc::parser::JSDoc;
@@ -34,41 +40,101 @@ use ir::kind::Deprecation;
 use super::{DocFacts, Extractor};
 
 impl<'a> Extractor<'a> {
-    /// Resolve the JSDoc attached to `node_id` into [`DocFacts`]: description
-    /// text, `@deprecated` → [`Deprecation`], `@ignore` flag.
-    ///
-    /// Uses `self.semantic.jsdoc().get_one_by_node(nodes, node)` as the primary
-    /// path; falls back to a manual scan of `self.semantic.comments()` keyed by
-    /// `attached_to == node.kind().span().start` when the finder returns `None`
-    /// (i.e. the node kind was not pre-flagged during the semantic walk).
+    /// Resolve the JSDoc attached to `node_id` into [`DocFacts`].
     pub(crate) fn jsdoc_for_node(&self, node_id: NodeId) -> DocFacts {
+        // Guard against dummy / unset node ids from unvisited nodes.
+        if node_id == NodeId::DUMMY {
+            return DocFacts::default();
+        }
+
         let nodes = self.semantic.nodes();
+        // `get_node` panics on out-of-range; guard with len when possible.
         let node = nodes.get_node(node_id);
 
-        // Primary path via the pre-indexed finder.
-        let jsdoc_opt = self.semantic.jsdoc().get_one_by_node(nodes, node);
-
-        // Fallback: manual scan when the node kind was not pre-flagged.
-        let jsdoc_opt = jsdoc_opt.or_else(|| {
-            let node_start = node.kind().span().start;
-            let source = self.semantic.source_text();
-            self.semantic
-                .comments()
-                .iter()
-                .find(|c| c.is_jsdoc() && c.attached_to == node_start)
-                .map(|c| {
-                    let content_span = c.content_span();
-                    // content_span covers `/*` to `*/`; strip one extra byte for the
-                    // leading `*` that makes this a JSDoc block (`/**`).
-                    let jsdoc_span = Span::new(content_span.start + 1, content_span.end);
-                    JSDoc::new(jsdoc_span.source_text(source), jsdoc_span)
-                })
-        });
-
-        match jsdoc_opt {
-            Some(jsdoc) => Self::extract_doc_facts(jsdoc),
-            None => DocFacts::default(),
+        // 1. Primary path via the pre-indexed finder.
+        if let Some(jsdoc) = self.semantic.jsdoc().get_one_by_node(nodes, node) {
+            return Self::extract_doc_facts(jsdoc);
         }
+
+        // 2–4. Span / comment / leading-trivia fallbacks.
+        self.jsdoc_for_span(node.kind().span())
+    }
+
+    /// Resolve JSDoc for an arbitrary AST span (properties, methods, signatures
+    /// that lack a convenient `NodeId` walk, or TS kinds oxc never flags).
+    pub(crate) fn jsdoc_for_span(&self, span: Span) -> DocFacts {
+        // 2. Finder's attached map keyed by span.start (works when the *parent*
+        //    ExportNamedDeclaration was flagged, if we pass that span; also
+        //    works for Class PropertyDefinition which *is* listed).
+        if let Some(docs) = self.semantic.jsdoc().get_all_by_span(span) {
+            if let Some(jsdoc) = docs.last() {
+                return Self::extract_doc_facts(jsdoc.clone());
+            }
+        }
+
+        let source = self.semantic.source_text();
+        let node_start = span.start;
+
+        // 3. Raw comment table: attached_to == this span start.
+        if let Some(jsdoc) = self.comment_jsdoc_at(node_start) {
+            return Self::extract_doc_facts(jsdoc);
+        }
+
+        // 4. Leading trivia: nearest preceding JSDoc with only export/declare
+        //    keywords between the comment and the node. This recovers docs for
+        //    `/** … */ export interface Foo` where attached_to points at `export`.
+        if let Some(jsdoc) = self.leading_jsdoc_before(node_start, source) {
+            return Self::extract_doc_facts(jsdoc);
+        }
+
+        DocFacts::default()
+    }
+
+    /// Parse a JSDoc comment whose `attached_to` equals `offset`, if any.
+    fn comment_jsdoc_at(&self, offset: u32) -> Option<JSDoc<'a>> {
+        let source = self.semantic.source_text();
+        self.semantic.comments().iter().find_map(|c| {
+            if c.is_jsdoc() && c.attached_to == offset {
+                Some(Self::parse_comment_jsdoc(c, source))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Nearest preceding JSDoc whose intervening text is only export/declare trivia.
+    fn leading_jsdoc_before(&self, node_start: u32, source: &'a str) -> Option<JSDoc<'a>> {
+        let mut best: Option<(u32, JSDoc<'a>)> = None;
+        for c in self.semantic.comments().iter() {
+            if !c.is_jsdoc() {
+                continue;
+            }
+            // Comment must end before the node, and be attached at or before it.
+            if c.span.end > node_start {
+                continue;
+            }
+            if c.attached_to > node_start {
+                continue;
+            }
+            // Only whitespace + declaration keywords between comment end and node.
+            if !is_leading_export_trivia(source, c.span.end, node_start) {
+                continue;
+            }
+            let jsdoc = Self::parse_comment_jsdoc(c, source);
+            match &best {
+                Some((prev_end, _)) if *prev_end >= c.span.end => {}
+                _ => best = Some((c.span.end, jsdoc)),
+            }
+        }
+        best.map(|(_, j)| j)
+    }
+
+    fn parse_comment_jsdoc(comment: &oxc_ast::ast::Comment, source: &'a str) -> JSDoc<'a> {
+        let content_span = comment.content_span();
+        // content_span covers `/*` to `*/`; strip one extra byte for the
+        // leading `*` that makes this a JSDoc block (`/**`).
+        let jsdoc_span = Span::new(content_span.start + 1, content_span.end);
+        JSDoc::new(jsdoc_span.source_text(source), jsdoc_span)
     }
 
     /// Module documentation = the first `/**` block whose parsed tags contain
@@ -84,10 +150,7 @@ impl<'a> Extractor<'a> {
                 continue;
             }
 
-            let content_span = comment.content_span();
-            // Strip the extra `*` that distinguishes `/**` from `/*`.
-            let jsdoc_span = Span::new(content_span.start + 1, content_span.end);
-            let jsdoc = JSDoc::new(jsdoc_span.source_text(source), jsdoc_span);
+            let jsdoc = Self::parse_comment_jsdoc(comment, source);
 
             if !jsdoc.tags().iter().any(|t| t.kind.parsed() == "module") {
                 continue;
@@ -162,4 +225,25 @@ impl<'a> Extractor<'a> {
 
         DocFacts { doc, deprecation, ignore }
     }
+}
+
+/// True when `source[from..to]` is only whitespace and declaration-prefix keywords
+/// (`export` / `default` / `declare` / `async` / `abstract`). Used to decide
+/// whether a preceding JSDoc is the leading doc for a node rather than a sibling's.
+fn is_leading_export_trivia(source: &str, from: u32, to: u32) -> bool {
+    if from > to {
+        return false;
+    }
+    let from = from as usize;
+    let to = to as usize;
+    if to > source.len() || from > source.len() {
+        return false;
+    }
+    let between = &source[from..to];
+    between.split_whitespace().all(|tok| {
+        matches!(
+            tok,
+            "export" | "default" | "declare" | "async" | "abstract" | "const" | "type"
+        )
+    })
 }

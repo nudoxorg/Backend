@@ -151,8 +151,9 @@ pub fn produce(
 	let deadline = Instant::now() + EVAL_BUDGET;
 	let code = flake_outputs_shim(root, &discover_input_names(root));
 
-	let evaluation = hermetic_evaluation(io);
+	let evaluation = hermetic_evaluation(io.clone());
 	let source_map = evaluation.source_map();
+	let globals = evaluation.globals();
 	let result = evaluation.evaluate(&code, Some(flake_nix.clone()));
 
 	for warning in &result.warnings {
@@ -175,7 +176,21 @@ pub fn produce(
 		});
 	}
 
-	let surface = walker::walk(&value, &source_map, table, meta, deadline);
+	// ForceHost re-enters snix (Strict / GenCo deep-force) for any suspended
+	// thunk the walker still encounters after the Lazy top-level evaluate.
+	let force_host = walker::ForceHost {
+		io,
+		globals,
+		source: source_map.clone(),
+	};
+	let surface = walker::walk_with_force(
+		&value,
+		&source_map,
+		table,
+		meta,
+		deadline,
+		Some(&force_host),
+	);
 	Ok(Some(surface))
 }
 

@@ -60,7 +60,7 @@ fn build_function(
 	receiver: Option<ReceiverKind>,
 ) -> Function {
 	let has_params = m.parameters.iter().any(|p| p.is_params);
-	let inputs = lower_params(&m.parameters, parsed);
+	let inputs = lower_params_ext(&m.parameters, parsed, m.is_extension_method);
 	let outputs = lower_outputs(m, parsed);
 
 	let mut attributes: Vec<Attribute> = Vec::new();
@@ -110,10 +110,23 @@ fn signature_is_unsafe(m: &schema::Method) -> bool {
 }
 
 /// Lower formal parameters, attaching modifiers and `<param>` descriptions.
+///
+/// When `extension_receiver` is true the first parameter is the C# `this`
+/// extension receiver and is stamped with an `(extension)` description note.
 pub fn lower_params(params: &[schema::Param], parsed: Option<&ParsedDoc>) -> Vec<IrParameter> {
+	lower_params_ext(params, parsed, false)
+}
+
+/// Like [`lower_params`], with an explicit extension-method flag.
+pub fn lower_params_ext(
+	params: &[schema::Param],
+	parsed: Option<&ParsedDoc>,
+	is_extension: bool,
+) -> Vec<IrParameter> {
 	params
 		.iter()
-		.map(|p| {
+		.enumerate()
+		.map(|(i, p)| {
 			let mut attrs: Vec<ParameterAttribute> = Vec::new();
 			let mut note: Option<&str> = None;
 			match p.ref_kind.as_str() {
@@ -137,6 +150,13 @@ pub fn lower_params(params: &[schema::Param], parsed: Option<&ParsedDoc>) -> Vec
 			}
 
 			let mut description = parsed.and_then(|d| d.params.get(&p.name).cloned());
+			// Extension receiver: first formal of a classic extension method.
+			if is_extension && i == 0 {
+				description = Some(match description {
+					Some(d) => format!("(extension) {d}"),
+					None => "(extension)".to_string(),
+				});
+			}
 			if let Some(n) = note {
 				description = Some(match description {
 					Some(d) => format!("({n}) {d}"),
@@ -157,14 +177,29 @@ pub fn lower_params(params: &[schema::Param], parsed: Option<&ParsedDoc>) -> Vec
 
 /// Lower the output side: the return value (first, unnamed) followed by one
 /// `throws` output per documented `<exception>`.
+///
+/// `ref` / `ref readonly` returns wrap the type in [`IrType::BorrowedRef`]
+/// (mutable for `ref`, immutable for `ref readonly`) so the return-by-ref
+/// flag is structural, not only a doc note (H8).
 fn lower_outputs(m: &schema::Method, parsed: Option<&ParsedDoc>) -> Vec<IrParameter> {
 	let mut outputs = Vec::new();
 
 	if let Some(ret) = &m.return_type {
 		if !is_void(ret) {
+			let base = types::lower_type(ret);
+			let r#type = if m.returns_by_ref {
+				// `ref T` → mutable borrow; `ref readonly T` → immutable.
+				IrType::BorrowedRef {
+					lifetime:   None,
+					is_mutable: !m.returns_by_ref_readonly,
+					r#type:     Box::new(base),
+				}
+			} else {
+				base
+			};
 			outputs.push(IrParameter::Literal(LiteralParameter {
 				name:          String::new(),
-				r#type:        Some(types::lower_type(ret)),
+				r#type:        Some(r#type),
 				attributes:    None,
 				default_value: None,
 				description:   parsed.and_then(|d| d.returns.clone()),
@@ -223,6 +258,17 @@ pub fn declaration_notes(m: &schema::Method) -> Vec<String> {
 	if m.is_readonly {
 		modifiers.push("readonly");
 	}
+	if m.is_extension_method {
+		// Classic extension method (`this` receiver) — C4.
+		modifiers.push("extension");
+	}
+	if m.returns_by_ref {
+		if m.returns_by_ref_readonly {
+			modifiers.push("ref readonly return");
+		} else {
+			modifiers.push("ref return");
+		}
+	}
 	if signature_is_unsafe(m) {
 		modifiers.push("unsafe");
 	}
@@ -261,12 +307,22 @@ pub fn declaration_notes(m: &schema::Method) -> Vec<String> {
 pub fn trait_method(m: &schema::Method, provided: bool) -> TraitMethod {
 	let parsed = super::xmldoc::parse_opt(m.doc.as_deref());
 
-	let parameters = lower_params(&m.parameters, parsed.as_ref());
+	let parameters = lower_params_ext(&m.parameters, parsed.as_ref(), m.is_extension_method);
 	let return_type: Option<Box<IrType>> = m.return_type.as_ref().and_then(|ret| {
 		if is_void(ret) {
 			None
 		} else {
-			Some(Box::new(types::lower_type(ret)))
+			let base = types::lower_type(ret);
+			let ty = if m.returns_by_ref {
+				IrType::BorrowedRef {
+					lifetime:   None,
+					is_mutable: !m.returns_by_ref_readonly,
+					r#type:     Box::new(base),
+				}
+			} else {
+				base
+			};
+			Some(Box::new(ty))
 		}
 	});
 

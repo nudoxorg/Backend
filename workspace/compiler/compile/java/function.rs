@@ -32,13 +32,18 @@
 //!   lower via `types::lower_type_params` into `Function::generics`.
 //! * **Modifiers and annotations** — the IR's `function::Attribute` enum is
 //!   closed (no custom variant), so `abstract`/`final`/`synchronized`/
-//!   `native`/`strictfp`/`default` and annotation uses are preserved as a
-//!   labelled documentation section (`Declared:` / `Annotations:`) — a
-//!   documented lossy-slot placement, consistent with the Go producer's
-//!   value notes. `abstract` additionally maps to `implemented: false`
-//!   (`native` methods count as implemented — the body exists, elsewhere).
+//!   `native`/`strictfp`/`default` and method-site annotation uses are
+//!   preserved as a labelled documentation section (`Declared:` /
+//!   `Annotations:`) — a documented lossy-slot placement, consistent with
+//!   the Go producer's value notes. `abstract` additionally maps to
+//!   `implemented: false` (`native` methods count as implemented — the body
+//!   exists, elsewhere). Parameter declaration annotations fold into the
+//!   parameter type via [`types::apply_annotations`] (TypeOperator wrappers)
+//!   because `ParameterAttribute` is also closed.
 //! * **Overloads** — grouping same-named methods into one `Function` with
 //!   `overloads` happens in `item`; this module lowers one signature.
+//!   Secondary-overload javadocs are merged into the symbol documentation by
+//!   `item::push_method_entries`.
 
 use ir::function::{Attribute, Function};
 use ir::parameter::{LiteralParameter, Parameter as IrParameter, ParameterAttribute};
@@ -109,6 +114,11 @@ fn build_function(
 
 /// Lower formal parameters, marking the final one variadic when the method
 /// is, and attaching `@param` descriptions.
+///
+/// Parameter declaration annotations (e.g. `@Nullable`) have no slot on the
+/// closed [`ParameterAttribute`] enum; they are folded into the parameter
+/// type as [`ir::ty::TypeOperator`] wrappers (outermost first), on top of any
+/// type-use annotations the type mirror already carries.
 pub fn lower_params(
 	params: &[schema::Param],
 	varargs: bool,
@@ -120,9 +130,12 @@ pub fn lower_params(
 		.enumerate()
 		.map(|(idx, p)| {
 			let is_variadic = varargs && idx == last;
+			// Type-use annotations live on the mirror; declaration annotations
+			// on the parameter are applied around the lowered type.
+			let ty = types::apply_annotations(types::lower_type(&p.ty), &p.annotations);
 			IrParameter::Literal(LiteralParameter {
 				name:          p.name.clone(),
-				r#type:        Some(types::lower_type(&p.ty)),
+				r#type:        Some(ty),
 				attributes:    if is_variadic {
 					Some(vec![ParameterAttribute::Variadic])
 				} else {

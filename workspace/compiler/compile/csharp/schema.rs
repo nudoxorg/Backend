@@ -160,7 +160,9 @@ pub struct Members {
 	pub conversions: Vec<Method>,
 	#[serde(default)]
 	pub indexers: Vec<Property>,
-	/// Qualified names of directly nested type declarations.
+	/// Directly nested type declarations. The oracle emits **doc-ids**
+	/// (`T:Ns.Outer+Inner`) when available, falling back to the metadata
+	/// qualified name. Resolve via `Lowering::resolve_type_ref`.
 	#[serde(default)]
 	pub nested: Vec<String>,
 }

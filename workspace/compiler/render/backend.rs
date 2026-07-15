@@ -192,10 +192,22 @@ pub fn render_entry_doc(entry: &Entry, cx: &RenderCtx) -> Rendered {
     let be = cx.backend();
     let body = match entry {
         Entry::RecordType(s) => be.record(&s.name, &s.visibility, &s.inner, cx),
-        Entry::SumType(s) => be.sum(&s.name, None, &s.inner, &s.visibility, cx),
+        Entry::SumType(s) => be.sum(
+            &s.name,
+            s.inner.generics.as_ref(),
+            &s.inner.variants,
+            &s.visibility,
+            cx,
+        ),
         Entry::TraitDef(s) => be.interface(&s.name, &s.inner, &s.visibility, cx),
         Entry::Function(s) => be.function(&s.name, &s.inner, &s.visibility, cx),
-        Entry::TypeAlias(s) => alias_doc(be, &s.name, &s.inner, cx),
+        Entry::TypeAlias(s) => alias_doc(
+            be,
+            &s.name,
+            s.inner.generics.as_ref(),
+            &s.inner.target,
+            cx,
+        ),
         Entry::UnionType(s) => union_alias_doc(be, &s.name, &s.inner, cx),
         other => Doc::text(format!("// <unrendered {}>", other.kind_tag())),
     };
@@ -292,15 +304,48 @@ fn deprecation_marker(dep: &Deprecation, cx: &RenderCtx) -> Rendered {
     }
 }
 
-fn alias_doc(be: &dyn Backend, name: &str, ty: &Type, cx: &RenderCtx) -> Rendered {
+fn alias_doc(
+    be: &dyn Backend,
+    name: &str,
+    generics: Option<&Generics>,
+    ty: &Type,
+    cx: &RenderCtx,
+) -> Rendered {
     use Annotation::*;
+    // Declaration-site generics: render `<T, U>` for TS/Rust when present.
+    // `gen` is a reserved keyword in Rust 2024.
+    let generics_doc = {
+        let info = emit::analyze_generics(generics);
+        if info.types.is_empty() {
+            Doc::nil()
+        } else {
+            let params: Vec<Rendered> = info.types.iter().map(|n| tyname(n)).collect();
+            generic_list("<", params, ">")
+        }
+    };
     match cx.language {
         Language::Rust => {
-            kw("type") + sp() + ident(name) + sp() + punct("=") + sp() + be.ty(ty, cx) + punct(";")
+            kw("type")
+                + sp()
+                + ident(name)
+                + generics_doc
+                + sp()
+                + punct("=")
+                + sp()
+                + be.ty(ty, cx)
+                + punct(";")
         }
         Language::Go => kw("type") + sp() + ident(name) + sp() + be.ty(ty, cx),
         Language::TypeScript => {
-            kw("type") + sp() + ident(name) + sp() + punct("=") + sp() + be.ty(ty, cx) + punct(";")
+            kw("type")
+                + sp()
+                + ident(name)
+                + generics_doc
+                + sp()
+                + punct("=")
+                + sp()
+                + be.ty(ty, cx)
+                + punct(";")
         }
         Language::Python => {
             ident(name)

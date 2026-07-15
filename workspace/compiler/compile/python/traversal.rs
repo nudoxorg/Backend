@@ -24,7 +24,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use version::{Constraint, TagContext, VersionGrammar, VersionRequest, resolve_from_tags};
+use heart::version::{Constraint, TagContext, VersionGrammar, VersionRequest, resolve_from_tags};
 use uv_pep440::{Version, VersionSpecifiers};
 
 /// PEP 440 specifiers (`>=1.2,<2`) as the shared [`Constraint`] predicate:

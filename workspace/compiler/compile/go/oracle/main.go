@@ -183,6 +183,11 @@ func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog) *D
 		if obj.IsAlias() {
 			base.Kind = "alias"
 			base.Target = s.typ(aliasRHS(obj))
+			// Generic type aliases (Go 1.23+): surface type parameters
+			// when the toolchain materializes them on *types.Alias.
+			if a, ok := obj.Type().(*types.Alias); ok {
+				base.TypeParams = s.typeParams(a.TypeParams())
+			}
 			return base
 		}
 		named, ok := obj.Type().(*types.Named)
@@ -199,6 +204,10 @@ func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog) *D
 		base.PromotedMethods = s.promotedMethods(named)
 		base.FieldDocs = docs.fieldDocs[obj.Name()]
 		base.MethodDocs = docs.ifaceMethodDocs[obj.Name()]
+		// In-package interfaces this concrete type satisfies.
+		if !types.IsInterface(named) {
+			base.Implements = s.implementsInterfaces(named, pkg.Types)
+		}
 		return base
 
 	case *types.Func:

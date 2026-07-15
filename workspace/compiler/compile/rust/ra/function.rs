@@ -233,14 +233,49 @@ fn collect_type_links(
 	if links.is_empty() { None } else { Some(links) }
 }
 
-/// Path-hash of a resolved type reference identifier (stable across runs).
+/// Path-hash of a resolved type-reference identifier (stable across runs).
+///
+/// Walks through wrappers (`&T`, `*mut T`, `[T]`, `[T; N]`, tuples, fn-ptrs)
+/// so nested named types still produce links — not only top-level
+/// `TypeReference`s.
 fn type_link_id(ty: Option<&Type>) -> Option<i64> {
-	match ty? {
-		Type::TypeReference(tr) if !tr.identifier.is_empty() => {
-			Some(stable_id(&PathKey::from(tr.identifier.as_str())))
+	fn walk(ty: &Type) -> Option<i64> {
+		match ty {
+			Type::TypeReference(tr) if !tr.identifier.is_empty() => {
+				Some(stable_id(&PathKey::from(tr.identifier.as_str())))
+			}
+			Type::BorrowedRef { r#type, .. }
+			| Type::RawPointer { r#type, .. }
+			| Type::Slice(r#type) => walk(r#type),
+			Type::Array { r#type, .. } => walk(r#type),
+			Type::Tuple(ts) => ts.iter().find_map(walk),
+			Type::Union(ts) => ts.iter().find_map(walk),
+			Type::QualifiedPath(qp) => walk(qp.self_type.as_ref()),
+			Type::FunctionPointer(fp) => {
+				let inputs = fp
+					.inputs
+					.as_ref()
+					.into_iter()
+					.flatten()
+					.filter_map(|p| match p {
+						Parameter::Literal(l) => l.r#type.as_ref(),
+						_ => None,
+					});
+				let outputs = fp
+					.outputs
+					.as_ref()
+					.into_iter()
+					.flatten()
+					.filter_map(|p| match p {
+						Parameter::Literal(l) => l.r#type.as_ref(),
+						_ => None,
+					});
+				inputs.chain(outputs).find_map(walk)
+			}
+			_ => None,
 		}
-		_ => None,
 	}
+	walk(ty?)
 }
 
 fn empty_to_none<T>(v: Vec<T>) -> Option<Vec<T>> {

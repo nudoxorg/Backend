@@ -141,13 +141,15 @@ def rust_tests(prefix, deps = [], edition = "2024", env = None, resources = None
     test_env = {"CARGO_MANIFEST_DIR": "."}
     if env:
         test_env.update(env)
-    # Data fixtures (Cargo.toml trees, sample sources, …) must live in the
-    # compile-time source tree so CARGO_MANIFEST_DIR lookups succeed. Also
-    # ship them as resources for sandboxed/RE runs that re-materialize them.
+    # Data fixtures + insta goldens must live in the compile-time source tree
+    # so CARGO_MANIFEST_DIR lookups succeed. Also ship them as resources for
+    # sandboxed/RE runs that re-materialize them.
     fixture_files = native.glob(["tests/fixtures/**"])
+    snapshot_files = native.glob(["tests/snapshots/**"])
+    data_files = fixture_files + snapshot_files
     test_resources = dict(resources) if resources else {}
-    if fixture_files and "tests/fixtures" not in test_resources:
-        for f in fixture_files:
+    for f in data_files:
+        if f not in test_resources:
             test_resources[f] = f
     for src in native.glob(["tests/*.rs"]):
         stem = src.removeprefix("tests/").removesuffix(".rs")
@@ -157,9 +159,9 @@ def rust_tests(prefix, deps = [], edition = "2024", env = None, resources = None
             test_kw["resources"] = test_resources
         native.rust_test(
             name = prefix + "-" + stem,
-            # Fixture data rides along in srcs so it lands under __srcs and is
-            # reachable via env!("CARGO_MANIFEST_DIR")/tests/fixtures/….
-            srcs = [src] + shared_rs + fixture_files,
+            # Fixture/snapshot data rides along in srcs so it lands under __srcs
+            # and is reachable via env!("CARGO_MANIFEST_DIR")/tests/{fixtures,snapshots}/….
+            srcs = [src] + shared_rs + data_files,
             crate_root = src,
             edition = edition,
             deps = deps,

@@ -1,5 +1,3 @@
-extra_srcs = [
-    "docs/migration_guide.md",
-    "docs/spec.md",
-    "readme.md",
-]
+['cfg(version = ">=2")']
+features = ["serde"]
+extra_deps = [":serde-1"]

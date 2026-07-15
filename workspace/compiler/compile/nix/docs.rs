@@ -41,6 +41,34 @@ impl ParsedDoc {
             && self.arg_docs.is_empty()
             && self.examples.is_empty()
     }
+
+    /// Human-facing documentation markdown: body plus any example blocks
+    /// folded under an `## Examples` heading. Empty when neither body nor
+    /// examples are present.
+    pub fn to_documentation(&self) -> Option<String> {
+        let mut out = self.markdown.trim().to_string();
+        if !self.examples.is_empty() {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str("## Examples\n\n");
+            for (i, ex) in self.examples.iter().enumerate() {
+                if i > 0 {
+                    out.push_str("\n\n");
+                }
+                let trimmed = ex.trim();
+                // Preserve fenced blocks as-is; wrap bare examples in a fence.
+                if trimmed.starts_with("```") {
+                    out.push_str(trimmed);
+                } else {
+                    out.push_str("```nix\n");
+                    out.push_str(trimmed);
+                    out.push_str("\n```");
+                }
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
 }
 
 /// Find the raw (dedented, marker-stripped) doc comment attached to a

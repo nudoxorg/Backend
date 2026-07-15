@@ -129,6 +129,23 @@ pub(crate) fn link(
             fact_entries.push(fact);
         }
 
+        // Wire Module.members from top-level symbols in this module
+        // (local_path == [module_name, symbol_name]).
+        let member_paths: Vec<NudoxPath> = fact_entries
+            .iter()
+            .filter(|f| f.local_path.len() == 2)
+            .map(|f| f.entry.path().clone())
+            .collect();
+        if let Some(module_fact) = fact_entries.first_mut() {
+            if let Entry::Module(ref mut sym) = module_fact.entry {
+                sym.inner.members = if member_paths.is_empty() {
+                    None
+                } else {
+                    Some(member_paths)
+                };
+            }
+        }
+
         module_entries.push((module_name, fact_entries));
     }
 

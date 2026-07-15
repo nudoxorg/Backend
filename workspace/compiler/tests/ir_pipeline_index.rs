@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use ir::entry::NudoxPath;
-use ir::kind::{Entry, Symbol, Visibility};
+use ir::kind::{Entry, Symbol, TypedBinding, Visibility};
 use ir::pipeline::Ir;
 
 fn constant_at(path: NudoxPath) -> Entry {
@@ -18,7 +18,7 @@ fn constant_at(path: NudoxPath) -> Entry {
         documentation: None,
         deprecation: None,
         doc_links: None,
-        inner: (),
+        inner: TypedBinding::default(),
     })
 }
 
