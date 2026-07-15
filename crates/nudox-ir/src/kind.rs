@@ -16,7 +16,7 @@ register_kinds! {
 	Type,
 }
 
-pub(crate) trait EntryKind: Any {
+pub trait EntryKind: Any + private::Sealed {
 	fn into_kind(self) -> Kind
 	where
 		Self: Sized;
@@ -24,6 +24,10 @@ pub(crate) trait EntryKind: Any {
 	fn discriminant() -> KindDiscriminant
 	where
 		Self: Sized;
+}
+
+mod private {
+	pub trait Sealed {}
 }
 
 macro_rules! register_kinds {
@@ -47,7 +51,7 @@ macro_rules! register_kinds {
 		}
 
 		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-		pub(crate) enum KindDiscriminant {
+		pub enum KindDiscriminant {
 			$(
 			$(#[$meta])*
 			$kind,
@@ -55,6 +59,8 @@ macro_rules! register_kinds {
 		}
 
 		$(
+		impl private::Sealed for $kind {}
+
 		impl EntryKind for $kind {
 			fn into_kind(self) -> Kind { Kind::$kind(self) }
 

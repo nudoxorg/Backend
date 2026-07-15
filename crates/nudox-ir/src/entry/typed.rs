@@ -17,7 +17,6 @@ impl<T> TypedEntry<T> {
 	pub fn sym(&self) -> &Symbol { &self.inner.sym }
 }
 
-#[expect(private_bounds)]
 impl<T: EntryKind> TypedEntry<T> {
 	pub(crate) fn new(entry: &Entry) -> &Self {
 		// Safety: `TypedEntry` is `repr(transparent)` and there are no possibilities

@@ -15,7 +15,6 @@ impl EntryBuilder {
 	/// Create a new child entry and recieve an EntryIdx for it
 	///
 	/// This is the public API for building entries.
-	#[expect(private_bounds)]
 	pub fn create<T>(&mut self, sym: Symbol, build: impl FnOnce(&mut Self) -> T) -> EntryIdx<T>
 	where
 		T: EntryKind,
@@ -33,7 +32,6 @@ impl EntryBuilder {
 	}
 
 	/// Emits a link between the currently-being-built entry and another entry.
-	#[expect(private_bounds)]
 	pub fn link<T>(&mut self, idx: EntryIdx<T>)
 	where
 		T: EntryKind,
@@ -42,7 +40,6 @@ impl EntryBuilder {
 	}
 
 	/// Emits a link between two entry
-	#[expect(private_bounds)]
 	pub fn link_between<T, U>(&mut self, a: EntryIdx<T>, b: EntryIdx<U>)
 	where
 		T: EntryKind,

@@ -27,7 +27,6 @@ pub trait Registry: DynRegistry {
 
 	fn resolve_package(&self, package_index: usize) -> &EntryArena;
 
-	#[expect(private_bounds)]
 	fn resolve<T>(&self, index: EntryIdx<T>) -> &TypedEntry<T>
 	where
 		T: EntryKind,

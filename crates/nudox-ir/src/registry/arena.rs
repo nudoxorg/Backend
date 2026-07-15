@@ -24,7 +24,6 @@ impl EntryArena {
 		EntryArena { package, entries: Vec::new(), links: HashSet::new() }
 	}
 
-	#[expect(private_bounds)]
 	pub fn create_top_level<T>(&mut self, sym: Symbol, build: impl FnOnce(&mut EntryBuilder) -> T)
 	where
 		T: EntryKind,
