@@ -75,7 +75,7 @@ impl EntryBuilder {
 
 		let EntryBuilder { idx, sym, parent, children, .. } = this;
 
-		let node = Node { parent, children: children.iter().map(|e| e.idx).collect() };
+		let node = Node::build(parent, children.iter().map(|e| e.idx).collect());
 
 		let entries = BuiltEntries { idx, entry: Entry::new(sym, node, kind), children };
 		let links = BuiltLinks { links: this.links };
@@ -153,11 +153,7 @@ mod tests {
 
 		itertools::assert_equal(built.enumerate(), [(
 			idx(0x100),
-			Entry::new(
-				dummy_symbol("mod42"),
-				Node { parent: None, children: Vec::new() },
-				Kind::Module(Module {}),
-			),
+			Entry::new(dummy_symbol("mod42"), Node::root(vec![]), Kind::Module(Module {})),
 		)]);
 	}
 
@@ -178,34 +174,13 @@ mod tests {
 				idx(0x10),
 				Entry::new(
 					dummy_symbol("struct67"),
-					Node { parent: None, children: vec![idx(0x11), idx(0x12), idx(0x13)] },
+					Node::root(vec![idx(0x11), idx(0x12), idx(0x13)]),
 					Kind::Record(Record { fields: vec![idx(0x11), idx(0x12), idx(0x13)] }),
 				),
 			),
-			(
-				idx(0x11),
-				Entry::new(
-					dummy_symbol("field1"),
-					Node { parent: Some(idx(0x10)), children: Vec::new() },
-					Kind::Field(Field {}),
-				),
-			),
-			(
-				idx(0x12),
-				Entry::new(
-					dummy_symbol("field2"),
-					Node { parent: Some(idx(0x10)), children: Vec::new() },
-					Kind::Field(Field {}),
-				),
-			),
-			(
-				idx(0x13),
-				Entry::new(
-					dummy_symbol("field3"),
-					Node { parent: Some(idx(0x10)), children: Vec::new() },
-					Kind::Field(Field {}),
-				),
-			),
+			(idx(0x11), Entry::new(dummy_symbol("field1"), Node::leaf(idx(0x10)), Kind::Field(Field {}))),
+			(idx(0x12), Entry::new(dummy_symbol("field2"), Node::leaf(idx(0x10)), Kind::Field(Field {}))),
+			(idx(0x13), Entry::new(dummy_symbol("field3"), Node::leaf(idx(0x10)), Kind::Field(Field {}))),
 		]);
 	}
 

@@ -46,11 +46,7 @@ mod tests {
 
 	#[test]
 	fn get_allows_typed_access() {
-		let entry = Entry::new(
-			dummy_symbol("test_sym"),
-			Node { parent: None, children: Vec::new() },
-			Kind::Module(Module {}),
-		);
+		let entry = Entry::new(dummy_symbol("test_sym"), Node::root(vec![]), Kind::Module(Module {}));
 
 		let entry = TypedEntry::new(&entry);
 
