@@ -15,7 +15,7 @@ pub trait Registry: DynRegistry {
 	/// packages within a registry. Should be constructable based on information
 	/// available within the IR of a package that is consuming an external
 	/// package's entry as the target.
-	type EntryId: serde::Serialize + for<'de> serde::Deserialize<'de> + Any;
+	type EntryId: serde::Serialize + serde::de::DeserializeOwned + Any;
 
 	/// resolves an `EntryId` to an actual `EntryIdx` that points to the given
 	/// Entry.
