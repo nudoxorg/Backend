@@ -1,4 +1,4 @@
-use std::{any::Any, marker::PhantomData};
+use std::marker::PhantomData;
 
 use super::{Entry, EntryInner};
 use crate::{kind::{EntryKind, Kind}, registry::Registry, symbol::Symbol};
@@ -36,14 +36,9 @@ impl<T: EntryKind> TypedEntry<T> {
 
 	// TODO: do we want to impl Deref and make this more like a smart pointer?
 	pub fn get<'a>(&'a self, r: &'a impl Registry) -> &'a T {
-		kind_as_dyn_any(self.kind(r)).downcast_ref().expect("using TypedEntry with incorrect type")
+		self.kind(r).variant_as_dyn().downcast_ref().expect("using TypedEntry with incorrect type")
 	}
 }
-
-// helper function to get a &dyn Any from the inner variant of a Kind as &dyn
-// Any, needed because variant_as_dyn returns &dyn EntryKind which doesn't
-// implicitly downcast to &dyn Any for some reason?
-fn kind_as_dyn_any(kind: &Kind) -> &dyn Any { kind.variant_as_dyn() }
 
 #[cfg(test)]
 mod tests {
