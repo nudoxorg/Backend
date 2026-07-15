@@ -1,14 +1,17 @@
-# Exposes the toolchain sub-flake as a Buck2 artifact for flake.package().
+# build/nix is a plain Nix package set (packages.nix), not a flake.
+# Buck2 hermetic toolchains use the thin flake at toolchains//nix:flake —
+# see build/toolchains/BUCK flake.package(path = "toolchains//nix:flake").
 #
-# build/toolchains/BUCK references this as `path = "//nix:flake"`. Buck2
-# materialises both files into a single directory artifact; flake.package()
-# then runs `nix build path:<dir>#packages.<system>.<name>` as a hermetic
-# local-only action.
+# This package only exposes non-flake Nix sources that other Buck targets
+# may materialize (e.g. snowydeer helpers under this tree).
 filegroup(
-    name = "flake",
+    name = "nix-sources",
     srcs = [
-        "flake.lock",
-        "flake.nix",
+        "packages.nix",
+        "backend-image.nix",
+        "compiler.nix",
+        "compiler-image.nix",
+        "buck2-artifact.json",
     ],
     visibility = ["PUBLIC"],
 )

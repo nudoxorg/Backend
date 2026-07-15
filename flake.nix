@@ -162,70 +162,35 @@
 
     in
     {
+      # Package recipes live in build/nix/packages.nix (not a sub-flake). That
+      # file returns the full attrset; this flake only supplies inputs + pins.
       packages = generateForEverySystem (
-        { systemArchitecture, nixPackages, ... }:
-        let
-          buildImage = nix2container.packages.${systemArchitecture}.nix2container.buildImage;
-        in
         {
-          default = (nixos.lib.build.rustService { pkgs = nixPackages; }) {
-            pname = "nudox-backend";
-            version = self.rev or "unknown";
-            src = ./.;
-            cargoPackage = "server";
-            mainProgram = "server";
-            description = "NuDox backend server";
-          };
-
-          backend = (nixos.lib.build.rustService { pkgs = nixPackages; }) {
-            pname = "nudox-backend";
-            version = self.rev or "unknown";
-            src = ./.;
-            cargoPackage = "server";
-            mainProgram = "server";
-            description = "NuDox backend server";
-          };
-
-          registry = ((nixos.lib.build.rustService { pkgs = nixPackages; }) {
-            pname = "nudox-registry";
-            version = self.rev or "unknown";
-            src = ./.;
-            cargoPackage = "registry";
-            mainProgram = "";
-            description = "NuDox registry library";
-          }).overrideAttrs {
-            postFixup = "";
-          };
-
-          compiler-daemon = nixPackages.callPackage ./build/nix/compiler.nix {
-            # All paths are read from env vars at evaluation time.  In pure eval
-            # (no --impure), builtins.getEnv returns "" so every path is null and
-            # placeholder scripts are emitted.  When --impure is used with the
-            # snowydeer-imported store paths set, the real binaries are wired in.
-            #
-            # The same pattern extends to the optional oracle resource paths.
-            compilerDaemon =
-              let p = builtins.getEnv "NUDOX_COMPILER_DAEMON_PATH";
-              in if p != "" then builtins.storePath p else null;
-            producerWorker =
-              let p = builtins.getEnv "NUDOX_PRODUCER_WORKER_PATH";
-              in if p != "" then builtins.storePath p else null;
-            goOracle =
-              let p = builtins.getEnv "NUDOX_GO_ORACLE_PATH";
-              in if p != "" then builtins.storePath p else null;
-            javaOracle =
-              let p = builtins.getEnv "NUDOX_JAVA_ORACLE_PATH";
-              in if p != "" then builtins.storePath p else null;
-            csharpOracle =
-              let p = builtins.getEnv "NUDOX_CSHARP_ORACLE_PATH";
-              in if p != "" then builtins.storePath p else null;
-          };
-
-          compilerImage = nixPackages.callPackage ./build/nix/compiler-image.nix {
-            inherit buildImage;
-            compiler = self.packages.${systemArchitecture}.compiler-daemon;
-            bwrap = if builtins.hasAttr "bwrap" nixPackages then nixPackages.bwrap else null;
-          };
+          systemArchitecture,
+          nixPackages,
+          fenixPackages,
+        }:
+        let
+          envPath =
+            name:
+            let
+              p = builtins.getEnv name;
+            in
+            if p != "" then builtins.storePath p else null;
+        in
+        import ./build/nix/packages.nix {
+          pkgs = nixPackages;
+          inherit fenixPackages nixos;
+          buildImage = nix2container.packages.${systemArchitecture}.nix2container.buildImage;
+          src = ./.;
+          version = self.rev or "unknown";
+          # snowydeer paths — pure eval yields null → placeholder scripts.
+          # With --impure + env vars set, real Buck2-built binaries are wired in.
+          compilerDaemonPath = envPath "NUDOX_COMPILER_DAEMON_PATH";
+          producerWorkerPath = envPath "NUDOX_PRODUCER_WORKER_PATH";
+          goOraclePath = envPath "NUDOX_GO_ORACLE_PATH";
+          javaOraclePath = envPath "NUDOX_JAVA_ORACLE_PATH";
+          csharpOraclePath = envPath "NUDOX_CSHARP_ORACLE_PATH";
         }
       );
 
@@ -363,23 +328,46 @@
           # Create a thin bash wrapper for each .nu script that cds to the
           # project root before running, matching the previous devshell
           # behaviour.
-          mkDevshellCommand = cmdName: nixPackages.writeTextFile {
-            name = "${cmdName}-nuenv";
-            destination = "/bin/${cmdName}";
-            executable = true;
-            text = ''
-              #!/bin/sh
-              cd "$PRJ_ROOT" && exec ${nixPackages.nushell}/bin/nu .config/scripts/${cmdName}.nu "$@"
-            '';
-          };
+          mkDevshellCommand =
+            cmdName:
+            nixPackages.writeTextFile {
+              name = "${cmdName}-nuenv";
+              destination = "/bin/${cmdName}";
+              executable = true;
+              text = ''
+                #!/bin/sh
+                cd "$PRJ_ROOT" && exec ${nixPackages.nushell}/bin/nu .config/scripts/${cmdName}.nu "$@"
+              '';
+            };
 
           nuScriptCommands = [
-            "build" "build-release" "check" "clean" "create-notes"
-            "doc" "doc-open" "fmt" "fmt-check" "install" "install-force"
-            "lint" "lint-fix" "patch" "release" "run" "run-release"
-            "sync-deps" "test" "test-with" "test-all" "update"
-            "buck-build" "buck-test" "ra-index"
-            "snowydeer-import" "build-compiler-image"
+            "build"
+            "build-release"
+            "check"
+            "clean"
+            "create-notes"
+            "doc"
+            "doc-open"
+            "fmt"
+            "fmt-check"
+            "install"
+            "install-force"
+            "lint"
+            "lint-fix"
+            "patch"
+            "release"
+            "run"
+            "run-release"
+            "sync-deps"
+            "test"
+            "test-with"
+            "test-all"
+            "update"
+            "buck-build"
+            "buck-test"
+            "ra-index"
+            "snowydeer-import"
+            "build-compiler-image"
           ];
 
           commandPackages = map mkDevshellCommand nuScriptCommands;
@@ -401,24 +389,48 @@
             DOTNET_SKIP_FIRST_TIME_EXPERIENCE = "1";
 
             # ── Packages available in the shell ─────────────────────────────
-            packages = commandPackages ++ [
-              rustNightlyToolchain
-              (makeBuck2BinaryDerivation nixPackages)
-              (makeReindeerBinaryDerivation nixPackages)
-            ]
-            ++ (with nixPackages; [
-              git cargo-bump rust-analyzer flock nixfmt-rfc-style
-              tombi typos hongdown kittysay marksman taplo
-              cargo-nextest libiconv nil jsonfmt dotacat goreleaser
-              cuelsp b3sum go jdk21_headless dotnetCorePackages.sdk_10_0
-            ])
-            ++ (
-              with nixPackages.lib;
-              optionals nixPackages.stdenv.isLinux (
-                with nixPackages;
-                [ wild-unwrapped openssl clang ]
-              )
-            );
+            packages =
+              commandPackages
+              ++ [
+                rustNightlyToolchain
+                (makeBuck2BinaryDerivation nixPackages)
+                (makeReindeerBinaryDerivation nixPackages)
+              ]
+              ++ (with nixPackages; [
+                git
+                cargo-bump
+                rust-analyzer
+                flock
+                nixfmt-rfc-style
+                tombi
+                typos
+                hongdown
+                kittysay
+                marksman
+                taplo
+                cargo-nextest
+                libiconv
+                nil
+                jsonfmt
+                dotacat
+                goreleaser
+                cuelsp
+                b3sum
+                go
+                jdk21_headless
+                dotnetCorePackages.sdk_10_0
+              ])
+              ++ (
+                with nixPackages.lib;
+                optionals nixPackages.stdenv.isLinux (
+                  with nixPackages;
+                  [
+                    wild-unwrapped
+                    openssl
+                    clang
+                  ]
+                )
+              );
 
             # ── Shell hook ─────────────────────────────────────────────────
             shellHook = ''

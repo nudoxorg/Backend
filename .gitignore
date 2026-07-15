@@ -33,17 +33,22 @@
 # Rust
 !/**/*.rs
 !/**/rustfmt.toml
+# Workspace + crate manifests required for cargo / rustService builds.
+# (Flake source filtering follows git — without these, `nix build .#server`
+# has Cargo.lock but no Cargo.toml and cargo fails immediately.)
+!/Cargo.toml
+!/Cargo.lock
+!/workspace/**/Cargo.toml
+# Manifests that tests scaffold at runtime stay ignored.
+/workspace/compiler/tests/fixtures/**/Cargo.toml
 
 # Nix
 !/flake.nix
 !/flake.lock
-# CI-maintained pin recording the Attic store path of the buck2/snowydeer
-# artifact that packages.default fetchClosure's (see flake.nix). Must be tracked
-# so it's part of the flake source snapshot.
-!/nix/buck2-artifact.json
-!/nix/flake.nix
-!/nix/flake.lock
-!/nix/BUCK
+# Package recipes under build/nix (not a sub-flake — root flake imports them).
+!/build/nix/**/*.nix
+!/build/nix/buck2-artifact.json
+!/build/nix/BUCK
 
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
@@ -150,4 +155,3 @@
 /build/third-party/.cargo
 /build/third-party/.cargo-tmp
 
-!/cargo.lock

@@ -1,0 +1,34 @@
+# Root virtual manifest for the Backend Cargo workspace.
+#
+# Dual-built crates (heart, ir, registry) keep their BUCK files so the Buck2
+# compiler build can compile them from the same source. compiler is Buck2-only
+# and is NOT a member here.
+#
+# After the streamlining, the small utility crates were consolidated:
+# caching/cas/telemetry/version folded into `heart` (content-addressed storage
+# and the stampede cache now live in `heart::cache`); runtime/protocol folded
+# into `registry` (the single serving crate); sandbox was dropped.
+[workspace]
+resolver = "3"
+members = [
+    "workspace/heart",
+    "workspace/ir",
+    "workspace/registry",
+    "workspace/server",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.lints.rust]
+unused_imports = "warn"
+dead_code = "warn"
+
+[workspace.lints.clippy]
+result_large_err = "allow"
+too_many_arguments = "allow"
+
+[profile.release]
+lto = "thin"

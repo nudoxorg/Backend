@@ -49,7 +49,7 @@ load("@nix//toolchains:rust.bzl", "nix_rust_toolchain")
 _use_nix = read_root_config("nix", "toolchain", "0") in ("1", "true", "True")
 
 # `flake.package` runs `nix build path:<dir>#packages.<system>.<pkg>.out` as a
-# Buck2 action; the building host just needs `nix` on PATH. `//nix:flake`
+# Buck2 action; the building host just needs `nix` on PATH. `toolchains//nix:flake`
 # (toolchains-cell-relative) is the filegroup exposing flake.nix + flake.lock.
 _TARGET_MAPPING = [
     select({k: k for k in [
@@ -79,7 +79,7 @@ flake.package(
         "strip",
     ],
     package = "cxx",
-    path = "//nix:flake",
+    path = "toolchains//nix:flake",
     target_compatible_with = _TARGET_MAPPING,
 )
 
@@ -121,7 +121,7 @@ flake.package(
     name = "rustc",
     binary = "rustc",
     binaries = ["rustdoc"],
-    path = "//nix:flake",
+    path = "toolchains//nix:flake",
     target_compatible_with = _TARGET_MAPPING,
 )
 
@@ -129,7 +129,7 @@ flake.package(
     name = "clippy",
     binary = "clippy-driver",
     package = "clippy",
-    path = "//nix:flake",
+    path = "toolchains//nix:flake",
     target_compatible_with = _TARGET_MAPPING,
 )
 
@@ -347,7 +347,7 @@ flake.package(
     name = "ripgrep_nix",
     binary = "rg",
     package = "ripgrep",
-    path = "//nix:flake",
+    path = "toolchains//nix:flake",
     target_compatible_with = _TARGET_MAPPING,
 )
 
