@@ -46,25 +46,21 @@ impl EntryArena {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{entry::Node, kind::Kind, module::Module, test_helpers::*};
+	use crate::{module::Module, test_helpers::*};
 
 	#[test]
 	fn create_top_level_module() {
 		let mut arena = EntryArena::new(0);
 
-		arena.create_top_level(dummy_symbol("module"), |_| Module {});
+		arena.create_top_level(dummy_symbol("module"), |_| Module);
 
-		assert_eq!(arena.entries, [Entry::new(
-			dummy_symbol("module"),
-			Node::root(vec![]),
-			Kind::Module(Module {})
-		)]);
+		assert_eq!(arena.entries, [entry("module", n::root(vec![]), Module)]);
 
-		arena.create_top_level(dummy_symbol("module_2"), |_| Module {});
+		arena.create_top_level(dummy_symbol("module_2"), |_| Module);
 
 		assert_eq!(arena.entries, [
-			Entry::new(dummy_symbol("module"), Node::root(vec![]), Kind::Module(Module {})),
-			Entry::new(dummy_symbol("module_2"), Node::root(vec![]), Kind::Module(Module {}))
+			entry("module", n::root(vec![]), Module),
+			entry("module_2", n::root(vec![]), Module)
 		])
 	}
 }

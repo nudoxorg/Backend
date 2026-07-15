@@ -132,9 +132,7 @@ impl BuiltLinks {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{kind::Kind, module::Module, record::{Field, Record}, test_helpers::dummy_symbol};
-
-	fn idx<T>(index: usize) -> EntryIdx<T> { EntryIdx::new(0, index) }
+	use crate::test_helpers::*;
 
 	fn build<T>(
 		index: RawEntryIdx,
@@ -149,11 +147,11 @@ mod tests {
 
 	#[test]
 	fn built_entries_single_entry_indices() {
-		let (built, _links) = build(idx(0x100), "mod42", |_| Module {});
+		let (built, _links) = build(idx(0x100), "mod42", |_| Module);
 
 		itertools::assert_equal(built.enumerate(), [(
 			idx(0x100),
-			Entry::new(dummy_symbol("mod42"), Node::root(vec![]), Kind::Module(Module {})),
+			entry("mod42", n::root(vec![]), Module),
 		)]);
 	}
 
@@ -172,37 +170,34 @@ mod tests {
 		itertools::assert_equal(built.enumerate(), [
 			(
 				idx(0x10),
-				Entry::new(
-					dummy_symbol("struct67"),
-					Node::root(vec![idx(0x11), idx(0x12), idx(0x13)]),
-					Kind::Record(Record { fields: vec![idx(0x11), idx(0x12), idx(0x13)] }),
-				),
+				entry("struct67", n::root(vec![idx(0x11), idx(0x12), idx(0x13)]), Record {
+					fields: vec![idx(0x11), idx(0x12), idx(0x13)],
+				}),
 			),
-			(idx(0x11), Entry::new(dummy_symbol("field1"), Node::leaf(idx(0x10)), Kind::Field(Field {}))),
-			(idx(0x12), Entry::new(dummy_symbol("field2"), Node::leaf(idx(0x10)), Kind::Field(Field {}))),
-			(idx(0x13), Entry::new(dummy_symbol("field3"), Node::leaf(idx(0x10)), Kind::Field(Field {}))),
+			(idx(0x11), entry("field1", n::leaf(idx(0x10)), Field {})),
+			(idx(0x12), entry("field2", n::leaf(idx(0x10)), Field {})),
+			(idx(0x13), entry("field3", n::leaf(idx(0x10)), Field {})),
 		]);
 	}
 
 	#[test]
 	fn links_emitted_correctly() {
 		let (_entries, links) = build(idx(0), "root", |b| {
-			let struct_idx_1: EntryIdx<Record> = b.create(dummy_symbol("struct1"), |b| {
+			let struct_idx_1 = b.create(dummy_symbol("struct1"), |b| {
 				let f1 = b.create(dummy_symbol("f1"), |_| Field {});
 				b.link(f1);
 
 				Record { fields: vec![f1] }
 			});
 
-			let struct_idx_2: EntryIdx<Record> =
-				b.create(dummy_symbol("struct2"), |_| Record { fields: vec![] });
+			let struct_idx_2 = b.create(dummy_symbol("struct2"), |_| Record { fields: vec![] });
 
 			b.link(struct_idx_1);
 			b.link(struct_idx_2);
 
 			b.link_between(struct_idx_1, struct_idx_2);
 
-			Module {}
+			Module
 		});
 
 		itertools::assert_equal(links.iter(), [

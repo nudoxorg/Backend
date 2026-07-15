@@ -44,24 +44,24 @@ fn build_registry() -> ExampleRegistry {
 	registry.package_mapping.insert(String::from("pkg-0"), 0);
 
 	registry.packages[0].arena.create_top_level(dummy_symbol("mod_0"), |b| {
-		b.create(dummy_symbol("mod_1"), |_| Module {});
+		b.create(dummy_symbol("mod_1"), |_| Module);
 		b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
 
-		Module {}
+		Module
 	});
 
 	registry.packages.push(ExamplePackage { arena: EntryArena::new(1) });
 	registry.package_mapping.insert(String::from("pkg-1"), 1);
 
-	registry.packages[1].arena.create_top_level(dummy_symbol("mod_0"), |_| Module {});
+	registry.packages[1].arena.create_top_level(dummy_symbol("mod_0"), |_| Module);
 
 	registry.packages[1].arena.create_top_level(dummy_symbol("mod_1"), |b| {
 		b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
 		b.create(dummy_symbol("mod_3"), |b| {
-			b.create(dummy_symbol("mod_4"), |_| Module {});
+			b.create(dummy_symbol("mod_4"), |_| Module);
 			b.create(dummy_symbol("record_5"), |_| Record { fields: vec![] });
 
-			Module {}
+			Module
 		});
 
 		b.create(dummy_symbol("record_6"), |b| Record {
@@ -71,7 +71,7 @@ fn build_registry() -> ExampleRegistry {
 				.to_vec(),
 		});
 
-		Module {}
+		Module
 	});
 
 	registry

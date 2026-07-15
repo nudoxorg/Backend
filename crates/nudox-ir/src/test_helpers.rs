@@ -1,6 +1,14 @@
 use std::path::PathBuf;
 
-use crate::{registry::{EntryArena, RawEntryIdx, RegistryResolver}, symbol::{Symbol, Visibility}};
+use crate::{entry::{Entry, Node}, kind::EntryKind, registry::{EntryArena, EntryIdx, RawEntryIdx, RegistryResolver}, symbol::{Symbol, Visibility}};
+pub use crate::{module::Module, record::{Field, Record}};
+
+pub fn entry<T>(name: &str, node: Node, kind: T) -> Entry
+where
+	T: EntryKind,
+{
+	Entry::new(dummy_symbol(name), node, kind.into_kind())
+}
 
 pub fn dummy_symbol(name: &str) -> Symbol {
 	Symbol {
@@ -11,6 +19,19 @@ pub fn dummy_symbol(name: &str) -> Symbol {
 		span:          0..0,
 	}
 }
+
+#[expect(unused, reason = "for the future")]
+pub fn n(parent: RawEntryIdx, children: Vec<RawEntryIdx>) -> Node { Node::new(parent, children) }
+
+pub mod n {
+	use crate::{entry::Node, registry::RawEntryIdx};
+
+	pub fn root(children: Vec<RawEntryIdx>) -> Node { Node::root(children) }
+
+	pub fn leaf(parent: RawEntryIdx) -> Node { Node::leaf(parent) }
+}
+
+pub fn idx<T>(index: usize) -> EntryIdx<T> { EntryIdx::new(0, index) }
 
 pub struct DummyRegistry;
 

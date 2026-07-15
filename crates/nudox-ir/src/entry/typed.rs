@@ -42,11 +42,11 @@ impl<T: EntryKind> TypedEntry<T> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{entry::{Entry, Node}, kind::Kind, module::Module, test_helpers::*};
+	use crate::test_helpers::*;
 
 	#[test]
 	fn get_allows_typed_access() {
-		let entry = Entry::new(dummy_symbol("test_sym"), Node::root(vec![]), Kind::Module(Module {}));
+		let entry = entry("test_sym", n::root(vec![]), Module);
 
 		let entry = TypedEntry::new(&entry);
 
