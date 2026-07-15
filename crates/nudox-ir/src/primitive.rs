@@ -1,7 +1,7 @@
 use crate::{registry::EntryIdx, ty::Type};
 
 /// A language-level primitive type, independent of any target architecture.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Primitive {
 	Integer {
 		signed: bool,
@@ -44,7 +44,7 @@ pub enum Primitive {
 }
 
 /// A language-level primitive type, independent of any target architecture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Width {
 	Fixed(usize),
 

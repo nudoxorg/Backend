@@ -1,6 +1,6 @@
 use crate::{primitive::Primitive, registry::EntryIdx};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Type {
 	/// A receiver/self type such as Rust `Self` or TypeScript `this`.
 	SelfType,

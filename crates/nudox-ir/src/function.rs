@@ -1,9 +1,9 @@
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Function {
 	pub input_params:  Vec<Param>,
 	pub output_params: Vec<Param>,
 	// TODO: rest
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Param {}

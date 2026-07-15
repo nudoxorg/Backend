@@ -1,4 +1,4 @@
-use std::{path::PathBuf, range::Range};
+use std::path::PathBuf;
 
 use crate::{registry::{EntryArena, RawEntryIdx, Registry}, symbol::{Symbol, Visibility}};
 
@@ -8,7 +8,7 @@ pub fn dummy_symbol(name: &str) -> Symbol {
 		visibility:    Visibility::Public,
 		documentation: None,
 		source:        PathBuf::new(),
-		span:          Range { start: 0, end: 0 },
+		span:          0..0,
 	}
 }
 

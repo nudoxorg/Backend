@@ -4,7 +4,7 @@ mod typed;
 pub use self::{node::Node, typed::TypedEntry};
 use crate::{kind::Kind, registry::RawEntryIdx, symbol::Symbol};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
 	pub sym:  Symbol,
 	pub node: Node,
@@ -21,7 +21,7 @@ impl Entry {
 	}
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EntryInner {
 	Owned(Kind),
 	Reference(RawEntryIdx),

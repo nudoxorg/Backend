@@ -1,11 +1,11 @@
-use std::{path::PathBuf, range::Range};
+use std::{ops::Range, path::PathBuf};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Visibility {
 	Public,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Symbol {
 	pub name:          String,
 	pub visibility:    Visibility,

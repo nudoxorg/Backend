@@ -1,12 +1,16 @@
 pub mod entry;
 pub mod function;
 pub mod kind;
-pub mod module;
 pub mod primitive;
 pub mod record;
 pub mod registry;
 pub mod symbol;
 pub mod ty;
+
+pub mod module {
+	#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+	pub struct Module;
+}
 
 #[cfg(test)]
 mod test_helpers;

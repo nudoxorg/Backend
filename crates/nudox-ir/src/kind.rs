@@ -26,7 +26,7 @@ pub(crate) trait EntryKind: Any {
 
 macro_rules! register_kinds {
 	($($(#[$meta:meta])* $kind:ident,)*) => {
-		#[derive(Debug, PartialEq, Eq)]
+		#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 		pub enum Kind {
 			$(
 			$(#[$meta])*
@@ -44,7 +44,7 @@ macro_rules! register_kinds {
 			}
 		}
 
-		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 		pub(crate) enum KindDiscriminant {
 			$(
 			$(#[$meta])*
