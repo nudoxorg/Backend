@@ -116,7 +116,7 @@ pub(crate) fn discover_entry_points_with(
     // ── 1. repo: hint (manifest-less trees, e.g. monorepo source checkouts) ──
     if let Some(hint) = repo_hint {
         let candidate = root.join(hint);
-        if candidate.is_file() {
+        if candidate.is_file() && is_ts_module_path(&candidate) {
             found.insert(candidate);
         }
     }
@@ -125,7 +125,9 @@ pub(crate) fn discover_entry_points_with(
     match resolver.resolve(root, ".") {
         Ok(resolution) => {
             let path = resolution.into_path_buf();
-            if path.is_file() {
+            // Resolver may land on package.json / assets when main fields
+            // point at non-code; only seed TS/JS modules into the graph.
+            if path.is_file() && is_ts_module_path(&path) {
                 found.insert(path);
             }
         }
@@ -210,7 +212,7 @@ fn exports_entry_points(
         match resolver.resolve(package_root, &spec) {
             Ok(resolution) => {
                 let path = resolution.into_path_buf();
-                if path.is_file() {
+                if path.is_file() && is_ts_module_path(&path) {
                     out.insert(path);
                 }
             }
@@ -235,6 +237,37 @@ fn exports_entry_points(
     Ok(out.into_iter().collect())
 }
 
+/// True for package.json self-exports (`"./package.json"`, `"package.json"`,
+/// …). These are a common npm pattern so tooling can read the manifest, but
+/// they are not TypeScript modules and must never seed the OXC graph.
+fn is_package_json_export(spec: &str) -> bool {
+    let trimmed = spec.trim_start_matches("./").trim_start_matches('/');
+    trimmed == "package.json" || trimmed.ends_with("/package.json")
+}
+
+/// True when `path` looks like a JS/TS module the OXC parser can lower.
+/// Excludes JSON (and other non-code assets) that the resolver may return for
+/// `exports["./package.json"]` or bare `.json` main fields.
+pub(crate) fn is_ts_module_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    // Declaration + source TypeScript.
+    if lower.ends_with(".d.ts")
+        || lower.ends_with(".d.mts")
+        || lower.ends_with(".d.cts")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".tsx")
+        || lower.ends_with(".mts")
+        || lower.ends_with(".cts")
+    {
+        return true;
+    }
+    // Runtime JS (often the only public surface for pure-JS packages).
+    lower.ends_with(".js") || lower.ends_with(".mjs") || lower.ends_with(".cjs") || lower.ends_with(".jsx")
+}
+
 /// Recursively collect string-valued `exports` specifiers from a `serde_json`
 /// value into `out`.
 ///
@@ -248,9 +281,9 @@ fn exports_entry_points(
 fn collect_export_specifiers(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::String(s) => {
-            // Bare path like "./index.js" — keep only subpath exports (start
-            // with ".") or bare specifiers.  Skip package.json self-references.
-            if !s.ends_with("/package.json") {
+            // Bare path like "./index.js".  Skip package.json self-references
+            // (both `"./package.json"` and `"package.json"`).
+            if !is_package_json_export(s) {
                 out.push(s.clone());
             }
         }
@@ -265,13 +298,16 @@ fn collect_export_specifiers(value: &serde_json::Value, out: &mut Vec<String>) {
                     // Subpath export key (e.g. ".", "./utils") — this is the
                     // specifier; resolve its value to find the file.
                     //
-                    // Rather than recursing with the value (which might itself
-                    // be a conditions object), we push `key` as the specifier
-                    // so the resolver evaluates it using `condition_names`.
-                    out.push(key.clone());
-                    // Still recurse into the value so that nested plain strings
-                    // (fallback arrays) are also captured.
-                    let _ = val; // resolver handles conditions via condition_names
+                    // Skip `"./package.json"` keys: npm packages commonly
+                    // re-export the manifest (zod, react, …) so consumers can
+                    // `import pkg from "zod/package.json"`.  Resolving that
+                    // key yields a JSON file that the TS parser rejects.
+                    if !is_package_json_export(key) {
+                        out.push(key.clone());
+                    }
+                    // Resolver handles condition objects via condition_names;
+                    // no need to recurse into the value for subpath keys.
+                    let _ = val;
                 } else {
                     // Condition key ("types", "import", "default", …) — recurse
                     // into the value; the outer key is not a resolvable specifier.
@@ -335,6 +371,35 @@ mod tests {
         let mut out = Vec::new();
         collect_export_specifiers(&val, &mut out);
         assert!(out.is_empty(), "package.json self-references should be skipped");
+    }
+
+    #[test]
+    fn collect_export_specifiers_skips_package_json_export_key() {
+        // Real-world shape from zod@3.24.2 / many other packages:
+        //   "exports": { ".": { "types": "./index.d.ts" }, "./package.json": "./package.json" }
+        let val = serde_json::json!({
+            ".": { "types": "./index.d.ts", "import": "./index.mjs" },
+            "./package.json": "./package.json",
+            "./locales/*": "./lib/locales/*"
+        });
+        let mut out = Vec::new();
+        collect_export_specifiers(&val, &mut out);
+        assert!(out.contains(&".".to_string()));
+        assert!(out.contains(&"./locales/*".to_string()));
+        assert!(
+            !out.iter().any(|s| is_package_json_export(s)),
+            "exports[\"./package.json\"] must not seed the module graph: {out:?}"
+        );
+    }
+
+    #[test]
+    fn is_ts_module_path_accepts_ts_rejects_json() {
+        assert!(is_ts_module_path(Path::new("/pkg/index.d.ts")));
+        assert!(is_ts_module_path(Path::new("/pkg/mod.ts")));
+        assert!(is_ts_module_path(Path::new("/pkg/lib/index.mjs")));
+        assert!(!is_ts_module_path(Path::new("/pkg/package.json")));
+        assert!(!is_ts_module_path(Path::new("/pkg/data.json")));
+        assert!(!is_ts_module_path(Path::new("/pkg/README.md")));
     }
 
     #[test]

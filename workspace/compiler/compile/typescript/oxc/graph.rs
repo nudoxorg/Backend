@@ -54,6 +54,17 @@ pub(crate) fn build_and_extract(roots: Vec<PathBuf>) -> Result<Vec<ModuleFacts>,
     }
 
     while let Some(path) = queue.pop_front() {
+        // Skip non-code assets (package.json self-exports, data JSON, …)
+        // that slipped past entry discovery or edge resolution.  Parsing
+        // JSON as TypeScript yields "Expected a semicolon…" hard failures.
+        if !entry::is_ts_module_path(&path) {
+            tracing::debug!(
+                path = %path.display(),
+                "graph: skipping non-TS/JS module path"
+            );
+            continue;
+        }
+
         // ----------------------------------------------------------------
         // 1.  Read source.  The owned `String` must outlive the arena scope
         //     — we declare it here, outside the block that creates the
@@ -198,6 +209,11 @@ pub(crate) fn build_and_extract(roots: Vec<PathBuf>) -> Result<Vec<ModuleFacts>,
                 match resolver.resolve_dts(&path, spec) {
                     Ok(resolution) => {
                         let resolved = resolution.into_path_buf();
+                        // Don't enqueue package.json / JSON assets even if a
+                        // relative import or exports map pointed at them.
+                        if !entry::is_ts_module_path(&resolved) {
+                            continue;
+                        }
                         let canon = canonicalize_best_effort(&resolved);
                         if visited.insert(canon.clone()) {
                             queue.push_back(canon);

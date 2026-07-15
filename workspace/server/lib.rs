@@ -274,9 +274,14 @@ impl<M: EmbeddingModel> Server<M> {
 				.map_err(invalid_configuration)?,
 		);
 
-		// Bring them all up at once; the first failure aborts with its backend + cause.
-		let (global_store, blobs, queue, outbox, graph, semantics) = tokio::try_join!(
-			global_cold.connect(),
+		// Apply the postgres schema first. Queue/outbox `connect` only probe for
+		// existing tables (`SELECT 1 FROM jobs/outbox`), so they must not race
+		// the schema transaction on a cold database.
+		let global_store = global_cold.connect().await?;
+
+		// Remaining backends come up concurrently; the first failure aborts
+		// with its backend + cause.
+		let (blobs, queue, outbox, graph, semantics) = tokio::try_join!(
 			blobs_cold.connect(),
 			queue_cold.connect(),
 			outbox_cold.connect(),

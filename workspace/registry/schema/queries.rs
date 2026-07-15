@@ -51,16 +51,26 @@ pub mod index {
 	/// RETURNING id` — the idempotent identity upsert. On a repeated publish it
 	/// refreshes the mutable columns (visibility, owner, toolchain, names,
 	/// `updated_at`) but never the immutable identity tuple.
+	///
+	/// Provisional public-registry packages (the ensure/index path) are written
+	/// as [`Visibility::Public`] owned by a nil tenant of kind
+	/// [`OwnerKind::Individual`]. Hosted multi-tenant ownership is a later layer;
+	/// the NOT NULL schema columns still need concrete values today.
 	pub fn upsert_package(
 		coords: &PackageCoordinates,
 		toolchain: &Toolchain,
 	) -> Result<(String, SqlxValues), codec::CodecError> {
+		use heart::{OwnerKind, Visibility};
+
 		let id = codec::package_id_to_uuid(coords.id());
 		let ecosystem = codec::ecosystem_token(coords.ecosystem());
 		let origin = coords.origin.token().to_string();
 		let name_canonical = coords.name.canonical().to_string();
 		let name_original = coords.name.original().to_string();
 		let version_canonical = coords.version.canonical();
+		let visibility = codec::visibility_token(Visibility::Public);
+		let owner_tenant = uuid::Uuid::nil();
+		let owner_kind = codec::owner_kind_token(OwnerKind::Individual);
 		let toolchain_json = codec::toolchain_to_json(toolchain)?;
 
 		let (sql, values) = Query::insert()
@@ -72,6 +82,9 @@ pub mod index {
 				Packages::NameCanonical,
 				Packages::NameOriginal,
 				Packages::VersionCanonical,
+				Packages::Visibility,
+				Packages::OwnerTenant,
+				Packages::OwnerKind,
 				Packages::Toolchain,
 			])
 			.values_panic([
@@ -81,12 +94,18 @@ pub mod index {
 				name_canonical.into(),
 				name_original.into(),
 				version_canonical.into(),
+				visibility.into(),
+				owner_tenant.into(),
+				owner_kind.into(),
 				toolchain_json.into(),
 			])
 			.on_conflict(
 				sea_query::OnConflict::column(Packages::Id)
 					.update_columns([
 						Packages::NameOriginal,
+						Packages::Visibility,
+						Packages::OwnerTenant,
+						Packages::OwnerKind,
 						Packages::Toolchain,
 					])
 					.value(Packages::UpdatedAt, Expr::current_timestamp())

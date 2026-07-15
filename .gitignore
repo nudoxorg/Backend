@@ -45,10 +45,15 @@
 # Nix
 !/flake.nix
 !/flake.lock
-# Package recipes under build/nix (not a sub-flake — root flake imports them).
+# Shared helpers under build/nix (not a sub-flake — root flake imports them).
 !/build/nix/**/*.nix
 !/build/nix/buck2-artifact.json
 !/build/nix/BUCK
+# Workspace package recipes + images.
+!/workspace/**/*.nix
+# Integration checks (Nix glue + Nushell scripts/modules).
+!/tests/**/*.nix
+!/tests/**/*.nu
 
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)

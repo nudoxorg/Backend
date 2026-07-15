@@ -122,6 +122,7 @@ rust_bin(
         crate("axum"),
         crate("tokio"),
         crate("serde_json"),
+        crate("postcard"),
         crate("tempfile"),
         crate("anyhow"),
         crate("tracing"),

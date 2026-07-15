@@ -160,10 +160,18 @@
           }
         );
 
+      # Shared helpers (rust components, mkNuCheck, envStorePath, …).
+      helpersFor =
+        nixPackages: fenixPackages:
+        import ./build/nix/lib.nix {
+          pkgs = nixPackages;
+          inherit fenixPackages;
+          inherit nixos;
+        };
+
     in
     {
-      # Package recipes live in build/nix/packages.nix (not a sub-flake). That
-      # file returns the full attrset; this flake only supplies inputs + pins.
+      # Workspace package recipes + toolchain re-exports.
       packages = generateForEverySystem (
         {
           systemArchitecture,
@@ -171,14 +179,10 @@
           fenixPackages,
         }:
         let
-          envPath =
-            name:
-            let
-              p = builtins.getEnv name;
-            in
-            if p != "" then builtins.storePath p else null;
+          helpers = helpersFor nixPackages fenixPackages;
+          inherit (helpers) envStorePath;
         in
-        import ./build/nix/packages.nix {
+        import ./workspace {
           pkgs = nixPackages;
           inherit fenixPackages nixos;
           buildImage = nix2container.packages.${systemArchitecture}.nix2container.buildImage;
@@ -186,11 +190,11 @@
           version = self.rev or "unknown";
           # snowydeer paths — pure eval yields null → placeholder scripts.
           # With --impure + env vars set, real Buck2-built binaries are wired in.
-          compilerDaemonPath = envPath "NUDOX_COMPILER_DAEMON_PATH";
-          producerWorkerPath = envPath "NUDOX_PRODUCER_WORKER_PATH";
-          goOraclePath = envPath "NUDOX_GO_ORACLE_PATH";
-          javaOraclePath = envPath "NUDOX_JAVA_ORACLE_PATH";
-          csharpOraclePath = envPath "NUDOX_CSHARP_ORACLE_PATH";
+          compilerDaemonPath = envStorePath "NUDOX_COMPILER_DAEMON_PATH";
+          producerWorkerPath = envStorePath "NUDOX_PRODUCER_WORKER_PATH";
+          goOraclePath = envStorePath "NUDOX_GO_ORACLE_PATH";
+          javaOraclePath = envStorePath "NUDOX_JAVA_ORACLE_PATH";
+          csharpOraclePath = envStorePath "NUDOX_CSHARP_ORACLE_PATH";
         }
       );
 
@@ -201,15 +205,51 @@
           fenixPackages,
         }:
         let
-          rustNightlyToolchain = fenixPackages.complete.withComponents [
-            "cargo"
-            "clippy"
-            "rustc"
-            "rustfmt"
-            "rustc-codegen-cranelift-preview"
-          ];
+          helpers = helpersFor nixPackages fenixPackages;
+          inherit (helpers) rustToolchainHooks;
+
+          packagesForSystem = self.packages.${systemArchitecture};
+
+          # Prefer an explicit snowydeer/nix-store path; else packages.compiler-daemon.
+          compilerFromEnv =
+            let
+              p = builtins.getEnv "NUDOX_COMPILER_DAEMON_PATH";
+            in
+            if p == "" then
+              null
+            else
+              nixPackages.runCommand "compiler-daemon-for-check" { } ''
+                mkdir -p "$out/bin"
+                src="${builtins.storePath p}"
+                if [ -f "$src/bin/compiler-daemon" ]; then
+                  cp -L "$src/bin/compiler-daemon" "$out/bin/compiler-daemon"
+                elif [ -f "$src" ]; then
+                  cp -L "$src" "$out/bin/compiler-daemon"
+                else
+                  echo "NUDOX_COMPILER_DAEMON_PATH=$src has no compiler-daemon binary" >&2
+                  exit 1
+                fi
+                chmod +x "$out/bin/compiler-daemon"
+              '';
+
+          projectRoot =
+            let
+              prj = builtins.getEnv "PRJ_ROOT";
+              pwd = builtins.getEnv "PWD";
+            in
+            if prj != "" then prj else pwd;
+
+          integrationChecks = import ./tests {
+            pkgs = nixPackages;
+            inherit fenixPackages nixos;
+            packages = packagesForSystem;
+            buck2 = makeBuck2BinaryDerivation nixPackages;
+            inherit projectRoot;
+            compilerDaemon = if compilerFromEnv != null then compilerFromEnv else null;
+          };
         in
-        {
+        integrationChecks
+        // {
           preCommitGitHooks = git-hooks.lib.${systemArchitecture}.run {
             src = ./.;
             package = nixPackages.prek;
@@ -231,8 +271,8 @@
               rustfmt = {
                 enable = true;
                 packageOverrides = {
-                  cargo = rustNightlyToolchain;
-                  rustfmt = rustNightlyToolchain;
+                  cargo = rustToolchainHooks;
+                  rustfmt = rustToolchainHooks;
                 };
               };
               markdownfmt = {
@@ -257,8 +297,8 @@
                   "pre-push"
                 ];
                 packageOverrides = {
-                  cargo = rustNightlyToolchain;
-                  clippy = rustNightlyToolchain;
+                  cargo = rustToolchainHooks;
+                  clippy = rustToolchainHooks;
                 };
               };
             };
@@ -273,22 +313,15 @@
           fenixPackages,
         }:
         let
-          rustNightlyToolchain = fenixPackages.complete.withComponents [
-            "cargo"
-            "clippy"
-            "rust-src"
-            "rust-docs"
-            "rustc"
-            "rustfmt"
-            "rustc-codegen-cranelift-preview"
-          ];
+          helpers = helpersFor nixPackages fenixPackages;
+          inherit (helpers) rustToolchainDev;
 
           gitHookConfiguration = self.checks.${systemArchitecture}.preCommitGitHooks;
 
           # Build script PATH: fenix rustc + nix package manager + system paths.
           # Consumed by build/third-party/defs.bzl via read_config("build","devshell_bin").
           devshellBin = nixPackages.lib.concatStringsSep ":" [
-            "${rustNightlyToolchain}/bin"
+            "${rustToolchainDev}/bin"
             "${nixPackages.nix}/bin"
             "/usr/bin"
             "/bin"
@@ -325,9 +358,6 @@
           );
 
           # ── Devshell command wrappers ────────────────────────────────────
-          # Create a thin bash wrapper for each .nu script that cds to the
-          # project root before running, matching the previous devshell
-          # behaviour.
           mkDevshellCommand =
             cmdName:
             nixPackages.writeTextFile {
@@ -376,7 +406,6 @@
           default = nixPackages.mkShell {
             name = "NuNuShell";
 
-            # ── Simple environment variables ────────────────────────────────
             RUSTC_BOOTSTRAP = "1";
             LIBRARY_PATH = "${nixPackages.libiconv}/lib";
             MAIN_PACKAGE = "nudox";
@@ -388,11 +417,10 @@
             DOTNET_NOLOGO = "1";
             DOTNET_SKIP_FIRST_TIME_EXPERIENCE = "1";
 
-            # ── Packages available in the shell ─────────────────────────────
             packages =
               commandPackages
               ++ [
-                rustNightlyToolchain
+                rustToolchainDev
                 (makeBuck2BinaryDerivation nixPackages)
                 (makeReindeerBinaryDerivation nixPackages)
               ]
@@ -432,11 +460,9 @@
                 )
               );
 
-            # ── Shell hook ─────────────────────────────────────────────────
             shellHook = ''
               export PRJ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 
-              # Environment vars that need shell expansion
               export LD_LIBRARY_PATH="${nixPackages.openssl.out}/lib:$LD_LIBRARY_PATH"
               export DOTNET_CLI_HOME="$TMPDIR/dotnet"
 
@@ -445,12 +471,10 @@
               # language oracles need go/javadoc/dotnet from the Nix store.
               export NUDOX_TOOLCHAIN_PATH="${nixPackages.go}/bin:${nixPackages.jdk21_headless}/bin:${nixPackages.dotnetCorePackages.sdk_10_0}/bin''${NUDOX_TOOLCHAIN_PATH:+:$NUDOX_TOOLCHAIN_PATH}"
 
-              # MotD
               if command -v kittysay > /dev/null 2>&1; then
                 kittysay --think "the nu is the now" | dotacat
               fi
 
-              # Prelude setup
               ln -sfn ${buck2-prelude} "$PRJ_ROOT/prelude"
               ln -sfn ${buck2-nix} "$PRJ_ROOT/build/nix-cell"
               preludeStampFile="$PRJ_ROOT/build/prelude-local/.nix-source"

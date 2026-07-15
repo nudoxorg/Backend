@@ -1,4 +1,5 @@
-# build/nix is a plain Nix package set (packages.nix), not a flake.
+# build/nix holds shared Nix helpers + snowydeer only (not app package recipes).
+# App packages live under workspace/{server,compiler,registry}.
 # Buck2 hermetic toolchains use the thin flake at toolchains//nix:flake —
 # see build/toolchains/BUCK flake.package(path = "toolchains//nix:flake").
 #
@@ -7,10 +8,7 @@
 filegroup(
     name = "nix-sources",
     srcs = [
-        "packages.nix",
-        "backend-image.nix",
-        "compiler.nix",
-        "compiler-image.nix",
+        "lib.nix",
         "buck2-artifact.json",
     ],
     visibility = ["PUBLIC"],

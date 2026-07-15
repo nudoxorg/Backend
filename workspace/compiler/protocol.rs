@@ -5,6 +5,13 @@
 //! reaches the identical source through `registry::protocol`; the two copies are
 //! kept byte-identical on purpose so both ends agree on the postcard layout.
 //!
+//! ## HTTP transport
+//!
+//! `POST /compile` is **postcard** (`Content-Type: application/x-postcard`), not
+//! JSON. The daemon returns IR surface bytes; the *server* emits those into the
+//! content-addressed blob store (`registry::blob::emit`) — the daemon does not
+//! write blobs itself.
+//!
 //! ## Wire layout stability
 //!
 //! [`WireReference`] and [`WireFile`] are the postcard-serializable mirrors of
@@ -66,9 +73,9 @@ pub struct CompileRequest {
 pub enum CompileResponse {
     /// Compilation succeeded.
     Ok {
-        /// `serde_json`-encoded bytes of `ir::entry::Index` (the IR surface).
-        /// Stored as raw bytes so this crate need not directly depend on a
-        /// serde-enabled `ir` build; the server decodes them.
+        /// Postcard-encoded bytes of `ir::entry::Index` (the IR surface).
+        /// Opaque to this crate (no `ir` dep on the wire); the server stores
+        /// them as a blob section via `BlobBuilder::set_ir`.
         surface: Vec<u8>,
         /// Per-file resolved reference spans, ready to be turned back into
         /// `ir::syntax::ResolvedReference` via [`WireReference::into_reference`].

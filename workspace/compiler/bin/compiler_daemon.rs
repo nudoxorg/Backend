@@ -5,15 +5,21 @@
 //!
 //! Routes:
 //!   GET  /health  → 200 OK
-//!   POST /compile → JSON body: CompileRequest; JSON response: CompileResponse
+//!   POST /compile → **postcard** body: CompileRequest; postcard response:
+//!                   CompileResponse (`Content-Type: application/x-postcard`)
+//!
+//! The protocol types are postcard-serializable by design (see
+//! `compiler::protocol` / `registry::protocol`). JSON was a temporary mistake —
+//! shipping `Vec<u8>` source files as JSON number arrays ballooned the body past
+//! any reasonable limit and disagreed with the wire contract.
 
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use axum::{
-    Json,
+    body::Bytes,
     extract::State,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
 };
@@ -21,6 +27,9 @@ use compiler::daemon::forge::{ForgeConfig, ForgeRuntime};
 use compiler::protocol::{CompileRequest, CompileResponse, WireFile, WireReference};
 use sandbox::Policy;
 use tracing::info;
+
+/// Content-Type for the postcard compile envelope (must match the server client).
+const POSTCARD_CONTENT_TYPE: &str = "application/x-postcard";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Application state
@@ -65,9 +74,15 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to assemble ForgeRuntime")?;
     let state = AppState { forge: Arc::new(forge) };
 
+    // Postcard is compact, but large packages still ship every source file.
+    // Match the server's write-plane ceiling so the forge worker is never the
+    // body-size bottleneck.
+    const COMPILE_BODY_CEILING: usize = 256 * 1024 * 1024;
+
     let app = axum::Router::new()
         .route("/health", get(health))
         .route("/compile", post(compile))
+        .layer(axum::extract::DefaultBodyLimit::max(COMPILE_BODY_CEILING))
         .with_state(state);
 
     info!(addr = %addr, "compiler daemon listening");
@@ -88,28 +103,56 @@ async fn health() -> impl IntoResponse {
     StatusCode::OK
 }
 
-/// `POST /compile` — compile one package.
-async fn compile(
-    State(state): State<AppState>,
-    Json(request): Json<CompileRequest>,
-) -> impl IntoResponse {
+/// `POST /compile` — compile one package (postcard request/response).
+async fn compile(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let request: CompileRequest = match postcard::from_bytes(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            tracing::warn!(%error, "postcard decode of CompileRequest failed");
+            return postcard_response(
+                StatusCode::BAD_REQUEST,
+                &CompileResponse::Err {
+                    kind: "bad_request".to_owned(),
+                    message: format!("invalid postcard CompileRequest: {error}"),
+                },
+            );
+        }
+    };
+
     let response = tokio::task::spawn_blocking(move || {
         compile_package(state.forge.as_ref(), request)
     })
     .await;
 
     match response {
-        Ok(r) => Json(r).into_response(),
+        Ok(r) => postcard_response(StatusCode::OK, &r),
         Err(e) => {
             tracing::error!(error = %e, "compile task panicked");
-            (
+            postcard_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(CompileResponse::Err {
+                &CompileResponse::Err {
                     kind: "internal".to_owned(),
                     message: "compile task panicked".to_owned(),
-                }),
+                },
             )
-                .into_response()
+        }
+    }
+}
+
+/// Encode a [`CompileResponse`] as postcard with the standard content type.
+fn postcard_response(status: StatusCode, response: &CompileResponse) -> axum::response::Response {
+    match postcard::to_allocvec(response) {
+        Ok(bytes) => {
+            let mut res = (status, bytes).into_response();
+            res.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(POSTCARD_CONTENT_TYPE),
+            );
+            res
+        }
+        Err(error) => {
+            tracing::error!(%error, "postcard encode of CompileResponse failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "postcard encode failed").into_response()
         }
     }
 }
@@ -164,8 +207,11 @@ fn try_compile_package<C: compiler::compile::producer::ForgeContext>(
 
     // ── 4. Map GeneratedPackage → CompileResponse::Ok ─────────────────────
 
-    // surface: JSON-encode the IR Index
-    let surface = serde_json::to_vec(&generated.surface).context("serialize surface")?;
+    // surface: postcard-encode the IR Index. JSON cannot represent
+    // `HashMap<NudoxPath, Entry>` map keys ("key must be a string"); postcard
+    // is the project wire format and matches how blob sections are stored.
+    let surface =
+        postcard::to_allocvec(&generated.surface).context("serialize surface (postcard)")?;
 
     // references: per-file WireFile from the CstSet
     let references = {
