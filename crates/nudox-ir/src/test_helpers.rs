@@ -22,12 +22,14 @@ pub fn dummy_symbol(name: &str) -> Symbol {
 }
 
 #[expect(unused, reason = "for the future")]
-pub fn n(parent: RawEntryIdx, children: Vec<RawEntryIdx>) -> Node { Node::new(parent, children) }
+pub fn n(parent: RawEntryIdx, children: impl IntoIterator<Item = RawEntryIdx>) -> Node {
+	Node::new(parent, children)
+}
 
 pub mod n {
 	use crate::{entry::Node, registry::RawEntryIdx};
 
-	pub fn root(children: Vec<RawEntryIdx>) -> Node { Node::root(children) }
+	pub fn root(children: impl IntoIterator<Item = RawEntryIdx>) -> Node { Node::root(children) }
 
 	pub fn leaf(parent: RawEntryIdx) -> Node { Node::leaf(parent) }
 }
@@ -46,3 +48,11 @@ impl RegistryResolver for DummyRegistryResolver {
 	fn entry_id_to_idx(&self, _: Self::EntryId, _: &RegistryState) -> RawEntryIdx { unimplemented!() }
 	fn idx_to_entry_id(&self, _: RawEntryIdx, _: &RegistryState) -> Self::EntryId { unimplemented!() }
 }
+
+macro_rules! slice {
+	($($tt:tt)*) => {
+		(::std::vec!($($tt)*)).into_boxed_slice()
+	};
+}
+
+pub(crate) use slice;

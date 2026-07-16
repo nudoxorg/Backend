@@ -34,26 +34,29 @@ fn build_registry() -> Registry<ExampleRegistryResolver> {
 
 	registry.build_package_ir(PackageId::path("/pkg-0"), dummy_symbol("pkg-0"), |b| {
 		b.create(dummy_symbol("mod_1"), |_| Module);
-		b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
+		b.create(dummy_symbol("record_2"), |_| Record { fields: slice![] });
 	});
 
 	registry.build_package_ir(PackageId::path("/pkg-1"), dummy_symbol("pkg-1"), |b| {
 		b.create(dummy_symbol("mod_1"), |_| Module);
 
-		b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
+		b.create(dummy_symbol("record_2"), |_| Record { fields: slice![] });
 
 		b.create(dummy_symbol("mod_3"), |b| {
 			b.create(dummy_symbol("mod_4"), |_| Module);
-			b.create(dummy_symbol("record_5"), |_| Record { fields: vec![] });
+			b.create(dummy_symbol("record_5"), |_| Record { fields: slice![] });
 
 			Module
 		});
 
-		b.create(dummy_symbol("record_6"), |b| Record {
-			fields: ["field_7", "field_8", "field_9"]
-				.map(dummy_symbol)
-				.map(|sym| b.create(sym, |_| Field {}))
-				.to_vec(),
+		b.create(dummy_symbol("record_6"), |b| {
+			Record::builder()
+				.fields(
+					["field_7", "field_8", "field_9"]
+						.map(dummy_symbol)
+						.map(|sym| b.create(sym, |_| Field {})),
+				)
+				.build(b)
 		});
 	});
 

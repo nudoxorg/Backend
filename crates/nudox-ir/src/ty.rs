@@ -1,4 +1,4 @@
-use crate::{primitive::Primitive, registry::EntryIdx};
+use crate::{List, primitive::Primitive, registry::EntryIdx};
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Type {
@@ -11,7 +11,7 @@ pub enum Type {
 
 	/// A fixed-length, heterogeneous collection of types.
 	/// Ex: `(i32, String)`. An empty vec `()` represents the Unit type.
-	Tuple(Vec<EntryIdx<Type>>),
+	Tuple(List<EntryIdx<Type>>),
 
 	/// A dynamically-sized view into a contiguous sequence.
 	/// Ex: `[u8]` or `[]T`.
@@ -23,11 +23,11 @@ pub enum Type {
 
 	/// An untagged union or sum of types.
 	/// Ex: `string | number`.
-	Union(Vec<EntryIdx<Type>>),
+	Union(List<EntryIdx<Type>>),
 
 	/// An intersection or combination of types.
 	/// Ex: `Serializable & Cloneable`.
-	Intersection(Vec<EntryIdx<Type>>),
+	Intersection(List<EntryIdx<Type>>),
 
 	/// Represents a type that cannot exist (Bottom Type).
 	/// Ex: `!` in Rust, `never` in TypeScript, `NoReturn` in Python.

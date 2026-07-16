@@ -84,7 +84,7 @@ impl EntryBuilder {
 
 		let EntryBuilder { mut entries, links, .. } = this;
 
-		let node = Node::build(parent, (1..=entries.len()).map(|i| idx.inc_arena_idx(i)).collect());
+		let node = Node::build(parent, (1..=entries.len()).map(|i| idx.inc_arena_idx(i)));
 
 		entries.insert(0, Entry::new(sym, node, kind));
 
@@ -129,7 +129,7 @@ mod tests {
 
 		itertools::assert_equal(built, [
 			entry("struct67", n::root(vec![idx(0x11), idx(0x12), idx(0x13)]), Record {
-				fields: vec![idx(0x11), idx(0x12), idx(0x13)],
+				fields: slice![idx(0x11), idx(0x12), idx(0x13)],
 			}),
 			entry("field1", n::leaf(idx(0x10)), Field {}),
 			entry("field2", n::leaf(idx(0x10)), Field {}),
@@ -144,10 +144,10 @@ mod tests {
 				let f1 = b.create(dummy_symbol("f1"), |_| Field {});
 				b.link(f1);
 
-				Record { fields: vec![f1] }
+				Record { fields: slice![f1] }
 			});
 
-			let struct_idx_2 = b.create(dummy_symbol("struct2"), |_| Record { fields: vec![] });
+			let struct_idx_2 = b.create(dummy_symbol("struct2"), |_| Record { fields: slice![] });
 
 			b.link(struct_idx_1);
 			b.link(struct_idx_2);

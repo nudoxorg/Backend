@@ -15,6 +15,8 @@ pub mod module {
 	pub struct Module;
 }
 
+pub type List<T> = Box<[T]>;
+
 #[cfg(test)]
 mod test_helpers;
 // pub mod generics;

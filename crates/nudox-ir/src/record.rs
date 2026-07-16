@@ -1,14 +1,16 @@
-use crate::registry::{EntryBuilder, EntryIdx};
+use crate::{List, registry::{EntryBuilder, EntryIdx}};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Record {
-	pub fields: Vec<EntryIdx<Field>>,
+	pub fields: List<EntryIdx<Field>>,
 }
 
 #[bon::bon]
 impl Record {
 	#[builder(finish_fn(name = finish, vis = ""))]
-	pub fn new(fields: Vec<EntryIdx<Field>>) -> Self { Record { fields } }
+	pub fn new(#[builder(with = FromIterator::from_iter)] fields: List<EntryIdx<Field>>) -> Self {
+		Record { fields }
+	}
 }
 
 impl<S: record_builder::IsComplete> RecordBuilder<S> {
@@ -44,5 +46,5 @@ pub struct Field {
 // used.
 
 fn _example_builder_api_usage(b: &mut EntryBuilder) -> Record {
-	Record::builder().fields(vec![]).build(b)
+	Record::builder().fields([]).build(b)
 }
