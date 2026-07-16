@@ -4,7 +4,7 @@ cargo-features = ["codegen-backend"]
 resolver = "3"
 members = [
   # "./compiler",
-  "./ir",
+  # "./ir",
   # "./crates/*",
   "crates/nudox-ir" # FIXME: development only
 ]

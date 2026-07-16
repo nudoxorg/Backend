@@ -10,25 +10,25 @@ pub mod symbol;
 pub mod ty;
 
 pub mod module {
-	#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-	pub struct Module;
+    #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct Module;
 }
 
 pub type List<T> = Box<[T]>;
 
 register_kinds::register_kinds! {
-	/// A namespace, package, or module — a container for other entries.
-	module::Module,
+    /// A namespace, package, or module — a container for other entries.
+    module::Module,
 
-	/// A product type: struct, class, record, or data class.
-	record::Record,
+    /// A product type: struct, class, record, or data class.
+    record::Record,
 
-	/// A field or property of a containing type.
-	record::Field,
+    /// A field or property of a containing type.
+    record::Field,
 
-	function::Function,
+    function::Function,
 
-	ty::Type,
+    ty::Type,
 }
 
 mod register_kinds;

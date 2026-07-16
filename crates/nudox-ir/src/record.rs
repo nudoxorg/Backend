@@ -1,31 +1,34 @@
-use crate::{List, registry::{EntryBuilder, EntryIdx}};
+use crate::{
+    List,
+    registry::{EntryBuilder, EntryIdx},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Record {
-	pub fields: List<EntryIdx<Field>>,
+    pub fields: List<EntryIdx<Field>>,
 }
 
 #[bon::bon]
 impl Record {
-	#[builder(finish_fn(name = finish, vis = ""))]
-	pub fn new(#[builder(with = FromIterator::from_iter)] fields: List<EntryIdx<Field>>) -> Self {
-		Record { fields }
-	}
+    #[builder(finish_fn(name = finish, vis = ""))]
+    pub fn new(#[builder(with = FromIterator::from_iter)] fields: List<EntryIdx<Field>>) -> Self {
+        Record { fields }
+    }
 }
 
 impl<S: record_builder::IsComplete> RecordBuilder<S> {
-	pub fn build(self, b: &mut EntryBuilder) -> Record {
-		let record = self.finish();
+    pub fn build(self, b: &mut EntryBuilder) -> Record {
+        let record = self.finish();
 
-		b.link_many(record.fields.iter().copied());
+        b.link_many(record.fields.iter().copied());
 
-		record
-	}
+        record
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Field {
-	// TODO
+    // TODO
 }
 
 // this serves as an example of the intended usage of the builder APIs.
@@ -46,5 +49,5 @@ pub struct Field {
 // used.
 
 fn _example_builder_api_usage(b: &mut EntryBuilder) -> Record {
-	Record::builder().fields([]).build(b)
+    Record::builder().fields([]).build(b)
 }
