@@ -12,6 +12,7 @@ parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true }
 serde_context = { workspace = true }
+triomphe = { workspace = true }
 
 [dev-dependencies]
 itertools = { workspace = true }

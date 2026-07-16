@@ -56,7 +56,7 @@ impl RegistryState {
 	}
 
 	pub fn package_id_of(&self, idx: RawEntryIdx) -> PackageId {
-		*self.packages.read().get_by_right(&idx.package_idx()).expect("") // TODO: error message
+		self.packages.read().get_by_right(&idx.package_idx()).cloned().expect("") // TODO: error message
 	}
 }
 

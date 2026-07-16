@@ -8,7 +8,7 @@ fn serialize_deserialize() {
 	let dummy_idx = RawEntryIdx::new(PackageIdx::new(1), ArenaIdx::new(8)); // field_8
 
 	assert_eq!(registry.resolver.idx_to_entry_id(dummy_idx, &registry.state), ExampleEntryId {
-		package: PackageId::Path,
+		package: PackageId::path("/pkg-0"),
 		symbol:  String::from("field_8"),
 	});
 
@@ -32,12 +32,12 @@ fn serialize_deserialize() {
 fn build_registry() -> Registry<ExampleRegistryResolver> {
 	let mut registry = Registry::new(ExampleRegistryResolver::default());
 
-	registry.build_package_ir(PackageId::Path, dummy_symbol("pkg-0"), |b| {
+	registry.build_package_ir(PackageId::path("/pkg-0"), dummy_symbol("pkg-0"), |b| {
 		b.create(dummy_symbol("mod_1"), |_| Module);
 		b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
 	});
 
-	registry.build_package_ir(PackageId::Path, dummy_symbol("pkg-1"), |b| {
+	registry.build_package_ir(PackageId::path("/pkg-1"), dummy_symbol("pkg-1"), |b| {
 		b.create(dummy_symbol("mod_1"), |_| Module);
 
 		b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
