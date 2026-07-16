@@ -5,11 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bimap = { workspace = true }
+elsa = { workspace = true }
 erased-serde = { workspace = true }
+parking_lot = { workspace = true }
+rustc-hash = { workspace = true }
 serde = { workspace = true }
 serde_context = { workspace = true }
 
 [dev-dependencies]
-bimap = { workspace = true }
 itertools = { workspace = true }
 serde_json = { workspace = true }

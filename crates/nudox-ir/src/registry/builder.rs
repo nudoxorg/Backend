@@ -1,17 +1,15 @@
-#![expect(unused)]
-
 use super::{EntryIdx, EntryLink, RawEntryIdx};
 
 use crate::{entry::{Entry, Node}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
 
 pub struct EntryBuilder {
-	sym:      Symbol,
+	kind: KindDiscriminant,
+
 	idx:      RawEntryIdx,
 	next_idx: RawEntryIdx,
-	parent:   Option<RawEntryIdx>,
-	children: Vec<BuiltEntries>,
-	kind:     KindDiscriminant,
-	links:    Vec<EntryLink>,
+
+	entries: Vec<Entry>,
+	links:   Vec<EntryLink>,
 }
 
 impl EntryBuilder {
@@ -22,15 +20,16 @@ impl EntryBuilder {
 	where
 		T: EntryKind,
 	{
-		let (entries, links) = Self::build(self.next_idx, sym, Some(self.idx), build);
+		let (entries, links) = Self::build(sym, self.next_idx, Some(self.idx), build);
 
-		let idx = entries.idx;
+		let idx = self.next_idx.typed();
 
-		self.next_idx = self.next_idx.inc_arena_idx(entries.count());
-		self.children.push(entries);
+		self.next_idx = self.next_idx.inc_arena_idx(entries.len());
+
+		self.entries.extend(entries);
 		self.links.extend(links.iter());
 
-		idx.typed()
+		idx
 	}
 
 	/// Emits a link between the currently-being-built entry and another entry.
@@ -54,80 +53,32 @@ impl EntryBuilder {
 
 impl EntryBuilder {
 	pub(super) fn build<T>(
-		idx: RawEntryIdx,
 		sym: Symbol,
+		idx: RawEntryIdx,
 		parent: Option<RawEntryIdx>,
 		build: impl FnOnce(&mut Self) -> T,
-	) -> (BuiltEntries, BuiltLinks)
+	) -> (Vec<Entry>, Vec<EntryLink>)
 	where
 		T: EntryKind,
 	{
 		let mut this = EntryBuilder {
-			sym,
+			kind: T::discriminant(),
 			idx,
 			next_idx: idx.inc_arena_idx(1),
-			parent,
-			children: Vec::new(),
-			kind: T::discriminant(),
+			entries: Vec::new(),
 			links: Vec::new(),
 		};
 
 		let kind = build(&mut this).into_kind();
 
-		let EntryBuilder { idx, sym, parent, children, .. } = this;
+		let EntryBuilder { mut entries, links, .. } = this;
 
-		let node = Node::build(parent, children.iter().map(|e| e.idx).collect());
+		let node = Node::build(parent, (1..=entries.len()).map(|i| idx.inc_arena_idx(i)).collect());
 
-		let entries = BuiltEntries { idx, entry: Entry::new(sym, node, kind), children };
-		let links = BuiltLinks { links: this.links };
+		entries.insert(0, Entry::new(sym, node, kind));
 
 		(entries, links)
 	}
-}
-
-pub(super) struct BuiltEntries {
-	idx:      RawEntryIdx,
-	entry:    Entry,
-	children: Vec<BuiltEntries>,
-}
-
-impl BuiltEntries {
-	pub(super) fn iter(self) -> impl Iterator<Item = Entry> {
-		use std::iter::*;
-
-		let first = once(self.entry);
-
-		let rest: Box<dyn Iterator<Item = Entry>> =
-			Box::new(self.children.into_iter().flat_map(BuiltEntries::iter));
-
-		chain(first, rest)
-	}
-
-	/// helper to return the `Entry` alongside the corresponding `RawEntryIdx`
-	///
-	/// used for tests to ensure that the `RawEntryIdx`'s that are created are
-	/// accurate w.r.t. the initial provided index when building `BuiltEntries`
-	#[cfg(test)]
-	pub(super) fn enumerate(self) -> impl Iterator<Item = (RawEntryIdx, Entry)> {
-		use std::iter::*;
-
-		let first = once((self.idx, self.entry));
-
-		let rest: Box<dyn Iterator<Item = _>> =
-			Box::new(self.children.into_iter().flat_map(BuiltEntries::enumerate));
-
-		chain(first, rest)
-	}
-
-	/// returns the number of entries in this tree
-	fn count(&self) -> usize { self.children.iter().map(Self::count).sum::<usize>() + 1 }
-}
-
-pub(super) struct BuiltLinks {
-	links: Vec<EntryLink>,
-}
-impl BuiltLinks {
-	pub(super) fn iter(self) -> impl Iterator<Item = EntryLink> { self.links.into_iter() }
 }
 
 #[cfg(test)]
@@ -139,21 +90,18 @@ mod tests {
 		index: RawEntryIdx,
 		sym: &str,
 		build: impl FnOnce(&mut EntryBuilder) -> T,
-	) -> (BuiltEntries, BuiltLinks)
+	) -> (Vec<Entry>, Vec<EntryLink>)
 	where
 		T: EntryKind,
 	{
-		EntryBuilder::build(index, dummy_symbol(sym), None, build)
+		EntryBuilder::build(dummy_symbol(sym), index, None, build)
 	}
 
 	#[test]
 	fn built_entries_single_entry_indices() {
 		let (built, _links) = build(idx(0x100), "mod42", |_| Module);
 
-		itertools::assert_equal(built.enumerate(), [(
-			idx(0x100),
-			entry("mod42", n::root(vec![]), Module),
-		)]);
+		itertools::assert_equal(built, [entry("mod42", n::root(vec![]), Module)]);
 	}
 
 	#[test]
@@ -168,16 +116,13 @@ mod tests {
 			Record { fields }
 		});
 
-		itertools::assert_equal(built.enumerate(), [
-			(
-				idx(0x10),
-				entry("struct67", n::root(vec![idx(0x11), idx(0x12), idx(0x13)]), Record {
-					fields: vec![idx(0x11), idx(0x12), idx(0x13)],
-				}),
-			),
-			(idx(0x11), entry("field1", n::leaf(idx(0x10)), Field {})),
-			(idx(0x12), entry("field2", n::leaf(idx(0x10)), Field {})),
-			(idx(0x13), entry("field3", n::leaf(idx(0x10)), Field {})),
+		itertools::assert_equal(built, [
+			entry("struct67", n::root(vec![idx(0x11), idx(0x12), idx(0x13)]), Record {
+				fields: vec![idx(0x11), idx(0x12), idx(0x13)],
+			}),
+			entry("field1", n::leaf(idx(0x10)), Field {}),
+			entry("field2", n::leaf(idx(0x10)), Field {}),
+			entry("field3", n::leaf(idx(0x10)), Field {}),
 		]);
 	}
 
@@ -201,7 +146,7 @@ mod tests {
 			Module
 		});
 
-		itertools::assert_equal(links.iter(), [
+		itertools::assert_equal(links, [
 			EntryLink::typed(idx::<Record>(1), idx::<Field>(2)),
 			EntryLink::typed(idx::<Module>(0), idx::<Record>(1)),
 			EntryLink::typed(idx::<Module>(0), idx::<Record>(3)),

@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use super::{Entry, EntryInner};
-use crate::{kind::{EntryKind, Kind}, registry::RegistryResolver, symbol::Symbol};
+use crate::{kind::{EntryKind, Kind}, registry::{Registry, RegistryResolver}, symbol::Symbol};
 
 #[repr(transparent)]
 pub struct TypedEntry<T> {
@@ -26,15 +26,15 @@ impl<T: EntryKind> TypedEntry<T> {
 	}
 
 	/// the entry's raw kind enum
-	pub fn kind<'a>(&'a self, r: &'a impl RegistryResolver) -> &'a Kind {
+	pub fn kind<'a>(&'a self, r: &'a Registry<impl RegistryResolver>) -> &'a Kind {
 		match &self.inner.kind {
 			EntryInner::Owned(kind) => kind,
-			EntryInner::Reference(idx) => r.resolve(idx.typed::<T>()).kind(r),
+			EntryInner::Reference(idx) => r.resolve_typed(idx.typed::<T>()).kind(r),
 		}
 	}
 
 	// TODO: do we want to impl Deref and make this more like a smart pointer?
-	pub fn get<'a>(&'a self, r: &'a impl RegistryResolver) -> &'a T {
+	pub fn get<'a>(&'a self, r: &'a Registry<impl RegistryResolver>) -> &'a T {
 		self.kind(r).variant_as_dyn().downcast_ref().expect("using TypedEntry with incorrect type")
 	}
 }
@@ -46,10 +46,12 @@ mod tests {
 
 	#[test]
 	fn get_allows_typed_access() {
+		let registry = dummy_registry();
+
 		let entry = entry("test_sym", n::root(vec![]), Module);
 
 		let entry = TypedEntry::new(&entry);
 
-		let _module: &Module = entry.get(&DummyRegistry);
+		let _module: &Module = entry.get(&registry);
 	}
 }

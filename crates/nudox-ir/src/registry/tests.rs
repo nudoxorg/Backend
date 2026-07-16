@@ -1,29 +1,21 @@
-use bimap::BiMap;
-
 use super::*;
-use crate::registry::{EntryArena, RegistryResolver};
+use crate::{registry::RegistryResolver, test_helpers::*};
 
 #[test]
-#[ignore = "not building IR in build_registry"]
 fn serialize_deserialize() {
 	let registry = build_registry();
 
 	let dummy_idx = RawEntryIdx::new(PackageIdx::new(1), ArenaIdx::new(8)); // field_8
 
-	assert_eq!(registry.entry_id_from_idx(dummy_idx), ExampleEntryId {
-		package: String::from("pkg-1"),
+	assert_eq!(registry.resolver.idx_to_entry_id(dummy_idx, &registry.state), ExampleEntryId {
+		package: PackageId::Path,
 		symbol:  String::from("field_8"),
 	});
 
 	let mut sink = Vec::new();
 	let serializer = &mut serde_json::Serializer::new(&mut sink);
 
-	serde_context::serialize_with_context(
-		&dummy_idx,
-		serializer,
-		&registry as &dyn DynRegistryResolver,
-	)
-	.expect("serialization failed");
+	registry.serialize(serializer, &dummy_idx).expect("serialization failed");
 
 	let serialized_json = String::from_utf8(sink).expect("wrote invalid utf8 during serialization");
 
@@ -32,96 +24,67 @@ fn serialize_deserialize() {
 	let deserializer = &mut serde_json::Deserializer::from_str(&serialized_json);
 
 	let deserialized_dummy_idx: RawEntryIdx =
-		serde_context::deserialize_with_context(deserializer, &registry as &dyn DynRegistryResolver)
-			.expect("deserialization failed");
+		registry.deserialize(deserializer).expect("deserialization failed");
 
 	assert_eq!(dummy_idx, deserialized_dummy_idx);
 }
 
-fn build_registry() -> ExampleRegistry {
-	let mut registry = ExampleRegistry { package_mapping: BiMap::new(), packages: Vec::new() };
+fn build_registry() -> Registry<ExampleRegistryResolver> {
+	let mut registry = Registry::new(ExampleRegistryResolver::default());
 
-	registry.packages.push(ExamplePackage { arena: EntryArena::new() });
-	registry.package_mapping.insert(String::from("pkg-0"), PackageIdx::new(0));
+	registry.build_package_ir(PackageId::Path, dummy_symbol("pkg-0"), |b| {
+		b.create(dummy_symbol("mod_1"), |_| Module);
+		b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
+	});
 
-	// registry.packages[0].arena.create_top_level(dummy_symbol("mod_0"), |b| {
-	// 	b.create(dummy_symbol("mod_1"), |_| Module);
-	// 	b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
+	registry.build_package_ir(PackageId::Path, dummy_symbol("pkg-1"), |b| {
+		b.create(dummy_symbol("mod_1"), |_| Module);
 
-	// 	Module
-	// });
+		b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
 
-	// registry.packages.push(ExamplePackage { arena: EntryArena::new() });
-	registry.package_mapping.insert(String::from("pkg-1"), PackageIdx::new(1));
+		b.create(dummy_symbol("mod_3"), |b| {
+			b.create(dummy_symbol("mod_4"), |_| Module);
+			b.create(dummy_symbol("record_5"), |_| Record { fields: vec![] });
 
-	// registry.packages[1].arena.create_top_level(dummy_symbol("mod_0"), |_|
-	// Module);
+			Module
+		});
 
-	// registry.packages[1].arena.create_top_level(dummy_symbol("mod_1"), |b| {
-	// 	b.create(dummy_symbol("record_2"), |_| Record { fields: vec![] });
-	// 	b.create(dummy_symbol("mod_3"), |b| {
-	// 		b.create(dummy_symbol("mod_4"), |_| Module);
-	// 		b.create(dummy_symbol("record_5"), |_| Record { fields: vec![] });
-
-	// 		Module
-	// 	});
-
-	// 	b.create(dummy_symbol("record_6"), |b| Record {
-	// 		fields: ["field_7", "field_8", "field_9"]
-	// 			.map(dummy_symbol)
-	// 			.map(|sym| b.create(sym, |_| Field {}))
-	// 			.to_vec(),
-	// 	});
-
-	// 	Module
-	// });
+		b.create(dummy_symbol("record_6"), |b| Record {
+			fields: ["field_7", "field_8", "field_9"]
+				.map(dummy_symbol)
+				.map(|sym| b.create(sym, |_| Field {}))
+				.to_vec(),
+		});
+	});
 
 	registry
 }
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ExampleEntryId {
-	package: String,
+	package: PackageId,
 	symbol:  String,
 }
 
-struct ExamplePackage {
-	arena: EntryArena,
-}
+#[derive(Default)]
+struct ExampleRegistryResolver;
 
-struct ExampleRegistry {
-	package_mapping: BiMap<String, PackageIdx>,
-	packages:        Vec<ExamplePackage>,
-}
-
-impl RegistryResolver for ExampleRegistry {
+impl RegistryResolver for ExampleRegistryResolver {
 	type EntryId = ExampleEntryId;
 
-	fn idx_from_entry_id(&self, id: Self::EntryId) -> RawEntryIdx {
-		let package_idx =
-			*self.package_mapping.get_by_left(&id.package).expect("invalid package identifier");
+	fn entry_id_to_idx(&self, id: Self::EntryId, state: &RegistryState) -> RawEntryIdx {
+		let package = state.resolve_package::<Self>(&id.package, |_| unimplemented!());
 
-		let entry_idx = self.packages[package_idx.index()]
-			.arena
-			.iter()
-			.position(|entry| entry.sym.name == id.symbol)
-			.map(ArenaIdx::new)
-			.expect("invalid symbol identifier");
-
-		EntryIdx::new(package_idx, entry_idx)
+		package
+			.enumerate()
+			.find_map(|(idx, e)| (e.sym.name == id.symbol).then_some(idx))
+			.expect("failed to find symbol")
 	}
 
-	fn entry_id_from_idx(&self, idx: RawEntryIdx) -> Self::EntryId {
-		let package =
-			self.package_mapping.get_by_right(&idx.package_idx()).expect("invalid package index").clone();
-		let entry = self.packages[idx.package_idx().index()].arena.resolve(idx.arena_idx());
-
-		let symbol = entry.sym.name.clone();
+	fn idx_to_entry_id(&self, idx: RawEntryIdx, state: &RegistryState) -> Self::EntryId {
+		let package = state.package_id_of(idx);
+		let symbol = state.resolve(idx).sym.name.clone();
 
 		ExampleEntryId { package, symbol }
-	}
-
-	fn resolve_package(&self, package_index: usize) -> &EntryArena {
-		&self.packages[package_index].arena
 	}
 }

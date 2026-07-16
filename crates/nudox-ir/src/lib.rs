@@ -1,6 +1,9 @@
+#![feature(trait_alias)]
+
 pub mod entry;
 pub mod function;
 pub mod kind;
+pub mod package;
 pub mod primitive;
 pub mod record;
 pub mod registry;

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{entry::{Entry, Node}, kind::EntryKind, registry::{ArenaIdx, EntryArena, EntryIdx, PackageIdx, RawEntryIdx, RegistryResolver}, symbol::{Symbol, Visibility}};
+use crate::{entry::{Entry, Node}, kind::EntryKind, registry::{ArenaIdx, EntryIdx, PackageIdx, RawEntryIdx, Registry, RegistryResolver, RegistryState}, symbol::{Symbol, Visibility}};
 
 pub use crate::{module::Module, record::{Field, Record}};
 
@@ -36,12 +36,13 @@ pub fn idx<T>(index: usize) -> EntryIdx<T> {
 	EntryIdx::new(PackageIdx::new(0), ArenaIdx::new(index))
 }
 
-pub struct DummyRegistry;
+pub fn dummy_registry() -> Registry<DummyRegistryResolver> { Registry::new(DummyRegistryResolver) }
 
-impl RegistryResolver for DummyRegistry {
+pub struct DummyRegistryResolver;
+
+impl RegistryResolver for DummyRegistryResolver {
 	type EntryId = ();
 
-	fn idx_from_entry_id(&self, _: Self::EntryId) -> RawEntryIdx { unimplemented!() }
-	fn entry_id_from_idx(&self, _: RawEntryIdx) -> Self::EntryId { unimplemented!() }
-	fn resolve_package(&self, _: usize) -> &EntryArena { unimplemented!() }
+	fn entry_id_to_idx(&self, _: Self::EntryId, _: &RegistryState) -> RawEntryIdx { unimplemented!() }
+	fn idx_to_entry_id(&self, _: RawEntryIdx, _: &RegistryState) -> Self::EntryId { unimplemented!() }
 }

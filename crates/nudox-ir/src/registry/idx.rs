@@ -1,7 +1,8 @@
 use std::{fmt, hash, marker::PhantomData};
 
-use super::DynRegistryResolver;
 use crate::kind::EntryKind;
+
+use super::{DynRegistryResolver, RegistryState};
 
 pub struct EntryIdx<T> {
 	package_idx: PackageIdx,
@@ -10,7 +11,6 @@ pub struct EntryIdx<T> {
 }
 
 impl<T> EntryIdx<T> {
-	#[cfg_attr(not(test), expect(unused))]
 	pub(crate) fn new(package_idx: PackageIdx, arena_idx: ArenaIdx) -> Self {
 		EntryIdx { package_idx, arena_idx, _p: PhantomData }
 	}
@@ -44,8 +44,9 @@ impl<T> serde::Serialize for EntryIdx<T> {
 
 		serde_context::context_scope(|cx| {
 			let registry = cx.get::<dyn DynRegistryResolver>().map_err(S::Error::custom)?;
+			let state = cx.get::<RegistryState>().map_err(S::Error::custom)?;
 
-			let value = registry.raw_entry_id_from_idx(self.raw());
+			let value = registry.__idx_to_entry_id(self.raw(), state);
 
 			erased_serde::serialize(&value, serializer)
 		})
@@ -60,12 +61,13 @@ impl<'de, T> serde::Deserialize<'de> for EntryIdx<T> {
 		use serde::de::Error;
 
 		serde_context::context_scope(|cx| {
-			let registry = cx.get::<dyn DynRegistryResolver>().map_err(D::Error::custom)?;
+			let resolver = cx.get::<dyn DynRegistryResolver>().map_err(D::Error::custom)?;
+			let state = cx.get::<RegistryState>().map_err(D::Error::custom)?;
 
 			// TODO: investigate if there's a better way to do this, so that we don't have
 			// to use D::Error::custom.
-			let idx = registry
-				.deser_entry_id_to_idx(&mut <dyn erased_serde::Deserializer>::erase(deserializer))
+			let idx = resolver
+				.__deser_entry_id_to_idx(&mut <dyn erased_serde::Deserializer>::erase(deserializer), state)
 				.map_err(D::Error::custom)?;
 
 			Ok(idx.typed())
