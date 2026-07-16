@@ -1,6 +1,6 @@
-use super::{DeferredIdx, EntryIdx, EntryLink, RawEntryIdx};
+use super::{DeferredId, DeferredIdx, EntryIdx, EntryLink, RawEntryIdx};
 
-use crate::{entry::{Entry, Node}, kind::{EntryKind, KindDiscriminant}, package::PackageId, registry::RegistryState, symbol::Symbol};
+use crate::{entry::{Entry, Node}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
 
 pub struct EntryBuilder {
 	sym: Symbol,
@@ -10,9 +10,11 @@ pub struct EntryBuilder {
 
 	parent: Option<RawEntryIdx>,
 
-	// deferred_idx: DeferredIdx,
-	entries: Vec<Entry>,
-	links:   Vec<EntryLink>,
+	deferred_start: DeferredIdx,
+
+	entries:  Vec<Entry>,
+	links:    Vec<EntryLink>,
+	deferred: Vec<DeferredId>,
 }
 
 impl EntryBuilder {
@@ -23,13 +25,16 @@ impl EntryBuilder {
 	where
 		T: EntryKind,
 	{
-		let (entries, links) =
-			Self::builder().sym(sym).entry_idx(self.next_entry_idx()).parent(self.entry_idx).build(build);
-
-		let idx = self.next_entry_idx().typed();
+		let (idx, entries, links, deferred) = Self::builder()
+			.sym(sym)
+			.parent(self.entry_idx)
+			.entry_idx(self.next_entry_idx())
+			.deferred_start(self.next_deferred_idx())
+			.build(build);
 
 		self.entries.extend(entries);
-		self.links.extend(links.iter());
+		self.links.extend(links);
+		self.deferred.extend(deferred);
 
 		idx
 	}
@@ -66,6 +71,8 @@ impl EntryBuilder {
 
 impl EntryBuilder {
 	fn next_entry_idx(&self) -> RawEntryIdx { self.entry_idx.inc_arena_idx(self.entries.len()) }
+
+	fn next_deferred_idx(&self) -> DeferredIdx { self.deferred_start.increment(self.deferred.len()) }
 }
 
 #[bon::bon]
@@ -73,24 +80,30 @@ impl EntryBuilder {
 	#[builder(finish_fn(name = finish, vis = ""))]
 	pub(super) fn new(
 		sym: Symbol,
-		entry_idx: RawEntryIdx,
 		parent: Option<RawEntryIdx>,
-		// deferred_idx: DeferredIdx,
+		entry_idx: RawEntryIdx,
+		deferred_start: DeferredIdx,
 	) -> Self {
 		EntryBuilder {
 			sym,
-			kind: KindDiscriminant::Module, // replaced when `build` is called
 			entry_idx,
 			parent,
-			// deferred_idx,
+			deferred_start,
+
+			kind: KindDiscriminant::Module, // replaced when `build` is called
+
 			entries: Vec::new(),
 			links: Vec::new(),
+			deferred: Vec::new(),
 		}
 	}
 }
 
 impl<S: entry_builder_builder::IsComplete> EntryBuilderBuilder<S> {
-	pub fn build<T>(self, build: impl FnOnce(&mut EntryBuilder) -> T) -> (Vec<Entry>, Vec<EntryLink>)
+	pub fn build<T>(
+		self,
+		build: impl FnOnce(&mut EntryBuilder) -> T,
+	) -> (EntryIdx<T>, Vec<Entry>, Vec<EntryLink>, Vec<DeferredId>)
 	where
 		T: EntryKind,
 	{
@@ -100,13 +113,13 @@ impl<S: entry_builder_builder::IsComplete> EntryBuilderBuilder<S> {
 
 		let kind = build(&mut builder).into_kind();
 
-		let EntryBuilder { sym, parent, entry_idx, entries, links, .. } = builder;
+		let EntryBuilder { sym, parent, entry_idx, entries, links, deferred, .. } = builder;
 
 		let node = Node::build(parent, (1..=entries.len()).map(|i| entry_idx.inc_arena_idx(i)));
 
 		let entries = std::iter::once(Entry::new(sym, node, kind)).chain(entries).collect();
 
-		(entries, links)
+		(entry_idx.typed(), entries, links, deferred)
 	}
 }
 
@@ -119,25 +132,27 @@ mod tests {
 		index: RawEntryIdx,
 		sym: &str,
 		build: impl FnOnce(&mut EntryBuilder) -> T,
-	) -> (Vec<Entry>, Vec<EntryLink>)
+	) -> (EntryIdx<T>, Vec<Entry>, Vec<EntryLink>, Vec<DeferredId>)
 	where
 		T: EntryKind,
 	{
-		todo!()
-		// EntryBuilder::build(dummy_symbol(sym), index, None,
-		// &RegistryState::new(), build)
+		EntryBuilder::builder()
+			.sym(dummy_symbol(sym))
+			.entry_idx(index)
+			.deferred_start(DeferredIdx::new(0))
+			.build(build)
 	}
 
 	#[test]
 	fn built_entries_single_entry_indices() {
-		let (built, _links) = build(idx(0x100), "mod42", |_| Module);
+		let (_idx, entries, _links, _deferred) = build(idx(0x100), "mod42", |_| Module);
 
-		itertools::assert_equal(built, [entry("mod42", n::root(vec![]), Module)]);
+		itertools::assert_equal(entries, [entry("mod42", n::root(vec![]), Module)]);
 	}
 
 	#[test]
 	fn built_entries_with_children() {
-		let (built, _links) = build(idx(0x10), "struct67", |b| {
+		let (_idx, entries, _links, _deferred) = build(idx(0x10), "struct67", |b| {
 			let fields = ["field1", "field2", "field3"]
 				.map(dummy_symbol)
 				.map(|field| b.create(field, |_| Field {}))
@@ -147,7 +162,7 @@ mod tests {
 			Record { fields }
 		});
 
-		itertools::assert_equal(built, [
+		itertools::assert_equal(entries, [
 			entry("struct67", n::root(vec![idx(0x11), idx(0x12), idx(0x13)]), Record {
 				fields: list![idx(0x11), idx(0x12), idx(0x13)],
 			}),
@@ -159,7 +174,7 @@ mod tests {
 
 	#[test]
 	fn links_emitted_correctly() {
-		let (_entries, links) = build(idx(0), "root", |b| {
+		let (_idx, _entries, links, _deferred) = build(idx(0), "root", |b| {
 			let struct_idx_1 = b.create(dummy_symbol("struct1"), |b| {
 				let f1 = b.create(dummy_symbol("f1"), |_| Field {});
 				b.link(f1);

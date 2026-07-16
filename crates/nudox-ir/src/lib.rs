@@ -1,5 +1,4 @@
 #![feature(trait_alias)]
-#![expect(unused)]
 
 pub mod entry;
 pub mod function;
@@ -24,6 +23,7 @@ register_kinds::register_kinds! {
 	/// A product type: struct, class, record, or data class.
 	record::Record,
 
+	/// A field or property of a containing type.
 	record::Field,
 
 	function::Function,

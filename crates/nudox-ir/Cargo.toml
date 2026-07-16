@@ -5,10 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bimap = { workspace = true }
 bon = { workspace = true }
 elsa = { workspace = true }
 erased-serde = { workspace = true }
+iddqd = { workspace = true}
 parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true }

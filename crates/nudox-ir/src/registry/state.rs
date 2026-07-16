@@ -1,4 +1,3 @@
-use bimap::BiHashMap;
 use elsa::sync::FrozenVec;
 use parking_lot::RwLock;
 use rustc_hash::FxHashSet;
@@ -7,46 +6,16 @@ use crate::{entry::{Entry, TypedEntry}, kind::EntryKind, module::Module, package
 
 use super::{ArenaIdx, EntryArena, EntryBuilder, EntryIdx, EntryLink, PackageIdx, RawEntryIdx, RegistryResolver};
 
-type BiFxHashMap<L, R> = BiHashMap<L, R, rustc_hash::FxBuildHasher, rustc_hash::FxBuildHasher>;
+type FxBiHashMap<T> = iddqd::BiHashMap<T, rustc_hash::FxBuildHasher>;
 
 pub struct RegistryState {
 	arenas: FrozenVec<Box<EntryArena>>,
 
-	packages: RwLock<BiFxHashMap<PackageId, PackageIdx>>,
+	packages: RwLock<FxBiHashMap<RegistryPackage>>,
 	links:    RwLock<FxHashSet<EntryLink>>,
 }
 
-// TODO: make this properly
-#[derive(Clone, Copy)]
-pub struct PackageIRView<'a> {
-	package_idx: PackageIdx,
-	arena:       &'a EntryArena,
-}
-
-impl<'a> PackageIRView<'a> {
-	pub fn enumerate(self) -> impl Iterator<Item = (RawEntryIdx, &'a Entry)> {
-		self.arena.iter().enumerate().map(move |(arena_idx, entry)| {
-			(RawEntryIdx::new(self.package_idx, ArenaIdx::new(arena_idx)), entry)
-		})
-	}
-}
-
 impl RegistryState {
-	pub fn resolve_package<R: RegistryResolver>(
-		&self,
-		id: &PackageId,
-		_fetch: impl FnOnce(&Self) -> Vec<Entry>,
-	) -> PackageIRView<'_> {
-		match self.packages.read().get_by_left(&id) {
-			Some(&idx) => PackageIRView { package_idx: idx, arena: self.arena(idx) },
-			None => {
-				// TODO: use fetch to resolve the IR to be loaded and insert it into the
-				// registry state
-				todo!()
-			}
-		}
-	}
-
 	pub fn resolve<R: RegistryResolver>(&self, idx: RawEntryIdx, _resolver: &R) -> &Entry {
 		match idx.repr() {
 			super::idx::Repr::Resolved { package_idx, arena_idx } => {
@@ -65,19 +34,13 @@ impl RegistryState {
 	) -> &TypedEntry<T> {
 		TypedEntry::new(self.resolve(idx.raw(), resolver))
 	}
-
-	pub fn package_id_of(&self, _idx: RawEntryIdx) -> PackageId {
-		todo!()
-		// self.packages.read().get_by_right(&idx.package_idx()).cloned().expect("")
-		// // TODO: error message
-	}
 }
 
 impl RegistryState {
 	pub(super) fn new() -> Self {
 		RegistryState {
 			arenas:   FrozenVec::new(),
-			packages: RwLock::new(BiFxHashMap::default()),
+			packages: RwLock::new(FxBiHashMap::default()),
 			links:    RwLock::new(FxHashSet::default()),
 		}
 	}
@@ -93,15 +56,19 @@ impl RegistryState {
 
 		let idx = EntryIdx::new(package_idx, arena_idx);
 
-		let (entries, links) = EntryBuilder::builder().sym(sym).entry_idx(idx).build(|b| {
-			build(b);
-			Module
-		});
+		let (idx, entries, links, _deferred) = EntryBuilder::builder()
+			.sym(sym)
+			.entry_idx(idx)
+			.deferred_start(super::DeferredIdx::new(0)) // TODO
+			.build(|b| {
+				build(b);
+				Module
+			});
 
 		self.arenas.push(Box::new(EntryArena::new(entries)));
 
 		self.links.write().extend(links);
-		self.packages.write().insert(pkg.id, package_idx);
+		let _ = self.packages.write().insert_unique(RegistryPackage::new(package_idx, pkg)); // TODO: how to handle overwriting package?
 
 		idx.typed()
 	}
@@ -109,4 +76,24 @@ impl RegistryState {
 	fn arena(&self, idx: PackageIdx) -> &EntryArena {
 		self.arenas.get(idx.index()).expect("") // TODO: error message
 	}
+}
+
+struct RegistryPackage {
+	idx:  PackageIdx,
+	meta: PackageMeta,
+}
+
+impl RegistryPackage {
+	fn new(idx: PackageIdx, meta: PackageMeta) -> Self { Self { idx, meta } }
+}
+
+impl iddqd::BiHashItem for RegistryPackage {
+	type K1<'a> = &'a PackageId;
+	type K2<'a> = PackageIdx;
+
+	fn key1(&self) -> Self::K1<'_> { &self.meta.id }
+
+	fn key2(&self) -> Self::K2<'_> { self.idx }
+
+	iddqd::bi_upcast!();
 }

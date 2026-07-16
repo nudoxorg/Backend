@@ -1,4 +1,4 @@
-use crate::{registry::RegistryResolver, test_helpers::*};
+use crate::{package::PackageId, registry::RegistryResolver, test_helpers::*};
 
 use super::*;
 
@@ -64,7 +64,7 @@ fn build_registry() -> Registry<ExampleRegistryResolver> {
 	registry
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash)]
 struct ExampleEntryId {
 	package: PackageId,
 	symbol:  String,
@@ -76,14 +76,7 @@ struct ExampleRegistryResolver;
 impl RegistryResolver for ExampleRegistryResolver {
 	type EntryId = ExampleEntryId;
 
-	fn entry_id_to_idx(&self, id: Self::EntryId, state: &RegistryState) -> RawEntryIdx {
-		let package = state.resolve_package::<Self>(&id.package, |_| unimplemented!());
+	fn entry_id_to_idx(&self, _id: Self::EntryId, _state: &RegistryState) -> RawEntryIdx { todo!() }
 
-		package
-			.enumerate()
-			.find_map(|(idx, e)| (e.sym.name == id.symbol).then_some(idx))
-			.expect("failed to find symbol")
-	}
-
-	fn idx_to_entry_id(&self, idx: RawEntryIdx, state: &RegistryState) -> Self::EntryId { todo!() }
+	fn idx_to_entry_id(&self, _idx: RawEntryIdx, _state: &RegistryState) -> Self::EntryId { todo!() }
 }

@@ -11,7 +11,11 @@ pub struct EntryIdx<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum Repr {
-	Resolved { package_idx: PackageIdx, arena_idx: ArenaIdx },
+	Resolved {
+		package_idx: PackageIdx,
+		arena_idx:   ArenaIdx,
+	},
+	#[expect(unused)]
 	Deferred(DeferredIdx),
 }
 
@@ -138,6 +142,10 @@ mod private {
 index_newtype!(PackageIdx);
 index_newtype!(ArenaIdx);
 index_newtype!(DeferredIdx);
+
+impl DeferredIdx {
+	pub(super) fn increment(self, amount: usize) -> Self { Self::new(self.index() + amount) }
+}
 
 macro_rules! index_newtype {
 	($index:ident) => {

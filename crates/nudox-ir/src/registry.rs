@@ -1,5 +1,6 @@
 mod arena;
 mod builder;
+mod deferred;
 mod idx;
 mod link;
 mod resolver;
@@ -8,9 +9,9 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use crate::{entry::{Entry, TypedEntry}, kind::EntryKind, module::Module, package::{PackageId, PackageMeta}, symbol::Symbol};
+use crate::{entry::{Entry, TypedEntry}, kind::EntryKind, module::Module, package::PackageMeta, symbol::Symbol};
 
-use self::{arena::EntryArena, idx::{ArenaIdx, DeferredIdx, PackageIdx}, resolver::DynRegistryResolver};
+use self::{arena::EntryArena, deferred::DeferredId, idx::{ArenaIdx, DeferredIdx, PackageIdx}, resolver::DynRegistryResolver};
 
 // allow test_helpers to create EntryIdx's
 #[cfg(test)]

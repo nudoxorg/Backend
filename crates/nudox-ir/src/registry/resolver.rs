@@ -1,10 +1,10 @@
-use std::any::Any;
+use std::{any::Any, hash::Hash};
 
 use super::{RawEntryIdx, RegistryState};
 
 pub(super) use self::private::DynRegistryResolver;
 
-pub trait EntryId = serde::Serialize + serde::de::DeserializeOwned + Any;
+pub trait EntryId = serde::Serialize + serde::de::DeserializeOwned + Hash + Any;
 
 pub trait RegistryResolver: DynRegistryResolver {
 	/// A type that can be used to uniquely identify an Entry between different
