@@ -16,777 +16,705 @@ use std::{fmt, fs, io};
 
 use smol_str::SmolStr;
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // normalize_keyword
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 /// Canonicalize a raw keyword string.
-///
-/// Rules (in order):
-/// 1. Fast-path: already lowercase-alphanumeric + hyphens → strip leading/trailing `-`.
-/// 2. Split on whitespace, `_`, `-`; apply well-known token replacements (`C++` →
-///    `cpp`, `iOS` → `ios`, plural acronym stripping `SSDs` → `SSD`, etc.).
-/// 3. Split on `/`.
-/// 4. Handle `%` → `percent`, `&` → ` and `.
-/// 5. MiB/GiB suffix normalization (`iB` → lowercase).
-/// 6. `iOS`-style (lowercase first, uppercase second) and `TeX`-style (UpLow-Up)
-///    → fully lowercase.
-/// 7. Numeric RFC/ISO/IEC/BCP prefix → insert hyphen (`rfc2119` → `rfc-2119`).
-/// 8. `Script` token → lowercase.
-/// 9. Kebab-case the joined tokens (non-alphanumeric runs → single `-`, trim).
-/// 10. Truncate to 55 chars with `…` if over 65.
 #[must_use]
-pub fn normalize_keyword(k_input: &str) -> SmolStr {
-	// Fast-path: already canonical.
-	if k_input
-		.as_bytes()
-		.iter()
-		.all(|&b| (b.is_ascii_lowercase() && b.is_ascii_alphanumeric()) || b == b'-')
-	{
-		return k_input.trim_matches('-').into();
-	}
+pub fn normalize_keyword(input_keyword: &str) -> SmolStr {
+    if is_already_canonical(input_keyword) {
+        return input_keyword.trim_matches('-').into();
+    }
 
-	let tokens: Vec<Cow<str>> = k_input
-		.split(|c: char| c.is_ascii_whitespace() || c == '_' || c == '-')
-		.map(|k| {
-			Cow::Borrowed(
-				match k.trim_end_matches("'s").trim_end_matches("\u{2019}s") {
-					"I/O" => "io",
-					"i/o" => "io",
-					"C++" => "cpp",
-					"C/C++" => "c-or-cpp",
-					"c++" => "cpp",
-					"OSes" => "os",
-					"LaTeX" => "latex",
-					"XeTeX" => "xetex",
-					"CHAdeMO" => "chademo",
-					other => other,
-				},
-			)
-		})
-		.flat_map(|k: Cow<str>| {
-			// We need to split on '/' but can't flat_map a Cow directly into
-			// owned strings without some care. Collect slash-splits as owned.
-			let s: String = k.into_owned();
-			s.split('/').map(|p| p.to_owned()).collect::<Vec<_>>()
-		})
-		.map(|k| {
-			let mut k: Cow<str> = Cow::Owned(k);
+    let tokens: Vec<Cow<str>> = input_keyword
+        .split(|character: char| {
+            character.is_ascii_whitespace() || character == '_' || character == '-'
+        })
+        .map(apply_well_known_replacements)
+        .flat_map(split_on_slashes)
+        .map(apply_formatting_rules)
+        .filter(|token| !token.is_empty())
+        .take(30)
+        .collect();
 
-			// Plural acronym: SSDs → SSD, APIs → API.
-			{
-				let bytes = k.as_bytes();
-				let len = bytes.len();
-				if len > 2 {
-					let last = bytes[len - 1];
-					let before_last = bytes[len - 2];
-					if last == b's' && before_last.is_ascii_uppercase() {
-						let trimmed = &k.as_ref()[..len - 1];
-						k = Cow::Owned(trimmed.to_owned());
-					}
-				}
-			}
+    let joined_tokens = tokens.join(" ");
+    let kebab_cased = inline_kebab_case(&joined_tokens);
 
-			if k.contains('%') {
-				k = Cow::Owned(k.replace('%', "percent"));
-			}
-			if k.contains('&') {
-				k = Cow::Owned(k.replace('&', " and "));
-			}
-
-			// MiB, GiB → mib, gib
-			if k.ends_with("iB") {
-				k = Cow::Owned(k.to_ascii_lowercase());
-			}
-
-			// iOS-style (lower first, upper second) or TeX-style (UpLowerUp, len==3)
-			{
-				let mut chars = k.chars();
-				if let (Some(first), Some(second)) = (chars.next(), chars.next()) {
-					let like_ios =
-						first.is_ascii_lowercase() && second.is_ascii_uppercase();
-					let like_tex = k.len() == 3
-						&& first.is_ascii_uppercase()
-						&& second.is_ascii_lowercase()
-						&& chars.next().is_some_and(|t| t.is_ascii_uppercase());
-					if like_ios || like_tex {
-						k = Cow::Owned(k.to_ascii_lowercase());
-					}
-				}
-			}
-
-			// rfc2119 → rfc-2119, iso8601 → iso-8601, etc.
-			{
-				let k_lower = k.to_ascii_lowercase();
-				for prefix in ["rfc", "iso", "iec", "bcp"] {
-					if let Some(rest) = k_lower.strip_prefix(prefix) {
-						if rest.len() >= 2 && rest.bytes().all(|b| b.is_ascii_digit()) {
-							k = Cow::Owned(format!("{prefix}-{rest}"));
-						}
-						break;
-					}
-				}
-			}
-
-			// "JavaScript", "TypeScript", etc.
-			if k.contains("Script") {
-				k = Cow::Owned(k.to_ascii_lowercase());
-			}
-
-			k
-		})
-		.filter(|k| !k.is_empty())
-		.take(30)
-		.collect();
-
-	// Join all tokens with spaces then kebab-case inline.
-	let joined = tokens.join(" ");
-	let kebab = inline_kebab_case(&joined);
-
-	// TODO: deunicode fallback
-	let mut res = SmolStr::from(kebab.trim_matches('-'));
-
-	if res.len() > 65 {
-		if let Some(truncated) = res.get(..55) {
-			let mut s = truncated.to_string();
-			s.push('…');
-			res = SmolStr::from(s);
-		}
-	}
-
-	res
+    truncate_keyword(&kebab_cased, 55, 65)
 }
 
-/// Inline kebab-caser: lowercase, replace runs of non-alphanumeric bytes with a
-/// single `-`, trim leading/trailing `-`.
-///
-/// This replaces `heck::AsKebabCase` which handles Unicode segmentation;
-/// our data is overwhelmingly ASCII so this is sufficient.
-fn inline_kebab_case(s: &str) -> String {
-	let mut out = String::with_capacity(s.len());
-	let mut in_sep = true; // start true to suppress leading dash
-	for b in s.bytes() {
-		if b.is_ascii_alphanumeric() {
-			out.push(b.to_ascii_lowercase() as char);
-			in_sep = false;
-		} else {
-			if !in_sep && !out.is_empty() {
-				out.push('-');
-				in_sep = true;
-			}
-		}
-	}
-	// Trim trailing '-'
-	while out.ends_with('-') {
-		out.pop();
-	}
-	out
+#[inline]
+fn is_already_canonical(input: &str) -> bool {
+    input
+        .as_bytes()
+        .iter()
+        .all(|&byte| (byte.is_ascii_lowercase() && byte.is_ascii_alphanumeric()) || byte == b'-')
 }
 
-// ---------------------------------------------------------------------------
+fn apply_well_known_replacements(token: &str) -> Cow<str> {
+    let stripped = token.trim_end_matches("'s").trim_end_matches("\u{2019}s");
+    let replacement = match stripped {
+        "I/O" | "i/o" => "io",
+        "C++" | "c++" => "cpp",
+        "C/C++" => "c-or-cpp",
+        "OSes" => "os",
+        "LaTeX" => "latex",
+        "XeTeX" => "xetex",
+        "CHAdeMO" => "chademo",
+        other => other,
+    };
+    Cow::Borrowed(replacement)
+}
+
+fn split_on_slashes(token: Cow<str>) -> Vec<String> {
+    token.into_owned().split('/').map(String::from).collect()
+}
+
+fn apply_formatting_rules(token: String) -> Cow<'static, str> {
+    let mut token = Cow::Owned(token);
+
+    token = strip_plural_acronyms(token);
+    token = replace_symbols(token);
+    token = normalize_byte_suffixes(token);
+    token = normalize_mixed_casing(token);
+    token = format_standard_prefixes(token);
+    token = lowercase_script_suffix(token);
+
+    token
+}
+
+fn strip_plural_acronyms(token: Cow<str>) -> Cow<str> {
+    let bytes = token.as_bytes();
+    let length = bytes.len();
+
+    if length > 2 && bytes[length - 1] == b's' && bytes[length - 2].is_ascii_uppercase() {
+        return Cow::Owned(token[..length - 1].to_owned());
+    }
+    token
+}
+
+fn replace_symbols(mut token: Cow<str>) -> Cow<str> {
+    if token.contains('%') {
+        token = Cow::Owned(token.replace('%', "percent"));
+    }
+    if token.contains('&') {
+        token = Cow::Owned(token.replace('&', " and "));
+    }
+    token
+}
+
+fn normalize_byte_suffixes(token: Cow<str>) -> Cow<str> {
+    if token.ends_with("iB") {
+        return Cow::Owned(token.to_ascii_lowercase());
+    }
+    token
+}
+
+fn normalize_mixed_casing(token: Cow<str>) -> Cow<str> {
+    let mut characters = token.chars();
+    if let (Some(first), Some(second)) = (characters.next(), characters.next()) {
+        let is_ios_style = first.is_ascii_lowercase() && second.is_ascii_uppercase();
+        let is_tex_style = token.len() == 3
+            && first.is_ascii_uppercase()
+            && second.is_ascii_lowercase()
+            && characters
+                .next()
+                .is_some_and(|char| char.is_ascii_uppercase());
+
+        if is_ios_style || is_tex_style {
+            return Cow::Owned(token.to_ascii_lowercase());
+        }
+    }
+    token
+}
+
+fn format_standard_prefixes(token: Cow<str>) -> Cow<str> {
+    let token_lower = token.to_ascii_lowercase();
+    for prefix in ["rfc", "iso", "iec", "bcp"] {
+        if let Some(rest) = token_lower.strip_prefix(prefix) {
+            if rest.len() >= 2 && rest.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Cow::Owned(format!("{prefix}-{rest}"));
+            }
+        }
+    }
+    token
+}
+
+fn lowercase_script_suffix(token: Cow<str>) -> Cow<str> {
+    if token.contains("Script") {
+        return Cow::Owned(token.to_ascii_lowercase());
+    }
+    token
+}
+
+fn truncate_keyword(keyword: &str, target_length: usize, max_length: usize) -> SmolStr {
+    let mut result = SmolStr::from(keyword.trim_matches('-'));
+
+    if result.len() > max_length {
+        if let Some(truncated) = result.get(..target_length) {
+            result = SmolStr::from(format!("{truncated}…"));
+        }
+    }
+    result
+}
+
+fn inline_kebab_case(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut inside_separator = true;
+
+    for byte in input.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            output.push(byte.to_ascii_lowercase() as char);
+            inside_separator = false;
+        } else if !inside_separator && !output.is_empty() {
+            output.push('-');
+            inside_separator = true;
+        }
+    }
+
+    while output.ends_with('-') {
+        output.pop();
+    }
+    output
+}
+
+// ===========================================================================
 // Synonyms
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
-/// Synonym table loaded from `tag-synonyms.csv`.
-///
-/// Format (one entry per line, `#` comments ignored):
-/// ```text
-/// find,replace,score
-/// ```
-/// where `score` is `0..=5` (votes). Absent file → empty map (no panic).
 pub struct Synonyms {
-	mapping: HashMap<SmolStr, (SmolStr, u8)>,
+    mapping: HashMap<SmolStr, (SmolStr, u8)>,
 }
 
 impl Synonyms {
-	/// Load from `data_dir/tag-synonyms.csv`. Returns an empty map if the file
-	/// is absent.
-	#[cold]
-	pub fn new(data_dir: &Path) -> io::Result<Self> {
-		let path = data_dir.join("tag-synonyms.csv");
-		if !path.exists() {
-			tracing::warn!("tag-synonyms.csv not found at {:?}; using empty map", path);
-			return Ok(Self { mapping: HashMap::new() });
-		}
-		let lines = fs::read_to_string(&path)?;
-		let mut mapping = HashMap::<SmolStr, (SmolStr, u8)>::with_capacity(2500);
-		let mut needs_fixing = false;
+    #[cold]
+    pub fn new(data_dir: &Path) -> io::Result<Self> {
+        let path = data_dir.join("tag-synonyms.csv");
+        if !path.exists() {
+            tracing::warn!("tag-synonyms.csv not found at {:?}; using empty map", path);
+            return Ok(Self {
+                mapping: HashMap::new(),
+            });
+        }
 
-		for l in lines.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
-			let fail = || io::Error::new(io::ErrorKind::InvalidData, format!("synonyms error at: {l}"));
-			let mut cols = l.splitn(3, ',');
-			let find = SmolStr::from(cols.next().ok_or_else(fail)?);
-			let replace = SmolStr::from(cols.next().ok_or_else(fail)?);
-			let score: u8 = cols
-				.next()
-				.and_then(|p| p.parse().ok())
-				.ok_or_else(fail)?;
+        let file_contents = fs::read_to_string(&path)?;
+        let mut mapping = HashMap::with_capacity(2500);
+        let mut needs_fixing = false;
 
-			if score > 5 {
-				tracing::error!("synonym borked score: {}", l);
-			}
+        for line in file_contents
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.is_empty())
+        {
+            if let Err(error) = Self::parse_synonym_line(line, &mut mapping) {
+                tracing::error!("synonym error: {}", error);
+                needs_fixing = true;
+            }
+        }
 
-			match mapping.entry(find) {
-				Entry::Occupied(mut e) => {
-					if e.get().1 < score {
-						tracing::error!("duplicate synonym {} and {}", l, e.get().0);
-						needs_fixing = true;
-						e.insert((replace, score));
-					}
-				}
-				Entry::Vacant(e) => {
-					e.insert((replace, score));
-				}
-			}
-		}
+        needs_fixing |= Self::remove_cyclic_synonyms(&mut mapping);
 
-		// Loop detection (debug only in original; kept as runtime-safe check).
-		let mut to_remove = Vec::new();
-		for k in mapping.keys() {
-			let mut s: &str = k.as_str();
-			let count = std::iter::from_fn(|| {
-				s = mapping.get(s)?.0.as_str();
-				Some(s)
-			})
-			.take(21)
-			.count();
-			if count >= 20 {
-				tracing::error!("synonym loop at {},{}", k, s);
-				needs_fixing = true;
-				to_remove.push(k.clone());
-			}
-		}
-		for k in to_remove {
-			mapping.remove(&k);
-		}
+        if needs_fixing {
+            tracing::warn!("synonym table had issues; consider regenerating tag-synonyms.csv");
+        }
 
-		if needs_fixing {
-			tracing::warn!("synonym table had issues; consider regenerating tag-synonyms.csv");
-		}
+        Ok(Self { mapping })
+    }
 
-		Ok(Self { mapping })
-	}
+    fn parse_synonym_line(
+        line: &str,
+        mapping: &mut HashMap<SmolStr, (SmolStr, u8)>,
+    ) -> io::Result<()> {
+        let mut columns = line.splitn(3, ',');
 
-	/// Look up a keyword, returning `(canonical_tag, relevance)` where relevance
-	/// is in `(0.0, 1.0]`. Returns `None` if not in the map.
-	#[inline]
-	#[must_use]
-	pub fn get(&self, keyword: &str) -> Option<(&str, f32)> {
-		let (tag, votes) = self.mapping.get(keyword)?;
-		let relevance = (f32::from(*votes) / 5.0 + 0.1).min(1.0);
-		Some((tag.as_str(), relevance))
-	}
+        let find_keyword =
+            SmolStr::from(columns.next().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Missing find column")
+            })?);
+        let replace_keyword =
+            SmolStr::from(columns.next().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Missing replace column")
+            })?);
+        let score: u8 = columns
+            .next()
+            .and_then(|part| part.parse().ok())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Missing or invalid score")
+            })?;
 
-	fn get_matching(&self, keyword: &str, min_votes: u8) -> Option<(&str, f32)> {
-		let (tag, votes) = self.mapping.get(keyword)?;
-		if *votes >= min_votes {
-			return Some((tag.as_str(), f32::from(*votes) / 5.0));
-		}
-		None
-	}
+        if score > 5 {
+            tracing::error!("synonym borked score: {}", line);
+        }
 
-	/// Follow the synonym chain up to two hops, normalizing both halves of
-	/// hyphenated compounds recursively.
-	#[must_use]
-	pub fn max_normalize<'a>(&'a self, keyword: &'a str) -> Cow<'a, str> {
-		self.max_normalize_inner(keyword, 2)
-	}
+        match mapping.entry(find_keyword) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().1 < score {
+                    tracing::error!("duplicate synonym {} and {}", line, entry.get().0);
+                    entry.insert((replace_keyword, score));
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert((replace_keyword, score));
+            }
+        }
+        Ok(())
+    }
 
-	fn max_normalize_inner<'a>(&'a self, keyword: &'a str, mut depth: u8) -> Cow<'a, str> {
-		let mut keyword: Cow<str> = Cow::Borrowed(
-			self.mapping
-				.get(keyword)
-				.map(|(k, _)| {
-					self.mapping
-						.get(k.as_str())
-						.map(|(k2, _)| k2.as_str())
-						.unwrap_or(k.as_str())
-				})
-				.unwrap_or(keyword),
-		);
-		if depth == 0 {
-			return keyword;
-		}
-		depth -= 1;
+    fn remove_cyclic_synonyms(mapping: &mut HashMap<SmolStr, (SmolStr, u8)>) -> bool {
+        let mut found_cycles = false;
+        let mut to_remove = Vec::new();
 
-		let mut has_multiple_hyphens = false;
-		if let Some((start, end)) = keyword.split_once('-') {
-			if end.contains('-') {
-				has_multiple_hyphens = true;
-			}
-			let start2 = self.max_normalize_inner(start, depth);
-			let end2 = self.max_normalize_inner(end, depth);
-			if start2 != start || end2 != end {
-				keyword = if start2 != end2 {
-					format!("{start2}-{end2}").into()
-				} else {
-					start2.to_string().into()
-				};
-			}
-		}
-		if has_multiple_hyphens {
-			if let Some((start, end)) = keyword.rsplit_once('-') {
-				let start2 = self.max_normalize_inner(start, depth);
-				let end2 = self.max_normalize_inner(end, depth);
-				if start2 != start || end2 != end {
-					keyword = format!("{start2}-{end2}").into();
-				}
-			}
-		}
-		keyword
-	}
+        for key in mapping.keys() {
+            let mut current = key.as_str();
+            let chain_length = std::iter::from_fn(|| {
+                current = mapping.get(current)?.0.as_str();
+                Some(current)
+            })
+            .take(21)
+            .count();
 
-	/// Normalize with a minimum vote threshold, following the chain at most two
-	/// hops. Returns `(canonical, weight)`.
-	#[must_use]
-	pub fn normalize<'a>(&'a self, keyword: &'a str, min_votes: u8) -> (&'a str, f32) {
-		debug_assert!(min_votes > 0 && min_votes <= 5);
-		if let Some((alt, w1)) = self.get_matching(keyword, min_votes.min(5)) {
-			if let Some((alt2, w2)) = self.get_matching(alt, (min_votes + 1).clamp(4, 5)) {
-				return (alt2, w1 * w2);
-			}
-			return (alt, w1);
-		}
-		(keyword, 1.0)
-	}
+            if chain_length >= 20 {
+                tracing::error!("synonym loop at {},{}", key, current);
+                found_cycles = true;
+                to_remove.push(key.clone());
+            }
+        }
 
-	/// Like [`normalize`] but returns a `SmolStr`, consuming the input if it
-	/// does not map.
-	#[inline]
-	#[must_use]
-	pub fn map_normalize(&self, word: SmolStr, min_votes: u8) -> SmolStr {
-		if let Some((w, _)) = self.get_matching(word.as_str(), min_votes) {
-			w.into()
-		} else {
-			word
-		}
-	}
+        for key in to_remove {
+            mapping.remove(&key);
+        }
 
-	/// Iterate over all `(canonical, votes)` pairs in the map.
-	pub fn dump_values(&self) -> impl Iterator<Item = &(SmolStr, u8)> {
-		self.mapping.values()
-	}
+        found_cycles
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn get(&self, keyword: &str) -> Option<(&str, f32)> {
+        let (tag, votes) = self.mapping.get(keyword)?;
+        let relevance = (f32::from(*votes) / 5.0 + 0.1).min(1.0);
+        Some((tag.as_str(), relevance))
+    }
+
+    fn get_matching(&self, keyword: &str, min_votes: u8) -> Option<(&str, f32)> {
+        let (tag, votes) = self.mapping.get(keyword)?;
+        if *votes >= min_votes {
+            return Some((tag.as_str(), f32::from(*votes) / 5.0));
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn max_normalize<'a>(&'a self, keyword: &'a str) -> Cow<'a, str> {
+        self.max_normalize_inner(keyword, 2)
+    }
+
+    fn max_normalize_inner<'a>(&'a self, keyword: &'a str, depth: u8) -> Cow<'a, str> {
+        let mut current_keyword: Cow<str> = Cow::Borrowed(
+            self.mapping
+                .get(keyword)
+                .map(|(first_hop, _)| {
+                    self.mapping
+                        .get(first_hop.as_str())
+                        .map(|(second_hop, _)| second_hop.as_str())
+                        .unwrap_or(first_hop.as_str())
+                })
+                .unwrap_or(keyword),
+        );
+
+        if depth == 0 {
+            return current_keyword;
+        }
+
+        let next_depth = depth - 1;
+        let mut has_multiple_hyphens = false;
+
+        if let Some((start, end)) = current_keyword.split_once('-') {
+            has_multiple_hyphens = end.contains('-');
+
+            let normalized_start = self.max_normalize_inner(start, next_depth);
+            let normalized_end = self.max_normalize_inner(end, next_depth);
+
+            if normalized_start != start || normalized_end != end {
+                current_keyword = if normalized_start != normalized_end {
+                    format!("{normalized_start}-{normalized_end}").into()
+                } else {
+                    normalized_start.to_string().into()
+                };
+            }
+        }
+
+        if has_multiple_hyphens {
+            if let Some((start, end)) = current_keyword.rsplit_once('-') {
+                let normalized_start = self.max_normalize_inner(start, next_depth);
+                let normalized_end = self.max_normalize_inner(end, next_depth);
+
+                if normalized_start != start || normalized_end != end {
+                    current_keyword = format!("{normalized_start}-{normalized_end}").into();
+                }
+            }
+        }
+
+        current_keyword
+    }
+
+    #[must_use]
+    pub fn normalize<'a>(&'a self, keyword: &'a str, min_votes: u8) -> (&'a str, f32) {
+        debug_assert!(min_votes > 0 && min_votes <= 5);
+        if let Some((first_hop, weight1)) = self.get_matching(keyword, min_votes.min(5)) {
+            if let Some((second_hop, weight2)) =
+                self.get_matching(first_hop, (min_votes + 1).clamp(4, 5))
+            {
+                return (second_hop, weight1 * weight2);
+            }
+            return (first_hop, weight1);
+        }
+        (keyword, 1.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn map_normalize(&self, word: SmolStr, min_votes: u8) -> SmolStr {
+        if let Some((normalized_word, _)) = self.get_matching(word.as_str(), min_votes) {
+            normalized_word.into()
+        } else {
+            word
+        }
+    }
+
+    pub fn dump_values(&self) -> impl Iterator<Item = &(SmolStr, u8)> {
+        self.mapping.values()
+    }
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Specifics DSL
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
-/// The action half of a specifics relation entry.
 #[derive(Debug, Clone, Copy)]
 pub enum SpecificsAction<'a> {
-	/// `& +other` — this keyword is more specific when paired with `other`.
-	Increase(SpecificsCond<'a>),
-	/// `& -other` — this keyword is less specific when paired with `other`.
-	Decrease(SpecificsCond<'a>),
-	/// `< other` — this keyword is subsumed by `other`.
-	Fold(SpecificsCond<'a>),
+    Increase(SpecificsCond<'a>),
+    Decrease(SpecificsCond<'a>),
+    Fold(SpecificsCond<'a>),
 }
 
 impl<'a> SpecificsAction<'a> {
-	/// The condition payload regardless of action kind.
-	#[must_use]
-	pub fn cond(&self) -> &SpecificsCond<'a> {
-		let (Self::Increase(w) | Self::Decrease(w) | Self::Fold(w)) = self;
-		w
-	}
+    #[must_use]
+    pub fn cond(&self) -> &SpecificsCond<'a> {
+        let (Self::Increase(condition) | Self::Decrease(condition) | Self::Fold(condition)) = self;
+        condition
+    }
 
-	/// The keyword this action references.
-	#[must_use]
-	pub fn keyword(&self) -> &'a str {
-		self.cond().with
-	}
+    #[must_use]
+    pub fn keyword(&self) -> &'a str {
+        self.cond().with
+    }
 }
 
-/// A keyword together with optional `?include`/`!exclude` condition suffixes.
 #[derive(Clone, Copy)]
 pub struct SpecificsCond<'a> {
-	/// The keyword itself.
-	pub with: &'a str,
-	/// The raw `?word!word…` tail (may be empty).
-	include_exclude: &'a str,
+    pub with: &'a str,
+    include_exclude: &'a str,
 }
 
 impl fmt::Debug for SpecificsCond<'_> {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.write_str(self.with)?;
-		f.write_str(self.include_exclude)
-	}
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.with)?;
+        formatter.write_str(self.include_exclude)
+    }
 }
 
 impl<'a> SpecificsCond<'a> {
-	fn new_plain(keyword: &'a str) -> Self {
-		Self { with: keyword, include_exclude: "" }
-	}
+    fn new_plain(keyword: &'a str) -> Self {
+        Self {
+            with: keyword,
+            include_exclude: "",
+        }
+    }
 
-	fn new(action: &'a str) -> Self {
-		debug_assert!(!action.starts_with(['+', '-']));
-		let (with, include_exclude) = action
-			.split_once(['!', '?'])
-			.and_then(|(w, _)| action.split_at_checked(w.len()))
-			.unwrap_or((action, ""));
-		Self { with, include_exclude }
-	}
+    fn new(action: &'a str) -> Self {
+        debug_assert!(!action.starts_with(['+', '-']));
+        let (with, include_exclude) = action
+            .split_once(['!', '?'])
+            .and_then(|(keyword, _)| action.split_at_checked(keyword.len()))
+            .unwrap_or((action, ""));
 
-	/// Keywords that must NOT be present.
-	pub fn unless(&self) -> impl Iterator<Item = &str> {
-		self.conditions().filter_map(|(id, w)| (id == b'!').then_some(w))
-	}
+        Self {
+            with,
+            include_exclude,
+        }
+    }
 
-	/// Keywords that must ALL be present.
-	pub fn only_if_all(&self) -> impl Iterator<Item = &str> {
-		self.conditions().filter_map(|(id, w)| (id == b'?').then_some(w))
-	}
+    pub fn unless(&self) -> impl Iterator<Item = &str> {
+        self.conditions()
+            .filter_map(|(modifier, word)| (modifier == b'!').then_some(word))
+    }
 
-	/// Whether the conditions are satisfied given `cb` (returns `true` if the
-	/// keyword is present in the current context).
-	pub fn matches(&self, cb: impl Fn(&str) -> bool + Copy) -> bool {
-		self.only_if_all().all(cb) && !self.unless().any(cb)
-	}
+    pub fn only_if_all(&self) -> impl Iterator<Item = &str> {
+        self.conditions()
+            .filter_map(|(modifier, word)| (modifier == b'?').then_some(word))
+    }
 
-	fn conditions(&self) -> impl Iterator<Item = (u8, &str)> {
-		let mut rest = self.include_exclude;
-		std::iter::from_fn(move || {
-			let (id, r) = rest.split_at_checked(1)?;
-			let (word, r) = r
-				.as_bytes()
-				.iter()
-				.position(|&b| b == b'?' || b == b'!')
-				.and_then(|pos| r.split_at_checked(pos))
-				.unwrap_or((r, ""));
-			rest = r;
-			Some((id.as_bytes()[0], word))
-		})
-	}
+    pub fn matches(&self, callback: impl Fn(&str) -> bool + Copy) -> bool {
+        self.only_if_all().all(callback) && !self.unless().any(callback)
+    }
+
+    fn conditions(&self) -> impl Iterator<Item = (u8, &str)> {
+        let mut remaining = self.include_exclude;
+        std::iter::from_fn(move || {
+            if remaining.is_empty() {
+                return None;
+            }
+
+            let modifier = remaining.as_bytes()[0];
+            remaining = &remaining[1..];
+
+            let end_index = remaining
+                .bytes()
+                .position(|byte| byte == b'?' || byte == b'!')
+                .unwrap_or(remaining.len());
+
+            let (word, rest) = remaining.split_at(end_index);
+            remaining = rest;
+
+            Some((modifier, word))
+        })
+    }
 }
 
-/// Split-point offsets: up to 4 dot-positions stored as byte lengths.
 type SplitOffsets = Vec<u8>;
 
-/// The loaded specifics tables.
 #[derive(Default)]
 pub struct Specifics {
-	/// `a + b c` — `a` is a combination of `b` and `c`.
-	combine: HashMap<SmolStr, String>,
-	/// `a < b` / `a & +b -c` — specificity/fold relations.
-	relate: HashMap<SmolStr, String>,
-	/// `a.b.c` — `a-b-c` splits into three parts at the stored offsets.
-	split: HashMap<SmolStr, SplitOffsets>,
-	/// Keywords that are too generic to be useful on their own.
-	bland: HashSet<SmolStr>,
+    combine: HashMap<SmolStr, String>,
+    relate: HashMap<SmolStr, String>,
+    split: HashMap<SmolStr, SplitOffsets>,
+    bland: HashSet<SmolStr>,
 }
 
 impl Specifics {
-	/// Load from `data_dir/{specific-keywords.txt,bland-keywords.txt}`.
-	/// Absent files → empty tables (no panic).
-	#[inline(never)]
-	pub fn new(data_dir: &Path) -> io::Result<Self> {
-		let mut parsed = Self::default();
+    #[inline(never)]
+    pub fn new(data_dir: &Path) -> io::Result<Self> {
+        let mut parsed = Self::default();
 
-		let specifics_path = data_dir.join("specific-keywords.txt");
-		let bland_path = data_dir.join("bland-keywords.txt");
+        let specifics_source = Self::read_optional_file(data_dir.join("specific-keywords.txt"))?;
+        let bland_source = Self::read_optional_file(data_dir.join("bland-keywords.txt"))?;
 
-		let specifics_src = if specifics_path.exists() {
-			fs::read_to_string(&specifics_path)?
-		} else {
-			tracing::warn!("specific-keywords.txt not found at {:?}", specifics_path);
-			String::new()
-		};
-		let bland_src = if bland_path.exists() {
-			fs::read_to_string(&bland_path)?
-		} else {
-			tracing::warn!("bland-keywords.txt not found at {:?}", bland_path);
-			String::new()
-		};
+        let has_errors = parsed.parse_keywords(&specifics_source, &bland_source);
+        if has_errors {
+            tracing::error!("Found syntax errors in specific-keywords.txt");
+        }
 
-		let errors = parsed.parse_keywords(&specifics_src, &bland_src);
-		if errors {
-			tracing::error!("Found syntax errors in specific-keywords.txt");
-		}
+        Ok(parsed)
+    }
 
-		Ok(parsed)
-	}
+    fn read_optional_file(path: std::path::PathBuf) -> io::Result<String> {
+        if path.exists() {
+            fs::read_to_string(&path)
+        } else {
+            tracing::warn!("{:?} not found", path);
+            Ok(String::new())
+        }
+    }
 
-	/// Parse `lines` (specific-keywords.txt) and `bland` (bland-keywords.txt)
-	/// into the internal tables. Returns `true` if any syntax errors were found.
-	fn parse_keywords(&mut self, lines: &str, bland: &str) -> bool {
-		let mut errors = false;
+    fn parse_keywords(&mut self, specifics_lines: &str, bland_lines: &str) -> bool {
+        let mut has_errors = false;
 
-		for line in lines.lines() {
-			let line = line.trim_ascii();
+        for line in specifics_lines.lines() {
+            let line = line.trim_ascii();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
 
-			let ((keyword_str, rest), must_have_prefix, list) =
-				if let Some(parts) = line.split_once(" < ") {
-					(parts, false, &mut self.relate)
-				} else if let Some(parts) = line.split_once(" & ") {
-					(parts, true, &mut self.relate)
-				} else if let Some(parts) = line.split_once(" + ") {
-					(parts, false, &mut self.combine)
-				} else if line.contains('.') {
-					// split entry: "a.b.c" → key "a-b-c", offsets [1, 1, ...]
-					let mut prev = 0usize;
-					let splits: Vec<u8> = line
-						.as_bytes()
-						.iter()
-						.enumerate()
-						.filter_map(|(i, &ch)| (ch == b'.').then_some(i))
-						.take(4)
-						.map(|n| {
-							let len = (n - prev) as u8;
-							prev = n + 1;
-							len
-						})
-						.collect();
+            if line.contains(" < ") {
+                has_errors |= self.parse_relation(line, " < ", false, true);
+            } else if line.contains(" & ") {
+                has_errors |= self.parse_relation(line, " & ", true, true);
+            } else if line.contains(" + ") {
+                has_errors |= self.parse_relation(line, " + ", false, false);
+            } else if line.contains('.') {
+                has_errors |= self.parse_split(line);
+            } else {
+                tracing::error!("bad line: {}", line);
+                has_errors = true;
+            }
+        }
 
-					let keyword = line.replace('.', "-");
-					if splits.is_empty() || keyword.is_empty() {
-						tracing::error!("bad split line: {}", line);
-						errors = true;
-						continue;
-					}
-					if self.split.insert(keyword.into(), splits).is_some() {
-						tracing::error!("duplicate split line: {}", line);
-						errors = true;
-					}
-					continue;
-				} else {
-					if !line.is_empty() && !line.starts_with('#') {
-						tracing::error!("bad line: {}", line);
-						errors = true;
-					}
-					continue;
-				};
+        self.bland.extend(
+            bland_lines
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(SmolStr::from),
+        );
 
-			let keyword = SpecificsCond::new(keyword_str.trim_ascii_end());
-			if keyword.with.is_empty() {
-				tracing::error!("bad line (empty keyword): {}", line);
-				errors = true;
-				continue;
-			}
+        has_errors
+    }
 
-			let list = list.entry(SmolStr::from(keyword.with)).or_default();
-			list.reserve(rest.trim_ascii_start().len());
+    fn parse_relation(
+        &mut self,
+        line: &str,
+        separator: &str,
+        must_have_prefix: bool,
+        is_relate: bool,
+    ) -> bool {
+        let Some((keyword_string, rest)) = line.split_once(separator) else {
+            return true;
+        };
 
-			for word in rest.split([' ', ',']).filter(|b| !b.is_empty()) {
-				let stem = word
-					.trim_start_matches(['-', '+'])
-					.split(['!', '?'])
-					.next()
-					.unwrap_or_default();
-				if stem.is_empty()
-					|| stem == keyword.with
-					|| must_have_prefix != word.starts_with(['-', '+'])
-				{
-					tracing::error!("bad word '{}' in line: {}", word, line);
-					errors = true;
-					continue;
-				}
-				if !list.is_empty() {
-					list.push(',');
-				}
-				list.push_str(word);
-				if !keyword.include_exclude.is_empty() {
-					list.push_str(keyword.include_exclude);
-				}
-			}
-		}
+        let keyword = SpecificsCond::new(keyword_string.trim_ascii_end());
+        if keyword.with.is_empty() {
+            tracing::error!("bad line (empty keyword): {}", line);
+            return true;
+        }
 
-		self.bland.extend(
-			bland.lines()
-				.map(|l| l.trim())
-				.filter(|l| !l.is_empty() && !l.starts_with('#'))
-				.map(SmolStr::from),
-		);
+        let target_map = if is_relate {
+            &mut self.relate
+        } else {
+            &mut self.combine
+        };
+        let list = target_map.entry(SmolStr::from(keyword.with)).or_default();
+        list.reserve(rest.trim_ascii_start().len());
 
-		errors
-	}
+        let mut error_found = false;
+        for word in rest.split([' ', ',']).filter(|segment| !segment.is_empty()) {
+            let stem = word
+                .trim_start_matches(['-', '+'])
+                .split(['!', '?'])
+                .next()
+                .unwrap_or_default();
 
-	/// If `word` has a `+` combination entry, return the canonical key and an
-	/// iterator over the sibling conditions.
-	#[inline]
-	#[must_use]
-	pub fn get_combined<'s>(
-		&'s self,
-		word: &str,
-	) -> Option<(&'s str, impl Iterator<Item = SpecificsCond<'s>> + 's)> {
-		let (k, v) = self.combine.get_key_value(word)?;
-		Some((k.as_str(), v.split(',').map(SpecificsCond::new)))
-	}
+            if stem.is_empty()
+                || stem == keyword.with
+                || must_have_prefix != word.starts_with(['-', '+'])
+            {
+                tracing::error!("bad word '{}' in line: {}", word, line);
+                error_found = true;
+                continue;
+            }
 
-	/// If `word` has a split entry, return:
-	/// - the canonical (hyphenated) key,
-	/// - the number of parts,
-	/// - an iterator yielding each part.
-	#[inline]
-	#[must_use]
-	pub fn get_splits<'s>(
-		&'s self,
-		word: &str,
-	) -> Option<(&'s str, usize, impl Iterator<Item = &'s str> + 's)> {
-		let (k, v) = self.split.get_key_value(word)?;
-		let mut rest = k.as_str();
-		let mut offsets = v.clone().into_iter().map(usize::from);
-		let n_parts = 1 + v.len();
-		Some((
-			k.as_str(),
-			n_parts,
-			std::iter::from_fn(move || {
-				if rest.is_empty() {
-					return None;
-				}
-				if let Some(n) = offsets.next() {
-					let (part, r) = rest.split_at_checked(n + 1)?;
-					rest = r;
-					let (part, _) = part.split_at_checked(n)?;
-					Some(part)
-				} else {
-					let part = rest;
-					rest = &rest[..0];
-					Some(part)
-				}
-			}),
-		))
-	}
+            if !list.is_empty() {
+                list.push(',');
+            }
+            list.push_str(word);
+            if !keyword.include_exclude.is_empty() {
+                list.push_str(keyword.include_exclude);
+            }
+        }
+        error_found
+    }
 
-	/// If `word` has a relation (`<` / `&`) entry, return the canonical key and
-	/// an iterator over its [`SpecificsAction`]s.
-	#[inline]
-	#[must_use]
-	pub fn get_relations<'s>(
-		&'s self,
-		word: &str,
-	) -> Option<(&'s str, impl Iterator<Item = SpecificsAction<'s>> + 's)> {
-		let (k, v) = self.relate.get_key_value(word)?;
-		Some((
-			k.as_str(),
-			v.split(',').filter_map(move |action| {
-				let (prefix, suffix) = action.split_at_checked(1)?;
-				Some(match prefix {
-					"+" => SpecificsAction::Increase(SpecificsCond::new(suffix)),
-					"-" => SpecificsAction::Decrease(SpecificsCond::new(suffix)),
-					_ => SpecificsAction::Fold(SpecificsCond::new(action)),
-				})
-			}),
-		))
-	}
+    fn parse_split(&mut self, line: &str) -> bool {
+        let mut previous_index = 0usize;
+        let splits: Vec<u8> = line
+            .bytes()
+            .enumerate()
+            .filter_map(|(index, byte)| (byte == b'.').then_some(index))
+            .take(4)
+            .map(|index| {
+                let length = (index - previous_index) as u8;
+                previous_index = index + 1;
+                length
+            })
+            .collect();
 
-	/// Iterator over all keywords that appear as relation heads or as one half of
-	/// a combination. Useful for building the full keyword universe.
-	pub fn extra_keywords(&self) -> impl Iterator<Item = SmolStr> + '_ {
-		self.relate
-			.keys()
-			.cloned()
-			.chain(self.combine.iter().flat_map(|(k1, rest)| {
-				rest.split(',').map(move |k2| {
-					let k2 = k2
-						.trim_start_matches(['+', '-'])
-						.split(['!', '?'])
-						.next()
-						.unwrap();
-					SmolStr::from(format!("{k1}-{k2}"))
-				})
-			}))
-	}
+        let keyword = line.replace('.', "-");
+        if splits.is_empty() || keyword.is_empty() {
+            tracing::error!("bad split line: {}", line);
+            return true;
+        }
 
-	/// If `keyword` is in the bland set, return a [`SpecificsAction::Fold`]
-	/// wrapping a plain condition.
-	pub fn is_bland<'s>(&'s self, keyword: &str) -> Option<SpecificsAction<'s>> {
-		self.bland
-			.get(keyword)
-			.map(|k| SpecificsAction::Fold(SpecificsCond::new_plain(k.as_str())))
-	}
+        if self.split.insert(keyword.into(), splits).is_some() {
+            tracing::error!("duplicate split line: {}", line);
+            return true;
+        }
+        false
+    }
 
-	/// Iterate over all bland keywords.
-	pub fn all_bland_keywords(&self) -> impl Iterator<Item = &str> + '_ {
-		self.bland.iter().map(|s| s.as_str())
-	}
-}
+    #[inline]
+    #[must_use]
+    pub fn get_combined<'s>(
+        &'s self,
+        word: &str,
+    ) -> Option<(&'s str, impl Iterator<Item = SpecificsCond<'s>> + 's)> {
+        let (key, value) = self.combine.get_key_value(word)?;
+        Some((key.as_str(), value.split(',').map(SpecificsCond::new)))
+    }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+    #[inline]
+    #[must_use]
+    pub fn get_splits<'s>(
+        &'s self,
+        word: &str,
+    ) -> Option<(&'s str, usize, impl Iterator<Item = &'s str> + 's)> {
+        let (key, offsets_list) = self.split.get_key_value(word)?;
+        let mut remaining = key.as_str();
+        let mut offsets = offsets_list.clone().into_iter().map(usize::from);
+        let part_count = 1 + offsets_list.len();
 
-#[cfg(test)]
-mod tests {
-	use super::*;
+        Some((
+            key.as_str(),
+            part_count,
+            std::iter::from_fn(move || {
+                if remaining.is_empty() {
+                    return None;
+                }
+                if let Some(offset) = offsets.next() {
+                    let (part, rest) = remaining.split_at_checked(offset + 1)?;
+                    remaining = rest;
+                    let (part, _) = part.split_at_checked(offset)?;
+                    Some(part)
+                } else {
+                    let part = remaining;
+                    remaining = &remaining[..0];
+                    Some(part)
+                }
+            }),
+        ))
+    }
 
-	// --- normalize_keyword ---------------------------------------------------
+    #[inline]
+    #[must_use]
+    pub fn get_relations<'s>(
+        &'s self,
+        word: &str,
+    ) -> Option<(&'s str, impl Iterator<Item = SpecificsAction<'s>> + 's)> {
+        let (key, value) = self.relate.get_key_value(word)?;
+        Some((
+            key.as_str(),
+            value.split(',').filter_map(move |action| {
+                let (prefix, suffix) = action.split_at_checked(1)?;
+                Some(match prefix {
+                    "+" => SpecificsAction::Increase(SpecificsCond::new(suffix)),
+                    "-" => SpecificsAction::Decrease(SpecificsCond::new(suffix)),
+                    _ => SpecificsAction::Fold(SpecificsCond::new(action)),
+                })
+            }),
+        ))
+    }
 
-	#[test]
-	fn normalize_cpp() {
-		assert_eq!(normalize_keyword("C++"), SmolStr::from("cpp"));
-	}
+    pub fn extra_keywords(&self) -> impl Iterator<Item = SmolStr> + '_ {
+        self.relate
+            .keys()
+            .cloned()
+            .chain(self.combine.iter().flat_map(|(key1, rest)| {
+                rest.split(',').map(move |key2| {
+                    let key2 = key2
+                        .trim_start_matches(['+', '-'])
+                        .split(['!', '?'])
+                        .next()
+                        .unwrap();
+                    SmolStr::from(format!("{key1}-{key2}"))
+                })
+            }))
+    }
 
-	#[test]
-	fn normalize_ios() {
-		assert_eq!(normalize_keyword("iOS"), SmolStr::from("ios"));
-	}
+    pub fn is_bland<'s>(&'s self, keyword: &str) -> Option<SpecificsAction<'s>> {
+        self.bland
+            .get(keyword)
+            .map(|key| SpecificsAction::Fold(SpecificsCond::new_plain(key.as_str())))
+    }
 
-	#[test]
-	fn normalize_async_unchanged() {
-		assert_eq!(normalize_keyword("async"), SmolStr::from("async"));
-	}
-
-	#[test]
-	fn normalize_hello_world() {
-		assert_eq!(normalize_keyword("Hello World"), SmolStr::from("hello-world"));
-	}
-
-	#[test]
-	fn normalize_rfc2119() {
-		assert_eq!(normalize_keyword("rfc2119"), SmolStr::from("rfc-2119"));
-	}
-
-	#[test]
-	fn normalize_javascript() {
-		assert_eq!(normalize_keyword("JavaScript"), SmolStr::from("javascript"));
-	}
-
-	#[test]
-	fn normalize_apis_plural() {
-		assert_eq!(normalize_keyword("APIs"), SmolStr::from("api"));
-	}
-
-	// --- Specifics::split ---------------------------------------------------
-
-	#[test]
-	fn split() {
-		let mut s = Specifics::default();
-		let err = s.parse_keywords("f12345.ba-bazz\na.b\na1.b.c33333.d.e4", "");
-		assert!(!err);
-
-		let (_, n, mut i) = s.get_splits("f12345-ba-bazz").unwrap();
-		assert_eq!(2, n);
-		assert_eq!("f12345", i.next().unwrap());
-		assert_eq!("ba-bazz", i.next().unwrap());
-		assert_eq!(None, i.next());
-
-		let (_, n, mut i) = s.get_splits("a-b").unwrap();
-		assert_eq!(2, n);
-		assert_eq!("a", i.next().unwrap());
-		assert_eq!("b", i.next().unwrap());
-		assert_eq!(None, i.next());
-
-		let (_, n, mut i) = s.get_splits("a1-b-c33333-d-e4").unwrap();
-		assert_eq!(5, n);
-		assert_eq!("a1", i.next().unwrap());
-		assert_eq!("b", i.next().unwrap());
-		assert_eq!("c33333", i.next().unwrap());
-		assert_eq!("d", i.next().unwrap());
-		assert_eq!("e4", i.next().unwrap());
-		assert_eq!(None, i.next());
-	}
-
-	// --- SpecificsCond ------------------------------------------------------
-
-	#[test]
-	fn s_cond() {
-		let c = SpecificsCond::new("k?req1?req2!not1!not2?req3");
-		assert_eq!("k", c.with);
-		assert_eq!("?req1?req2!not1!not2?req3", c.include_exclude);
-		let mut cc = c.conditions();
-		assert_eq!((b'?', "req1"), cc.next().unwrap());
-		assert_eq!((b'?', "req2"), cc.next().unwrap());
-		assert_eq!((b'!', "not1"), cc.next().unwrap());
-	}
+    pub fn all_bland_keywords(&self) -> impl Iterator<Item = &str> + '_ {
+        self.bland.iter().map(|string| string.as_str())
+    }
 }
