@@ -89,10 +89,12 @@ impl<T> Copy for EntryIdx<T> {}
 
 impl<T> fmt::Debug for EntryIdx<T> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.debug_struct("EntryIdx")
-			// .field("package", &self.package_idx)
-			// .field("index", &self.arena_idx)
-			.finish()
+		match self.repr {
+			Repr::Resolved { package_idx, arena_idx } => {
+				f.debug_tuple("EntryIdx").field(&package_idx.index()).field(&&arena_idx.index()).finish()
+			}
+			Repr::Deferred(deferred_idx) => f.debug_tuple("EntryIdx").field(&deferred_idx).finish(),
+		}
 	}
 }
 

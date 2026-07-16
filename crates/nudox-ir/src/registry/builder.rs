@@ -70,7 +70,9 @@ impl EntryBuilder {
 }
 
 impl EntryBuilder {
-	fn next_entry_idx(&self) -> RawEntryIdx { self.entry_idx.inc_arena_idx(self.entries.len()) }
+	fn next_entry_idx(&self) -> RawEntryIdx {
+		self.entry_idx.inc_arena_idx(self.entries.len() + 1) // offset to not reuse entry_idx for children
+	}
 
 	fn next_deferred_idx(&self) -> DeferredIdx { self.deferred_start.increment(self.deferred.len()) }
 }
