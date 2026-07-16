@@ -133,6 +133,8 @@ mod private {
 	pub struct UntypedMarker;
 }
 
+// TODO: give PackageIdx a niche to
+// support EntryIdx being u64-sized
 index_newtype!(PackageIdx);
 index_newtype!(ArenaIdx);
 index_newtype!(DeferredIdx);
@@ -146,12 +148,12 @@ macro_rules! index_newtype {
 
 		impl $index {
 			#[cfg_attr(not(test), allow(unused))]
-			pub(crate) fn new(index: usize) -> Self {
+			pub(super) fn new(index: usize) -> Self {
 				debug_assert!(u32::try_from(index).is_ok());
 				Self { index: index as u32 }
 			}
 
-			pub(crate) fn index(self) -> usize { self.index as usize }
+			pub(super) fn index(self) -> usize { self.index as usize }
 		}
 
 		impl std::fmt::Debug for $index {

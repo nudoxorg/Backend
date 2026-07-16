@@ -1,13 +1,16 @@
-use super::{EntryIdx, EntryLink, RawEntryIdx};
+use super::{DeferredIdx, EntryIdx, EntryLink, RawEntryIdx};
 
-use crate::{entry::{Entry, Node}, kind::{EntryKind, KindDiscriminant}, symbol::Symbol};
+use crate::{entry::{Entry, Node}, kind::{EntryKind, KindDiscriminant}, package::PackageId, registry::RegistryState, symbol::Symbol};
 
 pub struct EntryBuilder {
-	kind: KindDiscriminant,
+	sym: Symbol,
 
-	idx:      RawEntryIdx,
-	next_idx: RawEntryIdx,
+	kind:      KindDiscriminant,
+	entry_idx: RawEntryIdx,
 
+	parent: Option<RawEntryIdx>,
+
+	// deferred_idx: DeferredIdx,
 	entries: Vec<Entry>,
 	links:   Vec<EntryLink>,
 }
@@ -20,11 +23,10 @@ impl EntryBuilder {
 	where
 		T: EntryKind,
 	{
-		let (entries, links) = Self::build(sym, self.next_idx, Some(self.idx), build);
+		let (entries, links) =
+			Self::builder().sym(sym).entry_idx(self.next_entry_idx()).parent(self.entry_idx).build(build);
 
-		let idx = self.next_idx.typed();
-
-		self.next_idx = self.next_idx.inc_arena_idx(entries.len());
+		let idx = self.next_entry_idx().typed();
 
 		self.entries.extend(entries);
 		self.links.extend(links.iter());
@@ -37,7 +39,7 @@ impl EntryBuilder {
 	where
 		T: EntryKind,
 	{
-		let link = EntryLink::new((self.idx, self.kind), (idx.into(), T::discriminant()));
+		let link = EntryLink::new((self.entry_idx, self.kind), (idx.into(), T::discriminant()));
 		self.links.push(link);
 	}
 
@@ -63,30 +65,46 @@ impl EntryBuilder {
 }
 
 impl EntryBuilder {
-	pub(super) fn build<T>(
+	fn next_entry_idx(&self) -> RawEntryIdx { self.entry_idx.inc_arena_idx(self.entries.len()) }
+}
+
+#[bon::bon]
+impl EntryBuilder {
+	#[builder(finish_fn(name = finish, vis = ""))]
+	pub(super) fn new(
 		sym: Symbol,
-		idx: RawEntryIdx,
+		entry_idx: RawEntryIdx,
 		parent: Option<RawEntryIdx>,
-		build: impl FnOnce(&mut Self) -> T,
-	) -> (Vec<Entry>, Vec<EntryLink>)
+		// deferred_idx: DeferredIdx,
+	) -> Self {
+		EntryBuilder {
+			sym,
+			kind: KindDiscriminant::Module, // replaced when `build` is called
+			entry_idx,
+			parent,
+			// deferred_idx,
+			entries: Vec::new(),
+			links: Vec::new(),
+		}
+	}
+}
+
+impl<S: entry_builder_builder::IsComplete> EntryBuilderBuilder<S> {
+	pub fn build<T>(self, build: impl FnOnce(&mut EntryBuilder) -> T) -> (Vec<Entry>, Vec<EntryLink>)
 	where
 		T: EntryKind,
 	{
-		let mut this = EntryBuilder {
-			kind: T::discriminant(),
-			idx,
-			next_idx: idx.inc_arena_idx(1),
-			entries: Vec::new(),
-			links: Vec::new(),
-		};
+		let mut builder = self.finish();
 
-		let kind = build(&mut this).into_kind();
+		builder.kind = T::discriminant();
 
-		let EntryBuilder { mut entries, links, .. } = this;
+		let kind = build(&mut builder).into_kind();
 
-		let node = Node::build(parent, (1..=entries.len()).map(|i| idx.inc_arena_idx(i)));
+		let EntryBuilder { sym, parent, entry_idx, entries, links, .. } = builder;
 
-		entries.insert(0, Entry::new(sym, node, kind));
+		let node = Node::build(parent, (1..=entries.len()).map(|i| entry_idx.inc_arena_idx(i)));
+
+		let entries = std::iter::once(Entry::new(sym, node, kind)).chain(entries).collect();
 
 		(entries, links)
 	}
@@ -105,7 +123,9 @@ mod tests {
 	where
 		T: EntryKind,
 	{
-		EntryBuilder::build(dummy_symbol(sym), index, None, build)
+		todo!()
+		// EntryBuilder::build(dummy_symbol(sym), index, None,
+		// &RegistryState::new(), build)
 	}
 
 	#[test]

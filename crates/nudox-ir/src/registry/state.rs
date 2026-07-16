@@ -93,7 +93,7 @@ impl RegistryState {
 
 		let idx = EntryIdx::new(package_idx, arena_idx);
 
-		let (entries, links) = EntryBuilder::build(sym, idx, None, |b| {
+		let (entries, links) = EntryBuilder::builder().sym(sym).entry_idx(idx).build(|b| {
 			build(b);
 			Module
 		});
