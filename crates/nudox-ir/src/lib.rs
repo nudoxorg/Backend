@@ -1,8 +1,8 @@
 #![feature(trait_alias)]
+#![expect(unused)]
 
 pub mod entry;
 pub mod function;
-pub mod kind;
 pub mod package;
 pub mod primitive;
 pub mod record;
@@ -16,6 +16,22 @@ pub mod module {
 }
 
 pub type List<T> = Box<[T]>;
+
+register_kinds::register_kinds! {
+	/// A namespace, package, or module — a container for other entries.
+	module::Module,
+
+	/// A product type: struct, class, record, or data class.
+	record::Record,
+
+	record::Field,
+
+	function::Function,
+
+	ty::Type,
+}
+
+mod register_kinds;
 
 #[cfg(test)]
 mod test_helpers;

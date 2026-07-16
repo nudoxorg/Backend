@@ -1,5 +1,6 @@
-use super::*;
 use crate::{registry::RegistryResolver, test_helpers::*};
+
+use super::*;
 
 #[test]
 fn serialize_deserialize() {
@@ -32,19 +33,19 @@ fn serialize_deserialize() {
 fn build_registry() -> Registry<ExampleRegistryResolver> {
 	let mut registry = Registry::new(ExampleRegistryResolver::default());
 
-	registry.build_package_ir(PackageId::path("/pkg-0"), dummy_symbol("pkg-0"), |b| {
+	registry.build_package_ir(dummy_package("/pkg-0"), dummy_symbol("pkg-0"), |b| {
 		b.create(dummy_symbol("mod_1"), |_| Module);
-		b.create(dummy_symbol("record_2"), |_| Record { fields: slice![] });
+		b.create(dummy_symbol("record_2"), |_| Record { fields: list![] });
 	});
 
-	registry.build_package_ir(PackageId::path("/pkg-1"), dummy_symbol("pkg-1"), |b| {
+	registry.build_package_ir(dummy_package("/pkg-1"), dummy_symbol("pkg-1"), |b| {
 		b.create(dummy_symbol("mod_1"), |_| Module);
 
-		b.create(dummy_symbol("record_2"), |_| Record { fields: slice![] });
+		b.create(dummy_symbol("record_2"), |_| Record { fields: list![] });
 
 		b.create(dummy_symbol("mod_3"), |b| {
 			b.create(dummy_symbol("mod_4"), |_| Module);
-			b.create(dummy_symbol("record_5"), |_| Record { fields: slice![] });
+			b.create(dummy_symbol("record_5"), |_| Record { fields: list![] });
 
 			Module
 		});
@@ -84,10 +85,5 @@ impl RegistryResolver for ExampleRegistryResolver {
 			.expect("failed to find symbol")
 	}
 
-	fn idx_to_entry_id(&self, idx: RawEntryIdx, state: &RegistryState) -> Self::EntryId {
-		let package = state.package_id_of(idx);
-		let symbol = state.resolve(idx).sym.name.clone();
-
-		ExampleEntryId { package, symbol }
-	}
+	fn idx_to_entry_id(&self, idx: RawEntryIdx, state: &RegistryState) -> Self::EntryId { todo!() }
 }

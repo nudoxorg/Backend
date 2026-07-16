@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::{entry::{Entry, Node}, kind::EntryKind, registry::{ArenaIdx, EntryIdx, PackageIdx, RawEntryIdx, Registry, RegistryResolver, RegistryState}, symbol::{Symbol, Visibility}};
+use crate::{entry::{Entry, Node}, kind::EntryKind, package::{PackageId, PackageMeta}, registry::{EntryIdx, RawEntryIdx, Registry, RegistryResolver, RegistryState}, symbol::{Symbol, Visibility}};
 
-pub use crate::{module::Module, record::{Field, Record}};
+pub use crate::kinds::*;
 
 pub fn entry<T>(name: &str, node: Node, kind: T) -> Entry
 where
@@ -11,7 +11,7 @@ where
 	Entry::new(dummy_symbol(name), node, kind.into_kind())
 }
 
-pub fn dummy_symbol(name: &str) -> Symbol {
+pub fn dummy_symbol(name: impl Into<String>) -> Symbol {
 	Symbol {
 		name:          name.into(),
 		visibility:    Visibility::Public,
@@ -19,6 +19,10 @@ pub fn dummy_symbol(name: &str) -> Symbol {
 		source:        PathBuf::new(),
 		span:          0..0,
 	}
+}
+
+pub fn dummy_package(name: impl AsRef<Path>) -> PackageMeta {
+	PackageMeta { id: PackageId::path(name) }
 }
 
 #[expect(unused, reason = "for the future")]
@@ -34,9 +38,7 @@ pub mod n {
 	pub fn leaf(parent: RawEntryIdx) -> Node { Node::leaf(parent) }
 }
 
-pub fn idx<T>(index: usize) -> EntryIdx<T> {
-	EntryIdx::new(PackageIdx::new(0), ArenaIdx::new(index))
-}
+pub fn idx<T>(index: usize) -> EntryIdx<T> { crate::registry::new_idx(0, index) }
 
 pub fn dummy_registry() -> Registry<DummyRegistryResolver> { Registry::new(DummyRegistryResolver) }
 
@@ -49,10 +51,10 @@ impl RegistryResolver for DummyRegistryResolver {
 	fn idx_to_entry_id(&self, _: RawEntryIdx, _: &RegistryState) -> Self::EntryId { unimplemented!() }
 }
 
-macro_rules! slice {
+macro_rules! list {
 	($($tt:tt)*) => {
 		(::std::vec!($($tt)*)).into_boxed_slice()
 	};
 }
 
-pub(crate) use slice;
+pub(crate) use list;

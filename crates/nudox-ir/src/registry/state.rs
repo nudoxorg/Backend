@@ -3,7 +3,7 @@ use elsa::sync::FrozenVec;
 use parking_lot::RwLock;
 use rustc_hash::FxHashSet;
 
-use crate::{entry::{Entry, TypedEntry}, kind::EntryKind, module::Module, package::PackageId};
+use crate::{entry::{Entry, TypedEntry}, kind::EntryKind, module::Module, package::{PackageId, PackageMeta}, symbol::Symbol};
 
 use super::{ArenaIdx, EntryArena, EntryBuilder, EntryIdx, EntryLink, PackageIdx, RawEntryIdx, RegistryResolver};
 
@@ -47,16 +47,29 @@ impl RegistryState {
 		}
 	}
 
-	pub fn resolve(&self, idx: RawEntryIdx) -> &Entry {
-		self.arena(idx.package_idx()).entry(idx.arena_idx())
+	pub fn resolve<R: RegistryResolver>(&self, idx: RawEntryIdx, _resolver: &R) -> &Entry {
+		match idx.repr() {
+			super::idx::Repr::Resolved { package_idx, arena_idx } => {
+				self.arena(package_idx).entry(arena_idx)
+			}
+			super::idx::Repr::Deferred(_idx) => {
+				todo!("handle Deferred EntryIdx")
+			}
+		}
 	}
 
-	pub fn resolve_typed<T: EntryKind>(&self, idx: EntryIdx<T>) -> &TypedEntry<T> {
-		TypedEntry::new(self.resolve(idx.raw()))
+	pub fn resolve_typed<T: EntryKind, R: RegistryResolver>(
+		&self,
+		idx: EntryIdx<T>,
+		resolver: &R,
+	) -> &TypedEntry<T> {
+		TypedEntry::new(self.resolve(idx.raw(), resolver))
 	}
 
-	pub fn package_id_of(&self, idx: RawEntryIdx) -> PackageId {
-		self.packages.read().get_by_right(&idx.package_idx()).cloned().expect("") // TODO: error message
+	pub fn package_id_of(&self, _idx: RawEntryIdx) -> PackageId {
+		todo!()
+		// self.packages.read().get_by_right(&idx.package_idx()).cloned().expect("")
+		// // TODO: error message
 	}
 }
 
@@ -69,12 +82,12 @@ impl RegistryState {
 		}
 	}
 
-	pub(crate) fn build_package_ir<R: RegistryResolver>(
+	pub(crate) fn build_package_ir(
 		&self,
-		package_id: PackageId,
-		sym: crate::symbol::Symbol,
+		pkg: PackageMeta,
+		sym: Symbol,
 		build: impl FnOnce(&mut EntryBuilder),
-	) -> EntryIdx<crate::module::Module> {
+	) -> EntryIdx<Module> {
 		let package_idx = PackageIdx::new(self.arenas.len());
 		let arena_idx = ArenaIdx::new(0);
 
@@ -88,7 +101,7 @@ impl RegistryState {
 		self.arenas.push(Box::new(EntryArena::new(entries)));
 
 		self.links.write().extend(links);
-		self.packages.write().insert(package_id, package_idx);
+		self.packages.write().insert(pkg.id, package_idx);
 
 		idx.typed()
 	}

@@ -8,16 +8,15 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use crate::{entry::{Entry, TypedEntry}, kind::EntryKind, module::Module, package::PackageId, symbol::Symbol};
+use crate::{entry::{Entry, TypedEntry}, kind::EntryKind, module::Module, package::{PackageId, PackageMeta}, symbol::Symbol};
 
-use self::{arena::EntryArena, resolver::DynRegistryResolver};
+use self::{arena::EntryArena, idx::{ArenaIdx, DeferredIdx, PackageIdx}, resolver::DynRegistryResolver};
 
-// reexport at pub(crate) level to allow test_helpers to use
+// allow test_helpers to create EntryIdx's
 #[cfg(test)]
-pub(crate) use self::idx::{ArenaIdx, PackageIdx};
-
-#[cfg(not(test))]
-use self::idx::{ArenaIdx, PackageIdx};
+pub(crate) fn new_idx<T>(package: usize, arena: usize) -> EntryIdx<T> {
+	EntryIdx::new(PackageIdx::new(package), ArenaIdx::new(arena))
+}
 
 pub use self::{builder::EntryBuilder, idx::{EntryIdx, RawEntryIdx}, link::EntryLink, resolver::{EntryId, RegistryResolver}, state::RegistryState};
 
@@ -54,19 +53,19 @@ impl<R: RegistryResolver> Registry<R> {
 		)
 	}
 
-	pub fn resolve(&self, idx: RawEntryIdx) -> &Entry { self.state.resolve(idx) }
+	pub fn resolve(&self, idx: RawEntryIdx) -> &Entry { self.state.resolve(idx, &self.resolver) }
 
 	pub fn resolve_typed<T: EntryKind>(&self, idx: EntryIdx<T>) -> &TypedEntry<T> {
-		self.state.resolve_typed(idx)
+		self.state.resolve_typed(idx, &self.resolver)
 	}
 
 	pub fn build_package_ir(
 		&mut self,
-		package: PackageId,
+		pkg: PackageMeta,
 		sym: Symbol,
 		build: impl FnOnce(&mut EntryBuilder),
 	) -> EntryIdx<Module> {
-		self.state.build_package_ir::<R>(package, sym, build)
+		self.state.build_package_ir(pkg, sym, build)
 	}
 }
 
