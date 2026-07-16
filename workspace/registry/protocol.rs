@@ -191,36 +191,20 @@ impl WireTarget {
 // ─────────────────────────────────────────────────────────────────────────────
 // ReferenceKind discriminant table
 //
-// Stable wire values: DO NOT reorder or renumber.  Any new variant gets the
-// next available integer.  These must stay identical to the copy in
-// crate::blob.
+// Wire values come from `ir::syntax::ReferenceKind`'s `#[repr(u8)]` +
+// `strum::FromRepr` — the enum definition is the authoritative mapping, not a
+// hand-rolled match.  The Buck2 compiler daemon keeps its own standalone copy
+// of this file verbatim, so both ends stay in sync as long as the `ir` crate's
+// ReferenceKind discriminants are stable (never renumbered in a breaking way).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Encode a [`ir::syntax::ReferenceKind`] as a stable wire byte.
 fn kind_to_wire(kind: &ir::syntax::ReferenceKind) -> u8 {
-    use ir::syntax::ReferenceKind::*;
-    match kind {
-        FunctionCall => 0,
-        MethodCall => 1,
-        TypeReference => 2,
-        VariableUse => 3,
-        MacroInvocation => 4,
-        FieldAccess => 5,
-        Import => 6,
-    }
+    *kind as u8
 }
 
 /// Decode a wire byte back into a [`ir::syntax::ReferenceKind`].
 fn kind_from_wire(wire: u8) -> Result<ir::syntax::ReferenceKind, ProtocolError> {
-    use ir::syntax::ReferenceKind::*;
-    Ok(match wire {
-        0 => FunctionCall,
-        1 => MethodCall,
-        2 => TypeReference,
-        3 => VariableUse,
-        4 => MacroInvocation,
-        5 => FieldAccess,
-        6 => Import,
-        _ => return Err(ProtocolError::UnknownReferenceKindDiscriminant { wire }),
-    })
+    ir::syntax::ReferenceKind::from_repr(wire)
+        .ok_or(ProtocolError::UnknownReferenceKindDiscriminant { wire })
 }

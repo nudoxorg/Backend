@@ -335,35 +335,18 @@ impl WireTarget {
     }
 }
 
-/// The stable `ReferenceKind` wire discriminants. Kept explicit (not `as u8`
-/// on an untagged enum) so reordering the ir enum can never silently reshuffle
-/// stored data.
-fn kind_to_wire(kind: &ir::syntax::ReferenceKind) -> u8 {
-    use ir::syntax::ReferenceKind::*;
-    match kind {
-        FunctionCall => 0,
-        MethodCall => 1,
-        TypeReference => 2,
-        VariableUse => 3,
-        MacroInvocation => 4,
-        FieldAccess => 5,
-        Import => 6,
-    }
+/// The stable `ReferenceKind` wire discriminants. Uses `#[repr(u8)]` + `FromRepr`
+/// on the ir enum so the discriminant table is the source of truth — any
+/// reordering or renumbering in `ir::syntax::ReferenceKind` must be a conscious,
+/// backward-compatibility-aware decision.
+pub(crate) fn kind_to_wire(kind: &ir::syntax::ReferenceKind) -> u8 {
+	*kind as u8
 }
 
 /// Inverse of [`kind_to_wire`]; rejects out-of-range discriminants.
-fn kind_from_wire(wire: u8) -> Result<ir::syntax::ReferenceKind, BlobError> {
-    use ir::syntax::ReferenceKind::*;
-    Ok(match wire {
-        0 => FunctionCall,
-        1 => MethodCall,
-        2 => TypeReference,
-        3 => VariableUse,
-        4 => MacroInvocation,
-        5 => FieldAccess,
-        6 => Import,
-        _ => return Err(BlobError::UnknownReferenceKindDiscriminant { wire }),
-    })
+pub(crate) fn kind_from_wire(wire: u8) -> Result<ir::syntax::ReferenceKind, BlobError> {
+	ir::syntax::ReferenceKind::from_repr(wire)
+		.ok_or(BlobError::UnknownReferenceKindDiscriminant { wire })
 }
 
 /// The extracted references for a single file.

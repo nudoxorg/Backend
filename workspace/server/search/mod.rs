@@ -9,7 +9,7 @@ pub mod planner;
 pub mod query;
 pub mod registry;
 pub mod semantic;
-pub mod symbolic;
+pub mod symbols;
 
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
@@ -24,7 +24,7 @@ pub use query::{AbstractQuery, Filter, Pagination, Query, Search, SymbolCursor};
 
 use crate::SourceStores;
 use crate::error::{BadRequestReason, ServerError, ServerResult};
-use crate::search::symbolic::symbols::SymbolTextSurface;
+use crate::search::symbols::SymbolTextSurface;
 
 /// A store/target that answers searches with a stream of scored results.
 pub trait SearchTarget {

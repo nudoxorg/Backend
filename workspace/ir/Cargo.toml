@@ -24,6 +24,7 @@ serde = { version = "1.0", optional = true }
 # Always required.
 arborium_tree_sitter = { package = "arborium-tree-sitter", version = "2.18" }
 rustc_hash = { package = "rustc-hash", version = "1.1" }
+strum = { version = "0.26", features = ["derive"] }
 thiserror = "1.0"
 yoke = "0.8"
 

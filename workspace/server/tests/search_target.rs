@@ -12,7 +12,7 @@ use heart::SymbolKind;
 use server::search::SearchPlanner;
 use server::search::planner::Plan;
 use server::search::query::{AbstractQuery, Filter, PackageSelector, Query, Search};
-use server::search::symbolic::symbols::SymbolTextSurface;
+use server::search::symbols::SymbolTextSurface;
 
 /// A literal query searches the precise (tantivy) index.
 ///

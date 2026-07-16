@@ -22,6 +22,8 @@ use std::str::FromStr;
 use crate::package::Coordinates as PackageCoordinates;
 use sqlx::{Row, postgres::PgRow};
 
+use sea_query_binder::SqlxValues;
+
 use crate::{
     GlobalPackage,
     error::IndexError,
@@ -288,7 +290,7 @@ impl GlobalStore<Live> {
 async fn execute_query(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     query: &str,
-    parameters: sqlx::postgres::PgArguments,
+    parameters: SqlxValues,
 ) -> Result<(), IndexError> {
     sqlx::query_with(query, parameters)
         .execute(&mut **transaction)

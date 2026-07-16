@@ -149,35 +149,17 @@ pub fn ecosystem_token(e: Language) -> &'static str { e.as_token() }
 
 /// Reconstruct an [`Language`] from its token.
 pub fn ecosystem_from_token(token: &str) -> Result<Language, CodecError> {
-	match token {
-		"rust" => Ok(Language::Rust),
-		"typescript" => Ok(Language::Typescript),
-		"python" => Ok(Language::Python),
-		"go" => Ok(Language::Go),
-		"java" => Ok(Language::Java),
-		"csharp" => Ok(Language::CSharp),
-		"nix" => Ok(Language::Nix),
-		other => Err(CodecError::UnknownEcosystemDiscriminant { token: other.to_owned() }),
-	}
+	Language::from_str(token).map_err(|_| CodecError::UnknownEcosystemDiscriminant { token: token.to_owned() })
 }
 
 /// The token for a [`SinkKind`].
 pub fn sink_kind_token(k: SinkKind) -> &'static str {
-	match k {
-		SinkKind::Vector => "vector",
-		SinkKind::Graph => "graph",
-		SinkKind::Text => "text",
-	}
+	k.into()
 }
 
 /// Reconstruct a [`SinkKind`] from its token.
 pub fn sink_kind_from_token(token: &str) -> Result<SinkKind, CodecError> {
-	match token {
-		"vector" => Ok(SinkKind::Vector),
-		"graph" => Ok(SinkKind::Graph),
-		"text" => Ok(SinkKind::Text),
-		other => Err(CodecError::UnknownSinkKindDiscriminant { token: other.to_owned() }),
-	}
+	SinkKind::from_str(token).map_err(|_| CodecError::UnknownSinkKindDiscriminant { token: token.to_owned() })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,23 +168,12 @@ pub fn sink_kind_from_token(token: &str) -> Result<SinkKind, CodecError> {
 
 /// The token for a [`Phase`].
 pub fn phase_token(p: Phase) -> &'static str {
-	match p {
-		Phase::Acquiring => "acquiring",
-		Phase::Extracting => "extracting",
-		Phase::Compiling => "compiling",
-		Phase::Emitting => "emitting",
-	}
+	p.into()
 }
 
 /// Reconstruct a [`Phase`] from its token.
 pub fn phase_from_token(token: &str) -> Result<Phase, CodecError> {
-	match token {
-		"acquiring" => Ok(Phase::Acquiring),
-		"extracting" => Ok(Phase::Extracting),
-		"compiling" => Ok(Phase::Compiling),
-		"emitting" => Ok(Phase::Emitting),
-		other => Err(CodecError::UnknownPhaseDiscriminant { token: other.to_owned() }),
-	}
+	Phase::from_str(token).map_err(|_| CodecError::UnknownPhaseDiscriminant { token: token.to_owned() })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ mod common;
 use futures::StreamExt;
 use heart::{Scored, SymbolKind};
 use server::search::query::Query;
-use server::search::symbolic::symbols::{SymbolTextSurface, kind_admits};
+use server::search::symbols::{SymbolTextSurface, kind_admits};
 
 /// A symbol is found by name and returned as a scored hit.
 ///

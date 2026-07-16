@@ -14,7 +14,7 @@ use server::http::dto::SearchRequestDto;
 use server::search::SearchPlanner;
 use server::search::planner::Plan;
 use server::search::query::Query;
-use server::search::symbolic::symbols::SymbolTextSurface;
+use server::search::symbols::SymbolTextSurface;
 
 /// The default item-search response is backed by tantivy.
 ///

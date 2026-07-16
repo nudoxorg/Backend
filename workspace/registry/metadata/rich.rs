@@ -481,16 +481,9 @@ fn ident_words(ident: &str, weight: f32) -> Vec<(SmolStr, f32)> {
         .collect()
 }
 
-/// Naive camelCase → snake_case: insert `_` before uppercase letters.
+/// Convert camelCase to snake_case using heck.
 fn camel_to_snake(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, c) in s.char_indices() {
-        if c.is_ascii_uppercase() && i > 0 {
-            out.push('_');
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
+    heck::AsSnakeCase(s).to_string()
 }
 
 /// Combine weight from a new source into an existing entry: prefer the larger,

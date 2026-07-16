@@ -8,12 +8,14 @@ pub struct ResolvedReference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(strum::FromRepr)]
+#[repr(u8)]
 pub enum ReferenceKind {
-	FunctionCall,
-	MethodCall,
-	TypeReference,
-	VariableUse,
-	MacroInvocation,
-	FieldAccess,
-	Import,
+	FunctionCall  = 0,
+	MethodCall    = 1,
+	TypeReference = 2,
+	VariableUse   = 3,
+	MacroInvocation = 4,
+	FieldAccess   = 5,
+	Import        = 6,
 }

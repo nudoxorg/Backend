@@ -155,7 +155,7 @@ impl Outbox<Live> {
 
 		// 1. Transition the lifecycle row to Stored { snapshot } in this txn.
 		let stored = ResolutionState::Stored { hash: snapshot };
-		GlobalStore::set_state_tx(&mut tx, package, &stored)
+		GlobalStore::set_state_transaction(&mut tx, package, &stored)
 			.await
 			.map_err(OutboxError::Index)?;
 

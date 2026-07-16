@@ -160,23 +160,7 @@ fn truncate_keyword(keyword: &str, target_length: usize, max_length: usize) -> S
 }
 
 fn inline_kebab_case(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut inside_separator = true;
-
-    for byte in input.bytes() {
-        if byte.is_ascii_alphanumeric() {
-            output.push(byte.to_ascii_lowercase() as char);
-            inside_separator = false;
-        } else if !inside_separator && !output.is_empty() {
-            output.push('-');
-            inside_separator = true;
-        }
-    }
-
-    while output.ends_with('-') {
-        output.pop();
-    }
-    output
+    heck::AsKebabCase(input).to_string()
 }
 
 // ===========================================================================
@@ -198,17 +182,44 @@ impl Synonyms {
             });
         }
 
-        let file_contents = fs::read_to_string(&path)?;
+        let mut reader = csv::ReaderBuilder::new()
+            .comment(Some(b'#'))
+            .has_headers(false)
+            .trim(csv::Trim::All)
+            .flexible(true)
+            .from_path(&path)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
         let mut mapping = HashMap::with_capacity(2500);
         let mut needs_fixing = false;
 
-        for line in file_contents
-            .lines()
-            .filter(|line| !line.starts_with('#') && !line.is_empty())
-        {
-            if let Err(error) = Self::parse_synonym_line(line, &mut mapping) {
-                tracing::error!("synonym error: {}", error);
-                needs_fixing = true;
+        for result in reader.records() {
+            let record = result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if record.is_empty() {
+                continue;
+            }
+            let find_keyword = SmolStr::from(record.get(0).unwrap_or(""));
+            let replace_keyword = SmolStr::from(record.get(1).unwrap_or(""));
+            let score: u8 = record
+                .get(2)
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
+                    format!("Missing or invalid score in record: {:?}", record)))?;
+
+            if score > 5 {
+                tracing::error!("synonym borked score: {record:?}");
+            }
+
+            match mapping.entry(find_keyword) {
+                Entry::Occupied(mut entry) => {
+                    if entry.get().1 < score {
+                        tracing::error!("duplicate synonym {record:?} and {}", entry.get().0);
+                        entry.insert((replace_keyword, score));
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert((replace_keyword, score));
+                }
             }
         }
 
@@ -219,45 +230,6 @@ impl Synonyms {
         }
 
         Ok(Self { mapping })
-    }
-
-    fn parse_synonym_line(
-        line: &str,
-        mapping: &mut HashMap<SmolStr, (SmolStr, u8)>,
-    ) -> io::Result<()> {
-        let mut columns = line.splitn(3, ',');
-
-        let find_keyword =
-            SmolStr::from(columns.next().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "Missing find column")
-            })?);
-        let replace_keyword =
-            SmolStr::from(columns.next().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "Missing replace column")
-            })?);
-        let score: u8 = columns
-            .next()
-            .and_then(|part| part.parse().ok())
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "Missing or invalid score")
-            })?;
-
-        if score > 5 {
-            tracing::error!("synonym borked score: {}", line);
-        }
-
-        match mapping.entry(find_keyword) {
-            Entry::Occupied(mut entry) => {
-                if entry.get().1 < score {
-                    tracing::error!("duplicate synonym {} and {}", line, entry.get().0);
-                    entry.insert((replace_keyword, score));
-                }
-            }
-            Entry::Vacant(entry) => {
-                entry.insert((replace_keyword, score));
-            }
-        }
-        Ok(())
     }
 
     fn remove_cyclic_synonyms(mapping: &mut HashMap<SmolStr, (SmolStr, u8)>) -> bool {

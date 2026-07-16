@@ -20,6 +20,7 @@ use crate::content::ContentHash;
     strum::Display,
     strum::EnumIter,
     strum::EnumString,
+    strum::IntoStaticStr,
     strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]

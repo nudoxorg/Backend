@@ -11,14 +11,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::registry::identity::PackageCoordinates;
+use crate::registry::blob::creation::BlobBuilder;
 use crate::registry::ingest::{
-    ArchiveFormat, Builder, EntryAllowlist, ExtractionLimits, ingest_archive,
+    ArchiveFormat, EntryAllowlist, ExtractionLimits, ingest_archive,
 };
+use crate::registry::metadata::rich::{self, ExtractionInput};
+use heart::Retryable;
 use crate::registry::queue::LeasedJob;
 use crate::registry::{RegistryError, error::ResolveError};
 use futures::StreamExt;
 use heart::{
-    ContentHash, FailureKind, JobProgress, PackageId, Percent, Phase, Progressive, ResolutionState,
+    ContentHash, FailureKind, JobProgress, PackageId, Percent, Phase, ResolutionState,
 };
 use registry::runtime::vector::EmbeddingModel;
 
@@ -99,7 +102,7 @@ impl<M: EmbeddingModel> Indexer<M> {
         stores: &SourceStores<M>,
         package: PackageId,
         coordinates: &PackageCoordinates,
-    ) -> ServerResult<Builder> {
+    ) -> ServerResult<BlobBuilder> {
         let archive_bytes = self.fetch_archive(coordinates).await?;
         tracing::info!(%package, bytes = archive_bytes.len(), "source archive acquired");
 
@@ -111,7 +114,7 @@ impl<M: EmbeddingModel> Indexer<M> {
             .await
             .map_err(RegistryError::from)?;
 
-        ingest_archive(
+        Ok(ingest_archive(
             package,
             record.package.toolchain,
             std::io::Cursor::new(archive_bytes),
@@ -120,7 +123,7 @@ impl<M: EmbeddingModel> Indexer<M> {
             EntryAllowlist::SAFE,
         )
         .await
-        .map_err(RegistryError::from)
+        .map_err(RegistryError::from)?)
     }
 
     async fn execute_compile_phase(
@@ -128,7 +131,7 @@ impl<M: EmbeddingModel> Indexer<M> {
         stores: &SourceStores<M>,
         package: PackageId,
         coordinates: &PackageCoordinates,
-        builder: &mut Builder,
+        builder: &mut BlobBuilder,
     ) -> ServerResult<()> {
         self.advance(stores, package, &progressing(Phase::Compiling))
             .await?;
@@ -172,7 +175,8 @@ impl<M: EmbeddingModel> Indexer<M> {
         builder.set_ir(ir_bytes).map_err(RegistryError::from)?;
         builder
             .set_references(&references)
-            .map_err(RegistryError::from)
+            .map_err(RegistryError::from)?;
+        Ok(())
     }
 
     async fn execute_emit_phase(
@@ -180,7 +184,7 @@ impl<M: EmbeddingModel> Indexer<M> {
         stores: &SourceStores<M>,
         package: PackageId,
         coordinates: &PackageCoordinates,
-        builder: Builder,
+        builder: BlobBuilder,
     ) -> ServerResult<ContentHash> {
         self.advance(stores, package, &progressing(Phase::Emitting))
             .await?;
@@ -220,6 +224,24 @@ impl<M: EmbeddingModel> Indexer<M> {
         );
 
         Ok(snapshot)
+    }
+
+    /// Recompute the content hash of a stored package from its persisted
+    /// manifest — the dual of the snapshot computed in [`execute_emit_phase`].
+    /// Used by the freshness-check path in the sync handler.
+    pub async fn content_hash(&self, package: PackageId) -> ServerResult<ContentHash> {
+        let stores = self.server.base();
+        let record = stores
+            .global_store
+            .get(package)
+            .await
+            .map_err(RegistryError::from)?;
+        let manifest = stores
+            .blobs
+            .get_manifest(&record.package.coordinates)
+            .await
+            .map_err(RegistryError::from)?;
+        Ok(ContentHash::of_bytes(&manifest.identity_bytes()))
     }
 
     // ── Networking & Archive Acquisition ──────────────────────────────────

@@ -30,6 +30,7 @@ use crate::error::Retryable;
     strum::Display,
     strum::EnumString,
     strum::EnumIter,
+    strum::IntoStaticStr,
     strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]
