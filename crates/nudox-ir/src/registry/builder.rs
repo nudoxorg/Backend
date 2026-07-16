@@ -41,6 +41,17 @@ impl EntryBuilder {
 		self.links.push(link);
 	}
 
+	/// Emits links between the currently-being-built entry and the entries
+	/// provided
+	pub fn link_many<T>(&mut self, entries: impl IntoIterator<Item = EntryIdx<T>>)
+	where
+		T: EntryKind,
+	{
+		for idx in entries {
+			self.link(idx);
+		}
+	}
+
 	/// Emits a link between two entry
 	pub fn link_between<T, U>(&mut self, a: EntryIdx<T>, b: EntryIdx<U>)
 	where

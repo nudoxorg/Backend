@@ -4,7 +4,7 @@ cargo-features = ["codegen-backend"]
 resolver = "3"
 members = [
   # "./compiler",
-  # "./ir",
+  "./ir",
   # "./crates/*",
   "crates/nudox-ir" # FIXME: development only
 ]
@@ -23,6 +23,7 @@ yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
 
+bon = "3.9"
 elsa = "1.11"
 itertools = "0.15"
 parking_lot = "0.12"
