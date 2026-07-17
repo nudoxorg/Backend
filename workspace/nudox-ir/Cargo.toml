@@ -1,0 +1,33 @@
+# nudox-ir — arena-indexed IR core + IrAtom + linear apply.
+#
+# Owns the arena identity types (`ArenaIdx`, `EntryIdx<T>`, `StrId`, …), the
+# `Entry`/`Node`/`Symbol` model, the `register_kinds!` machinery + wire twins,
+# the `IrAtom` change atom (implements `nudox_change::Atom`), the within-change
+# order normalizer, the linear single-writer pristine + apply, the deterministic
+# `IntroId` bootstrap, the type-skeleton opcode encoder, and the `Registry`
+# resolve surface. Depends only on `nudox-change`.
+[package]
+name = "nudox-ir"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+nudox-change = { path = "../nudox-change" }
+
+blake3 = "1.8"
+smol_str = { version = "0.2", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
+thiserror = "1.0"
+rustc-hash = { package = "rustc-hash", version = "1.1" }
+async-trait = "0.1"
+
+[dev-dependencies]
+postcard = { version = "1.1", features = ["alloc", "use-std"] }

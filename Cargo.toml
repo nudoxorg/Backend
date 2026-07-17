@@ -15,6 +15,16 @@ members = [
     "workspace/ir",
     "workspace/registry",
     "workspace/server",
+    # ── IR-native VCS plane ──────────────────────────────────────────────────
+    # The IR data model + serve archive + generation identity are the domain;
+    # libpijul (via nudox-ir-vcs) is the change engine — we do NOT reimplement
+    # patch theory. `nudox-ir-channel` is retired (its custom in-memory change
+    # store was exactly that reimplementation) and is no longer built.
+    "workspace/nudox-change",
+    "workspace/nudox-ir",
+    "workspace/nudox-ir-archive",
+    "workspace/nudox-ir-manifest",
+    "workspace/nudox-ir-vcs",
 ]
 
 [workspace.package]
