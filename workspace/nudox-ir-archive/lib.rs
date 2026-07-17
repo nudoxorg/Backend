@@ -31,5 +31,5 @@ pub use header::{
     ArchiveHeader, EntryHead, SectionId, TocEntry, MAX_ENTRIES, MAX_SECTION_UNCOMPRESSED,
     MAX_STRING_BLOB,
 };
-pub use seal::{seal_package_archive, SealError, SealedArchive};
+pub use seal::{seal_from_entries, seal_package_archive, SealEntry, SealError, SealedArchive};
 pub use view::{LinkEnd, PackageArchiveView, YokedArchive};

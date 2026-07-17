@@ -18,11 +18,13 @@ use libpijul::working_copy::memory::Memory as MemWc;
 use libpijul::working_copy::{WorkingCopy, WorkingCopyRead};
 use libpijul::{MutTxnTExt, TxnTExt};
 
-use nudox_change::{ChangeSetFingerprint, IntroId, PackageLineageId};
+use nudox_change::{ChangeSetFingerprint, IntroId, PackageLineageId, StableRef};
 use nudox_ir::apply::{LinkRecord, PristineIntroTable};
+use nudox_ir::kind::KindDiscriminant;
 use nudox_ir::wire::OwnedEntryPayload;
-use nudox_ir_archive::{seal_package_archive, SealedArchive};
+use nudox_ir_archive::{seal_from_entries, SealEntry, SealedArchive};
 
+use crate::blob::SymbolView;
 use crate::checkout::MaterializedIndex;
 use crate::error::VcsError;
 use crate::serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
@@ -108,6 +110,27 @@ pub struct IrRepository<C = MemChanges> {
     channel_name: String,
     #[allow(dead_code)]
     package: PackageLineageId,
+    /// The channel tip that `self.working_copy` currently reflects.
+    ///
+    /// Initialised to `[0u8; 32]` (the zero-state, which is never a real
+    /// tip) so that the very first call to `record_generation` on a
+    /// freshly-opened or newly-created repository always falls through to
+    /// the one-time resync path.
+    ///
+    /// Updated to `current_state().to_bytes()` at the end of every method
+    /// that leaves `self.working_copy` consistent with a committed tip:
+    /// - `record_generation` (after apply + commit)
+    /// - `unrecord` (after the unrecord + commit)
+    ///
+    /// `materialize`, `materialize_index`, and `checkout_symbol` use fresh
+    /// throwaway working copies; they never touch `self.working_copy` and
+    /// therefore never update this field.
+    working_copy_tip: std::cell::Cell<[u8; 32]>,
+    /// How many whole-tree `output_repository_no_pending` calls were made
+    /// from `record_generation`'s baseline-sync step.  Exposed to tests
+    /// via `sync_output_count()` to verify the O(delta) invariant.
+    #[cfg(test)]
+    sync_output_count: std::cell::Cell<u64>,
 }
 
 impl IrRepository<MemChanges> {
@@ -122,6 +145,9 @@ impl IrRepository<MemChanges> {
             working_copy: MemWc::new(),
             channel_name: channel.to_owned(),
             package,
+            working_copy_tip: std::cell::Cell::new([0u8; 32]),
+            #[cfg(test)]
+            sync_output_count: std::cell::Cell::new(0),
         })
     }
 }
@@ -143,6 +169,9 @@ impl IrRepository<FsChanges> {
             working_copy: MemWc::new(),
             channel_name: channel.to_owned(),
             package,
+            working_copy_tip: std::cell::Cell::new([0u8; 32]),
+            #[cfg(test)]
+            sync_output_count: std::cell::Cell::new(0),
         })
     }
 }
@@ -176,6 +205,11 @@ where
 
     /// Output the current channel state into the working copy so that
     /// `working_copy` reflects the recorded IR.
+    ///
+    /// This is the O(package) baseline resync. In the steady state it is only
+    /// called once per fresh process open (stale WC path). Subsequent calls to
+    /// `record_generation` skip it when `working_copy_tip` already matches the
+    /// channel tip.
     fn sync_output<T>(&self, txn: &ArcTxn<T>, channel: &ChannelRef<T>) -> Result<(), VcsError>
     where
         T: libpijul::pristine::MutTxnT
@@ -188,6 +222,9 @@ where
         libpijul::working_copy::memory::Error: Send + Sync + 'static,
         libpijul::changestore::memory::Error: Send + 'static,
     {
+        #[cfg(test)]
+        self.sync_output_count.set(self.sync_output_count.get() + 1);
+
         libpijul::output::output_repository_no_pending(
             &self.working_copy,
             &self.changes,
@@ -203,6 +240,14 @@ where
         Ok(())
     }
 
+    /// Return how many whole-tree baseline-sync outputs `record_generation` has
+    /// performed since this repository was created.  Used in tests to verify the
+    /// O(delta) invariant (steady-state recordings must NOT trigger a resync).
+    #[cfg(test)]
+    pub(crate) fn sync_output_count(&self) -> u64 {
+        self.sync_output_count.get()
+    }
+
     // -----------------------------------------------------------------------
     // record_generation
     // -----------------------------------------------------------------------
@@ -215,9 +260,38 @@ where
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
-        // 1. Output current channel state into working copy so we start from
-        //    the correct baseline.
-        self.sync_output(&txn, &channel)?;
+        // 1. Ensure the working copy reflects the current channel tip.
+        //
+        //    Fast path (O(1)): if `working_copy_tip` already equals the
+        //    current channel tip, `self.working_copy` is already up to date
+        //    and the whole-tree output is unnecessary.  This is the steady
+        //    state for every recording after the first.
+        //
+        //    Slow path (O(package)): on a fresh `open()` or after any method
+        //    that left `working_copy_tip` stale (e.g. process restart with a
+        //    durable repo whose on-disk pristine has changes the new empty WC
+        //    does not know about), we do one-time whole-tree output to resync,
+        //    then record `working_copy_tip`.  Only this path pays the resync
+        //    cost.
+        {
+            let current_tip = txn
+                .read()
+                .current_state(&channel.read())
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state: {e}")))?
+                .to_bytes();
+
+            if current_tip != self.working_copy_tip.get() {
+                // WC is stale (or fresh process re-open): resync from channel.
+                self.sync_output(&txn, &channel)?;
+                // Mark WC as current immediately; if an error occurs later we
+                // will not re-enter this branch on the next call (the WC is
+                // now populated).  That is safe: the next call simply
+                // proceeds from the already-synced WC.
+                self.working_copy_tip.set(current_tip);
+            }
+            // else: WC already reflects the channel tip; skip the expensive
+            // whole-tree output.
+        }
 
         // 2. Compute the desired file set from `ir`.
         //    For each live intro we build a SymbolFile. Links are stored on
@@ -392,10 +466,23 @@ where
         )
         .map_err(|e| VcsError::Pijul(anyhow::anyhow!("apply_local_change: {e}")))?;
 
+        // Snapshot the NEW tip (after apply, before commit) so we can update
+        // `working_copy_tip` once the commit succeeds.  The WC reflects the
+        // applied change, so after a successful commit the WC IS consistent
+        // with this tip.
+        let new_tip = txn
+            .read()
+            .current_state(&channel.read())
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (post-apply): {e}")))?
+            .to_bytes();
+
         // 9. Commit.
         txn.commit().map_err(|e| {
             VcsError::Pijul(anyhow::anyhow!("commit: {e}"))
         })?;
+
+        // WC is now consistent with `new_tip`.
+        self.working_copy_tip.set(new_tip);
 
         Ok(Some(ChangeHashHex(hash_to_hex(&hash))))
     }
@@ -554,8 +641,10 @@ where
 
     /// Remove the given change from the channel history (undo it).
     ///
-    /// After unrecord, the working copy is inconsistent — call [`materialize`]
-    /// or [`record_generation`] to re-sync.
+    /// libpijul's `unrecord` updates `self.working_copy` in place so that it
+    /// reflects the post-unrecord channel tip.  We record that new tip in
+    /// `working_copy_tip` so that the next call to `record_generation` can skip
+    /// the expensive whole-tree resync.
     pub fn unrecord(&self, hex: &ChangeHashHex) -> Result<(), VcsError> {
         let hash = hex_to_hash(&hex.0)?;
         let txn = self.env.arc_txn_begin().map_err(|e| {
@@ -565,15 +654,26 @@ where
 
         // `unrecord` is exposed as a `MutTxnTExt` method (the free `unrecord`
         // module is private). Arg order: changes, channel, hash, salt, wc.
-        // It reverts the pristine and updates the working copy itself, so we do
-        // NOT call `sync_output` afterwards (materialize re-derives the tree).
+        // It reverts the pristine and updates the working copy itself.
         txn.write()
             .unrecord(&self.changes, &channel, &hash, 0, &self.working_copy)
             .map_err(|e| VcsError::Pijul(anyhow::anyhow!("unrecord: {e}")))?;
 
+        // Snapshot the tip AFTER unrecord (but before commit) so we can mark
+        // the WC as consistent with the new channel state once the commit
+        // succeeds.
+        let new_tip = txn
+            .read()
+            .current_state(&channel.read())
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (post-unrecord): {e}")))?
+            .to_bytes();
+
         txn.commit().map_err(|e| {
             VcsError::Pijul(anyhow::anyhow!("commit (unrecord): {e}"))
         })?;
+
+        // `self.working_copy` now reflects `new_tip`.
+        self.working_copy_tip.set(new_tip);
 
         Ok(())
     }
@@ -584,8 +684,69 @@ where
 
     /// Materialize the current channel tip and seal it as a [`SealedArchive`].
     pub fn seal(&self) -> Result<SealedArchive, VcsError> {
-        let table = self.materialize()?;
-        seal_package_archive(&table).map_err(VcsError::Seal)
+        let index = self.materialize_index()?;
+        self.seal_from_index(&index)
+    }
+
+    /// Seal a serve archive **directly from a [`MaterializedIndex`]** — the read
+    /// path never materializes an owned `PristineIntroTable`. Each symbol's index
+    /// bytes are handed to the archive verbatim as the (opaque) payload; the
+    /// archive's lookup indices are built from borrowed [`SymbolView`] metadata.
+    /// The expensive libpijul reconstruction was already paid (incrementally) to
+    /// build the index; this is a borrow + cheap memcpy assembly.
+    pub fn seal_from_index(&self, index: &MaterializedIndex) -> Result<SealedArchive, VcsError> {
+        // Stable intro order so the parallel owned side-tables line up.
+        let mut intros: Vec<IntroId> = index.intros().collect();
+        intros.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        // Borrowed views over the index bytes (no owned payloads).
+        let mut views: Vec<SymbolView<'_>> = Vec::with_capacity(intros.len());
+        for &intro in &intros {
+            let view = index
+                .view(intro)
+                .expect("intro came from index.intros()")
+                .map_err(|e| VcsError::CorruptSymbolFile {
+                    path: symbol_path(intro),
+                    reason: e.to_string(),
+                })?;
+            views.push(view);
+        }
+
+        // Owned side-tables that must outlive the `SealEntry` borrows: alias
+        // pointer lists and the (owned `StableRef`) link tuples. Content stays
+        // borrowed from the index bytes; only these small spines allocate.
+        let aliases: Vec<Vec<&str>> = views.iter().map(|v| v.aliases().collect()).collect();
+        let links: Vec<Vec<(StableRef, KindDiscriminant, KindDiscriminant)>> = views
+            .iter()
+            .map(|v| v.links().map(|l| (l.to_stable_ref(), l.kind_self, l.kind_other)).collect())
+            .collect();
+
+        let entries: Vec<SealEntry<'_>> = intros
+            .iter()
+            .enumerate()
+            .map(|(i, &intro)| {
+                let v = &views[i];
+                let (span_start, span_end) = v.span();
+                SealEntry {
+                    intro,
+                    name: v.name(),
+                    aliases: &aliases[i],
+                    visibility: v.visibility() as u8,
+                    source_path: v.source_path(),
+                    span_start,
+                    span_end,
+                    kind_disc: v.kind_disc(),
+                    flags: v.flags().0,
+                    payload_hash: v.payload_hash(),
+                    parent: v.parent(),
+                    type_fingerprint: v.type_fingerprint(),
+                    links: &links[i],
+                    payload_bytes: &index.get(intro).expect("present")[..],
+                }
+            })
+            .collect();
+
+        seal_from_entries(entries).map_err(VcsError::Seal)
     }
 
     // -----------------------------------------------------------------------
@@ -1085,5 +1246,152 @@ mod delta_tests {
         // 1 and 3 untouched → same Arc.
         assert!(std::sync::Arc::ptr_eq(prev.get(intro(1)).unwrap(), idx.get(intro(1)).unwrap()));
         assert!(std::sync::Arc::ptr_eq(prev.get(intro(3)).unwrap(), idx.get(intro(3)).unwrap()));
+    }
+
+    // -----------------------------------------------------------------------
+    // O(delta) write-path tests
+    // -----------------------------------------------------------------------
+
+    /// **Core O(delta) write invariant.**
+    ///
+    /// Build a 3-symbol package (N ≥ 3), record gen A, then change exactly ONE
+    /// symbol and record gen B.  The second `record_generation` call MUST NOT
+    /// perform a whole-tree `output_repository_no_pending` — the WC was already
+    /// current after gen A, so `working_copy_tip` matches the channel tip and
+    /// the baseline-resync is skipped.
+    ///
+    /// Verification via `sync_output_count()`:
+    /// - Gen A may or may not call sync depending on whether the empty channel's
+    ///   tip happens to equal `[0u8; 32]`.  We capture the count after gen A.
+    /// - Gen B must NOT increase the count (working_copy_tip is current).
+    /// - Gen C (another change) must also NOT increase the count.
+    ///
+    /// We also verify correctness: `materialize` after gen C returns all three
+    /// symbols with updated names.
+    #[test]
+    fn record_generation_write_path_is_o_delta() {
+        let repo = IrRepository::in_memory(pkg(), "main").unwrap();
+
+        let gen_a = table(&[(1, "alpha"), (2, "beta"), (3, "gamma")]);
+        repo.record_generation(&gen_a)
+            .unwrap()
+            .expect("gen A must produce a change");
+
+        // Capture count after gen A: the first recording on a fresh repo may or
+        // may not resync (depends on whether the empty channel tip == [0;32]).
+        // What matters is that subsequent recordings do NOT resync.
+        let count_after_a = repo.sync_output_count();
+
+        // Gen B: only symbol 2 changes.  working_copy_tip now matches the gen A
+        // tip, so no resync should occur.
+        let gen_b = table(&[(1, "alpha"), (2, "beta_v2"), (3, "gamma")]);
+        repo.record_generation(&gen_b)
+            .unwrap()
+            .expect("gen B must produce a change");
+
+        assert_eq!(
+            repo.sync_output_count(),
+            count_after_a,
+            "gen B must NOT trigger a whole-tree sync (working_copy_tip was current after gen A)"
+        );
+
+        // Gen C: change a different symbol.  Still no resync expected.
+        let gen_c = table(&[(1, "alpha"), (2, "beta_v2"), (3, "gamma_v2")]);
+        repo.record_generation(&gen_c)
+            .unwrap()
+            .expect("gen C must produce a change");
+
+        assert_eq!(
+            repo.sync_output_count(),
+            count_after_a,
+            "gen C must NOT trigger a whole-tree sync either"
+        );
+
+        // Correctness: materialize should reflect gen C.
+        let mat = repo.materialize().unwrap();
+        assert_eq!(mat.live_entries().count(), 3, "all three symbols survive");
+        assert!(mat.is_live(intro(1)));
+        assert!(mat.is_live(intro(2)));
+        assert!(mat.is_live(intro(3)));
+        // Symbol 2 must be updated (from gen B).
+        let p2 = mat.get(intro(2)).and_then(|e| e.as_live()).unwrap();
+        assert_eq!(p2.symbol.name, "beta_v2", "symbol 2 must have updated name from gen B");
+        // Symbol 3 must be updated (from gen C).
+        let p3 = mat.get(intro(3)).and_then(|e| e.as_live()).unwrap();
+        assert_eq!(p3.symbol.name, "gamma_v2", "symbol 3 must have updated name from gen C");
+    }
+
+    /// **Stale WC path (durable re-open).**
+    ///
+    /// Record a generation through an on-disk `IrRepository`, drop it, then
+    /// re-open the same root in a new `IrRepository` (fresh empty WC, but the
+    /// pristine + changestore persist).  The first `record_generation` on the
+    /// re-opened repository must perform one whole-tree resync (WC is empty but
+    /// the channel is non-empty), then leave `working_copy_tip` current so that
+    /// the SECOND recording skips the sync.
+    ///
+    /// Correctness: the final `materialize` must reflect all recorded symbols.
+    #[test]
+    fn record_generation_stale_wc_resyncs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pkg = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("testcrate"));
+
+        // --- first open: record two generations then drop. ---
+        {
+            use libpijul::changestore::filesystem::FileSystem as FsChanges;
+
+            let repo: IrRepository<FsChanges> =
+                IrRepository::open(root, pkg.clone(), "main").unwrap();
+            repo.record_generation(&table_pkg(&pkg, &[(1, "a"), (2, "b"), (3, "c")]))
+                .unwrap()
+                .expect("gen A");
+        }
+
+        // --- second open: fresh IrRepository with empty WC. ---
+        {
+            use libpijul::changestore::filesystem::FileSystem as FsChanges;
+
+            let repo: IrRepository<FsChanges> =
+                IrRepository::open(root, pkg.clone(), "main").unwrap();
+
+            // WC is empty, channel tip is non-empty → stale.
+            // The first record_generation must do ONE whole-tree sync, then update
+            // working_copy_tip so subsequent recordings can skip it.
+            repo.record_generation(&table_pkg(&pkg, &[(1, "a"), (2, "b_new"), (3, "c")]))
+                .unwrap()
+                .expect("gen B on re-open");
+
+            assert_eq!(
+                repo.sync_output_count(),
+                1,
+                "re-opened repo must resync once (stale WC path)"
+            );
+
+            // A second recording must NOT resync (WC is now current).
+            repo.record_generation(&table_pkg(&pkg, &[(1, "a"), (2, "b_new"), (3, "c_new")]))
+                .unwrap()
+                .expect("gen C");
+
+            assert_eq!(
+                repo.sync_output_count(),
+                1,
+                "second recording after re-open must NOT resync again"
+            );
+
+            // Correctness: latest materialize has all three symbols with updated names.
+            let mat = repo.materialize().unwrap();
+            assert_eq!(mat.live_entries().count(), 3);
+            let p3 = mat.get(intro(3)).and_then(|e| e.as_live()).unwrap();
+            assert_eq!(p3.symbol.name, "c_new");
+        }
+    }
+
+    /// Helper: build a `PristineIntroTable` tied to `pkg` (for durable-repo tests).
+    fn table_pkg(
+        _pkg: &PackageLineageId,
+        entries: &[(u8, &str)],
+    ) -> nudox_ir::apply::PristineIntroTable {
+        table(entries)
     }
 }

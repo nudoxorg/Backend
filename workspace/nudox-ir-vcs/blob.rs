@@ -845,6 +845,35 @@ impl<'a> SymbolView<'a> {
         link_lines.into_iter().filter_map(|line| parse_link_line(line).ok())
     }
 
+    /// Raw (possibly escaped) source path.
+    pub fn source_path(&self) -> &'a str {
+        self.src
+    }
+
+    /// Raw (possibly escaped) documentation, if present.
+    pub fn documentation(&self) -> Option<&'a str> {
+        self.doc
+    }
+
+    /// Raw (possibly escaped) alias names, borrowed.
+    pub fn aliases(&self) -> impl Iterator<Item = &'a str> + 'a {
+        self.alias_lines.clone().into_iter()
+    }
+
+    /// The type-skeleton fingerprint of a `Type` entry (for the archive's
+    /// TypeSkeletonIndex); `None` for other kinds. Reconstructs only the small
+    /// one-level `TypeWire` (its children are leaf refs), not the whole payload.
+    pub fn type_fingerprint(&self) -> Option<nudox_ir::index::TypeFingerprintId> {
+        if self.kind_disc != KindDiscriminant::Type {
+            return None;
+        }
+        let line = self.kind_body_lines.iter().find_map(|l| l.strip_prefix("type\t"))?;
+        let tw = decode_typeexpr(line).ok()?;
+        let mut skel = Vec::new();
+        nudox_ir::skeleton::type_wire_skeleton(&tw, &mut skel);
+        Some(nudox_ir::skeleton::type_fingerprint(&skel))
+    }
+
     // -----------------------------------------------------------------------
     // Full reconstruction
     // -----------------------------------------------------------------------

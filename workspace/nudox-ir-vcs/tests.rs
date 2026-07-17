@@ -194,3 +194,32 @@ fn durable_open_persists_across_reopen() {
     assert_eq!(mat.live_entries().count(), 2, "materialized IR survives a re-open");
     assert!(mat.is_live(intro(1)) && mat.is_live(intro(2)));
 }
+
+#[test]
+fn seal_archive_serves_zero_copy() {
+    // The full serve path: record -> seal (borrowed, no owned table) -> open the
+    // zerocopy archive -> answer lookups from POD indices and read a payload body
+    // back as a borrowed SymbolView (IO-speed, zero decode).
+    let repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    repo.record_generation(&sample_ir()).unwrap().unwrap();
+
+    let sealed = repo.seal().unwrap();
+    let yoked = sealed.open().expect("archive opens");
+    let view = yoked.get();
+
+    // Hot-path lookups straight from the zerocopy indices.
+    let m = view.lookup_intro(intro(1)).expect("module in archive");
+    let f = view.lookup_intro(intro(2)).expect("function in archive");
+    assert!(view.lookup_name("root").collect::<Vec<_>>().contains(&m));
+    assert!(view.lookup_name("do_thing").collect::<Vec<_>>().contains(&f));
+    assert!(view.children(m).collect::<Vec<_>>().contains(&f), "function is a child of the module");
+
+    // Payload body = the textual blob, read back as a borrowed SymbolView.
+    let raw = view.payload_raw(f).expect("payload bytes");
+    let sv = crate::blob::SymbolView::from_bytes(raw).expect("blob parses");
+    assert_eq!(sv.name(), "do_thing");
+    assert_eq!(sv.parent(), Some(intro(1)));
+
+    // Sealing again yields the same content address.
+    assert_eq!(repo.seal().unwrap().cas_key, sealed.cas_key);
+}
