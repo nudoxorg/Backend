@@ -1,8 +1,8 @@
 use elsa::sync::FrozenVec;
 use parking_lot::RwLock;
-use rustc_hash::FxHashSet;
 
 use crate::{
+    List,
     entry::{Entry, TypedEntry},
     kind::EntryKind,
     module::Module,
@@ -11,17 +11,19 @@ use crate::{
 };
 
 use super::{
-    ArenaIdx, EntryArena, EntryBuilder, EntryIdx, EntryLink, PackageIdx, RawEntryIdx,
-    RegistryResolver,
+    EntryBuilder, EntryIdx, EntryLink, PackageIdx, RawEntryIdx, RegistryResolver, ScopeIdx,
 };
 
 type FxBiHashMap<T> = iddqd::BiHashMap<T, rustc_hash::FxBuildHasher>;
 
-pub struct RegistryState {
-    arenas: FrozenVec<Box<EntryArena>>,
+const BAD_PACKAGE_INDEX_ERROR: &str = "";
+const BAD_SCOPE_INDEX_ERROR: &str = "";
 
+pub struct RegistryState {
     packages: RwLock<FxBiHashMap<RegistryPackage>>,
-    links: RwLock<FxHashSet<EntryLink>>,
+
+    scopes: FrozenVec<List<Entry>>,
+    links: FrozenVec<List<EntryLink>>,
 }
 
 impl RegistryState {
@@ -29,8 +31,8 @@ impl RegistryState {
         match idx.repr() {
             super::idx::Repr::Resolved {
                 package_idx,
-                arena_idx,
-            } => self.arena(package_idx).entry(arena_idx),
+                scope_idx,
+            } => self.index_resolved(package_idx, scope_idx),
             super::idx::Repr::Deferred(_idx) => {
                 todo!("handle Deferred EntryIdx")
             }
@@ -49,9 +51,10 @@ impl RegistryState {
 impl RegistryState {
     pub(super) fn new() -> Self {
         RegistryState {
-            arenas: FrozenVec::new(),
             packages: RwLock::new(FxBiHashMap::default()),
-            links: RwLock::new(FxHashSet::default()),
+
+            scopes: FrozenVec::new(),
+            links: FrozenVec::new(),
         }
     }
 
@@ -61,10 +64,10 @@ impl RegistryState {
         sym: Symbol,
         build: impl FnOnce(&mut EntryBuilder),
     ) -> EntryIdx<Module> {
-        let package_idx = PackageIdx::new(self.arenas.len());
-        let arena_idx = ArenaIdx::new(0);
+        let package_idx = PackageIdx::new(self.scopes.len());
+        let scope_idx = ScopeIdx::new(0);
 
-        let idx = EntryIdx::new(package_idx, arena_idx);
+        let idx = EntryIdx::new(package_idx, scope_idx);
 
         let (idx, entries, links, _deferred) = EntryBuilder::builder()
             .sym(sym)
@@ -75,9 +78,9 @@ impl RegistryState {
                 Module
             });
 
-        self.arenas.push(Box::new(EntryArena::new(entries)));
+        self.scopes.push(entries.into_boxed_slice());
+        self.links.push(links.into_boxed_slice());
 
-        self.links.write().extend(links);
         let _ = self
             .packages
             .write()
@@ -86,8 +89,12 @@ impl RegistryState {
         idx.typed()
     }
 
-    fn arena(&self, idx: PackageIdx) -> &EntryArena {
-        self.arenas.get(idx.index()).expect("") // TODO: error message
+    fn index_resolved(&self, pkg: PackageIdx, entry: ScopeIdx) -> &Entry {
+        self.scopes
+            .get(pkg.index())
+            .expect(BAD_PACKAGE_INDEX_ERROR)
+            .get(entry.index())
+            .expect(BAD_SCOPE_INDEX_ERROR)
     }
 }
 

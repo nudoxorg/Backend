@@ -75,7 +75,7 @@ impl EntryBuilder {
 
 impl EntryBuilder {
     fn next_entry_idx(&self) -> RawEntryIdx {
-        self.entry_idx.inc_arena_idx(self.entries.len() + 1) // offset to not reuse entry_idx for children
+        self.entry_idx.inc_scope_idx(self.entries.len() + 1) // offset to not reuse entry_idx for children
     }
 
     fn next_deferred_idx(&self) -> DeferredIdx {
@@ -133,7 +133,7 @@ impl<S: entry_builder_builder::IsComplete> EntryBuilderBuilder<S> {
 
         let node = Node::build(
             parent,
-            (1..=entries.len()).map(|i| entry_idx.inc_arena_idx(i)),
+            (1..=entries.len()).map(|i| entry_idx.inc_scope_idx(i)),
         );
 
         let entries = std::iter::once(Entry::new(sym, node, kind))

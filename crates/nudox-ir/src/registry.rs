@@ -1,4 +1,3 @@
-mod arena;
 mod builder;
 mod deferred;
 mod idx;
@@ -18,16 +17,15 @@ use crate::{
 };
 
 use self::{
-    arena::EntryArena,
     deferred::DeferredId,
-    idx::{ArenaIdx, DeferredIdx, PackageIdx},
+    idx::{DeferredIdx, PackageIdx, ScopeIdx},
     resolver::DynRegistryResolver,
 };
 
 // allow test_helpers to create EntryIdx's
 #[cfg(test)]
-pub(crate) fn new_idx<T>(package: usize, arena: usize) -> EntryIdx<T> {
-    EntryIdx::new(PackageIdx::new(package), ArenaIdx::new(arena))
+pub(crate) fn new_idx<T>(package_idx: usize, scope_idx: usize) -> EntryIdx<T> {
+    EntryIdx::new(PackageIdx::new(package_idx), ScopeIdx::new(scope_idx))
 }
 
 pub use self::{

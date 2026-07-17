@@ -13,7 +13,7 @@ pub struct EntryIdx<T> {
 pub(super) enum Repr {
     Resolved {
         package_idx: PackageIdx,
-        arena_idx: ArenaIdx,
+        scope_idx: ScopeIdx,
     },
     #[expect(unused)]
     Deferred(DeferredIdx),
@@ -23,11 +23,11 @@ pub(super) enum Repr {
 // const _: () = assert!(size_of::<Repr>() == size_of::<u64>());
 
 impl<T> EntryIdx<T> {
-    pub(super) fn new(package_idx: PackageIdx, arena_idx: ArenaIdx) -> Self {
+    pub(super) fn new(package_idx: PackageIdx, scope_idx: ScopeIdx) -> Self {
         EntryIdx {
             repr: Repr::Resolved {
                 package_idx,
-                arena_idx,
+                scope_idx,
             },
             _p: PhantomData,
         }
@@ -116,11 +116,11 @@ impl<T> fmt::Debug for EntryIdx<T> {
         match self.repr {
             Repr::Resolved {
                 package_idx,
-                arena_idx,
+                scope_idx,
             } => f
                 .debug_tuple("EntryIdx")
                 .field(&package_idx.index())
-                .field(&&arena_idx.index())
+                .field(&&scope_idx.index())
                 .finish(),
             Repr::Deferred(deferred_idx) => f.debug_tuple("EntryIdx").field(&deferred_idx).finish(),
         }
@@ -156,18 +156,18 @@ impl<T> hash::Hash for EntryIdx<T> {
 pub type RawEntryIdx = EntryIdx<private::UntypedMarker>;
 
 impl RawEntryIdx {
-    pub(super) fn inc_arena_idx(self, amount: usize) -> Self {
+    pub(super) fn inc_scope_idx(self, amount: usize) -> Self {
         let Repr::Resolved {
             package_idx,
-            arena_idx,
+            scope_idx,
         } = self.repr
         else {
-            panic!("called inc_arena_idx on deferred EntryIdx");
+            panic!("called inc_scope_idx on deferred EntryIdx");
         };
 
-        let arena_idx = ArenaIdx::new(arena_idx.index() + amount);
+        let scope_idx = ScopeIdx::new(scope_idx.index() + amount);
 
-        RawEntryIdx::new(package_idx, arena_idx)
+        RawEntryIdx::new(package_idx, scope_idx)
     }
 }
 
@@ -185,7 +185,7 @@ mod private {
 // TODO: give PackageIdx a niche to
 // support EntryIdx being u64-sized
 index_newtype!(PackageIdx);
-index_newtype!(ArenaIdx);
+index_newtype!(ScopeIdx);
 index_newtype!(DeferredIdx);
 
 impl DeferredIdx {
