@@ -12,7 +12,7 @@ use libpijul::changestore::filesystem::FileSystem as FsChanges;
 use libpijul::changestore::memory::Memory as MemChanges;
 use libpijul::changestore::ChangeStore;
 use libpijul::pristine::sanakirja::{Pristine, SanakirjaError};
-use libpijul::pristine::{ArcTxn, ChannelRef, Hash, Merkle, Position};
+use libpijul::pristine::{ArcTxn, ChannelRef, Hash, Merkle, MutTxnT, Position, TxnT};
 use libpijul::record::{Algorithm, Builder};
 use libpijul::working_copy::memory::Memory as MemWc;
 use libpijul::working_copy::{WorkingCopy, WorkingCopyRead};
@@ -28,6 +28,8 @@ use crate::blob::SymbolView;
 use crate::checkout::MaterializedIndex;
 use crate::error::VcsError;
 use crate::serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
+use crate::serve_cache::{ServeCache, ServeSource, ServedArchive};
+use crate::version::{VersionLabel, VersionState};
 
 // ---------------------------------------------------------------------------
 // Public newtypes
@@ -382,12 +384,28 @@ where
             let bytes = crate::blob::serialize_symbol_blob(payload, *parent, links);
 
             if current_files.contains(&path) {
-                // Update: write new content to working copy.
+                // Update — but only if the content actually differs.
+                //
+                // Skipping an identical rewrite preserves the file's mtime, so
+                // libpijul's stat cache (`modified_since_last_commit`) skips
+                // re-diffing it during `record`. That makes the record diff
+                // O(changed symbols) instead of O(package): the expensive
+                // per-file Myers diff runs only for symbols whose bytes moved,
+                // exactly matching the O(delta) we already get on the output
+                // side. Correctness is independent of the stat cache — we only
+                // ever skip a *no-op* write, never a real change.
+                let mut existing = Vec::new();
                 self.working_copy
-                    .write_file(&path, libpijul::pristine::Inode::ROOT)
-                    .map_err(|e| VcsError::Pijul(anyhow::anyhow!("write_file open: {e}")))?
-                    .write_all(&bytes)
-                    .map_err(|e| VcsError::Pijul(anyhow::anyhow!("write_file write: {e}")))?;
+                    .read_file(&path, &mut existing)
+                    .map_err(|e| VcsError::Pijul(anyhow::anyhow!("read_file (compare) {path}: {e}")))?;
+                if existing != bytes {
+                    self.working_copy
+                        .write_file(&path, libpijul::pristine::Inode::ROOT)
+                        .map_err(|e| VcsError::Pijul(anyhow::anyhow!("write_file open: {e}")))?
+                        .write_all(&bytes)
+                        .map_err(|e| VcsError::Pijul(anyhow::anyhow!("write_file write: {e}")))?;
+                }
+                // else: identical content — leave the file and its mtime alone.
             } else {
                 // Add: put content into working copy and track in txn.
                 self.working_copy.add_file(&path, bytes);
@@ -762,7 +780,26 @@ where
     pub fn materialize_index(&self) -> Result<MaterializedIndex, VcsError> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
+        let index = self.index_from_channel(&txn, &channel)?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (materialize_index): {e}")))?;
+        Ok(index)
+    }
 
+    /// Output an already-opened channel's whole tree into a fresh [`MemWc`] and
+    /// read every `{hex}.nir` file back into a [`MaterializedIndex`].
+    ///
+    /// Channel-parametrized so it serves both the working channel
+    /// ([`materialize_index`](Self::materialize_index)) and any frozen version
+    /// channel ([`materialize_version`](Self::materialize_version)). The caller
+    /// owns the transaction lifecycle (this does **not** commit). The tip Merkle
+    /// is snapshotted inside the same transaction so the resulting index's `tip`
+    /// is consistent with the bytes read.
+    fn index_from_channel(
+        &self,
+        txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
+        channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
+    ) -> Result<MaterializedIndex, VcsError> {
         // Snapshot the tip BEFORE output so it's in the same transaction.
         let tip = txn
             .read()
@@ -774,18 +811,15 @@ where
         libpijul::output::output_repository_no_pending(
             &wc,
             &self.changes,
-            &txn,
-            &channel,
+            txn,
+            channel,
             "",
             true,
             None,
             1,
             0,
         )
-        .map_err(|e| VcsError::Pijul(anyhow::anyhow!("output (materialize_index): {e}")))?;
-
-        txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (materialize_index): {e}")))?;
+        .map_err(|e| VcsError::Pijul(anyhow::anyhow!("output (index_from_channel): {e}")))?;
 
         let mut symbols = std::collections::HashMap::new();
         for path in wc.list_files().into_iter().filter(|p| is_symbol_path(p)) {
@@ -1058,16 +1092,32 @@ where
         &self,
         intro: IntroId,
     ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
-        let path = symbol_path(intro);
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
+        let out = self.checkout_symbol_from_channel(&txn, &channel, intro)?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (checkout_symbol): {e}")))?;
+        Ok(out)
+    }
 
+    /// Output only `symbol_path(intro)` from an already-opened channel into a
+    /// fresh [`MemWc`] and return its bytes, or `None` if absent from that
+    /// channel's tip. Channel-parametrized so it serves both the working
+    /// channel and any frozen version channel
+    /// ([`checkout_symbol_at`](Self::checkout_symbol_at)). Does **not** commit.
+    fn checkout_symbol_from_channel(
+        &self,
+        txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
+        channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
+        intro: IntroId,
+    ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
+        let path = symbol_path(intro);
         let wc = MemWc::new();
         libpijul::output::output_repository_no_pending(
             &wc,
             &self.changes,
-            &txn,
-            &channel,
+            txn,
+            channel,
             &path,
             true,
             None,
@@ -1075,9 +1125,6 @@ where
             0,
         )
         .map_err(|e| VcsError::Pijul(anyhow::anyhow!("output (checkout_symbol): {e}")))?;
-
-        txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (checkout_symbol): {e}")))?;
 
         let files = wc.list_files();
         if files.iter().any(|p| p == &path) {
@@ -1109,6 +1156,330 @@ where
             }
         }
         Ok(result)
+    }
+
+    // =======================================================================
+    // Historical replay
+    //
+    // Efficient replay of any published version, without eager per-version
+    // snapshots. Storage is the content-shared pijul graph (unchanged symbols
+    // stored once across all versions). A version is a *frozen channel* forked
+    // from the working channel at publish time; serving it is a graph walk in
+    // O(state), not O(history) — Zod 2.0 and Zod 5.0 cost the same modulo their
+    // sizes. Per-symbol history and version diffs are native graph reads.
+    // =======================================================================
+
+    /// Look up an existing channel by name (does **not** create it).
+    fn load_channel_ref(
+        &self,
+        txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
+        name: &str,
+    ) -> Result<Option<ChannelRef<libpijul::pristine::sanakirja::MutTxn0>>, VcsError> {
+        let reader = txn.read();
+        reader
+            .load_channel(name)
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("load_channel {name}: {e}")))
+    }
+
+    /// Require an existing version channel, mapping absence to
+    /// [`VcsError::VersionNotFound`].
+    fn require_version_channel(
+        &self,
+        txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
+        label: &VersionLabel,
+    ) -> Result<ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, VcsError> {
+        self.load_channel_ref(txn, &label.channel_name())?
+            .ok_or_else(|| VcsError::VersionNotFound { label: label.as_str().to_owned() })
+    }
+
+    /// **Tag the current working-channel tip as a published version.**
+    ///
+    /// Forks the working channel into a frozen channel `version/{label}` that
+    /// shares the content-addressed pristine graph (a cheap copy-on-write of the
+    /// channel's B-tree roots — no content is duplicated). The version channel is
+    /// never recorded onto again, so it forever reconstructs exactly this IR.
+    ///
+    /// Returns the [`VersionState`] (the tip Merkle) identifying the version.
+    /// Errors with [`VcsError::VersionAlreadyTagged`] if the version already
+    /// exists — tagging is strict, never a silent overwrite.
+    pub fn tag_version(&self, label: &VersionLabel) -> Result<VersionState, VcsError> {
+        let txn = self.arc_txn()?;
+        let version_channel = label.channel_name();
+
+        if self.load_channel_ref(&txn, &version_channel)?.is_some() {
+            return Err(VcsError::VersionAlreadyTagged { label: label.as_str().to_owned() });
+        }
+
+        let main = Self::open_or_create_channel(&txn, &self.channel_name)?;
+        let state = {
+            let reader = txn.read();
+            reader
+                .current_state(&main.read())
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (tag): {e}")))?
+                .to_bytes()
+        };
+
+        // Fork the working channel at its current tip into the version channel.
+        txn.write()
+            .fork(&main, &version_channel)
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("fork {version_channel}: {e}")))?;
+
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (tag_version): {e}")))?;
+
+        Ok(VersionState::from_bytes(state))
+    }
+
+    /// The [`VersionState`] of a tagged version — its channel tip Merkle. Cheap:
+    /// reads the tip, no output. Errors [`VcsError::VersionNotFound`] if untagged.
+    pub fn version_state(&self, label: &VersionLabel) -> Result<VersionState, VcsError> {
+        let txn = self.arc_txn()?;
+        let channel = self.require_version_channel(&txn, label)?;
+        let state = {
+            let reader = txn.read();
+            reader
+                .current_state(&channel.read())
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (version): {e}")))?
+                .to_bytes()
+        };
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (version_state): {e}")))?;
+        Ok(VersionState::from_bytes(state))
+    }
+
+    /// **Reconstruct a version's full IR** as a [`MaterializedIndex`] of borrowed
+    /// [`SymbolView`]s — a graph walk of that version's frozen channel, O(state).
+    /// Age-independent: an old version costs no more than a new one of the same
+    /// size.
+    pub fn materialize_version(&self, label: &VersionLabel) -> Result<MaterializedIndex, VcsError> {
+        let txn = self.arc_txn()?;
+        let channel = self.require_version_channel(&txn, label)?;
+        let index = self.index_from_channel(&txn, &channel)?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (materialize_version): {e}")))?;
+        Ok(index)
+    }
+
+    /// **Check out a single symbol at a version** — a per-file graph output,
+    /// O(symbol). Returns `None` if that intro is absent from the version.
+    pub fn checkout_symbol_at(
+        &self,
+        label: &VersionLabel,
+        intro: IntroId,
+    ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
+        let txn = self.arc_txn()?;
+        let channel = self.require_version_channel(&txn, label)?;
+        let out = self.checkout_symbol_from_channel(&txn, &channel, intro)?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (checkout_symbol_at): {e}")))?;
+        Ok(out)
+    }
+
+    /// **Per-symbol history / blame** over the working channel's linear history:
+    /// every change that touched symbol `intro`, newest first.
+    ///
+    /// Native because each symbol is a stable `{intro}.nir` file (IntroId is
+    /// stable across versions), so libpijul's `log_for_path` walks exactly that
+    /// file's change history. Returns an empty vector if the symbol is absent
+    /// from the current tip.
+    pub fn symbol_history(&self, intro: IntroId) -> Result<Vec<ChangeHashHex>, VcsError> {
+        let txn = self.arc_txn()?;
+        let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
+        let target = symbol_path(intro);
+
+        let mut hashes = Vec::new();
+        {
+            let reader = txn.read();
+            let graph = channel.read();
+
+            // Resolve the symbol file's graph Position among the root's children.
+            let mut position: Option<Position<libpijul::pristine::ChangeId>> = None;
+            for entry in libpijul::fs::iter_graph_children(
+                &*reader,
+                &self.changes,
+                &graph,
+                Position::ROOT,
+            )
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("iter_graph_children: {e}")))?
+            {
+                let (pos, _vertex, meta, name) = entry
+                    .map_err(|e| VcsError::Pijul(anyhow::anyhow!("graph child: {e}")))?;
+                if meta.is_dir() {
+                    continue;
+                }
+                if name == target {
+                    position = Some(pos);
+                    break;
+                }
+            }
+
+            if let Some(pos) = position {
+                for item in reader
+                    .log_for_path(&graph, pos, 0)
+                    .map_err(|e| VcsError::Pijul(anyhow::anyhow!("log_for_path: {e}")))?
+                {
+                    let hash =
+                        item.map_err(|e| VcsError::Pijul(anyhow::anyhow!("log_for_path entry: {e}")))?;
+                    hashes.push(ChangeHashHex(hash_to_hex(&hash)));
+                }
+            }
+        }
+
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (symbol_history): {e}")))?;
+        Ok(hashes)
+    }
+
+    /// **Symbol-level diff between two versions**: which intros were added,
+    /// removed, or modified going from `from` to `to`.
+    ///
+    /// Correct and simple: reconstructs both version indices and compares by
+    /// intro identity + payload bytes. (The change objects between the two
+    /// channel states — see [`changes_between`](Self::changes_between) — give the
+    /// native pijul view of the same delta.)
+    pub fn diff_versions(
+        &self,
+        from: &VersionLabel,
+        to: &VersionLabel,
+    ) -> Result<VersionDiff, VcsError> {
+        let a = self.materialize_version(from)?;
+        let b = self.materialize_version(to)?;
+
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut modified = Vec::new();
+
+        for intro in b.intros() {
+            match a.get(intro) {
+                None => added.push(intro),
+                Some(old) => {
+                    let new = b.get(intro).expect("intro came from b.intros()");
+                    if old[..] != new[..] {
+                        modified.push(intro);
+                    }
+                }
+            }
+        }
+        for intro in a.intros() {
+            if b.get(intro).is_none() {
+                removed.push(intro);
+            }
+        }
+
+        // Deterministic ordering by intro bytes.
+        let by_bytes = |x: &IntroId, y: &IntroId| x.as_bytes().cmp(y.as_bytes());
+        added.sort_by(by_bytes);
+        removed.sort_by(by_bytes);
+        modified.sort_by(by_bytes);
+
+        Ok(VersionDiff { added, removed, modified })
+    }
+
+    /// The change hashes present in `to`'s channel but not in `from`'s — the
+    /// **native pijul change delta** between two versions, in recorded order.
+    pub fn changes_between(
+        &self,
+        from: &VersionLabel,
+        to: &VersionLabel,
+    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+        let txn = self.arc_txn()?;
+        let from_channel = self.require_version_channel(&txn, from)?;
+        let to_channel = self.require_version_channel(&txn, to)?;
+
+        let from_set: std::collections::HashSet<String> = self
+            .channel_log(&txn, &from_channel)?
+            .into_iter()
+            .map(|h| h.0)
+            .collect();
+        let delta = self
+            .channel_log(&txn, &to_channel)?
+            .into_iter()
+            .filter(|h| !from_set.contains(&h.0))
+            .collect();
+
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (changes_between): {e}")))?;
+        Ok(delta)
+    }
+
+    /// The change hashes in a channel, oldest first. Does not commit.
+    fn channel_log(
+        &self,
+        txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
+        channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
+    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+        let reader = txn.read();
+        let mut out = Vec::new();
+        for item in reader
+            .log(&channel.read(), 0)
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("channel_log: {e}")))?
+        {
+            let (_n, (serialized_hash, _merkle)) =
+                item.map_err(|e| VcsError::Pijul(anyhow::anyhow!("channel_log entry: {e}")))?;
+            let hash: Hash = serialized_hash.into();
+            out.push(ChangeHashHex(hash_to_hex(&hash)));
+        }
+        Ok(out)
+    }
+
+    /// **Serve a version's sealed archive through the leaky-bucket hot cache.**
+    ///
+    /// - **Cache hit** → returns the sealed archive with **no graph walk**
+    ///   ([`ServeSource::Cached`]).
+    /// - **Miss, admitted** → materializes the version (one graph walk), seals
+    ///   it, and stores it so the next read is a hit
+    ///   ([`ServeSource::SealedAndStored`]).
+    /// - **Miss, throttled** → materializes and seals but does **not** store it
+    ///   ([`ServeSource::SealedThrottled`]); the leaky bucket is protecting the
+    ///   hot set from a cold-version scan.
+    ///
+    /// Correctness never depends on the gate — every call returns the requested
+    /// archive.
+    pub fn serve_version_cached(
+        &self,
+        label: &VersionLabel,
+        cache: &ServeCache,
+    ) -> Result<ServedArchive, VcsError> {
+        let state = self.version_state(label)?;
+
+        if let Some(archive) = cache.get(state) {
+            return Ok(ServedArchive { archive, source: ServeSource::Cached });
+        }
+
+        let index = self.materialize_version(label)?;
+        let archive = std::sync::Arc::new(self.seal_from_index(&index)?);
+
+        let source = if cache.try_admit() {
+            cache.insert(state, std::sync::Arc::clone(&archive));
+            ServeSource::SealedAndStored
+        } else {
+            ServeSource::SealedThrottled
+        };
+
+        Ok(ServedArchive { archive, source })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VersionDiff
+// ---------------------------------------------------------------------------
+
+/// The symbol-level delta between two versions (see
+/// [`IrRepository::diff_versions`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VersionDiff {
+    /// Intros present in `to` but not in `from`.
+    pub added: Vec<IntroId>,
+    /// Intros present in `from` but not in `to`.
+    pub removed: Vec<IntroId>,
+    /// Intros present in both, with different payload bytes.
+    pub modified: Vec<IntroId>,
+}
+
+impl VersionDiff {
+    /// True if the two versions are identical at the symbol level.
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.modified.is_empty()
     }
 }
 

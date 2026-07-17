@@ -23,4 +23,19 @@ pub enum VcsError {
     /// A `symbols/*` file contained unexpected or empty content.
     #[error("corrupt symbol file at path '{path}': {reason}")]
     CorruptSymbolFile { path: String, reason: String },
+
+    /// A [`VersionLabel`](crate::version::VersionLabel) string was empty or
+    /// contained a channel-unsafe character.
+    #[error("invalid version label '{label}': {reason}")]
+    InvalidVersionLabel { label: String, reason: String },
+
+    /// [`tag_version`](crate::repo::IrRepository::tag_version) was asked to tag a
+    /// version whose channel already exists.
+    #[error("version '{label}' is already tagged")]
+    VersionAlreadyTagged { label: String },
+
+    /// A historical-serving call named a version that was never tagged (its
+    /// channel does not exist).
+    #[error("version '{label}' has not been tagged")]
+    VersionNotFound { label: String },
 }

@@ -31,6 +31,8 @@ pub mod checkout;
 pub mod error;
 pub mod repo;
 pub mod serialize;
+pub mod serve_cache;
+pub mod version;
 
 #[cfg(test)]
 mod tests;
@@ -38,5 +40,7 @@ mod tests;
 pub use blob::{serialize_symbol_blob, BlobError, LinkView, SymbolView};
 pub use checkout::MaterializedIndex;
 pub use error::VcsError;
-pub use repo::{ChangeHashHex, IrRepository, IrTip};
+pub use repo::{ChangeHashHex, IrRepository, IrTip, VersionDiff};
 pub use serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
+pub use serve_cache::{ServeCache, ServeSource, ServedArchive};
+pub use version::{VersionLabel, VersionState};
