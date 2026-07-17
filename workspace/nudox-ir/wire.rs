@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use nudox_change::{ContentBlake3, IntroId, StableRef};
 
 use crate::kind::KindDiscriminant;
+use crate::symbol::Visibility;
 
 // ---------------------------------------------------------------------------
 // TypeRefWire
@@ -187,7 +188,10 @@ pub struct DocLinkWire {
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub struct SymbolWire {
     pub name: String,
-    pub visibility: u8,
+    /// Typed access level. Postcard encodes the variant index, which is
+    /// byte-identical to the former raw-`u8` encoding (see the payload-hash
+    /// golden pin).
+    pub visibility: Visibility,
     pub documentation: Option<String>,
     pub source_path: String,
     pub span_start: u32,
@@ -242,9 +246,8 @@ pub struct ReferencePayload {
 /// The fully-sealed payload for one intro stored in the [`crate::apply::PristineIntroTable`].
 ///
 /// The `payload_hash` is a domain-separated BLAKE3 over the postcard encoding of
-/// `(symbol, kind_disc, kind, flags)`. It is used as the `before_hash` field in
-/// [`crate::atom::IrAtom::Update`] and [`crate::atom::IrAtom::Delete`] to detect
-/// concurrent write conflicts.
+/// `(symbol, kind_disc, kind, flags)`. It gives every payload a stable content
+/// identity for lineage and change detection (the blob format's `hash` line).
 ///
 /// Construct via [`OwnedEntryPayload::sealed`]; **never** set `payload_hash` manually.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
@@ -297,34 +300,6 @@ impl OwnedEntryPayload {
         let payload_hash = Self::compute_payload_hash(&symbol, &kind_disc, &kind, &flags);
         Self { symbol, kind_disc, kind, flags, payload_hash }
     }
-
-    /// Create a minimal placeholder payload where `payload_hash` is forcibly set
-    /// to `known_hash`.
-    ///
-    /// # Safety (semantic)
-    ///
-    /// This placeholder is **only valid** as the `entry` field of an inverse
-    /// [`crate::atom::IrAtom::Insert`] atom returned by [`crate::atom::IrAtom::inverse`]
-    /// on a `Delete`. Applying such a placeholder directly will fail or produce
-    /// incorrect state — the actual before-entry must be recovered from the change
-    /// `contents` snapshot first.
-    pub fn placeholder_for_recovery(known_hash: ContentBlake3) -> Self {
-        let symbol = SymbolWire {
-            name: String::new(),
-            visibility: 0,
-            documentation: None,
-            source_path: String::new(),
-            span_start: 0,
-            span_end: 0,
-            aliases: Vec::new(),
-            deprecation: None,
-            doc_links: Vec::new(),
-        };
-        let kind = KindWire::Module(ModuleWire {});
-        let kind_disc = KindDiscriminant::Module;
-        let flags = EntryPayloadFlags::default();
-        Self { symbol, kind_disc, kind, flags, payload_hash: known_hash }
-    }
 }
 
 #[cfg(test)]
@@ -335,7 +310,7 @@ mod tests {
     fn payload_hash_is_deterministic() {
         let sym = SymbolWire {
             name: "foo".into(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".into(),
             span_start: 0,
@@ -360,7 +335,7 @@ mod tests {
     fn sealed_payload_hash_matches_computed() {
         let sym = SymbolWire {
             name: "bar".into(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "src/main.rs".into(),
             span_start: 5,
@@ -375,6 +350,44 @@ mod tests {
         let expected = OwnedEntryPayload::compute_payload_hash(&sym, &kind_disc, &kind, &flags);
         let payload = OwnedEntryPayload::sealed(sym, kind_disc, kind, flags);
         assert_eq!(payload.payload_hash, expected);
+    }
+
+    /// **Golden pin** of the payload-hash derivation: postcard of the
+    /// `(symbol, kind_disc, kind, flags)` tuple under the `nudox.entry.v1`
+    /// domain. `payload_hash` is durable identity (before-hash lineage, blob
+    /// `hash` lines), so encoding drift here is a wire-stability break — an
+    /// intentional change requires a new domain tag.
+    #[test]
+    fn payload_hash_golden_pin() {
+        let sym = SymbolWire {
+            name: "golden".into(),
+            visibility: Visibility::Private,
+            documentation: Some("docs".into()),
+            source_path: "src/lib.rs".into(),
+            span_start: 7,
+            span_end: 21,
+            aliases: vec!["alias_a".into()],
+            deprecation: Some(DeprecationWire { note: Some("old".into()), since: None }),
+            doc_links: Vec::new(),
+        };
+        let kind = KindWire::Function(FunctionWire {
+            input_params: Box::new([ParamWire {
+                name: Some("x".into()),
+                ty: TypeRefWire::Same(IntroId::from_raw([0x11; 32])),
+            }]),
+            output_params: Box::new([]),
+        });
+        let h = OwnedEntryPayload::compute_payload_hash(
+            &sym,
+            &KindDiscriminant::Function,
+            &kind,
+            &EntryPayloadFlags::default(),
+        );
+        assert_eq!(
+            h.to_hex(),
+            "53906699c9e142e3b69aa7dfad86ab07e2117f33dac33e989dbfb1d20b98b133",
+            "payload-hash preimage drifted — wire-stability break"
+        );
     }
 
     #[test]

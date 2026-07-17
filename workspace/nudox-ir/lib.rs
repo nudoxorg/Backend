@@ -31,7 +31,7 @@ pub mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use apply::{LinkRecord, MaterializedEntry, PristineIntroTable};
+pub use apply::{LinkRecord, PristineIntroTable};
 pub use builder::{EntryBuilder, SymbolBuf};
 pub use entry::{Entry, EntryInner, Node};
 pub use index::{ArenaIdx, EntryIdx, EntryKind, LinkId, PackageIdx, RawEntryIdx, StrId, TypeFingerprintId};

@@ -5,10 +5,11 @@
 //! and seals a deterministic archive — with libpijul owning changes/deps/unrecord.
 
 use nudox_change::{
-    ChangeId, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef,
+    EcosystemId, IntroId, PackageLineageId, PackageName, StableRef,
 };
 use nudox_ir::apply::{LinkRecord, PristineIntroTable};
 use nudox_ir::kind::KindDiscriminant;
+use nudox_ir::symbol::Visibility;
 use nudox_ir::wire::{
     EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
 };
@@ -33,7 +34,7 @@ fn sref(i: IntroId) -> StableRef {
 fn sym(name: &str) -> SymbolWire {
     SymbolWire {
         name: name.to_owned(),
-        visibility: 0,
+        visibility: Visibility::Public,
         documentation: None,
         source_path: "src/lib.rs".to_owned(),
         span_start: 0,
@@ -63,7 +64,7 @@ fn module(name: &str) -> OwnedEntryPayload {
 }
 
 /// A module `root` (intro 1) with a nested function `do_thing` (intro 2) linked
-/// to it. Links carry a zero `added_by` because libpijul now owns provenance.
+/// to it.
 fn sample_ir() -> PristineIntroTable {
     let m = intro(1);
     let f = intro(2);
@@ -75,7 +76,6 @@ fn sample_ir() -> PristineIntroTable {
         b: sref(f),
         kind_a: KindDiscriminant::Module,
         kind_b: KindDiscriminant::Function,
-        added_by: ChangeId::from_raw([0u8; 32]),
     });
     ir
 }
@@ -93,7 +93,7 @@ fn record_then_materialize_round_trips() {
     assert!(mat.is_live(intro(1)) && mat.is_live(intro(2)));
     assert_eq!(mat.parent_of(intro(2)), Some(intro(1)), "nesting must survive the round-trip");
     assert_eq!(
-        mat.get(intro(2)).and_then(|e| e.as_live()),
+        mat.get(intro(2)),
         Some(&function("do_thing")),
         "payload bytes must survive the round-trip",
     );

@@ -34,13 +34,6 @@ pub fn encode_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(bytes);
 }
 
-/// `encode_bytes(b) = u32le(len) || b` — length-framed opaque bytes.
-#[inline]
-pub fn encode_bytes(out: &mut Vec<u8>, b: &[u8]) {
-    write_u32le(out, u32::try_from(b.len()).expect("blob longer than u32::MAX bytes"));
-    out.extend_from_slice(b);
-}
-
 /// `encode_segments(ss) = u32le(count) || encode_str(each, root->leaf)`.
 #[inline]
 pub fn encode_segments<S: AsRef<str>>(out: &mut Vec<u8>, segments: &[S]) {

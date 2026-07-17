@@ -95,6 +95,99 @@ fn kind_table_type_hash() -> [u8; 8] {
 }
 
 // ---------------------------------------------------------------------------
+// Section + assemble_archive — the single layout path
+// ---------------------------------------------------------------------------
+
+/// One encoded section body awaiting layout.
+struct Section {
+    id: SectionId,
+    body: Vec<u8>,
+    flags: u32,
+}
+
+/// Lay out header + TOC + section bodies and derive the CAS key.
+///
+/// Layout:
+///   `[0..64)` — `ArchiveHeader` (CRC over the whole header minus the CRC field)
+///   `[64..64+toc_len*32)` — `TocEntry` array
+///   then section bodies back-to-back (byte streams; no alignment needed).
+///
+/// This is the only place archive bytes are assembled — both seal fronts
+/// funnel through it, so layout can never drift between them.
+fn assemble_archive(
+    sections: Vec<Section>,
+    entry_count: u32,
+    string_count: u32,
+    link_count: u32,
+) -> SealedArchive {
+    let toc_len = sections.len() as u64;
+    let toc_start: u64 = 64; // immediately after header
+    let toc_end = toc_start + toc_len * 32; // TocEntry is 32 bytes
+
+    let mut section_offsets: Vec<u64> = Vec::with_capacity(sections.len());
+    let mut cur = toc_end;
+    for s in &sections {
+        section_offsets.push(cur);
+        cur += s.body.len() as u64;
+    }
+    let total_size = cur as usize;
+
+    let mut out: Vec<u8> = vec![0u8; total_size];
+
+    // Write TOC entries.
+    for (i, s) in sections.iter().enumerate() {
+        let crc = crc32_of(&s.body);
+        let entry_off = toc_start as usize + i * 32;
+        let toc_e = TocEntry {
+            section_id: s.id.as_u32().to_le_bytes(),
+            offset: section_offsets[i].to_le_bytes(),
+            length: (s.body.len() as u64).to_le_bytes(),
+            uncompressed_crc32: crc.to_le_bytes(),
+            flags: s.flags.to_le_bytes(),
+            reserved: [0u8; 4],
+        };
+        out[entry_off..entry_off + 32].copy_from_slice(toc_e.as_bytes());
+    }
+
+    // Write section bodies.
+    for (i, s) in sections.iter().enumerate() {
+        let off = section_offsets[i] as usize;
+        out[off..off + s.body.len()].copy_from_slice(&s.body);
+    }
+
+    // Build header (without CRC first, then patch).
+    let type_hash = kind_table_type_hash();
+    let mut hdr = ArchiveHeader {
+        magic: MAGIC,
+        format_version: FORMAT_VERSION.to_le_bytes(),
+        flags: 0u16.to_le_bytes(),
+        type_hash,
+        header_crc32: [0u8; 4], // patched below
+        toc_offset: toc_start.to_le_bytes(),
+        toc_len: toc_len.to_le_bytes(),
+        entry_count: entry_count.to_le_bytes(),
+        string_count: string_count.to_le_bytes(),
+        link_count: link_count.to_le_bytes(),
+        kind_table_version: 1u16.to_le_bytes(),
+        reserved: [0u8; 2],
+        _reserved_tail: [0u8; 12],
+    };
+
+    out[0..64].copy_from_slice(hdr.as_bytes());
+    let crc_val = ArchiveHeader::header_crc(&out[0..64]);
+    hdr.header_crc32 = crc_val.to_le_bytes();
+    out[0..64].copy_from_slice(hdr.as_bytes());
+
+    // CAS key = plain blake3(bytes) (no domain prefix so external verifiers
+    // can recompute it with any BLAKE3 implementation).
+    let cas_bytes = *blake3::hash(&out).as_bytes();
+    let cas_key = CasKey::from_raw(cas_bytes);
+
+    let bytes: Arc<[u8]> = out.into();
+    SealedArchive { bytes, cas_key }
+}
+
+// ---------------------------------------------------------------------------
 // SealEntry — borrowed, opaque-payload entry descriptor
 // ---------------------------------------------------------------------------
 
@@ -353,12 +446,6 @@ fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, SealError> {
     };
     let meta_bytes = postcard::to_allocvec(&meta).map_err(SealError::MetaSerialize)?;
 
-    struct Section {
-        id: SectionId,
-        body: Vec<u8>,
-        flags: u32,
-    }
-
     let sections: Vec<Section> = vec![
         Section { id: SectionId::EntryHeads,       body: entry_heads_bytes,              flags: 0 },
         Section { id: SectionId::EntryPayloads,     body: payload_body_bytes,             flags: 0 },
@@ -373,74 +460,7 @@ fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, SealError> {
         Section { id: SectionId::KindDiscCol,       body: kind_disc_col,                  flags: 0 },
     ];
 
-    // ------------------------------------------------------------------
-    // Step 5 — lay out the archive bytes (same logic as seal_package_archive)
-    // ------------------------------------------------------------------
-
-    let toc_len = sections.len() as u64;
-    let toc_start: u64 = 64;
-    let toc_end = toc_start + toc_len * 32;
-
-    let mut section_offsets: Vec<u64> = Vec::with_capacity(sections.len());
-    let mut cur = toc_end;
-    for s in &sections {
-        section_offsets.push(cur);
-        cur += s.body.len() as u64;
-    }
-    let total_size = cur as usize;
-
-    let mut out: Vec<u8> = vec![0u8; total_size];
-
-    for (i, s) in sections.iter().enumerate() {
-        let crc = crc32_of(&s.body);
-        let entry_off = toc_start as usize + i * 32;
-        let toc_e = TocEntry {
-            section_id: s.id.as_u32().to_le_bytes(),
-            offset: section_offsets[i].to_le_bytes(),
-            length: (s.body.len() as u64).to_le_bytes(),
-            uncompressed_crc32: crc.to_le_bytes(),
-            flags: s.flags.to_le_bytes(),
-            reserved: [0u8; 4],
-        };
-        out[entry_off..entry_off + 32].copy_from_slice(toc_e.as_bytes());
-    }
-
-    for (i, s) in sections.iter().enumerate() {
-        let off = section_offsets[i] as usize;
-        out[off..off + s.body.len()].copy_from_slice(&s.body);
-    }
-
-    let type_hash = kind_table_type_hash();
-    let mut hdr = ArchiveHeader {
-        magic: MAGIC,
-        format_version: FORMAT_VERSION.to_le_bytes(),
-        flags: 0u16.to_le_bytes(),
-        type_hash,
-        header_crc32: [0u8; 4],
-        toc_offset: toc_start.to_le_bytes(),
-        toc_len: toc_len.to_le_bytes(),
-        entry_count: (entry_count as u32).to_le_bytes(),
-        string_count: string_count.to_le_bytes(),
-        link_count: link_count.to_le_bytes(),
-        kind_table_version: 1u16.to_le_bytes(),
-        reserved: [0u8; 2],
-        _reserved_tail: [0u8; 12],
-    };
-
-    out[0..64].copy_from_slice(hdr.as_bytes());
-    let crc_val = crc32_of(&out[0..ArchiveHeader::CRC_OFFSET]);
-    hdr.header_crc32 = crc_val.to_le_bytes();
-    out[0..64].copy_from_slice(hdr.as_bytes());
-
-    // ------------------------------------------------------------------
-    // Step 6 — CAS key
-    // ------------------------------------------------------------------
-
-    let cas_bytes = *blake3::hash(&out).as_bytes();
-    let cas_key = CasKey::from_raw(cas_bytes);
-
-    let bytes: Arc<[u8]> = out.into();
-    Ok(SealedArchive { bytes, cas_key })
+    Ok(assemble_archive(sections, entry_count as u32, string_count, link_count))
 }
 
 // ---------------------------------------------------------------------------
@@ -547,7 +567,7 @@ pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchi
             source_path: src_path_str_id.0.to_le_bytes(),
             span_start: sym.span_start.to_le_bytes(),
             span_end: sym.span_end.to_le_bytes(),
-            visibility: sym.visibility,
+            visibility: sym.visibility as u8,
             flags: payload.flags.0,
             kind_disc: payload.kind_disc.as_u16().to_le_bytes(),
             parent: parent_arena.to_le_bytes(),
@@ -623,12 +643,6 @@ pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchi
     };
     let meta_bytes = postcard::to_allocvec(&meta).map_err(SealError::MetaSerialize)?;
 
-    struct Section {
-        id: SectionId,
-        body: Vec<u8>,
-        flags: u32,
-    }
-
     let sections: Vec<Section> = vec![
         Section { id: SectionId::EntryHeads,       body: entry_heads_bytes,              flags: 0 },
         Section { id: SectionId::EntryPayloads,     body: payload_body_bytes,             flags: 0 },
@@ -643,92 +657,14 @@ pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchi
         Section { id: SectionId::KindDiscCol,       body: kind_disc_col,                  flags: 0 },
     ];
 
-    // ------------------------------------------------------------------
-    // Step 5 — lay out the archive bytes
-    //
-    // Layout:
-    //   [0..64)   — ArchiveHeader (64 bytes; CRC covers [0..12))
-    //   [64..64+toc_len*32) — TocEntry array
-    //   [aligned] — section bodies
-    // ------------------------------------------------------------------
-
-    let toc_len = sections.len() as u64;
-    let toc_start: u64 = 64; // immediately after header
-    let toc_end = toc_start + toc_len * 32; // TocEntry is 32 bytes
-
-    // Compute section offsets (no alignment needed; sections are byte streams).
-    let mut section_offsets: Vec<u64> = Vec::with_capacity(sections.len());
-    let mut cur = toc_end;
-    for s in &sections {
-        section_offsets.push(cur);
-        cur += s.body.len() as u64;
-    }
-    let total_size = cur as usize;
-
-    // Allocate output.
-    let mut out: Vec<u8> = vec![0u8; total_size];
-
-    // Write TOC entries.
-    for (i, s) in sections.iter().enumerate() {
-        let crc = crc32_of(&s.body);
-        let entry_off = toc_start as usize + i * 32;
-        let toc_e = TocEntry {
-            section_id: s.id.as_u32().to_le_bytes(),
-            offset: section_offsets[i].to_le_bytes(),
-            length: (s.body.len() as u64).to_le_bytes(),
-            uncompressed_crc32: crc.to_le_bytes(),
-            flags: s.flags.to_le_bytes(),
-            reserved: [0u8; 4],
-        };
-        out[entry_off..entry_off + 32].copy_from_slice(toc_e.as_bytes());
-    }
-
-    // Write section bodies.
-    for (i, s) in sections.iter().enumerate() {
-        let off = section_offsets[i] as usize;
-        out[off..off + s.body.len()].copy_from_slice(&s.body);
-    }
-
-    // Build header (without CRC first, then patch).
-    let type_hash = kind_table_type_hash();
-    let mut hdr = ArchiveHeader {
-        magic: MAGIC,
-        format_version: FORMAT_VERSION.to_le_bytes(),
-        flags: 0u16.to_le_bytes(),
-        type_hash,
-        header_crc32: [0u8; 4], // patched below
-        toc_offset: toc_start.to_le_bytes(),
-        toc_len: toc_len.to_le_bytes(),
-        entry_count: (entry_count as u32).to_le_bytes(),
-        string_count: string_count.to_le_bytes(),
-        link_count: link_count.to_le_bytes(),
-        kind_table_version: 1u16.to_le_bytes(),
-        reserved: [0u8; 2],
-        _reserved_tail: [0u8; 12],
-    };
-
-    // Write the header into the output buffer temporarily to compute CRC.
-    out[0..64].copy_from_slice(hdr.as_bytes());
-    // CRC covers bytes 0..CRC_OFFSET (= 0..12).
-    let crc_val = crc32_of(&out[0..ArchiveHeader::CRC_OFFSET]);
-    hdr.header_crc32 = crc_val.to_le_bytes();
-    out[0..64].copy_from_slice(hdr.as_bytes());
-
-    // ------------------------------------------------------------------
-    // Step 6 — CAS key = plain blake3(bytes) (no domain prefix)
-    // ------------------------------------------------------------------
-
-    let cas_bytes = *blake3::hash(&out).as_bytes();
-    let cas_key = CasKey::from_raw(cas_bytes);
-
-    let bytes: Arc<[u8]> = out.into();
-    Ok(SealedArchive { bytes, cas_key })
+    Ok(assemble_archive(sections, entry_count as u32, string_count, link_count))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use nudox_change::IntroId;
+    use nudox_ir::symbol::Visibility;
     use nudox_ir::{
         apply::PristineIntroTable,
         kind::KindDiscriminant,
@@ -743,7 +679,7 @@ mod tests {
         OwnedEntryPayload::sealed(
             SymbolWire {
                 name: name.to_string(),
-                visibility: 0,
+                visibility: Visibility::Public,
                 documentation: None,
                 source_path: "src/lib.rs".to_string(),
                 span_start: 0,
@@ -762,7 +698,7 @@ mod tests {
         OwnedEntryPayload::sealed(
             SymbolWire {
                 name: name.to_string(),
-                visibility: 1,
+                visibility: Visibility::Private,
                 documentation: Some("Does things.".to_string()),
                 source_path: "src/lib.rs".to_string(),
                 span_start: 10,
@@ -784,7 +720,7 @@ mod tests {
         OwnedEntryPayload::sealed(
             SymbolWire {
                 name: name.to_string(),
-                visibility: 0,
+                visibility: Visibility::Public,
                 documentation: None,
                 source_path: "src/lib.rs".to_string(),
                 span_start: 100,
@@ -1155,6 +1091,71 @@ mod tests {
             sealed_a.cas_key.as_bytes(),
             sealed_b.cas_key.as_bytes(),
             "seal_from_entries must be order-independent: shuffled input must yield identical cas_key",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Adversarial open tests — malicious/corrupt bytes must error, never panic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn open_truncated_archive_errors_not_panics() {
+        let sealed = seal_package_archive(&build_test_pristine()).unwrap();
+        let full = &sealed.bytes;
+        for cut in [0usize, 3, 4, 16, 63, 64, 65, 100, full.len() - 1] {
+            let cut = cut.min(full.len() - 1);
+            let bytes: std::sync::Arc<[u8]> = full[..cut].into();
+            assert!(
+                open_archive(bytes).is_err(),
+                "open of a {cut}-byte truncation must return Err"
+            );
+        }
+    }
+
+    #[test]
+    fn open_bad_magic_errors() {
+        let sealed = seal_package_archive(&build_test_pristine()).unwrap();
+        let mut bad = sealed.bytes.to_vec();
+        bad[0] ^= 0xFF;
+        assert!(
+            matches!(open_archive(bad.into()), Err(crate::error::ArchiveError::BadMagic)),
+            "flipped magic must be BadMagic"
+        );
+    }
+
+    #[test]
+    fn open_corrupt_section_body_errors() {
+        let sealed = seal_package_archive(&build_test_pristine()).unwrap();
+        // Flip one byte in every position of the first 200 bytes past the
+        // header + a byte at the very end; every flip must produce Err (CRC,
+        // truncation, or format error), never a panic or silent success.
+        let full = sealed.bytes.to_vec();
+        let probe: Vec<usize> = (64..full.len().min(264)).chain([full.len() - 1]).collect();
+        for i in probe {
+            let mut bad = full.clone();
+            bad[i] ^= 0xFF;
+            assert!(
+                open_archive(bad.into()).is_err(),
+                "flipping byte {i} must be detected"
+            );
+        }
+    }
+
+    #[test]
+    fn open_crafted_toc_overflow_errors() {
+        let sealed = seal_package_archive(&build_test_pristine()).unwrap();
+        // Patch toc_offset (bytes 20..28) and toc_len (28..36) to huge values
+        // whose product/sum wraps usize, then re-stamp a valid header CRC so
+        // the crafted header actually reaches the TOC bounds logic — it must
+        // fail closed (Truncated), not wrap and panic.
+        let mut bad = sealed.bytes.to_vec();
+        bad[20..28].copy_from_slice(&(u64::MAX - 15).to_le_bytes());
+        bad[28..36].copy_from_slice(&(u64::MAX / 32).to_le_bytes());
+        let crc = ArchiveHeader::header_crc(&bad[0..64]);
+        bad[16..20].copy_from_slice(&crc.to_le_bytes());
+        assert!(
+            matches!(open_archive(bad.into()), Err(crate::error::ArchiveError::Truncated)),
+            "wrapping toc_offset/toc_len must be Truncated, not a panic"
         );
     }
 }

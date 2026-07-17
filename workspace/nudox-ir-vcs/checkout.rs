@@ -158,6 +158,7 @@ mod tests {
     use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName};
     use nudox_ir::apply::PristineIntroTable;
     use nudox_ir::kind::KindDiscriminant;
+    use nudox_ir::symbol::Visibility;
     use nudox_ir::wire::{
         EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
     };
@@ -181,7 +182,7 @@ mod tests {
     fn sym(name: &str) -> SymbolWire {
         SymbolWire {
             name: name.to_owned(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".to_owned(),
             span_start: 0,

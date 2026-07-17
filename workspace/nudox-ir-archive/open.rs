@@ -5,7 +5,8 @@
 //! 1. Check magic bytes (`b"NdIr"`).
 //! 2. Check `format_version` ≤ [`FORMAT_VERSION`]; reject unknown with
 //!    [`ArchiveError::UnsupportedFormat`].
-//! 3. Verify `header_crc32` over bytes `[0..ArchiveHeader::CRC_OFFSET)`.
+//! 3. Verify `header_crc32` over the whole header minus the CRC field itself;
+//!    reject nonzero reserved header/TOC fields.
 //! 4. Parse the TOC; for each entry:
 //!    - Check `length` ≤ [`MAX_SECTION_UNCOMPRESSED`]; return
 //!      [`ArchiveError::SectionTooLarge`] if violated.
@@ -50,18 +51,30 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
         });
     }
 
-    // --- Step 3: header CRC ---
-    let computed_crc = crc32_of(&bytes[0..ArchiveHeader::CRC_OFFSET]);
+    // --- Step 3: header CRC (whole header minus the CRC field itself) ---
+    let computed_crc = ArchiveHeader::header_crc(&bytes[0..64]);
     if computed_crc != hdr.header_crc32() {
         return Err(ArchiveError::Crc);
+    }
+
+    // v1: reserved header fields must be zero.
+    if hdr.flags() != 0 {
+        return Err(ArchiveError::ReservedNonzero("header.flags"));
+    }
+    if hdr.reserved != [0u8; 2] || hdr._reserved_tail != [0u8; 12] {
+        return Err(ArchiveError::ReservedNonzero("header.reserved"));
     }
 
     // --- Step 4: parse TOC and validate sections ---
     let toc_offset = hdr.toc_offset() as usize;
     let toc_len = hdr.toc_len() as usize;
-    let toc_bytes_len = toc_len * std::mem::size_of::<TocEntry>(); // 32 bytes each
+    // Both the multiply and the add can wrap on crafted headers — fail closed.
+    let toc_end = toc_len
+        .checked_mul(std::mem::size_of::<TocEntry>()) // 32 bytes each
+        .and_then(|toc_bytes_len| toc_offset.checked_add(toc_bytes_len))
+        .ok_or(ArchiveError::Truncated)?;
 
-    if bytes.len() < toc_offset + toc_bytes_len {
+    if bytes.len() < toc_end {
         return Err(ArchiveError::Truncated);
     }
 
@@ -77,6 +90,15 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
         let offset = toc_e.offset() as usize;
         let length = toc_e.length();
         let stored_crc = toc_e.uncompressed_crc32();
+
+        // v1: only the OPTIONAL flag bit is defined; reserved bits/bytes must
+        // be zero so corrupted or non-canonical TOC entries fail closed.
+        if toc_e.flags() & !crate::header::TOC_ENTRY_FLAG_OPTIONAL != 0 {
+            return Err(ArchiveError::ReservedNonzero("toc.flags"));
+        }
+        if toc_e.reserved != [0u8; 4] {
+            return Err(ArchiveError::ReservedNonzero("toc.reserved"));
+        }
 
         // Size guard.
         if length > MAX_SECTION_UNCOMPRESSED {

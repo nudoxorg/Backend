@@ -20,6 +20,7 @@ use libpijul::changestore::filesystem::FileSystem as FsChanges;
 use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 use nudox_ir::apply::PristineIntroTable;
 use nudox_ir::kind::KindDiscriminant;
+use nudox_ir::symbol::Visibility;
 use nudox_ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
 
 use crate::repo::IrRepository;
@@ -36,7 +37,7 @@ fn intro_n(n: u32) -> IntroId {
 fn func(name: &str) -> OwnedEntryPayload {
     let sym = SymbolWire {
         name: name.to_owned(),
-        visibility: 0,
+        visibility: Visibility::Public,
         documentation: None,
         source_path: "src/lib.rs".to_owned(),
         span_start: 0,

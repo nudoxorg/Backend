@@ -289,6 +289,64 @@ mod tests {
         let _ = fp.0;
     }
 
+    /// **Golden pins** for the opcode walk (design: "Golden vectors committed"
+    /// under the type-skeleton section). Skeleton bytes and the derived
+    /// fingerprint are *durable identity* — they feed overload disambiguators
+    /// and therefore `IntroId` preimages. Any encoding drift breaks identity of
+    /// already-published symbols, so an intentional change requires a new
+    /// domain tag (`nudox.tyskel.v2`), never an edit of these vectors.
+    #[test]
+    fn skeleton_golden_vectors() {
+        let intro = IntroId::from_raw([0xAB; 32]);
+
+        // &mut [i32; 3] as: Array { ty: Same(intro), length: 3 }
+        let mut out = Vec::new();
+        type_wire_skeleton(&TypeWire::Array { ty: Box::new(TypeRefWire::Same(intro)), length: 3 }, &mut out);
+        let mut expected = vec![0x14];
+        expected.extend_from_slice(&3u64.to_le_bytes());
+        expected.push(0x01);
+        expected.extend_from_slice(&[0xAB; 32]);
+        assert_eq!(out, expected, "Array opcode layout drifted");
+
+        // Integer { signed: true, width: Fixed(32) }
+        let mut out = Vec::new();
+        type_wire_skeleton(
+            &TypeWire::Primitive(PrimitiveWire::Integer { signed: true, width: WidthWire::Fixed(32) }),
+            &mut out,
+        );
+        assert_eq!(out, vec![0x11, 0x01, 0x01, 0x01, 32, 0, 0, 0], "Integer opcode layout drifted");
+
+        // Reference { lifetime ignored, mutable, ty }
+        let mut out = Vec::new();
+        type_wire_skeleton(
+            &TypeWire::Primitive(PrimitiveWire::Reference {
+                lifetime: Some("'a".to_owned()),
+                mutable: true,
+                ty: Box::new(TypeRefWire::Same(intro)),
+            }),
+            &mut out,
+        );
+        let mut expected = vec![0x11, 0x08, 0x01, 0x01];
+        expected.extend_from_slice(&[0xAB; 32]);
+        assert_eq!(out, expected, "Reference opcode layout drifted (lifetime must be excluded)");
+
+        // Builtin("String") — name is structural, length-prefixed.
+        let mut out = Vec::new();
+        type_wire_skeleton(&TypeWire::Primitive(PrimitiveWire::Builtin("String".to_owned())), &mut out);
+        let mut expected = vec![0x11, 0x09];
+        expected.extend_from_slice(&6u32.to_le_bytes());
+        expected.extend_from_slice(b"String");
+        assert_eq!(out, expected, "Builtin opcode layout drifted");
+    }
+
+    /// **Golden pin** of the fingerprint derivation (`nudox.tyskel.v1` domain,
+    /// first 4 LE bytes). See `skeleton_golden_vectors` for why.
+    #[test]
+    fn fingerprint_golden_pin() {
+        let fp = type_fingerprint(&[0x10]); // SelfType
+        assert_eq!(fp.0, 0x9001_4699, "tyskel fingerprint derivation drifted");
+    }
+
     #[test]
     fn signature_separator() {
         let inputs = vec![ParamWire { name: None, ty: TypeRefWire::Same(dummy_intro()) }];

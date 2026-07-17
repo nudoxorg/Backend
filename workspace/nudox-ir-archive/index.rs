@@ -167,52 +167,10 @@ impl<'a> PostingIndexView<'a> {
         Ok(Self { bytes, n })
     }
 
-    /// Return the slice of `ArenaIdx` values for `key` (may be empty).
-    pub fn lookup(&self, key: u32) -> &'a [ArenaIdx] {
-        // Find the first posting with this key, then the first with key+1.
-        let lo = self.lower_bound(key);
-        let hi = self.lower_bound(key.wrapping_add(1));
-        if lo >= hi { return &[]; }
-        // Reinterpret the arena_idx column as &[ArenaIdx].
-        // Each posting is 8 bytes: [key u32le][arena_idx u32le].
-        // We want the arena_idx of postings [lo..hi].
-        //
-        // We build a slice from the raw bytes.  Since ArenaIdx is repr(transparent)
-        // over u32 and we are on a little-endian target, we can directly cast the
-        // stride-4 column.  To avoid unsafe transmute we return a slice built
-        // from the underlying bytes via a helper.
-        let data_start = 4usize; // after the count
-        let first_off = data_start + lo * 8 + 4; // skip key field
-        let count = hi - lo;
-        // Build a slice of &[ArenaIdx] by reading through the raw bytes.
-        // Each element sits at stride 8, offset 4 within each posting.
-        // Since we can't easily return a non-contiguous slice, we use a safe
-        // approach: return a slice of a locally built vec — but that allocates.
-        // Instead, we return a slice of the raw bytes re-interpreted.
-        //
-        // The arena_idx fields are contiguous only if we had a separate column;
-        // they are interleaved here.  We must return a live reference, so we
-        // store the postings in a layout where arena_idx values are packed.
-        //
-        // Resolution: at build time we sort by (key, arena_idx) and store
-        // postings that share the same key contiguously.  We cannot return a
-        // `&[ArenaIdx]` from interleaved bytes without unsafe reinterpretation.
-        // We use a separate "dense postings" helper that stores only arena_idx
-        // when the key matches — but that requires rebuilding at read time.
-        //
-        // ACTUAL APPROACH: return a `PostingsRange` iterator instead.
-        // Since the signature in view.rs uses `impl Iterator`, we expose a helper
-        // that the view calls as an iterator.
-        //
-        // For the `by_type_fingerprint` case which returns `&'a [ArenaIdx]`,
-        // we need a contiguous slice.  We achieve this by packing a *dense*
-        // column format separately in TypeSkeletonIndex (see DensePostingIndex).
-        //
-        // For NameIndex, the view returns `impl Iterator<Item=ArenaIdx>` so we
-        // can return a range-iterator without a contiguous slice.
-        let _ = (first_off, count); // suppress unused warnings; used by range()
-        &[]   // placeholder — see range() below
-    }
+    // NOTE: postings are interleaved `[key u32le][arena_idx u32le]` pairs, so a
+    // borrowed `&[ArenaIdx]` slice per key is impossible without a dense column
+    // (that's what `DensePostingIndexView` is for). Lookups go through
+    // `iter_key`.
 
     /// Return `(lo, hi)` indices into the posting array for `key`.
     pub fn range(&self, key: u32) -> (usize, usize) {

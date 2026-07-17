@@ -150,11 +150,6 @@ blake3_newtype!(
     IntroId, "intro"
 );
 
-/// Alias used at the `ChannelStore` tip API — same bits as
-/// [`ChangeSetFingerprint`] in v1, kept as an alias so a future homomorphic
-/// Merkle state can replace it without churning call sites.
-pub type MerkleState = ChangeSetFingerprint;
-
 impl ChangeSetFingerprint {
     /// Domain tag for the v1 change-set fingerprint.
     pub const DOMAIN: &'static str = "nudox.cset.v1";

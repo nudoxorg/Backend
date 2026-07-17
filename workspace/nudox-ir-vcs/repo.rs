@@ -12,7 +12,7 @@ use libpijul::changestore::filesystem::FileSystem as FsChanges;
 use libpijul::changestore::memory::Memory as MemChanges;
 use libpijul::changestore::ChangeStore;
 use libpijul::pristine::sanakirja::{Pristine, SanakirjaError};
-use libpijul::pristine::{ArcTxn, ChannelRef, Hash, Merkle, MutTxnT, Position, TxnT};
+use libpijul::pristine::{ArcTxn, ChannelRef, ChannelTxnT, Hash, Merkle, MutTxnT, Position, TxnT};
 use libpijul::record::{Algorithm, Builder};
 use libpijul::working_copy::memory::Memory as MemWc;
 use libpijul::working_copy::{WorkingCopy, WorkingCopyRead};
@@ -134,6 +134,10 @@ pub struct IrRepository<C = MemChanges> {
     /// via `sync_output_count()` to verify the O(delta) invariant.
     #[cfg(test)]
     sync_output_count: std::cell::Cell<u64>,
+    /// Test-only wall-clock override for `record_generation`'s write stamps.
+    /// Simulates a backwards-stepping `SystemTime` (see `stamp_written`).
+    #[cfg(test)]
+    mock_now: std::cell::Cell<Option<std::time::SystemTime>>,
 }
 
 impl IrRepository<MemChanges> {
@@ -155,6 +159,8 @@ impl IrRepository<MemChanges> {
             working_copy_tip: std::cell::Cell::new([0u8; 32]),
             #[cfg(test)]
             sync_output_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            mock_now: std::cell::Cell::new(None),
         })
     }
 }
@@ -180,6 +186,8 @@ impl IrRepository<FsChanges> {
             working_copy_tip: std::cell::Cell::new([0u8; 32]),
             #[cfg(test)]
             sync_output_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            mock_now: std::cell::Cell::new(None),
         })
     }
 }
@@ -192,6 +200,15 @@ where
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
+
+    /// The wall clock, overridable in tests to simulate a backwards step.
+    fn now(&self) -> std::time::SystemTime {
+        #[cfg(test)]
+        if let Some(t) = self.mock_now.get() {
+            return t;
+        }
+        std::time::SystemTime::now()
+    }
 
     fn arc_txn(&self) -> Result<ArcTxn<libpijul::pristine::sanakirja::MutTxn0>, VcsError> {
         self.env.arc_txn_begin().map_err(|e| {
@@ -302,7 +319,7 @@ where
         }
 
         // 2. Compute the desired file set from `ir`.
-        //    For each live intro we build a SymbolFile. Links are stored on
+        //    For each live intro we build a symbol blob. Links are stored on
         //    the canonical-owner side: the endpoint whose IntroId bytes are
         //    smallest (or, for cross-package links, the local endpoint).
         let package_id = &self.package;
@@ -410,6 +427,21 @@ where
                         .map_err(|e| VcsError::Pijul(anyhow::anyhow!("write_file open: {e}")))?
                         .write_all(&bytes)
                         .map_err(|e| VcsError::Pijul(anyhow::anyhow!("write_file write: {e}")))?;
+                    // libpijul's record consults a per-file stat cache: a file
+                    // is re-diffed only when its mtime is >= the channel's
+                    // last-modified time (truncated to the second). The mtime
+                    // comes from the non-monotonic wall clock, so a backwards
+                    // step across a second boundary between two recordings
+                    // would make this really-changed file look stale and its
+                    // modification would be silently dropped from the change.
+                    // Clamp the stamp so a written file can never predate the
+                    // channel tip.
+                    let channel_ms = txn.read().last_modified(&*channel.read());
+                    let floor = std::time::UNIX_EPOCH
+                        + std::time::Duration::from_millis(channel_ms);
+                    self.working_copy
+                        .touch(&path, self.now().max(floor))
+                        .map_err(|e| VcsError::Pijul(anyhow::anyhow!("touch {path}: {e}")))?;
                 }
                 // else: identical content — leave the file and its mtime alone.
             } else {
@@ -577,7 +609,6 @@ where
                     b: link.to_stable_ref(),
                     kind_a: link.kind_self,
                     kind_b: link.kind_other,
-                    added_by: nudox_change::ChangeId::from_raw([0u8; 32]), // libpijul owns provenance
                 });
             }
         }
@@ -1841,6 +1872,7 @@ mod delta_tests {
     use nudox_change::{EcosystemId, PackageName};
     use nudox_ir::apply::PristineIntroTable;
     use nudox_ir::kind::KindDiscriminant;
+    use nudox_ir::symbol::Visibility;
     use nudox_ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, SymbolWire};
 
     fn pkg() -> PackageLineageId {
@@ -1854,7 +1886,7 @@ mod delta_tests {
     fn func(name: &str) -> OwnedEntryPayload {
         let sym = SymbolWire {
             name: name.to_owned(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".to_owned(),
             span_start: 0,
@@ -1945,6 +1977,38 @@ mod delta_tests {
         assert!(std::sync::Arc::ptr_eq(prev.get(intro(3)).unwrap(), idx.get(intro(3)).unwrap()));
     }
 
+    /// **Regression: a backwards wall-clock step must not drop a modification.**
+    ///
+    /// libpijul's record stat-cache re-diffs a file only when its mtime is >=
+    /// the channel's last-modified time. `SystemTime` is not monotonic, so if
+    /// the clock steps backwards across a second boundary between two
+    /// recordings, a genuinely modified symbol file would look stale and its
+    /// change would be silently dropped (observed once as a flake in
+    /// `checkout::tests::incremental_reuse_untouched_arc`). The write path now
+    /// clamps every written file's mtime to the channel tip; this test forces
+    /// the pathological clock (`mock_now = UNIX_EPOCH`) and asserts the
+    /// modification is still recorded.
+    #[test]
+    fn record_generation_survives_backwards_clock_step() {
+        let repo = IrRepository::in_memory(pkg(), "main").unwrap();
+
+        repo.record_generation(&table(&[(1, "root"), (2, "helper")]))
+            .unwrap()
+            .expect("gen A recorded");
+
+        // Simulate the wall clock stepping (far) backwards before gen B.
+        repo.mock_now.set(Some(std::time::UNIX_EPOCH));
+
+        let recorded = repo
+            .record_generation(&table(&[(1, "root_v2"), (2, "helper")]))
+            .unwrap();
+        assert!(recorded.is_some(), "modification must be recorded despite stale clock");
+
+        let idx = repo.materialize_index().unwrap();
+        let view = idx.view(intro(1)).unwrap().unwrap();
+        assert_eq!(view.name(), "root_v2", "channel must contain the modified payload");
+    }
+
     // -----------------------------------------------------------------------
     // O(delta) write-path tests
     // -----------------------------------------------------------------------
@@ -2011,10 +2075,10 @@ mod delta_tests {
         assert!(mat.is_live(intro(2)));
         assert!(mat.is_live(intro(3)));
         // Symbol 2 must be updated (from gen B).
-        let p2 = mat.get(intro(2)).and_then(|e| e.as_live()).unwrap();
+        let p2 = mat.get(intro(2)).unwrap();
         assert_eq!(p2.symbol.name, "beta_v2", "symbol 2 must have updated name from gen B");
         // Symbol 3 must be updated (from gen C).
-        let p3 = mat.get(intro(3)).and_then(|e| e.as_live()).unwrap();
+        let p3 = mat.get(intro(3)).unwrap();
         assert_eq!(p3.symbol.name, "gamma_v2", "symbol 3 must have updated name from gen C");
     }
 
@@ -2079,7 +2143,7 @@ mod delta_tests {
             // Correctness: latest materialize has all three symbols with updated names.
             let mat = repo.materialize().unwrap();
             assert_eq!(mat.live_entries().count(), 3);
-            let p3 = mat.get(intro(3)).and_then(|e| e.as_live()).unwrap();
+            let p3 = mat.get(intro(3)).unwrap();
             assert_eq!(p3.symbol.name, "c_new");
         }
     }

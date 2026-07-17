@@ -3,77 +3,31 @@
 //! This is a pure **container**: a map of live entries keyed by
 //! [`nudox_change::IntroId`], plus their parent edges and links. It is *not* a
 //! change engine — libpijul (via `nudox-ir-vcs`) owns changes, dependencies,
-//! apply, and unrecord. This type is what a `materialize` produces (by reading
-//! libpijul's output tree) and what `nudox-ir-archive` seals into a serve
-//! snapshot.
+//! apply, unrecord, and all provenance (which change introduced or deleted
+//! what). A symbol absent from the table simply has no file at the channel
+//! tip; there are no tombstones here. This type is what a `materialize`
+//! produces (by reading libpijul's output tree) and what `nudox-ir-archive`
+//! seals into a serve snapshot.
 
 use rustc_hash::FxHashMap;
 
 use nudox_change::domain::LinkDomainKey;
-use nudox_change::{ChangeId, ContentBlake3, IntroId, StableRef};
+use nudox_change::{IntroId, StableRef};
 
 use crate::kind::KindDiscriminant;
 use crate::wire::OwnedEntryPayload;
-
-// ---------------------------------------------------------------------------
-// MaterializedEntry
-// ---------------------------------------------------------------------------
-
-/// The materialized state of a single intro.
-///
-/// A `materialize` populates only [`MaterializedEntry::Live`] entries (a symbol
-/// absent from the channel simply has no file); the [`MaterializedEntry::Deleted`]
-/// tombstone variant is retained for callers that track deletions explicitly.
-///
-/// The `Live` variant is large (a full payload) and `Deleted` is small; that is
-/// intentional — entries are accessed by reference through the table, never
-/// moved by value on hot paths, so boxing would only add indirection.
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum MaterializedEntry {
-    /// The intro is live with this payload.
-    Live(OwnedEntryPayload),
-    /// The intro was deleted; its last `payload_hash` and the deleting change
-    /// are recorded for provenance.
-    Deleted {
-        last_hash: ContentBlake3,
-        deleted_by: ChangeId,
-    },
-}
-
-impl MaterializedEntry {
-    /// True if this entry is currently live.
-    #[inline]
-    pub fn is_live(&self) -> bool {
-        matches!(self, MaterializedEntry::Live(_))
-    }
-
-    /// Extract the live payload, or `None`.
-    #[inline]
-    pub fn as_live(&self) -> Option<&OwnedEntryPayload> {
-        match self {
-            MaterializedEntry::Live(p) => Some(p),
-            MaterializedEntry::Deleted { .. } => None,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // LinkRecord
 // ---------------------------------------------------------------------------
 
 /// A materialized undirected link between two stable-ref endpoints.
-///
-/// `added_by` records the change that introduced the link. Under the
-/// libpijul-backed VCS, provenance is owned by libpijul, so a rebuilt table may
-/// carry a placeholder here — the field is retained for API compatibility.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LinkRecord {
     pub a: StableRef,
     pub b: StableRef,
     pub kind_a: KindDiscriminant,
     pub kind_b: KindDiscriminant,
-    pub added_by: ChangeId,
 }
 
 // ---------------------------------------------------------------------------
@@ -81,14 +35,14 @@ pub struct LinkRecord {
 // ---------------------------------------------------------------------------
 
 /// The in-memory materialized IR of a single package channel: a map
-/// `IntroId → MaterializedEntry`, the links, and the parent edges.
+/// `IntroId → OwnedEntryPayload`, the links, and the parent edges.
 ///
 /// A pure value — clone it freely. Build it with [`PristineIntroTable::insert_live`]
 /// / [`PristineIntroTable::insert_link`]; read it with the accessors below (which
 /// `nudox-ir-archive` uses to seal a serve snapshot).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct PristineIntroTable {
-    map: FxHashMap<IntroId, MaterializedEntry>,
+    map: FxHashMap<IntroId, OwnedEntryPayload>,
     links: FxHashMap<LinkDomainKey, LinkRecord>,
     parent: FxHashMap<IntroId, Option<IntroId>>,
 }
@@ -105,7 +59,7 @@ impl PristineIntroTable {
 
     /// Insert or replace a live entry.
     pub fn insert_live(&mut self, intro: IntroId, payload: OwnedEntryPayload, parent: Option<IntroId>) {
-        self.map.insert(intro, MaterializedEntry::Live(payload));
+        self.map.insert(intro, payload);
         self.parent.insert(intro, parent);
     }
 
@@ -119,9 +73,9 @@ impl PristineIntroTable {
     // Read API
     // -----------------------------------------------------------------------
 
-    /// Iterate over all currently live intros and their payloads.
+    /// Iterate over all live intros and their payloads.
     pub fn live_entries(&self) -> impl Iterator<Item = (IntroId, &OwnedEntryPayload)> {
-        self.map.iter().filter_map(|(id, e)| e.as_live().map(|p| (*id, p)))
+        self.map.iter().map(|(id, p)| (*id, p))
     }
 
     /// Look up the parent of an intro (`None` if unknown or a root entry).
@@ -134,24 +88,24 @@ impl PristineIntroTable {
         self.links.values()
     }
 
-    /// Look up any entry (live or deleted) by intro.
-    pub fn get(&self, intro: IntroId) -> Option<&MaterializedEntry> {
+    /// Look up an entry's payload by intro.
+    pub fn get(&self, intro: IntroId) -> Option<&OwnedEntryPayload> {
         self.map.get(&intro)
     }
 
-    /// True if the intro is currently live.
+    /// True if the intro is present (live) at this tip.
     pub fn is_live(&self, intro: IntroId) -> bool {
-        self.map.get(&intro).map(|e| e.is_live()).unwrap_or(false)
+        self.map.contains_key(&intro)
     }
 
     /// Number of live entries.
     pub fn len(&self) -> usize {
-        self.map.values().filter(|e| e.is_live()).count()
+        self.map.len()
     }
 
     /// True if there are no live entries.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.map.is_empty()
     }
 }
 
@@ -159,13 +113,14 @@ impl PristineIntroTable {
 mod tests {
     use super::*;
     use crate::kind::KindDiscriminant;
+    use crate::symbol::Visibility;
     use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, SymbolWire};
     use nudox_change::{EcosystemId, PackageLineageId, PackageName};
 
     fn payload(name: &str, module: bool) -> OwnedEntryPayload {
         let sym = SymbolWire {
             name: name.into(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".into(),
             span_start: 0,
@@ -204,13 +159,12 @@ mod tests {
             b: sref(2),
             kind_a: KindDiscriminant::Module,
             kind_b: KindDiscriminant::Function,
-            added_by: ChangeId::from_raw([0u8; 32]),
         });
 
         assert_eq!(t.len(), 2);
         assert!(t.is_live(intro(1)) && t.is_live(intro(2)));
         assert_eq!(t.parent_of(intro(2)), Some(intro(1)));
-        assert_eq!(t.get(intro(2)).and_then(|e| e.as_live()), Some(&payload("f", false)));
+        assert_eq!(t.get(intro(2)), Some(&payload("f", false)));
         assert_eq!(t.links().count(), 1);
     }
 

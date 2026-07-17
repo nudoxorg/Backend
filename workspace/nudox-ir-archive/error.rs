@@ -38,6 +38,11 @@ pub enum ArchiveError {
     #[error("unknown mandatory section id {0}")]
     UnknownSection(u32),
 
+    /// A reserved header/TOC field that must be zero in this format version
+    /// carries a nonzero value.
+    #[error("reserved field nonzero: {0}")]
+    ReservedNonzero(&'static str),
+
     /// An ArenaIdx is out of range for the EntryHead table.
     #[error("arena index {0} out of range (entry count {1})")]
     IndexOutOfRange(u32, u32),

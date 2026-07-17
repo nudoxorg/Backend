@@ -16,11 +16,6 @@ pub mod encode;
 pub mod hash;
 pub mod ids;
 
-pub use domain::{DomainKey, GraphDocId, GraphRelationId, IriPolicy, LinkDomainKey};
-pub use hash::{
-    CasKey, ChangeId, ChangeSetFingerprint, ContentBlake3, GenerationStamp, IntroId, MerkleState,
-};
-pub use ids::{
-    AuthorId, ChangeMessage, ChannelId, ChannelName, EcosystemId, PackageLineageId, PackageName,
-    StableRef, TimestampUnixMs,
-};
+pub use domain::LinkDomainKey;
+pub use hash::{CasKey, ChangeId, ChangeSetFingerprint, ContentBlake3, GenerationStamp, IntroId};
+pub use ids::{ChannelName, EcosystemId, PackageLineageId, PackageName, StableRef};

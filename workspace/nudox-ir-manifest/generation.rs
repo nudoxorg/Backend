@@ -48,7 +48,7 @@
 //! would require a v4 stamp function with a new domain tag.
 
 use nudox_change::{
-    ChangeId, ChangeSetFingerprint, ChannelName, GenerationStamp, PackageLineageId,
+    GenerationStamp,
     encode::{encode_str, write_u32le},
 };
 use thiserror::Error;
@@ -75,28 +75,6 @@ pub enum GenerationStampError {
     /// Postcard serialization of [`heart::Toolchain`] failed.
     #[error("postcard serialization of Toolchain failed: {0}")]
     ToolchainSerialize(postcard::Error),
-}
-
-/// Inputs available at seal time for callers that want to pass generation
-/// identity without materializing a full [`BlobManifestV3`] (e.g. the
-/// orchestrator's commit-gate check).
-///
-/// These are the fields that logically identify *which* generation is being
-/// requested before the source files have been fetched. The stamp itself still
-/// requires the full manifest (and thus the file hashes) — this struct is a
-/// convenience for routing/logging, not a stamp preimage.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GenerationInputs {
-    /// Package lineage (ecosystem + name) being built.
-    pub package: PackageLineageId,
-    /// Channel being sealed into.
-    pub channel: ChannelName,
-    /// Channel tip at seal time.
-    pub tip: ChangeSetFingerprint,
-    /// Most-recently applied change, if the channel is non-empty.
-    pub tip_change: Option<ChangeId>,
-    /// Toolchain the producer is running under.
-    pub toolchain: heart::Toolchain,
 }
 
 /// Derive the v3 [`GenerationStamp`] (Hash ①) from a [`BlobManifestV3`].
@@ -308,6 +286,31 @@ mod tests {
         // Just exercise the Debug impl to ensure it's the right newtype.
         let debug = format!("{:?}", stamp);
         assert!(debug.starts_with("gen:"), "expected gen: prefix, got: {debug}");
+    }
+
+    /// **Golden pin** (design Issue 16 / "Outbox — day one"): the v3 stamp of a
+    /// fixed manifest is pinned to an exact digest. Any change to the preimage
+    /// layout, the domain tag, `encode_str`, or the postcard encoding of
+    /// `ChangeSetRef`/`Toolchain` breaks this test — which is the point:
+    /// historical generations must keep their stamps forever, so an intentional
+    /// layout change requires a *new* `generation_stamp_v4`, never an edit here.
+    #[test]
+    fn stamp_golden_pin_v3() {
+        let mut m = base_manifest();
+        m.change_set_ref = Some(ChangeSetRef {
+            channel: ChannelName::new("main"),
+            tip: ChangeSetFingerprint::empty(),
+            tip_change: None,
+            change_log_cas: Some(cas(0x42)),
+        });
+        m.references_ref = Some(cas(0xAA));
+
+        let stamp = generation_stamp_v3(&m).unwrap();
+        assert_eq!(
+            stamp.to_hex(),
+            "7fb8950f498cd3b643838e8914adc68605c5d84f219abbe1cba5e0776c64013a",
+            "v3 stamp preimage drifted — this is a wire-stability break"
+        );
     }
 
     /// A `ChangeSetRef` round-trips through postcard (validates our encoding).

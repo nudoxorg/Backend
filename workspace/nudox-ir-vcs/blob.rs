@@ -443,7 +443,7 @@ pub fn serialize_symbol_blob(
     out.push('\n');
 
     // vis
-    let vis = Visibility::from_u8(sym.visibility).unwrap_or(Visibility::Public);
+    let vis = sym.visibility;
     out.push_str("vis\t");
     out.push_str(vis_name(vis));
     out.push('\n');
@@ -812,6 +812,9 @@ impl<'a> SymbolView<'a> {
     // Accessors — all borrow from the original buffer
     // -----------------------------------------------------------------------
 
+    /// Raw (possibly escaped) name, borrowed. Identifiers never contain `\\`,
+    /// TAB, or newline in practice, so the raw slice is normally the exact
+    /// name; call [`SymbolView::unescape`] when that cannot be assumed.
     pub fn name(&self) -> &'a str {
         self.name
     }
@@ -929,7 +932,7 @@ impl<'a> SymbolView<'a> {
 
         let sym = SymbolWire {
             name,
-            visibility: self.vis as u8,
+            visibility: self.vis,
             documentation,
             source_path,
             span_start: self.span_start,
@@ -1349,10 +1352,67 @@ mod tests {
         ]
     }
 
+    /// **Golden pin** of the blob text format. These bytes are what libpijul
+    /// diffs and stores; format drift silently re-records every symbol as
+    /// modified on the next generation and breaks old-blob decode. An
+    /// intentional format change requires bumping the `NdIrSym` version, not
+    /// editing this vector.
+    #[test]
+    fn blob_golden_pin() {
+        let sym = SymbolWire {
+            name: "golden".to_owned(),
+            visibility: Visibility::Private,
+            documentation: Some("line1\nline2".to_owned()),
+            source_path: "src/lib.rs".to_owned(),
+            span_start: 7,
+            span_end: 21,
+            aliases: vec!["b".to_owned(), "a".to_owned()],
+            deprecation: None,
+            doc_links: Vec::new(),
+        };
+        let payload = OwnedEntryPayload {
+            kind_disc: KindDiscriminant::Function,
+            payload_hash: nudox_change::ContentBlake3::from_raw([0xCD; 32]),
+            symbol: sym,
+            kind: KindWire::Function(FunctionWire {
+                input_params: Box::new([ParamWire {
+                    name: Some("x".to_owned()),
+                    ty: TypeRefWire::Same(intro(0x11)),
+                }]),
+                output_params: Box::new([]),
+            }),
+            flags: EntryPayloadFlags::default(),
+        };
+        let links = vec![LinkWire {
+            other: sref("cargo", "lib", 2),
+            kind_self: KindDiscriminant::Function,
+            kind_other: KindDiscriminant::Module,
+        }];
+        let bytes = serialize_symbol_blob(&payload, Some(intro(0x01)), &links);
+        let expected = "NdIrSym\t1\n\
+             name\tgolden\n\
+             vis\tPrivate\n\
+             kind\tFunction\n\
+             span\t7\t21\n\
+             hash\tcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n\
+             parent\t0101010101010101010101010101010101010101010101010101010101010101\n\
+             src\tsrc/lib.rs\n\
+             doc\tline1\\nline2\n\
+             alias\ta\n\
+             alias\tb\n\
+             link\tcargo\tlib\t0202020202020202020202020202020202020202020202020202020202020202\tFunction\tModule\n\
+             in\tx\tS:1111111111111111111111111111111111111111111111111111111111111111\n";
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            expected,
+            "blob text format drifted — bump the NdIrSym version instead"
+        );
+    }
+
     fn rich_function_payload() -> OwnedEntryPayload {
         let sym = SymbolWire {
             name: "my_func".to_owned(),
-            visibility: 1,
+            visibility: Visibility::Private,
             documentation: Some("Has\ta\ttab and\nnewline".to_owned()),
             source_path: "src/lib.rs".to_owned(),
             span_start: 42,
@@ -1508,7 +1568,7 @@ mod tests {
     fn round_trip_record() {
         let sym = SymbolWire {
             name: "MyRecord".to_owned(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "src/foo.rs".to_owned(),
             span_start: 10,
@@ -1545,7 +1605,7 @@ mod tests {
     fn round_trip_field() {
         let sym = SymbolWire {
             name: "my_field".to_owned(),
-            visibility: 2,
+            visibility: Visibility::Protected,
             documentation: None,
             source_path: "src/foo.rs".to_owned(),
             span_start: 100,
@@ -1581,7 +1641,7 @@ mod tests {
     fn type_round_trip(tw: TypeWire) {
         let sym = SymbolWire {
             name: "T".to_owned(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "".to_owned(),
             span_start: 0,
@@ -1766,7 +1826,7 @@ mod tests {
     fn is_reference_flag_round_trip() {
         let sym = SymbolWire {
             name: "reexport".to_owned(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".to_owned(),
             span_start: 0,
@@ -1805,7 +1865,7 @@ mod tests {
     fn escape_round_trip() {
         let sym = SymbolWire {
             name: "a\\b\tc\nd".to_owned(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: Some("line1\nline2\ttabbed\\slash".to_owned()),
             source_path: "path/with\ttab".to_owned(),
             span_start: 0,
@@ -1892,7 +1952,7 @@ mod tests {
 
     fn record_payload() -> OwnedEntryPayload {
         let sym = SymbolWire {
-            name: "R".into(), visibility: 0, documentation: None, source_path: "".into(),
+            name: "R".into(), visibility: Visibility::Public, documentation: None, source_path: "".into(),
             span_start: 0, span_end: 1, aliases: Vec::new(), deprecation: None, doc_links: Vec::new(),
         };
         let kind = KindWire::Record(RecordWire { fields: Box::new([intro(1), intro(2), intro(3)]) });
@@ -1905,7 +1965,7 @@ mod tests {
 
     fn type_payload(tw: TypeWire) -> OwnedEntryPayload {
         let sym = SymbolWire {
-            name: "T".into(), visibility: 0, documentation: None, source_path: "".into(),
+            name: "T".into(), visibility: Visibility::Public, documentation: None, source_path: "".into(),
             span_start: 0, span_end: 1, aliases: Vec::new(), deprecation: None, doc_links: Vec::new(),
         };
         let kind = KindWire::Type(tw);

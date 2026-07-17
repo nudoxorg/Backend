@@ -239,13 +239,10 @@ impl<R: RegistryResolver> Registry<R> {
         table: &PristineIntroTable,
         id: &ProductionEntryId,
     ) -> Result<OwnedEntryPayload, ResolveError> {
-        match table.get(id.intro) {
-            None => Err(ResolveError::IntroNotFound(id.intro)),
-            Some(crate::apply::MaterializedEntry::Deleted { .. }) => {
-                Err(ResolveError::IntroNotFound(id.intro))
-            }
-            Some(crate::apply::MaterializedEntry::Live(payload)) => Ok(payload.clone()),
-        }
+        table
+            .get(id.intro)
+            .cloned()
+            .ok_or(ResolveError::IntroNotFound(id.intro))
     }
 }
 
@@ -253,6 +250,7 @@ impl<R: RegistryResolver> Registry<R> {
 mod tests {
     use super::*;
     use crate::kind::KindDiscriminant;
+    use crate::symbol::Visibility;
     use crate::wire::{EntryPayloadFlags, KindWire, OwnedEntryPayload, SymbolWire};
     use nudox_change::{EcosystemId, PackageName};
 
@@ -263,7 +261,7 @@ mod tests {
     fn make_payload() -> OwnedEntryPayload {
         let sym = SymbolWire {
             name: "entry".into(),
-            visibility: 0,
+            visibility: Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".into(),
             span_start: 0,

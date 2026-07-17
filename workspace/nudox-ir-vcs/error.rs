@@ -12,10 +12,6 @@ pub enum VcsError {
     #[error("libpijul error: {0}")]
     Pijul(#[from] anyhow::Error),
 
-    /// Postcard serialization/deserialization failure.
-    #[error("serialization error: {0}")]
-    Serialize(#[from] postcard::Error),
-
     /// Archive sealing failure.
     #[error("seal error: {0}")]
     Seal(#[from] nudox_ir_archive::SealError),

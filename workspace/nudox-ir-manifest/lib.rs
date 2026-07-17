@@ -20,6 +20,6 @@ pub mod outbox;
 #[cfg(test)]
 mod tests;
 
-pub use generation::{generation_stamp_v3, GenerationInputs, GenerationStampError};
+pub use generation::{generation_stamp_v3, GenerationStampError};
 pub use manifest::{BlobManifestV3, ChangeSetRef, FileEntry};
 pub use outbox::{Outbox, OutboxEntry, OutboxError};

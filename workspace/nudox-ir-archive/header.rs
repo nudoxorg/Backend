@@ -166,10 +166,21 @@ const _: () = assert!(std::mem::size_of::<ArchiveHeader>() == 64);
 
 impl ArchiveHeader {
     /// Byte offset in the header at which `header_crc32` lives.
-    /// The CRC covers `[0, CRC_OFFSET)`.
     ///
     /// Layout: magic(4) + format_version(2) + flags(2) + type_hash(8) = 16
     pub const CRC_OFFSET: usize = 16;
+
+    /// CRC32 over the whole 64-byte header **except** the `header_crc32` field
+    /// itself: bytes `[0..16)` and `[20..64)`. Covering the full header (TOC
+    /// pointer, counts, reserved tail) means any single corrupted header byte
+    /// is detected at open, not deferred to a downstream bounds check.
+    pub fn header_crc(header_bytes: &[u8]) -> u32 {
+        debug_assert!(header_bytes.len() >= 64);
+        let mut covered = [0u8; 60];
+        covered[..Self::CRC_OFFSET].copy_from_slice(&header_bytes[..Self::CRC_OFFSET]);
+        covered[Self::CRC_OFFSET..].copy_from_slice(&header_bytes[Self::CRC_OFFSET + 4..64]);
+        crate::section::crc32_of(&covered)
+    }
 
     // Convenience readers.
 
@@ -192,12 +203,13 @@ impl ArchiveHeader {
 }
 
 // ---------------------------------------------------------------------------
-// TocEntry (28 bytes, repr C)
+// TocEntry (32 bytes, repr C)
 // ---------------------------------------------------------------------------
 
 /// One entry in the Table of Contents; points at a section within the archive.
 ///
-/// 28 bytes: section_id(4) + offset(8) + length(8) + crc32(4) + flags(4).
+/// 32 bytes: section_id(4) + offset(8) + length(8) + crc32(4) + flags(4) +
+/// reserved(4).
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct TocEntry {

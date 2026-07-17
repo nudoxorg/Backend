@@ -1,9 +1,10 @@
-# nudox-change — universal, invertible change algebra.
+# nudox-change — content-addressed identity primitives.
 #
 # Bottom of the IR-VCS dependency stack (design K4 / crate map). Has NO
 # dependency on Terminus, HTTP, or `nudox-ir`: it only knows domain-agnostic
-# identity primitives, the `Atom` trait, and the `Change` envelope. Concrete
-# atoms (`IrAtom`, `GraphAtom`) live next to their domain types in higher crates.
+# identity newtypes (Hash ①/② discipline), the wire-stable StableRef /
+# PackageLineageId vocabulary, and the canonical LE encode helpers. The change
+# engine itself is libpijul (via `nudox-ir-vcs`).
 [package]
 name = "nudox-change"
 edition.workspace = true
@@ -20,8 +21,3 @@ path = "lib.rs"
 blake3 = "1.8"
 smol_str = { version = "0.2", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
-postcard = { version = "1.1", features = ["alloc"] }
-thiserror = "1.0"
-
-[dev-dependencies]
-postcard = { version = "1.1", features = ["alloc", "use-std"] }

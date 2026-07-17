@@ -86,7 +86,7 @@ impl EntryBuilder {
             .collect();
         Symbol {
             name,
-            visibility: Visibility::from_u8(wire.visibility).unwrap_or(Visibility::Public),
+            visibility: wire.visibility,
             documentation,
             source_path,
             span: ByteSpan::new(wire.span_start, wire.span_end),
@@ -106,7 +106,7 @@ impl EntryBuilder {
     ) -> SymbolWire {
         SymbolWire {
             name: name.to_owned(),
-            visibility: visibility as u8,
+            visibility,
             documentation: doc.map(str::to_owned),
             source_path: source_path.to_owned(),
             span_start: span.start,
@@ -385,7 +385,7 @@ impl EntryBuilder {
         let sym = &entry.sym;
         SymbolWire {
             name: self.arena.strings.resolve(sym.name).unwrap_or("").to_owned(),
-            visibility: sym.visibility as u8,
+            visibility: sym.visibility,
             documentation: sym.documentation
                 .and_then(|id| self.arena.strings.resolve(id))
                 .map(str::to_owned),
