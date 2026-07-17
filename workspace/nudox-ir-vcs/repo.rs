@@ -879,13 +879,58 @@ where
         self.incremental_inner(prev)
     }
 
+    /// **Replay a reference's full IR incrementally from a prior index** — the
+    /// "replay on the seal" primitive. Given a checkpoint's [`MaterializedIndex`]
+    /// (`prev`), rebuild `reference`'s index in O(delta): only the symbols that
+    /// changed between `prev.tip` and `reference`'s tip are re-output; every
+    /// untouched symbol keeps its exact `Arc` from `prev`. Falls back to a full
+    /// walk (correctly) if `prev.tip` is not an ancestor of `reference` (e.g. a
+    /// checkpoint on a divergent branch).
+    pub fn materialize_ref_incremental(
+        &self,
+        reference: &Ref,
+        prev: &MaterializedIndex,
+    ) -> Result<MaterializedIndex, VcsError> {
+        Ok(self.materialize_ref_incremental_counted(reference, prev)?.0)
+    }
+
+    /// As [`materialize_ref_incremental`](Self::materialize_ref_incremental), also
+    /// reporting how it was rebuilt: `Some(k)` = O(delta) re-output of `k`
+    /// symbols; `None` = whole-tree fallback (`prev` was not a usable base).
+    pub fn materialize_ref_incremental_counted(
+        &self,
+        reference: &Ref,
+        prev: &MaterializedIndex,
+    ) -> Result<(MaterializedIndex, Option<usize>), VcsError> {
+        let txn = self.arc_txn()?;
+        let channel = self.require_ref_channel(&txn, reference)?;
+        let result = self.incremental_core(&txn, &channel, prev)?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (materialize_ref_incremental): {e}")))?;
+        Ok(result)
+    }
+
     fn incremental_inner(
         &self,
         prev: &MaterializedIndex,
     ) -> Result<(MaterializedIndex, Option<usize>), VcsError> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
+        let result = self.incremental_core(&txn, &channel, prev)?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (incremental): {e}")))?;
+        Ok(result)
+    }
 
+    /// The channel-parametrized O(delta) rebuild core (no commit — caller owns
+    /// the transaction). Shared by `incremental_inner` (working channel) and
+    /// `materialize_ref_incremental` (any ref's channel).
+    fn incremental_core(
+        &self,
+        txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
+        channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
+        prev: &MaterializedIndex,
+    ) -> Result<(MaterializedIndex, Option<usize>), VcsError> {
         let tip = txn
             .read()
             .current_state(&channel.read())
@@ -894,12 +939,10 @@ where
 
         // Fast path: nothing changed.
         if tip == prev.tip {
-            txn.commit()
-                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (incremental noop): {e}")))?;
             return Ok((prev.clone(), Some(0)));
         }
 
-        let (index, count) = match self.plan_delta(&txn, &channel, prev)? {
+        let result = match self.plan_delta(txn, channel, prev)? {
             Some((changed, current_intros)) => {
                 // O(delta): reuse every untouched Arc; drop removed symbols;
                 // re-output only the changed ones.
@@ -911,7 +954,7 @@ where
                     let path = symbol_path(*intro);
                     let wc = MemWc::new();
                     libpijul::output::output_repository_no_pending(
-                        &wc, &self.changes, &txn, &channel, &path, true, None, 1, 0,
+                        &wc, &self.changes, txn, channel, &path, true, None, 1, 0,
                     )
                     .map_err(|e| VcsError::Pijul(anyhow::anyhow!("output (delta {path}): {e}")))?;
                     outputs += 1;
@@ -934,12 +977,10 @@ where
                 }
                 (MaterializedIndex { tip, symbols }, Some(outputs))
             }
-            None => (self.incremental_whole_tree(&txn, &channel, prev, tip)?, None),
+            None => (self.incremental_whole_tree(txn, channel, prev, tip)?, None),
         };
 
-        txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (incremental): {e}")))?;
-        Ok((index, count))
+        Ok(result)
     }
 
     /// Compute `(changed_intros, current_intros)` for the O(delta) path without a

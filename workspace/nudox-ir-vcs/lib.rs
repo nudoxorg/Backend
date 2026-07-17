@@ -28,6 +28,7 @@
 
 pub mod blob;
 pub mod checkout;
+pub mod checkpoint;
 pub mod error;
 pub mod refs;
 pub mod repo;
@@ -41,8 +42,14 @@ mod tests;
 #[cfg(test)]
 mod ref_probes;
 
+#[cfg(test)]
+mod size_tests;
+
 pub use blob::{serialize_symbol_blob, BlobError, LinkView, SymbolView};
 pub use checkout::MaterializedIndex;
+pub use checkpoint::{
+    Checkpoint, CheckpointCache, CheckpointConfig, Retention, ServeStrategy, Served,
+};
 pub use error::VcsError;
 pub use refs::{BranchName, Ref, RefKind, ResolvedRef, TagName};
 pub use repo::{ChangeHashHex, IrRepository, IrTip, VersionDiff};
