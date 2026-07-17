@@ -1,5 +1,7 @@
 use elsa::sync::FrozenVec;
+use iddqd::{BiHashItem, BiHashMap, bi_upcast};
 use parking_lot::RwLock;
+use rustc_hash::FxBuildHasher;
 
 use crate::{
     List,
@@ -11,31 +13,32 @@ use crate::{
 };
 
 use super::{
-    EntryBuilder, EntryIdx, EntryLink, PackageIdx, RawEntryIdx, RegistryResolver, ScopeIdx,
+    DeferredEntry, DeferredIdx, EntryBuilder, EntryIdx, EntryLink, PackageIdx, RawEntryIdx,
+    RegistryResolver, ScopeIdx,
 };
 
-type FxBiHashMap<T> = iddqd::BiHashMap<T, rustc_hash::FxBuildHasher>;
-
+// TODO: panic messages for invalid usage
 const BAD_PACKAGE_INDEX_ERROR: &str = "";
 const BAD_SCOPE_INDEX_ERROR: &str = "";
+const BAD_DEFERRED_INDEX_ERROR: &str = "";
 
 pub struct RegistryState {
-    packages: RwLock<FxBiHashMap<RegistryPackage>>,
+    packages: RwLock<BiHashMap<RegistryPackage, FxBuildHasher>>,
 
     scopes: FrozenVec<List<Entry>>,
     links: FrozenVec<List<EntryLink>>,
+
+    deferred: RwLock<Vec<DeferredEntry>>,
 }
 
 impl RegistryState {
-    pub fn resolve<R: RegistryResolver>(&self, idx: RawEntryIdx, _resolver: &R) -> &Entry {
+    pub fn resolve<R: RegistryResolver>(&self, idx: RawEntryIdx, resolver: &R) -> &Entry {
         match idx.repr() {
             super::idx::Repr::Resolved {
                 package_idx,
                 scope_idx,
             } => self.index_resolved(package_idx, scope_idx),
-            super::idx::Repr::Deferred(_idx) => {
-                todo!("handle Deferred EntryIdx")
-            }
+            super::idx::Repr::Deferred(deferred_idx) => self.index_deferred(deferred_idx, resolver),
         }
     }
 
@@ -49,12 +52,13 @@ impl RegistryState {
 }
 
 impl RegistryState {
-    pub(super) fn new() -> Self {
+    pub(super) const fn new() -> Self {
         RegistryState {
-            packages: RwLock::new(FxBiHashMap::default()),
+            packages: RwLock::new(BiHashMap::with_hasher(FxBuildHasher)),
 
             scopes: FrozenVec::new(),
             links: FrozenVec::new(),
+            deferred: RwLock::new(Vec::new()),
         }
     }
 
@@ -72,7 +76,7 @@ impl RegistryState {
         let (idx, entries, links, _deferred) = EntryBuilder::builder()
             .sym(sym)
             .entry_idx(idx)
-            .deferred_start(super::DeferredIdx::new(0)) // TODO
+            .deferred_start(DeferredIdx::new(0)) // TODO
             .build(|b| {
                 build(b);
                 Module
@@ -84,7 +88,7 @@ impl RegistryState {
         let _ = self
             .packages
             .write()
-            .insert_unique(RegistryPackage::new(package_idx, pkg)); // TODO: how to handle overwriting package?
+            .insert_overwrite(RegistryPackage::new(package_idx, pkg)); // TODO: how to handle overwriting package?
 
         idx.typed()
     }
@@ -95,6 +99,20 @@ impl RegistryState {
             .expect(BAD_PACKAGE_INDEX_ERROR)
             .get(entry.index())
             .expect(BAD_SCOPE_INDEX_ERROR)
+    }
+
+    fn index_deferred<R: RegistryResolver>(&self, idx: DeferredIdx, resolver: &R) -> &Entry {
+        match self
+            .deferred
+            .read()
+            .get(idx.index())
+            .expect(BAD_DEFERRED_INDEX_ERROR)
+        {
+            DeferredEntry::Resolved(idx) => self.resolve(*idx, resolver),
+            DeferredEntry::Deferred(_id) => {
+                todo!("resolve deferred indices")
+            }
+        }
     }
 }
 
@@ -109,7 +127,7 @@ impl RegistryPackage {
     }
 }
 
-impl iddqd::BiHashItem for RegistryPackage {
+impl BiHashItem for RegistryPackage {
     type K1<'a> = &'a PackageId;
     type K2<'a> = PackageIdx;
 
@@ -121,5 +139,5 @@ impl iddqd::BiHashItem for RegistryPackage {
         self.idx
     }
 
-    iddqd::bi_upcast!();
+    bi_upcast!();
 }

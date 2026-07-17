@@ -11,7 +11,7 @@ pub type LinkVertex = (RawEntryIdx, KindDiscriminant);
 //       or decide if we support directed edges
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntryLink {
-    inner: [(RawEntryIdx, KindDiscriminant); 2],
+    inner: [LinkVertex; 2],
 }
 
 impl EntryLink {

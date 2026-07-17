@@ -7,7 +7,7 @@ use super::*;
 fn serialize_deserialize() {
     let registry = build_registry();
 
-    let dummy_idx = RawEntryIdx::new(PackageIdx::new(1), ScopeIdx::new(8)); // field_8
+    let dummy_idx = RawEntryIdx::new(PackageIdx::new(1), ScopeIdx::new(8));
 
     assert_eq!(
         registry

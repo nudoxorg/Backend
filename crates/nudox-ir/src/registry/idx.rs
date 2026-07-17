@@ -202,7 +202,6 @@ macro_rules! index_newtype {
         }
 
         impl $index {
-            #[cfg_attr(not(test), allow(unused))]
             pub(super) fn new(index: usize) -> Self {
                 debug_assert!(u32::try_from(index).is_ok());
                 Self {

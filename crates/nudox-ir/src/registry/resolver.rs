@@ -1,16 +1,15 @@
-use std::{any::Any, hash::Hash};
+use std::any::Any;
 
 use super::{RawEntryIdx, RegistryState};
 
 pub(super) use self::private::DynRegistryResolver;
 
-pub trait EntryId = serde::Serialize + serde::de::DeserializeOwned + Hash + Any;
+pub trait EntryId = serde::Serialize + serde::de::DeserializeOwned + Any;
 
 pub trait RegistryResolver: DynRegistryResolver {
-    /// A type that can be used to uniquely identify an Entry between different
-    /// packages within a registry. Should be constructable based on information
-    /// available within the IR of a package that is consuming an external
-    /// package's entry as the target.
+    /// A type that can be used to uniquely identify an Entry within a package.
+    /// Should be constructable based on information available within the IR of
+    /// a package that is consuming an external package's entry as the target.
     type EntryId: EntryId;
 
     /// resolves an `EntryId` to an actual `EntryIdx` that points to the given

@@ -30,6 +30,7 @@ iddqd ={version = "0.4", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 rustc-hash = "2.1"
 triomphe = "0.1"
+unsize = "1"
 
 # nudox-occurrences shared deps
 async-trait = "0.1"

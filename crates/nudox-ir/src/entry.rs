@@ -1,8 +1,13 @@
 mod node;
 mod typed;
 
+use crate::{
+    kind::Kind,
+    registry::{RawEntryIdx, Registry, RegistryResolver},
+    symbol::Symbol,
+};
+
 pub use self::{node::Node, typed::TypedEntry};
-use crate::{kind::Kind, registry::RawEntryIdx, symbol::Symbol};
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
@@ -10,6 +15,7 @@ pub struct Entry {
     pub node: Node,
     pub kind: EntryInner,
 }
+
 impl Entry {
     pub(crate) const fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
         Self {
@@ -25,6 +31,13 @@ impl Entry {
             sym,
             node,
             kind: EntryInner::Reference(idx),
+        }
+    }
+
+    pub fn kind<'r>(&'r self, r: &'r Registry<impl RegistryResolver>) -> &'r Kind {
+        match &self.kind {
+            EntryInner::Owned(kind) => kind,
+            EntryInner::Reference(idx) => r.resolve(*idx).kind(r),
         }
     }
 }

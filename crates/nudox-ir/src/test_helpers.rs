@@ -54,7 +54,6 @@ pub fn idx<T>(index: usize) -> EntryIdx<T> {
     crate::registry::new_idx(0, index)
 }
 
-#[expect(unused)]
 pub fn dummy_registry() -> Registry<DummyRegistryResolver> {
     Registry::new(DummyRegistryResolver)
 }

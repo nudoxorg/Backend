@@ -1,13 +1,11 @@
-#![expect(unused)]
+use std::{marker::PhantomData, ops::Deref};
 
-use std::marker::PhantomData;
-
-use super::{Entry, EntryInner};
 use crate::{
-    kind::{EntryKind, Kind},
+    kind::EntryKind,
     registry::{Registry, RegistryResolver},
-    symbol::Symbol,
 };
+
+use super::Entry;
 
 #[repr(transparent)]
 pub struct TypedEntry<T> {
@@ -15,15 +13,11 @@ pub struct TypedEntry<T> {
     _p: PhantomData<T>,
 }
 
-impl<T> TypedEntry<T> {
-    /// the raw (untyped) inner entry
-    pub fn entry(&self) -> &Entry {
-        &self.inner
-    }
+impl<T> Deref for TypedEntry<T> {
+    type Target = Entry;
 
-    /// the entry's symbol
-    pub fn sym(&self) -> &Symbol {
-        &self.inner.sym
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
@@ -35,33 +29,27 @@ impl<T: EntryKind> TypedEntry<T> {
         unsafe { &*std::ptr::from_ref(entry).cast() }
     }
 
-    // /// the entry's raw kind enum
-    // pub fn kind<'a>(&'a self, r: &'a Registry<impl RegistryResolver>) -> &'a Kind
-    // { 	match &self.inner.kind {
-    // 		EntryInner::Owned(kind) => kind,
-    // 		EntryInner::Reference(idx) => r.resolve_typed(idx.typed::<T>()).kind(r),
-    // 	}
-    // }
-
-    // // TODO: do we want to impl Deref and make this more like a smart pointer?
-    // pub fn get<'a>(&'a self, r: &'a Registry<impl RegistryResolver>) -> &'a T {
-    // 	self.kind(r).variant_as_dyn().downcast_ref().expect("using TypedEntry with
-    // incorrect type") }
+    pub fn typed<'r>(&'r self, r: &'r Registry<impl RegistryResolver>) -> &'r T {
+        self.kind(r)
+            .variant_as_dyn()
+            .downcast_ref()
+            .expect("using TypedEntry with incorrect type")
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
-    // use crate::test_helpers::*;
+    use super::*;
+    use crate::test_helpers::*;
 
-    // #[test]
-    // fn get_allows_typed_access() {
-    // 	let registry = dummy_registry();
+    #[test]
+    fn get_allows_typed_access() {
+        let registry = dummy_registry();
 
-    // 	let entry = entry("test_sym", n::root(vec![]), Module);
+        let entry = entry("test_sym", n::root(vec![]), Module);
 
-    // 	let entry = TypedEntry::new(&entry);
+        let entry = TypedEntry::new(&entry);
 
-    // 	let _module: &Module = entry.get(&registry);
-    // }
+        let _module: &Module = entry.typed(&registry);
+    }
 }

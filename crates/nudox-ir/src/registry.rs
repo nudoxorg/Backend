@@ -17,7 +17,7 @@ use crate::{
 };
 
 use self::{
-    deferred::DeferredId,
+    deferred::{DeferredEntry, DeferredId},
     idx::{DeferredIdx, PackageIdx, ScopeIdx},
     resolver::DynRegistryResolver,
 };
