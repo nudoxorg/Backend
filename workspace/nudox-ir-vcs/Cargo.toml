@@ -1,0 +1,41 @@
+# nudox-ir-vcs — versioning the IR with libpijul as the change engine.
+#
+# We do NOT reimplement patch theory. Each package's materialized IR is mapped to
+# a file-per-`IntroId` working tree (`symbols/{intro_hex}`), and libpijul owns
+# changes, dependencies, commutation, unrecord, channels, and durable storage.
+# `materialize` reads pijul's output tree back into a `PristineIntroTable`
+# container, which the archive seals into a serve snapshot.
+[package]
+name = "nudox-ir-vcs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+nudox-change = { path = "../nudox-change" }
+nudox-ir = { path = "../nudox-ir" }
+nudox-ir-archive = { path = "../nudox-ir-archive" }
+nudox-ir-manifest = { path = "../nudox-ir-manifest" }
+
+# The change engine. GPL — acceptable per design K7. Pinned exactly: libpijul's
+# on-disk formats and API are pre-1.0 and move between betas.
+libpijul = "=1.0.0-beta.11"
+
+blake3 = "1.8"
+zerocopy = { version = "0.8", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
+smol_str = { version = "0.2", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+# libpijul change headers carry a `jiff::Timestamp`; pin to libpijul's version.
+jiff = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

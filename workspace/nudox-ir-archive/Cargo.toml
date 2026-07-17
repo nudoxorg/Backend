@@ -1,0 +1,33 @@
+# nudox-ir-archive — sealed, mmap-able, IR-only PackageArchive + yoke.
+#
+# The `NdIr` container: a sectional, content-addressed archive with POD
+# (`zerocopy`) headers, deterministic seal (identical inputs -> identical
+# `CasKey`), and zero-copy lookup indices (name/alias, intro, tree CSR, link
+# CSR, type-skeleton fingerprints). IR only: never source bytes, tar, or CST.
+[package]
+name = "nudox-ir-archive"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+nudox-change = { path = "../nudox-change" }
+nudox-ir = { path = "../nudox-ir" }
+
+blake3 = "1.8"
+zerocopy = { version = "0.8", features = ["derive"] }
+yoke = { version = "0.8", features = ["derive"] }
+smol_str = { version = "0.2", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
+thiserror = "1.0"
+rustc-hash = { package = "rustc-hash", version = "1.1" }
+
+[dev-dependencies]
+postcard = { version = "1.1", features = ["alloc", "use-std"] }
