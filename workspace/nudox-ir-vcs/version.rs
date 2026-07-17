@@ -31,8 +31,8 @@ pub struct VersionLabel(SmolStr);
 
 impl VersionLabel {
     /// Channel-name prefix under which every version channel lives. Chosen so a
-    /// version channel can never equal the working channel name (`"main"`).
-    const CHANNEL_PREFIX: &'static str = "version/";
+    /// version channel can never equal a branch (a raw channel name).
+    pub(crate) const CHANNEL_PREFIX: &'static str = "version/";
 
     /// Build a version label, rejecting empty or channel-unsafe strings.
     ///
@@ -41,8 +41,9 @@ impl VersionLabel {
     pub fn new(label: impl Into<SmolStr>) -> Result<Self, VcsError> {
         let label = label.into();
         if label.is_empty() {
-            return Err(VcsError::InvalidVersionLabel {
-                label: label.to_string(),
+            return Err(VcsError::InvalidRefName {
+                kind: "version".to_owned(),
+                name: label.to_string(),
                 reason: "empty".to_owned(),
             });
         }
@@ -50,8 +51,9 @@ impl VersionLabel {
             .chars()
             .find(|c| *c == '/' || c.is_control() || c.is_whitespace())
         {
-            return Err(VcsError::InvalidVersionLabel {
-                label: label.to_string(),
+            return Err(VcsError::InvalidRefName {
+                kind: "version".to_owned(),
+                name: label.to_string(),
                 reason: format!("illegal character {bad:?}"),
             });
         }

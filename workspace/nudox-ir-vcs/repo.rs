@@ -28,6 +28,7 @@ use crate::blob::SymbolView;
 use crate::checkout::MaterializedIndex;
 use crate::error::VcsError;
 use crate::serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
+use crate::refs::{BranchName, Ref, ResolvedRef, TagName};
 use crate::serve_cache::{ServeCache, ServeSource, ServedArchive};
 use crate::version::{VersionLabel, VersionState};
 
@@ -139,13 +140,17 @@ impl IrRepository<MemChanges> {
     /// In-memory pristine (anon sanakirja) + memory changestore — fast,
     /// ephemeral, for tests.
     pub fn in_memory(package: PackageLineageId, channel: &str) -> Result<Self, VcsError> {
+        // The working channel is a branch; validate it so `current_branch` is
+        // always well-formed and the working branch can't sit in a reserved
+        // (tag/ or version/) namespace.
+        let branch = BranchName::new(channel)?;
         let env = Pristine::new_anon()
             .map_err(|e| VcsError::Pijul(anyhow::anyhow!("pristine init: {e}")))?;
         Ok(Self {
             env,
             changes: MemChanges::new(),
             working_copy: MemWc::new(),
-            channel_name: channel.to_owned(),
+            channel_name: branch.channel_name(),
             package,
             working_copy_tip: std::cell::Cell::new([0u8; 32]),
             #[cfg(test)]
@@ -160,6 +165,7 @@ impl IrRepository<FsChanges> {
     /// pristine and every recorded change persist across process restarts; the
     /// working copy is ephemeral scratch, re-derived by `materialize`.
     pub fn open(root: &Path, package: PackageLineageId, channel: &str) -> Result<Self, VcsError> {
+        let branch = BranchName::new(channel)?;
         std::fs::create_dir_all(root.join("changes"))
             .map_err(|e| VcsError::Pijul(anyhow::anyhow!("create changes dir: {e}")))?;
         let env = Pristine::new(root.join("pristine"))
@@ -169,7 +175,7 @@ impl IrRepository<FsChanges> {
             env,
             changes,
             working_copy: MemWc::new(),
-            channel_name: channel.to_owned(),
+            channel_name: branch.channel_name(),
             package,
             working_copy_tip: std::cell::Cell::new([0u8; 32]),
             #[cfg(test)]
@@ -1159,14 +1165,16 @@ where
     }
 
     // =======================================================================
-    // Historical replay
+    // Reference model — branches, tags, versions, changes
     //
-    // Efficient replay of any published version, without eager per-version
-    // snapshots. Storage is the content-shared pijul graph (unchanged symbols
-    // stored once across all versions). A version is a *frozen channel* forked
-    // from the working channel at publish time; serving it is a graph walk in
-    // O(state), not O(history) — Zod 2.0 and Zod 5.0 cost the same modulo their
-    // sizes. Per-symbol history and version diffs are native graph reads.
+    // The store is a frozen mirror of an upstream VCS, specialized to IR:
+    // references are the whole interface. Channels ARE branches (movable); tags
+    // and versions are frozen channels (`tag/…`, `version/…`) that share the
+    // content-addressed pristine graph — a fork is a cheap copy-on-write of the
+    // channel B-tree roots, duplicating no content. Every channel-backed ref
+    // serves through one fast path: a graph walk in O(state), not O(history)
+    // (Zod 2.0 and Zod 5.0 cost the same modulo size). Per-symbol history and
+    // ref-to-ref diffs are native graph reads. No eager per-version snapshots.
     // =======================================================================
 
     /// Look up an existing channel by name (does **not** create it).
@@ -1181,170 +1189,374 @@ where
             .map_err(|e| VcsError::Pijul(anyhow::anyhow!("load_channel {name}: {e}")))
     }
 
-    /// Require an existing version channel, mapping absence to
-    /// [`VcsError::VersionNotFound`].
-    fn require_version_channel(
+    /// Require the channel backing a reference. A bare [`Ref::Change`] is not a
+    /// channel → [`VcsError::RefNotServable`]; an absent branch/tag/version →
+    /// [`VcsError::RefNotFound`].
+    fn require_ref_channel(
         &self,
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
-        label: &VersionLabel,
+        reference: &Ref,
     ) -> Result<ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, VcsError> {
-        self.load_channel_ref(txn, &label.channel_name())?
-            .ok_or_else(|| VcsError::VersionNotFound { label: label.as_str().to_owned() })
+        let name = reference
+            .channel_name()
+            .ok_or_else(|| VcsError::RefNotServable { reference: reference.to_string() })?;
+        self.load_channel_ref(txn, &name)?
+            .ok_or_else(|| VcsError::RefNotFound { reference: reference.to_string() })
     }
 
-    /// **Tag the current working-channel tip as a published version.**
-    ///
-    /// Forks the working channel into a frozen channel `version/{label}` that
-    /// shares the content-addressed pristine graph (a cheap copy-on-write of the
-    /// channel's B-tree roots — no content is duplicated). The version channel is
-    /// never recorded onto again, so it forever reconstructs exactly this IR.
-    ///
-    /// Returns the [`VersionState`] (the tip Merkle) identifying the version.
-    /// Errors with [`VcsError::VersionAlreadyTagged`] if the version already
-    /// exists — tagging is strict, never a silent overwrite.
-    pub fn tag_version(&self, label: &VersionLabel) -> Result<VersionState, VcsError> {
-        let txn = self.arc_txn()?;
-        let version_channel = label.channel_name();
-
-        if self.load_channel_ref(&txn, &version_channel)?.is_some() {
-            return Err(VcsError::VersionAlreadyTagged { label: label.as_str().to_owned() });
-        }
-
-        let main = Self::open_or_create_channel(&txn, &self.channel_name)?;
-        let state = {
-            let reader = txn.read();
-            reader
-                .current_state(&main.read())
-                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (tag): {e}")))?
-                .to_bytes()
-        };
-
-        // Fork the working channel at its current tip into the version channel.
-        txn.write()
-            .fork(&main, &version_channel)
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("fork {version_channel}: {e}")))?;
-
-        txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (tag_version): {e}")))?;
-
-        Ok(VersionState::from_bytes(state))
+    /// The repository's current working branch — the channel that
+    /// `record_generation` and the default `materialize`/`seal`/`symbol_history`
+    /// operate on.
+    pub fn current_branch(&self) -> BranchName {
+        BranchName::new(self.channel_name.clone())
+            .expect("the working channel name is validated as a branch at construction")
     }
 
-    /// The [`VersionState`] of a tagged version — its channel tip Merkle. Cheap:
-    /// reads the tip, no output. Errors [`VcsError::VersionNotFound`] if untagged.
-    pub fn version_state(&self, label: &VersionLabel) -> Result<VersionState, VcsError> {
+    /// Resolve a channel-backed reference (branch/tag/version) to its channel
+    /// name + current tip [`VersionState`]. Cheap — reads the tip, no output.
+    pub fn resolve_ref(&self, reference: &Ref) -> Result<ResolvedRef, VcsError> {
         let txn = self.arc_txn()?;
-        let channel = self.require_version_channel(&txn, label)?;
+        let channel = self.require_ref_channel(&txn, reference)?;
+        let channel_name = reference.channel_name().expect("channel-backed above");
         let state = {
             let reader = txn.read();
             reader
                 .current_state(&channel.read())
-                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (version): {e}")))?
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (resolve): {e}")))?
                 .to_bytes()
         };
         txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (version_state): {e}")))?;
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (resolve_ref): {e}")))?;
+        Ok(ResolvedRef {
+            kind: reference.kind(),
+            channel_name,
+            state: VersionState::from_bytes(state),
+        })
+    }
+
+    // ----- lifecycle: fork + channel helpers -----
+
+    /// Fork the channel backing `from` into a new channel, strictly (errors
+    /// [`VcsError::RefAlreadyExists`] if it exists). The fork is a copy-on-write
+    /// of the channel B-tree roots — content stays shared in the pristine graph.
+    /// Returns the frozen tip state. Shared by branch-fork / tag / version.
+    fn fork_into(
+        &self,
+        from: &Ref,
+        new_channel: &str,
+        new_label: String,
+    ) -> Result<VersionState, VcsError> {
+        let txn = self.arc_txn()?;
+        if self.load_channel_ref(&txn, new_channel)?.is_some() {
+            return Err(VcsError::RefAlreadyExists { reference: new_label });
+        }
+        let src = self.require_ref_channel(&txn, from)?;
+        let state = {
+            let reader = txn.read();
+            reader
+                .current_state(&src.read())
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (fork src): {e}")))?
+                .to_bytes()
+        };
+        txn.write()
+            .fork(&src, new_channel)
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("fork {new_channel}: {e}")))?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (fork_into): {e}")))?;
         Ok(VersionState::from_bytes(state))
     }
 
-    /// **Reconstruct a version's full IR** as a [`MaterializedIndex`] of borrowed
-    /// [`SymbolView`]s — a graph walk of that version's frozen channel, O(state).
-    /// Age-independent: an old version costs no more than a new one of the same
-    /// size.
-    pub fn materialize_version(&self, label: &VersionLabel) -> Result<MaterializedIndex, VcsError> {
+    /// Enumerate channels, mapping each name through `pick` (which returns `Some`
+    /// for the channels it wants). Results are sorted by channel name.
+    fn list_channels<T, F>(&self, pick: F) -> Result<Vec<T>, VcsError>
+    where
+        F: Fn(&str) -> Option<T>,
+    {
         let txn = self.arc_txn()?;
-        let channel = self.require_version_channel(&txn, label)?;
+        let mut names: Vec<String> = {
+            let reader = txn.read();
+            reader
+                .channels("")
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("channels: {e}")))?
+                .into_iter()
+                .map(|ch| ch.read().name.as_str().to_owned())
+                .collect()
+        };
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (list_channels): {e}")))?;
+        names.sort();
+        Ok(names.iter().filter_map(|n| pick(n)).collect())
+    }
+
+    /// Drop a channel by name; errors [`VcsError::RefNotFound`] if it did not
+    /// exist.
+    fn drop_channel_strict(&self, channel_name: &str, label: &str) -> Result<(), VcsError> {
+        let txn = self.arc_txn()?;
+        let existed = txn
+            .write()
+            .drop_channel(channel_name)
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("drop_channel {channel_name}: {e}")))?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (drop_channel): {e}")))?;
+        if existed {
+            Ok(())
+        } else {
+            Err(VcsError::RefNotFound { reference: label.to_owned() })
+        }
+    }
+
+    /// Rename a channel; the target must not exist and the source must.
+    fn rename_channel_strict(
+        &self,
+        old_channel: &str,
+        new_channel: &str,
+        old_label: &str,
+    ) -> Result<(), VcsError> {
+        let txn = self.arc_txn()?;
+        if self.load_channel_ref(&txn, new_channel)?.is_some() {
+            return Err(VcsError::RefAlreadyExists { reference: new_channel.to_owned() });
+        }
+        let mut channel = self
+            .load_channel_ref(&txn, old_channel)?
+            .ok_or_else(|| VcsError::RefNotFound { reference: old_label.to_owned() })?;
+        txn.write()
+            .rename_channel(&mut channel, new_channel)
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("rename_channel: {e}")))?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (rename_channel): {e}")))?;
+        Ok(())
+    }
+
+    // ----- branches (channels) -----
+
+    /// Create a new, **empty** branch (channel). Strict: errors if it exists.
+    pub fn create_branch(&self, branch: &BranchName) -> Result<(), VcsError> {
+        let txn = self.arc_txn()?;
+        let name = branch.channel_name();
+        if self.load_channel_ref(&txn, &name)?.is_some() {
+            return Err(VcsError::RefAlreadyExists { reference: format!("branch:{branch}") });
+        }
+        Self::open_or_create_channel(&txn, &name)?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (create_branch): {e}")))?;
+        Ok(())
+    }
+
+    /// Fork `from` into a new branch. Returns the new branch's tip state.
+    pub fn fork_branch(&self, from: &Ref, new: &BranchName) -> Result<VersionState, VcsError> {
+        self.fork_into(from, &new.channel_name(), format!("branch:{new}"))
+    }
+
+    /// Whether a branch exists.
+    pub fn branch_exists(&self, branch: &BranchName) -> Result<bool, VcsError> {
+        let txn = self.arc_txn()?;
+        let exists = self.load_channel_ref(&txn, &branch.channel_name())?.is_some();
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (branch_exists): {e}")))?;
+        Ok(exists)
+    }
+
+    /// List every branch (channels outside the reserved tag/version namespaces).
+    pub fn list_branches(&self) -> Result<Vec<BranchName>, VcsError> {
+        self.list_channels(|name| {
+            if name.starts_with(crate::refs::TAG_PREFIX)
+                || name.starts_with(crate::refs::VERSION_PREFIX)
+            {
+                None
+            } else {
+                BranchName::new(name).ok()
+            }
+        })
+    }
+
+    /// Delete a branch. Refuses to delete the current working branch.
+    pub fn delete_branch(&self, branch: &BranchName) -> Result<(), VcsError> {
+        if branch == &self.current_branch() {
+            return Err(VcsError::CurrentBranchProtected { branch: branch.to_string() });
+        }
+        self.drop_channel_strict(&branch.channel_name(), &format!("branch:{branch}"))
+    }
+
+    /// Rename a branch. Refuses to rename the current working branch.
+    pub fn rename_branch(&self, old: &BranchName, new: &BranchName) -> Result<(), VcsError> {
+        if old == &self.current_branch() {
+            return Err(VcsError::CurrentBranchProtected { branch: old.to_string() });
+        }
+        self.rename_channel_strict(&old.channel_name(), &new.channel_name(), &format!("branch:{old}"))
+    }
+
+    /// **Switch the working branch.** The branch must exist. Resets the scratch
+    /// working copy so the next `record_generation` re-syncs from the target
+    /// branch's tip — a fresh working copy carries no cross-branch stale files.
+    pub fn switch_branch(&mut self, branch: &BranchName) -> Result<(), VcsError> {
+        if !self.branch_exists(branch)? {
+            return Err(VcsError::RefNotFound { reference: format!("branch:{branch}") });
+        }
+        self.channel_name = branch.channel_name();
+        self.working_copy = MemWc::new();
+        self.working_copy_tip.set([0u8; 32]);
+        Ok(())
+    }
+
+    // ----- tags (frozen channels) -----
+
+    /// Create an immutable tag at the state of `from`. Strict.
+    pub fn create_tag(&self, tag: &TagName, from: &Ref) -> Result<VersionState, VcsError> {
+        self.fork_into(from, &tag.channel_name(), format!("tag:{tag}"))
+    }
+
+    /// Whether a tag exists.
+    pub fn tag_exists(&self, tag: &TagName) -> Result<bool, VcsError> {
+        let txn = self.arc_txn()?;
+        let exists = self.load_channel_ref(&txn, &tag.channel_name())?.is_some();
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (tag_exists): {e}")))?;
+        Ok(exists)
+    }
+
+    /// List every tag.
+    pub fn list_tags(&self) -> Result<Vec<TagName>, VcsError> {
+        self.list_channels(|name| {
+            name.strip_prefix(crate::refs::TAG_PREFIX)
+                .and_then(|n| TagName::new(n).ok())
+        })
+    }
+
+    /// Delete a tag.
+    pub fn delete_tag(&self, tag: &TagName) -> Result<(), VcsError> {
+        self.drop_channel_strict(&tag.channel_name(), &format!("tag:{tag}"))
+    }
+
+    /// The state a tag points at.
+    pub fn tag_state(&self, tag: &TagName) -> Result<VersionState, VcsError> {
+        self.resolve_ref(&Ref::Tag(tag.clone())).map(|r| r.state)
+    }
+
+    // ----- versions (frozen channels, semver identity) -----
+
+    /// Create a version pointing at the state of an arbitrary `from` reference.
+    pub fn create_version_from(
+        &self,
+        label: &VersionLabel,
+        from: &Ref,
+    ) -> Result<VersionState, VcsError> {
+        self.fork_into(from, &label.channel_name(), format!("version:{}", label.as_str()))
+    }
+
+    /// List every version.
+    pub fn list_versions(&self) -> Result<Vec<VersionLabel>, VcsError> {
+        self.list_channels(|name| {
+            name.strip_prefix(crate::refs::VERSION_PREFIX)
+                .and_then(|n| VersionLabel::new(n).ok())
+        })
+    }
+
+    /// Delete a version.
+    pub fn delete_version(&self, label: &VersionLabel) -> Result<(), VcsError> {
+        self.drop_channel_strict(&label.channel_name(), &format!("version:{}", label.as_str()))
+    }
+
+    // ----- ref-based serving -----
+
+    /// **Reconstruct a reference's full IR** (branch/tag/version) as a
+    /// [`MaterializedIndex`] of borrowed [`SymbolView`]s — a graph walk of that
+    /// ref's channel, O(state). Age-independent.
+    pub fn materialize_ref(&self, reference: &Ref) -> Result<MaterializedIndex, VcsError> {
+        let txn = self.arc_txn()?;
+        let channel = self.require_ref_channel(&txn, reference)?;
         let index = self.index_from_channel(&txn, &channel)?;
         txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (materialize_version): {e}")))?;
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (materialize_ref): {e}")))?;
         Ok(index)
     }
 
-    /// **Check out a single symbol at a version** — a per-file graph output,
-    /// O(symbol). Returns `None` if that intro is absent from the version.
-    pub fn checkout_symbol_at(
+    /// **Check out a single symbol at a reference** — a per-file graph output,
+    /// O(symbol). Returns `None` if that intro is absent from the reference.
+    pub fn checkout_symbol_at_ref(
         &self,
-        label: &VersionLabel,
+        reference: &Ref,
         intro: IntroId,
     ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
         let txn = self.arc_txn()?;
-        let channel = self.require_version_channel(&txn, label)?;
+        let channel = self.require_ref_channel(&txn, reference)?;
         let out = self.checkout_symbol_from_channel(&txn, &channel, intro)?;
         txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (checkout_symbol_at): {e}")))?;
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (checkout_symbol_at_ref): {e}")))?;
         Ok(out)
     }
 
-    /// **Per-symbol history / blame** over the working channel's linear history:
-    /// every change that touched symbol `intro`, newest first.
-    ///
-    /// Native because each symbol is a stable `{intro}.nir` file (IntroId is
-    /// stable across versions), so libpijul's `log_for_path` walks exactly that
-    /// file's change history. Returns an empty vector if the symbol is absent
-    /// from the current tip.
-    pub fn symbol_history(&self, intro: IntroId) -> Result<Vec<ChangeHashHex>, VcsError> {
+    /// **Per-symbol history / blame** within a reference's channel: every change
+    /// that touched `intro`. Empty if the symbol is absent from that ref's tip.
+    pub fn symbol_history_on(
+        &self,
+        reference: &Ref,
+        intro: IntroId,
+    ) -> Result<Vec<ChangeHashHex>, VcsError> {
         let txn = self.arc_txn()?;
-        let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
-        let target = symbol_path(intro);
-
-        let mut hashes = Vec::new();
-        {
-            let reader = txn.read();
-            let graph = channel.read();
-
-            // Resolve the symbol file's graph Position among the root's children.
-            let mut position: Option<Position<libpijul::pristine::ChangeId>> = None;
-            for entry in libpijul::fs::iter_graph_children(
-                &*reader,
-                &self.changes,
-                &graph,
-                Position::ROOT,
-            )
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("iter_graph_children: {e}")))?
-            {
-                let (pos, _vertex, meta, name) = entry
-                    .map_err(|e| VcsError::Pijul(anyhow::anyhow!("graph child: {e}")))?;
-                if meta.is_dir() {
-                    continue;
-                }
-                if name == target {
-                    position = Some(pos);
-                    break;
-                }
-            }
-
-            if let Some(pos) = position {
-                for item in reader
-                    .log_for_path(&graph, pos, 0)
-                    .map_err(|e| VcsError::Pijul(anyhow::anyhow!("log_for_path: {e}")))?
-                {
-                    let hash =
-                        item.map_err(|e| VcsError::Pijul(anyhow::anyhow!("log_for_path entry: {e}")))?;
-                    hashes.push(ChangeHashHex(hash_to_hex(&hash)));
-                }
-            }
-        }
-
+        let channel = self.require_ref_channel(&txn, reference)?;
+        let hashes = self.symbol_history_in_channel(&txn, &channel, intro)?;
         txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (symbol_history): {e}")))?;
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (symbol_history_on): {e}")))?;
         Ok(hashes)
     }
 
-    /// **Symbol-level diff between two versions**: which intros were added,
-    /// removed, or modified going from `from` to `to`.
-    ///
-    /// Correct and simple: reconstructs both version indices and compares by
-    /// intro identity + payload bytes. (The change objects between the two
-    /// channel states — see [`changes_between`](Self::changes_between) — give the
-    /// native pijul view of the same delta.)
-    pub fn diff_versions(
+    /// Walk a symbol's change history within an already-opened channel (no
+    /// commit). Native: each symbol is a stable `{intro}.nir` file, so
+    /// `log_for_path` walks exactly its history.
+    fn symbol_history_in_channel(
         &self,
-        from: &VersionLabel,
-        to: &VersionLabel,
-    ) -> Result<VersionDiff, VcsError> {
-        let a = self.materialize_version(from)?;
-        let b = self.materialize_version(to)?;
+        txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
+        channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
+        intro: IntroId,
+    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+        let target = symbol_path(intro);
+        let mut hashes = Vec::new();
+        let reader = txn.read();
+        let graph = channel.read();
 
+        // Resolve the symbol file's graph Position among the root's children.
+        let mut position: Option<Position<libpijul::pristine::ChangeId>> = None;
+        for entry in
+            libpijul::fs::iter_graph_children(&*reader, &self.changes, &graph, Position::ROOT)
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("iter_graph_children: {e}")))?
+        {
+            let (pos, _vertex, meta, name) =
+                entry.map_err(|e| VcsError::Pijul(anyhow::anyhow!("graph child: {e}")))?;
+            if meta.is_dir() {
+                continue;
+            }
+            if name == target {
+                position = Some(pos);
+                break;
+            }
+        }
+
+        if let Some(pos) = position {
+            for item in reader
+                .log_for_path(&graph, pos, 0)
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("log_for_path: {e}")))?
+            {
+                let hash =
+                    item.map_err(|e| VcsError::Pijul(anyhow::anyhow!("log_for_path entry: {e}")))?;
+                hashes.push(ChangeHashHex(hash_to_hex(&hash)));
+            }
+        }
+
+        Ok(hashes)
+    }
+
+    /// **Symbol-level diff between two references**: intros added, removed, or
+    /// modified going from `from` to `to`. Correct and simple — reconstructs both
+    /// and compares by intro identity + payload bytes. (The change objects
+    /// between the two states — [`changes_between_refs`](Self::changes_between_refs)
+    /// — give the native pijul view of the same delta.)
+    pub fn diff_refs(&self, from: &Ref, to: &Ref) -> Result<VersionDiff, VcsError> {
+        let a = self.materialize_ref(from)?;
+        let b = self.materialize_ref(to)?;
+        Ok(Self::diff_indices(&a, &b))
+    }
+
+    fn diff_indices(a: &MaterializedIndex, b: &MaterializedIndex) -> VersionDiff {
         let mut added = Vec::new();
         let mut removed = Vec::new();
         let mut modified = Vec::new();
@@ -1366,25 +1578,24 @@ where
             }
         }
 
-        // Deterministic ordering by intro bytes.
         let by_bytes = |x: &IntroId, y: &IntroId| x.as_bytes().cmp(y.as_bytes());
         added.sort_by(by_bytes);
         removed.sort_by(by_bytes);
         modified.sort_by(by_bytes);
 
-        Ok(VersionDiff { added, removed, modified })
+        VersionDiff { added, removed, modified }
     }
 
     /// The change hashes present in `to`'s channel but not in `from`'s — the
-    /// **native pijul change delta** between two versions, in recorded order.
-    pub fn changes_between(
+    /// **native pijul change delta** between two references, in recorded order.
+    pub fn changes_between_refs(
         &self,
-        from: &VersionLabel,
-        to: &VersionLabel,
+        from: &Ref,
+        to: &Ref,
     ) -> Result<Vec<ChangeHashHex>, VcsError> {
         let txn = self.arc_txn()?;
-        let from_channel = self.require_version_channel(&txn, from)?;
-        let to_channel = self.require_version_channel(&txn, to)?;
+        let from_channel = self.require_ref_channel(&txn, from)?;
+        let to_channel = self.require_ref_channel(&txn, to)?;
 
         let from_set: std::collections::HashSet<String> = self
             .channel_log(&txn, &from_channel)?
@@ -1398,8 +1609,109 @@ where
             .collect();
 
         txn.commit()
-            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (changes_between): {e}")))?;
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (changes_between_refs): {e}")))?;
         Ok(delta)
+    }
+
+    /// **Serve a reference's sealed archive through the leaky-bucket hot cache.**
+    ///
+    /// - **Cache hit** → the sealed archive with **no graph walk**
+    ///   ([`ServeSource::Cached`]).
+    /// - **Miss, admitted** → materialize (one graph walk) + seal + store
+    ///   ([`ServeSource::SealedAndStored`]).
+    /// - **Miss, throttled** → materialize + seal, not stored
+    ///   ([`ServeSource::SealedThrottled`]); the bucket is protecting the hot set
+    ///   from a cold scan.
+    ///
+    /// Correctness never depends on the gate.
+    pub fn serve_ref_cached(
+        &self,
+        reference: &Ref,
+        cache: &ServeCache,
+    ) -> Result<ServedArchive, VcsError> {
+        let state = self.resolve_ref(reference)?.state;
+
+        if let Some(archive) = cache.get(state) {
+            return Ok(ServedArchive { archive, source: ServeSource::Cached });
+        }
+
+        let index = self.materialize_ref(reference)?;
+        let archive = std::sync::Arc::new(self.seal_from_index(&index)?);
+
+        let source = if cache.try_admit() {
+            cache.insert(state, std::sync::Arc::clone(&archive));
+            ServeSource::SealedAndStored
+        } else {
+            ServeSource::SealedThrottled
+        };
+
+        Ok(ServedArchive { archive, source })
+    }
+
+    /// **Tag the current working branch's tip as a published version.**
+    ///
+    /// A version is a frozen `version/{label}` channel forked from the working
+    /// branch — sharing the content graph, never recorded onto again, so it
+    /// forever reconstructs exactly this IR. Strict: errors
+    /// [`VcsError::RefAlreadyExists`] rather than overwriting.
+    pub fn tag_version(&self, label: &VersionLabel) -> Result<VersionState, VcsError> {
+        self.create_version_from(label, &Ref::Branch(self.current_branch()))
+    }
+
+    /// The [`VersionState`] of a tagged version — its channel tip Merkle.
+    pub fn version_state(&self, label: &VersionLabel) -> Result<VersionState, VcsError> {
+        self.resolve_ref(&Ref::Version(label.clone())).map(|r| r.state)
+    }
+
+    /// **Reconstruct a version's full IR** — see
+    /// [`materialize_ref`](Self::materialize_ref).
+    pub fn materialize_version(&self, label: &VersionLabel) -> Result<MaterializedIndex, VcsError> {
+        self.materialize_ref(&Ref::Version(label.clone()))
+    }
+
+    /// **Check out a single symbol at a version** — see
+    /// [`checkout_symbol_at_ref`](Self::checkout_symbol_at_ref).
+    pub fn checkout_symbol_at(
+        &self,
+        label: &VersionLabel,
+        intro: IntroId,
+    ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
+        self.checkout_symbol_at_ref(&Ref::Version(label.clone()), intro)
+    }
+
+    /// **Per-symbol history / blame** over the current working branch. Tolerant:
+    /// if the working branch has no channel yet, or the symbol is absent, returns
+    /// an empty vector. (For an explicit reference, use
+    /// [`symbol_history_on`](Self::symbol_history_on).)
+    pub fn symbol_history(&self, intro: IntroId) -> Result<Vec<ChangeHashHex>, VcsError> {
+        let txn = self.arc_txn()?;
+        // open_or_create (not require) so a fresh working branch yields empty
+        // history rather than an error.
+        let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
+        let hashes = self.symbol_history_in_channel(&txn, &channel, intro)?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (symbol_history): {e}")))?;
+        Ok(hashes)
+    }
+
+    /// **Symbol-level diff between two versions** — see
+    /// [`diff_refs`](Self::diff_refs).
+    pub fn diff_versions(
+        &self,
+        from: &VersionLabel,
+        to: &VersionLabel,
+    ) -> Result<VersionDiff, VcsError> {
+        self.diff_refs(&Ref::Version(from.clone()), &Ref::Version(to.clone()))
+    }
+
+    /// The native pijul change delta between two versions — see
+    /// [`changes_between_refs`](Self::changes_between_refs).
+    pub fn changes_between(
+        &self,
+        from: &VersionLabel,
+        to: &VersionLabel,
+    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+        self.changes_between_refs(&Ref::Version(from.clone()), &Ref::Version(to.clone()))
     }
 
     /// The change hashes in a channel, oldest first. Does not commit.
@@ -1422,41 +1734,14 @@ where
         Ok(out)
     }
 
-    /// **Serve a version's sealed archive through the leaky-bucket hot cache.**
-    ///
-    /// - **Cache hit** → returns the sealed archive with **no graph walk**
-    ///   ([`ServeSource::Cached`]).
-    /// - **Miss, admitted** → materializes the version (one graph walk), seals
-    ///   it, and stores it so the next read is a hit
-    ///   ([`ServeSource::SealedAndStored`]).
-    /// - **Miss, throttled** → materializes and seals but does **not** store it
-    ///   ([`ServeSource::SealedThrottled`]); the leaky bucket is protecting the
-    ///   hot set from a cold-version scan.
-    ///
-    /// Correctness never depends on the gate — every call returns the requested
-    /// archive.
+    /// **Serve a version's sealed archive through the leaky-bucket hot cache** —
+    /// see [`serve_ref_cached`](Self::serve_ref_cached).
     pub fn serve_version_cached(
         &self,
         label: &VersionLabel,
         cache: &ServeCache,
     ) -> Result<ServedArchive, VcsError> {
-        let state = self.version_state(label)?;
-
-        if let Some(archive) = cache.get(state) {
-            return Ok(ServedArchive { archive, source: ServeSource::Cached });
-        }
-
-        let index = self.materialize_version(label)?;
-        let archive = std::sync::Arc::new(self.seal_from_index(&index)?);
-
-        let source = if cache.try_admit() {
-            cache.insert(state, std::sync::Arc::clone(&archive));
-            ServeSource::SealedAndStored
-        } else {
-            ServeSource::SealedThrottled
-        };
-
-        Ok(ServedArchive { archive, source })
+        self.serve_ref_cached(&Ref::Version(label.clone()), cache)
     }
 }
 

@@ -24,18 +24,28 @@ pub enum VcsError {
     #[error("corrupt symbol file at path '{path}': {reason}")]
     CorruptSymbolFile { path: String, reason: String },
 
-    /// A [`VersionLabel`](crate::version::VersionLabel) string was empty or
-    /// contained a channel-unsafe character.
-    #[error("invalid version label '{label}': {reason}")]
-    InvalidVersionLabel { label: String, reason: String },
+    /// A reference name (branch, tag, or version label) was empty or contained a
+    /// channel-unsafe / reserved sequence.
+    #[error("invalid {kind} name '{name}': {reason}")]
+    InvalidRefName { kind: String, name: String, reason: String },
 
-    /// [`tag_version`](crate::repo::IrRepository::tag_version) was asked to tag a
-    /// version whose channel already exists.
-    #[error("version '{label}' is already tagged")]
-    VersionAlreadyTagged { label: String },
+    /// A reference (branch/tag/version) that must not yet exist already does.
+    #[error("reference already exists: {reference}")]
+    RefAlreadyExists { reference: String },
 
-    /// A historical-serving call named a version that was never tagged (its
-    /// channel does not exist).
-    #[error("version '{label}' has not been tagged")]
-    VersionNotFound { label: String },
+    /// A reference (branch/tag/version) named in a serve/resolve call does not
+    /// exist.
+    #[error("reference not found: {reference}")]
+    RefNotFound { reference: String },
+
+    /// A reference cannot be served/materialized directly (e.g. a bare change
+    /// hash, which is a point in a branch's history, not a channel tip — capture
+    /// it as a tag or branch to serve it).
+    #[error("reference is not directly servable: {reference}")]
+    RefNotServable { reference: String },
+
+    /// A branch-lifecycle operation was refused because it would remove or
+    /// clobber the repository's current working branch.
+    #[error("operation refused on the current working branch: {branch}")]
+    CurrentBranchProtected { branch: String },
 }

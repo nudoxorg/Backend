@@ -13,6 +13,7 @@ use nudox_ir::wire::{
     EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
 };
 
+use crate::refs::{BranchName, Ref, RefKind, TagName};
 use crate::repo::IrRepository;
 use crate::serve_cache::{ServeCache, ServeSource};
 use crate::version::VersionLabel;
@@ -290,15 +291,15 @@ fn tagging_is_strict() {
 
     repo.tag_version(&vlabel("1.0.0")).unwrap();
     assert!(
-        matches!(repo.tag_version(&vlabel("1.0.0")), Err(crate::VcsError::VersionAlreadyTagged { .. })),
+        matches!(repo.tag_version(&vlabel("1.0.0")), Err(crate::VcsError::RefAlreadyExists { .. })),
         "re-tagging the same version must error"
     );
     assert!(
-        matches!(repo.materialize_version(&vlabel("9.9.9")), Err(crate::VcsError::VersionNotFound { .. })),
+        matches!(repo.materialize_version(&vlabel("9.9.9")), Err(crate::VcsError::RefNotFound { .. })),
         "serving an untagged version must error"
     );
     assert!(
-        matches!(repo.version_state(&vlabel("9.9.9")), Err(crate::VcsError::VersionNotFound { .. })),
+        matches!(repo.version_state(&vlabel("9.9.9")), Err(crate::VcsError::RefNotFound { .. })),
     );
 }
 
@@ -483,6 +484,230 @@ fn tagged_version_persists_across_reopen() {
 
     // Per-symbol history survives too (symbol 2 changed once after creation).
     assert_eq!(repo2.symbol_history(intro(2)).unwrap().len(), 2);
+}
+
+// ===========================================================================
+// Unified reference model — branches / tags / versions / changes
+// ===========================================================================
+
+fn branch(s: &str) -> BranchName {
+    BranchName::new(s).unwrap()
+}
+
+fn tag(s: &str) -> TagName {
+    TagName::new(s).unwrap()
+}
+
+/// **The load-bearing branch invariant: switching branches isolates the working
+/// copy.** Recording onto a branch must never leak symbols from whatever branch
+/// was recorded last — the scratch WC is reset on switch.
+#[test]
+fn switch_branch_isolates_working_copy() {
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+
+    // main: symbols 1, 2.
+    repo.record_generation(&func_table(&[(1, "a"), (2, "b")])).unwrap().unwrap();
+
+    // Fork develop from main, switch to it, and diverge: change 2, add 3.
+    repo.fork_branch(&Ref::Branch(branch("main")), &branch("develop")).unwrap();
+    repo.switch_branch(&branch("develop")).unwrap();
+    assert_eq!(repo.current_branch().as_str(), "develop");
+    repo.record_generation(&func_table(&[(1, "a"), (2, "b_dev"), (3, "c_dev")])).unwrap().unwrap();
+
+    // Switch back to main and diverge differently: change 2 → b_main, no 3.
+    repo.switch_branch(&branch("main")).unwrap();
+    repo.record_generation(&func_table(&[(1, "a"), (2, "b_main")])).unwrap().unwrap();
+
+    // main must be {1, 2=b_main} with NO leaked symbol 3 from develop.
+    let m = repo.materialize_ref(&Ref::Branch(branch("main"))).unwrap();
+    assert_eq!(m.len(), 2, "main must not have leaked develop's symbol 3");
+    assert_eq!(payload_name(&m, intro(2)), "b_main");
+    assert!(m.get(intro(3)).is_none(), "symbol 3 belongs to develop only");
+
+    // develop must be {1, 2=b_dev, 3}.
+    let d = repo.materialize_ref(&Ref::Branch(branch("develop"))).unwrap();
+    assert_eq!(d.len(), 3);
+    assert_eq!(payload_name(&d, intro(2)), "b_dev");
+    assert!(d.get(intro(3)).is_some());
+
+    // The two branches genuinely diverged.
+    let diff = repo
+        .diff_refs(&Ref::Branch(branch("main")), &Ref::Branch(branch("develop")))
+        .unwrap();
+    assert_eq!(diff.added, vec![intro(3)], "develop adds 3");
+    assert_eq!(diff.modified, vec![intro(2)], "2 differs between branches");
+}
+
+/// Branch lifecycle: create / fork / list / exists / rename / delete, with the
+/// current working branch protected.
+#[test]
+fn branch_lifecycle() {
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    repo.record_generation(&func_table(&[(1, "a")])).unwrap().unwrap();
+
+    // The working branch exists implicitly once recorded.
+    assert!(repo.branch_exists(&branch("main")).unwrap());
+    assert_eq!(repo.current_branch(), branch("main"));
+
+    // Fork + empty create.
+    repo.fork_branch(&Ref::Branch(branch("main")), &branch("release/2.x")).unwrap();
+    repo.create_branch(&branch("feature/x")).unwrap();
+    assert!(repo.branch_exists(&branch("release/2.x")).unwrap());
+    assert!(repo.branch_exists(&branch("feature/x")).unwrap());
+
+    // Strictness: re-create errors.
+    assert!(matches!(
+        repo.create_branch(&branch("feature/x")),
+        Err(crate::VcsError::RefAlreadyExists { .. })
+    ));
+
+    // Listing partitions only branches (no tag/version leakage).
+    repo.tag_version(&vlabel("1.0.0")).unwrap();
+    repo.create_tag(&tag("rc1"), &Ref::Branch(branch("main"))).unwrap();
+    let mut branches: Vec<String> = repo.list_branches().unwrap().iter().map(|b| b.as_str().to_owned()).collect();
+    branches.sort();
+    assert_eq!(branches, vec!["feature/x", "main", "release/2.x"]);
+
+    // Rename a non-current branch.
+    repo.rename_branch(&branch("feature/x"), &branch("feature/y")).unwrap();
+    assert!(!repo.branch_exists(&branch("feature/x")).unwrap());
+    assert!(repo.branch_exists(&branch("feature/y")).unwrap());
+
+    // Delete a non-current branch.
+    repo.delete_branch(&branch("feature/y")).unwrap();
+    assert!(!repo.branch_exists(&branch("feature/y")).unwrap());
+
+    // The current working branch is protected from delete + rename.
+    assert!(matches!(
+        repo.delete_branch(&branch("main")),
+        Err(crate::VcsError::CurrentBranchProtected { .. })
+    ));
+    assert!(matches!(
+        repo.rename_branch(&branch("main"), &branch("trunk")),
+        Err(crate::VcsError::CurrentBranchProtected { .. })
+    ));
+
+    // Switching to a non-existent branch errors.
+    assert!(matches!(
+        repo.switch_branch(&branch("ghost")),
+        Err(crate::VcsError::RefNotFound { .. })
+    ));
+}
+
+/// Tags are first-class: create from any ref, list, resolve state, materialize,
+/// and delete — and a tag frozen from a branch survives that branch advancing.
+#[test]
+fn tags_are_first_class() {
+    let repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    repo.record_generation(&func_table(&[(1, "a"), (2, "b")])).unwrap().unwrap();
+
+    // Tag main's current state.
+    let rc_state = repo.create_tag(&tag("rc1"), &Ref::Branch(branch("main"))).unwrap();
+    assert!(repo.tag_exists(&tag("rc1")).unwrap());
+    assert_eq!(repo.tag_state(&tag("rc1")).unwrap().to_bytes(), rc_state.to_bytes());
+
+    // main advances; the tag stays frozen.
+    repo.record_generation(&func_table(&[(1, "a"), (2, "b2"), (3, "c")])).unwrap().unwrap();
+
+    let tagged = repo.materialize_ref(&Ref::Tag(tag("rc1"))).unwrap();
+    assert_eq!(tagged.len(), 2, "tag is frozen at 2 symbols");
+    assert_eq!(payload_name(&tagged, intro(2)), "b", "tag keeps the original payload");
+
+    // A version can be cut from a tag (release the RC as 1.0.0).
+    repo.create_version_from(&vlabel("1.0.0"), &Ref::Tag(tag("rc1"))).unwrap();
+    let v = repo.materialize_ref(&Ref::version("1.0.0").unwrap()).unwrap();
+    assert_eq!(payload_name(&v, intro(2)), "b", "1.0.0 inherits the RC's state");
+
+    // Listing + deletion.
+    assert_eq!(repo.list_tags().unwrap(), vec![tag("rc1")]);
+    repo.delete_tag(&tag("rc1")).unwrap();
+    assert!(!repo.tag_exists(&tag("rc1")).unwrap());
+    assert!(matches!(
+        repo.delete_tag(&tag("rc1")),
+        Err(crate::VcsError::RefNotFound { .. })
+    ));
+}
+
+/// A bare change reference is first-class for identity but is not directly
+/// servable (it is a point in history, not a channel tip).
+#[test]
+fn change_ref_is_not_servable() {
+    let repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    let h = repo.record_generation(&func_table(&[(1, "a")])).unwrap().unwrap();
+
+    let change_ref = Ref::Change(h.clone());
+    assert_eq!(change_ref.kind(), RefKind::Change);
+    assert!(!change_ref.is_channel_backed());
+    assert!(matches!(
+        repo.materialize_ref(&change_ref),
+        Err(crate::VcsError::RefNotServable { .. })
+    ));
+    assert!(matches!(
+        repo.resolve_ref(&change_ref),
+        Err(crate::VcsError::RefNotServable { .. })
+    ));
+}
+
+/// Unified serving: `serve_ref_cached`, `checkout_symbol_at_ref`, and
+/// `symbol_history_on` all work uniformly across branch and tag references.
+#[test]
+fn unified_ref_serving() {
+    use std::num::NonZeroU32;
+
+    let repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    repo.record_generation(&func_table(&[(1, "a"), (2, "b")])).unwrap().unwrap();
+    repo.create_tag(&tag("snap"), &Ref::Branch(branch("main"))).unwrap();
+    repo.record_generation(&func_table(&[(1, "a_v2"), (2, "b")])).unwrap().unwrap();
+
+    // checkout one symbol at the tag vs the branch tip.
+    let at_tag = repo.checkout_symbol_at_ref(&Ref::Tag(tag("snap")), intro(1)).unwrap().unwrap();
+    assert_eq!(crate::blob::SymbolView::from_bytes(&at_tag).unwrap().name(), "a");
+    let at_branch = repo.checkout_symbol_at_ref(&Ref::Branch(branch("main")), intro(1)).unwrap().unwrap();
+    assert_eq!(crate::blob::SymbolView::from_bytes(&at_branch).unwrap().name(), "a_v2");
+
+    // symbol_history_on the branch: symbol 1 created + changed → 2 changes.
+    assert_eq!(repo.symbol_history_on(&Ref::Branch(branch("main")), intro(1)).unwrap().len(), 2);
+    // On the frozen tag: symbol 1 only created → 1 change.
+    assert_eq!(repo.symbol_history_on(&Ref::Tag(tag("snap")), intro(1)).unwrap().len(), 1);
+
+    // serve_ref_cached works for a tag ref.
+    let cache = ServeCache::new(8 << 20, NonZeroU32::new(4).unwrap(), NonZeroU32::new(4).unwrap());
+    let s = repo.serve_ref_cached(&Ref::Tag(tag("snap")), &cache).unwrap();
+    assert_eq!(s.source, ServeSource::SealedAndStored);
+    let s2 = repo.serve_ref_cached(&Ref::Tag(tag("snap")), &cache).unwrap();
+    assert_eq!(s2.source, ServeSource::Cached);
+    assert!(s2.archive.open().unwrap().get().lookup_intro(intro(1)).is_some());
+
+    // changes_between a frozen tag and the advanced branch = the newer change.
+    let delta = repo.changes_between_refs(&Ref::Tag(tag("snap")), &Ref::Branch(branch("main"))).unwrap();
+    assert_eq!(delta.len(), 1);
+}
+
+/// Branches and tags persist across a reopen of the durable store.
+#[test]
+fn refs_persist_across_reopen() {
+    use libpijul::changestore::filesystem::FileSystem as FsChanges;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    {
+        let repo: IrRepository<FsChanges> = IrRepository::open(root, pkg(), "main").unwrap();
+        repo.record_generation(&func_table(&[(1, "a"), (2, "b")])).unwrap().unwrap();
+        repo.fork_branch(&Ref::Branch(branch("main")), &branch("develop")).unwrap();
+        repo.create_tag(&tag("rc1"), &Ref::Branch(branch("main"))).unwrap();
+        repo.tag_version(&vlabel("1.0.0")).unwrap();
+    }
+
+    let repo2: IrRepository<FsChanges> = IrRepository::open(root, pkg(), "main").unwrap();
+    assert!(repo2.branch_exists(&branch("develop")).unwrap());
+    assert!(repo2.tag_exists(&tag("rc1")).unwrap());
+    assert_eq!(repo2.list_versions().unwrap(), vec![vlabel("1.0.0")]);
+    // list_branches partitions correctly after reopen.
+    let mut bs: Vec<String> = repo2.list_branches().unwrap().iter().map(|b| b.as_str().to_owned()).collect();
+    bs.sort();
+    assert_eq!(bs, vec!["develop", "main"]);
+    assert_eq!(repo2.materialize_ref(&Ref::Tag(tag("rc1"))).unwrap().len(), 2);
 }
 
 // ===========================================================================

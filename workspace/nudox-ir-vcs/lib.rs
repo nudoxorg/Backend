@@ -29,6 +29,7 @@
 pub mod blob;
 pub mod checkout;
 pub mod error;
+pub mod refs;
 pub mod repo;
 pub mod serialize;
 pub mod serve_cache;
@@ -37,9 +38,13 @@ pub mod version;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod ref_probes;
+
 pub use blob::{serialize_symbol_blob, BlobError, LinkView, SymbolView};
 pub use checkout::MaterializedIndex;
 pub use error::VcsError;
+pub use refs::{BranchName, Ref, RefKind, ResolvedRef, TagName};
 pub use repo::{ChangeHashHex, IrRepository, IrTip, VersionDiff};
 pub use serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
 pub use serve_cache::{ServeCache, ServeSource, ServedArchive};
