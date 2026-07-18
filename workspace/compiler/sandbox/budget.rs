@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::limits::{Limits, Network};
 use crate::spec::{Env, Mounts};
+use crate::vm::{Cidr, DnsName};
 
 /// Threat posture of the code a producer runs, driving *default* capability
 /// policy (DAEMON-PLAN §2.3 / §5 Phase 6).
@@ -39,6 +40,17 @@ impl ThreatTier {
 	/// default is expressed by policy, not by an implicit call-site constant.
 	pub const fn net_default(self) -> NetGrant {
 		NetGrant::Off
+	}
+
+	/// Whether code at this tier must execute inside a microVM (SV-5).
+	///
+	/// `Hostile` (interpreters running package code) and `Untrusted`
+	/// (compilers / oracles over untrusted source) both execute
+	/// package-controlled code paths, so the hardware-virtualized cage is
+	/// mandatory. `Trusted` host tooling may use the in-process fast path on
+	/// the desktop; on the fleet everything runs in-VM regardless.
+	pub const fn vm_required(self) -> bool {
+		matches!(self, Self::Hostile | Self::Untrusted)
 	}
 
 	/// Per-tier hard ceiling: the loosest limits this tier may ever be granted.
@@ -183,23 +195,70 @@ impl FsGrant {
 	}
 }
 
+/// Egress allowlist for an acquiring-phase network grant.
+///
+/// Projected by the cage into `NetworkPolicy::Egress { allowed_cidrs, dns }`
+/// plus the host-side DNS filter (SMOLVM-PLAN §3.1). An empty `dns_names`
+/// list means *unrestricted* DNS (the permissive acquiring default); a
+/// non-empty list restricts resolution to exactly those names.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EgressAllowlist {
+	/// CIDR blocks outbound connections may target.
+	pub cidrs: Vec<Cidr>,
+	/// DNS names the guest may resolve (empty ⇒ unrestricted).
+	pub dns_names: Vec<DnsName>,
+}
+
+impl EgressAllowlist {
+	/// The acquiring-phase default: all of IPv4, unrestricted DNS.
+	///
+	/// Acquisition fetches are hash-pinned (FOD discipline), so the wide grant
+	/// is a fetch convenience, not a trust statement — sealing always drops it.
+	pub fn permissive() -> Self {
+		Self {
+			cidrs: vec![Cidr::ANY_V4],
+			dns_names: Vec::new(),
+		}
+	}
+
+	/// Build from explicit CIDRs and DNS names.
+	pub fn new(cidrs: Vec<Cidr>, dns_names: Vec<DnsName>) -> Self {
+		Self { cidrs, dns_names }
+	}
+}
+
 /// Network capability inside a sealed (or acquiring) budget.
 ///
-/// Same semantics as [`Network`]; separate name for sealed-compute vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Same *posture* semantics as [`Network`], but `On` carries the concrete
+/// egress allowlist the cage projects into the VM's network policy.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum NetGrant {
-	/// Empty netns / denied outbound (sealed-phase default).
+	/// No network device at all (sealed-phase default).
 	#[default]
 	Off,
-	/// Network permitted (acquiring / fetch only).
-	On,
+	/// Egress permitted under the allowlist (acquiring / fetch only).
+	On(EgressAllowlist),
+}
+
+impl NetGrant {
+	/// The permissive acquiring-phase grant ([`EgressAllowlist::permissive`]).
+	pub fn permissive() -> Self {
+		Self::On(EgressAllowlist::permissive())
+	}
+
+	/// Whether the network is off.
+	pub fn is_off(&self) -> bool {
+		matches!(self, Self::Off)
+	}
 }
 
 impl From<Network> for NetGrant {
 	fn from(n: Network) -> Self {
 		match n {
 			Network::Off => Self::Off,
-			Network::On => Self::On,
+			// The binary `Network::On` maps to the permissive acquiring
+			// default; callers with a real allowlist construct `On` directly.
+			Network::On => Self::permissive(),
 		}
 	}
 }
@@ -208,7 +267,7 @@ impl From<NetGrant> for Network {
 	fn from(n: NetGrant) -> Self {
 		match n {
 			NetGrant::Off => Self::Off,
-			NetGrant::On => Self::On,
+			NetGrant::On(_) => Self::On,
 		}
 	}
 }

@@ -236,7 +236,7 @@ impl LocalForgeContext {
 		Self {
 			node: NodeId::from_host(),
 			// Dev passthrough is fine for the default in-process path; production
-			// runs come through the server's injected LinuxNamespaces cage.
+			// runs come through the server's injected SmolvmCage (microVM).
 			cage: sandbox::DevPassthrough::try_new(sandbox::Policy::Development)
 				.expect("Development policy yields a dev cage"),
 			cas: Tiered::memory_only(256),

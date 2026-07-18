@@ -62,7 +62,7 @@ pub enum SandboxError {
 		program: String,
 	},
 
-	/// bubblewrap / sandbox-exec binary not found when required.
+	/// Required helper binary (e.g. the VM helper) not found.
 	#[error("sandbox helper missing: {program}")]
 	HelperMissing {
 		/// Helper binary that was required.
@@ -82,7 +82,7 @@ pub enum SandboxError {
 		wall: Duration,
 	},
 
-	/// Backend-specific failure (bwrap exit, seatbelt profile, cgroup setup).
+	/// Backend-specific failure (VMM exit, cgroup setup).
 	#[error("sandbox backend error: {0}")]
 	Backend(String),
 
@@ -115,7 +115,7 @@ pub enum CageError {
 		program: String,
 	},
 
-	/// bubblewrap / sandbox-exec / helper missing.
+	/// Required helper binary (e.g. the VM helper) missing.
 	#[error("sandbox helper missing: {program}")]
 	HelperMissing {
 		/// Helper binary name.
@@ -144,9 +144,9 @@ pub enum CageError {
 		message: String,
 	},
 
-	/// Seccomp BPF compile or install failed.
-	#[error("seccomp compile failed: {0}")]
-	SeccompCompile(String),
+	/// microVM runtime failure (launch / exec / golden fork).
+	#[error("vm: {0}")]
+	Vm(#[from] crate::vm::VmError),
 
 	/// A path required by the FS grant is missing on the host.
 	#[error("required mount missing: {path}")]
@@ -214,7 +214,7 @@ impl From<CageError> for SandboxError {
 			CageError::CgroupWrite { path, message } => {
 				Self::Backend(format!("cgroup write {}: {message}", path.display()))
 			}
-			CageError::SeccompCompile(s) => Self::Backend(format!("seccomp: {s}")),
+			CageError::Vm(e) => Self::Backend(format!("vm: {e}")),
 			CageError::MountMissing { path } => {
 				Self::Backend(format!("mount missing: {}", path.display()))
 			}

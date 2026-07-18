@@ -184,6 +184,11 @@ pub enum BadRequestReason {
     #[error("archive exceeded the download ceiling")]
     ArchiveExceedsLimit,
 
+    /// `POST /v1/compiled/lookup` received more than the allowed number of
+    /// [`heart::JobKey`]s in a single request (SMOLVM-PLAN §5.1, ≤ 1024).
+    #[error("too many job_keys in lookup request: {count} (maximum {max})")]
+    TooManyJobKeys { count: usize, max: usize },
+
     /// A save/verify/rebuild operation named a snapshot that does not match the
     /// one currently held by the blob store for the package.
     #[error("snapshot mismatch for package {package}: blob store holds a different generation")]

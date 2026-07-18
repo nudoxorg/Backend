@@ -142,6 +142,157 @@ fn resolve_custom_origin(name: &str) -> Result<RegistryOrigin, ServerError> {
 		.ok_or_else(|| BadRequestReason::UnknownCustomRegistry { name: name.to_owned() }.into())
 }
 
+// ── Compiled-lookup DTOs ─────────────────────────────────────────────────────
+
+/// Maximum number of [`JobKeyHex`] values accepted in a single
+/// `POST /v1/compiled/lookup` request (SMOLVM-PLAN §5.1).
+pub const COMPILED_LOOKUP_MAX_KEYS: usize = 1024;
+
+/// A validated, lower-hex-encoded [`heart::JobKey`] as received over the wire.
+///
+/// Validation happens at deserialize time:
+/// - Must be exactly 64 lowercase hex characters (a 32-byte BLAKE3 digest).
+/// - Upper-case hex is rejected.
+///
+/// The inner `[u8; 32]` is the raw digest; use [`JobKeyHex::into_bytes`] to
+/// obtain it after deserialization.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+pub struct JobKeyHex(String);
+
+impl JobKeyHex {
+    /// The validated lower-hex string as received from the client.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Decode into the raw 32-byte digest. Infallible after construction
+    /// (the constructor validates hex).
+    pub fn into_bytes(self) -> [u8; 32] {
+        let mut raw = [0u8; 32];
+        data_encoding::HEXLOWER
+            .decode_mut(self.0.as_bytes(), &mut raw)
+            .expect("hex was validated at deserialize time");
+        raw
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for JobKeyHex {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        if s.len() != 64 {
+            return Err(serde::de::Error::custom(format!(
+                "job_key must be exactly 64 hex chars, got {}",
+                s.len()
+            )));
+        }
+        // Reject upper-case hex and non-hex bytes.
+        let mut raw = [0u8; 32];
+        data_encoding::HEXLOWER
+            .decode_mut(s.as_bytes(), &mut raw)
+            .map_err(|_| serde::de::Error::custom("job_key is not valid lowercase hex"))?;
+        Ok(JobKeyHex(s))
+    }
+}
+
+impl std::fmt::Display for JobKeyHex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The request body for `POST /v1/compiled/lookup` (SMOLVM-PLAN §5.1).
+///
+/// Validation:
+/// - `job_keys` must be non-empty.
+/// - `job_keys` must contain ≤ [`COMPILED_LOOKUP_MAX_KEYS`] entries.
+/// - Each key must be exactly 64 lowercase hex characters.
+///
+/// These constraints are enforced lazily (at the `.validate()` call in the
+/// handler) rather than in `Deserialize`, so the handler can return a typed
+/// `400` with a structured error rather than axum's default JSON rejection.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CompiledLookupRequest {
+    pub job_keys: Vec<JobKeyHex>,
+}
+
+impl CompiledLookupRequest {
+    /// Validate list-level constraints (non-empty; ≤ 1024 keys).
+    /// Per-key validation already happened in `JobKeyHex`'s `Deserialize`.
+    pub fn validate(&self) -> Result<(), ServerError> {
+        if self.job_keys.is_empty() {
+            return Err(BadRequestReason::MissingField { field: "job_keys" }.into());
+        }
+        if self.job_keys.len() > COMPILED_LOOKUP_MAX_KEYS {
+            return Err(BadRequestReason::TooManyJobKeys {
+                count: self.job_keys.len(),
+                max: COMPILED_LOOKUP_MAX_KEYS,
+            }
+            .into());
+        }
+        Ok(())
+    }
+}
+
+/// One entry in the `POST /v1/compiled/lookup` response.
+///
+/// JSON shape:
+/// - hit:  `{"job_key":"…","hit":true,"package":"…","channel":"…","tip":"<64hex>","generation_stamp":"<hex>"}`
+/// - miss: `{"job_key":"…","hit":false}`
+///
+/// The client trusts the mapping because (a) writes are fleet-only (SV-6), and
+/// (b) the referenced change-set is verified AT IMPORT by Pijul content-
+/// addressing when pulled over iroh — the response is a claim, the changes
+/// are the proof.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CompiledLookupEntry {
+    pub job_key: String,
+    pub hit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// Pijul channel name. Present on hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// 64-char lowercase hex tip change-hash. Present on hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tip: Option<String>,
+    /// Hash① of the generation (64-char lower-hex). Present on hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation_stamp: Option<String>,
+}
+
+impl CompiledLookupEntry {
+    /// Construct a miss entry.
+    pub fn miss(job_key: &JobKeyHex) -> Self {
+        Self {
+            job_key: job_key.as_str().to_owned(),
+            hit: false,
+            package: None,
+            channel: None,
+            tip: None,
+            generation_stamp: None,
+        }
+    }
+
+    /// Construct a hit entry from a store hit.
+    pub fn hit(job_key: &JobKeyHex, hit: &registry::compiled::CompiledHit) -> Self {
+        Self {
+            job_key: job_key.as_str().to_owned(),
+            hit: true,
+            package: Some(hit.package.as_uuid().to_string()),
+            channel: Some(hit.channel.as_str().to_owned()),
+            tip: Some(hit.tip.as_str().to_owned()),
+            generation_stamp: Some(hit.generation_stamp.hex()),
+        }
+    }
+}
+
+/// The response body for `POST /v1/compiled/lookup`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CompiledLookupResponse {
+    pub results: Vec<CompiledLookupEntry>,
+}
+
 /// The wire error a DTO field rejection projects to.
 /// Deprecated in favor of direct construction of `BadRequestReason` variants
 /// (which are `Into<ServerError>` via the `#[from]` chain). Kept only for

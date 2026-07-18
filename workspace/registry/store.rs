@@ -100,6 +100,13 @@ impl Store<Live> {
 		Path::from(format!("cas/{}", hash_hex(&hash)))
 	}
 
+	/// The shared object-store backend handle, so sibling stores over the same
+	/// namespace (e.g. [`crate::compiled::ObjectCompiledStore`]) can be built
+	/// without threading a second `Arc` through configuration.
+	pub fn backend(&self) -> Arc<dyn ObjectStore> {
+		Arc::clone(&self.backend)
+	}
+
 	/// The `ptr/{package-id}` pointer path for a package's coordinates. The leaf
 	/// is the deterministic [`PackageId`] — a fixed-shape UUID derived from the
 	/// validated coordinate tuple — so no name or version, however exotic, can

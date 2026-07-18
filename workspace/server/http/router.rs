@@ -24,7 +24,7 @@ use tracing::Span;
 use registry::runtime::vector::EmbeddingModel;
 use crate::config::Limits;
 use crate::Server;
-use crate::http::handlers::{admin, health, indexing, search};
+use crate::http::handlers::{admin, compiled, health, indexing, search};
 
 /// The largest read-plane request body: search/expand requests are JSON control
 /// messages plus at most a pasted code snippet.
@@ -34,6 +34,12 @@ const READ_PLANE_BODY_CEILING: usize = 2 * 1024 * 1024;
 /// small coordinate JSON, so its ceiling sits *below* the read plane's — the
 /// configured `max_request_bytes` can tighten it further but never widen it.
 const WRITE_PLANE_BODY_CEILING: usize = 64 * 1024;
+
+/// The body ceiling for `POST /v1/compiled/lookup` (SMOLVM-PLAN §5.1).
+///
+/// The plan specifies "≤ 256 KiB". Worst case: 1 024 keys × 64 hex bytes +
+/// JSON punctuation ≈ 68 KiB; 256 KiB is the stated contract.
+const COMPILED_LOOKUP_BODY_CEILING: usize = 256 * 1024;
 
 /// Build the full application router over a shared server handle.
 ///
@@ -52,6 +58,7 @@ pub fn router<M: EmbeddingModel>(server: Arc<Server<M>>) -> Router {
 		.merge(read_plane().layer(DefaultBodyLimit::max(READ_PLANE_BODY_CEILING)))
 		.merge(write_plane(limits))
 		.merge(admin_plane(limits))
+		.merge(compiled_plane())
 		// RED metrics via `route_layer` (not `layer`): it runs *after* route
 		// matching, so `MatchedPath` is populated and the `http_route` label is
 		// the low-cardinality template (`/symbols/:id`) rather than the raw path
@@ -215,6 +222,21 @@ fn admin_plane<M: EmbeddingModel>(limits: &Limits) -> Router<Arc<Server<M>>> {
 				.layer(tower::timeout::TimeoutLayer::new(limits.upload_timeout)),
 		)
 		.layer(DefaultBodyLimit::max(body_ceiling))
+}
+
+/// The compiled-output plane: `POST /v1/compiled/lookup` (SMOLVM-PLAN §5, SV-6).
+///
+/// Carries a dedicated body limit of [`COMPILED_LOOKUP_BODY_CEILING`] (256 KiB)
+/// per the plan's "control plane, ≤ 256 KiB" statement. No write mutations here;
+/// this is a read gate on fleet-produced artifacts.
+///
+/// Auth: [`Principal`] + `compiled.lookup` read capability. Under the current
+/// allow-all policy every request is granted; future enforcement will require a
+/// `DownloadGrant`-equivalent token (SV-7).
+fn compiled_plane<M: EmbeddingModel>() -> Router<Arc<Server<M>>> {
+	Router::new()
+		.route("/v1/compiled/lookup", post(compiled::compiled_lookup))
+		.layer(DefaultBodyLimit::max(COMPILED_LOOKUP_BODY_CEILING))
 }
 
 /// The timeout layer's error projection: an admin mutation that outlived

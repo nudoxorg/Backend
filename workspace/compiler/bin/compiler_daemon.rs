@@ -60,8 +60,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
 
     // Assemble the forge runtime.  We use Development policy so the daemon can
-    // start without bwrap on hosts that do not have Linux namespaces (e.g. the
-    // macOS build image).  A production container would set
+    // start without the smolvm microVM backend on hosts without hardware
+    // virtualization (e.g. the build image).  A production container would set
     // `NUDOX_ISOLATION_POLICY=production` which the sandbox crate picks up via
     // `IsolationPolicy::require_worker()`.
     let policy = Policy::Development;

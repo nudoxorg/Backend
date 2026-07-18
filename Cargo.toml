@@ -15,6 +15,13 @@ members = [
     "workspace/ir",
     "workspace/registry",
     "workspace/server",
+    # ── Sealed-compute plane (SMOLVM-PLAN) ───────────────────────────────────
+    # sandbox rejoins the cargo workspace: it is the home of SmolvmCage and the
+    # budget/typestate layer; ir-stream is the guest→host IR streaming protocol.
+    "workspace/compiler/sandbox",
+    "workspace/ir-stream",
+    "workspace/ir-sync",
+    "workspace/nudox-sync",
     # ── IR-native VCS plane ──────────────────────────────────────────────────
     # The IR data model + serve archive + generation identity are the domain;
     # libpijul (via nudox-ir-vcs) is the change engine — we do NOT reimplement

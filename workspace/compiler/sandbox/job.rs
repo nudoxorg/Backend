@@ -81,8 +81,8 @@ impl Job<Acquiring> {
 	}
 
 	/// Network posture during acquisition.
-	pub fn net(&self) -> NetGrant {
-		self.net
+	pub fn net(&self) -> &NetGrant {
+		&self.net
 	}
 
 	/// Transition to the sealed phase, clamping resources to `tier` and forcing
@@ -156,11 +156,11 @@ impl Job<Sealed> {
 ///     FsGrant::scratch("/tmp"),
 ///     Env::empty(),
 ///     ProducerProfile::Nix.limits(),
-///     NetGrant::On,
+///     NetGrant::permissive(),
 /// );
 /// let mut budget = job.seal(ThreatTier::Hostile).budget();
-/// // `budget.net` has type `NetOff`; `NetGrant::On` is a different type.
-/// budget.net = NetGrant::On; // mismatched types — does not compile
+/// // `budget.net` has type `NetOff`; `NetGrant` is a different type.
+/// budget.net = NetGrant::permissive(); // mismatched types — does not compile
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NetOff;
@@ -195,6 +195,53 @@ impl SealedBudget {
 	}
 }
 
+/// Witness that a production-grade cage backs the forge (SV-4).
+///
+/// `Compile` implementations over untrusted sources must demand a `VmForge`
+/// in their construction path: it is obtainable only from a cage whose
+/// [`capabilities`](crate::cage::Cage::capabilities) report
+/// `production_grade` (today: [`crate::smolvm::SmolvmCage`]), never from
+/// [`crate::cage::DevPassthrough`] and never in-process. Holding one is
+/// therefore a static proof that untrusted code will execute behind the
+/// hardware-virtualization boundary.
+///
+/// The only constructor is [`VmForge::over`]; the field is private, so a
+/// witness cannot be forged by literal construction:
+///
+/// ```compile_fail
+/// use sandbox::{VmForge, CageId};
+///
+/// // The `cage` field is private — struct-literal construction is a
+/// // compile error, not a runtime check.
+/// let forged = VmForge { cage: CageId("dev-passthrough") };
+/// ```
+#[derive(Debug, Clone)]
+pub struct VmForge {
+	cage: crate::cage::CageId,
+}
+
+impl VmForge {
+	/// Obtain a witness over `cage`, refusing non-production-grade cages.
+	pub fn over<C: crate::cage::Cage + ?Sized>(cage: &C) -> Result<Self, crate::error::CageError> {
+		let caps = cage.capabilities();
+		if caps.production_grade {
+			Ok(Self { cage: cage.id() })
+		} else {
+			Err(crate::error::CageError::Denied {
+				reason: format!(
+					"VmForge requires a production-grade cage; `{}` is not",
+					cage.id()
+				),
+			})
+		}
+	}
+
+	/// The cage this witness was taken over.
+	pub fn cage_id(&self) -> &crate::cage::CageId {
+		&self.cage
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -213,9 +260,9 @@ mod tests {
 			scratch_fs(),
 			Env::empty(),
 			ProducerProfile::Nix.base_limits(),
-			NetGrant::On, // acquiring may have net on
+			NetGrant::permissive(), // acquiring may have net on
 		);
-		assert_eq!(job.net(), NetGrant::On);
+		assert!(matches!(job.net(), NetGrant::On(_)));
 
 		let sealed = job.seal(ThreatTier::Hostile);
 		let budget = sealed.budget();
@@ -227,6 +274,14 @@ mod tests {
 			NetGrant::Off,
 			"a sealed job can never carry net-on"
 		);
+	}
+
+	#[test]
+	fn vm_forge_refuses_non_production_cages() {
+		let dev = crate::cage::DevPassthrough::try_new(crate::cage::Policy::Development)
+			.expect("dev cage");
+		let err = VmForge::over(&dev).expect_err("dev passthrough is not production-grade");
+		assert!(matches!(err, crate::error::CageError::Denied { .. }));
 	}
 
 	#[test]

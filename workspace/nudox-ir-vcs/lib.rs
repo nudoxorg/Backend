@@ -34,6 +34,8 @@ pub mod refs;
 pub mod repo;
 pub mod serialize;
 pub mod serve_cache;
+pub mod session;
+pub mod stream;
 pub mod version;
 
 #[cfg(test)]
@@ -55,4 +57,6 @@ pub use refs::{BranchName, Ref, RefKind, ResolvedRef, TagName};
 pub use repo::{ChangeHashHex, IrRepository, IrTip, VersionDiff};
 pub use serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
 pub use serve_cache::{ServeCache, ServeSource, ServedArchive};
+pub use session::{FinishReport, RecordingSession, StageReport, StagedEntry};
+pub use stream::{record_stream, ProgressSnapshot, SourceDigestEntry, StreamPolicy, StreamedRecording};
 pub use version::{VersionLabel, VersionState};

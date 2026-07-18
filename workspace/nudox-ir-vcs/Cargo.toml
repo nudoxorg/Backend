@@ -22,6 +22,8 @@ nudox-change = { path = "../nudox-change" }
 nudox-ir = { path = "../nudox-ir" }
 nudox-ir-archive = { path = "../nudox-ir-archive" }
 nudox-ir-manifest = { path = "../nudox-ir-manifest" }
+ir-stream = { path = "../ir-stream" }
+heart = { path = "../heart" }
 
 # The change engine. GPL — acceptable per design K7. Pinned exactly: libpijul's
 # on-disk formats and API are pre-1.0 and move between betas.

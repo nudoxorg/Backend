@@ -29,8 +29,8 @@ fn acquiring_job(net: NetGrant, profile: ProducerProfile) -> Job<Acquiring> {
 #[test]
 fn sealed_job_is_always_net_off() {
 	// Even when acquisition had the network ON, sealing drops it.
-	let acquiring = acquiring_job(NetGrant::On, ProducerProfile::Nix);
-	assert_eq!(acquiring.net(), NetGrant::On);
+	let acquiring = acquiring_job(NetGrant::permissive(), ProducerProfile::Nix);
+	assert!(matches!(acquiring.net(), NetGrant::On(_)));
 
 	let sealed: Job<Sealed> = acquiring.seal(ThreatTier::Hostile);
 	let budget: SealedBudget = sealed.budget();

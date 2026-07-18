@@ -52,7 +52,7 @@ fn is_already_canonical(input: &str) -> bool {
         .all(|&byte| (byte.is_ascii_lowercase() && byte.is_ascii_alphanumeric()) || byte == b'-')
 }
 
-fn apply_well_known_replacements(token: &str) -> Cow<str> {
+fn apply_well_known_replacements(token: &str) -> Cow<'_, str> {
     let stripped = token.trim_end_matches("'s").trim_end_matches("\u{2019}s");
     let replacement = match stripped {
         "I/O" | "i/o" => "io",
@@ -190,7 +190,7 @@ impl Synonyms {
             .from_path(&path)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        let mut mapping = HashMap::with_capacity(2500);
+        let mut mapping: HashMap<SmolStr, (SmolStr, u8)> = HashMap::with_capacity(2500);
         let mut needs_fixing = false;
 
         for result in reader.records() {

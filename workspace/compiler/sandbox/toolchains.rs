@@ -1,5 +1,13 @@
 //! Resolved toolchain store paths (DAEMON-PLAN §2.5).
 //!
+//! # Submodules
+//!
+//! - [`images`] — OCI sealed-plane types: [`images::ToolchainImage`],
+//!   [`images::ToolchainImageSet`], [`images::ToolchainImageStore`],
+//!   [`images::ToolchainPlane`], [`images::ImageDigest`], [`images::OciImageRef`].
+//!   `ToolchainPlane::digest` is what feeds `JobKey::derive`'s `toolchain`
+//!   argument going forward; `ToolchainSet::digest` is unchanged.
+//!
 //! Absorbs the compiler's former `ToolchainPaths::from_env`. This is the one
 //! sanctioned place that may read `NUDOX_TOOLCHAIN_*` / `RUSTUP_HOME` etc. — the
 //! seal boundary. The result is hashed into every `JobKey` via [`Self::digest`]
@@ -7,6 +15,8 @@
 //!
 //! Owned by the `ForgeRuntime` and injected downstream; the `compiler` crate
 //! never reads toolchain env itself.
+
+pub mod images;
 
 use std::path::PathBuf;
 

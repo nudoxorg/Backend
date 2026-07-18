@@ -41,6 +41,7 @@ use crate::registry::{
 	metadata::{Specifics, Synonyms},
 	queue::{Queue, RetryPolicy},
 };
+use registry::compiled::ObjectCompiledStore;
 use registry::runtime::{
 	graph::{Credentials, Database, Graph, Organization},
 	session::PgSessionStore,
@@ -126,6 +127,12 @@ pub struct Server<M: EmbeddingModel> {
 	/// with `(None, None)`, name/identifier facets only). Loaded once because the
 	/// tables are expensive to parse and immutable for the process lifetime.
 	heuristics: Option<Heuristics>,
+
+	/// The compiled-output lookup store for `POST /v1/compiled/lookup` (SV-6),
+	/// sharing the definitive base's object-store backend. Records are written
+	/// by the iroh SyncService apply-hook via [`registry::compiled::ObjectCompiledStore::record`]
+	/// after a merged change-set is verified and applied.
+	compiled_store: ObjectCompiledStore,
 }
 
 /// The metadata keyword-normalization tables, loaded once at assembly and shared
@@ -165,6 +172,9 @@ impl<M: EmbeddingModel> Server<M> {
 
 		// The definitive base is the federation's required root.
 		let base = Self::connect_source(&config.definitive).await?;
+		// The compiled-lookup store rides the base's own object-store backend —
+		// one namespace for cas/, ptr/, and compiled/ (SV-6).
+		let compiled_store = ObjectCompiledStore::new(base.blobs.backend());
 		let mut federation = Federation::new(config.definitive.source_id(), base);
 
 		// Overlays, in declared precedence order (highest first).
@@ -226,6 +236,7 @@ impl<M: EmbeddingModel> Server<M> {
 			sessions,
 			compiler_client,
 			heuristics,
+			compiled_store,
 		})
 	}
 
@@ -352,6 +363,13 @@ impl<M: EmbeddingModel> Server<M> {
 
 	/// The HTTP client for the compiler daemon.
 	pub fn compiler_client(&self) -> &crate::compiler_client::CompilerClient { &self.compiler_client }
+
+	/// The compiled-output lookup store for `POST /v1/compiled/lookup` (SV-6).
+	///
+	/// Returns a reference to the store so the handler can call `.lookup()`.
+	/// Backed by the definitive base's object store: reads the
+	/// `compiled/{job_key}` records the fleet's emit pipeline writes.
+	pub fn compiled_store(&self) -> &ObjectCompiledStore { &self.compiled_store }
 
 	/// Serve until shutdown: bind the HTTP router to `config.serving_address` and
 	/// run the background pollers (queue workers + derived-store consumers) for

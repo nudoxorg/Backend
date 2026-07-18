@@ -852,3 +852,898 @@ fn bench_replay_vs_snapshot() {
     // 2. Partial read is strictly cheaper than a full replay.
     assert!(checkout_best < replay_new, "one-symbol checkout must beat a full replay");
 }
+
+// ===========================================================================
+// RecordingSession tests
+// ===========================================================================
+
+use crate::session::StagedEntry;
+
+/// Convert a `PristineIntroTable` entry into a `StagedEntry` for session staging.
+fn table_entry_to_staged(
+    table: &PristineIntroTable,
+    intro_id: IntroId,
+) -> StagedEntry {
+    let payload = table.get(intro_id).unwrap().clone();
+    let parent = table.parent_of(intro_id);
+    // Collect links where this intro is the canonical owner.
+    let package = pkg();
+    let self_ref = StableRef::new(package.clone(), intro_id);
+    let links: Vec<crate::serialize::LinkWire> = table
+        .links()
+        .filter(|l| l.a == self_ref || l.b == self_ref)
+        .filter_map(|l| {
+            // Same canonical-owner rule as record_generation.
+            let a_intro = l.a.intro;
+            let b_intro = l.b.intro;
+            let a_is_local = l.a.package == package;
+            let b_is_local = l.b.package == package;
+            let owner_intro = if a_is_local && b_is_local {
+                if a_intro.as_bytes() <= b_intro.as_bytes() { a_intro } else { b_intro }
+            } else if a_is_local {
+                a_intro
+            } else {
+                b_intro
+            };
+            if owner_intro != intro_id {
+                return None;
+            }
+            // Build LinkWire from this intro's perspective.
+            let (kind_self, kind_other, other) = if l.a.intro == intro_id {
+                (l.kind_a, l.kind_b, l.b.clone())
+            } else {
+                (l.kind_b, l.kind_a, l.a.clone())
+            };
+            Some(crate::serialize::LinkWire { other, kind_self, kind_other })
+        })
+        .collect();
+
+    StagedEntry {
+        stable: StableRef::new(pkg(), intro_id),
+        payload,
+        parent,
+        links,
+    }
+}
+
+/// **Equivalence property**: `begin_recording` + `stage` + `finish` produces
+/// the same materialized IR as `record_generation` on the same table.
+#[test]
+fn session_equivalence_property() {
+    let ir = sample_ir();
+
+    // Repo A: batch record_generation.
+    let repo_a = IrRepository::in_memory(pkg(), "main").unwrap();
+    repo_a.record_generation(&ir).unwrap().unwrap();
+
+    // Repo B: streaming session, split into two batches.
+    let mut repo_b = IrRepository::in_memory(pkg(), "main").unwrap();
+    {
+        let mut session = repo_b.begin_recording().unwrap();
+        let intros: Vec<IntroId> = ir.live_entries().map(|(i, _)| i).collect();
+        let (first, second) = intros.split_at(intros.len() / 2 + 1);
+        session
+            .stage(first.iter().map(|&i| table_entry_to_staged(&ir, i)).collect())
+            .unwrap();
+        if !second.is_empty() {
+            session
+                .stage(second.iter().map(|&i| table_entry_to_staged(&ir, i)).collect())
+                .unwrap();
+        }
+        session.finish().unwrap();
+    }
+
+    // Both repos must have exactly one change in their log.
+    assert_eq!(repo_a.log().unwrap().len(), 1, "record_generation must produce 1 change");
+    assert_eq!(repo_b.log().unwrap().len(), 1, "session must produce 1 change");
+
+    // Materialized IR must be content-identical (same payloads, parents, links).
+    // Tip fingerprints will differ because change identity includes timestamps/messages.
+    let mat_a = repo_a.materialize().unwrap();
+    let mat_b = repo_b.materialize().unwrap();
+    assert_eq!(
+        mat_a.live_entries().count(),
+        mat_b.live_entries().count(),
+        "same number of live symbols"
+    );
+    for (i, payload) in mat_a.live_entries() {
+        assert_eq!(mat_b.get(i), Some(payload), "payload for intro {:?} differs", i);
+        assert_eq!(mat_a.parent_of(i), mat_b.parent_of(i), "parent mismatch for {:?}", i);
+    }
+    assert_eq!(mat_a.links().count(), mat_b.links().count(), "link count mismatch");
+}
+
+/// **Deletion semantics**: symbols not staged in `finish` are deleted.
+#[test]
+fn session_deletion_semantics() {
+    // Start with 3 symbols.
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    let mut initial = PristineIntroTable::new();
+    initial.insert_live(intro(1), module("root"), None);
+    initial.insert_live(intro(2), function("alpha"), None);
+    initial.insert_live(intro(3), function("beta"), None);
+    repo.record_generation(&initial).unwrap().unwrap();
+
+    // New session: stage only intro(1) and intro(2).
+    let report = {
+        let mut session = repo.begin_recording().unwrap();
+        let batch = vec![
+            table_entry_to_staged(&initial, intro(1)),
+            table_entry_to_staged(&initial, intro(2)),
+        ];
+        session.stage(batch).unwrap();
+        session.finish().unwrap()
+    };
+
+    assert_eq!(report.deleted, 1, "intro(3) should be deleted");
+
+    let mat = repo.materialize().unwrap();
+    assert_eq!(mat.live_entries().count(), 2, "only 2 symbols remain");
+    assert!(mat.is_live(intro(1)));
+    assert!(mat.is_live(intro(2)));
+    assert!(!mat.is_live(intro(3)), "intro(3) must be deleted");
+}
+
+/// **Checkpoint semantics**: a checkpoint commits staged symbols without
+/// deleting unstaged ones; `finish` later records deletions.
+#[test]
+fn session_checkpoint_mid_session() {
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+
+    // Start: record 3 symbols.
+    let mut initial = PristineIntroTable::new();
+    initial.insert_live(intro(1), module("root"), None);
+    initial.insert_live(intro(2), function("alpha"), None);
+    initial.insert_live(intro(3), function("beta"), None);
+    repo.record_generation(&initial).unwrap().unwrap();
+
+    // Session: checkpoint after staging intro(1), then stage intro(2), then finish
+    // (deleting intro(3)).
+    {
+        let mut session = repo.begin_recording().unwrap();
+
+        // Stage intro(1) with changed content.
+        let mut changed = PristineIntroTable::new();
+        changed.insert_live(intro(1), module("root_v2"), None);
+        changed.insert_live(intro(2), function("alpha"), None);
+
+        session
+            .stage(vec![table_entry_to_staged(&changed, intro(1))])
+            .unwrap();
+        let cp = session.checkpoint("partial").unwrap();
+        assert!(cp.is_some(), "checkpoint must record a change");
+
+        // Stage intro(2) (unchanged).
+        session
+            .stage(vec![table_entry_to_staged(&changed, intro(2))])
+            .unwrap();
+
+        // finish: intro(3) is not staged → deleted.
+        session.finish().unwrap();
+    }
+
+    let log = repo.log().unwrap();
+    assert_eq!(log.len(), 3, "initial record + checkpoint + finish = 3 changes");
+
+    let mat = repo.materialize().unwrap();
+    assert_eq!(mat.live_entries().count(), 2, "intro(3) deleted by finish");
+    assert!(mat.is_live(intro(1)));
+    assert!(mat.is_live(intro(2)));
+    assert!(!mat.is_live(intro(3)));
+    // intro(1) content updated.
+    assert_eq!(mat.get(intro(1)).unwrap().symbol.name, "root_v2");
+}
+
+/// **Checkpoint never deletes**: a partial enumeration cannot distinguish
+/// "gone" from "not yet emitted", so a checkpoint must leave every unstaged
+/// symbol live on the channel. Proven by checkpointing a strict subset,
+/// abandoning the session, and materializing: everything survives.
+#[test]
+fn session_checkpoint_never_deletes() {
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+
+    let mut initial = PristineIntroTable::new();
+    initial.insert_live(intro(1), module("root"), None);
+    initial.insert_live(intro(2), function("alpha"), None);
+    initial.insert_live(intro(3), function("beta"), None);
+    repo.record_generation(&initial).unwrap().unwrap();
+
+    // Stage ONLY intro(1) with changed content, checkpoint, then abandon —
+    // no finish ever runs, so the channel state after the checkpoint is the
+    // only state to inspect.
+    {
+        let mut session = repo.begin_recording().unwrap();
+        let mut changed = PristineIntroTable::new();
+        changed.insert_live(intro(1), module("root_v2"), None);
+        session
+            .stage(vec![table_entry_to_staged(&changed, intro(1))])
+            .unwrap();
+        assert!(session.checkpoint("subset").unwrap().is_some());
+        session.abandon().unwrap();
+    }
+
+    let mat = repo.materialize().unwrap();
+    assert_eq!(mat.live_entries().count(), 3, "checkpoint must not delete anything");
+    assert!(mat.is_live(intro(2)) && mat.is_live(intro(3)), "unstaged symbols survive");
+    assert_eq!(
+        mat.get(intro(1)).unwrap().symbol.name,
+        "root_v2",
+        "the staged symbol IS on the channel after the checkpoint"
+    );
+}
+
+/// **Crash recovery**: an abandoned session leaves the repo recoverable.
+/// `record_generation` with the full set works correctly after `abandon`.
+#[test]
+fn session_crash_resume() {
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+
+    let mut initial = PristineIntroTable::new();
+    initial.insert_live(intro(1), module("root"), None);
+    initial.insert_live(intro(2), function("alpha"), None);
+    initial.insert_live(intro(3), function("beta"), None);
+    repo.record_generation(&initial).unwrap().unwrap();
+
+    // Begin a session, stage some symbols, then abandon.
+    {
+        let mut session = repo.begin_recording().unwrap();
+        session
+            .stage(vec![table_entry_to_staged(&initial, intro(1))])
+            .unwrap();
+        session.abandon().unwrap();
+    }
+
+    // After abandon, record_generation with the full table must succeed.
+    let mut updated = initial.clone();
+    updated.insert_live(intro(4), function("gamma"), None);
+    let result = repo.record_generation(&updated).unwrap();
+    assert!(result.is_some(), "record after abandon must succeed and produce a change");
+
+    let mat = repo.materialize().unwrap();
+    assert_eq!(mat.live_entries().count(), 4, "all 4 symbols present after recovery");
+    assert!(mat.is_live(intro(4)), "newly added symbol gamma present");
+}
+
+/// **Idempotent restage**: finishing a session whose staged content is identical
+/// to the current tip records no change.
+#[test]
+fn session_idempotent_restage() {
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    let ir = sample_ir();
+    repo.record_generation(&ir).unwrap().unwrap();
+
+    // Stage the same content — nothing should change.
+    let report = {
+        let mut session = repo.begin_recording().unwrap();
+        let entries: Vec<StagedEntry> = ir
+            .live_entries()
+            .map(|(i, _)| table_entry_to_staged(&ir, i))
+            .collect();
+        let stage_report = session.stage(entries).unwrap();
+        assert!(stage_report.unchanged > 0, "all entries should be unchanged");
+        session.finish().unwrap()
+    };
+
+    assert!(report.change.is_none(), "no change should be recorded for identical content");
+    assert_eq!(report.deleted, 0, "nothing deleted");
+}
+
+/// **Large batch (SMOLVM P2 gate)**: staging ~100 entries in one call exercises
+/// the single-txn / single-`list_files` path and must produce the same
+/// materialized IR as `record_generation` on the same table.
+#[test]
+fn session_large_batch_stage() {
+    const N: u8 = 100;
+
+    // Build a table of N top-level functions.
+    let mut table = PristineIntroTable::new();
+    for i in 0..N {
+        table.insert_live(intro(i), function(&format!("sym_{i}")), None);
+    }
+
+    // Reference: record_generation.
+    let repo_ref = IrRepository::in_memory(pkg(), "main").unwrap();
+    repo_ref.record_generation(&table).unwrap().unwrap();
+
+    // Session: stage all N entries in a single batch.
+    let mut repo_ses = IrRepository::in_memory(pkg(), "main").unwrap();
+    let report = {
+        let mut session = repo_ses.begin_recording().unwrap();
+        let batch: Vec<StagedEntry> = table
+            .live_entries()
+            .map(|(i, _)| table_entry_to_staged(&table, i))
+            .collect();
+        assert_eq!(batch.len(), N as usize, "batch has exactly N entries");
+        let stage_report = session.stage(batch).unwrap();
+        assert_eq!(stage_report.added, N as u64, "all N are new");
+        assert_eq!(stage_report.updated, 0);
+        assert_eq!(stage_report.unchanged, 0);
+        assert!(stage_report.sample.len() <= 5, "sample capped at 5");
+        session.finish().unwrap()
+    };
+
+    assert!(report.change.is_some(), "a change must be recorded");
+    assert_eq!(report.added, N as u64);
+    assert_eq!(report.deleted, 0);
+
+    // Materialized IR must match the reference.
+    let mat_ref = repo_ref.materialize().unwrap();
+    let mat_ses = repo_ses.materialize().unwrap();
+    assert_eq!(mat_ref.live_entries().count(), mat_ses.live_entries().count());
+    for (i, payload) in mat_ref.live_entries() {
+        assert_eq!(mat_ses.get(i), Some(payload), "payload mismatch for intro {:?}", i);
+    }
+}
+
+/// **Foreign-package rejection (SV-10)**: staging an entry whose
+/// `stable.package` differs from the repository's package must return
+/// `VcsError::ForeignPackage` before any WC mutation.  A valid entry staged
+/// after the rejection must be committed correctly.
+#[test]
+fn session_foreign_package_rejected() {
+    use nudox_change::{EcosystemId, PackageName};
+
+    let foreign_pkg = PackageLineageId::new(
+        EcosystemId::new("cargo"),
+        PackageName::new("other_crate"),
+    );
+
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+
+    // Build a foreign entry (different package).
+    let foreign_intro = intro(42);
+    let foreign_entry = StagedEntry {
+        stable: StableRef::new(foreign_pkg.clone(), foreign_intro),
+        payload: function("foreign_sym"),
+        parent: None,
+        links: vec![],
+    };
+
+    // Build a valid entry (correct package).
+    let valid_intro = intro(10);
+    let mut valid_table = PristineIntroTable::new();
+    valid_table.insert_live(valid_intro, function("valid_sym"), None);
+    let valid_entry = table_entry_to_staged(&valid_table, valid_intro);
+
+    {
+        let mut session = repo.begin_recording().unwrap();
+
+        // Staging the foreign entry must error with ForeignPackage.
+        let err = session.stage(vec![foreign_entry]).unwrap_err();
+        assert!(
+            matches!(err, crate::VcsError::ForeignPackage { .. }),
+            "expected ForeignPackage, got {err:?}"
+        );
+
+        // The WC must be untouched: staging the valid entry now succeeds.
+        let stage_report = session.stage(vec![valid_entry]).unwrap();
+        assert_eq!(stage_report.added, 1, "the valid entry is added");
+
+        let report = session.finish().unwrap();
+        assert!(report.change.is_some(), "a change for the valid entry was recorded");
+        assert_eq!(report.added, 1);
+    }
+
+    // After finish, only the valid symbol exists — the foreign one was never written.
+    let mat = repo.materialize().unwrap();
+    assert_eq!(mat.live_entries().count(), 1, "only the valid symbol present");
+    assert!(mat.is_live(valid_intro), "valid symbol is live");
+    assert!(!mat.is_live(foreign_intro), "foreign symbol must not be present");
+}
+
+// ===========================================================================
+// record_stream end-to-end tests
+// ===========================================================================
+
+use crate::stream::{record_stream, StreamPolicy, StreamedRecording};
+use heart::content::{ContentHash, JobKey};
+use ir_stream::{FailureKindWire, PhaseWire, ProducerId, SymbolSink, WireEntry, WireLink};
+
+fn stream_job() -> JobKey {
+    JobKey::derive(b"stream-test", b"rust-1.79", b"src/lib.rs", b"Cargo.lock")
+}
+
+fn stream_producer() -> ProducerId {
+    ProducerId::from_static("rust-1.79")
+}
+
+fn stream_content_hash(seed: u8) -> ContentHash {
+    ContentHash::of_bytes(&[seed; 32])
+}
+
+/// Build a `WireEntry` for a function symbol belonging to `pkg()`.
+fn wire_entry(name: &str, seed: u8) -> WireEntry {
+    use nudox_ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
+    use nudox_ir::kind::KindDiscriminant;
+    use nudox_ir::symbol::Visibility;
+
+    let sym = SymbolWire {
+        name: name.to_owned(),
+        visibility: Visibility::Public,
+        documentation: None,
+        source_path: "src/lib.rs".to_owned(),
+        span_start: 0,
+        span_end: name.len() as u32,
+        aliases: Vec::new(),
+        deprecation: None,
+        doc_links: Vec::new(),
+    };
+    let kind = KindWire::Function(FunctionWire {
+        input_params: Box::new([]),
+        output_params: Box::new([]),
+    });
+    let payload = OwnedEntryPayload::sealed(
+        sym,
+        KindDiscriminant::Function,
+        kind,
+        EntryPayloadFlags::default(),
+    );
+    WireEntry {
+        stable: StableRef::new(pkg(), IntroId::from_raw([seed; 32])),
+        payload,
+        parent: None,
+        links: Vec::new(),
+    }
+}
+
+/// Build a `WireEntry` with a parent set.
+fn wire_entry_child(name: &str, seed: u8, parent_seed: u8) -> WireEntry {
+    let mut e = wire_entry(name, seed);
+    e.parent = Some(IntroId::from_raw([parent_seed; 32]));
+    e
+}
+
+/// Produce a complete stream into a byte buffer synchronously.
+/// Returns the bytes.
+fn produce_stream(
+    entries: Vec<WireEntry>,
+    links: Vec<(StableRef, WireLink)>,
+    source_path: Option<&str>,
+    finish_or_abort: bool, // true = Finish, false = Abort
+) -> Vec<u8> {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let buf2 = buf.clone();
+
+    struct ArcVecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for ArcVecWriter {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut sink = SymbolSink::hello(ArcVecWriter(buf2), stream_job(), stream_producer()).unwrap();
+    sink.emit_all(entries).unwrap();
+    for (from, link) in links {
+        sink.emit_link(from, link).unwrap();
+    }
+    if let Some(path) = source_path {
+        sink.source_digest(path, stream_content_hash(0xAA), 4242).unwrap();
+    }
+    sink.progress(PhaseWire::Emit).unwrap();
+    if finish_or_abort {
+        sink.finish(stream_content_hash(0xFF)).unwrap();
+    } else {
+        sink.abort(FailureKindWire::Internal, "producer crashed").unwrap();
+    }
+
+    buf.lock().unwrap().clone()
+}
+
+/// **Happy path**: N entries in several batches + inline links + source digest →
+/// `record_stream` → materialized index equals a batch `record_generation` of
+/// the same table.
+///
+/// Links are embedded in `WireEntry.links` (the canonical same-entry path) so
+/// they are included in the `Symbols` batch itself. A separate `Links` frame
+/// test is covered by `stream_separate_links_frame`.
+#[test]
+fn stream_happy_path_equivalence() {
+    use nudox_ir::apply::{LinkRecord, PristineIntroTable};
+    use nudox_ir::kind::KindDiscriminant;
+
+    let m_seed = 0x10u8;
+    let f_seed = 0x20u8;
+    let m_intro = IntroId::from_raw([m_seed; 32]);
+    let f_intro = IntroId::from_raw([f_seed; 32]);
+
+    // "root" owns the link (m_intro=[0x10] < f_intro=[0x20]).
+    let mut root_entry = wire_entry("root", m_seed);
+    root_entry.links = vec![WireLink {
+        other: StableRef::new(pkg(), f_intro),
+        kind_self: KindDiscriminant::Module,
+        kind_other: KindDiscriminant::Function,
+    }];
+
+    let entries = vec![
+        root_entry,
+        wire_entry_child("do_thing", f_seed, m_seed),
+    ];
+
+    let bytes = produce_stream(entries, vec![], Some("src/lib.rs"), true);
+
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    let outcome =
+        record_stream(&mut repo, std::io::Cursor::new(bytes), StreamPolicy { checkpoint_every: None })
+            .unwrap();
+
+    match &outcome {
+        StreamedRecording::Finished { sources, .. } => {
+            assert_eq!(sources.len(), 1, "source digest collected");
+            assert_eq!(sources[0].path, "src/lib.rs");
+        }
+        StreamedRecording::Aborted { .. } => panic!("expected Finished"),
+    }
+
+    // Build the equivalent PristineIntroTable for reference.
+    let mut ir = PristineIntroTable::new();
+    ir.insert_live(m_intro, function("root"), None);
+    ir.insert_live(f_intro, function("do_thing"), Some(m_intro));
+    ir.insert_link(LinkRecord {
+        a: sref(m_intro),
+        b: sref(f_intro),
+        kind_a: KindDiscriminant::Module,
+        kind_b: KindDiscriminant::Function,
+    });
+
+    let repo_ref = IrRepository::in_memory(pkg(), "main").unwrap();
+    repo_ref.record_generation(&ir).unwrap().unwrap();
+
+    let mat_stream = repo.materialize().unwrap();
+    let mat_ref = repo_ref.materialize().unwrap();
+
+    assert_eq!(
+        mat_stream.live_entries().count(),
+        mat_ref.live_entries().count(),
+        "same number of live entries"
+    );
+    for (i, payload) in mat_ref.live_entries() {
+        assert_eq!(
+            mat_stream.get(i),
+            Some(payload),
+            "payload mismatch for intro {:?}",
+            i
+        );
+        assert_eq!(
+            mat_ref.parent_of(i),
+            mat_stream.parent_of(i),
+            "parent mismatch for {:?}",
+            i
+        );
+    }
+    assert_eq!(
+        mat_stream.links().count(),
+        mat_ref.links().count(),
+        "link count mismatch"
+    );
+}
+
+/// **Separate Links frame**: a `Links { from, batch }` frame sent AFTER the
+/// owning symbol's `Symbols` batch updates the symbol's blob with the link.
+///
+/// This tests the `stage_links` path in `record_stream`. The producer flushes
+/// the symbol batch first (`sink.finish()` drains the buffer), then emits a
+/// separate Links frame.
+#[test]
+fn stream_separate_links_frame() {
+    use ir_stream::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
+    use nudox_ir::kind::KindDiscriminant;
+    use nudox_ir::apply::{LinkRecord, PristineIntroTable};
+
+    let m_seed = 0x10u8;
+    let f_seed = 0x20u8;
+    let m_intro = IntroId::from_raw([m_seed; 32]);
+    let f_intro = IntroId::from_raw([f_seed; 32]);
+
+    // Build a stream manually: Hello, Symbols (no links in entries), Links, Finish.
+    let mut buf = Vec::<u8>::new();
+    let mut fw = FrameWriter::new(&mut buf);
+    fw.write_frame(&StreamFrame::Hello {
+        version: IR_STREAM_VERSION,
+        job: stream_job(),
+        producer: stream_producer(),
+    }).unwrap();
+    fw.write_frame(&StreamFrame::Symbols {
+        batch: vec![
+            wire_entry("root", m_seed),
+            wire_entry_child("do_thing", f_seed, m_seed),
+        ],
+    }).unwrap();
+    // Now emit the link in a separate frame (m_intro owns the link).
+    fw.write_frame(&StreamFrame::Links {
+        from: StableRef::new(pkg(), m_intro),
+        batch: vec![WireLink {
+            other: StableRef::new(pkg(), f_intro),
+            kind_self: KindDiscriminant::Module,
+            kind_other: KindDiscriminant::Function,
+        }],
+    }).unwrap();
+    fw.write_frame(&StreamFrame::Finish {
+        emitted: 2,
+        producer_digest: stream_content_hash(0xFF),
+    }).unwrap();
+    let _ = fw;
+
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    let outcome = record_stream(
+        &mut repo,
+        std::io::Cursor::new(buf),
+        StreamPolicy { checkpoint_every: None },
+    ).unwrap();
+
+    assert!(matches!(outcome, StreamedRecording::Finished { .. }), "must finish");
+
+    // Build reference via record_generation.
+    let mut ir = PristineIntroTable::new();
+    ir.insert_live(m_intro, function("root"), None);
+    ir.insert_live(f_intro, function("do_thing"), Some(m_intro));
+    ir.insert_link(LinkRecord {
+        a: sref(m_intro),
+        b: sref(f_intro),
+        kind_a: KindDiscriminant::Module,
+        kind_b: KindDiscriminant::Function,
+    });
+
+    let repo_ref = IrRepository::in_memory(pkg(), "main").unwrap();
+    repo_ref.record_generation(&ir).unwrap().unwrap();
+
+    let mat_stream = repo.materialize().unwrap();
+    let mat_ref = repo_ref.materialize().unwrap();
+
+    assert_eq!(
+        mat_stream.links().count(),
+        mat_ref.links().count(),
+        "link count: stream={} vs ref={}",
+        mat_stream.links().count(),
+        mat_ref.links().count()
+    );
+    assert_eq!(mat_stream.live_entries().count(), 2, "both symbols present");
+}
+
+/// **Checkpoint policy**: `checkpoint_every: 2` with entries arriving in multiple
+/// batches ⇒ log length > 1 and content is still correct.
+///
+/// We produce a stream where each entry arrives in its own 1-entry `Symbols`
+/// frame. That way batch 1 stages entry 1, batch 2 stages entry 2 (total=2,
+/// multiple=2 > 0 → checkpoint fires), batch 3 stages entry 3, batch 4 stages
+/// entry 4 (total=4, multiple=4 > 2 → second checkpoint fires), batch 5 stages
+/// entry 5. Then `finish()` completes with a final change (deletions = 0,
+/// change recorded since the last checkpoint is already committed; but the 5th
+/// entry was staged after the last checkpoint so finish sees pending content).
+/// We assert at least 2 changes.
+#[test]
+fn stream_checkpoint_policy() {
+    use ir_stream::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
+
+    // Build a stream manually: Hello, 5 × single-entry Symbols, Finish.
+    let mut buf = Vec::<u8>::new();
+    let mut fw = FrameWriter::new(&mut buf);
+    fw.write_frame(&StreamFrame::Hello {
+        version: IR_STREAM_VERSION,
+        job: stream_job(),
+        producer: stream_producer(),
+    }).unwrap();
+    for i in 1u8..=5 {
+        fw.write_frame(&StreamFrame::Symbols {
+            batch: vec![wire_entry(&format!("sym_{i}"), i)],
+        }).unwrap();
+    }
+    fw.write_frame(&StreamFrame::Finish {
+        emitted: 5,
+        producer_digest: stream_content_hash(0xFF),
+    }).unwrap();
+    let _ = fw;
+
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    let outcome = record_stream(
+        &mut repo,
+        std::io::Cursor::new(buf),
+        StreamPolicy { checkpoint_every: std::num::NonZeroU64::new(2) },
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, StreamedRecording::Finished { .. }), "must finish");
+
+    let log = repo.log().unwrap();
+    assert!(
+        log.len() >= 2,
+        "checkpoint_every=2 on 5 single-entry batches must produce >=2 changes, got {}",
+        log.len()
+    );
+
+    // Content must still be correct: all 5 symbols present.
+    let mat = repo.materialize().unwrap();
+    assert_eq!(mat.live_entries().count(), 5, "all 5 symbols present");
+}
+
+/// **Abort mid-stream**: Aborted outcome, repo tip unchanged, next
+/// `record_generation` works (resync path).
+#[test]
+fn stream_abort_mid_stream() {
+    // First record something so the repo tip is non-zero.
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    let ir = sample_ir();
+    repo.record_generation(&ir).unwrap().unwrap();
+    let tip_before = repo.tip().unwrap();
+
+    // Now stream an abort.
+    let bytes = produce_stream(
+        vec![wire_entry("partial", 0x77)],
+        vec![],
+        None,
+        false, // Abort
+    );
+
+    let outcome =
+        record_stream(&mut repo, std::io::Cursor::new(bytes), StreamPolicy { checkpoint_every: None })
+            .unwrap();
+
+    match &outcome {
+        StreamedRecording::Aborted { failure, message, .. } => {
+            assert_eq!(*failure, FailureKindWire::Internal);
+            assert_eq!(message, "producer crashed");
+        }
+        StreamedRecording::Finished { .. } => panic!("expected Aborted"),
+    }
+
+    // Repo tip must be unchanged.
+    let tip_after = repo.tip().unwrap();
+    assert_eq!(
+        tip_before.fingerprint(),
+        tip_after.fingerprint(),
+        "repo tip must not change on abort"
+    );
+
+    // Resync path: a subsequent record_generation must succeed.
+    let mut ir2 = ir.clone();
+    ir2.insert_live(IntroId::from_raw([0x99; 32]), function("new_thing"), None);
+    let change = repo.record_generation(&ir2).unwrap();
+    assert!(change.is_some(), "record_generation after abort must produce a change");
+    assert_eq!(
+        repo.materialize().unwrap().live_entries().count(),
+        3,
+        "both original + new symbol present"
+    );
+}
+
+/// **Protocol violation**: truncated transport → `VcsError::Stream`, session
+/// abandoned, repo still usable after.
+#[test]
+fn stream_protocol_violation_truncated() {
+    use ir_stream::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
+
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+    let ir = sample_ir();
+    repo.record_generation(&ir).unwrap().unwrap();
+    let tip_before = repo.tip().unwrap();
+
+    // Build a truncated stream: valid Hello + partial frame length header.
+    let mut buf = Vec::<u8>::new();
+    let mut fw = FrameWriter::new(&mut buf);
+    fw.write_frame(&StreamFrame::Hello {
+        version: IR_STREAM_VERSION,
+        job: stream_job(),
+        producer: stream_producer(),
+    })
+    .unwrap();
+    let _ = fw;
+    // Append a length header claiming 100 bytes, but no body.
+    let fake_len: u32 = 100;
+    buf.extend_from_slice(&fake_len.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 3]); // only 3 bytes of claimed 100
+
+    let result = record_stream(
+        &mut repo,
+        std::io::Cursor::new(buf),
+        StreamPolicy { checkpoint_every: None },
+    );
+
+    assert!(result.is_err(), "truncated stream must return Err");
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, crate::VcsError::Stream(_)),
+        "expected VcsError::Stream, got {err:?}"
+    );
+
+    // Repo tip must be unchanged.
+    let tip_after = repo.tip().unwrap();
+    assert_eq!(
+        tip_before.fingerprint(),
+        tip_after.fingerprint(),
+        "repo tip unchanged after protocol violation"
+    );
+
+    // Repo must be usable: a subsequent record_generation must succeed.
+    let change = repo.record_generation(&ir).unwrap();
+    // The IR is the same as before — may be a no-op, but the repo is not broken.
+    let mat = repo.materialize().unwrap();
+    assert_eq!(mat.live_entries().count(), 2, "original symbols still present");
+    let _ = change;
+}
+
+/// **Foreign-package entry in the stream**: `VcsError::ForeignPackage` surfaces
+/// through `record_stream` and the repo stays clean.
+#[test]
+fn stream_foreign_package_rejected() {
+    let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
+
+    // Build a stream with a foreign-package entry.
+    let foreign_pkg = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("other"));
+    let foreign_ref = StableRef::new(foreign_pkg, IntroId::from_raw([0xEE; 32]));
+
+    use nudox_ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
+    use nudox_ir::kind::KindDiscriminant;
+    use nudox_ir::symbol::Visibility;
+
+    let foreign_entry = WireEntry {
+        stable: foreign_ref,
+        payload: OwnedEntryPayload::sealed(
+            SymbolWire {
+                name: "foreign".to_owned(),
+                visibility: Visibility::Public,
+                documentation: None,
+                source_path: "index.ts".to_owned(),
+                span_start: 0,
+                span_end: 7,
+                aliases: Vec::new(),
+                deprecation: None,
+                doc_links: Vec::new(),
+            },
+            KindDiscriminant::Function,
+            KindWire::Function(FunctionWire {
+                input_params: Box::new([]),
+                output_params: Box::new([]),
+            }),
+            EntryPayloadFlags::default(),
+        ),
+        parent: None,
+        links: Vec::new(),
+    };
+
+    // Produce a stream with just the foreign entry.
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+
+    struct ArcVecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for ArcVecWriter {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    let mut sink = SymbolSink::hello(ArcVecWriter(buf.clone()), stream_job(), stream_producer()).unwrap();
+    sink.emit(foreign_entry).unwrap();
+    sink.finish(stream_content_hash(0x01)).unwrap();
+
+    let bytes = buf.lock().unwrap().clone();
+
+    let tip_before = repo.tip().unwrap();
+    let result = record_stream(
+        &mut repo,
+        std::io::Cursor::new(bytes),
+        StreamPolicy { checkpoint_every: None },
+    );
+
+    assert!(result.is_err(), "foreign package must produce an error");
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, crate::VcsError::ForeignPackage { .. }),
+        "expected ForeignPackage, got {err:?}"
+    );
+
+    // Repo tip unchanged — session was abandoned.
+    let tip_after = repo.tip().unwrap();
+    assert_eq!(
+        tip_before.fingerprint(),
+        tip_after.fingerprint(),
+        "repo tip unchanged after ForeignPackage rejection"
+    );
+
+    // Repo is clean: an empty materialize works fine.
+    let mat = repo.materialize().unwrap();
+    assert_eq!(mat.live_entries().count(), 0, "no symbols after rejected stream");
+}

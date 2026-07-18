@@ -5,9 +5,11 @@ use std::sync::{Arc, OnceLock};
 
 /// Shared cancellation flag for in-flight cage work.
 ///
-/// Cheap to clone. Linux cages honor cancel mid-run by writing `cgroup.kill`
-/// (via the supervisor) when a cgroup is owned; worker slots kill the child
-/// process tree the same way.
+/// Cheap to clone. The VM cage honors cancel by killing the machine
+/// (`VmHandle::kill` — the ephemeral overlay dies with it); the dev
+/// passthrough supervisor honors it by writing `cgroup.kill` when a
+/// fairness cgroup is owned, and worker slots kill the child process tree
+/// the same way.
 #[derive(Debug, Clone)]
 pub struct CancelToken {
 	inner: Arc<AtomicBool>,

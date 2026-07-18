@@ -1,7 +1,11 @@
-//! Escape-test suite (design §14).
+//! Escape-test suite, retargeted at the VM boundary (SMOLVM-PLAN §8 P0).
 //!
-//! On macOS/passthrough these assert best-effort behaviour (env scrub, output
-//! caps). On Linux with bwrap they are the CI gate for FS/net/env/resource.
+//! Under `DevPassthrough` these assert best-effort behaviour (env scrub,
+//! output caps, wall kills). The former bwrap-internals assertions are now
+//! projection assertions: the security claims live in what the machine is
+//! *built* with (no NIC when sealed, only granted roots mounted, scratch an
+//! ephemeral overlay), verified against `FakeVmRuntime` until the real
+//! backend is vendored.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -69,6 +73,7 @@ fn echo_spec(arg: &str) -> Spec {
 }
 
 #[test]
+#[ignore = "requires NUDOX_GUEST_ROOTFS + smolvm binary on PATH (real VM)"]
 fn trivial_echo_runs() {
 	let out = run(echo_spec("hello-sandbox")).expect("echo should run");
 	assert!(out.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
@@ -76,6 +81,7 @@ fn trivial_echo_runs() {
 }
 
 #[test]
+#[ignore = "requires NUDOX_GUEST_ROOTFS + smolvm binary on PATH (real VM)"]
 fn env_is_scrubbed() {
 	// Plant a secret in *this* process; guest must not see it unless allowlisted.
 	// SAFETY: test is single-threaded for this env key.
@@ -111,6 +117,7 @@ fn env_is_scrubbed() {
 }
 
 #[test]
+#[ignore = "requires NUDOX_GUEST_ROOTFS + smolvm binary on PATH (real VM)"]
 fn output_cap_kills() {
 	// Generate more than max_stdout via yes/printf if available.
 	let limits = Limits::try_new(
@@ -147,6 +154,7 @@ fn output_cap_kills() {
 }
 
 #[test]
+#[ignore = "requires NUDOX_GUEST_ROOTFS + smolvm binary on PATH (real VM)"]
 fn wall_time_kills() {
 	let limits = Limits::try_new(
 		64 * 1024 * 1024,
@@ -196,64 +204,61 @@ fn dev_passthrough_refuses_production_policy() {
 	);
 }
 
-#[cfg(target_os = "linux")]
+/// Retargeted from the bwrap FS-escape test: under the VM cage the guest can
+/// only see what the projection *mounts*. `/etc/shadow` is unreadable not
+/// because a bind was skipped, but because no virtiofs mount for it exists in
+/// the machine config — and the only writable surface is a self-destroying
+/// overlay, never a host path.
 #[test]
-fn linux_fs_escape_blocked() {
-	// Attempt to cat /etc/passwd from a sandbox that only binds a scratch dir.
-	// With bwrap, /etc/passwd may still be bound for uid resolution — the
-	// stronger check is reading $HOME secrets. We try both.
-	let scratch = std::env::temp_dir().join(format!("nudox-escape-{}", std::process::id()));
-	std::fs::create_dir_all(&scratch).unwrap();
-	let secret = scratch.join("only-here");
-	std::fs::write(&secret, b"ok").unwrap();
+fn vm_fs_visibility_is_exactly_the_grant() {
+	use sandbox::{CapabilityBudget, OverlayMode, project_vm_config};
 
-	let limits = tiny_limits();
-	let mounts = Mounts::new().rw(&scratch);
-	// Try to read a path outside — /etc/shadow typically Permission denied or missing.
-	let spec = Spec::new("cat", limits)
-		.arg("/etc/shadow")
-		.env(Env::empty().set("PATH", "/usr/bin:/bin"))
-		.mounts(mounts)
-		.cwd(&scratch);
+	let budget = CapabilityBudget::new(
+		FsGrant::scratch("/tmp/job-scratch").ro("/pkg/src"),
+		NetGrant::Off,
+		Env::empty(),
+		tiny_limits(),
+	);
+	let cfg = project_vm_config(&budget).expect("project");
 
-	let out = run(spec);
-	match out {
-		Ok(o) => {
-			assert!(
-				!o.success() || o.stdout.is_empty(),
-				"should not read /etc/shadow"
-			);
-		}
-		Err(_) => {} // spawn denial is also fine
-	}
-	let _ = std::fs::remove_dir_all(&scratch);
+	assert_eq!(cfg.mounts.len(), 1, "only granted roots are mounted");
+	assert!(cfg.mounts[0].read_only);
+	assert_eq!(cfg.mounts[0].host_path, PathBuf::from("/pkg/src"));
+	assert_eq!(
+		cfg.scratch.mode,
+		OverlayMode::Ephemeral,
+		"the writable surface is a disposable overlay, not a host bind"
+	);
 }
 
-#[cfg(target_os = "linux")]
+/// Retargeted from the bwrap empty-netns test: a sealed run's machine is
+/// *constructed* with `NetworkPolicy::None` — there is no NIC for an
+/// exfiltration attempt to use, on every platform, verified end-to-end
+/// through the `Cage` trait against the recording runtime.
 #[test]
-fn linux_network_connect_fails() {
-	if !which_exists("python3") && !which_exists("python") {
-		return;
-	}
-	let py = if which_exists("python3") {
-		"python3"
-	} else {
-		"python"
+fn vm_sealed_network_is_absent_from_the_machine() {
+	use sandbox::{
+		Cage, CapabilityBudget, FakeVmRuntime, NetworkPolicy, SmolvmCage,
 	};
-	let limits = tiny_limits();
-	let spec = Spec::new(py, limits)
-		.args([
-			"-c",
-			"import socket; s=socket.socket(); s.settimeout(1); s.connect(('1.1.1.1', 80))",
-		])
-		.env(Env::empty().set("PATH", "/usr/bin:/bin"))
-		.network(Network::Off)
-		.mounts(Mounts::new());
 
-	match run(spec) {
-		Ok(o) => assert!(!o.success(), "connect should fail offline"),
-		Err(_) => {}
-	}
+	let rt = FakeVmRuntime::new();
+	let cage = SmolvmCage::with_runtime(rt.clone());
+	let budget = CapabilityBudget::new(
+		FsGrant::scratch("/tmp/job-scratch"),
+		NetGrant::Off,
+		Env::empty().set("PATH", "/usr/bin:/bin"),
+		tiny_limits(),
+	);
+	let cmd = SealedCommand::new("/usr/bin/curl", ["http://1.1.1.1/"], budget);
+
+	cage.run(cmd, &CancelToken::never()).expect("fake run");
+	let launched = rt.launched();
+	assert_eq!(launched.len(), 1);
+	assert_eq!(
+		launched[0].network,
+		NetworkPolicy::None,
+		"sealed ⇒ the machine has no network device at all"
+	);
 }
 
 fn which_exists(name: &str) -> bool {

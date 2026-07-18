@@ -200,10 +200,14 @@ impl<M: EmbeddingModel> Indexer<M> {
             self.server.heuristics(),
         );
 
-        let emitted =
-            crate::registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
-                .await
-                .map_err(RegistryError::from)?;
+        let emitted = crate::registry::blob::emit::emit(
+            &stores.blobs,
+            &stores.outbox,
+            manifest,
+            sections,
+        )
+        .await
+        .map_err(RegistryError::from)?;
 
         stores
             .outbox

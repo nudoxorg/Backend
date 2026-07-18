@@ -1,7 +1,14 @@
-//! Thin cgroup v2 controller — no zbus, just sysfs writes.
+//! Thin cgroup v2 controller — **scheduling fairness only**, no zbus, just
+//! sysfs writes.
 //!
 //! Creates a child under the current process cgroup (or a configured parent),
 //! applies memory/cpu/pids ceilings, attaches a pid, and reads `memory.peak`.
+//!
+//! Cgroups are **not** part of the security boundary (SMOLVM-PLAN §3.1): the
+//! microVM is the boundary of record. This wrapper survives so that
+//! [`crate::DevPassthrough`] runs and (later) VMM host processes are
+//! scheduled fairly against each other — the ceilings here keep a runaway
+//! dev job from starving the host, nothing more.
 
 use std::fs;
 use std::io;

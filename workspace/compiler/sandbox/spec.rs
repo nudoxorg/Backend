@@ -85,7 +85,7 @@ impl Mounts {
 /// Fully-specified sandboxed command.
 #[derive(Debug, Clone)]
 pub struct Spec {
-	/// Program to exec (looked up on host for passthrough; bound into guest for bwrap).
+	/// Program to exec (looked up on host for passthrough; a guest path for VM runs).
 	pub command: PathBuf,
 	/// Arguments (not including argv0).
 	pub args: Vec<OsString>,

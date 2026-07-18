@@ -2,6 +2,7 @@
 //! onto these; each delegates to `server::coordination`.
 
 pub mod admin;
+pub mod compiled;
 pub mod health;
 pub mod indexing;
 pub mod search;

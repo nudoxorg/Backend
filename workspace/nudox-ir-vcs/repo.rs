@@ -57,6 +57,11 @@ impl IrTip {
 // Helper: hash ↔ hex
 // ---------------------------------------------------------------------------
 
+/// `pub(crate)` helper for session.rs to convert a libpijul `Hash` to its hex string.
+pub(crate) fn hash_to_hex_pub(h: &Hash) -> String {
+    hash_to_hex(h)
+}
+
 fn hash_to_hex(h: &Hash) -> String {
     match h {
         Hash::Blake3(b) => {
@@ -189,6 +194,76 @@ impl IrRepository<FsChanges> {
             #[cfg(test)]
             mock_now: std::cell::Cell::new(None),
         })
+    }
+
+    /// Apply external change files (already written to the filesystem changestore
+    /// by `nudox-sync`'s `FsChangeIo`) to this repository's working channel.
+    ///
+    /// This is the **iroh-sync import path**: the caller (`nudox-sync`'s
+    /// `RepoApplyHook`) must ensure all change files have been written to the
+    /// on-disk changestore under `<repo-root>/changes/` via `FsChangeIo::write_change`
+    /// before calling this method.
+    ///
+    /// For each hash in `hashes` (in dependency order, oldest first):
+    /// - Parses the hex to a `libpijul::Hash`.
+    /// - Skips if the change is already on the channel (idempotent).
+    /// - Verifies the file is present in the changestore; returns
+    ///   [`VcsError::ChangeMissingFromStore`] if not.
+    /// - Applies via `libpijul::apply::apply_change_arc` (plain sequential
+    ///   apply; `_rec` is not needed because the caller passes changes in
+    ///   announcement order, which is already dependency-respecting — pijul
+    ///   enforces this in `TipAnnouncement::changes`).
+    ///
+    /// After all changes are applied, commits the transaction and calls
+    /// `reset_working_copy_tip()` to mark the in-memory working copy as stale.
+    /// The next `record_generation` or `begin_recording` call will re-sync the
+    /// working copy from the new channel tip via the existing stale-WC path.
+    ///
+    /// Returns the new channel tip as an [`IrTip`].
+    pub fn apply_external_changes(&self, hashes: &[ChangeHashHex]) -> Result<IrTip, VcsError> {
+        let txn = self.arc_txn()?;
+        let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
+
+        for hex in hashes {
+            let hash = hex_to_hash(&hex.0)?;
+
+            // Check if already on the channel (idempotent).
+            let already_applied = txn
+                .read()
+                .has_change(&channel, &hash)
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("has_change: {e}")))?
+                .is_some();
+            if already_applied {
+                continue;
+            }
+
+            // Verify the change file is present in the on-disk changestore.
+            if !self.changes.has_change(&hash) {
+                return Err(VcsError::ChangeMissingFromStore { hash: hex.0.clone() });
+            }
+
+            // Apply: plain `apply_change_arc` in dependency order. The `_rec`
+            // variant recursively pulls transitive dependencies from the
+            // changestore; we don't need it here because the announcement order
+            // is already dependency-respecting (earlier entries are deps of
+            // later ones) and all files are already in the store.
+            libpijul::apply::apply_change_arc(&self.changes, &txn, &channel, &hash)
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("apply_change_arc {}: {e}", hex.0)))?;
+        }
+
+        // Snapshot the tip and commit.
+        let merkle = txn
+            .read()
+            .current_state(&channel.read())
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state (apply_external): {e}")))?;
+        txn.commit()
+            .map_err(|e| VcsError::Pijul(anyhow::anyhow!("commit (apply_external): {e}")))?;
+
+        // The in-memory working copy no longer reflects the channel tip; force
+        // resync on the next record/begin_recording call.
+        self.reset_working_copy_tip();
+
+        Ok(IrTip { merkle_bytes: merkle.to_bytes() })
     }
 }
 
@@ -1784,6 +1859,117 @@ where
         to: &VersionLabel,
     ) -> Result<Vec<ChangeHashHex>, VcsError> {
         self.changes_between_refs(&Ref::Version(from.clone()), &Ref::Version(to.clone()))
+    }
+
+    // -----------------------------------------------------------------------
+    // RecordingSession support — pub(crate) accessors + begin_recording
+    // -----------------------------------------------------------------------
+
+    /// Begin a streaming [`RecordingSession`] on this repository.
+    ///
+    /// Takes `&mut self` to prevent concurrent sessions at the type level.
+    /// Ensures the working copy is synced to the current channel tip (same
+    /// logic as `record_generation`'s step 1) and captures the set of intros
+    /// currently in the working copy as the deletion baseline.
+    pub fn begin_recording(&mut self) -> Result<crate::session::RecordingSession<'_, C>, VcsError> {
+        let txn = self.arc_txn()?;
+        let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
+
+        // Sync WC if stale (same fast/slow paths as record_generation).
+        {
+            let current_tip = txn
+                .read()
+                .current_state(&channel.read())
+                .map_err(|e| VcsError::Pijul(anyhow::anyhow!("current_state: {e}")))?
+                .to_bytes();
+
+            if current_tip != self.working_copy_tip.get() {
+                self.sync_output(&txn, &channel)?;
+                self.working_copy_tip.set(current_tip);
+            }
+        }
+
+        txn.commit().map_err(|e| {
+            VcsError::Pijul(anyhow::anyhow!("commit (begin_recording): {e}"))
+        })?;
+
+        // Capture the current set of symbol intros in the WC.
+        let tip_intros: std::collections::HashSet<nudox_change::IntroId> = self
+            .working_copy
+            .list_files()
+            .into_iter()
+            .filter(|p| is_symbol_path(p))
+            .filter_map(|p| {
+                let hex = intro_hex_of(&p)?;
+                crate::checkout::_try_intro_from_path(&p)
+                    .or_else(|| {
+                        // Fallback: parse from hex directly.
+                        if hex.len() != 64 { return None; }
+                        let mut bytes = [0u8; 32];
+                        for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+                            let hi = (chunk[0] as char).to_digit(16)? as u8;
+                            let lo = (chunk[1] as char).to_digit(16)? as u8;
+                            bytes[i] = (hi << 4) | lo;
+                        }
+                        Some(nudox_change::IntroId::from_raw(bytes))
+                    })
+            })
+            .collect();
+
+        Ok(crate::session::RecordingSession::new(self, tip_intros))
+    }
+
+    /// `pub(crate)` arc_txn for session.rs.
+    pub(crate) fn arc_txn_pub(
+        &self,
+    ) -> Result<libpijul::pristine::ArcTxn<libpijul::pristine::sanakirja::MutTxn0>, VcsError> {
+        self.arc_txn()
+    }
+
+    /// `pub(crate)` open_or_create_channel for session.rs.
+    pub(crate) fn open_or_create_channel_pub(
+        txn: &libpijul::pristine::ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
+        name: &str,
+    ) -> Result<libpijul::pristine::ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, VcsError> {
+        Self::open_or_create_channel(txn, name)
+    }
+
+    /// `pub(crate)` reference to the working copy for session.rs.
+    pub(crate) fn working_copy_ref(&self) -> &libpijul::working_copy::memory::Memory {
+        &self.working_copy
+    }
+
+    /// `pub(crate)` reference to the changestore for session.rs.
+    pub(crate) fn changes_ref(&self) -> &C {
+        &self.changes
+    }
+
+    /// `pub(crate)` reference to the channel name for session.rs.
+    pub(crate) fn channel_name_ref(&self) -> &str {
+        &self.channel_name
+    }
+
+    /// `pub(crate)` reference to the package id for session.rs.
+    pub(crate) fn package_id(&self) -> &nudox_change::PackageLineageId {
+        &self.package
+    }
+
+    /// `pub(crate)` set the working copy tip (used by session after commit).
+    pub(crate) fn set_working_copy_tip(&self, tip: [u8; 32]) {
+        self.working_copy_tip.set(tip);
+    }
+
+    /// Reset the working copy tip to zero, forcing a full resync on the next
+    /// `record_generation` or `begin_recording` call.
+    ///
+    /// Called by `apply_external_changes` and session abandonment.
+    pub fn reset_working_copy_tip(&self) {
+        self.working_copy_tip.set([0u8; 32]);
+    }
+
+    /// `pub(crate)` now() accessor for session.rs.
+    pub(crate) fn now_pub(&self) -> std::time::SystemTime {
+        self.now()
     }
 
     /// The change hashes in a channel, oldest first. Does not commit.

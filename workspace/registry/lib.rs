@@ -27,6 +27,7 @@
 #![feature(return_type_notation)]
 
 pub mod blob;
+pub mod compiled;
 pub mod coordination;
 pub mod error;
 pub mod health;

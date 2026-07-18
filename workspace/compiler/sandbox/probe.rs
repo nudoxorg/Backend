@@ -1,41 +1,104 @@
-//! Host isolation capability probe and production policy (design §5, §16.3–4).
+//! Host virtualization probe and production policy (SMOLVM-PLAN §3.3, §8 P0).
 //!
 //! Call once at process start. [`IsolationPolicy::RequireProduction`] fails
-//! closed when the host cannot provide a production-grade cage.
+//! closed when the host cannot host a hardware-virtualized cage: Linux needs
+//! a readable+writable `/dev/kvm`; macOS needs `kern.hv_support == 1`
+//! (Hypervisor.framework).
 
-use crate::cage::{CageCaps, DevPassthrough, Policy, Cage};
-#[cfg(target_os = "linux")]
-use crate::cage::LinuxNamespaces;
+use crate::cage::CageCaps;
 use crate::error::SandboxError;
+
+/// Which hypervisor the host can offer to the microVM cage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtSupport {
+	/// Linux KVM: `/dev/kvm` exists and is read/write accessible.
+	Kvm,
+	/// macOS Hypervisor.framework: `kern.hv_support` is 1.
+	Hvf,
+	/// No hardware virtualization available to this process.
+	Unavailable,
+}
+
+impl VirtSupport {
+	/// Whether a microVM can be booted on this host.
+	pub const fn available(self) -> bool {
+		!matches!(self, Self::Unavailable)
+	}
+}
+
+/// Probe host virtualization support.
+///
+/// Linux: access(2) on `/dev/kvm` for read+write. macOS: `sysctlbyname`
+/// (`kern.hv_support`), with a `sysctl -n` subprocess fallback. Everything
+/// else reports [`VirtSupport::Unavailable`].
+pub fn probe_virtualization() -> VirtSupport {
+	#[cfg(target_os = "linux")]
+	{
+		if kvm_accessible() {
+			return VirtSupport::Kvm;
+		}
+		VirtSupport::Unavailable
+	}
+	#[cfg(target_os = "macos")]
+	{
+		if hv_support() {
+			return VirtSupport::Hvf;
+		}
+		VirtSupport::Unavailable
+	}
+	#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+	{
+		VirtSupport::Unavailable
+	}
+}
+
+#[cfg(target_os = "linux")]
+fn kvm_accessible() -> bool {
+	// access(2): existence + rw permission in one call, no fd churn.
+	// SAFETY: constant NUL-terminated path; access has no memory effects.
+	unsafe { libc::access(c"/dev/kvm".as_ptr(), libc::R_OK | libc::W_OK) == 0 }
+}
+
+#[cfg(target_os = "macos")]
+fn hv_support() -> bool {
+	let mut val: libc::c_int = 0;
+	let mut len = std::mem::size_of::<libc::c_int>();
+	// SAFETY: sysctlbyname writes at most `len` bytes into `val`.
+	let rc = unsafe {
+		libc::sysctlbyname(
+			c"kern.hv_support".as_ptr(),
+			(&raw mut val).cast(),
+			&raw mut len,
+			std::ptr::null_mut(),
+			0,
+		)
+	};
+	if rc == 0 {
+		return val == 1;
+	}
+	// Fallback: subprocess read (sandboxed test environments occasionally
+	// deny the syscall but allow the binary).
+	std::process::Command::new("sysctl")
+		.arg("-n")
+		.arg("kern.hv_support")
+		.output()
+		.map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+		.unwrap_or(false)
+}
 
 /// Snapshot of what this host can enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostIsolation {
-	/// Selected cage capabilities.
+	/// Capabilities of the cage this host can carry.
 	pub capabilities: CageCaps,
 	/// Selected cage name.
 	pub backend: &'static str,
-	/// bubblewrap present on PATH (Linux).
-	pub bwrap: bool,
-	/// cgroup v2 writable parent discovered.
+	/// Hardware virtualization support (KVM / HVF).
+	pub virtualization: VirtSupport,
+	/// cgroup v2 writable parent discovered (scheduling fairness only).
 	pub cgroup: bool,
-	/// Landlock ABI available (Linux; best-effort probe).
-	pub landlock: LandlockAbi,
-	/// seccomp denylist compiles for this arch.
-	pub seccomp: bool,
-	/// Kernel major.minor when readable from `/proc/version` / `uname`.
+	/// Kernel major.minor when readable from `uname`.
 	pub kernel: Option<(u32, u32)>,
-}
-
-/// Landlock support tier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LandlockAbi {
-	/// Not Linux or probe failed.
-	Unavailable,
-	/// Kernel has Landlock but below our preferred ABI.
-	Partial,
-	/// Full FS isolation at V3+ (Truncate).
-	Full,
 }
 
 /// How strictly isolation is required.
@@ -44,7 +107,7 @@ pub enum IsolationPolicy {
 	/// Degrade gracefully (dev default).
 	#[default]
 	BestEffort,
-	/// Refuse to run without a production-grade backend.
+	/// Refuse to run without a production-grade (virtualization-capable) host.
 	RequireProduction,
 }
 
@@ -83,47 +146,34 @@ impl IsolationPolicy {
 }
 
 /// Probe the host once.
+///
+/// Reports the capabilities of the cage this host *can carry*: a
+/// virtualization-capable host reports the smolvm microVM cage's
+/// (production-grade) capability set even before the `smolvm-backend`
+/// feature links the real runtime — wiring the runtime is the P0 gate, the
+/// hardware capability is what the probe answers.
 pub fn probe() -> HostIsolation {
-	#[cfg(target_os = "linux")]
-	let (capabilities, cage_name, bwrap) = {
-		let linux = LinuxNamespaces::new();
-		if linux.probe_available() {
-			let caps = Cage::capabilities(&linux);
-			(caps, "linux-namespaces", true)
-		} else {
-			let dev = DevPassthrough::try_new(Policy::Development)
-				.map(|d| Cage::capabilities(&d))
-				.unwrap_or_default();
-			(dev, "dev-passthrough", false)
-		}
+	let virtualization = probe_virtualization();
+	let (capabilities, backend) = if virtualization.available() {
+		(
+			CageCaps {
+				isolation: true,
+				network_off: true,
+				fs_scope: true,
+				resource_limits: true,
+				production_grade: true,
+			},
+			"smolvm-microvm",
+		)
+	} else {
+		(CageCaps::default(), "dev-passthrough")
 	};
-	#[cfg(not(target_os = "linux"))]
-	let (capabilities, cage_name, bwrap) = {
-		let dev = DevPassthrough::try_new(Policy::Development)
-			.map(|d| Cage::capabilities(&d))
-			.unwrap_or_default();
-		(dev, "dev-passthrough", false)
-	};
-
-	let cgroup = crate::cgroup::has_writable_parent();
-
-	#[cfg(target_os = "linux")]
-	let landlock = probe_landlock();
-	#[cfg(not(target_os = "linux"))]
-	let landlock = LandlockAbi::Unavailable;
-
-	#[cfg(target_os = "linux")]
-	let seccomp = crate::seccomp::denylist_bpf_bytes().is_ok();
-	#[cfg(not(target_os = "linux"))]
-	let seccomp = false;
 
 	HostIsolation {
 		capabilities,
-		backend: cage_name,
-		bwrap,
-		cgroup,
-		landlock,
-		seccomp,
+		backend,
+		virtualization,
+		cgroup: crate::cgroup::has_writable_parent(),
 		kernel: read_kernel_version(),
 	}
 }
@@ -136,43 +186,20 @@ pub fn require(policy: IsolationPolicy) -> Result<HostIsolation, SandboxError> {
 			if !host.capabilities.production_grade {
 				tracing::warn!(
 					backend = host.backend,
-					"isolation is best-effort (not production-grade)"
+					"isolation is best-effort (no hardware virtualization)"
 				);
-			}
-			if host.landlock == LandlockAbi::Unavailable && cfg!(target_os = "linux") {
-				tracing::info!("Landlock unavailable; namespaces+seccomp+cgroups still apply");
 			}
 			Ok(host)
 		}
 		IsolationPolicy::RequireProduction => {
-			if !host.capabilities.production_grade {
+			if !host.virtualization.available() {
 				return Err(SandboxError::Denied {
 					reason: format!(
-						"production isolation required but cage `{}` is not production-grade",
+						"production isolation required but host has no hardware \
+						 virtualization (backend `{}`)",
 						host.backend
 					),
 				});
-			}
-			#[cfg(target_os = "linux")]
-			{
-				if !host.bwrap {
-					return Err(SandboxError::HelperMissing {
-						program: "bwrap".into(),
-					});
-				}
-				if !host.seccomp {
-					return Err(SandboxError::Backend(
-						"seccomp denylist failed to compile; refusing production".into(),
-					));
-				}
-				// Landlock degrades best-effort on older kernels (design §16.3);
-				// we log but do not hard-fail — namespaces+seccomp still hold.
-				if host.landlock != LandlockAbi::Full {
-					tracing::warn!(
-						?host.landlock,
-						"Landlock not fully enforced; continuing under RequireProduction"
-					);
-				}
 			}
 			Ok(host)
 		}
@@ -201,20 +228,31 @@ fn read_kernel_version() -> Option<(u32, u32)> {
 	}
 }
 
-#[cfg(target_os = "linux")]
-fn probe_landlock() -> LandlockAbi {
-	use landlock::{Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, ABI};
-	// Create only — never `restrict_self` on the indexer process.
-	match Ruleset::default()
-		.set_compatibility(CompatLevel::BestEffort)
-		.handle_access(AccessFs::from_all(ABI::V3))
-		.and_then(|r| r.create())
-	{
-		Ok(_) => {
-			// V3 create success ⇒ kernel supports our preferred ABI floor.
-			// Full vs partial is only knowable after restrict_self on a guest.
-			LandlockAbi::Full
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn probe_reports_consistent_capability_and_backend() {
+		let host = probe();
+		if host.virtualization.available() {
+			assert_eq!(host.backend, "smolvm-microvm");
+			assert!(host.capabilities.production_grade);
+		} else {
+			assert_eq!(host.backend, "dev-passthrough");
+			assert!(!host.capabilities.production_grade);
 		}
-		Err(_) => LandlockAbi::Unavailable,
+	}
+
+	#[test]
+	fn best_effort_always_passes() {
+		assert!(require(IsolationPolicy::BestEffort).is_ok());
+	}
+
+	#[test]
+	fn virt_support_availability() {
+		assert!(VirtSupport::Kvm.available());
+		assert!(VirtSupport::Hvf.available());
+		assert!(!VirtSupport::Unavailable.available());
 	}
 }

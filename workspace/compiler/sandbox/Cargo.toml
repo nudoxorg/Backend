@@ -11,6 +11,7 @@ workspace = true
 path = "lib.rs"
 
 [dependencies]
+smolvm = { git = "https://github.com/smol-machines/smolvm", rev = "56bb13b99dfe65a58df158bf241077a5024d3a64" }
 heart     = { path = "../../heart" }
 thiserror = "1.0"
 tracing   = "0.1"
@@ -22,8 +23,3 @@ tempfile  = "3.27"
 [target.'cfg(unix)'.dependencies]
 rlimit = "0.10"
 libc   = "0.2"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# Linux-specific isolation (Landlock + seccomp BPF).
-# These are compiled into the seccomp/landlock modules which are gated with
-# #[cfg(target_os = "linux")] in lib.rs.

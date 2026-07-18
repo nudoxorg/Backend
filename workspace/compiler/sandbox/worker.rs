@@ -1,9 +1,12 @@
-//! Pooled sandboxed workers for library-form producer isolation.
+//! Pooled workers for library-form producer isolation — **in-guest** in the
+//! VM model.
 //!
-//! Cage-internal (DAEMON-PLAN §2.2): long-lived children under rlimits + cgroup
-//! speak a line-oriented JSON protocol. Not a peer of the Backend enum —
-//! [`LinuxNamespaces`](crate::LinuxNamespaces) remains the production OS cage;
-//! this pool is how library producers (nix/ts/python) run inside that model.
+//! Cage-internal (SMOLVM-PLAN §3.3 / SV-11): long-lived children under
+//! rlimits + a fairness cgroup speak a line-oriented JSON protocol. Not a
+//! peer of any backend enum — [`SmolvmCage`](crate::smolvm::SmolvmCage) is
+//! the production cage, and this pool is how library producers
+//! (nix/ts/python) run *inside the guest image* (`ExecPlan::Library`). On
+//! the dev passthrough path the pool runs directly on the host.
 //!
 //! Concurrency: free-list of slots (`Mutex<Vec<WorkerSlot>>` + condvar) so the
 //! free-list lock is never held across worker I/O. Real parallelism equals pool
@@ -118,7 +121,7 @@ pub struct WorkerPoolConfig {
 	pub size: usize,
 	/// Resource ceilings per worker process.
 	pub limits: Limits,
-	/// Extra RO binds (toolchains, etc.) — reserved for bwrap-pooled mode.
+	/// Extra RO binds (toolchains, etc.) — reserved for pooled-guest mode.
 	pub read_only: Vec<PathBuf>,
 	/// Restart worker if self-reported RSS exceeds this (bytes).
 	pub memory_watermark: u64,

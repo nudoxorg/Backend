@@ -16,8 +16,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use heart::cache::{Cas, CasError, ContentHash, DiskCas, Tiered};
 use sandbox::{
-    Cage, CageError, DevPassthrough, ForgeObserver, LinuxNamespaces, NodeId, NullObserver,
-    OverrideTable, Policy, ToolchainSet, WorkerLang, WorkerPool, WorkerPoolConfig,
+    Cage, CageError, DevPassthrough, ForgeObserver, NodeId, NullObserver, OverrideTable,
+    Policy, RootfsStore, SmolvmCage, SmolvmRuntime, ToolchainSet, WorkerLang, WorkerPool,
+    WorkerPoolConfig,
 };
 
 use crate::compile::producer::ForgeContext;
@@ -226,28 +227,22 @@ impl ForgeContext for ForgeRuntime<Ready> {
 
 /// Select and verify a cage for `policy`.
 ///
-/// `Production` demands a production-grade cage (LinuxNamespaces + bwrap);
-/// `Development` yields a [`DevPassthrough`] (or LinuxNamespaces when available).
+/// `Production` constructs a [`SmolvmCage`] backed by the real
+/// [`SmolvmRuntime`]. The rootfs store is bootstrapped from `NUDOX_GUEST_ROOTFS`
+/// (see [`RootfsStore::from_env`]). A missing or invalid env var — or the
+/// absence of libkrun / the smolvm binary — surfaces as
+/// [`ForgeError::Cage`] with a typed [`sandbox::VmError`] inside.
+/// `Development` yields a [`DevPassthrough`].
 pub fn select_cage(policy: Policy) -> Result<Arc<dyn Cage>, ForgeError> {
     match policy {
         Policy::Production => {
-            let linux = LinuxNamespaces::new();
-            if linux.probe_available() && Cage::capabilities(&linux).production_grade {
-                Ok(Arc::new(linux))
-            } else {
-                Err(ForgeError::NoProductionCage(
-                    "bwrap not available or backend not production-grade".into(),
-                ))
-            }
+            let store = RootfsStore::from_env().map_err(|e| {
+                ForgeError::Cage(sandbox::CageError::Vm(e))
+            })?;
+            let runtime = SmolvmRuntime::new(store);
+            Ok(Arc::new(SmolvmCage::with_runtime(runtime)))
         }
-        Policy::Development => {
-            let linux = LinuxNamespaces::new();
-            if linux.probe_available() {
-                Ok(Arc::new(linux))
-            } else {
-                Ok(Arc::new(DevPassthrough::try_new(Policy::Development)?))
-            }
-        }
+        Policy::Development => Ok(Arc::new(DevPassthrough::try_new(Policy::Development)?)),
     }
 }
 
