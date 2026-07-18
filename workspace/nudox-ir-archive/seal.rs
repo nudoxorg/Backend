@@ -590,9 +590,10 @@ pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchi
 
         // TypeSkeletonIndex for Type entries.
         if payload.kind_disc == KindDiscriminant::Type
-            && let KindWire::Type(type_wire) = &payload.kind {
+            && let KindWire::Type(alias) = &payload.kind {
                 let mut skel_bytes = Vec::new();
-                type_wire_skeleton(type_wire, &mut skel_bytes);
+                // alias.ty is the TypeWire; type_wire_skeleton expects &TypeWire.
+                type_wire_skeleton(&alias.ty, &mut skel_bytes);
                 let fp = type_fingerprint(&skel_bytes);
                 type_skel_index.push(fp.0, arena_idx);
             }
@@ -668,7 +669,7 @@ mod tests {
     use nudox_ir::{
         apply::PristineIntroTable,
         kind::KindDiscriminant,
-        wire::{EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire, TypeWire},
+        wire::{EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire, TypeAliasWire, TypeWire},
     };
 
     fn intro(b: u8) -> IntroId {
@@ -687,6 +688,8 @@ mod tests {
                 aliases: vec![],
                 deprecation: None,
                 doc_links: vec![],
+                attrs: Vec::new(),
+                cfg: None,
             },
             KindDiscriminant::Module,
             KindWire::Module(ModuleWire {}),
@@ -706,11 +709,16 @@ mod tests {
                 aliases: vec!["fn_alias".to_string()],
                 deprecation: None,
                 doc_links: vec![],
+                attrs: Vec::new(),
+                cfg: None,
             },
             KindDiscriminant::Function,
             KindWire::Function(FunctionWire {
                 input_params: Box::new([]),
                 output_params: Box::new([]),
+                sig: Default::default(),
+                generics: Box::new([]),
+                wheres: Box::new([]),
             }),
             EntryPayloadFlags::default(),
         )
@@ -728,9 +736,16 @@ mod tests {
                 aliases: vec![],
                 deprecation: None,
                 doc_links: vec![],
+                attrs: Vec::new(),
+                cfg: None,
             },
             KindDiscriminant::Type,
-            KindWire::Type(TypeWire::Never),
+            KindWire::Type(TypeAliasWire {
+                ty: TypeWire::Never,
+                generics: Box::new([]),
+                wheres: Box::new([]),
+                auto: Box::new([]),
+            }),
             EntryPayloadFlags::default(),
         )
     }

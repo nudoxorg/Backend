@@ -58,11 +58,16 @@ fn function_payload(name: &str) -> OwnedEntryPayload {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         },
         KindDiscriminant::Function,
         KindWire::Function(FunctionWire {
             input_params: Box::new([]),
             output_params: Box::new([]),
+            sig: Default::default(),
+            generics: Box::new([]),
+            wheres: Box::new([]),
         }),
         EntryPayloadFlags::default(),
     )

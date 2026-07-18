@@ -63,10 +63,15 @@ fn make_entry(name: &str, seed: u8) -> WireEntry {
         aliases: Vec::new(),
         deprecation: None,
         doc_links: Vec::new(),
+        attrs: Vec::new(),
+        cfg: None,
     };
     let kind = KindWire::Function(FunctionWire {
         input_params: Box::new([]),
         output_params: Box::new([]),
+        sig: Default::default(),
+        generics: Box::new([]),
+        wheres: Box::new([]),
     });
     let payload = OwnedEntryPayload::sealed(
         sym,
@@ -255,6 +260,8 @@ fn test_auto_batch_splitting() {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         };
         let kind = KindWire::Module(ModuleWire {});
         let payload = OwnedEntryPayload::sealed(
