@@ -21,13 +21,23 @@ path = "lib.rs"
 nudox-change = { path = "../nudox-change" }
 nudox-ir = { path = "../nudox-ir" }
 nudox-ir-archive = { path = "../nudox-ir-archive" }
+nudox-ir-diff = { path = "../nudox-ir-diff" }
 nudox-ir-manifest = { path = "../nudox-ir-manifest" }
+# The frozen F1 key registry + field-aware pairer (DEPTH1 plan §3.2): the
+# registry constants live there now; f1.rs re-exports them unchanged.
+nudox-f1 = { path = "../nudox-f1" }
 ir-stream = { path = "../ir-stream" }
 heart = { path = "../heart" }
 
 # The change engine. GPL — acceptable per design K7. Pinned exactly: libpijul's
 # on-disk formats and API are pre-1.0 and move between betas.
 libpijul = "=1.0.0-beta.11"
+
+# Canonical content hashing for api_surface_hash, delta_digest, embed_hash.
+blake3 = "1"
+
+# GenerationMeta encoding (domain-prefixed postcard under nudox.genmeta.v1).
+postcard = { version = "1", features = ["use-std"] }
 
 serde = { version = "1.0", features = ["derive"] }
 smol_str = { version = "0.2", features = ["serde"] }

@@ -71,4 +71,14 @@ pub enum VcsError {
     /// before calling `apply_external_changes`.
     #[error("change {hash} missing from changestore")]
     ChangeMissingFromStore { hash: String },
+
+    /// §12.3: `output_repository_no_pending` returned merge conflicts; all
+    /// conflict paths are listed.  The caller must resolve conflicts before
+    /// parsing any F1 blob.
+    #[error("repository has unresolved conflicts at paths: {}", paths.join(", "))]
+    ConflictedState { paths: Vec<String> },
+
+    /// F1 canonical format parse/serialize error.
+    #[error("F1 format error: {0}")]
+    F1(#[from] crate::f1::F1Error),
 }

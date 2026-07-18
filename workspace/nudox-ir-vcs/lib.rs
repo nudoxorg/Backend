@@ -26,16 +26,20 @@
 //! - [`repo::IrRepository::seal`] materializes then seals a
 //!   [`nudox_ir_archive`] serve snapshot.
 
+pub mod ascii;
 pub mod blob;
 pub mod checkout;
 pub mod checkpoint;
+pub mod continuity;
 pub mod error;
+pub mod f1;
 pub mod refs;
 pub mod repo;
 pub mod serialize;
 pub mod serve_cache;
 pub mod session;
 pub mod stream;
+pub mod subst;
 pub mod version;
 
 #[cfg(test)]
@@ -47,16 +51,25 @@ mod ref_probes;
 #[cfg(test)]
 mod size_tests;
 
+#[cfg(test)]
+mod record_shape_tests;
+
+pub use ascii::AsciiError;
 pub use blob::{serialize_symbol_blob, BlobError, LinkView, SymbolView};
 pub use checkout::MaterializedIndex;
 pub use checkpoint::{
     Checkpoint, CheckpointCache, CheckpointConfig, Retention, ServeStrategy, Served,
 };
+pub use continuity::compute_sigma;
 pub use error::VcsError;
+pub use f1::{
+    compute_api_surface_hash, serialize_f1, ContinuityOp, ContinuitySummary, F1Error, F1View,
+    RenameEdge,
+};
 pub use refs::{BranchName, Ref, RefKind, ResolvedRef, TagName};
 pub use repo::{ChangeHashHex, IrRepository, IrTip, VersionDiff};
 pub use serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
 pub use serve_cache::{ServeCache, ServeSource, ServedArchive};
-pub use session::{FinishReport, RecordingSession, StageReport, StagedEntry};
+pub use session::{FinishReport, GenerationMeta, RecordingSession, StageReport, StagedEntry};
 pub use stream::{record_stream, ProgressSnapshot, SourceDigestEntry, StreamPolicy, StreamedRecording};
 pub use version::{VersionLabel, VersionState};

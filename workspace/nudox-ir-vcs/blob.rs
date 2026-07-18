@@ -63,6 +63,10 @@ pub enum BlobError {
 
     #[error("hex decode error: {0}")]
     HexParse(String),
+
+    /// Wire-v2: kind discriminant not handled by the V1 debug-export path.
+    #[error("unsupported kind for V1 blob format: {0:?}")]
+    UnsupportedKind(KindDiscriminant),
 }
 
 // ---------------------------------------------------------------------------
@@ -373,13 +377,15 @@ fn decode_typeexpr(s: &str) -> Result<TypeWire, BlobError> {
 // KindDiscriminant name ↔ string
 // ---------------------------------------------------------------------------
 
-fn kind_name(k: KindDiscriminant) -> &'static str {
+fn kind_name(k: KindDiscriminant) -> Option<&'static str> {
     match k {
-        KindDiscriminant::Module => "Module",
-        KindDiscriminant::Record => "Record",
-        KindDiscriminant::Field => "Field",
-        KindDiscriminant::Function => "Function",
-        KindDiscriminant::Type => "Type",
+        KindDiscriminant::Module => Some("Module"),
+        KindDiscriminant::Record => Some("Record"),
+        KindDiscriminant::Field => Some("Field"),
+        KindDiscriminant::Function => Some("Function"),
+        KindDiscriminant::Type => Some("Type"),
+        // Wire-v2 kinds not representable in V1 debug-export
+        _ => None,
     }
 }
 
@@ -425,12 +431,17 @@ fn vis_from_name(s: &str) -> Result<Visibility, BlobError> {
 // serialize_symbol_blob
 // ---------------------------------------------------------------------------
 
-/// Emit the canonical text blob for one symbol.
+/// Emit the V1 debug-export blob for a symbol (kinds 1–5 only).
+///
+/// For wire-v2 kinds (6–12) this returns `Err(BlobError::UnsupportedKind)`.
+/// The canonical format for all 12 kinds is [`crate::f1::serialize_f1`].
 pub fn serialize_symbol_blob(
     payload: &OwnedEntryPayload,
     parent: Option<IntroId>,
     links: &[LinkWire],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, BlobError> {
+    let kind_tok = kind_name(payload.kind_disc)
+        .ok_or(BlobError::UnsupportedKind(payload.kind_disc))?;
     let sym = &payload.symbol;
     let mut out = String::new();
 
@@ -450,7 +461,7 @@ pub fn serialize_symbol_blob(
 
     // kind
     out.push_str("kind\t");
-    out.push_str(kind_name(payload.kind_disc));
+    out.push_str(kind_tok);
     out.push('\n');
 
     // span
@@ -468,10 +479,7 @@ pub fn serialize_symbol_blob(
         out.push('\n');
     }
 
-    // ref (bare line, only if IS_REFERENCE flag set)
-    if payload.flags.has(EntryPayloadFlags::IS_REFERENCE) {
-        out.push_str("ref\n");
-    }
+    // IS_REFERENCE bit was retired in wire-v2; omit the bare "ref" line.
 
     // src (optional, only if non-empty)
     if !sym.source_path.is_empty() {
@@ -522,18 +530,20 @@ pub fn serialize_symbol_blob(
         out.push_str(&format!("deprecated\t{}\t{}\n", escape(since), escape(note)));
     }
 
-    // links (sorted by full tuple string for determinism)
+    // links (sorted by full tuple string for determinism; skip v2-only kind links)
     let mut link_lines: Vec<String> = links
         .iter()
-        .map(|l| {
-            format!(
+        .filter_map(|l| {
+            let ks = kind_name(l.kind_self)?;
+            let ko = kind_name(l.kind_other)?;
+            Some(format!(
                 "link\t{}\t{}\t{}\t{}\t{}\n",
                 l.other.package.ecosystem.as_str(),
                 l.other.package.name.as_str(),
                 l.other.intro.to_hex(),
-                kind_name(l.kind_self),
-                kind_name(l.kind_other)
-            )
+                ks,
+                ko
+            ))
         })
         .collect();
     link_lines.sort();
@@ -576,14 +586,20 @@ pub fn serialize_symbol_blob(
                 ));
             }
         }
-        KindWire::Type(tw) => {
+        KindWire::Type(ta) => {
+            // wire-v2: TypeAliasWire.ty is the TypeWire
             out.push_str("type\t");
-            out.push_str(&encode_typeexpr(tw));
+            out.push_str(&encode_typeexpr(&ta.ty));
             out.push('\n');
+        }
+        _ => {
+            // wire-v2 kinds (6–12): caller should use serialize_f1 instead.
+            // We already checked kind_name above, so this branch is unreachable,
+            // but the exhaustive match requires it.
         }
     }
 
-    out.into_bytes()
+    Ok(out.into_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -674,7 +690,7 @@ impl<'a> SymbolView<'a> {
         let mut span_start: Option<u32> = None;
         let mut span_end: Option<u32> = None;
         let mut payload_hash: Option<ContentBlake3> = None;
-        let mut flags = EntryPayloadFlags::default();
+        let flags = EntryPayloadFlags::default();
         let mut parent: Option<IntroId> = None;
         let mut src: &'a str = "";
         let mut doc: Option<&'a str> = None;
@@ -702,7 +718,8 @@ impl<'a> SymbolView<'a> {
 
             // Parse metadata line by keyword
             if raw_line == "ref" {
-                flags.set(EntryPayloadFlags::IS_REFERENCE);
+                // IS_REFERENCE bit retired in wire-v2; silently ignore the bare "ref" line
+                // so we can still read V1 blobs without error.
                 continue;
             }
 
@@ -940,13 +957,16 @@ impl<'a> SymbolView<'a> {
             aliases,
             deprecation,
             doc_links,
+            // wire-v2 fields: V1 debug-export has no attrs/cfg encoding
+            attrs: vec![],
+            cfg: None,
         };
 
         // Parse kind body
         let kind = parse_kind_body(self.kind_disc, &self.kind_body_lines)?;
 
-        // Reconstruct flags: only IS_REFERENCE bit comes from the file
-        let flags = EntryPayloadFlags(self.flags.0 & EntryPayloadFlags::IS_REFERENCE);
+        // IS_REFERENCE bit retired in wire-v2; reconstruct with default flags
+        let flags = EntryPayloadFlags::default();
 
         Ok(OwnedEntryPayload {
             symbol: sym,
@@ -1030,7 +1050,14 @@ fn parse_kind_body(disc: KindDiscriminant, lines: &[&str]) -> Result<KindWire, B
                     fields.push(IntroId::from_raw(bytes));
                 }
             }
-            Ok(KindWire::Record(RecordWire { fields: fields.into_boxed_slice() }))
+            Ok(KindWire::Record(RecordWire {
+                fields: fields.into_boxed_slice(),
+                // wire-v2 fields: not encoded in V1 debug-export
+                generics: Box::new([]),
+                wheres: Box::new([]),
+                auto: Box::new([]),
+                form: nudox_ir::wire::RecordForm::Struct,
+            }))
         }
         KindDiscriminant::Field => {
             let mut ty: Option<TypeRefWire> = None;
@@ -1054,6 +1081,10 @@ fn parse_kind_body(disc: KindDiscriminant, lines: &[&str]) -> Result<KindWire, B
             Ok(KindWire::Function(FunctionWire {
                 input_params: input_params.into_boxed_slice(),
                 output_params: output_params.into_boxed_slice(),
+                // wire-v2 fields: not encoded in V1 debug-export
+                sig: nudox_ir::wire::FnSigFlags::default(),
+                generics: Box::new([]),
+                wheres: Box::new([]),
             }))
         }
         KindDiscriminant::Type => {
@@ -1062,8 +1093,15 @@ fn parse_kind_body(disc: KindDiscriminant, lines: &[&str]) -> Result<KindWire, B
                 .find(|l| l.starts_with("type\t"))
                 .ok_or_else(|| BlobError::MalformedLine("Type kind missing 'type' line".into()))?;
             let rest = &type_line["type\t".len()..];
-            Ok(KindWire::Type(decode_typeexpr(rest)?))
+            // wire-v2: KindWire::Type wraps TypeAliasWire, not TypeWire directly
+            Ok(KindWire::Type(nudox_ir::wire::TypeAliasWire {
+                ty: decode_typeexpr(rest)?,
+                generics: Box::new([]),
+                wheres: Box::new([]),
+                auto: Box::new([]),
+            }))
         }
+        _ => Err(BlobError::UnsupportedKind(disc)),
     }
 }
 
@@ -1321,9 +1359,9 @@ mod tests {
     use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
     use nudox_ir::kind::KindDiscriminant;
     use nudox_ir::wire::{
-        DeprecationWire, DocLinkWire, EntryPayloadFlags, FieldWire, FunctionWire, KindWire,
-        ModuleWire, OwnedEntryPayload, ParamWire, PrimitiveWire, RecordWire, SymbolWire,
-        TypeRefWire, TypeWire, WidthWire,
+        DeprecationWire, DocLinkWire, EntryPayloadFlags, FieldWire, FnSigFlags, FunctionWire,
+        KindWire, ModuleWire, OwnedEntryPayload, ParamWire, PrimitiveWire, RecordForm, RecordWire,
+        SymbolWire, TypeAliasWire, TypeRefWire, TypeWire, WidthWire,
     };
 
     fn intro(n: u8) -> IntroId {
@@ -1369,6 +1407,8 @@ mod tests {
             aliases: vec!["b".to_owned(), "a".to_owned()],
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: vec![],
+            cfg: None,
         };
         let payload = OwnedEntryPayload {
             kind_disc: KindDiscriminant::Function,
@@ -1380,6 +1420,9 @@ mod tests {
                     ty: TypeRefWire::Same(intro(0x11)),
                 }]),
                 output_params: Box::new([]),
+                sig: FnSigFlags::default(),
+                generics: Box::new([]),
+                wheres: Box::new([]),
             }),
             flags: EntryPayloadFlags::default(),
         };
@@ -1388,7 +1431,7 @@ mod tests {
             kind_self: KindDiscriminant::Function,
             kind_other: KindDiscriminant::Module,
         }];
-        let bytes = serialize_symbol_blob(&payload, Some(intro(0x01)), &links);
+        let bytes = serialize_symbol_blob(&payload, Some(intro(0x01)), &links).unwrap();
         let expected = "NdIrSym\t1\n\
              name\tgolden\n\
              vis\tPrivate\n\
@@ -1426,40 +1469,28 @@ mod tests {
                 DocLinkWire { target: sref("cargo", "lib", 4), label: Some("see also\ttab".to_owned()) },
                 DocLinkWire { target: sref("npm", "pkg", 5), label: None },
             ],
+            attrs: vec![],
+            cfg: None,
         };
+        let fn_wire = || KindWire::Function(FunctionWire {
+            input_params: Box::new([
+                ParamWire { name: Some("x".into()), ty: TypeRefWire::Same(intro(9)) },
+                ParamWire { name: None, ty: TypeRefWire::Foreign(sref("npm", "types", 3)) },
+            ]),
+            output_params: Box::new([ParamWire { name: None, ty: TypeRefWire::Same(intro(5)) }]),
+            sig: FnSigFlags::default(),
+            generics: Box::new([]),
+            wheres: Box::new([]),
+        });
         OwnedEntryPayload {
             kind_disc: KindDiscriminant::Function,
             payload_hash: OwnedEntryPayload::compute_payload_hash(
                 &sym,
                 &KindDiscriminant::Function,
-                &KindWire::Function(FunctionWire {
-                    input_params: Box::new([
-                        ParamWire { name: Some("x".into()), ty: TypeRefWire::Same(intro(9)) },
-                        ParamWire {
-                            name: None,
-                            ty: TypeRefWire::Foreign(sref("npm", "types", 3)),
-                        },
-                    ]),
-                    output_params: Box::new([ParamWire {
-                        name: None,
-                        ty: TypeRefWire::Same(intro(5)),
-                    }]),
-                }),
+                &fn_wire(),
                 &EntryPayloadFlags::default(),
             ),
-            kind: KindWire::Function(FunctionWire {
-                input_params: Box::new([
-                    ParamWire { name: Some("x".into()), ty: TypeRefWire::Same(intro(9)) },
-                    ParamWire {
-                        name: None,
-                        ty: TypeRefWire::Foreign(sref("npm", "types", 3)),
-                    },
-                ]),
-                output_params: Box::new([ParamWire {
-                    name: None,
-                    ty: TypeRefWire::Same(intro(5)),
-                }]),
-            }),
+            kind: fn_wire(),
             symbol: sym,
             flags: EntryPayloadFlags::default(),
         }
@@ -1470,7 +1501,7 @@ mod tests {
     #[test]
     fn textual_diff_friendly() {
         let payload = rich_function_payload();
-        let bytes = serialize_symbol_blob(&payload, None, &[]);
+        let bytes = serialize_symbol_blob(&payload, None, &[]).unwrap();
         let text = std::str::from_utf8(&bytes).expect("must be valid UTF-8");
 
         // Must contain newline-separated name line
@@ -1491,7 +1522,7 @@ mod tests {
             }
             p
         };
-        let bytes2 = serialize_symbol_blob(&payload2, None, &[]);
+        let bytes2 = serialize_symbol_blob(&payload2, None, &[]).unwrap();
         let text2 = std::str::from_utf8(&bytes2).expect("must be valid UTF-8");
 
         let lines1: std::collections::HashSet<_> = text.lines().collect();
@@ -1510,7 +1541,7 @@ mod tests {
         let parent = Some(intro(1));
         let links = two_links();
 
-        let bytes = serialize_symbol_blob(&payload, parent, &links);
+        let bytes = serialize_symbol_blob(&payload, parent, &links).unwrap();
         let view = SymbolView::from_bytes(&bytes).expect("from_bytes must succeed");
 
         // Borrow-based accessors
@@ -1524,7 +1555,7 @@ mod tests {
         assert_eq!(se, 99);
         assert_eq!(view.payload_hash(), payload.payload_hash);
         assert_eq!(view.parent(), parent);
-        assert!(!view.flags().has(EntryPayloadFlags::IS_REFERENCE));
+        // IS_REFERENCE retired in wire-v2 — flags are always default on read
 
         // Links
         let viewed_links: Vec<_> = view.links().collect();
@@ -1576,9 +1607,15 @@ mod tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: vec![],
+            cfg: None,
         };
         let kind = KindWire::Record(RecordWire {
             fields: Box::new([intro(1), intro(2), intro(3)]),
+            form: RecordForm::Struct,
+            generics: Box::new([]),
+            wheres: Box::new([]),
+            auto: Box::new([]),
         });
         let payload = OwnedEntryPayload {
             kind_disc: KindDiscriminant::Record,
@@ -1592,7 +1629,7 @@ mod tests {
             symbol: sym,
             flags: EntryPayloadFlags::default(),
         };
-        let bytes = serialize_symbol_blob(&payload, None, &[]);
+        let bytes = serialize_symbol_blob(&payload, None, &[]).unwrap();
         let view = SymbolView::from_bytes(&bytes).expect("parse");
         assert_eq!(view.kind_disc(), KindDiscriminant::Record);
         let recon = view.to_owned_payload().expect("to_owned_payload");
@@ -1613,6 +1650,8 @@ mod tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: vec![],
+            cfg: None,
         };
         let kind =
             KindWire::Field(FieldWire { ty: Some(TypeRefWire::Same(intro(5))) });
@@ -1628,7 +1667,7 @@ mod tests {
             symbol: sym,
             flags: EntryPayloadFlags::default(),
         };
-        let bytes = serialize_symbol_blob(&payload, Some(intro(10)), &[]);
+        let bytes = serialize_symbol_blob(&payload, Some(intro(10)), &[]).unwrap();
         let view = SymbolView::from_bytes(&bytes).expect("parse");
         assert_eq!(view.kind_disc(), KindDiscriminant::Field);
         assert_eq!(view.parent(), Some(intro(10)));
@@ -1649,8 +1688,16 @@ mod tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: vec![],
+            cfg: None,
         };
-        let kind = KindWire::Type(tw.clone());
+        // wire-v2: KindWire::Type wraps TypeAliasWire
+        let kind = KindWire::Type(TypeAliasWire {
+            ty: tw.clone(),
+            generics: Box::new([]),
+            wheres: Box::new([]),
+            auto: Box::new([]),
+        });
         let payload = OwnedEntryPayload {
             kind_disc: KindDiscriminant::Type,
             payload_hash: OwnedEntryPayload::compute_payload_hash(
@@ -1663,7 +1710,7 @@ mod tests {
             symbol: sym,
             flags: EntryPayloadFlags::default(),
         };
-        let bytes = serialize_symbol_blob(&payload, None, &[]);
+        let bytes = serialize_symbol_blob(&payload, None, &[]).unwrap();
         let view = SymbolView::from_bytes(&bytes).expect("parse");
         let recon = view.to_owned_payload().expect("to_owned_payload");
         assert_eq!(recon.kind, payload.kind, "TypeWire {:?} failed round-trip", tw);
@@ -1720,22 +1767,22 @@ mod tests {
     fn determinism_and_sorted_output() {
         let payload = rich_function_payload();
         let links = two_links();
-        let b1 = serialize_symbol_blob(&payload, Some(intro(1)), &links);
-        let b2 = serialize_symbol_blob(&payload, Some(intro(1)), &links);
+        let b1 = serialize_symbol_blob(&payload, Some(intro(1)), &links).unwrap();
+        let b2 = serialize_symbol_blob(&payload, Some(intro(1)), &links).unwrap();
         assert_eq!(b1, b2, "must be deterministic");
 
         // Give links in reversed order — output must be the same
         let mut links_rev = links.clone();
         links_rev.reverse();
-        let b3 = serialize_symbol_blob(&payload, Some(intro(1)), &links_rev);
+        let b3 = serialize_symbol_blob(&payload, Some(intro(1)), &links_rev).unwrap();
         assert_eq!(b1, b3, "link order must not affect output");
 
         // aliases in reversed order — output must be the same
         let mut payload2 = payload.clone();
         payload2.symbol.aliases = vec!["z_alias".to_owned(), "a_alias".to_owned()];
-        let b4 = serialize_symbol_blob(&payload2, Some(intro(1)), &links);
+        let b4 = serialize_symbol_blob(&payload2, Some(intro(1)), &links).unwrap();
         payload2.symbol.aliases = vec!["a_alias".to_owned(), "z_alias".to_owned()];
-        let b5 = serialize_symbol_blob(&payload2, Some(intro(1)), &links);
+        let b5 = serialize_symbol_blob(&payload2, Some(intro(1)), &links).unwrap();
         assert_eq!(b4, b5, "alias order must not affect output");
 
         // aliases appear sorted in text
@@ -1751,7 +1798,7 @@ mod tests {
     fn borrow_at_odd_offset() {
         let payload = rich_function_payload();
         let links = two_links();
-        let blob = serialize_symbol_blob(&payload, Some(intro(42)), &links);
+        let blob = serialize_symbol_blob(&payload, Some(intro(42)), &links).unwrap();
 
         let mut padded = Vec::with_capacity(blob.len() + 1);
         padded.push(0u8);
@@ -1802,7 +1849,7 @@ mod tests {
 
         // Truncated in middle of a valid blob
         let payload = rich_function_payload();
-        let blob = serialize_symbol_blob(&payload, None, &[]);
+        let blob = serialize_symbol_blob(&payload, None, &[]).unwrap();
         let truncated = &blob[..blob.len() / 2];
         // May succeed (partial parse) or fail — must not panic
         let _ = SymbolView::from_bytes(truncated);
@@ -1818,45 +1865,6 @@ mod tests {
         // Random bytes must not panic
         let garbage: Vec<u8> = (0u8..=255).cycle().take(300).collect();
         let _ = SymbolView::from_bytes(&garbage);
-    }
-
-    // ---- Test 7: IS_REFERENCE flag -------------------------------------------
-
-    #[test]
-    fn is_reference_flag_round_trip() {
-        let sym = SymbolWire {
-            name: "reexport".to_owned(),
-            visibility: Visibility::Public,
-            documentation: None,
-            source_path: "src/lib.rs".to_owned(),
-            span_start: 0,
-            span_end: 8,
-            aliases: Vec::new(),
-            deprecation: None,
-            doc_links: Vec::new(),
-        };
-        let kind = KindWire::Module(ModuleWire {});
-        let mut flags = EntryPayloadFlags::default();
-        flags.set(EntryPayloadFlags::IS_REFERENCE);
-        let payload = OwnedEntryPayload {
-            kind_disc: KindDiscriminant::Module,
-            payload_hash: OwnedEntryPayload::compute_payload_hash(
-                &sym,
-                &KindDiscriminant::Module,
-                &kind,
-                &flags,
-            ),
-            kind,
-            symbol: sym,
-            flags,
-        };
-        let bytes = serialize_symbol_blob(&payload, None, &[]);
-        let text = std::str::from_utf8(&bytes).unwrap();
-        assert!(text.contains("\nref\n"), "ref bare line must be present");
-        let view = SymbolView::from_bytes(&bytes).expect("parse");
-        assert!(view.flags().has(EntryPayloadFlags::IS_REFERENCE));
-        let recon = view.to_owned_payload().expect("to_owned_payload");
-        assert_eq!(recon.flags, payload.flags);
     }
 
     // ---- Test 8: escaping round-trip in doc/name/src ----------------------
@@ -1876,6 +1884,8 @@ mod tests {
                 note: Some("note\nwith\\newline".to_owned()),
             }),
             doc_links: Vec::new(),
+            attrs: vec![],
+            cfg: None,
         };
         let kind = KindWire::Module(ModuleWire {});
         let flags = EntryPayloadFlags::default();
@@ -1891,7 +1901,7 @@ mod tests {
             symbol: sym.clone(),
             flags,
         };
-        let bytes = serialize_symbol_blob(&payload, None, &[]);
+        let bytes = serialize_symbol_blob(&payload, None, &[]).unwrap();
         let view = SymbolView::from_bytes(&bytes).expect("parse");
         let recon = view.to_owned_payload().expect("to_owned_payload");
         assert_eq!(recon.symbol.name, sym.name);
@@ -1907,7 +1917,7 @@ mod tests {
     fn borrowed_graph_navigation() {
         // Function: walk params via borrowed views — no owned payload built.
         let payload = rich_function_payload();
-        let bytes = serialize_symbol_blob(&payload, Some(intro(1)), &two_links());
+        let bytes = serialize_symbol_blob(&payload, Some(intro(1)), &two_links()).unwrap();
         let view = SymbolView::from_bytes(&bytes).unwrap();
 
         let inputs: Vec<ParamView> = view.function_inputs().map(|r| r.unwrap()).collect();
@@ -1929,7 +1939,7 @@ mod tests {
 
         // Record: walk field intros lazily.
         let rec = record_payload();
-        let rb = serialize_symbol_blob(&rec, None, &[]);
+        let rb = serialize_symbol_blob(&rec, None, &[]).unwrap();
         let rv = SymbolView::from_bytes(&rb).unwrap();
         let fields: Vec<IntroId> = rv.record_fields().collect();
         assert_eq!(fields, vec![intro(1), intro(2), intro(3)]);
@@ -1939,7 +1949,7 @@ mod tests {
             TypeRefWire::Same(intro(1)),
             TypeRefWire::Foreign(sref("cargo", "x", 2)),
         ])));
-        let tb = serialize_symbol_blob(&ty, None, &[]);
+        let tb = serialize_symbol_blob(&ty, None, &[]).unwrap();
         let tv = SymbolView::from_bytes(&tb).unwrap();
         match tv.type_expr().unwrap().unwrap() {
             TypeExprView::Tuple(list) => {
@@ -1950,12 +1960,31 @@ mod tests {
         }
     }
 
+    fn base_sym(name: &str) -> SymbolWire {
+        SymbolWire {
+            name: name.into(),
+            visibility: Visibility::Public,
+            documentation: None,
+            source_path: "".into(),
+            span_start: 0,
+            span_end: 1,
+            aliases: Vec::new(),
+            deprecation: None,
+            doc_links: Vec::new(),
+            attrs: vec![],
+            cfg: None,
+        }
+    }
+
     fn record_payload() -> OwnedEntryPayload {
-        let sym = SymbolWire {
-            name: "R".into(), visibility: Visibility::Public, documentation: None, source_path: "".into(),
-            span_start: 0, span_end: 1, aliases: Vec::new(), deprecation: None, doc_links: Vec::new(),
-        };
-        let kind = KindWire::Record(RecordWire { fields: Box::new([intro(1), intro(2), intro(3)]) });
+        let sym = base_sym("R");
+        let kind = KindWire::Record(RecordWire {
+            fields: Box::new([intro(1), intro(2), intro(3)]),
+            form: RecordForm::Struct,
+            generics: Box::new([]),
+            wheres: Box::new([]),
+            auto: Box::new([]),
+        });
         OwnedEntryPayload {
             kind_disc: KindDiscriminant::Record,
             payload_hash: OwnedEntryPayload::compute_payload_hash(&sym, &KindDiscriminant::Record, &kind, &EntryPayloadFlags::default()),
@@ -1964,11 +1993,14 @@ mod tests {
     }
 
     fn type_payload(tw: TypeWire) -> OwnedEntryPayload {
-        let sym = SymbolWire {
-            name: "T".into(), visibility: Visibility::Public, documentation: None, source_path: "".into(),
-            span_start: 0, span_end: 1, aliases: Vec::new(), deprecation: None, doc_links: Vec::new(),
-        };
-        let kind = KindWire::Type(tw);
+        let sym = base_sym("T");
+        // wire-v2: KindWire::Type wraps TypeAliasWire
+        let kind = KindWire::Type(TypeAliasWire {
+            ty: tw,
+            generics: Box::new([]),
+            wheres: Box::new([]),
+            auto: Box::new([]),
+        });
         OwnedEntryPayload {
             kind_disc: KindDiscriminant::Type,
             payload_hash: OwnedEntryPayload::compute_payload_hash(&sym, &KindDiscriminant::Type, &kind, &EntryPayloadFlags::default()),

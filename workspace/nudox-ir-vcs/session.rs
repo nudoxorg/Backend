@@ -1,23 +1,18 @@
-//! [`RecordingSession`] — streaming incremental IR recording.
+//! [`RecordingSession`] — two-phase incremental IR recording session.
 //!
-//! A `RecordingSession` allows callers to incrementally stage IR symbols into
-//! the repository's working copy in multiple batches, take optional mid-session
-//! checkpoints, and finally commit the full change (including deletions) via
-//! [`RecordingSession::finish`]. This is the streaming counterpart to
-//! [`crate::repo::IrRepository::record_generation`], which requires the full
-//! [`nudox_ir::apply::PristineIntroTable`] upfront.
+//! # Phase A: streaming stage
 //!
-//! # Lifecycle
+//! The caller calls `.stage(batch)`, `.stage_links(from, links)`, and
+//! optionally `.checkpoint(msg)` any number of times.  Files are written to
+//! the working copy using wire-ids; no continuity matching occurs yet.
 //!
-//! ```text
-//! begin_recording(&mut repo)
-//!   → RecordingSession
-//!       .stage(batch)  // repeat any number of times
-//!       [.checkpoint(msg)]  // optional partial commit (no deletions)
-//!       .finish()  // deletions + final commit → FinishReport
-//!       | .abandon()  // discard (WC stays; next call will resync)
-//! ```
+//! # Phase B: finish
+//!
+//! `.finish()` runs the continuity matcher (§5), performs the σ substitution
+//! cascade (K-Subst-Cascade), writes the final WC state, records a change
+//! with [`GenerationMeta`], and returns [`FinishReport`].
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write as IoWrite;
 
@@ -28,11 +23,66 @@ use libpijul::working_copy::{WorkingCopy, WorkingCopyRead};
 use libpijul::{MutTxnTExt, TxnTExt};
 
 use nudox_change::{IntroId, StableRef};
+use nudox_ir::apply::PristineIntroTable;
 use nudox_ir::wire::OwnedEntryPayload;
 
+use crate::continuity;
+use crate::f1::ContinuitySummary;
 use crate::error::VcsError;
+use crate::f1::{serialize_f1, F1View};
 use crate::repo::{ChangeHashHex, IrRepository, IrTip};
 use crate::serialize::{symbol_path, LinkWire};
+
+// ---------------------------------------------------------------------------
+// GenerationMeta (§7.6)
+// ---------------------------------------------------------------------------
+
+/// Metadata attached to every change produced by a recording session.
+///
+/// Encoded with `postcard` under domain `nudox.genmeta.v1` and passed as the
+/// `metadata` argument to `Change::make_change`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GenerationMeta {
+    /// Schema epoch — currently always `2`.
+    pub schema_epoch: u16,
+    /// Config identifier (empty string = no config).
+    pub config: String,
+    /// Producer identifier string (e.g. `"rustdoc"`, `"deno_doc"`).
+    pub producer: String,
+    /// Job key (e.g. package version or job hash).
+    pub job: String,
+    /// Blake3 of the delta (content-hash of all new/changed F1 files), computed
+    /// after σ substitution is complete.
+    pub delta_digest: [u8; 32],
+    /// Whether this is a partial generation (not all symbols were staged).
+    pub partial: bool,
+}
+
+impl Default for GenerationMeta {
+    fn default() -> Self {
+        Self {
+            schema_epoch: 2,
+            config: String::new(),
+            producer: String::new(),
+            job: String::new(),
+            delta_digest: [0u8; 32],
+            partial: false,
+        }
+    }
+}
+
+impl GenerationMeta {
+    /// Encode `self` as bytes for `Change::make_change`'s metadata argument.
+    pub fn encode(&self) -> Vec<u8> {
+        // Domain prefix + postcard payload.
+        let postcard_bytes = postcard::to_stdvec(self).unwrap_or_default();
+        let domain = b"nudox.genmeta.v1\0";
+        let mut out = Vec::with_capacity(domain.len() + postcard_bytes.len());
+        out.extend_from_slice(domain);
+        out.extend_from_slice(&postcard_bytes);
+        out
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -40,7 +90,7 @@ use crate::serialize::{symbol_path, LinkWire};
 
 /// A single symbol to stage during a recording session.
 pub struct StagedEntry {
-    /// The stable reference for this symbol.  `stable.intro` is the [`IntroId`].
+    /// The stable reference for this symbol.  `stable.intro` is the wire id.
     pub stable: StableRef,
     /// The serialized IR payload for this symbol.
     pub payload: OwnedEntryPayload,
@@ -85,27 +135,33 @@ pub struct FinishReport {
     /// Symbols deleted (present in the tip when the session began, absent
     /// from all `stage` calls).
     pub deleted: u64,
+    /// Continuity summary from the P2 matcher.
+    pub continuity: ContinuitySummary,
 }
 
 /// Streaming incremental IR recording session.
 ///
 /// Obtain one via [`IrRepository::begin_recording`].  Stage entries in any
-/// number of batches, optionally checkpoint, then either [`finish`](Self::finish)
-/// (records a change) or [`abandon`](Self::abandon) (discards without recording).
+/// number of batches, optionally checkpoint (Phase A), then either
+/// [`finish`](Self::finish) (Phase B: continuity + change) or
+/// [`abandon`](Self::abandon) (discards without recording).
 pub struct RecordingSession<'r, C: ChangeStore> {
     pub(crate) repo: &'r IrRepository<C>,
-    /// Intros staged during this session (union of all `stage` calls).
-    staged: HashSet<IntroId>,
+    /// Wire-id → (payload, parent, links) for all staged entries.
+    /// Kept so Phase B can run the σ cascade and rewrite files.
+    staged_payloads: HashMap<IntroId, (OwnedEntryPayload, Option<IntroId>, Vec<LinkWire>)>,
     /// Intros present in the WC at session start (populated by `begin_recording`).
     pub(crate) tip_intros: HashSet<IntroId>,
-    /// Paths currently tracked in the working copy — populated on the first
-    /// `stage` call and kept up-to-date as files are added.  This avoids
-    /// re-calling the O(package) `list_files()` on every batch.
+    /// Tip table materialized at begin_recording for Phase B continuity matching.
+    pub(crate) tip_table: PristineIntroTable,
+    /// Paths currently tracked in the working copy.
     wc_paths: Option<HashSet<String>>,
     /// Cumulative counts.
     total_added: u64,
     total_updated: u64,
     total_unchanged: u64,
+    /// GenerationMeta template — callers may mutate before `.finish()`.
+    pub meta: GenerationMeta,
 }
 
 impl<'r, C> RecordingSession<'r, C>
@@ -114,56 +170,49 @@ where
     C::Error: std::fmt::Display + Send + Sync + 'static,
 {
     /// Create a new session from a repository reference and its current WC intros.
-    pub(crate) fn new(repo: &'r IrRepository<C>, tip_intros: HashSet<IntroId>) -> Self {
+    pub(crate) fn new(
+        repo: &'r IrRepository<C>,
+        tip_intros: HashSet<IntroId>,
+        tip_table: PristineIntroTable,
+    ) -> Self {
         Self {
             repo,
-            staged: HashSet::new(),
+            staged_payloads: HashMap::new(),
             tip_intros,
+            tip_table,
             wc_paths: None,
             total_added: 0,
             total_updated: 0,
             total_unchanged: 0,
+            meta: GenerationMeta::default(),
         }
     }
 
-    /// Stage a batch of entries into the working copy.
+    // -----------------------------------------------------------------------
+    // Phase A: stage / stage_links / checkpoint
+    // -----------------------------------------------------------------------
+
+    /// Stage a batch of entries into the working copy (Phase A).
     ///
     /// All entries must belong to this repository's package
     /// ([`StableRef::package`] == `repo.package_id()`).  An entry whose package
     /// differs is rejected with [`VcsError::ForeignPackage`] **before** any
-    /// working-copy mutation for that entry; entries processed before the
-    /// foreign one in the same batch are left in the WC (partial-batch
-    /// semantics).  The caller is responsible for not mixing packages in a
-    /// batch; the session records all entries that pass validation as if they
-    /// had been submitted individually.
+    /// working-copy mutation for that entry.
     ///
-    /// Files with identical content to what is already in the working copy are
-    /// left untouched (mtime preserved) so libpijul's stat cache can skip
-    /// re-diffing them during [`checkpoint`](Self::checkpoint) /
-    /// [`finish`](Self::finish).
-    ///
-    /// # Performance
-    ///
-    /// One transaction, one channel open, and one `list_files()` snapshot are
-    /// shared across the entire batch.  The path snapshot is folded into the
-    /// session's `wc_paths` cache so that subsequent `stage` calls never call
-    /// `list_files()` again — new paths are inserted as files are added.  The
-    /// mtime floor (channel `last_modified`) is computed once per call.
+    /// Files are written with [`serialize_f1`] (NdIrF1 canonical format).
+    /// Wire-ids are used at this point; durable-id substitution happens in
+    /// [`finish`](Self::finish) (Phase B).
     pub fn stage(&mut self, batch: Vec<StagedEntry>) -> Result<StageReport, VcsError> {
         let mut report = StageReport::default();
         let package_id = self.repo.package_id();
 
-        // ONE txn + ONE channel open for the entire batch.
         let txn = self.repo.arc_txn_pub()?;
         let channel = IrRepository::<C>::open_or_create_channel_pub(&txn, self.repo.channel_name_ref())?;
 
-        // Compute the mtime floor once for the whole batch.
         let channel_ms = txn.read().last_modified(&*channel.read());
         let floor = std::time::UNIX_EPOCH + std::time::Duration::from_millis(channel_ms);
         let mtime_floor = self.repo.now_pub().max(floor);
 
-        // ONE list_files() snapshot, taken at most once per session (subsequent
-        // stage() calls reuse + update the cached set).
         if self.wc_paths.is_none() {
             let paths: HashSet<String> = self
                 .repo
@@ -173,14 +222,11 @@ where
                 .collect();
             self.wc_paths = Some(paths);
         }
-        // SAFETY: set above if it was None.
         let wc_paths = self.wc_paths.as_mut().expect("wc_paths initialised");
 
         for entry in batch {
             let intro = entry.stable.intro;
 
-            // SV-10: reject entries that don't belong to this package before
-            // any WC mutation.
             if &entry.stable.package != package_id {
                 return Err(VcsError::ForeignPackage {
                     expected: format!("{package_id:?}"),
@@ -188,34 +234,25 @@ where
                 });
             }
 
-            // Canonical-owner rule: since `entry.stable.package == package_id`
-            // is now guaranteed (enforced above), `a_is_local` is always true.
-            // For same-package links the owner is the endpoint with the smaller
-            // IntroId; for cross-package links the local endpoint (this intro)
-            // always owns the link.
+            // Canonical-owner rule for links.
             let mut owned_links: Vec<LinkWire> = Vec::new();
             for link in &entry.links {
                 let b_intro = link.other.intro;
                 let b_is_local = &link.other.package == package_id;
-
                 let owner_intro = if b_is_local {
-                    // Both endpoints local: owner = smaller IntroId.
                     if intro.as_bytes() <= b_intro.as_bytes() { intro } else { b_intro }
                 } else {
-                    // Cross-package: the local endpoint (this intro) owns it.
                     intro
                 };
-
                 if owner_intro == intro {
                     owned_links.push(link.clone());
                 }
             }
 
-            let bytes = crate::blob::serialize_symbol_blob(&entry.payload, entry.parent, &owned_links);
+            let bytes = serialize_f1(&entry.payload, entry.parent, &owned_links);
             let path = symbol_path(intro);
 
             if wc_paths.contains(&path) {
-                // Read and compare.
                 let mut existing = Vec::new();
                 self.repo
                     .working_copy_ref()
@@ -230,8 +267,6 @@ where
                         .write_all(&bytes)
                         .map_err(|e| VcsError::Pijul(anyhow::anyhow!("write_file write: {e}")))?;
 
-                    // Clamp mtime so modified files are never invisible to
-                    // libpijul's stat cache.
                     self.repo
                         .working_copy_ref()
                         .touch(&path, mtime_floor)
@@ -242,7 +277,6 @@ where
                     } else {
                         report.added += 1;
                     }
-                    // Single push site for sample (covers both added and updated).
                     if report.sample.len() < 5 {
                         report.sample.push((intro, entry.payload.symbol.name.clone()));
                     }
@@ -250,18 +284,15 @@ where
                     report.unchanged += 1;
                 }
             } else {
-                // New file: add to WC and register in transaction.
                 self.repo.working_copy_ref().add_file(&path, bytes);
                 txn.write().add_file(&path, 0).map_err(|e| {
                     VcsError::Pijul(anyhow::anyhow!("add_file: {e}"))
                 })?;
-                // Touch the newly-added file to ensure mtime >= channel tip.
                 self.repo
                     .working_copy_ref()
                     .touch(&path, mtime_floor)
                     .map_err(|e| VcsError::Pijul(anyhow::anyhow!("touch (new) {path}: {e}")))?;
 
-                // Track the new path so subsequent stage() calls don't re-list.
                 wc_paths.insert(path.clone());
 
                 report.added += 1;
@@ -270,11 +301,9 @@ where
                 }
             }
 
-            // Always track as staged (even if unchanged content).
-            self.staged.insert(intro);
+            self.staged_payloads.insert(intro, (entry.payload, entry.parent, owned_links));
         }
 
-        // ONE commit for the entire batch.
         txn.commit().map_err(|e| {
             VcsError::Pijul(anyhow::anyhow!("commit (stage): {e}"))
         })?;
@@ -285,29 +314,13 @@ where
         Ok(report)
     }
 
-    /// Stage additional links for a symbol that was already staged.
+    /// Stage additional links for an already-staged symbol (Phase A).
     ///
-    /// This is the links-only path used by the stream host when the producer
-    /// emits a `Links { from, batch }` frame after the symbol was already
-    /// staged via a `Symbols` batch. We cannot re-stage the full entry because
-    /// we don't have the payload here (and re-encoding a synthetic payload would
-    /// violate payload semantics). Instead, we read the existing blob, merge the
-    /// new links under the canonical-owner rule, and rewrite the file only if the
-    /// merged content actually differs.
-    ///
-    /// SV-10 enforcement: `from` must belong to this repository's package.
-    /// Links whose canonical owner is the `from` intro are stored; non-owned
-    /// links (where the other endpoint is local and has a smaller `IntroId`) are
-    /// silently dropped — the canonical owner will store them when its own entry
-    /// is staged.
-    ///
-    /// If `from` has not been staged yet in this session, the call is a no-op
-    /// for the links (the entry's own `stage` call will carry the correct links).
-    /// If it has been staged, the file is updated in place.
+    /// Reads the existing F1 file, merges new links under the canonical-owner
+    /// rule, and rewrites only if content differs.
     pub fn stage_links(&mut self, from: StableRef, links: Vec<LinkWire>) -> Result<(), VcsError> {
         let package_id = self.repo.package_id();
 
-        // SV-10: only accept links whose `from` belongs to this package.
         if &from.package != package_id {
             return Err(VcsError::ForeignPackage {
                 expected: format!("{package_id:?}"),
@@ -318,7 +331,6 @@ where
         let intro = from.intro;
         let path = crate::serialize::symbol_path(intro);
 
-        // Ensure wc_paths is initialized.
         if self.wc_paths.is_none() {
             let paths: HashSet<String> = self
                 .repo
@@ -330,21 +342,17 @@ where
         }
         let wc_paths = self.wc_paths.as_mut().expect("wc_paths initialised");
 
-        // If the symbol file doesn't exist yet, nothing to do — it will be
-        // created when stage() is called for this intro.
         if !wc_paths.contains(&path) {
             return Ok(());
         }
 
-        // Read the existing blob.
         let mut existing = Vec::new();
         self.repo
             .working_copy_ref()
             .read_file(&path, &mut existing)
             .map_err(|e| VcsError::Pijul(anyhow::anyhow!("read_file (stage_links) {path}: {e}")))?;
 
-        // Parse the blob to extract the current payload + parent, then merge links.
-        let view = crate::blob::SymbolView::from_bytes(&existing).map_err(|e| {
+        let view = F1View::from_bytes(&existing).map_err(|e| {
             VcsError::CorruptSymbolFile { path: path.clone(), reason: e.to_string() }
         })?;
         let payload = view.to_owned_payload().map_err(|e| {
@@ -352,17 +360,8 @@ where
         })?;
         let parent = view.parent();
 
-        // Collect existing links.
-        let mut merged: Vec<LinkWire> = view
-            .links()
-            .map(|l| LinkWire {
-                other: l.to_stable_ref(),
-                kind_self: l.kind_self,
-                kind_other: l.kind_other,
-            })
-            .collect();
+        let mut merged: Vec<LinkWire> = view.links().to_vec();
 
-        // Apply canonical-owner rule for new links and merge in.
         for link in &links {
             let b_intro = link.other.intro;
             let b_is_local = &link.other.package == package_id;
@@ -376,7 +375,12 @@ where
             }
         }
 
-        let new_bytes = crate::blob::serialize_symbol_blob(&payload, parent, &merged);
+        // Update the in-memory staged_payloads entry so Phase B sees the merged links.
+        if let Some(entry) = self.staged_payloads.get_mut(&intro) {
+            entry.2 = merged.clone();
+        }
+
+        let new_bytes = serialize_f1(&payload, parent, &merged);
 
         if new_bytes == existing {
             return Ok(());
@@ -409,51 +413,130 @@ where
     }
 
     /// Record the currently staged symbols as a libpijul change, without
-    /// performing deletions.
-    ///
-    /// This is a partial commit: symbols that have not yet been staged are
-    /// still present in the working copy.  Only `finish` performs deletions.
+    /// performing deletions (Phase A partial commit).
     ///
     /// Returns the change hash, or `None` if nothing has changed since the
     /// last checkpoint (or since session start).
     pub fn checkpoint(&mut self, msg: &str) -> Result<Option<ChangeHashHex>, VcsError> {
-        self.record_and_apply(msg)
+        self.record_and_apply(msg, Vec::new())
     }
 
-    /// Finalize the session.
+    // -----------------------------------------------------------------------
+    // Phase B: finish
+    // -----------------------------------------------------------------------
+
+    /// Finalize the session (Phase B).
     ///
-    /// 1. Deletes WC files for intros that were in `tip_intros` but not staged.
-    /// 2. Records a final change (or `None` if nothing changed).
-    /// 3. Returns [`FinishReport`] with cumulative counts and the final tip.
+    /// 1. Runs the continuity matcher against `tip_table`.
+    /// 2. Computes σ (wire-id → durable-id map).
+    /// 3. Rewrites all in-generation files with durable ids (σ cascade).
+    /// 4. Deletes WC files for intros absent from all `stage` calls.
+    /// 5. Records a change with [`GenerationMeta`] metadata.
+    /// 6. Returns [`FinishReport`].
     pub fn finish(self) -> Result<FinishReport, VcsError> {
-        // Determine deletions: intros that existed at session start but were
-        // not staged during the session.
+        // --- Collect all staged entries for the continuity matcher ---
+        let staged_wire_entries: Vec<(IntroId, OwnedEntryPayload, Option<IntroId>, Vec<LinkWire>)> =
+            self.staged_payloads
+                .iter()
+                .map(|(wire_id, (payload, parent, links))| {
+                    (*wire_id, payload.clone(), *parent, links.clone())
+                })
+                .collect();
+
+        // --- Phase B: continuity matching ---
+        let (sigma, continuity) =
+            continuity::compute_sigma(&self.tip_table, &staged_wire_entries);
+
+        // --- σ cascade: rewrite all staged files with durable ids ---
+        let txn = self.repo.arc_txn_pub()?;
+        let channel_ms = {
+            let ch = IrRepository::<C>::open_or_create_channel_pub(&txn, self.repo.channel_name_ref())?;
+            txn.read().last_modified(&*ch.read())
+        };
+        let floor = std::time::UNIX_EPOCH + std::time::Duration::from_millis(channel_ms);
+        let mtime_floor = self.repo.now_pub().max(floor);
+
+        // Delta hasher for GenerationMeta.delta_digest
+        let mut delta_hasher = blake3::Hasher::new();
+
+        for (wire_id, payload, parent, links) in &staged_wire_entries {
+            // Map wire references to durable ids.
+            let durable_id = sigma.get(wire_id).copied().unwrap_or(*wire_id);
+            let durable_parent = parent.map(|p| sigma.get(&p).copied().unwrap_or(p));
+            let durable_links: Vec<LinkWire> = links
+                .iter()
+                .map(|l| {
+                    let durable_other = sigma.get(&l.other.intro).copied().unwrap_or(l.other.intro);
+                    LinkWire {
+                        other: nudox_change::StableRef::new(l.other.package.clone(), durable_other),
+                        kind_self: l.kind_self,
+                        kind_other: l.kind_other,
+                    }
+                })
+                .collect();
+
+            // σ substitution cascade (§5, K-Subst-Cascade): rewrite every
+            // in-payload reference w→σ(w) and re-seal before the WC write, so a
+            // reused durable id propagates into all signatures/fields/reexport
+            // targets that mention it. Parent + links are remapped above; this
+            // covers the intra-payload refs.
+            let durable_payload = crate::subst::substitute_and_reseal(payload, &sigma);
+            let new_bytes = serialize_f1(&durable_payload, durable_parent, &durable_links);
+            delta_hasher.update(&new_bytes);
+
+            let new_path = symbol_path(durable_id);
+            let old_path = symbol_path(*wire_id);
+
+            // If the durable id differs from wire id, remove the old file and
+            // add the new one at the durable path.
+            if durable_id != *wire_id {
+                // Remove wire-id file.
+                let _ = self.repo.working_copy_ref().remove_path(&old_path, false);
+                let _ = txn.write().remove_file(&old_path);
+
+                // Write durable-id file.
+                self.repo.working_copy_ref().add_file(&new_path, new_bytes.clone());
+                let _ = txn.write().add_file(&new_path, 0);
+            } else {
+                // Overwrite in place (file was already at the correct path).
+                let mut existing = Vec::new();
+                let _ = self.repo.working_copy_ref().read_file(&new_path, &mut existing);
+                if existing != new_bytes
+                    && let Ok(mut w) = self.repo
+                        .working_copy_ref()
+                        .write_file(&new_path, libpijul::pristine::Inode::ROOT)
+                    {
+                        let _ = w.write_all(&new_bytes);
+                    }
+            }
+            let _ = self.repo.working_copy_ref().touch(&new_path, mtime_floor);
+        }
+
+        // --- Deletions ---
         let to_delete: Vec<IntroId> = self
             .tip_intros
             .iter()
-            .filter(|i| !self.staged.contains(i))
+            .filter(|i| !self.staged_payloads.contains_key(*i))
             .copied()
             .collect();
         let deleted = to_delete.len() as u64;
 
-        if !to_delete.is_empty() {
-            let txn = self.repo.arc_txn_pub()?;
-            for intro in &to_delete {
-                let path = symbol_path(*intro);
-                self.repo
-                    .working_copy_ref()
-                    .remove_path(&path, false)
-                    .map_err(|e| VcsError::Pijul(anyhow::anyhow!("remove_path: {e}")))?;
-                txn.write().remove_file(&path).map_err(|e| {
-                    VcsError::Pijul(anyhow::anyhow!("remove_file: {e}"))
-                })?;
-            }
-            txn.commit().map_err(|e| {
-                VcsError::Pijul(anyhow::anyhow!("commit (finish-delete): {e}"))
-            })?;
+        for intro in &to_delete {
+            let path = symbol_path(*intro);
+            let _ = self.repo.working_copy_ref().remove_path(&path, false);
+            let _ = txn.write().remove_file(&path);
         }
 
-        let change = self.record_and_apply("finish")?;
+        txn.commit().map_err(|e| {
+            VcsError::Pijul(anyhow::anyhow!("commit (finish-cascade): {e}"))
+        })?;
+
+        // Build GenerationMeta with finalized delta_digest.
+        let mut meta = self.meta.clone();
+        meta.delta_digest = delta_hasher.finalize().into();
+        let meta_bytes = meta.encode();
+
+        let change = self.record_and_apply_with_meta("finish", meta_bytes)?;
         let tip = self.repo.tip()?;
 
         Ok(FinishReport {
@@ -462,24 +545,33 @@ where
             added: self.total_added,
             updated: self.total_updated,
             deleted,
+            continuity,
         })
     }
 
     /// Abandon the session without recording a change.
-    ///
-    /// The working copy may contain staged files; the next `record_generation`
-    /// or `begin_recording` call will trigger a full WC resync because
-    /// `working_copy_tip` is reset to zero here.
     pub fn abandon(self) -> Result<(), VcsError> {
         self.repo.reset_working_copy_tip();
         Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // Internal: record + apply + commit the current WC state.
+    // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn record_and_apply(&self, msg: &str) -> Result<Option<ChangeHashHex>, VcsError> {
+    fn record_and_apply(
+        &self,
+        msg: &str,
+        metadata: Vec<u8>,
+    ) -> Result<Option<ChangeHashHex>, VcsError> {
+        self.record_and_apply_with_meta(msg, metadata)
+    }
+
+    fn record_and_apply_with_meta(
+        &self,
+        msg: &str,
+        metadata: Vec<u8>,
+    ) -> Result<Option<ChangeHashHex>, VcsError> {
         let txn = self.repo.arc_txn_pub()?;
         let channel = IrRepository::<C>::open_or_create_channel_pub(&txn, self.repo.channel_name_ref())?;
 
@@ -528,7 +620,7 @@ where
                 description: None,
                 timestamp: jiff::Timestamp::now(),
             },
-            Vec::new(),
+            metadata,
         )
         .map_err(|e| VcsError::Pijul(anyhow::anyhow!("make_change: {e:?}")))?;
 

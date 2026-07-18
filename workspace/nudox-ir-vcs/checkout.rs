@@ -100,19 +100,19 @@ impl MaterializedIndex {
         self.symbols.keys().copied()
     }
 
-    /// A **borrowed** [`SymbolView`](crate::blob::SymbolView) over a symbol's
+    /// A **borrowed** [`SymbolView`](crate::f1::F1View) over a symbol's
     /// bytes — the materialized graph as zero-owned borrowed views, not an owned
     /// `PristineIntroTable`. Returns `None` if the intro is absent, or `Some(Err)`
     /// if the stored bytes are malformed.
-    pub fn view(&self, intro: IntroId) -> Option<Result<crate::blob::SymbolView<'_>, crate::blob::BlobError>> {
-        self.symbols.get(&intro).map(|arc| crate::blob::SymbolView::from_bytes(&arc[..]))
+    pub fn view(&self, intro: IntroId) -> Option<Result<crate::f1::F1View<'_>, crate::f1::F1Error>> {
+        self.symbols.get(&intro).map(|arc| crate::f1::F1View::from_bytes(&arc[..]))
     }
 
     /// Iterate `(IntroId, SymbolView)` over every symbol, borrowed.
-    pub fn views(&self) -> impl Iterator<Item = (IntroId, Result<crate::blob::SymbolView<'_>, crate::blob::BlobError>)> + '_ {
+    pub fn views(&self) -> impl Iterator<Item = (IntroId, Result<crate::f1::F1View<'_>, crate::f1::F1Error>)> + '_ {
         self.symbols
             .iter()
-            .map(|(intro, arc)| (*intro, crate::blob::SymbolView::from_bytes(&arc[..])))
+            .map(|(intro, arc)| (*intro, crate::f1::F1View::from_bytes(&arc[..])))
     }
 }
 
@@ -163,12 +163,12 @@ mod tests {
         EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
     };
 
-    use crate::blob::SymbolView;
+    use crate::f1::F1View;
     use crate::repo::IrRepository;
 
     /// Decode a symbol blob's bytes back to its payload (for assertions).
     fn payload_of(bytes: &[u8]) -> nudox_ir::wire::OwnedEntryPayload {
-        SymbolView::from_bytes(bytes).unwrap().to_owned_payload().unwrap()
+        F1View::from_bytes(bytes).unwrap().to_owned_payload().unwrap()
     }
 
     fn pkg() -> PackageLineageId {
@@ -190,6 +190,8 @@ mod tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         }
     }
 
@@ -200,6 +202,9 @@ mod tests {
             KindWire::Function(FunctionWire {
                 input_params: Box::new([]),
                 output_params: Box::new([]),
+                sig: Default::default(),
+                generics: Box::new([]),
+                wheres: Box::new([]),
             }),
             EntryPayloadFlags::default(),
         )

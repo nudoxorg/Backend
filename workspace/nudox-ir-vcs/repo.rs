@@ -24,10 +24,22 @@ use nudox_ir::kind::KindDiscriminant;
 use nudox_ir::wire::OwnedEntryPayload;
 use nudox_ir_archive::{seal_from_entries, SealEntry, SealedArchive};
 
-use crate::blob::SymbolView;
 use crate::checkout::MaterializedIndex;
 use crate::error::VcsError;
 use crate::serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
+
+/// Derive the type-skeleton fingerprint for a type-alias payload. F1 no longer
+/// stores it as a frame (§6.2), so the seal path recomputes it from the alias's
+/// type expression; non-alias kinds have no type fingerprint.
+fn type_fingerprint_of(p: &OwnedEntryPayload) -> Option<nudox_ir::index::TypeFingerprintId> {
+    if let nudox_ir::wire::KindWire::Type(alias) = &p.kind {
+        let mut sk = Vec::new();
+        nudox_ir::skeleton::type_wire_skeleton(&alias.ty, &mut sk);
+        Some(nudox_ir::skeleton::type_fingerprint(&sk))
+    } else {
+        None
+    }
+}
 use crate::refs::{BranchName, Ref, ResolvedRef, TagName};
 use crate::serve_cache::{ServeCache, ServeSource, ServedArchive};
 use crate::version::{VersionLabel, VersionState};
@@ -477,9 +489,9 @@ where
         // Files to add or update:
         for (intro, (payload, parent, links)) in &desired {
             let path = symbol_path(*intro);
-            // Textual, line-oriented per-symbol content so libpijul diffs at the
-            // field/param level.
-            let bytes = crate::blob::serialize_symbol_blob(payload, *parent, links);
+            // NdIrF1 canonical format — text, one frame per field, TAB-separated.
+            // libpijul diffs at the line level (one field per line).
+            let bytes = crate::f1::serialize_f1(payload, *parent, links);
 
             if current_files.contains(&path) {
                 // Update — but only if the content actually differs.
@@ -564,7 +576,8 @@ where
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // 6. Make Change.
+        // 6. Make Change with GenerationMeta (§7.6).
+        let gen_meta = crate::session::GenerationMeta::default().encode();
         let contents = std::mem::take(&mut *rec.contents.lock());
         let mut change = libpijul::change::Change::make_change(
             &*txn.read(),
@@ -577,7 +590,7 @@ where
                 description: None,
                 timestamp: jiff::Timestamp::now(),
             },
-            Vec::new(),
+            gen_meta,
         )
         .map_err(|e| VcsError::Pijul(anyhow::anyhow!("make_change: {e:?}")))?;
 
@@ -634,7 +647,8 @@ where
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
         let wc = MemWc::new();
-        libpijul::output::output_repository_no_pending(
+        // §12.3: check for conflicts BEFORE parsing any F1 blob.
+        let conflicts = libpijul::output::output_repository_no_pending(
             &wc,
             &self.changes,
             &txn,
@@ -647,6 +661,14 @@ where
         )
         .map_err(|e| VcsError::Pijul(anyhow::anyhow!("output (materialize): {e}")))?;
 
+        if !conflicts.is_empty() {
+            let paths: Vec<String> = conflicts
+                .iter()
+                .map(|c| format!("{:?}", c))
+                .collect();
+            return Err(VcsError::ConflictedState { paths });
+        }
+
         txn.commit().map_err(|e| {
             VcsError::Pijul(anyhow::anyhow!("commit (materialize): {e}"))
         })?;
@@ -657,16 +679,14 @@ where
         let files = wc.list_files();
         for path in files.iter().filter(|p| is_symbol_path(p)) {
             let hex = intro_hex_of(path).unwrap_or("");
-            // Parse IntroId from hex filename.
             let intro = parse_intro_hex(hex, path)?;
 
             let mut buf = Vec::new();
             wc.read_file(path, &mut buf)
                 .map_err(|e| VcsError::Pijul(anyhow::anyhow!("read_file {path}: {e}")))?;
 
-            // Borrow-based scan of the textual blob (no content allocation on
-            // the read path).
-            let view = crate::blob::SymbolView::from_bytes(&buf).map_err(|e| {
+            // Parse F1 canonical format.
+            let view = crate::f1::F1View::from_bytes(&buf).map_err(|e| {
                 VcsError::CorruptSymbolFile { path: path.clone(), reason: e.to_string() }
             })?;
             let payload = view.to_owned_payload().map_err(|e| {
@@ -675,13 +695,11 @@ where
 
             table.insert_live(intro, payload, view.parent());
 
-            // Reconstruct links from the canonical-owner file: this intro owns
-            // the link; the other endpoint is `link.other`.
             for link in view.links() {
                 let self_ref = nudox_change::StableRef::new(package_id.clone(), intro);
                 table.insert_link(LinkRecord {
                     a: self_ref,
-                    b: link.to_stable_ref(),
+                    b: link.other.clone(),
                     kind_a: link.kind_self,
                     kind_b: link.kind_other,
                 });
@@ -824,13 +842,18 @@ where
     /// archive's lookup indices are built from borrowed [`SymbolView`] metadata.
     /// The expensive libpijul reconstruction was already paid (incrementally) to
     /// build the index; this is a borrow + cheap memcpy assembly.
+    ///
+    /// NOTE (P1c→P4 migration): After the F1 migration the working-copy bytes are
+    /// NdIrF1 format, not NdIrSym V1.  This path still uses `SymbolView` for
+    /// metadata extraction; it needs to be migrated to `F1View` in a follow-up
+    /// once the archive sealing contract is updated for wire-v2 kinds.
     pub fn seal_from_index(&self, index: &MaterializedIndex) -> Result<SealedArchive, VcsError> {
         // Stable intro order so the parallel owned side-tables line up.
         let mut intros: Vec<IntroId> = index.intros().collect();
         intros.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
         // Borrowed views over the index bytes (no owned payloads).
-        let mut views: Vec<SymbolView<'_>> = Vec::with_capacity(intros.len());
+        let mut views: Vec<crate::f1::F1View<'_>> = Vec::with_capacity(intros.len());
         for &intro in &intros {
             let view = index
                 .view(intro)
@@ -842,34 +865,55 @@ where
             views.push(view);
         }
 
-        // Owned side-tables that must outlive the `SealEntry` borrows: alias
-        // pointer lists and the (owned `StableRef`) link tuples. Content stays
-        // borrowed from the index bytes; only these small spines allocate.
-        let aliases: Vec<Vec<&str>> = views.iter().map(|v| v.aliases().collect()).collect();
+        // F1 deliberately drops the derived `payload_hash`/`type_fingerprint`
+        // frames (§6.2), so — unlike the V1 borrowed `SymbolView` path — the seal
+        // reconstructs owned payloads once and derives the seal metadata from
+        // them. The owned payloads outlive the borrowed `SealEntry`s below.
+        let payloads: Vec<OwnedEntryPayload> = views
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                v.to_owned_payload().map_err(|e| VcsError::CorruptSymbolFile {
+                    path: symbol_path(intros[i]),
+                    reason: e.to_string(),
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let aliases: Vec<Vec<&str>> = payloads
+            .iter()
+            .map(|p| p.symbol.aliases.iter().map(String::as_str).collect())
+            .collect();
         let links: Vec<Vec<(StableRef, KindDiscriminant, KindDiscriminant)>> = views
             .iter()
-            .map(|v| v.links().map(|l| (l.to_stable_ref(), l.kind_self, l.kind_other)).collect())
+            .map(|v| {
+                v.links()
+                    .iter()
+                    .map(|l| (l.other.clone(), l.kind_self, l.kind_other))
+                    .collect()
+            })
             .collect();
+        let type_fps: Vec<Option<nudox_ir::index::TypeFingerprintId>> =
+            payloads.iter().map(type_fingerprint_of).collect();
 
         let entries: Vec<SealEntry<'_>> = intros
             .iter()
             .enumerate()
             .map(|(i, &intro)| {
-                let v = &views[i];
-                let (span_start, span_end) = v.span();
+                let p = &payloads[i];
                 SealEntry {
                     intro,
-                    name: v.name(),
+                    name: p.symbol.name.as_str(),
                     aliases: &aliases[i],
-                    visibility: v.visibility() as u8,
-                    source_path: v.source_path(),
-                    span_start,
-                    span_end,
-                    kind_disc: v.kind_disc(),
-                    flags: v.flags().0,
-                    payload_hash: v.payload_hash(),
-                    parent: v.parent(),
-                    type_fingerprint: v.type_fingerprint(),
+                    visibility: p.symbol.visibility as u8,
+                    source_path: p.symbol.source_path.as_str(),
+                    span_start: p.symbol.span_start,
+                    span_end: p.symbol.span_end,
+                    kind_disc: p.kind_disc,
+                    flags: p.flags.0,
+                    payload_hash: p.payload_hash,
+                    parent: views[i].parent(),
+                    type_fingerprint: type_fps[i],
                     links: &links[i],
                     payload_bytes: &index.get(intro).expect("present")[..],
                 }
@@ -1894,16 +1938,19 @@ where
         })?;
 
         // Capture the current set of symbol intros in the WC.
-        let tip_intros: std::collections::HashSet<nudox_change::IntroId> = self
+        let symbol_paths: Vec<String> = self
             .working_copy
             .list_files()
             .into_iter()
             .filter(|p| is_symbol_path(p))
+            .collect();
+
+        let tip_intros: std::collections::HashSet<nudox_change::IntroId> = symbol_paths
+            .iter()
             .filter_map(|p| {
-                let hex = intro_hex_of(&p)?;
-                crate::checkout::_try_intro_from_path(&p)
+                let hex = intro_hex_of(p)?;
+                crate::checkout::_try_intro_from_path(p)
                     .or_else(|| {
-                        // Fallback: parse from hex directly.
                         if hex.len() != 64 { return None; }
                         let mut bytes = [0u8; 32];
                         for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
@@ -1916,7 +1963,25 @@ where
             })
             .collect();
 
-        Ok(crate::session::RecordingSession::new(self, tip_intros))
+        // Materialize tip_table for Phase B continuity matching (§5.1).
+        // Read existing F1 files from the working copy into a PristineIntroTable.
+        let mut tip_table = nudox_ir::apply::PristineIntroTable::new();
+        for path in &symbol_paths {
+            let intro = match crate::checkout::_try_intro_from_path(path) {
+                Some(i) => i,
+                None => continue,
+            };
+            let mut buf = Vec::new();
+            if self.working_copy.read_file(path, &mut buf).is_err() {
+                continue;
+            }
+            if let Ok(view) = crate::f1::F1View::from_bytes(&buf)
+                && let Ok(payload) = view.to_owned_payload() {
+                    tip_table.insert_live(intro, payload, view.parent());
+                }
+        }
+
+        Ok(crate::session::RecordingSession::new(self, tip_intros, tip_table))
     }
 
     /// `pub(crate)` arc_txn for session.rs.
@@ -2080,11 +2145,13 @@ mod delta_tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         };
         OwnedEntryPayload::sealed(
             sym,
             KindDiscriminant::Function,
-            KindWire::Function(FunctionWire { input_params: Box::new([]), output_params: Box::new([]) }),
+            KindWire::Function(FunctionWire { input_params: Box::new([]), output_params: Box::new([]), sig: Default::default(), generics: Box::new([]), wheres: Box::new([]) }),
             EntryPayloadFlags::default(),
         )
     }

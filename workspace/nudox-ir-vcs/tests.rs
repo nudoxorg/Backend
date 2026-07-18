@@ -42,6 +42,8 @@ fn sym(name: &str) -> SymbolWire {
         aliases: Vec::new(),
         deprecation: None,
         doc_links: Vec::new(),
+        attrs: Vec::new(),
+        cfg: None,
     }
 }
 
@@ -49,7 +51,7 @@ fn function(name: &str) -> OwnedEntryPayload {
     OwnedEntryPayload::sealed(
         sym(name),
         KindDiscriminant::Function,
-        KindWire::Function(FunctionWire { input_params: Box::new([]), output_params: Box::new([]) }),
+        KindWire::Function(FunctionWire { input_params: Box::new([]), output_params: Box::new([]), sig: Default::default(), generics: Box::new([]), wheres: Box::new([]) }),
         EntryPayloadFlags::default(),
     )
 }
@@ -219,7 +221,7 @@ fn seal_archive_serves_zero_copy() {
 
     // Payload body = the textual blob, read back as a borrowed SymbolView.
     let raw = view.payload_raw(f).expect("payload bytes");
-    let sv = crate::blob::SymbolView::from_bytes(raw).expect("blob parses");
+    let sv = crate::f1::F1View::from_bytes(raw).expect("blob parses");
     assert_eq!(sv.name(), "do_thing");
     assert_eq!(sv.parent(), Some(intro(1)));
 
@@ -314,12 +316,12 @@ fn checkout_symbol_at_version() {
 
     // At v1, symbol 2 is `b`.
     let raw = repo.checkout_symbol_at(&vlabel("1.0.0"), intro(2)).unwrap().expect("present at v1");
-    let view = crate::blob::SymbolView::from_bytes(&raw).unwrap();
+    let view = crate::f1::F1View::from_bytes(&raw).unwrap();
     assert_eq!(view.name(), "b", "v1 checkout is the original payload");
 
     // On main it's `b_v2`.
     let raw_main = repo.checkout_symbol(intro(2)).unwrap().unwrap();
-    assert_eq!(crate::blob::SymbolView::from_bytes(&raw_main).unwrap().name(), "b_v2");
+    assert_eq!(crate::f1::F1View::from_bytes(&raw_main).unwrap().name(), "b_v2");
 
     // A symbol absent from the version is `None`.
     assert!(repo.checkout_symbol_at(&vlabel("1.0.0"), intro(99)).unwrap().is_none());
@@ -480,7 +482,7 @@ fn tagged_version_persists_across_reopen() {
 
     // Partial checkout at the persisted version.
     let raw = repo2.checkout_symbol_at(&vlabel("1.0.0"), intro(1)).unwrap().unwrap();
-    assert_eq!(crate::blob::SymbolView::from_bytes(&raw).unwrap().name(), "a");
+    assert_eq!(crate::f1::F1View::from_bytes(&raw).unwrap().name(), "a");
 
     // Per-symbol history survives too (symbol 2 changed once after creation).
     assert_eq!(repo2.symbol_history(intro(2)).unwrap().len(), 2);
@@ -661,9 +663,9 @@ fn unified_ref_serving() {
 
     // checkout one symbol at the tag vs the branch tip.
     let at_tag = repo.checkout_symbol_at_ref(&Ref::Tag(tag("snap")), intro(1)).unwrap().unwrap();
-    assert_eq!(crate::blob::SymbolView::from_bytes(&at_tag).unwrap().name(), "a");
+    assert_eq!(crate::f1::F1View::from_bytes(&at_tag).unwrap().name(), "a");
     let at_branch = repo.checkout_symbol_at_ref(&Ref::Branch(branch("main")), intro(1)).unwrap().unwrap();
-    assert_eq!(crate::blob::SymbolView::from_bytes(&at_branch).unwrap().name(), "a_v2");
+    assert_eq!(crate::f1::F1View::from_bytes(&at_branch).unwrap().name(), "a_v2");
 
     // symbol_history_on the branch: symbol 1 created + changed → 2 changes.
     assert_eq!(repo.symbol_history_on(&Ref::Branch(branch("main")), intro(1)).unwrap().len(), 2);
@@ -806,7 +808,7 @@ fn bench_replay_vs_snapshot() {
     for i in 0..N {
         if let Some(id) = view.lookup_intro(intro_n(i)) {
             let raw = view.payload_raw(id).unwrap();
-            let sv = crate::blob::SymbolView::from_bytes(raw).unwrap();
+            let sv = crate::f1::F1View::from_bytes(raw).unwrap();
             total_payload += sv.name().len();
         }
     }
@@ -1267,10 +1269,15 @@ fn wire_entry(name: &str, seed: u8) -> WireEntry {
         aliases: Vec::new(),
         deprecation: None,
         doc_links: Vec::new(),
+        attrs: Vec::new(),
+        cfg: None,
     };
     let kind = KindWire::Function(FunctionWire {
         input_params: Box::new([]),
         output_params: Box::new([]),
+        sig: Default::default(),
+        generics: Box::new([]),
+        wheres: Box::new([]),
     });
     let payload = OwnedEntryPayload::sealed(
         sym,
@@ -1691,11 +1698,16 @@ fn stream_foreign_package_rejected() {
                 aliases: Vec::new(),
                 deprecation: None,
                 doc_links: Vec::new(),
+                attrs: Vec::new(),
+                cfg: None,
             },
             KindDiscriminant::Function,
             KindWire::Function(FunctionWire {
                 input_params: Box::new([]),
                 output_params: Box::new([]),
+                sig: Default::default(),
+                generics: Box::new([]),
+                wheres: Box::new([]),
             }),
             EntryPayloadFlags::default(),
         ),
