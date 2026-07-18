@@ -24,13 +24,13 @@ arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
 
 bon = "3.9"
+dashmap = "6"
 elsa = "1.11"
 itertools = "0.15"
-iddqd ={version = "0.4", default-features = false, features = ["std"] }
+ouroboros = "0.18"
 parking_lot = "0.12"
 rustc-hash = "2.1"
 triomphe = "0.1"
-unsize = "1"
 
 # nudox-occurrences shared deps
 async-trait = "0.1"

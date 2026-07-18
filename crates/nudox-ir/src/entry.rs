@@ -1,11 +1,7 @@
 mod node;
 mod typed;
 
-use crate::{
-    kind::Kind,
-    registry::{RawEntryIdx, Registry, RegistryResolver},
-    symbol::Symbol,
-};
+use crate::{kind::Kind, registry::RawEntryIdx, symbol::Symbol};
 
 pub use self::{node::Node, typed::TypedEntry};
 
@@ -25,19 +21,11 @@ impl Entry {
         }
     }
 
-    #[expect(unused)] // TODO: test and actually use
     pub(crate) const fn reference(sym: Symbol, node: Node, idx: RawEntryIdx) -> Self {
         Self {
             sym,
             node,
             kind: EntryInner::Reference(idx),
-        }
-    }
-
-    pub fn kind<'r>(&'r self, r: &'r Registry<impl RegistryResolver>) -> &'r Kind {
-        match &self.kind {
-            EntryInner::Owned(kind) => kind,
-            EntryInner::Reference(idx) => r.resolve(*idx).kind(r),
         }
     }
 }

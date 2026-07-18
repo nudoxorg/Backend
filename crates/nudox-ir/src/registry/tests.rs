@@ -1,22 +1,22 @@
-use crate::{package::PackageId, registry::RegistryResolver, test_helpers::*};
+use std::convert::Infallible;
+
+use crate::{entry::Entry, test_helpers::*};
 
 use super::*;
 
 #[test]
-#[ignore = "ExampleRegistryResolver not implemented"]
 fn serialize_deserialize() {
     let registry = build_registry();
 
-    let dummy_idx = RawEntryIdx::new(PackageIdx::new(1), ScopeIdx::new(8));
+    let dummy_idx = RawEntryIdx::new(10);
 
     assert_eq!(
         registry
-            .resolver
-            .idx_to_entry_id(dummy_idx, &registry.state),
-        ExampleEntryId {
-            package: PackageId::path("/pkg-0"),
-            symbol: String::from("field_8"),
-        }
+            .state
+            .entry_idx_to_unique_id(dummy_idx)
+            .downcast_ref::<ExampleRegistryResolver>()
+            .entry(),
+        Some(&8)
     );
 
     let mut sink = Vec::new();
@@ -39,32 +39,34 @@ fn serialize_deserialize() {
     assert_eq!(dummy_idx, deserialized_dummy_idx);
 }
 
+#[expect(unused)]
 fn build_registry() -> Registry<ExampleRegistryResolver> {
     let mut registry = Registry::new(ExampleRegistryResolver::default());
 
     registry.build_package_ir(dummy_package("/pkg-0"), dummy_symbol("pkg-0"), |b| {
-        b.create(dummy_symbol("mod_1"), |_| Module);
-        b.create(dummy_symbol("record_2"), |_| Record { fields: list![] });
+        b.create(0, dummy_symbol("mod_1"), |_| Module);
+        b.create(1, dummy_symbol("record_2"), |_| Record { fields: list![] });
     });
 
     registry.build_package_ir(dummy_package("/pkg-1"), dummy_symbol("pkg-1"), |b| {
-        b.create(dummy_symbol("mod_1"), |_| Module);
+        b.create(2, dummy_symbol("mod_1"), |_| Module);
 
-        b.create(dummy_symbol("record_2"), |_| Record { fields: list![] });
+        b.create(3, dummy_symbol("record_2"), |_| Record { fields: list![] });
 
-        b.create(dummy_symbol("mod_3"), |b| {
-            b.create(dummy_symbol("mod_4"), |_| Module);
-            b.create(dummy_symbol("record_5"), |_| Record { fields: list![] });
+        b.create(4, dummy_symbol("mod_3"), |b| {
+            b.create(5, dummy_symbol("mod_4"), |_| Module);
+            b.create(6, dummy_symbol("record_5"), |_| Record { fields: list![] });
 
             Module
         });
 
-        b.create(dummy_symbol("record_6"), |b| {
+        b.create(7, dummy_symbol("record_6"), |b| {
             Record::builder()
                 .fields(
                     ["field_7", "field_8", "field_9"]
-                        .map(dummy_symbol)
-                        .map(|sym| b.create(sym, |_| Field {})),
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, sym)| b.create(idx + 8, dummy_symbol(sym), |_| Field {})),
                 )
                 .build(b)
         });
@@ -73,23 +75,18 @@ fn build_registry() -> Registry<ExampleRegistryResolver> {
     registry
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash)]
-struct ExampleEntryId {
-    package: PackageId,
-    symbol: String,
-}
-
 #[derive(Default)]
 struct ExampleRegistryResolver;
 
 impl RegistryResolver for ExampleRegistryResolver {
-    type EntryId = ExampleEntryId;
+    type EntryId = usize;
+    type Error = Infallible;
 
-    fn entry_id_to_idx(&self, _id: Self::EntryId, _state: &RegistryState) -> RawEntryIdx {
-        todo!()
-    }
-
-    fn idx_to_entry_id(&self, _idx: RawEntryIdx, _state: &RegistryState) -> Self::EntryId {
-        todo!()
+    fn load_unique_id(
+        &self,
+        _: &UniqueId<Self::EntryId>,
+        _: &RegistryState,
+    ) -> Result<Entry, Self::Error> {
+        unimplemented!()
     }
 }

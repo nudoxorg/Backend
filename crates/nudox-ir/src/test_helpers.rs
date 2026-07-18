@@ -1,23 +1,26 @@
-use std::path::{Path, PathBuf};
+use std::{
+    convert::Infallible,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     entry::{Entry, Node},
     kind::EntryKind,
     package::{PackageId, PackageMeta},
-    registry::{EntryIdx, RawEntryIdx, Registry, RegistryResolver, RegistryState},
+    registry::{RawEntryIdx, Registry, RegistryResolver, RegistryState, UniqueId},
     symbol::{Symbol, Visibility},
 };
 
-pub use crate::kinds::*;
+pub(crate) use crate::{kinds::*, registry::new_idx as idx};
 
-pub fn entry<T>(name: &str, node: Node, kind: T) -> Entry
+pub(crate) fn entry<T>(name: &str, node: Node, kind: T) -> Entry
 where
     T: EntryKind,
 {
     Entry::new(dummy_symbol(name), node, kind.into_kind())
 }
 
-pub fn dummy_symbol(name: impl Into<String>) -> Symbol {
+pub(crate) fn dummy_symbol(name: impl Into<String>) -> Symbol {
     Symbol {
         name: name.into(),
         visibility: Visibility::Public,
@@ -27,46 +30,46 @@ pub fn dummy_symbol(name: impl Into<String>) -> Symbol {
     }
 }
 
-pub fn dummy_package(name: impl AsRef<Path>) -> PackageMeta {
+pub(crate) fn dummy_package(name: impl AsRef<Path>) -> PackageMeta {
     PackageMeta {
         id: PackageId::path(name),
     }
 }
 
 #[expect(unused, reason = "for the future")]
-pub fn n(parent: RawEntryIdx, children: impl IntoIterator<Item = RawEntryIdx>) -> Node {
+pub(crate) fn n(parent: RawEntryIdx, children: impl IntoIterator<Item = RawEntryIdx>) -> Node {
     Node::new(parent, children)
 }
 
-pub mod n {
+pub(crate) mod n {
     use crate::{entry::Node, registry::RawEntryIdx};
 
-    pub fn root(children: impl IntoIterator<Item = RawEntryIdx>) -> Node {
+    pub(crate) fn root(children: impl IntoIterator<Item = RawEntryIdx>) -> Node {
         Node::root(children)
     }
 
-    pub fn leaf(parent: RawEntryIdx) -> Node {
+    pub(crate) fn leaf(parent: RawEntryIdx) -> Node {
         Node::leaf(parent)
     }
 }
 
-pub fn idx<T>(index: usize) -> EntryIdx<T> {
-    crate::registry::new_idx(0, index)
-}
-
-pub fn dummy_registry() -> Registry<DummyRegistryResolver> {
+#[expect(unused)]
+pub(crate) fn dummy_registry() -> Registry<DummyRegistryResolver> {
     Registry::new(DummyRegistryResolver)
 }
 
-pub struct DummyRegistryResolver;
+pub(crate) struct DummyRegistryResolver;
 
 impl RegistryResolver for DummyRegistryResolver {
     type EntryId = ();
 
-    fn entry_id_to_idx(&self, _: Self::EntryId, _: &RegistryState) -> RawEntryIdx {
-        unimplemented!()
-    }
-    fn idx_to_entry_id(&self, _: RawEntryIdx, _: &RegistryState) -> Self::EntryId {
+    type Error = Infallible;
+
+    fn load_unique_id(
+        &self,
+        _: &UniqueId<Self::EntryId>,
+        _: &RegistryState,
+    ) -> Result<Entry, Self::Error> {
         unimplemented!()
     }
 }

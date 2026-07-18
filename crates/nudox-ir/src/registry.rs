@@ -1,38 +1,24 @@
 mod builder;
-mod deferred;
+mod id;
 mod idx;
 mod link;
 mod resolver;
+mod serde_impl;
 mod state;
 
 #[cfg(test)]
 mod tests;
 
-use crate::{
-    entry::{Entry, TypedEntry},
-    kind::EntryKind,
-    module::Module,
-    package::PackageMeta,
-    symbol::Symbol,
-};
+use crate::{package::PackageMeta, symbol::Symbol};
 
-use self::{
-    deferred::{DeferredEntry, DeferredId},
-    idx::{DeferredIdx, PackageIdx, ScopeIdx},
-    resolver::DynRegistryResolver,
-};
-
-// allow test_helpers to create EntryIdx's
-#[cfg(test)]
-pub(crate) fn new_idx<T>(package_idx: usize, scope_idx: usize) -> EntryIdx<T> {
-    EntryIdx::new(PackageIdx::new(package_idx), ScopeIdx::new(scope_idx))
-}
+use self::{id::ErasedUniqueId, state::StoredEntry};
 
 pub use self::{
     builder::EntryBuilder,
+    id::{EntryId, UniqueId},
     idx::{EntryIdx, RawEntryIdx},
     link::EntryLink,
-    resolver::{EntryId, RegistryResolver},
+    resolver::RegistryResolver,
     state::RegistryState,
 };
 
@@ -48,54 +34,19 @@ impl<R> Registry<R> {
             state: RegistryState::new(),
         }
     }
-}
-
-impl<R: RegistryResolver> Registry<R> {
-    pub fn serialize<T, S>(&self, serializer: S, it: &T) -> Result<S::Ok, S::Error>
-    where
-        T: serde::Serialize,
-        S: serde::Serializer,
-    {
-        serde_context::serialize_with_context(
-            it,
-            serializer,
-            (&self.resolver as &dyn DynRegistryResolver, &self.state),
-        )
-    }
-
-    pub fn deserialize<'de, T, D>(&self, deserializer: D) -> Result<T, D::Error>
-    where
-        T: serde::Deserialize<'de>,
-        D: serde::Deserializer<'de>,
-    {
-        serde_context::deserialize_with_context(
-            deserializer,
-            (&self.resolver as &dyn DynRegistryResolver, &self.state),
-        )
-    }
-
-    pub fn resolve(&self, idx: RawEntryIdx) -> &Entry {
-        self.state.resolve(idx, &self.resolver)
-    }
-
-    pub fn resolve_typed<T: EntryKind>(&self, idx: EntryIdx<T>) -> &TypedEntry<T> {
-        self.state.resolve_typed(idx, &self.resolver)
-    }
 
     pub fn build_package_ir(
-        &mut self,
+        &self,
         pkg: PackageMeta,
         sym: Symbol,
-        build: impl FnOnce(&mut EntryBuilder),
-    ) -> EntryIdx<Module> {
+        build: impl Fn(&mut EntryBuilder),
+    ) {
         self.state.build_package_ir(pkg, sym, build)
     }
 }
 
-impl<T: EntryKind, R: RegistryResolver> std::ops::Index<EntryIdx<T>> for Registry<R> {
-    type Output = TypedEntry<T>;
-
-    fn index(&self, index: EntryIdx<T>) -> &Self::Output {
-        self.resolve_typed(index)
-    }
+// allow test_helpers to create EntryIdx's
+#[cfg(test)]
+pub(crate) fn new_idx<T>(index: usize) -> EntryIdx<T> {
+    EntryIdx::new(index)
 }

@@ -14,6 +14,7 @@ macro_rules! register_kinds {
 			}
 
 			impl Kind {
+				#[expect(unused, reason = "public API helper for a public API that doesn't exist yet")]
 				pub(crate) fn variant_as_dyn(&self) -> &dyn Any {
 					match self {
 						$(
