@@ -157,7 +157,7 @@ Every section conforms to these. GD numbers are stable across revisions so resea
 - **GD-1 Naming.** INDEX / REGISTRY / ORCH / client / lindsey per glossary. No crate is ever named bare `registry` or `server`.
 - **GD-2 SQLite everywhere there is SQL.** INDEX = sqlx 0.8 (writer pool max 1 + reader pool N), sea-query `SqliteQueryBuilder`, k8s StatefulSet `replicas: 1` + RWO PVC, Litestream v0.5.x sidecar → S3 with restore-on-boot. REGISTRY = rusqlite (bundled) on a dedicated thread. The job queue is not SQL (→ GD-19). Outbox + sink watermarks are sqlite tables drained by a single-writer poller.
 - **GD-3 Graph trait naming.** `PackageGraph` = full graph API; `GraphOps` = client-facing subset (client-core).
-- **GD-4 Vector.** Two layers: `VectorStore` (low-level ANN CRUD) + `VectorSearch` (app-level + SemanticGate). Embedded = **qdrant-edge**; remote = qdrant-client. Parity both sides: `jinaai/jina-embeddings-v2-base-code`, 768-d, via fastembed + ort. One vector stack; premium remote-only Voyage collection + SymbolDelta-only embeds per `.research/librarification/09b`.
+- **GD-4 Vector.** Two layers: `VectorStore` (low-level ANN CRUD) + `VectorSearch` (app-level + SemanticGate). Embedded = **qdrant-edge**; remote = qdrant-client. Parity both sides: `jinaai/jina-embeddings-v2-base-code`, 768-d, via fastembed + ort (**CPU durable canonical**; CoreML/CUDA gated accelerators per `09c`). One vector stack; premium remote-only Voyage collection + SymbolDelta-only embeds per `.research/librarification/09b`.
 - **GD-5 Catalog ⊆ MetaStore.** `Catalog` is the client-facing read surface; `MetaStore` is the spine CRUD + outbox + watermarks.
 - **GD-6 client-core sans-IO split.** Pure traits, routing policy, sync state machine, typestates in client-core; tokio/reqwest/iroh wiring in client.
 - **GD-7 Symbol identity per RFC-19.** Dedicated `moniker` crate. Version-stripped `LineageMoniker` (SCIP-shaped) + generation-qualified `GenerationSymbol`; BLAKE3 part hashes `sig`/`body`/`doc`/`ref`/`embed_key` with `normalizer_version`; explicit `LineageEdge` records from the frozen T0–T7 cascade; **prefer false-split over false-merge**; soft edges never skip embeds or hard identity. `PackageStemId` (version-less package continuity) in heart.
@@ -944,12 +944,14 @@ Adopted 0.24–0.26 features: CompactDoc (desktop memory), lazy scorers (as-you-
 
 **Source:** `.research/librarification/09`, `09b` · **Crates:** vector-local, vector-remote
 
-- **Embedded engine: qdrant-edge** (in-process, disk-resident, same filter/payload model as remote Qdrant via qdrant-client). One vector stack, both planes, one model: `jinaai/jina-embeddings-v2-base-code` (768-d, Apache-2.0, 8K context) via fastembed + ort (CPU default; Metal/CoreML EP later). Same model + dimension + metric local and remote — single-index identity; model upgrades ship as versioned collections.
-- **Layout:** one Edge shard per workspace project; payload fields `language`, `package`, `kind`, `symbol_id` participate in ANN filtering (not post-filter). Scalar/binary quantization under a **500 MB RAM ceiling**; WAL durability (desktops force-quit).
-- **`EmbedStage`:** input digest = `embed_key` (§5.3); `tool_digest` = model+revision+dims fingerprint — bumping the model invalidates globally *by design*. Re-embed skip across lineage edges only at confidence ≥ 0.95 (GD-7).
-- **`SemanticGate`** capability gates local CPU quota and remote premium collections; `Routed` prefers remote until the local corpus is Ready.
+- **Embedded engine: qdrant-edge** (in-process, disk-resident, same filter/payload model as remote Qdrant via qdrant-client). One vector stack, both planes, one model: `jinaai/jina-embeddings-v2-base-code` (768-d, Apache-2.0, 8K context) via **fastembed + ort**. Same model + dimension + metric local and remote — single-index identity; model upgrades ship as versioned collections. Sidecar Qdrant = documented isolation mode if in-process native risk is unacceptable.
+- **Layout:** one Edge shard per workspace project; payload fields `language`, `package`, `kind`, `symbol_id` participate in ANN filtering (not post-filter). Scalar quantization under a **500 MB store RSS ceiling** (embedder weights budgeted separately, unload on idle); WAL durability (desktops force-quit). **Hot-deps only** locally — cold packages → remote INDEX (monorepo GA blocker until productized).
+- **`EmbedStage`:** input digest = `embed_key` (§5.3); `tool_digest` = model+revision+dims+**ORT package** fingerprint — bumping the model invalidates globally *by design*. **Durable vectors are CPU-EP canonical** (I11); CoreML/CUDA are bulk/query accelerators behind gates (see `.research/librarification/09c`). Re-embed skip across lineage edges only at confidence ≥ 0.95 (GD-7).
+- **`SemanticGate`** capability gates local CPU/accel quota and remote premium collections; `Routed` prefers remote until the local corpus is Ready.
 
-*Acceptance:* local/remote result-parity harness on a fixture corpus; RAM ceiling test at 10⁶ vectors; kill-9 durability test.
+*Research:* store → `09-vector`; retrieval → `09b`; **runtime/GPU/adversarial/summary plan → `09c`**.
+
+*Acceptance:* local/remote result-parity harness on a fixture corpus; RAM ceiling test at 10⁶ vectors; kill-9 durability test; CPU↔CoreML cosine-equivalence suite before auto-accel.
 
 ---
 

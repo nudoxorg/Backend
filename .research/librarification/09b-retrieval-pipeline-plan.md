@@ -6,7 +6,8 @@
 
 > **Compatibility:** This plan does **not** replace qdrant-edge / qdrant-client. It specifies *what* we embed, *which* models/vectors live where, and *how* search stages compose. Store choice remains GD-4.  
 > **Sibling docs:** store selection → `09-vector.md`; incremental spine → `08-incremental.md`; identity → §6 / RFC-19; assembly → `_master/plan-part3.md` §12.  
-> **Deep sections:** §16 incrementality composition · §17 memory-saving mechanisms · §18 HNSW & rerank · §19 multimodal IR · §20 local GPU · §21 glossary.
+> **Deep sections:** §16 incrementality composition · §17 memory-saving mechanisms · §18 HNSW & rerank · §19 multimodal IR · §20 local GPU (summary; **full runtime in 09c**) · §21 glossary.  
+> **Adversarial + CPU/GPU runtime + library abstractions + summary plan:** **`09c-embeddings-runtime-adversarial.md`** (2026-07-17).
 
 ---
 
@@ -18,12 +19,14 @@
 | **L0 Local lexical** | Exact-ish identifiers / error strings / rare tokens | **Tantivy BM25** (`IdentTokenizer`) — already planned §11 | Not in Qdrant by default (single hybrid owner) |
 | **L1 Local optional fields** | Intent-split: “find similar signatures” vs “find similar implementations” | **Named multi-rep** dense vectors `"sig"` / `"body"` (same model, different IR text) — Phase 2 | Edge named vectors; same 768-d |
 | **R0 Remote parity** | Syncable with Edge; DepSet search before local Ready | **Same Jina model + same recipe** as L0 | Host collection `symbols__jina_v2_code_768` |
-| **R1 Remote premium** | Highest code-retrieval quality | **`voyage-code-3`** (default 1024-d MRL; int8/binary quant) | Separate host collection `symbols__voyage_code3_1024` — **never fused into local scores** |
-| **R2 Remote rerank (optional)** | Precision@k when user/agent pays latency | **ColBERT multivector MaxSim** (or Voyage/Cohere cross-encoder later) on top-K from R0/R1 | Multivector field, **HNSW m=0**, used only as Stage-2 |
+| **R1 Remote premium** | Highest code-retrieval quality | **`voyage-code-3`** (**pin `output_dimension=1024` + `input_type` explicitly** — never rely on API defaults; int8/binary quant) | Separate host collection `symbols__voyage_code3_1024` — **never fused into local scores** |
+| **R2 Remote rerank (optional)** | Precision@k when user/agent pays latency | **Cross-encoder Stage-2** on top-100 from R0/R1: self-host **`mxbai-rerank-base-v2`** (Apache-2.0, code-benchmarked) · premium **Voyage `rerank-2.5`** API. **ColBERT MaxSim demoted to experimental** — no license-clean code ColBERT exists (§18.3b) | Rerank service on INDEX; ColBERT (if ever) multivector field, **HNSW m=0**, Stage-2 only |
 | **Not in v1 desktop** | — | Full BGE-M3 multi+dense (too heavy / not code-first), SigLIP (no multimodal IR), nomic-embed-code 7B | — |
 
 **One-line product rule:**  
-Local = **IR-structured bi-encoder + Tantivy hybrid**. Remote = **same bi-encoder for parity** + **Voyage code premium** + **optional late-interaction rerank**. Storage always **quantized / on_disk** at scale; ColBERT never first-stage indexes every token under HNSW.
+Local = **IR-structured bi-encoder + Tantivy hybrid**. Remote = **same bi-encoder for parity** + **Voyage code premium** + **optional server-side neural rerank** (cross-encoder default; ColBERT experimental — §18.3b). Storage always **quantized / on_disk** at scale; ColBERT never first-stage indexes every token under HNSW.
+
+**Placement:** which plane runs each workload (client vs server), the shard bakery, hot-set admission, and the frozen latency/memory budgets are owned by **09-vector §20** — this doc defines *what* is retrieved and *how well*, not *where*.
 
 ---
 
@@ -98,6 +101,7 @@ Qdrant named vectors let one point hold several dense embeddings with independen
 | Storage | ~tokens × 128-d per symbol body → **10²–10³×** denser than bi-encoder |
 | Edge | Technically possible; **not default** under 500 MB budget at 10⁵–10⁶ symbols |
 | Fit | **Remote Stage-2** on top-K (e.g. 50–100) from R0/R1; optional “deep search” mode |
+| **Licensing (verified 2026-07-17)** | **jina-colbert-v2 is CC-BY-NC-4.0 — forbidden in the product**; answerai-colbert-small-v1 is Apache-2.0 but 33M / English-prose / not code-tuned. **There is currently no license-clean, code-capable ColBERT** — this demotes ColBERT from “planned Stage-2” to **experimental**, and makes the cross-encoder the Deep-mode default (§18.3 / §18.3b) |
 
 **Anti-pattern:** Indexing ColBERT multivectors under HNSW for first-stage retrieval at registry scale.
 
@@ -110,6 +114,8 @@ Qdrant named vectors let one point hold several dense embeddings with independen
 
 **Remote shortlist+rerank (MRL-style):**  
 Index 512-d or 1024-d quantized for HNSW → prefetch top 100 → rescore with full 2048 float if stored (Voyage supports requesting dims). Do **not** invent MRL for Jina by blind truncation without a quality gate.
+
+**Pinning rule (I16):** the Voyage API accepts `output_dimension` ∈ {2048, 1024, 512, 256} and `output_dtype` ∈ {float, int8, uint8, binary, ubinary} — **always pass both explicitly** (we pin 1024/float for CAS blobs). The blog and API docs disagree on which dimension is “default”; code that relies on a vendor default is a latent geometry-corruption bug.
 
 ### 2.6 Quantization (storage at the edge and INDEX)
 
@@ -172,6 +178,36 @@ recipe_id = "nudox.embedtext.v2"
 2. Uses **part-hash normalizers** from §6.3 so `body` text agrees with `body_hash` identity (no dual “pretty for humans / different for embed”).
 3. Does **not** include branch names, absolute machine paths, or generation ids in the embed text (those are payload).
 4. Optional **query-side prefixes** if the model family needs them (e.g. some E5-style models); Jina-code and voyage-code use model-documented input formatting — pin in `tool_digest`.
+
+### 3.1b Model I/O correctness (frozen — how vectors are actually produced)
+
+Getting the *text* right (§3.1) is half the recipe; the other half is the model I/O contract. Verified against live model cards / API docs **2026-07-17**.
+
+| Contract | Jina v2-code (L0/R0) | voyage-code-3 (R1) |
+|---|---|---|
+| Pooling | **Mean pooling over the attention mask** — required by the model card. fastembed does this; a raw-`ort` escape hatch must reimplement it identically or vectors silently diverge | API-internal |
+| Normalization | **L2-normalize at write and at query** (belt-and-braces for cosine even where the store normalizes) | verify normalized output |
+| Query/doc asymmetry | **None** — no instruction prefixes; same encoder both sides | **`input_type="document"` on the write path, `"query"` on the query path** — Voyage prepends different prompts server-side; omitting `input_type` silently degrades retrieval |
+| Dimensions | 768 from the artifact | **pin `output_dimension=1024`** on every call (I16) |
+| dtype | f32 out of ONNX | pin `output_dtype="float"` for CAS blobs; store-side quant is separate |
+| Context | 8192 (ALiBi) but trained at 512 — recipe budget is 1024 tokens (below); longer windows gated on eval | 32k; the same recipe budget applies for parity of unit |
+| Tokenizer | HF `tokenizer.json` from the pinned repo — its sha is part of `tool_digest` | vendor-side |
+| Batch limits | fastembed’s default batch is **256 — override to 32** (long code windows OOM) | ≤ 1000 texts **and** ≤ 120k tokens per request — chunk INDEX batches to both caps |
+| Weights artifact | **canonical pinned `onnx/model_quantized.onnx` — 161.9 MB int8 — on both planes** (161M params; f32 = 641.5 MB, fp16 = 321 MB are gated fallbacks only; 09-vector §20.8) | n/a |
+
+**Truncation algorithm (deterministic, frozen):**
+
+```text
+total_budget = 1024 tokens (model tokenizer, pinned by sha)
+1. header + sig : kept whole. Pathological case: if sig alone > 512 tokens
+                  (generated code), hard-truncate sig at 512 on a token boundary.
+2. doc block    : min(tokens(doc), 256)   # documentation IS embedded — doc facet
+3. body window  : all remaining budget, taken from the start of the body-hash-
+                  normalized token stream, cut on a token boundary. Deterministic;
+                  no sampling, no "smart" selection in v1.
+```
+
+**Trait gap in live code (fix in P0):** `Embedder` in `workspace/registry/runtime/vector/embedding.rs` carries `EmbeddingPurpose::{Code, Documentation}` but **no query-vs-document axis**. Voyage (`input_type`) and E5-family (prefixes; `E5Small` is in the live catalog) require one. Add `EmbedRole { Query, Document }` to `embed`/`embed_batch`: Jina adapters ignore it, Voyage maps it to `input_type`, E5 maps it to `"query: "`/`"passage: "` prefixes. `EmbeddingPurpose` maps to *named vectors* (Code → `sym`, Documentation → a future doc facet) — it is not the role axis, and conflating the two would bake the bug into the trait.
 
 ### 3.2 Facet recipes (multi-rep)
 
@@ -281,7 +317,7 @@ for each symbol in delta.added ∪ delta.changed:   # NOT unchanged
 maybe_schedule_compact()   # idle; never per-symbol optimize
 ```
 
-**Remote R1:** same loop with `voyage-code-3` → separate collection; `embed_key` includes that model_id. INDEX workers also only process package-level SymbolDelta for sealed generations.
+**Remote R1:** same loop with `voyage-code-3` → separate collection; `embed_key` includes that model_id; every call pins `input_type="document"`, `output_dimension=1024`, `output_dtype="float"` (§3.1b), batched under the 1000-text / 120k-token API caps. Voyage keys live server-side only (09-vector §20 R5). INDEX workers also only process package-level SymbolDelta for sealed generations.
 
 ### 4.2 Query path
 
@@ -298,15 +334,17 @@ query(q, scope, quality_mode):
   else if quality_mode == Parity || !premium_enabled:
       qv = remote_jina.embed(q)                   # or local jina if same model
       dense = host.search(coll_jina, qv, filter=scope)
-  else: # Premium
-      qv = voyage.embed(q, input_type=query, dim=1024)
+  else: # Premium — runs server-side; the client ships query TEXT, never API keys
+      qv = voyage.embed(q, input_type="query", output_dimension=1024)
       dense = host.search(coll_voyage, qv, filter=scope)
 
   fused = RRF(dense, bm25)
 
-  // Optional Stage-2 late interaction (remote, quality_mode == Deep)
+  // Optional Stage-2 neural rerank (remote, quality_mode == Deep) — §18.3
   if deep && remote_ok:
-      fused = colbert_maxsim_rerank(q, fused.top(100))
+      fused = stage2_rerank(q, fused.top(100))   # cross-encoder service;
+                                                 # ColBERT only behind experiment flag
+      # client renders Stage-1 order immediately; re-ranks in place when this lands
 
   return fused.top(k) with source labels
 ```
@@ -327,11 +365,11 @@ Never RRF-fuse Jina scores with Voyage scores into one unlabeled list.
 | Shard | Contents | Sync |
 |---|---|---|
 | **Mutable Edge** | Trusted project `sym` (Jina) | Local-only by default |
-| **Immutable Edge** | Hot deps `sym` (Jina) | Partial snapshots from **Jina host collection only** |
+| **Immutable Edge** | Hot deps `sym` (Jina) | **Server-baked Edge shards** (bakery, 09-vector §20.3); admission per §20.4; read-only after install |
 | **Host Jina** | All INDEX packages | Authoritative for untrusted deps |
 | **Host Voyage** | Premium INDEX packages | No Edge mirror (model mismatch) |
 
-Partial snapshots only make sense for the **parity model**. Premium Voyage stays query-remote.
+Dep-shard distribution only exists for the **parity model** — the bakery is the productized form of the “partial snapshot” idea. Premium Voyage stays query-remote.
 
 ---
 
@@ -372,15 +410,16 @@ same multitenancy payload as Jina
 # NO Edge snapshot sync
 ```
 
-### 5.4 Host — optional ColBERT rerank field (same points or side collection)
+### 5.4 Host — ColBERT rerank field (**experimental only — license-gated, §18.3b**)
 
 ```text
-# Preferred: side-by-side named multivector on premium or parity points
+# ONLY behind an experiment flag, and ONLY once a license-clean code ColBERT exists.
+# Preferred shape if enabled: side-by-side named multivector on premium or parity points
 colbert: size=128, multivector MAX_SIM, hnsw m=0, on_disk=true
 # Query: prefetch dense limit=100 → query using=colbert
 ```
 
-Only materialize ColBERT for symbols whose body token count exceeds a threshold (e.g. ≥ 64 tokens) to control storage.
+Only materialize ColBERT for symbols whose body token count exceeds a threshold (e.g. ≥ 64 tokens) to control storage. The shipping Deep-mode Stage-2 is the **cross-encoder service** (§18.3), which needs no extra stored vectors at all — a real storage win over ColBERT.
 
 ---
 
@@ -393,7 +432,7 @@ Only materialize ColBERT for symbols whose body token count exceeds a threshold 
 | f32 raw | 1e5 × 768 × 4 ≈ **300 MB** |
 | int8 scalar | ≈ **75 MB** vectors |
 | HNSW graph | tens of MB (depends on m/ef) |
-| ONNX Jina weights | ~150–300 MB (unload when idle) |
+| ONNX Jina weights | **161.9 MB** canonical int8 (f32 is 641.5 MB — never ship it to desktop; 09-vector §20.8) — unload when idle |
 | ColBERT for all | **multi-GB** — reject as default |
 
 **Policy:** on_disk + int8 by default above 50k; hold project + **hot deps only** on Edge.
@@ -479,13 +518,14 @@ UI labels results: `local` | `index-jina` | `index-voyage` | `hybrid`.
 
 *Acceptance:* signature-only rename doesn’t re-embed `body`; eval improves on “find similar API” tasks.
 
-### Phase D — Late interaction (optional Deep mode)
+### Phase D — Deep mode (server Stage-2 rerank)
 
-1. ColBERT multivector on host for long-body symbols  
-2. Prefetch dense → MaxSim rerank  
-3. Gate behind SemanticGate + latency budget  
+1. Rerank service on INDEX: **`mxbai-rerank-base-v2`** (Apache-2.0, 0.5B, code-benchmarked) on GPU workers; input = (query, EmbedText of candidate) pairs over top-100 from Stage-1; bake-off vs `bge-reranker-v2-m3` (Apache-2.0, in fastembed, but 512-token window and not code-tuned) before freezing  
+2. Premium wiring: **Voyage `rerank-2.5`** (32k context) behind the same service interface; per-org budget caps  
+3. Client: **progressive display** — Stage-1 order renders immediately, list re-ranks in place when Stage-2 lands (09-vector §20.7)  
+4. (Experimental, flag off) ColBERT multivector MaxSim for long-body symbols — blocked until a license-clean code ColBERT exists (§18.3b)  
 
-*Acceptance:* Deep mode p95 &lt; 300 ms on warm INDEX for k=10 after dense prefetch; storage growth &lt; X% of package corpus.
+*Acceptance:* Deep end-to-end p95 ≤ 1.2 s at k=100 rerank with progressive Stage-1 render ≤ local/parity budgets; measurable nDCG lift vs Stage-1 on the §11 NL→code suite; CI model-license deny-list green.
 
 ### Phase E — Bake-offs / escape hatches
 
@@ -561,7 +601,9 @@ Decision:
   3. Local Stage-1: jina-embeddings-v2-base-code (768) on qdrant-edge; hybrid with Tantivy.
   4. Remote Stage-1 parity: same Jina collection (Edge sync / Routed).
   5. Remote Stage-1 premium: voyage-code-3 (1024 MRL, int8/binary) separate collection.
-  6. Stage-2 optional: ColBERT MaxSim multivector (HNSW off) for Deep mode only.
+  6. Stage-2 optional (Deep): server cross-encoder rerank — mxbai-rerank-v2 self-host
+     (Apache-2.0) / Voyage rerank-2.5 premium; ColBERT MaxSim experimental only
+     (license-blocked as of 2026-07-17; HNSW off if ever enabled).
   7. Phase 2: named multi-rep vectors sig/body aligned to part-hash fan-out.
   8. Quantization + on_disk mandatory at scale; ColBERT never default first-stage.
 
@@ -580,7 +622,7 @@ Consequences:
 
 1. **CodeRankEmbed vs Jina** on our fixture languages — run Phase E before freezing L0 forever.  
 2. **Voyage dim default:** 1024 vs 512 for INDEX cost — decide after one package-scale cost model.  
-3. **Whether Deep ColBERT is product-visible** or agent-only.  
+3. **Deep-mode surface:** product-visible or agent-only; and **watch for a license-clean, code-capable ColBERT** to revive the MaxSim experiment (today jina-colbert-v2 is CC-BY-NC and answerai-colbert-small is English-prose — §18.3b).  
 4. **File-level secondary points** for “explain this module” — separate recipe, not v1.  
 5. **Edge multi-vector support parity** with server for Phase C — verify on pinned qdrant-edge version before coding multi-rep local.
 
@@ -598,6 +640,9 @@ Consequences:
 | Qdrant Edge sync | https://qdrant.tech/documentation/edge/edge-synchronization-guide/ |
 | voyage-code-3 MRL + quant | https://blog.voyageai.com/2024/12/04/voyage-code-3/ |
 | ONNX Runtime CoreML EP | https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html |
+| ORT all EPs | https://onnxruntime.ai/docs/execution-providers/ |
+| fastembed-rs (EP passthrough, DirectML, Jina-code) | https://github.com/Anush008/fastembed-rs |
+| 09c adversarial runtime plan | ./09c-embeddings-runtime-adversarial.md |
 | HNSW paper | https://arxiv.org/abs/1603.09320 |
 | jina-embeddings-v2-base-code | https://jina.ai/models/jina-embeddings-v2-base-code/ |
 | Prior store decision | `.research/librarification/09-vector.md` |
@@ -709,7 +754,7 @@ Point IDs: **UUID v5(namespace_nudox, symbol_id)** stable across re-embeds (09-v
 |---|---|
 | Opening a project | Load Edge shard from disk; no embed |
 | Switching branches to same commit | Same generation id → no-op |
-| Pulling hot deps | Immutable Edge **snapshot** of precomputed Jina vectors; no local Voyage; no local re-embed of crates.io |
+| Pulling hot deps | **Baked Edge shard install** — fetch, hash-verify, unpack (09-vector §20.3); no local Voyage; the client never embeds crates.io code (09-vector R2) |
 | Query-time | Embed **one query string** only (not corpus) |
 | Premium Voyage | INDEX-only; never blocks local delta path |
 | ColBERT materialization | Host optional; not required for local Ready |
@@ -823,12 +868,19 @@ A and B must be budgeted **separately**. The 500 MB target is **A** (vector sear
 ### 17.3 Frozen local config ladder
 
 ```text
-N < 20k:     on_disk, no quant, default HNSW
-20k–50k:     on_disk, scalar optional
-N ≥ 50k:     on_disk + scalar int8 (always_ram quant), rescore off by default
-N ≥ 200k:    same + consider TurboQuant bits4 after eval; shrink hot-dep set
+project shard (mutable):
+  N < 20k:   on_disk, no quant, default HNSW
+  20k–50k:   on_disk, scalar optional
+  N ≥ 50k:   on_disk + scalar int8 (always_ram quant)
+  N ≥ 200k:  same + consider TurboQuant bits4 after eval; shrink hot-dep set
+dep shards (baked): ALWAYS scalar int8 (profile qp1 — 09-vector §20.3)
+rescore:     ALWAYS ON for quantized shards (oversampling 2.0) — cross-shard
+             merges must compare exact f32 scores (09-vector §20.6); an
+             unquantized project shard needs no rescore
 always:      unload embedder after idle T; SemanticGate concurrency cap
 ```
+
+> **Amendment 2026-07-17:** the earlier “rescore off by default at int8” guidance is superseded by the cross-shard comparability rule above — with the project shard and baked dep shards at different quant profiles, merged rankings are only valid if every quantized shard rescores against its on-disk f32 originals (sub-ms warm on NVMe at oversampling 2.0).
 
 ### 17.4 Host INDEX config ladder
 
@@ -894,11 +946,28 @@ Stage 2 — expensive, high precision  ("rerank")
 |---|---|---|
 | **None** | — | Default local + parity |
 | **RRF fusion** | dense list + BM25 list | Default hybrid (not a neural rerank; rank fusion) |
-| **ColBERT MaxSim** | query token matrix × doc token matrix | Deep mode, remote |
-| **Cross-encoder** | (query, doc) pair scores | Future alternative to ColBERT |
-| **Quant rescore** | full-precision vectors on shortlist | After binary/TurboQuant aggressive modes |
+| **Cross-encoder (server)** | (query, doc) pair scores — `mxbai-rerank-base-v2` self-host / Voyage `rerank-2.5` premium | **Deep-mode default** (Phase D) |
+| **ColBERT MaxSim** | query token matrix × doc token matrix | **Experimental only** — license-blocked for product (§18.3b) |
+| **Quant rescore** | full-precision vectors on shortlist | **Always on quantized shards** (§17.3; 09-vector §20.6) |
 
-Rerank does **not** re-embed the corpus. It may embed the **query** once more in a late-interaction space.
+Rerank does **not** re-embed the corpus. A cross-encoder needs no stored vectors at all — it reads (query, candidate-text) pairs, so it composes with any Stage-1 and costs zero index storage.
+
+### 18.3b Reranker / late-interaction licensing audit (verified 2026-07-17)
+
+We ship a commercial desktop app and a commercial INDEX. **CC-BY-NC models cannot ship in either plane**, and two of the four rerankers in the fastembed catalog are CC-BY-NC — being in our chosen library’s catalog is *not* license clearance.
+
+| Model | License | Params / notes | Verdict |
+|---|---|---|---|
+| `jinaai/jina-reranker-v2-base-multilingual` (in fastembed) | **CC-BY-NC-4.0** | 278M; code-capable (CodeSearchNet 71.4 MRR@10); 1024-token window | **Forbidden** — research/eval only, or paid Jina license |
+| `jinaai/jina-colbert-v2` | **CC-BY-NC-4.0** | 0.6B; 128/96/64-d tokens; 8k ctx | **Forbidden** — blocks the ColBERT Stage-2 as originally planned |
+| `jinaai/jina-reranker-v1-turbo-en` (in fastembed) | Apache-2.0 | English-only, prose | Clean but wrong domain |
+| `BAAI/bge-reranker-v2-m3` (in fastembed) | **Apache-2.0** | 0.6B; multilingual general; ~512-token practical window; not code-tuned | **Clean fallback** — usable day one via fastembed |
+| `mixedbread-ai/mxbai-rerank-base-v2` / `-large-v2` | **Apache-2.0** | 0.5B / 1.5B; code + 100+ languages, code-search benchmarked; Qwen2.5-based | **Default self-host Stage-2** — needs our own ONNX export or a server runtime (server-side only, so fine) |
+| `answerdotai/answerai-colbert-small-v1` | Apache-2.0 | 33M; English prose; not code | Eval baseline only |
+| Voyage `rerank-2.5` / `rerank-2.5-lite` | Commercial API | 32k context; instruction-following | **Premium Stage-2** |
+| Cohere Rerank 3.5 | Commercial API | multilingual enterprise | Alternative premium; not primary |
+
+**Enforcement (I15):** a CI deny-list of model ids (the two CC-BY-NC entries above, plus any future addition) checked against every `ModelId` in the catalog and every model the rerank service is configured to load. A human adding a model must add its license to the table above first.
 
 ### 18.4 Why ColBERT is Stage-2 only
 
@@ -950,49 +1019,77 @@ Those entries would carry content hashes and could be embedded with a **vision�
 
 ## 20. Local GPU / accelerator viability
 
+> **Canonical deep-dive:** [`09c-embeddings-runtime-adversarial.md`](./09c-embeddings-runtime-adversarial.md) §§2–5, 8, 10.  
+> This section is the **frozen product summary**; do not re-derive EP details here.
+
 ### 20.1 Scope
 
-Local embedding model is **~137M** Jina-code (or similar CodeRankEmbed), not a 7B LLM. Workloads:
+Local embedding model is **161M** Jina-code (HF-verified; or 137M CodeRankEmbed), not a 7B LLM. Workloads:
 
 | Workload | Frequency | GPU value |
 |---|---|---|
 | Query embed (1 string) | Every semantic search | Low — CPU already ms-class |
 | Delta re-embed (1–100 symbols) | Each commit | Nice — still fine on CPU |
-| Cold full index (10⁴–10⁵) | Rare | **High** — minutes → faster |
+| Cold full index (10⁴–10⁵) | Rare | **High** — minutes → faster (if CoreML/CUDA graph is clean) |
+| INDEX fleet bulk | Continuous | **First-class CUDA/TRT** on workers |
 | Continuous dirty-buffer embed | Not in product | N/A |
 
 ### 20.2 Stack
 
 ```text
-fastembed → ONNX model → ort (ONNX Runtime)
-                         ├─ CPU EP          (required, default, CI)
-                         ├─ CoreML EP       (macOS: GPU + Apple Neural Engine)
-                         ├─ CUDA EP         (optional Linux NVIDIA builds)
-                         └─ DirectML        (future Windows)
+app Embedder trait (branded EmbeddingModel)
+    → fastembed 5.17.x  (default)  or raw ort Session (escape hatch)
+         → ONNX model (Jina-code; sha256 pinned)
+              → ort (ONNX Runtime 2.x)
+                    ├─ CPU EP          (required, default, CI, **durable canonical**)
+                    ├─ CoreML EP       (macOS: GPU + ANE; MLProgram + model cache dir)
+                    ├─ CUDA EP         (optional Linux/Windows NVIDIA; INDEX workers)
+                    ├─ TensorRT EP     (INDEX only; engine cache)
+                    └─ DirectML        (future Windows GUI; fastembed feature)
 ```
 
-CoreML EP docs: requires recent macOS; can target CPUAndGPU / CPUAndNeuralEngine / ALL. Graph partitioning: unsupported ops fall back to CPU — **fragmented graphs can be slower than pure CPU**. Must benchmark the actual Jina ONNX export.
+**Libraries ranked for us (09c §3):** `fastembed` + `ort` + our `Embedder`/`EmbeddingModel` traits. Candle/Burn/llama.cpp are **not** default. Python sidecar = scripts only.
 
 ### 20.3 Viability assessment
 
 | Platform | Verdict |
 |---|---|
-| **Apple Silicon + CoreML** | **Viable and recommended as opt-in/auto** after parity numeric check vs CPU. Expect ~2–5× on clean encoder graphs; not guaranteed until measured. |
-| **CPU-only laptop** | **Fully supported product path** — never require GPU. |
-| **NVIDIA Linux workstation** | Viable for power users if we ship CUDA-enabled ort; not default CI matrix. |
-| **Matching Voyage locally on GPU** | **Out of scope** — Voyage is API; local GPU only accelerates open models. |
+| **Apple Silicon + CoreML** | **Viable as opt-in/auto** after cosine-equivalence suite vs CPU; require `ModelCacheDirectory` or first-run compile pain; fragmented graphs can **lose** to pure CPU |
+| **CPU-only laptop** | **Fully supported product path** — never require GPU |
+| **NVIDIA Linux workstation** | Optional CUDA-enabled pack; not default CI matrix |
+| **INDEX k8s GPU nodes** | CUDA default; optional TensorRT; lock EP for collection generations |
+| **Matching Voyage locally on GPU** | **Out of scope** — API only |
 
-### 20.4 Product rules
+### 20.4 Product rules (hardened 2026-07-17)
 
-1. **CPU path always correct** — golden vectors from CPU for CAS identity when `tool_digest` pins EP-agnostic ONNX (float tolerance: store f32 from one canonical EP, or accept tiny diffs only inside non-parity paths).  
-2. **Canonical embed for parity CAS:** prefer **CPU EP** (or single pinned EP) when writing vectors that must match INDEX Jina workers bit-for-bit; if bit-identical is impossible across EP, define **cosine equivalence** tests instead of memcmp.  
-3. **SemanticGate** budgets concurrent sessions (default 1) and respects low-power / thermal.  
-4. **Unload** model after idle (e.g. 60–120s) to free 150–300 MB.  
-5. Feature-gate CoreML in builds if binary size hurts.
+1. **CPU path always correct and complete** — no feature requires an accelerator.  
+2. **I11 Durable canonical EP = CPU** for vectors written to local Edge *and* INDEX parity collections (simplest correct rule). Accelerators may speed **query** embeds or an explicit “fast rebuild” UX only if labeled non-parity; prefer not shipping hybrid durable paths until needed (full policy 09c §2.3).  
+3. **I12 `tool_digest`** fingerprints model weights + recipe + **ORT package identity**, not ambient GPU presence.  
+4. **SemanticGate** budgets concurrent sessions (default 1), low-power → force CPU, thermal-aware throttling on cold index.  
+5. **Unload** model after idle (e.g. 60–120s) to free 150–300 MB (**separate** from 500 MB store budget).  
+6. Feature-gate CoreML/CUDA in builds; default binary is **CPU-only ORT**.  
+7. Quantized ONNX (int8) is a **CPU** optimization path; do not assume GPU EPs accept the same file (fastembed BGE-M3Q warning pattern).  
+8. **Thread model:** one ORT session + mutex or single embed worker; never free-thread concurrent `Run` without proof.
 
 ### 20.5 Incrementality interaction
 
 GPU does **not** change *which* symbols embed — only *how fast* `stage.run` is for symbols already in the delta. A GPU without SymbolDelta still wastes work; SymbolDelta on CPU still meets the product invariant.
+
+### 20.6 `EmbedRuntimeInfo` (trait gap from adversarial review)
+
+```rust
+pub struct EmbedRuntimeInfo {
+    pub model_id: ModelId,
+    pub accel: AccelKind,        // Cpu | CoreMl | Cuda | DirectMl | Other
+    pub durable_canonical: bool, // true only on CPU parity path
+    pub max_batch: usize,
+    pub max_seq_len: usize,
+    pub weights_sha256: [u8; 32],
+    pub ort_package_id: &'static str,
+}
+```
+
+Expose via `Embedder::runtime()` so SemanticGate and UI can show “Accelerator: CoreML (query only)” without leaking ORT types across crates.
 
 ---
 
@@ -1041,11 +1138,25 @@ I3  Local primary model = open code bi-encoder (Jina v2 code unless bake-off win
 I4  Remote parity = same model; premium = separate collection (Voyage-code-3).
 I5  Never mix scores across embedding spaces without labeled UI / learned fusion.
 I6  Desktop: on_disk always; scalar (≥50k); no ColBERT Stage-1; no binary Jina v1.
-I7  HNSW = Stage-1; ColBERT MaxSim = optional Stage-2 with m=0.
-I8  CPU embed always works; CoreML/CUDA accelerate delta/full index only.
+I7  HNSW = Stage-1; neural rerank = server Stage-2 (cross-encoder default;
+    ColBERT experimental, m=0 if ever enabled).
+I8  CPU embed always works; CoreML/CUDA accelerate bulk/query only when gated.
 I9  Multimodal IR deferred; text multi-rep (sig/body) is not multimodal.
 I10 optimize()/compact is idle/threshold — never per-symbol with embed.
+I11 Durable parity vectors are produced on CPU EP (canonical) — see 09c.
+I12 tool_digest pins model + recipe + ORT package id; not ambient GPU.
+I13 The client never embeds dependency corpora — server-baked Edge shards or
+    remote routing only (09-vector §20).
+I14 Local store budgets enforced by hot-set admission; narrowed scope is always
+    labeled in the UI, never silent.
+I15 Only license-cleared models ship (CI deny-list); CC-BY-NC models
+    (jina-reranker-v2, jina-colbert-v2) are forbidden in both planes (§18.3b).
+I16 Vendor/API parameters are pinned explicitly — Voyage output_dimension +
+    input_type, fastembed batch size, HNSW params, weights-artifact sha.
+    An unpinned default is a bug.
 ```
+
+**Summary ship plan (P0–P8):** **09c §0** — do not maintain a parallel phase list here; 09b Phase A–E remain the *retrieval quality* phases, 09c P0–P8 the *runtime/store implementation* sequence.
 
 ---
 

@@ -1,10 +1,10 @@
 # 09 — Embedded Vector Search for Local REGISTRY (GPUI Desktop)
 
-**Research date:** 2026-07-16  
+**Research date:** 2026-07-16 (adversarial + runtime cross-link **2026-07-17** via 09c)  
 **Scope:** Embedded/on-device vector databases for nudox’s GPUI desktop app (Rust, macOS + Linux); remote Qdrant INDEX compatibility; local embedding generation; `VectorStore` trait design.  
 **Context scale:** ~10⁴–10⁶ vectors per project-with-dependencies; target **&lt;500 MB** resident for vector search in the GUI; incremental upsert/delete by stable symbol ID; payload filters (language, package, kind).
 
-> **Verification policy:** All version numbers, crate status, and product claims below were re-checked against live web sources / crates.io on **2026-07-16**. Training data is not trusted.
+> **Verification policy:** All version numbers, crate status, and product claims below were re-checked against live web sources / crates.io on **2026-07-16** (store candidates); runtime/EP claims updated **2026-07-17** in **09c**. Training data is not trusted.
 
 ---
 
@@ -15,13 +15,18 @@
 | **Embedded store winner** | **`qdrant-edge` (Qdrant Edge) v0.7.2** — true in-process Rust library, disk-resident, same filter/payload model as the remote Qdrant server already in `workspace/registry` and `workspace/server` (`qdrant-client = "1.18"`) |
 | **Runner-up** | **LanceDB (`lancedb` 0.31.0)** — best pure-disk columnar alternative if Edge beta risk or dependency politics force a second path |
 | **Do not ship** | Qdrant **sidecar binary** as primary (Edge supersedes it); bare `instant-distance` (stale since 2023); raw HNSW alone without a payload store |
-| **Local embedding model** | **`jinaai/jina-embeddings-v2-base-code`** (768-d, 137M, Apache-2.0, 8K context) via **fastembed-rs** / ONNX Runtime (`ort`) |
-| **Local embedding runner** | **fastembed 5.17.x + `ort`** (CPU default; Metal/CoreML EP optional later) |
+| **Local embedding model** | **`jinaai/jina-embeddings-v2-base-code`** (768-d, **161M**, Apache-2.0, 8K context) via **fastembed-rs** / ONNX Runtime (`ort`); canonical weights = sha-pinned **int8 ONNX, 161.9 MB** (§20.8) |
+| **Local embedding runner** | **fastembed 5.17.x + `ort`** — **CPU EP canonical for durable vectors**; CoreML/CUDA opt-in accelerators per **09c** (not “later TBD”) |
 | **Remote ↔ local compatibility policy** | **Same model + same dimension + same distance metric in both places** (single-index identity). Dual-index only as an explicit upgrade path with versioned collection names. |
 | **Storage layout** | **One Edge shard (or Lance table) per workspace project**, with payload fields `language`, `package`, `kind`, `symbol_id`; optional global “open projects” fan-out. Quantize with **scalar or binary** under the 500 MB RAM ceiling. |
-| **Retrieval pipeline (what/when/how quality)** | See **`09b-retrieval-pipeline-plan.md`** — dual-tier Jina+Voyage, IR embed recipe, **SymbolDelta-only local embeds**, quant ladder, HNSW vs rerank, GPU EP policy. This doc remains the **store** decision record. |
+| **Retrieval pipeline (what/when/how quality)** | See **`09b-retrieval-pipeline-plan.md`** — dual-tier Jina+Voyage, IR embed recipe, **SymbolDelta-only local embeds**, quant ladder, HNSW vs rerank. This doc remains the **store** decision record. |
+| **Embed runtime / GPU·CPU / adversarial** | See **`09c-embeddings-runtime-adversarial.md`** — durable **CPU-canonical** embeds (I11); CoreML/CUDA as bulk accelerators; `fastembed`+`ort` abstractions; residual risks. |
+| **Client/server placement (what the client serves vs what the server handles)** | See **§20** (frozen 2026-07-17) — placement rules R1–R8, server **shard bakery** (deps arrive as baked Edge shards, the client never embeds them), budget-driven **hot-set admission** (closes the monorepo GA blocker), cross-shard rescore-for-comparability rule, frozen latency/memory budgets, canonical **int8 ONNX** artifact policy. |
+| **Sidecar posture (hardened)** | Sidecar Qdrant is not only an “Edge beta emergency” — it is a documented **process-isolation mode** if in-process Edge/ORT native crashes are unacceptable (09c §1.1). |
 
 The rest of this document is the exhaustive evidence trail, decision matrix, trait sketch, and risks.
+
+> **Summary plan:** one-page ship sequence + invariants live in **09c §0**. Do not fork a third delivery plan — extend 09c.
 
 ---
 
@@ -135,7 +140,7 @@ This is **not** a thin ANN wrapper: it is the Qdrant engine cut down to a librar
 | Feature parity with cloud Qdrant | Highest | High for single-shard; no clustering |
 | Code complexity | Process supervisor + client | Direct library calls |
 
-**Verdict:** Sidecar is a **fallback** if Edge hits a showstopper (license packaging issue, Metal/segfault in-process, or beta API thrash). It is **not** the primary design in 2026. MindWork AI Studio’s Feb 2026 discussion ([#8190](https://github.com/orgs/qdrant/discussions/8190)) is exactly the pre-crate pain; the official answer is now the crate.
+**Verdict:** Sidecar is **not** the primary design in 2026 (Edge is). It remains a **first-class isolation mode** (env `NUDOX_QDRANT_SIDECAR=1`) if Edge hits a showstopper *or* product policy rejects in-process native risk (segfault → whole GPUI death). MindWork AI Studio’s Feb 2026 discussion ([#8190](https://github.com/orgs/qdrant/discussions/8190)) is exactly the pre-crate pain; the official answer is now the crate. See adversarial residual risks in **09c §1.1 / §9**.
 
 ### 2.4 Python embedded client — out of scope
 
@@ -343,7 +348,7 @@ Source: [https://github.com/Anush008/fastembed-rs](https://github.com/Anush008/f
 
 | Model | Params | Dim | Context | License | Local desktop? | Notes |
 |---|---|---|---|---|---|---|
-| **jina-embeddings-v2-base-code** | 137M | **768** | 8K | **Apache-2.0** | **Yes** (~&lt;300 MB weights class) | In fastembed; strong code/docstring retrieval ([jina.ai model card](https://jina.ai/models/jina-embeddings-v2-base-code/)) |
+| **jina-embeddings-v2-base-code** | **161M** (HF-verified 2026-07-17; earlier drafts said 137M) | **768** | 8K (ALiBi; trained at 512) | **Apache-2.0** | **Yes** — ONNX: f32 **641.5 MB** / fp16 **321 MB** / int8 **161.9 MB**; ship the **int8** artifact (§20.8) | In fastembed; strong code/docstring retrieval; **mean pooling + L2 normalize required**; no query/doc prefixes ([jina.ai model card](https://jina.ai/models/jina-embeddings-v2-base-code/)) |
 | **CodeRankEmbed** (nomic-ai) | 137M | 768-class | 8K | **MIT** | Yes (~522 MB reported) | Strong CoRNStack code retrieval; not default in fastembed — ONNX export / candle needed ([HF](https://huggingface.co/nomic-ai/CodeRankEmbed)) |
 | **nomic-embed-code** | **7B** | high | long | Apache-2.0 | **No** for default GUI (~26 GB class) | SOTA quality; server/GPU INDEX only ([Nomic announcement](https://www.nomic.ai/news/introducing-state-of-the-art-nomic-embed-code)) |
 | voyage-code-3 / voyage-3-large | proprietary | varies | — | commercial | API only | Excellent code quality; **not** open-weights for offline |
@@ -440,7 +445,7 @@ Rough math for **1e6 vectors × 768 × f32**:
 | ANN graph / centroids hot | 100–200 MB |
 | Quantized vector pages | 50–150 MB |
 | Payload indexes | 20–50 MB |
-| Embed model weights (if loaded) | 150–300 MB (Jina 137M class) — **count separately from “vector search” if possible; unload when idle** |
+| Embed model weights (if loaded) | **161.9 MB** canonical int8 (Jina 161M; f32 would be 641.5 MB — never shipped, §20.8) — **count separately from “vector search”; unload when idle** |
 | **Vector search RSS target** | **&lt;500 MB** excluding UI |
 
 ### 5.3 Scale tiers
@@ -451,6 +456,8 @@ Rough math for **1e6 vectors × 768 × f32**:
 | 20k–200k | HNSW/Edge default + scalar quant optional |
 | 200k–1M | **Required** on_disk + quant; scheduled optimize; maybe IVF (Lance) |
 | &gt;1M deps | Prefer remote INDEX; local holds **project + hot deps** only |
+
+**Hot-deps policy — RESOLVED (§20.4):** Without an explicit cap on which transitive packages materialize locally, monorepos blow past any quant ladder. **Local Edge = sealed project symbols ∪ budget-admitted hot package set**; cold packages route to remote INDEX with explicit UI labeling. The concrete admission algorithm (score/cost density under a byte budget, bakery-published `ram_estimate`, eviction, cadence) is frozen in **§20.4** — the former monorepo GA blocker is closed.
 
 ---
 
@@ -654,16 +661,20 @@ Scoring 1–5 (5 best) for nudox weights: filter parity (×2), incr. delete (×2
 
 ## 10. Open questions and risks
 
-1. **Edge beta stability:** Will 0.x break shard on-disk format? Need migration tests and version field in shard dir.
-2. **Concurrent access:** Multi-window GPUI — one writer actor per shard mandatory?
-3. **SymbolId mapping:** UUID v5 vs string IDs in Qdrant — pick one before shipping data.
-4. **Metal EP maturity with ort 2.0 rc:** Validate on M-series before promising GPU speedups.
-5. **License distribution of ONNX Runtime + model weights** in signed macOS app — legal pass.
-6. **Dependency index size:** How many transitive symbols land local vs remote? Product policy needed.
+1. **Edge beta stability:** Will 0.x break shard on-disk format? Need migration tests and version field in shard dir (this also versions **baked shard artifacts** — `edge_format_version` is part of `edgepack_key`, §20.3).
+2. **Concurrent access:** Multi-window GPUI — one writer actor per shard **mandatory** (09c).
+3. ~~**SymbolId mapping:**~~ **RESOLVED:** point ids are **UUID v5(namespace_nudox, symbol_id)**, stable across re-embeds (frozen in 09b §16.5; used by both planes and the bakery).
+4. **CoreML/CUDA EP maturity:** Full policy + equivalence gates in **09c §5**; do not market GPU until suite passes.
+5. **License distribution of ONNX Runtime + model weights** in signed macOS app — legal pass (09c §7). **Note:** reranker licensing is separately audited in 09b §18.3b — several fastembed-catalog rerankers are **CC-BY-NC** and must not ship.
+6. ~~**Dependency index size / hot-deps:**~~ **RESOLVED:** budget-driven hot-set admission frozen in **§20.4**; cold deps are server-routed with explicit labeling.
 7. **Meilisearch Hannoy:** If we later want full-text+vector hybrid local, re-evaluate Meilisearch-as-library vs Tantivy (task 10) + Edge.
-8. **Delete tombstone bloat:** Edge `optimize` thresholds must be tuned (`deleted_threshold`).
+8. **Delete tombstone bloat:** Edge `optimize` thresholds must be tuned (`deleted_threshold`); compact must be **automatic with telemetry**, not tribal knowledge.
 9. **Score calibration** between Edge and remote for identical data — A/B test before mixing results in UI.
-10. **Windows** later? All primary crates claim support; still need CI.
+10. **Windows** later? DirectML path documented in fastembed; still need CI when GUI ships Win.
+11. **Durable EP identity:** Parity/CAS vectors must be CPU-canonical (**09c I11**) or an INDEX-wide single-EP program.
+12. **Native crash isolation:** In-process Edge + ORT vs sidecar — product decision, not only engineering fallback.
+
+> Full adversarial scorecard, library survey, and summary ship plan: **`09c-embeddings-runtime-adversarial.md`**.
 
 ---
 
@@ -694,6 +705,9 @@ Scoring 1–5 (5 best) for nudox weights: filter parity (×2), incr. delete (×2
 | nomic-embed-code | https://www.nomic.ai/news/introducing-state-of-the-art-nomic-embed-code |
 | Qdrant filtering reference | https://qdrant.tech/documentation/search/filtering/ |
 | Qdrant quantization | https://qdrant.tech/documentation/manage-data/quantization/ |
+| **09c adversarial + GPU/CPU runtime** | ./09c-embeddings-runtime-adversarial.md |
+| ORT execution providers | https://onnxruntime.ai/docs/execution-providers/ |
+| CoreML EP | https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html |
 
 ---
 
@@ -704,6 +718,8 @@ nudox needs an **embedded, disk-resident vector store** inside a Rust GPUI deskt
 Local embeddings should use **`jina-embeddings-v2-base-code` (768-d, Apache-2.0)** through **fastembed-rs + ort**, with optional evaluation of **CodeRankEmbed** if we invest in ONNX export. **Remote and local must share the same model id, dimension, and metric**; dual-index only as an explicit second collection. Storage default: **one Edge shard per project**, scalar/binary quantization as N grows, **&lt;500 MB** RSS via on_disk settings, and idle `optimize()`. Abstract behind `trait VectorStore` with Qdrant-shaped filters as the intersection language.
 
 **Ship Edge + Jina-code + same-model policy.** Keep Lance behind a feature flag. Measure Edge beta format stability before GA.
+
+**Placement (2026-07-17):** the client serves interactive Stage-1 over *project + budget-admitted hot deps* only — dependency vectors arrive as **server-baked Edge shards** (the client never embeds a dependency), everything else routes to the server, and all neural re-ranking is server-side. Full frozen split, budgets, and admission algorithm: **§20**.
 
 ---
 
@@ -716,13 +732,16 @@ Local embeddings should use **`jina-embeddings-v2-base-code` (768-d, Apache-2.0)
 ```text
 $DATA_ROOT/projects/<project_id>/
   vectors/
-    edge-shard/           # EdgeShard path (WAL + segments)
+    edge-shard/           # mutable project EdgeShard (WAL + segments)
       # managed by qdrant-edge
-    MODEL_ID              # text file: jina-embeddings-v2-base-code@<sha>
-    schema.json           # payload field docs + dim + distance
+    dep-shards/           # server-baked, read-only after install (§20.3)
+      <package>/<version>/edge-shard/
+      <package>/<version>/MANIFEST.json   # edgepack_key + artifact_id + ram_estimate
+    MODEL_ID              # text file: jina-embeddings-v2-base-code@<weights_sha256>
+    schema.json           # payload field docs + dim + distance + format_version + quant_profile
   embed-cache/
     content_hash → optional raw vector blobs if needed for rebuild
-  state.sqlite            # optional: symbol→hash map for incremental (task 11)
+  state.sqlite            # symbol→hash map, stage_traces, hot-set admission state (task 11)
 ```
 
 `$DATA_ROOT` examples:
@@ -949,6 +968,8 @@ March 2026 Meilisearch product notes describe **HNSW-backed store (Hannoy)** as 
 - [x] `VectorStore` trait sketch + leak notes
 - [x] Risks/open questions listed
 - [x] URLs inline for verification
+- [x] Client/server placement plane frozen — bakery, hot-set admission, budgets (§20)
+- [x] Canonical weights artifact pinned (int8 ONNX, sha in tool_digest) (§20.8)
 
 ---
 
@@ -999,4 +1020,196 @@ Consequences:
 
 ---
 
-*End of report 09-vector — research date 2026-07-16.*
+## 19. Adversarial addendum (2026-07-17)
+
+Full write-up: **[09c-embeddings-runtime-adversarial.md](./09c-embeddings-runtime-adversarial.md)**.
+
+| Finding | Action on store plan |
+|---|---|
+| Edge beta + in-process crash risk underrated | Keep Edge primary; **document sidecar isolation mode**; single-writer actor; format_version |
+| Snapshot Edge→server under-specified | Default remote truth = **re-embed from IR/CAS**, not shard shipping; the productized *server→client* direction is the **shard bakery** (§20.3) |
+| Hot-deps undefined | **Resolved 2026-07-17:** budget-driven admission algorithm frozen in §20.4 |
+| GPU story was thin | Owned by 09c; store doc only notes on_disk/quant |
+| Live registry brands E5/OpenAI, plan says Jina | Catalog must add `JinaCodeV2` when implementing EmbedStage |
+
+**Store ADR in §17 still holds.** Runtime/GPU ADR lives in 09c §0 / §10.
+
+---
+
+## 20. Client/server placement plane (frozen spec)
+
+**Added:** 2026-07-17 (split-plane hardening pass; verified against live qdrant-edge 0.7.2 docs, HF model repos, and Voyage API docs on this date).  
+**Status:** Frozen — this section **closes** open questions §10.3 (SymbolId → UUID v5, per 09b §16.5) and §10.6 (hot-deps policy, formerly a monorepo GA blocker).  
+**Owns:** what the **client serves** vs what the **server handles**, the hot-set admission algorithm, the server-side **shard bakery**, cross-shard score comparability, and the frozen latency/memory budgets.  
+**Consumers:** 09b (retrieval quality) and 09c (runtime + implementation playbook) point here; do not restate this split elsewhere.
+
+### 20.1 Roles and placement rules
+
+**Client (GPUI process, `qdrant-edge` in-process):** serves every *interactive Stage-1* semantic query over the **working set** — the trusted project's sealed symbols plus a budget-admitted hot-dependency set — with query embedding on local CPU and RRF fusion with local Tantivy. Anything the client serves must answer with **no network** inside the latency budget (§20.7).
+
+**Server (INDEX: Qdrant 1.18 cluster + embed/rerank/bakery workers):** owns the **full corpus** (every package × version), all bulk embedding (Jina parity + Voyage premium), all **neural re-ranking**, the **shard bakery** that pre-builds Edge shards for client distribution, and every query the working set cannot answer.
+
+Frozen placement rules:
+
+| ID | Rule |
+|---|---|
+| **R1** | The client embeds exactly two things: **sealed project symbols** (SymbolDelta) and **one query string at a time**. Nothing else — ever. |
+| **R2** | The client **never embeds dependency corpora**. Dep vectors arrive as server-baked Edge shards (§20.3) or the query routes remote. |
+| **R3** | The server is **never in the interactive Stage-1 path** when the working set can answer the scope. |
+| **R4** | All neural rerankers (cross-encoder, ColBERT/MaxSim) run **server-side only** in v1. Client "rerank" = RRF + Edge quant rescore (arithmetic, not a model). |
+| **R5** | Voyage (embed + rerank) API keys live **server-side only**; premium queries ship query *text* to the server, never keys to the client (GD-9). |
+| **R6** | Cross-plane result merging is **rank-based (RRF)** only — never raw-score fusion across planes, and never any fusion across models (09b I5). |
+| **R7** | Project symbol vectors **never leave the client** unless the user explicitly publishes the package (privacy default). |
+| **R8** | Every API default is **pinned explicitly** in code (Voyage `output_dimension=1024`, `input_type`, fastembed batch size, HNSW params). Relying on a vendor default is a bug. |
+
+### 20.2 Placement matrix
+
+| Workload | Client | Server | Rationale |
+|---|---|---|---|
+| Query embed (Jina, 1 string) | **Always** (CPU, warm session) | Only as fallback embed for parity queries from thin clients | ~10–25 ms local beats any RTT |
+| Query embed (Voyage) | Never | **Always** (`input_type="query"`, dim pinned 1024) | Keys + cost control server-side (R5) |
+| Project SymbolDelta embed | **Always** (CPU canonical, I11) | Only for *published* packages | Privacy (R7) + offline + parity model is open |
+| Dependency vectors | **Never computed** — baked shards installed read-only | **Bakery** produces them once per package version | Amortize embed+HNSW cost across all users (R2) |
+| Stage-1 ANN, scope ⊆ working set | **Edge shards, parallel fan-out** | — | R3 |
+| Stage-1 ANN, cold deps / org scope | — | Parity (Jina) or premium (Voyage) collections | Corpus lives there |
+| BM25 lexical | Tantivy (project + hot deps) | Server lexical for org scope | One hybrid owner per plane |
+| Stage-2 neural rerank | Never (v1) | Cross-encoder / experimental ColBERT (09b §18) | 0.5B-class models don't fit the client budget |
+| Quant rescore (originals on disk) | Edge-internal on quantized shards | Qdrant-internal | Arithmetic, not a model |
+| Compaction / optimize | Own shards, idle-triggered | Own collections | Each plane owns its store health |
+| Shard bakery | Never | **Always** | Needs full IR + canonical embed fleet |
+
+### 20.3 Server shard bakery (the qdrant-edge leverage point)
+
+Edge shards are self-contained directories, and Edge ships snapshot pack/unpack + `recover_partial_snapshot` (verified in Edge docs 2026-07-17). That makes the **shard itself a distributable artifact**. The bakery turns the server's one-time work into every client's zero-cost dependency search:
+
+**Artifact key (content-addressed):**
+
+```text
+edgepack_key = (package_id, version, model_id, recipe_id,
+                quant_profile, edge_format_version)
+artifact     = tar.zst of the optimized shard dir
+artifact_id  = BLAKE3(artifact bytes)   # stored in CAS; listed in package manifest
+```
+
+**Bake procedure (INDEX worker, idempotent per `edgepack_key` — single claim in the work queue, no duplicate bakes):**
+
+1. Pull sealed IR for the package version from CAS; run `EmbedTextBuilder` (recipe v2).
+2. Vectors: CAS `embed_key` hit → reuse blob; miss → embed on the **canonical CPU EP with the canonical pinned ONNX artifact** (I11/I13 — same file the desktop uses, §20.8).
+3. Create a fresh `EdgeShard` with the **frozen client config**: named vector `sym` (768, Cosine, `on_disk=true`), `on_disk_payload=true`, payload indexes `language`/`package`/`kind`, quant profile `qp1` (below).
+4. Upsert all points (UUID v5 ids), `optimize()`, flush, close.
+5. Pack, hash, store in CAS, publish `artifact_id` + a bakery-computed `ram_estimate` (§20.4) in the package manifest.
+
+**Quant profile `qp1` (frozen for baked shards):** scalar int8, `quantile=0.99`, `always_ram=true`, f32 originals `on_disk`. Baked shards are **always** int8 regardless of N — they are read-mostly and the hot-set RAM budget is the binding constraint. (The *project* mutable shard instead follows the 09b §17.3 N-ladder.)
+
+**Client install:** on DepSet resolution, fetch artifacts for admitted packages (§20.4), verify BLAKE3 against the signed manifest, unpack to `dep-shards/<package>/<version>/`, open with `EdgeShard::load`. Baked shards are **never written** after install; upgrades are whole-directory swaps.
+
+**Security:** a shard is parsed by native code — treat it as untrusted input exactly like model weights (09c §7.2). Only fetch from the trusted INDEX origin; only open after hash verification against the signed manifest.
+
+**Determinism scope:** the *vectors inside* are canonical (I11); the *artifact bytes* are not promised bit-reproducible across bakes (HNSW build is thread-timing-dependent). Identity is the once-baked, content-addressed artifact — hence the single-claim rule.
+
+**Fallbacks (in order):** artifact missing for the pinned `edge_format_version`/`model_id`/`recipe_id` → route that package's queries to the server parity collection and enqueue a bake request; hash mismatch → refetch once, then remote-route; Edge `load` failure → delete dir, refetch. The client **never** falls back to embedding a dependency locally (R2 — it would require running the full IR producer pipeline for the dep and would drift from canonical vectors).
+
+### 20.4 Hot-set admission (closes the monorepo GA blocker)
+
+Deterministic, budget-driven; no heuristics a junior can't implement:
+
+```text
+budget            = vector.local_budget_bytes            # default 350 MB (store RSS, §20.8)
+project_ram       = measured RSS estimate of the mutable project shard
+dep_budget        = budget − project_ram                 # project is always admitted
+
+per-package cost  = ram_estimate from the manifest (bakery-computed):
+                    N × (768 B int8 codes + ~130 B HNSW graph @ m=16) ≈ N × 0.9 KB
+                    # ~180 MB per 200k symbols; payload + f32 originals stay on disk
+
+score(pkg) = 3.0 × is_direct_dep                         # from the lockfile/DepSet
+           + 2.0 × ref_density(pkg)                      # distinct project symbols referencing
+                                                         # pkg / total project refs (OccurrenceSet)
+           + 1.0 × query_hit_ema(pkg)                    # EMA (half-life 14 days) of remote-served
+                                                         # queries whose clicked result was in pkg
+           + ∞   × user_pin(pkg)                         # manual "keep local"
+
+admission: sort candidates by score/cost density; greedily admit while
+           Σ ram_estimate ≤ dep_budget
+eviction:  on budget pressure or version bump, drop lowest-density admitted
+           package (delete its directory — Edge shard delete is a dir removal)
+cadence:   re-evaluate on DepSet change (lockfile edit) and on a weekly timer;
+           never mid-search; swaps happen at idle
+```
+
+Everything not admitted is **remote-served** (Routed, parity collection, DepSet filter). The UI must show the split honestly: *"searched locally: project + 12 hot packages · 47 cold packages served by INDEX"* — silent truncation of scope is forbidden.
+
+### 20.5 Query routing (frozen decision table)
+
+Inputs: `scope` (project | deps | org), `quality_mode` (local | parity | premium | deep), `online`, per-package hot-set membership.
+
+| Scope / condition | Dense Stage-1 | Notes |
+|---|---|---|
+| Project | Local mutable shard | If not yet Ready: partial results + progress badge; never block on remote |
+| Dep ∈ hot set | Local baked shard | |
+| Dep ∉ hot set, online | Server parity (Jina), DepSet filter | Labeled `index-jina` |
+| Dep ∉ hot set, offline | Omitted, **explicitly labeled** in UI | Never silently narrower |
+| Org / global | Server (parity or premium by mode) | Never requires Edge |
+| `premium` | Server Voyage collection | Server embeds query, `input_type="query"`, dim 1024 pinned |
+| `deep` | Premium/parity Stage-1 top-100 → server rerank | 09b §18; progressive display (§20.7) |
+
+**Hedged mixed-scope queries:** when scope spans local + cold packages, fire local and remote **in parallel**; render local hits immediately; merge remote hits when they land via **RRF by rank** (safe across quant configs of the same model because RRF ignores score scale; still forbidden across models, R6), each hit labeled `local` / `index-jina` / `index-voyage`.
+
+### 20.6 Cross-shard fan-out and score comparability
+
+Edge has no built-in multi-shard search: the client queries each open shard (mutable + admitted baked shards) on the store actor's pool and merges top-k.
+
+**Frozen comparability rule:** quantized shards always search with `rescore=true, oversampling=2.0`. Rescoring re-scores the oversampled candidates against the **f32 originals on disk** (~100 × 3 KB mmap reads — sub-ms warm, few-ms cold on NVMe), so every score that leaves any shard is an exact f32 cosine in the same Jina geometry → **merging across shards by raw score is valid**. The f32 project shard needs no rescore. Without this rule, int8-vs-f32 score drift across shards would silently mis-rank merged results.
+
+HNSW frozen params (client shards): `m=16`, `ef_construct=128`, search `ef = max(64, 2 × limit × oversampling)`. Fan-out is parallel across shards; cap concurrent shard searches at the store actor pool size.
+
+### 20.7 Latency budgets (frozen, p95, warm unless stated)
+
+| Path | Budget | Breakdown |
+|---|---|---|
+| **Local hybrid** (embed + fan-out + RRF) | **≤ 120 ms** | query embed ≤ 25 ms (int8 ONNX, ≤ 64 tokens) · Edge ANN ≤ 20 ms/shard @ 200k, shards in parallel · Tantivy ≤ 10 ms · RRF ≤ 1 ms |
+| Cold-start penalty (embedder load) | ≤ 2 s, once | 162 MB int8 ONNX; mitigate: pre-warm session on search-UI focus; keep-alive 120 s after last query; then unload |
+| Remote parity | ≤ 250 ms | network 50–100 + server embed ≤ 30 + ANN ≤ 50 |
+| Remote premium | ≤ 400 ms | Voyage embed API 50–150 + ANN + network |
+| Deep (rerank top-100) | ≤ 1.2 s end-to-end | **Progressive display:** Stage-1 order renders immediately, list re-ranks in place when Stage-2 lands — perceived latency stays Stage-1 |
+
+Budgets are gates in `vector-eval` (09c §8), not marketing; publish measured numbers before GA copy.
+
+### 20.8 Memory budgets (frozen, client) — with corrected model-weight numbers
+
+Three separately-metered gauges (09c §1.6), now with verified numbers:
+
+| Gauge | Budget | Notes |
+|---|---|---|
+| **Vector store RSS** (all Edge shards) | target ≤ 350 MB, hard cap 500 MB | Enforced *by construction* via §20.4 admission (~0.9 KB/symbol hot ⇒ ~390k symbols under target) |
+| **Embedder RSS** | ≤ 300 MB loaded, **0 when idle-unloaded** | Weights 162 MB (int8) + tokenizer ~3 MB + ORT arena + activations (cap batch 32 × 1024 tokens) |
+| **Tantivy + catalog SQLite + misc** | ≤ 100 MB | |
+
+**Corrected weight facts (verified on HF 2026-07-17):** `jina-embeddings-v2-base-code` is **161M params** (not 137M as earlier drafts said). ONNX artifacts: `model.onnx` **641.5 MB** (f32) · `model_fp16.onnx` **321 MB** · `model_quantized.onnx` **161.9 MB** (int8). The old "150–300 MB weights" budget is only true for the quantized/fp16 artifacts — **f32 would blow the budget 2×**.
+
+**Canonical-artifact policy (extends I11):** desktop *and* INDEX pin the **same single ONNX file by sha256** — nominally `model_quantized.onnx` (162 MB; also 2–4× faster per query on CPU) — gated by a one-time retrieval-quality check vs f32 (recall@10 delta ≤ 1 pt on the 09b §11 fixtures; fall back to `model_fp16.onnx` if it fails, and re-budget). Mixing artifacts across planes breaks vector parity even on the same EP — the artifact sha is part of `tool_digest` (I12).
+
+### 20.9 Failure modes (placement-specific)
+
+| Failure | Behavior |
+|---|---|
+| Baked shard artifact missing / stale format | Remote-route that package; enqueue bake; UI shows it as server-served |
+| Artifact hash mismatch | One refetch, then remote-route + telemetry alarm |
+| Offline + cold-dep scope | Answer from working set, label omitted packages explicitly |
+| Budget exceeded after project growth | Evict lowest-density dep shard at idle; never evict mid-query |
+| Server rerank timeout (deep) | Return Stage-1 order with "rerank unavailable" label — never silently degrade |
+| Multi-window | Single store service per project path (09c §1.1); baked shards read-only after install |
+
+### 20.10 Placement acceptance tests (junior checklist)
+
+1. **R2 proof:** fresh project with 50 deps → embedder invocation count == (project symbols only); dep search works with the embedder **never loaded** (baked shards only).
+2. **Budget proof:** admit shards until budget; RSS gauge ≤ 350 MB; adding one more dep evicts the lowest-density one, not OOM.
+3. **Merge validity:** same query against (f32 project shard ∪ int8 baked shard) with rescore → identical ordering to an all-f32 control corpus (tolerance: none — exact).
+4. **Routing table:** each row of §20.5 exercised in an integration test; offline premium/deep visibly disabled.
+5. **Hedged merge:** cold-dep query returns local hits ≤ 120 ms with remote hits merging in labeled, RRF by rank.
+6. **Bakery idempotence:** two concurrent bake requests for one `edgepack_key` → one artifact.
+7. **Canonical artifact:** CI asserts desktop and INDEX `tool_digest` cite the same weights sha256.
+
+---
+
+*End of report 09-vector — research date 2026-07-16; §20 placement plane added 2026-07-17.*
