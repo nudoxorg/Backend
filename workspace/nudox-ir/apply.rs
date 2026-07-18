@@ -114,7 +114,9 @@ mod tests {
     use super::*;
     use crate::kind::KindDiscriminant;
     use crate::symbol::Visibility;
-    use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, SymbolWire};
+    use crate::wire::{
+        EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, SymbolWire,
+    };
     use nudox_change::{EcosystemId, PackageLineageId, PackageName};
 
     fn payload(name: &str, module: bool) -> OwnedEntryPayload {
@@ -128,6 +130,8 @@ mod tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         };
         if module {
             OwnedEntryPayload::sealed(sym, KindDiscriminant::Module, KindWire::Module(ModuleWire {}), EntryPayloadFlags::default())
@@ -135,7 +139,13 @@ mod tests {
             OwnedEntryPayload::sealed(
                 sym,
                 KindDiscriminant::Function,
-                KindWire::Function(FunctionWire { input_params: Box::new([]), output_params: Box::new([]) }),
+                KindWire::Function(FunctionWire {
+                    input_params: Box::new([]),
+                    output_params: Box::new([]),
+                    sig: FnSigFlags::default(),
+                    generics: Box::new([]),
+                    wheres: Box::new([]),
+                }),
                 EntryPayloadFlags::default(),
             )
         }

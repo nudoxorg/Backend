@@ -269,6 +269,8 @@ mod tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         };
         OwnedEntryPayload::sealed(
             sym,

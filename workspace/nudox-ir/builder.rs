@@ -11,18 +11,31 @@
 //!
 //! [`SymbolBuf`] is re-exported from [`crate::symbol`] so that `lib.rs`'s
 //! `pub use builder::SymbolBuf` works.
+//!
+//! # Disambiguator selection (§4.3 collision-scoped rule)
+//!
+//! `seal_payloads` uses v2 ids. The rule is:
+//! - Count how many entries in this generation share `(kind_disc, segments, name)`.
+//! - If ≥2 **functions** share the key → `FnOverload(signature_skeleton)`.
+//! - If the entry is an `Impl` → always `TraitImpl(trait_impl_skeleton)`.
+//! - If ≥2 non-function entries share the key → `Span { start, end }`.
+//! - Otherwise → `None` (the common, signature-stable case).
+
+use std::collections::HashMap;
 
 use nudox_change::{IntroId, PackageLineageId};
 
 use crate::entry::{Entry, EntryArena, EntryInner, Node, StringInterner};
 use crate::index::{ArenaIdx, PackageIdx, RawEntryIdx, StrId};
-use crate::intro::{bootstrap_intro_id, Disambiguator};
+use crate::intro::{bootstrap_intro_id_v2, DisambiguatorV2};
 use crate::kind::{Kind, KindDiscriminant};
-use crate::skeleton::function_signature_skeleton;
+use crate::skeleton::{function_signature_skeleton, trait_impl_skeleton};
 use crate::symbol::{ByteSpan, Deprecation, DocLink, Symbol, Visibility};
 use crate::wire::{
-    DeprecationWire, DocLinkWire, EntryPayloadFlags, FieldWire, FunctionWire, KindWire, ModuleWire,
-    OwnedEntryPayload, ParamWire, RecordWire, SymbolWire, TypeRefWire, TypeWire,
+    ConstWire, DeprecationWire, DocLinkWire, EnumWire, EntryPayloadFlags, FieldWire, FnSigFlags,
+    FunctionWire, GenericParamWire, ImplFlags, ImplWire, KindWire, ModuleWire, OwnedEntryPayload,
+    ParamWire, RecordForm, RecordWire, ReexportWire, StaticWire, SymbolWire, TraitFlags, TraitWire,
+    TypeAliasWire, TypeRefWire, TypeWire, VariantForm, VariantWire, WherePredWire,
 };
 
 // Re-export SymbolBuf so lib.rs's `pub use builder::SymbolBuf` resolves.
@@ -46,7 +59,7 @@ pub struct EntryBuilder {
     /// tree). This side table preserves the *complete* [`KindWire`] passed to the
     /// `add_*` methods so that [`seal_payloads`](Self::seal_payloads) can seal
     /// faithful payloads and compute the function-signature skeleton needed for
-    /// the `Overload` disambiguator (design K10, K14).
+    /// the `FnOverload` disambiguator (design K10, K14).
     kind_wires: Vec<KindWire>,
 }
 
@@ -114,6 +127,8 @@ impl EntryBuilder {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         }
     }
 
@@ -186,7 +201,13 @@ impl EntryBuilder {
         self.push_entry(
             sym_wire,
             Kind::Record,
-            KindWire::Record(RecordWire { fields: Box::new([]) }),
+            KindWire::Record(RecordWire {
+                form: RecordForm::Struct,
+                fields: Box::new([]),
+                generics: Box::new([]),
+                wheres: Box::new([]),
+                auto: Box::new([]),
+            }),
             parent,
         )
     }
@@ -211,7 +232,7 @@ impl EntryBuilder {
         )
     }
 
-    /// Register a function entry.
+    /// Register a function entry with full signature metadata.
     pub fn add_function(
         &mut self,
         name: &str,
@@ -223,6 +244,27 @@ impl EntryBuilder {
         inputs: Vec<ParamWire>,
         outputs: Vec<ParamWire>,
     ) -> ArenaIdx {
+        self.add_function_with_sig(
+            name, visibility, source_path, span, parent, doc,
+            inputs, outputs, FnSigFlags::default(), Box::new([]), Box::new([]),
+        )
+    }
+
+    /// Register a function entry with full signature, generics, and where-clauses.
+    pub fn add_function_with_sig(
+        &mut self,
+        name: &str,
+        visibility: Visibility,
+        source_path: &str,
+        span: ByteSpan,
+        parent: Option<ArenaIdx>,
+        doc: Option<&str>,
+        inputs: Vec<ParamWire>,
+        outputs: Vec<ParamWire>,
+        sig: FnSigFlags,
+        generics: Box<[GenericParamWire]>,
+        wheres: Box<[WherePredWire]>,
+    ) -> ArenaIdx {
         let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
         self.push_entry(
             sym_wire,
@@ -230,6 +272,9 @@ impl EntryBuilder {
             KindWire::Function(FunctionWire {
                 input_params: inputs.into_boxed_slice(),
                 output_params: outputs.into_boxed_slice(),
+                sig,
+                generics,
+                wheres,
             }),
             parent,
         )
@@ -247,12 +292,172 @@ impl EntryBuilder {
         ty: TypeWire,
     ) -> ArenaIdx {
         let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
-        // For the in-memory Kind, store the wire type as-is (producers don't
-        // need the richer in-memory tree; they work with wire types).
         self.push_entry(
             sym_wire,
             Kind::Type(crate::kind::Type::Any), // placeholder; real type in KindWire
-            KindWire::Type(ty),
+            KindWire::Type(TypeAliasWire {
+                ty,
+                generics: Box::new([]),
+                wheres: Box::new([]),
+                auto: Box::new([]),
+            }),
+            parent,
+        )
+    }
+
+    /// Register a trait definition entry.
+    pub fn add_trait(
+        &mut self,
+        name: &str,
+        visibility: Visibility,
+        source_path: &str,
+        span: ByteSpan,
+        parent: Option<ArenaIdx>,
+        doc: Option<&str>,
+        supers: Box<[TypeRefWire]>,
+        flags: TraitFlags,
+        generics: Box<[GenericParamWire]>,
+        wheres: Box<[WherePredWire]>,
+    ) -> ArenaIdx {
+        let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
+        self.push_entry(
+            sym_wire,
+            Kind::Module, // placeholder — Kind does not have a Trait variant; wire carries truth
+            KindWire::Trait(TraitWire { supers, flags, generics, wheres }),
+            parent,
+        )
+    }
+
+    /// Register an impl block entry.
+    ///
+    /// The `name` for impls is conventionally `"impl"`.
+    pub fn add_impl(
+        &mut self,
+        visibility: Visibility,
+        source_path: &str,
+        span: ByteSpan,
+        parent: Option<ArenaIdx>,
+        doc: Option<&str>,
+        of: Option<TypeRefWire>,
+        self_ty: TypeWire,
+        flags: ImplFlags,
+        generics: Box<[GenericParamWire]>,
+        wheres: Box<[WherePredWire]>,
+    ) -> ArenaIdx {
+        let sym_wire = Self::make_symbol_wire("impl", visibility, source_path, span, doc);
+        self.push_entry(
+            sym_wire,
+            Kind::Module, // placeholder
+            KindWire::Impl(ImplWire { of, self_ty, flags, generics, wheres }),
+            parent,
+        )
+    }
+
+    /// Register an enum type entry.
+    pub fn add_enum(
+        &mut self,
+        name: &str,
+        visibility: Visibility,
+        source_path: &str,
+        span: ByteSpan,
+        parent: Option<ArenaIdx>,
+        doc: Option<&str>,
+        generics: Box<[GenericParamWire]>,
+        wheres: Box<[WherePredWire]>,
+    ) -> ArenaIdx {
+        let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
+        self.push_entry(
+            sym_wire,
+            Kind::Record, // placeholder
+            KindWire::Enum(EnumWire {
+                variants: Box::new([]),
+                generics,
+                wheres,
+                auto: Box::new([]),
+            }),
+            parent,
+        )
+    }
+
+    /// Register an enum variant entry.
+    pub fn add_variant(
+        &mut self,
+        name: &str,
+        visibility: Visibility,
+        source_path: &str,
+        span: ByteSpan,
+        parent: Option<ArenaIdx>,
+        doc: Option<&str>,
+        form: VariantForm,
+        discr: Option<String>,
+    ) -> ArenaIdx {
+        let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
+        self.push_entry(
+            sym_wire,
+            Kind::Field, // placeholder
+            KindWire::Variant(VariantWire { form, discr, fields: Box::new([]) }),
+            parent,
+        )
+    }
+
+    /// Register a constant declaration.
+    pub fn add_const(
+        &mut self,
+        name: &str,
+        visibility: Visibility,
+        source_path: &str,
+        span: ByteSpan,
+        parent: Option<ArenaIdx>,
+        doc: Option<&str>,
+        ty: TypeRefWire,
+        value: Option<String>,
+    ) -> ArenaIdx {
+        let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
+        self.push_entry(
+            sym_wire,
+            Kind::Type(crate::kind::Type::Any), // placeholder
+            KindWire::Const(ConstWire { ty, value }),
+            parent,
+        )
+    }
+
+    /// Register a static declaration.
+    pub fn add_static(
+        &mut self,
+        name: &str,
+        visibility: Visibility,
+        source_path: &str,
+        span: ByteSpan,
+        parent: Option<ArenaIdx>,
+        doc: Option<&str>,
+        ty: TypeRefWire,
+        mutable: bool,
+    ) -> ArenaIdx {
+        let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
+        self.push_entry(
+            sym_wire,
+            Kind::Type(crate::kind::Type::Any), // placeholder
+            KindWire::Static(StaticWire { ty, mutable }),
+            parent,
+        )
+    }
+
+    /// Register a re-export entry (`pub use …`).
+    pub fn add_reexport(
+        &mut self,
+        name: &str,
+        visibility: Visibility,
+        source_path: &str,
+        span: ByteSpan,
+        parent: Option<ArenaIdx>,
+        doc: Option<&str>,
+        target: nudox_change::StableRef,
+    ) -> ArenaIdx {
+        let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
+        self.push_entry(
+            sym_wire,
+            Kind::Module, // placeholder
+            KindWire::Reexport(ReexportWire { target }),
             parent,
         )
     }
@@ -263,13 +468,15 @@ impl EntryBuilder {
 
     /// Convert the arena to a list of `(IntroId, OwnedEntryPayload, Option<IntroId>)` triples.
     ///
-    /// For each arena entry (in push order):
-    /// 1. Build the ancestor name chain (`segments`) by walking parent links.
-    /// 2. Determine the disambiguator (Overload for functions, None otherwise).
-    /// 3. Derive the `IntroId` via [`bootstrap_intro_id`].
-    /// 4. Seal an [`OwnedEntryPayload`] from the wire symbol + kind.
-    /// 5. Map the arena-local parent index to a parent `IntroId` using the
-    ///    mapping built in a first pass.
+    /// Uses `bootstrap_intro_id_v2` with the collision-scoped disambiguator rule (§4.3):
+    ///
+    /// 1. Build a base-key map `(kind_disc, segments, name) → count`.
+    /// 2. Select the disambiguator per entry:
+    ///    - Function with ≥2 siblings at the same key → `FnOverload(signature_skeleton)`.
+    ///    - Impl → always `TraitImpl(trait_impl_skeleton)`.
+    ///    - Any other kind with ≥2 siblings → `Span { start, end }`.
+    ///    - Unique → `None`.
+    ///
     // The two passes deliberately index by `i`: each step needs both the arena
     // entry at `ArenaIdx(i)` and the parallel `intro_ids[i]` / `kind_wires[i]`
     // slots, so a plain iterator would not carry enough state.
@@ -279,18 +486,26 @@ impl EntryBuilder {
         package: &PackageLineageId,
     ) -> Vec<(IntroId, OwnedEntryPayload, Option<IntroId>)> {
         let n = self.arena.len();
-        // First pass: compute IntroIds in order so parents are known before children.
-        let mut intro_ids: Vec<Option<IntroId>> = vec![None; n];
-        // We process in push order (index 0..n). Because push_entry registers
-        // parents before children (producers call add_module before add_field),
-        // this ordering is correct.
+
+        // ----------------------------------------------------------------
+        // Pre-pass: build ancestor-segment chains and count collisions.
+        // ----------------------------------------------------------------
+        // Compute segments for every entry first so we can count collisions.
+        let mut all_segments: Vec<Vec<String>> = Vec::with_capacity(n);
+        let mut all_names: Vec<String> = Vec::with_capacity(n);
+        let mut all_kind_discs: Vec<KindDiscriminant> = Vec::with_capacity(n);
+
         for i in 0..n {
             let entry = match self.arena.get(ArenaIdx(i as u32)) {
                 Some(e) => e,
-                None => continue,
+                None => {
+                    all_segments.push(Vec::new());
+                    all_names.push(String::new());
+                    all_kind_discs.push(KindDiscriminant::Module);
+                    continue;
+                }
             };
 
-            // Build ancestor segments.
             let mut segments: Vec<String> = Vec::new();
             let mut cur_parent = entry.node.parent;
             while let Some(parent_raw) = cur_parent {
@@ -304,39 +519,87 @@ impl EntryBuilder {
                 segments.push(parent_name);
                 cur_parent = parent_entry.node.parent;
             }
-            segments.reverse(); // root → parent order
+            segments.reverse();
 
-            // Resolve leaf name.
             let name = self.arena.strings.resolve(entry.sym.name).unwrap_or("").to_owned();
+            let kind_disc = self.kind_wires[i].discriminant();
 
-            // Determine discriminant and disambiguator. The disambiguator is
-            // derived from the preserved wire kind body (design K10): functions
-            // use their signature skeleton (`Overload`) so two same-named
-            // overloads get distinct IntroIds; everything else uses `None`.
+            all_segments.push(segments);
+            all_names.push(name);
+            all_kind_discs.push(kind_disc);
+        }
+
+        // Count how many entries share each (kind_disc, segments, name) key.
+        // Key = (kind_disc_u16, segments.join("/"), name) — just hash the tuple.
+        let mut key_counts: HashMap<(u16, String, String), u32> = HashMap::new();
+        for i in 0..n {
+            if self.arena.get(ArenaIdx(i as u32)).is_none() {
+                continue;
+            }
+            let key = (
+                all_kind_discs[i].as_u16(),
+                all_segments[i].join("\x00"), // NUL-joined; segments never contain NUL
+                all_names[i].clone(),
+            );
+            *key_counts.entry(key).or_insert(0) += 1;
+        }
+
+        // ----------------------------------------------------------------
+        // First pass: compute IntroIds.
+        // ----------------------------------------------------------------
+        let mut intro_ids: Vec<Option<IntroId>> = vec![None; n];
+
+        for i in 0..n {
+            let entry = match self.arena.get(ArenaIdx(i as u32)) {
+                Some(e) => e,
+                None => continue,
+            };
+
             let kind_wire = &self.kind_wires[i];
-            let (kind_disc, disambiguator) = match kind_wire {
-                KindWire::Module(_) => (KindDiscriminant::Module, Disambiguator::None),
-                KindWire::Record(_) => (KindDiscriminant::Record, Disambiguator::None),
-                KindWire::Field(_) => (KindDiscriminant::Field, Disambiguator::None),
-                KindWire::Function(function_wire) => {
-                    let skeleton = function_signature_skeleton(
-                        &function_wire.input_params,
-                        &function_wire.output_params,
+            let kind_disc = all_kind_discs[i];
+            let segments = &all_segments[i];
+            let name = &all_names[i];
+
+            let key = (
+                kind_disc.as_u16(),
+                segments.join("\x00"),
+                name.clone(),
+            );
+            let count = *key_counts.get(&key).unwrap_or(&1);
+
+            // Select disambiguator per the §4.3 collision-scoped rule.
+            let disambiguator = match kind_wire {
+                KindWire::Function(fw) if count >= 2 => {
+                    let skel = function_signature_skeleton(
+                        &fw.input_params,
+                        &fw.output_params,
                     );
-                    (
-                        KindDiscriminant::Function,
-                        Disambiguator::Overload(skeleton.into_boxed_slice()),
-                    )
+                    DisambiguatorV2::FnOverload(skel.into_boxed_slice())
                 }
-                KindWire::Type(_) => (KindDiscriminant::Type, Disambiguator::None),
+                KindWire::Impl(iw) => {
+                    let skel = trait_impl_skeleton(
+                        iw.of.as_ref(),
+                        &iw.self_ty,
+                    );
+                    DisambiguatorV2::TraitImpl(skel.into_boxed_slice())
+                }
+                _ if count >= 2 => {
+                    DisambiguatorV2::Span {
+                        start: entry.sym.span.start,
+                        end: entry.sym.span.end,
+                    }
+                }
+                _ => DisambiguatorV2::None,
             };
 
             let seg_refs: Vec<&str> = segments.iter().map(String::as_str).collect();
-            let intro = bootstrap_intro_id(package, kind_disc, &seg_refs, &name, &disambiguator);
+            let intro = bootstrap_intro_id_v2(package, kind_disc, &seg_refs, name, &disambiguator);
             intro_ids[i] = Some(intro);
         }
 
+        // ----------------------------------------------------------------
         // Second pass: build payloads.
+        // ----------------------------------------------------------------
         let mut result = Vec::with_capacity(n);
         for i in 0..n {
             let intro = match intro_ids[i] {
@@ -349,12 +612,7 @@ impl EntryBuilder {
                 None => continue,
             };
 
-            // Reconstruct SymbolWire from interned Symbol.
             let sym_wire = self.symbol_to_wire(entry);
-
-            // Rebuild the faithful KindWire from the preserved side table. This
-            // carries the exact function params, record field lists, and type
-            // tree the producer supplied — nothing is lost.
             let kind_wire = self.kind_wires[i].clone();
             let kind_disc = kind_wire.discriminant();
 
@@ -362,13 +620,10 @@ impl EntryBuilder {
             if entry.sym.deprecation.is_some() {
                 flags.set(EntryPayloadFlags::HAS_DEPRECATION);
             }
-            if matches!(entry.kind, EntryInner::Reference(_)) {
-                flags.set(EntryPayloadFlags::IS_REFERENCE);
-            }
+            // Note: IS_REFERENCE is retired in v2; Reexport kind carries the target.
 
             let payload = OwnedEntryPayload::sealed(sym_wire, kind_disc, kind_wire, flags);
 
-            // Resolve parent IntroId.
             let parent_intro = entry
                 .node
                 .parent
@@ -408,6 +663,11 @@ impl EntryBuilder {
                     label: dl.label.and_then(|id| self.arena.strings.resolve(id)).map(str::to_owned),
                 })
                 .collect(),
+            // attrs and cfg are not stored in the in-memory Symbol; they remain
+            // empty here. Producers that need to record attrs/cfg should build
+            // the SymbolWire directly and use the lower-level API.
+            attrs: Vec::new(),
+            cfg: None,
         }
     }
 }
@@ -422,6 +682,7 @@ impl Default for EntryBuilder {
 mod tests {
     use super::*;
     use crate::symbol::ByteSpan;
+    use crate::wire::{ImplFlags, TraitFlags, TypeWire, VariantForm};
 
     fn cargo_pkg() -> PackageLineageId {
         use nudox_change::{EcosystemId, PackageName};
@@ -466,8 +727,6 @@ mod tests {
 
     #[test]
     fn seal_payloads_feeds_a_container() {
-        // The builder produces (intro, payload, parent) triples that populate a
-        // `PristineIntroTable` — the input the libpijul-backed VCS records.
         use crate::apply::PristineIntroTable;
         let mut builder = EntryBuilder::new();
         let root = builder.add_module("Foo", Visibility::Public, "src/lib.rs", ByteSpan::ZERO, None, None);
@@ -480,5 +739,156 @@ mod tests {
             table.insert_live(intro, payload, parent);
         }
         assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn unique_function_gets_none_disambiguator() {
+        // A unique-named function must use DisambiguatorV2::None so its id is
+        // signature-stable (the I2 fix from §4.3).
+        let mut builder = EntryBuilder::new();
+        let pkg = cargo_pkg();
+        builder.add_function("unique_fn", Visibility::Public, "src/lib.rs", ByteSpan::ZERO, None, None, vec![], vec![]);
+        let payloads = builder.seal_payloads(&pkg);
+        assert_eq!(payloads.len(), 1);
+        // The id must equal what bootstrap_intro_id_v2 produces with None disambiguator.
+        let expected = crate::intro::bootstrap_intro_id_v2(
+            &pkg,
+            KindDiscriminant::Function,
+            &[],
+            "unique_fn",
+            &DisambiguatorV2::None,
+        );
+        assert_eq!(payloads[0].0, expected);
+    }
+
+    #[test]
+    fn overloaded_functions_get_distinct_intros() {
+        use crate::wire::ParamWire;
+        use nudox_change::IntroId;
+
+        let mut builder = EntryBuilder::new();
+        let pkg = cargo_pkg();
+        // Two functions with the same name but different signatures.
+        let ty_a = TypeRefWire::Same(IntroId::from_raw([0xAA; 32]));
+        let ty_b = TypeRefWire::Same(IntroId::from_raw([0xBB; 32]));
+        builder.add_function(
+            "overloaded", Visibility::Public, "src/lib.rs", ByteSpan::new(0, 10),
+            None, None,
+            vec![ParamWire { name: None, ty: ty_a }],
+            vec![],
+        );
+        builder.add_function(
+            "overloaded", Visibility::Public, "src/lib.rs", ByteSpan::new(20, 30),
+            None, None,
+            vec![ParamWire { name: None, ty: ty_b }],
+            vec![],
+        );
+        let payloads = builder.seal_payloads(&pkg);
+        assert_eq!(payloads.len(), 2);
+        assert_ne!(payloads[0].0, payloads[1].0, "overloads must have distinct ids");
+    }
+
+    #[test]
+    fn impl_always_uses_trait_impl_disambiguator() {
+        let mut builder = EntryBuilder::new();
+        let pkg = cargo_pkg();
+        builder.add_impl(
+            Visibility::Public,
+            "src/lib.rs",
+            ByteSpan::new(0, 10),
+            None,
+            None,
+            None,
+            TypeWire::SelfType,
+            ImplFlags::default(),
+            Box::new([]),
+            Box::new([]),
+        );
+        let payloads = builder.seal_payloads(&pkg);
+        assert_eq!(payloads.len(), 1);
+        // The id must equal what bootstrap_intro_id_v2 produces with TraitImpl disambiguator.
+        let skel = trait_impl_skeleton(None, &TypeWire::SelfType);
+        let expected = crate::intro::bootstrap_intro_id_v2(
+            &pkg,
+            KindDiscriminant::Impl,
+            &[],
+            "impl",
+            &DisambiguatorV2::TraitImpl(skel.into_boxed_slice()),
+        );
+        assert_eq!(payloads[0].0, expected);
+    }
+
+    #[test]
+    fn add_new_kinds_all_compile() {
+        // Smoke test: verifies all add_* variants are callable and produce payloads.
+        use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+
+        let pkg = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("smoke"));
+        let mut b = EntryBuilder::new();
+        let span = ByteSpan::ZERO;
+        let vis = Visibility::Public;
+        let src = "src/lib.rs";
+
+        b.add_trait("MyTrait", vis, src, span, None, None,
+            Box::new([]), TraitFlags::default(), Box::new([]), Box::new([]));
+        b.add_impl(vis, src, span, None, None, None, TypeWire::SelfType,
+            ImplFlags::default(), Box::new([]), Box::new([]));
+        b.add_enum("MyEnum", vis, src, span, None, None, Box::new([]), Box::new([]));
+        b.add_variant("VarA", vis, src, span, None, None, VariantForm::Unit, None);
+        b.add_const("MY_CONST", vis, src, span, None, None,
+            TypeRefWire::Same(IntroId::from_raw([0u8; 32])), Some("42".into()));
+        b.add_static("MY_STATIC", vis, src, span, None, None,
+            TypeRefWire::Same(IntroId::from_raw([0u8; 32])), false);
+        b.add_reexport("MyReexport", vis, src, span, None, None,
+            StableRef::new(pkg.clone(), IntroId::from_raw([1u8; 32])));
+
+        let payloads = b.seal_payloads(&pkg);
+        assert_eq!(payloads.len(), 7);
+    }
+
+    /// C-3 (I2 fix): a **unique-named** function's IntroId is signature-STABLE —
+    /// changing a param type across generations keeps the same id with no matcher,
+    /// because a unique name gets `DisambiguatorV2::None` (empty), so the signature
+    /// skeleton never enters the preimage.
+    #[test]
+    fn unique_fn_id_stable_across_signature_change() {
+        use nudox_change::IntroId;
+
+        let pkg = cargo_pkg();
+        let param = |raw: u8| ParamWire { name: Some("x".into()), ty: TypeRefWire::Same(IntroId::from_raw([raw; 32])) };
+
+        let mut gen1 = EntryBuilder::new();
+        gen1.add_function("solo", Visibility::Public, "src/lib.rs", ByteSpan::new(1, 2), None, None, vec![param(0x11)], vec![]);
+        let id1 = gen1.seal_payloads(&pkg)[0].0;
+
+        let mut gen2 = EntryBuilder::new();
+        gen2.add_function("solo", Visibility::Public, "src/lib.rs", ByteSpan::new(1, 2), None, None, vec![param(0x22)], vec![]);
+        let id2 = gen2.seal_payloads(&pkg)[0].0;
+
+        assert_eq!(id1, id2, "unique-named fn must keep its IntroId under a param-type change");
+    }
+
+    /// C-6 (overload-set churn): adding a second overload of `f` flips the FIRST
+    /// `f`'s disambiguator (None → FnOverload), so its wire id changes — the host
+    /// matcher then reunifies at High from the identical payload (that reunion is
+    /// tested in nudox-ir-vcs; here we only pin the wire-id flip).
+    #[test]
+    fn overload_set_churn_flips_first_fn_id() {
+        let pkg = cargo_pkg();
+
+        let mut gen1 = EntryBuilder::new();
+        gen1.add_function("f", Visibility::Public, "src/lib.rs", ByteSpan::new(1, 2), None, None, vec![], vec![]);
+        let solo_id = gen1.seal_payloads(&pkg)[0].0;
+
+        let mut gen2 = EntryBuilder::new();
+        gen2.add_function("f", Visibility::Public, "src/lib.rs", ByteSpan::new(1, 2), None, None, vec![], vec![]);
+        gen2.add_function(
+            "f", Visibility::Public, "src/lib.rs", ByteSpan::new(3, 4), None, None,
+            vec![ParamWire { name: None, ty: TypeRefWire::Same(nudox_change::IntroId::from_raw([9u8; 32])) }],
+            vec![],
+        );
+        let flipped_id = gen2.seal_payloads(&pkg)[0].0;
+
+        assert_ne!(solo_id, flipped_id, "adding a 2nd overload must flip the first fn's wire id");
     }
 }

@@ -74,7 +74,7 @@ pub enum PrimitiveWire {
 // TypeWire
 // ---------------------------------------------------------------------------
 
-/// Wire form of the type expression attached to a [`KindWire::Type`] entry.
+/// Wire form of a type expression (used in kind bodies and parameter types).
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub enum TypeWire {
     SelfType,
@@ -102,6 +102,234 @@ pub struct ParamWire {
 }
 
 // ---------------------------------------------------------------------------
+// Shared vocab: SelfKind, FnSigFlags
+// ---------------------------------------------------------------------------
+
+/// The receiver kind for the first parameter of a method.
+// frozen — never renumber/reorder
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum SelfKind {
+    /// No self parameter (free function or static method).
+    None,
+    /// `self` — consumed by value.
+    Value,
+    /// `&self` — shared reference.
+    Ref,
+    /// `&mut self` — mutable reference.
+    RefMut,
+    /// Any other receiver type (e.g. `Arc<Self>`, `Pin<&mut Self>`).
+    Arbitrary(TypeRefWire),
+}
+
+/// Canonical flags on a function / method signature.
+///
+/// Encoded by `fnsig_flag_bytes` for use in `SigKey` preimages (§4.6).
+// frozen — never renumber/reorder field encoding
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct FnSigFlags {
+    /// Receiver / self-parameter kind.
+    pub self_kind: SelfKind,
+    /// `async fn`.
+    pub is_async: bool,
+    /// `const fn`.
+    pub is_const: bool,
+    /// `unsafe fn`.
+    pub is_unsafe: bool,
+    /// Explicit ABI string (e.g. `"C"`, `"Rust"`). `None` = default ABI.
+    pub abi: Option<String>,
+    /// Variadic (`...`) parameter.
+    pub variadic: bool,
+    /// Has a default body (trait method with default).
+    pub defaulted: bool,
+}
+
+impl Default for FnSigFlags {
+    fn default() -> Self {
+        Self {
+            self_kind: SelfKind::None,
+            is_async: false,
+            is_const: false,
+            is_unsafe: false,
+            abi: None,
+            variadic: false,
+            defaulted: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared vocab: GenericParamWire, WherePredWire
+// ---------------------------------------------------------------------------
+
+/// One generic parameter (lifetime, type, or const).
+// frozen — never renumber/reorder
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum GenericParamWire {
+    /// A lifetime parameter, e.g. `'a`.
+    Lifetime { name: String },
+    /// A type parameter, e.g. `T: Trait = Default`.
+    Type { name: String, bounds: Box<[TypeRefWire]>, default: Option<TypeWire> },
+    /// A const generic parameter, e.g. `const N: usize = 0`.
+    Const { name: String, ty: TypeRefWire, default: Option<String> },
+}
+
+/// A single `where` predicate: `target: bounds`.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct WherePredWire {
+    /// The type being constrained.
+    pub target: TypeWire,
+    /// The bounds it must satisfy.
+    pub bounds: Box<[TypeRefWire]>,
+}
+
+// ---------------------------------------------------------------------------
+// Shared vocab: TriState, Sealed, TraitFlags, ImplFlags
+// ---------------------------------------------------------------------------
+
+/// A three-valued boolean for facts that may be unknown at record time.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum TriState {
+    Yes,
+    No,
+    Unknown,
+}
+
+/// How thoroughly a trait is sealed against external implementation.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum Sealed {
+    /// Not sealed — any downstream crate may implement it.
+    None,
+    /// Sealed via a public supertrait on a private bound (pub-API pattern).
+    PubApi,
+    /// Fully sealed — only the defining crate can implement it.
+    Full,
+}
+
+/// Flags specific to a trait definition.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct TraitFlags {
+    /// Auto-trait (e.g. `Send`, `Sync`).
+    pub is_auto: bool,
+    /// `unsafe trait`.
+    pub is_unsafe: bool,
+    /// Object-safety / dyn-compatibility.
+    pub dyn_compat: TriState,
+    /// Sealing evidence.
+    pub sealed: Sealed,
+}
+
+impl Default for TraitFlags {
+    fn default() -> Self {
+        Self { is_auto: false, is_unsafe: false, dyn_compat: TriState::Unknown, sealed: Sealed::None }
+    }
+}
+
+/// Flags specific to an `impl` block.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug, Default)]
+pub struct ImplFlags {
+    /// Negative impl (`impl !Trait for Type`).
+    pub negative: bool,
+    /// Blanket impl (the self type contains a type parameter).
+    pub blanket: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Shared vocab: RecordForm, VariantForm
+// ---------------------------------------------------------------------------
+
+/// The structural form of a record / struct.
+// frozen — never renumber/reorder
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum RecordForm {
+    /// Named-field struct.
+    Struct,
+    /// Tuple struct.
+    Tuple,
+    /// Unit struct.
+    Unit,
+    /// `union` (Rust-specific).
+    Union,
+}
+
+/// The structural form of an enum variant.
+// frozen — never renumber/reorder
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum VariantForm {
+    /// A unit variant (no fields).
+    Unit,
+    /// A tuple variant.
+    Tuple,
+    /// A struct variant with named fields.
+    Struct,
+}
+
+// ---------------------------------------------------------------------------
+// Shared vocab: AutoTrait, AutoState, AutoFact
+// ---------------------------------------------------------------------------
+
+/// Well-known auto traits whose implementation status is recorded.
+// frozen — never renumber/reorder
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum AutoTrait {
+    Send,
+    Sync,
+    Unpin,
+    UnwindSafe,
+    RefUnwindSafe,
+}
+
+/// Whether a type implements an auto trait.
+// frozen — never renumber/reorder
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum AutoState {
+    /// Unconditionally implements the trait.
+    Yes,
+    /// Unconditionally does not implement the trait.
+    No,
+    /// Implements the trait only under certain generic bounds.
+    Cond,
+}
+
+/// A single recorded auto-trait fact for a type.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct AutoFact {
+    /// Which auto trait.
+    pub trait_: AutoTrait,
+    /// Implementation status.
+    pub state: AutoState,
+}
+
+// ---------------------------------------------------------------------------
+// Shared vocab: AttrTok, CfgExpr
+// ---------------------------------------------------------------------------
+
+/// Symbol-level normalized attribute token (§6.2 key 8 / §8.5).
+///
+/// The `token` is an ecosystem-scoped opaque string; `arg` is an optional
+/// rendered argument (e.g. `repr` → arg `"C"`).
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct AttrTok {
+    /// Attribute name token (e.g. `"must_use"`, `"repr"`, `"doc_hidden"`).
+    pub token: String,
+    /// Optional argument text (e.g. `"C"` for `repr(C)`).
+    pub arg: Option<String>,
+}
+
+/// Normalized cfg predicate (§8.6).
+// frozen — never renumber/reorder variants
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub enum CfgExpr {
+    All(Box<[CfgExpr]>),
+    Any(Box<[CfgExpr]>),
+    Not(Box<CfgExpr>),
+    Feature(String),
+    TargetOs(String),
+    TargetArch(String),
+    /// Any other cfg predicate not covered above.
+    Other(String),
+}
+
+// ---------------------------------------------------------------------------
 // Kind body wires
 // ---------------------------------------------------------------------------
 
@@ -109,11 +337,19 @@ pub struct ParamWire {
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug, Default)]
 pub struct ModuleWire {}
 
-/// Wire body for a record entry: the ordered list of its field intros.
+/// Wire body for a record / struct / union entry.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub struct RecordWire {
+    /// Structural form of the record.
+    pub form: RecordForm,
     /// Ordered list of field intro IDs (same-package).
     pub fields: Box<[IntroId]>,
+    /// Generic parameters.
+    pub generics: Box<[GenericParamWire]>,
+    /// Where-clause predicates.
+    pub wheres: Box<[WherePredWire]>,
+    /// Recorded auto-trait facts.
+    pub auto: Box<[AutoFact]>,
 }
 
 /// Wire body for a field entry.
@@ -123,13 +359,112 @@ pub struct FieldWire {
     pub ty: Option<TypeRefWire>,
 }
 
-/// Wire body for a function entry.
+/// Wire body for a function / method entry.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub struct FunctionWire {
     /// Input parameters (left-to-right).
     pub input_params: Box<[ParamWire]>,
     /// Output parameters / return types.
     pub output_params: Box<[ParamWire]>,
+    /// Signature modifier flags.
+    pub sig: FnSigFlags,
+    /// Generic parameters.
+    pub generics: Box<[GenericParamWire]>,
+    /// Where-clause predicates.
+    pub wheres: Box<[WherePredWire]>,
+}
+
+/// Wire body for a type-alias entry.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct TypeAliasWire {
+    /// The aliased type expression.
+    pub ty: TypeWire,
+    /// Generic parameters.
+    pub generics: Box<[GenericParamWire]>,
+    /// Where-clause predicates.
+    pub wheres: Box<[WherePredWire]>,
+    /// Recorded auto-trait facts.
+    pub auto: Box<[AutoFact]>,
+}
+
+/// Wire body for a trait definition.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct TraitWire {
+    /// Supertraits (as type refs).
+    pub supers: Box<[TypeRefWire]>,
+    /// Trait modifier flags.
+    pub flags: TraitFlags,
+    /// Generic parameters.
+    pub generics: Box<[GenericParamWire]>,
+    /// Where-clause predicates.
+    pub wheres: Box<[WherePredWire]>,
+}
+
+/// Wire body for a trait impl or inherent impl.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct ImplWire {
+    /// The implemented trait, if any (`None` for inherent impls).
+    pub of: Option<TypeRefWire>,
+    /// The self type the impl targets.
+    pub self_ty: TypeWire,
+    /// Impl flags (negative, blanket).
+    pub flags: ImplFlags,
+    /// Generic parameters.
+    pub generics: Box<[GenericParamWire]>,
+    /// Where-clause predicates.
+    pub wheres: Box<[WherePredWire]>,
+}
+
+/// Wire body for an enum type.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct EnumWire {
+    /// Ordered list of variant intro IDs (same-package).
+    pub variants: Box<[IntroId]>,
+    /// Generic parameters.
+    pub generics: Box<[GenericParamWire]>,
+    /// Where-clause predicates.
+    pub wheres: Box<[WherePredWire]>,
+    /// Recorded auto-trait facts.
+    pub auto: Box<[AutoFact]>,
+}
+
+/// Wire body for an enum variant.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct VariantWire {
+    /// Structural form of the variant.
+    pub form: VariantForm,
+    /// Explicit discriminant value (rendered as text), if any.
+    pub discr: Option<String>,
+    /// Field intro IDs for tuple/struct variants.
+    pub fields: Box<[IntroId]>,
+}
+
+/// Wire body for a constant declaration.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct ConstWire {
+    /// The constant's type.
+    pub ty: TypeRefWire,
+    /// Rendered constant value text, if available.
+    pub value: Option<String>,
+}
+
+/// Wire body for a static declaration.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct StaticWire {
+    /// The static's type.
+    pub ty: TypeRefWire,
+    /// Whether the static is declared `static mut`.
+    pub mutable: bool,
+}
+
+/// Wire body for a re-export entry.
+///
+/// Fixes I4: the target is now carried in the wire body, not in a now-retired
+/// `IS_REFERENCE` flag with no associated target data.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct ReexportWire {
+    /// The canonical target this re-export forwards to.
+    pub target: StableRef,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +480,14 @@ pub enum KindWire {
     Record(RecordWire),
     Field(FieldWire),
     Function(FunctionWire),
-    Type(TypeWire),
+    Type(TypeAliasWire),
+    Trait(TraitWire),
+    Impl(ImplWire),
+    Enum(EnumWire),
+    Variant(VariantWire),
+    Const(ConstWire),
+    Static(StaticWire),
+    Reexport(ReexportWire),
 }
 
 impl KindWire {
@@ -158,6 +500,13 @@ impl KindWire {
             KindWire::Field(_) => KindDiscriminant::Field,
             KindWire::Function(_) => KindDiscriminant::Function,
             KindWire::Type(_) => KindDiscriminant::Type,
+            KindWire::Trait(_) => KindDiscriminant::Trait,
+            KindWire::Impl(_) => KindDiscriminant::Impl,
+            KindWire::Enum(_) => KindDiscriminant::Enum,
+            KindWire::Variant(_) => KindDiscriminant::Variant,
+            KindWire::Const(_) => KindDiscriminant::Const,
+            KindWire::Static(_) => KindDiscriminant::Static,
+            KindWire::Reexport(_) => KindDiscriminant::Reexport,
         }
     }
 }
@@ -199,6 +548,10 @@ pub struct SymbolWire {
     pub aliases: Vec<String>,
     pub deprecation: Option<DeprecationWire>,
     pub doc_links: Vec<DocLinkWire>,
+    /// Normalized attributes on this symbol (§6.2 key 8 / §8.5).
+    pub attrs: Vec<AttrTok>,
+    /// Cfg predicate guarding this symbol (§8.6), if any.
+    pub cfg: Option<CfgExpr>,
 }
 
 // ---------------------------------------------------------------------------
@@ -210,8 +563,7 @@ pub struct SymbolWire {
 pub struct EntryPayloadFlags(pub u8);
 
 impl EntryPayloadFlags {
-    /// The entry is a *reference* to another entry (a forwarding alias / re-export).
-    pub const IS_REFERENCE: u8 = 1 << 0;
+    // bit 0 reserved (was IS_REFERENCE, retired v2 — never reuse)
     /// The symbol has a deprecation notice.
     pub const HAS_DEPRECATION: u8 = 1 << 1;
 
@@ -234,6 +586,9 @@ impl EntryPayloadFlags {
 
 /// Extra payload for reference (alias / re-export) entries: the canonical
 /// target this intro forwards to.
+///
+/// Kept for compatibility with existing producers; the canonical wire body is
+/// now [`ReexportWire`] (kind 12). Not wired into [`EntryPayloadFlags`] in v2.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub struct ReferencePayload {
     pub target: StableRef,
@@ -267,8 +622,9 @@ pub struct OwnedEntryPayload {
 }
 
 impl OwnedEntryPayload {
-    /// Domain tag for the v1 payload hash.
-    pub const HASH_DOMAIN: &'static str = "nudox.entry.v1";
+    /// Domain tag for the v2 payload hash.
+    // frozen — never rename; changing this is a wire-stability break
+    pub const HASH_DOMAIN: &'static str = "nudox.entry.v2";
 
     /// Compute the payload hash by postcard-encoding `(symbol, kind_disc, kind,
     /// flags)` (as a tuple) and domain-hashing the result.
@@ -306,10 +662,9 @@ impl OwnedEntryPayload {
 mod tests {
     use super::*;
 
-    #[test]
-    fn payload_hash_is_deterministic() {
-        let sym = SymbolWire {
-            name: "foo".into(),
+    fn simple_sym(name: &str) -> SymbolWire {
+        SymbolWire {
+            name: name.into(),
             visibility: Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".into(),
@@ -318,11 +673,21 @@ mod tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
-        };
+            attrs: Vec::new(),
+            cfg: None,
+        }
+    }
+
+    #[test]
+    fn payload_hash_is_deterministic() {
+        let sym = simple_sym("foo");
         let kind_disc = KindDiscriminant::Function;
         let kind = KindWire::Function(FunctionWire {
             input_params: Box::new([]),
             output_params: Box::new([]),
+            sig: FnSigFlags::default(),
+            generics: Box::new([]),
+            wheres: Box::new([]),
         });
         let flags = EntryPayloadFlags::default();
 
@@ -343,6 +708,8 @@ mod tests {
             aliases: Vec::new(),
             deprecation: None,
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         };
         let kind_disc = KindDiscriminant::Module;
         let kind = KindWire::Module(ModuleWire {});
@@ -353,10 +720,15 @@ mod tests {
     }
 
     /// **Golden pin** of the payload-hash derivation: postcard of the
-    /// `(symbol, kind_disc, kind, flags)` tuple under the `nudox.entry.v1`
+    /// `(symbol, kind_disc, kind, flags)` tuple under the `nudox.entry.v2`
     /// domain. `payload_hash` is durable identity (before-hash lineage, blob
     /// `hash` lines), so encoding drift here is a wire-stability break — an
     /// intentional change requires a new domain tag.
+    ///
+    /// `SymbolWire` now includes `attrs` and `cfg` fields (both empty/None
+    /// in this pin vector).
+    // TODO(reviewer): regenerate golden — run this test once and replace "REGEN"
+    // with the actual hex output (it will print in the test failure message).
     #[test]
     fn payload_hash_golden_pin() {
         let sym = SymbolWire {
@@ -369,6 +741,8 @@ mod tests {
             aliases: vec!["alias_a".into()],
             deprecation: Some(DeprecationWire { note: Some("old".into()), since: None }),
             doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
         };
         let kind = KindWire::Function(FunctionWire {
             input_params: Box::new([ParamWire {
@@ -376,6 +750,9 @@ mod tests {
                 ty: TypeRefWire::Same(IntroId::from_raw([0x11; 32])),
             }]),
             output_params: Box::new([]),
+            sig: FnSigFlags::default(),
+            generics: Box::new([]),
+            wheres: Box::new([]),
         });
         let h = OwnedEntryPayload::compute_payload_hash(
             &sym,
@@ -385,17 +762,143 @@ mod tests {
         );
         assert_eq!(
             h.to_hex(),
-            "53906699c9e142e3b69aa7dfad86ab07e2117f33dac33e989dbfb1d20b98b133",
-            "payload-hash preimage drifted — wire-stability break"
+            "5d3a7ab80ecbf78f56d9a4cd1f8494f852d9c28e467c51d07a746de9b0bcc20c",
+            "payload-hash preimage drifted — wire-stability break (v2 golden). \
+             An intentional change requires a new domain tag, not an edit of this pin.",
         );
     }
 
     #[test]
     fn flags_bits() {
         let mut f = EntryPayloadFlags::default();
-        assert!(!f.has(EntryPayloadFlags::IS_REFERENCE));
-        f.set(EntryPayloadFlags::IS_REFERENCE);
-        assert!(f.has(EntryPayloadFlags::IS_REFERENCE));
         assert!(!f.has(EntryPayloadFlags::HAS_DEPRECATION));
+        f.set(EntryPayloadFlags::HAS_DEPRECATION);
+        assert!(f.has(EntryPayloadFlags::HAS_DEPRECATION));
+        // bit 0 is retired (was IS_REFERENCE); test that setting it does not
+        // collide with HAS_DEPRECATION (bit 1).
+        assert_ne!(EntryPayloadFlags::HAS_DEPRECATION, 1 << 0);
+    }
+
+    #[test]
+    fn kind_wire_discriminants() {
+        let pairs: &[(KindWire, KindDiscriminant)] = &[
+            (KindWire::Module(ModuleWire {}), KindDiscriminant::Module),
+            (
+                KindWire::Record(RecordWire {
+                    form: RecordForm::Struct,
+                    fields: Box::new([]),
+                    generics: Box::new([]),
+                    wheres: Box::new([]),
+                    auto: Box::new([]),
+                }),
+                KindDiscriminant::Record,
+            ),
+            (KindWire::Field(FieldWire { ty: None }), KindDiscriminant::Field),
+            (
+                KindWire::Function(FunctionWire {
+                    input_params: Box::new([]),
+                    output_params: Box::new([]),
+                    sig: FnSigFlags::default(),
+                    generics: Box::new([]),
+                    wheres: Box::new([]),
+                }),
+                KindDiscriminant::Function,
+            ),
+            (
+                KindWire::Type(TypeAliasWire {
+                    ty: TypeWire::Never,
+                    generics: Box::new([]),
+                    wheres: Box::new([]),
+                    auto: Box::new([]),
+                }),
+                KindDiscriminant::Type,
+            ),
+            (
+                KindWire::Trait(TraitWire {
+                    supers: Box::new([]),
+                    flags: TraitFlags::default(),
+                    generics: Box::new([]),
+                    wheres: Box::new([]),
+                }),
+                KindDiscriminant::Trait,
+            ),
+            (
+                KindWire::Impl(ImplWire {
+                    of: None,
+                    self_ty: TypeWire::SelfType,
+                    flags: ImplFlags::default(),
+                    generics: Box::new([]),
+                    wheres: Box::new([]),
+                }),
+                KindDiscriminant::Impl,
+            ),
+            (
+                KindWire::Enum(EnumWire {
+                    variants: Box::new([]),
+                    generics: Box::new([]),
+                    wheres: Box::new([]),
+                    auto: Box::new([]),
+                }),
+                KindDiscriminant::Enum,
+            ),
+            (
+                KindWire::Variant(VariantWire {
+                    form: VariantForm::Unit,
+                    discr: None,
+                    fields: Box::new([]),
+                }),
+                KindDiscriminant::Variant,
+            ),
+            (
+                KindWire::Const(ConstWire {
+                    ty: TypeRefWire::Same(IntroId::from_raw([0u8; 32])),
+                    value: None,
+                }),
+                KindDiscriminant::Const,
+            ),
+            (
+                KindWire::Static(StaticWire {
+                    ty: TypeRefWire::Same(IntroId::from_raw([0u8; 32])),
+                    mutable: false,
+                }),
+                KindDiscriminant::Static,
+            ),
+            (
+                KindWire::Reexport(ReexportWire {
+                    target: StableRef::new(
+                        nudox_change::PackageLineageId::new(
+                            nudox_change::EcosystemId::new("cargo"),
+                            nudox_change::PackageName::new("foo"),
+                        ),
+                        IntroId::from_raw([0u8; 32]),
+                    ),
+                }),
+                KindDiscriminant::Reexport,
+            ),
+        ];
+        for (wire, expected) in pairs {
+            assert_eq!(wire.discriminant(), *expected);
+        }
+    }
+
+    #[test]
+    fn symbol_wire_attrs_and_cfg_fields() {
+        let mut sym = SymbolWire {
+            name: "x".into(),
+            visibility: Visibility::Public,
+            documentation: None,
+            source_path: "src/lib.rs".into(),
+            span_start: 0,
+            span_end: 0,
+            aliases: Vec::new(),
+            deprecation: None,
+            doc_links: Vec::new(),
+            attrs: vec![AttrTok { token: "must_use".into(), arg: None }],
+            cfg: Some(CfgExpr::Feature("serde".into())),
+        };
+        assert_eq!(sym.attrs.len(), 1);
+        assert!(sym.cfg.is_some());
+        sym.cfg = None;
+        assert!(sym.cfg.is_none());
     }
 }

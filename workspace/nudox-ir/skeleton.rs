@@ -44,10 +44,11 @@
 //! | `0x00` | Arch (pointer-sized)                 |
 //! | `0x01` | then u32le = Fixed(n) bits            |
 
+use nudox_change::encode::encode_str;
 use nudox_change::ContentBlake3;
 
 use crate::index::TypeFingerprintId;
-use crate::wire::{ParamWire, PrimitiveWire, TypeRefWire, TypeWire, WidthWire};
+use crate::wire::{FnSigFlags, ParamWire, PrimitiveWire, SelfKind, TypeRefWire, TypeWire, WidthWire};
 
 // ---------------------------------------------------------------------------
 // Width encoding
@@ -228,6 +229,77 @@ pub fn function_signature_skeleton(inputs: &[ParamWire], outputs: &[ParamWire]) 
     out
 }
 
+// ---------------------------------------------------------------------------
+// trait_impl_skeleton (§4.3)
+// ---------------------------------------------------------------------------
+
+/// §4.3: 2-tuple skeleton of `(trait_ref, self_ty)` for `TraitImpl`
+/// disambiguation.
+///
+/// Encoding (frozen — never change):
+/// - If `of` is `Some(tr)`: `type_skeleton(tr)` bytes.
+/// - If `of` is `None` (inherent impl): single `0x00` marker byte.
+/// - `0xFF` separator.
+/// - `type_wire_skeleton(self_ty)` bytes.
+pub fn trait_impl_skeleton(of: Option<&TypeRefWire>, self_ty: &TypeWire) -> Vec<u8> {
+    let mut out = Vec::new();
+    match of {
+        Some(tr) => type_skeleton(tr, &mut out),
+        None => out.push(0x00),
+    }
+    out.push(0xFF); // separator
+    type_wire_skeleton(self_ty, &mut out);
+    out
+}
+
+// ---------------------------------------------------------------------------
+// fnsig_flag_bytes (§4.6)
+// ---------------------------------------------------------------------------
+
+/// Canonical byte encoding of [`FnSigFlags`] for the `SigKey` preimage (§4.6).
+///
+/// Encoding order (frozen — never change):
+/// 1. `self_kind` tag byte: `None=0`, `Value=1`, `Ref=2`, `RefMut=3`, `Arbitrary=4`
+///    followed by `type_skeleton` of the arbitrary receiver type.
+/// 2. One byte each for `is_async`, `is_const`, `is_unsafe` (0 or 1).
+/// 3. ABI: `0x00` if `None`, else `0x01` followed by `encode_str`-style bytes.
+/// 4. One byte each for `variadic`, `defaulted` (0 or 1).
+pub fn fnsig_flag_bytes(sig: &FnSigFlags) -> Vec<u8> {
+    let mut out = Vec::new();
+
+    // 1. self_kind
+    match &sig.self_kind {
+        SelfKind::None => out.push(0),
+        SelfKind::Value => out.push(1),
+        SelfKind::Ref => out.push(2),
+        SelfKind::RefMut => out.push(3),
+        SelfKind::Arbitrary(tr) => {
+            out.push(4);
+            type_skeleton(tr, &mut out);
+        }
+    }
+
+    // 2. bool flags
+    out.push(sig.is_async as u8);
+    out.push(sig.is_const as u8);
+    out.push(sig.is_unsafe as u8);
+
+    // 3. ABI
+    match &sig.abi {
+        None => out.push(0x00),
+        Some(abi) => {
+            out.push(0x01);
+            encode_str(&mut out, abi);
+        }
+    }
+
+    // 4. variadic / defaulted
+    out.push(sig.variadic as u8);
+    out.push(sig.defaulted as u8);
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +426,117 @@ mod tests {
         let bytes = function_signature_skeleton(&inputs, &outputs);
         // Should have intro bytes + 0xFF separator
         assert!(bytes.contains(&0xFF));
+    }
+
+    // -----------------------------------------------------------------------
+    // trait_impl_skeleton tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn trait_impl_skeleton_inherent_marker() {
+        let self_ty = TypeWire::SelfType;
+        let bytes = trait_impl_skeleton(None, &self_ty);
+        // First byte = 0x00 (inherent impl marker), then 0xFF separator, then 0x10 (SelfType)
+        assert_eq!(bytes[0], 0x00, "inherent impl must start with 0x00 marker");
+        assert_eq!(bytes[1], 0xFF, "separator must follow marker");
+        assert_eq!(bytes[2], 0x10, "SelfType opcode must follow separator");
+        assert_eq!(bytes.len(), 3);
+    }
+
+    #[test]
+    fn trait_impl_skeleton_with_trait() {
+        let intro = dummy_intro();
+        let of = TypeRefWire::Same(intro);
+        let self_ty = TypeWire::Never;
+        let bytes = trait_impl_skeleton(Some(&of), &self_ty);
+        // First byte = 0x01 (Same intro opcode), then 32 intro bytes, 0xFF, 0x17 (Never)
+        assert_eq!(bytes[0], 0x01);
+        assert_eq!(&bytes[1..33], intro.as_bytes());
+        assert_eq!(bytes[33], 0xFF);
+        assert_eq!(bytes[34], 0x17, "Never opcode");
+    }
+
+    #[test]
+    fn trait_impl_skeleton_deterministic() {
+        let intro = dummy_intro();
+        let of = TypeRefWire::Same(intro);
+        let self_ty = TypeWire::Any;
+        let b1 = trait_impl_skeleton(Some(&of), &self_ty);
+        let b2 = trait_impl_skeleton(Some(&of), &self_ty);
+        assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn trait_impl_skeleton_none_vs_some_differ() {
+        let intro = dummy_intro();
+        let of = TypeRefWire::Same(intro);
+        let self_ty = TypeWire::SelfType;
+        let inherent = trait_impl_skeleton(None, &self_ty);
+        let trait_ = trait_impl_skeleton(Some(&of), &self_ty);
+        assert_ne!(inherent, trait_);
+    }
+
+    // -----------------------------------------------------------------------
+    // fnsig_flag_bytes tests
+    // -----------------------------------------------------------------------
+
+    use crate::wire::{FnSigFlags, SelfKind};
+
+    #[test]
+    fn fnsig_flag_bytes_default_is_deterministic() {
+        let sig = FnSigFlags::default();
+        let b1 = fnsig_flag_bytes(&sig);
+        let b2 = fnsig_flag_bytes(&sig);
+        assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn fnsig_flag_bytes_self_kind_tags() {
+        let mk = |sk: SelfKind| fnsig_flag_bytes(&FnSigFlags { self_kind: sk, ..Default::default() });
+        assert_eq!(mk(SelfKind::None)[0], 0);
+        assert_eq!(mk(SelfKind::Value)[0], 1);
+        assert_eq!(mk(SelfKind::Ref)[0], 2);
+        assert_eq!(mk(SelfKind::RefMut)[0], 3);
+        let arb = mk(SelfKind::Arbitrary(TypeRefWire::Same(dummy_intro())));
+        assert_eq!(arb[0], 4);
+    }
+
+    #[test]
+    fn fnsig_flag_bytes_bool_flags() {
+        let async_sig = FnSigFlags { is_async: true, ..Default::default() };
+        let b = fnsig_flag_bytes(&async_sig);
+        // byte 0 = self_kind (None=0), byte 1 = is_async
+        assert_eq!(b[1], 1);
+        assert_eq!(b[2], 0); // is_const
+        assert_eq!(b[3], 0); // is_unsafe
+
+        let unsafe_sig = FnSigFlags { is_unsafe: true, ..Default::default() };
+        let b = fnsig_flag_bytes(&unsafe_sig);
+        assert_eq!(b[3], 1);
+    }
+
+    #[test]
+    fn fnsig_flag_bytes_abi_presence() {
+        let no_abi = FnSigFlags::default();
+        let b = fnsig_flag_bytes(&no_abi);
+        // byte at offset 4 (after self_kind+3 bools) = 0x00 for no ABI
+        assert_eq!(b[4], 0x00);
+
+        let c_abi = FnSigFlags { abi: Some("C".into()), ..Default::default() };
+        let b = fnsig_flag_bytes(&c_abi);
+        assert_eq!(b[4], 0x01);
+        // followed by encode_str("C") = u32le(1) + b"C"
+        let len = u32::from_le_bytes([b[5], b[6], b[7], b[8]]);
+        assert_eq!(len, 1);
+        assert_eq!(b[9], b'C');
+    }
+
+    #[test]
+    fn fnsig_flag_bytes_variadic_and_defaulted() {
+        let sig = FnSigFlags { variadic: true, defaulted: true, ..Default::default() };
+        let b = fnsig_flag_bytes(&sig);
+        // last two bytes (no abi case: offset 5,6)
+        assert_eq!(*b.last().unwrap(), 1, "defaulted must be last");
+        assert_eq!(b[b.len() - 2], 1, "variadic must be second-to-last");
     }
 }

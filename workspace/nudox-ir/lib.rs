@@ -13,7 +13,7 @@
 //! libpijul (via `nudox-ir-vcs`) is the change engine — changes, dependencies,
 //! apply, and unrecord are its job, not ours.
 //!
-//! Spec context: `.research/ir-vcs/design/IR-NATIVE-VCS-DESIGN.md` and brief
+//! Spec context: `.research/ir-vcs/design/SEMANTIC-IR-VCS-PLAN.md` and brief
 //! `06-new-ir-rewrite.md` (data model); the change-algebra sections are
 //! superseded by the libpijul-backed VCS.
 
@@ -35,10 +35,19 @@ pub use apply::{LinkRecord, PristineIntroTable};
 pub use builder::{EntryBuilder, SymbolBuf};
 pub use entry::{Entry, EntryInner, Node};
 pub use index::{ArenaIdx, EntryIdx, EntryKind, LinkId, PackageIdx, RawEntryIdx, StrId, TypeFingerprintId};
+pub use intro::{
+    bootstrap_intro_id, bootstrap_intro_id_v2, sig_key, Disambiguator, DisambiguatorV2,
+};
 pub use kind::{Kind, KindDiscriminant};
 pub use registry::{
     AsyncRegistryResolver, ProductionEntryId, Registry, RegistryResolver, RegistryState,
     ResolveError,
 };
+pub use skeleton::{fnsig_flag_bytes, trait_impl_skeleton};
 pub use symbol::{ByteSpan, Deprecation, DocLink, Symbol, Visibility};
-pub use wire::{EntryPayloadFlags, KindWire, OwnedEntryPayload, SymbolWire};
+pub use wire::{
+    AttrTok, AutoFact, AutoState, AutoTrait, CfgExpr, ConstWire, EnumWire, EntryPayloadFlags,
+    FnSigFlags, GenericParamWire, ImplFlags, ImplWire, KindWire, OwnedEntryPayload, RecordForm,
+    ReexportWire, Sealed, SelfKind, StaticWire, SymbolWire, TraitFlags, TraitWire, TriState,
+    TypeAliasWire, VariantForm, VariantWire, WherePredWire,
+};

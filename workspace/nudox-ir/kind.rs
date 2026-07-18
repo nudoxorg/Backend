@@ -28,6 +28,7 @@ use nudox_change::{IntroId, StableRef};
 ///
 /// The numeric values are part of the stable wire format and **must never be
 /// reused or renumbered**. New kinds get new numbers above the current maximum.
+// frozen — never renumber/reorder
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Debug)]
 #[repr(u16)]
 pub enum KindDiscriminant {
@@ -41,6 +42,20 @@ pub enum KindDiscriminant {
     Function = 4,
     /// A type alias, typedef, or type declaration.
     Type = 5,
+    /// A trait definition.
+    Trait = 6,
+    /// A trait implementation (`impl Trait for Type`) or inherent impl.
+    Impl = 7,
+    /// An enum type.
+    Enum = 8,
+    /// A variant of an enum.
+    Variant = 9,
+    /// A constant declaration.
+    Const = 10,
+    /// A static declaration.
+    Static = 11,
+    /// A re-export (`pub use …`).
+    Reexport = 12,
 }
 
 impl KindDiscriminant {
@@ -53,6 +68,13 @@ impl KindDiscriminant {
             3 => Some(Self::Field),
             4 => Some(Self::Function),
             5 => Some(Self::Type),
+            6 => Some(Self::Trait),
+            7 => Some(Self::Impl),
+            8 => Some(Self::Enum),
+            9 => Some(Self::Variant),
+            10 => Some(Self::Const),
+            11 => Some(Self::Static),
+            12 => Some(Self::Reexport),
             _ => None,
         }
     }
@@ -242,10 +264,18 @@ mod tests {
             KindDiscriminant::Field,
             KindDiscriminant::Function,
             KindDiscriminant::Type,
+            KindDiscriminant::Trait,
+            KindDiscriminant::Impl,
+            KindDiscriminant::Enum,
+            KindDiscriminant::Variant,
+            KindDiscriminant::Const,
+            KindDiscriminant::Static,
+            KindDiscriminant::Reexport,
         ] {
             assert_eq!(KindDiscriminant::from_u16(disc.as_u16()), Some(disc));
         }
         assert_eq!(KindDiscriminant::from_u16(0), None);
+        assert_eq!(KindDiscriminant::from_u16(13), None);
         assert_eq!(KindDiscriminant::from_u16(99), None);
     }
 
@@ -256,5 +286,12 @@ mod tests {
         assert_eq!(KindDiscriminant::Field as u16, 3);
         assert_eq!(KindDiscriminant::Function as u16, 4);
         assert_eq!(KindDiscriminant::Type as u16, 5);
+        assert_eq!(KindDiscriminant::Trait as u16, 6);
+        assert_eq!(KindDiscriminant::Impl as u16, 7);
+        assert_eq!(KindDiscriminant::Enum as u16, 8);
+        assert_eq!(KindDiscriminant::Variant as u16, 9);
+        assert_eq!(KindDiscriminant::Const as u16, 10);
+        assert_eq!(KindDiscriminant::Static as u16, 11);
+        assert_eq!(KindDiscriminant::Reexport as u16, 12);
     }
 }

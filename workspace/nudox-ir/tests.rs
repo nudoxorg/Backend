@@ -50,7 +50,6 @@ fn build_seal_populate_container() {
     let function_parent = table
         .live_entries()
         .find(|(_, p)| matches!(p.kind, crate::wire::KindWire::Function(_)))
-        .map(|(i, _)| table.parent_of(i))
-        .flatten();
+        .and_then(|(i, _)| table.parent_of(i));
     assert_eq!(function_parent, Some(module_intro));
 }
