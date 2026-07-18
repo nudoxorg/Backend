@@ -1633,6 +1633,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "ecosystem"
+version = "0.1.0"
+dependencies = [
+ "quick-xml 0.37.5",
+ "semver",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "strum 0.26.3",
+ "toml 0.8.23",
+ "uv-pep440",
+]
+
+[[package]]
 name = "ed25519"
 version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2473,6 +2487,7 @@ dependencies = [
  "compact_str",
  "dashmap",
  "data-encoding",
+ "ecosystem",
  "metrics",
  "metrics-exporter-prometheus",
  "metrics-util",
@@ -3720,9 +3735,7 @@ dependencies = [
 
 [[package]]
 name = "libpijul"
-version = "1.0.0-beta.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f625e90234ef1fd164dfe7980ffb04a3036a08e31e051cc29e6273a0c9a7a7e7"
+version = "1.0.0-beta.11+nudox.1"
 dependencies = [
  "adler32",
  "aes 0.7.5",
@@ -3748,6 +3761,7 @@ dependencies = [
  "log",
  "lru-cache",
  "nom",
+ "nudox-f1",
  "parking_lot",
  "path-slash",
  "pbkdf2",
@@ -4447,6 +4461,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudox-f1"
+version = "0.1.0"
+dependencies = [
+ "diffs",
+]
+
+[[package]]
 name = "nudox-ir"
 version = "0.1.0"
 dependencies = [
@@ -4477,6 +4498,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudox-ir-diff"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nudox-change",
+ "nudox-ir",
+ "postcard",
+ "serde",
+ "smol_str",
+]
+
+[[package]]
 name = "nudox-ir-manifest"
 version = "0.1.0"
 dependencies = [
@@ -4497,6 +4530,7 @@ name = "nudox-ir-vcs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "governor",
  "heart",
  "ir-stream",
@@ -4504,13 +4538,28 @@ dependencies = [
  "libpijul",
  "moka",
  "nudox-change",
+ "nudox-f1",
  "nudox-ir",
  "nudox-ir-archive",
+ "nudox-ir-diff",
  "nudox-ir-manifest",
+ "postcard",
  "serde",
  "smol_str",
  "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "nudox-semver"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nudox-change",
+ "nudox-ir",
+ "nudox-ir-diff",
+ "serde",
+ "smol_str",
 ]
 
 [[package]]
@@ -5115,7 +5164,7 @@ checksum = "7da1d65da6dd5d1e44199ac0f58712d241c0f439f80adea8924d832384087f85"
 dependencies = [
  "base64",
  "indexmap 2.14.0",
- "quick-xml",
+ "quick-xml 0.41.0",
  "serde",
  "time",
 ]
@@ -5423,6 +5472,15 @@ dependencies = [
  "wasi 0.11.1+wasi-snapshot-preview1",
  "web-sys",
  "winapi",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.37.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -5804,11 +5862,13 @@ dependencies = [
  "anyhow",
  "arborium-tree-sitter",
  "async-compression",
+ "axum 0.8.9",
  "blake3",
  "bytes",
  "chrono",
  "csv",
  "data-encoding",
+ "ecosystem",
  "flate2",
  "futures",
  "futures-util",
@@ -5847,6 +5907,7 @@ dependencies = [
  "url",
  "uuid",
  "uv-pep440",
+ "zip 2.4.2",
  "zstd",
 ]
 
@@ -6511,6 +6572,7 @@ dependencies = [
  "bytes",
  "chrono",
  "data-encoding",
+ "ecosystem",
  "figment",
  "flate2",
  "futures",
@@ -8302,7 +8364,7 @@ dependencies = [
  "url",
  "utoipa",
  "utoipa-swagger-ui-vendored",
- "zip",
+ "zip 3.0.0",
 ]
 
 [[package]]
@@ -9249,6 +9311,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "zip"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "displaydoc",
+ "flate2",
+ "indexmap 2.14.0",
+ "memchr",
+ "thiserror 2.0.18",
+ "zopfli",
 ]
 
 [[package]]

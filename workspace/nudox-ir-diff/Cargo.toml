@@ -1,0 +1,26 @@
+# nudox-ir-diff — matcher-free structural delta over IR generations (SEMANTIC-IR-VCS-PLAN P3).
+#
+# Pure projection: `diff_tables(T0, T1)` compares two materialized IR states by
+# durable IntroId only (continuity was decided at record time), emitting typed
+# `IrOp`s / a `PackageDelta`. No libpijul link (engine-neutral, MIT); the Depth-1
+# fork's `FrameDelta` would consume this crate's output, never the reverse (§11.4).
+[package]
+name = "nudox-ir-diff"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+nudox-change = { path = "../nudox-change" }
+nudox-ir = { path = "../nudox-ir" }
+
+smol_str = { version = "0.2", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
+blake3 = "1.8"

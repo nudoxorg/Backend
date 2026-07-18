@@ -11,6 +11,10 @@
 [workspace]
 resolver = "3"
 members = [
+    # The per-ecosystem spec crate (ECOSYSTEM-PLAN): the leaf everything else
+    # reads "what does ecosystem X need?" from. `Language` lives here; heart
+    # re-exports it.
+    "workspace/ecosystem",
     "workspace/heart",
     "workspace/ir",
     "workspace/registry",
@@ -32,7 +36,22 @@ members = [
     "workspace/nudox-ir-archive",
     "workspace/nudox-ir-manifest",
     "workspace/nudox-ir-vcs",
+    # Semantic classification plane (SEMANTIC-IR-VCS-PLAN P3–P5): structural
+    # delta projection + IR-only ApiSurface/semver. Engine-neutral (no libpijul).
+    "workspace/nudox-ir-diff",
+    "workspace/nudox-semver",
+    # Depth-1 structured record (DEPTH1 plan §3): the frozen F1 key registry +
+    # the field-aware pairing function. Leaf crate; the vendored libpijul fork
+    # links it as its only nudox dependency.
+    "workspace/nudox-f1",
 ]
+
+# Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
+# requirement in the workspace resolves to the vendored fork (build metadata
+# `+nudox.N` is ignored in semver comparison). Fork diff = src/diff/diff.rs +
+# Cargo.toml only; regenerable patch at workspace/vendor/libpijul-fork.patch.
+[patch.crates-io]
+libpijul = { path = "workspace/vendor/libpijul" }
 
 [workspace.package]
 edition = "2024"
