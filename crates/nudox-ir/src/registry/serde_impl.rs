@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use super::{EntryIdx, ErasedUniqueId, Registry, RegistryResolver, RegistryState, UniqueId};
 
 impl<R: RegistryResolver> Registry<R> {
@@ -6,7 +8,7 @@ impl<R: RegistryResolver> Registry<R> {
         T: serde::Serialize,
         S: serde::Serializer,
     {
-        serde_context::serialize_with_context(it, serializer, &self.state)
+        self.state.serialize::<T, S, R>(serializer, it)
     }
 
     pub fn deserialize<'de, T, D>(&self, deserializer: D) -> Result<T, D::Error>
@@ -14,9 +16,30 @@ impl<R: RegistryResolver> Registry<R> {
         T: serde::Deserialize<'de>,
         D: serde::Deserializer<'de>,
     {
+        self.state.deserialize::<T, D, R>(deserializer)
+    }
+}
+
+impl RegistryState {
+    pub fn serialize<T, S, R>(&self, serializer: S, it: &T) -> Result<S::Ok, S::Error>
+    where
+        T: serde::Serialize,
+        S: serde::Serializer,
+    {
+        serde_context::serialize_with_context(it, serializer, self)
+    }
+
+    pub fn deserialize<'de, T, D, R>(&self, deserializer: D) -> Result<T, D::Error>
+    where
+        T: serde::Deserialize<'de>,
+        D: serde::Deserializer<'de>,
+        R: RegistryResolver,
+    {
+        let provider = Provider::<R>::new();
+
         serde_context::deserialize_with_context(
             deserializer,
-            (&self.state, &self.resolver as &dyn DeserProvider),
+            (self, &provider as &dyn DeserProvider),
         )
     }
 }
@@ -45,16 +68,25 @@ impl<'de, T> serde::Deserialize<'de> for EntryIdx<T> {
         use serde::de::Error;
 
         serde_context::context_scope(|cx| {
-            let resolver = cx.get::<dyn DeserProvider>().map_err(D::Error::custom)?;
-
+            let provider = cx.get::<dyn DeserProvider>().map_err(D::Error::custom)?;
             let state = cx.get::<RegistryState>().map_err(D::Error::custom)?;
 
-            let id = resolver
-                .deser_erased_id(&mut <dyn erased_serde::Deserializer>::erase(deserializer))
+            let deserializer = &mut <dyn erased_serde::Deserializer>::erase(deserializer);
+
+            let id = provider
+                .deser_erased_id(deserializer)
                 .map_err(D::Error::custom)?;
 
             Ok(state.unique_id_to_entry_idx(id).cast())
         })
+    }
+}
+
+struct Provider<R>(PhantomData<R>);
+
+impl<R> Provider<R> {
+    fn new() -> Self {
+        Self(PhantomData)
     }
 }
 
@@ -65,7 +97,7 @@ trait DeserProvider: 'static {
     ) -> erased_serde::Result<ErasedUniqueId>;
 }
 
-impl<R: RegistryResolver> DeserProvider for R {
+impl<R: RegistryResolver> DeserProvider for Provider<R> {
     fn deser_erased_id(
         &self,
         deserializer: &mut dyn erased_serde::Deserializer,

@@ -16,5 +16,5 @@ pub trait RegistryResolver: 'static {
         &self,
         id: &UniqueId<Self::EntryId>,
         state: &RegistryState,
-    ) -> Result<Entry, Self::Error>;
+    ) -> impl Future<Output = Result<Entry, Self::Error>>;
 }

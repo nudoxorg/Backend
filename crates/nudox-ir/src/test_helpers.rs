@@ -7,7 +7,7 @@ use crate::{
     entry::{Entry, Node},
     kind::EntryKind,
     package::{PackageId, PackageMeta},
-    registry::{RawEntryIdx, Registry, RegistryResolver, RegistryState, UniqueId},
+    registry::{RawEntryIdx, RegistryResolver, RegistryState, UniqueId},
     symbol::{Symbol, Visibility},
 };
 
@@ -53,19 +53,14 @@ pub(crate) mod n {
     }
 }
 
-#[expect(unused)]
-pub(crate) fn dummy_registry() -> Registry<DummyRegistryResolver> {
-    Registry::new(DummyRegistryResolver)
-}
-
+#[derive(Default)]
 pub(crate) struct DummyRegistryResolver;
 
 impl RegistryResolver for DummyRegistryResolver {
-    type EntryId = ();
-
+    type EntryId = usize;
     type Error = Infallible;
 
-    fn load_unique_id(
+    async fn load_unique_id(
         &self,
         _: &UniqueId<Self::EntryId>,
         _: &RegistryState,

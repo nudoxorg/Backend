@@ -22,7 +22,9 @@ pub use self::{
     state::RegistryState,
 };
 
+#[derive(Default)]
 pub struct Registry<R> {
+    #[expect(unused)]
     resolver: R,
     state: RegistryState,
 }

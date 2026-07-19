@@ -18,6 +18,12 @@ impl RegistryState {
     // TODO: public API for RegistryResolver to use
 }
 
+impl Default for RegistryState {
+    fn default() -> Self {
+        RegistryState::new()
+    }
+}
+
 impl RegistryState {
     pub(super) fn new() -> Self {
         RegistryState {

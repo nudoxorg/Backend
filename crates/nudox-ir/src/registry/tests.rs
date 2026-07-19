@@ -1,6 +1,4 @@
-use std::convert::Infallible;
-
-use crate::{entry::Entry, test_helpers::*};
+use crate::test_helpers::*;
 
 use super::*;
 
@@ -14,7 +12,7 @@ fn serialize_deserialize() {
         registry
             .state
             .entry_idx_to_unique_id(dummy_idx)
-            .downcast_ref::<ExampleRegistryResolver>()
+            .downcast_ref::<DummyRegistryResolver>()
             .entry(),
         Some(&8)
     );
@@ -39,9 +37,8 @@ fn serialize_deserialize() {
     assert_eq!(dummy_idx, deserialized_dummy_idx);
 }
 
-#[expect(unused)]
-fn build_registry() -> Registry<ExampleRegistryResolver> {
-    let mut registry = Registry::new(ExampleRegistryResolver::default());
+fn build_registry() -> Registry<DummyRegistryResolver> {
+    let registry = Registry::default();
 
     registry.build_package_ir(dummy_package("/pkg-0"), dummy_symbol("pkg-0"), |b| {
         b.create(0, dummy_symbol("mod_1"), |_| Module);
@@ -73,20 +70,4 @@ fn build_registry() -> Registry<ExampleRegistryResolver> {
     });
 
     registry
-}
-
-#[derive(Default)]
-struct ExampleRegistryResolver;
-
-impl RegistryResolver for ExampleRegistryResolver {
-    type EntryId = usize;
-    type Error = Infallible;
-
-    fn load_unique_id(
-        &self,
-        _: &UniqueId<Self::EntryId>,
-        _: &RegistryState,
-    ) -> Result<Entry, Self::Error> {
-        unimplemented!()
-    }
 }

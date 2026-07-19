@@ -14,8 +14,10 @@ parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true }
 serde_context = { workspace = true }
-triomphe = { workspace = true, features = ["unsize"] }
+triomphe = { workspace = true }
 
 [dev-dependencies]
 itertools = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
+vfs = { workspace = true, features = ["async-vfs"] }

@@ -13,7 +13,7 @@ use super::RegistryResolver;
 const INVALID_ENTRY_ID_DOWNCAST_MESSAGE: &str = ""; // TODO
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct UniqueId<T: ?Sized> {
     package: PackageId,
     entry: Option<Box<T>>,

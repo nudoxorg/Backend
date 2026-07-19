@@ -31,6 +31,7 @@ ouroboros = "0.18"
 parking_lot = "0.12"
 rustc-hash = "2.1"
 triomphe = "0.1"
+vfs = "0.13"
 
 # nudox-occurrences shared deps
 async-trait = "0.1"
