@@ -5,8 +5,9 @@
 
 pub mod catalog;
 pub mod id;
+pub mod license;
 
-pub use catalog::{E5Small, OpenAi3Small};
+pub use catalog::{E5Small, JinaCodeV2, OpenAi3Small, VoyageCode3};
 pub use id::ModelId;
 
 mod sealed {

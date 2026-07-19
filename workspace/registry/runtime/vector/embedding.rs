@@ -34,6 +34,22 @@ pub enum EmbeddingPurpose {
 	Documentation,
 }
 
+/// The retrieval role of the text being embedded. Voyage-class models (and some
+/// others) use separate encodings for query-time and document-time embeddings;
+/// sending the wrong role silently degrades recall. This enum is threaded through
+/// every [`Embedder`] call so the implementing client can map it to the correct
+/// `input_type` on the wire.
+///
+/// For OpenAI-compatible endpoints that do not distinguish roles, implementations
+/// may ignore this field — document that choice at the impl site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EmbedRole {
+	/// The text is a search query (look-up time).
+	Query,
+	/// The text is a document being indexed (ingest time).
+	Document,
+}
+
 /// A model-branded embedding vector. The brand `M` fixes both the dimension and
 /// the producing model at the type level; the values are length-validated
 /// against `M::DIMENSIONS` at construction.
@@ -129,19 +145,29 @@ pub trait Embedder: Send + Sync {
 	/// The model id (matches `Self::Model::id()`); stamped on stored vectors.
 	fn model(&self) -> &ModelId;
 
-	/// Embed a single piece of `text` for the given `purpose`.
+	/// Embed a single piece of `text` for the given `purpose` and `role`.
+	///
+	/// `role` distinguishes query-time from document-time encoding (Voyage and
+	/// similar APIs use distinct encoder paths). Implementors that speak a
+	/// protocol without this distinction (OpenAI-compat) may ignore `role` but
+	/// must document that decision.
 	async fn embed(
 		&self,
 		text: &str,
 		purpose: EmbeddingPurpose,
+		role: EmbedRole,
 	) -> Result<Embedding<Self::Model>, EmbedError>;
 
 	/// Embed a batch in one round-trip; the result is positionally aligned with
 	/// `texts`. An all-or-nothing failure is reported via `Err`.
+	///
+	/// `role` applies uniformly to every text in the batch — callers must not
+	/// mix query and document texts in one call.
 	async fn embed_batch(
 		&self,
 		texts: &[&str],
 		purpose: EmbeddingPurpose,
+		role: EmbedRole,
 	) -> Result<Vec<Embedding<Self::Model>>, EmbedError>;
 }
 
@@ -153,3 +179,4 @@ where
 	E: Embedder<embed(..): Send, embed_batch(..): Send>,
 {
 }
+

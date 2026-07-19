@@ -16,27 +16,32 @@ use moka::future::Cache;
 use crate::runtime::{
 	error::EmbedError,
 	vector::{
-		embedding::{Embedder, Embedding, EmbeddingPurpose},
+		embedding::{EmbedRole, Embedder, Embedding, EmbeddingPurpose},
 		model::{EmbeddingModel, ModelId},
 	},
 };
 
-/// The cache key: which model produced the vector, and the content hash of the
-/// exact text that was embedded. The package snapshot deliberately is *not* part
-/// of the key — identical text embeds identically regardless of which package
-/// snapshot it came from, which is what makes cross-package dedupe work.
+/// The cache key: which model produced the vector, the retrieval role, and the
+/// content hash of the exact text that was embedded.
+///
+/// `role` is part of the key because Voyage-class models produce different
+/// vectors for the same text depending on whether it is a query or a document.
+/// The package snapshot is deliberately *not* part of the key — identical text
+/// embeds identically regardless of which package it came from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EmbeddingKey {
 	/// The model that produced (or would produce) the vector.
 	pub model:     ModelId,
+	/// The retrieval role — query vs document encoding.
+	pub role:      EmbedRole,
 	/// The BLAKE3 hash of the embedded text.
 	pub text_hash: ContentHash,
 }
 
 impl EmbeddingKey {
-	/// Build a key for `text` under `model`, hashing the text.
-	pub fn new(model: ModelId, text: &str) -> Self {
-		Self { model, text_hash: ContentHash::of_bytes(text.as_bytes()) }
+	/// Build a key for `text` under `model` and `role`, hashing the text.
+	pub fn new(model: ModelId, role: EmbedRole, text: &str) -> Self {
+		Self { model, role, text_hash: ContentHash::of_bytes(text.as_bytes()) }
 	}
 }
 
@@ -70,10 +75,11 @@ impl<M: EmbeddingModel> EmbeddingCache<M> {
 		purpose: EmbeddingPurpose,
 	) -> Result<Embedding<M>, EmbedError> {
 		if let Some(hit) = self.inner.get(&key).await {
-			tracing::debug!(model = %key.model, "embedding cache hit");
+			tracing::debug!(model = %key.model, role = ?key.role, "embedding cache hit");
 			return Ok(hit);
 		}
-		let embedding = embedder.embed(text, purpose).await?;
+		let role = key.role;
+		let embedding = embedder.embed(text, purpose, role).await?;
 		self.inner.insert(key, embedding.clone()).await;
 		Ok(embedding)
 	}
@@ -81,5 +87,35 @@ impl<M: EmbeddingModel> EmbeddingCache<M> {
 	/// Best-effort peek without embedding — returns `None` on a miss.
 	pub async fn get(&self, key: &EmbeddingKey) -> Option<Embedding<M>> {
 		self.inner.get(key).await
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::runtime::vector::model::{E5Small, EmbeddingModel};
+
+	/// Verify that Query and Document roles produce distinct cache entries for
+	/// identical text, so a query embedding never collides with a document
+	/// embedding in the cache.
+	#[test]
+	fn embed_role_is_part_of_cache_key() {
+		let model = E5Small::id();
+		let text = "fn search(query: &str) -> Vec<Symbol>";
+
+		let query_key = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);
+		let doc_key = EmbeddingKey::new(model, EmbedRole::Document, text);
+
+		assert_ne!(query_key, doc_key, "Query and Document roles must produce distinct keys");
+	}
+
+	#[test]
+	fn same_text_same_role_same_key() {
+		let model = E5Small::id();
+		let text = "fn search(query: &str) -> Vec<Symbol>";
+
+		let k1 = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);
+		let k2 = EmbeddingKey::new(model, EmbedRole::Query, text);
+		assert_eq!(k1, k2);
 	}
 }

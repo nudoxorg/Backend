@@ -7,7 +7,7 @@
 mod support;
 
 use runtime::vector::{
-    Embedder, EmbeddingPurpose,
+    EmbedRole, Embedder, EmbeddingPurpose,
     model::{E5Small, EmbeddingModel},
 };
 use support::DeterministicEmbedder;
@@ -20,8 +20,8 @@ async fn same_input_yields_same_vector() {
     let embedder = DeterministicEmbedder::new();
     let code = "fn checked_add(a: u32, b: u32) -> Option<u32> { a.checked_add(b) }";
 
-    let first = embedder.embed(code, EmbeddingPurpose::Code).await.expect("embed succeeds");
-    let second = embedder.embed(code, EmbeddingPurpose::Code).await.expect("embed succeeds");
+    let first = embedder.embed(code, EmbeddingPurpose::Code, EmbedRole::Document).await.expect("embed succeeds");
+    let second = embedder.embed(code, EmbeddingPurpose::Code, EmbedRole::Document).await.expect("embed succeeds");
     assert_eq!(first, second, "embedding is a pure function of (text, purpose)");
 }
 
@@ -30,8 +30,8 @@ async fn same_input_yields_same_vector() {
 async fn different_input_yields_different_vector() {
     let embedder = DeterministicEmbedder::new();
 
-    let add = embedder.embed("fn add(a: u32, b: u32) -> u32", EmbeddingPurpose::Code).await;
-    let mul = embedder.embed("fn mul(a: u32, b: u32) -> u32", EmbeddingPurpose::Code).await;
+    let add = embedder.embed("fn add(a: u32, b: u32) -> u32", EmbeddingPurpose::Code, EmbedRole::Document).await;
+    let mul = embedder.embed("fn mul(a: u32, b: u32) -> u32", EmbeddingPurpose::Code, EmbedRole::Document).await;
     assert_ne!(
         add.expect("embed succeeds"),
         mul.expect("embed succeeds"),
@@ -48,9 +48,9 @@ async fn purpose_differentiates_the_vector() {
     let embedder = DeterministicEmbedder::new();
     let text = "Router routes requests to handlers.";
 
-    let as_code = embedder.embed(text, EmbeddingPurpose::Code).await.expect("embed succeeds");
+    let as_code = embedder.embed(text, EmbeddingPurpose::Code, EmbedRole::Document).await.expect("embed succeeds");
     let as_docs =
-        embedder.embed(text, EmbeddingPurpose::Documentation).await.expect("embed succeeds");
+        embedder.embed(text, EmbeddingPurpose::Documentation, EmbedRole::Document).await.expect("embed succeeds");
     assert_ne!(as_code, as_docs, "purpose is part of the embedding identity");
 }
 
@@ -63,7 +63,7 @@ async fn embeddings_are_nonempty_and_correctly_sized() {
     let embedder = DeterministicEmbedder::new();
 
     let batch = embedder
-        .embed_batch(&["fn a()", "fn b()", "struct C;"], EmbeddingPurpose::Code)
+        .embed_batch(&["fn a()", "fn b()", "struct C;"], EmbeddingPurpose::Code, EmbedRole::Document)
         .await
         .expect("batch embed succeeds");
     assert_eq!(batch.len(), 3, "batch results align positionally with inputs");

@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use registry::runtime::error::{EmbedError, EmbedRejectionReason};
-use registry::runtime::vector::{Embedder, Embedding, EmbeddingModel, EmbeddingPurpose, ModelId};
+use registry::runtime::vector::{EmbedRole, Embedder, Embedding, EmbeddingModel, EmbeddingPurpose, ModelId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use url::Url;
@@ -99,8 +99,9 @@ impl<M: EmbeddingModel> Embedder for HttpEmbedder<M> {
 		&self,
 		text: &str,
 		purpose: EmbeddingPurpose,
+		role: EmbedRole,
 	) -> Result<Embedding<M>, EmbedError> {
-		let mut vectors = self.embed_batch(&[text], purpose).await?;
+		let mut vectors = self.embed_batch(&[text], purpose, role).await?;
 		vectors.pop().ok_or_else(|| EmbedRejectionReason::EmptyResponse.into())
 	}
 
@@ -108,10 +109,12 @@ impl<M: EmbeddingModel> Embedder for HttpEmbedder<M> {
 		&self,
 		texts: &[&str],
 		purpose: EmbeddingPurpose,
+		role: EmbedRole,
 	) -> Result<Vec<Embedding<M>>, EmbedError> {
-		// The wire shape carries no purpose; it is honoured upstream by the
-		// cache key and payload stamping, and traced here for audit.
-		tracing::trace!(count = texts.len(), ?purpose, model = %self.model, "embedding batch");
+		// OpenAI-compatible endpoints do not distinguish query vs document role;
+		// `role` is accepted for interface uniformity but not sent on the wire.
+		// It is traced here so callers can audit what role was intended.
+		tracing::trace!(count = texts.len(), ?purpose, ?role, model = %self.model, "embedding batch");
 		if texts.is_empty() {
 			return Ok(Vec::new());
 		}

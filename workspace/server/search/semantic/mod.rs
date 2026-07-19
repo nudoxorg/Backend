@@ -7,8 +7,8 @@ use std::num::NonZeroUsize;
 use futures::Stream;
 use heart::{Live, SymbolId, Scored};
 use registry::runtime::vector::{
-	Embedder, Embedding, EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose, Semantic,
-	SemanticGate,
+	EmbedRole, Embedder, Embedding, EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose,
+	Semantic, SemanticGate,
 };
 
 use crate::error::ServerError;
@@ -73,13 +73,21 @@ impl<'a, M: EmbeddingModel, E: Embedder<Model = M>> SemanticSurface<'a, M, E> {
 
 	/// Embed the query text, cache-first: identical text under the same model
 	/// never pays the network round-trip twice.
+	///
+	/// Queries always use [`EmbedRole::Query`] so Voyage-class models select the
+	/// query encoder path.
 	async fn embed(
 		&self,
 		text: &str,
 		purpose: EmbeddingPurpose,
 	) -> Result<Embedding<M>, ServerError> {
 		self.cache
-			.get_or_embed(EmbeddingKey::new(M::id(), text), self.embedder, text, purpose)
+			.get_or_embed(
+				EmbeddingKey::new(M::id(), EmbedRole::Query, text),
+				self.embedder,
+				text,
+				purpose,
+			)
 			.await
 			.map_err(|error| ServerError::Runtime(error.into()))
 	}

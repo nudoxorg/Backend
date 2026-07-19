@@ -24,3 +24,19 @@ impl EmbeddingModel for OpenAi3Small {
 	fn id() -> ModelId { model_id("openai/text-embedding-3-small") }
 }
 
+/// `jinaai/jina-embeddings-v2-base-code` — 768-dim.
+pub struct JinaCodeV2;
+impl Sealed for JinaCodeV2 {}
+impl EmbeddingModel for JinaCodeV2 {
+	const DIMENSIONS: usize = 768;
+	fn id() -> ModelId { model_id("jinaai/jina-embeddings-v2-base-code") }
+}
+
+/// `voyage/voyage-code-3` — 1024-dim.
+pub struct VoyageCode3;
+impl Sealed for VoyageCode3 {}
+impl EmbeddingModel for VoyageCode3 {
+	const DIMENSIONS: usize = 1024;
+	fn id() -> ModelId { model_id("voyage/voyage-code-3") }
+}
+

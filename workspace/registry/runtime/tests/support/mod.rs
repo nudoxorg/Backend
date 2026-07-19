@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use heart::{Guid, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
 use runtime::error::EmbedError;
 use runtime::vector::{
-    Embedder, Embedding, EmbeddingPurpose,
+    EmbedRole, Embedder, Embedding, EmbeddingPurpose,
     model::{E5Small, EmbeddingModel, ModelId},
 };
 
@@ -71,6 +71,7 @@ impl Embedder for DeterministicEmbedder {
         &self,
         text: &str,
         purpose: EmbeddingPurpose,
+        _role: EmbedRole,
     ) -> Result<Embedding<E5Small>, EmbedError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(deterministic_embedding(text, purpose))
@@ -80,6 +81,7 @@ impl Embedder for DeterministicEmbedder {
         &self,
         texts: &[&str],
         purpose: EmbeddingPurpose,
+        _role: EmbedRole,
     ) -> Result<Vec<Embedding<E5Small>>, EmbedError> {
         self.calls.fetch_add(texts.len(), Ordering::SeqCst);
         Ok(texts.iter().map(|text| deterministic_embedding(text, purpose)).collect())

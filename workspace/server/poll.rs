@@ -13,7 +13,7 @@ use std::time::Duration;
 use heart::PackageId;
 use crate::registry::coordination::{OutboxEntry, OutboxOp, SinkKind};
 use registry::runtime::vector::{
-	EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose, SymbolPoint,
+	EmbedRole, EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose, SymbolPoint,
 };
 
 use crate::coordination::indexing::Indexer;
@@ -258,7 +258,7 @@ async fn materialize_vector<M: EmbeddingModel>(
 		let text = symbol.name.fully_qualified.as_str();
 		let embedding = cache
 			.get_or_embed(
-				EmbeddingKey::new(M::id(), text),
+				EmbeddingKey::new(M::id(), EmbedRole::Document, text),
 				embedder,
 				text,
 				EmbeddingPurpose::Code,

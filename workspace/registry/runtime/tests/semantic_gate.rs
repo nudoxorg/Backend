@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
 use runtime::vector::{
-    Embedder, Embedding, EmbeddingPurpose, SemanticGate,
+    EmbedRole, Embedder, Embedding, EmbeddingPurpose, SemanticGate,
     model::{E5Small, EmbeddingModel},
 };
 use support::DeterministicEmbedder;
@@ -89,7 +89,7 @@ async fn embedding_only_happens_behind_the_gate() {
         text: &str,
     ) -> Embedding<E5Small> {
         tracing::debug!(reason = gate.reason(), "semantic path authorized");
-        embedder.embed(text, EmbeddingPurpose::Code).await.expect("offline embedder is total")
+        embedder.embed(text, EmbeddingPurpose::Code, EmbedRole::Query).await.expect("offline embedder is total")
     }
 
     // Default (text) path: whatever happens, no embedder is ever consulted.

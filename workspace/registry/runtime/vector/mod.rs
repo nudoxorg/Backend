@@ -32,7 +32,7 @@ pub mod model;
 pub mod similarity;
 
 pub use cache::{EmbeddingCache, EmbeddingKey};
-pub use embedding::{Embedder, Embedding, EmbeddingPurpose};
+pub use embedding::{EmbedRole, Embedder, Embedding, EmbeddingPurpose};
 pub use gate::SemanticGate;
 pub use model::{EmbeddingModel, ModelId, catalog as models};
 
