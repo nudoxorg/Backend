@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::{fmt, fs, io};
 
+use heart::ecosystem::Language;
 use smol_str::SmolStr;
 
 // ===========================================================================
@@ -68,7 +69,7 @@ fn apply_well_known_replacements(token: &str) -> Cow<'_, str> {
 }
 
 fn split_on_slashes(token: Cow<str>) -> Vec<String> {
-    token.into_owned().split('/').map(String::from).collect()
+    token.split('/').map(String::from).collect()
 }
 
 fn apply_formatting_rules(token: String) -> Cow<'static, str> {
@@ -165,8 +166,24 @@ fn inline_kebab_case(input: &str) -> String {
 // Synonyms
 // ===========================================================================
 
+/// Vote-weighted synonym table loaded from `tag-synonyms.csv`.
+///
+/// # CSV layout
+///
+/// - **Global (3 columns):** `term,canonical,votes`
+/// - **Ecosystem-scoped (4 columns):** `ecosystem,term,canonical,votes` when the
+///   first column is a known [`Language`] wire token (`rust`, `python`,
+///   `typescript`, `go`, `java`, `nix`, `csharp`, plus aliases via
+///   [`Language::from_token`]).
+///
+/// Comments (`# …`), blank lines, and flexible column counts are accepted.
+/// Lines with a non-language first column and 3+ fields are treated as global.
 pub struct Synonyms {
+    /// Global term → (canonical, votes).
     mapping: HashMap<SmolStr, (SmolStr, u8)>,
+    /// Per-ecosystem overrides; checked before the global map in
+    /// [`Self::normalize_for`].
+    by_eco: HashMap<Language, HashMap<SmolStr, (SmolStr, u8)>>,
 }
 
 impl Synonyms {
@@ -177,6 +194,7 @@ impl Synonyms {
             tracing::warn!("tag-synonyms.csv not found at {:?}; using empty map", path);
             return Ok(Self {
                 mapping: HashMap::new(),
+                by_eco: HashMap::new(),
             });
         }
 
@@ -189,6 +207,7 @@ impl Synonyms {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let mut mapping: HashMap<SmolStr, (SmolStr, u8)> = HashMap::with_capacity(2500);
+        let mut by_eco: HashMap<Language, HashMap<SmolStr, (SmolStr, u8)>> = HashMap::new();
         let mut needs_fixing = false;
 
         for result in reader.records() {
@@ -196,38 +215,93 @@ impl Synonyms {
             if record.is_empty() {
                 continue;
             }
-            let find_keyword = SmolStr::from(record.get(0).unwrap_or(""));
-            let replace_keyword = SmolStr::from(record.get(1).unwrap_or(""));
-            let score: u8 = record
-                .get(2)
-                .and_then(|s| s.parse().ok())
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-                    format!("Missing or invalid score in record: {:?}", record)))?;
+
+            // 4-col eco form when col0 is a known Language token; else 3-col global.
+            let (eco, find_keyword, replace_keyword, score) =
+                if record.len() >= 4 {
+                    if let Some(lang) = Language::from_token(record.get(0).unwrap_or("")) {
+                        let find = SmolStr::from(record.get(1).unwrap_or(""));
+                        let replace = SmolStr::from(record.get(2).unwrap_or(""));
+                        let score: u8 = record
+                            .get(3)
+                            .and_then(|s| s.parse().ok())
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("Missing or invalid score in record: {:?}", record),
+                                )
+                            })?;
+                        (Some(lang), find, replace, score)
+                    } else {
+                        // First col not a language — fall through as global 3-col.
+                        let find = SmolStr::from(record.get(0).unwrap_or(""));
+                        let replace = SmolStr::from(record.get(1).unwrap_or(""));
+                        let score: u8 = record
+                            .get(2)
+                            .and_then(|s| s.parse().ok())
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("Missing or invalid score in record: {:?}", record),
+                                )
+                            })?;
+                        (None, find, replace, score)
+                    }
+                } else {
+                    let find = SmolStr::from(record.get(0).unwrap_or(""));
+                    let replace = SmolStr::from(record.get(1).unwrap_or(""));
+                    let score: u8 = record
+                        .get(2)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Missing or invalid score in record: {:?}", record),
+                            )
+                        })?;
+                    (None, find, replace, score)
+                };
 
             if score > 5 {
                 tracing::error!("synonym borked score: {record:?}");
             }
 
-            match mapping.entry(find_keyword) {
-                Entry::Occupied(mut entry) => {
-                    if entry.get().1 < score {
-                        tracing::error!("duplicate synonym {record:?} and {}", entry.get().0);
-                        entry.insert((replace_keyword, score));
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert((replace_keyword, score));
-                }
-            }
+            let target = match eco {
+                Some(lang) => by_eco.entry(lang).or_default(),
+                None => &mut mapping,
+            };
+            Self::insert_synonym(target, find_keyword, replace_keyword, score);
         }
 
         needs_fixing |= Self::remove_cyclic_synonyms(&mut mapping);
+        for eco_map in by_eco.values_mut() {
+            needs_fixing |= Self::remove_cyclic_synonyms(eco_map);
+        }
 
         if needs_fixing {
             tracing::warn!("synonym table had issues; consider regenerating tag-synonyms.csv");
         }
 
-        Ok(Self { mapping })
+        Ok(Self { mapping, by_eco })
+    }
+
+    fn insert_synonym(
+        mapping: &mut HashMap<SmolStr, (SmolStr, u8)>,
+        find_keyword: SmolStr,
+        replace_keyword: SmolStr,
+        score: u8,
+    ) {
+        match mapping.entry(find_keyword) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().1 < score {
+                    tracing::error!("duplicate synonym → {} with score {}", entry.get().0, score);
+                    entry.insert((replace_keyword, score));
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert((replace_keyword, score));
+            }
+        }
     }
 
     fn remove_cyclic_synonyms(mapping: &mut HashMap<SmolStr, (SmolStr, u8)>) -> bool {
@@ -265,12 +339,36 @@ impl Synonyms {
         Some((tag.as_str(), relevance))
     }
 
-    fn get_matching(&self, keyword: &str, min_votes: u8) -> Option<(&str, f32)> {
-        let (tag, votes) = self.mapping.get(keyword)?;
+    fn get_matching_in<'a>(
+        map: &'a HashMap<SmolStr, (SmolStr, u8)>,
+        keyword: &str,
+        min_votes: u8,
+    ) -> Option<(&'a str, f32)> {
+        let (tag, votes) = map.get(keyword)?;
         if *votes >= min_votes {
             return Some((tag.as_str(), f32::from(*votes) / 5.0));
         }
         None
+    }
+
+    fn get_matching(&self, keyword: &str, min_votes: u8) -> Option<(&str, f32)> {
+        Self::get_matching_in(&self.mapping, keyword, min_votes)
+    }
+
+    /// Eco-specific lookup first, then global fallback.
+    fn get_matching_for(
+        &self,
+        eco: Option<Language>,
+        keyword: &str,
+        min_votes: u8,
+    ) -> Option<(&str, f32)> {
+        if let Some(lang) = eco
+            && let Some(map) = self.by_eco.get(&lang)
+            && let Some(hit) = Self::get_matching_in(map, keyword, min_votes)
+        {
+            return Some(hit);
+        }
+        self.get_matching(keyword, min_votes)
     }
 
     #[must_use]
@@ -326,12 +424,39 @@ impl Synonyms {
         current_keyword
     }
 
+    /// Normalize against the **global** synonym table only.
+    ///
+    /// Prefer [`Self::normalize_for`] when the query ecosystem is known so
+    /// eco-specific rows can win over global ones.
     #[must_use]
     pub fn normalize<'a>(&'a self, keyword: &'a str, min_votes: u8) -> (&'a str, f32) {
         debug_assert!(min_votes > 0 && min_votes <= 5);
         if let Some((first_hop, weight1)) = self.get_matching(keyword, min_votes.min(5)) {
             if let Some((second_hop, weight2)) =
                 self.get_matching(first_hop, (min_votes + 1).clamp(4, 5))
+            {
+                return (second_hop, weight1 * weight2);
+            }
+            return (first_hop, weight1);
+        }
+        (keyword, 1.0)
+    }
+
+    /// Normalize with optional ecosystem scope: eco-specific rows first, then
+    /// the global table. Second-hop chains use the same eco-then-global rule.
+    #[must_use]
+    pub fn normalize_for<'a>(
+        &'a self,
+        eco: Option<Language>,
+        keyword: &'a str,
+        min_votes: u8,
+    ) -> (&'a str, f32) {
+        debug_assert!(min_votes > 0 && min_votes <= 5);
+        if let Some((first_hop, weight1)) =
+            self.get_matching_for(eco, keyword, min_votes.min(5))
+        {
+            if let Some((second_hop, weight2)) =
+                self.get_matching_for(eco, first_hop, (min_votes + 1).clamp(4, 5))
             {
                 return (second_hop, weight1 * weight2);
             }
@@ -685,5 +810,117 @@ impl Specifics {
 
     pub fn all_bland_keywords(&self) -> impl Iterator<Item = &str> + '_ {
         self.bland.iter().map(|string| string.as_str())
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn load_synonyms(csv: &str) -> Synonyms {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tag-synonyms.csv");
+        {
+            let mut f = std::fs::File::create(&path).expect("create csv");
+            f.write_all(csv.as_bytes()).expect("write csv");
+        }
+        let synonyms = Synonyms::new(dir.path()).expect("Synonyms::new");
+        // mapping is owned; tempdir can drop
+        drop(dir);
+        synonyms
+    }
+
+    #[test]
+    fn global_three_column_format_still_loads() {
+        let syn = load_synonyms(
+            "\
+# comment
+http-client,reqwest,4
+yaml,serde-yaml,3
+",
+        );
+        let (canon, weight) = syn.normalize("http-client", 3);
+        assert_eq!(canon, "reqwest");
+        assert!(weight > 0.0);
+        // normalize_for with no eco is equivalent to normalize
+        let (c2, _) = syn.normalize_for(None, "http-client", 3);
+        assert_eq!(c2, "reqwest");
+    }
+
+    #[test]
+    fn eco_four_column_format_overrides_per_language() {
+        let syn = load_synonyms(
+            "\
+# global default
+http-client,reqwest,4
+# python-specific override
+python,http-client,httpx,5
+# typescript-specific
+typescript,http-client,axios,4
+# rust alias for ecosystem token
+rust,web-framework,axum,4
+",
+        );
+
+        // Global path (no eco / normalize)
+        assert_eq!(syn.normalize("http-client", 3).0, "reqwest");
+        assert_eq!(
+            syn.normalize_for(None, "http-client", 3).0,
+            "reqwest"
+        );
+
+        // Eco-specific wins over global
+        assert_eq!(
+            syn.normalize_for(Some(Language::Python), "http-client", 3).0,
+            "httpx"
+        );
+        assert_eq!(
+            syn.normalize_for(Some(Language::Typescript), "http-client", 3).0,
+            "axios"
+        );
+
+        // Unscoped eco falls back to global for terms only defined globally
+        assert_eq!(
+            syn.normalize_for(Some(Language::Go), "http-client", 3).0,
+            "reqwest"
+        );
+
+        // Rust-only row invisible globally
+        assert_eq!(syn.normalize("web-framework", 3).0, "web-framework");
+        assert_eq!(
+            syn.normalize_for(Some(Language::Rust), "web-framework", 3).0,
+            "axum"
+        );
+    }
+
+    #[test]
+    fn language_aliases_as_ecosystem_column() {
+        // `py` and `ts` are Language::from_token aliases
+        let syn = load_synonyms(
+            "\
+py,async,asyncio,4
+ts,async,async-hooks,4
+",
+        );
+        assert_eq!(
+            syn.normalize_for(Some(Language::Python), "async", 3).0,
+            "asyncio"
+        );
+        assert_eq!(
+            syn.normalize_for(Some(Language::Typescript), "async", 3).0,
+            "async-hooks"
+        );
+    }
+
+    #[test]
+    fn four_columns_without_language_token_treated_as_global() {
+        // First column is not a Language token → 3-col global parse of cols 0..2
+        let syn = load_synonyms("not-a-lang,canonical,4,ignored\n");
+        assert_eq!(syn.normalize("not-a-lang", 3).0, "canonical");
     }
 }
