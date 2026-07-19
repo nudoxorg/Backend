@@ -44,6 +44,7 @@ pub mod runtime;
 pub mod schema;
 pub mod search;
 pub mod store;
+pub mod upstream;
 
 use heart::{PackageId, ResolutionState, Toolchain};
 use serde::{Deserialize, Serialize};

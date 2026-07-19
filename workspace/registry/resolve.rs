@@ -16,6 +16,8 @@ use crate::package::{Coordinates as PackageCoordinates, PackageName};
 
 use crate::error::ResolveError;
 
+use ecosystem::{self, LanguageExt as _, upstream::ListingStatus};
+
 // The shared version vocabulary: the request enum, its constraint predicate,
 // and the pick_best selection primitive (folded into `heart::version`).
 use heart::version::{Constraint, pick_best};
@@ -49,27 +51,10 @@ impl Constraint<PackageVersion> for RangeConstraint {
 	fn matches(&self, candidate: &PackageVersion) -> bool {
 		match self {
 			RangeConstraint::Semver(range) => semver_matches(range, candidate),
-			RangeConstraint::Range { ecosystem, spec } => match ecosystem {
-				Language::Rust | Language::Typescript | Language::Nix => {
-					// A malformed range admits nothing; `select` re-parses to
-					// surface `MalformedRequest` distinctly on the error path.
-					semver::VersionReq::parse(spec)
-						.is_ok_and(|range| semver_matches(&range, candidate))
-				}
-				Language::Python => match candidate {
-					PackageVersion::Python(version) => spec
-						.parse::<uv_pep440::VersionSpecifiers>()
-						.is_ok_and(|specifiers| specifiers.contains(version)),
-					_ => false,
-				},
-				// NuGet interval notation (`[1.0,2.0)`, bare `1.2.3` = "≥ min").
-				Language::CSharp => match candidate {
-					PackageVersion::CSharp(version) => nuget::range_matches(spec, version),
-					_ => false,
-				},
-				// Go/Java resolve via git tags, not this registry range path.
-				Language::Go | Language::Java => false,
-			},
+			RangeConstraint::Range { ecosystem, spec } => {
+				let raw = candidate.canonical();
+				ecosystem.spec().range_matches(spec, &raw)
+			}
 		}
 	}
 }
@@ -87,14 +72,38 @@ pub struct ResolveSource {
 /// under the ecosystem's version grammar, and selects the greatest — assembling
 /// validated [`PackageCoordinates`] whose [`PackageId`](heart::PackageId)
 /// is then deterministic. `// registry version-list fetch is network I/O`.
-#[tracing::instrument(skip(source), fields(origin = %source.origin.token()))]
+/// The outcome of a successful resolve: the concrete coordinates plus the full
+/// per-version listing snapshot observed at resolve time. The caller may
+/// persist the snapshot via [`crate::index::Index::set_listing`].
+pub struct ResolveOutput {
+	pub coordinates: PackageCoordinates,
+	/// All versions observed during this resolve, paired with their listing
+	/// status. Callers that drive indexing should persist these.
+	pub observed_listing: Vec<(PackageVersion, ListingStatus)>,
+}
+
+#[tracing::instrument(skip(client, source), fields(origin = %source.origin.token()))]
 pub async fn resolve(
+	client: &crate::upstream::UpstreamClient,
 	source: &ResolveSource,
 	name: &PackageName,
 	request: &VersionRequest,
-) -> Result<PackageCoordinates, ResolveError> {
-	let published = published_versions(&source.origin, name).await?;
-	tracing::debug!(candidates = published.len(), "published version set fetched");
+) -> Result<ResolveOutput, ResolveError> {
+	let published_with_status = published_versions(client, &source.origin, name).await?;
+	tracing::debug!(candidates = published_with_status.len(), "published version set fetched");
+
+	// Exact pins may resolve withdrawn versions (allows dependency on yanked/unlisted
+	// versions when the caller explicitly requests one). Latest/Constraint silently
+	// skip withdrawn versions so they never enter automatic resolution.
+	let published: Vec<PackageVersion> = match request {
+		VersionRequest::Exact(_) => published_with_status.iter().map(|(pv, _)| pv.clone()).collect(),
+		_ => published_with_status
+			.iter()
+			.filter(|(_, status)| status.is_listed())
+			.map(|(pv, _)| pv.clone())
+			.collect(),
+	};
+
 	let version = select(request, &published).map_err(|error| match error {
 		// `select` works over a bare candidate set; re-attach the name here.
 		ResolveError::NoMatchLatest { .. } => ResolveError::NoMatchLatest { name: name.original().to_owned() },
@@ -103,7 +112,10 @@ pub async fn resolve(
 		ResolveError::NoMatchRange { spec, .. } => ResolveError::NoMatchRange { name: name.original().to_owned(), spec },
 		other => other,
 	})?;
-	Ok(PackageCoordinates { origin: source.origin.clone(), name: name.clone(), version })
+	Ok(ResolveOutput {
+		coordinates: PackageCoordinates { origin: source.origin.clone(), name: name.clone(), version },
+		observed_listing: published_with_status,
+	})
 }
 
 /// Select the greatest version from a candidate set satisfying `request`. Split
@@ -130,24 +142,10 @@ pub fn select(
 			// A raw ecosystem range whose spec doesn't parse is a *malformed
 			// request*, distinct from "parsed but nothing matched": pre-validate
 			// so that error survives the fold into the constraint case.
-			if let RangeConstraint::Range { ecosystem, spec } = constraint {
-				match ecosystem {
-					Language::Rust | Language::Typescript | Language::Nix => {
-						semver::VersionReq::parse(spec)
-							.map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
-					}
-					Language::Python => {
-						spec.parse::<uv_pep440::VersionSpecifiers>()
-							.map_err(|_| ResolveError::MalformedRequest { spec: spec.clone() })?;
-					}
-					Language::CSharp => {
-						if !nuget::spec_is_valid(spec) {
-							return Err(ResolveError::MalformedRequest { spec: spec.clone() });
-						}
-					}
-					Language::Go | Language::Java => {}
+			if let RangeConstraint::Range { ecosystem, spec } = constraint
+				&& !ecosystem.spec().spec_is_valid(spec) {
+					return Err(ResolveError::MalformedRequest { spec: spec.clone() });
 				}
-			}
 			candidates.iter().filter(|candidate| constraint.matches(candidate)).collect()
 		}
 	};
@@ -186,7 +184,7 @@ struct OrdKey<'a>(&'a PackageVersion);
 
 impl Ord for OrdKey<'_> {
 	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-		grammar_order(&self.0, &other.0)
+		grammar_order(self.0, other.0)
 	}
 }
 
@@ -197,23 +195,11 @@ impl PartialOrd for OrdKey<'_> {
 }
 
 /// Whether a `PackageVersion` represents a prerelease under its grammar.
+/// Delegates to the ecosystem's version grammar via `DynSpec`.
 fn package_version_is_prerelease(v: &PackageVersion) -> bool {
-	match v {
-		PackageVersion::Cargo(sv) | PackageVersion::Npm(sv) | PackageVersion::Nix(sv) => {
-			!sv.pre.is_empty()
-		}
-		PackageVersion::Python(pv) => pv.any_prerelease(),
-		// Go and Java versions are resolved via git tags (not this registry path),
-		// but classify conservatively: any version containing a '-' or alphabetic
-		// character after the numeric part is treated as a prerelease.
-		PackageVersion::Go(s) | PackageVersion::Java(s) => {
-			s.contains('-') || s.chars().any(|c| c.is_ascii_alphabetic())
-		}
-		// NuGet prerelease: a `-label` suffix on the numeric core.
-		PackageVersion::CSharp(s) => nuget::NuGetVersion::parse(s)
-			.map(|v| v.is_prerelease())
-			.unwrap_or_else(|| s.contains('-')),
-	}
+	let lang = Language::from(v);
+	let raw = v.canonical();
+	lang.spec().version_is_prerelease(&raw).unwrap_or(false)
 }
 
 /// Whether a SemVer range admits a candidate (only meaningful for the SemVer
@@ -229,26 +215,24 @@ fn semver_matches(range: &semver::VersionReq, candidate: &PackageVersion) -> boo
 	}
 }
 
-/// Order two candidates under their own grammar. Mixed grammars have no order
-/// and compare equal, so `max_by` keeps the earlier of an (invalid) mixed set.
-fn grammar_order(a: &&PackageVersion, b: &&PackageVersion) -> std::cmp::Ordering {
-	match (a, b) {
-		(PackageVersion::Cargo(x), PackageVersion::Cargo(y))
-		| (PackageVersion::Npm(x), PackageVersion::Npm(y)) => x.cmp(y),
-		(PackageVersion::Python(x), PackageVersion::Python(y)) => x.cmp(y),
-		(PackageVersion::Go(x), PackageVersion::Go(y))
-		| (PackageVersion::Java(x), PackageVersion::Java(y)) => x.cmp(y),
-		(PackageVersion::Nix(x), PackageVersion::Nix(y)) => x.cmp(y),
-		// NuGet ordering (4-part + prerelease); unparseable strays compare by
-		// raw string so selection stays total.
-		(PackageVersion::CSharp(x), PackageVersion::CSharp(y)) => {
-			match (nuget::NuGetVersion::parse(x), nuget::NuGetVersion::parse(y)) {
-				(Some(a), Some(b)) => a.cmp(&b),
-				_ => x.cmp(y),
-			}
-		}
-		_ => std::cmp::Ordering::Equal, // mixed not happen
+/// Order two candidates under their own grammar via `DynSpec::compare_versions`.
+/// Delegates to the ecosystem grammar; falls back to raw-string comparison for
+/// unparseable strays so selection stays total.
+fn grammar_order(a: &PackageVersion, b: &PackageVersion) -> std::cmp::Ordering {
+	let lang_a = Language::from(a);
+	let lang_b = Language::from(b);
+	// Mixed-ecosystem pairs have no grammar order; treat as equal so the earlier
+	// candidate is kept — a mixed set should not happen in practice.
+	if lang_a != lang_b {
+		return std::cmp::Ordering::Equal;
 	}
+	let raw_a = a.canonical();
+	let raw_b = b.canonical();
+	lang_a
+		.spec()
+		.compare_versions(&raw_a, &raw_b)
+		// Fallback: both failed to parse — sort by raw string to stay total.
+		.unwrap_or_else(|| raw_a.cmp(&raw_b))
 }
 
 
@@ -256,32 +240,63 @@ fn grammar_order(a: &&PackageVersion, b: &&PackageVersion) -> std::cmp::Ordering
 /// ecosystem's grammar (unparseable strays are skipped with a debug log, not
 /// fatal). `// registry version-list fetch is network I/O`.
 async fn published_versions(
+	client: &crate::upstream::UpstreamClient,
 	origin: &RegistryOrigin,
 	name: &PackageName,
-) -> Result<Vec<PackageVersion>, ResolveError> {
-	let ecosystem = name.ecosystem();
-	let url = versions_url(origin, name);
-	let response = reqwest::get(&url).await.map_err(ResolveError::Lookup)?;
-	if response.status() == reqwest::StatusCode::NOT_FOUND {
-		return Err(ResolveError::NotFound { name: name.original().to_owned() });
-	}
-	let body: serde_json::Value = response
-		.error_for_status()
-		.map_err(ResolveError::Lookup)?
-		.json()
-		.await
-		.map_err(ResolveError::Lookup)?;
+) -> Result<Vec<(PackageVersion, ecosystem::upstream::ListingStatus)>, ResolveError> {
+	use crate::upstream::UpstreamError;
 
-	Ok(raw_versions(ecosystem, &body)
+	let ecosystem_lang = name.ecosystem();
+	let spec = ecosystem_lang.spec();
+	let url = versions_url(origin, name);
+	let body_bytes = match client.get(ecosystem_lang, &url).await {
+		Err(UpstreamError::NotFound) => {
+			return Err(ResolveError::NotFound { name: name.original().to_owned() });
+		}
+		other => other?,
+	};
+
+	let mut listed = spec.parse_version_listing(&body_bytes);
+
+	// Secondary listing-status fetch for ecosystems that need it (NuGet M3).
+	// Best-effort: a failed status fetch leaves everything Listed rather than
+	// failing the resolve.
+	if let Some(status_template) = spec.endpoints().listing_status {
+		let status_url = format!(
+			"{}{}",
+			versions_base_url(origin),
+			status_template.replace("{name_lower}", name.canonical())
+		);
+		if let Ok(sb) = client.get(ecosystem_lang, &status_url).await {
+			listed = spec.merge_listing_status(listed, &sb);
+		}
+	}
+
+	Ok(listed
 		.into_iter()
-		.filter_map(|raw| {
-			PackageVersion::try_from((ecosystem, raw.as_str()))
+		.filter_map(|lv| {
+			PackageVersion::try_from((ecosystem_lang, lv.raw.as_str()))
 				.inspect_err(|error| {
-					tracing::debug!(%raw, %error, "skipping unparseable published version");
+					tracing::debug!(raw = %lv.raw, %error, "skipping unparseable published version");
 				})
 				.ok()
+				.map(|pv| (pv, lv.status))
 		})
 		.collect())
+}
+
+/// Base URL for a registry origin (no trailing slash).
+fn versions_base_url(origin: &RegistryOrigin) -> String {
+	match origin {
+		RegistryOrigin::CratesIo => String::from("https://crates.io"),
+		RegistryOrigin::NpmPublic => String::from("https://registry.npmjs.org"),
+		RegistryOrigin::PyPi => String::from("https://pypi.org"),
+		RegistryOrigin::FlakeHub => String::from("https://api.flakehub.com"),
+		RegistryOrigin::NuGet => String::from("https://api.nuget.org"),
+		RegistryOrigin::GoProxy => String::from("https://proxy.golang.org"),
+		RegistryOrigin::MavenCentral => String::from("https://repo1.maven.org/maven2"),
+		RegistryOrigin::Custom { url, .. } => url.as_str().trim_end_matches('/').to_owned(),
+	}
 }
 
 /// The version-list endpoint for an origin, following each public registry's
@@ -294,14 +309,28 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		RegistryOrigin::PyPi => String::from("https://pypi.org"),
 		RegistryOrigin::FlakeHub => String::from("https://api.flakehub.com"),
 		RegistryOrigin::NuGet => String::from("https://api.nuget.org"),
+		RegistryOrigin::GoProxy => String::from("https://proxy.golang.org"),
+		RegistryOrigin::MavenCentral => String::from("https://repo1.maven.org/maven2"),
 		RegistryOrigin::Custom { url, .. } => url.as_str().trim_end_matches('/').to_owned(),
 	};
 	match name.ecosystem() {
 		Language::Rust => format!("{base}/api/v1/crates/{}", name.canonical()),
 		Language::Typescript => format!("{base}/{}", name.canonical()),
 		Language::Python => format!("{base}/pypi/{}/json", name.canonical()),
-		Language::Go => format!("{base}/{}", name.canonical()),
-		Language::Java => format!("{base}/{}", name.canonical()),
+		Language::Go => {
+			let escaped = ecosystem::escape_module_path(name.canonical());
+			format!("{base}/{escaped}/@v/list")
+		}
+		Language::Java => {
+			// canonical is `group:artifact`; map to group_path/artifact/maven-metadata.xml
+			let canon = name.canonical();
+			if let Some((group, artifact)) = canon.split_once(':') {
+				let group_path = group.replace('.', "/");
+				format!("{base}/{group_path}/{artifact}/maven-metadata.xml")
+			} else {
+				format!("{base}/{canon}/maven-metadata.xml")
+			}
+		}
 		// NuGet flat-container version index (ids lowercased — `canonical`
 		// already folds case).
 		Language::CSharp => {
@@ -313,273 +342,215 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 	}
 }
 
-/// Project the raw version strings out of each registry's response shape,
-/// dropping yanked crates.io versions (npm/PyPI listings are already live-only
-/// at these endpoints).
-fn raw_versions(ecosystem: Language, body: &serde_json::Value) -> Vec<String> {
-	match ecosystem {
-		Language::Rust => body["versions"]
-			.as_array()
-			.into_iter()
-			.flatten()
-			.filter(|version| !version["yanked"].as_bool().unwrap_or(false))
-			.filter_map(|version| version["num"].as_str().map(str::to_owned))
-			.collect(),
-		Language::Typescript => body["versions"]
-			.as_object()
-			.into_iter()
-			.flat_map(|versions| versions.keys().cloned())
-			.collect(),
-		Language::Python => body["releases"]
-			.as_object()
-			.into_iter()
-			.flat_map(|releases| releases.keys().cloned())
-			.collect(),
-		// NuGet flat-container `index.json`: `{"versions":[...]}`. Includes
-		// unlisted versions (registration `listed` flag cross-checks elsewhere).
-		Language::CSharp => body["versions"]
-			.as_array()
-			.into_iter()
-			.flatten()
-			.filter_map(|version| version.as_str().map(str::to_owned))
-			.collect(),
-		Language::Go | Language::Java => vec![], // not via this registry resolve path yet
-		Language::Nix => vec![],                 // resolved via FlakeHub in the Nix producer
-	}
-}
-
 // ---------------------------------------------------------------------------
-// NuGet version grammar + interval-notation range matching
+// Tests
 // ---------------------------------------------------------------------------
 
-/// NuGet versioning: SemVer2 with an optional legacy 4th numeric part, plus
-/// interval-notation version ranges (`[1.0,2.0)`). NuGet versions are *not*
-/// SemVer (`1.0.0.5` is legal), so `semver` cannot be used — this is a faithful
-/// subset of NuGet's own `NuGetVersion` / `VersionRange` semantics.
-pub mod nuget {
-	use std::cmp::Ordering;
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use heart::PackageVersion;
 
-	/// A parsed NuGet version: up to four numeric parts, an optional
-	/// dot-separated prerelease, and (dropped) build metadata.
-	#[derive(Debug, Clone, PartialEq, Eq)]
-	pub struct NuGetVersion {
-		parts: [u64; 4],
-		/// Lowercased prerelease labels (`-alpha.1` → `["alpha", "1"]`); empty
-		/// for a release version.
-		pre: Vec<String>,
+	fn cargo(s: &str) -> PackageVersion {
+		PackageVersion::Cargo(semver::Version::parse(s).unwrap())
 	}
 
-	impl NuGetVersion {
-		/// Parse a NuGet version string, or `None` if it isn't numeric-led.
-		pub fn parse(text: &str) -> Option<Self> {
-			let text = text.trim();
-			// Drop build metadata (`+sha`) — ignored in ordering.
-			let core = text.split('+').next().unwrap_or(text);
-			let (numeric, pre_str) = match core.split_once('-') {
-				Some((n, p)) => (n, Some(p)),
-				None => (core, None),
-			};
-			let mut parts = [0u64; 4];
-			let mut count = 0usize;
-			for (i, seg) in numeric.split('.').enumerate() {
-				if i >= 4 || seg.is_empty() {
-					return None;
-				}
-				parts[i] = seg.parse::<u64>().ok()?;
-				count = i + 1;
-			}
-			if count == 0 {
-				return None;
-			}
-			let pre = pre_str
-				.map(|p| p.split('.').map(|s| s.to_ascii_lowercase()).collect())
-				.unwrap_or_default();
-			Some(NuGetVersion { parts, pre })
-		}
-
-		/// Whether this version carries a prerelease label.
-		pub fn is_prerelease(&self) -> bool {
-			!self.pre.is_empty()
-		}
+	fn npm(s: &str) -> PackageVersion {
+		PackageVersion::Npm(semver::Version::parse(s).unwrap())
 	}
 
-	impl Ord for NuGetVersion {
-		fn cmp(&self, other: &Self) -> Ordering {
-			match self.parts.cmp(&other.parts) {
-				Ordering::Equal => {}
-				ord => return ord,
-			}
-			// A release outranks any prerelease of the same numeric core.
-			match (self.pre.is_empty(), other.pre.is_empty()) {
-				(true, true) => Ordering::Equal,
-				(true, false) => Ordering::Greater,
-				(false, true) => Ordering::Less,
-				(false, false) => cmp_pre(&self.pre, &other.pre),
-			}
-		}
+	fn python(s: &str) -> PackageVersion {
+		PackageVersion::Python(s.parse().unwrap())
 	}
 
-	impl PartialOrd for NuGetVersion {
-		fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-			Some(self.cmp(other))
-		}
+	fn csharp(s: &str) -> PackageVersion {
+		PackageVersion::CSharp(s.to_owned())
 	}
 
-	/// Compare prerelease label lists dot-segment-wise (numeric segments
-	/// numerically, else case-insensitive lexically; numeric < alphanumeric).
-	fn cmp_pre(a: &[String], b: &[String]) -> Ordering {
-		for i in 0..a.len().max(b.len()) {
-			let ord = match (a.get(i), b.get(i)) {
-				(Some(x), Some(y)) => cmp_pre_seg(x, y),
-				(Some(_), None) => Ordering::Greater,
-				(None, Some(_)) => Ordering::Less,
-				(None, None) => Ordering::Equal,
-			};
-			if ord != Ordering::Equal {
-				return ord;
-			}
-		}
-		Ordering::Equal
+	fn go_ver(s: &str) -> PackageVersion {
+		PackageVersion::Go(s.to_owned())
 	}
 
-	fn cmp_pre_seg(x: &str, y: &str) -> Ordering {
-		match (x.parse::<u64>(), y.parse::<u64>()) {
-			(Ok(nx), Ok(ny)) => nx.cmp(&ny),
-			(Ok(_), Err(_)) => Ordering::Less,
-			(Err(_), Ok(_)) => Ordering::Greater,
-			(Err(_), Err(_)) => x.cmp(y),
-		}
+	fn java(s: &str) -> PackageVersion {
+		PackageVersion::Java(s.to_owned())
 	}
 
-	/// One end of a NuGet interval.
-	struct Bound {
-		version: Option<NuGetVersion>,
-		inclusive: bool,
+	// ── select(): exact pin ───────────────────────────────────────────────────
+
+	#[test]
+	fn select_exact_pin() {
+		let candidates = vec![cargo("1.0.0"), cargo("2.0.0"), cargo("3.0.0")];
+		let req = VersionRequest::Exact(cargo("2.0.0"));
+		assert_eq!(select(&req, &candidates).unwrap(), cargo("2.0.0"));
 	}
 
-	/// A parsed NuGet version range.
-	struct Range {
-		lower: Bound,
-		upper: Bound,
+	#[test]
+	fn select_exact_pin_missing() {
+		let candidates = vec![cargo("1.0.0"), cargo("3.0.0")];
+		let req = VersionRequest::Exact(cargo("2.0.0"));
+		assert!(matches!(
+			select(&req, &candidates),
+			Err(ResolveError::NoMatchExact { .. })
+		));
 	}
 
-	/// Parse a NuGet version-range spec. Supports interval notation
-	/// (`[1.0]`, `[1.0,2.0)`, `(1.0,)`, `(,2.0]`) and a bare version
-	/// (`1.2.3` = "≥ 1.2.3, the *minimum*", NOT exact — the documented rule).
-	fn parse_range(spec: &str) -> Option<Range> {
-		let spec = spec.trim();
-		if spec.is_empty() {
-			return None;
-		}
-		let first = spec.chars().next().unwrap();
-		let last = spec.chars().last().unwrap();
-		let is_interval = matches!(first, '[' | '(') && matches!(last, ']' | ')');
-		if !is_interval {
-			// Bare version: minimum inclusive, unbounded above.
-			let v = NuGetVersion::parse(spec)?;
-			return Some(Range {
-				lower: Bound { version: Some(v), inclusive: true },
-				upper: Bound { version: None, inclusive: false },
-			});
-		}
-		let inner = &spec[1..spec.len() - 1];
-		let (lo_str, hi_str) = match inner.split_once(',') {
-			Some((lo, hi)) => (lo.trim(), hi.trim()),
-			// `[1.0]` — an exact single version.
-			None => {
-				let v = NuGetVersion::parse(inner.trim())?;
-				return Some(Range {
-					lower: Bound { version: Some(v.clone()), inclusive: true },
-					upper: Bound { version: Some(v), inclusive: true },
-				});
-			}
-		};
-		let lower = Bound {
-			version: if lo_str.is_empty() { None } else { Some(NuGetVersion::parse(lo_str)?) },
-			inclusive: first == '[',
-		};
-		let upper = Bound {
-			version: if hi_str.is_empty() { None } else { Some(NuGetVersion::parse(hi_str)?) },
-			inclusive: last == ']',
-		};
-		Some(Range { lower, upper })
+	// ── select(): SemVer range ────────────────────────────────────────────────
+
+	#[test]
+	fn select_semver_range_picks_greatest() {
+		let candidates = vec![cargo("1.0.0"), cargo("1.2.0"), cargo("1.5.0"), cargo("2.0.0")];
+		let req = VersionRequest::Constraint(RangeConstraint::Semver(
+			semver::VersionReq::parse(">=1.0,<2.0").unwrap(),
+		));
+		assert_eq!(select(&req, &candidates).unwrap(), cargo("1.5.0"));
 	}
 
-	/// Whether `spec` is a well-formed NuGet range.
-	pub fn spec_is_valid(spec: &str) -> bool {
-		parse_range(spec).is_some()
+	#[test]
+	fn select_semver_stable_preferred_over_prerelease() {
+		let candidates = vec![cargo("1.0.0"), cargo("1.1.0-alpha.1")];
+		let req = VersionRequest::Constraint(RangeConstraint::Semver(
+			semver::VersionReq::parse(">=1.0").unwrap(),
+		));
+		// 1.1.0-alpha.1 is higher but pre-release; pick_best should prefer 1.0.0 stable.
+		assert_eq!(select(&req, &candidates).unwrap(), cargo("1.0.0"));
 	}
 
-	/// Whether `candidate` (a raw NuGet version string) satisfies `spec`.
-	pub fn range_matches(spec: &str, candidate: &str) -> bool {
-		let Some(range) = parse_range(spec) else {
-			return false;
-		};
-		let Some(v) = NuGetVersion::parse(candidate) else {
-			return false;
-		};
-		if let Some(lo) = &range.lower.version {
-			match v.cmp(lo) {
-				Ordering::Less => return false,
-				Ordering::Equal if !range.lower.inclusive => return false,
-				_ => {}
-			}
-		}
-		if let Some(hi) = &range.upper.version {
-			match v.cmp(hi) {
-				Ordering::Greater => return false,
-				Ordering::Equal if !range.upper.inclusive => return false,
-				_ => {}
-			}
-		}
-		true
+	// ── select(): PEP 440 range ───────────────────────────────────────────────
+
+	#[test]
+	fn select_pep440_range() {
+		let candidates = vec![
+			python("1.0.0"),
+			python("1.5.0"),
+			python("2.0.0"),
+			python("2.1.0a1"),
+		];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::Python,
+			spec: String::from(">=1.0,<2.0"),
+		});
+		assert_eq!(select(&req, &candidates).unwrap(), python("1.5.0"));
 	}
 
-	#[cfg(test)]
-	mod tests {
-		use super::*;
+	#[test]
+	fn select_pep440_stable_preferred() {
+		let candidates = vec![python("1.0.0"), python("1.1.0a1")];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::Python,
+			spec: String::from(">=1.0"),
+		});
+		assert_eq!(select(&req, &candidates).unwrap(), python("1.0.0"));
+	}
 
-		fn v(s: &str) -> NuGetVersion {
-			NuGetVersion::parse(s).expect("parses")
-		}
+	// ── select(): NuGet interval notation ────────────────────────────────────
 
-		#[test]
-		fn four_part_and_prerelease_ordering() {
-			assert!(v("1.0.0.5") > v("1.0.0"));
-			assert!(v("1.0.0") > v("1.0.0-rc.1"));
-			assert!(v("1.0.0-alpha") < v("1.0.0-beta"));
-			assert!(v("1.0.0-alpha.1") < v("1.0.0-alpha.2"));
-			// Case-insensitive prerelease.
-			assert_eq!(v("1.0.0-Alpha"), v("1.0.0-alpha"));
-			// Build metadata dropped.
-			assert_eq!(v("1.0.0+abc"), v("1.0.0+def"));
-		}
+	#[test]
+	fn select_nuget_interval() {
+		let candidates = vec![csharp("1.0.0"), csharp("1.5.0"), csharp("2.0.0")];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::CSharp,
+			spec: String::from("[1.0,2.0)"),
+		});
+		assert_eq!(select(&req, &candidates).unwrap(), csharp("1.5.0"));
+	}
 
-		#[test]
-		fn interval_notation() {
-			assert!(range_matches("[1.0,2.0)", "1.5.0"));
-			assert!(!range_matches("[1.0,2.0)", "2.0.0"));
-			assert!(range_matches("[1.0,2.0]", "2.0.0"));
-			assert!(!range_matches("(1.0,2.0)", "1.0.0"));
-			assert!(range_matches("(1.0,)", "5.0.0"));
-			assert!(range_matches("(,2.0]", "1.0.0"));
-			assert!(range_matches("[1.0]", "1.0.0"));
-			assert!(!range_matches("[1.0]", "1.0.1"));
-		}
+	#[test]
+	fn select_nuget_malformed_spec() {
+		let candidates = vec![csharp("1.0.0")];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::CSharp,
+			spec: String::from("not-a-nuget-spec!!"),
+		});
+		assert!(matches!(
+			select(&req, &candidates),
+			Err(ResolveError::MalformedRequest { .. })
+		));
+	}
 
-		#[test]
-		fn bare_version_is_minimum_not_exact() {
-			assert!(range_matches("1.2.3", "1.2.3"));
-			assert!(range_matches("1.2.3", "2.0.0"));
-			assert!(!range_matches("1.2.3", "1.0.0"));
-		}
+	#[test]
+	fn select_nuget_stable_preferred() {
+		let candidates = vec![csharp("1.0.0"), csharp("1.1.0-alpha")];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::CSharp,
+			spec: String::from("1.0.0"), // bare = minimum
+		});
+		assert_eq!(select(&req, &candidates).unwrap(), csharp("1.0.0"));
+	}
 
-		#[test]
-		fn malformed_specs_rejected() {
-			assert!(!spec_is_valid("not-a-version"));
-			assert!(!spec_is_valid(""));
-			assert!(spec_is_valid("[1.0,2.0)"));
-			assert!(spec_is_valid("1.2.3"));
-		}
+	// ── select(): Go exact match ──────────────────────────────────────────────
+
+	#[test]
+	fn select_go_exact() {
+		let candidates = vec![go_ver("v1.0.0"), go_ver("v1.1.0"), go_ver("v2.0.0")];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::Go,
+			spec: String::from("v1.1.0"),
+		});
+		// Go range_matches = exact; only v1.1.0 qualifies.
+		assert_eq!(select(&req, &candidates).unwrap(), go_ver("v1.1.0"));
+	}
+
+	#[test]
+	fn select_go_no_match() {
+		let candidates = vec![go_ver("v1.0.0"), go_ver("v2.0.0")];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::Go,
+			spec: String::from("v1.5.0"),
+		});
+		assert!(matches!(
+			select(&req, &candidates),
+			Err(ResolveError::NoMatchRange { .. })
+		));
+	}
+
+	// ── select(): Java bracket range ─────────────────────────────────────────
+
+	#[test]
+	fn select_java_bracket_range() {
+		let candidates = vec![
+			java("1.0"),
+			java("1.5"),
+			java("2.0"),
+			java("2.1-SNAPSHOT"),
+		];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::Java,
+			spec: String::from("[1.0,2.0)"),
+		});
+		assert_eq!(select(&req, &candidates).unwrap(), java("1.5"));
+	}
+
+	#[test]
+	fn select_java_stable_before_prerelease() {
+		let candidates = vec![java("1.0"), java("1.1-SNAPSHOT")];
+		let req = VersionRequest::Constraint(RangeConstraint::Range {
+			ecosystem: Language::Java,
+			spec: String::from("[1.0,2.0)"),
+		});
+		assert_eq!(select(&req, &candidates).unwrap(), java("1.0"));
+	}
+
+	// ── grammar_order ─────────────────────────────────────────────────────────
+
+	#[test]
+	fn grammar_order_cargo() {
+		assert_eq!(grammar_order(&cargo("2.0.0"), &cargo("1.0.0")), std::cmp::Ordering::Greater);
+		assert_eq!(grammar_order(&cargo("1.0.0"), &cargo("1.0.0")), std::cmp::Ordering::Equal);
+	}
+
+	#[test]
+	fn grammar_order_nuget_fallback_unparseable() {
+		// Even if a CSharp version string cannot be parsed as NuGetVersion,
+		// grammar_order falls back to raw string cmp (stays total).
+		let a = PackageVersion::CSharp(String::from("garbage!!"));
+		let b = PackageVersion::CSharp(String::from("zzz"));
+		// Should not panic; result is just some ordering.
+		let _ = grammar_order(&a, &b);
+	}
+
+	#[test]
+	fn grammar_order_mixed_ecosystems_equal() {
+		// Mixed is not expected in practice; should be Equal (not panic).
+		assert_eq!(grammar_order(&cargo("1.0.0"), &npm("1.0.0")), std::cmp::Ordering::Equal);
 	}
 }

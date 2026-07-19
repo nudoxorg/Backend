@@ -15,6 +15,7 @@ path = "lib.rs"
 # `cas` and `version` were folded in: content-addressed storage now lives in
 # `crate::cas` (backed by `object_store`), and version logic in `heart::version`.
 heart = { path = "../heart" }
+ecosystem = { path = "../ecosystem" }
 ir    = { path = "../ir" }
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
@@ -103,6 +104,7 @@ flate2            = "1.1"
 tar               = "0.4"
 zstd              = "0.13"
 async-compression = "0.4"
+zip               = { version = "2", default-features = false, features = ["deflate"] }
 
 # ── Tree-sitter (blob parsing) ────────────────────────────────────────────────
 arborium-tree-sitter = "2.18"
@@ -121,3 +123,4 @@ strum    = { version = "0.26", features = ["derive"] }
 generativity = "1.2"
 bytes    = "1.12"
 futures  = { version = "0.3", features = ["std"] }
+axum     = { version = "0.8" }

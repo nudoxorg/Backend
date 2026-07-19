@@ -594,6 +594,11 @@ pub enum ResolveError {
 	#[error("version lookup failed")]
 	Lookup(#[from] reqwest::Error),
 
+	/// The shared upstream client failed (retries exhausted, rate-limited,
+	/// transport). Retryability delegates to the inner error's own class.
+	#[error("upstream fetch failed")]
+	Upstream(#[from] crate::upstream::UpstreamError),
+
 	/// The named package does not exist in the source.
 	#[error("package not found in source")]
 	NotFound { name: String },
@@ -601,7 +606,11 @@ pub enum ResolveError {
 
 impl Retryable for ResolveError {
 	fn is_retryable(&self) -> bool {
-		matches!(self, ResolveError::Lookup(_))
+		match self {
+			ResolveError::Lookup(_) => true,
+			ResolveError::Upstream(inner) => inner.is_retryable(),
+			_ => false,
+		}
 	}
 }
 
