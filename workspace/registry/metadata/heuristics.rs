@@ -132,11 +132,10 @@ fn normalize_mixed_casing(token: Cow<str>) -> Cow<str> {
 fn format_standard_prefixes(token: Cow<str>) -> Cow<str> {
     let token_lower = token.to_ascii_lowercase();
     for prefix in ["rfc", "iso", "iec", "bcp"] {
-        if let Some(rest) = token_lower.strip_prefix(prefix) {
-            if rest.len() >= 2 && rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        if let Some(rest) = token_lower.strip_prefix(prefix)
+            && rest.len() >= 2 && rest.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Cow::Owned(format!("{prefix}-{rest}"));
             }
-        }
     }
     token
 }
@@ -151,11 +150,10 @@ fn lowercase_script_suffix(token: Cow<str>) -> Cow<str> {
 fn truncate_keyword(keyword: &str, target_length: usize, max_length: usize) -> SmolStr {
     let mut result = SmolStr::from(keyword.trim_matches('-'));
 
-    if result.len() > max_length {
-        if let Some(truncated) = result.get(..target_length) {
+    if result.len() > max_length
+        && let Some(truncated) = result.get(..target_length) {
             result = SmolStr::from(format!("{truncated}…"));
         }
-    }
     result
 }
 
@@ -315,8 +313,8 @@ impl Synonyms {
             }
         }
 
-        if has_multiple_hyphens {
-            if let Some((start, end)) = current_keyword.rsplit_once('-') {
+        if has_multiple_hyphens
+            && let Some((start, end)) = current_keyword.rsplit_once('-') {
                 let normalized_start = self.max_normalize_inner(start, next_depth);
                 let normalized_end = self.max_normalize_inner(end, next_depth);
 
@@ -324,7 +322,6 @@ impl Synonyms {
                     current_keyword = format!("{normalized_start}-{normalized_end}").into();
                 }
             }
-        }
 
         current_keyword
     }

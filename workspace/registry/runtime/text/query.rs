@@ -332,3 +332,78 @@ fn escape_regex(raw: &str) -> String {
     }
     escaped
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::text::index::TextIndex;
+    use heart::{Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
+    use std::num::NonZeroUsize;
+    use futures::TryStreamExt;
+
+    fn tmp_dir(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir()
+            .join(format!("text-query-test-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).expect("tempdir");
+        path
+    }
+
+    fn sym(n: u64, plain: &str, fq: &str) -> Symbol {
+        Symbol {
+            id: SymbolId::from_uuid(uuid::Uuid::from_u128(0xBEEF_0000 + u128::from(n))),
+            package: PackageId::from_uuid(uuid::Uuid::from_u128(0xCAFE_0000)),
+            ecosystem: Language::Rust,
+            name: Name { plain: plain.into(), fully_qualified: fq.into() },
+            kind: SymbolKind::Type,
+        }
+    }
+
+    /// Q1 regression: `axum::Router` — colons in the raw query must not confuse
+    /// the regex tier (escape_regex handles `:` as a literal character).
+    #[tokio::test]
+    async fn build_query_axum_router_produces_query() {
+        let dir = tmp_dir("axum-router");
+        let index = TextIndex::open_or_create(&dir).expect("index opens");
+        index.upsert_batch(&[sym(1, "Router", "axum::Router")]).expect("indexed");
+        let schema = index.schema();
+        let q = TextQuery::new("axum::Router");
+        let _built = build_query(schema, &q).expect("Q1: axum::Router must build a query");
+        // Regex tier: the contains clause must match through the lowercased fq field.
+        let hits: Vec<_> = index.search(&q, NonZeroUsize::new(10).unwrap(), None)
+            .try_collect().await.expect("search");
+        assert!(!hits.is_empty(), "axum::Router should match itself end-to-end");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Q1 regression: `react-query` — hyphens must not be treated as subtraction.
+    #[tokio::test]
+    async fn build_query_react_query_produces_query() {
+        let dir = tmp_dir("react-query");
+        let index = TextIndex::open_or_create(&dir).expect("index opens");
+        // npm-style: name stored as-is, fq same
+        index.upsert_batch(&[sym(2, "react-query", "react-query")]).expect("indexed");
+        let schema = index.schema();
+        let q = TextQuery::new("react-query");
+        let _built = build_query(schema, &q).expect("Q1: react-query must build a query");
+        let hits: Vec<_> = index.search(&q, NonZeroUsize::new(10).unwrap(), None)
+            .try_collect().await.expect("search");
+        assert!(!hits.is_empty(), "react-query should match itself end-to-end");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Q1 regression: `Option<T>` — angle brackets must not break the regex engine.
+    #[tokio::test]
+    async fn build_query_option_t_produces_query() {
+        let dir = tmp_dir("option-t");
+        let index = TextIndex::open_or_create(&dir).expect("index opens");
+        index.upsert_batch(&[sym(3, "Option", "core::option::Option<T>")]).expect("indexed");
+        let schema = index.schema();
+        let q = TextQuery::new("Option<T>");
+        let _built = build_query(schema, &q).expect("Q1: Option<T> must build a query");
+        // The exact-name / subtoken tiers should still find the symbol.
+        let hits: Vec<_> = index.search(&TextQuery::new("Option"), NonZeroUsize::new(10).unwrap(), None)
+            .try_collect().await.expect("search");
+        assert!(!hits.is_empty(), "Option subtoken should match the stored symbol");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

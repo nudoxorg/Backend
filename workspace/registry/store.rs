@@ -88,7 +88,7 @@ fn keyed(path: &Path, error: object_store::Error) -> StoreError {
 		object_store::Error::Unauthenticated { .. } => StoreError::ObjectStoreUnauthenticated { source: error },
 		object_store::Error::Precondition { .. } => StoreError::ObjectStorePreconditionFailed { path: path.clone(), source: error },
 		object_store::Error::AlreadyExists { .. } => StoreError::ObjectStoreAlreadyExists { path: path.clone(), source: error },
-		object_store::Error::Generic { store, .. } => StoreError::ObjectStoreGeneric { store: *store, source: error },
+		object_store::Error::Generic { store, .. } => StoreError::ObjectStoreGeneric { store, source: error },
 		object_store::Error::JoinError { .. } => StoreError::ObjectStoreJoin { source: error },
 		_ => StoreError::Backend(error),
 	}

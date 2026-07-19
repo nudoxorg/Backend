@@ -529,6 +529,21 @@ impl Queue<Live> {
 			.map_err(QueueError::Database)?;
 		Ok(result.rows_affected())
 	}
+
+	/// Count the number of runnable (un-leased) jobs in the queue.
+	///
+	/// Used by the catalog follower driver for backpressure: if the queue depth
+	/// exceeds the configured ceiling the driver pauses rather than enqueueing
+	/// more work. Returns 0 on any database error (non-fatal — the follower
+	/// simply won't pause).
+	pub async fn pending_count(&self) -> Result<u64, QueueError> {
+		let row = sqlx::query("SELECT COUNT(*) FROM jobs WHERE lease_until IS NULL OR lease_until < now()")
+			.fetch_one(&self.pool)
+			.await
+			.map_err(QueueError::Database)?;
+		let count: i64 = row.try_get(0).map_err(QueueError::Database)?;
+		Ok(count.max(0) as u64)
+	}
 }
 
 /// Look up the [`PackageId`] a bridged job id targets — used only to fill a

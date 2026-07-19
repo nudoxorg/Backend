@@ -47,6 +47,18 @@ pub struct BlobBuilder {
 	references_ref: Option<ContentHash>,
 }
 
+/// Hand-written: `ContentHasher` has no `Debug`, and dumping pending bytes
+/// would flood output; identity + counts are what error contexts need.
+impl std::fmt::Debug for BlobBuilder {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("BlobBuilder")
+			.field("package", &self.package)
+			.field("files", &self.files.len())
+			.field("pending", &self.pending.len())
+			.finish_non_exhaustive()
+	}
+}
+
 impl BlobBuilder {
 	/// Begin assembling a snapshot for `package` produced under `toolchain`.
 	pub fn new(package: PackageId, toolchain: Toolchain) -> Self {

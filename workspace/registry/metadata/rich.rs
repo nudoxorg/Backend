@@ -2,139 +2,25 @@
 //!
 //! Turns a package's ingest inputs ([`ExtractionInput`]) into weighted keywords
 //! and a quality score ([`RichMetadata`]).  All logic is self-contained; the only
-//! workspace item used is [`crate::metadata::heuristics`] (normalize_keyword,
-//! Synonyms, Specifics).
+//! workspace items used are [`crate::metadata::heuristics`] (normalize_keyword,
+//! Synonyms, Specifics) and [`ecosystem::search::SearchNorms`] (per-ecosystem
+//! stopwords — R3).
+//!
+//! The shared English stopword list now lives in `ecosystem::search::ENGLISH_STOPWORDS`
+//! (sorted, binary-searched). Per-ecosystem convention words (`crate`, `rust`,
+//! `npm`, `py`, …) live on each impl's `SearchNorms::stopwords`. The old
+//! `STOPWORDS` array is gone; `is_stopword` delegates to `norms.is_stopword`.
 
 use smol_str::SmolStr;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 
 use crate::metadata::heuristics::{Specifics, Synonyms, normalize_keyword};
+use ecosystem::search::SearchNorms;
 
-// ---------------------------------------------------------------------------
-// Stopwords (Sorted alphabetically for binary_search)
-// ---------------------------------------------------------------------------
-
-const STOPWORDS: &[&str] = &[
-    "a",
-    "about",
-    "after",
-    "all",
-    "also",
-    "an",
-    "and",
-    "any",
-    "are",
-    "as",
-    "at",
-    "be",
-    "been",
-    "before",
-    "being",
-    "both",
-    "build",
-    "but",
-    "by",
-    "can",
-    "code",
-    "crate",
-    "crates",
-    "do",
-    "each",
-    "easy",
-    "even",
-    "example",
-    "examples",
-    "fast",
-    "feature",
-    "features",
-    "few",
-    "for",
-    "from",
-    "get",
-    "good",
-    "had",
-    "has",
-    "have",
-    "he",
-    "how",
-    "in",
-    "into",
-    "is",
-    "it",
-    "just",
-    "large",
-    "libraries",
-    "library",
-    "make",
-    "many",
-    "may",
-    "me",
-    "more",
-    "most",
-    "much",
-    "new",
-    "no",
-    "nor",
-    "not",
-    "of",
-    "on",
-    "one",
-    "only",
-    "option",
-    "options",
-    "or",
-    "other",
-    "over",
-    "package",
-    "readme",
-    "run",
-    "rust",
-    "set",
-    "she",
-    "simple",
-    "small",
-    "so",
-    "some",
-    "such",
-    "than",
-    "that",
-    "the",
-    "then",
-    "these",
-    "they",
-    "this",
-    "those",
-    "to",
-    "todo",
-    "up",
-    "us",
-    "usable",
-    "usage",
-    "use",
-    "used",
-    "useful",
-    "uses",
-    "using",
-    "very",
-    "via",
-    "was",
-    "we",
-    "well",
-    "were",
-    "what",
-    "when",
-    "where",
-    "which",
-    "who",
-    "will",
-    "wip",
-    "with",
-    "without",
-    "yet",
-    "you",
-];
-
+/// Identifier-specific stopwords (code structure words with no semantic meaning
+/// in search context). These are LOCAL to rich.rs: they supplement the shared
+/// English + ecosystem stopwords for the identifier extraction path only.
 const IDENT_STOPWORDS: &[&str] = &[
     "add", "app", "as", "bench", "benches", "build", "check", "clone", "close", "convert", "copy",
     "core", "count", "create", "debug", "default", "delete", "drop", "enum", "eq", "err", "false",
@@ -246,7 +132,7 @@ impl Score {
         n: impl Into<f64>,
     ) -> ScoreAdj<'_> {
         let n = n.into();
-        assert!(n >= 0. && n <= 1., "frac n={n} out of 0..=1");
+        assert!((0. ..=1.).contains(&n), "frac n={n} out of 0..=1");
         let max = f64::from(max_score);
         self.score_f(for_what, max, n * max)
     }
@@ -336,6 +222,10 @@ pub struct ExtractionInput<'a> {
     pub has_license: bool,
     /// Lines of code (Rust source).
     pub loc: u32,
+    /// Published release count observed at resolve time (`None` before resolve).
+    pub release_count: Option<u32>,
+    /// Withdrawn/yanked releases among them.
+    pub withdrawn_count: Option<u32>,
 }
 
 /// The derived, searchable metadata.  Serde so it can ride inside a stored
@@ -348,6 +238,8 @@ pub struct RichMetadata {
     pub categories: Vec<(f32, SmolStr)>,
     /// Overall quality score in 0.0..=1.0.
     pub quality: f32,
+    /// Normalized direct-dependency name slugs (lowercase, trimmed, deduped, sorted).
+    pub dependencies: Vec<SmolStr>,
 }
 
 impl RichMetadata {
@@ -385,6 +277,41 @@ pub struct SearchFacets {
     /// Quality in parts-per-million (0..=1_000_000) — integer so the enclosing
     /// record stays `Eq`.
     pub quality_ppm: u32,
+    /// The manifest description, carried through to the tantivy `description`
+    /// field (S2). `#[serde(default)]` so pre-existing stored facets decode.
+    #[serde(default)]
+    pub description: Option<SmolStr>,
+    /// Monthly downloads from the ecosystem's `DownloadEndpoint` (S4); `None`
+    /// when the ecosystem has no source — downloads-driven ranking stages then
+    /// never fire for it.
+    #[serde(default)]
+    pub downloads: Option<u64>,
+    /// Normalized direct-dependency name slugs (lowercase), for `dep:` search
+    /// filters and the corpus-wide reverse-dependency sweep.
+    #[serde(default)]
+    pub dependencies: Vec<SmolStr>,
+    /// Reverse-dependency in-degree computed by the periodic corpus sweep —
+    /// the ecosystem-fair popularity signal. `None` until the first sweep.
+    #[serde(default)]
+    pub dependents: Option<u32>,
+    /// Normalized repository slug (`host/owner/repo`, lowercase) for
+    /// cross-ecosystem entity resolution. `None` when no repository is declared.
+    #[serde(default)]
+    pub repo_slug: Option<SmolStr>,
+    /// Lowercased license expression (e.g. `mit`, `apache-2.0`, `mit or apache-2.0`)
+    /// for `license:` filters. `None` when the manifest declares none.
+    #[serde(default)]
+    pub license: Option<SmolStr>,
+    /// Published (listed + withdrawn) release count observed at resolve time.
+    #[serde(default)]
+    pub release_count: Option<u32>,
+    /// How many of those releases are withdrawn/yanked.
+    #[serde(default)]
+    pub withdrawn_count: Option<u32>,
+    /// Whether THIS version is currently withdrawn on its registry — ranking
+    /// applies a graded demotion (never a binary visibility cut).
+    #[serde(default)]
+    pub withdrawn: bool,
 }
 
 impl SearchFacets {
@@ -394,6 +321,15 @@ impl SearchFacets {
         Self {
             keywords: rich.keywords.iter().map(|(_, slug)| slug.clone()).collect(),
             quality_ppm: rich.quality_ppm().min(1_000_000) as u32,
+            description: None,
+            downloads: None,
+            dependencies: rich.dependencies.clone(),
+            dependents: None,
+            repo_slug: None,
+            license: None,
+            release_count: None,
+            withdrawn_count: None,
+            withdrawn: false,
         }
     }
 
@@ -418,18 +354,22 @@ impl SearchFacets {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn is_stopword(w: &str) -> bool {
-    STOPWORDS.binary_search(&w).is_ok()
+fn is_stopword(w: &str, norms: &SearchNorms) -> bool {
+    norms.is_stopword(w)
 }
 
-fn is_ident_stopword(w: &str) -> bool {
-    IDENT_STOPWORDS.binary_search(&w).is_ok() || STOPWORDS.binary_search(&w).is_ok()
+fn is_ident_stopword(w: &str, norms: &SearchNorms) -> bool {
+    IDENT_STOPWORDS.binary_search(&w).is_ok() || norms.is_stopword(w)
 }
 
 /// Split a prose string into word candidates, normalize each, and yield
 /// `(normalized, raw_weight)` pairs where `raw_weight` is the caller-supplied
-/// source weight.
-fn prose_words(text: &str, weight: f32) -> impl Iterator<Item = (SmolStr, f32)> + '_ {
+/// source weight. Stopword filtering is delegated to `norms` (R3).
+fn prose_words<'a>(
+    text: &'a str,
+    weight: f32,
+    norms: &'a SearchNorms,
+) -> impl Iterator<Item = (SmolStr, f32)> + 'a {
     text.split(|c: char| {
         c.is_ascii_whitespace()
             || matches!(
@@ -438,15 +378,16 @@ fn prose_words(text: &str, weight: f32) -> impl Iterator<Item = (SmolStr, f32)> 
             )
     })
     .filter(|w| w.len() >= 2)
-    .map(|w| normalize_keyword(w))
+    .map(normalize_keyword)
     .filter(|w| !w.is_empty() && w.len() >= 2)
-    .filter(|w| !is_stopword(w.as_str()))
+    .filter(move |w| !is_stopword(w.as_str(), norms))
     .map(move |w| (w, weight))
 }
 
 /// Split an identifier into its component words (snake_case split, camelCase
-/// split), strip prefixes/suffixes, and normalize.
-fn ident_words(ident: &str, weight: f32) -> Vec<(SmolStr, f32)> {
+/// split), strip prefixes/suffixes, and normalize. Stopword filtering uses
+/// `norms` (R3).
+fn ident_words(ident: &str, weight: f32, norms: &SearchNorms) -> Vec<(SmolStr, f32)> {
     // Convert camelCase → snake_case first by inserting underscores before
     // uppercase runs.
     let snake = camel_to_snake(ident);
@@ -474,9 +415,9 @@ fn ident_words(ident: &str, weight: f32) -> Vec<(SmolStr, f32)> {
 
     s.split('_')
         .filter(|w| w.len() >= 2)
-        .map(|w| normalize_keyword(w))
+        .map(normalize_keyword)
         .filter(|w| !w.is_empty() && w.len() >= 2)
-        .filter(|w| !is_ident_stopword(w.as_str()))
+        .filter(|w| !is_ident_stopword(w.as_str(), norms))
         .map(|w| (w, weight))
         .collect()
 }
@@ -633,6 +574,20 @@ fn compute_quality(input: &ExtractionInput<'_>) -> f32 {
     score.has("non_giant", 1, input.loc < 80_000);
     score.frac("loc", 3, (input.loc as f64 / 10_000.).min(1.0));
 
+    // Release-history group — only contributes when release_count is known.
+    if let Some(release_count) = input.release_count {
+        let withdrawn_count = input.withdrawn_count.unwrap_or(0);
+        let mut rh = Score::new();
+        rh.n("release_maturity", 20, i64::from(release_count.min(20)));
+        let ratio = if release_count == 0 {
+            0.0f64
+        } else {
+            f64::from(withdrawn_count) / f64::from(release_count)
+        };
+        rh.has("low_withdrawn_ratio", 3, ratio < 0.15);
+        score.group("release_history", 23, rh);
+    }
+
     score.total() as f32
 }
 
@@ -663,11 +618,10 @@ fn apply_synonyms_and_specifics(
             }
         }
 
-        if let Some(sp) = specifics {
-            if sp.is_bland(current.as_str()).is_some() {
+        if let Some(sp) = specifics
+            && sp.is_bland(current.as_str()).is_some() {
                 current_w *= 0.3;
             }
-        }
 
         if current != *kw || (current_w - w).abs() > 1e-6 {
             remap.push((kw.clone(), current, current_w));
@@ -682,8 +636,13 @@ fn apply_synonyms_and_specifics(
 }
 
 /// Extract rich metadata from the given input.
+///
+/// `norms` is the per-ecosystem [`SearchNorms`] whose `is_stopword` governs
+/// prose/identifier filtering. Pass `ecosystem::spec(lang).search_norms()` at
+/// the call site (R3).
 pub fn extract(
     input: &ExtractionInput<'_>,
+    norms: &'static SearchNorms,
     synonyms: Option<&Synonyms>,
     specifics: Option<&Specifics>,
 ) -> RichMetadata {
@@ -717,22 +676,21 @@ pub fn extract(
         }
     }
 
-    // 3. Crate name parts (weight 0.6, hidden — they are not stopword-filtered
-    //    like prose; they're kept if len > 2 and not obviously generic).
+    // 3. Package name parts (weight 0.6, hidden — kept if len > 2 and not obviously generic).
     let name_skip = ["rs", "impl", "internal", "shared"];
     for part in input.name.split(|c: char| !c.is_ascii_alphanumeric()) {
         if part.len() <= 2 || name_skip.contains(&part) {
             continue;
         }
         let norm = normalize_keyword(part);
-        if !norm.is_empty() && norm.len() >= 2 && !is_stopword(norm.as_str()) {
+        if !norm.is_empty() && norm.len() >= 2 && !is_stopword(norm.as_str(), norms) {
             add!(norm, 0.6);
         }
     }
 
     // 4. Description words (weight 0.6).
     if let Some(desc) = input.description {
-        for (kw, w) in prose_words(desc, 0.6) {
+        for (kw, w) in prose_words(desc, 0.6, norms) {
             add!(kw, w);
         }
     }
@@ -740,7 +698,7 @@ pub fn extract(
     // 5. README words (weight 0.3, skip boilerplate sections).
     if let Some(readme) = input.readme {
         for (text, section_w) in readme_relevant_text(readme) {
-            for (kw, w) in prose_words(text, 0.3 * section_w) {
+            for (kw, w) in prose_words(text, 0.3 * section_w, norms) {
                 add!(kw, w);
             }
         }
@@ -748,7 +706,7 @@ pub fn extract(
 
     // 6. Source identifiers (weight 0.25).
     for ident in input.identifiers {
-        for (kw, w) in ident_words(ident.as_str(), 0.25) {
+        for (kw, w) in ident_words(ident.as_str(), 0.25, norms) {
             add!(kw, w);
         }
     }
@@ -763,7 +721,7 @@ pub fn extract(
     apply_synonyms_and_specifics(&mut bag, synonyms, specifics);
 
     // Remove dep: keywords from visible output and any remaining stopwords.
-    bag.retain(|k, _| !k.starts_with("dep:") && !is_stopword(k.as_str()));
+    bag.retain(|k, _| !k.starts_with("dep:") && !is_stopword(k.as_str(), norms));
 
     // Sort descending by weight, cap at 20.
     let mut keywords: Vec<(f32, SmolStr)> = bag.into_iter().map(|(k, w)| (w, k)).collect();
@@ -771,23 +729,34 @@ pub fn extract(
     keywords.truncate(20);
 
     // Normalize so the top keyword = 1.0.
-    if let Some(&(top_w, _)) = keywords.first() {
-        if top_w > 0.0 {
+    if let Some(&(top_w, _)) = keywords.first()
+        && top_w > 0.0 {
             for (w, _) in &mut keywords {
                 *w = (*w / top_w).clamp(0.0, 1.0);
             }
         }
-    }
 
     // Categories: from manifest, else infer from keywords.
     let categories = derive_categories(input, &keywords);
 
     let quality = compute_quality(input);
 
+    // Dependency slugs: lowercase + trim, deduplicated, sorted for determinism.
+    // No `normalize_keyword` — names must round-trip exactly for the reverse-dep join.
+    let mut dependencies: Vec<SmolStr> = input
+        .dependencies
+        .iter()
+        .map(|d| SmolStr::from(d.trim().to_ascii_lowercase()))
+        .filter(|d| !d.is_empty())
+        .collect();
+    dependencies.sort_unstable();
+    dependencies.dedup();
+
     RichMetadata {
         keywords,
         categories,
         quality,
+        dependencies,
     }
 }
 
@@ -825,6 +794,11 @@ fn derive_categories(
 mod tests {
     use super::*;
 
+    /// Rust norms: suitable for tests that just need a valid `&'static SearchNorms`.
+    fn rust_norms() -> &'static SearchNorms {
+        ecosystem::spec(ecosystem::Language::Rust).search_norms()
+    }
+
     #[test]
     fn score_basic() {
         let mut s = Score::new();
@@ -855,8 +829,237 @@ mod tests {
             identifiers: &[],
             dependencies: &[],
             loc: 2000,
+            ..Default::default()
         };
-        let meta = extract(&input, None, None);
+        let meta = extract(&input, rust_norms(), None, None);
         assert!(meta.quality_ppm() <= 1_000_000);
+    }
+
+    #[test]
+    fn rust_ecosystem_words_stopword_filtered() {
+        // "rust"/"crate"/"crates" must be stopwords when using Rust norms.
+        let norms = rust_norms();
+        assert!(norms.is_stopword("rust"), "'rust' must be stopped by Rust norms");
+        assert!(norms.is_stopword("crate"), "'crate' must be stopped by Rust norms");
+        assert!(norms.is_stopword("crates"), "'crates' must be stopped by Rust norms");
+    }
+
+    #[test]
+    fn npm_ecosystem_words_not_stopped_by_rust_norms() {
+        let norms = rust_norms();
+        assert!(!norms.is_stopword("node"), "'node' NOT stopped by Rust norms");
+        assert!(!norms.is_stopword("npm"), "'npm' NOT stopped by Rust norms");
+    }
+
+    #[test]
+    fn extract_uses_ecosystem_norms_for_stopwords() {
+        // "rust" is a stopword for Rust norms → must not appear in keywords.
+        let rust_norms = ecosystem::spec(ecosystem::Language::Rust).search_norms();
+        let input = ExtractionInput {
+            name: "mylib",
+            description: Some("A rust library for parsing"),
+            manifest_keywords: &[],
+            manifest_categories: &[],
+            readme: None,
+            identifiers: &[],
+            dependencies: &[],
+            has_repository: false,
+            has_documentation: false,
+            has_license: false,
+            loc: 0,
+            ..Default::default()
+        };
+        let meta = extract(&input, rust_norms, None, None);
+        let kw_slugs: Vec<&str> = meta.keywords.iter().map(|(_, k)| k.as_str()).collect();
+        assert!(!kw_slugs.contains(&"rust"), "'rust' must be filtered by Rust norms");
+
+        // "node" is a stopword for npm norms → must not appear.
+        let npm_norms = ecosystem::spec(ecosystem::Language::Typescript).search_norms();
+        let input_npm = ExtractionInput {
+            name: "axios",
+            description: Some("Promise based http client for node"),
+            ..input
+        };
+        let meta_npm = extract(&input_npm, npm_norms, None, None);
+        let kw_npm: Vec<&str> = meta_npm.keywords.iter().map(|(_, k)| k.as_str()).collect();
+        assert!(!kw_npm.contains(&"node"), "'node' must be filtered by npm norms");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2: dependency slug extraction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dependencies_dedup_sort_lowercase() {
+        let deps = vec![
+            "Serde".to_string(),
+            "tokio".to_string(),
+            "SERDE".to_string(),
+            "Anyhow".to_string(),
+            "tokio".to_string(),
+        ];
+        let input = ExtractionInput {
+            name: "mylib",
+            dependencies: &deps,
+            ..Default::default()
+        };
+        let meta = extract(&input, rust_norms(), None, None);
+        // Expect sorted, deduplicated, lowercased.
+        assert_eq!(
+            meta.dependencies,
+            vec![
+                SmolStr::from("anyhow"),
+                SmolStr::from("serde"),
+                SmolStr::from("tokio"),
+            ],
+            "dependencies must be sorted, deduped, and lowercased"
+        );
+    }
+
+    #[test]
+    fn dep_keywords_never_in_visible_keywords() {
+        let deps = vec!["tokio".to_string(), "serde".to_string()];
+        let input = ExtractionInput {
+            name: "mylib",
+            description: Some("async runtime wrapper"),
+            dependencies: &deps,
+            ..Default::default()
+        };
+        let meta = extract(&input, rust_norms(), None, None);
+        for (_, kw) in &meta.keywords {
+            assert!(
+                !kw.starts_with("dep:"),
+                "dep: keyword leaked into visible keywords: {kw}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_facets_copies_dependencies() {
+        let deps = vec!["serde".to_string(), "anyhow".to_string()];
+        let input = ExtractionInput {
+            name: "mylib",
+            dependencies: &deps,
+            ..Default::default()
+        };
+        let meta = extract(&input, rust_norms(), None, None);
+        let facets = SearchFacets::from_rich(&meta);
+        assert_eq!(facets.dependencies, meta.dependencies);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3: release-maturity quality signals
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn release_maturity_raises_quality() {
+        let base = ExtractionInput {
+            name: "mylib",
+            description: Some("A useful library"),
+            has_license: true,
+            loc: 1000,
+            ..Default::default()
+        };
+        let with_releases = ExtractionInput {
+            release_count: Some(20),
+            withdrawn_count: Some(0),
+            ..base.clone()
+        };
+
+        let q_base = compute_quality(&base);
+        let q_with = compute_quality(&with_releases);
+        assert!(
+            q_with > q_base,
+            "quality with release_count=20 ({q_with}) should exceed quality without ({q_base})"
+        );
+    }
+
+    #[test]
+    fn none_release_count_leaves_quality_identical() {
+        let base = ExtractionInput {
+            name: "mylib",
+            description: Some("A useful library"),
+            has_license: true,
+            loc: 1000,
+            ..Default::default()
+        };
+        // Explicitly None fields — same as Default.
+        let with_none = ExtractionInput {
+            release_count: None,
+            withdrawn_count: None,
+            ..base.clone()
+        };
+
+        let q_base = compute_quality(&base);
+        let q_none = compute_quality(&with_none);
+        assert!(
+            (q_base - q_none).abs() < 1e-7,
+            "None release_count must not change quality: {q_base} vs {q_none}"
+        );
+    }
+
+    #[test]
+    fn high_withdrawn_ratio_penalizes_low_withdrawn_ratio_signal() {
+        let good = ExtractionInput {
+            name: "mylib",
+            release_count: Some(10),
+            withdrawn_count: Some(0),
+            ..Default::default()
+        };
+        let bad = ExtractionInput {
+            name: "mylib",
+            release_count: Some(10),
+            withdrawn_count: Some(2), // 20% > 15% threshold
+            ..Default::default()
+        };
+        let q_good = compute_quality(&good);
+        let q_bad = compute_quality(&bad);
+        assert!(
+            q_good > q_bad,
+            "low withdrawn ratio should score higher than high: {q_good} vs {q_bad}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4: SearchFacets serde round-trip + legacy decode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_facets_serde_roundtrip_with_new_fields() {
+        let facets = SearchFacets {
+            keywords: vec![SmolStr::from("async"), SmolStr::from("runtime")],
+            quality_ppm: 750_000,
+            description: Some(SmolStr::from("An async runtime")),
+            downloads: Some(100_000),
+            dependencies: vec![SmolStr::from("tokio"), SmolStr::from("serde")],
+            dependents: Some(42),
+            repo_slug: Some(SmolStr::from("github/tokio-rs/tokio")),
+            license: Some(SmolStr::from("mit")),
+            release_count: Some(15),
+            withdrawn_count: Some(1),
+            withdrawn: false,
+        };
+
+        let json = serde_json::to_string(&facets).expect("serialize");
+        let decoded: SearchFacets = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(facets, decoded, "round-trip must be identity");
+    }
+
+    #[test]
+    fn search_facets_legacy_json_decodes_with_defaults() {
+        // Simulate a stored facet that predates all new fields.
+        let legacy = r#"{"keywords":["async","runtime"],"quality_ppm":500000}"#;
+        let decoded: SearchFacets = serde_json::from_str(legacy).expect("legacy decode");
+        assert_eq!(decoded.keywords, vec![SmolStr::from("async"), SmolStr::from("runtime")]);
+        assert_eq!(decoded.quality_ppm, 500_000);
+        assert!(decoded.dependencies.is_empty());
+        assert!(decoded.dependents.is_none());
+        assert!(decoded.repo_slug.is_none());
+        assert!(decoded.license.is_none());
+        assert!(decoded.release_count.is_none());
+        assert!(decoded.withdrawn_count.is_none());
+        assert!(!decoded.withdrawn);
+        assert!(decoded.description.is_none());
+        assert!(decoded.downloads.is_none());
     }
 }
