@@ -174,6 +174,10 @@ pub enum RegistryOrigin {
     FlakeHub,
     /// nuget.org — the public NuGet gallery / flat-container feed.
     NuGet,
+    /// proxy.golang.org — the public Go module proxy.
+    GoProxy,
+    /// repo1.maven.org — Maven Central (sources jar preferred).
+    MavenCentral,
     Custom { name: SmolStr, url: url::Url },
 }
 
@@ -185,6 +189,8 @@ impl RegistryOrigin {
             RegistryOrigin::PyPi => Cow::Borrowed("pypi"),
             RegistryOrigin::FlakeHub => Cow::Borrowed("flakehub"),
             RegistryOrigin::NuGet => Cow::Borrowed("nuget"),
+            RegistryOrigin::GoProxy => Cow::Borrowed("goproxy"),
+            RegistryOrigin::MavenCentral => Cow::Borrowed("maven-central"),
             RegistryOrigin::Custom { name, .. } => Cow::Owned(name.to_string()),
         }
     }

@@ -1,68 +1,11 @@
-use std::marker::ConstParamTy;
-
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-/// The world the code belongs to.
-///
-/// The wire token for each variant is its lowercase name (`"rust"`, `"typescript"`,
-/// etc.), matching the postgres `CHECK` domain.  `VariantNames::VARIANTS` is
-/// the single source the schema CHECK constraint is derived from.
-#[derive(
-	Debug,
-	Clone,
-	Copy,
-	PartialEq,
-	Eq,
-	Hash,
-	PartialOrd,
-	Ord,
-	ConstParamTy,
-	Serialize,
-	Deserialize,
-	strum::Display,
-	strum::EnumString,
-	strum::EnumIter,
-	strum::AsRefStr,
-	strum::IntoStaticStr,
-	strum::VariantNames,
-)]
-#[strum(serialize_all = "lowercase")]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-	/// <https://rust-lang.org/>.io.
-	Rust,
-
-	/// <https://www.typescriptlang.org/>.
-	Typescript,
-
-	/// <https://python.org/>.
-	Python,
-
-	/// <https://go.dev/>.
-	Go,
-
-	/// <https://www.java.com/>.
-	Java,
-
-	/// <https://nix.dev/>. Flakes, packages, NixOS modules, and lib functions,
-	/// acquired from FlakeHub and evaluated in-process.
-	Nix,
-
-	/// <https://dotnet.microsoft.com/>. .NET / NuGet packages, extracted from
-	/// compiled assemblies (metadata) or source via a Roslyn oracle.
-	CSharp,
-}
-
-impl Language {
-	/// The stable lowercase wire token (`"rust"` / `"typescript"` / `"python"`) as
-	/// a `&'static str` — the form persisted in postgres and used as a codec token.
-	///
-	/// Delegates to `strum::IntoStaticStr` so the token set can never drift from
-	/// the variants. (`AsRefStr` yields the same strings but borrowed from `self`,
-	/// which can't satisfy the `'static` return the storage/codec paths need.)
-	pub fn as_token(&self) -> &'static str { self.into() }
-}
+/// [`Language`] moved to the `ecosystem` spec crate (ECOSYSTEM-PLAN P0) so the
+/// per-ecosystem spec sits *below* heart — `PackageName` delegates its grammar
+/// to `ecosystem::spec`, so the spec crate cannot also depend on heart.
+/// Re-exported here so every `heart::Language` path compiles unchanged.
+pub use ::ecosystem::Language;
 
 /// The Rust edition a crate was produced under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
