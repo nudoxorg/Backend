@@ -34,9 +34,81 @@ pub struct SearchRequestDto {
 	/// into a session graph (the `/expand` surface).
 	#[serde(default)]
 	pub session: Option<uuid::Uuid>,
+
+	/// The requested quality mode (09-vector §20.5). Absent → `parity` (the
+	/// server is online by definition; `local` is the client-side default).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub quality_mode: Option<QualityModeDto>,
+
+	/// What slice of the world the query addresses. Absent → `org`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub scope: Option<QueryScopeDto>,
+
+	/// Dep packages the client **claims** it serves from local baked shards
+	/// (hot-set membership is claimed by the client, §20.5); the server
+	/// excludes them from its dense Stage-1 rather than double-answering.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub hot_packages: Vec<uuid::Uuid>,
+}
+
+/// The wire spelling of [`vector_core::routing::QualityMode`], a separate DTO
+/// enum so the HTTP contract stays decoupled from the vector-core vocabulary
+/// it lowers into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QualityModeDto {
+	Local,
+	Parity,
+	Premium,
+	Deep,
+}
+
+impl From<QualityModeDto> for vector_core::routing::QualityMode {
+	fn from(mode: QualityModeDto) -> Self {
+		match mode {
+			QualityModeDto::Local => Self::Local,
+			QualityModeDto::Parity => Self::Parity,
+			QualityModeDto::Premium => Self::Premium,
+			QualityModeDto::Deep => Self::Deep,
+		}
+	}
+}
+
+/// The wire spelling of [`vector_core::routing::QueryScope`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueryScopeDto {
+	Project,
+	Deps,
+	Org,
+}
+
+impl From<QueryScopeDto> for vector_core::routing::QueryScope {
+	fn from(scope: QueryScopeDto) -> Self {
+		match scope {
+			QueryScopeDto::Project => Self::Project,
+			QueryScopeDto::Deps => Self::Deps,
+			QueryScopeDto::Org => Self::Org,
+		}
+	}
 }
 
 impl SearchRequestDto {
+	/// Lower the wire routing fields into [`crate::search::routing::RouteInputs`]
+	/// (09-vector §20.5): default quality `parity` (the server is online),
+	/// default scope `org`, hot-set membership as claimed by the client.
+	pub fn routing_inputs(&self) -> crate::search::routing::RouteInputs {
+		crate::search::routing::RouteInputs {
+			scope: self.scope.map(Into::into).unwrap_or(vector_core::routing::QueryScope::Org),
+			quality: self
+				.quality_mode
+				.map(Into::into)
+				.unwrap_or(vector_core::routing::QualityMode::Parity),
+			online: true,
+			claimed_hot: self.hot_packages.iter().copied().map(heart::PackageId::from_uuid).collect(),
+		}
+	}
+
 	/// Lower the wire request into the typed [`Search`]. A semantic opt-in
 	/// becomes an [`AbstractQuery`] (which only the planner may escalate);
 	/// everything else is a validated, operator-escaped literal.
@@ -312,4 +384,239 @@ fn bad_request(error: impl std::fmt::Display) -> ServerError {
 pub struct HealthDto {
 	pub ready: bool,
 	pub degraded: Vec<heart::BackendKind>,
+}
+
+// ── Dep-shard DTOs (09-vector §20.3) ─────────────────────────────────────────
+
+/// The response body for `GET /v1/depshards/{package}/{version}/manifest`:
+/// the full edgepack key (so the client can verify it derived the same
+/// identity), the artifact id + RAM estimate once baked, and the lifecycle
+/// status. `artifact_id`/`ram_estimate` are absent until `status == "ready"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepshardManifestDto {
+	/// The package uuid.
+	pub package: String,
+	/// The package's canonical version.
+	pub version: String,
+	/// The embedding model id the shard was baked under.
+	pub model_id: String,
+	/// The embed-text recipe revision.
+	pub recipe_id: String,
+	/// The quantization profile token (`qp1`).
+	pub quant_profile: String,
+	/// The qdrant-edge on-disk format version.
+	pub edge_format_version: u32,
+	/// Lower-hex blake3 of the edgepack key — the artifact's identity.
+	pub edgepack_key_digest: String,
+	/// Lower-hex blake3 of the packed artifact bytes (the CAS key), once ready.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub artifact_id: Option<String>,
+	/// The client-side admission estimate in bytes (§20.4), once ready.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub ram_estimate: Option<i64>,
+	/// `pending` | `ready` | `failed`.
+	pub status: String,
+}
+
+impl DepshardManifestDto {
+	/// Assemble from the computed key and the (possibly absent) ledger row.
+	/// No row, or a row still `claimed`, presents as `pending` — the bakery
+	/// poller will (or already did) pick the package up.
+	pub fn from_parts(
+		key: &vector_core::shard::EdgepackKey,
+		row: Option<&crate::bakery::EdgepackRow>,
+	) -> Self {
+		use crate::bakery::EdgepackStatus;
+		let status = match row.map(|row| row.status) {
+			Some(EdgepackStatus::Ready) => "ready",
+			Some(EdgepackStatus::Failed) => "failed",
+			Some(EdgepackStatus::Claimed) | None => "pending",
+		};
+		Self {
+			package: key.package.to_string(),
+			version: key.version.to_string(),
+			model_id: key.model_id.to_string(),
+			recipe_id: key.recipe_id.to_string(),
+			quant_profile: quant_profile_token(&key.quant_profile),
+			edge_format_version: key.edge_format_version,
+			edgepack_key_digest: key.digest().hex(),
+			artifact_id: row.and_then(|row| row.artifact).map(|hash| hash.hex()),
+			ram_estimate: row.and_then(|row| row.ram_estimate),
+			status: status.to_owned(),
+		}
+	}
+
+	/// Whether the artifact is servable.
+	pub fn is_ready(&self) -> bool { self.status == "ready" }
+}
+
+/// The stable wire token for a quantization profile (mirrors the bakery
+/// fingerprint encoding; clients treat it as opaque).
+fn quant_profile_token(profile: &vector_core::quant::QuantProfile) -> String {
+	use vector_core::quant::QuantProfile;
+	match profile {
+		QuantProfile::None => "none".to_owned(),
+		QuantProfile::ScalarInt8 { quantile, always_ram } => {
+			format!("scalar-int8/q{quantile}/ram{}", u8::from(*always_ram))
+		}
+	}
+}
+
+// ── Rerank DTOs (09-vector §20.8) ────────────────────────────────────────────
+
+/// The largest number of documents one rerank call accepts (the deep path
+/// sends the Stage-1 top-100; a generous ceiling bounds abuse).
+pub const RERANK_MAX_DOCUMENTS: usize = 256;
+
+/// The request body for `POST /v1/rerank`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankRequestDto {
+	/// The query the documents are scored against.
+	pub query: String,
+	/// The candidate documents.
+	pub documents: Vec<crate::rerank::RerankDocument>,
+	/// How many results to return (descending relevance).
+	pub top_k: std::num::NonZeroU32,
+}
+
+impl RerankRequestDto {
+	/// Structural validation, surfaced as typed 400s.
+	pub fn validate(&self) -> Result<(), ServerError> {
+		if self.query.trim().is_empty() {
+			return Err(BadRequestReason::MissingField { field: "query" }.into());
+		}
+		if self.documents.is_empty() {
+			return Err(BadRequestReason::MissingField { field: "documents" }.into());
+		}
+		if self.documents.len() > RERANK_MAX_DOCUMENTS {
+			return Err(BadRequestReason::MalformedQuery(crate::error::QueryError::Malformed {
+				detail: format!(
+					"too many rerank documents: {} (maximum {RERANK_MAX_DOCUMENTS})",
+					self.documents.len()
+				),
+				query: String::new(),
+			})
+			.into());
+		}
+		Ok(())
+	}
+}
+
+/// The response body for `POST /v1/rerank`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankResponseDto {
+	/// Scores in descending relevance order, at most `top_k` of them.
+	pub scores: Vec<crate::rerank::RerankScore>,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The manifest wire shape: every edgepack-key field present, hex digests,
+	/// and the optional fields elided until ready.
+	#[test]
+	fn depshard_manifest_serde_shape() {
+		let key = vector_core::shard::EdgepackKey {
+			package: uuid::Uuid::from_u128(3).to_string(),
+			version: "0.4.2".to_owned(),
+			model_id: "jinaai/jina-embeddings-v2-base-code".to_owned(),
+			recipe_id: crate::bakery::RECIPE_ID.to_owned(),
+			quant_profile: crate::bakery::QUANT_PROFILE.to_owned(),
+			edge_format_version: vector_core::shard::EDGE_FORMAT_VERSION,
+		};
+
+		// Pending: no row yet → optional fields elided, status pending.
+		let pending = DepshardManifestDto::from_parts(&key, None);
+		let value = serde_json::to_value(&pending).expect("serializes");
+		let object = value.as_object().expect("object");
+		for field in [
+			"package",
+			"version",
+			"model_id",
+			"recipe_id",
+			"quant_profile",
+			"edge_format_version",
+			"edgepack_key_digest",
+			"status",
+		] {
+			assert!(object.contains_key(field), "manifest must carry `{field}`");
+		}
+		assert!(!object.contains_key("artifact_id"), "artifact_id elided while pending");
+		assert!(!object.contains_key("ram_estimate"), "ram_estimate elided while pending");
+		assert_eq!(object["status"], "pending");
+		assert_eq!(object["quant_profile"], crate::bakery::QUANT_PROFILE);
+
+		// Ready: artifact + estimate present, digests lower-hex.
+		let row = crate::bakery::EdgepackRow {
+			digest: key.digest(),
+			status: crate::bakery::EdgepackStatus::Ready,
+			artifact: Some(heart::ContentHash::of_bytes(b"artifact")),
+			ram_estimate: Some(9216),
+		};
+		let ready = DepshardManifestDto::from_parts(&key, Some(&row));
+		assert!(ready.is_ready());
+		let value = serde_json::to_value(&ready).expect("serializes");
+		assert_eq!(value["ram_estimate"], 9216);
+		let artifact = value["artifact_id"].as_str().expect("hex artifact id");
+		assert_eq!(artifact.len(), 64);
+		assert!(artifact.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+	}
+
+	/// The routing fields default to (org, parity, no claims) when absent.
+	#[test]
+	fn search_request_routing_defaults() {
+		let req: SearchRequestDto = serde_json::from_value(serde_json::json!({
+			"query": "async runtime",
+			"limit": 10,
+		}))
+		.expect("deserializes");
+		let inputs = req.routing_inputs();
+		assert!(matches!(inputs.quality, vector_core::routing::QualityMode::Parity));
+		assert!(matches!(inputs.scope, vector_core::routing::QueryScope::Org));
+		assert!(inputs.online);
+		assert!(inputs.claimed_hot.is_empty());
+
+		let req: SearchRequestDto = serde_json::from_value(serde_json::json!({
+			"query": "async runtime",
+			"limit": 10,
+			"quality_mode": "deep",
+			"scope": "deps",
+			"hot_packages": [uuid::Uuid::from_u128(9).to_string()],
+		}))
+		.expect("deserializes");
+		let inputs = req.routing_inputs();
+		assert!(matches!(inputs.quality, vector_core::routing::QualityMode::Deep));
+		assert!(matches!(inputs.scope, vector_core::routing::QueryScope::Deps));
+		assert_eq!(inputs.claimed_hot.len(), 1);
+	}
+
+	/// Rerank request validation: empty query/documents and oversize batches
+	/// are typed 400s.
+	#[test]
+	fn rerank_request_validation() {
+		let valid = RerankRequestDto {
+			query: "parse a toml file".to_owned(),
+			documents: vec![crate::rerank::RerankDocument {
+				id: "a".to_owned(),
+				text: "toml::from_str".to_owned(),
+			}],
+			top_k: std::num::NonZeroU32::new(5).expect("non-zero"),
+		};
+		assert!(valid.validate().is_ok());
+
+		let mut empty_query = valid.clone();
+		empty_query.query = "  ".to_owned();
+		assert!(empty_query.validate().is_err());
+
+		let mut no_documents = valid.clone();
+		no_documents.documents.clear();
+		assert!(no_documents.validate().is_err());
+
+		let mut oversize = valid;
+		oversize.documents = (0..=RERANK_MAX_DOCUMENTS)
+			.map(|i| crate::rerank::RerankDocument { id: i.to_string(), text: String::new() })
+			.collect();
+		assert!(oversize.validate().is_err());
+	}
 }

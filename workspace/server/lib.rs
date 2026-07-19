@@ -15,12 +15,14 @@
 #![feature(return_type_notation)]
 
 pub mod authz;
+pub mod bakery;
 pub mod compiler_client;
 pub mod config;
 pub mod coordination;
 pub mod error;
 pub mod http;
 mod poll;
+pub mod rerank;
 pub mod save;
 pub mod search;
 
@@ -133,6 +135,11 @@ pub struct Server<M: EmbeddingModel> {
 	/// by the iroh SyncService apply-hook via [`registry::compiled::ObjectCompiledStore::record`]
 	/// after a merged change-set is verified and applied.
 	compiled_store: ObjectCompiledStore,
+
+	/// The shard-bakery claim ledger + artifact index (`edgepack_artifacts`
+	/// postgres table). `None` when `config.bakery.enabled` is false — callers
+	/// check with [`Self::edgepacks`] before using.
+	edgepacks: Option<std::sync::Arc<crate::bakery::PgEdgepackStore>>,
 }
 
 /// The metadata keyword-normalization tables, loaded once at assembly and shared
@@ -227,6 +234,27 @@ impl<M: EmbeddingModel> Server<M> {
 			None => None,
 		};
 
+		// The bakery claim-store is assembled from the same postgres pool as
+		// the session store (same database, bakery-owned table). Migrations are
+		// lazy: the table is created here and is idempotent (`IF NOT EXISTS`).
+		let edgepacks = if config.bakery.enabled || config.depshards.enabled {
+			let edgepack_pool = sqlx::postgres::PgPoolOptions::new()
+				.max_connections(4)
+				.connect_lazy(config.definitive.endpoints.postgres.expose_secret())
+				.map_err(|error| {
+					ConnectError::new(BackendKind::Postgres, ConnectFailure::Other(error.into()))
+				})?;
+			let store = std::sync::Arc::new(crate::bakery::PgEdgepackStore::new(edgepack_pool));
+			store.migrate().await.map_err(|error| {
+				ServerError::Internal(InternalError::Other {
+					message: format!("edgepack_artifacts migration failed: {error}"),
+				})
+			})?;
+			Some(store)
+		} else {
+			None
+		};
+
 		Ok(Self {
 			config,
 			federation,
@@ -237,6 +265,7 @@ impl<M: EmbeddingModel> Server<M> {
 			compiler_client,
 			heuristics,
 			compiled_store,
+			edgepacks,
 		})
 	}
 
@@ -371,6 +400,22 @@ impl<M: EmbeddingModel> Server<M> {
 	/// `compiled/{job_key}` records the fleet's emit pipeline writes.
 	pub fn compiled_store(&self) -> &ObjectCompiledStore { &self.compiled_store }
 
+	/// The shard-bakery claim ledger (`edgepack_artifacts` table), or `None`
+	/// when neither `bakery.enabled` nor `depshards.enabled` is true (the table
+	/// was not created). Handlers that serve dep-shard manifests always check
+	/// before querying; the bakery worker checks before starting.
+	pub fn edgepacks(&self) -> Option<&crate::bakery::PgEdgepackStore> {
+		self.edgepacks.as_deref()
+	}
+
+	/// The optional reranker service, built from `config.rerank`. `None` when
+	/// no endpoint is configured (calls return `rerank_unavailable`).
+	pub fn reranker(&self) -> Option<&crate::rerank::HttpProxyReranker> {
+		// The reranker is built lazily by the handler on first call, or could
+		// be pre-built here. For now the handler constructs it from the config.
+		None
+	}
+
 	/// Serve until shutdown: bind the HTTP router to `config.serving_address` and
 	/// run the background pollers (queue workers + derived-store consumers) for
 	/// every source in the federation.
@@ -405,10 +450,18 @@ impl<M: EmbeddingModel> Server<M> {
 			queue_worker = Some(tokio::spawn(poll::queue_worker(Arc::clone(&self), drain.clone())));
 		}
 		if role.runs_gateway() {
+			// The bakery worker scans for packages that need edge-shard baking.
+			// Gated by `config.bakery.enabled` (default false) so it never runs
+			// unless the operator explicitly opts in.
+			if self.config.bakery.enabled {
+				pollers.spawn(crate::bakery::bakery_worker(Arc::clone(&self)));
+			}
+
 			for sink in <heart::DerivedStore as strum::IntoEnumIterator>::iter() {
 				pollers.spawn(poll::outbox_consumer(Arc::clone(&self), sink));
 			}
 			pollers.spawn(poll::package_index_poller(Arc::clone(&self)));
+			pollers.spawn(poll::package_signals_poller(Arc::clone(&self)));
 			pollers.spawn(poll::text_index_poller(Arc::clone(&self)));
 			// Storage reclamation (CAS GC): purge consumed outbox rows below every
 			// sink's watermark. The delete is idempotent, so overlapping replicas

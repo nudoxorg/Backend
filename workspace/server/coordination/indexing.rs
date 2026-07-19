@@ -206,27 +206,35 @@ impl<M: EmbeddingModel> Indexer<M> {
         let (manifest, sections) = builder.finalize().map_err(RegistryError::from)?;
         let snapshot = ContentHash::of_bytes(&manifest.identity_bytes());
 
-        // GAP (P3): `observed_listing` from registry::resolve::ResolveOutput is not
-        // available here — the server fetches archives directly via `archive_url`
-        // without going through the resolve path, so release-count and
-        // withdrawn-status are structurally absent at this point. Pass `None`; Task 2
-        // wires `set_listing` from `run_indexing_job_on` below once coordinates are
-        // resolved. When the resolve path is threaded into the job pipeline, replace
-        // `None` with `Some((total, withdrawn_count, this_version_is_withdrawn))`.
+        // Listing signals (release counts + freshness) from the registry listing
+        // body — same non-fatal pattern as S4 downloads. Enables temporal quality.
+        let listing = fetch_listing_signals(coordinates, &self.acquisition).await;
+
         let mut facets = extract_facets(
             coordinates,
             &manifest,
             &sections,
             &identifiers,
             self.server.heuristics(),
-            None,
+            listing,
         );
 
         // S4: fetch download counts from the ecosystem's DownloadEndpoint (if any).
         // Failure is non-fatal: log debug and continue. The `downloads` field stays
         // `None` for ecosystems with no endpoint; the fairness floor handles them.
+        // Re-run squat after downloads so dead-stub detection sees download volume.
         if let Some(ref mut f) = facets {
             fetch_and_set_downloads(coordinates, f, &self.acquisition).await;
+            f.squat_suspect = crate::registry::search::squat::is_squat_suspect(
+                crate::registry::search::squat::SquatInput {
+                    name: &coordinates.name.canonical(),
+                    quality: f.quality(),
+                    downloads: f.downloads,
+                    release_count: f.release_count,
+                    description: f.description.as_deref(),
+                    has_repository: f.repo_slug.is_some(),
+                },
+            );
         }
 
         let emitted = crate::registry::blob::emit::emit(
@@ -635,12 +643,94 @@ fn ensure_trailing_slash(url: &url::Url) -> String {
     rendered
 }
 
+/// Fetch the registry listing body and parse release/freshness signals.
+///
+/// Non-fatal: returns `None` on any failure so emit still succeeds.
+/// Tuple: `(total, withdrawn, this_version_withdrawn, last_release_days_ago)`.
+async fn fetch_listing_signals(
+    coordinates: &PackageCoordinates,
+    client: &registry::upstream::UpstreamClient,
+) -> Option<(u32, u32, bool, Option<u32>)> {
+    use crate::registry::search::listing_signals::listing_signals_from_body;
+    use ecosystem::LanguageExt;
+
+    let spec = coordinates.ecosystem().spec();
+    let name = coordinates.name.canonical();
+    let version = coordinates.version.canonical();
+
+    // Prefer reusing the absolute download/listing URL when available (crates.io,
+    // npm packument patterns). Relative templates alone need an origin we don't
+    // always have at this call site.
+    let full_url = if let Some(dl) = spec.download_source() {
+        let url = dl.url.replace("{name}", &name);
+        // crates.io download source *is* the listing JSON — use it for signals.
+        if coordinates.ecosystem() == ecosystem::Language::Rust {
+            url
+        } else {
+            // npm downloads API is not the packument; use known packument/JSON URLs.
+            match coordinates.ecosystem() {
+                ecosystem::Language::Typescript => {
+                    format!("https://registry.npmjs.org/{name}")
+                }
+                ecosystem::Language::Python => {
+                    format!("https://pypi.org/pypi/{name}/json")
+                }
+                _ => url,
+            }
+        }
+    } else {
+        match coordinates.ecosystem() {
+            ecosystem::Language::Python => format!("https://pypi.org/pypi/{name}/json"),
+            ecosystem::Language::Typescript => format!("https://registry.npmjs.org/{name}"),
+            _ => return None,
+        }
+    };
+
+    let body = match client.get(coordinates.ecosystem(), &full_url).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::debug!(
+                package = %name,
+                ecosystem = ?coordinates.ecosystem(),
+                error = %e,
+                "listing signals fetch failed"
+            );
+            return None;
+        }
+    };
+    let signals = listing_signals_from_body(
+        coordinates.ecosystem(),
+        &body,
+        version.as_str(),
+        chrono::Utc::now(),
+    )?;
+    tracing::debug!(
+        package = %name,
+        total = signals.total,
+        withdrawn = signals.withdrawn,
+        days = ?signals.last_release_days_ago,
+        "listing signals fetched"
+    );
+    Some((
+        signals.total,
+        signals.withdrawn,
+        signals.this_version_withdrawn,
+        signals.last_release_days_ago,
+    ))
+}
+
 /// Fetch the download count for `coordinates` from the ecosystem's
 /// [`DownloadEndpoint`](ecosystem::upstream::DownloadEndpoint) (if any) and
 /// store it in `facets.downloads`.
 ///
+/// Ecosystems with a source today: TypeScript (npm downloads API), C# (NuGet
+/// search `totalDownloads`), Rust (crates.io listing `crate.recent_downloads`).
+/// Others return `download_source() = None` and leave `downloads` unset so
+/// ranking uses the fairness floor (and/or corpus `dependents`).
+///
 /// Non-fatal: any network/parse failure is logged at debug level and the
-/// `downloads` field is left as `None`. Never fails ingest.
+/// `downloads` field is left as `None`. Never fails ingest. Explicit zero
+/// counts from a successful parse are stored as `Some(0)`.
 async fn fetch_and_set_downloads(
     coordinates: &PackageCoordinates,
     facets: &mut SearchFacets,
@@ -702,18 +792,16 @@ async fn fetch_and_set_downloads(
 /// name-only facet set (or `None`), so ingest never fails because search
 /// metadata could not be derived.
 ///
-/// `listing` is the release listing observed at resolve time, if the caller has
-/// it: `(total_published, withdrawn_among_them, this_version_is_withdrawn)`.
-/// Pass `None` when the resolve path is not available at this call site (P3 gap:
-/// the server fetches archives directly without going through
-/// `registry::resolve::resolve`).
+/// `listing` is release/freshness signals observed from the registry listing
+/// body (or resolve): `(total, withdrawn, this_withdrawn, last_release_days_ago)`.
+/// Pass `None` when no listing fetch is available.
 fn extract_facets(
     coordinates: &PackageCoordinates,
     manifest: &BlobManifest,
     sections: &[PendingSection],
     identifiers: &[String],
     heuristics: Option<&crate::Heuristics>,
-    listing: Option<(u32, u32, bool)>,
+    listing: Option<(u32, u32, bool, Option<u32>)>,
 ) -> Option<SearchFacets> {
     let (synonyms, specifics) = match heuristics {
         Some(h) => (Some(h.synonyms()), Some(h.specifics())),
@@ -815,9 +903,9 @@ fn extract_facets(
     };
 
     // ── Build ExtractionInput + run rich extraction ───────────────────────────
-    let (release_count, withdrawn_count) = match listing {
-        Some((total, withdrawn, _)) => (Some(total), Some(withdrawn)),
-        None => (None, None),
+    let (release_count, withdrawn_count, last_release_days_ago) = match listing {
+        Some((total, withdrawn, _, days)) => (Some(total), Some(withdrawn), days),
+        None => (None, None, None),
     };
 
     let input = ExtractionInput {
@@ -834,6 +922,7 @@ fn extract_facets(
         loc,
         release_count,
         withdrawn_count,
+        last_release_days_ago,
     };
 
     let rich = rich::extract(&input, norms, synonyms, specifics);
@@ -858,11 +947,29 @@ fn extract_facets(
 
     // `dependencies` already flows via `SearchFacets::from_rich` — no duplication.
 
-    if let Some((total, withdrawn, this_withdrawn)) = listing {
+    if let Some((total, withdrawn, this_withdrawn, _)) = listing {
         facets.release_count = Some(total);
         facets.withdrawn_count = Some(withdrawn);
         facets.withdrawn = this_withdrawn;
     }
+
+    // verified_repo soft signal from name + repo slug.
+    facets.verified_repo = crate::registry::search::gates::verified_repo(
+        &name,
+        facets.repo_slug.as_deref(),
+    );
+
+    // Automatic squat / land-grab heuristic (quality-gated; never flags mature pkgs).
+    facets.squat_suspect = crate::registry::search::squat::is_squat_suspect(
+        crate::registry::search::squat::SquatInput {
+            name: &name,
+            quality: facets.quality(),
+            downloads: facets.downloads,
+            release_count: facets.release_count,
+            description: facets.description.as_deref(),
+            has_repository: facets.repo_slug.is_some(),
+        },
+    );
 
     Some(facets)
 }

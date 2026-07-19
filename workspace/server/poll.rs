@@ -443,6 +443,60 @@ pub(crate) async fn package_index_poller<M: EmbeddingModel>(server: Arc<Server<M
 	}
 }
 
+/// How often to recompute corpus dependents + per-eco popularity percentiles.
+/// Heavy-ish full scan; keep well below hot poll intervals.
+const PACKAGE_SIGNALS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Periodic sweep: reverse-dependency counts + per-ecosystem popularity CDF.
+/// Writes only when values change (touch discipline so tantivy does not full-resync).
+#[tracing::instrument(skip_all, name = "package_signals_poller")]
+pub(crate) async fn package_signals_poller<M: EmbeddingModel>(server: Arc<Server<M>>) {
+	// Stagger first run slightly so it does not pile onto boot with index sync.
+	tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+	loop {
+		for sourced in server.federation().in_precedence() {
+			let store = &sourced.value.global_store;
+			match store.refresh_dependents().await {
+				Ok(n) => {
+					if n > 0 {
+						tracing::info!(
+							source = %sourced.source,
+							updated = n,
+							"dependents sweep wrote updates"
+						);
+					}
+				}
+				Err(error) => {
+					tracing::warn!(
+						source = %sourced.source,
+						error = %error,
+						"dependents sweep failed"
+					);
+				}
+			}
+			match store.refresh_popularity_percentiles().await {
+				Ok(n) => {
+					if n > 0 {
+						tracing::info!(
+							source = %sourced.source,
+							updated = n,
+							"popularity percentile sweep wrote updates"
+						);
+					}
+				}
+				Err(error) => {
+					tracing::warn!(
+						source = %sourced.source,
+						error = %error,
+						"popularity percentile sweep failed"
+					);
+				}
+			}
+		}
+		tokio::time::sleep(PACKAGE_SIGNALS_INTERVAL).await;
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Catalog follower driver
 // ─────────────────────────────────────────────────────────────────────────────
