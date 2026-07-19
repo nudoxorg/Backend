@@ -63,7 +63,7 @@ impl RegistryResolver for DummyRegistryResolver {
     async fn load_unique_id(
         &self,
         _: &UniqueId<Self::EntryId>,
-        _: &RegistryState,
+        _: &RegistryState<Self>,
     ) -> Result<Entry, Self::Error> {
         unimplemented!()
     }

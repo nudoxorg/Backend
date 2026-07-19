@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{marker::PhantomData, sync::OnceLock};
 
 use dashmap::DashMap;
 use elsa::sync::FrozenVec;
@@ -6,36 +6,28 @@ use rustc_hash::FxBuildHasher;
 
 use crate::{entry::Entry, kinds::Module, package::PackageMeta, symbol::Symbol};
 
-use super::{EntryBuilder, EntryIdx, ErasedUniqueId, RawEntryIdx, UniqueId};
+use super::{EntryBuilder, EntryIdx, ErasedUniqueId, RawEntryIdx, RegistryResolver, UniqueId};
 
 const INVALID_ENTRY_IDX_MESSAGE: &str = ""; // TODO
 
-pub struct RegistryState {
+#[repr(transparent)]
+pub struct RegistryState<R> {
     inner: EntriesState,
+    _p: PhantomData<R>,
 }
 
-impl RegistryState {
-    // TODO: public API for RegistryResolver to use
-}
-
-impl Default for RegistryState {
+impl<R> Default for RegistryState<R> {
     fn default() -> Self {
         RegistryState::new()
     }
 }
 
-impl RegistryState {
-    pub(super) fn new() -> Self {
-        RegistryState {
-            inner: EntriesState::new(FrozenVec::new(), |_| DashMap::default()),
-        }
-    }
-
+impl<R: RegistryResolver> RegistryState<R> {
     pub(super) fn build_package_ir(
         &self,
         pkg: PackageMeta,
         sym: Symbol,
-        build: impl Fn(&mut EntryBuilder),
+        build: impl Fn(&mut EntryBuilder<R>),
     ) {
         let idx = self.inner.with_entries(|e| EntryIdx::new(e.len()));
 
@@ -54,6 +46,15 @@ impl RegistryState {
         // TODO: how to handle IR links?
         let _links = built.links;
     }
+}
+
+impl<R> RegistryState<R> {
+    pub(super) fn new() -> Self {
+        RegistryState {
+            inner: EntriesState::new(FrozenVec::new(), |_| DashMap::default()),
+            _p: PhantomData,
+        }
+    }
 
     pub(super) fn unique_id_to_entry_idx(&self, id: ErasedUniqueId) -> RawEntryIdx {
         self.inner.with(|it| match it.lookup.get(&id) {
@@ -71,7 +72,7 @@ impl RegistryState {
     }
 }
 
-impl RegistryState {
+impl<R> RegistryState<R> {
     fn insert_entry(&self, entry: StoredEntry) -> RawEntryIdx {
         self.inner.with(|it| {
             let idx = RawEntryIdx::new(it.entries.len());
@@ -84,6 +85,19 @@ impl RegistryState {
             idx
         })
     }
+}
+
+impl<R> RegistryState<R> {
+    pub(super) fn erased(&self) -> &ErasedRegistryState {
+        // Safety: `repr(transparent)`
+        unsafe { &*std::ptr::from_ref(self).cast() }
+    }
+}
+
+pub type ErasedRegistryState = RegistryState<private::UntypedMarker>;
+
+mod private {
+    pub struct UntypedMarker;
 }
 
 #[derive(Debug, PartialEq, Eq)]

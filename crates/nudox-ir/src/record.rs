@@ -1,6 +1,6 @@
 use crate::{
     List,
-    registry::{EntryBuilder, EntryIdx},
+    registry::{EntryBuilder, EntryIdx, RegistryResolver},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -17,7 +17,7 @@ impl Record {
 }
 
 impl<S: record_builder::IsComplete> RecordBuilder<S> {
-    pub fn build(self, b: &mut EntryBuilder) -> Record {
+    pub fn build(self, b: &mut EntryBuilder<impl RegistryResolver>) -> Record {
         let record = self.finish();
 
         b.link_many(record.fields.iter().copied());
@@ -48,6 +48,6 @@ pub struct Field {
 // is what enables us to guarentee that we emit IR links if the builder API is
 // used.
 
-fn _example_builder_api_usage(b: &mut EntryBuilder) -> Record {
+fn _example_builder_api_usage(b: &mut EntryBuilder<impl RegistryResolver>) -> Record {
     Record::builder().fields([]).build(b)
 }

@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::{
     entry::{Entry, Node},
     kind::{EntryKind, KindDiscriminant},
@@ -5,21 +7,27 @@ use crate::{
     symbol::Symbol,
 };
 
-use super::{EntryId, EntryIdx, EntryLink, ErasedUniqueId, RawEntryIdx, StoredEntry, UniqueId};
+use super::{
+    EntryIdx, EntryLink, ErasedUniqueId, RawEntryIdx, RegistryResolver, StoredEntry, UniqueId,
+};
 
-pub struct EntryBuilder {
+pub struct EntryBuilder<R> {
     kind: KindDiscriminant,
     tree: EntryTree,
     links: Vec<EntryLink>,
+    _p: PhantomData<R>,
 }
 
-impl EntryBuilder {
+impl<R> EntryBuilder<R>
+where
+    R: RegistryResolver,
+{
     /// Create a new child entry and recieve an EntryIdx for it
     ///
     /// This is the public API for building entries.
     pub fn create<T>(
         &mut self,
-        eid: impl EntryId,
+        id: R::EntryId,
         sym: Symbol,
         build: impl FnOnce(&mut Self) -> T,
     ) -> EntryIdx<T>
@@ -27,7 +35,7 @@ impl EntryBuilder {
         T: EntryKind,
     {
         let built = Self::builder()
-            .id(self.new_id(eid))
+            .id(self.unique_id(id))
             .idx(self.next_idx())
             .build(sym, self.idx(), build);
 
@@ -39,12 +47,7 @@ impl EntryBuilder {
         idx
     }
 
-    pub fn create_ref<T>(
-        &mut self,
-        id: UniqueId<impl EntryId>,
-        sym: Symbol,
-        idx: EntryIdx<T>,
-    ) -> EntryIdx<T>
+    pub fn create_ref<T>(&mut self, id: R::EntryId, sym: Symbol, idx: EntryIdx<T>) -> EntryIdx<T>
     where
         T: EntryKind,
     {
@@ -53,7 +56,7 @@ impl EntryBuilder {
         self.tree.push(EntryTree::resolved(
             entry_idx,
             StoredEntry::resolved(
-                id.upcast(),
+                self.unique_id(id).upcast(),
                 Entry::reference(sym, Node::build(Some(self.idx()), []), idx.raw()),
             ),
         ));
@@ -91,13 +94,18 @@ impl EntryBuilder {
     }
 }
 
-impl EntryBuilder {
+impl<R> EntryBuilder<R>
+where
+    R: RegistryResolver,
+{
+    fn unique_id(&self, entry: R::EntryId) -> UniqueId<R::EntryId> {
+        UniqueId::new(self.pkg(), entry)
+    }
+}
+
+impl<R> EntryBuilder<R> {
     fn pkg(&self) -> PackageId {
         self.tree.entry.id().package()
-    }
-
-    fn new_id(&self, entry: impl EntryId) -> ErasedUniqueId {
-        UniqueId::new(self.pkg(), entry).upcast()
     }
 
     fn idx(&self) -> RawEntryIdx {
@@ -110,24 +118,32 @@ impl EntryBuilder {
 }
 
 #[bon::bon]
-impl EntryBuilder {
+impl<R> EntryBuilder<R>
+where
+    R: RegistryResolver,
+{
     #[builder(finish_fn(name = finish, vis = ""))]
-    pub(super) fn new(id: ErasedUniqueId, idx: RawEntryIdx) -> Self {
+    pub(super) fn new(id: UniqueId<R::EntryId>, idx: RawEntryIdx) -> Self {
         EntryBuilder {
             kind: KindDiscriminant::Module, // replaced in build
-            tree: EntryTree::new(id, idx),
+            tree: EntryTree::new(id.upcast(), idx),
             links: Vec::new(),
+            _p: PhantomData,
         }
     }
 }
 
-impl<S: entry_builder_builder::IsComplete> EntryBuilderBuilder<S> {
+impl<R, S> EntryBuilderBuilder<R, S>
+where
+    R: RegistryResolver,
+    S: entry_builder_builder::IsComplete,
+{
     pub fn build<T>(
         self,
 
         sym: Symbol,
         parent: impl Into<Option<RawEntryIdx>>,
-        build: impl FnOnce(&mut EntryBuilder) -> T,
+        build: impl FnOnce(&mut EntryBuilder<R>) -> T,
     ) -> BuildResult
     where
         T: EntryKind,
@@ -205,7 +221,7 @@ pub(super) struct BuildResult {
 
 #[cfg(test)]
 mod tests {
-    use crate::{package::PackageId, test_helpers::*};
+    use crate::{package::PackageId, registry::EntryId, test_helpers::*};
 
     use super::*;
 
@@ -219,15 +235,15 @@ mod tests {
 
     fn build<T>(
         index: RawEntryIdx,
-        id: UniqueId<impl EntryId>,
+        id: UniqueId<<DummyRegistryResolver as RegistryResolver>::EntryId>,
         sym: &str,
-        build: impl FnOnce(&mut EntryBuilder) -> T,
+        build: impl FnOnce(&mut EntryBuilder<DummyRegistryResolver>) -> T,
     ) -> BuildResult
     where
         T: EntryKind,
     {
         EntryBuilder::builder()
-            .id(id.upcast())
+            .id(id)
             .idx(index)
             .build(dummy_symbol(sym), None, build)
     }
@@ -278,16 +294,14 @@ mod tests {
     #[test]
     fn links_emitted_correctly() {
         let built = build(idx(0), uid(0), "root", |b| {
-            let struct_idx_1 = b.create(uid(1), dummy_symbol("struct1"), |b| {
-                let f1 = b.create(uid(2), dummy_symbol("f1"), |_| Field {});
+            let struct_idx_1 = b.create(1, dummy_symbol("struct1"), |b| {
+                let f1 = b.create(2, dummy_symbol("f1"), |_| Field {});
                 b.link(f1);
 
                 Record { fields: list![f1] }
             });
 
-            let struct_idx_2 = b.create(uid(3), dummy_symbol("struct2"), |_| Record {
-                fields: list![],
-            });
+            let struct_idx_2 = b.create(3, dummy_symbol("struct2"), |_| Record { fields: list![] });
 
             b.link(struct_idx_1);
             b.link(struct_idx_2);

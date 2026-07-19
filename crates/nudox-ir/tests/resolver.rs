@@ -41,7 +41,7 @@ impl RegistryResolver for ExampleResolver {
     async fn load_unique_id(
         &self,
         id: &UniqueId<Self::EntryId>,
-        state: &RegistryState,
+        state: &RegistryState<Self>,
     ) -> Result<Entry, Self::Error> {
         let package = match id.package().view() {
             PackageIdView::Path(path) => format!("{}", path.display()),
@@ -64,7 +64,7 @@ impl RegistryResolver for ExampleResolver {
 
         let deserializer = &mut serde_json::Deserializer::from_str(&file);
 
-        let entry = state.deserialize::<_, _, Self>(deserializer)?;
+        let entry = state.deserialize(deserializer)?;
 
         Ok(entry)
     }

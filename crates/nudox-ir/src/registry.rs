@@ -11,7 +11,10 @@ mod tests;
 
 use crate::{package::PackageMeta, symbol::Symbol};
 
-use self::{id::ErasedUniqueId, state::StoredEntry};
+use self::{
+    id::ErasedUniqueId,
+    state::{ErasedRegistryState, StoredEntry},
+};
 
 pub use self::{
     builder::EntryBuilder,
@@ -26,7 +29,18 @@ pub use self::{
 pub struct Registry<R> {
     #[expect(unused)]
     resolver: R,
-    state: RegistryState,
+    state: RegistryState<R>,
+}
+
+impl<R: RegistryResolver> Registry<R> {
+    pub fn build_package_ir(
+        &self,
+        pkg: PackageMeta,
+        sym: Symbol,
+        build: impl Fn(&mut EntryBuilder<R>),
+    ) {
+        self.state.build_package_ir(pkg, sym, build)
+    }
 }
 
 impl<R> Registry<R> {
@@ -35,15 +49,6 @@ impl<R> Registry<R> {
             resolver,
             state: RegistryState::new(),
         }
-    }
-
-    pub fn build_package_ir(
-        &self,
-        pkg: PackageMeta,
-        sym: Symbol,
-        build: impl Fn(&mut EntryBuilder),
-    ) {
-        self.state.build_package_ir(pkg, sym, build)
     }
 }
 
