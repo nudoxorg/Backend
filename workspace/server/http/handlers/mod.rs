@@ -3,6 +3,8 @@
 
 pub mod admin;
 pub mod compiled;
+pub mod depshards;
 pub mod health;
 pub mod indexing;
+pub mod rerank;
 pub mod search;

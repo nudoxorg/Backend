@@ -4,10 +4,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use futures::Stream;
-use heart::{ContentHash, Cursor, Scored};
+use heart::{ContentHash, Cursor, Language, Scored};
 use crate::registry::GlobalPackage;
+use crate::registry::metadata::Synonyms;
 use crate::registry::search::{
-	SearchKey, RegistryQuery, collect_ranked_hits,
+	SearchKey, RegistryQuery, search_page,
 	tantivy::{PackageIndex, SyncWatermark},
 };
 
@@ -51,46 +52,40 @@ impl PackageSearchIndex {
 	/// Every page — first or resumed — is a slice of that one order, so the
 	/// `(score, id)` keyset cursor advances monotonically with no scoring seam at
 	/// the page boundary. There is no first-page/subsequent-page split.
+	///
+	/// # Ecosystem scope
+	///
+	/// `ecosystem` is the API-level scope (wins over inline `lang:` tokens in the
+	/// structured parse). Pass `None` for an unscoped search across all ecosystems.
+	///
+	/// # Synonyms
+	///
+	/// When `synonyms` is `Some`, free terms are expanded after structured parse
+	/// so the EXPANDED BM25 tier can fire. `None` skips expansion.
 	pub async fn page(
 		&self,
 		text: &str,
 		limit: usize,
 		after: Option<&Cursor<SearchKey>>,
+		ecosystem: Option<Language>,
+		synonyms: Option<&Synonyms>,
 	) -> ServerResult<Vec<Scored<GlobalPackage>>> {
 		let index = self.index.lock().await;
 
-		// Build a RegistryQuery so we can delegate to the shared ranked-hits logic.
+		// Delegate keyset pagination to the shared registry search_page so
+		// production and tests share one resume path.
 		let query = RegistryQuery {
 			text: text.to_owned(),
-			ecosystem: None,
+			ecosystem,
 			limit,
 			after: after.cloned(),
 		};
 
-		let hits = collect_ranked_hits(&index, &query)
+		let page = search_page(&index, &query, synonyms)
 			.await
 			.map_err(crate::registry::RegistryError::from)?;
 
-		// Resume strictly after the cursor key under (score desc, id asc).
-		let snapshot = ContentHash::of_bytes(&index.watermark().position.to_le_bytes());
-		let after_key = after.map(|cursor| {
-			if cursor.snapshot != snapshot {
-				tracing::debug!("cursor anchored to an older snapshot; serving from the newer one");
-			}
-			cursor.after
-		});
-
-		let resumed: Vec<Scored<GlobalPackage>> = hits
-			.into_iter()
-			.filter(|hit| {
-				after_key.is_none_or(|(score, id)| {
-					hit.score < score || (hit.score == score && hit.value.id > id)
-				})
-			})
-			.take(limit.max(1))
-			.collect();
-
-		Ok(resumed)
+		Ok(page.items)
 	}
 
 	/// The snapshot hash a page's resume cursor is anchored to — derived from
@@ -121,10 +116,14 @@ impl RegistrySearchSurface {
 	/// Wrap one source's shared package index.
 	pub fn new(index: Arc<PackageSearchIndex>) -> Self { Self { index } }
 
+	/// Search packages for `query`, optionally scoped to `ecosystem` and expanded
+	/// via `synonyms` when heuristics are loaded on the server.
 	pub async fn search(
 		&self,
 		query: &Query,
 		page: &Pagination,
+		ecosystem: Option<Language>,
+		synonyms: Option<&Synonyms>,
 	) -> Result<impl Stream<Item = Result<Scored<GlobalPackage>, ServerError>> + Send, ServerError> {
 		let after = page
 			.after
@@ -139,7 +138,13 @@ impl RegistrySearchSurface {
 			.transpose()?;
 		let hits = self
 			.index
-			.page(query.text(), page.limit.get() as usize, after.as_ref())
+			.page(
+				query.text(),
+				page.limit.get() as usize,
+				after.as_ref(),
+				ecosystem,
+				synonyms,
+			)
 			.await?;
 		Ok(futures::stream::iter(hits.into_iter().map(Ok)))
 	}
@@ -231,7 +236,7 @@ mod tests {
 			after: None,
 		};
 
-		let page = crate::registry::search::search_page(&index, &query)
+		let page = crate::registry::search::search_page(&index, &query, None)
 			.await
 			.expect("query executes");
 
@@ -299,7 +304,7 @@ mod tests {
 			after: None,
 		};
 
-		let page = crate::registry::search::search_page(&index, &query)
+		let page = crate::registry::search::search_page(&index, &query, None)
 			.await
 			.expect("query executes");
 
@@ -328,7 +333,7 @@ mod tests {
 			after: None,
 		};
 
-		let page = crate::registry::search::search_page(&index, &query)
+		let page = crate::registry::search::search_page(&index, &query, None)
 			.await
 			.expect("full ranking pipeline must not panic");
 

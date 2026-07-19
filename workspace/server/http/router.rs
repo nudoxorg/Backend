@@ -24,7 +24,7 @@ use tracing::Span;
 use registry::runtime::vector::EmbeddingModel;
 use crate::config::Limits;
 use crate::Server;
-use crate::http::handlers::{admin, compiled, health, indexing, search};
+use crate::http::handlers::{admin, compiled, depshards, health, indexing, rerank as rerank_handler, search};
 
 /// The largest read-plane request body: search/expand requests are JSON control
 /// messages plus at most a pasted code snippet.
@@ -59,6 +59,7 @@ pub fn router<M: EmbeddingModel>(server: Arc<Server<M>>) -> Router {
 		.merge(write_plane(limits))
 		.merge(admin_plane(limits))
 		.merge(compiled_plane())
+		.merge(vector_plane())
 		// RED metrics via `route_layer` (not `layer`): it runs *after* route
 		// matching, so `MatchedPath` is populated and the `http_route` label is
 		// the low-cardinality template (`/symbols/:id`) rather than the raw path
@@ -237,6 +238,27 @@ fn compiled_plane<M: EmbeddingModel>() -> Router<Arc<Server<M>>> {
 	Router::new()
 		.route("/v1/compiled/lookup", post(compiled::compiled_lookup))
 		.layer(DefaultBodyLimit::max(COMPILED_LOOKUP_BODY_CEILING))
+}
+
+/// The body ceiling for `POST /v1/rerank` (256 documents × ~512 bytes ≈ 128 KiB
+/// plus JSON framing; 256 KiB is a generous ceiling).
+const RERANK_BODY_CEILING: usize = 256 * 1024;
+
+/// The vector-plane routes: dep-shard manifest and the rerank surface
+/// (09-vector §20.3, §20.8).
+///
+/// - `GET /v1/depshards/{package}/{version}/manifest` — edgepack manifest
+///   (status pending/ready/failed, artifact CAS key, RAM estimate).
+/// - `POST /v1/rerank` — cross-encoder reranking for Deep mode queries
+///   (§20.8); timeout → explicit `rerank_unavailable` (§20.9).
+fn vector_plane<M: EmbeddingModel>() -> Router<Arc<Server<M>>> {
+	Router::new()
+		.route(
+			"/v1/depshards/:package/:version/manifest",
+			get(depshards::get_manifest),
+		)
+		.route("/v1/rerank", post(rerank_handler::rerank))
+		.layer(DefaultBodyLimit::max(RERANK_BODY_CEILING))
 }
 
 /// The timeout layer's error projection: an admin mutation that outlived

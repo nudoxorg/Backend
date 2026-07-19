@@ -67,10 +67,19 @@ pub async fn search_packages<M: EmbeddingModel>(
 		Query::Literal(LiteralQuery::parse(&req.query).map_err(BadRequestReason::from)?);
 	let page = Pagination { limit: req.limit, after: req.cursor };
 
+	// Package search scopes to at most one ecosystem for v1:
+	// - empty `ecosystems` → unscoped (all ecosystems; `lang:` tokens still apply)
+	// - exactly one → that ecosystem (API scope wins over inline `lang:`)
+	// - multi → first listed only; remaining ecosystems are ignored. Prefer a
+	//   single ecosystem in the request, or `lang:` tokens in the query text.
+	let ecosystem = req.ecosystems.first().copied();
+	// Synonym expansion rides the process-wide heuristics tables when configured.
+	let synonyms = server.heuristics().map(|h| h.synonyms());
+
 	let mut groups = Vec::new();
 	for sourced in server.federation().in_precedence() {
 		let surface = RegistrySearchSurface::new(Arc::clone(&sourced.value.packages));
-		let hits = surface.search(&query, &page).await?;
+		let hits = surface.search(&query, &page, ecosystem, synonyms).await?;
 		groups.push(hits.try_collect().await?);
 	}
 	let items = merge_overlay_first(groups, |package| package.id, limit);
