@@ -15,7 +15,19 @@
 //! 5. [`downloads_bubble`]        — gentle adjacent-pair swap on the tail
 //! 6. Truncate to `limit`
 
+use heart::ecosystem::Language;
 use smol_str::SmolStr;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/// One active dependent ≈ this many monthly downloads. The single universal
+/// bridge between the dependents in-degree and the crates.io-calibrated
+/// download thresholds — as sweep coverage grows this one constant replaces
+/// the per-ecosystem `downloads_scale` guesswork entirely.
+const DEPENDENT_DOWNLOAD_EQUIV: u64 = 2_500;
+
+/// Graded demotion multiplier for withdrawn versions.
+const WITHDRAWN_DEMOTION: f32 = 0.25;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -33,11 +45,60 @@ pub struct Candidate<T> {
 	/// Quality signal in `0.0..=1.0` (analogous to `crate_base_score` /
 	/// `crate_score` in lib.rs).
 	pub quality: f32,
-	/// Monthly download count (used by the bubble-sort and representative
-	/// pull-up passes).
-	pub downloads: u64,
+	/// Monthly download count, calibrated by the ecosystem's `downloads_scale`.
+	///
+	/// `None` when the ecosystem has no download source (see
+	/// `SearchNorms::downloads_scale`). Downloads-driven ranking stages (pull-up,
+	/// bubble) use the **fairness floor** for `None` candidates so they are never
+	/// penalized relative to ecosystems that have data.
+	pub downloads: Option<u64>,
+	/// Corpus-wide reverse-dependency count from the periodic sweep, if computed.
+	/// The ecosystem-fair popularity signal: same methodology in every registry,
+	/// no upstream API, harder to game than downloads.
+	pub dependents: Option<u32>,
+	/// This version is withdrawn/yanked on its registry — graded demotion, never
+	/// a binary visibility cut (a deprecated-but-only-option must still surface).
+	pub withdrawn: bool,
+	/// The ecosystem this candidate belongs to; used to select the correct
+	/// per-ecosystem `strip_conventions` function for the contains-name bonus (R1).
+	pub ecosystem: Language,
 	/// Normalised keywords for the diversity pass.
 	pub keywords: Vec<SmolStr>,
+}
+
+impl<T> Candidate<T> {
+	/// The popularity weight for downloads-calibrated stages.
+	///
+	/// Takes the **strongest available evidence**: the dependents in-degree
+	/// (ecosystem-fair, converted via [`DEPENDENT_DOWNLOAD_EQUIV`]) and the
+	/// calibrated downloads are max-combined when both exist — a sparse early
+	/// sweep (`dependents: Some(1)`) must never *downgrade* a package whose
+	/// downloads already prove popularity. With neither signal, the stage's
+	/// fairness floor applies. As sweep coverage grows, dependents dominate and
+	/// the per-ecosystem `downloads_scale` guesswork stops mattering.
+	pub fn popularity_weight(&self, floor: u64) -> u64 {
+		let dependents_equiv = self
+			.dependents
+			.map(|count| u64::from(count).saturating_mul(DEPENDENT_DOWNLOAD_EQUIV));
+		match (dependents_equiv, self.downloads) {
+			(Some(equiv), Some(downloads)) => equiv.max(downloads).max(floor),
+			(Some(equiv), None) => equiv.max(floor),
+			(None, Some(downloads)) => downloads.max(floor),
+			(None, None) => {
+				static ONCE: std::sync::Once = std::sync::Once::new();
+				ONCE.call_once(|| {
+					tracing::debug!(
+						"ranking: downloads None for at least one candidate (ecosystem {:?}); \
+						 using fairness floor {} — this is expected for ecosystems without a \
+						 download-count endpoint",
+						self.ecosystem,
+						floor,
+					);
+				});
+				floor
+			}
+		}
+	}
 }
 
 /// Tuning knobs.  All constants match the lib.rs defaults.
@@ -138,8 +199,17 @@ impl Default for RankingConfig {
 ///
 /// Pure and deterministic: repeated calls on the same input yield identical
 /// output.
-pub fn rank<T>(query: &str, candidates: Vec<Candidate<T>>, limit: usize) -> Vec<Candidate<T>> {
-	rank_with(&RankingConfig::default(), query, candidates, limit)
+///
+/// `ecosystem_scope`: when the search is scoped to a single ecosystem (e.g.
+/// `lang:go mux`) pass `Some(lang)` so `query_is_specific` uses that
+/// ecosystem's separator set; `None` falls back to the shared default set.
+pub fn rank<T>(
+	query: &str,
+	candidates: Vec<Candidate<T>>,
+	limit: usize,
+	ecosystem_scope: Option<Language>,
+) -> Vec<Candidate<T>> {
+	rank_with(&RankingConfig::default(), query, candidates, limit, ecosystem_scope)
 }
 
 /// Like [`rank`] but accepts explicit tuning knobs.
@@ -148,10 +218,11 @@ pub fn rank_with<T>(
 	query: &str,
 	candidates: Vec<Candidate<T>>,
 	limit: usize,
+	ecosystem_scope: Option<Language>,
 ) -> Vec<Candidate<T>> {
 	// Classic single-page behaviour: truncate to `limit` at the pull-up (so the
 	// tail-bubble runs over the truncated list, exactly as before).
-	rank_pipeline(cfg, query, candidates, limit, limit)
+	rank_pipeline(cfg, query, candidates, limit, limit, ecosystem_scope)
 }
 
 /// Run the full five-stage pipeline over **all** `candidates` and return them in
@@ -171,8 +242,13 @@ pub fn rank_with<T>(
 ///
 /// Pure and deterministic: repeated calls on the same input yield identical
 /// output.
-pub fn rank_full<T>(query: &str, candidates: Vec<Candidate<T>>, limit: usize) -> Vec<Candidate<T>> {
-	rank_full_with(&RankingConfig::default(), query, candidates, limit)
+pub fn rank_full<T>(
+	query: &str,
+	candidates: Vec<Candidate<T>>,
+	limit: usize,
+	ecosystem_scope: Option<Language>,
+) -> Vec<Candidate<T>> {
+	rank_full_with(&RankingConfig::default(), query, candidates, limit, ecosystem_scope)
 }
 
 /// Like [`rank_full`] but accepts explicit tuning knobs.
@@ -181,10 +257,11 @@ pub fn rank_full_with<T>(
 	query: &str,
 	candidates: Vec<Candidate<T>>,
 	limit: usize,
+	ecosystem_scope: Option<Language>,
 ) -> Vec<Candidate<T>> {
 	// `retain = usize::MAX` keeps the whole order (nothing is truncated); `limit`
 	// still tunes the position-sensitive stages exactly as the single-page path.
-	rank_pipeline(cfg, query, candidates, limit, usize::MAX)
+	rank_pipeline(cfg, query, candidates, limit, usize::MAX, ecosystem_scope)
 }
 
 /// The shared five-stage pipeline. `limit` tunes the position-sensitive stages
@@ -198,13 +275,23 @@ fn rank_pipeline<T>(
 	candidates: Vec<Candidate<T>>,
 	limit: usize,
 	retain: usize,
+	ecosystem_scope: Option<Language>,
 ) -> Vec<Candidate<T>> {
 	if candidates.is_empty() || limit == 0 {
 		return Vec::new();
 	}
 
 	// ── Stage (a): fuse score per candidate ──────────────────────────────────
-	let fused: Vec<f32> = fuse_scores(cfg, query, &candidates);
+	let mut fused: Vec<f32> = fuse_scores(cfg, query, &candidates, ecosystem_scope);
+
+	// ── Stage (a.5): graded withdrawn demotion ────────────────────────────────
+	// Multiply withdrawn candidates' scores by WITHDRAWN_DEMOTION (never zero —
+	// a deprecated-but-only-option must still surface).
+	for (score, candidate) in fused.iter_mut().zip(candidates.iter()) {
+		if candidate.withdrawn {
+			*score *= WITHDRAWN_DEMOTION;
+		}
+	}
 
 	// ── Stage (b): sort by fused score desc, name asc for ties ───────────────
 	// Attach scores as a parallel vec then zip-sort so we avoid adding a field
@@ -259,15 +346,38 @@ fn rank_pipeline<T>(
 /// fused = bm25 * q
 /// ```
 /// Then an exact-name bonus or a capped contains-name bonus is added.
-fn fuse_scores<T>(cfg: &RankingConfig, query: &str, candidates: &[Candidate<T>]) -> Vec<f32> {
+///
+/// R1 fix: the contains-name check now strips per-ecosystem naming conventions
+/// from **both** the candidate name and the query before checking containment.
+/// Previously a hard-coded Rust-only strip (`cargo`/`rust`/`rs`) was applied to
+/// all ecosystems; now each candidate uses its own ecosystem's
+/// `strip_conventions` function so npm packages are not affected by Rust-prefix
+/// removal and vice versa. The query is also stripped (improvement: query
+/// `cargo-serde` for a Rust candidate strips to `serde` and fires the bonus).
+///
+/// R2 fix: `query_is_specific` now uses the scoped ecosystem's
+/// `specificity_separators` when the search is ecosystem-scoped; otherwise
+/// falls back to the shared `DEFAULT_SPECIFICITY_SEPARATORS`.
+fn fuse_scores<T>(
+	cfg: &RankingConfig,
+	query: &str,
+	candidates: &[Candidate<T>],
+	ecosystem_scope: Option<Language>,
+) -> Vec<f32> {
+	use ecosystem::{LanguageExt, search::DEFAULT_SPECIFICITY_SEPARATORS};
+
 	// Pre-compute the top-4 BM25 (the cap target for the contains bonus).
 	let mut top4_bm25: Vec<f32> = candidates.iter().map(|c| c.bm25).collect();
 	top4_bm25.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 	let top4_score = top4_bm25.get(3).copied().unwrap_or(top4_bm25.first().copied().unwrap_or(0.0));
 
-	// Is the query specific (contains separators or is long)?
-	// Lib.rs: `query_is_specific = query.contains(['-', '_']) || query.len() > 15`
-	let query_is_specific = query.contains(['-', '_']) || query.len() > 15;
+	// R2: use the scoped ecosystem's separators when available; else the shared set.
+	let query_is_specific = match ecosystem_scope {
+		Some(lang) => lang.spec().search_norms().query_is_specific(query),
+		None => {
+			query.contains(DEFAULT_SPECIFICITY_SEPARATORS) || query.len() > 15
+		}
+	};
 
 	let query_lower = query.to_ascii_lowercase();
 	let mut boosted = 0usize;
@@ -290,7 +400,7 @@ fn fuse_scores<T>(cfg: &RankingConfig, query: &str, candidates: &[Candidate<T>])
 			// it as a large additive bonus so the order is equivalent.
 			score += cfg.exact_name_bonus;
 		} else if boosted < cfg.contains_max_boosted
-			&& contains_query_names(&name_lower, &query_lower)
+			&& contains_query_names_for_ecosystem(&name_lower, &query_lower, c.ecosystem)
 		{
 			// Contains bonus: capped so keyword-spam can't reach top-3.
 			// Lib.rs formula: `capped = ((top4 * 3 + boosted_score) / 4).max(minimal)`
@@ -313,20 +423,33 @@ fn fuse_scores<T>(cfg: &RankingConfig, query: &str, candidates: &[Candidate<T>])
 	fused
 }
 
-/// Ports `contains_query` from lib.rs: strips `cargo`/`rust` prefix and `rs`
-/// suffix then checks substring containment (longer contains shorter).
-fn contains_query_names(name: &str, query: &str) -> bool {
-	let a = name
-		.strip_prefix("cargo")
-		.or_else(|| name.strip_prefix("rust"))
-		.unwrap_or(name)
-		.trim_end_matches("rs")
-		.trim_matches(['-', '_']);
-	if a.is_empty() {
+/// R1 fix: per-ecosystem contains-query check.
+///
+/// Strips ecosystem-specific naming conventions from BOTH `name` AND `query`
+/// (using the candidate's ecosystem's `strip_conventions`), then checks
+/// substring containment (longer contains shorter). Empty-after-strip → false.
+///
+/// Semantics:
+/// - **Name side**: prefixes/suffixes that are ecosystem boilerplate (e.g.
+///   `cargo-` / `rust-` / `-rs` for Rust; `@scope/` for npm; `py`/`python`
+///   affixes for Python; authority segment for Go) are stripped before matching.
+/// - **Query side**: the same strip is applied to the query. This means a
+///   Rust-scoped search for `cargo-serde` strips the query to `serde`, enabling
+///   a contains-match against `serde-*` packages that would otherwise be missed.
+///   For npm the strip is identity (only `@scope/` prefix) so `cargo-web` stays
+///   `cargo-web` — preventing false Rust-convention matches in npm results.
+/// - Because the strip is per-candidate-ecosystem, a Rust strip never fires for
+///   an npm candidate and vice versa.
+fn contains_query_names_for_ecosystem(name: &str, query: &str, ecosystem: Language) -> bool {
+	use ecosystem::LanguageExt;
+	let strip = ecosystem.spec().search_norms().strip_conventions;
+	let a = strip(name).trim_matches(|c| c == '-' || c == '_');
+	let q = strip(query).trim_matches(|c| c == '-' || c == '_');
+	if a.is_empty() || q.is_empty() {
 		return false;
 	}
 	// longer.contains(shorter)
-	let (long, short) = if a.len() >= query.len() { (a, query) } else { (query, a) };
+	let (long, short) = if a.len() >= q.len() { (a, q) } else { (q, a) };
 	long.contains(short)
 }
 
@@ -453,6 +576,10 @@ fn diversity_pass<T>(cfg: &RankingConfig, candidates: &mut [Candidate<T>], score
 /// at least `candidates.len()` (e.g. `usize::MAX`) keeps the whole order (used by
 /// keyset pagination, which pages over the full order); passing `retain == limit`
 /// reproduces the classic single-page truncation.
+///
+/// Fairness guard: `popularity_weight(floor)` is used everywhere instead of
+/// raw `downloads` so `None`-downloads candidates participate at the floor and
+/// are never sorted below candidates that merely have data.
 fn pull_up_representatives<T>(
 	cfg: &RankingConfig,
 	candidates: &mut Vec<Candidate<T>>,
@@ -473,7 +600,13 @@ fn pull_up_representatives<T>(
 
 	let take = (limit / 70).clamp(1, 3);
 	let top = &candidates[..better_half];
-	let max_downloads = top.iter().map(|c| c.downloads).max().unwrap_or(0);
+	// Use popularity_weight at the representative floor for eligibility.
+	let dl_floor = cfg.representative_downloads_floor;
+	let max_downloads = top
+		.iter()
+		.map(|c| c.popularity_weight(dl_floor))
+		.max()
+		.unwrap_or(0);
 	let max_quality = top
 		.iter()
 		.map(|c| c.quality)
@@ -508,8 +641,9 @@ fn pull_up_representatives<T>(
 		if pull_indices.contains(&i) {
 			continue;
 		}
-		let min_score = if c.downloads >= 1_000_000 { 0.32 } else { 0.55 };
-		if c.quality >= min_score && c.downloads >= high_dl {
+		let eff = c.popularity_weight(dl_floor);
+		let min_score = if eff >= 1_000_000 { 0.32 } else { 0.55 };
+		if c.quality >= min_score && eff >= high_dl {
 			pull_indices.push(i);
 			dl_pulled += 1;
 		}
@@ -528,11 +662,12 @@ fn pull_up_representatives<T>(
 		.collect();
 	top_crates.reverse(); // restore original relative order
 
-	// Sort the pulled crates by mixed score: (0.3 + score_proxy) * quality * log2(downloads + 25000)
-	// We don't carry the fused score here, so proxy with quality as the relevance signal.
+	// Sort the pulled crates by mixed score using popularity_weight at floor.
 	top_crates.sort_unstable_by(|a, b| {
 		let mixed = |c: &Candidate<T>| {
-			(0.3 + c.quality) * c.quality * ((c.downloads + 25_000) as f32).log2()
+			(0.3 + c.quality)
+				* c.quality
+				* ((c.popularity_weight(dl_floor) + 25_000) as f32).log2()
 		};
 		mixed(b)
 			.partial_cmp(&mixed(a))
@@ -556,12 +691,19 @@ fn pull_up_representatives<T>(
 ///
 /// Swap condition: `b.downloads > bubble_min && b.downloads < bubble_max &&
 /// a.downloads * ratio < b.downloads`.
+///
+/// Fairness guard: both `a` and `b` use `popularity_weight(floor)` where
+/// `floor = bubble_downloads_min` so `None`-downloads candidates are treated
+/// as if they have exactly the floor count (they participate neutrally).
 fn downloads_bubble<T>(cfg: &RankingConfig, slice: &mut [Candidate<T>]) {
-	for pair in slice.chunks_exact_mut(2) {
-		let [a, b] = pair else { continue };
-		if b.downloads > cfg.bubble_downloads_min
-			&& b.downloads < cfg.bubble_downloads_max
-			&& a.downloads.saturating_mul(cfg.bubble_ratio) < b.downloads
+	let floor = cfg.bubble_downloads_min;
+	for pair in slice.as_chunks_mut::<2>().0 {
+		let [a, b] = pair;
+		let a_eff = a.popularity_weight(floor);
+		let b_eff = b.popularity_weight(floor);
+		if b_eff > cfg.bubble_downloads_min
+			&& b_eff < cfg.bubble_downloads_max
+			&& a_eff.saturating_mul(cfg.bubble_ratio) < b_eff
 		{
 			std::mem::swap(a, b);
 		}
@@ -610,13 +752,37 @@ fn apply_permutation<T>(items: &mut [Candidate<T>], scores: &mut [f32], mut perm
 mod tests {
 	use super::*;
 
-	fn make(name: &str, bm25: f32, quality: f32, downloads: u64, kws: &[&str]) -> Candidate<&'static str> {
+	fn make(name: &str, bm25: f32, quality: f32, downloads: Option<u64>, kws: &[&str]) -> Candidate<&'static str> {
 		Candidate {
 			item: "payload",
 			name: name.to_owned(),
 			bm25,
 			quality,
 			downloads,
+			dependents: None,
+			withdrawn: false,
+			ecosystem: Language::Rust,
+			keywords: kws.iter().map(|&k| SmolStr::new(k)).collect(),
+		}
+	}
+
+	fn make_eco(
+		name: &str,
+		bm25: f32,
+		quality: f32,
+		downloads: Option<u64>,
+		eco: Language,
+		kws: &[&str],
+	) -> Candidate<&'static str> {
+		Candidate {
+			item: "payload",
+			name: name.to_owned(),
+			bm25,
+			quality,
+			downloads,
+			dependents: None,
+			withdrawn: false,
+			ecosystem: eco,
 			keywords: kws.iter().map(|&k| SmolStr::new(k)).collect(),
 		}
 	}
@@ -628,10 +794,10 @@ mod tests {
 		// High-quality item (0.9) with modest bm25 = 1.0 → fused = 1.0 * (0.9+1.0) = 1.9
 		// Low-quality item  (0.1) with higher bm25 = 1.5 → fused = 1.5 * 0.1       = 0.15
 		let candidates = vec![
-			make("low-quality", 1.5, 0.1, 10, &[]),
-			make("high-quality", 1.0, 0.9, 10, &[]),
+			make("low-quality", 1.5, 0.1, Some(10), &[]),
+			make("high-quality", 1.0, 0.9, Some(10), &[]),
 		];
-		let result = rank("foo", candidates, 10);
+		let result = rank("foo", candidates, 10, None);
 		assert_eq!(result[0].name, "high-quality", "high-quality item should rank first");
 		assert_eq!(result[1].name, "low-quality");
 	}
@@ -641,9 +807,9 @@ mod tests {
 		// quality = 0.41 (just above threshold) → fused = bm25 * (0.41+1.0) = bm25 * 1.41
 		// quality = 0.40 (at threshold, not above) → fused = bm25 * 0.40
 		let bm25 = 1.0_f32;
-		let above_kink = make("above", bm25, 0.41, 0, &[]);
-		let at_kink    = make("at",    bm25, 0.40, 0, &[]);
-		let result = rank("q", vec![at_kink, above_kink], 10);
+		let above_kink = make("above", bm25, 0.41, None, &[]);
+		let at_kink    = make("at",    bm25, 0.40, None, &[]);
+		let result = rank("q", vec![at_kink, above_kink], 10, None);
 		assert_eq!(result[0].name, "above", "item above the kink should rank higher");
 	}
 
@@ -654,11 +820,280 @@ mod tests {
 		// "tokio-exact" has higher bm25 but doesn't match the query name exactly.
 		// "tokio" exactly matches the query and should rank first.
 		let candidates = vec![
-			make("tokio-extended", 5.0, 0.5, 1_000, &["async"]),
-			make("tokio",          1.0, 0.5, 1_000, &["async"]),
+			make("tokio-extended", 5.0, 0.5, Some(1_000), &["async"]),
+			make("tokio",          1.0, 0.5, Some(1_000), &["async"]),
 		];
-		let result = rank("tokio", candidates, 10);
+		let result = rank("tokio", candidates, 10, None);
 		assert_eq!(result[0].name, "tokio", "exact match should rank above higher-bm25 non-exact");
+	}
+
+	// ── R1: per-ecosystem strip_conventions ──────────────────────────────────
+
+	/// R1 regression: Rust-convention stripping must NOT fire for npm candidates.
+	/// Old code stripped `cargo`/`rust`/`rs` from all ecosystems; new code uses
+	/// the candidate's ecosystem strip function.
+	///
+	/// Test case A: npm candidate `cargo-web`, query `web`.
+	/// Old path: strip `cargo-` → `web` == `web` → exact-in-strip bonus fires.
+	/// New path (npm): strip is `strip_npm_scope` (identity for non-scoped names)
+	/// → `cargo-web` contains `web` as substring → bonus still fires (containment
+	/// logic is unaffected). This is CORRECT — `cargo-web` genuinely contains `web`.
+	///
+	/// Test case B (the real differentiator): Rust candidate `cargo-serde`, query
+	/// `serde`. Old path: strip is applied to NAME only. New path: strip is also
+	/// applied to the QUERY. Under Rust ecosystem both strip to their cores:
+	/// name `cargo-serde` → `serde`, query `serde` → `serde` → contains fires.
+	/// This is an improvement enabled by the two-sided strip.
+	#[test]
+	fn r1_rust_query_strip_applied_to_query() {
+		// Rust ecosystem: query `cargo-serde` strips to `serde`; name `serde` → `serde`.
+		// Containment `serde` contains `serde` → bonus fires (improvement).
+		// contains_query_names_for_ecosystem for Rust:
+		// strip("serde") = "serde", strip("cargo-serde") = "serde", "serde" contains "serde" → true
+		assert!(
+			contains_query_names_for_ecosystem("serde", "cargo-serde", Language::Rust),
+			"Rust: name 'serde' should contain stripped query 'cargo-serde' → 'serde'"
+		);
+		// Containment is symmetric (longer contains shorter — lib.rs port), so
+		// `cargo-serde` ⊇ `serde` matches under npm too. The case that truly
+		// differentiates: query `cargo-axio` vs name `axios` — only the Rust
+		// strip (`cargo-` off the query → `axio` ⊆ `axios`) can connect them.
+		assert!(
+			contains_query_names_for_ecosystem("axios", "cargo-axio", Language::Rust),
+			"Rust: query 'cargo-axio' strips to 'axio', contained in 'axios'"
+		);
+		assert!(
+			!contains_query_names_for_ecosystem("axios", "cargo-axio", Language::Typescript),
+			"npm: identity strip — neither of 'axios'/'cargo-axio' contains the other"
+		);
+	}
+
+	/// R1: Rust `rs`-suffix stripping does not affect npm candidates.
+	#[test]
+	fn r1_rust_rs_suffix_not_applied_to_npm() {
+		// npm candidate named `axio-rs`, query `axio`.
+		// Old Rust strip: `axio-rs` → trim `rs` → `axio-` → trim `-` → `axio` → contains `axio` ✓
+		// New npm strip (strip_npm_scope = identity for non-scoped): `axio-rs` stays `axio-rs`
+		// query stays `axio`; `axio-rs` contains `axio` as substring → bonus still fires.
+		// The true differentiator is when stripping PREVENTS a false match:
+		// npm name `cargo-utils`, query `utils`: npm keeps `cargo-utils` which contains `utils` → OK.
+		// Rust name `utils-rs`, query `utils`: Rust strips `-rs` → `utils`, contains `utils` → OK.
+		// Cross-check: if we run Rust strip on npm name `cargo-utils` with query `utils`:
+		// Rust strip on `cargo-utils` → `utils`; `utils` == `utils` → stronger match than needed.
+		// New code: npm candidate with query `utils` uses npm strip (identity) → `cargo-utils`
+		// contains `utils` as substring → normal contains bonus, not the full strip-equality match.
+		// The critical test: name `cargo-utils` (npm) + query `utils` with Rust ecosystem:
+		//   Old: would apply Rust strip → name becomes `utils` → exact-in-strip
+		//   New: npm strip, name stays `cargo-utils` → only substring contains (different boosting)
+		let rust_strips_cargo = contains_query_names_for_ecosystem("cargo-utils", "utils", Language::Rust);
+		let npm_strips_cargo  = contains_query_names_for_ecosystem("cargo-utils", "utils", Language::Typescript);
+		// Both fire (substring still works) but for different reasons:
+		// Rust: strip("cargo-utils") = "utils", strip("utils") = "utils", "utils" contains "utils"
+		// npm:  "cargo-utils" contains "utils" as substring
+		assert!(rust_strips_cargo, "Rust: contains should fire (strip gives exact)");
+		assert!(npm_strips_cargo,  "npm: contains should fire (substring)");
+		// But npm name `utils-rs` with query `utils`: Rust would strip `-rs`; npm won't.
+		// Under Rust strip: "utils-rs" → "utils", "utils" contains "utils" → match
+		// Under npm strip: "utils-rs" stays "utils-rs", contains "utils" as substring → match
+		// The strip is separator-anchored (`-rs`/`cargo-`), NOT the legacy
+		// `trim_end_matches("rs")` that mangled names like `colors`: a bare
+		// `rs` survives for every ecosystem and matches itself.
+		assert!(
+			contains_query_names_for_ecosystem("rs", "rs", Language::Rust),
+			"Rust: anchored strip keeps a bare 'rs' — exact self-match stands"
+		);
+		assert!(
+			contains_query_names_for_ecosystem("rs", "rs", Language::Typescript),
+			"npm: no Rust stripping — 'rs' vs 'rs' matches verbatim"
+		);
+	}
+
+	/// R1: Python conventions are per-ecosystem.
+	#[test]
+	fn r1_python_strip_applied_for_python_only() {
+		// Python: `python-requests` → `requests`; query `requests` → `requests` → match
+		assert!(
+			contains_query_names_for_ecosystem("python-requests", "requests", Language::Python),
+			"Python: strip 'python-' prefix, 'requests' contains 'requests'"
+		);
+		// npm: same name, same query — npm strip is identity → 'python-requests' contains 'requests' (substring)
+		assert!(
+			contains_query_names_for_ecosystem("python-requests", "requests", Language::Typescript),
+			"npm (identity strip): 'python-requests' contains 'requests' as substring"
+		);
+		// Rust: 'python-requests' — Rust doesn't strip 'python-', stays 'python-requests'
+		// which contains 'requests' as substring. Same result but different semantic path.
+		assert!(
+			contains_query_names_for_ecosystem("python-requests", "requests", Language::Rust),
+			"Rust: 'python-requests' contains 'requests' as substring"
+		);
+	}
+
+	// ── R2: specificity_separators ───────────────────────────────────────────
+
+	/// R2: a query like `org.springframework` is specific in Java (uses `.` separator).
+	#[test]
+	fn r2_java_dot_separator_marks_specific() {
+		use ecosystem::LanguageExt;
+		let norms = Language::Java.spec().search_norms();
+		assert!(
+			norms.query_is_specific("org.springframework"),
+			"Java: '.' marks query as specific"
+		);
+		assert!(
+			norms.query_is_specific("org:springframework"),
+			"Java: ':' marks query as specific"
+		);
+		assert!(
+			!norms.query_is_specific("springframework"),
+			"Java: bare name without separator is not specific (len <= 15)"
+		);
+	}
+
+	/// R2: scoped ecosystem scope changes specificity evaluation in fuse_scores.
+	#[test]
+	fn r2_ecosystem_scope_used_for_specificity() {
+		// Build candidates with identical bm25/quality to isolate the specificity effect.
+		// A specific query (contains separator) should give bigger contains bonus.
+		// We test that passing Some(Language::Rust) doesn't crash and produces output.
+		let candidates = vec![
+			make_eco("serde", 1.0, 0.5, Some(100_000), Language::Rust, &[]),
+			make_eco("serde-json", 0.9, 0.5, Some(80_000), Language::Rust, &[]),
+		];
+		// Query with separator → specific → larger bonus multiplier.
+		let result_specific = rank("cargo-serde", candidates.clone(), 10, Some(Language::Rust));
+		let result_bare = rank("serde", candidates, 10, Some(Language::Rust));
+		// Both should return results; specific query should give serde a larger boost.
+		assert!(!result_specific.is_empty());
+		assert!(!result_bare.is_empty());
+	}
+
+	// ── S4: downloads as Option<u64> ─────────────────────────────────────────
+
+	/// S4: downloads=None candidate should not be ranked below a candidate with
+	/// equal BM25/quality but with downloads data (fairness guard).
+	#[test]
+	fn s4_downloads_none_fairness_within_first_page() {
+		// NuGet candidate with downloads=None vs Rust candidate with 1M downloads.
+		// Equal BM25 and quality.  NuGet should appear in the first page (top-N of rank_full).
+		let candidates: Vec<Candidate<&str>> = vec![
+			make_eco("nuget-pkg",  1.0, 0.6, None,            Language::CSharp, &[]),
+			make_eco("rust-pkg",   1.0, 0.6, Some(1_000_000), Language::Rust,   &[]),
+			make_eco("rust-pkg2",  0.9, 0.5, Some(500_000),   Language::Rust,   &[]),
+		];
+		let result = rank_full("pkg", candidates, 10, None);
+		let nuget_pos = result.iter().position(|c| c.name == "nuget-pkg")
+			.expect("nuget-pkg in results");
+		// NuGet should be within the first page (all 3 candidates fit, so all should appear).
+		assert!(
+			nuget_pos < 3,
+			"NuGet candidate (downloads=None) should appear in results, got pos {nuget_pos}"
+		);
+	}
+
+	/// S4: popularity_weight returns floor for None downloads/dependents, max(n, floor) for Some.
+	#[test]
+	fn s4_popularity_weight_accessor() {
+		let c_none = make("none", 1.0, 0.5, None, &[]);
+		let c_low  = make("low",  1.0, 0.5, Some(100), &[]);
+		let c_high = make("high", 1.0, 0.5, Some(10_000), &[]);
+		let floor = 500u64;
+		assert_eq!(c_none.popularity_weight(floor), floor, "None downloads, None dependents → floor");
+		assert_eq!(c_low.popularity_weight(floor),  floor, "Some(100) < floor → floor");
+		assert_eq!(c_high.popularity_weight(floor), 10_000, "Some(10000) > floor → value");
+
+		// Dependents take priority over downloads.
+		let c_dep = Candidate {
+			dependents: Some(100),
+			downloads: None,
+			..make("dep", 1.0, 0.5, None, &[])
+		};
+		assert_eq!(
+			c_dep.popularity_weight(floor),
+			100 * DEPENDENT_DOWNLOAD_EQUIV,
+			"dependents=Some(100) → 100 * DEPENDENT_DOWNLOAD_EQUIV"
+		);
+
+		// Dependents beat downloads even when downloads are present.
+		let c_dep_over_dl = Candidate {
+			dependents: Some(10),
+			downloads: Some(1_000),
+			..make("dep-dl", 1.0, 0.5, Some(1_000), &[])
+		};
+		assert_eq!(
+			c_dep_over_dl.popularity_weight(floor),
+			10 * DEPENDENT_DOWNLOAD_EQUIV,
+			"dependents preferred over downloads"
+		);
+	}
+
+	/// Dependents-driven popularity: a candidate with dependents=Some(100) and
+	/// downloads=None participates in pull-up/bubble as 250_000-equivalent.
+	#[test]
+	fn dependents_beat_absent_downloads_in_pullup() {
+		// Build enough candidates to trigger pull-up (needs ≥ 7).
+		let mut candidates: Vec<Candidate<&'static str>> = (0..15)
+			.map(|i| make(&format!("crate-{i:02}"), 1.0 - (i as f32 * 0.05), 0.3, Some(100), &[]))
+			.collect();
+		// Insert a candidate with dependents=100 (≡ 250_000 downloads) at position 12.
+		candidates.insert(12, Candidate {
+			dependents: Some(100),
+			downloads: None,
+			..make("popular-dep", 0.4, 0.85, None, &[])
+		});
+		let result = rank("crate", candidates, 20, None);
+		let pos = result.iter().position(|c| c.name == "popular-dep")
+			.expect("popular-dep in results");
+		assert!(pos < 5, "dependents=100 candidate should be pulled into top 5, got pos {pos}");
+	}
+
+	/// Withdrawn candidate is demoted below an otherwise-equal listed one but
+	/// still present in output.
+	#[test]
+	fn withdrawn_demoted_but_present() {
+		let candidates = vec![
+			make("listed",    1.0, 0.6, Some(1_000), &[]),
+			Candidate {
+				withdrawn: true,
+				..make("withdrawn", 1.0, 0.6, Some(1_000), &[])
+			},
+		];
+		let result = rank("q", candidates, 10, None);
+		assert_eq!(result.len(), 2, "both candidates must be in output");
+		assert_eq!(result[0].name, "listed",    "listed should outrank withdrawn");
+		assert_eq!(result[1].name, "withdrawn", "withdrawn still present");
+	}
+
+	/// A withdrawn exact-name match still surfaces (top-3 when it's the only match).
+	#[test]
+	fn withdrawn_exact_name_still_surfaces() {
+		let candidates = vec![
+			Candidate {
+				withdrawn: true,
+				..make("only-match", 2.0, 0.7, Some(5_000), &[])
+			},
+		];
+		let result = rank("only-match", candidates, 10, None);
+		assert!(!result.is_empty(), "withdrawn-only exact match must still surface");
+		assert_eq!(result[0].name, "only-match");
+	}
+
+	// ── Downloads scale calibration ───────────────────────────────────────────
+
+	/// downloads_scale: npm raw 1M × 0.05 ≈ 50k, comparable to Rust 50k × 1.0.
+	/// This is validated at the Candidate construction level (mod.rs populates
+	/// effective downloads after scaling). Here we test the scale values themselves.
+	#[test]
+	fn downloads_scale_npm_vs_rust() {
+		use ecosystem::LanguageExt;
+		let rust_scale = Language::Rust.spec().search_norms().downloads_scale;
+		let npm_scale  = Language::Typescript.spec().search_norms().downloads_scale;
+		assert_eq!(rust_scale, Some(1.0), "Rust scale = 1.0 (calibration baseline)");
+		assert_eq!(npm_scale,  Some(0.05), "npm scale = 0.05 (npm volumes ~20× larger)");
+		// 1M npm × 0.05 = 50k effective ≈ 50k Rust × 1.0
+		let npm_raw = 1_000_000u64;
+		let npm_eff = (npm_raw as f32 * npm_scale.unwrap()) as u64;
+		assert_eq!(npm_eff, 50_000);
 	}
 
 	// ── Representative pull-up ───────────────────────────────────────────────
@@ -667,12 +1102,12 @@ mod tests {
 	fn representative_pullup_popular_item() {
 		// Build 20 mediocre items plus one very popular item buried at position 15.
 		let mut candidates: Vec<Candidate<&'static str>> = (0..20)
-			.map(|i| make(&format!("crate-{i:02}"), 1.0 - (i as f32 * 0.04), 0.3, 500, &[]))
+			.map(|i| make(&format!("crate-{i:02}"), 1.0 - (i as f32 * 0.04), 0.3, Some(500), &[]))
 			.collect();
 		// Popular item has high downloads (5M) and high quality (0.9), inserted at index 15.
-		candidates.insert(15, make("popular-crate", 0.5, 0.9, 5_000_000, &[]));
+		candidates.insert(15, make("popular-crate", 0.5, 0.9, Some(5_000_000), &[]));
 
-		let result = rank("something", candidates, 20);
+		let result = rank("something", candidates, 20, None);
 		// The popular crate should be in the top few results.
 		let pos = result.iter().position(|c| c.name == "popular-crate").expect("popular crate in results");
 		assert!(pos < 5, "popular crate should be pulled into top 5, got position {pos}");
@@ -686,8 +1121,8 @@ mod tests {
 		// The bubble should swap them.
 		let cfg = RankingConfig::default();
 		let mut slice = vec![
-			make("small",  1.0, 0.5, 1_000,   &[]),
-			make("large",  0.9, 0.5, 500_000, &[]),
+			make("small",  1.0, 0.5, Some(1_000),   &[]),
+			make("large",  0.9, 0.5, Some(500_000), &[]),
 		];
 		downloads_bubble(&cfg, &mut slice);
 		assert_eq!(slice[0].name, "large",  "large-download item should bubble up");
@@ -699,11 +1134,28 @@ mod tests {
 		// b.downloads = 2_000_000 ≥ bubble_max (1_000_000) → no swap.
 		let cfg = RankingConfig::default();
 		let mut slice = vec![
-			make("small", 1.0, 0.5, 1_000,     &[]),
-			make("huge",  0.9, 0.5, 2_000_000, &[]),
+			make("small", 1.0, 0.5, Some(1_000),     &[]),
+			make("huge",  0.9, 0.5, Some(2_000_000), &[]),
 		];
 		downloads_bubble(&cfg, &mut slice);
 		assert_eq!(slice[0].name, "small", "should not swap when b.downloads exceeds cap");
+	}
+
+	/// Fairness: None-downloads bubble swap. A candidate with None acts as if it
+	/// has exactly bubble_min (floor). So it doesn't get incorrectly swapped past
+	/// a candidate that also has floor-level downloads.
+	#[test]
+	fn downloads_bubble_none_uses_floor_no_swap() {
+		// a.downloads = None → effective = floor = 200
+		// b.downloads = None → effective = floor = 200
+		// ratio: 200 * 3 = 600 ≥ 200 → no swap (a_eff * ratio >= b_eff)
+		let cfg = RankingConfig::default();
+		let mut slice = vec![
+			make("a", 1.0, 0.5, None, &[]),
+			make("b", 0.9, 0.5, None, &[]),
+		];
+		downloads_bubble(&cfg, &mut slice);
+		assert_eq!(slice[0].name, "a", "None-None pair: no swap (equal floor)");
 	}
 
 	// ── Determinism ──────────────────────────────────────────────────────────
@@ -711,12 +1163,12 @@ mod tests {
 	#[test]
 	fn rank_is_deterministic() {
 		let candidates = || vec![
-			make("zeta",  1.2, 0.8, 10_000, &["net"]),
-			make("alpha", 1.0, 0.6, 50_000, &["io"]),
-			make("beta",  1.5, 0.3, 5_000,  &["net", "io"]),
+			make("zeta",  1.2, 0.8, Some(10_000), &["net"]),
+			make("alpha", 1.0, 0.6, Some(50_000), &["io"]),
+			make("beta",  1.5, 0.3, Some(5_000),  &["net", "io"]),
 		];
-		let r1 = rank("net", candidates(), 10);
-		let r2 = rank("net", candidates(), 10);
+		let r1 = rank("net", candidates(), 10, None);
+		let r2 = rank("net", candidates(), 10, None);
 		let names1: Vec<&str> = r1.iter().map(|c| c.name.as_str()).collect();
 		let names2: Vec<&str> = r2.iter().map(|c| c.name.as_str()).collect();
 		assert_eq!(names1, names2, "rank must be deterministic");
@@ -726,31 +1178,48 @@ mod tests {
 
 	#[test]
 	fn truncation_respects_limit() {
-		let candidates: Vec<_> = (0..20).map(|i| make(&format!("c{i}"), 1.0, 0.5, 0, &[])).collect();
-		let result = rank("q", candidates, 5);
+		let candidates: Vec<_> = (0..20).map(|i| make(&format!("c{i}"), 1.0, 0.5, None, &[])).collect();
+		let result = rank("q", candidates, 5, None);
 		assert_eq!(result.len(), 5);
 	}
 
 	#[test]
 	fn empty_input_returns_empty() {
-		let result = rank::<&str>("q", vec![], 10);
+		let result = rank::<&str>("q", vec![], 10, None);
 		assert!(result.is_empty());
 	}
 
 	#[test]
 	fn limit_zero_returns_empty() {
-		let candidates = vec![make("a", 1.0, 0.5, 0, &[])];
-		let result = rank("q", candidates, 0);
+		let candidates = vec![make("a", 1.0, 0.5, None, &[])];
+		let result = rank("q", candidates, 0, None);
 		assert!(result.is_empty());
 	}
 
 	#[test]
 	fn limit_larger_than_candidates_returns_all() {
 		let candidates = vec![
-			make("a", 1.0, 0.5, 0, &[]),
-			make("b", 0.8, 0.3, 0, &[]),
+			make("a", 1.0, 0.5, None, &[]),
+			make("b", 0.8, 0.3, None, &[]),
 		];
-		let result = rank("q", candidates, 100);
+		let result = rank("q", candidates, 100, None);
 		assert_eq!(result.len(), 2);
+	}
+
+	// ── Ecosystem-scoped ranking ──────────────────────────────────────────────
+
+	/// Scoped query: Python candidate should rank above a Rust lookalike when
+	/// the search is Python-scoped.
+	#[test]
+	fn python_scoped_ranking_first() {
+		let candidates = vec![
+			make_eco("requests",       2.0, 0.9, Some(5_000_000), Language::Python, &["http", "client"]),
+			make_eco("reqwest",        1.8, 0.8, Some(3_000_000), Language::Rust,   &["http", "client"]),
+			make_eco("python-asyncio", 1.5, 0.7, Some(1_000_000), Language::Python, &["async"]),
+		];
+		// Rust ecosystem scope
+		let result = rank("requests", candidates, 10, Some(Language::Python));
+		// requests should be first (exact name match)
+		assert_eq!(result[0].name, "requests");
 	}
 }

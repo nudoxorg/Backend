@@ -25,9 +25,17 @@ use heart::{PackageId, Scored, cursor::Cursor, ecosystem::Language, search::Page
 
 use crate::{GlobalPackage, error::SearchError};
 
+pub mod dependents;
+pub mod entity;
+pub mod eval;
 pub mod multi_parent;
 pub mod ranking;
+pub mod rrf;
+pub mod spell;
+pub mod structured;
 pub mod tantivy;
+
+pub use structured::StructuredQuery;
 
 /// The quality assigned to a package with no extracted facets yet — a neutral
 /// midpoint so the fusion multiplier neither erases (`0.0`) nor inflates such a
@@ -118,22 +126,74 @@ pub async fn collect_ranked_hits(
 	index: &tantivy::PackageIndex,
 	query: &RegistryQuery,
 ) -> Result<Vec<Scored<GlobalPackage>>, SearchError> {
+	collect_ranked_hits_hybrid(index, query, &[]).await
+}
+
+/// Like [`collect_ranked_hits`], but fuses the BM25 candidate list with an
+/// externally-supplied semantic (vector) ranking via reciprocal-rank fusion
+/// before hydration — the hybrid-retrieval seam. `semantic` is best-first
+/// package ids from the vector plane; empty behaves identically to
+/// [`collect_ranked_hits`].
+///
+/// When `semantic` is non-empty, RRF fuses the BM25 id order with the semantic
+/// id order (via [`rrf::fuse`] with [`rrf::DEFAULT_RRF_K`]). Each candidate
+/// then gets a relevance score of `fused_rrf_score × (max_bm25 / max_rrf)` —
+/// rescaled into BM25 magnitude so the downstream kink/bonus math keeps its
+/// calibration. Ids surfaced only by the semantic list are hydrated too, drawing
+/// from the same over-fetch budget. When `semantic` is empty the path is
+/// identical to plain BM25.
+pub async fn collect_ranked_hits_hybrid(
+	index: &tantivy::PackageIndex,
+	query: &RegistryQuery,
+	semantic: &[PackageId],
+) -> Result<Vec<Scored<GlobalPackage>>, SearchError> {
 	use std::collections::HashMap;
 
 	// Over-fetch so filtering, de-dup, and cursor resume still fill a page.
 	let over_fetch = query.limit.max(1) * 4 + 32;
-	let raw = index.query(&query.text, over_fetch)?;
-	let ids: Vec<PackageId> = raw.iter().map(|(id, _)| *id).collect();
-	let scores: HashMap<PackageId, f32> = raw.into_iter().collect();
+	let sq = StructuredQuery::parse(&query.text, query.ecosystem);
+	let raw = index.query_structured(&sq, over_fetch)?;
+
+	// Build the id order and score map from BM25 results.
+	let bm25_ids: Vec<PackageId> = raw.iter().map(|(id, _)| *id).collect();
+	let bm25_scores: HashMap<PackageId, f32> = raw.into_iter().collect();
+
+	// Determine the final id order and per-id relevance score.
+	// When semantic is empty this is a no-op (pure BM25 path).
+	let (hydrate_ids, scores): (Vec<PackageId>, HashMap<PackageId, f32>) = if semantic.is_empty() {
+		(bm25_ids.clone(), bm25_scores)
+	} else {
+		// RRF-fuse BM25 order with semantic order.
+		let fused = rrf::fuse(&[bm25_ids.as_slice(), semantic], rrf::DEFAULT_RRF_K);
+
+		// Rescale RRF scores into BM25 magnitude so downstream stages (quality
+		// kink, exact/contains bonus) keep their calibration. The rescaling factor
+		// is max_bm25 / max_rrf; when no BM25 hits exist the RRF scores stand as-is.
+		let max_bm25 = bm25_scores.values().cloned().fold(0.0_f32, f32::max);
+		let max_rrf = fused.first().map(|(_, s)| *s).unwrap_or(1.0_f32);
+		let rescale = if max_rrf > 0.0 && max_bm25 > 0.0 {
+			max_bm25 / max_rrf
+		} else {
+			1.0
+		};
+
+		let all_ids: Vec<PackageId> = fused.iter().map(|(id, _)| *id).collect();
+		let score_map: HashMap<PackageId, f32> =
+			fused.into_iter().map(|(id, s)| (id, s * rescale)).collect();
+		(all_ids, score_map)
+	};
 
 	let scored: Vec<Scored<GlobalPackage>> = index
-		.hydrate(&ids)
+		.hydrate(&hydrate_ids)
 		.await?
 		.into_iter()
-		.filter(|package| {
-			query
-				.ecosystem
-				.is_none_or(|ecosystem| package.package.coordinates.ecosystem() == ecosystem)
+		// Ecosystem filtering happens in the index (Must TermQuery, Q4); this
+		// assert is a belt-and-braces rollout guard only, never a filter.
+		.inspect(|package| {
+			debug_assert!(
+				query.ecosystem.is_none_or(|eco| package.package.coordinates.ecosystem() == eco),
+				"tantivy ecosystem Must-filter missed a doc — index may need rebuild"
+			);
 		})
 		.map(|package| {
 			let raw_score = scores.get(&package.id).copied().unwrap_or_default();
@@ -142,26 +202,62 @@ pub async fn collect_ranked_hits(
 		.collect();
 
 	// Collapse multi-parent duplicates to their best representative.
-	let representatives: Vec<GlobalPackage> = multi_parent::merge(scored)
+	let mut representatives: Vec<GlobalPackage> = multi_parent::merge(scored)
 		.into_iter()
 		.map(|merged| merged.representative.value)
 		.collect();
+
+	// Cross-ecosystem entity dedup for unscoped queries: when the user hasn't
+	// narrowed to a single ecosystem, deduplicate "the same project" (e.g. a
+	// Rust crate + its npm wasm shim) by repository slug, keeping the best-ranked
+	// representative only.
+	if query.ecosystem.is_none() {
+		representatives = entity::dedup_by_repo(representatives, |pkg| {
+			pkg.facets.as_ref().and_then(|f| f.repo_slug.as_deref())
+		});
+	}
 
 	// Build ranking candidates.
 	let candidates: Vec<ranking::Candidate<GlobalPackage>> = representatives
 		.into_iter()
 		.map(|package| {
+			use ecosystem::LanguageExt;
 			let bm25 = scores.get(&package.id).copied().unwrap_or_default();
 			// A package whose rich metadata hasn't been extracted yet has no
 			// quality signal. Treat "unknown" as neutral, not zero — otherwise
 			// `bm25 × 0` would erase its relevance.
-			let (quality, keywords) = package
+			let (quality, keywords, raw_downloads, dependents, withdrawn) = package
 				.facets
 				.as_ref()
-				.map(|facets| (facets.quality(), facets.keywords.clone()))
-				.unwrap_or((NEUTRAL_QUALITY, Vec::new()));
+				.map(|facets| (
+					facets.quality(),
+					facets.keywords.clone(),
+					facets.downloads,
+					facets.dependents,
+					facets.withdrawn,
+				))
+				.unwrap_or((NEUTRAL_QUALITY, Vec::new(), None, None, false));
+			let ecosystem = package.package.coordinates.ecosystem();
+			// S4/downloads calibration: apply the per-ecosystem `downloads_scale`
+			// so all ecosystems are normalised onto the crates.io-calibrated
+			// ranking thresholds.  `None` scale → `None` effective downloads
+			// (the ecosystem has no download source; fairness floor kicks in).
+			let downloads = match ecosystem.spec().search_norms().downloads_scale {
+				Some(scale) => raw_downloads.map(|n| (n as f32 * scale) as u64),
+				None => None,
+			};
 			let name = package.package.coordinates.name.canonical().to_string();
-			ranking::Candidate { item: package, name, bm25, quality, downloads: 0, keywords }
+			ranking::Candidate {
+				item: package,
+				name,
+				bm25,
+				quality,
+				downloads,
+				dependents,
+				withdrawn,
+				ecosystem,
+				keywords,
+			}
 		})
 		.collect();
 
@@ -170,8 +266,11 @@ pub async fn collect_ranked_hits(
 	// ranked order is materialized so the keyset cursor can slice any page out of
 	// it. The order is thus a single function of `(query.text, ecosystem, snapshot)`
 	// and *not* of page position: page 1 and page N resume over the same order.
+	// Rank on the FREE terms, not the raw input — `lang:go mux` must give the
+	// exact/contains name bonus to `mux`, and `lang:go` tokens would defeat it.
+	// R2: pass the ecosystem scope so `query_is_specific` uses the right separators.
 	let limit = query.limit.max(1);
-	let ranked = ranking::rank_full(&query.text, candidates, limit);
+	let ranked = ranking::rank_full(&sq.terms, candidates, limit, query.ecosystem);
 
 	// Stamp each item with a strictly-descending rank score keyed on its final
 	// ordinal, so `(score, id)` is a strict total order matching the pipeline
