@@ -1,0 +1,22 @@
+# nudox-f1 — frozen F1 key registry + field-aware line pairing (DEPTH1-STRUCTURED-RECORD-PLAN §3).
+#
+# Leaf crate: the two things both the IR plane and the libpijul fork must agree on.
+# Pure data + pure functions over byte slices: no libpijul types, no graph awareness,
+# no I/O.  Depends only on `diffs` so the fork's closure stays minimal and the pairer
+# is independently testable on the semantic plane.
+[package]
+name = "nudox-f1"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+# Pinned to the exact version libpijul resolves (its req is "0.5"), so both
+# consumers run the same Myers. MIT/Apache-2.0.
+diffs = "=0.5.1"

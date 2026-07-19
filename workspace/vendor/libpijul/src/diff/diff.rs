@@ -20,6 +20,12 @@ pub(super) fn diff(
     algorithm: Algorithm,
     stop_early: bool,
 ) -> D {
+    // NUDOX FORK: canonical NdIrF1 blobs take the field-aware pairing.
+    // Same D out, same lowering downstream; `algorithm` is deliberately
+    // ignored for these files.
+    if is_f1(lines_a) || is_f1(lines_b) {
+        return f1_diff(lines_a, lines_b, stop_early);
+    }
     let result = D {
         r: Vec::with_capacity(lines_a.len() + lines_b.len()),
         stop_early,
@@ -217,4 +223,35 @@ impl D {
             _ => None,
         }
     }
+}
+
+/// NUDOX FORK. A file is F1 iff its first line is byte-equal to the frozen
+/// version-1 magic line. Exact equality makes the sniff version-safe (an
+/// `NdIrF1\t2` blob records via stock Myers until nudox-f1 learns v2) and
+/// chunk-safe (an 8192-byte binary chunk can never equal the 9-byte line).
+fn is_f1(lines: &[Line]) -> bool {
+    lines
+        .first()
+        .map_or(false, |l| l.l == nudox_f1::registry::MAGIC_LINE)
+}
+
+/// NUDOX FORK. Field-grained pairing for F1 blobs: bridge `nudox_f1::line_diff`
+/// (plain data, engine-neutral) into pijul's own `D`. `stop_early` keeps the
+/// stock observable behavior — a short-circuited D with at most one entry.
+fn f1_diff(lines_a: &[Line], lines_b: &[Line], stop_early: bool) -> D {
+    let a: Vec<&[u8]> = lines_a.iter().map(|l| l.l).collect();
+    let b: Vec<&[u8]> = lines_b.iter().map(|l| l.l).collect();
+    let mut r: Vec<Replacement> = nudox_f1::pair::line_diff(&a, &b)
+        .into_iter()
+        .map(|e| Replacement {
+            old: e.old,
+            old_len: e.old_len,
+            new: e.new,
+            new_len: e.new_len,
+        })
+        .collect();
+    if stop_early {
+        r.truncate(1);
+    }
+    D { r, stop_early }
 }

@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "libpijul"
-version = "1.0.0-beta.11"
+version = "1.0.0-beta.11+nudox.1"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 build = false
 autolib = false
@@ -95,6 +95,11 @@ version = "2.9"
 
 [dependencies.diffs]
 version = "0.5"
+
+# NUDOX FORK (F-2): the F1 field-aware pairer — the only nudox crate the fork
+# sees (DEPTH1 plan §3.4).
+[dependencies.nudox-f1]
+path = "../../nudox-f1"
 
 [dependencies.ed25519-dalek]
 version = "1.0"
