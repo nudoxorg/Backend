@@ -8,6 +8,7 @@
 pub mod planner;
 pub mod query;
 pub mod registry;
+pub mod routing;
 pub mod semantic;
 pub mod symbols;
 

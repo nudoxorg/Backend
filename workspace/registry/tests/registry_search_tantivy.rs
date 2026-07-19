@@ -59,7 +59,7 @@ async fn registry_search_finds_packages() {
     let tokio = rust_record("tokio");
     let index = searchable_index(&directory, &[serde.clone(), tokio]);
 
-    let page = search_page(&index, &query("serde")).await.expect("the query executes");
+    let page = search_page(&index, &query("serde"), None).await.expect("the query executes");
     assert_eq!(page.items.len(), 1, "exactly the matching package must surface");
     let hit = &page.items[0].value;
     assert_eq!(hit.id, serde.id, "the hit is the package record itself, not a symbol");
@@ -168,7 +168,7 @@ async fn multi_parent_packages_collapse_to_one_result() {
     );
 
     let index = searchable_index(&directory, &[through_crates, through_mirror]);
-    let page = search_page(&index, &query("serde")).await.expect("the query executes");
+    let page = search_page(&index, &query("serde"), None).await.expect("the query executes");
     assert_eq!(
         page.items.len(),
         1,
@@ -194,12 +194,12 @@ async fn registry_search_respects_access_scope() {
     let index = searchable_index(&directory, &[rust_side, python_side.clone()]);
 
     // Unscoped, the caller sees both worlds...
-    let open = search_page(&index, &query("httpclient")).await.expect("the query executes");
+    let open = search_page(&index, &query("httpclient"), None).await.expect("the query executes");
     assert_eq!(open.items.len(), 2, "both ecosystems match without a scope");
 
     // ...scoped, only the permitted slice surfaces.
     let scoped = RegistryQuery { ecosystem: Some(Language::Python), ..query("httpclient") };
-    let page = search_page(&index, &scoped).await.expect("the scoped query executes");
+    let page = search_page(&index, &scoped, None).await.expect("the scoped query executes");
     assert_eq!(page.items.len(), 1, "the scope must filter, not merely rank");
     assert_eq!(page.items[0].value.id, python_side.id);
     assert_eq!(page.items[0].value.package.coordinates.ecosystem(), Language::Python);
@@ -242,7 +242,7 @@ async fn nuget_csharp_package_is_searchable_and_scopes_correctly() {
     let index = searchable_index(&directory, &[nuget_side.clone(), rust_side]);
 
     // Unscoped: both ecosystems contribute results for "json".
-    let open = search_page(&index, &query("json")).await.expect("the query executes");
+    let open = search_page(&index, &query("json"), None).await.expect("the query executes");
     assert!(
         open.items.iter().any(|s| s.value.id == nuget_side.id),
         "Newtonsoft.Json must appear in unscoped search for 'json'"
@@ -250,7 +250,7 @@ async fn nuget_csharp_package_is_searchable_and_scopes_correctly() {
 
     // CSharp-scoped: only the NuGet record surfaces.
     let scoped = RegistryQuery { ecosystem: Some(Language::CSharp), ..query("json") };
-    let page = search_page(&index, &scoped).await.expect("the scoped query executes");
+    let page = search_page(&index, &scoped, None).await.expect("the scoped query executes");
     assert_eq!(page.items.len(), 1, "the CSharp scope must exclude non-C# packages");
     assert_eq!(page.items[0].value.id, nuget_side.id, "the NuGet record must surface");
     assert_eq!(
@@ -284,7 +284,7 @@ async fn fused_ranking_exact_name_outranks_contains_match() {
 
     let index = searchable_index(&directory, &[tokio_ext, tokio_exact.clone(), serde]);
 
-    let page = search_page(&index, &query("tokio")).await.expect("query executes");
+    let page = search_page(&index, &query("tokio"), None).await.expect("query executes");
 
     let names: Vec<&str> = page
         .items
@@ -317,7 +317,7 @@ async fn fused_ranking_quality_multiplier_applied() {
 
     let index = searchable_index(&directory, &[lowqual, highqual.clone()]);
 
-    let page = search_page(&index, &query("async")).await.expect("query executes");
+    let page = search_page(&index, &query("async"), None).await.expect("query executes");
 
     let names: Vec<&str> = page
         .items
@@ -371,7 +371,7 @@ async fn keyset_pagination_is_seam_free_across_pages() {
     // The single, unpaged total order: one full-pipeline run large enough to
     // hold everything the pages will visit.
     let unpaged =
-        search_page(&index, &RegistryQuery { limit: 100, ..query("async") })
+        search_page(&index, &RegistryQuery { limit: 100, ..query("async") }, None)
             .await
             .expect("the unpaged query executes");
     let total_order: Vec<_> = unpaged.items.iter().map(|s| s.value.id).collect();
@@ -388,7 +388,7 @@ async fn keyset_pagination_is_seam_free_across_pages() {
             after: after.clone(),
             ..query("async")
         };
-        let page = search_page(&index, &q).await.expect("a page query executes");
+        let page = search_page(&index, &q, None).await.expect("a page query executes");
         assert!(page.items.len() <= page_size, "a page must respect its limit");
         for hit in &page.items {
             assert!(
@@ -460,7 +460,7 @@ async fn structured_lang_go_finds_go_package_only() {
         limit: 10,
         after: None,
     };
-    let page = search_page(&index, &scoped_q).await.expect("query executes");
+    let page = search_page(&index, &scoped_q, None).await.expect("query executes");
     // Only Go results.
     assert!(
         page.items.iter().all(|h| h.value.package.coordinates.ecosystem() == Language::Go),
@@ -511,7 +511,7 @@ async fn structured_types_node_exact_match() {
         limit: 10,
         after: None,
     };
-    let page = search_page(&index, &q).await.expect("query executes");
+    let page = search_page(&index, &q, None).await.expect("query executes");
     assert!(
         page.items.iter().any(|h| h.value.id == types_node.id),
         "@types/node must appear in scoped+namespace query"
@@ -539,7 +539,7 @@ async fn structured_spring_boot_matches_via_namespace() {
         limit: 10,
         after: None,
     };
-    let page = search_page(&index, &q).await.expect("query executes");
+    let page = search_page(&index, &q, None).await.expect("query executes");
     assert!(
         page.items.iter().any(|h| h.value.id == spring.id),
         "spring boot query must match the Spring Boot artifact"
@@ -559,7 +559,7 @@ async fn structured_fuzzy_typo_finds_getuserbyid() {
 
     // The typo query (missing 'r'): "getUseById" → single token of len 10 → fuzzy fires.
     let q = RegistryQuery { text: "getUseById".to_owned(), ecosystem: None, limit: 10, after: None };
-    let page = search_page(&index, &q).await.expect("query executes");
+    let page = search_page(&index, &q, None).await.expect("query executes");
     // getUserById may surface either via fuzzy or via subtoken matching.
     assert!(
         page.items.iter().any(|h| h.value.id == correct.id),
@@ -586,7 +586,7 @@ async fn structured_ienumerable_matches_subtoken_i_alone_no_crash() {
 
     // `IEnumerable` should match.
     let q_match = RegistryQuery { text: "IEnumerable".to_owned(), ecosystem: None, limit: 10, after: None };
-    let page = search_page(&index, &q_match).await.expect("query executes");
+    let page = search_page(&index, &q_match, None).await.expect("query executes");
     assert!(
         page.items.iter().any(|h| h.value.id == ienumerable.id),
         "IEnumerable query must find the package"
@@ -596,7 +596,7 @@ async fn structured_ienumerable_matches_subtoken_i_alone_no_crash() {
     // return empty (the `i` subtoken is filtered out of the Must-conjunction).
     let q_i = RegistryQuery { text: "i".to_owned(), ecosystem: None, limit: 10, after: None };
     // Should not panic — result may be empty or return some match.
-    let _page_i = search_page(&index, &q_i).await.expect("single-char 'i' query must not crash");
+    let _page_i = search_page(&index, &q_i, None).await.expect("single-char 'i' query must not crash");
 }
 
 /// Ecosystem + namespace combined query works.
@@ -617,7 +617,7 @@ async fn structured_ecosystem_and_namespace_combined() {
         limit: 10,
         after: None,
     };
-    let page = search_page(&index, &q).await.expect("query executes");
+    let page = search_page(&index, &q, None).await.expect("query executes");
     // Java + namespace filter: only the Java package.
     assert!(
         page.items.iter().all(|h| h.value.package.coordinates.ecosystem() == Language::Java),
@@ -643,7 +643,7 @@ async fn structured_namespace_only_does_not_crash() {
         limit: 10,
         after: None,
     };
-    let _page = search_page(&index, &q).await.expect("namespace-only query must not crash");
+    let _page = search_page(&index, &q, None).await.expect("namespace-only query must not crash");
 }
 
 /// Stale schema: opening a dir with schema_version=1 wipes and resets watermark.
@@ -669,10 +669,10 @@ async fn stale_schema_wipes_and_resets_watermark() {
         "watermark must be reset to 0 after stale-schema wipe"
     );
 
-    // The schema_version marker should now be SCHEMA_VERSION (3).
+    // The schema_version marker should now be SCHEMA_VERSION (4).
     let marker = std::fs::read_to_string(path.join("schema_version"))
         .expect("schema_version file written");
-    assert_eq!(marker.trim(), "3", "schema_version marker must be updated to 3");
+    assert_eq!(marker.trim(), "4", "schema_version marker must be updated to 4");
 }
 
 /// Adversarial: tantivy grammar chars in query must not break the hand-built tree.
@@ -696,7 +696,7 @@ async fn structured_adversarial_grammar_chars() {
         "react-query",
     ] {
         let q = RegistryQuery { text: bad.to_string(), ecosystem: None, limit: 10, after: None };
-        search_page(&index, &q).await
+        search_page(&index, &q, None).await
             .unwrap_or_else(|_| heart::search::Page { items: vec![], next: None });
     }
 }
@@ -710,7 +710,7 @@ async fn structured_adversarial_1024_boundary() {
 
     let at_limit = "a".repeat(1024);
     let q = RegistryQuery { text: at_limit, ecosystem: None, limit: 10, after: None };
-    let _page = search_page(&index, &q).await.expect("1024-char query must not crash");
+    let _page = search_page(&index, &q, None).await.expect("1024-char query must not crash");
 }
 
 /// Adversarial: unicode in query terms must not crash.
@@ -721,7 +721,7 @@ async fn structured_adversarial_unicode() {
     let index = searchable_index(&directory, &[r]);
 
     let q = RegistryQuery { text: "résumé 日本語 🦀".to_owned(), ecosystem: None, limit: 10, after: None };
-    let _page = search_page(&index, &q).await.expect("unicode query must not crash");
+    let _page = search_page(&index, &q, None).await.expect("unicode query must not crash");
 }
 
 /// Adversarial: all-stopword query must return (possibly empty) result, not crash.
@@ -734,7 +734,86 @@ async fn structured_adversarial_all_stopwords() {
     // "library" and "for" are in ENGLISH_STOPWORDS — the ident tokenizer may
     // still produce them as subtokens; the query must not crash.
     let q = RegistryQuery { text: "library for".to_owned(), ecosystem: None, limit: 10, after: None };
-    let _page = search_page(&index, &q).await.expect("all-stopword query must not crash");
+    let _page = search_page(&index, &q, None).await.expect("all-stopword query must not crash");
+}
+
+
+/// Absorb smoke: dashed package names remain exact-matchable after enrichment
+/// folds name parts into the keywords field (no schema bump / no name_exact loss).
+#[tokio::test]
+async fn absorb_dashed_name_still_exact_matchable() {
+    let directory = common::TempDir::new("enrich-absorb-dash");
+    let pkg = rust_record("serde-json");
+    let index = searchable_index(&directory, std::slice::from_ref(&pkg));
+
+    let page = search_page(&index, &query("serde-json"), None)
+        .await
+        .expect("dashed exact query executes");
+    assert_eq!(page.items.len(), 1, "serde-json must exact-match after absorb+enrich");
+    assert_eq!(page.items[0].value.id, pkg.id);
+
+    let part = search_page(&index, &query("json"), None)
+        .await
+        .expect("part query executes");
+    assert!(
+        part.items.iter().any(|s| s.value.id == pkg.id),
+        "serde-json must remain findable via 'json' after enrichment"
+    );
+}
+
+// ── Schema v4: FAST ranking columns ────────────────────────────────────────
+
+/// Absorb with facets writes FAST quality/downloads without panic and values
+/// round-trip via segment reader / DocId from TopDocs.
+#[tokio::test]
+async fn v4_absorb_writes_fast_ranking_signals() {
+    use registry::search::tantivy::FastRankingSignals;
+
+    let directory = common::TempDir::new("v4-fast-signals");
+    let mut pkg = rust_record_with_facets("fast-pkg", 750_000, &["async", "runtime"]);
+    if let Some(facets) = pkg.facets.as_mut() {
+        facets.downloads = Some(42_000);
+    }
+    let index = searchable_index(&directory, &[pkg.clone()]);
+
+    // Absorb must not panic and package remains searchable.
+    let hits = index.query("fast-pkg", 10).expect("query after absorb");
+    assert!(
+        hits.iter().any(|(id, _)| *id == pkg.id),
+        "absorbed package with facets must be queryable"
+    );
+
+    let signals = index
+        .fast_ranking_signals(pkg.id)
+        .expect("FAST read must not error")
+        .expect("package must be in index");
+    assert_eq!(
+        signals,
+        FastRankingSignals {
+            quality_ppm: 750_000,
+            downloads: 42_000,
+            popularity_pct_ppm: 0, // not yet filled on SearchFacets
+        },
+        "FAST columns must round-trip facets.quality_ppm / downloads"
+    );
+
+    // Missing facets → zeros.
+    let bare = rust_record("no-facets");
+    let mut index2 = PackageIndex::open(directory.path()).expect("reopen");
+    index2.absorb([&bare], 2).expect("bare absorb");
+    let zeros = index2
+        .fast_ranking_signals(bare.id)
+        .expect("FAST read")
+        .expect("bare package present");
+    assert_eq!(
+        zeros,
+        FastRankingSignals {
+            quality_ppm: 0,
+            downloads: 0,
+            popularity_pct_ppm: 0,
+        },
+        "missing facets must write 0 for all FAST ranking columns"
+    );
 }
 
 // ── Schema v3: dep:/license:/phrase tests ──────────────────────────────────
@@ -788,7 +867,7 @@ async fn v3_dep_filter_narrows_results() {
         limit: 10,
         after: None,
     };
-    let page = search_page(&index, &dep_q).await.expect("dep: query executes");
+    let page = search_page(&index, &dep_q, None).await.expect("dep: query executes");
     assert!(
         page.items.iter().any(|h| h.value.id == with_serde.id),
         "serde-dependent package must be in results"
@@ -823,7 +902,7 @@ async fn v3_dep_only_query_works_with_allquery() {
     let index = searchable_index(&directory, &[async_crate.clone(), sync_crate.clone()]);
 
     let q = RegistryQuery { text: "dep:tokio".to_owned(), ecosystem: None, limit: 10, after: None };
-    let page = search_page(&index, &q).await.expect("dep-only query must not crash");
+    let page = search_page(&index, &q, None).await.expect("dep-only query must not crash");
     assert!(
         page.items.iter().any(|h| h.value.id == async_crate.id),
         "tokio-dependent crate must appear"
@@ -862,7 +941,7 @@ async fn v3_license_filter_narrows_results() {
         limit: 10,
         after: None,
     };
-    let page = search_page(&index, &q).await.expect("license: query executes");
+    let page = search_page(&index, &q, None).await.expect("license: query executes");
     assert!(
         page.items.iter().any(|h| h.value.id == mit_pkg.id),
         "MIT-licensed package must appear"
@@ -894,7 +973,7 @@ async fn v3_license_only_query_works_with_allquery() {
     let index = searchable_index(&directory, &[mit_pkg.clone(), gpl_pkg.clone()]);
 
     let q = RegistryQuery { text: "license:mit".to_owned(), ecosystem: None, limit: 10, after: None };
-    let page = search_page(&index, &q).await.expect("license-only query must not crash");
+    let page = search_page(&index, &q, None).await.expect("license-only query must not crash");
     assert!(
         page.items.iter().any(|h| h.value.id == mit_pkg.id),
         "MIT package must appear in license-only query"

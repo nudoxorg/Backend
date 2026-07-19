@@ -66,6 +66,7 @@ fn extract_for(
 		loc: 500,
 		release_count: None,
 		withdrawn_count: None,
+		last_release_days_ago: None,
 	};
 
 	let rich = extract(&input, norms, None, None);
