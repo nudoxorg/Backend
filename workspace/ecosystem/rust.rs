@@ -96,12 +96,29 @@ impl EcosystemSpec for Rust {
 
 	fn search_norms() -> &'static search::SearchNorms { &NORMS }
 
-	/// crates.io download counts are embedded in the `/api/v1/crates/{name}`
-	/// listing JSON already fetched during ingest (`crate.recent_downloads`).
-	/// A separate download-count fetch would duplicate that request. The ingest
-	/// path populates `SearchFacets::downloads` from the listing JSON directly;
-	/// the S4 fetch loop therefore does not fire for Rust (`None` here).
-	fn download_source() -> Option<upstream::DownloadEndpoint> { None }
+	/// crates.io embeds download counts in the same `/api/v1/crates/{name}`
+	/// listing JSON used for version resolution. Ingest does not currently
+	/// thread that body into facet extraction (resolve/listing is a separate
+	/// path from archive emit), so S4 re-fetches the listing URL via the shared
+	/// download-count loop — same trait shape as npm/NuGet. Prefer
+	/// `crate.recent_downloads` (≈90d) over all-time `crate.downloads`.
+	fn download_source() -> Option<upstream::DownloadEndpoint> {
+		Some(upstream::DownloadEndpoint {
+			// Absolute URL: UpstreamClient GETs the template as-is (no registry base).
+			url: "https://crates.io/api/v1/crates/{name}",
+		})
+	}
+
+	/// Parse crates.io crate metadata: prefer `crate.recent_downloads`, fall
+	/// back to all-time `crate.downloads`. Malformed / missing → `None` (no panic).
+	/// Explicit `0` is valid (`Some(0)`).
+	fn parse_download_count(body: &[u8]) -> Option<u64> {
+		let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+		let krate = &v["crate"];
+		krate["recent_downloads"]
+			.as_u64()
+			.or_else(|| krate["downloads"].as_u64())
+	}
 }
 
 static NORMS: SearchNorms = SearchNorms {
@@ -310,5 +327,53 @@ license-file = "LICENSE"
 		let candidates = Rust::manifest_candidates();
 		assert_eq!(candidates.len(), 1);
 		assert_eq!(candidates[0].path_suffix, "Cargo.toml");
+	}
+
+	// ── parse_download_count (S4) ────────────────────────────────────────────
+
+	#[test]
+	fn parse_download_count_recent_downloads() {
+		let body = br#"{
+			"crate": {
+				"id": "serde",
+				"name": "serde",
+				"downloads": 999999999,
+				"recent_downloads": 1234567
+			},
+			"versions": []
+		}"#;
+		assert_eq!(Rust::parse_download_count(body), Some(1_234_567));
+	}
+
+	#[test]
+	fn parse_download_count_falls_back_to_all_time() {
+		// recent_downloads null/missing → use all-time downloads.
+		let body = br#"{"crate":{"name":"foo","downloads":42}}"#;
+		assert_eq!(Rust::parse_download_count(body), Some(42));
+
+		let body_null = br#"{"crate":{"name":"foo","downloads":42,"recent_downloads":null}}"#;
+		assert_eq!(Rust::parse_download_count(body_null), Some(42));
+	}
+
+	#[test]
+	fn parse_download_count_zero_is_some() {
+		let body = br#"{"crate":{"name":"brand-new","downloads":0,"recent_downloads":0}}"#;
+		assert_eq!(Rust::parse_download_count(body), Some(0));
+	}
+
+	#[test]
+	fn parse_download_count_malformed_or_missing() {
+		assert_eq!(Rust::parse_download_count(b"not json"), None);
+		assert_eq!(Rust::parse_download_count(b"{}"), None);
+		assert_eq!(Rust::parse_download_count(br#"{"crate":{}}"#), None);
+		assert_eq!(Rust::parse_download_count(br#"{"crate":{"recent_downloads":"nope"}}"#), None);
+		assert_eq!(Rust::parse_download_count(b""), None);
+	}
+
+	#[test]
+	fn download_source_is_crates_io_listing() {
+		let ep = Rust::download_source().expect("Rust has a download source");
+		assert!(ep.url.contains("crates.io"));
+		assert!(ep.url.contains("{name}"));
 	}
 }

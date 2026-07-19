@@ -584,6 +584,7 @@ impl VersionGrammar for GoVersion {
 ///     resolution; callers that need MVS-style should use `Latest`).
 ///   - Bracket ranges `[1.0,2.0)`, `(,1.0]`, `[1.0]` (exact) are *hard*
 ///     requirements and are fully supported.
+///
 /// Equality is defined via [`Ord`] (`cmp == Equal`), NOT structurally —
 /// null-padding makes `1.0 == 1.0.0` under `cmp`, so a derived `Eq` over
 /// `tokens + original` would break `Ord`'s contract.

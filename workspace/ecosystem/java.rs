@@ -153,10 +153,38 @@ impl EcosystemSpec for Java {
 
 	fn search_norms() -> &'static SearchNorms { &NORMS }
 
-	/// Maven Central has no public per-artifact download-count API. Returns
-	/// `None`; Java packages participate in downloads-driven ranking at the
-	/// fairness floor.
+	/// Maven Central has **no public free per-artifact download-count API**.
+	/// (Sonatype OSS Index / commercial stats require auth; search.maven.org
+	/// does not expose download numbers.) Returns `None`; ranking uses
+	/// dependents / fairness floor.
+	///
+	/// A pure [`parse_download_count`] accepts an offline fixture shape
+	/// `{"downloads": N}` (or `{"downloadCount": N}`) so corpus jobs can inject
+	/// counts later without changing the trait surface.
 	fn download_source() -> Option<upstream::DownloadEndpoint> { None }
+
+	/// Parse a documented offline JSON shape for Maven download counts.
+	/// Malformed / missing → `None` (never panics). Not used at ingest while
+	/// [`download_source`] is `None`.
+	fn parse_download_count(body: &[u8]) -> Option<u64> {
+		parse_maven_download_count(body)
+	}
+}
+
+/// Pure parser for a best-effort Maven download-count JSON fixture.
+///
+/// Documented shape (no live free upstream today):
+/// ```json
+/// { "downloads": 12345 }
+/// ```
+/// Also accepts camelCase `downloadCount` (common in Sonatype-style payloads).
+/// Explicit `0` is `Some(0)`.
+pub fn parse_maven_download_count(body: &[u8]) -> Option<u64> {
+	let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+	v["downloads"]
+		.as_u64()
+		.or_else(|| v["downloadCount"].as_u64())
+		.or_else(|| v["download_count"].as_u64())
 }
 
 static NORMS: SearchNorms = SearchNorms {
@@ -397,5 +425,36 @@ mod tests {
 	fn parse_maven_metadata_empty_or_malformed() {
 		assert!(Java::parse_version_listing(b"<metadata/>").is_empty());
 		assert!(Java::parse_version_listing(b"not xml").is_empty());
+	}
+
+	// ── parse_download_count (no live free source; pure fixture parse) ────────
+
+	#[test]
+	fn download_source_is_none() {
+		assert!(Java::download_source().is_none());
+	}
+
+	#[test]
+	fn parse_download_count_happy_path() {
+		assert_eq!(Java::parse_download_count(br#"{"downloads":999}"#), Some(999));
+		assert_eq!(
+			Java::parse_download_count(br#"{"downloadCount":42}"#),
+			Some(42)
+		);
+		assert_eq!(parse_maven_download_count(br#"{"download_count":7}"#), Some(7));
+	}
+
+	#[test]
+	fn parse_download_count_zero_is_some() {
+		assert_eq!(Java::parse_download_count(br#"{"downloads":0}"#), Some(0));
+	}
+
+	#[test]
+	fn parse_download_count_malformed_or_missing() {
+		assert_eq!(Java::parse_download_count(b"not json"), None);
+		assert_eq!(Java::parse_download_count(b"{}"), None);
+		assert_eq!(Java::parse_download_count(br#"{"downloads":null}"#), None);
+		assert_eq!(Java::parse_download_count(br#"{"downloads":"nope"}"#), None);
+		assert_eq!(Java::parse_download_count(b""), None);
 	}
 }

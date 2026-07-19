@@ -114,10 +114,35 @@ impl EcosystemSpec for Go {
 
 	fn search_norms() -> &'static SearchNorms { &NORMS }
 
-	/// Go modules have no public download-count API (proxy.golang.org exposes
-	/// no statistics endpoint). Returns `None`; Go packages participate in
-	/// downloads-driven ranking stages at the fairness floor.
+	/// Go modules have **no public download-count API** (proxy.golang.org
+	/// exposes no statistics endpoint; pkg.go.dev has no free per-module JSON
+	/// download feed). Returns `None`; ranking uses dependents / fairness floor.
+	///
+	/// A pure [`parse_download_count`] is still provided for offline/fixture
+	/// JSON shaped as `{"downloads": N}` so corpus jobs can inject counts later
+	/// without touching the trait surface.
 	fn download_source() -> Option<upstream::DownloadEndpoint> { None }
+
+	/// Parse a documented offline JSON shape: `{"downloads": N}` (or
+	/// `{"download_count": N}`). Malformed / missing → `None` (never panics).
+	/// Not used at ingest while [`download_source`] is `None`.
+	fn parse_download_count(body: &[u8]) -> Option<u64> {
+		parse_go_download_count(body)
+	}
+}
+
+/// Pure parser for a best-effort Go download-count JSON fixture.
+///
+/// Documented shape (no live upstream today):
+/// ```json
+/// { "downloads": 12345 }
+/// ```
+/// Also accepts `download_count` as an alternate key. Explicit `0` is `Some(0)`.
+pub fn parse_go_download_count(body: &[u8]) -> Option<u64> {
+	let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+	v["downloads"]
+		.as_u64()
+		.or_else(|| v["download_count"].as_u64())
 }
 
 static NORMS: SearchNorms = SearchNorms {
@@ -476,5 +501,36 @@ require (
 		let body = b"v1.0.0\n\nv1.1.0\n";
 		let versions = Go::parse_version_listing(body);
 		assert_eq!(versions.len(), 2);
+	}
+
+	// ── parse_download_count (no live source; pure fixture parse) ─────────────
+
+	#[test]
+	fn download_source_is_none() {
+		assert!(Go::download_source().is_none());
+	}
+
+	#[test]
+	fn parse_download_count_happy_path() {
+		assert_eq!(Go::parse_download_count(br#"{"downloads":12345}"#), Some(12_345));
+		assert_eq!(
+			Go::parse_download_count(br#"{"download_count":99}"#),
+			Some(99)
+		);
+		assert_eq!(parse_go_download_count(br#"{"downloads":1}"#), Some(1));
+	}
+
+	#[test]
+	fn parse_download_count_zero_is_some() {
+		assert_eq!(Go::parse_download_count(br#"{"downloads":0}"#), Some(0));
+	}
+
+	#[test]
+	fn parse_download_count_malformed_or_missing() {
+		assert_eq!(Go::parse_download_count(b"not json"), None);
+		assert_eq!(Go::parse_download_count(b"{}"), None);
+		assert_eq!(Go::parse_download_count(br#"{"downloads":null}"#), None);
+		assert_eq!(Go::parse_download_count(br#"{"downloads":"nope"}"#), None);
+		assert_eq!(Go::parse_download_count(b""), None);
 	}
 }

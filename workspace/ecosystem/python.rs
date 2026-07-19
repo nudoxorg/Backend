@@ -123,12 +123,48 @@ impl EcosystemSpec for Python {
 
 	fn search_norms() -> &'static SearchNorms { &NORMS }
 
-	/// PyPI does not expose a simple per-package download-count endpoint in its
-	/// v1 JSON API (the `stats` field was removed). The BigQuery public dataset
-	/// and pypistats.org provide counts but require separate sign-up/integration.
-	/// Acceptable v1: returns `None` so downloads-driven stages use the fairness
-	/// floor for Python packages (they participate at floor, never penalized).
-	fn download_source() -> Option<upstream::DownloadEndpoint> { None }
+	/// Monthly downloads via the free, no-auth [pypistats](https://pypistats.org)
+	/// recent-downloads API.
+	///
+	/// Template: `https://pypistats.org/api/packages/{name}/recent`
+	/// Documented JSON shape (see [`parse_pypistats_recent`]):
+	/// ```json
+	/// { "data": { "last_day": N, "last_week": N, "last_month": N }, "package": "..." }
+	/// ```
+	/// Prefer `data.last_month` as the monthly count. PyPI's own JSON API no
+	/// longer exposes download stats; BigQuery remains an offline alternative.
+	fn download_source() -> Option<upstream::DownloadEndpoint> {
+		Some(upstream::DownloadEndpoint {
+			url: "https://pypistats.org/api/packages/{name}/recent",
+		})
+	}
+
+	/// Parse a pypistats-shaped recent-downloads body into a monthly count.
+	/// Malformed / missing → `None` (never panics). Explicit `0` is `Some(0)`.
+	fn parse_download_count(body: &[u8]) -> Option<u64> {
+		parse_pypistats_recent(body)
+	}
+}
+
+/// Parse pypistats.org `/api/packages/{name}/recent` JSON.
+///
+/// Documented shape:
+/// ```json
+/// {
+///   "data": { "last_day": 1, "last_week": 10, "last_month": 100 },
+///   "package": "requests",
+///   "type": "recent_downloads"
+/// }
+/// ```
+/// Returns `data.last_month` when present and numeric. Falls back to
+/// `last_week` then `last_day` if month is absent (best-effort).
+pub fn parse_pypistats_recent(body: &[u8]) -> Option<u64> {
+	let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+	let data = &v["data"];
+	data["last_month"]
+		.as_u64()
+		.or_else(|| data["last_week"].as_u64())
+		.or_else(|| data["last_day"].as_u64())
 }
 
 static NORMS: SearchNorms = SearchNorms {
@@ -137,6 +173,8 @@ static NORMS: SearchNorms = SearchNorms {
 	strip_conventions: strip_python_conventions,
 	normalize_query: search::normalize_identity,
 	map_category: map_pypi_category,
+	// pypistats last_month is true monthly; scale ≈ crates.io recent (≈90d)
+	// reference. Corpus-percentile calibration will supersede this.
 	downloads_scale: Some(0.1),
 };
 
@@ -732,5 +770,43 @@ file = "LICENSE.txt"
 		// Empty file list → listed
 		let v07 = versions.iter().find(|v| v.raw == "0.7.0").unwrap();
 		assert!(v07.status.is_listed());
+	}
+
+	// ── parse_download_count / pypistats ──────────────────────────────────────
+
+	#[test]
+	fn parse_download_count_pypistats_happy_path() {
+		let body = br#"{"data":{"last_day":100,"last_week":1000,"last_month":50000},"package":"requests","type":"recent_downloads"}"#;
+		assert_eq!(Python::parse_download_count(body), Some(50_000));
+		assert_eq!(parse_pypistats_recent(body), Some(50_000));
+	}
+
+	#[test]
+	fn parse_download_count_falls_back_to_week() {
+		let body = br#"{"data":{"last_day":10,"last_week":999}}"#;
+		assert_eq!(Python::parse_download_count(body), Some(999));
+	}
+
+	#[test]
+	fn parse_download_count_zero_is_some() {
+		let body = br#"{"data":{"last_month":0}}"#;
+		assert_eq!(Python::parse_download_count(body), Some(0));
+	}
+
+	#[test]
+	fn parse_download_count_malformed_or_missing() {
+		assert_eq!(Python::parse_download_count(b"not json"), None);
+		assert_eq!(Python::parse_download_count(b"{}"), None);
+		assert_eq!(Python::parse_download_count(br#"{"data":{}}"#), None);
+		assert_eq!(Python::parse_download_count(br#"{"data":{"last_month":null}}"#), None);
+		assert_eq!(Python::parse_download_count(br#"{"data":{"last_month":"nope"}}"#), None);
+		assert_eq!(Python::parse_download_count(b""), None);
+	}
+
+	#[test]
+	fn download_source_is_pypistats() {
+		let ep = Python::download_source().expect("Python has a download source");
+		assert!(ep.url.contains("pypistats.org"));
+		assert!(ep.url.contains("{name}"));
 	}
 }

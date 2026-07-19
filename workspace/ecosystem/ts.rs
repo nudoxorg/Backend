@@ -121,6 +121,7 @@ impl EcosystemSpec for TypeScript {
 	}
 
 	/// Parse the npm Downloads API response: `{"downloads": N, ...}`.
+	/// Explicit `0` is valid (`Some(0)`). Malformed / missing field → `None`.
 	fn parse_download_count(body: &[u8]) -> Option<u64> {
 		let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
 		v["downloads"].as_u64()
@@ -378,5 +379,29 @@ mod tests {
 		// null deprecated = listed
 		let v08 = versions.iter().find(|v| v.raw == "0.8.0").unwrap();
 		assert!(v08.status.is_listed());
+	}
+
+	// ── parse_download_count (S4) ────────────────────────────────────────────
+
+	#[test]
+	fn parse_download_count_happy_path() {
+		assert_eq!(
+			TypeScript::parse_download_count(br#"{"downloads":123,"start":"2024-01-01","end":"2024-01-31","package":"lodash"}"#),
+			Some(123)
+		);
+	}
+
+	#[test]
+	fn parse_download_count_zero_is_some() {
+		assert_eq!(TypeScript::parse_download_count(br#"{"downloads":0}"#), Some(0));
+	}
+
+	#[test]
+	fn parse_download_count_malformed_or_missing() {
+		assert_eq!(TypeScript::parse_download_count(b"not json"), None);
+		assert_eq!(TypeScript::parse_download_count(b"{}"), None);
+		assert_eq!(TypeScript::parse_download_count(br#"{"downloads":null}"#), None);
+		assert_eq!(TypeScript::parse_download_count(br#"{"downloads":"nope"}"#), None);
+		assert_eq!(TypeScript::parse_download_count(b""), None);
 	}
 }
