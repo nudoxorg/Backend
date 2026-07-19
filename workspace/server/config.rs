@@ -76,6 +76,12 @@ pub struct ServerConfiguration {
 	/// `metadata_data_dir` key in the TOML config file.
 	#[serde(default)]
 	pub metadata_data_dir: Option<PathBuf>,
+
+	/// Catalog-mirror configuration: which ecosystems to actively follow and
+	/// the backpressure ceiling. Default: no active followers (demand-pull
+	/// only).
+	#[serde(default)]
+	pub mirror: MirrorConfig,
 }
 
 /// The deployment tier this node is running in.
@@ -191,6 +197,33 @@ pub struct Endpoints {
 	pub embeddings_api_key: Option<SecretString>,
 }
 
+/// Mirror-catalog follower configuration. When `follow` is non-empty, the
+/// gateway spawns one `catalog_follower_worker` per language. Demand-pull (the
+/// existing on-request resolve path) remains the default when `follow` is empty.
+///
+/// Configure via `[mirror]` in `nudox.toml`, e.g.:
+/// ```toml
+/// [mirror]
+/// follow = ["csharp", "rust"]
+/// ```
+/// or via environment variables:
+/// ```text
+/// NUDOX_MIRROR__FOLLOW='["csharp", "rust"]'
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MirrorConfig {
+	/// Languages whose upstream catalogs should be actively followed.
+	/// Default: `[]` (demand-pull only).
+	#[serde(default)]
+	pub follow: Vec<smol_str::SmolStr>,
+
+	/// Pause mirror ingestion while the indexing queue depth exceeds this
+	/// ceiling (number of pending jobs). Default: 1000. This prevents the
+	/// catalog follower from outrunning the compile workers.
+	#[serde(default = "defaults::mirror_queue_ceiling")]
+	pub queue_ceiling: usize,
+}
+
 /// Operational limits that bound resource use and blast radius.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
@@ -243,6 +276,7 @@ impl Default for ServerConfiguration {
 			deployment: Deployment::default(),
 			metadata_data_dir: None,
 			compiler_endpoint: defaults::compiler_endpoint(),
+			mirror: MirrorConfig::default(),
 		}
 	}
 }
@@ -471,6 +505,9 @@ mod defaults {
 	/// Graceful-drain bound for in-flight jobs at shutdown.
 	pub(super) fn drain_deadline() -> std::time::Duration { std::time::Duration::from_secs(30) }
 	pub(super) fn compiler_endpoint() -> url::Url { super::parse_static("http://127.0.0.1:8080") }
+	/// Mirror queue ceiling: pause catalog ingestion above this many pending
+	/// jobs.
+	pub(super) fn mirror_queue_ceiling() -> usize { 1000 }
 }
 
 /// Why configuration failed to resolve.

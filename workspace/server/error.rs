@@ -238,6 +238,10 @@ pub enum InternalError {
     #[error("malformed archive url for {raw}")]
     MalformedArchiveUrl { raw: String },
 
+    /// An upstream registry fetch failed (non-404).
+    #[error("upstream fetch failed: {reason}")]
+    UpstreamFetch { reason: String },
+
     /// PyPI metadata JSON for a release was structurally wrong.
     #[error("malformed pypi metadata for {name} {version}")]
     MalformedPypiMetadata { name: String, version: String },

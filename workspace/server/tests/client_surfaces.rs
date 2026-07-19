@@ -42,7 +42,7 @@ async fn default_item_search_is_tantivy() {
     let replica = common::TempDir::new("default-surface");
     let package = common::package_id("serde");
     let symbol = common::rust_symbol(package, "Deserialize", "serde::Deserialize", SymbolKind::Trait);
-    let index = common::populated_text_index(replica.path(), &[symbol.clone()]);
+    let index = common::populated_text_index(replica.path(), std::slice::from_ref(&symbol));
     let Query::Literal(literal) = &request.query else { unreachable!("asserted literal above") };
     let hits: Vec<_> = SymbolTextSurface::over(&index)
         .search(literal, &request.page)

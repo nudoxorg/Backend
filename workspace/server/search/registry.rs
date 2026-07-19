@@ -99,6 +99,17 @@ impl PackageSearchIndex {
 		let index = self.index.lock().await;
 		ContentHash::of_bytes(&index.watermark().position.to_le_bytes())
 	}
+
+	/// Remove a package's document from the replica-local tantivy index.
+	///
+	/// Used by the mirror tombstone path (`OutboxOp::Delete`). The removal is
+	/// committed immediately; the sync watermark is not advanced (it tracks
+	/// the postgres position, not individual removals). Blob / CAS data is
+	/// never touched.
+	pub async fn remove(&self, package: heart::PackageId) -> ServerResult<()> {
+		let mut index = self.index.lock().await;
+		index.remove(package).map_err(|error| crate::registry::RegistryError::from(error).into())
+	}
 }
 
 /// The package-search adapter in the server's query vocabulary.
@@ -181,6 +192,7 @@ mod tests {
 		let facets = Some(SearchFacets {
 			keywords: keywords.iter().map(|&k| SmolStr::new(k)).collect(),
 			quality_ppm,
+			..Default::default()
 		});
 		GlobalPackage { id, package, state: ResolutionState::Unindexed { needed: false }, facets }
 	}

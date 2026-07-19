@@ -21,7 +21,7 @@ async fn finds_symbol_and_scores_it() {
     let replica = common::TempDir::new("finds-and-scores");
     let package = common::package_id("serde");
     let symbol = common::rust_symbol(package, "Deserialize", "serde::Deserialize", SymbolKind::Trait);
-    let index = common::populated_text_index(replica.path(), &[symbol.clone()]);
+    let index = common::populated_text_index(replica.path(), std::slice::from_ref(&symbol));
 
     let request = common::literal_search("Deserialize", 8);
     let Query::Literal(literal) = &request.query else { unreachable!("built literal") };

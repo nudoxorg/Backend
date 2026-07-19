@@ -23,7 +23,7 @@ async fn literal_query_hits_the_text_index() {
     let replica = common::TempDir::new("literal-hits");
     let package = common::package_id("serde");
     let symbol = common::rust_symbol(package, "Deserialize", "serde::Deserialize", SymbolKind::Trait);
-    let index = common::populated_text_index(replica.path(), &[symbol.clone()]);
+    let index = common::populated_text_index(replica.path(), std::slice::from_ref(&symbol));
 
     let request = common::literal_search("Deserialize", 8);
     let Query::Literal(literal) = &request.query else { unreachable!("built literal") };
@@ -148,7 +148,7 @@ async fn get_by_id_fetches_one() {
     let replica = common::TempDir::new("get-by-id");
     let package = common::package_id("serde");
     let symbol = common::rust_symbol(package, "Serialize", "serde::Serialize", SymbolKind::Trait);
-    let index = common::populated_text_index(replica.path(), &[symbol.clone()]);
+    let index = common::populated_text_index(replica.path(), std::slice::from_ref(&symbol));
     let surface = SymbolTextSurface::over(&index);
 
     let found = surface.find(symbol.id).await.expect("identity lookup succeeds");

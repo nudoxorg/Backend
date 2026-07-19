@@ -42,6 +42,12 @@ impl TenantId {
         Self(String::from("anonymous"))
     }
 
+    /// The system tenant — used for internal background operations (mirror
+    /// catalog followers, etc.) that do not originate from an external principal.
+    pub fn system() -> Self {
+        Self(String::from("system"))
+    }
+
     /// The raw identity string (for logging and audit traces).
     pub fn as_str(&self) -> &str {
         &self.0
@@ -94,6 +100,12 @@ impl WriteCap {
     /// The tenant this capability was issued for.
     pub fn tenant(&self) -> &TenantId {
         &self.tenant
+    }
+
+    /// Mint a system-level write capability for internal background operations
+    /// (e.g. mirror catalog followers). Bypasses principal-based authorization.
+    pub fn system() -> Self {
+        sealed::WriteCap { tenant: TenantId::system() }
     }
 }
 

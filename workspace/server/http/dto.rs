@@ -100,9 +100,9 @@ impl AddPackageDto {
 	}
 }
 
-/// Return the canonical default origin for ecosystems that have one (Rust, TS,
-/// Python, Nix). For Go and Java there is no universal public registry, so
-/// `origin` is required; omitting it is a 400 Bad Request.
+/// The canonical default origin per ecosystem. Every ecosystem now has one —
+/// Go resolves via proxy.golang.org and Java via Maven Central (M5); an
+/// explicit `origin` still overrides for self-hosted registries.
 fn required_or_default_origin(ecosystem: Language) -> Result<RegistryOrigin, ServerError> {
 	match ecosystem {
 		Language::Rust => Ok(RegistryOrigin::CratesIo),
@@ -110,9 +110,8 @@ fn required_or_default_origin(ecosystem: Language) -> Result<RegistryOrigin, Ser
 		Language::Python => Ok(RegistryOrigin::PyPi),
 		Language::Nix => Ok(RegistryOrigin::FlakeHub),
 		Language::CSharp => Ok(RegistryOrigin::NuGet),
-		Language::Go | Language::Java => {
-			Err(BadRequestReason::MissingField { field: "origin" }.into())
-		}
+		Language::Go => Ok(RegistryOrigin::GoProxy),
+		Language::Java => Ok(RegistryOrigin::MavenCentral),
 	}
 }
 

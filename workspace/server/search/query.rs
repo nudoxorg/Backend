@@ -23,12 +23,6 @@ impl LiteralQuery {
 	/// not a name lookup.
 	const MAXIMUM_LENGTH: usize = 1024;
 
-	/// The characters the tantivy query grammar treats as operators. Escaping
-	/// them (rather than rejecting) means a user can search for `Option<T>` or
-	/// `operator+` literally — the whole point of the precise surface.
-	const TANTIVY_OPERATORS: &'static [char] =
-		&['+', '-', '!', '(', ')', '{', '}', '[', ']', '^', '"', '~', '*', '?', ':', '\\'];
-
 	pub fn parse(raw: &str) -> Result<Self, QueryError> {
 		let trimmed = raw.trim();
 		if raw.trim().is_empty() {
@@ -53,14 +47,9 @@ impl LiteralQuery {
 				snippet: trimmed.chars().skip(position.saturating_sub(8)).take(32).collect(),
 			});
 		}
-		let mut escaped = String::with_capacity(trimmed.len());
-		for character in trimmed.chars() {
-			if Self::TANTIVY_OPERATORS.contains(&character) {
-				escaped.push('\\');
-			}
-			escaped.push(character);
-		}
-		Ok(Self(escaped))
+		// Raw string, no tantivy-grammar escaping — the search path uses a
+		// hand-built BooleanQuery tree that never passes text to QueryParser.
+		Ok(Self(trimmed.to_owned()))
 	}
 
 	pub fn as_str(&self) -> &str { &self.0 }
@@ -109,18 +98,17 @@ pub struct PackageSelector {
 impl PackageSelector {
 	/// Whether a symbol plausibly belongs to the selected package.
 	///
-	/// Symbols carry a [`heart::PackageId`], which cannot be re-derived from a
-	/// bare name (identity needs origin + version), so the match is on the
-	/// fully-qualified name's leading segment — the package/crate/module root
-	/// every ecosystem's grammar puts first.
+	/// Uses `StructuredName::symbol_roots()` so Go module paths, dotted Java
+	/// groups, and npm scoped names all match correctly (Q2).
 	pub fn matches(&self, symbol: &heart::Symbol) -> bool {
 		symbol.ecosystem == self.name.ecosystem()
-			&& symbol
-				.name
-				.fully_qualified
-				.split([':', '.', '/'])
-				.next()
-				.is_some_and(|root| root == self.name.canonical())
+			&& self.name.structured().symbol_roots().iter().any(|root| {
+				let fq = symbol.name.fully_qualified.as_str();
+				fq == root
+					|| fq
+						.strip_prefix(root.as_str())
+						.is_some_and(|rest| rest.starts_with([':', '.', '/']))
+			})
 	}
 }
 
@@ -160,3 +148,50 @@ pub struct Search<'a> {
 
 pub type SymbolCursorKey = (Score, heart::SymbolId);
 pub type SymbolCursor = Cursor<SymbolCursorKey>;
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Q1 regression: qualified Rust paths must parse unescaped (no backslash injection).
+	#[test]
+	fn literal_query_axum_router_parses_unescaped() {
+		let q = LiteralQuery::parse("axum::Router").expect("should parse");
+		assert_eq!(q.as_str(), "axum::Router");
+	}
+
+	/// Q1 regression: hyphenated npm-style names must parse unescaped.
+	#[test]
+	fn literal_query_react_query_parses_unescaped() {
+		let q = LiteralQuery::parse("react-query").expect("should parse");
+		assert_eq!(q.as_str(), "react-query");
+	}
+
+	/// Q1 regression: generic type syntax must parse unescaped.
+	#[test]
+	fn literal_query_option_t_parses_unescaped() {
+		let q = LiteralQuery::parse("Option<T>").expect("should parse");
+		assert_eq!(q.as_str(), "Option<T>");
+	}
+
+	#[test]
+	fn literal_query_empty_is_rejected() {
+		assert!(matches!(LiteralQuery::parse(""), Err(QueryError::Empty)));
+	}
+
+	#[test]
+	fn literal_query_whitespace_only_is_rejected() {
+		assert!(matches!(LiteralQuery::parse("   "), Err(QueryError::EmptyAfterTrim { .. })));
+	}
+
+	#[test]
+	fn literal_query_too_long_is_rejected() {
+		let long = "x".repeat(LiteralQuery::MAXIMUM_LENGTH + 1);
+		assert!(matches!(LiteralQuery::parse(&long), Err(QueryError::TooLong { .. })));
+	}
+
+	#[test]
+	fn literal_query_control_char_is_rejected() {
+		assert!(matches!(LiteralQuery::parse("foo\x01bar"), Err(QueryError::ControlCharacter { .. })));
+	}
+}

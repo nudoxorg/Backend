@@ -148,7 +148,7 @@ fn fixture_coordinates() -> server::registry::package::Coordinates {
         origin: heart::RegistryOrigin::CratesIo,
         name: server::registry::package::PackageName::new(
             heart::Language::Rust,
-            &format!("init-flow-{}", uuid::Uuid::new_v4().simple()),
+            format!("init-flow-{}", uuid::Uuid::new_v4().simple()),
         )
         .expect("fixture names are valid"),
         version: heart::PackageVersion::try_from((heart::Language::Rust, "1.0.0"))

@@ -146,42 +146,36 @@ async fn read_and_write_planes_are_separated() {
 /// Go and Java have no canonical public registry, so `origin` is required.
 ///
 /// Assert: `AddPackageDto::into_coordinates()` for `go`/`java` without an
-///   `origin` field returns `Err(BadRequest { field: "origin" })`.
+/// `origin` field now lowers to the ecosystem's public default (M5:
+/// proxy.golang.org / Maven Central) — the old "origin required" contract died
+/// with the Go/Java resolve stubs.
 #[tokio::test]
-async fn go_without_origin_is_rejected_at_lowering() {
+async fn go_without_origin_defaults_to_goproxy() {
     let dto = AddPackageDto {
         ecosystem: heart::Language::Go,
         name: "github.com/gorilla/mux".into(),
-        version: "1.8.1".into(),
+        version: "v1.8.1".into(),
         origin: None,
     };
-    let error = dto.into_coordinates().expect_err(
-        "go without origin must be rejected (no default registry for Go)"
-    );
-    let message = error.to_string();
-    assert!(
-        message.contains("origin"),
-        "error must mention the missing field; got: {message}"
-    );
+    let coordinates = dto
+        .into_coordinates()
+        .expect("go without origin lowers against the module proxy");
+    assert_eq!(coordinates.origin, heart::RegistryOrigin::GoProxy);
 }
 
 /// Same contract for Java.
 #[tokio::test]
-async fn java_without_origin_is_rejected_at_lowering() {
+async fn java_without_origin_defaults_to_maven_central() {
     let dto = AddPackageDto {
         ecosystem: heart::Language::Java,
-        name: "com.example.mylib".into(),
+        name: "com.example:mylib".into(),
         version: "2.0.0".into(),
         origin: None,
     };
-    let error = dto.into_coordinates().expect_err(
-        "java without origin must be rejected (no default registry for Java)"
-    );
-    let message = error.to_string();
-    assert!(
-        message.contains("origin"),
-        "error must mention the missing field; got: {message}"
-    );
+    let coordinates = dto
+        .into_coordinates()
+        .expect("java without origin lowers against Maven Central");
+    assert_eq!(coordinates.origin, heart::RegistryOrigin::MavenCentral);
 }
 
 /// Go with an explicit origin resolves against the custom-registry table.

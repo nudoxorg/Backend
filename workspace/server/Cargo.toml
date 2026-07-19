@@ -25,6 +25,7 @@ default = []
 # `telemetry` feature pulls in the OTLP/Pyroscope stack (server is its only
 # consumer, so the heavy deps stay out of every other heart consumer).
 heart    = { path = "../heart", features = ["telemetry"] }
+ecosystem = { path = "../ecosystem" }
 ir       = { path = "../ir" }
 registry = { path = "../registry" }
 

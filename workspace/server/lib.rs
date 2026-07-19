@@ -415,6 +415,32 @@ impl<M: EmbeddingModel> Server<M> {
 			// are harmless — no advisory lock needed. Blob GC is a documented TODO
 			// (see `poll::cas_gc`) pending a safe live-reference oracle.
 			pollers.spawn(poll::cas_gc(Arc::clone(&self)));
+
+			// Catalog followers (M2): one task per configured ecosystem. The list
+			// defaults to empty (demand-pull only); operators opt in via
+			// `[mirror] follow = ["csharp", "rust"]`. Each follower is built here
+			// and driven by `catalog_follower_worker`.
+			for lang_str in &self.config.mirror.follow {
+				use std::str::FromStr;
+				let Ok(lang) = ecosystem::Language::from_str(lang_str.as_str()) else {
+					tracing::warn!(lang = %lang_str, "unknown language in mirror.follow; skipping");
+					continue;
+				};
+				let follower: Box<dyn crate::registry::upstream::CatalogFollower> = match lang {
+					ecosystem::Language::CSharp => {
+						Box::new(registry::upstream::NuGetCatalogFollower::production())
+					}
+					ecosystem::Language::Rust => {
+						Box::new(registry::upstream::CratesCatalogFollower::production())
+					}
+					other => {
+						tracing::warn!(%other, "no catalog follower implemented for language; skipping");
+						continue;
+					}
+				};
+				tracing::info!(%lang, "starting catalog follower");
+				pollers.spawn(poll::catalog_follower_worker(Arc::clone(&self), follower));
+			}
 		}
 		tracing::info!(?role, "background pollers started");
 
