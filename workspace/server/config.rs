@@ -82,6 +82,23 @@ pub struct ServerConfiguration {
 	/// only).
 	#[serde(default)]
 	pub mirror: MirrorConfig,
+
+	/// Shard-bakery configuration (09-vector §20.3): whether this node bakes
+	/// per-package Edge dep-shard artifacts and how often it scans for work.
+	/// Default: disabled.
+	#[serde(default)]
+	pub bakery: BakeryConfig,
+
+	/// Rerank-service configuration (09-vector §20.8, 09b §18.3): the external
+	/// cross-encoder endpoint the `POST /v1/rerank` surface proxies to. Default:
+	/// no endpoint (rerank answers `rerank_unavailable`).
+	#[serde(default)]
+	pub rerank: RerankConfig,
+
+	/// Dep-shard distribution configuration (09-vector §20.3): whether the
+	/// `GET /v1/depshards/...` surface serves manifests and artifacts.
+	#[serde(default)]
+	pub depshards: DepshardsConfig,
 }
 
 /// The deployment tier this node is running in.
@@ -224,6 +241,86 @@ pub struct MirrorConfig {
 	pub queue_ceiling: usize,
 }
 
+/// Shard-bakery configuration (09-vector §20.3). The bakery is the INDEX-side
+/// worker that turns a package's symbol projection into a packed, quantized
+/// qdrant-edge shard artifact, published content-addressed for client dep-shard
+/// installs.
+///
+/// Configure via `[bakery]` in `nudox.toml` or `NUDOX_BAKERY__ENABLED=true`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BakeryConfig {
+	/// Whether this node runs the bakery worker. Default: `false` — baking is
+	/// an explicit operator opt-in (it drives the embedder fleet).
+	#[serde(default)]
+	pub enabled: bool,
+
+	/// How often the bakery scans for packages with vectors but no ready
+	/// artifact under the current edgepack key. Coarser than the outbox poll:
+	/// baking is a batch duty, not a freshness path.
+	#[serde(default = "defaults::bakery_poll_interval")]
+	pub poll_interval: std::time::Duration,
+}
+
+impl Default for BakeryConfig {
+	fn default() -> Self {
+		Self { enabled: false, poll_interval: defaults::bakery_poll_interval() }
+	}
+}
+
+/// Rerank-service configuration (09-vector §20.8, 09b §18.3). The server does
+/// not self-host the cross-encoder in this pass; it proxies to a configured
+/// external endpoint (the mirror of the embeddings endpoint pattern).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankConfig {
+	/// The external rerank endpoint (TEI/Cohere-compatible wire shape). `None`
+	/// (the default) means `POST /v1/rerank` answers `rerank_unavailable`.
+	#[serde(default)]
+	pub endpoint: Option<Url>,
+
+	/// The rerank model id, validated at startup against the license deny-list
+	/// (09b §18.3b, I15): CC-BY-NC rerankers are a hard config error.
+	#[serde(default = "defaults::rerank_model_id")]
+	pub model_id: SmolStr,
+
+	/// The end-to-end latency budget for one rerank call (09-vector §20.7: the
+	/// deep path answers within ~1.2 s). On timeout the service returns an
+	/// explicit `rerank_unavailable` — never a silent degrade (§20.9).
+	#[serde(default = "defaults::rerank_timeout_ms")]
+	pub timeout_ms: u64,
+
+	/// The bearer token presented to the rerank endpoint, if it wants one.
+	#[serde(default, with = "optional_secret")]
+	pub api_key: Option<SecretString>,
+}
+
+impl Default for RerankConfig {
+	fn default() -> Self {
+		Self {
+			endpoint: None,
+			model_id: defaults::rerank_model_id(),
+			timeout_ms: defaults::rerank_timeout_ms(),
+			api_key: None,
+		}
+	}
+}
+
+/// Dep-shard distribution configuration (09-vector §20.3, 09c §8.3
+/// `depshards.enabled`). Governs the read-side `GET /v1/depshards/...` surface;
+/// baking itself is [`BakeryConfig`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepshardsConfig {
+	/// Whether the dep-shard manifest/artifact endpoints serve. Default: `true`
+	/// (per 09c §8.3) — with the bakery disabled they simply answer "pending".
+	#[serde(default = "defaults::depshards_enabled")]
+	pub enabled: bool,
+}
+
+impl Default for DepshardsConfig {
+	fn default() -> Self {
+		Self { enabled: defaults::depshards_enabled() }
+	}
+}
+
 /// Operational limits that bound resource use and blast radius.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
@@ -277,6 +374,9 @@ impl Default for ServerConfiguration {
 			metadata_data_dir: None,
 			compiler_endpoint: defaults::compiler_endpoint(),
 			mirror: MirrorConfig::default(),
+			bakery: BakeryConfig::default(),
+			rerank: RerankConfig::default(),
+			depshards: DepshardsConfig::default(),
 		}
 	}
 }
@@ -361,6 +461,18 @@ impl ServerConfiguration {
 			if self.deployment == Deployment::Production {
 				source.endpoints.assert_not_default_credentials()?;
 			}
+		}
+
+		// License gate (09b §18.3b, I15): a CC-BY-NC reranker id is a hard boot
+		// error, checked against vector-core's canonical deny-list — even when
+		// no endpoint is configured yet, so a forbidden id never lies dormant in
+		// config waiting for an endpoint to activate it.
+		if let Err(error) = vector_core::model::license::assert_licensed(self.rerank.model_id.as_str())
+		{
+			return Err(ConfigError::Validation(ConfigValidationError::ForbiddenRerankModel {
+				model: self.rerank.model_id.clone(),
+				detail: error.to_string(),
+			}));
 		}
 		Ok(())
 	}
@@ -508,6 +620,18 @@ mod defaults {
 	/// Mirror queue ceiling: pause catalog ingestion above this many pending
 	/// jobs.
 	pub(super) fn mirror_queue_ceiling() -> usize { 1000 }
+	/// Bakery scan cadence: batch duty, deliberately coarser than poll_interval.
+	pub(super) fn bakery_poll_interval() -> std::time::Duration {
+		std::time::Duration::from_secs(30)
+	}
+	/// The default self-hosted reranker (09b §18.3: Apache-2.0, code-capable).
+	pub(super) fn rerank_model_id() -> SmolStr {
+		SmolStr::new_static("mixedbread-ai/mxbai-rerank-base-v2")
+	}
+	/// Deep-path rerank budget (09-vector §20.7: ≤ 1.2 s end-to-end).
+	pub(super) fn rerank_timeout_ms() -> u64 { 1200 }
+	/// Dep-shard serving defaults on (09c §8.3).
+	pub(super) fn depshards_enabled() -> bool { true }
 }
 
 /// Why configuration failed to resolve.
@@ -582,6 +706,12 @@ pub enum ConfigValidationError {
 		 set it to a non-default value via config file or environment variable"
 	)]
 	DefaultCredentialInProduction { field: &'static str },
+
+	/// The configured rerank model id is on the license deny-list (09b §18.3b,
+	/// I15): CC-BY-NC rerankers must never be deployed server-side. The server
+	/// refuses to start rather than silently serving un-licensable scores.
+	#[error("rerank model `{model}` is license-forbidden: {detail}")]
+	ForbiddenRerankModel { model: smol_str::SmolStr, detail: String },
 
 	/// Generic other validation problem (use only when no more specific variant
 	/// fits; prefer extending the enum).

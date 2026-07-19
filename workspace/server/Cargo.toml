@@ -28,6 +28,11 @@ heart    = { path = "../heart", features = ["telemetry"] }
 ecosystem = { path = "../ecosystem" }
 ir       = { path = "../ir" }
 registry = { path = "../registry" }
+# Vector plane (09-vector §20): routing/shard-key/admission vocabulary and the
+# qdrant-edge shard builder the bakery drives. Written in parallel; the APIs
+# used here are the frozen §20 client/server-split surface.
+vector-core  = { path = "../vector-core" }
+vector-local = { path = "../vector-local" }
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
 tokio        = { version = "1.52",  features = ["full"] }
