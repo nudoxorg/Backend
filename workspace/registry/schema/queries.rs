@@ -190,6 +190,10 @@ pub mod index {
     /// atomically, yet it never disturbs the state/phase/hash columns the
     /// [`set_state`] upsert owns. `facets` is nullable jsonb (mirrors `failure`);
     /// `None` writes `NULL`.
+    ///
+    /// The caller MUST also execute [`touch_package`] in the same transaction
+    /// so `packages.updated_at` advances and `changed_since` (the tantivy sync
+    /// poll) sees the new facets (S5).
     pub fn set_facets(
         package: PackageId,
         facets: Option<&crate::metadata::SearchFacets>,
@@ -205,6 +209,76 @@ pub mod index {
             .and_where(Expr::col(ParseStatus::PackageId).eq(codec::package_id_to_uuid(package)))
             .build_sqlx(PG);
         Ok((sql, values))
+    }
+
+    /// `UPDATE parse_status SET facets = jsonb_set(facets, '{dependents}',
+    /// to_jsonb($1)) WHERE package_id = $2 AND facets IS NOT NULL` — write the
+    /// corpus-wide reverse-dependency count into the stored facets jsonb without
+    /// disturbing any other key. sea_query cannot express `jsonb_set`, so this
+    /// uses a raw SQL string in the style of [`super::outbox::try_advisory_lock`].
+    ///
+    /// The `facets IS NOT NULL` guard keeps this a no-op for packages whose
+    /// facets have never been extracted, so the sweep never creates facets rows
+    /// from scratch.
+    pub fn set_dependents(
+        package: PackageId,
+        dependents: u32,
+    ) -> Result<(String, SqlxValues), codec::CodecError> {
+        let sql = "UPDATE parse_status \
+                   SET facets = jsonb_set(facets, '{dependents}', to_jsonb($1::int)), \
+                       updated_at = now() \
+                   WHERE package_id = $2 AND facets IS NOT NULL"
+            .to_string();
+        let values = SqlxValues(sea_query::Values(vec![
+            sea_query::Value::BigInt(Some(i64::from(dependents))),
+            sea_query::Value::Uuid(Some(Box::new(codec::package_id_to_uuid(package)))),
+        ]));
+        Ok((sql, values))
+    }
+
+    /// `UPDATE parse_status SET listing = $1, updated_at = now() WHERE
+    /// package_id = $2` — persist the last-observed registry listing status.
+    /// `None` clears the column (status unknown). Follows the same nullable-jsonb
+    /// pattern as `Facets`. The listing status is observed by the resolve path to
+    /// decide whether a version may enter Latest/Constraint resolution.
+    pub fn set_listing(
+        package: PackageId,
+        listing: Option<&ecosystem::upstream::ListingStatus>,
+    ) -> Result<(String, SqlxValues), codec::CodecError> {
+        let listing_val: SimpleExpr = match listing {
+            Some(s) => serde_json::to_value(s)
+                .map(|v| Expr::val(v).into())
+                .map_err(|e| codec::CodecError::Json { domain: "ListingStatus", source: e })?,
+            None => Expr::val(Option::<serde_json::Value>::None).into(),
+        };
+        let (sql, values) = Query::update()
+            .table(ParseStatus::Table)
+            .value(ParseStatus::Listing, listing_val)
+            .value(ParseStatus::UpdatedAt, Expr::current_timestamp())
+            .and_where(Expr::col(ParseStatus::PackageId).eq(codec::package_id_to_uuid(package)))
+            .build_sqlx(PG);
+        Ok((sql, values))
+    }
+
+    /// `SELECT listing FROM parse_status WHERE package_id = $1`.
+    pub fn get_listing(package: PackageId) -> (String, SqlxValues) {
+        Query::select()
+            .column(ParseStatus::Listing)
+            .from(ParseStatus::Table)
+            .and_where(Expr::col(ParseStatus::PackageId).eq(codec::package_id_to_uuid(package)))
+            .build_sqlx(PG)
+    }
+
+    /// `UPDATE packages SET updated_at = now() WHERE id = $1` — bump the
+    /// package's own `updated_at` so the tantivy sync's `changed_since` poll
+    /// (which filters on `packages.updated_at`) picks up facet-only updates.
+    /// Run in the **same transaction** as [`set_facets`] (S5).
+    pub fn touch_package(package: PackageId) -> (String, SqlxValues) {
+        Query::update()
+            .table(Packages::Table)
+            .value(Packages::UpdatedAt, Expr::current_timestamp())
+            .and_where(Expr::col(Packages::Id).eq(codec::package_id_to_uuid(package)))
+            .build_sqlx(PG)
     }
 
     /// `SELECT state, phase, content_hash, needed, failure FROM parse_status
@@ -545,7 +619,7 @@ pub mod queue {
 pub mod outbox {
     use super::*;
 
-    /// `INSERT INTO outbox (package_id, generation, sink_kind) VALUES ... ON
+    /// `INSERT INTO outbox (package_id, generation, sink_kind, op) VALUES ... ON
     /// CONFLICT (package_id, generation, sink_kind) DO NOTHING` — append one
     /// idempotent fan-out intent. The unique dedupe index makes a re-emit of the
     /// same generation a silent no-op.
@@ -561,11 +635,41 @@ pub mod outbox {
     ) -> (String, SqlxValues) {
         Query::insert()
             .into_table(Outbox::Table)
-            .columns([Outbox::PackageId, Outbox::Generation, Outbox::SinkKind])
+            .columns([Outbox::PackageId, Outbox::Generation, Outbox::SinkKind, Outbox::Op])
             .values_panic([
                 codec::package_id_to_uuid(package).into(),
                 codec::generation_to_bytes(generation).into(),
                 codec::sink_kind_token(kind).into(),
+                codec::outbox_op_token(crate::coordination::OutboxOp::Upsert).into(),
+            ])
+            .on_conflict(
+                sea_query::OnConflict::columns([
+                    Outbox::PackageId,
+                    Outbox::Generation,
+                    Outbox::SinkKind,
+                ])
+                .do_nothing()
+                .to_owned(),
+            )
+            .build_sqlx(PG)
+    }
+
+    /// Append one fan-out intent with an explicit [`crate::coordination::OutboxOp`].
+    /// Used by the mirror path to record `Delete` tombstones.
+    pub fn append_one_with_op(
+        package: PackageId,
+        generation: ContentHash,
+        kind: SinkKind,
+        op: crate::coordination::OutboxOp,
+    ) -> (String, SqlxValues) {
+        Query::insert()
+            .into_table(Outbox::Table)
+            .columns([Outbox::PackageId, Outbox::Generation, Outbox::SinkKind, Outbox::Op])
+            .values_panic([
+                codec::package_id_to_uuid(package).into(),
+                codec::generation_to_bytes(generation).into(),
+                codec::sink_kind_token(kind).into(),
+                codec::outbox_op_token(op).into(),
             ])
             .on_conflict(
                 sea_query::OnConflict::columns([
@@ -580,7 +684,7 @@ pub mod outbox {
     }
 
     /// Append a fan-out intent for *every* [`SinkKind`] in one multi-row insert,
-    /// deduped per `(package, generation, kind)`.
+    /// deduped per `(package, generation, kind)`. All intents are `Upsert`.
     pub fn append_all(package: PackageId, generation: ContentHash) -> (String, SqlxValues) {
         let pkg = codec::package_id_to_uuid(package);
         let gen_bytes = codec::generation_to_bytes(generation);
@@ -590,12 +694,14 @@ pub mod outbox {
             Outbox::PackageId,
             Outbox::Generation,
             Outbox::SinkKind,
+            Outbox::Op,
         ]);
         for kind in SinkKind::iter() {
             stmt.values_panic([
                 pkg.into(),
                 gen_bytes.clone().into(),
                 codec::sink_kind_token(kind).into(),
+                codec::outbox_op_token(crate::coordination::OutboxOp::Upsert).into(),
             ]);
         }
         stmt.on_conflict(
@@ -610,7 +716,40 @@ pub mod outbox {
         .build_sqlx(PG)
     }
 
-    /// `SELECT seq, package_id, generation, sink_kind, created_at FROM outbox
+    /// Append a `Delete` tombstone for every [`SinkKind`] in one multi-row insert.
+    /// Deduped per `(package, generation, sink_kind)` — an idempotent withdrawal.
+    pub fn append_delete_all(package: PackageId, generation: ContentHash) -> (String, SqlxValues) {
+        let pkg = codec::package_id_to_uuid(package);
+        let gen_bytes = codec::generation_to_bytes(generation);
+
+        let mut stmt = Query::insert();
+        stmt.into_table(Outbox::Table).columns([
+            Outbox::PackageId,
+            Outbox::Generation,
+            Outbox::SinkKind,
+            Outbox::Op,
+        ]);
+        for kind in SinkKind::iter() {
+            stmt.values_panic([
+                pkg.into(),
+                gen_bytes.clone().into(),
+                codec::sink_kind_token(kind).into(),
+                codec::outbox_op_token(crate::coordination::OutboxOp::Delete).into(),
+            ]);
+        }
+        stmt.on_conflict(
+            sea_query::OnConflict::columns([
+                Outbox::PackageId,
+                Outbox::Generation,
+                Outbox::SinkKind,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .build_sqlx(PG)
+    }
+
+    /// `SELECT seq, package_id, generation, sink_kind, op, created_at FROM outbox
     /// WHERE sink_kind = $1 AND seq > $2 ORDER BY seq ASC LIMIT $3` — the poll one
     /// derived store performs against its watermark.
     pub fn read_since(kind: SinkKind, after_seq: i64, limit: u64) -> (String, SqlxValues) {
@@ -620,6 +759,7 @@ pub mod outbox {
                 Outbox::PackageId,
                 Outbox::Generation,
                 Outbox::SinkKind,
+                Outbox::Op,
                 Outbox::CreatedAt,
             ])
             .from(Outbox::Table)
@@ -786,6 +926,44 @@ pub mod outbox {
 pub mod search {
     use super::*;
     use chrono::{DateTime, Utc};
+
+    /// Keyset-paginated scan over all packages that have non-NULL facets, for
+    /// the corpus-wide reverse-dependency sweep.
+    ///
+    /// Returns `(package_id uuid, language text, name_canonical text, facets
+    /// jsonb)` — enough to build a [`crate::search::dependents::DependencyRow`]
+    /// and to identify the package for the subsequent `set_dependents` write.
+    /// Pages are ordered by `packages.id ASC`; pass `after = None` for the
+    /// first page and the last returned id for subsequent pages.
+    pub fn all_current_facets(
+        limit: u64,
+        after: Option<uuid::Uuid>,
+    ) -> (String, SqlxValues) {
+        let mut stmt = Query::select();
+        stmt.columns([
+                (Packages::Table, Packages::Id),
+                (Packages::Table, Packages::Language),
+                (Packages::Table, Packages::NameCanonical),
+            ])
+            .column((ParseStatus::Table, ParseStatus::Facets))
+            .from(Packages::Table)
+            .inner_join(
+                ParseStatus::Table,
+                Expr::col((Packages::Table, Packages::Id))
+                    .equals((ParseStatus::Table, ParseStatus::PackageId)),
+            )
+            .and_where(Expr::col((ParseStatus::Table, ParseStatus::Facets)).is_not_null())
+            .order_by((Packages::Table, Packages::Id), sea_query::Order::Asc)
+            .limit(limit);
+
+        if let Some(after_id) = after {
+            stmt.and_where(
+                Expr::col((Packages::Table, Packages::Id)).gt(after_id),
+            );
+        }
+
+        stmt.build_sqlx(PG)
+    }
 
     /// `SELECT p.<identity+toolchain+updated_at>, ps.<lifecycle> FROM packages p
     /// LEFT JOIN parse_status ps ON ps.package_id = p.id WHERE p.updated_at > $1

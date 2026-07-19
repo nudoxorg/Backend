@@ -40,6 +40,9 @@ pub enum CodecError {
 	#[error("unknown sink kind discriminant")]
 	UnknownSinkKindDiscriminant { token: String },
 
+	#[error("unknown outbox op discriminant")]
+	UnknownOutboxOpDiscriminant { token: String },
+
 	#[error("unknown phase discriminant")]
 	UnknownPhaseDiscriminant { token: String },
 
@@ -160,6 +163,29 @@ pub fn sink_kind_token(k: SinkKind) -> &'static str {
 /// Reconstruct a [`SinkKind`] from its token.
 pub fn sink_kind_from_token(token: &str) -> Result<SinkKind, CodecError> {
 	SinkKind::from_str(token).map_err(|_| CodecError::UnknownSinkKindDiscriminant { token: token.to_owned() })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OutboxOp ↔ text
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The SQL token for an [`crate::coordination::OutboxOp`].
+pub fn outbox_op_token(op: crate::coordination::OutboxOp) -> &'static str {
+	match op {
+		crate::coordination::OutboxOp::Upsert => "upsert",
+		crate::coordination::OutboxOp::Delete => "delete",
+	}
+}
+
+/// Reconstruct an [`crate::coordination::OutboxOp`] from its stored token.
+/// Unknown tokens default to `Upsert` for forwards-compat with rows written
+/// before the `op` column existed (they had `DEFAULT 'upsert'`).
+pub fn outbox_op_from_token(token: &str) -> Result<crate::coordination::OutboxOp, CodecError> {
+	match token {
+		"upsert" => Ok(crate::coordination::OutboxOp::Upsert),
+		"delete" => Ok(crate::coordination::OutboxOp::Delete),
+		other => Err(CodecError::UnknownOutboxOpDiscriminant { token: other.to_owned() }),
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -329,6 +355,8 @@ pub fn origin_from_token(token: &str) -> Result<heart::RegistryOrigin, CodecErro
 		"pypi" => Ok(heart::RegistryOrigin::PyPi),
 		"flakehub" => Ok(heart::RegistryOrigin::FlakeHub),
 		"nuget" => Ok(heart::RegistryOrigin::NuGet),
+		"goproxy" => Ok(heart::RegistryOrigin::GoProxy),
+		"maven-central" => Ok(heart::RegistryOrigin::MavenCentral),
 		custom => {
 			let url = url::Url::parse(&format!("https://{custom}"))
 				.map_err(|source| CodecError::Origin { token: custom.to_owned(), source })?;

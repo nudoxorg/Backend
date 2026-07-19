@@ -93,6 +93,10 @@ pub enum ParseStatus {
 	/// (derived keywords + quality). Mirrors `Failure`'s nullable-jsonb shape;
 	/// `NULL` until rich metadata is extracted for the stored generation.
 	Facets,
+	/// `jsonb` nullable — the serialized [`ecosystem::upstream::ListingStatus`]
+	/// for the most-recently-observed registry listing state. `NULL` means the
+	/// listing has not yet been fetched.
+	Listing,
 	/// `bool` — the `Unindexed { needed }` flag (dependency-ordered scheduling).
 	Needed,
 	/// `timestamptz` — last transition time.
@@ -133,6 +137,10 @@ pub enum Outbox {
 	Generation,
 	/// `text` — the [`crate::coordination::SinkKind`] discriminant.
 	SinkKind,
+	/// `text` — the [`crate::coordination::OutboxOp`] discriminant.
+	/// `"upsert"` (default — forwards-compatible with existing rows) or
+	/// `"delete"` (mirror tombstone: remove from search, retain CAS blob).
+	Op,
 	/// `timestamptz` — intent creation time.
 	CreatedAt,
 }
@@ -219,6 +227,11 @@ pub const PHASE_VALUES: &[&str] = heart::Phase::VARIANTS;
 /// `heart::DerivedStore` has `#[strum(serialize_all = "lowercase")]` so
 /// VARIANTS produces the exact SQL tokens.
 pub const SINK_KIND_VALUES: &[&str] = heart::DerivedStore::VARIANTS;
+
+/// `outbox.op` domain — `"upsert"` or `"delete"`. Two values; hand-coded
+/// like `STATE_VALUES` (no corresponding enum in `heart`, lives in
+/// `coordination`).
+pub const OUTBOX_OP_VALUES: [&str; 2] = ["upsert", "delete"];
 
 /// `symbols.kind` domain — derived from [`heart::SymbolKind::VARIANTS`].
 ///
@@ -326,6 +339,7 @@ pub fn create_parse_status() -> TableCreateStatement {
 		.col(ColumnDef::new(ParseStatus::Attempts).integer().not_null().default(0))
 		.col(ColumnDef::new(ParseStatus::Failure).json_binary().null())
 		.col(ColumnDef::new(ParseStatus::Facets).json_binary().null())
+		.col(ColumnDef::new(ParseStatus::Listing).json_binary().null())
 		.col(ColumnDef::new(ParseStatus::Needed).boolean().not_null().default(false))
 		.col(
 			ColumnDef::new(ParseStatus::UpdatedAt)
@@ -388,6 +402,13 @@ pub fn create_outbox() -> TableCreateStatement {
 				.text()
 				.not_null()
 				.check(sea_query::Expr::cust(check_in("sink_kind", SINK_KIND_VALUES))),
+		)
+		.col(
+			ColumnDef::new(Outbox::Op)
+				.text()
+				.not_null()
+				.default("upsert")
+				.check(sea_query::Expr::cust(check_in("op", &OUTBOX_OP_VALUES))),
 		)
 		.col(
 			ColumnDef::new(Outbox::CreatedAt)

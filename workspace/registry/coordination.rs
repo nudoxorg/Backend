@@ -18,12 +18,31 @@ use heart::{
 	content::ContentHash,
 };
 use sqlx::{Row, postgres::PgRow};
+use strum::IntoEnumIterator;
 
 use crate::{
 	error::OutboxError,
 	index::GlobalStore,
 	schema::{codec, queries},
 };
+
+/// What the outbox consumer should do when it sees this entry.
+///
+/// `Upsert` is the default — it means "materialize this package's symbols into
+/// the sink". `Delete` is the mirror-tombstone path: the package was Withdrawn
+/// by its upstream registry and search visibility should end.
+///
+/// **CAS / blob data is never touched by a Delete intent.** The mirror keeps
+/// full history; only the search-plane projections (tantivy, qdrant, terminus)
+/// lose visibility. This is documented at every materialization site below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OutboxOp {
+	/// Materialize (upsert) the package's symbols into the sink.
+	Upsert,
+	/// Remove the package's symbols from the sink (search tombstone). CAS
+	/// history is retained — mirror keeps full blob lineage.
+	Delete,
+}
 
 /// A single fan-out intent: "package `X` reached generation `G`; sink `K` should
 /// materialize it."
@@ -37,6 +56,9 @@ pub struct OutboxEntry {
 
 	/// Which derived sink this intent is for.
 	pub kind: SinkKind,
+
+	/// Whether to upsert or delete the package's search projection.
+	pub op: OutboxOp,
 
 	/// When the intent was recorded.
 	pub created_at: DateTime<Utc>,
@@ -85,19 +107,24 @@ impl Connect for Outbox<Cold> {
 
 /// Reassemble an [`OutboxEntry`] from a result row. Column order matches
 /// [`queries::outbox::read_since`]: seq, package_id, generation, sink_kind,
-/// created_at.
+/// op, created_at.
 fn row_to_entry(row: &PgRow) -> Result<OutboxEntry, OutboxError> {
 	let seq: i64 = row.try_get(0).map_err(OutboxError::Database)?;
 	let package_uuid: uuid::Uuid = row.try_get(1).map_err(OutboxError::Database)?;
 	let kind_tok: String = row.try_get(3).map_err(OutboxError::Database)?;
-	let created_at: DateTime<Utc> = row.try_get(4).map_err(OutboxError::Database)?;
+	let op_tok: String = row.try_get(4).map_err(OutboxError::Database)?;
+	let created_at: DateTime<Utc> = row.try_get(5).map_err(OutboxError::Database)?;
 
 	let kind = codec::sink_kind_from_token(&kind_tok).map_err(OutboxError::Codec)?;
+	// Unknown op tokens default to Upsert for forwards-compat with rows written
+	// before the op column existed.
+	let op = codec::outbox_op_from_token(&op_tok).unwrap_or(OutboxOp::Upsert);
 
 	Ok(OutboxEntry {
 		id: OutboxSeq(seq),
 		package: codec::package_id_from_uuid(package_uuid),
 		kind,
+		op,
 		created_at,
 	})
 }
@@ -170,7 +197,16 @@ impl Outbox<Live> {
 			.await
 			.map_err(OutboxError::Database)?;
 
-		// 3. Fan out one idempotent intent per sink in the *same* txn.
+		// 3. Bump packages.updated_at so the tantivy changed_since poll sees
+		//    facet-only updates (S5: set_facets only touches parse_status.updated_at,
+		//    but the search sync polls packages.updated_at).
+		let (touch_sql, touch_vals) = queries::index::touch_package(package);
+		sqlx::query_with(&touch_sql, touch_vals)
+			.execute(&mut *tx)
+			.await
+			.map_err(OutboxError::Database)?;
+
+		// 4. Fan out one idempotent intent per sink in the *same* txn.
 		let (sql, vals) = queries::outbox::append_all(package, snapshot);
 		sqlx::query_with(&sql, vals)
 			.execute(&mut *tx)
@@ -179,6 +215,59 @@ impl Outbox<Live> {
 
 		tx.commit().await.map_err(OutboxError::Database)?;
 		let _ = index; // pool is shared via `self.pool`; `index` documents the invariant.
+		Ok(())
+	}
+
+	/// Emit `Delete` tombstone intents for every version of a package that is
+	/// `Withdrawn` according to a freshly-observed listing snapshot.
+	///
+	/// # Seam — call from the resolve/refresh path (P3 gap)
+	///
+	/// This function is **ready to call** but is not yet wired to its production
+	/// trigger: the `ResolveResult::observed_listing` field (in
+	/// `registry/resolve.rs`) is populated at resolve time but never passed to
+	/// `GlobalStore::set_listing` nor to this function in the current server
+	/// coordination pipeline. Once P3's listing-persistence lands (i.e., the
+	/// server's indexing coordinator calls `set_listing` for each observed version),
+	/// this function should be called there for every version whose
+	/// `ListingStatus::Withdrawn` is freshly observed.
+	///
+	/// Until then, Withdrawn status from the resolve path does not produce outbox
+	/// Delete intents. The catalog-follower path (`Withdrawn` events from
+	/// `catalog_follower_worker`) bypasses this function and calls
+	/// `append_delete` directly, so that path is fully wired.
+	///
+	/// **Seam location**: `server/coordination/indexing.rs` (the `drive_job` /
+	/// post-resolve hook) — after `set_listing` is called, call this function
+	/// for each version whose listing transitioned to `Withdrawn`.
+	pub async fn emit_withdraw_intents_for_version(
+		&self,
+		package: PackageId,
+		generation: ContentHash,
+	) -> Result<(), OutboxError> {
+		self.append_delete(package, generation).await
+	}
+
+	/// Record `Delete` tombstone intents for every derived sink — the mirror
+	/// path for a Withdrawn package. The semantics are symmetric to
+	/// [`Self::append`] but write `op = 'delete'` on every row.
+	///
+	/// **CAS / blob history is untouched.** Only search-plane visibility ends.
+	/// Idempotent via the same `(package, generation, sink_kind)` dedupe key.
+	pub async fn append_delete(
+		&self,
+		package: PackageId,
+		generation: ContentHash,
+	) -> Result<(), OutboxError> {
+		let mut tx = self.pool.begin().await.map_err(OutboxError::Database)?;
+		for kind in SinkKind::iter() {
+			let (sql, vals) = queries::outbox::append_one_with_op(package, generation, kind, OutboxOp::Delete);
+			sqlx::query_with(&sql, vals)
+				.execute(&mut *tx)
+				.await
+				.map_err(OutboxError::Database)?;
+		}
+		tx.commit().await.map_err(OutboxError::Database)?;
 		Ok(())
 	}
 

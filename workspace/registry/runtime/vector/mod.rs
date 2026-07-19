@@ -205,6 +205,31 @@ impl<M: EmbeddingModel> Semantic<M, Live> {
 	/// The collection this store reads/writes.
 	pub fn collection(&self) -> &CollectionName { &self.collection }
 
+	/// Delete all points whose `package` payload field equals `package`.
+	///
+	/// Used by the mirror tombstone path (`OutboxOp::Delete`) to remove a
+	/// withdrawn package's vectors from the collection. The `"package"` payload
+	/// key is set by [`point_struct`] for every uploaded [`SymbolPoint`].
+	///
+	/// Idempotent — deleting already-absent points is a no-op.
+	/// **Blob / CAS data is never touched.**
+	pub async fn delete_package_points(&self, package: heart::PackageId) -> Result<(), VectorError> {
+		use qdrant_client::qdrant::{Condition, DeletePointsBuilder, Filter};
+
+		let pkg_uuid = package.as_uuid().to_string();
+		let filter = Filter::must([Condition::matches("package", pkg_uuid)]);
+		self.client
+			.delete_points(
+				DeletePointsBuilder::new(self.collection.as_str())
+					.points(filter)
+					.wait(true),
+			)
+			.await
+			.map_err(VectorError::Transport)?;
+		tracing::debug!(%package, collection = self.collection.as_str(), "package vectors deleted");
+		Ok(())
+	}
+
 	/// Nearest-neighbour semantic search, ranked by cosine.
 	///
 	/// Gated: the [`SemanticGate`] is **consumed by value**, so one issuance

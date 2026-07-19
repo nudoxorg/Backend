@@ -493,6 +493,75 @@ impl Graph<Live> {
 		Ok(())
 	}
 
+	/// Delete all `Symbol` documents for a package from the graph store.
+	///
+	/// Issues a WOQL `DeleteDocument` for every `Symbol/{uuid}` associated with
+	/// `package`. This is the thinnest correct deletion: it mirrors the shape of
+	/// `insert_symbols` (each document lives at `Symbol/{symbol-uuid}`) and uses
+	/// the same document API path.
+	///
+	/// Called by the outbox consumer on a `Delete` intent — the mirror tombstone
+	/// path. **Blob / CAS data is retained**; only the graph projection loses
+	/// visibility.
+	pub async fn delete_package_symbols(&self, package: heart::PackageId) -> Result<(), GraphError> {
+		use secrecy::ExposeSecret;
+
+		// WOQL: delete all Symbol documents whose package field equals this uuid.
+		// We use a triple-match + DeleteDocument pattern: match
+		//   Triple("v:Doc", "@type", "Symbol") AND
+		//   Triple("v:Doc", "package", pkg_uuid)
+		// then DeleteDocument("v:Doc").
+		let pkg_str = package.as_uuid().to_string();
+		let query = serde_json::json!({
+			"@type": "And",
+			"and": [
+				{
+					"@type": "Triple",
+					"subject": { "@type": "NodeValue", "variable": "Doc" },
+					"predicate": { "@type": "NodeValue", "node": "@type" },
+					"object": { "@type": "Value", "node": "Symbol" }
+				},
+				{
+					"@type": "Triple",
+					"subject": { "@type": "NodeValue", "variable": "Doc" },
+					"predicate": { "@type": "NodeValue", "node": "package" },
+					"object": { "@type": "Value", "data": { "@type": "xsd:string", "@value": pkg_str } }
+				},
+				{
+					"@type": "DeleteDocument",
+					"identifier": { "@type": "NodeValue", "variable": "Doc" }
+				}
+			]
+		});
+
+		let url = self
+			.endpoint
+			.join(&format!("api/woql/{}/{}", self.organization.as_str(), self.database.as_str()))
+			.expect("validated org/db names always form a legal url path");
+		let body = serde_json::to_vec(&serde_json::json!({ "query": query }))
+			.expect("woql delete query serializes infallibly");
+		let reply = self
+			.client
+			.post(url)
+			.basic_auth(self.credentials.user(), Some(self.credentials.password().expose_secret()))
+			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.body(body)
+			.send()
+			.await
+			.map_err(GraphError::Transport)?;
+
+		let status = reply.status();
+		let bytes = reply.bytes().await.map_err(GraphError::Transport)?;
+		if !status.is_success() {
+			return Err(GraphError::Query(crate::runtime::error::GraphQueryError::HttpStatus {
+				status,
+				body: String::from_utf8_lossy(&bytes).into_owned(),
+			}));
+		}
+		tracing::debug!(%package, "symbol documents deleted from graph");
+		Ok(())
+	}
+
 	/// POST one WOQL query to the endpoint and return its binding rows.
 	pub(crate) async fn bindings(
 		&self,

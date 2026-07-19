@@ -200,6 +200,52 @@ impl GlobalStore<Live> {
         row_to_state(&row).map_err(convert_codec_error)
     }
 
+    /// Persist the last-observed registry listing status for a package.
+    /// `None` clears the column (status unknown). Follows the same nullable-jsonb
+    /// pattern as `set_facets`. The listing status is later read by the resolve
+    /// path to filter withdrawn versions from Latest/Constraint resolution.
+    pub async fn set_listing(
+        &self,
+        package: PackageId,
+        listing: Option<&ecosystem::upstream::ListingStatus>,
+    ) -> Result<(), IndexError> {
+        let (query, parameters) =
+            queries::index::set_listing(package, listing).map_err(convert_codec_error)?;
+        sqlx::query_with(&query, parameters)
+            .execute(&self.pool)
+            .await
+            .map_err(IndexError::Database)?;
+        Ok(())
+    }
+
+    /// Read the last-observed registry listing status for a package.
+    pub async fn get_listing(
+        &self,
+        package: PackageId,
+    ) -> Result<Option<ecosystem::upstream::ListingStatus>, IndexError> {
+        let (query, parameters) = queries::index::get_listing(package);
+        let row = sqlx::query_with(&query, parameters)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(IndexError::Database)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let val: Option<serde_json::Value> = row.try_get(0).map_err(|e| IndexError::RowDecode {
+            column: "listing",
+            source: e,
+        })?;
+        match val {
+            None => Ok(None),
+            Some(v) => serde_json::from_value(v)
+                .map(Some)
+                .map_err(|e| IndexError::Codec(crate::schema::codec::CodecError::Json {
+                    domain: "ListingStatus",
+                    source: e,
+                })),
+        }
+    }
+
     /// Fetch a package's current global record.
     pub async fn get(&self, package: PackageId) -> Result<GlobalPackage, IndexError> {
         let state = self.get_state(package).await?;
@@ -267,6 +313,131 @@ impl GlobalStore<Live> {
             .map_err(IndexError::Database)?;
 
         Ok(())
+    }
+
+    /// Recompute the corpus-wide reverse-dependency counts and persist each
+    /// package's `dependents` into its stored facets. Returns packages updated.
+    /// Runs in pages; safe to re-run (idempotent overwrite). Writes the count
+    /// for every package that appears as a dependency target; packages with no
+    /// dependents receive a `0` write so stale counts from prior sweeps decay.
+    pub async fn refresh_dependents(&self) -> Result<u64, IndexError> {
+        use crate::search::dependents::{DependencyRow, count_dependents};
+
+        const PAGE_SIZE: u64 = 1_000;
+
+        // Collect all rows from the paginated scan.
+        let mut rows: Vec<DependencyRow> = Vec::new();
+        let mut after: Option<uuid::Uuid> = None;
+        loop {
+            let (sql, params) = queries::search::all_current_facets(PAGE_SIZE, after);
+            let page = sqlx::query_with(&sql, params)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(IndexError::Database)?;
+
+            let done = page.len() < PAGE_SIZE as usize;
+            let mut last_id: Option<uuid::Uuid> = None;
+
+            for row in &page {
+                let id: uuid::Uuid = row.try_get(0).map_err(IndexError::Database)?;
+                let language: String = row.try_get(1).map_err(IndexError::Database)?;
+                let name_canonical: String = row.try_get(2).map_err(IndexError::Database)?;
+                let facets_json: Option<serde_json::Value> =
+                    row.try_get(3).map_err(IndexError::Database)?;
+
+                last_id = Some(id);
+
+                let ecosystem = codec::ecosystem_from_token(&language)
+                    .map_err(convert_codec_error)?;
+
+                let dependencies = facets_json
+                    .as_ref()
+                    .and_then(|v| {
+                        codec::facets_from_json(Some(v))
+                            .ok()
+                            .flatten()
+                            .map(|f| f.dependencies)
+                    })
+                    .unwrap_or_default();
+
+                rows.push(DependencyRow {
+                    ecosystem,
+                    name: smol_str::SmolStr::from(name_canonical),
+                    dependencies,
+                });
+            }
+
+            after = last_id;
+            if done {
+                break;
+            }
+        }
+
+        // Build corpus-wide dependents counts from the collected rows.
+        let counts = count_dependents(rows);
+
+        // Write counts back — but only where the stored value actually changed.
+        // Every write also bumps `packages.updated_at` (the tantivy sync's
+        // `changed_since` poll filters on it, not on `parse_status.updated_at`),
+        // so an unconditional rewrite would force a full replica re-fold of the
+        // corpus on every sweep. Packages that stopped being depended on decay
+        // to `0` the same way (stored `Some(n>0)` → counted `0` is a change).
+        let mut updated: u64 = 0;
+        let mut after: Option<uuid::Uuid> = None;
+        loop {
+            let (sql, params) = queries::search::all_current_facets(PAGE_SIZE, after);
+            let page = sqlx::query_with(&sql, params)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(IndexError::Database)?;
+
+            let done = page.len() < PAGE_SIZE as usize;
+            let mut last_id: Option<uuid::Uuid> = None;
+
+            for row in &page {
+                let id: uuid::Uuid = row.try_get(0).map_err(IndexError::Database)?;
+                let language: String = row.try_get(1).map_err(IndexError::Database)?;
+                let name_canonical: String = row.try_get(2).map_err(IndexError::Database)?;
+                let facets_json: Option<serde_json::Value> =
+                    row.try_get(3).map_err(IndexError::Database)?;
+
+                last_id = Some(id);
+
+                let ecosystem = codec::ecosystem_from_token(&language)
+                    .map_err(convert_codec_error)?;
+                let name = smol_str::SmolStr::from(name_canonical);
+                let dep_count = counts
+                    .get(&(ecosystem, name))
+                    .copied()
+                    .unwrap_or(0);
+
+                let stored = facets_json
+                    .as_ref()
+                    .and_then(|v| v.get("dependents"))
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|n| n as u32);
+                if stored == Some(dep_count) {
+                    continue;
+                }
+
+                let package = codec::package_id_from_uuid(id);
+                let mut tx = self.pool.begin().await.map_err(IndexError::BeginTx)?;
+                let (q, p) = queries::index::set_dependents(package, dep_count)
+                    .map_err(convert_codec_error)?;
+                execute_query(&mut tx, &q, p).await?;
+                let (touch_q, touch_p) = queries::index::touch_package(package);
+                execute_query(&mut tx, &touch_q, touch_p).await?;
+                tx.commit().await.map_err(IndexError::Commit)?;
+                updated += 1;
+            }
+
+            after = last_id;
+            if done {
+                break;
+            }
+        }
+
+        Ok(updated)
     }
 
     /// Read a package's serving-projection symbols back out of the global index.
