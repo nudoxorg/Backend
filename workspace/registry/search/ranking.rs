@@ -18,13 +18,12 @@
 use heart::ecosystem::Language;
 use smol_str::SmolStr;
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+use super::gates::{self, GateConfig, GateFlags};
+use super::popularity::PopularitySignals;
+use super::policy::RankingPolicy;
 
-/// One active dependent ≈ this many monthly downloads. The single universal
-/// bridge between the dependents in-degree and the crates.io-calibrated
-/// download thresholds — as sweep coverage grows this one constant replaces
-/// the per-ecosystem `downloads_scale` guesswork entirely.
-const DEPENDENT_DOWNLOAD_EQUIV: u64 = 2_500;
+// Re-export so existing tests / callers that name the constant keep compiling.
+pub use super::popularity::DEPENDENT_DOWNLOAD_EQUIV;
 
 /// Graded demotion multiplier for withdrawn versions.
 const WITHDRAWN_DEMOTION: f32 = 0.25;
@@ -56,9 +55,20 @@ pub struct Candidate<T> {
 	/// The ecosystem-fair popularity signal: same methodology in every registry,
 	/// no upstream API, harder to game than downloads.
 	pub dependents: Option<u32>,
+	/// Per-ecosystem popularity percentile in `0.0..=1.0` when the offline CDF
+	/// job has filled it. Preferred over raw downloads in
+	/// [`Self::popularity_weight`] when present.
+	pub popularity_pct: Option<f32>,
 	/// This version is withdrawn/yanked on its registry — graded demotion, never
 	/// a binary visibility cut (a deprecated-but-only-option must still surface).
 	pub withdrawn: bool,
+	/// Typosquat / name land-grab suspect — skips exact-name bonus and applies
+	/// the squat gate factor after fuse.
+	pub squat_suspect: bool,
+	/// Known or flagged malware — buried via the malware gate factor after fuse.
+	pub malware: bool,
+	/// Declared repository path contains the package name (soft signal).
+	pub verified_repo: bool,
 	/// The ecosystem this candidate belongs to; used to select the correct
 	/// per-ecosystem `strip_conventions` function for the contains-name bonus (R1).
 	pub ecosystem: Language,
@@ -67,37 +77,47 @@ pub struct Candidate<T> {
 }
 
 impl<T> Candidate<T> {
+	/// Safety flags for hard spam / squat / malware gates.
+	#[must_use]
+	pub fn gate_flags(&self) -> GateFlags {
+		GateFlags {
+			squat_suspect: self.squat_suspect,
+			malware: self.malware,
+			verified_repo: self.verified_repo,
+		}
+	}
+
+	/// Popularity signals for this candidate (calibrated downloads already on
+	/// [`Self::downloads`]; percentile left `None` until the offline job fills it).
+	pub fn popularity_signals(&self) -> PopularitySignals {
+		PopularitySignals {
+			downloads: self.downloads,
+			dependents: self.dependents,
+			popularity_pct: self.popularity_pct,
+		}
+	}
+
 	/// The popularity weight for downloads-calibrated stages.
 	///
-	/// Takes the **strongest available evidence**: the dependents in-degree
-	/// (ecosystem-fair, converted via [`DEPENDENT_DOWNLOAD_EQUIV`]) and the
-	/// calibrated downloads are max-combined when both exist — a sparse early
-	/// sweep (`dependents: Some(1)`) must never *downgrade* a package whose
-	/// downloads already prove popularity. With neither signal, the stage's
-	/// fairness floor applies. As sweep coverage grows, dependents dominate and
-	/// the per-ecosystem `downloads_scale` guesswork stops mattering.
+	/// Delegates to [`PopularitySignals::effective_weight`] so percentile /
+	/// dependents / downloads / floor logic lives in one place. With neither
+	/// signal, the stage's fairness floor applies (missing data is never a
+	/// zero-penalty vs packages at the floor).
 	pub fn popularity_weight(&self, floor: u64) -> u64 {
-		let dependents_equiv = self
-			.dependents
-			.map(|count| u64::from(count).saturating_mul(DEPENDENT_DOWNLOAD_EQUIV));
-		match (dependents_equiv, self.downloads) {
-			(Some(equiv), Some(downloads)) => equiv.max(downloads).max(floor),
-			(Some(equiv), None) => equiv.max(floor),
-			(None, Some(downloads)) => downloads.max(floor),
-			(None, None) => {
-				static ONCE: std::sync::Once = std::sync::Once::new();
-				ONCE.call_once(|| {
-					tracing::debug!(
-						"ranking: downloads None for at least one candidate (ecosystem {:?}); \
-						 using fairness floor {} — this is expected for ecosystems without a \
-						 download-count endpoint",
-						self.ecosystem,
-						floor,
-					);
-				});
-				floor
-			}
+		let weight = self.popularity_signals().effective_weight(floor);
+		if self.downloads.is_none() && self.dependents.is_none() {
+			static ONCE: std::sync::Once = std::sync::Once::new();
+			ONCE.call_once(|| {
+				tracing::debug!(
+					"ranking: downloads None for at least one candidate (ecosystem {:?}); \
+					 using fairness floor {} — this is expected for ecosystems without a \
+					 download-count endpoint",
+					self.ecosystem,
+					floor,
+				);
+			});
 		}
+		weight
 	}
 }
 
@@ -167,6 +187,26 @@ pub struct RankingConfig {
 	/// Ratio threshold for the bubble-sort swap.
 	/// Lib.rs: `a.downloads * 3 < b.downloads`.
 	pub bubble_ratio: u64,
+
+	/// Contains-name specificity factor when the query is marked specific
+	/// (separators / long). Default `0.9` (Navigate / historic lib.rs).
+	/// [`super::policy::RankingPolicy::config_for_intent`] lowers this for Explore.
+	pub contains_specificity_when_specific: f32,
+
+	/// Contains-name specificity factor when the query is generic.
+	/// Default `0.15` (Navigate / historic lib.rs).
+	pub contains_specificity_when_generic: f32,
+
+	/// Additive quality × log-popularity path scale in score fusion.
+	/// Default `0.0` (Navigate / historic behaviour). Explore sets this `> 0`
+	/// so high quality + downloads can outrank keyword-spam name contains.
+	///
+	/// Formula applied in [`fuse_scores`]:
+	/// `score += scale * quality * log2(popularity_weight(1) + 1) / 20`
+	pub quality_popularity_path_scale: f32,
+
+	/// Hard spam / squat / malware gate knobs (exact-bonus floor + multipliers).
+	pub gate: GateConfig,
 }
 
 impl Default for RankingConfig {
@@ -188,6 +228,12 @@ impl Default for RankingConfig {
 			bubble_downloads_min:             200,
 			bubble_downloads_max:             1_000_000,
 			bubble_ratio:                     3,
+			// Intent-sensitive knobs — defaults match historic Navigate behaviour
+			// so existing `rank` / `rank_full` callers stay bit-compatible.
+			contains_specificity_when_specific: 0.9,
+			contains_specificity_when_generic:  0.15,
+			quality_popularity_path_scale:      0.0,
+			gate: GateConfig::default(),
 		}
 	}
 }
@@ -264,6 +310,30 @@ pub fn rank_full_with<T>(
 	rank_pipeline(cfg, query, candidates, limit, usize::MAX, ecosystem_scope)
 }
 
+/// Intent-aware single-page rank: classifies [`QueryIntent`] then applies
+/// [`RankingPolicy::config_for_intent`] before the pipeline.
+///
+/// Prefer this (or [`RankingPolicy::rank_candidates`]) over bare [`rank`] when
+/// the caller has not already chosen an intent-tuned config.
+pub fn rank_with_intent<T>(
+	query: &str,
+	candidates: Vec<Candidate<T>>,
+	limit: usize,
+	ecosystem_scope: Option<Language>,
+) -> Vec<Candidate<T>> {
+	RankingPolicy::default().rank_candidates(query, candidates, limit, ecosystem_scope)
+}
+
+/// Intent-aware full-order rank (pagination). See [`rank_with_intent`].
+pub fn rank_full_with_intent<T>(
+	query: &str,
+	candidates: Vec<Candidate<T>>,
+	limit: usize,
+	ecosystem_scope: Option<Language>,
+) -> Vec<Candidate<T>> {
+	RankingPolicy::default().rank_full_candidates(query, candidates, limit, ecosystem_scope)
+}
+
 /// The shared five-stage pipeline. `limit` tunes the position-sensitive stages
 /// (pull-up `take`/`better_half`, the bubble tail); `retain` is the length the
 /// reordered list is truncated to at the pull-up. The single-page [`rank_with`]
@@ -284,7 +354,14 @@ fn rank_pipeline<T>(
 	// ── Stage (a): fuse score per candidate ──────────────────────────────────
 	let mut fused: Vec<f32> = fuse_scores(cfg, query, &candidates, ecosystem_scope);
 
-	// ── Stage (a.5): graded withdrawn demotion ────────────────────────────────
+	// ── Stage (a.5): hard spam / squat / malware gates ────────────────────────
+	// Multiplicative demotion (never zero) so flagged packages stay visible in
+	// deep pages but cannot outrank clean peers via raw BM25.
+	for (score, candidate) in fused.iter_mut().zip(candidates.iter()) {
+		*score = gates::apply_gate_multiplier(*score, candidate.gate_flags(), &cfg.gate);
+	}
+
+	// ── Stage (a.6): graded withdrawn demotion ────────────────────────────────
 	// Multiply withdrawn candidates' scores by WITHDRAWN_DEMOTION (never zero —
 	// a deprecated-but-only-option must still surface).
 	for (score, candidate) in fused.iter_mut().zip(candidates.iter()) {
@@ -358,6 +435,12 @@ fn rank_pipeline<T>(
 /// R2 fix: `query_is_specific` now uses the scoped ecosystem's
 /// `specificity_separators` when the search is ecosystem-scoped; otherwise
 /// falls back to the shared `DEFAULT_SPECIFICITY_SEPARATORS`.
+///
+/// Intent is folded in via [`RankingConfig`] knobs set by
+/// [`super::policy::RankingPolicy::config_for_intent`]:
+/// - **Navigate** — high `exact_name_bonus` + historic contains specificity.
+/// - **Explore** — softer exact/contains + `quality_popularity_path_scale > 0`
+///   so quality × log-popularity can outrank keyword-spam name hits.
 fn fuse_scores<T>(
 	cfg: &RankingConfig,
 	query: &str,
@@ -392,13 +475,27 @@ fn fuse_scores<T>(
 		};
 		let mut score = c.bm25 * q;
 
+		// ── Explore quality/popularity path ─────────────────────────────────
+		// Additive: scale * quality * log2(pop_weight + 1) / 20.
+		// Default scale is 0 (Navigate / historic); Explore raises it so a
+		// high-quality popular package can beat pure keyword-spam BM25 names.
+		if cfg.quality_popularity_path_scale > 0.0 {
+			let pop = c.popularity_weight(1) as f32;
+			let pop_factor = (pop + 1.0).log2() / 20.0;
+			score += cfg.quality_popularity_path_scale * c.quality * pop_factor;
+		}
+
 		// ── Exact / contains name bonus (assign_doc_score / contains_query) ───
 		let name_lower = c.name.to_ascii_lowercase();
 		if name_lower == query_lower {
-			// Exact match: flat bonus, replaces the fused score if larger.
-			// Lib.rs caps at `max_relevance * match_multiplier`; here we model
-			// it as a large additive bonus so the order is equivalent.
-			score += cfg.exact_name_bonus;
+			// Exact match: flat bonus only when quality clears the gate floor
+			// and the candidate is not a squat/land-grab suspect. Lib.rs caps
+			// at `max_relevance * match_multiplier`; here we model it as a
+			// large additive bonus so the order is equivalent. Navigate keeps
+			// this high; Explore softens via RankingPolicy.
+			if gates::exact_bonus_eligible(c.quality, c.squat_suspect, &cfg.gate) {
+				score += cfg.exact_name_bonus;
+			}
 		} else if boosted < cfg.contains_max_boosted
 			&& contains_query_names_for_ecosystem(&name_lower, &query_lower, c.ecosystem)
 		{
@@ -407,7 +504,11 @@ fn fuse_scores<T>(
 			// with bonus multiplier = 1 + quality_bonus * specificity_factor.
 			let quality_bonus =
 				(c.quality * c.quality + 0.25) * 2.0_f32.min(1.1);
-			let specificity = if query_is_specific { 0.9 } else { 0.15 };
+			let specificity = if query_is_specific {
+				cfg.contains_specificity_when_specific
+			} else {
+				cfg.contains_specificity_when_generic
+			};
 			let bonus_factor =
 				1.0 + quality_bonus * specificity * 2.0 / (2.0 + boosted as f32);
 			let boosted_score = score * bonus_factor;
@@ -760,7 +861,11 @@ mod tests {
 			quality,
 			downloads,
 			dependents: None,
+			popularity_pct: None,
 			withdrawn: false,
+			squat_suspect: false,
+			malware: false,
+			verified_repo: false,
 			ecosystem: Language::Rust,
 			keywords: kws.iter().map(|&k| SmolStr::new(k)).collect(),
 		}
@@ -781,7 +886,11 @@ mod tests {
 			quality,
 			downloads,
 			dependents: None,
+			popularity_pct: None,
 			withdrawn: false,
+			squat_suspect: false,
+			malware: false,
+			verified_repo: false,
 			ecosystem: eco,
 			keywords: kws.iter().map(|&k| SmolStr::new(k)).collect(),
 		}
@@ -1221,5 +1330,182 @@ mod tests {
 		let result = rank("requests", candidates, 10, Some(Language::Python));
 		// requests should be first (exact name match)
 		assert_eq!(result[0].name, "requests");
+	}
+
+	// ── Intent-aware ranking (Tracks B+C) ────────────────────────────────────
+
+	/// Navigate: exact match "serde" still beats high-BM25 spam (existing behaviour).
+	#[test]
+	fn navigate_exact_serde_beats_bm25_spam() {
+		// Spam has inflated BM25 and a name that *contains* the query; exact
+		// match still wins via exact_name_bonus (Navigate keeps bonus ≥ 10).
+		let candidates = vec![
+			make(
+				"serde-with-lots-of-keywords-spam",
+				8.0,
+				0.15,
+				Some(1_000),
+				&["serde", "serialize", "json"],
+			),
+			make("serde", 1.0, 0.9, Some(50_000_000), &["serialize"]),
+		];
+		let result = rank_with_intent("serde", candidates, 10, Some(Language::Rust));
+		assert_eq!(
+			result[0].name, "serde",
+			"Navigate exact match must outrank high-BM25 name-spam"
+		);
+	}
+
+	/// Explore: "http client" — high quality+downloads outranks keyword-spam name-contains.
+	#[test]
+	fn explore_http_client_quality_beats_name_spam() {
+		// Spam: name contains query tokens, inflated BM25, low quality / downloads.
+		// Good: household-name HTTP client, lower BM25, high quality + downloads.
+		let candidates = vec![
+			make(
+				"http-client-keywords-spam-extra",
+				12.0,
+				0.12,
+				Some(50),
+				&["http", "client", "request"],
+			),
+			make("reqwest", 2.0, 0.95, Some(5_000_000), &["http", "client"]),
+			make("hyper", 1.8, 0.9, Some(3_000_000), &["http"]),
+		];
+		let result = rank_with_intent("http client", candidates, 10, Some(Language::Rust));
+		let spam_pos = result
+			.iter()
+			.position(|c| c.name == "http-client-keywords-spam-extra")
+			.expect("spam in results");
+		let good_pos = result
+			.iter()
+			.position(|c| c.name == "reqwest")
+			.expect("reqwest in results");
+		assert!(
+			good_pos < spam_pos,
+			"Explore: high quality+downloads must outrank keyword-spam (reqwest@{good_pos} vs spam@{spam_pos}); order={:?}",
+			result.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+		);
+	}
+
+	/// Adversarial: withdrawn package cannot outrank healthy equal-BM25 via popularity alone.
+	#[test]
+	fn adversarial_withdrawn_cannot_outrank_via_popularity() {
+		let candidates = vec![
+			make("healthy", 1.0, 0.6, Some(10_000), &[]),
+			Candidate {
+				withdrawn: true,
+				downloads: Some(50_000_000),
+				..make("withdrawn-popular", 1.0, 0.6, Some(50_000_000), &[])
+			},
+		];
+		let result = rank_with_intent("q", candidates, 10, None);
+		assert_eq!(result.len(), 2);
+		assert_eq!(
+			result[0].name, "healthy",
+			"withdrawn demotion must beat pure popularity even with equal BM25"
+		);
+		assert_eq!(result[1].name, "withdrawn-popular");
+	}
+
+	// ── Hard spam / squat gates ───────────────────────────────────────────────
+
+	/// Malware with absurd BM25 still ranks after a clean peer.
+	#[test]
+	fn adversarial_malware_huge_bm25_ranks_after_clean() {
+		let candidates = vec![
+			Candidate {
+				malware: true,
+				..make("evil-pkg", 1_000.0, 0.9, Some(50_000_000), &["async"])
+			},
+			make("clean-pkg", 1.5, 0.6, Some(10_000), &["async"]),
+		];
+		let result = rank("async", candidates, 10, None);
+		assert_eq!(result.len(), 2);
+		assert_eq!(
+			result[0].name, "clean-pkg",
+			"clean peer must outrank malware despite huge BM25; got {:?}",
+			result.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+		);
+		assert_eq!(result[1].name, "evil-pkg", "malware still visible (buried, not dropped)");
+	}
+
+	/// Squat exact-name land-grab does not receive the full exact bonus, so a
+	/// real high-quality package wins the query.
+	#[test]
+	fn adversarial_squat_exact_landgrab_loses_to_real() {
+		// Query "yaml": squat package owns the exact name but is flagged and
+		// low-quality; real package is a well-known implementation.
+		let candidates = vec![
+			Candidate {
+				squat_suspect: true,
+				..make("yaml", 5.0, 0.05, Some(10), &["yaml"])
+			},
+			make("yaml-rust", 2.0, 0.85, Some(500_000), &["yaml", "parser"]),
+		];
+		let result = rank("yaml", candidates, 10, None);
+		assert_eq!(
+			result[0].name, "yaml-rust",
+			"real package must beat squat exact-name land-grab; got {:?}",
+			result.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+		);
+	}
+
+	/// Exact-name bonus is withheld when quality is below the gate floor even
+	/// for a clean (non-squat) candidate.
+	#[test]
+	fn exact_bonus_requires_quality_floor() {
+		// Low-quality exact match vs higher-quality non-exact peer.
+		// Without the floor, exact bonus (10.0) would dominate.
+		let candidates = vec![
+			make("floortest", 1.0, 0.05, Some(100), &[]), // exact, below floor
+			make("floortest-real", 3.0, 0.9, Some(100_000), &[]),
+		];
+		let result = rank("floortest", candidates, 10, None);
+		assert_eq!(
+			result[0].name, "floortest-real",
+			"exact match below quality floor must not get full exact bonus; got {:?}",
+			result.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+		);
+	}
+
+	/// Adversarial: missing downloads uses floor — never zero-penalty vs packages at floor.
+	#[test]
+	fn adversarial_missing_downloads_floor_not_zero_penalty() {
+		use super::super::popularity::PopularitySignals;
+		let floor = 200u64;
+		let none_sig = PopularitySignals::from_facets(None, None, Some(1.0));
+		let floor_sig = PopularitySignals {
+			downloads: Some(floor),
+			dependents: None,
+			popularity_pct: None,
+		};
+		assert_eq!(
+			none_sig.effective_weight(floor),
+			floor_sig.effective_weight(floor),
+			"None downloads must equal packages that only have floor-level data"
+		);
+		// Ranking: equal BM25/quality; None must not sort strictly below floor-data
+		// solely because downloads are missing (name tiebreak is the only differentiator).
+		let candidates = vec![
+			make("aaa-none", 1.0, 0.6, None, &[]),
+			make("zzz-floor", 1.0, 0.6, Some(floor), &[]),
+		];
+		let result = rank("q", candidates, 10, None);
+		assert_eq!(result.len(), 2);
+		// Same fused score → name ascending: aaa-none before zzz-floor.
+		assert_eq!(result[0].name, "aaa-none");
+		assert_eq!(result[1].name, "zzz-floor");
+	}
+
+	/// Default `rank` (no intent) still preserves exact-match dominance.
+	#[test]
+	fn default_rank_preserves_exact_match() {
+		let candidates = vec![
+			make("tokio-extended", 5.0, 0.5, Some(1_000), &["async"]),
+			make("tokio", 1.0, 0.5, Some(1_000), &["async"]),
+		];
+		let result = rank("tokio", candidates, 10, None);
+		assert_eq!(result[0].name, "tokio");
 	}
 }

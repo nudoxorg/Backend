@@ -1,18 +1,25 @@
 //! Replica-local tantivy index over the searchable package projection.
 //!
-//! Schema v3 (SCHEMA_VERSION = 3):
+//! Schema v4 (SCHEMA_VERSION = 4):
 //! - `package_id`  STRING|STORED — upsert/delete key
 //! - `name_exact`  STRING        — search_surface lowercased + canonical lowercased
 //!   + original lowercased (multiple values per doc)
 //! - `name_tokens` TEXT(ident)   — search_surface + original, identifier-tokenized
 //! - `name_ns`     TEXT(ident)   — namespace segments space-joined
 //! - `description` TEXT          — from SearchFacets.description (S2)
-//! - `keywords`    TEXT          — from SearchFacets.keyword_text()
+//! - `keywords`    TEXT          — from SearchFacets.keyword_text() plus
+//!   index-time name separator parts ([`super::enrich`]; no separate `extra` field)
 //! - `ecosystem`   STRING|STORED — language token (Must filter, Q4)
 //! - `record`      STORED        — full serialized GlobalPackage (hydrate)
 //! - `deps`        STRING        — one value per facets.dependencies slug (multi-valued)
 //! - `license`     STRING        — facets.license as a single lowercase term, when present
 //! - `repo`        STRING        — facets.repo_slug, when present
+//! - `quality_ppm`         FAST u64 — facets.quality_ppm (0 if unknown)
+//! - `downloads`           FAST u64 — facets.downloads (0 if None)
+//! - `popularity_pct_ppm`  FAST u64 — eco CDF × 1e6 (0 if None / not yet filled)
+//!
+//! FAST ranking fields are for future collectors and debug; the live rank path
+//! still hydrates the full `record` JSON. Query matching is unchanged from v3.
 //!
 //! The IdentifierTokenizer from registry/runtime/text/tokenizer.rs is
 //! re-registered on this index after every open (same mechanism as TextIndex).
@@ -31,7 +38,7 @@ use super::structured::StructuredQuery;
 
 /// Schema version written to `schema_version` next to the index dir.
 /// Mismatch on open → wipe contents + reset watermark to 0.
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 /// Filename for the durable sync watermark.
 const WATERMARK_FILE: &str = "sync_watermark.json";
@@ -53,6 +60,20 @@ pub struct PackageIndex {
 	dir:       std::path::PathBuf,
 }
 
+/// Ranking signals stored as FAST u64 columns (schema v4).
+///
+/// Read via [`PackageIndex::fast_ranking_signals`] for collectors / debug /
+/// round-trip tests. Live ranking still uses hydrated facets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FastRankingSignals {
+	/// Quality in parts-per-million (`0..=1_000_000`); `0` if facets unknown.
+	pub quality_ppm: u64,
+	/// Monthly downloads; `0` when facets omit downloads (`None`).
+	pub downloads: u64,
+	/// Ecosystem popularity percentile as ppm (`0..=1_000_000`); `0` if unset.
+	pub popularity_pct_ppm: u64,
+}
+
 /// Schema field handles — resolved once per operation so writer/reader agree.
 struct Fields {
 	package_id:  Field,
@@ -69,6 +90,10 @@ struct Fields {
 	license:     Field,
 	/// `host/owner/repo` slug, when present.
 	repo:        Field,
+	/// v4 FAST ranking columns.
+	quality_ppm:        Field,
+	downloads:          Field,
+	popularity_pct_ppm: Field,
 }
 
 /// All query boost values in one place so tuning is one-line. (§8.3)
@@ -179,9 +204,11 @@ impl PackageIndex {
 		Ok(())
 	}
 
-	/// Schema v3: all fields.
+	/// Schema v4: all fields (v3 text/facet filters + FAST ranking columns).
 	pub fn schema() -> tantivy::schema::Schema {
-		use tantivy::schema::{STORED, STRING, TEXT, TextFieldIndexing, TextOptions, IndexRecordOption};
+		use tantivy::schema::{
+			FAST, STORED, STRING, TEXT, TextFieldIndexing, TextOptions, IndexRecordOption,
+		};
 		let mut builder = tantivy::schema::Schema::builder();
 		builder.add_text_field("package_id", STRING | STORED);
 		// Exact-match field: stores search_surface, canonical, and original
@@ -204,6 +231,10 @@ impl PackageIndex {
 		builder.add_text_field("deps", STRING);
 		builder.add_text_field("license", STRING);
 		builder.add_text_field("repo", STRING);
+		// v4: FAST ranking signals for collectors / debug (not used by query tree).
+		builder.add_u64_field("quality_ppm", FAST);
+		builder.add_u64_field("downloads", FAST);
+		builder.add_u64_field("popularity_pct_ppm", FAST);
 		builder.build()
 	}
 
@@ -222,6 +253,9 @@ impl PackageIndex {
 			deps:        field("deps")?,
 			license:     field("license")?,
 			repo:        field("repo")?,
+			quality_ppm:        field("quality_ppm")?,
+			downloads:          field("downloads")?,
+			popularity_pct_ppm: field("popularity_pct_ppm")?,
 		})
 	}
 
@@ -277,11 +311,47 @@ impl PackageIndex {
 
 			document.add_text(fields.ecosystem, coordinates.ecosystem().as_token());
 
+			// Index-time enrichment: name separator parts → keywords TEXT (no
+			// schema bump for a dedicated `extra` field — see `enrich` module).
+			// Use search_surface so Go authority never re-enters the bag (R4).
+			let eco = coordinates.ecosystem();
+			let base_keywords = record
+				.facets
+				.as_ref()
+				.map(|f| f.keyword_text())
+				.unwrap_or_default();
+			let enrichment = super::enrich::enrich_package_text(
+				&search_surface_lower,
+				&base_keywords,
+				eco,
+			);
+			let keywords_text = super::enrich::merge_keywords(&base_keywords, &enrichment);
+
+			// v4 FAST ranking columns — always written so every doc has values.
+			// popularity_pct_ppm: facets.popularity_pct (0..=10000) → scale to
+			// 0..=1_000_000 for a uniform ppm-style FAST column.
+			let (quality_ppm, downloads, popularity_pct_ppm) = match &record.facets {
+				Some(facets) => (
+					u64::from(facets.quality_ppm),
+					facets.downloads.unwrap_or(0),
+					facets
+						.popularity_pct
+						.map(|p| u64::from(p.min(10_000)) * 100)
+						.unwrap_or(0),
+				),
+				None => (0, 0, 0),
+			};
+			document.add_u64(fields.quality_ppm, quality_ppm);
+			document.add_u64(fields.downloads, downloads);
+			document.add_u64(fields.popularity_pct_ppm, popularity_pct_ppm);
+
 			if let Some(facets) = &record.facets {
 				if let Some(desc) = &facets.description {
 					document.add_text(fields.description, desc.as_str());
 				}
-				document.add_text(fields.keywords, facets.keyword_text());
+				if !keywords_text.is_empty() {
+					document.add_text(fields.keywords, &keywords_text);
+				}
 
 				// v3 facet filter fields.
 				for dep in &facets.dependencies {
@@ -293,6 +363,10 @@ impl PackageIndex {
 				if let Some(repo) = &facets.repo_slug {
 					document.add_text(fields.repo, repo.as_str());
 				}
+			} else if !keywords_text.is_empty() {
+				// No facets yet: still index name-derived extras so dash-split
+				// keyword matching works before rich metadata lands.
+				document.add_text(fields.keywords, &keywords_text);
 			}
 
 			document.add_text(fields.record, &json);
@@ -616,6 +690,57 @@ impl PackageIndex {
 				.map_err(|e| SearchError::JsonDecode { domain: "GlobalPackage", source: e })?);
 		}
 		Ok(records)
+	}
+
+	/// Read FAST ranking signals for a package (schema v4).
+	///
+	/// Locates the doc via `package_id` TermQuery + TopDocs, then reads the
+	/// columnar FAST fields from the segment reader. Returns `None` when the
+	/// package is not in the index. Used by future collectors, debug, and tests
+	/// that prove absorb → FAST round-trip; the live rank path still hydrates
+	/// the full stored record.
+	pub fn fast_ranking_signals(
+		&self,
+		id: PackageId,
+	) -> Result<Option<FastRankingSignals>, SearchError> {
+		use tantivy::{Term, collector::TopDocs, query::TermQuery, schema::IndexRecordOption};
+
+		let fields = self.fields()?;
+		let searcher = self.reader.searcher();
+		let term = Term::from_field_text(fields.package_id, &id.to_string());
+		let query = TermQuery::new(term, IndexRecordOption::Basic);
+		let top =
+			searcher.search(&query, &TopDocs::with_limit(1)).map_err(SearchError::Tantivy)?;
+		let Some((_, address)) = top.into_iter().next() else {
+			return Ok(None);
+		};
+
+		let segment_reader = searcher.segment_reader(address.segment_ord);
+		let fast = segment_reader.fast_fields();
+		let quality = fast.u64("quality_ppm").map_err(SearchError::Tantivy)?;
+		let downloads = fast.u64("downloads").map_err(SearchError::Tantivy)?;
+		let popularity = fast.u64("popularity_pct_ppm").map_err(SearchError::Tantivy)?;
+
+		Ok(Some(FastRankingSignals {
+			quality_ppm: quality.first(address.doc_id).unwrap_or(0),
+			downloads: downloads.first(address.doc_id).unwrap_or(0),
+			popularity_pct_ppm: popularity.first(address.doc_id).unwrap_or(0),
+		}))
+	}
+
+	/// Snapshot of index health for ops dashboards (doc count, watermark, schema).
+	pub fn health_snapshot(&self) -> super::health::PackageIndexHealth {
+		super::health::PackageIndexHealth {
+			schema_version: SCHEMA_VERSION,
+			num_docs: self.reader.searcher().num_docs(),
+			watermark_position: self.watermark.position,
+			path: self.dir.clone(),
+		}
+	}
+
+	/// Alias for [`Self::health_snapshot`].
+	pub fn health(&self) -> super::health::PackageIndexHealth {
+		self.health_snapshot()
 	}
 
 	pub fn watermark(&self) -> SyncWatermark { self.watermark }
