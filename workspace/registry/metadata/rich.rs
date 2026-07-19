@@ -226,6 +226,10 @@ pub struct ExtractionInput<'a> {
     pub release_count: Option<u32>,
     /// Withdrawn/yanked releases among them.
     pub withdrawn_count: Option<u32>,
+    /// Days since the most recent published release (`None` when unknown).
+    /// Used by the temporal quality group (freshness / deadness); missing →
+    /// that group contributes nothing.
+    pub last_release_days_ago: Option<u32>,
 }
 
 /// The derived, searchable metadata.  Serde so it can ride inside a stored
@@ -312,6 +316,22 @@ pub struct SearchFacets {
     /// applies a graded demotion (never a binary visibility cut).
     #[serde(default)]
     pub withdrawn: bool,
+    /// Per-ecosystem popularity percentile in parts-per-10_000
+    /// (`0..=10_000` ≡ `0.0..=1.0`). `None` until the offline CDF job fills it.
+    /// Integer so the enclosing record stays `Eq`.
+    #[serde(default)]
+    pub popularity_pct: Option<u16>,
+    /// Typosquat / name land-grab suspect. Ranking skips the exact-name bonus
+    /// and multiplies the fused score by the squat gate factor.
+    #[serde(default)]
+    pub squat_suspect: bool,
+    /// Known or flagged malware. Ranking multiplies the fused score by the
+    /// malware gate factor (still visible, but buried).
+    #[serde(default)]
+    pub malware: bool,
+    /// Declared repository path contains the package name (soft trust signal).
+    #[serde(default)]
+    pub verified_repo: bool,
 }
 
 impl SearchFacets {
@@ -330,7 +350,24 @@ impl SearchFacets {
             release_count: None,
             withdrawn_count: None,
             withdrawn: false,
+            popularity_pct: None,
+            squat_suspect: false,
+            malware: false,
+            verified_repo: false,
         }
+    }
+
+    /// Decode `popularity_pct` (parts-per-10_000) as a float in `0.0..=1.0`.
+    #[must_use]
+    pub fn popularity_pct_f32(&self) -> Option<f32> {
+        self.popularity_pct
+            .map(|ppm| (f32::from(ppm.min(10_000)) / 10_000.0).clamp(0.0, 1.0))
+    }
+
+    /// Encode a float percentile in `0.0..=1.0` as parts-per-10_000 (`0..=10_000`).
+    #[must_use]
+    pub fn encode_popularity_pct(pct: f32) -> u16 {
+        (pct.clamp(0.0, 1.0) * 10_000.0).round() as u16
     }
 
     /// The keyword slugs space-joined for the tantivy `keywords` TEXT field.
@@ -551,6 +588,63 @@ fn readme_score(readme: Option<&str>) -> Score {
     s
 }
 
+/// Horizon (days) over which release freshness linearly decays to zero.
+const FRESHNESS_HORIZON_DAYS: f64 = 365.0;
+/// A package is "dead" when its last release is older than this *and*
+/// release count is below [`DEADNESS_LOW_RELEASE_COUNT`].
+const DEADNESS_AGE_DAYS: u32 = 730;
+/// Low-ish release count paired with a very old last release → deadness demotion.
+const DEADNESS_LOW_RELEASE_COUNT: u32 = 5;
+
+/// Temporal quality group (lib.rs-inspired, simplified).
+///
+/// - **freshness**: higher when released recently; linear decay to 0 at ~365 days
+/// - **maturity**: multi-release signal (caps at 10 releases)
+/// - **not_dead**: demotion when last release is very old *and* release count is low
+///
+/// Returns `None` when no temporal inputs are present so the group is omitted
+/// entirely (contributes 0 without changing the static denominator).
+fn temporal_score(input: &ExtractionInput<'_>) -> Option<Score> {
+    if input.last_release_days_ago.is_none() && input.release_count.is_none() {
+        return None;
+    }
+
+    let mut t = Score::new();
+
+    // Freshness: 1.0 at day 0 → 0.0 at FRESHNESS_HORIZON_DAYS (and beyond).
+    if let Some(days) = input.last_release_days_ago {
+        let freshness = (1.0 - f64::from(days) / FRESHNESS_HORIZON_DAYS).clamp(0.0, 1.0);
+        t.frac("freshness", 15, freshness);
+    }
+
+    // Maturity: multi-release already partial; light signal here for temporal axis.
+    if let Some(release_count) = input.release_count {
+        t.frac(
+            "maturity",
+            10,
+            (f64::from(release_count) / 10.0).min(1.0),
+        );
+    }
+
+    // Deadness demotion: very old last release AND low-ish release count.
+    // Score algebra is non-negative, so demotion = missing the `not_dead` points.
+    match (input.last_release_days_ago, input.release_count) {
+        (Some(days), Some(rc)) => {
+            let is_dead = days >= DEADNESS_AGE_DAYS && rc < DEADNESS_LOW_RELEASE_COUNT;
+            t.has("not_dead", 10, !is_dead);
+        }
+        (Some(days), None) => {
+            // Without release_count we cannot assert deadness; only reward recent.
+            t.has("not_dead", 10, days < DEADNESS_AGE_DAYS);
+        }
+        // release_count alone: maturity already scored; no deadness signal.
+        (None, Some(_)) => {}
+        (None, None) => unreachable!("gated above"),
+    }
+
+    Some(t)
+}
+
 fn compute_quality(input: &ExtractionInput<'_>) -> f32 {
     let mut score = Score::new();
 
@@ -586,6 +680,12 @@ fn compute_quality(input: &ExtractionInput<'_>) -> f32 {
         };
         rh.has("low_withdrawn_ratio", 3, ratio < 0.15);
         score.group("release_history", 23, rh);
+    }
+
+    // Temporal group — only when last_release_days_ago and/or release_count set.
+    // Missing temporal inputs → group omitted (contributes 0, no crash).
+    if let Some(ts) = temporal_score(input) {
+        score.group("temporal", 25, ts);
     }
 
     score.total() as f32
@@ -1021,6 +1121,96 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Layer B: temporal quality (freshness / maturity / deadness)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn temporal_missing_inputs_do_not_change_quality() {
+        let base = ExtractionInput {
+            name: "mylib",
+            description: Some("A useful library"),
+            has_license: true,
+            loc: 1000,
+            ..Default::default()
+        };
+        let with_none = ExtractionInput {
+            last_release_days_ago: None,
+            release_count: None,
+            ..base.clone()
+        };
+        let q_base = compute_quality(&base);
+        let q_none = compute_quality(&with_none);
+        assert!(
+            (q_base - q_none).abs() < 1e-7,
+            "missing temporal inputs must leave quality unchanged: {q_base} vs {q_none}"
+        );
+    }
+
+    #[test]
+    fn temporal_fresh_multi_release_beats_abandoned() {
+        // Same static signals; abandoned = very old last release + few releases.
+        let static_base = ExtractionInput {
+            name: "mylib",
+            description: Some("A useful library for async IO"),
+            has_repository: true,
+            has_documentation: true,
+            has_license: true,
+            loc: 2000,
+            ..Default::default()
+        };
+        let abandoned = ExtractionInput {
+            last_release_days_ago: Some(900), // > DEADNESS_AGE_DAYS
+            release_count: Some(2),           // < DEADNESS_LOW_RELEASE_COUNT
+            withdrawn_count: Some(0),
+            ..static_base.clone()
+        };
+        let fresh = ExtractionInput {
+            last_release_days_ago: Some(14),
+            release_count: Some(20),
+            withdrawn_count: Some(0),
+            ..static_base
+        };
+        let q_abandoned = compute_quality(&abandoned);
+        let q_fresh = compute_quality(&fresh);
+        assert!(
+            q_fresh > q_abandoned,
+            "fresh multi-release ({q_fresh}) must outrank abandoned peer ({q_abandoned})"
+        );
+    }
+
+    #[test]
+    fn temporal_freshness_decays_with_age() {
+        let recent = ExtractionInput {
+            name: "mylib",
+            last_release_days_ago: Some(7),
+            ..Default::default()
+        };
+        let old = ExtractionInput {
+            name: "mylib",
+            last_release_days_ago: Some(400), // past 365-day horizon → freshness 0
+            ..Default::default()
+        };
+        let q_recent = compute_quality(&recent);
+        let q_old = compute_quality(&old);
+        assert!(
+            q_recent > q_old,
+            "recent release ({q_recent}) should score above stale ({q_old})"
+        );
+    }
+
+    #[test]
+    fn temporal_group_score_bounded() {
+        let input = ExtractionInput {
+            name: "mylib",
+            last_release_days_ago: Some(0),
+            release_count: Some(50),
+            ..Default::default()
+        };
+        let q = compute_quality(&input);
+        assert!((0.0..=1.0).contains(&q), "quality must stay in 0..=1, got {q}");
+    }
+
+    // -----------------------------------------------------------------------
     // Task 4: SearchFacets serde round-trip + legacy decode
     // -----------------------------------------------------------------------
 
@@ -1038,11 +1228,16 @@ mod tests {
             release_count: Some(15),
             withdrawn_count: Some(1),
             withdrawn: false,
+            popularity_pct: Some(9_000), // 0.90
+            squat_suspect: false,
+            malware: false,
+            verified_repo: true,
         };
 
         let json = serde_json::to_string(&facets).expect("serialize");
         let decoded: SearchFacets = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(facets, decoded, "round-trip must be identity");
+        assert!((decoded.popularity_pct_f32().unwrap() - 0.9).abs() < 1e-4);
     }
 
     #[test]
@@ -1061,5 +1256,19 @@ mod tests {
         assert!(!decoded.withdrawn);
         assert!(decoded.description.is_none());
         assert!(decoded.downloads.is_none());
+        assert!(decoded.popularity_pct.is_none());
+    }
+
+    #[test]
+    fn encode_decode_popularity_pct_ppm() {
+        assert_eq!(SearchFacets::encode_popularity_pct(0.0), 0);
+        assert_eq!(SearchFacets::encode_popularity_pct(1.0), 10_000);
+        assert_eq!(SearchFacets::encode_popularity_pct(0.5), 5_000);
+        assert_eq!(SearchFacets::encode_popularity_pct(1.5), 10_000); // clamp
+        let facets = SearchFacets {
+            popularity_pct: Some(2_500),
+            ..Default::default()
+        };
+        assert!((facets.popularity_pct_f32().unwrap() - 0.25).abs() < 1e-6);
     }
 }
