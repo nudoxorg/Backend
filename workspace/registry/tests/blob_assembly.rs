@@ -69,8 +69,8 @@ async fn emit_uploads_and_signals() {
         ContentHash::of_bytes(b"generation"),
     );
     assert!(sql.contains("ON CONFLICT"), "fan-out is idempotent");
-    // Three sinks × (package, generation, kind) = nine bound values.
-    assert_eq!(values.0.iter().count(), 9, "one intent row per derived sink");
+    // Three sinks × (package, generation, kind, op) = twelve bound values.
+    assert_eq!(values.0.iter().count(), 12, "one intent row per derived sink");
 }
 
 /// Emission distinguishes transient upload failures (retryable per the sink

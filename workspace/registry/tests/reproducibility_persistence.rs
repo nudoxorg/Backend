@@ -113,7 +113,7 @@ async fn qdrant_rebuilds_from_blobs() {
     let (sql, values) =
         registry::schema::queries::outbox::append_one(package.id(), generation, SinkKind::Vector);
     assert!(sql.contains("ON CONFLICT"), "the vector rebuild intent must be idempotent");
-    assert_eq!(values.0.iter().count(), 3, "one (package, generation, kind) intent row");
+    assert_eq!(values.0.iter().count(), 4, "one (package, generation, kind, op) intent row");
 
     // The rebuild input: the IR section the embedder consumes, exactly as
     // emitted.

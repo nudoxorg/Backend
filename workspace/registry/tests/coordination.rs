@@ -7,6 +7,7 @@
 
 mod common;
 
+use chrono::Utc;
 use heart::{Connect, ContentHash, EntryUri, Phase, ResolutionState, SymbolKind};
 use registry::coordination::{Outbox, OutboxEntry, OutboxSeq, SinkKind};
 use strum::IntoEnumIterator;
@@ -164,5 +165,62 @@ async fn recording_advances_resolution_state() {
         store.get_state(package.id()).await.expect("state resolves"),
         ResolutionState::Stored { hash: generation },
         "coordination must advance the lifecycle to Stored"
+    );
+}
+
+/// S5 regression: facet writes must bump `packages.updated_at` so `changed_since`
+/// (the tantivy sync poll) discovers facet-only updates.
+///
+/// Assert: after `record_stored` with facets, `changed_since(pre)` returns the
+/// package (i.e. `packages.updated_at` advanced past the pre-write timestamp).
+#[tokio::test]
+async fn set_facets_bumps_packages_updated_at() {
+    let Some(pool) = common::postgres_pool("set_facets_bumps_packages_updated_at").await else {
+        return;
+    };
+    let store = common::global_store(pool.clone()).await;
+    let outbox = outbox(pool.clone()).await;
+
+    let package = common::rust_package(&common::unique_rust_name("facets-freshen"), "1.0.0");
+    store
+        .upsert(&common::global_package(
+            package.clone(),
+            ResolutionState::Unindexed { needed: false },
+        ))
+        .await
+        .expect("the package is registered");
+
+    // Record the timestamp immediately before the facet write.
+    let pre = Utc::now() - chrono::Duration::milliseconds(1);
+
+    let generation = ContentHash::of_bytes(b"facet generation");
+    let facets = registry::metadata::SearchFacets {
+        keywords: vec!["async".into(), "runtime".into()],
+        quality_ppm: 500_000,
+        description: Some("async runtime".into()),
+        downloads: None,
+        ..Default::default()
+    };
+    outbox
+        .record_stored(&store, package.id(), generation, Some(&facets))
+        .await
+        .expect("record_stored with facets succeeds");
+
+    // `changed_since(pre)` must include this package — its `packages.updated_at`
+    // must have been bumped by the facet write (S5).
+    let (sql, vals) = registry::schema::queries::search::changed_since(pre, 1_000);
+    let rows: Vec<sqlx::postgres::PgRow> = sqlx::query_with(&sql, vals)
+        .fetch_all(&pool)
+        .await
+        .expect("changed_since query executes");
+
+    let found = rows.iter().any(|row| {
+        use sqlx::Row;
+        let pkg_uuid: uuid::Uuid = row.try_get(0).unwrap_or_default();
+        pkg_uuid == registry::schema::codec::package_id_to_uuid(package.id())
+    });
+    assert!(
+        found,
+        "set_facets must bump packages.updated_at so changed_since returns the package (S5)"
     );
 }

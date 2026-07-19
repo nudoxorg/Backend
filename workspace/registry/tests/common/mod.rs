@@ -71,6 +71,36 @@ pub fn python_package(name: &str, version: &str) -> Package {
     Package { coordinates, toolchain }
 }
 
+/// A validated Go module coordinate tuple + package.
+pub fn go_package(module_path: &str, version: &str) -> Package {
+    let coordinates = Coordinates {
+        origin: RegistryOrigin::Custom {
+            name: "proxy.golang.org".into(),
+            url: url::Url::parse("https://proxy.golang.org").expect("fixture url"),
+        },
+        name: PackageName::new(Language::Go, module_path).expect("fixture Go module is valid"),
+        version: PackageVersion::try_from((Language::Go, version))
+            .expect("fixture version is valid"),
+    };
+    let toolchain = Toolchain::Go { compiler: semver::Version::new(1, 22, 0) };
+    Package { coordinates, toolchain }
+}
+
+/// A validated Maven coordinate tuple + package (groupId:artifactId form accepted).
+pub fn java_package(artifact: &str, version: &str) -> Package {
+    let coordinates = Coordinates {
+        origin: RegistryOrigin::Custom {
+            name: "repo1.maven.org".into(),
+            url: url::Url::parse("https://repo1.maven.org").expect("fixture url"),
+        },
+        name: PackageName::new(Language::Java, artifact).expect("fixture Maven artifact is valid"),
+        version: PackageVersion::try_from((Language::Java, version))
+            .expect("fixture version is valid"),
+    };
+    let toolchain = Toolchain::Java { compiler: semver::Version::new(21, 0, 0) };
+    Package { coordinates, toolchain }
+}
+
 /// A validated NuGet coordinate tuple + package (for C# / NuGet ecosystem specs).
 pub fn csharp_package(name: &str, version: &str) -> Package {
     let coordinates = Coordinates {

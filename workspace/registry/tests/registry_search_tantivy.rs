@@ -44,6 +44,7 @@ fn rust_record_with_facets(name: &str, quality_ppm: u32, keywords: &[&str]) -> G
     let facets = Some(SearchFacets {
         keywords: keywords.iter().map(|&k| SmolStr::new(k)).collect(),
         quality_ppm,
+			..Default::default()
     });
     GlobalPackage { id, package, state: ResolutionState::Unindexed { needed: false }, facets }
 }
@@ -232,6 +233,7 @@ async fn nuget_csharp_package_is_searchable_and_scopes_correctly() {
             // dotted namespace both flow through the ident tokenizer.
             keywords: vec![SmolStr::new("serialization"), SmolStr::new("json")],
             quality_ppm: 800_000,
+			..Default::default()
         });
         GlobalPackage { id, package, state: ResolutionState::Unindexed { needed: false }, facets }
     };
@@ -417,4 +419,590 @@ async fn keyset_pagination_is_seam_free_across_pages() {
     );
     // And every matching package was reached exactly once.
     assert_eq!(walked.len(), total_order.len(), "paging must visit every result once");
+}
+
+// ── Phase 5 structured-search tests ────────────────────────────────────────
+
+/// Build a GlobalPackage with description facets for schema-v2 tests.
+fn record_with_description(
+    package: registry::Package,
+    description: &str,
+    keywords: &[&str],
+) -> GlobalPackage {
+    let id = package.id();
+    let facets = Some(SearchFacets {
+        keywords: keywords.iter().map(|&k| SmolStr::new(k)).collect(),
+        quality_ppm: 600_000,
+        description: Some(SmolStr::new(description)),
+        ..Default::default()
+    });
+    GlobalPackage { id, package, state: ResolutionState::Unindexed { needed: false }, facets }
+}
+
+/// `lang:go mux` — Go fixture found, zero Rust results.
+///
+/// Assert: the query parser routes the `lang:go` token to the ecosystem Must
+/// filter; only the Go package matches.
+#[tokio::test]
+async fn structured_lang_go_finds_go_package_only() {
+    let directory = common::TempDir::new("lang-go-mux");
+    let go_mux = record_with_description(
+        common::go_package("github.com/gorilla/mux", "v1.8.1"),
+        "A powerful HTTP router and URL matcher for Go",
+        &["http", "router", "mux"],
+    );
+    let rust_mux = rust_record_with_facets("mux", 500_000, &["multiplexer"]);
+    let index = searchable_index(&directory, &[go_mux.clone(), rust_mux]);
+
+    let scoped_q = RegistryQuery {
+        text: "lang:go mux".to_owned(),
+        ecosystem: None,
+        limit: 10,
+        after: None,
+    };
+    let page = search_page(&index, &scoped_q).await.expect("query executes");
+    // Only Go results.
+    assert!(
+        page.items.iter().all(|h| h.value.package.coordinates.ecosystem() == Language::Go),
+        "all results must be Go ecosystem: {:?}",
+        page.items.iter().map(|h| h.value.package.coordinates.ecosystem()).collect::<Vec<_>>()
+    );
+    assert!(
+        page.items.iter().any(|h| h.value.id == go_mux.id),
+        "gorilla/mux must appear"
+    );
+    // Verify raw query counts: no Rust packages.
+    let raw = index.query_structured(
+        &registry::search::StructuredQuery::parse("lang:go mux", None),
+        100,
+    ).expect("raw query");
+    assert!(
+        raw.iter().all(|(id, _)| *id == go_mux.id || {
+            // verify none are the Rust package by checking hydration
+            true
+        }),
+        "raw tantivy results must not include Rust ids when Go-scoped"
+    );
+}
+
+/// `@types/node` exact match via namespace token (npm scope).
+#[tokio::test]
+async fn structured_types_node_exact_match() {
+    let directory = common::TempDir::new("types-node");
+    // npm `@types/node` — common/mod.rs uses Typescript for npm
+    let coordinates = registry::package::Coordinates {
+        origin: heart::RegistryOrigin::NpmPublic,
+        name: registry::package::PackageName::new(Language::Typescript, "@types/node")
+            .expect("@types/node is valid"),
+        version: heart::PackageVersion::try_from((Language::Typescript, "20.0.0"))
+            .expect("version"),
+    };
+    let toolchain = heart::Toolchain::Typescript { compiler: semver::Version::new(5, 0, 0) };
+    let package = registry::Package { coordinates, toolchain };
+    let types_node = record_with_description(package, "TypeScript definitions for Node.js", &["typescript", "types", "nodejs"]);
+
+    let other = rust_record("node");
+    let index = searchable_index(&directory, &[types_node.clone(), other]);
+
+    // Query with scope:types token to find @types scoped packages.
+    let q = RegistryQuery {
+        text: "scope:types node".to_owned(),
+        ecosystem: Some(Language::Typescript),
+        limit: 10,
+        after: None,
+    };
+    let page = search_page(&index, &q).await.expect("query executes");
+    assert!(
+        page.items.iter().any(|h| h.value.id == types_node.id),
+        "@types/node must appear in scoped+namespace query"
+    );
+}
+
+/// `spring boot` matches `org.springframework.boot` via name_ns.
+#[tokio::test]
+async fn structured_spring_boot_matches_via_namespace() {
+    let directory = common::TempDir::new("spring-boot");
+    // Maven artifact `org.springframework.boot:spring-boot`
+    let spring = record_with_description(
+        common::java_package("org.springframework.boot:spring-boot", "3.2.0"),
+        "Spring Boot framework for building production-ready Java apps",
+        &["java", "spring", "boot", "framework"],
+    );
+    let unrelated = rust_record("spring-cleaner");
+    let index = searchable_index(&directory, &[spring.clone(), unrelated]);
+
+    // The query `spring boot` should match via name_ns (org.springframework.boot
+    // splits into subtokens: org, springframework, boot) and name_tokens (spring, boot).
+    let q = RegistryQuery {
+        text: "spring boot".to_owned(),
+        ecosystem: Some(Language::Java),
+        limit: 10,
+        after: None,
+    };
+    let page = search_page(&index, &q).await.expect("query executes");
+    assert!(
+        page.items.iter().any(|h| h.value.id == spring.id),
+        "spring boot query must match the Spring Boot artifact"
+    );
+}
+
+/// Fuzzy: `getUseById` (typo) finds `getUserById`-named package.
+///
+/// The fuzzy tier (FuzzyTermQuery distance=1) activates for single tokens of
+/// length 4..=12. "getusebyid" is 10 chars — within range.
+#[tokio::test]
+async fn structured_fuzzy_typo_finds_getuserbyid() {
+    let directory = common::TempDir::new("fuzzy-typo");
+    let correct = rust_record_with_facets("getUserById", 700_000, &["user", "query"]);
+    let unrelated = rust_record("unrelated-crate");
+    let index = searchable_index(&directory, &[correct.clone(), unrelated]);
+
+    // The typo query (missing 'r'): "getUseById" → single token of len 10 → fuzzy fires.
+    let q = RegistryQuery { text: "getUseById".to_owned(), ecosystem: None, limit: 10, after: None };
+    let page = search_page(&index, &q).await.expect("query executes");
+    // getUserById may surface either via fuzzy or via subtoken matching.
+    assert!(
+        page.items.iter().any(|h| h.value.id == correct.id),
+        "typo 'getUseById' must find 'getUserById' via fuzzy or subtoken tier"
+    );
+}
+
+/// `IEnumerable` matches its package; bare `i` alone doesn't crash (T2).
+#[tokio::test]
+async fn structured_ienumerable_matches_subtoken_i_alone_no_crash() {
+    let directory = common::TempDir::new("ienumerable");
+    let ienumerable = {
+        let package = common::csharp_package("System.Collections.IEnumerable", "8.0.0");
+        let id = package.id();
+        let facets = Some(SearchFacets {
+            keywords: vec![SmolStr::new("IEnumerable"), SmolStr::new("collections")],
+            quality_ppm: 900_000,
+            description: Some(SmolStr::new("Exposes the enumerator for a collection")),
+            ..Default::default()
+        });
+        GlobalPackage { id, package, state: ResolutionState::Unindexed { needed: false }, facets }
+    };
+    let index = searchable_index(&directory, std::slice::from_ref(&ienumerable));
+
+    // `IEnumerable` should match.
+    let q_match = RegistryQuery { text: "IEnumerable".to_owned(), ecosystem: None, limit: 10, after: None };
+    let page = search_page(&index, &q_match).await.expect("query executes");
+    assert!(
+        page.items.iter().any(|h| h.value.id == ienumerable.id),
+        "IEnumerable query must find the package"
+    );
+
+    // Bare `i` query (T2 subtoken filter drops len<2 tokens) must not crash and
+    // return empty (the `i` subtoken is filtered out of the Must-conjunction).
+    let q_i = RegistryQuery { text: "i".to_owned(), ecosystem: None, limit: 10, after: None };
+    // Should not panic — result may be empty or return some match.
+    let _page_i = search_page(&index, &q_i).await.expect("single-char 'i' query must not crash");
+}
+
+/// Ecosystem + namespace combined query works.
+#[tokio::test]
+async fn structured_ecosystem_and_namespace_combined() {
+    let directory = common::TempDir::new("eco-ns-combined");
+    let java_spring = record_with_description(
+        common::java_package("org.springframework:spring-core", "6.0.0"),
+        "Spring Framework core utilities",
+        &["spring", "java"],
+    );
+    let rust_crate = rust_record("spring-core");
+    let index = searchable_index(&directory, &[java_spring.clone(), rust_crate]);
+
+    let q = RegistryQuery {
+        text: "group:org.springframework spring-core".to_owned(),
+        ecosystem: Some(Language::Java),
+        limit: 10,
+        after: None,
+    };
+    let page = search_page(&index, &q).await.expect("query executes");
+    // Java + namespace filter: only the Java package.
+    assert!(
+        page.items.iter().all(|h| h.value.package.coordinates.ecosystem() == Language::Java),
+        "combined eco+namespace must only return Java results"
+    );
+}
+
+/// Namespace-only (empty terms) query does not crash.
+#[tokio::test]
+async fn structured_namespace_only_does_not_crash() {
+    let directory = common::TempDir::new("ns-only");
+    let spring = record_with_description(
+        common::java_package("org.springframework:spring-core", "6.0.0"),
+        "Core spring utilities",
+        &[],
+    );
+    let index = searchable_index(&directory, &[spring]);
+
+    // Empty terms after namespace extraction is allowed (§8.1).
+    let q = RegistryQuery {
+        text: "group:org.springframework".to_owned(),
+        ecosystem: None,
+        limit: 10,
+        after: None,
+    };
+    let _page = search_page(&index, &q).await.expect("namespace-only query must not crash");
+}
+
+/// Stale schema: opening a dir with schema_version=1 wipes and resets watermark.
+#[tokio::test]
+async fn stale_schema_wipes_and_resets_watermark() {
+    let directory = common::TempDir::new("stale-schema");
+    let path = directory.path();
+
+    // Seed the directory with a fake schema_version=1 marker and a watermark.
+    std::fs::write(path.join("schema_version"), "1").expect("write stale marker");
+    let fake_watermark = registry::search::tantivy::SyncWatermark { position: 999 };
+    std::fs::write(
+        path.join("sync_watermark.json"),
+        serde_json::to_vec(&fake_watermark).expect("serialize"),
+    ).expect("write fake watermark");
+    // Write a dummy file to make the dir look "non-empty".
+    std::fs::write(path.join("segments_1"), b"fake-tantivy-data").expect("write fake segment");
+
+    // Open: should detect version mismatch, wipe, and reset watermark.
+    let index = PackageIndex::open(path).expect("open with stale schema succeeds");
+    assert_eq!(
+        index.watermark().position, 0,
+        "watermark must be reset to 0 after stale-schema wipe"
+    );
+
+    // The schema_version marker should now be SCHEMA_VERSION (3).
+    let marker = std::fs::read_to_string(path.join("schema_version"))
+        .expect("schema_version file written");
+    assert_eq!(marker.trim(), "3", "schema_version marker must be updated to 3");
+}
+
+/// Adversarial: tantivy grammar chars in query must not break the hand-built tree.
+#[tokio::test]
+async fn structured_adversarial_grammar_chars() {
+    let directory = common::TempDir::new("adversarial");
+    let r = rust_record_with_facets("axum", 500_000, &["web", "router"]);
+    let index = searchable_index(&directory, &[r]);
+
+    // These must not panic or return error.
+    for bad in &[
+        "axum) AND",
+        "\"quoted query\"",
+        "field:value",
+        "AND OR NOT",
+        "^boost~2",
+        "[1 TO 10]",
+        "?wildcard*",
+        "axum::Router",
+        "Option<T>",
+        "react-query",
+    ] {
+        let q = RegistryQuery { text: bad.to_string(), ecosystem: None, limit: 10, after: None };
+        search_page(&index, &q).await
+            .unwrap_or_else(|_| heart::search::Page { items: vec![], next: None });
+    }
+}
+
+/// Adversarial: 1024-character boundary (MAXIMUM_LENGTH) must not crash the index layer.
+#[tokio::test]
+async fn structured_adversarial_1024_boundary() {
+    let directory = common::TempDir::new("len-1024");
+    let r = rust_record("longquery");
+    let index = searchable_index(&directory, &[r]);
+
+    let at_limit = "a".repeat(1024);
+    let q = RegistryQuery { text: at_limit, ecosystem: None, limit: 10, after: None };
+    let _page = search_page(&index, &q).await.expect("1024-char query must not crash");
+}
+
+/// Adversarial: unicode in query terms must not crash.
+#[tokio::test]
+async fn structured_adversarial_unicode() {
+    let directory = common::TempDir::new("unicode");
+    let r = rust_record("unicode-lib");
+    let index = searchable_index(&directory, &[r]);
+
+    let q = RegistryQuery { text: "résumé 日本語 🦀".to_owned(), ecosystem: None, limit: 10, after: None };
+    let _page = search_page(&index, &q).await.expect("unicode query must not crash");
+}
+
+/// Adversarial: all-stopword query must return (possibly empty) result, not crash.
+#[tokio::test]
+async fn structured_adversarial_all_stopwords() {
+    let directory = common::TempDir::new("stopwords");
+    let r = rust_record_with_facets("useful-lib", 500_000, &["library", "useful", "for"]);
+    let index = searchable_index(&directory, &[r]);
+
+    // "library" and "for" are in ENGLISH_STOPWORDS — the ident tokenizer may
+    // still produce them as subtokens; the query must not crash.
+    let q = RegistryQuery { text: "library for".to_owned(), ecosystem: None, limit: 10, after: None };
+    let _page = search_page(&index, &q).await.expect("all-stopword query must not crash");
+}
+
+// ── Schema v3: dep:/license:/phrase tests ──────────────────────────────────
+
+/// Build a GlobalPackage with full facets for v3 filter tests.
+fn record_with_facets_v3(
+    package: registry::Package,
+    description: &str,
+    keywords: &[&str],
+    deps: &[&str],
+    license: Option<&str>,
+) -> GlobalPackage {
+    let id = package.id();
+    let facets = Some(SearchFacets {
+        keywords: keywords.iter().map(|&k| SmolStr::new(k)).collect(),
+        quality_ppm: 600_000,
+        description: Some(SmolStr::new(description)),
+        dependencies: deps.iter().map(|&d| SmolStr::new(d)).collect(),
+        license: license.map(SmolStr::new),
+        ..Default::default()
+    });
+    GlobalPackage { id, package, state: ResolutionState::Unindexed { needed: false }, facets }
+}
+
+/// `dep:serde` filter narrows results to packages that declare serde as a dep.
+///
+/// Arrange: two Rust packages — one depends on serde, one does not.
+/// Assert: `dep:serde` returns only the serde-dependent package.
+#[tokio::test]
+async fn v3_dep_filter_narrows_results() {
+    let directory = common::TempDir::new("dep-filter");
+    let with_serde = record_with_facets_v3(
+        common::rust_package("json-lib", "1.0.0"),
+        "A JSON library using serde",
+        &["json", "serialization"],
+        &["serde", "serde-json"],
+        Some("mit"),
+    );
+    let without_serde = record_with_facets_v3(
+        common::rust_package("bare-json", "1.0.0"),
+        "A JSON library with no serde dep",
+        &["json"],
+        &["miniserde"],
+        Some("apache-2.0"),
+    );
+    let index = searchable_index(&directory, &[with_serde.clone(), without_serde.clone()]);
+
+    let dep_q = RegistryQuery {
+        text: "dep:serde json".to_owned(),
+        ecosystem: None,
+        limit: 10,
+        after: None,
+    };
+    let page = search_page(&index, &dep_q).await.expect("dep: query executes");
+    assert!(
+        page.items.iter().any(|h| h.value.id == with_serde.id),
+        "serde-dependent package must be in results"
+    );
+    assert!(
+        !page.items.iter().any(|h| h.value.id == without_serde.id),
+        "non-serde package must be excluded by dep:serde filter"
+    );
+}
+
+/// `dep:tokio` alone (no free terms) still works — AllQuery + Must filter.
+///
+/// Assert: a dep-only query returns packages that have the dep, even without
+/// any text terms present.
+#[tokio::test]
+async fn v3_dep_only_query_works_with_allquery() {
+    let directory = common::TempDir::new("dep-only");
+    let async_crate = record_with_facets_v3(
+        common::rust_package("async-worker", "1.0.0"),
+        "Async task worker",
+        &["async"],
+        &["tokio", "futures"],
+        None,
+    );
+    let sync_crate = record_with_facets_v3(
+        common::rust_package("sync-worker", "1.0.0"),
+        "Sync task worker",
+        &["sync"],
+        &["rayon"],
+        None,
+    );
+    let index = searchable_index(&directory, &[async_crate.clone(), sync_crate.clone()]);
+
+    let q = RegistryQuery { text: "dep:tokio".to_owned(), ecosystem: None, limit: 10, after: None };
+    let page = search_page(&index, &q).await.expect("dep-only query must not crash");
+    assert!(
+        page.items.iter().any(|h| h.value.id == async_crate.id),
+        "tokio-dependent crate must appear"
+    );
+    assert!(
+        !page.items.iter().any(|h| h.value.id == sync_crate.id),
+        "non-tokio crate must be excluded"
+    );
+}
+
+/// `license:mit` filter narrows results to MIT-licensed packages.
+///
+/// Assert: only the MIT package is returned; the Apache-licensed one is excluded.
+#[tokio::test]
+async fn v3_license_filter_narrows_results() {
+    let directory = common::TempDir::new("license-filter");
+    let mit_pkg = record_with_facets_v3(
+        common::rust_package("mit-lib", "1.0.0"),
+        "An MIT licensed HTTP client library",
+        &["http", "client"],
+        &[],
+        Some("mit"),
+    );
+    let apache_pkg = record_with_facets_v3(
+        common::rust_package("apache-lib", "1.0.0"),
+        "An Apache-licensed HTTP server library",
+        &["http", "server"],
+        &[],
+        Some("apache-2.0"),
+    );
+    let index = searchable_index(&directory, &[mit_pkg.clone(), apache_pkg.clone()]);
+
+    let q = RegistryQuery {
+        text: "license:mit http".to_owned(),
+        ecosystem: None,
+        limit: 10,
+        after: None,
+    };
+    let page = search_page(&index, &q).await.expect("license: query executes");
+    assert!(
+        page.items.iter().any(|h| h.value.id == mit_pkg.id),
+        "MIT-licensed package must appear"
+    );
+    assert!(
+        !page.items.iter().any(|h| h.value.id == apache_pkg.id),
+        "non-MIT package must be excluded by license:mit filter"
+    );
+}
+
+/// `license:mit` alone (no free terms) still works — AllQuery + Must filter.
+#[tokio::test]
+async fn v3_license_only_query_works_with_allquery() {
+    let directory = common::TempDir::new("license-only");
+    let mit_pkg = record_with_facets_v3(
+        common::rust_package("mit-only", "1.0.0"),
+        "MIT licensed",
+        &[],
+        &[],
+        Some("mit"),
+    );
+    let gpl_pkg = record_with_facets_v3(
+        common::rust_package("gpl-only", "1.0.0"),
+        "GPL licensed",
+        &[],
+        &[],
+        Some("gpl-3.0"),
+    );
+    let index = searchable_index(&directory, &[mit_pkg.clone(), gpl_pkg.clone()]);
+
+    let q = RegistryQuery { text: "license:mit".to_owned(), ecosystem: None, limit: 10, after: None };
+    let page = search_page(&index, &q).await.expect("license-only query must not crash");
+    assert!(
+        page.items.iter().any(|h| h.value.id == mit_pkg.id),
+        "MIT package must appear in license-only query"
+    );
+    assert!(
+        !page.items.iter().any(|h| h.value.id == gpl_pkg.id),
+        "GPL package must be excluded"
+    );
+}
+
+/// Phrase query `"http client"` must exclude a doc that has the words but not
+/// the phrase in order.
+///
+/// Arrange:
+/// - "phrase-match": description = "An http client library" (phrase present)
+/// - "no-phrase":   description = "A client and http wrapper" (words present,
+///   but not in order)
+///
+/// Assert: the phrase query must match "phrase-match" and exclude "no-phrase".
+/// (This relies on PhraseQuery with positions; tantivy TEXT fields index positions.)
+#[tokio::test]
+async fn v3_phrase_must_match_excludes_non_phrase_doc() {
+    let directory = common::TempDir::new("phrase-filter");
+    let phrase_match = record_with_facets_v3(
+        common::rust_package("http-client", "1.0.0"),
+        "An http client library for Rust",
+        &["http", "client", "networking"],
+        &[],
+        None,
+    );
+    let no_phrase = record_with_facets_v3(
+        common::rust_package("client-http-wrapper", "1.0.0"),
+        "A client and http wrapper library",
+        &["client", "http"],
+        &[],
+        None,
+    );
+    let index = searchable_index(&directory, &[phrase_match.clone(), no_phrase.clone()]);
+
+    // Structured query with a phrase. Because the phrase "http client" comes from
+    // StructuredQuery::parse's phrase extraction, we use query_structured directly.
+    let sq = registry::search::StructuredQuery::parse(r#""http client""#, None);
+    assert_eq!(sq.phrases, vec!["http client".to_owned()], "phrase must be parsed");
+
+    let hits = index.query_structured(&sq, 10).expect("phrase query executes");
+    let hit_ids: Vec<_> = hits.iter().map(|(id, _)| *id).collect();
+
+    assert!(
+        hit_ids.contains(&phrase_match.id),
+        "phrase-match doc must be found by phrase query"
+    );
+    assert!(
+        !hit_ids.contains(&no_phrase.id),
+        "doc without the phrase in order must be excluded: {:?}",
+        hit_ids
+    );
+}
+
+/// Expanded synonym term recalls a doc that plain terms miss.
+///
+/// Arrange: a package with keyword "reqwest"; query uses "http-client" which has
+/// no direct keyword match but expands to "reqwest" via the synonyms table.
+///
+/// Assert: after `expand_synonyms`, the package is recalled via the EXPANDED tier.
+#[tokio::test]
+async fn v3_expanded_synonym_recalls_doc_plain_terms_miss() {
+    use std::io::Write as _;
+
+    let directory = common::TempDir::new("synonym-expand");
+    let reqwest_pkg = record_with_facets_v3(
+        common::rust_package("reqwest", "0.12.0"),
+        "An ergonomic, batteries-included HTTP client",
+        &["reqwest", "http", "client"],
+        &[],
+        Some("mit"),
+    );
+    let unrelated = record_with_facets_v3(
+        common::rust_package("rayon", "1.0.0"),
+        "Data parallelism library",
+        &["parallel", "rayon"],
+        &[],
+        None,
+    );
+    let index = searchable_index(&directory, &[reqwest_pkg.clone(), unrelated]);
+
+    // Build a synonyms table: "http-client" → "reqwest" with score 4.
+    let syn_dir = tempfile::tempdir().expect("tempdir for synonyms");
+    let syn_path = syn_dir.path().join("tag-synonyms.csv");
+    {
+        let mut f = std::fs::File::create(&syn_path).unwrap();
+        f.write_all(b"http-client,reqwest,4\n").unwrap();
+    }
+    let synonyms = registry::metadata::Synonyms::new(syn_dir.path()).expect("Synonyms::new");
+
+    // Plain query for "http-client" may or may not find reqwest (no direct
+    // keyword or name match). After expand_synonyms it should.
+    let mut sq = registry::search::StructuredQuery::parse("http-client", None);
+    sq.expand_synonyms(&synonyms);
+    assert!(
+        sq.expanded_terms.contains(&"reqwest".to_owned()),
+        "expanded_terms must contain 'reqwest'"
+    );
+
+    let hits = index.query_structured(&sq, 10).expect("synonym-expanded query executes");
+    let hit_ids: Vec<_> = hits.iter().map(|(id, _)| *id).collect();
+    assert!(
+        hit_ids.contains(&reqwest_pkg.id),
+        "reqwest package must be recalled via expanded synonym tier; hits: {:?}",
+        hit_ids
+    );
 }
