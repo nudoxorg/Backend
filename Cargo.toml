@@ -44,6 +44,15 @@ members = [
     # the field-aware pairing function. Leaf crate; the vendored libpijul fork
     # links it as its only nudox dependency.
     "workspace/nudox-f1",
+    # ── Vector plane (09-vector §20 / 09b / 09c) ─────────────────────────────
+    # vector-core is the pure shared plane (recipe, embed_key, routing,
+    # admission, store traits); vector-local is the qdrant-edge client store;
+    # vector-embed is the fastembed/ort CPU-canonical runtime (feature "onnx");
+    # vector-remote is the qdrant-client parity/premium + Voyage/rerank plane.
+    "workspace/vector-core",
+    "workspace/vector-local",
+    "workspace/vector-embed",
+    "workspace/vector-remote",
 ]
 
 # Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
@@ -52,6 +61,10 @@ members = [
 # Cargo.toml only; regenerable patch at workspace/vendor/libpijul-fork.patch.
 [patch.crates-io]
 libpijul = { path = "workspace/vendor/libpijul" }
+# qdrant-edge 0.7.2 verbatim except `#![recursion_limit = "256"]` in lib.rs:
+# objc2 (pulled by iroh/netdev on macOS) adds a recursive blanket impl that
+# overflows the default trait-solver limit inside qdrant-edge's anonymize.rs.
+qdrant-edge = { path = "workspace/vendor/qdrant-edge" }
 
 [workspace.package]
 edition = "2024"
