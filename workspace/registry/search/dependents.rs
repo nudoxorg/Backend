@@ -1,5 +1,18 @@
 //! Corpus-wide reverse-dependency counting — the ecosystem-fair popularity
 //! signal (in-degree over the mirror's own manifests; no upstream API).
+//!
+//! # How the signal reaches ranking
+//!
+//! 1. **Ingest** stores each package's direct deps in
+//!    [`SearchFacets::dependencies`](crate::metadata::SearchFacets::dependencies).
+//! 2. **Sweep** ([`crate::index::Index::refresh_dependents`]) builds
+//!    [`DependencyRow`]s from those facets, runs [`count_dependents`], and
+//!    writes the per-package in-degree back to
+//!    [`SearchFacets::dependents`](crate::metadata::SearchFacets::dependents).
+//! 3. **Search candidate build** (`search/mod.rs`) copies `facets.dependents`
+//!    onto [`ranking::Candidate::dependents`]. When downloads are absent,
+//!    [`ranking::Candidate::popularity_weight`] uses dependents alone
+//!    (converted via `DEPENDENT_DOWNLOAD_EQUIV`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,6 +32,9 @@ pub struct DependencyRow {
 /// counts once per target even if it appears with multiple versions — pass one
 /// row per package (latest generation); duplicate `(ecosystem, name)` rows are
 /// collapsed, self-dependencies ignored.
+///
+/// The resulting counts are the values persisted into `SearchFacets.dependents`
+/// and later consumed by ranking popularity when downloads are `None`.
 pub fn count_dependents(
 	rows: impl IntoIterator<Item = DependencyRow>,
 ) -> HashMap<(Language, SmolStr), u32> {

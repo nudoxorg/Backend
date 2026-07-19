@@ -110,11 +110,11 @@ pub type PollFuture<'a> =
 
 /// An incremental feed follower for one ecosystem's upstream registry.
 ///
-/// The driver (`catalog_follower_worker`) holds a `Vec<Box<dyn CatalogFollower
-/// + Send + Sync>>` and polls each one in its own tokio task. Only one task
-/// per follower exists at a time; the advisory-lock pattern that guards
-/// outbox consumers is *not* needed here because cursors are local files, not
-/// shared postgres rows.
+/// The driver (`catalog_follower_worker`) holds a
+/// `Vec<Box<dyn CatalogFollower + Send + Sync>>` and polls each one in its own
+/// tokio task. Only one task per follower exists at a time; the advisory-lock
+/// pattern that guards outbox consumers is *not* needed here because cursors
+/// are local files, not shared postgres rows.
 pub trait CatalogFollower: Send + Sync + 'static {
 	/// The ecosystem this follower covers. Used to route events to the correct
 	/// idempotent registration entry point.

@@ -440,6 +440,104 @@ impl GlobalStore<Live> {
         Ok(updated)
     }
 
+    /// Recompute per-ecosystem popularity percentiles and persist
+    /// `facets.popularity_pct` (parts-per-10_000). Groups packages by language
+    /// so crates.io volume never sets npm's percentile floor.
+    ///
+    /// Popularity value per package = max(dependents × DEPENDENT_DOWNLOAD_EQUIV,
+    /// downloads) when either signal exists; packages with neither skip the CDF
+    /// (stored pct left unchanged / cleared only when previously set and now
+    /// unscoreable is not done — they keep prior pct until next successful score).
+    ///
+    /// Only writes when the stored value changes (same touch discipline as
+    /// [`Self::refresh_dependents`]).
+    pub async fn refresh_popularity_percentiles(&self) -> Result<u64, IndexError> {
+        use crate::metadata::SearchFacets;
+        use crate::search::popularity::{DEPENDENT_DOWNLOAD_EQUIV, assign_percentiles};
+        use std::collections::HashMap;
+
+        const PAGE_SIZE: u64 = 1_000;
+
+        // eco → Vec<(package_id, popularity_value)>
+        let mut by_eco: HashMap<heart::Language, Vec<(PackageId, u64)>> = HashMap::new();
+        // package → currently stored popularity_pct
+        let mut stored_pct: HashMap<PackageId, Option<u16>> = HashMap::new();
+
+        let mut after: Option<uuid::Uuid> = None;
+        loop {
+            let (sql, params) = queries::search::all_current_facets(PAGE_SIZE, after);
+            let page = sqlx::query_with(&sql, params)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(IndexError::Database)?;
+
+            let done = page.len() < PAGE_SIZE as usize;
+            let mut last_id: Option<uuid::Uuid> = None;
+
+            for row in &page {
+                let id: uuid::Uuid = row.try_get(0).map_err(IndexError::Database)?;
+                let language: String = row.try_get(1).map_err(IndexError::Database)?;
+                let facets_json: Option<serde_json::Value> =
+                    row.try_get(3).map_err(IndexError::Database)?;
+                last_id = Some(id);
+
+                let ecosystem = codec::ecosystem_from_token(&language)
+                    .map_err(convert_codec_error)?;
+                let package = codec::package_id_from_uuid(id);
+
+                let facets = facets_json
+                    .as_ref()
+                    .and_then(|v| codec::facets_from_json(Some(v)).ok().flatten());
+
+                let stored = facets.as_ref().and_then(|f| f.popularity_pct);
+                stored_pct.insert(package, stored);
+
+                let Some(f) = facets else { continue };
+                let dep_equiv = f
+                    .dependents
+                    .map(|d| u64::from(d).saturating_mul(DEPENDENT_DOWNLOAD_EQUIV));
+                let downloads = f.downloads;
+                let value = match (dep_equiv, downloads) {
+                    (Some(a), Some(b)) => a.max(b),
+                    (Some(a), None) | (None, Some(a)) => a,
+                    (None, None) => continue,
+                };
+                by_eco.entry(ecosystem).or_default().push((package, value));
+            }
+
+            after = last_id;
+            if done {
+                break;
+            }
+        }
+
+        // Per-eco CDF → target pct map.
+        let mut target: HashMap<PackageId, u16> = HashMap::new();
+        for (_eco, items) in by_eco {
+            let pcts = assign_percentiles(&items);
+            for (id, pct) in pcts {
+                target.insert(id, SearchFacets::encode_popularity_pct(pct));
+            }
+        }
+
+        let mut updated: u64 = 0;
+        for (package, new_pct) in target {
+            if stored_pct.get(&package).copied().flatten() == Some(new_pct) {
+                continue;
+            }
+            let mut tx = self.pool.begin().await.map_err(IndexError::BeginTx)?;
+            let (q, p) = queries::index::set_popularity_pct(package, new_pct)
+                .map_err(convert_codec_error)?;
+            execute_query(&mut tx, &q, p).await?;
+            let (touch_q, touch_p) = queries::index::touch_package(package);
+            execute_query(&mut tx, &touch_q, touch_p).await?;
+            tx.commit().await.map_err(IndexError::Commit)?;
+            updated += 1;
+        }
+
+        Ok(updated)
+    }
+
     /// Read a package's serving-projection symbols back out of the global index.
     pub async fn symbols_for(&self, package: PackageId) -> Result<Vec<heart::Symbol>, IndexError> {
         let (query, parameters) = queries::index::symbols_for(package);

@@ -132,7 +132,11 @@ pub fn evaluate(query: &GoldenQuery, k: usize) -> f64 {
 				ecosystem,
 				keywords: entry.keywords.iter().map(SmolStr::new).collect(),
 				dependents: entry.dependents,
+				popularity_pct: None,
 				withdrawn: entry.withdrawn,
+				squat_suspect: false,
+				malware: false,
+				verified_repo: false,
 			}
 		})
 		.collect();

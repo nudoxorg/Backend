@@ -139,6 +139,115 @@ impl SpellIndex {
 		candidates.truncate(limit);
 		candidates.into_iter().map(|(_, name)| name).collect()
 	}
+
+	/// Like [`suggest`], but each entry is `(name, damerau_levenshtein_distance)`.
+	///
+	/// Exact vocabulary hits return distance `0`. Empty when nothing is within
+	/// `max_distance`.
+	pub fn suggest_with_distance(&self, term: &str, limit: usize) -> Vec<(&str, u8)> {
+		if limit == 0 {
+			return Vec::new();
+		}
+
+		let query = term.to_lowercase();
+
+		if let Some(candidates) = self.deletes.get(query.as_str()) {
+			for &idx in candidates {
+				if self.names[idx as usize].as_str() == query.as_str() {
+					return vec![(self.names[idx as usize].as_str(), 0)];
+				}
+			}
+		}
+
+		let mut seen_idx: HashSet<u32> = HashSet::new();
+		let mut candidates: Vec<(u8, &str)> = Vec::new();
+
+		let mut query_variants = generate_deletes(query.as_str(), self.max_distance);
+		query_variants.insert(query.clone());
+
+		for variant in &query_variants {
+			if let Some(indices) = self.deletes.get(variant.as_str()) {
+				for &idx in indices {
+					if !seen_idx.insert(idx) {
+						continue;
+					}
+					let candidate_name = self.names[idx as usize].as_str();
+					if candidate_name.len().abs_diff(query.len()) > self.max_distance as usize {
+						continue;
+					}
+					let dist = damerau_levenshtein(query.as_str(), candidate_name);
+					if dist <= self.max_distance as usize {
+						candidates.push((dist as u8, candidate_name));
+					}
+				}
+			}
+		}
+
+		candidates.sort_unstable_by(|(da, na), (db, nb)| da.cmp(db).then_with(|| na.cmp(nb)));
+		candidates.truncate(limit);
+		candidates.into_iter().map(|(d, name)| (name, d)).collect()
+	}
+}
+
+/// Owned-string wrapper around [`SpellIndex::suggest`].
+#[must_use]
+pub fn suggest_names(spell: &SpellIndex, query: &str, limit: usize) -> Vec<String> {
+	spell.suggest(query, limit).into_iter().map(str::to_owned).collect()
+}
+
+/// Build a temporary [`SpellIndex`] from `vocab` (max distance 2) and return
+/// did-you-mean suggestions for `query`. Pure helper for zero-hit repair UIs.
+#[must_use]
+pub fn dym_suggestions(
+	vocab: impl IntoIterator<Item = impl AsRef<str>>,
+	query: &str,
+	limit: usize,
+) -> Vec<String> {
+	let index = SpellIndex::build(vocab, 2);
+	suggest_names(&index, query, limit)
+}
+
+/// Optional auto-repair for zero-hit queries: when there is a **unique best**
+/// suggestion at Damerau–Levenshtein distance **exactly 1**, return it.
+///
+/// Returns `None` when:
+/// - the query is empty or multi-token (whitespace),
+/// - there is an exact vocabulary hit,
+/// - the best suggestion is not distance 1,
+/// - two or more suggestions share distance 1 (ambiguous).
+///
+/// Callers should only apply this after a zero-hit retrieve; this function does
+/// not inspect hit counts itself.
+#[must_use]
+pub fn maybe_repair_query(spell: &SpellIndex, query: &str) -> Option<String> {
+	let q = query.trim();
+	if q.is_empty() {
+		return None;
+	}
+	// Multi-token free text is not auto-repaired (would need per-term repair).
+	if q.split_whitespace().count() != 1 {
+		return None;
+	}
+
+	let ranked = spell.suggest_with_distance(q, 3);
+	if ranked.is_empty() {
+		return None;
+	}
+
+	let (best, best_dist) = ranked[0];
+	if best_dist == 0 {
+		// Exact hit — nothing to repair.
+		return None;
+	}
+	if best_dist != 1 {
+		return None;
+	}
+	// Ambiguous: another distance-1 candidate exists.
+	if ranked.get(1).is_some_and(|(_, d)| *d == 1) {
+		return None;
+	}
+
+	Some(best.to_owned())
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -376,5 +485,85 @@ mod tests {
 		assert_eq!(damerau_levenshtein("", ""), 0);
 		assert_eq!(damerau_levenshtein("abc", ""), 3);
 		assert_eq!(damerau_levenshtein("", "abc"), 3);
+	}
+
+	// ── DYM / suggest_names / maybe_repair_query ─────────────────────────────
+
+	/// Vocabulary with serde suggests for distance-1 typos `serda` / `serd`.
+	#[test]
+	fn dym_suggests_serde_for_serda_and_serd() {
+		let for_serda = dym_suggestions(["serde", "tokio", "reqwest"], "serda", 5);
+		assert!(
+			for_serda.iter().any(|s| s == "serde"),
+			"expected serde for serda, got: {for_serda:?}"
+		);
+		let for_serd = dym_suggestions(["serde", "tokio", "reqwest"], "serd", 5);
+		assert!(
+			for_serd.iter().any(|s| s == "serde"),
+			"expected serde for serd, got: {for_serd:?}"
+		);
+	}
+
+	/// Close edit must rank above an unrelated long name.
+	#[test]
+	fn close_edit_preferred_over_unrelated_long_name() {
+		let idx = index(&["serde", "serialization-framework-helper"]);
+		let suggestions = idx.suggest("serda", 5);
+		assert!(
+			!suggestions.is_empty(),
+			"expected at least one suggestion for serda"
+		);
+		assert_eq!(
+			suggestions[0], "serde",
+			"distance-1 'serde' must rank before long unrelated name, got: {suggestions:?}"
+		);
+		// Long name is far beyond max_distance from "serda" → should not appear.
+		assert!(
+			!suggestions.contains(&"serialization-framework-helper"),
+			"unrelated long name must not appear in distance-bounded suggestions: {suggestions:?}"
+		);
+	}
+
+	#[test]
+	fn suggest_names_returns_owned_strings() {
+		let idx = index(&["serde", "tokio"]);
+		let owned = suggest_names(&idx, "serd", 3);
+		assert!(owned.iter().any(|s| s == "serde"));
+	}
+
+	#[test]
+	fn maybe_repair_unique_distance1() {
+		let idx = index(&["serde", "tokio"]);
+		// "serd" → unique distance-1 repair to "serde".
+		assert_eq!(maybe_repair_query(&idx, "serd").as_deref(), Some("serde"));
+	}
+
+	#[test]
+	fn maybe_repair_skips_exact_hit() {
+		let idx = index(&["serde"]);
+		assert_eq!(maybe_repair_query(&idx, "serde"), None);
+	}
+
+	#[test]
+	fn maybe_repair_skips_ambiguous_distance1() {
+		// "ser" → sera and serb both distance 1 → ambiguous.
+		let idx = index(&["sera", "serb"]);
+		assert_eq!(maybe_repair_query(&idx, "ser"), None);
+	}
+
+	#[test]
+	fn maybe_repair_skips_multi_token() {
+		let idx = index(&["serde"]);
+		assert_eq!(maybe_repair_query(&idx, "serd json"), None);
+	}
+
+	#[test]
+	fn maybe_repair_skips_distance2_only() {
+		// "requess" → "requests" is two edits (t insert + t→s or similar);
+		// auto-repair only fires for a *unique* distance-1 suggestion.
+		// "reqests" is Damerau distance 1 from "requests" (transpose/insert)
+		// on some implementations — use a clearly distance-2 typo.
+		let idx = index(&["requests"]);
+		assert_eq!(maybe_repair_query(&idx, "reqqess"), None);
 	}
 }

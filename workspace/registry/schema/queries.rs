@@ -236,6 +236,25 @@ pub mod index {
         Ok((sql, values))
     }
 
+    /// `UPDATE parse_status SET facets = jsonb_set(facets, '{popularity_pct}',
+    /// to_jsonb($1)) WHERE package_id = $2 AND facets IS NOT NULL` — write the
+    /// per-ecosystem popularity percentile (parts-per-10_000, 0..=10000).
+    pub fn set_popularity_pct(
+        package: PackageId,
+        popularity_pct: u16,
+    ) -> Result<(String, SqlxValues), codec::CodecError> {
+        let sql = "UPDATE parse_status \
+                   SET facets = jsonb_set(facets, '{popularity_pct}', to_jsonb($1::int)), \
+                       updated_at = now() \
+                   WHERE package_id = $2 AND facets IS NOT NULL"
+            .to_string();
+        let values = SqlxValues(sea_query::Values(vec![
+            sea_query::Value::BigInt(Some(i64::from(popularity_pct))),
+            sea_query::Value::Uuid(Some(Box::new(codec::package_id_to_uuid(package)))),
+        ]));
+        Ok((sql, values))
+    }
+
     /// `UPDATE parse_status SET listing = $1, updated_at = now() WHERE
     /// package_id = $2` — persist the last-observed registry listing status.
     /// `None` clears the column (status unknown). Follows the same nullable-jsonb
