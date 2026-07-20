@@ -18,20 +18,18 @@ fn default_binds_local_address() {
     );
 }
 
-/// The default config knows the terminus endpoint.
+/// The default config exposes the instance token.
 ///
-/// Assert: `terminus_endpoint()` returns the configured terminus URL.
+/// Assert: `instance_token()` returns the `"{org}/{db}"` salt used for
+///   deterministic symbol ids — the stable identity of the definitive source.
 #[test]
-fn default_exposes_terminus_endpoint() {
+fn default_exposes_instance_token() {
     let configuration = ServerConfiguration::default();
-    let endpoint = configuration.terminus_endpoint();
+    let token = configuration.definitive.endpoints.instance_token();
     assert_eq!(
-        endpoint.as_str(),
-        "http://127.0.0.1:6363/",
-        "the definitive source's terminus endpoint must be the localhost default"
+        token, "nudox/registry",
+        "the default instance token is the documented development value"
     );
-    // The accessor is the definitive base's endpoint — the single-source path.
-    assert_eq!(endpoint, &configuration.definitive.endpoints.terminus);
 }
 
 /// The default role is `All` (single-node runs both compute and fan-out).
@@ -77,52 +75,28 @@ fn upload_timeout_is_two_seconds() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Boot guard: production + default terminus password → hard error
+// Boot guard: production deployment validation
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Production + default terminus password → validation error naming the field.
+/// Production deployment with the default rerank model → validation passes.
 ///
-/// Assert: a `production` deployment with the stock `root` TerminusDB password
-///   must be rejected at `validate()` before any network connection opens.
-/// The catalog needs no credentials (local DoltLite engine), so the only
-/// credential guard is `endpoints.terminus_password`.
+/// Assert: a `production` deployment with the stock configuration passes
+///   `validate()` — the catalog is local DoltLite (no credentials), and the
+///   default rerank model (`mxbai-rerank-base-v2`) is Apache-2.0 licensed.
 #[test]
-fn production_with_default_terminus_password_is_rejected() {
+fn production_with_default_config_passes_validation() {
     let mut configuration = ServerConfiguration::default();
     configuration.deployment = Deployment::Production;
-    // terminus_password is still "root" (the default).
-
-    let error = configuration.validate().expect_err(
-        "production + default terminus password must be a hard validation error",
-    );
-    let message = error.to_string();
-    assert!(
-        message.contains("endpoints.terminus_password"),
-        "error must name the unsafe field; got: {message}"
-    );
-}
-
-/// Production + non-default terminus password → validation passes.
-///
-/// Assert: once the terminus password is overridden, `validate()` returns `Ok`.
-#[test]
-fn production_with_real_credentials_passes_validation() {
-    use secrecy::SecretString;
-
-    let mut configuration = ServerConfiguration::default();
-    configuration.deployment = Deployment::Production;
-    configuration.definitive.endpoints.terminus_password =
-        SecretString::from("sup3r_s3cr3t_terminus_pw");
 
     configuration.validate().expect(
-        "production with non-default terminus password must pass structural validation",
+        "production with default configuration must pass structural validation"
     );
 }
 
 /// Development (default) with default credentials → validation passes.
 ///
-/// Assert: the boot guard is not applied in the `development` tier so local
-///   `buck2 run` / CI setups work without configuring secrets.
+/// Assert: the default `development` tier accepts the stock localhost config so
+///   a `cargo run` / `buck2 run` works out of the box without configuring secrets.
 #[test]
 fn development_with_default_credentials_passes_validation() {
     let configuration = ServerConfiguration::default();
