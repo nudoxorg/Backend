@@ -9,14 +9,13 @@
 //! [`PackageCoordinates::id`].
 
 use heart::{
-	PackageVersion, RegistryOrigin,
-	ecosystem::Language,
+	PackageVersion, RegistryOrigin, Language,
 };
 use crate::package::{Coordinates as PackageCoordinates, PackageName};
 
 use crate::error::ResolveError;
 
-use ecosystem::{self, LanguageExt as _, upstream::ListingStatus};
+use crate::ecosystem::{self, LanguageExt as _, upstream::ListingStatus};
 
 // The shared version vocabulary: the request enum, its constraint predicate,
 // and the pick_best selection primitive (folded into `heart::version`).
@@ -246,7 +245,7 @@ async fn published_versions(
 	client: &crate::upstream::UpstreamClient,
 	origin: &RegistryOrigin,
 	name: &PackageName,
-) -> Result<Vec<(PackageVersion, ecosystem::upstream::ListingStatus)>, ResolveError> {
+) -> Result<Vec<(PackageVersion, crate::ecosystem::upstream::ListingStatus)>, ResolveError> {
 	use crate::upstream::UpstreamError;
 
 	let ecosystem_lang = name.ecosystem();
@@ -328,7 +327,7 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		Language::Typescript => format!("{base}/{}", name.canonical()),
 		Language::Python => format!("{base}/pypi/{}/json", name.canonical()),
 		Language::Go => {
-			let escaped = ecosystem::escape_module_path(name.canonical());
+			let escaped = crate::ecosystem::escape_module_path(name.canonical());
 			format!("{base}/{escaped}/@v/list")
 		}
 		Language::Java => {

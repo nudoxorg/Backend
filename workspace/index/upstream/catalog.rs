@@ -25,7 +25,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use ecosystem::Language;
+use crate::ecosystem::Language;
 
 use crate::upstream::UpstreamError;
 

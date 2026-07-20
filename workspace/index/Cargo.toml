@@ -32,7 +32,14 @@ default = ["test-engine"]
 
 [dependencies]
 heart = { path = "../heart" }
-ecosystem = { path = "../ecosystem" }
+# ── ecosystem spec (folded in as `index::ecosystem`) ─────────────────────────
+# The per-language name/version/upstream/manifest grammar (ECOSYSTEM-PLAN). Used
+# only by `index` (+ `driver`, which composes `index`); `Language` itself lives
+# in `heart`, so the index-free planes never link this. These three parsers are
+# what the spec crate pulled in beyond index's existing serde/strum/semver/pep440.
+toml = "0.8"
+quick-xml = "0.37"
+ron = "0.12"
 grit-lib = { git = "https://github.com/gitbutlerapp/grit", rev = "dfb079967b9cbc99e533c21e65f674bb3f5e8b07", features = ["http-ureq"] }
 sha2 = "0.10"
 rusqdoltlite = { path = "../vendor/rusqdoltlite", optional = true }

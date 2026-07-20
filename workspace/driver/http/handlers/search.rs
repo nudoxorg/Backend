@@ -21,6 +21,7 @@ use axum::{
 	response::{IntoResponse, Response},
 };
 use futures::TryStreamExt;
+use index::ecosystem::PackageNameExt as _;
 use heart::query::{Query, QueryMode, Target};
 use heart::{Page, Score, Scored, Sourced, Symbol, SymbolId};
 use registry::runtime::session::{SessionGraph, SessionId, SessionStore};

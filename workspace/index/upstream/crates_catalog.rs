@@ -34,7 +34,7 @@
 //! items strictly newer than the cursor and return them, advancing the cursor
 //! to the maximum seen timestamp.
 
-use ecosystem::Language;
+use crate::ecosystem::Language;
 use serde::Deserialize;
 
 use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};

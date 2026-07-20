@@ -11,7 +11,7 @@
 //! to tantivy's `QueryParser`, so grammar escaping has no consumer and would
 //! only corrupt qualified/hyphenated queries (Q1 defect).
 
-use ecosystem::{Language, LanguageExt};
+use crate::ecosystem::{Language, LanguageExt};
 
 /// The parsed, structured form of a registry search request.
 #[derive(Debug, Clone, PartialEq, Eq)]

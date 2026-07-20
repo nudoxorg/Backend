@@ -14,7 +14,7 @@
 
 use std::collections::HashSet;
 
-use ecosystem::{Language, LanguageExt};
+use crate::ecosystem::{Language, LanguageExt};
 
 /// Maximum number of name-derived extra parts folded into keywords per package.
 const MAX_EXTRA_PARTS: usize = 8;

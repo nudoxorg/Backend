@@ -264,9 +264,9 @@ fn extract_zip_into_builder(
 }
 
 /// The compression framing of an incoming archive — the ecosystem crate's
-/// [`ecosystem::archive::ArchiveKind`], re-exported under the registry's
+/// [`index::ecosystem::archive::ArchiveKind`], re-exported under the registry's
 /// historical name so `spec(lang).archive()` feeds ingest without conversion.
-pub use ecosystem::archive::ArchiveKind as ArchiveFormat;
+pub use index::ecosystem::archive::ArchiveKind as ArchiveFormat;
 
 #[cfg(test)]
 mod tests {

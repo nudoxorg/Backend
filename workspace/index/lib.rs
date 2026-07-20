@@ -23,6 +23,12 @@
 //! §13).
 
 pub mod codec;
+/// The per-ecosystem spec (ECOSYSTEM-PLAN): name/version/upstream/manifest/search
+/// grammar per `heart::Language`. Folded in from the former standalone
+/// `ecosystem` crate; used only by `index` and `driver` (which composes index),
+/// so the index-free planes (`ir`, `registry`) never link it. `PackageNameExt`
+/// bridges `heart::PackageName` to this grammar.
+pub mod ecosystem;
 pub mod engine;
 pub mod entity;
 pub mod enums;

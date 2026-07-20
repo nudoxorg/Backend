@@ -563,15 +563,15 @@ impl<M: EmbeddingModel> Driver<M> {
 			// and driven by `catalog_follower_worker`.
 			for lang_str in &self.config.mirror.follow {
 				use std::str::FromStr;
-				let Ok(lang) = ecosystem::Language::from_str(lang_str.as_str()) else {
+				let Ok(lang) = index::ecosystem::Language::from_str(lang_str.as_str()) else {
 					tracing::warn!(lang = %lang_str, "unknown language in mirror.follow; skipping");
 					continue;
 				};
 				let follower: Box<dyn crate::registry::upstream::CatalogFollower> = match lang {
-					ecosystem::Language::CSharp => {
+					index::ecosystem::Language::CSharp => {
 						Box::new(registry::upstream::NuGetCatalogFollower::production())
 					}
-					ecosystem::Language::Rust => {
+					index::ecosystem::Language::Rust => {
 						Box::new(registry::upstream::CratesCatalogFollower::production())
 					}
 					other => {

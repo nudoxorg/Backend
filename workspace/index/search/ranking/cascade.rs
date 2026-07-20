@@ -447,7 +447,7 @@ fn fuse_scores<T>(
 	candidates: &[Candidate<T>],
 	ecosystem_scope: Option<Language>,
 ) -> Vec<f32> {
-	use ecosystem::{LanguageExt, search::DEFAULT_SPECIFICITY_SEPARATORS};
+	use crate::ecosystem::{LanguageExt, search::DEFAULT_SPECIFICITY_SEPARATORS};
 
 	// Pre-compute the top-4 BM25 (the cap target for the contains bonus).
 	let mut top4_bm25: Vec<f32> = candidates.iter().map(|c| c.bm25).collect();
@@ -542,7 +542,7 @@ fn fuse_scores<T>(
 /// - Because the strip is per-candidate-ecosystem, a Rust strip never fires for
 ///   an npm candidate and vice versa.
 fn contains_query_names_for_ecosystem(name: &str, query: &str, ecosystem: Language) -> bool {
-	use ecosystem::LanguageExt;
+	use crate::ecosystem::LanguageExt;
 	let strip = ecosystem.spec().search_norms().strip_conventions;
 	let a = strip(name).trim_matches(|c| c == '-' || c == '_');
 	let q = strip(query).trim_matches(|c| c == '-' || c == '_');
@@ -1043,7 +1043,7 @@ mod tests {
 	/// R2: a query like `org.springframework` is specific in Java (uses `.` separator).
 	#[test]
 	fn r2_java_dot_separator_marks_specific() {
-		use ecosystem::LanguageExt;
+		use crate::ecosystem::LanguageExt;
 		let norms = Language::Java.spec().search_norms();
 		assert!(
 			norms.query_is_specific("org.springframework"),
@@ -1216,7 +1216,7 @@ mod tests {
 	/// effective downloads after scaling). Here we test the scale values themselves.
 	#[test]
 	fn downloads_scale_npm_vs_rust() {
-		use ecosystem::LanguageExt;
+		use crate::ecosystem::LanguageExt;
 		let rust_scale = Language::Rust.spec().search_norms().downloads_scale;
 		let npm_scale  = Language::Typescript.spec().search_norms().downloads_scale;
 		assert_eq!(rust_scale, Some(1.0), "Rust scale = 1.0 (calibration baseline)");

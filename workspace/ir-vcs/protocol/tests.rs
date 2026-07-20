@@ -639,7 +639,7 @@ fn bodies_frame_round_trips() {
     let oracle = OracleBody::default();
     // tree is non-empty (root_kind is set), so merge_body returns Present.
     let present_body = merge_body(
-        ecosystem::Language::Rust,
+        heart::Language::Rust,
         tree,
         oracle,
         BodyMergeNote::treesitter_only(),

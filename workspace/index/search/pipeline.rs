@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 
-use heart::{PackageId, Scored, cursor::Cursor, ecosystem::Language, search::Page};
+use heart::{PackageId, Scored, cursor::Cursor, Language, search::Page};
 
 use crate::{GlobalPackage, error::SearchError, metadata::Synonyms};
 
@@ -182,7 +182,7 @@ pub async fn retrieve_and_rank(
 	let candidates: Vec<ranking::Candidate<GlobalPackage>> = representatives
 		.into_iter()
 		.map(|package| {
-			use ecosystem::LanguageExt;
+			use crate::ecosystem::LanguageExt;
 			let bm25 = scores.get(&package.id).copied().unwrap_or_default();
 			let (
 				quality,

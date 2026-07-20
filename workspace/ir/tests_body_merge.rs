@@ -10,7 +10,7 @@
 //! - non-overlapping facts are never dropped;
 //! - the forbidden steady state is constructible only by hand and is detected.
 
-use ecosystem::Language;
+use heart::Language;
 use proptest::prelude::*;
 
 use crate::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};

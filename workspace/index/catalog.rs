@@ -234,16 +234,16 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     pub async fn set_listing(
         &self,
         package: PackageId,
-        listing: Option<&ecosystem::upstream::ListingStatus>,
+        listing: Option<&crate::ecosystem::upstream::ListingStatus>,
     ) -> Result<(), IndexError> {
         let Some(status) = listing else {
             return Ok(());
         };
         let (wire_status, reason) = match status {
-            ecosystem::upstream::ListingStatus::Listed => {
+            crate::ecosystem::upstream::ListingStatus::Listed => {
                 (crate::enums::ListingStatus::Listed, None)
             }
-            ecosystem::upstream::ListingStatus::Withdrawn { reason } => (
+            crate::ecosystem::upstream::ListingStatus::Withdrawn { reason } => (
                 crate::enums::ListingStatus::Withdrawn,
                 reason.as_ref().map(|r| r.to_string()),
             ),
@@ -261,17 +261,17 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     pub async fn get_listing(
         &self,
         package: PackageId,
-    ) -> Result<Option<ecosystem::upstream::ListingStatus>, IndexError> {
+    ) -> Result<Option<crate::ecosystem::upstream::ListingStatus>, IndexError> {
         let Some((status_token, reason)) = lifecycle::latest_listing(self.engine(), package)?
         else {
             return Ok(None);
         };
         Ok(match status_token.as_str() {
-            "listed" => Some(ecosystem::upstream::ListingStatus::Listed),
+            "listed" => Some(crate::ecosystem::upstream::ListingStatus::Listed),
             // `advisory` / `deprecated` rows are advisory-plane events, not a
             // listing observation — the resolve path treats them as listed.
-            "advisory" | "deprecated" => Some(ecosystem::upstream::ListingStatus::Listed),
-            _ => Some(ecosystem::upstream::ListingStatus::Withdrawn {
+            "advisory" | "deprecated" => Some(crate::ecosystem::upstream::ListingStatus::Listed),
+            _ => Some(crate::ecosystem::upstream::ListingStatus::Withdrawn {
                 reason: reason.map(Into::into),
             }),
         })

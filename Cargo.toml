@@ -11,10 +11,11 @@
 [workspace]
 resolver = "3"
 members = [
-    # The per-ecosystem spec crate (ECOSYSTEM-PLAN): the leaf everything else
-    # reads "what does ecosystem X need?" from. `Language` lives here; heart
-    # re-exports it.
-    "workspace/ecosystem",
+    # The per-ecosystem spec (ECOSYSTEM-PLAN) is now folded into the catalog
+    # crate as `index::ecosystem` — it is used only by `index` (+ `driver`,
+    # which composes `index`). `Language` itself lives in `heart` (the light
+    # shared vocabulary), keeping the index-free planes (`ir`, `registry`) off
+    # the catalog link path.
     "workspace/heart",
     # ── INDEX catalog plane (INDEX-PLAN) ─────────────────────────────────────
     # rusqdoltlite (now under vendor/) binds the vendored DoltLite engine

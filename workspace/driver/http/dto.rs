@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use arc_swap::ArcSwap;
+use index::ecosystem::PackageNameExt as _;
 use heart::{Language, PackageVersion, RegistryOrigin};
 use crate::registry::package::{Coordinates as PackageCoordinates, PackageName};
 use serde::{Deserialize, Serialize};

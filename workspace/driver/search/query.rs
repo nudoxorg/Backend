@@ -1,5 +1,6 @@
 //! The query, filter, and match types that describe a search request and its results.
 
+use index::ecosystem::PackageNameExt as _;
 use heart::{Cursor, Language, PackageVersion, PageSpecification, Score};
 use nonempty::NonEmpty;
 use crate::registry::package::PackageName;

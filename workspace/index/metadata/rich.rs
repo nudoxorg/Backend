@@ -3,10 +3,10 @@
 //! Turns a package's ingest inputs ([`ExtractionInput`]) into weighted keywords
 //! and a quality score ([`RichMetadata`]).  All logic is self-contained; the only
 //! workspace items used are [`crate::metadata::heuristics`] (normalize_keyword,
-//! Synonyms, Specifics) and [`ecosystem::search::SearchNorms`] (per-ecosystem
+//! Synonyms, Specifics) and [`crate::ecosystem::search::SearchNorms`] (per-ecosystem
 //! stopwords — R3).
 //!
-//! The shared English stopword list now lives in `ecosystem::search::ENGLISH_STOPWORDS`
+//! The shared English stopword list now lives in `crate::ecosystem::search::ENGLISH_STOPWORDS`
 //! (sorted, binary-searched). Per-ecosystem convention words (`crate`, `rust`,
 //! `npm`, `py`, …) live on each impl's `SearchNorms::stopwords`. The old
 //! `STOPWORDS` array is gone; `is_stopword` delegates to `norms.is_stopword`.
@@ -16,7 +16,7 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 
 use crate::metadata::heuristics::{Specifics, Synonyms, normalize_keyword};
-use ecosystem::search::SearchNorms;
+use crate::ecosystem::search::SearchNorms;
 
 /// Identifier-specific stopwords (code structure words with no semantic meaning
 /// in search context). These are LOCAL to rich.rs: they supplement the shared
@@ -738,7 +738,7 @@ fn apply_synonyms_and_specifics(
 /// Extract rich metadata from the given input.
 ///
 /// `norms` is the per-ecosystem [`SearchNorms`] whose `is_stopword` governs
-/// prose/identifier filtering. Pass `ecosystem::spec(lang).search_norms()` at
+/// prose/identifier filtering. Pass `crate::ecosystem::spec(lang).search_norms()` at
 /// the call site (R3).
 pub fn extract(
     input: &ExtractionInput<'_>,
@@ -896,7 +896,7 @@ mod tests {
 
     /// Rust norms: suitable for tests that just need a valid `&'static SearchNorms`.
     fn rust_norms() -> &'static SearchNorms {
-        ecosystem::spec(ecosystem::Language::Rust).search_norms()
+        crate::ecosystem::spec(crate::ecosystem::Language::Rust).search_norms()
     }
 
     #[test]
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn extract_uses_ecosystem_norms_for_stopwords() {
         // "rust" is a stopword for Rust norms → must not appear in keywords.
-        let rust_norms = ecosystem::spec(ecosystem::Language::Rust).search_norms();
+        let rust_norms = crate::ecosystem::spec(crate::ecosystem::Language::Rust).search_norms();
         let input = ExtractionInput {
             name: "mylib",
             description: Some("A rust library for parsing"),
@@ -974,7 +974,7 @@ mod tests {
         assert!(!kw_slugs.contains(&"rust"), "'rust' must be filtered by Rust norms");
 
         // "node" is a stopword for npm norms → must not appear.
-        let npm_norms = ecosystem::spec(ecosystem::Language::Typescript).search_norms();
+        let npm_norms = crate::ecosystem::spec(crate::ecosystem::Language::Typescript).search_norms();
         let input_npm = ExtractionInput {
             name: "axios",
             description: Some("Promise based http client for node"),

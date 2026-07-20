@@ -18,7 +18,7 @@ use crate::registry::ingest::{
     EntryAllowlist, ExtractionLimits, ingest_archive,
 };
 use crate::registry::metadata::rich::{self, ExtractionInput};
-use ecosystem::{self, DynSpec, LanguageExt};
+use index::ecosystem::{self, DynSpec, LanguageExt};
 use heart::Retryable;
 use crate::registry::queue::LeasedJob;
 use crate::registry::{RegistryError, error::ResolveError};
@@ -128,7 +128,7 @@ impl<M: EmbeddingModel> Indexer<M> {
             .await
             .map_err(RegistryError::from)?;
 
-        let archive_format = ecosystem::spec(record.package.coordinates.ecosystem()).archive();
+        let archive_format = index::ecosystem::spec(record.package.coordinates.ecosystem()).archive();
         Ok(ingest_archive(
             package,
             record.package.toolchain,
@@ -305,7 +305,7 @@ impl<M: EmbeddingModel> Indexer<M> {
             }
             RegistryOrigin::GoProxy => {
                 // goproxy capital-escaping on module path.
-                let escaped = ecosystem::escape_module_path(name);
+                let escaped = index::ecosystem::escape_module_path(name);
                 format!("https://proxy.golang.org/{escaped}/@v/{version}.zip")
             }
             RegistryOrigin::MavenCentral => {
@@ -358,7 +358,7 @@ impl<M: EmbeddingModel> Indexer<M> {
         let metadata_url = format!("https://pypi.org/pypi/{name}/{version}/json");
         let bytes = self
             .acquisition
-            .get(ecosystem::Language::Python, &metadata_url)
+            .get(index::ecosystem::Language::Python, &metadata_url)
             .await
             .map_err(|e| match e {
                 UpstreamError::NotFound => ServerError::Registry(
@@ -603,7 +603,7 @@ async fn fetch_listing_signals(
     client: &registry::upstream::UpstreamClient,
 ) -> Option<(u32, u32, bool, Option<u32>)> {
     use crate::registry::search::listing_signals::listing_signals_from_body;
-    use ecosystem::LanguageExt;
+    use index::ecosystem::LanguageExt;
 
     let spec = coordinates.ecosystem().spec();
     let name = coordinates.name.canonical();
@@ -615,15 +615,15 @@ async fn fetch_listing_signals(
     let full_url = if let Some(dl) = spec.download_source() {
         let url = dl.url.replace("{name}", &name);
         // crates.io download source *is* the listing JSON — use it for signals.
-        if coordinates.ecosystem() == ecosystem::Language::Rust {
+        if coordinates.ecosystem() == index::ecosystem::Language::Rust {
             url
         } else {
             // npm downloads API is not the packument; use known packument/JSON URLs.
             match coordinates.ecosystem() {
-                ecosystem::Language::Typescript => {
+                index::ecosystem::Language::Typescript => {
                     format!("https://registry.npmjs.org/{name}")
                 }
-                ecosystem::Language::Python => {
+                index::ecosystem::Language::Python => {
                     format!("https://pypi.org/pypi/{name}/json")
                 }
                 _ => url,
@@ -631,8 +631,8 @@ async fn fetch_listing_signals(
         }
     } else {
         match coordinates.ecosystem() {
-            ecosystem::Language::Python => format!("https://pypi.org/pypi/{name}/json"),
-            ecosystem::Language::Typescript => format!("https://registry.npmjs.org/{name}"),
+            index::ecosystem::Language::Python => format!("https://pypi.org/pypi/{name}/json"),
+            index::ecosystem::Language::Typescript => format!("https://registry.npmjs.org/{name}"),
             _ => return None,
         }
     };
@@ -671,7 +671,7 @@ async fn fetch_listing_signals(
 }
 
 /// Fetch the download count for `coordinates` from the ecosystem's
-/// [`DownloadEndpoint`](ecosystem::upstream::DownloadEndpoint) (if any) and
+/// [`DownloadEndpoint`](index::ecosystem::upstream::DownloadEndpoint) (if any) and
 /// store it in `facets.downloads`.
 ///
 /// Ecosystems with a source today: TypeScript (npm downloads API), C# (NuGet
@@ -814,7 +814,7 @@ fn extract_facets(
                     ecosystem = ?coordinates.ecosystem(),
                     "no manifest found; name-only facets"
                 );
-                ecosystem::manifest::ExtractedFacts::default()
+                index::ecosystem::manifest::ExtractedFacts::default()
             }
         }
     };
@@ -886,7 +886,7 @@ fn extract_facets(
     facets.repo_slug = facts
         .repository
         .as_deref()
-        .and_then(ecosystem::repo::normalize_repo_url)
+        .and_then(index::ecosystem::repo::normalize_repo_url)
         .map(|slug| smol_str::SmolStr::from(slug.as_str()));
 
     facets.license = facts

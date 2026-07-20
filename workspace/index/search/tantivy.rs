@@ -24,6 +24,7 @@
 //! The IdentifierTokenizer from registry/runtime/text/tokenizer.rs is
 //! re-registered on this index after every open (same mechanism as TextIndex).
 
+use crate::ecosystem::PackageNameExt as _;
 use heart::PackageId;
 use tantivy::{Index, IndexReader, schema::Field};
 

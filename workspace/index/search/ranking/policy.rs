@@ -94,7 +94,7 @@ impl RankingPolicy {
 	/// Classify intent with ecosystem norms when the scope is known.
 	pub fn intent_for(&self, query: &str, ecosystem_scope: Option<Language>) -> QueryIntent {
 		let norms = ecosystem_scope.map(|lang| {
-			use ecosystem::LanguageExt;
+			use crate::ecosystem::LanguageExt;
 			lang.spec().search_norms()
 		});
 		classify_intent(query, ecosystem_scope, norms)

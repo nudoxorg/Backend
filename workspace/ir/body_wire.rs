@@ -90,7 +90,7 @@ mod tests {
     use super::*;
     use crate::body::{BodyCall, BodyMergeNote, OracleBody, TreesitterBody};
     use crate::vocab::RelSpan;
-    use ecosystem::Language;
+    use heart::Language;
 
     #[test]
     fn absent_round_trips() {

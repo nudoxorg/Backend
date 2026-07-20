@@ -38,7 +38,7 @@
 //!    [`OracleBody`] when both producers ran. [`BodyFacts::is_forbidden_steady_state`]
 //!    detects the smell so tests can assert it is rejected.
 
-use ecosystem::Language;
+use heart::Language;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 

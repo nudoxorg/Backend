@@ -2,7 +2,7 @@
 //! infrastructure for the mirror demand-pull path.
 //!
 //! One `reqwest::Client` instance with the canonical User-Agent, per-language
-//! token-bucket rate limiting (rates sourced from [`ecosystem::spec`]),
+//! token-bucket rate limiting (rates sourced from [`crate::ecosystem::spec`]),
 //! retry-with-backoff on 429/5xx, and optional `Retry-After` honor per policy.
 //!
 //! M6: replaces ad-hoc `reqwest::get` / `reqwest::Client::new()` calls in
@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use tokio::sync::Mutex;
 
-use ecosystem::{Language, LanguageExt as _};
+use crate::ecosystem::{Language, LanguageExt as _};
 
 const USER_AGENT: &str = "nudox-registry-mirror/0.1 (+https://github.com/philocalyst)";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -41,7 +41,7 @@ pub struct UpstreamClient {
 
 impl UpstreamClient {
     /// Construct a client with a per-language token bucket seeded from
-    /// [`ecosystem::spec`] policy.
+    /// [`crate::ecosystem::spec`] policy.
     pub fn new() -> Self {
         use strum::IntoEnumIterator;
         let inner = reqwest::Client::builder()

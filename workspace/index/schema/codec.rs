@@ -15,10 +15,11 @@
 
 use std::str::FromStr;
 
+use crate::ecosystem::PackageNameExt as _;
+
 use heart::{
-	Failure, OwnerKind, Phase, ResolutionState, Visibility,
+	Failure, Language, OwnerKind, Phase, ResolutionState, Visibility,
 	content::ContentHash,
-	ecosystem::Language,
 	identity::{SymbolId, PackageId},
 };
 use uuid::Uuid;

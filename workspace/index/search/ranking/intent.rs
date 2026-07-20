@@ -4,7 +4,7 @@
 //! [`super::policy::RankingPolicy`] (or [`super::cascade::rank_with_intent`]) so
 //! the Navigate / Explore distinction cannot be skipped accidentally.
 
-use ecosystem::search::{DEFAULT_SPECIFICITY_SEPARATORS, SearchNorms};
+use crate::ecosystem::search::{DEFAULT_SPECIFICITY_SEPARATORS, SearchNorms};
 use heart::ecosystem::Language;
 
 /// How the user is searching: looking up a known package vs browsing by topic.
@@ -106,7 +106,7 @@ fn resolve_norms(
 		return norms;
 	}
 	ecosystem_scope.map(|lang| {
-		use ecosystem::LanguageExt;
+		use crate::ecosystem::LanguageExt;
 		lang.spec().search_norms()
 	})
 }
@@ -124,7 +124,7 @@ fn is_only_bland(query: &str, norms: Option<&SearchNorms>) -> bool {
 		let lower = t.to_ascii_lowercase();
 		match norms {
 			Some(n) => n.is_stopword(&lower),
-			None => ecosystem::search::ENGLISH_STOPWORDS
+			None => crate::ecosystem::search::ENGLISH_STOPWORDS
 				.binary_search(&lower.as_str())
 				.is_ok(),
 		}
@@ -134,7 +134,7 @@ fn is_only_bland(query: &str, norms: Option<&SearchNorms>) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use ecosystem::LanguageExt;
+	use crate::ecosystem::LanguageExt;
 
 	#[test]
 	fn types_node_is_navigate() {

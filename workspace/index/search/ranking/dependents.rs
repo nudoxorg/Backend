@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ecosystem::Language;
+use crate::ecosystem::Language;
 use smol_str::SmolStr;
 
 /// One package's contribution to the sweep: who it is and what it depends on.

@@ -21,8 +21,8 @@ path = "lib.rs"
 [dependencies]
 # The light IR data model (entry/symbol/kind/wire/change/view/vocab/…).
 ir           = { path = "../ir" }
-# `ecosystem` owns the canonical `Language` enum.
-ecosystem    = { path = "../ecosystem" }
+# The canonical `Language` enum lives in `heart`; `ir-vcs` reads it from there
+# and never links the `ecosystem` spec crate.
 heart        = { path = "../heart" }
 
 # ── content-transfer plane ──────────────────────────────────────────────────

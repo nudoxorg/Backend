@@ -8,19 +8,19 @@
 //!    cpp stem.
 //! 2. [`enumerate_git_versions`] pulls `ls-remote` bytes via the
 //!    [`GitRepository`] adapter and hands them to the ecosystem's **pure** cpp
-//!    listing parser (`ecosystem::cpp::listing::parse_ls_remote`), which does
+//!    listing parser (`crate::ecosystem::cpp::listing::parse_ls_remote`), which does
 //!    all tag/peel logic and pins the peeled commit oid in the `raw` slot as
 //!    `"<tag>@<oid>"` (RL-14).
 //! 3. Each listed version becomes an [`UpsertVersion`] op with
 //!    `source: Git { url, rev: <peeled oid>, registry_checksum: None }`.
 //! 4. Zero tags ⇒ one pseudo-version synthesized from `HEAD` via
-//!    `ecosystem::cpp::synthesize_pseudo_version` (§3.3).
+//!    `crate::ecosystem::cpp::synthesize_pseudo_version` (§3.3).
 //!
 //! Sealing the ObjectPack and queueing IR are **other planes** (RL-15); this
 //! module stops at catalog ops.
 
-use ecosystem::Language;
-use ecosystem::cpp::listing::parse_ls_remote;
+use crate::ecosystem::Language;
+use crate::ecosystem::cpp::listing::parse_ls_remote;
 use heart::identity::derive;
 use crate::ids::{PackageId, PackageStemId};
 use crate::protocol::{
@@ -167,7 +167,7 @@ fn enumerate_pseudo_version<Repository: GitRepository>(
     // HEAD (defensive) is padded/truncated to 12 by the synthesis helper's own
     // validation, so guard here and fall back to Raw when it cannot form one.
     let hash12: String = head_oid.chars().take(12).collect();
-    let synthesized = ecosystem::cpp::synthesize_pseudo_version(None, commit_timestamp, &hash12);
+    let synthesized = crate::ecosystem::cpp::synthesize_pseudo_version(None, commit_timestamp, &hash12);
 
     // If the timestamp/hash could not form a valid Go pseudo-version, fall back
     // to a raw HEAD-pinned version so the stem still gets exactly one version.

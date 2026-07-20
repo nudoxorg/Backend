@@ -26,7 +26,7 @@
 //! `MetaStore` and the search pipeline) and injected via
 //! [`super::pipeline::PackageSearchDeps::alias_expander`].
 
-use ecosystem::Language;
+use crate::ecosystem::Language;
 
 /// The confidence tier of an alias, mirrored from the catalog vocabulary so the
 /// expander can order candidates authoritative > curated > heuristic without a

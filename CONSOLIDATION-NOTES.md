@@ -659,3 +659,17 @@ So the unified trait now has FOUR implementors: IR changes, object packs (index:
 shards, and **compiler golden snapshots** (sandbox). CAPSTONE (after server dissolve + the crates
 settle): retarget `SmolvmRuntime`'s golden persist/restore onto `heart::sync` + the shared transport,
 deleting the bespoke snapshot plumbing; the fleet-scale golden sharing then comes for free.
+
+### 8e. Federation/overlay-aware sync — the deployment model (2026-07-20 user)
+The unified `heart::sync::ContentIo` (per-target seam) + `transport` (per-endpoint byte
+movement) + the existing `Federation<SourceStores>` (definitive base + overlays) compose into
+federation-aware sync. A verified content item (change / pack / shard / golden) fans across the
+federation topology per deployment:
+- **Local node:** ContentIo::write to the LOCAL store AND push via `transport` to the REMOTE
+  overlay(s) — content is durable locally and replicated up. (local + remote)
+- **Fleet of compilers:** each node has no local serving store of its own, so it just pushes
+  its produced content (esp. goldens §8d, IR changes) BACK to the main/central remote. (fleet → central)
+The trait stays per-target; the fan-out is a thin **federation sync driver** that iterates
+`Federation` and routes each item to the right ContentIo/transport target. NOT YET WIRED — the
+pieces (ContentIo, transport::Provider/Fetcher, Federation) all exist; the orchestrator that
+walks the federation and multiplexes writes/pushes is the remaining glue. Same seam, N targets.

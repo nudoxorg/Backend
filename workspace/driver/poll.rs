@@ -12,6 +12,7 @@ use crate::{registry, vector};
 use std::sync::Arc;
 use std::time::Duration;
 
+use index::ecosystem::PackageNameExt as _;
 use heart::PackageId;
 use crate::registry::coordination::{OutboxEntry, OutboxOp, SinkKind};
 use registry::vector::{
@@ -486,7 +487,7 @@ pub(crate) async fn package_signals_poller<M: EmbeddingModel>(server: Arc<Server
 
 /// Cursor filename pattern: `catalog-cursor-{lang}.json`, placed next to the
 /// tantivy watermark files so a `data_directory` wipe resets both.
-fn cursor_path(data_dir: &std::path::Path, language: ecosystem::Language) -> std::path::PathBuf {
+fn cursor_path(data_dir: &std::path::Path, language: index::ecosystem::Language) -> std::path::PathBuf {
 	data_dir.join(format!("catalog-cursor-{language}.json"))
 }
 

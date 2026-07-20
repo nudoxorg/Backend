@@ -7,7 +7,7 @@
 //! # Stem resolution and confidence tiers (§7.1.3)
 //!
 //! A formula's upstream repo is inferred from `urls.stable.url` first, then its
-//! `homepage`, through `ecosystem::repo::normalize_repo_url`:
+//! `homepage`, through `crate::ecosystem::repo::normalize_repo_url`:
 //! - a recognizable GitHub **release** tarball URL → `authoritative` (the feed
 //!   itself points at the upstream repo);
 //! - any other normalizable URL / homepage → `heuristic` (a sniff).
@@ -19,8 +19,8 @@
 //! tarballs (git is preferred when P6 enumerates the stem directly) is honored
 //! by emitting `source: None` on the version — brew only records the checksum.
 
-use ecosystem::Language;
-use ecosystem::repo::normalize_repo_url;
+use crate::ecosystem::Language;
+use crate::ecosystem::repo::normalize_repo_url;
 use crate::enums::{AliasConfidence, EdgeKind, EdgeSource};
 use crate::ids::PackageStemId;
 use crate::protocol::{

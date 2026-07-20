@@ -27,7 +27,8 @@ default = []
 #              runtime text index, health)
 #   registry = graph (Trustfall) + vector (the folded-in vector plane)
 heart    = { path = "../heart", features = ["telemetry"] }
-ecosystem = { path = "../ecosystem" }
+# The per-ecosystem spec is now `index::ecosystem` (folded into the catalog
+# crate); driver composes `index`, so it reaches the grammar through there.
 # The real `registry` (graph + vector) and the `vector` plane are re-projected
 # through this crate's `mod registry` / `mod vector` facades (§8 shim), so the
 # extern crate is aliased out of the prelude to `xregistry` — bare `registry::…`

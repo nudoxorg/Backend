@@ -40,7 +40,7 @@
 //! All fetches go through `UpstreamClient`, which applies the per-language
 //! token-bucket rate limiter and retry-with-backoff from the ecosystem policy.
 
-use ecosystem::Language;
+use crate::ecosystem::Language;
 use serde::Deserialize;
 
 use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};

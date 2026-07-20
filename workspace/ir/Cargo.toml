@@ -23,11 +23,10 @@ workspace = true
 path = "lib.rs"
 
 [dependencies]
-# Body facts carry the language they were produced for; `ecosystem` owns the
-# canonical `Language` enum (a leaf crate depending only on serde), so reusing
-# it here introduces no dependency cycle and never duplicates the vocabulary.
-ecosystem    = { path = "../ecosystem" }
-# Required by the folded-in `manifest` module.
+# Body facts carry the language they were produced for; the canonical
+# `Language` enum lives in `heart` (the light shared vocabulary), so `ir` reads
+# `heart::Language` and never links the `ecosystem` spec crate — keeping the
+# `registry` (which deps `ir`) off the catalog/`index` link path.
 heart        = { path = "../heart" }
 
 blake3 = "1.8"
