@@ -7,7 +7,7 @@ use crate::{
     entry::{Entry, Node},
     kind::EntryKind,
     package::{PackageId, PackageMeta},
-    registry::{RawEntryIdx, RegistryResolver, RegistryState, UniqueId},
+    registry::{DeserContext, RawEntryIdx, RegistryResolver, UniqueId},
     symbol::{Symbol, Visibility},
 };
 
@@ -63,7 +63,7 @@ impl RegistryResolver for DummyRegistryResolver {
     async fn load_unique_id(
         &self,
         _: &UniqueId<Self::EntryId>,
-        _: &RegistryState<Self>,
+        _: DeserContext<'_>,
     ) -> Result<Entry, Self::Error> {
         unimplemented!()
     }

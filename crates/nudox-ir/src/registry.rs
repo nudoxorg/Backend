@@ -13,7 +13,7 @@ use crate::{package::PackageMeta, symbol::Symbol};
 
 use self::{
     id::ErasedUniqueId,
-    state::{ErasedRegistryState, StoredEntry},
+    state::{RegistryState, StoredEntry},
 };
 
 pub use self::{
@@ -22,14 +22,14 @@ pub use self::{
     idx::{EntryIdx, RawEntryIdx},
     link::EntryLink,
     resolver::RegistryResolver,
-    state::RegistryState,
+    serde_impl::DeserContext,
 };
 
 #[derive(Default)]
 pub struct Registry<R> {
     #[expect(unused)]
     resolver: R,
-    state: RegistryState<R>,
+    state: RegistryState,
 }
 
 impl<R: RegistryResolver> Registry<R> {

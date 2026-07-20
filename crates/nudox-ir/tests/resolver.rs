@@ -6,7 +6,7 @@ use vfs::{
 use nudox_ir::{
     entry::Entry,
     package::PackageIdView,
-    registry::{RegistryResolver, RegistryState, UniqueId},
+    registry::{DeserContext, RegistryResolver, UniqueId},
 };
 
 pub struct ExampleResolver {
@@ -41,7 +41,7 @@ impl RegistryResolver for ExampleResolver {
     async fn load_unique_id(
         &self,
         id: &UniqueId<Self::EntryId>,
-        state: &RegistryState<Self>,
+        cx: DeserContext<'_>,
     ) -> Result<Entry, Self::Error> {
         let package = match id.package().view() {
             PackageIdView::Path(path) => format!("{}", path.display()),
@@ -64,7 +64,7 @@ impl RegistryResolver for ExampleResolver {
 
         let deserializer = &mut serde_json::Deserializer::from_str(&file);
 
-        let entry = state.deserialize(deserializer)?;
+        let entry = cx.deserialize(deserializer)?;
 
         Ok(entry)
     }

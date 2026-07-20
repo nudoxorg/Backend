@@ -225,8 +225,16 @@ mod tests {
 
     use super::*;
 
+    fn pid() -> PackageId {
+        PackageId::path("/")
+    }
+
+    fn root_uid() -> UniqueId<usize> {
+        UniqueId::root(pid())
+    }
+
     fn uid(id: usize) -> UniqueId<usize> {
-        UniqueId::new(PackageId::path("/"), id)
+        UniqueId::new(pid(), id)
     }
 
     fn stored_entry(id: UniqueId<impl EntryId>, entry: Entry) -> StoredEntry {
@@ -235,7 +243,6 @@ mod tests {
 
     fn build<T>(
         index: RawEntryIdx,
-        id: UniqueId<<DummyRegistryResolver as RegistryResolver>::EntryId>,
         sym: &str,
         build: impl FnOnce(&mut EntryBuilder<DummyRegistryResolver>) -> T,
     ) -> BuildResult
@@ -243,32 +250,32 @@ mod tests {
         T: EntryKind,
     {
         EntryBuilder::builder()
-            .id(id)
+            .id(root_uid())
             .idx(index)
             .build(dummy_symbol(sym), None, build)
     }
 
     #[test]
     fn built_entries_single_entry_indices() {
-        let built = build(idx(0x100), uid(0), "mod42", |_| Module);
+        let built = build(idx(0x100), "mod42", |_| Module);
 
         assert_eq!(built.links, []);
 
         assert_eq!(built.tree.idx, idx(0x100));
 
         itertools::assert_equal(built.tree.iter(), [stored_entry(
-            uid(0),
+            root_uid(),
             entry("mod42", n::root([]), Module),
         )]);
     }
 
     #[test]
     fn built_entries_with_children() {
-        let built = build(idx(0x10), uid(0), "struct67", |b| {
+        let built = build(idx(0x10), "struct67", |b| {
             let fields = ["field1", "field2", "field3"]
                 .into_iter()
                 .enumerate()
-                .map(|(idx, field)| b.create(idx + 1, dummy_symbol(field), |_| Field {}))
+                .map(|(idx, field)| b.create(idx, dummy_symbol(field), |_| Field {}))
                 .collect();
 
             Record { fields }
@@ -276,7 +283,7 @@ mod tests {
 
         itertools::assert_equal(built.tree.iter(), [
             stored_entry(
-                uid(0),
+                root_uid(),
                 entry(
                     "struct67",
                     n::root([idx(0x11), idx(0x12), idx(0x13)]),
@@ -285,15 +292,15 @@ mod tests {
                     },
                 ),
             ),
-            stored_entry(uid(1), entry("field1", n::leaf(idx(0x10)), Field {})),
-            stored_entry(uid(2), entry("field2", n::leaf(idx(0x10)), Field {})),
-            stored_entry(uid(3), entry("field3", n::leaf(idx(0x10)), Field {})),
+            stored_entry(uid(0), entry("field1", n::leaf(idx(0x10)), Field {})),
+            stored_entry(uid(1), entry("field2", n::leaf(idx(0x10)), Field {})),
+            stored_entry(uid(2), entry("field3", n::leaf(idx(0x10)), Field {})),
         ]);
     }
 
     #[test]
     fn links_emitted_correctly() {
-        let built = build(idx(0), uid(0), "root", |b| {
+        let built = build(idx(0), "root", |b| {
             let struct_idx_1 = b.create(1, dummy_symbol("struct1"), |b| {
                 let f1 = b.create(2, dummy_symbol("f1"), |_| Field {});
                 b.link(f1);
