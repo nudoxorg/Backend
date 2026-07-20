@@ -4,7 +4,7 @@
 //! into libpijul, materializes back identically, accumulates history, unrecords,
 //! and seals a deterministic archive — with libpijul owning changes/deps/unrecord.
 
-use nudox_change::{
+use nudox_ir::change::{
     EcosystemId, IntroId, PackageLineageId, PackageName, StableRef,
 };
 use nudox_ir::apply::{LinkRecord, PristineIntroTable};
@@ -1183,7 +1183,7 @@ fn session_large_batch_stage() {
 /// after the rejection must be committed correctly.
 #[test]
 fn session_foreign_package_rejected() {
-    use nudox_change::{EcosystemId, PackageName};
+    use nudox_ir::change::{EcosystemId, PackageName};
 
     let foreign_pkg = PackageLineageId::new(
         EcosystemId::new("cargo"),
@@ -1239,7 +1239,7 @@ fn session_foreign_package_rejected() {
 
 use crate::stream::{record_stream, StreamPolicy, StreamedRecording};
 use heart::content::{ContentHash, JobKey};
-use ir_stream::{FailureKindWire, PhaseWire, ProducerId, SymbolSink, WireEntry, WireLink};
+use crate::protocol::{FailureKindWire, PhaseWire, ProducerId, SymbolSink, WireEntry, WireLink};
 
 fn stream_job() -> JobKey {
     JobKey::derive(b"stream-test", b"rust-1.79", b"src/lib.rs", b"Cargo.lock")
@@ -1436,7 +1436,7 @@ fn stream_happy_path_equivalence() {
 /// separate Links frame.
 #[test]
 fn stream_separate_links_frame() {
-    use ir_stream::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
+    use crate::protocol::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
     use nudox_ir::kind::KindDiscriminant;
     use nudox_ir::apply::{LinkRecord, PristineIntroTable};
 
@@ -1523,7 +1523,7 @@ fn stream_separate_links_frame() {
 /// We assert at least 2 changes.
 #[test]
 fn stream_checkpoint_policy() {
-    use ir_stream::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
+    use crate::protocol::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
 
     // Build a stream manually: Hello, 5 × single-entry Symbols, Finish.
     let mut buf = Vec::<u8>::new();
@@ -1620,7 +1620,7 @@ fn stream_abort_mid_stream() {
 /// abandoned, repo still usable after.
 #[test]
 fn stream_protocol_violation_truncated() {
-    use ir_stream::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
+    use crate::protocol::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
 
     let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
     let ir = sample_ir();

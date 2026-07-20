@@ -108,7 +108,7 @@ impl UsageQueryBackend for Unsupported {
 
 use std::sync::Arc;
 
-use nudox_change::{IntroId, PackageLineageId, StableRef};
+use nudox_ir::change::{IntroId, PackageLineageId, StableRef};
 use nudox_ir::IrView;
 
 use crate::graph::ReversePositionIndex;
@@ -262,8 +262,8 @@ fn stable_ref_from_wire(reference: &StableReference) -> Result<StableRef, String
     let intro_bytes = decode_hex_32(reference.intro_hex())
         .ok_or_else(|| format!("intro id `{}` is not 32 bytes of hex", reference.intro_hex()))?;
     let package = PackageLineageId::new(
-        nudox_change::EcosystemId::new(reference.ecosystem()),
-        nudox_change::PackageName::new(reference.package()),
+        nudox_ir::change::EcosystemId::new(reference.ecosystem()),
+        nudox_ir::change::PackageName::new(reference.package()),
     );
     Ok(StableRef::new(package, IntroId::from_raw(intro_bytes)))
 }
@@ -316,7 +316,7 @@ fn paginate(uses: Vec<Usage>, page: &PageSpecification) -> Page<Usage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::{EcosystemId, PackageLineageId, PackageName, StableRef};
+    use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName, StableRef};
     use nudox_ir::view::Occurrence;
     use nudox_ir::vocab::{Confidence, ReferenceKind, RelSpan};
     use nudox_ir::wire::{
@@ -329,8 +329,8 @@ mod tests {
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("demo"))
     }
 
-    fn intro(n: u8) -> nudox_change::IntroId {
-        nudox_change::IntroId::from_raw([n; 32])
+    fn intro(n: u8) -> nudox_ir::change::IntroId {
+        nudox_ir::change::IntroId::from_raw([n; 32])
     }
 
     fn module_payload(name: &str) -> OwnedEntryPayload {

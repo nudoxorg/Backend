@@ -32,7 +32,7 @@ pub(crate) mod sealed {
 ///
 /// Arena indices are only valid for the specific arena they were obtained from;
 /// they are **not** stable across arena reconstructions or serialization.
-/// Cross-session identity is carried by [`nudox_change::IntroId`].
+/// Cross-session identity is carried by [`crate::change::IntroId`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct ArenaIdx(pub u32);

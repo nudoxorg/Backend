@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use nudox_change::{IntroId, PackageLineageId, StableRef};
+use nudox_ir::change::{IntroId, PackageLineageId, StableRef};
 use nudox_ir::view::Occurrence;
 use nudox_ir::wire::OwnedEntryPayload;
 use nudox_ir::IrView;
@@ -211,7 +211,7 @@ pub fn execute_graph_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
     use nudox_ir::view::Occurrence;
     use nudox_ir::vocab::{Confidence, ReferenceKind, RelSpan};
     use nudox_ir::kind::KindDiscriminant;

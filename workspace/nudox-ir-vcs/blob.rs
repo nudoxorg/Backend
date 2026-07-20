@@ -28,7 +28,7 @@
 //! # Type:   type\t<typeexpr>
 //! ```
 
-use nudox_change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+use nudox_ir::change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
 use nudox_ir::kind::KindDiscriminant;
 use nudox_ir::symbol::Visibility;
 use nudox_ir::wire::{
@@ -1356,7 +1356,7 @@ fn parse_param_view(rest: &str) -> Result<ParamView<'_>, BlobError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
     use nudox_ir::kind::KindDiscriminant;
     use nudox_ir::wire::{
         DeprecationWire, DocLinkWire, EntryPayloadFlags, FieldWire, FnSigFlags, FunctionWire,
@@ -1412,7 +1412,7 @@ mod tests {
         };
         let payload = OwnedEntryPayload {
             kind_disc: KindDiscriminant::Function,
-            payload_hash: nudox_change::ContentBlake3::from_raw([0xCD; 32]),
+            payload_hash: nudox_ir::change::ContentBlake3::from_raw([0xCD; 32]),
             symbol: sym,
             kind: KindWire::Function(FunctionWire {
                 input_params: Box::new([ParamWire {

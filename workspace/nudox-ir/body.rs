@@ -15,7 +15,7 @@
 //! serialized as its own format-versioned channel (the `nudox.body.v1`
 //! envelope, [`crate::body_wire`]) so a body edit touches only that channel and
 //! the declaration bytes stay byte-identical — but it is still one entry, one
-//! [`nudox_change::IntroId`]. There is no parallel IR universe and no occurrence
+//! [`crate::change::IntroId`]. There is no parallel IR universe and no occurrence
 //! side table: usages are read back off the union of body call sites.
 //!
 //! # The merge contract (§5.1, normative)
@@ -29,7 +29,7 @@
 //!    that tier saw. A tier's struct is empty only when that tier truly saw
 //!    nothing.
 //! 3. On overlapping call/type spans the tree-sitter structural fields are
-//!    kept and the oracle's [`nudox_change::StableRef`] / higher [`Confidence`]
+//!    kept and the oracle's [`crate::change::StableRef`] / higher [`Confidence`]
 //!    rides on the matching span. Neither tier's non-overlapping facts are ever
 //!    dropped.
 //! 4. Host `resolve_occurrences` still writes occurrence frames from the union
@@ -42,7 +42,7 @@ use ecosystem::Language;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use nudox_change::StableRef;
+use crate::change::StableRef;
 
 use crate::vocab::{Confidence, ReferenceKind, RelSpan};
 
@@ -155,7 +155,7 @@ impl TreesitterBody {
 // ---------------------------------------------------------------------------
 
 /// The semantic view of a body from the language oracle. Filled to the maximum
-/// the oracle resolved; targets carry [`nudox_change::StableRef`] and
+/// the oracle resolved; targets carry [`crate::change::StableRef`] and
 /// [`Confidence`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OracleBody {
@@ -402,7 +402,7 @@ pub fn overlapping_call<'a>(call: &BodyCall, oracle: &'a OracleBody) -> Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName};
+    use crate::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 
     fn sr(name: &str) -> StableRef {
         StableRef::new(

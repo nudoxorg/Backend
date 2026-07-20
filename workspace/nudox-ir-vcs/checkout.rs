@@ -40,7 +40,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nudox_change::IntroId;
+use nudox_ir::change::IntroId;
 
 use crate::serialize::{intro_hex_of, is_symbol_path};
 
@@ -155,7 +155,7 @@ pub(crate) use try_intro_from_path as _try_intro_from_path;
 mod tests {
     use std::sync::Arc;
 
-    use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName};
+    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
     use nudox_ir::apply::PristineIntroTable;
     use nudox_ir::kind::KindDiscriminant;
     use nudox_ir::symbol::Visibility;

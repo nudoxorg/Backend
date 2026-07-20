@@ -18,16 +18,13 @@ workspace = true
 path = "lib.rs"
 
 [dependencies]
-nudox-change = { path = "../nudox-change" }
 nudox-ir = { path = "../nudox-ir" }
-nudox-ir-archive = { path = "../nudox-ir-archive" }
-nudox-ir-diff = { path = "../nudox-ir-diff" }
-nudox-ir-manifest = { path = "../nudox-ir-manifest" }
 # The frozen F1 key registry + field-aware pairer (DEPTH1 plan §3.2): the
 # registry constants live there now; f1.rs re-exports them unchanged.
 nudox-f1 = { path = "../nudox-f1" }
-ir-stream = { path = "../ir-stream" }
 heart = { path = "../heart" }
+# Required by the folded-in `protocol` module (formerly the `ir-stream` crate).
+ecosystem = { path = "../ecosystem" }
 
 # The change engine. GPL — acceptable per design K7. Pinned exactly: libpijul's
 # on-disk formats and API are pre-1.0 and move between betas.
@@ -43,6 +40,11 @@ serde = { version = "1.0", features = ["derive"] }
 smol_str = { version = "0.2", features = ["serde"] }
 thiserror = "1.0"
 anyhow = "1.0"
+# Required by the folded-in `archive` module (formerly nudox-ir-archive):
+# zero-copy POD headers + yoked zero-copy views.
+zerocopy = { version = "0.8", features = ["derive"] }
+yoke = { version = "0.8", features = ["derive"] }
+rustc-hash = { package = "rustc-hash", version = "1.1" }
 # libpijul change headers carry a `jiff::Timestamp`; pin to libpijul's version.
 jiff = "0.2"
 

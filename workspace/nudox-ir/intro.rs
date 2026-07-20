@@ -1,4 +1,4 @@
-//! Deterministic [`nudox_change::IntroId`] bootstrap from package + kind + path.
+//! Deterministic [`crate::change::IntroId`] bootstrap from package + kind + path.
 //!
 //! # Bootstrap contract
 //!
@@ -30,8 +30,8 @@
 //! - [`Disambiguator::Span`] — source byte offsets (last resort for e.g. two
 //!   anonymous types at different positions).
 
-use nudox_change::encode::{encode_segments, encode_str, write_u16le};
-use nudox_change::{ContentBlake3, IntroId, PackageLineageId};
+use crate::change::encode::{encode_segments, encode_str, write_u16le};
+use crate::change::{ContentBlake3, IntroId, PackageLineageId};
 
 use crate::kind::KindDiscriminant;
 use crate::skeleton::{fnsig_flag_bytes, function_signature_skeleton};
@@ -269,7 +269,7 @@ pub fn sig_key(inputs: &[ParamWire], outputs: &[ParamWire], sig: &FnSigFlags) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::{EcosystemId, PackageLineageId, PackageName};
+    use crate::change::{EcosystemId, PackageLineageId, PackageName};
 
     fn test_pkg() -> PackageLineageId {
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("mylib"))
@@ -439,7 +439,7 @@ mod tests {
     fn v2_trait_impl_skeleton_disambiguator_is_deterministic() {
         use crate::skeleton::trait_impl_skeleton;
         use crate::wire::{TypeRefWire, TypeWire};
-        use nudox_change::IntroId;
+        use crate::change::IntroId;
 
         let intro = IntroId::from_raw([0xAB; 32]);
         let of = TypeRefWire::Same(intro);
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn sig_key_is_deterministic() {
         use crate::wire::{FnSigFlags, ParamWire, TypeRefWire};
-        use nudox_change::IntroId;
+        use crate::change::IntroId;
 
         let inputs = vec![ParamWire {
             name: Some("x".into()),
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn sig_key_changes_on_param_type_change() {
         use crate::wire::{FnSigFlags, ParamWire, TypeRefWire};
-        use nudox_change::IntroId;
+        use crate::change::IntroId;
 
         let input_a = vec![ParamWire {
             name: None,

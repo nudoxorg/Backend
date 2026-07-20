@@ -26,7 +26,7 @@
 //! unknown ones; new versions never mutate old bytes (ID-22 / format_version
 //! discipline).
 
-use nudox_change::IntroId;
+use crate::change::IntroId;
 
 use crate::body::BodyEmbed;
 

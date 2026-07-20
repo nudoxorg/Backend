@@ -16,7 +16,7 @@
 //! Escaping (§6.3): `\` → `\\`  TAB → `\t`  LF → `\n`  CR → `\r`
 //! other C0 → `\xNN`; decode rejects unknown escapes and trailing `\`.
 
-use nudox_change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+use nudox_ir::change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
 use nudox_ir::kind::KindDiscriminant;
 use nudox_ir::symbol::Visibility;
 use nudox_ir::wire::{
@@ -1808,7 +1808,7 @@ pub fn compute_api_surface_hash(payload: &OwnedEntryPayload) -> ContentBlake3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
     use nudox_ir::wire::{
         AutoFact, AutoState, AutoTrait, EntryPayloadFlags, FnSigFlags, GenericParamWire, ImplFlags,
         ImplWire, ModuleWire, OwnedEntryPayload, ReexportWire, SelfKind, StaticWire, SymbolWire,

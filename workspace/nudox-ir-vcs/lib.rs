@@ -1,7 +1,7 @@
 //! # nudox-ir-vcs — libpijul-backed IR versioning
 //!
 //! This crate deliberately does **not** reimplement patch theory. It maps a
-//! package's materialized IR onto a **file-per-[`IntroId`](nudox_change::IntroId)**
+//! package's materialized IR onto a **file-per-[`IntroId`](nudox_ir::change::IntroId)**
 //! working tree — one file `symbols/{intro_hex}` per symbol introduction — and
 //! lets **libpijul** be the change engine: libpijul computes content-addressed
 //! changes, their dependencies, commutation, `unrecord`, channel membership, the
@@ -24,7 +24,21 @@
 //!   symbols that changed since a prior tip; [`repo::IrRepository::checkout_symbol`]
 //!   fetches a single symbol.
 //! - [`repo::IrRepository::seal`] materializes then seals a
-//!   [`nudox_ir_archive`] serve snapshot.
+//!   [`archive`] serve snapshot.
+
+// ── Folded-in IR data planes (formerly sibling crates) ──────────────────────
+/// Sealed, mmap-able IR-only `PackageArchive` (formerly the `nudox-ir-archive`
+/// crate): header/index/seal/section/view.
+pub mod archive;
+/// Matcher-free structural delta over IR tables (formerly `nudox-ir-diff`):
+/// `PackageDelta`, `IrOp`, diff/apply.
+pub mod diff;
+/// IR-only API-surface projection + semver classification (formerly
+/// `nudox-semver`): surface/classify/report/law-packs.
+pub mod semver;
+/// Guest→host IR streaming protocol (formerly the `ir-stream` crate): the frame
+/// grammar + sink/receiver state machines. The host-side driver is [`stream`].
+pub mod protocol;
 
 pub mod ascii;
 pub mod blob;

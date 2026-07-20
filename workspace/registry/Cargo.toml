@@ -24,7 +24,6 @@ ir    = { path = "../ir" }
 # IR data model (declaration + body + view) — drives registry/graph.
 # Does NOT pull libpijul (libpijul lives in nudox-ir-vcs, a separate crate).
 nudox-ir     = { path = "../nudox-ir" }
-nudox-change = { path = "../nudox-change" }
 # Graph query layer — pinned to the exact patch so the schema API is stable.
 trustfall = "=0.8.1"
 

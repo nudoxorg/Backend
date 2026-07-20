@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use nudox_change::IntroId;
+use nudox_ir::change::IntroId;
 use nudox_ir::apply::PristineIntroTable;
 use nudox_ir::kind::KindDiscriminant;
 use nudox_ir::wire::OwnedEntryPayload;
@@ -488,7 +488,7 @@ pub fn compute_sigma(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::IntroId;
+    use nudox_ir::change::IntroId;
     use nudox_ir::apply::PristineIntroTable;
     use nudox_ir::kind::KindDiscriminant;
     use nudox_ir::symbol::Visibility;
