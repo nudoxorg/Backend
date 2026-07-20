@@ -11,7 +11,7 @@
 //!
 //! Identity is never minted here — it is delegated to heart's deterministic
 //! derivers ([`PackageCoordinates::id`], [`SymbolId::derive`]) so the same
-//! identifier is recomputable offline against the same [`TerminusInstance`].
+//! identifier is recomputable offline against the same [`InstanceToken`].
 
 use std::sync::Arc;
 
@@ -39,9 +39,9 @@ use crate::{GlobalPackage, error::IndexError};
 /// The wrapped string is validated to the `organization/database` shape on
 /// construction.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TerminusInstance(String);
+pub struct InstanceToken(String);
 
-impl TerminusInstance {
+impl InstanceToken {
     /// Validate and wrap an `{organization}/{database}` instance token.
     /// Rejects anything that is not exactly two non-empty, slash-separated segments.
     pub fn new(token: impl Into<String>) -> Result<Self, IndexError> {
@@ -72,7 +72,7 @@ pub struct GlobalStore<Engine: VersioningEngine> {
     writer: Arc<CatalogWriter<Engine>>,
 
     /// The instance every global symbol identifier in this store is derived against.
-    instance: TerminusInstance,
+    instance: InstanceToken,
 }
 
 impl<Engine: VersioningEngine> Clone for GlobalStore<Engine> {
@@ -86,12 +86,12 @@ impl<Engine: VersioningEngine> Clone for GlobalStore<Engine> {
 
 impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     /// Wrap the catalog writer handle. The catalog must already be migrated.
-    pub fn new(writer: Arc<CatalogWriter<Engine>>, instance: TerminusInstance) -> Self {
+    pub fn new(writer: Arc<CatalogWriter<Engine>>, instance: InstanceToken) -> Self {
         Self { writer, instance }
     }
 
     /// The instance this store salts identifiers with.
-    pub fn instance(&self) -> &TerminusInstance {
+    pub fn instance(&self) -> &InstanceToken {
         &self.instance
     }
 

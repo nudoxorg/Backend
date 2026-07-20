@@ -428,8 +428,8 @@ pub enum IndexError {
 	#[error("toolchain JSON codec failed")]
 	ToolchainJson(#[source] serde_json::Error),
 
-	/// The `{org}/{db}` terminus-instance token was malformed.
-	#[error("invalid terminus instance token: expected `org/db`")]
+	/// The `{org}/{db}` instance token (identity salt) was malformed.
+	#[error("invalid instance token: expected `org/db`")]
 	InvalidInstance { token: String },
 
 	/// A package expected in the index was absent.

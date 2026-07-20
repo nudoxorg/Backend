@@ -8,8 +8,6 @@
 //!   postgres watermark. Cheap, precise name/signature lookup.
 //! - [`vector`] — qdrant, the **gated** semantic surface. Heavy, so it is only
 //!   ever reached with an explicit [`vector::SemanticGate`] capability.
-//! - [`graph`] — terminus, the **source of truth** for how a package's symbols
-//!   are structured and related.
 //! - [`session`] — per-session exploration state: a join-semilattice of the
 //!   nodes/edges a user has accumulated, merged monotonically.
 //!
@@ -25,7 +23,6 @@
 //!   [`heart::Retryable`], and [`error::RuntimeError`] aggregates them.
 
 pub mod error;
-pub mod graph;
 pub(crate) mod pagination;
 pub mod session;
 pub mod text;

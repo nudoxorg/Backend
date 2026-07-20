@@ -188,7 +188,12 @@ async fn materialize<M: EmbeddingModel>(
 				SinkKind::Vector => {
 					materialize_vector(server.embedder(), server.embedding_cache(), stores, &symbols).await?
 				}
-				SinkKind::Graph => materialize_graph(stores, &symbols).await?,
+				// The graph sink (catalog `UsageIndex`) is served by the IR
+				// reverse-position index, not a symbol-document store. Terminus
+				// is removed; in-process IR materialization + reverse-index
+				// population is the pending consumer (INDEX-PLAN §5.5 / IP-7), so
+				// this intent is a no-op for now rather than writing anywhere.
+				SinkKind::Graph => {}
 			}
 
 			tracing::debug!(
@@ -205,7 +210,9 @@ async fn materialize<M: EmbeddingModel>(
 			match entry.kind {
 				SinkKind::Text => delete_text(stores, entry.package).await?,
 				SinkKind::Vector => delete_vector(stores, entry.package).await?,
-				SinkKind::Graph => delete_graph(stores, entry.package).await?,
+				// See the upsert arm: the graph/usage plane moved to the IR
+				// reverse index (Terminus removed); nothing to tombstone here yet.
+				SinkKind::Graph => {}
 			}
 
 			tracing::debug!(
@@ -283,23 +290,6 @@ async fn materialize_vector<M: EmbeddingModel>(
 		.map_err(|error| crate::error::ServerError::Runtime(error.into()))
 }
 
-/// Graph sink: write the package's `Symbol` documents into terminus. Keyed by
-/// document `@id` (derived from the symbol uuid), so a re-insert replaces in
-/// place.
-async fn materialize_graph<M: EmbeddingModel>(
-	stores: &SourceStores<M>,
-	symbols: &[heart::Symbol],
-) -> ServerResult<()> {
-	if symbols.is_empty() {
-		return Ok(());
-	}
-	stores
-		.graph
-		.insert_symbols(symbols)
-		.await
-		.map_err(|error| crate::error::ServerError::Runtime(error.into()))
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Delete helpers — mirror tombstone path (OutboxOp::Delete).
 //
@@ -331,18 +321,6 @@ async fn delete_vector<M: EmbeddingModel>(
 	stores
 		.semantics
 		.delete_package_points(package)
-		.await
-		.map_err(|error| crate::error::ServerError::Runtime(error.into()))
-}
-
-/// Graph sink: delete all `Symbol` documents for this package from terminus.
-async fn delete_graph<M: EmbeddingModel>(
-	stores: &SourceStores<M>,
-	package: PackageId,
-) -> ServerResult<()> {
-	stores
-		.graph
-		.delete_package_symbols(package)
 		.await
 		.map_err(|error| crate::error::ServerError::Runtime(error.into()))
 }

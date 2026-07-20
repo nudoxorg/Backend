@@ -9,7 +9,7 @@ use heart::{Edition, Language, PackageVersion, RegistryOrigin, ResolutionState, 
 use registry::{
     BlobManifest, GlobalPackage, Package,
     blob::{BlobBuilder, ReferenceSet, creation::PendingSection},
-    index::{GlobalStore, TerminusInstance},
+    index::{GlobalStore, InstanceToken},
     package::{Coordinates, PackageName},
 };
 
@@ -156,11 +156,11 @@ pub fn catalog_store(test: &str) -> (GlobalStore<index::engine::memory::MemoryEn
         .expect("in-memory catalog engine opens");
     index::migrations::runner::migrate_to_v4(&engine).expect("catalog migrates");
     let writer = std::sync::Arc::new(index::store::writer::CatalogWriter::new(engine));
-    let instance = TerminusInstance::new("test/catalog").expect("fixture instance");
+    let instance = InstanceToken::new("test/catalog").expect("fixture instance");
     (GlobalStore::new(std::sync::Arc::clone(&writer), instance), writer)
 }
 
 /// The `{org}/{db}` instance token every gated spec salts symbol ids with.
-pub fn test_instance() -> TerminusInstance {
-    TerminusInstance::new("test-org/test-db").expect("the fixture token is `org/db`-shaped")
+pub fn test_instance() -> InstanceToken {
+    InstanceToken::new("test-org/test-db").expect("the fixture token is `org/db`-shaped")
 }

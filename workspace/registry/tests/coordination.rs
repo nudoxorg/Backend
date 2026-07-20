@@ -65,7 +65,7 @@ async fn recording_a_blob_registers_it_globally() {
         path: vec![smol_str::SmolStr::new("answer")].into_boxed_slice(),
     };
     let symbol = store.symbol_id(&uri);
-    let catalog_instance = registry::index::TerminusInstance::new("test/catalog")
+    let catalog_instance = registry::index::InstanceToken::new("test/catalog")
         .expect("fixture catalog instance token");
     assert_eq!(
         symbol,

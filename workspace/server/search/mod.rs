@@ -13,11 +13,9 @@ pub mod semantic;
 pub mod symbols;
 
 use std::collections::HashSet;
-use std::num::NonZeroUsize;
 
 use futures::Stream;
 use heart::{SymbolId, Scored, StoreError, Symbol};
-use crate::registry::runtime::graph::{GraphStore, RelationKind, expansion::ExpansionBounds};
 use crate::registry::runtime::vector::EmbeddingModel;
 
 pub use planner::SearchPlanner;
@@ -49,7 +47,7 @@ pub trait SearchTarget {
 /// A store of symbols supporting both precise and (gated) semantic search, plus
 /// graph-relationship expansion. This is what the server's symbol-search surface
 /// is generic over.
-pub trait SymbolStore: SearchTarget<Item = Symbol> + GraphStore {
+pub trait SymbolStore: SearchTarget<Item = Symbol> {
 	/// Given a hit, walk its graph relationships and score the related symbols —
 	/// the "expand from here" operation that powers session-based exploration.
 	async fn related_hits(
@@ -84,11 +82,6 @@ where
 	merged
 }
 
-/// How far a single expand call walks: immediate neighbours, a bounded fan.
-const EXPANSION_BOUNDS: ExpansionBounds = ExpansionBounds {
-	depth: NonZeroUsize::new(1).expect("one is non-zero"),
-	breadth: NonZeroUsize::new(16).expect("sixteen is non-zero"),
-};
 
 impl<M: EmbeddingModel> SourceStores<M> {
 	/// Look one symbol up by its durable id within this source.
@@ -126,60 +119,15 @@ impl<M: EmbeddingModel> SearchTarget for SourceStores<M> {
 	}
 }
 
-impl<M: EmbeddingModel> GraphStore for SourceStores<M> {
-	type Error = crate::registry::runtime::error::GraphError;
-
-	fn get_occurrences(
-		&self,
-		item: SymbolId,
-	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send {
-		self.graph.get_occurrences(item)
-	}
-
-	fn get_references(
-		&self,
-		item: SymbolId,
-	) -> impl Stream<Item = Result<Scored<SymbolId>, Self::Error>> + Send {
-		self.graph.get_references(item)
-	}
-
-	async fn are_related(
-		&self,
-		from: SymbolId,
-		to: SymbolId,
-	) -> Result<Option<RelationKind>, Self::Error> {
-		self.graph.are_related(from, to).await
-	}
-}
-
 impl<M: EmbeddingModel> SymbolStore for SourceStores<M> {
 	async fn related_hits(
 		&self,
-		hit: &Scored<Symbol>,
+		_hit: &Scored<Symbol>,
 	) -> Result<Vec<Scored<Symbol>>, ServerError> {
-		use futures::StreamExt;
-
-		let edges = self.graph.expand(hit.value.id, EXPANSION_BOUNDS);
-		futures::pin_mut!(edges);
-
-		let mut related = Vec::new();
-		let mut visited = HashSet::from([hit.value.id]);
-		while let Some(edge) = edges.next().await {
-			let edge = match edge {
-				Ok(edge) => edge,
-				// A symbol absent from this source's graph is an empty
-				// neighbourhood, not a failure.
-				Err(crate::registry::runtime::error::GraphError::NotFound) => break,
-				Err(error) => return Err(ServerError::Runtime(error.into())),
-			};
-			if !visited.insert(edge.target.value) {
-				continue;
-			}
-			if let Some(symbol) = self.symbol_by_id(edge.target.value).await? {
-				related.push(Scored::new(symbol, edge.target.score));
-			}
-		}
-		related.sort_by_key(|left| std::cmp::Reverse(left.score));
-		Ok(related)
+		// Symbol-graph expansion moved off the (removed) Terminus store onto the
+		// IR reverse-position index + `Target::Usages` plane (INDEX-PLAN §5.5).
+		// In-process IR is not materialized yet (IP-7), so a hit's neighbourhood
+		// is honestly empty here rather than served from a symbol-document graph.
+		Ok(Vec::new())
 	}
 }

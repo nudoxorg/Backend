@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use url::Url;
@@ -180,21 +180,15 @@ pub struct SourceConfig {
 /// is no stringly-typed lookup that can miss.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Endpoints {
-	/// The TerminusDB graph store.
-	pub terminus: Url,
-	/// The TerminusDB organization the graph database lives under.
-	#[serde(default = "defaults::terminus_organization")]
-	pub terminus_organization: SmolStr,
-	/// The TerminusDB database name — also the instance token every
-	/// deterministic symbol id is salted with, so it must be stable.
-	#[serde(default = "defaults::terminus_database")]
-	pub terminus_database: SmolStr,
-	/// The TerminusDB basic-auth user.
-	#[serde(default = "defaults::terminus_user")]
-	pub terminus_user: SmolStr,
-	/// The TerminusDB basic-auth password (secret).
-	#[serde(default = "defaults::terminus_password", with = "secret_url")]
-	pub terminus_password: SecretString,
+	/// The organization half of the `{organization}/{database}` **instance
+	/// token** every deterministic symbol id is salted with (`GlobalStore`).
+	/// Historical: this was the Terminus org; no graph database exists anymore.
+	#[serde(default = "defaults::instance_organization")]
+	pub instance_organization: SmolStr,
+	/// The database half of the instance token — must be stable, since changing
+	/// it re-salts every derived id.
+	#[serde(default = "defaults::instance_database")]
+	pub instance_database: SmolStr,
 	/// The Qdrant vector store (gRPC).
 	pub qdrant: Url,
 	/// The Qdrant collection symbol vectors live in.
@@ -437,9 +431,6 @@ impl ServerConfiguration {
 		Ok(configuration)
 	}
 
-	/// The definitive source's terminus endpoint — the common single-source case.
-	pub fn terminus_endpoint(&self) -> &Url { &self.definitive.endpoints.terminus }
-
 	/// Structural validation of the merged configuration: source names must be
 	/// non-empty and unique (they seed the deterministic source identities).
 	///
@@ -457,10 +448,6 @@ impl ServerConfiguration {
 				return Err(ConfigError::Validation(ConfigValidationError::DuplicateSourceName {
 					name: source.name.clone(),
 				}));
-			}
-
-			if self.deployment == Deployment::Production {
-				source.endpoints.assert_not_default_credentials()?;
 			}
 		}
 
@@ -497,11 +484,8 @@ impl Endpoints {
 	/// The all-localhost endpoint set used for development.
 	pub fn localhost_defaults() -> Self {
 		Self {
-			terminus: parse_static("http://127.0.0.1:6363"),
-			terminus_organization: defaults::terminus_organization(),
-			terminus_database: defaults::terminus_database(),
-			terminus_user: defaults::terminus_user(),
-			terminus_password: defaults::terminus_password(),
+			instance_organization: defaults::instance_organization(),
+			instance_database: defaults::instance_database(),
 			qdrant: parse_static("http://127.0.0.1:6334"),
 			qdrant_collection: defaults::qdrant_collection(),
 			catalog_directory: std::path::PathBuf::from("./data/catalog"),
@@ -511,29 +495,10 @@ impl Endpoints {
 		}
 	}
 
-	/// The `{org}/{db}` terminus-instance token this endpoint set names — the
-	/// salt for every deterministic symbol id minted against this source.
-	pub fn terminus_instance(&self) -> String {
-		format!("{}/{}", self.terminus_organization, self.terminus_database)
-	}
-
-	/// In production, reject well-known default credentials before any network
-	/// connection is opened.
-	///
-	/// The TerminusDB password default is `root` — public, so it must not be
-	/// used in a production deployment. (The catalog needs no credentials: it
-	/// is a local DoltLite engine.)
-	fn assert_not_default_credentials(&self) -> Result<(), ConfigError> {
-		const DEFAULT_TERMINUS_PASSWORD: &str = "root";
-
-		if self.terminus_password.expose_secret() == DEFAULT_TERMINUS_PASSWORD {
-			return Err(ConfigError::Validation(
-				ConfigValidationError::DefaultCredentialInProduction {
-					field: "endpoints.terminus_password",
-				},
-			));
-		}
-		Ok(())
+	/// The `{org}/{db}` **instance token** this endpoint set names — the salt for
+	/// every deterministic symbol id minted against this source.
+	pub fn instance_token(&self) -> String {
+		format!("{}/{}", self.instance_organization, self.instance_database)
 	}
 }
 
@@ -592,14 +557,11 @@ fn object_store_default() -> Url {
 
 /// Serde `default =` targets for the optional endpoint/limit fields.
 mod defaults {
-	use secrecy::SecretString;
 	use smol_str::SmolStr;
 	use url::Url;
 
-	pub(super) fn terminus_organization() -> SmolStr { SmolStr::new_static("nudox") }
-	pub(super) fn terminus_database() -> SmolStr { SmolStr::new_static("registry") }
-	pub(super) fn terminus_user() -> SmolStr { SmolStr::new_static("admin") }
-	pub(super) fn terminus_password() -> SecretString { SecretString::from("root") }
+	pub(super) fn instance_organization() -> SmolStr { SmolStr::new_static("nudox") }
+	pub(super) fn instance_database() -> SmolStr { SmolStr::new_static("registry") }
 	pub(super) fn qdrant_collection() -> SmolStr { SmolStr::new_static("symbols") }
 	pub(super) fn embeddings() -> Url { super::parse_static("http://127.0.0.1:11434/v1/embeddings") }
 	pub(super) fn poll_interval() -> std::time::Duration { std::time::Duration::from_secs(2) }
@@ -676,15 +638,6 @@ pub enum ConfigValidationError {
 	},
 
 	/// Terminus organization name failed validation (carries the rich GraphNameError
-	/// with position, length, char details etc.).
-	#[error("invalid terminus organization")]
-	InvalidTerminusOrganization(registry::runtime::graph::GraphNameError),
-
-	/// Terminus database name failed validation.
-	#[error("invalid terminus database")]
-	// Same source type as organization; no #[from] so From is not ambiguous.
-	InvalidTerminusDatabase(registry::runtime::graph::GraphNameError),
-
 	/// A Qdrant collection name failed validation (carries the rich CollectionNameError).
 	#[error("invalid qdrant collection name")]
 	InvalidQdrantCollection(#[from] registry::runtime::vector::CollectionNameError),
@@ -712,22 +665,8 @@ pub enum ConfigValidationError {
 	Other { detail: String },
 }
 
-/// Serde adapter so a secret connection URL round-trips as a plain string in
-/// config without ever being `Debug`-printed in the clear.
-mod secret_url {
-	use secrecy::{ExposeSecret, SecretString};
-	use serde::{Deserialize, Deserializer, Serializer};
-
-	pub(crate) fn serialize<S: Serializer>(value: &SecretString, s: S) -> Result<S::Ok, S::Error> {
-		s.serialize_str(value.expose_secret())
-	}
-
-	pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
-		Ok(SecretString::from(String::deserialize(d)?))
-	}
-}
-
-/// The `Option<SecretString>` sibling of [`secret_url`].
+/// Serde adapter so an optional secret round-trips as a plain string in config
+/// without ever being `Debug`-printed in the clear.
 mod optional_secret {
 	use secrecy::{ExposeSecret, SecretString};
 	use serde::{Deserialize, Deserializer, Serializer};

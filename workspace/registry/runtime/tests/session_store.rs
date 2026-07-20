@@ -5,7 +5,7 @@
 
 mod support;
 
-use runtime::graph::RelationKind;
+use runtime::session::RelationKind;
 use runtime::session::{
     Edge, MemorySessionStore, Persistence, SessionGraph, SessionId, SessionStore,
 };

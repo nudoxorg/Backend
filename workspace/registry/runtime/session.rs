@@ -21,7 +21,43 @@ use serde::{Deserialize, Serialize};
 
 use heart::{SymbolId, Id};
 
-use crate::runtime::{error::SessionError, graph::RelationKind};
+use crate::runtime::error::SessionError;
+
+/// The kind of edge two symbols share in an exploration graph.
+///
+/// A plain relationship taxonomy — formerly homed in the (now removed) Terminus
+/// graph store, kept here because the session semilattice is its only remaining
+/// user. The live symbol-relationship surface is the IR reverse-index /
+/// `Target::Usages` query plane, not this enum.
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	PartialEq,
+	Eq,
+	PartialOrd,
+	Ord,
+	Hash,
+	Serialize,
+	Deserialize,
+	strum::Display,
+	strum::EnumString,
+)]
+pub enum RelationKind {
+	/// The target is a member of the source (a method of a type, a field of a
+	/// record, an item of a module).
+	Member,
+	/// The source references the target (a call, a use, a mention).
+	Reference,
+	/// The target occurs within the source's declaration/signature.
+	Occurrence,
+	/// The source implements the target (a type implements a trait/interface).
+	Implements,
+	/// The source extends/subclasses the target.
+	Extends,
+	/// The source re-exports the target.
+	ReExport,
+}
 
 /// A directed, kinded edge between two symbols in a session graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

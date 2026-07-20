@@ -40,18 +40,16 @@ use index::store::writer::CatalogWriter;
 use crate::registry::{
 	Store,
 	coordination::Outbox,
-	index::{GlobalStore, TerminusInstance},
+	index::{GlobalStore, InstanceToken},
 	metadata::{Specifics, Synonyms},
 	queue::{Queue, RetryPolicy},
 };
 use registry::compiled::ObjectCompiledStore;
 use registry::runtime::{
-	graph::{Credentials, Database, Graph, Organization},
 	session::ScratchSessionStore,
 	text::TextIndex,
 	vector::{CollectionName, EmbeddingCache, EmbeddingModel, Semantic},
 };
-use secrecy::ExposeSecret;
 
 pub use config::{Deployment, Endpoints, Limits, Role, ServerConfiguration, SourceConfig};
 pub use error::{ServerError, ServerResult};
@@ -87,8 +85,6 @@ pub struct SourceStores<M: EmbeddingModel> {
 	pub queue: Queue,
 	/// Transactional outbox for derived-store fan-out (catalog-backed).
 	pub outbox: Outbox<CatalogEngine>,
-	/// Graph store (terminus).
-	pub graph: Graph<Live>,
 	/// Semantic/vector store (qdrant).
 	pub semantics: Semantic<M, Live>,
 	/// Replica-local precise-search index (tantivy) for this source.
@@ -318,7 +314,7 @@ impl<M: EmbeddingModel> Server<M> {
 				ConnectError::new(BackendKind::Catalog, ConnectFailure::Other(error.into()))
 			})?;
 
-		let instance = TerminusInstance::new(endpoints.terminus_instance())
+		let instance = InstanceToken::new(endpoints.instance_token())
 			.map_err(crate::registry::RegistryError::from)?;
 
 		// Catalog-backed stores construct directly (no remote handshake to
@@ -332,15 +328,6 @@ impl<M: EmbeddingModel> Server<M> {
 		let outbox = Outbox::new(Arc::clone(&writer));
 
 		let blobs_cold: Store<heart::Cold> = Store::new(object_store_backend(&endpoints.object_store)?);
-		let graph_cold: Graph<heart::Cold> = Graph::new(
-			reqwest::Client::new(),
-			endpoints.terminus.clone(),
-			Organization::new(endpoints.terminus_organization.as_str())
-				.map_err(invalid_configuration)?,
-			Database::new(endpoints.terminus_database.as_str()).map_err(invalid_configuration)?,
-			Credentials::new(endpoints.terminus_user.as_str(), endpoints.terminus_password.clone())
-				.map_err(invalid_configuration)?,
-		);
 		let semantic_cold: Semantic<M, heart::Cold> = Semantic::new(
 			qdrant_client::Qdrant::from_url(endpoints.qdrant.as_str()).build().map_err(
 				|error| ConnectError::new(BackendKind::Qdrant, ConnectFailure::Other(error.into())),
@@ -351,9 +338,8 @@ impl<M: EmbeddingModel> Server<M> {
 
 		// Network backends come up concurrently; the first failure aborts
 		// with its backend + cause.
-		let (blobs, graph, semantics) = tokio::try_join!(
+		let (blobs, semantics) = tokio::try_join!(
 			blobs_cold.connect(),
-			graph_cold.connect(),
 			semantic_cold.connect(),
 		)?;
 
@@ -372,7 +358,7 @@ impl<M: EmbeddingModel> Server<M> {
 			.map_err(|error| ServerError::Runtime(registry::runtime::error::TextError::Io(error).into()))?;
 		let packages = Arc::new(PackageSearchIndex::open(&packages_dir)?);
 
-		Ok(SourceStores { global_store, blobs, queue, outbox, graph, semantics, text, packages })
+		Ok(SourceStores { global_store, blobs, queue, outbox, semantics, text, packages })
 	}
 
 	/// The resolved configuration.
@@ -399,9 +385,6 @@ impl<M: EmbeddingModel> Server<M> {
 
 	/// The definitive base's outbox handle.
 	pub fn outbox(&self) -> &Outbox<CatalogEngine> { &self.base().outbox }
-
-	/// The definitive base's graph store handle.
-	pub fn graph(&self) -> &Graph<Live> { &self.base().graph }
 
 	/// The definitive base's semantic store handle.
 	pub fn semantics(&self) -> &Semantic<M, Live> { &self.base().semantics }

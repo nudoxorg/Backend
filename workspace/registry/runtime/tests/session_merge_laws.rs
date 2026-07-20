@@ -6,7 +6,7 @@
 use heart::SymbolId;
 use proptest::prelude::*;
 use runtime::session::{Edge, SessionGraph};
-use runtime::graph::RelationKind;
+use runtime::session::RelationKind;
 use uuid::Uuid;
 
 /// Build a `SessionGraph` from raw ids so proptest can generate arbitrary graphs
