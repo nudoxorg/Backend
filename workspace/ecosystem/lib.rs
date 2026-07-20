@@ -28,6 +28,7 @@ pub mod version;
 #[cfg(test)]
 mod name_tests;
 
+pub mod cpp;
 mod csharp;
 mod go;
 mod java;
@@ -42,8 +43,8 @@ pub use language::Language;
 use core::marker::PhantomData;
 
 mod sealed {
-	/// Exactly the seven per-language ZSTs implement this; nothing outside the
-	/// crate can add an eighth.
+	/// Exactly the eight per-language ZSTs implement this; nothing outside the
+	/// crate can add a ninth.
 	pub trait Sealed {}
 }
 
@@ -313,6 +314,7 @@ pub fn spec(language: Language) -> &'static dyn DynSpec {
 		Language::Java => &Erased::<java::Java>(PhantomData),
 		Language::CSharp => &Erased::<csharp::CSharp>(PhantomData),
 		Language::Nix => &Erased::<nix::Nix>(PhantomData),
+		Language::Cpp => &Erased::<cpp::Cpp>(PhantomData),
 	}
 }
 

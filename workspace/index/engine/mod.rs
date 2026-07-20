@@ -1,0 +1,267 @@
+//! The engine facade (INDEX-PLAN ID-20).
+//!
+//! Every access to the versioned catalog engine — plain SQL *and* the `dolt_*`
+//! versioning calls — funnels through the [`CatalogEngine`] trait defined here.
+//! rusqdoltlite is being built by another workstream and may not compile yet;
+//! wrapping it behind one trait makes surface drift a one-file fix, and lets the
+//! whole catalog (schema, [`MetaStore`](crate::store::MetaStore), migrations)
+//! compile and be tested against an in-memory fake.
+//!
+//! The facade owns its **own** value/row/error vocabulary ([`Value`], [`Row`],
+//! [`EngineError`]) rather than re-exporting the engine's, so a change in the
+//! upstream binding never ripples past this directory.
+//!
+//! Implementations:
+//! - [`dolt::DoltEngine`] — the real DoltLite binding (feature `dolt-engine`).
+//! - [`memory::MemoryEngine`] — a test-only rusqlite-backed fake with an honest
+//!   recorded commit log (feature `test-engine`). **Never a product mode.**
+
+use std::fmt;
+
+pub mod memory;
+
+#[cfg(feature = "dolt-engine")]
+pub mod dolt;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Values
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A single SQL-bindable value. Mirrors the engine's cell vocabulary but is our
+/// own type, so the engine's shape can drift without touching callers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    /// SQL `NULL`.
+    Null,
+    /// A signed 64-bit integer (also carries `INTEGER`-typed booleans as 0/1).
+    Integer(i64),
+    /// A 64-bit float.
+    Real(f64),
+    /// UTF-8 text.
+    Text(String),
+    /// An opaque byte blob (`BLOB16` ids, `BLOB32` hashes, …).
+    Blob(Vec<u8>),
+}
+
+impl Value {
+    /// Convenience: wrap an owned string.
+    pub fn text(value: impl Into<String>) -> Self {
+        Value::Text(value.into())
+    }
+
+    /// Convenience: a blob from any byte source.
+    pub fn blob(bytes: impl Into<Vec<u8>>) -> Self {
+        Value::Blob(bytes.into())
+    }
+
+    /// Wrap an optional value, mapping `None` to [`Value::Null`].
+    pub fn from_optional<T>(value: Option<T>, wrap: impl FnOnce(T) -> Value) -> Value {
+        match value {
+            Some(inner) => wrap(inner),
+            None => Value::Null,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rows
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A read-back row, addressed by zero-based column index. The concrete engine
+/// supplies a [`Row`] implementor to the row-mapping closure; typed getters
+/// return [`EngineError::UnexpectedColumnType`] on a shape mismatch rather than
+/// panicking, so a projection bug is a typed error, never a crash.
+pub trait Row {
+    /// Fetch a non-null `INTEGER` column.
+    fn get_integer(&self, index: usize) -> Result<i64, EngineError>;
+    /// Fetch a non-null `REAL` column.
+    fn get_real(&self, index: usize) -> Result<f64, EngineError>;
+    /// Fetch a non-null `TEXT` column.
+    fn get_text(&self, index: usize) -> Result<String, EngineError>;
+    /// Fetch a non-null `BLOB` column.
+    fn get_blob(&self, index: usize) -> Result<Vec<u8>, EngineError>;
+
+    /// Fetch a nullable `INTEGER` column.
+    fn get_optional_integer(&self, index: usize) -> Result<Option<i64>, EngineError>;
+    /// Fetch a nullable `REAL` column.
+    fn get_optional_real(&self, index: usize) -> Result<Option<f64>, EngineError>;
+    /// Fetch a nullable `TEXT` column.
+    fn get_optional_text(&self, index: usize) -> Result<Option<String>, EngineError>;
+    /// Fetch a nullable `BLOB` column.
+    fn get_optional_blob(&self, index: usize) -> Result<Option<Vec<u8>>, EngineError>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Versioning vocabulary (our own newtypes over the engine's)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A catalog commit hash (hex) in the engine's history graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CommitHash(pub String);
+
+impl fmt::Display for CommitHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A branch name (`main`, `local/<device>`, `pre-migrate-v4`, …).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BranchName(pub String);
+
+impl BranchName {
+    /// The advertised writer branch (INDEX-PLAN ID-1: single writer on `main`).
+    pub fn main() -> Self {
+        BranchName("main".to_owned())
+    }
+}
+
+impl fmt::Display for BranchName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The outcome of a `dolt_merge`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeOutcome {
+    /// Merge applied cleanly, producing a new commit.
+    Clean { commit: CommitHash },
+    /// Merge produced conflicts on these tables; resolution is caller policy.
+    Conflicts { tables: Vec<String> },
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Errors
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Every failure the facade can surface. Concrete engines map their native
+/// errors into these variants so callers never match on an engine-specific type.
+#[derive(Debug, thiserror::Error)]
+pub enum EngineError {
+    /// The database file / connection could not be opened.
+    #[error("failed to open catalog engine: {0}")]
+    Open(String),
+    /// A statement failed to prepare or execute.
+    #[error("statement failed: {0}")]
+    Statement(String),
+    /// A read-back column had a type other than the getter expected.
+    #[error("column {index} had unexpected type: {detail}")]
+    UnexpectedColumnType { index: usize, detail: String },
+    /// A read-back column was `NULL` where a non-null getter was used.
+    #[error("column {index} was NULL where a value was required")]
+    UnexpectedNull { index: usize },
+    /// A transaction could not be started, committed, or rolled back.
+    #[error("transaction failed: {0}")]
+    Transaction(String),
+    /// A `dolt_*` versioning call failed.
+    #[error("versioning operation `{operation}` failed: {detail}")]
+    Versioning { operation: &'static str, detail: String },
+    /// The engine was asked to do something structurally impossible (e.g. a
+    /// second writer, or a versioning call on a plain-SQLite fake in a code path
+    /// that requires real history).
+    #[error("unsupported engine operation: {0}")]
+    Unsupported(String),
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The facade traits
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The plain-SQL surface of the catalog engine — everything that is *not* a
+/// versioning call. Both the real DoltLite binding and the in-memory fake
+/// implement it identically, so business logic is engine-agnostic.
+pub trait CatalogEngine {
+    /// Execute a non-query statement, returning the number of affected rows.
+    fn execute(&self, sql: &str, params: &[Value]) -> Result<usize, EngineError>;
+
+    /// Run a query, mapping each row through `map` and collecting the results.
+    ///
+    /// The closure receives a `&dyn Row` (object-safe) so the mapper never names
+    /// the engine's concrete row type. The `where Self: Sized` bound keeps this
+    /// generic method out of the vtable, so [`CatalogEngine`] stays object-safe
+    /// (the transaction body and [`apply`](crate::store::apply) use `execute`
+    /// through a `&dyn CatalogEngine`).
+    fn query_rows<T>(
+        &self,
+        sql: &str,
+        params: &[Value],
+        map: &mut dyn FnMut(&dyn Row) -> Result<T, EngineError>,
+    ) -> Result<Vec<T>, EngineError>
+    where
+        Self: Sized;
+
+    /// Run `body` inside one transaction, committing on `Ok` and rolling back on
+    /// `Err`. This is the atomicity primitive [`MetaStore::apply_ops`] builds on
+    /// (INDEX-PLAN ID-3: business write + outbox rows in **one** transaction).
+    ///
+    /// `body` receives a plain-SQL handle scoped to the transaction; it cannot
+    /// issue versioning calls (those belong to the batch heartbeat commit, not
+    /// the per-op transaction).
+    fn transaction(
+        &self,
+        body: &mut dyn FnMut(&dyn CatalogEngine) -> Result<(), EngineError>,
+    ) -> Result<(), EngineError>;
+}
+
+/// The DoltLite versioning surface (INDEX-PLAN §4 ID-1). Kept separate from
+/// [`CatalogEngine`] so the per-op transaction path cannot accidentally reach a
+/// `dolt_commit`; only the writer's batch heartbeat (ID-4) holds a
+/// [`VersioningEngine`].
+pub trait VersioningEngine: CatalogEngine {
+    /// Stage all working-set changes (`dolt add -A`).
+    fn dolt_add_all(&self) -> Result<(), EngineError>;
+
+    /// Commit the staged working set with a message, returning the new head.
+    /// This is the batch heartbeat commit (ID-4).
+    fn dolt_commit(&self, message: &str) -> Result<CommitHash, EngineError>;
+
+    /// Create a branch (e.g. `pre-migrate-v4` before a migration, §13).
+    fn dolt_branch_create(&self, name: &BranchName) -> Result<(), EngineError>;
+
+    /// Check out a branch (rollback of a failed migration = checkout, §13).
+    fn dolt_checkout(&self, name: &BranchName) -> Result<(), EngineError>;
+
+    /// Merge `from` into the current branch (overlay merge, ID-9).
+    fn dolt_merge(&self, from: &BranchName) -> Result<MergeOutcome, EngineError>;
+
+    /// Garbage-collect abandoned history (§12 weekly `dolt_gc`).
+    fn dolt_gc(&self) -> Result<(), EngineError>;
+
+    /// The current head commit.
+    fn head(&self) -> Result<CommitHash, EngineError>;
+
+    /// Resolve an as-of-time read to the newest commit at or before the instant
+    /// (INDEX-PLAN §9 `AsOf::Time`). `None` when the instant precedes the first
+    /// commit.
+    fn resolve_as_of_time(
+        &self,
+        unix_milliseconds: i64,
+    ) -> Result<Option<CommitHash>, EngineError>;
+
+    /// Read one table **as of** a historical commit reference (INDEX-PLAN §9,
+    /// §18 scenario 1: "dependents of X at time T via catalog only").
+    ///
+    /// `table` is the plain table name; `commit_reference` is a DoltLite ref
+    /// (a commit hash, `HEAD~N`, or a branch name). The real engine rewrites the
+    /// read against the point-in-time table-valued function `dolt_at_<table>(ref)`
+    /// (the vendored engine exposes no `AS OF <ts>` SQL). `where_clause` is
+    /// appended verbatim after the table expression, so it **must** be
+    /// caller-controlled text with any user values bound through `params`
+    /// (`?`-placeholders), never interpolated — the same injection discipline as
+    /// every other statement in this crate.
+    ///
+    /// `table` is validated against a known catalog table name before use, so a
+    /// crafted `table` string can never reach the SQL text.
+    fn query_rows_at<T>(
+        &self,
+        commit_reference: &str,
+        table: &str,
+        projection: &str,
+        where_clause: &str,
+        params: &[Value],
+        map: &mut dyn FnMut(&dyn Row) -> Result<T, EngineError>,
+    ) -> Result<Vec<T>, EngineError>
+    where
+        Self: Sized;
+}

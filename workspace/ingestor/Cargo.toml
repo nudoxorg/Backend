@@ -1,0 +1,50 @@
+[package]
+name = "ingestor"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+# The Remote-deployment entry point (INDEX-PLAN ID-7): the ingestor runs as its
+# own external process, driving followers + the git monitor against a catalog
+# writer handle. Embedded deployments link the library directly instead.
+[[bin]]
+name = "ingestor"
+path = "main.rs"
+
+[dependencies]
+# The catalog protocol (CatalogOp) + the writer trait (MetaStore) the driver
+# batches through, plus the id/enum vocabulary the followers emit.
+index = { path = "../index" }
+# Language, RepoUrl/GitRev/ContentHash, deterministic ids.
+heart = { path = "../heart" }
+# Pure ecosystem logic: the cpp ls-remote listing parser, pseudo-version
+# synthesis, repo-url normalization, and the alias vocabulary.
+ecosystem = { path = "../ecosystem" }
+
+# The in-process git implementation behind [`GritAdapter`] (the default
+# `GitRepository`). Unpublished on crates.io, so pinned to a specific rev of the
+# MIT-licensed `grit-lib` workspace member (the GPL `grit-git` CLI crate is NOT
+# used). `http-ureq` provides the batteries-included smart-HTTP client used for
+# https:// feed URLs.
+grit-lib = { git = "https://github.com/gitbutlerapp/grit", rev = "dfb079967b9cbc99e533c21e65f674bb3f5e8b07", features = ["http-ureq"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+smol_str = { version = "0.2", features = ["serde"] }
+thiserror = "1.0"
+tracing = "0.1"
+# The published-artifact checksum honesty layer (Homebrew sha256) is computed
+# with sha2.
+sha2 = "0.10"
+
+[dev-dependencies]
+# Tests drive the driver against index's in-memory test-engine facade.
+index = { path = "../index", features = ["test-engine"] }
+uuid = { version = "1.23", features = ["v4", "v5"] }
+tempfile = "3"

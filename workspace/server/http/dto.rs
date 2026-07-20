@@ -1,6 +1,15 @@
 //! Request DTOs — the serialized shapes the API *accepts* — and their lowering
 //! into the typed domain vocabulary.
 
+//! Request DTOs — the serialized shapes the API *accepts* — and their lowering
+//! into the typed domain vocabulary.
+//!
+//! The search surfaces no longer live here: `POST /search`, `/packages/search`,
+//! and `/usages` deserialize the one query algebra ([`heart::query::Query`])
+//! directly (INDEX-PLAN §9), so there is no `SearchRequestDto`. What remains are
+//! the mutation/lookup DTOs (add-package, compiled-lookup, depshard manifest,
+//! rerank) whose shapes are genuinely distinct from any query.
+
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -9,145 +18,10 @@ use heart::{Language, PackageVersion, RegistryOrigin};
 use crate::registry::package::{Coordinates as PackageCoordinates, PackageName};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use strum::IntoEnumIterator;
 use url::Url;
 
 use crate::config::CustomRegistry;
 use crate::error::{BadRequestReason, ServerError};
-use crate::search::query::{
-	AbstractQuery, Filter, LiteralQuery, PackageSelector, Pagination, Query, Search,
-};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchRequestDto {
-	pub query: String,
-	#[serde(default)]
-	pub semantic: bool,
-	#[serde(default)]
-	pub ecosystems: Vec<Language>,
-	#[serde(default)]
-	pub packages: Vec<String>,
-	pub limit: std::num::NonZeroU32,
-	#[serde(default)]
-	pub cursor: Option<String>,
-	/// The caller's exploration session, when the results should accumulate
-	/// into a session graph (the `/expand` surface).
-	#[serde(default)]
-	pub session: Option<uuid::Uuid>,
-
-	/// The requested quality mode (09-vector §20.5). Absent → `parity` (the
-	/// server is online by definition; `local` is the client-side default).
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub quality_mode: Option<QualityModeDto>,
-
-	/// What slice of the world the query addresses. Absent → `org`.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub scope: Option<QueryScopeDto>,
-
-	/// Dep packages the client **claims** it serves from local baked shards
-	/// (hot-set membership is claimed by the client, §20.5); the server
-	/// excludes them from its dense Stage-1 rather than double-answering.
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub hot_packages: Vec<uuid::Uuid>,
-}
-
-/// The wire spelling of [`vector_core::routing::QualityMode`], a separate DTO
-/// enum so the HTTP contract stays decoupled from the vector-core vocabulary
-/// it lowers into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum QualityModeDto {
-	Local,
-	Parity,
-	Premium,
-	Deep,
-}
-
-impl From<QualityModeDto> for vector_core::routing::QualityMode {
-	fn from(mode: QualityModeDto) -> Self {
-		match mode {
-			QualityModeDto::Local => Self::Local,
-			QualityModeDto::Parity => Self::Parity,
-			QualityModeDto::Premium => Self::Premium,
-			QualityModeDto::Deep => Self::Deep,
-		}
-	}
-}
-
-/// The wire spelling of [`vector_core::routing::QueryScope`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum QueryScopeDto {
-	Project,
-	Deps,
-	Org,
-}
-
-impl From<QueryScopeDto> for vector_core::routing::QueryScope {
-	fn from(scope: QueryScopeDto) -> Self {
-		match scope {
-			QueryScopeDto::Project => Self::Project,
-			QueryScopeDto::Deps => Self::Deps,
-			QueryScopeDto::Org => Self::Org,
-		}
-	}
-}
-
-impl SearchRequestDto {
-	/// Lower the wire routing fields into [`crate::search::routing::RouteInputs`]
-	/// (09-vector §20.5): default quality `parity` (the server is online),
-	/// default scope `org`, hot-set membership as claimed by the client.
-	pub fn routing_inputs(&self) -> crate::search::routing::RouteInputs {
-		crate::search::routing::RouteInputs {
-			scope: self.scope.map(Into::into).unwrap_or(vector_core::routing::QueryScope::Org),
-			quality: self
-				.quality_mode
-				.map(Into::into)
-				.unwrap_or(vector_core::routing::QualityMode::Parity),
-			online: true,
-			claimed_hot: self.hot_packages.iter().copied().map(heart::PackageId::from_uuid).collect(),
-		}
-	}
-
-	/// Lower the wire request into the typed [`Search`]. A semantic opt-in
-	/// becomes an [`AbstractQuery`] (which only the planner may escalate);
-	/// everything else is a validated, operator-escaped literal.
-	pub fn into_search(self) -> Result<Search<'static>, ServerError> {
-		let query = if self.semantic {
-			Query::Abstract(AbstractQuery::NaturalLanguage(self.query))
-		} else {
-			Query::Literal(LiteralQuery::parse(&self.query).map_err(BadRequestReason::from)?)
-		};
-
-		// Package names are ecosystem-scoped; a bare name is tried against every
-		// requested (or, unstated, every known) ecosystem's grammar.
-		let candidates: Vec<Language> = match self.ecosystems.as_slice() {
-			[] => Language::iter().collect(),
-			requested => requested.to_vec(),
-		};
-		let mut selectors = Vec::new();
-		for raw in &self.packages {
-			for &ecosystem in &candidates {
-				if let Ok(name) = PackageName::new(ecosystem, raw.as_str()) {
-					selectors.push(PackageSelector { name, version: None });
-				}
-			}
-		}
-		if !self.packages.is_empty() && selectors.is_empty() {
-			return Err(BadRequestReason::NoValidPackageSelectors.into());
-		}
-
-		Ok(Search {
-			query,
-			filter: Filter {
-				ecosystems: nonempty::NonEmpty::from_vec(self.ecosystems),
-				packages: nonempty::NonEmpty::from_vec(selectors),
-			},
-			page: Pagination { limit: self.limit, after: self.cursor },
-			_lifetime: std::marker::PhantomData,
-		})
-	}
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddPackageDto {
@@ -184,6 +58,8 @@ fn required_or_default_origin(ecosystem: Language) -> Result<RegistryOrigin, Ser
 		Language::CSharp => Ok(RegistryOrigin::NuGet),
 		Language::Go => Ok(RegistryOrigin::GoProxy),
 		Language::Java => Ok(RegistryOrigin::MavenCentral),
+		// `cpp` is registry-less: the git repository is the package (RL-1).
+		Language::Cpp => Ok(RegistryOrigin::Git),
 	}
 }
 
@@ -561,34 +437,6 @@ mod tests {
 		let artifact = value["artifact_id"].as_str().expect("hex artifact id");
 		assert_eq!(artifact.len(), 64);
 		assert!(artifact.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-	}
-
-	/// The routing fields default to (org, parity, no claims) when absent.
-	#[test]
-	fn search_request_routing_defaults() {
-		let req: SearchRequestDto = serde_json::from_value(serde_json::json!({
-			"query": "async runtime",
-			"limit": 10,
-		}))
-		.expect("deserializes");
-		let inputs = req.routing_inputs();
-		assert!(matches!(inputs.quality, vector_core::routing::QualityMode::Parity));
-		assert!(matches!(inputs.scope, vector_core::routing::QueryScope::Org));
-		assert!(inputs.online);
-		assert!(inputs.claimed_hot.is_empty());
-
-		let req: SearchRequestDto = serde_json::from_value(serde_json::json!({
-			"query": "async runtime",
-			"limit": 10,
-			"quality_mode": "deep",
-			"scope": "deps",
-			"hot_packages": [uuid::Uuid::from_u128(9).to_string()],
-		}))
-		.expect("deserializes");
-		let inputs = req.routing_inputs();
-		assert!(matches!(inputs.quality, vector_core::routing::QualityMode::Deep));
-		assert!(matches!(inputs.scope, vector_core::routing::QueryScope::Deps));
-		assert_eq!(inputs.claimed_hot.len(), 1);
 	}
 
 	/// Rerank request validation: empty query/documents and oversize batches

@@ -79,3 +79,4 @@ uv-pep440 = { package = "uv-pep440", version = "0.0.59", features = ["serde", "v
 tokio = { version = "1.52", features = ["full"] }
 bytes = "1"
 tempfile = "3"
+serde_json = "1"

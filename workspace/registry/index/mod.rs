@@ -1,39 +1,43 @@
-//! The global index — postgres, the orchestration source of truth.
+//! The global index — the versioned catalog, the orchestration source of truth.
 //!
-//! Every parsed package is recorded here with its deterministic [`PackageId`],
-//! its current [`heart::ResolutionState`] (which phase it is in, what dependents
-//! need it, whether it is stored), and the cross-store links the read plane
-//! joins on. This is the relational spine; the object store holds the bytes, the
-//! queue holds the work, and this holds the *truth* about what exists and where
-//! it sits.
+//! Every parsed package is recorded here with its deterministic [`PackageId`]
+//! (which **is** the catalog `versions.id`), its current
+//! [`heart::ResolutionState`] (lowered onto the `versions` lifecycle columns by
+//! the frozen law in [`crate::schema::catalog_map`]), and the cross-store links
+//! the read plane joins on. This is the relational spine; the object store
+//! holds the bytes, the scratch queue holds the work, and this holds the
+//! *truth* about what exists and where it sits — with full DoltLite commit
+//! history behind it (INDEX-PLAN ID-1).
 //!
 //! Identity is never minted here — it is delegated to heart's deterministic
 //! derivers ([`PackageCoordinates::id`], [`SymbolId::derive`]) so the same
 //! identifier is recomputable offline against the same [`TerminusInstance`].
 
+use std::sync::Arc;
+
 use heart::{
-    BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, Probeable, ResolutionState,
+    BackendKind, Probeable, ResolutionState,
     content::ContentHash,
     identity::{EntryUri, PackageId, SymbolId},
     timed_probe,
 };
-use std::str::FromStr;
+
+use index::engine::VersioningEngine;
+use index::ids::PackageStemId;
+use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
+use index::store::writer::CatalogWriter;
+use index::store::{MetaStore, lifecycle};
 
 use crate::package::Coordinates as PackageCoordinates;
-use sqlx::{Row, postgres::PgRow};
+use crate::schema::catalog_map;
+use crate::{GlobalPackage, error::IndexError};
 
-use sea_query_binder::SqlxValues;
-
-use crate::{
-    GlobalPackage,
-    error::IndexError,
-    schema::{codec, queries},
-};
-
-/// The `{organization}/{database}` TerminusDB instance every deterministic global
-/// identifier is salted with, so a [`SymbolId`] is recomputable offline from the same instance.
+/// The `{organization}/{database}` instance token every deterministic global
+/// identifier is salted with, so a [`SymbolId`] is recomputable offline from
+/// the same instance. (The name is historical; no graph database is involved.)
 ///
-/// The wrapped string is validated to the `organization/database` shape on construction.
+/// The wrapped string is validated to the `organization/database` shape on
+/// construction.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TerminusInstance(String);
 
@@ -42,7 +46,6 @@ impl TerminusInstance {
     /// Rejects anything that is not exactly two non-empty, slash-separated segments.
     pub fn new(token: impl Into<String>) -> Result<Self, IndexError> {
         let token = token.into();
-
         match token.split_once('/') {
             Some((organization, database)) if !organization.is_empty() && !database.is_empty() => {
                 Ok(Self(token))
@@ -57,75 +60,48 @@ impl TerminusInstance {
     }
 }
 
-/// Our global store / connective tissue (postgres). `S` is the connection
-/// typestate ([`Cold`] until [`Connect::connect`], then [`Live`]).
-pub struct GlobalStore<S = Live> {
-    /// The connection pool to the postgres instance that owns the global index.
-    pool: sqlx::PgPool,
+/// Our global store / connective tissue: a handle over the catalog's
+/// single-writer (`index::store::writer::CatalogWriter` on `main`).
+///
+/// The old postgres `Cold`/`Live` connection typestate is gone: the catalog is
+/// a local engine opened synchronously at assembly, so there is no remote
+/// handshake to verify. Construction is [`GlobalStore::new`]; migrations run
+/// at assembly, before any store is built.
+pub struct GlobalStore<Engine: VersioningEngine> {
+    /// The catalog's single writer; all reads go through its engine too.
+    writer: Arc<CatalogWriter<Engine>>,
 
     /// The instance every global symbol identifier in this store is derived against.
     instance: TerminusInstance,
-
-    _state: std::marker::PhantomData<S>,
 }
 
-impl GlobalStore<Cold> {
-    /// Configure (but do not yet verify) a global store over a pool and instance.
-    pub fn new(pool: sqlx::PgPool, instance: TerminusInstance) -> Self {
+impl<Engine: VersioningEngine> Clone for GlobalStore<Engine> {
+    fn clone(&self) -> Self {
         Self {
-            pool,
-            instance,
-            _state: std::marker::PhantomData,
+            writer: Arc::clone(&self.writer),
+            instance: self.instance.clone(),
         }
     }
 }
 
-impl Connect for GlobalStore<Cold> {
-    type Live = GlobalStore<Live>;
-
-    /// Verify the pool is reachable and apply the schema, then go [`Live`].
-    async fn connect(self) -> Result<Self::Live, ConnectError> {
-        sqlx::query("SELECT 1")
-            .execute(&self.pool)
-            .await
-            .map_err(|error| ConnectError::new(BackendKind::Postgres, connect_failure(error)))?;
-
-        let mut transaction =
-            self.pool.begin().await.map_err(|error| {
-                ConnectError::new(BackendKind::Postgres, connect_failure(error))
-            })?;
-
-        for schema_statement in crate::schema::schema_ddl() {
-            sqlx::query(&schema_statement)
-                .execute(&mut *transaction)
-                .await
-                .map_err(|_| {
-                    ConnectError::new(BackendKind::Postgres, ConnectFailure::SchemaMismatch)
-                })?;
-        }
-
-        transaction
-            .commit()
-            .await
-            .map_err(|error| ConnectError::new(BackendKind::Postgres, connect_failure(error)))?;
-
-        Ok(GlobalStore {
-            pool: self.pool,
-            instance: self.instance,
-            _state: std::marker::PhantomData,
-        })
+impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
+    /// Wrap the catalog writer handle. The catalog must already be migrated.
+    pub fn new(writer: Arc<CatalogWriter<Engine>>, instance: TerminusInstance) -> Self {
+        Self { writer, instance }
     }
-}
 
-impl GlobalStore<Live> {
     /// The instance this store salts identifiers with.
     pub fn instance(&self) -> &TerminusInstance {
         &self.instance
     }
 
-    /// The shared connection pool, for cross-module transactional writes.
-    pub(crate) fn pool(&self) -> &sqlx::PgPool {
-        &self.pool
+    /// The shared writer handle, for cross-module writes on the same catalog.
+    pub fn writer(&self) -> &Arc<CatalogWriter<Engine>> {
+        &self.writer
+    }
+
+    fn engine(&self) -> &Engine {
+        self.writer.engine()
     }
 
     /// Mint the deterministic [`PackageId`] for coordinates.
@@ -138,23 +114,97 @@ impl GlobalStore<Live> {
         uri.symbol_id(self.instance.token())
     }
 
-    /// Upsert a package's global record (identity + state + generation).
+    /// The catalog stem id for coordinates: `(ecosystem_token, name_canonical)`
+    /// under heart's frozen framing law — the same framing every other stem
+    /// producer (ingestor, seeder) routes through.
+    pub fn stem_id(coordinates: &PackageCoordinates) -> PackageStemId {
+        let id = heart::identity::derive::package_id_from_parts([
+            coordinates.ecosystem().as_token().as_bytes(),
+            coordinates.name.canonical().as_bytes(),
+        ]);
+        PackageStemId::from_uuid(*id.as_uuid())
+    }
+
+    fn stem_wire(coordinates: &PackageCoordinates) -> PackageStemWire {
+        PackageStemWire {
+            stem_id: Self::stem_id(coordinates),
+            ecosystem: coordinates.ecosystem(),
+            // `name_struct` carries the registry origin token — the one
+            // coordinate axis schema v4 has no dedicated column for.
+            name_struct: coordinates.origin.token().into_owned(),
+            name_canonical: coordinates.name.canonical().to_owned(),
+            name_original: coordinates.name.original().to_owned(),
+        }
+    }
+
+    fn version_coordinates(coordinates: &PackageCoordinates) -> VersionCoordinates {
+        VersionCoordinates {
+            version_id: coordinates.id(),
+            stem_id: Self::stem_id(coordinates),
+            version_canonical: coordinates.version.canonical(),
+            version_original: coordinates.version.canonical(),
+        }
+    }
+
+    /// Upsert a package's global record (identity + metadata + state).
+    ///
+    /// Metadata lands via `apply_ops` (same-transaction outbox fan-out, ID-3);
+    /// the lifecycle columns land via the dedicated state path, which the
+    /// metadata upsert deliberately never touches.
     pub async fn upsert(&self, package: &GlobalPackage) -> Result<(), IndexError> {
-        let (identity_query, identity_parameters) = queries::index::upsert_package(
-            &package.package.coordinates,
-            &package.package.toolchain,
-        )
-        .map_err(convert_codec_error)?;
+        let coordinates = &package.package.coordinates;
+        let facet_wire = match &package.facets {
+            Some(facets) => {
+                let (keywords, quality_ppm, extras) = catalog_map::facets_to_row(facets)?;
+                FacetWire {
+                    keywords,
+                    quality_ppm,
+                    extras,
+                }
+            }
+            None => FacetWire::default(),
+        };
+        let toolchain_json = serde_json::to_string(&package.package.toolchain)
+            .map_err(IndexError::ToolchainJson)?;
+        self.writer.apply_ops(&[
+            CatalogOp::UpsertPackage {
+                stem: Self::stem_wire(coordinates),
+                repo_url: None,
+            },
+            CatalogOp::UpsertVersion {
+                coordinates: Self::version_coordinates(coordinates),
+                published_at: None,
+                toolchain: Some(index::protocol::ToolchainRef(toolchain_json.into())),
+                license: None,
+                edges: Vec::new(),
+                facets: facet_wire,
+                source: None,
+            },
+        ])?;
+        self.write_state(package.id, &package.state)
+    }
 
-        let (state_query, state_parameters) =
-            queries::index::set_state(package.id, &package.state).map_err(convert_codec_error)?;
-
-        let mut transaction = self.pool.begin().await.map_err(IndexError::BeginTx)?;
-
-        execute_query(&mut transaction, &identity_query, identity_parameters).await?;
-        execute_query(&mut transaction, &state_query, state_parameters).await?;
-
-        transaction.commit().await.map_err(IndexError::Commit)?;
+    fn write_state(&self, package: PackageId, state: &ResolutionState) -> Result<(), IndexError> {
+        let columns = catalog_map::state_to_columns(state)?;
+        if let Some(hash) = columns.stored_hash {
+            lifecycle::record_stored_generation(
+                self.engine(),
+                package,
+                hash.as_bytes(),
+                chrono::Utc::now().timestamp_millis(),
+            )?;
+        }
+        lifecycle::set_version_lifecycle(
+            self.engine(),
+            package,
+            columns.parse_state,
+            columns.parse_phase.as_deref(),
+            columns.failure_json.as_deref(),
+            matches!(
+                state,
+                ResolutionState::Failed(_) | ResolutionState::DeadLettered(_)
+            ),
+        )?;
         Ok(())
     }
 
@@ -164,57 +214,46 @@ impl GlobalStore<Live> {
         package: PackageId,
         state: &ResolutionState,
     ) -> Result<(), IndexError> {
-        let (query, parameters) =
-            queries::index::set_state(package, state).map_err(convert_codec_error)?;
-
-        sqlx::query_with(&query, parameters)
-            .execute(&self.pool)
-            .await
-            .map_err(IndexError::Database)?;
-
-        Ok(())
+        self.write_state(package, state)
     }
 
-    /// Advance a package's lifecycle state within an existing transaction.
-    pub async fn set_state_transaction(
-        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        package: PackageId,
-        state: &ResolutionState,
-    ) -> Result<(), IndexError> {
-        let (query, parameters) =
-            queries::index::set_state(package, state).map_err(convert_codec_error)?;
-
-        execute_query(transaction, &query, parameters).await
-    }
-
-    /// Fetch a package's current lifecycle [`ResolutionState`] from `parse_status`.
+    /// Fetch a package's current lifecycle [`ResolutionState`].
     pub async fn get_state(&self, package: PackageId) -> Result<ResolutionState, IndexError> {
-        let (query, parameters) = queries::index::get_state(package);
-
-        let row = sqlx::query_with(&query, parameters)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(IndexError::Database)?
+        let lifecycle_row = lifecycle::version_lifecycle(self.engine(), package)?
             .ok_or(IndexError::NotFound { package })?;
-
-        row_to_state(&row).map_err(convert_codec_error)
+        let stored_hash = lifecycle::latest_generation(self.engine(), package)?
+            .map(|stamp| ContentHash::from_bytes(stamp.to_blob()));
+        Ok(catalog_map::state_from_columns(&lifecycle_row, stored_hash)?)
     }
 
     /// Persist the last-observed registry listing status for a package.
-    /// `None` clears the column (status unknown). Follows the same nullable-jsonb
-    /// pattern as `set_facets`. The listing status is later read by the resolve
-    /// path to filter withdrawn versions from Latest/Constraint resolution.
+    ///
+    /// `Some(status)` appends a bitemporal `listing_events` row; `None`
+    /// ("status unknown") appends nothing — the event log records
+    /// observations, not the absence of one.
     pub async fn set_listing(
         &self,
         package: PackageId,
         listing: Option<&ecosystem::upstream::ListingStatus>,
     ) -> Result<(), IndexError> {
-        let (query, parameters) =
-            queries::index::set_listing(package, listing).map_err(convert_codec_error)?;
-        sqlx::query_with(&query, parameters)
-            .execute(&self.pool)
-            .await
-            .map_err(IndexError::Database)?;
+        let Some(status) = listing else {
+            return Ok(());
+        };
+        let (wire_status, reason) = match status {
+            ecosystem::upstream::ListingStatus::Listed => {
+                (index::enums::ListingStatus::Listed, None)
+            }
+            ecosystem::upstream::ListingStatus::Withdrawn { reason } => (
+                index::enums::ListingStatus::Withdrawn,
+                reason.as_ref().map(|r| r.to_string()),
+            ),
+        };
+        self.writer.apply_ops(&[CatalogOp::SetListing {
+            version: package,
+            status: wire_status,
+            valid_from: chrono::Utc::now().timestamp_millis(),
+            reason,
+        }])?;
         Ok(())
     }
 
@@ -223,46 +262,61 @@ impl GlobalStore<Live> {
         &self,
         package: PackageId,
     ) -> Result<Option<ecosystem::upstream::ListingStatus>, IndexError> {
-        let (query, parameters) = queries::index::get_listing(package);
-        let row = sqlx::query_with(&query, parameters)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(IndexError::Database)?;
-        let Some(row) = row else {
+        let Some((status_token, reason)) = lifecycle::latest_listing(self.engine(), package)?
+        else {
             return Ok(None);
         };
-        let val: Option<serde_json::Value> = row.try_get(0).map_err(|e| IndexError::RowDecode {
-            column: "listing",
-            source: e,
-        })?;
-        match val {
-            None => Ok(None),
-            Some(v) => serde_json::from_value(v)
-                .map(Some)
-                .map_err(|e| IndexError::Codec(crate::schema::codec::CodecError::Json {
-                    domain: "ListingStatus",
-                    source: e,
-                })),
-        }
+        Ok(match status_token.as_str() {
+            "listed" => Some(ecosystem::upstream::ListingStatus::Listed),
+            // `advisory` / `deprecated` rows are advisory-plane events, not a
+            // listing observation — the resolve path treats them as listed.
+            "advisory" | "deprecated" => Some(ecosystem::upstream::ListingStatus::Listed),
+            _ => Some(ecosystem::upstream::ListingStatus::Withdrawn {
+                reason: reason.map(Into::into),
+            }),
+        })
     }
 
     /// Fetch a package's current global record.
     pub async fn get(&self, package: PackageId) -> Result<GlobalPackage, IndexError> {
         let state = self.get_state(package).await?;
-
-        let (query, parameters) = queries::index::get_package(package);
-        let row = sqlx::query_with(&query, parameters)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(IndexError::Database)?
+        let (
+            version_canonical,
+            _version_original,
+            toolchain_json,
+            ecosystem_token,
+            _name_canonical,
+            name_original,
+            origin_token,
+        ) = lifecycle::version_record(self.engine(), package)?
             .ok_or(IndexError::NotFound { package })?;
 
-        let package_data = row_to_package(&row).map_err(convert_codec_error)?;
-        let facets = row_to_facets(&row).map_err(convert_codec_error)?;
+        let coordinates = crate::schema::codec::coordinates_from_columns(
+            &ecosystem_token,
+            &origin_token,
+            &name_original,
+            &version_canonical,
+        )?;
+        let toolchain = toolchain_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(IndexError::ToolchainJson)?
+            .ok_or(IndexError::NotFound { package })?;
+
+        let facets = match lifecycle::facets_for(self.engine(), package)? {
+            Some((_keywords, _quality, extras)) => {
+                catalog_map::facets_from_extras(extras.as_deref())?
+            }
+            None => None,
+        };
 
         Ok(GlobalPackage {
-            id: package_data.id(),
-            package: package_data,
+            id: coordinates.id(),
+            package: crate::Package {
+                coordinates,
+                toolchain,
+            },
             state,
             facets,
         })
@@ -270,27 +324,17 @@ impl GlobalStore<Live> {
 
     /// The recorded snapshot [`ContentHash`] for a package.
     pub async fn generation(&self, package: PackageId) -> Result<Option<ContentHash>, IndexError> {
-        let (query, parameters) = queries::index::get_generation(package);
-
-        let row_option = sqlx::query_with(&query, parameters)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(IndexError::Database)?;
-
-        let Some(row) = row_option else {
-            return Ok(None);
-        };
-
-        let Some(bytes): Option<Vec<u8>> = row.try_get(0).map_err(IndexError::Database)? else {
-            return Ok(None);
-        };
-
-        codec::generation_from_bytes(&bytes)
-            .map(Some)
-            .map_err(convert_codec_error)
+        Ok(lifecycle::latest_generation(self.engine(), package)?
+            .map(|stamp| ContentHash::from_bytes(stamp.to_blob())))
     }
 
-    /// Upsert a serving-projection symbol row, keyed on its deterministic global identifier.
+    /// Upsert a serving-projection symbol row, keyed on its deterministic
+    /// global identifier.
+    ///
+    /// The catalog's `symbols_proj.intro_id` slot is BLOB32 (the IR plane's
+    /// IntroId); until the IR plane feeds it directly, the registry's 16-byte
+    /// [`SymbolId`] occupies the first half, zero-padded — documented, total,
+    /// reversible.
     pub async fn upsert_symbol(
         &self,
         identifier: SymbolId,
@@ -299,364 +343,197 @@ impl GlobalStore<Live> {
         kind: heart::SymbolKind,
         generation: ContentHash,
     ) -> Result<(), IndexError> {
-        let (query, parameters) = queries::index::upsert_symbol(
-            identifier,
+        lifecycle::upsert_symbol_projection(
+            self.engine(),
+            &symbol_slot(identifier),
             package,
+            generation.as_bytes(),
             fully_qualified_name,
-            kind,
-            generation,
-        );
-
-        sqlx::query_with(&query, parameters)
-            .execute(&self.pool)
-            .await
-            .map_err(IndexError::Database)?;
-
+            &kind.to_string(),
+        )?;
         Ok(())
+    }
+
+    /// Read a package's serving-projection symbols back out of the global index.
+    pub async fn symbols_for(&self, package: PackageId) -> Result<Vec<heart::Symbol>, IndexError> {
+        let (_, _, _, ecosystem_token, ..) = lifecycle::version_record(self.engine(), package)?
+            .ok_or(IndexError::NotFound { package })?;
+        let ecosystem = crate::schema::codec::ecosystem_from_token(&ecosystem_token)?;
+
+        lifecycle::symbols_for_version(self.engine(), package)?
+            .into_iter()
+            .map(|(intro_blob, moniker, kind_token)| {
+                let kind = std::str::FromStr::from_str(&kind_token)
+                    .map_err(|_| IndexError::UnknownSymbolKind { token: kind_token })?;
+                Ok(heart::Symbol {
+                    id: symbol_from_slot(&intro_blob),
+                    package,
+                    ecosystem,
+                    name: heart::Name {
+                        plain: extract_plain_name(&moniker).into(),
+                        fully_qualified: moniker.into(),
+                    },
+                    kind,
+                })
+            })
+            .collect()
     }
 
     /// Recompute the corpus-wide reverse-dependency counts and persist each
     /// package's `dependents` into its stored facets. Returns packages updated.
-    /// Runs in pages; safe to re-run (idempotent overwrite). Writes the count
-    /// for every package that appears as a dependency target; packages with no
-    /// dependents receive a `0` write so stale counts from prior sweeps decay.
+    /// Runs in pages; safe to re-run (idempotent overwrite). Every changed
+    /// facet write emits an outbox row, so the tantivy sync refolds exactly the
+    /// packages whose counts moved.
     pub async fn refresh_dependents(&self) -> Result<u64, IndexError> {
         use crate::search::dependents::{DependencyRow, count_dependents};
 
-        const PAGE_SIZE: u64 = 1_000;
-
-        // Collect all rows from the paginated scan.
-        let mut rows: Vec<DependencyRow> = Vec::new();
-        let mut after: Option<uuid::Uuid> = None;
-        loop {
-            let (sql, params) = queries::search::all_current_facets(PAGE_SIZE, after);
-            let page = sqlx::query_with(&sql, params)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(IndexError::Database)?;
-
-            let done = page.len() < PAGE_SIZE as usize;
-            let mut last_id: Option<uuid::Uuid> = None;
-
-            for row in &page {
-                let id: uuid::Uuid = row.try_get(0).map_err(IndexError::Database)?;
-                let language: String = row.try_get(1).map_err(IndexError::Database)?;
-                let name_canonical: String = row.try_get(2).map_err(IndexError::Database)?;
-                let facets_json: Option<serde_json::Value> =
-                    row.try_get(3).map_err(IndexError::Database)?;
-
-                last_id = Some(id);
-
-                let ecosystem = codec::ecosystem_from_token(&language)
-                    .map_err(convert_codec_error)?;
-
-                let dependencies = facets_json
-                    .as_ref()
-                    .and_then(|v| {
-                        codec::facets_from_json(Some(v))
-                            .ok()
-                            .flatten()
-                            .map(|f| f.dependencies)
-                    })
-                    .unwrap_or_default();
-
-                rows.push(DependencyRow {
-                    ecosystem,
-                    name: smol_str::SmolStr::from(name_canonical),
-                    dependencies,
-                });
-            }
-
-            after = last_id;
-            if done {
-                break;
-            }
-        }
-
-        // Build corpus-wide dependents counts from the collected rows.
+        let pages = self.collect_facet_pages()?;
+        let rows: Vec<DependencyRow> = pages
+            .iter()
+            .filter_map(|(_, ecosystem, name, facets)| {
+                Some(DependencyRow {
+                    ecosystem: *ecosystem,
+                    name: name.clone(),
+                    dependencies: facets.as_ref()?.dependencies.clone(),
+                })
+            })
+            .collect();
         let counts = count_dependents(rows);
 
-        // Write counts back — but only where the stored value actually changed.
-        // Every write also bumps `packages.updated_at` (the tantivy sync's
-        // `changed_since` poll filters on it, not on `parse_status.updated_at`),
-        // so an unconditional rewrite would force a full replica re-fold of the
-        // corpus on every sweep. Packages that stopped being depended on decay
-        // to `0` the same way (stored `Some(n>0)` → counted `0` is a change).
-        let mut updated: u64 = 0;
-        let mut after: Option<uuid::Uuid> = None;
-        loop {
-            let (sql, params) = queries::search::all_current_facets(PAGE_SIZE, after);
-            let page = sqlx::query_with(&sql, params)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(IndexError::Database)?;
-
-            let done = page.len() < PAGE_SIZE as usize;
-            let mut last_id: Option<uuid::Uuid> = None;
-
-            for row in &page {
-                let id: uuid::Uuid = row.try_get(0).map_err(IndexError::Database)?;
-                let language: String = row.try_get(1).map_err(IndexError::Database)?;
-                let name_canonical: String = row.try_get(2).map_err(IndexError::Database)?;
-                let facets_json: Option<serde_json::Value> =
-                    row.try_get(3).map_err(IndexError::Database)?;
-
-                last_id = Some(id);
-
-                let ecosystem = codec::ecosystem_from_token(&language)
-                    .map_err(convert_codec_error)?;
-                let name = smol_str::SmolStr::from(name_canonical);
-                let dep_count = counts
-                    .get(&(ecosystem, name))
-                    .copied()
-                    .unwrap_or(0);
-
-                let stored = facets_json
-                    .as_ref()
-                    .and_then(|v| v.get("dependents"))
-                    .and_then(serde_json::Value::as_u64)
-                    .map(|n| n as u32);
-                if stored == Some(dep_count) {
-                    continue;
-                }
-
-                let package = codec::package_id_from_uuid(id);
-                let mut tx = self.pool.begin().await.map_err(IndexError::BeginTx)?;
-                let (q, p) = queries::index::set_dependents(package, dep_count)
-                    .map_err(convert_codec_error)?;
-                execute_query(&mut tx, &q, p).await?;
-                let (touch_q, touch_p) = queries::index::touch_package(package);
-                execute_query(&mut tx, &touch_q, touch_p).await?;
-                tx.commit().await.map_err(IndexError::Commit)?;
-                updated += 1;
+        let mut updated = 0u64;
+        for (package, ecosystem, name, facets) in pages {
+            let counted = counts.get(&(ecosystem, name)).copied().unwrap_or(0);
+            let Some(mut facets) = facets else {
+                continue;
+            };
+            if facets.dependents == Some(counted) {
+                continue;
             }
-
-            after = last_id;
-            if done {
-                break;
-            }
+            facets.dependents = Some(counted);
+            self.persist_facets(package, &facets)?;
+            updated += 1;
         }
-
         Ok(updated)
     }
 
     /// Recompute per-ecosystem popularity percentiles and persist
     /// `facets.popularity_pct` (parts-per-10_000). Groups packages by language
-    /// so crates.io volume never sets npm's percentile floor.
-    ///
-    /// Popularity value per package = max(dependents × DEPENDENT_DOWNLOAD_EQUIV,
-    /// downloads) when either signal exists; packages with neither skip the CDF
-    /// (stored pct left unchanged / cleared only when previously set and now
-    /// unscoreable is not done — they keep prior pct until next successful score).
-    ///
-    /// Only writes when the stored value changes (same touch discipline as
-    /// [`Self::refresh_dependents`]).
+    /// so crates.io volume never sets npm's percentile floor. Only writes when
+    /// the stored value changes.
     pub async fn refresh_popularity_percentiles(&self) -> Result<u64, IndexError> {
         use crate::metadata::SearchFacets;
         use crate::search::popularity::{DEPENDENT_DOWNLOAD_EQUIV, assign_percentiles};
         use std::collections::HashMap;
 
-        const PAGE_SIZE: u64 = 1_000;
+        let pages = self.collect_facet_pages()?;
 
-        // eco → Vec<(package_id, popularity_value)>
-        let mut by_eco: HashMap<heart::Language, Vec<(PackageId, u64)>> = HashMap::new();
-        // package → currently stored popularity_pct
-        let mut stored_pct: HashMap<PackageId, Option<u16>> = HashMap::new();
-
-        let mut after: Option<uuid::Uuid> = None;
-        loop {
-            let (sql, params) = queries::search::all_current_facets(PAGE_SIZE, after);
-            let page = sqlx::query_with(&sql, params)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(IndexError::Database)?;
-
-            let done = page.len() < PAGE_SIZE as usize;
-            let mut last_id: Option<uuid::Uuid> = None;
-
-            for row in &page {
-                let id: uuid::Uuid = row.try_get(0).map_err(IndexError::Database)?;
-                let language: String = row.try_get(1).map_err(IndexError::Database)?;
-                let facets_json: Option<serde_json::Value> =
-                    row.try_get(3).map_err(IndexError::Database)?;
-                last_id = Some(id);
-
-                let ecosystem = codec::ecosystem_from_token(&language)
-                    .map_err(convert_codec_error)?;
-                let package = codec::package_id_from_uuid(id);
-
-                let facets = facets_json
-                    .as_ref()
-                    .and_then(|v| codec::facets_from_json(Some(v)).ok().flatten());
-
-                let stored = facets.as_ref().and_then(|f| f.popularity_pct);
-                stored_pct.insert(package, stored);
-
-                let Some(f) = facets else { continue };
-                let dep_equiv = f
-                    .dependents
-                    .map(|d| u64::from(d).saturating_mul(DEPENDENT_DOWNLOAD_EQUIV));
-                let downloads = f.downloads;
-                let value = match (dep_equiv, downloads) {
-                    (Some(a), Some(b)) => a.max(b),
-                    (Some(a), None) | (None, Some(a)) => a,
-                    (None, None) => continue,
-                };
-                by_eco.entry(ecosystem).or_default().push((package, value));
-            }
-
-            after = last_id;
-            if done {
-                break;
-            }
+        let mut by_ecosystem: HashMap<heart::Language, Vec<(PackageId, u64)>> = HashMap::new();
+        for (package, ecosystem, _, facets) in &pages {
+            let Some(facets) = facets else { continue };
+            let dependent_equivalent = facets
+                .dependents
+                .map(|count| u64::from(count).saturating_mul(DEPENDENT_DOWNLOAD_EQUIV));
+            let value = match (dependent_equivalent, facets.downloads) {
+                (Some(a), Some(b)) => a.max(b),
+                (Some(a), None) | (None, Some(a)) => a,
+                (None, None) => continue,
+            };
+            by_ecosystem
+                .entry(*ecosystem)
+                .or_default()
+                .push((*package, value));
         }
 
-        // Per-eco CDF → target pct map.
         let mut target: HashMap<PackageId, u16> = HashMap::new();
-        for (_eco, items) in by_eco {
-            let pcts = assign_percentiles(&items);
-            for (id, pct) in pcts {
+        for items in by_ecosystem.into_values() {
+            for (id, pct) in assign_percentiles(&items) {
                 target.insert(id, SearchFacets::encode_popularity_pct(pct));
             }
         }
 
-        let mut updated: u64 = 0;
-        for (package, new_pct) in target {
-            if stored_pct.get(&package).copied().flatten() == Some(new_pct) {
+        let mut updated = 0u64;
+        for (package, _, _, facets) in pages {
+            let Some(mut facets) = facets else { continue };
+            let Some(new_pct) = target.get(&package).copied() else {
+                continue;
+            };
+            if facets.popularity_pct == Some(new_pct) {
                 continue;
             }
-            let mut tx = self.pool.begin().await.map_err(IndexError::BeginTx)?;
-            let (q, p) = queries::index::set_popularity_pct(package, new_pct)
-                .map_err(convert_codec_error)?;
-            execute_query(&mut tx, &q, p).await?;
-            let (touch_q, touch_p) = queries::index::touch_package(package);
-            execute_query(&mut tx, &touch_q, touch_p).await?;
-            tx.commit().await.map_err(IndexError::Commit)?;
+            facets.popularity_pct = Some(new_pct);
+            self.persist_facets(package, &facets)?;
             updated += 1;
         }
-
         Ok(updated)
     }
 
-    /// Read a package's serving-projection symbols back out of the global index.
-    pub async fn symbols_for(&self, package: PackageId) -> Result<Vec<heart::Symbol>, IndexError> {
-        let (query, parameters) = queries::index::symbols_for(package);
+    /// Page the whole corpus's `(version, ecosystem, name, facets)` rows.
+    #[allow(clippy::type_complexity)]
+    fn collect_facet_pages(
+        &self,
+    ) -> Result<
+        Vec<(
+            PackageId,
+            heart::Language,
+            smol_str::SmolStr,
+            Option<crate::metadata::SearchFacets>,
+        )>,
+        IndexError,
+    > {
+        const PAGE_SIZE: u64 = 1_000;
+        let mut collected = Vec::new();
+        let mut after: Option<PackageId> = None;
+        loop {
+            let page = lifecycle::scan_version_facets(self.engine(), after, PAGE_SIZE)?;
+            let done = (page.len() as u64) < PAGE_SIZE;
+            for (package, ecosystem_token, name_canonical, extras) in page {
+                after = Some(package);
+                let ecosystem = crate::schema::codec::ecosystem_from_token(&ecosystem_token)?;
+                let facets = catalog_map::facets_from_extras(extras.as_deref())?;
+                collected.push((
+                    package,
+                    ecosystem,
+                    smol_str::SmolStr::from(name_canonical),
+                    facets,
+                ));
+            }
+            if done {
+                break;
+            }
+        }
+        Ok(collected)
+    }
 
-        let rows = sqlx::query_with(&query, parameters)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(IndexError::Database)?;
-
-        rows.iter().map(row_to_symbol).collect()
+    fn persist_facets(
+        &self,
+        package: PackageId,
+        facets: &crate::metadata::SearchFacets,
+    ) -> Result<(), IndexError> {
+        let (keywords, quality_ppm, extras) = catalog_map::facets_to_row(facets)?;
+        lifecycle::set_facets(
+            self.engine(),
+            package,
+            keywords.as_deref(),
+            quality_ppm,
+            extras.as_deref(),
+        )?;
+        Ok(())
     }
 }
 
-// -----------------------------------------------------------------------------
-// Database Query Helpers
-// -----------------------------------------------------------------------------
-
-/// Executes a database query inside a transaction, mapping to `IndexError::Database` on failure.
-async fn execute_query(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    query: &str,
-    parameters: SqlxValues,
-) -> Result<(), IndexError> {
-    sqlx::query_with(query, parameters)
-        .execute(&mut **transaction)
-        .await
-        .map_err(IndexError::Database)?;
-    Ok(())
+/// Pack a 16-byte [`SymbolId`] into the BLOB32 `intro_id` slot (zero-padded).
+fn symbol_slot(identifier: SymbolId) -> [u8; 32] {
+    let mut slot = [0u8; 32];
+    slot[..16].copy_from_slice(identifier.as_uuid().as_bytes());
+    slot
 }
 
-// -----------------------------------------------------------------------------
-// Decoding Functions
-// -----------------------------------------------------------------------------
-
-fn row_to_symbol(row: &PgRow) -> Result<heart::Symbol, IndexError> {
-    let identifier: uuid::Uuid = row.try_get(0).map_err(IndexError::Database)?;
-    let package_uuid: uuid::Uuid = row.try_get(1).map_err(IndexError::Database)?;
-    let fully_qualified_name: String = row.try_get(2).map_err(IndexError::Database)?;
-    let kind_token: String = row.try_get(3).map_err(IndexError::Database)?;
-    let language: String = row.try_get(4).map_err(IndexError::Database)?;
-
-    let ecosystem = codec::ecosystem_from_token(&language).map_err(convert_codec_error)?;
-
-    let kind = parse_symbol_kind(&kind_token)
-        .ok_or(IndexError::UnknownSymbolKind { token: kind_token })?;
-
-    Ok(heart::Symbol {
-        id: heart::SymbolId::from_uuid(identifier),
-        package: codec::package_id_from_uuid(package_uuid),
-        ecosystem,
-        name: heart::Name {
-            plain: extract_plain_name(&fully_qualified_name).into(),
-            fully_qualified: fully_qualified_name.into(),
-        },
-        kind,
-    })
-}
-
-fn row_to_package(row: &PgRow) -> Result<crate::Package, codec::CodecError> {
-    let language: String = row.try_get(1).map_err(decode_package_row)?;
-    let origin_token: String = row.try_get(2).map_err(decode_package_row)?;
-    let name_original: String = row.try_get(4).map_err(decode_package_row)?;
-    let version_canonical: String = row.try_get(5).map_err(decode_package_row)?;
-    let visibility_token: String = row.try_get(6).map_err(decode_package_row)?;
-    let owner_kind_token: String = row.try_get(8).map_err(decode_package_row)?;
-    let toolchain_json: serde_json::Value = row.try_get(9).map_err(decode_package_row)?;
-
-    let coordinates = codec::coordinates_from_columns(
-        &language,
-        &origin_token,
-        &name_original,
-        &version_canonical,
-    )?;
-
-    // Utilizing ? for validation side-effects rather than binding to unused variables.
-    codec::visibility_from_token(&visibility_token)?;
-    codec::owner_kind_from_token(&owner_kind_token)?;
-
-    let toolchain = codec::toolchain_from_json(&toolchain_json)?;
-
-    Ok(crate::Package {
-        coordinates,
-        toolchain,
-    })
-}
-
-fn row_to_facets(row: &PgRow) -> Result<Option<crate::metadata::SearchFacets>, codec::CodecError> {
-    let facets_json: Option<serde_json::Value> =
-        row.try_get(10)
-            .map_err(|source| codec::CodecError::SqlxDecode {
-                domain: "parse_status.facets",
-                source,
-            })?;
-
-    codec::facets_from_json(facets_json.as_ref())
-}
-
-fn row_to_state(row: &PgRow) -> Result<ResolutionState, codec::CodecError> {
-    let state: String = row.try_get(0).map_err(decode_state_row)?;
-    let phase: Option<String> = row.try_get(1).map_err(decode_state_row)?;
-    let content_hash: Option<Vec<u8>> = row.try_get(2).map_err(decode_state_row)?;
-    let needed: bool = row.try_get(3).map_err(decode_state_row)?;
-    let failure: Option<serde_json::Value> = row.try_get(4).map_err(decode_state_row)?;
-
-    codec::state_from_columns(
-        &state,
-        phase.as_deref(),
-        content_hash.as_deref(),
-        needed,
-        failure.as_ref(),
-    )
-}
-
-// -----------------------------------------------------------------------------
-// Utilities & Error Converters
-// -----------------------------------------------------------------------------
-
-fn parse_symbol_kind(raw: &str) -> Option<heart::SymbolKind> {
-    heart::SymbolKind::from_str(raw).ok()
+/// Recover the [`SymbolId`] from the first half of the BLOB32 slot.
+fn symbol_from_slot(blob: &[u8]) -> SymbolId {
+    let mut bytes = [0u8; 16];
+    let take = blob.len().min(16);
+    bytes[..take].copy_from_slice(&blob[..take]);
+    SymbolId::from_uuid(uuid::Uuid::from_bytes(bytes))
 }
 
 fn extract_plain_name(fully_qualified_name: &str) -> &str {
@@ -666,43 +543,17 @@ fn extract_plain_name(fully_qualified_name: &str) -> &str {
         .unwrap_or(fully_qualified_name)
 }
 
-fn convert_codec_error(error: codec::CodecError) -> IndexError {
-    IndexError::Codec(error)
-}
-
-fn connect_failure(error: sqlx::Error) -> ConnectFailure {
-    match error {
-        sqlx::Error::PoolTimedOut => ConnectFailure::Timeout,
-        sqlx::Error::Io(_) => ConnectFailure::Unreachable,
-        other => ConnectFailure::Other(other.into()),
-    }
-}
-
-fn decode_package_row(source: sqlx::Error) -> codec::CodecError {
-    codec::CodecError::SqlxDecode {
-        domain: "packages row",
-        source,
-    }
-}
-
-fn decode_state_row(source: sqlx::Error) -> codec::CodecError {
-    codec::CodecError::SqlxDecode {
-        domain: "parse_status row",
-        source,
-    }
-}
-
 // -----------------------------------------------------------------------------
 // Probe
 // -----------------------------------------------------------------------------
 
-impl Probeable for GlobalStore<Live> {
+impl<Engine: VersioningEngine + Send + Sync> Probeable for GlobalStore<Engine> {
     fn backend(&self) -> BackendKind {
-        BackendKind::Postgres
+        BackendKind::Catalog
     }
 
     async fn probe(&self) -> heart::Probe {
-        timed_probe(BackendKind::Postgres, async {
+        timed_probe(BackendKind::Catalog, async {
             match self
                 .get_state(PackageId::from_uuid(heart::Guid::nil()))
                 .await
@@ -714,8 +565,3 @@ impl Probeable for GlobalStore<Live> {
         .await
     }
 }
-
-const _: fn() = || {
-    // Fail at this crate if probe futures stop being Send.
-    heart::assert_probe_future_send::<GlobalStore<Live>>();
-};

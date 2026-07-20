@@ -64,12 +64,12 @@ impl<M: EmbeddingModel> Server<M> {
 
 /// Probe one source's five backends concurrently via [`Probeable`].
 async fn probe_source<M: EmbeddingModel>(stores: &SourceStores<M>) -> Vec<heart::Probe> {
-	let (postgres, object_store, terminus, qdrant, tantivy) = tokio::join!(
+	let (catalog, object_store, terminus, qdrant, tantivy) = tokio::join!(
 		stores.global_store.probe(),
 		stores.blobs.probe(),
 		stores.graph.probe(),
 		stores.semantics.probe(),
 		stores.text.probe(),
 	);
-	vec![postgres, object_store, terminus, qdrant, tantivy]
+	vec![catalog, object_store, terminus, qdrant, tantivy]
 }

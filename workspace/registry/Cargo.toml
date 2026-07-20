@@ -16,7 +16,17 @@ path = "lib.rs"
 # `crate::cas` (backed by `object_store`), and version logic in `heart::version`.
 heart = { path = "../heart" }
 ecosystem = { path = "../ecosystem" }
+# The versioned catalog + ephemeral scratch store (INDEX-PLAN). The scratch
+# store (jobs/wanted/sessions/claims) is plain rusqlite and needs no engine
+# feature; the catalog engine feature is selected by the top-level binary.
+index = { path = "../index" }
 ir    = { path = "../ir" }
+# IR data model (declaration + body + view) — drives registry/graph.
+# Does NOT pull libpijul (libpijul lives in nudox-ir-vcs, a separate crate).
+nudox-ir     = { path = "../nudox-ir" }
+nudox-change = { path = "../nudox-change" }
+# Graph query layer — pinned to the exact patch so the schema API is stable.
+trustfall = "=0.8.1"
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
 tokio        = { version = "1.52",  features = ["full"] }
@@ -25,27 +35,6 @@ futures-util = { version = "0.3" }
 tokio-stream = { version = "0.1" }
 tokio-util   = { version = "0.6" }
 
-# ── SQL / postgres ────────────────────────────────────────────────────────────
-sqlx = { version = "0.8", default-features = false, features = [
-    "runtime-tokio-rustls",
-    "macros",
-    "postgres",
-    "uuid",
-    "json",
-    "chrono",
-    "migrate",
-] }
-libsqlite3-sys = { version = "0.30", features = ["bundled"] }
-
-# ── Query builder ─────────────────────────────────────────────────────────────
-sea-query        = { version = "0.32" }
-sea-query-binder = { version = "0.7", features = [
-    "runtime-tokio-rustls",
-    "sqlx-postgres",
-    "with-chrono",
-    "with-json",
-    "with-uuid",
-] }
 
 # ── Object / blob store ───────────────────────────────────────────────────────
 object_store = { version = "0.11" }

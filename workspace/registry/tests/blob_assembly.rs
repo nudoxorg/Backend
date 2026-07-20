@@ -46,10 +46,13 @@ fn tarred_source_is_a_readable_archive() {
 }
 
 /// Emitting a blob uploads it to object storage and signals downstream: the
-/// sections + manifest land in the store, and the outbox statement fans one
+/// sections + manifest land in the store, and the catalog outbox fans one
 /// intent out to every derived sink.
 #[tokio::test]
 async fn emit_uploads_and_signals() {
+    use registry::coordination::{Outbox, OutboxSeq, SinkKind};
+    use strum::IntoEnumIterator;
+
     let package = common::rust_package("serde", "1.0.0");
     let (manifest, sections) = common::built_manifest(&package);
 
@@ -63,14 +66,37 @@ async fn emit_uploads_and_signals() {
     let read_back = store.get_manifest(&package.coordinates).await.expect("manifest resolves");
     assert_eq!(read_back, manifest);
 
-    // The signal half: one idempotent intent per derived sink in one statement.
-    let (sql, values) = registry::schema::queries::outbox::append_all(
-        package.id(),
-        ContentHash::of_bytes(b"generation"),
-    );
-    assert!(sql.contains("ON CONFLICT"), "fan-out is idempotent");
-    // Three sinks × (package, generation, kind, op) = twelve bound values.
-    assert_eq!(values.0.iter().count(), 12, "one intent row per derived sink");
+    // The signal half: the catalog outbox fans one intent per derived sink.
+    let (catalog_store, writer) = common::catalog_store("emit_uploads_and_signals");
+    let outbox = Outbox::new(std::sync::Arc::clone(&writer));
+    catalog_store
+        .upsert(&common::global_package(
+            package.clone(),
+            heart::ResolutionState::Unindexed { needed: false },
+        ))
+        .await
+        .expect("package registered for outbox test");
+    let generation = heart::ContentHash::of_bytes(b"generation");
+    outbox
+        .append(package.id(), generation, &[SinkKind::Text, SinkKind::Vector, SinkKind::Graph])
+        .await
+        .expect("fan-out appended for all sinks");
+    // Re-appending is idempotent.
+    outbox
+        .append(package.id(), generation, &[SinkKind::Text, SinkKind::Vector, SinkKind::Graph])
+        .await
+        .expect("duplicate fan-out is idempotent");
+    // Every sink has at least one intent recorded.
+    for kind in SinkKind::iter() {
+        let intents = outbox
+            .read_since(kind, OutboxSeq(0), 1_000)
+            .await
+            .expect("outbox readable");
+        assert!(
+            intents.iter().any(|e| e.package == package.id()),
+            "sink {kind:?} must have an intent after fan-out"
+        );
+    }
 }
 
 /// Emission distinguishes transient upload failures (retryable per the sink

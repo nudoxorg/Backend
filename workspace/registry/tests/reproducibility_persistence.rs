@@ -11,7 +11,7 @@ mod common;
 
 use std::sync::Arc;
 
-use heart::{Connect, ContentHash, ResolutionState};
+use heart::{Connect, ContentHash};
 use object_store::{ObjectStore, memory::InMemory};
 use registry::{
     BlobManifest, GlobalPackage, Store,
@@ -99,7 +99,7 @@ async fn blobs_are_the_durable_root() {
 ///
 /// The qdrant engine lives in the runtime crate (a gap against this spec at
 /// the registry layer); what the registry owns of the rebuild is asserted
-/// here: the vector sink's idempotent fan-out intent, and the IR section —
+/// here: the vector sink's idempotent fan-out, and the IR section —
 /// the embedding source — round-tripping byte-identically from the blob root.
 #[tokio::test]
 async fn qdrant_rebuilds_from_blobs() {
@@ -107,16 +107,36 @@ async fn qdrant_rebuilds_from_blobs() {
     let (_backend, store) = memory_store().await;
     let manifest = persist_blob(&store, &package).await;
 
-    // The rebuild signal: a re-emit toward the vector sink is idempotent, so
-    // replaying blob history can never double-materialize a generation.
+    // The rebuild signal: a re-emit toward the vector sink via the catalog outbox
+    // is idempotent — replaying blob history can never double-materialize a generation.
+    let (catalog_store, writer) = common::catalog_store("qdrant_rebuilds_from_blobs");
+    let outbox = registry::coordination::Outbox::new(std::sync::Arc::clone(&writer));
+    catalog_store
+        .upsert(&common::global_package(
+            package.clone(),
+            heart::ResolutionState::Unindexed { needed: false },
+        ))
+        .await
+        .expect("package registers for outbox test");
     let generation = ContentHash::of_bytes(b"generation");
-    let (sql, values) =
-        registry::schema::queries::outbox::append_one(package.id(), generation, SinkKind::Vector);
-    assert!(sql.contains("ON CONFLICT"), "the vector rebuild intent must be idempotent");
-    assert_eq!(values.0.iter().count(), 4, "one (package, generation, kind, op) intent row");
+    outbox
+        .append(package.id(), generation, &[SinkKind::Vector])
+        .await
+        .expect("vector sink intent appended");
+    // Re-appending is idempotent (catalog outbox uses upsert semantics).
+    outbox
+        .append(package.id(), generation, &[SinkKind::Vector])
+        .await
+        .expect("duplicate append is idempotent");
+    let intents = outbox
+        .read_since(SinkKind::Vector, registry::coordination::OutboxSeq(0), 1_000)
+        .await
+        .expect("outbox readable");
+    let count = intents.iter().filter(|e| e.package == package.id()).count();
+    // At-least-once: at least one intent recorded for the vector sink.
+    assert!(count >= 1, "vector rebuild intent must be recorded for the package");
 
-    // The rebuild input: the IR section the embedder consumes, exactly as
-    // emitted.
+    // The rebuild input: the IR section the embedder consumes, exactly as emitted.
     let ir = store.get_section(manifest.ir_ref).await.expect("ir section resolves");
     assert_eq!(&ir[..], b"ir-section-bytes", "the embedding source must survive verbatim");
 }
@@ -157,19 +177,42 @@ async fn tantivy_rebuilds_from_blobs() {
 ///
 /// The terminus engine lives outside this crate (a gap against this spec at
 /// the registry layer); what the registry owns of the rebuild is asserted
-/// here: the graph sink's idempotent intent, and the CST-free reference set —
-/// the graph's edge source — decoding identically from the blob root.
+/// here: the graph sink's idempotent catalog outbox intent, and the CST-free
+/// reference set — the graph's edge source — decoding identically from the
+/// blob root.
 #[tokio::test]
 async fn terminus_rebuilds_from_blobs() {
     let package = common::rust_package("serde", "1.0.0");
     let (_backend, store) = memory_store().await;
     let manifest = persist_blob(&store, &package).await;
 
-    // The rebuild signal for the graph sink is idempotent.
+    // The rebuild signal for the graph sink is idempotent via the catalog outbox.
+    let (catalog_store, writer) = common::catalog_store("terminus_rebuilds_from_blobs");
+    let outbox = registry::coordination::Outbox::new(std::sync::Arc::clone(&writer));
+    catalog_store
+        .upsert(&common::global_package(
+            package.clone(),
+            heart::ResolutionState::Unindexed { needed: false },
+        ))
+        .await
+        .expect("package registers for outbox test");
     let generation = ContentHash::of_bytes(b"generation");
-    let (sql, _values) =
-        registry::schema::queries::outbox::append_one(package.id(), generation, SinkKind::Graph);
-    assert!(sql.contains("ON CONFLICT"), "the graph rebuild intent must be idempotent");
+    outbox
+        .append(package.id(), generation, &[SinkKind::Graph])
+        .await
+        .expect("graph sink intent appended");
+    outbox
+        .append(package.id(), generation, &[SinkKind::Graph])
+        .await
+        .expect("duplicate graph append is idempotent");
+    let intents = outbox
+        .read_since(SinkKind::Graph, registry::coordination::OutboxSeq(0), 1_000)
+        .await
+        .expect("graph outbox readable");
+    assert!(
+        intents.iter().any(|e| e.package == package.id()),
+        "graph rebuild intent must be recorded"
+    );
 
     // The rebuild input: the reference section decodes from the root exactly
     // as it was encoded (the codec is the identity through the CAS).

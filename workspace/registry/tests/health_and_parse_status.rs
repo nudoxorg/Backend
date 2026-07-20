@@ -1,11 +1,11 @@
-//! Diagram: **postgres is in charge of the health of a particular project and
+//! Diagram: **catalog is in charge of the health of a particular project and
 //! whether it's been parsed, etc.**
 //!
-//! TDD specs for `registry::health` and the postgres-backed parse status.
+//! TDD specs for `registry::health` and the catalog-backed parse status.
 //!
 //! The pure halves (the readiness policy over probes, the progress view of a
 //! lifecycle state, the loaded-store link bitmap) run unconditionally; the
-//! postgres round-trips are gated on `REGISTRY_TEST_POSTGRES`/`DATABASE_URL`.
+//! catalog round-trips run against an in-memory store.
 
 mod common;
 
@@ -30,7 +30,7 @@ fn probe(backend: BackendKind, healthy: bool) -> Probe {
 /// Every backend the registry fronts, all healthy.
 fn all_healthy() -> Vec<Probe> {
     [
-        BackendKind::Postgres,
+        BackendKind::Catalog,
         BackendKind::ObjectStore,
         BackendKind::Qdrant,
         BackendKind::Terminus,
@@ -68,9 +68,8 @@ async fn new_project_is_unparsed() {
     assert!(!progress.is_complete(), "a new project must not read as parsed");
     assert_eq!(progress.current_phase(), None, "no parse phase is active yet");
 
-    // Gated: postgres reports the same for a freshly registered package.
-    let Some(pool) = common::postgres_pool("new_project_is_unparsed").await else { return };
-    let store = common::global_store(pool).await;
+    // Catalog: reports the same for a freshly registered package.
+    let (store, _writer) = common::catalog_store("new_project_is_unparsed");
     let package = common::rust_package(&common::unique_rust_name("fresh"), "1.0.0");
     store
         .upsert(&common::global_package(package.clone(), initial.clone()))
@@ -106,11 +105,8 @@ async fn indexed_project_is_healthy_and_loaded() {
     let loaded = StoreLinks { vector: true, graph: true, text: true };
     assert!(loaded.fully_linked());
 
-    // Gated: postgres records the indexed state + snapshot.
-    let Some(pool) = common::postgres_pool("indexed_project_is_healthy_and_loaded").await else {
-        return;
-    };
-    let store = common::global_store(pool).await;
+    // Catalog: records the indexed state + snapshot.
+    let (store, _writer) = common::catalog_store("indexed_project_is_healthy_and_loaded");
     let package = common::rust_package(&common::unique_rust_name("indexed"), "1.0.0");
     store
         .upsert(&common::global_package(package.clone(), ResolutionState::Stored { hash }))
@@ -144,14 +140,13 @@ async fn failed_parse_is_degraded() {
 
     // ...while a required backend down means not serving at all.
     let mut spine_down = all_healthy();
-    spine_down.retain(|probe| probe.backend != BackendKind::Postgres);
-    spine_down.push(probe(BackendKind::Postgres, false));
+    spine_down.retain(|probe| probe.backend != BackendKind::Catalog);
+    spine_down.push(probe(BackendKind::Catalog, false));
     assert_eq!(aggregate(&spine_down), Health::Down);
     assert!(!aggregate(&spine_down).is_serving());
 
-    // Gated: the failure — reason included — is recorded in postgres.
-    let Some(pool) = common::postgres_pool("failed_parse_is_degraded").await else { return };
-    let store = common::global_store(pool).await;
+    // Catalog: the failure — reason included — is recorded.
+    let (store, _writer) = common::catalog_store("failed_parse_is_degraded");
     let package = common::rust_package(&common::unique_rust_name("degraded"), "1.0.0");
     let failure = parse_failure("rustc exited with signal 9");
     store
@@ -177,9 +172,6 @@ async fn health_distinguishes_parsed_from_loaded() {
     let hash = ContentHash::of_bytes(b"parsed snapshot");
     let parsed = ResolutionState::Stored { hash };
 
-    // Parsed is the lifecycle fact; loaded is the per-store link bitmap the
-    // outbox pollers advance. A parsed-but-unloaded project has the first
-    // without the second.
     assert!(progress_of(parsed.clone()).is_complete(), "the project is parsed");
     let just_parsed = StoreLinks::default();
     assert!(
@@ -187,7 +179,6 @@ async fn health_distinguishes_parsed_from_loaded() {
         "a freshly parsed project is not yet loaded into any runtime store"
     );
 
-    // The distinction is per-store: text loaded alone is still not "loaded".
     let partially_loaded = StoreLinks { text: true, ..StoreLinks::default() };
     assert!(!partially_loaded.fully_linked());
     assert_ne!(just_parsed, partially_loaded, "partial materialization must be observable");

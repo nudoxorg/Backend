@@ -14,6 +14,7 @@ path = "lib.rs"
 heart       = { path = "../heart" }
 nudox-ir    = { path = "../nudox-ir" }
 nudox-change = { path = "../nudox-change" }
+ecosystem   = { path = "../ecosystem" }
 postcard = { version = "1.0", features = ["use-std"] }
 serde    = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"

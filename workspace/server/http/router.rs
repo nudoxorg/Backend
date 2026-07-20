@@ -173,12 +173,13 @@ fn request_trace_layer() -> TraceLayer<
 }
 
 /// The read plane: `/search`, `/search/semantic`, `/packages/search`,
-/// `/symbols/:id`, `/expand`, `/sessions/:id`.
+/// `/usages`, `/symbols/:id`, `/expand`, `/sessions/:id`.
 fn read_plane<M: EmbeddingModel>() -> Router<Arc<Server<M>>> {
 	Router::new()
 		.route("/search", post(search::search))
 		.route("/search/semantic", post(search::search_semantic))
 		.route("/packages/search", post(search::search_packages))
+		.route("/usages", post(search::usages))
 		.route("/expand", post(search::expand))
 		.route("/symbols/:id", get(search::get_symbol))
 		.route("/sessions/:id", get(search::get_session))

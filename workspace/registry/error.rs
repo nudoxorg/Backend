@@ -45,7 +45,7 @@ pub enum RegistryError {
 	#[error("queue error")]
 	Queue(#[from] QueueError),
 
-	/// A global-index (postgres) failure.
+	/// A global-index (catalog) failure.
 	#[error("index error")]
 	Index(#[from] IndexError),
 
@@ -180,7 +180,8 @@ impl Retryable for BlobError {
 ///
 /// Renamed from the old `store::StoreError` — the name now lives only here.
 /// All variants carry typed data (StorePath, ContentHash, PackageId) and
-/// concrete #[source] for full chaining (e.g. sqlx inside index inside registry).
+/// concrete #[source] for full chaining (e.g. an object-store error inside a
+/// blob error inside registry).
 #[derive(Debug, Error)]
 pub enum StoreError {
 	// --- Fine-grained mappings for object_store::Error (specific variants
@@ -379,16 +380,16 @@ pub enum EntryKind {
 	Other,
 }
 
-/// Lightweight id for error carrying (avoids pulling full queue::Job type).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct JobIdForError(pub uuid::Uuid);
-
-/// Failures of the durable postgres job [`crate::queue`].
+/// Failures of the durable scratch-backed job [`crate::queue`] (INDEX-PLAN IP-4).
 #[derive(Debug, Error)]
 pub enum QueueError {
-	/// The backing postgres query failed.
-	#[error("queue database operation failed")]
-	Database(#[source] sqlx::Error),
+	/// The backing scratch-store operation failed.
+	#[error("queue scratch-store operation failed")]
+	Scratch(#[source] index::scratch::ScratchError),
+
+	/// A job payload row could not be decoded into typed fields.
+	#[error("queue job payload decode failed")]
+	Codec(#[source] serde_json::Error),
 
 	/// A job referenced by id was not present.
 	#[error("job for package not found")]
@@ -398,37 +399,34 @@ pub enum QueueError {
 	/// and been reclaimed — the worker lost the race.
 	#[error("lease lost; job was reclaimed")]
 	LeaseLost { package: PackageId },
-
-	// Fine-grained DB contexts (carry typed package where known, source chain).
-	#[error("queue enqueue failed")]
-	EnqueueFailed { package: PackageId, #[source] source: sqlx::Error },
-
-	#[error("queue dequeue failed")]
-	DequeueFailed { #[source] source: sqlx::Error },
-
-	#[error("queue complete failed")]
-	CompleteFailed { job: JobIdForError, #[source] source: sqlx::Error },
 }
 
 impl Retryable for QueueError {
 	fn is_retryable(&self) -> bool {
 		match self {
-			QueueError::Database(e) => is_sqlx_retryable(e),
-			QueueError::EnqueueFailed { source, .. } => is_sqlx_retryable(source),
-			QueueError::DequeueFailed { source } => is_sqlx_retryable(source),
-			QueueError::CompleteFailed { source, .. } => is_sqlx_retryable(source),
+			// A local sqlite fault (e.g. a transient lock) is worth a retry.
+			QueueError::Scratch(_) => true,
 			QueueError::LeaseLost { .. } => true,
+			QueueError::Codec(_) => false,
 			QueueError::NotFound { .. } => false,
 		}
 	}
 }
 
-/// Failures of the global [`crate::index`] (postgres).
+/// Failures of the global [`crate::index`] (the versioned catalog).
 #[derive(Debug, Error)]
 pub enum IndexError {
-	/// A backing postgres query failed.
-	#[error("index database operation failed")]
-	Database(#[source] sqlx::Error),
+	/// A catalog store operation failed (engine, codec, or watermark layer).
+	#[error("catalog operation failed")]
+	Catalog(#[from] index::store::MetaError),
+
+	/// The runtime↔catalog mapping law was violated by a stored row.
+	#[error("catalog row mapping failed")]
+	Map(#[from] crate::schema::catalog_map::CatalogMapError),
+
+	/// A toolchain payload failed to (de)serialize.
+	#[error("toolchain JSON codec failed")]
+	ToolchainJson(#[source] serde_json::Error),
 
 	/// The `{org}/{db}` terminus-instance token was malformed.
 	#[error("invalid terminus instance token: expected `org/db`")]
@@ -437,23 +435,6 @@ pub enum IndexError {
 	/// A package expected in the index was absent.
 	#[error("package not present in the global index")]
 	NotFound { package: PackageId },
-
-	/// Applying the (sea-query-defined) schema DDL on connect failed.
-	#[error("index schema initialization failed")]
-	SchemaInit(#[source] sqlx::Error),
-
-	// Fine grained DB ops for context without string messages.
-	#[error("index begin transaction failed")]
-	BeginTx(#[source] sqlx::Error),
-
-	#[error("index commit failed")]
-	Commit(#[source] sqlx::Error),
-
-	#[error("index upsert failed")]
-	UpsertFailed { package: PackageId, #[source] source: sqlx::Error },
-
-	#[error("index row decode failed")]
-	RowDecode { column: &'static str, #[source] source: sqlx::Error },
 
 	/// A stored `symbols.kind` token did not match any known [`heart::SymbolKind`].
 	#[error("unknown symbol kind token in symbols row: {token}")]
@@ -467,14 +448,9 @@ pub enum IndexError {
 
 impl Retryable for IndexError {
 	fn is_retryable(&self) -> bool {
-		match self {
-			IndexError::Database(e) => is_sqlx_retryable(e),
-			IndexError::BeginTx(e) => is_sqlx_retryable(e),
-			IndexError::Commit(e) => is_sqlx_retryable(e),
-			IndexError::UpsertFailed { source, .. } => is_sqlx_retryable(source),
-			IndexError::RowDecode { source, .. } => is_sqlx_retryable(source),
-			_ => false,
-		}
+		// The catalog engine is a local store: failures are structural
+		// (schema/codec/mapping), not transient network weather.
+		false
 	}
 
 	fn retry_after(&self) -> Option<Duration> { None }
@@ -483,29 +459,30 @@ impl Retryable for IndexError {
 /// Failures of the transactional [`crate::coordination`] outbox.
 #[derive(Debug, Error)]
 pub enum OutboxError {
-	/// The backing postgres query failed.
-	#[error("outbox database operation failed")]
-	Database(#[source] sqlx::Error),
+	/// A catalog store operation failed (engine, codec, watermark).
+	#[error("outbox catalog operation failed")]
+	Catalog(#[from] index::store::MetaError),
+
+	/// The runtime↔catalog mapping law was violated.
+	#[error("outbox row mapping failed")]
+	Map(#[from] crate::schema::catalog_map::CatalogMapError),
+
+	/// An outbox row had no version id where one is required.
+	#[error("outbox row {seq} carries no version id")]
+	MissingVersion { seq: i64 },
 
 	/// The append raced an equivalent `(package, snapshot, kind)` intent; the
 	/// dedupe key already exists (idempotent no-op for the caller).
 	#[error("duplicate outbox intent")]
 	Duplicate { package: PackageId, generation: ContentHash, kind: SinkKind },
 
-	// Fine grained for trace.
-	#[error("outbox begin tx failed")]
-	BeginTx(#[source] sqlx::Error),
-
-	#[error("outbox append failed")]
-	AppendFailed { package: PackageId, #[source] source: sqlx::Error },
-
 	/// A codec failure while decoding an outbox / facets row (corrupt data or
 	/// schema drift) — not a transport fault, not retryable.
 	#[error("outbox codec failure")]
 	Codec(#[from] codec::CodecError),
 
-	/// An index error surfaced inside an outbox transaction (state transition
-	/// half of `record_stored`). Retryable when the index error is.
+	/// An index error surfaced inside an outbox sequence (state transition
+	/// half of `record_stored`).
 	#[error("outbox index operation failed")]
 	Index(#[from] IndexError),
 }
@@ -513,11 +490,8 @@ pub enum OutboxError {
 impl Retryable for OutboxError {
 	fn is_retryable(&self) -> bool {
 		match self {
-			OutboxError::Database(e) => is_sqlx_retryable(e),
-			OutboxError::BeginTx(e) => is_sqlx_retryable(e),
-			OutboxError::AppendFailed { source, .. } => is_sqlx_retryable(source),
 			OutboxError::Index(e) => e.is_retryable(),
-			OutboxError::Codec(_) | OutboxError::Duplicate { .. } => false,
+			_ => false,
 		}
 	}
 }
@@ -533,9 +507,9 @@ pub enum SearchError {
 	#[error("invalid pagination cursor")]
 	Cursor(#[from] heart::cursor::CursorError),
 
-	/// Reading the postgres watermark / source failed.
+	/// Reading the catalog watermark / source failed.
 	#[error("search source read failed")]
-	Source(#[source] sqlx::Error),
+	Source(#[from] index::store::MetaError),
 
 	// Fine-grained tantivy + internal + codec to avoid losing source via to_string + InternalError.
 	#[error("tantivy query parse failed")]
@@ -545,7 +519,12 @@ pub enum SearchError {
 	TantivyInternal(#[source] tantivy::TantivyError),
 
 	#[error("search row decode failed")]
-	RowDecode { column: &'static str, #[source] source: sqlx::Error },
+	RowDecode { column: &'static str, detail: String },
+
+	/// Reading/decoding the catalog outbox feed failed (carried as rendered
+	/// detail: the outbox error is not `Sync`-clean across this boundary).
+	#[error("search outbox feed read failed: {detail}")]
+	OutboxRead { detail: String },
 
 	#[error("search json decode failed")]
 	JsonDecode { domain: &'static str, #[source] source: serde_json::Error },
@@ -561,12 +540,12 @@ pub enum SearchError {
 impl Retryable for SearchError {
 	fn is_retryable(&self) -> bool {
 		match self {
-			SearchError::Source(e) => is_sqlx_retryable(e),
-			SearchError::RowDecode { source, .. } => is_sqlx_retryable(source),
+			SearchError::Source(_) | SearchError::RowDecode { .. } => false,
 			_ => false,
 		}
 	}
 }
+
 
 /// Failures resolving a version request to a concrete
 /// [`heart::PackageVersion`].
@@ -611,25 +590,6 @@ impl Retryable for ResolveError {
 			ResolveError::Upstream(inner) => inner.is_retryable(),
 			_ => false,
 		}
-	}
-}
-
-/// Classify a `sqlx::Error` as transient. Connection resets, pool timeouts, and
-/// serialization failures are retryable; syntax/constraint errors are not.
-fn is_sqlx_retryable(err: &sqlx::Error) -> bool {
-	match err {
-		// Transport / pool pressure: retrying against a healthy pool can succeed.
-		sqlx::Error::Io(_)
-		| sqlx::Error::PoolTimedOut
-		| sqlx::Error::WorkerCrashed => true,
-		// SQLSTATE 40001 (serialization_failure) and 40P01 (deadlock_detected)
-		// are postgres explicitly telling us to retry the transaction; 57P03
-		// (cannot_connect_now) and 53300 (too_many_connections) are startup /
-		// pressure conditions that clear on their own.
-		sqlx::Error::Database(db) => {
-			matches!(db.code().as_deref(), Some("40001" | "40P01" | "57P03" | "53300"))
-		}
-		_ => false,
 	}
 }
 

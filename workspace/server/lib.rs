@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use heart::{BackendKind, ConnectError, ConnectFailure, Connect, Federation, Live};
+use index::store::writer::CatalogWriter;
 use crate::registry::{
 	Store,
 	coordination::Outbox,
@@ -46,7 +47,7 @@ use crate::registry::{
 use registry::compiled::ObjectCompiledStore;
 use registry::runtime::{
 	graph::{Credentials, Database, Graph, Organization},
-	session::PgSessionStore,
+	session::ScratchSessionStore,
 	text::TextIndex,
 	vector::{CollectionName, EmbeddingCache, EmbeddingModel, Semantic},
 };
@@ -70,17 +71,22 @@ const INDEXING_RETRY_POLICY: RetryPolicy = RetryPolicy {
 /// How many query-text embeddings the in-process cache retains.
 const EMBEDDING_CACHE_CAPACITY: u64 = 65_536;
 
+/// The one catalog engine the server links: real DoltLite (INDEX-PLAN ID-1;
+/// the `index` crate's `dolt-engine` feature). Tests inside `index`/`registry`
+/// use the in-memory facade; the serving binary is versioned-catalog-only.
+pub type CatalogEngine = index::engine::dolt::DoltEngine;
+
 /// The full set of connected backing stores for one federated source. Every
 /// source — definitive or overlay — is a complete, independently-verified stack.
 pub struct SourceStores<M: EmbeddingModel> {
-	/// Global index / orchestration spine (postgres).
-	pub global_store: GlobalStore<Live>,
+	/// Global index / orchestration spine (the versioned catalog).
+	pub global_store: GlobalStore<CatalogEngine>,
 	/// Content-addressed blob store (object store).
 	pub blobs: Store<Live>,
-	/// Durable, poison-pill-safe job queue (postgres).
-	pub queue: Queue<Live>,
-	/// Transactional outbox for derived-store fan-out (postgres).
-	pub outbox: Outbox<Live>,
+	/// Durable, poison-pill-safe job queue (scratch-backed).
+	pub queue: Queue,
+	/// Transactional outbox for derived-store fan-out (catalog-backed).
+	pub outbox: Outbox<CatalogEngine>,
 	/// Graph store (terminus).
 	pub graph: Graph<Live>,
 	/// Semantic/vector store (qdrant).
@@ -114,11 +120,10 @@ pub struct Server<M: EmbeddingModel> {
 	/// The content-addressed embedding cache in front of the embedder.
 	embedding_cache: EmbeddingCache<M>,
 
-	/// Per-session exploration graphs (join-semilattice merge), backed by
-	/// postgres so **any** gateway replica can serve **any** session (the
-	/// node-local `MemorySessionStore` is invisible to sibling replicas). The
-	/// backing `sessions` table is created at boot via [`PgSessionStore::migrate`].
-	sessions: PgSessionStore,
+	/// Per-session exploration graphs (join-semilattice merge), backed by the
+	/// ephemeral `scratch.sqlite` store (INDEX-PLAN ID-2/ID-19). The backing
+	/// `sessions` table is created when the scratch store is opened.
+	sessions: ScratchSessionStore,
 
 	/// The HTTP client for the compiler daemon (replaces the in-process
 	/// `ForgeRuntime` that was removed in the Buck2→Cargo migration).
@@ -136,10 +141,19 @@ pub struct Server<M: EmbeddingModel> {
 	/// after a merged change-set is verified and applied.
 	compiled_store: ObjectCompiledStore,
 
-	/// The shard-bakery claim ledger + artifact index (`edgepack_artifacts`
-	/// postgres table). `None` when `config.bakery.enabled` is false — callers
+	/// The shard-bakery claim ledger + artifact index (the catalog\'s
+	/// `edgepack_artifacts` table). `None` when `config.bakery.enabled` is false — callers
 	/// check with [`Self::edgepacks`] before using.
-	edgepacks: Option<std::sync::Arc<crate::bakery::PgEdgepackStore>>,
+	edgepacks: Option<std::sync::Arc<crate::bakery::CatalogEdgepackStore>>,
+
+	/// The reverse-position usage-query backend for `Target::Usages`
+	/// ([`registry::graph::ReversePositionIndex`], INDEX-PLAN §5.5). Constructed
+	/// [`empty`](crate::registry::search::ReverseIndexUsageBackend::empty) at
+	/// assembly — no package IR is materialized in-process yet — so usage queries
+	/// return the honest `IndexUnavailable` (`503`) until a scope is loaded. The
+	/// wiring is real: swapping in a loaded backend (an IR view + its reverse
+	/// index) makes the route serve live results with no other change.
+	usage_backend: crate::registry::search::ReverseIndexUsageBackend,
 }
 
 /// The metadata keyword-normalization tables, loaded once at assembly and shared
@@ -197,24 +211,19 @@ impl<M: EmbeddingModel> Server<M> {
 		);
 		let embedding_cache = EmbeddingCache::new(EMBEDDING_CACHE_CAPACITY);
 
-		// Sessions live in postgres so any gateway replica serves any session. The
-		// pool is built the same way every other pg-backed store of the definitive
-		// source is (`connect_lazy` — no I/O until first use), from the definitive
-		// source's postgres endpoint. `migrate()` creates the `sessions` table
-		// (`IF NOT EXISTS`, idempotent). We reach the definitive source's stores
-		// (already connected above) only for their liveness; the pool here is its
-		// own lazy handle onto the same database.
-		let session_pool = sqlx::postgres::PgPoolOptions::new()
-			.max_connections(8)
-			.connect_lazy(config.definitive.endpoints.postgres.expose_secret())
+		// Exploration-graph sessions live in the ephemeral scratch store
+		// (`scratch.sqlite`) under the definitive source's data directory — working
+		// state, delete-anytime, never replicated (INDEX-PLAN ID-2). Opening the
+		// store creates the `sessions` table, so there is no separate migrate step.
+		let scratch_dir = config.definitive.data_directory();
+		std::fs::create_dir_all(&scratch_dir).map_err(|error| {
+			ServerError::Runtime(registry::runtime::error::TextError::Io(error).into())
+		})?;
+		let scratch_store = index::scratch::ScratchStore::open(&scratch_dir.join("scratch.sqlite"))
 			.map_err(|error| {
-				ConnectError::new(BackendKind::Postgres, ConnectFailure::Other(error.into()))
+				ServerError::Runtime(registry::runtime::error::SessionError::Scratch(error).into())
 			})?;
-		let sessions = PgSessionStore::new(session_pool);
-		sessions
-			.migrate()
-			.await
-			.map_err(|error| ServerError::Runtime(error.into()))?;
+		let sessions = ScratchSessionStore::new(scratch_store);
 
 		// Build the compiler-daemon HTTP client from the configured endpoint.
 		let compiler_client = crate::compiler_client::CompilerClient::new(
@@ -234,23 +243,13 @@ impl<M: EmbeddingModel> Server<M> {
 			None => None,
 		};
 
-		// The bakery claim-store is assembled from the same postgres pool as
-		// the session store (same database, bakery-owned table). Migrations are
-		// lazy: the table is created here and is idempotent (`IF NOT EXISTS`).
+		// The bakery claim-ledger + artifact index rides the definitive base's
+		// catalog (`edgepack_artifacts` table, migrated with schema v4) and
+		// scratch claims — no separate migration step.
 		let edgepacks = if config.bakery.enabled || config.depshards.enabled {
-			let edgepack_pool = sqlx::postgres::PgPoolOptions::new()
-				.max_connections(4)
-				.connect_lazy(config.definitive.endpoints.postgres.expose_secret())
-				.map_err(|error| {
-					ConnectError::new(BackendKind::Postgres, ConnectFailure::Other(error.into()))
-				})?;
-			let store = std::sync::Arc::new(crate::bakery::PgEdgepackStore::new(edgepack_pool));
-			store.migrate().await.map_err(|error| {
-				ServerError::Internal(InternalError::Other {
-					message: format!("edgepack_artifacts migration failed: {error}"),
-				})
-			})?;
-			Some(store)
+			Some(std::sync::Arc::new(crate::bakery::CatalogEdgepackStore::new(
+				std::sync::Arc::clone(federation.base().global_store.writer()),
+			)))
 		} else {
 			None
 		};
@@ -266,7 +265,19 @@ impl<M: EmbeddingModel> Server<M> {
 			heuristics,
 			compiled_store,
 			edgepacks,
+			// No package IR is materialized in-process at assembly, so the usage
+			// backend starts empty (queries answer `IndexUnavailable`/503, never a
+			// fake empty). A loaded scope is swapped in when IR is materialized.
+			usage_backend: crate::registry::search::ReverseIndexUsageBackend::empty(),
 		})
+	}
+
+	/// The reverse-position usage-query backend behind `Target::Usages`.
+	/// Empty until a package's IR view + reverse index is loaded; queries then
+	/// answer the honest `IndexUnavailable` rather than a `501` or a fake empty
+	/// page (INDEX-PLAN §5.5).
+	pub(crate) fn usage_backend(&self) -> &crate::registry::search::ReverseIndexUsageBackend {
+		&self.usage_backend
 	}
 
 	/// The keyword-normalization heuristics, if a `metadata_data_dir` was
@@ -279,24 +290,48 @@ impl<M: EmbeddingModel> Server<M> {
 	async fn connect_source(cfg: &SourceConfig) -> ServerResult<SourceStores<M>> {
 		let endpoints = &cfg.endpoints;
 
-		// One pool underlies every postgres-backed store of this source (index,
-		// queue, outbox, package-search hydration). `connect_lazy` does no I/O;
-		// verification happens in each store's `Connect` below.
-		let pool = sqlx::postgres::PgPoolOptions::new()
-			.max_connections(16)
-			.connect_lazy(endpoints.postgres.expose_secret())
+		// The versioned catalog underlies every relational store of this source
+		// (index, outbox, package-search hydration). It is a local DoltLite
+		// engine: open, migrate, then share one single-writer handle
+		// (INDEX-PLAN ID-1/ID-5).
+		std::fs::create_dir_all(&endpoints.catalog_directory).map_err(|error| {
+			ConnectError::new(BackendKind::Catalog, ConnectFailure::Other(error.into()))
+		})?;
+		let engine =
+			CatalogEngine::open(&endpoints.catalog_directory.join("catalog.dolt")).map_err(
+				|error| ConnectError::new(BackendKind::Catalog, ConnectFailure::Other(error.into())),
+			)?;
+		index::migrations::runner::migrate_to_v4(&engine).map_err(|error| {
+			ConnectError::new(BackendKind::Catalog, ConnectFailure::Other(error.into()))
+		})?;
+		let writer = Arc::new(CatalogWriter::new(engine));
+
+		// The queue + claims live in this source's ephemeral scratch store
+		// (INDEX-PLAN ID-2); a second connection to the same file the session
+		// store uses is fine (sqlite serializes).
+		let scratch_dir = cfg.data_directory();
+		std::fs::create_dir_all(&scratch_dir).map_err(|error| {
+			ConnectError::new(BackendKind::Catalog, ConnectFailure::Other(error.into()))
+		})?;
+		let queue_scratch = index::scratch::ScratchStore::open(&scratch_dir.join("scratch.sqlite"))
 			.map_err(|error| {
-				ConnectError::new(BackendKind::Postgres, ConnectFailure::Other(error.into()))
+				ConnectError::new(BackendKind::Catalog, ConnectFailure::Other(error.into()))
 			})?;
 
 		let instance = TerminusInstance::new(endpoints.terminus_instance())
 			.map_err(crate::registry::RegistryError::from)?;
 
-		// Construct the cold (configured-but-unverified) store handles for this source.
-		let global_cold: GlobalStore<heart::Cold> = GlobalStore::new(pool.clone(), instance);
+		// Catalog-backed stores construct directly (no remote handshake to
+		// verify); network-backed stores keep the Connect typestate below.
+		let global_store = GlobalStore::new(Arc::clone(&writer), instance);
+		let queue = Queue::new(
+			Arc::new(std::sync::Mutex::new(queue_scratch)),
+			format!("server:{}", cfg.source_id()),
+			INDEXING_RETRY_POLICY,
+		);
+		let outbox = Outbox::new(Arc::clone(&writer));
+
 		let blobs_cold: Store<heart::Cold> = Store::new(object_store_backend(&endpoints.object_store)?);
-		let queue_cold: Queue<heart::Cold> = Queue::new(pool.clone(), INDEXING_RETRY_POLICY);
-		let outbox_cold: Outbox<heart::Cold> = Outbox::new(pool.clone());
 		let graph_cold: Graph<heart::Cold> = Graph::new(
 			reqwest::Client::new(),
 			endpoints.terminus.clone(),
@@ -314,34 +349,28 @@ impl<M: EmbeddingModel> Server<M> {
 				.map_err(invalid_configuration)?,
 		);
 
-		// Apply the postgres schema first. Queue/outbox `connect` only probe for
-		// existing tables (`SELECT 1 FROM jobs/outbox`), so they must not race
-		// the schema transaction on a cold database.
-		let global_store = global_cold.connect().await?;
-
-		// Remaining backends come up concurrently; the first failure aborts
+		// Network backends come up concurrently; the first failure aborts
 		// with its backend + cause.
-		let (blobs, queue, outbox, graph, semantics) = tokio::try_join!(
+		let (blobs, graph, semantics) = tokio::try_join!(
 			blobs_cold.connect(),
-			queue_cold.connect(),
-			outbox_cold.connect(),
 			graph_cold.connect(),
 			semantic_cold.connect(),
 		)?;
 
 		// The text index is replica-local: opened/rebuilt from this source's
-		// postgres watermark, not "connected".
+		// persisted watermark, not "connected".
 		let text_dir: std::path::PathBuf = cfg.text_index_directory();
 		std::fs::create_dir_all(&text_dir)
 			.map_err(|error| ServerError::Runtime(registry::runtime::error::TextError::Io(error).into()))?;
 		let text =
 			TextIndex::open_or_create(&text_dir).map_err(|e| ServerError::Runtime(e.into()))?;
 
-		// So is the package-search index, fed by the sync poller off the same pool.
+		// So is the package-search index, fed by the sync poller off the
+		// catalog outbox feed.
 		let packages_dir = cfg.package_index_directory();
 		std::fs::create_dir_all(&packages_dir)
 			.map_err(|error| ServerError::Runtime(registry::runtime::error::TextError::Io(error).into()))?;
-		let packages = Arc::new(PackageSearchIndex::open(&packages_dir, pool)?);
+		let packages = Arc::new(PackageSearchIndex::open(&packages_dir)?);
 
 		Ok(SourceStores { global_store, blobs, queue, outbox, graph, semantics, text, packages })
 	}
@@ -360,16 +389,16 @@ impl<M: EmbeddingModel> Server<M> {
 	// use `federation()` to walk overlays-then-base; single-source flows use these.
 
 	/// The definitive base's global index handle.
-	pub fn global_store(&self) -> &GlobalStore<Live> { &self.base().global_store }
+	pub fn global_store(&self) -> &GlobalStore<CatalogEngine> { &self.base().global_store }
 
 	/// The definitive base's blob store handle.
 	pub fn blobs(&self) -> &Store<Live> { &self.base().blobs }
 
 	/// The definitive base's job queue handle.
-	pub fn queue(&self) -> &Queue<Live> { &self.base().queue }
+	pub fn queue(&self) -> &Queue { &self.base().queue }
 
 	/// The definitive base's outbox handle.
-	pub fn outbox(&self) -> &Outbox<Live> { &self.base().outbox }
+	pub fn outbox(&self) -> &Outbox<CatalogEngine> { &self.base().outbox }
 
 	/// The definitive base's graph store handle.
 	pub fn graph(&self) -> &Graph<Live> { &self.base().graph }
@@ -387,8 +416,8 @@ impl<M: EmbeddingModel> Server<M> {
 	/// The content-addressed embedding cache in front of the embedder.
 	pub(crate) fn embedding_cache(&self) -> &EmbeddingCache<M> { &self.embedding_cache }
 
-	/// The per-session exploration graphs (postgres-backed; replica-shared).
-	pub fn sessions(&self) -> &PgSessionStore { &self.sessions }
+	/// The per-session exploration graphs (scratch-backed; process-local).
+	pub fn sessions(&self) -> &ScratchSessionStore { &self.sessions }
 
 	/// The HTTP client for the compiler daemon.
 	pub fn compiler_client(&self) -> &crate::compiler_client::CompilerClient { &self.compiler_client }
@@ -404,7 +433,7 @@ impl<M: EmbeddingModel> Server<M> {
 	/// when neither `bakery.enabled` nor `depshards.enabled` is true (the table
 	/// was not created). Handlers that serve dep-shard manifests always check
 	/// before querying; the bakery worker checks before starting.
-	pub fn edgepacks(&self) -> Option<&crate::bakery::PgEdgepackStore> {
+	pub fn edgepacks(&self) -> Option<&crate::bakery::CatalogEdgepackStore> {
 		self.edgepacks.as_deref()
 	}
 

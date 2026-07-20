@@ -18,7 +18,7 @@ use nudox_change::StableRef;
 
 use crate::error::StreamError;
 use crate::frame::{
-    FailureKindWire, PhaseWire, ProducerId, StreamFrame, WireEntry, WireLink,
+    BodyWire, FailureKindWire, PhaseWire, ProducerId, StreamFrame, WireEntry, WireLink,
     IR_STREAM_VERSION,
 };
 use crate::io::FrameReader;
@@ -68,6 +68,17 @@ pub enum Received {
     },
     /// A chunked occurrence section.
     Occurrences(Vec<u8>),
+    /// A batch of merged body facts received from the producer.
+    ///
+    /// Each [`BodyWire`] in the batch is keyed by a content-derived
+    /// [`nudox_change::IntroId`] (never an arena index) and carries the
+    /// merged treesitter+oracle [`nudox_ir::BodyEmbed`] for that entry.
+    /// The host associates these with the corresponding entry staged from a
+    /// previous [`Received::Symbols`] batch.
+    ///
+    /// Body facts do not affect [`StreamReceiver::observed_count`]; they are
+    /// an extension slot on the entry, not a new symbol entry.
+    Bodies(Vec<BodyWire>),
     /// A progress update.
     Progress {
         /// Running emitted count reported by the producer.
@@ -227,6 +238,8 @@ impl<R: Read> StreamReceiver<R> {
             }
 
             StreamFrame::Occurrences { section } => Ok(Some(Received::Occurrences(section))),
+
+            StreamFrame::Bodies { batch } => Ok(Some(Received::Bodies(batch))),
 
             StreamFrame::Progress { emitted, phase } => {
                 Ok(Some(Received::Progress { emitted, phase }))

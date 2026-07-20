@@ -16,6 +16,16 @@ members = [
     # re-exports it.
     "workspace/ecosystem",
     "workspace/heart",
+    # ── INDEX catalog plane (INDEX-PLAN) ─────────────────────────────────────
+    # rusqdoltlite binds the vendored DoltLite engine (versioned SQLite);
+    # index is the catalog crate (schema v4, MetaStore, outbox, migrations);
+    # ingestor is the feed/git-monitor process plane.
+    "workspace/rusqdoltlite",
+    "workspace/index",
+    "workspace/ingestor",
+    # ObjectPack (INDEX-PLAN §6): the one container family for source trees,
+    # goldens, and compile stages; range-addressable zstd members + TOC.
+    "workspace/object-pack",
     "workspace/ir",
     "workspace/registry",
     "workspace/server",

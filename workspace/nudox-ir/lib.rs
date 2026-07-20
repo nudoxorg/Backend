@@ -18,20 +18,44 @@
 //! superseded by the libpijul-backed VCS.
 
 pub mod apply;
+pub mod body;
+pub mod body_wire;
 pub mod builder;
 pub mod entry;
 pub mod index;
 pub mod intro;
 pub mod kind;
+pub mod reflect;
 pub mod registry;
 pub mod skeleton;
 pub mod symbol;
+pub mod view;
+pub mod vocab;
 pub mod wire;
 
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+#[path = "tests_body_merge.rs"]
+mod tests_body_merge;
+
 pub use apply::{LinkRecord, PristineIntroTable};
+pub use body::{
+    merge_body, overlapping_call, AccessMode, BodyCall, BodyEmbed, BodyFacts, BodyImport,
+    BodyMergeNote, ConflictPolicy, ControlSketch, LocalBind, LocalKind, OracleAccess, OracleBody,
+    OracleCall, OracleTypeMention, TreesitterBody,
+};
+pub use body_wire::{
+    body_path, deserialize_body, serialize_body, BodyWireError, BODY_DOMAIN_V1,
+    BODY_FILE_EXTENSION,
+};
+pub use reflect::{
+    boundary, exported, monikers, CfgAssignment, DepIrProvider, DepMissing, ExportPolicy,
+    MonikerPath,
+};
+pub use view::IrView;
+pub use vocab::{Confidence, ReferenceKind, RelSpan};
 pub use builder::{EntryBuilder, SymbolBuf};
 pub use entry::{Entry, EntryInner, Node};
 pub use index::{ArenaIdx, EntryIdx, EntryKind, LinkId, PackageIdx, RawEntryIdx, StrId, TypeFingerprintId};

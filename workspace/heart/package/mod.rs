@@ -66,6 +66,9 @@ const fn length_limit(ecosystem: Language) -> usize {
         Language::Go | Language::Java => 256,
         Language::CSharp => 256,
         Language::Nix => 256,
+        // `cpp` names are repository slugs (`host/org/repo`) or scoped forms —
+        // roomier than a bare package name; match Go/Java's 256 ceiling.
+        Language::Cpp => 256,
     }
 }
 
@@ -82,5 +85,11 @@ fn is_valid_char_for(ecosystem: Language, c: char) -> bool {
         }
         Language::CSharp => c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'),
         Language::Nix => c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'),
+        // `cpp` names may be full repository URLs / SCP forms, so the base set
+        // admits URL punctuation (`:` `/` `@` `+` `~`); `parse_name` enforces
+        // the real slug grammar via `normalize_repo_url`.
+        Language::Cpp => {
+            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '@' | '+' | '~')
+        }
     }
 }

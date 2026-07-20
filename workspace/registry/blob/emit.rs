@@ -41,9 +41,9 @@ pub struct Emitted {
 /// SyncService apply-hook AFTER a merged change-set is verified and applied —
 /// not here. See [`crate::compiled::ObjectCompiledStore::record`].
 #[tracing::instrument(skip_all, fields(package = %manifest.package, sections = sections.len()))]
-pub async fn emit(
+pub async fn emit<Engine: index::engine::VersioningEngine + Send + Sync>(
     store: &Store,
-    outbox: &Outbox,
+    outbox: &Outbox<Engine>,
     manifest: BlobManifest,
     sections: Vec<PendingSection>,
 ) -> Result<Emitted, BlobError> {

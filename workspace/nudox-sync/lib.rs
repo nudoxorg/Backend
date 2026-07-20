@@ -349,9 +349,52 @@ pub fn merge_event(
 ///
 /// Thin wrapper around [`ir_sync::Syncer::on_merge`] so callers have a single
 /// obvious entry point that matches the nudox-sync vocabulary.
+///
+/// Trust model: the receiver side enforces the enrollment gate (INDEX-PLAN
+/// ID-18) — see [`trusted_provide_endpoint`] for the push-side capability check
+/// and [`ir_sync::SyncService::enroll`] for the accept-side allow-list.
 pub async fn sync_merged<C: ChangeIo + 'static>(
     syncer: &ir_sync::Syncer<C>,
     event: MergeEvent,
 ) -> Result<SyncAck, SyncGlueError> {
     syncer.on_merge(event).await.map_err(SyncGlueError::Sync)
+}
+
+// ---------------------------------------------------------------------------
+// Trusted-remote gate (INDEX-PLAN ID-18)
+// ---------------------------------------------------------------------------
+
+/// The reason a trusted-remote provide was refused before any transfer.
+#[derive(Debug, thiserror::Error)]
+pub enum TrustGateError {
+    /// The remote is on the trust list but not authorized to *receive* provides
+    /// from this device (`can_provide = false`).
+    #[error("trusted remote {name:?} is not authorized to receive provides")]
+    NotAuthorizedToProvide {
+        /// The remote's handle.
+        name: String,
+    },
+}
+
+/// Derive the endpoint string this device may push IR changes to, enforcing the
+/// same capability gate as the ObjectPack plane (INDEX-PLAN ID-18): a device may
+/// only `provide` to a trusted remote whose `can_provide` flag is set.
+///
+/// This mirrors `object_pack::transport::ProvideTarget::from_trusted_remote`;
+/// the two planes share one trust policy. Returns the remote's endpoint id
+/// string (the caller resolves it to an `iroh::EndpointId` /
+/// `ir_sync::RemoteConfig`).
+///
+/// # Errors
+///
+/// [`TrustGateError::NotAuthorizedToProvide`] when `remote.can_provide` is false.
+pub fn trusted_provide_endpoint(
+    remote: &heart::deployment::TrustedRemote,
+) -> Result<String, TrustGateError> {
+    if !remote.can_provide {
+        return Err(TrustGateError::NotAuthorizedToProvide {
+            name: remote.name.clone(),
+        });
+    }
+    Ok(remote.endpoint.clone())
 }

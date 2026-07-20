@@ -1,7 +1,8 @@
-//! Keeping the text index fresh: tantivy polls postgres for newly-indexed work
-//! and pulls it into the local index (rather than postgres pushing into
-//! tantivy). This keeps the replica-local index a pure projection of the durable
-//! source, catchable-up after a restart from a persisted watermark.
+//! Keeping the text index fresh: tantivy polls the catalog outbox for
+//! newly-indexed work and pulls it into the local index (rather than the
+//! catalog pushing into tantivy). This keeps the replica-local index a pure
+//! projection of the durable source, catchable-up after a restart from a
+//! persisted watermark.
 
 use std::{
 	io::ErrorKind,
@@ -10,22 +11,26 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
 
 use heart::Retryable;
 
-use crate::runtime::{error::{RowDecodeError, TextError}, text::index::TextIndex};
+use index::engine::VersioningEngine;
 
-/// A durable pointer into postgres marking how far the local index has been
-/// caught up. Persisted alongside the tantivy directory so a restarted replica
-/// resumes from where it left off rather than rebuilding from scratch.
+use crate::coordination::{Outbox, OutboxSeq, SinkKind};
+use crate::index::GlobalStore;
+use crate::runtime::{error::TextError, text::index::TextIndex};
+
+/// A durable pointer into the catalog outbox marking how far the local index
+/// has been caught up. Persisted alongside the tantivy directory so a
+/// restarted replica resumes from where it left off rather than rebuilding
+/// from scratch.
 ///
 /// Monotone: it only ever advances, so the poll loop is idempotent and
 /// crash-safe (re-processing from a stale watermark just re-upserts, which is a
 /// no-op by id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Watermark {
-	/// The last postgres change sequence pulled into the index.
+	/// The last outbox sequence pulled into the index.
 	pub sequence: u64,
 }
 
@@ -34,8 +39,8 @@ impl Watermark {
 	pub const BOTTOM: Watermark = Watermark { sequence: 0 };
 }
 
-/// How many pending `outbox` intents one poll consumes at most.
-const BATCH_LIMIT: i64 = 64;
+/// How many pending outbox intents one poll consumes at most.
+const BATCH_LIMIT: usize = 64;
 
 /// The backoff ceiling when transient poll errors stack up.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -43,42 +48,41 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// The file the watermark persists to, next to the tantivy directory.
 const WATERMARK_FILE: &str = "watermark.json";
 
-/// Pending change intents for the text sink, newest last:
-/// `(outbox sequence, package id)`.
-const PENDING_SQL: &str = "SELECT seq, package_id FROM outbox \
-	WHERE sink_kind = 'text' AND seq > $1 ORDER BY seq ASC LIMIT $2";
-
-/// The serving projection of every symbol in the given packages, joined with
-/// the owning package's ecosystem token.
-const SYMBOLS_SQL: &str = "SELECT s.id, s.package_id, s.fq_name, s.kind, p.language \
-	FROM symbols s JOIN packages p ON p.id = s.package_id \
-	WHERE s.package_id = ANY($1)";
-
-/// Drives the postgres → tantivy poll loop: reads rows changed since the
-/// [`Watermark`], upserts them into the local [`TextIndex`], commits, and
-/// advances the watermark durably.
-pub struct Poller {
-	/// The durable source the local index is a projection of.
-	pool: sqlx::PgPool,
+/// Drives the catalog-outbox → tantivy poll loop: reads Text intents since the
+/// [`Watermark`], loads each changed package's serving symbols, upserts them
+/// into the local [`TextIndex`], commits, and advances the watermark durably.
+pub struct Poller<Engine: VersioningEngine> {
+	/// The durable outbox feed the local index is a projection of.
+	outbox: Outbox<Engine>,
+	/// The symbol source for changed packages.
+	global: GlobalStore<Engine>,
 	/// The watermark file, derived from the replica's tantivy directory.
 	watermark_path: PathBuf,
 	/// How long [`run`](Self::run) sleeps between healthy polls.
 	interval: Duration,
 }
 
-impl Poller {
+impl<Engine: VersioningEngine + Send + Sync> Poller<Engine> {
 	/// Configure a poller feeding the index that lives in `index_directory`,
 	/// persisting its watermark alongside it.
 	///
-	/// This is the public constructor the server builds a text catch-up loop from
-	/// (it owns the postgres pool + the replica's tantivy directory). The
-	/// per-intent fan-out materialization in the server upserts a package's
+	/// The per-intent fan-out materialization in the server upserts a package's
 	/// symbols into the same [`TextIndex`] directly (via
 	/// [`TextIndex::upsert_batch`], the exact write [`poll_once`](Self::poll_once)
 	/// performs), so a Text intent and a poll cycle converge to the same
 	/// upsert-by-id state.
-	pub fn new(pool: sqlx::PgPool, index_directory: &Path, interval: Duration) -> Self {
-		Self { pool, watermark_path: index_directory.join(WATERMARK_FILE), interval }
+	pub fn new(
+		outbox: Outbox<Engine>,
+		global: GlobalStore<Engine>,
+		index_directory: &Path,
+		interval: Duration,
+	) -> Self {
+		Self {
+			outbox,
+			global,
+			watermark_path: index_directory.join(WATERMARK_FILE),
+			interval,
+		}
 	}
 
 	/// Load the persisted watermark for this replica's index (bottom if none).
@@ -105,15 +109,18 @@ impl Poller {
 	/// commit, advance and persist the watermark, and return the new watermark
 	/// (unchanged if nothing was pending).
 	///
-	/// The postgres read is async; the tantivy upsert/commit runs on
-	/// spawn_blocking (see [`TextIndex`]).
+	/// The catalog read is cheap and local; the tantivy upsert/commit runs on
+	/// a blocking section (see [`TextIndex`]).
 	pub async fn poll_once(&self, index: &TextIndex) -> Result<Watermark, TextError> {
 		let current = self.watermark().await?;
 
-		let pending = sqlx::query(PENDING_SQL)
-			.bind(i64::try_from(current.sequence).unwrap_or(i64::MAX))
-			.bind(BATCH_LIMIT)
-			.fetch_all(&self.pool)
+		let pending = self
+			.outbox
+			.read_since(
+				SinkKind::Text,
+				OutboxSeq(i64::try_from(current.sequence).unwrap_or(i64::MAX)),
+				BATCH_LIMIT,
+			)
 			.await
 			.map_err(TextError::Poll)?;
 		if pending.is_empty() {
@@ -121,19 +128,21 @@ impl Poller {
 		}
 
 		let mut advanced = current.sequence;
-		let mut packages = Vec::with_capacity(pending.len());
-		for row in &pending {
-			let sequence: i64 = row.try_get("seq").map_err(TextError::Poll)?;
-			advanced = advanced.max(sequence.max(0) as u64);
-			packages.push(row.try_get::<heart::Guid, _>("package_id").map_err(TextError::Poll)?);
+		let mut symbols = Vec::new();
+		for entry in &pending {
+			advanced = advanced.max(entry.id.0.max(0) as u64);
+			symbols.extend(
+				self.global
+					.symbols_for(entry.package)
+					.await
+					.or_else(|error| match error {
+						// A version row can trail its intent; the next intent
+						// redelivers it.
+						crate::error::IndexError::NotFound { .. } => Ok(Vec::new()),
+						other => Err(TextError::Symbols(other)),
+					})?,
+			);
 		}
-
-		let rows = sqlx::query(SYMBOLS_SQL)
-			.bind(&packages)
-			.fetch_all(&self.pool)
-			.await
-			.map_err(TextError::Poll)?;
-		let symbols = rows.iter().map(symbol_from_row).collect::<Result<Vec<_>, _>>()?;
 
 		// The blocking boundary: tantivy indexing is CPU/disk-bound. On a
 		// multi-threaded runtime it moves off the async workers; on a
@@ -146,7 +155,7 @@ impl Poller {
 		tracing::info!(
 			from = current.sequence,
 			to = watermark.sequence,
-			packages = packages.len(),
+			intents = pending.len(),
 			symbols = symbols.len(),
 			"text index caught up"
 		);
@@ -185,38 +194,4 @@ fn blocking<T>(work: impl FnOnce() -> T) -> T {
 		}
 		_ => work(),
 	}
-}
-
-/// Decode one joined `symbols × packages` row into the [`heart::Symbol`] the
-/// index serves. The plain name is the last path segment of the stored
-/// fully-qualified name (postgres does not carry it separately).
-fn symbol_from_row(row: &sqlx::postgres::PgRow) -> Result<heart::Symbol, TextError> {
-	let id: heart::Guid = row.try_get("id").map_err(TextError::Poll)?;
-	let package: heart::Guid = row.try_get("package_id").map_err(TextError::Poll)?;
-	let fq_name: String = row.try_get("fq_name").map_err(TextError::Poll)?;
-	let kind: String = row.try_get("kind").map_err(TextError::Poll)?;
-	let language: String = row.try_get("language").map_err(TextError::Poll)?;
-
-	Ok(heart::Symbol {
-		id: heart::SymbolId::from_uuid(id),
-		package: heart::PackageId::from_uuid(package),
-		ecosystem: language
-			.parse()
-			.map_err(|_| TextError::Row(RowDecodeError::UnknownEcosystem { raw: language }))?,
-		name: heart::Name {
-			plain: plain_name(&fq_name).into(),
-			fully_qualified: fq_name.as_str().into(),
-		},
-		kind: crate::runtime::text::index::parse_kind(&kind)
-			.ok_or_else(|| TextError::Row(RowDecodeError::UnknownSymbolKind { raw: kind }))?,
-	})
-}
-
-/// The leaf identifier of a fully-qualified name, across ecosystem separators
-/// (`::` for Rust, `.` for Python/TypeScript, `/` defensively).
-fn plain_name(fully_qualified: &str) -> &str {
-	fully_qualified
-		.rsplit(['/', '.', ':'])
-		.find(|segment| !segment.is_empty())
-		.unwrap_or(fully_qualified)
 }

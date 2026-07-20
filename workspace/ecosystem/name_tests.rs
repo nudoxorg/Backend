@@ -877,3 +877,106 @@ mod search_surface_tests {
 		assert!(s.contains("logging"));
 	}
 }
+
+/// `cpp` name grammar totalness (REGISTRYLESS §3.1): slug identity, scoped
+/// forms, and the deliberate rejection of bare alias tokens.
+#[cfg(test)]
+mod cpp_names {
+	use crate::{Language, LanguageExt as _};
+
+	fn parse(raw: &str) -> Option<crate::name::StructuredName> {
+		Language::Cpp.spec().parse_name(raw)
+	}
+
+	fn canonical(raw: &str) -> Option<String> {
+		let spec = Language::Cpp.spec();
+		parse(raw).map(|n| spec.render_canonical(&n))
+	}
+
+	// ── Slug identity (URLs, SCP, shorthands) ────────────────────────────────
+
+	#[test]
+	fn https_url_to_slug() {
+		assert_eq!(canonical("https://github.com/madler/zlib").as_deref(), Some("github.com/madler/zlib"));
+	}
+
+	#[test]
+	fn git_suffix_and_case_normalized() {
+		assert_eq!(
+			canonical("git+https://GitHub.com/Curl/Curl.git").as_deref(),
+			Some("github.com/curl/curl")
+		);
+	}
+
+	#[test]
+	fn scp_form_accepted() {
+		assert_eq!(
+			canonical("git@github.com:boostorg/boost.git").as_deref(),
+			Some("github.com/boostorg/boost")
+		);
+	}
+
+	#[test]
+	fn bare_owner_repo_shorthand_is_github() {
+		// A weird-but-valid two-segment slug resolves via the github shorthand.
+		assert_eq!(canonical("F-user/weird.repo").as_deref(), Some("github.com/f-user/weird.repo"));
+	}
+
+	#[test]
+	fn gitlab_subgroup_preserved() {
+		let name = parse("https://gitlab.com/group/subgroup/project").unwrap();
+		assert_eq!(name.authority.as_deref(), Some("gitlab.com"));
+		assert_eq!(name.namespace.iter().map(|s| s.as_str()).collect::<Vec<_>>(), vec!["group", "subgroup"]);
+		assert_eq!(name.name, "project");
+	}
+
+	// ── Scoped forms ─────────────────────────────────────────────────────────
+
+	#[test]
+	fn system_stem_accepted() {
+		let name = parse("system/pthread").unwrap();
+		assert_eq!(name.authority.as_deref(), Some("system"));
+		assert_eq!(name.name, "pthread");
+		assert_eq!(canonical("system/pthread").as_deref(), Some("system/pthread"));
+	}
+
+	#[test]
+	fn vcpkg_and_conan_scoped_fallbacks_accepted() {
+		assert_eq!(canonical("vcpkg/zlib").as_deref(), Some("vcpkg/zlib"));
+		assert_eq!(canonical("conan/openssl").as_deref(), Some("conan/openssl"));
+	}
+
+	// ── Rejections ───────────────────────────────────────────────────────────
+
+	#[test]
+	fn bare_token_rejected() {
+		// `zlib` is an alias, not a name — resolved before parse_name (§9).
+		assert!(parse("zlib").is_none());
+		assert!(parse("OpenSSL").is_none());
+	}
+
+	#[test]
+	fn empty_rejected() {
+		assert!(parse("").is_none());
+		assert!(parse("   ").is_none());
+	}
+
+	#[test]
+	fn host_only_rejected() {
+		assert!(parse("https://github.com").is_none());
+		assert!(parse("https://github.com/just-a-user").is_none());
+	}
+
+	// ── Round-trip law ───────────────────────────────────────────────────────
+
+	#[test]
+	fn round_trip_canonical() {
+		let spec = Language::Cpp.spec();
+		for raw in ["https://github.com/madler/zlib", "system/pthread", "git@github.com:curl/curl.git"] {
+			let first = parse(raw).unwrap();
+			let rendered = spec.render_canonical(&first);
+			let second = spec.parse_name(&rendered).unwrap();
+			assert_eq!(spec.render_canonical(&second), rendered, "round-trip drift for {raw}");
+		}
+	}
+}

@@ -114,7 +114,7 @@ pub fn csharp_package(name: &str, version: &str) -> Package {
 }
 
 /// A collision-free crates.io package name: `prefix` plus a fresh uuid, so
-/// postgres-backed tests never trip over rows a previous run left behind.
+/// catalog-backed tests never trip over rows a previous run left behind.
 pub fn unique_rust_name(prefix: &str) -> String {
     format!("{prefix}{}", uuid::Uuid::new_v4().simple())
 }
@@ -149,41 +149,18 @@ impl Drop for TempDir {
     }
 }
 
-/// The postgres pool the infrastructure-gated specs run against, or `None`
-/// (with a skip note) when no database is configured/reachable — so the suite
-/// stays green offline while remaining a real test where postgres exists.
-pub async fn postgres_pool(test: &str) -> Option<sqlx::PgPool> {
-    let url = match std::env::var("REGISTRY_TEST_POSTGRES")
-        .or_else(|_| std::env::var("DATABASE_URL"))
-    {
-        Ok(url) => url,
-        Err(_) => {
-            eprintln!(
-                "skipping {test}: set REGISTRY_TEST_POSTGRES (or DATABASE_URL) to run \
-                 postgres-backed registry tests"
-            );
-            return None;
-        }
-    };
-    match sqlx::postgres::PgPoolOptions::new().max_connections(4).connect(&url).await {
-        Ok(pool) => Some(pool),
-        Err(error) => {
-            eprintln!("skipping {test}: postgres is configured but unreachable: {error}");
-            None
-        }
-    }
+/// Open a fresh in-memory catalog store for tests. Returns `(GlobalStore, CatalogWriter)`.
+pub fn catalog_store(test: &str) -> (GlobalStore<index::engine::memory::MemoryEngine>, std::sync::Arc<index::store::writer::CatalogWriter<index::engine::memory::MemoryEngine>>) {
+    let _ = test;
+    let engine = index::engine::memory::MemoryEngine::open_in_memory()
+        .expect("in-memory catalog engine opens");
+    index::migrations::runner::migrate_to_v4(&engine).expect("catalog migrates");
+    let writer = std::sync::Arc::new(index::store::writer::CatalogWriter::new(engine));
+    let instance = TerminusInstance::new("test/catalog").expect("fixture instance");
+    (GlobalStore::new(std::sync::Arc::clone(&writer), instance), writer)
 }
 
 /// The `{org}/{db}` instance token every gated spec salts symbol ids with.
 pub fn test_instance() -> TerminusInstance {
     TerminusInstance::new("test-org/test-db").expect("the fixture token is `org/db`-shaped")
-}
-
-/// A connected [`GlobalStore`] over `pool` (applies the idempotent schema).
-pub async fn global_store(pool: sqlx::PgPool) -> GlobalStore {
-    use heart::Connect;
-    GlobalStore::new(pool, test_instance())
-        .connect()
-        .await
-        .expect("the configured postgres accepts the registry schema")
 }

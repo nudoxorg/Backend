@@ -34,7 +34,8 @@ use smol_str::SmolStr;
 /// Desktop-only context. Built from the open project + local sqlite.
 ///
 /// **Privacy:** intentionally has no `Serialize` / `Deserialize` derive — this
-/// type must never appear on the INDEX wire or inside [`super::RegistryQuery`].
+/// type must never appear on the INDEX wire or inside the public
+/// [`heart::query::Query`] wire.
 #[derive(Debug, Clone, Default)]
 pub struct LocalContext {
 	/// Optional open-project marker (opaque string; keep simple).
@@ -628,22 +629,31 @@ mod tests {
 		assert_eq!(local_count, 3, "only max_local_inject locals may appear");
 	}
 
-	/// 6. Privacy: LocalEnrichment is separate from RegistryQuery; serializing
-	///    RegistryQuery JSON has no usage / local fields.
+	/// 6. Privacy: LocalEnrichment is separate from the public wire query;
+	///    serializing the public `heart::query::Query` JSON has no usage / local
+	///    fields.
 	#[test]
-	fn privacy_registry_query_json_has_no_local_fields() {
+	fn privacy_public_query_json_has_no_local_fields() {
 		// Compile-time documentation: LocalContext is a separate type and does
-		// not derive Serialize (see type definition above). RegistryQuery must
-		// never grow usage / dep_relation / local_only fields.
-		use crate::search::RegistryQuery;
-
-		let q = RegistryQuery {
-			text: "serde".into(),
-			ecosystem: None,
-			limit: 10,
-			after: None,
+		// not derive Serialize (see type definition above). The public wire type
+		// heart::query::Query must never grow usage / dep_relation / local_only
+		// fields.
+		use heart::query::{
+			PageSpecification, Query, QueryMode, RankSpecification, Routing, Scope, Target,
 		};
-		let json = serde_json::to_value(&q).expect("RegistryQuery serializes");
+
+		let q = Query {
+			target: Target::Packages,
+			text: "serde".into(),
+			scope: Scope::default(),
+			rank: RankSpecification::default(),
+			mode: QueryMode::default(),
+			routing: Routing::default(),
+			session: None,
+			at: None,
+			page: PageSpecification::default(),
+		};
+		let json = serde_json::to_value(&q).expect("heart::query::Query serializes");
 		let obj = json.as_object().expect("object");
 
 		for forbidden in [
@@ -657,27 +667,27 @@ mod tests {
 		] {
 			assert!(
 				!obj.contains_key(forbidden),
-				"RegistryQuery JSON must not contain privacy field {forbidden:?}: {obj:?}"
+				"heart::query::Query JSON must not contain privacy field {forbidden:?}: {obj:?}"
 			);
 		}
 
-		// LocalEnrichment / LocalContext are distinct types from RegistryQuery.
+		// LocalEnrichment / LocalContext are distinct types from heart::query::Query.
 		let _enrich = LocalEnrichment::default();
 		let _ctx = LocalContext::default();
 		assert_ne!(
 			std::any::type_name::<LocalContext>(),
-			std::any::type_name::<RegistryQuery>()
+			std::any::type_name::<Query>()
 		);
 		assert_ne!(
 			std::any::type_name::<LocalEnrichment>(),
-			std::any::type_name::<RegistryQuery>()
+			std::any::type_name::<Query>()
 		);
 
 		// Keys that *are* on the wire stay only the public query surface.
 		use std::collections::HashSet;
 		let keys: HashSet<&str> = obj.keys().map(|s| s.as_str()).collect();
 		assert!(keys.contains("text"));
-		assert!(keys.contains("limit"));
+		assert!(keys.contains("target"));
 	}
 
 	/// 7. Transitive vs Direct labels differ (and only Direct gets a score lift).

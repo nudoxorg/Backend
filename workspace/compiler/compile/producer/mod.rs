@@ -192,6 +192,10 @@ pub trait Producer: Send + Sync {
 			Language::Java => ProducerProfile::Java,
 			Language::CSharp => ProducerProfile::CSharp,
 			Language::Nix => ProducerProfile::Nix,
+			// C/C++ has no producer yet (RL-15); when wired it will be a
+			// treesitter-skeleton / clang static extractor — profile it as a
+			// static parser, the least-privileged non-oracle tier.
+			Language::Cpp => ProducerProfile::StaticParser,
 			Language::Python | Language::Typescript => ProducerProfile::StaticParser,
 		}
 	}

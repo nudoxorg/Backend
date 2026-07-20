@@ -1,8 +1,8 @@
 //! Track A — package search wire path: ecosystem scope + synonym expansion.
 //!
 //! Guards the production wiring that threads API `ecosystems` and process
-//! heuristics (`Synonyms`) into `RegistryQuery` / `collect_ranked_hits` rather
-//! than leaving `ecosystem: None` and empty `expanded_terms` hard-coded.
+//! heuristics (`Synonyms`) into `PackageSearchRequest` / `collect_ranked_hits`
+//! rather than leaving `ecosystem: None` and empty `expanded_terms` hard-coded.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use registry::{
 	GlobalPackage, Package,
 	metadata::{SearchFacets, Synonyms},
 	package::{Coordinates, PackageName},
-	search::{RegistryQuery, StructuredQuery, search_page, tantivy::PackageIndex},
+	search::{PackageSearchRequest, StructuredQuery, search_page, tantivy::PackageIndex},
 };
 use smol_str::SmolStr;
 
@@ -123,15 +123,16 @@ fn make_synonyms(csv: &str) -> Synonyms {
 // Ecosystem scope wiring
 // ---------------------------------------------------------------------------
 
-/// RegistryQuery.ecosystem Some(Go) must surface as StructuredQuery.ecosystem Some(Go)
+/// PackageSearchRequest.ecosystem Some(Go) must surface as StructuredQuery.ecosystem Some(Go)
 /// after parse — the same parse call `collect_ranked_hits` uses.
 #[test]
 fn registry_query_ecosystem_go_produces_structured_scope() {
-	let query = RegistryQuery {
+	let query = PackageSearchRequest {
 		text: "mux".to_owned(),
 		ecosystem: Some(Language::Go),
 		limit: 10,
 		after: None,
+		semantic: Vec::new(),
 	};
 	let sq = StructuredQuery::parse(&query.text, query.ecosystem);
 	assert_eq!(sq.ecosystem, Some(Language::Go));
@@ -186,11 +187,12 @@ async fn ecosystem_go_scopes_search_results() {
 	// Unscoped: both worlds match a bare "mux" (or at least more than one).
 	let open = search_page(
 		&index,
-		&RegistryQuery {
+		&PackageSearchRequest {
 			text: "mux".to_owned(),
 			ecosystem: None,
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		},
 		None,
 	)
@@ -205,11 +207,12 @@ async fn ecosystem_go_scopes_search_results() {
 	// API-scoped to Go: only the Go package.
 	let scoped = search_page(
 		&index,
-		&RegistryQuery {
+		&PackageSearchRequest {
 			text: "mux".to_owned(),
 			ecosystem: Some(Language::Go),
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		},
 		None,
 	)
@@ -225,11 +228,12 @@ async fn ecosystem_go_scopes_search_results() {
 	// Inline lang: token scopes equivalently when API ecosystem is None.
 	let lang_token = search_page(
 		&index,
-		&RegistryQuery {
+		&PackageSearchRequest {
 			text: "lang:go mux".to_owned(),
 			ecosystem: None,
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		},
 		None,
 	)
@@ -278,11 +282,12 @@ async fn search_page_with_synonyms_expands_and_recalls() {
 	// With synonyms, EXPANDED tier must surface reqwest.
 	let page = search_page(
 		&index,
-		&RegistryQuery {
+		&PackageSearchRequest {
 			text: "http-client".to_owned(),
 			ecosystem: None,
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		},
 		Some(&synonyms),
 	)
@@ -309,11 +314,12 @@ async fn unscoped_search_still_works() {
 
 	let page = search_page(
 		&index,
-		&RegistryQuery {
+		&PackageSearchRequest {
 			text: "serde".to_owned(),
 			ecosystem: None,
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		},
 		None,
 	)
@@ -367,11 +373,12 @@ async fn multi_parent_dedup_and_pagination_smoke() {
 	// Multi-parent collapses to one for "serde".
 	let serde_page = search_page(
 		&index,
-		&RegistryQuery {
+		&PackageSearchRequest {
 			text: "serde".to_owned(),
 			ecosystem: None,
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		},
 		None,
 	)
@@ -386,11 +393,12 @@ async fn multi_parent_dedup_and_pagination_smoke() {
 	// Pagination: page 1 then resume with next cursor.
 	let page1 = search_page(
 		&index,
-		&RegistryQuery {
+		&PackageSearchRequest {
 			text: "crate".to_owned(),
 			ecosystem: None,
 			limit: 5,
 			after: None,
+			semantic: Vec::new(),
 		},
 		None,
 	)
@@ -404,11 +412,12 @@ async fn multi_parent_dedup_and_pagination_smoke() {
 		.expect("cursor decodes");
 	let page2 = search_page(
 		&index,
-		&RegistryQuery {
+		&PackageSearchRequest {
 			text: "crate".to_owned(),
 			ecosystem: None,
 			limit: 5,
 			after: Some(cursor),
+			semantic: Vec::new(),
 		},
 		None,
 	)

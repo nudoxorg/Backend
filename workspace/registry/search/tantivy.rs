@@ -25,13 +25,12 @@
 //! re-registered on this index after every open (same mechanism as TextIndex).
 
 use heart::PackageId;
-use sqlx::Row;
 use tantivy::{Index, IndexReader, schema::Field};
 
 use crate::{
 	GlobalPackage,
 	error::SearchError,
-	schema::{codec, queries},
+	schema::codec,
 };
 use crate::runtime::text::tokenizer;
 use super::structured::StructuredQuery;
@@ -382,21 +381,39 @@ impl PackageIndex {
 		Ok(self.watermark)
 	}
 
-	/// Poll postgres from the current watermark and fold new/changed packages.
+	/// Poll the catalog outbox (Text sink) from the current watermark and fold
+	/// new/changed packages. The watermark position is the outbox `seq` (it was
+	/// a postgres timestamp before the catalog port; both are monotonic i64s,
+	/// so persisted watermarks stay decodable — a stale timestamp value simply
+	/// reads as "far ahead" and the next full rebuild resets it).
 	#[tracing::instrument(skip_all, fields(from = self.watermark.position))]
-	pub async fn sync_from(&mut self, pool: &sqlx::PgPool) -> Result<SyncWatermark, SearchError> {
-		let after = chrono::DateTime::from_timestamp_micros(self.watermark.position)
-			.unwrap_or(chrono::DateTime::UNIX_EPOCH);
-		let (sql, vals) = queries::search::changed_since(after, SYNC_BATCH);
-		let rows =
-			sqlx::query_with(&sql, vals).fetch_all(pool).await.map_err(SearchError::Source)?;
+	pub async fn sync_from<Engine: index::engine::VersioningEngine + Send + Sync>(
+		&mut self,
+		global: &crate::index::GlobalStore<Engine>,
+		outbox: &crate::coordination::Outbox<Engine>,
+	) -> Result<SyncWatermark, SearchError> {
+		let entries = outbox
+			.read_since(
+				crate::coordination::SinkKind::Text,
+				crate::coordination::OutboxSeq(self.watermark.position),
+				SYNC_BATCH as usize,
+			)
+			.await
+			.map_err(|error| SearchError::OutboxRead { detail: error.to_string() })?;
 
 		let mut head = self.watermark.position;
-		let mut records = Vec::with_capacity(rows.len());
-		for row in &rows {
-			let (record, updated_micros) = row_to_record(row)?;
-			head = head.max(updated_micros);
-			records.push(record);
+		let mut records = Vec::with_capacity(entries.len());
+		for entry in &entries {
+			head = head.max(entry.id.0);
+			match global.get(entry.package).await {
+				Ok(record) => records.push(record),
+				// A version row can trail its outbox intent (or be tombstoned);
+				// skip and let the next intent re-deliver it.
+				Err(crate::error::IndexError::NotFound { .. }) => continue,
+				Err(error) => {
+					return Err(SearchError::OutboxRead { detail: error.to_string() });
+				}
+			}
 		}
 		self.absorb(records.iter(), head)
 	}
@@ -811,34 +828,3 @@ fn stored_text(
 
 fn codec_to_search(e: codec::CodecError) -> SearchError { SearchError::Codec(e) }
 
-fn row_to_record(row: &sqlx::postgres::PgRow) -> Result<(GlobalPackage, i64), SearchError> {
-	let id: uuid::Uuid = row.try_get(0).map_err(SearchError::Source)?;
-	let language: String = row.try_get(1).map_err(SearchError::Source)?;
-	let origin_token: String = row.try_get(2).map_err(SearchError::Source)?;
-	let name_original: String = row.try_get(4).map_err(SearchError::Source)?;
-	let version_canonical: String = row.try_get(5).map_err(SearchError::Source)?;
-	let toolchain_json: serde_json::Value = row.try_get(6).map_err(SearchError::Source)?;
-	let updated_at: chrono::DateTime<chrono::Utc> = row.try_get(7).map_err(SearchError::Source)?;
-	let state: Option<String> = row.try_get(8).map_err(SearchError::Source)?;
-	let phase: Option<String> = row.try_get(9).map_err(SearchError::Source)?;
-	let content_hash: Option<Vec<u8>> = row.try_get(10).map_err(SearchError::Source)?;
-	let needed: Option<bool> = row.try_get(11).map_err(SearchError::Source)?;
-	let failure: Option<serde_json::Value> = row.try_get(12).map_err(SearchError::Source)?;
-	let facets_json: Option<serde_json::Value> = row.try_get(13).map_err(SearchError::Source)?;
-
-	let coordinates = codec::coordinates_from_columns(
-		&language, &origin_token, &name_original, &version_canonical,
-	).map_err(codec_to_search)?;
-	let toolchain = codec::toolchain_from_json(&toolchain_json).map_err(codec_to_search)?;
-	let state = match state {
-		None => heart::ResolutionState::Unindexed { needed: false },
-		Some(token) => codec::state_from_columns(
-			&token, phase.as_deref(), content_hash.as_deref(),
-			needed.unwrap_or(false), failure.as_ref(),
-		).map_err(codec_to_search)?,
-	};
-	let facets = codec::facets_from_json(facets_json.as_ref()).map_err(codec_to_search)?;
-	let package = crate::Package { coordinates, toolchain };
-	let record = GlobalPackage { id: codec::package_id_from_uuid(id), package, state, facets };
-	Ok((record, updated_at.timestamp_micros()))
-}

@@ -6,8 +6,10 @@ use futures::{Stream, StreamExt};
 use heart::{Cursor, Enforced, Scored, Symbol, SymbolId, SymbolKind};
 use registry::runtime::text::{TextIndex, TextQuery};
 
+use heart::PageSpecification;
+
 use crate::error::{BadRequestReason, ServerError};
-use crate::search::query::{Filter, LiteralQuery, Pagination};
+use crate::search::query::{Filter, LiteralQuery};
 
 /// The thin adapter from the server's query vocabulary onto one replica-local
 /// [`TextIndex`], owning the `TextError` → [`ServerError`] translation.
@@ -22,7 +24,7 @@ impl<'a> SymbolTextSurface<'a> {
 	pub async fn search(
 		&self,
 		query: &LiteralQuery,
-		page: &Pagination,
+		page: &PageSpecification,
 	) -> Result<impl Stream<Item = Result<Scored<Symbol>, ServerError>> + Send, ServerError> {
 		let limit = page_limit(page);
 		let after = self.decode_cursor(page)?;
@@ -43,7 +45,7 @@ impl<'a> SymbolTextSurface<'a> {
 	pub(crate) async fn collect(
 		&self,
 		query: &LiteralQuery,
-		page: &Pagination,
+		page: &PageSpecification,
 		filter: &Filter,
 	) -> Result<Vec<Scored<Symbol>>, ServerError> {
 		let limit = page_limit(page).get();
@@ -78,9 +80,9 @@ impl<'a> SymbolTextSurface<'a> {
 	/// (a cheap defence-in-depth check against a commit racing this decode).
 	fn decode_cursor(
 		&self,
-		page: &Pagination,
+		page: &PageSpecification,
 	) -> Result<Option<Cursor<registry::runtime::text::TextCursorKey, Enforced>>, ServerError> {
-		let Some(token) = page.after.as_deref() else {
+		let Some(token) = page.cursor.as_deref() else {
 			return Ok(None);
 		};
 		let live = self
@@ -104,7 +106,7 @@ pub fn kind_admits(kinds: &[SymbolKind], kind: SymbolKind) -> bool {
 }
 
 /// The page size as the index's `NonZeroUsize` vocabulary.
-fn page_limit(page: &Pagination) -> NonZeroUsize {
-	NonZeroUsize::new(page.limit.get() as usize).unwrap_or(NonZeroUsize::MIN)
+fn page_limit(page: &PageSpecification) -> NonZeroUsize {
+	NonZeroUsize::new(page.limit as usize).unwrap_or(NonZeroUsize::MIN)
 }
 

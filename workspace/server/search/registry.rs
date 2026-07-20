@@ -8,35 +8,41 @@ use heart::{ContentHash, Cursor, Language, Scored};
 use crate::registry::GlobalPackage;
 use crate::registry::metadata::Synonyms;
 use crate::registry::search::{
-	SearchKey, RegistryQuery, search_page,
+	SearchKey, PackageSearchRequest, search_page,
 	tantivy::{PackageIndex, SyncWatermark},
 };
 
+use heart::PageSpecification;
+
 use crate::error::{BadRequestReason, ServerError, ServerResult};
-use crate::search::query::{Pagination, Query};
+use crate::search::query::Query;
 
 /// One source's replica-local package index, shared between the query surface
-/// and the postgres sync poller. The `tokio::sync::Mutex` exists because
+/// and the catalog sync poller. The `tokio::sync::Mutex` exists because
 /// [`PackageIndex::sync_from`] mutates (single writer); queries hold the lock
 /// only for the in-memory tantivy read.
 pub struct PackageSearchIndex {
 	index: tokio::sync::Mutex<PackageIndex>,
-	pool: sqlx::PgPool,
 }
 
 impl PackageSearchIndex {
-	/// Open (or create) the replica-local index at `directory`, hydrating from
-	/// the given postgres pool.
-	pub fn open(directory: &Path, pool: sqlx::PgPool) -> ServerResult<Self> {
+	/// Open (or create) the replica-local index at `directory`. Hydration
+	/// happens per-tick via [`Self::synchronize`], off the catalog outbox feed.
+	pub fn open(directory: &Path) -> ServerResult<Self> {
 		let index = PackageIndex::open(directory).map_err(crate::registry::RegistryError::from)?;
-		Ok(Self { index: tokio::sync::Mutex::new(index), pool })
+		Ok(Self { index: tokio::sync::Mutex::new(index) })
 	}
 
-	/// Pull one batch of changed packages from postgres into the local index,
-	/// advancing the watermark. Idempotent and resumable; the sync poller's tick.
-	pub async fn synchronize(&self) -> ServerResult<SyncWatermark> {
+	/// Pull one batch of changed packages from the catalog outbox feed into
+	/// the local index, advancing the watermark. Idempotent and resumable;
+	/// the sync poller's tick.
+	pub async fn synchronize(
+		&self,
+		global: &crate::registry::index::GlobalStore<crate::CatalogEngine>,
+		outbox: &crate::registry::coordination::Outbox<crate::CatalogEngine>,
+	) -> ServerResult<SyncWatermark> {
 		let mut index = self.index.lock().await;
-		index.sync_from(&self.pool).await.map_err(|error| crate::registry::RegistryError::from(error).into())
+		index.sync_from(global, outbox).await.map_err(|error| crate::registry::RegistryError::from(error).into())
 	}
 
 	/// One materialized page of scored packages for a free-text query,
@@ -74,14 +80,15 @@ impl PackageSearchIndex {
 
 		// Delegate keyset pagination to the shared registry search_page so
 		// production and tests share one resume path.
-		let query = RegistryQuery {
+		let request = PackageSearchRequest {
 			text: text.to_owned(),
 			ecosystem,
 			limit,
 			after: after.cloned(),
+			semantic: Vec::new(),
 		};
 
-		let page = search_page(&index, &query, synonyms)
+		let page = search_page(&index, &request, synonyms)
 			.await
 			.map_err(crate::registry::RegistryError::from)?;
 
@@ -121,12 +128,12 @@ impl RegistrySearchSurface {
 	pub async fn search(
 		&self,
 		query: &Query,
-		page: &Pagination,
+		page: &PageSpecification,
 		ecosystem: Option<Language>,
 		synonyms: Option<&Synonyms>,
 	) -> Result<impl Stream<Item = Result<Scored<GlobalPackage>, ServerError>> + Send, ServerError> {
 		let after = page
-			.after
+			.cursor
 			.as_deref()
 			.map(|token| {
 				Cursor::<SearchKey>::decode(token)
@@ -140,7 +147,7 @@ impl RegistrySearchSurface {
 			.index
 			.page(
 				query.text(),
-				page.limit.get() as usize,
+				page.limit as usize,
 				after.as_ref(),
 				ecosystem,
 				synonyms,
@@ -157,7 +164,7 @@ mod tests {
 		GlobalPackage, Package,
 		metadata::SearchFacets,
 		package::{Coordinates, PackageName},
-		search::{RegistryQuery, tantivy::PackageIndex},
+		search::{PackageSearchRequest, tantivy::PackageIndex},
 	};
 	use smol_str::SmolStr;
 
@@ -229,11 +236,12 @@ mod tests {
 		let records = vec![tokio_ext, tokio_exact, unrelated];
 		let index = build_index(&dir, &records);
 
-		let query = RegistryQuery {
+		let query = PackageSearchRequest {
 			text: "tokio".to_owned(),
 			ecosystem: None,
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		};
 
 		let page = crate::registry::search::search_page(&index, &query, None)
@@ -297,11 +305,12 @@ mod tests {
 		let records = vec![primary, mirror];
 		let index = build_index(&dir, &records);
 
-		let query = RegistryQuery {
+		let query = PackageSearchRequest {
 			text: "serde".to_owned(),
 			ecosystem: None,
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		};
 
 		let page = crate::registry::search::search_page(&index, &query, None)
@@ -326,11 +335,12 @@ mod tests {
 			.collect();
 		let index = build_index(&dir, &records);
 
-		let query = RegistryQuery {
+		let query = PackageSearchRequest {
 			text: "crate".to_owned(),
 			ecosystem: None,
 			limit: 10,
 			after: None,
+			semantic: Vec::new(),
 		};
 
 		let page = crate::registry::search::search_page(&index, &query, None)

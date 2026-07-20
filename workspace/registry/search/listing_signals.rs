@@ -37,7 +37,11 @@ pub fn listing_signals_from_body(
 		// Go (list of tags), Java, C#, Nix: counts only via DynSpec-style arrays
 		// when JSON is present; otherwise no temporal.
 		Language::CSharp => parse_nuget_versions_array(body, version_raw, now),
-		Language::Go | Language::Java | Language::Nix => parse_generic_version_count(body, version_raw),
+		// Go (list of tags), Java, C#, Nix, and cpp (ls-remote-derived counts):
+		// count-only when a JSON array is present, else no temporal signal.
+		Language::Go | Language::Java | Language::Nix | Language::Cpp => {
+			parse_generic_version_count(body, version_raw)
+		}
 	}
 }
 

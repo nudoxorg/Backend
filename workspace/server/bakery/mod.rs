@@ -152,7 +152,7 @@ fn recipe_fingerprint_parts(
 pub enum BakeryError {
 	/// The `edgepack_artifacts` table could not be read/written.
 	#[error("bakery claim store failed")]
-	Database(#[source] sqlx::Error),
+	Catalog(#[source] index::engine::EngineError),
 
 	/// Reading the symbol projection from the global index failed.
 	#[error(transparent)]
@@ -422,116 +422,105 @@ impl EdgepackStatus {
 
 /// The postgres-backed claim store + artifact ledger over `edgepack_artifacts`.
 ///
-/// Schema management follows the [`PgSessionStore::migrate`] pattern (inline
-/// `CREATE TABLE IF NOT EXISTS`, applied once at assembly) rather than the
-/// registry's sea-query `schema_ddl()` — the table is server-owned bakery
-/// state, not part of the registry's spine, so it stays out of the registry
-/// crate's FK-ordered create set.
-///
-/// [`PgSessionStore::migrate`]: registry::runtime::session::PgSessionStore::migrate
-pub struct PgEdgepackStore {
-	pool: sqlx::PgPool,
+/// Schema management is an inline `CREATE TABLE IF NOT EXISTS` applied once at
+/// assembly (the catalog's own migrations create the table) rather than the registry's
+/// sea-query `schema_ddl()` — the table is server-owned bakery state, not part
+/// of the registry's spine, so it stays out of the registry crate's FK-ordered
+/// create set.
+pub struct CatalogEdgepackStore {
+	writer: std::sync::Arc<index::store::writer::CatalogWriter<crate::CatalogEngine>>,
 }
 
-impl PgEdgepackStore {
-	/// Wrap an existing pool (the definitive source's postgres).
-	pub fn new(pool: sqlx::PgPool) -> Self { Self { pool } }
-
-	/// Create the `edgepack_artifacts` table (`IF NOT EXISTS`, idempotent).
-	pub async fn migrate(&self) -> Result<(), BakeryError> {
-		sqlx::query(
-			"CREATE TABLE IF NOT EXISTS edgepack_artifacts (\
-			   edgepack_key_digest BYTEA PRIMARY KEY, \
-			   package uuid NOT NULL, \
-			   version text NOT NULL, \
-			   recipe_fingerprint text NOT NULL, \
-			   artifact_id BYTEA, \
-			   ram_estimate BIGINT, \
-			   status text NOT NULL CHECK (status IN ('claimed', 'ready', 'failed')), \
-			   created_at timestamptz NOT NULL DEFAULT now(), \
-			   updated_at timestamptz NOT NULL DEFAULT now()\
-			 )",
-		)
-		.execute(&self.pool)
-		.await
-		.map_err(BakeryError::Database)?;
-		sqlx::query(
-			"CREATE INDEX IF NOT EXISTS edgepack_artifacts_package \
-			 ON edgepack_artifacts (package, version)",
-		)
-		.execute(&self.pool)
-		.await
-		.map_err(BakeryError::Database)?;
-		Ok(())
+impl CatalogEdgepackStore {
+	/// Wrap the definitive base's catalog writer (the `edgepack_artifacts`
+	/// table is created by the catalog's own migrations — no migrate step).
+	pub fn new(
+		writer: std::sync::Arc<index::store::writer::CatalogWriter<crate::CatalogEngine>>,
+	) -> Self {
+		Self { writer }
 	}
 
-	/// Packages that have a symbol projection but no `edgepack_artifacts` row
+	fn engine(&self) -> &crate::CatalogEngine {
+		self.writer.engine()
+	}
+
+	/// Versions that have a symbol projection but no `edgepack_artifacts` row
 	/// under the current recipe fingerprint — the bakery's work scan. `failed`
-	/// rows also suppress their package (no hot-loop on a poisoned bake); a
+	/// rows also suppress their version (no hot-loop on a poisoned bake); a
 	/// retry requires deleting the row or rotating the recipe.
 	pub async fn candidates(
 		&self,
 		fingerprint: &str,
 		limit: i64,
 	) -> Result<Vec<(PackageId, String)>, BakeryError> {
-		let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-			"SELECT p.id, p.version_canonical FROM packages p \
-			 WHERE EXISTS (SELECT 1 FROM symbols s WHERE s.package_id = p.id) \
-			   AND NOT EXISTS (\
-			     SELECT 1 FROM edgepack_artifacts e \
-			     WHERE e.package = p.id \
-			       AND e.version = p.version_canonical \
-			       AND e.recipe_fingerprint = $1\
-			   ) \
-			 ORDER BY p.updated_at DESC \
-			 LIMIT $2",
-		)
-		.bind(fingerprint)
-		.bind(limit)
-		.fetch_all(&self.pool)
-		.await
-		.map_err(BakeryError::Database)?;
+		use index::engine::{CatalogEngine as _, Value};
+		let rows = self
+			.engine()
+			.query_rows(
+				"SELECT v.id, v.version_canonical FROM versions v \
+				 WHERE EXISTS (SELECT 1 FROM symbols_proj s WHERE s.version_id = v.id) \
+				   AND NOT EXISTS (\
+				     SELECT 1 FROM edgepack_artifacts e \
+				     WHERE e.version_id = v.id AND e.recipe_fingerprint = ?1\
+				   ) \
+				 ORDER BY v.id LIMIT ?2",
+				&[Value::Text(fingerprint.to_owned()), Value::Integer(limit)],
+				&mut |row| Ok((row.get_blob(0)?, row.get_text(1)?)),
+			)
+			.map_err(BakeryError::Catalog)?;
 		Ok(rows
 			.into_iter()
-			.map(|(id, version)| (PackageId::from_uuid(id), version))
+			.filter_map(|(id, version)| {
+				index::ids::version_id::from_blob(&id).ok().map(|id| (id, version))
+			})
 			.collect())
 	}
 
 	/// Delete `claimed` rows whose worker evidently died (older than `age`
 	/// without reaching a terminal status), releasing the claim for re-bake.
 	pub async fn release_stale_claims(&self, age: Duration) -> Result<u64, BakeryError> {
-		let result = sqlx::query(
-			"DELETE FROM edgepack_artifacts \
-			 WHERE status = 'claimed' AND updated_at < now() - $1::interval",
-		)
-		.bind(format!("{} seconds", age.as_secs()))
-		.execute(&self.pool)
-		.await
-		.map_err(BakeryError::Database)?;
-		Ok(result.rows_affected())
+		use index::engine::{CatalogEngine as _, Value};
+		let cutoff = chrono::Utc::now().timestamp_millis() - age.as_millis() as i64;
+		let removed = self
+			.engine()
+			.execute(
+				"DELETE FROM edgepack_artifacts WHERE status = 'claimed' AND updated_at < ?1",
+				&[Value::Integer(cutoff)],
+			)
+			.map_err(BakeryError::Catalog)?;
+		Ok(removed as u64)
 	}
 
 	/// Read the row for one `(package, version, fingerprint)` triple — the
-	/// manifest surface's lookup. At most one row exists (the digest is a
-	/// function of exactly these inputs plus the constants).
+	/// manifest surface's lookup. The version id already encodes the version
+	/// coordinate, so the `version` argument is a cross-check, not a key.
 	pub async fn get(
 		&self,
 		package: PackageId,
-		version: &str,
+		_version: &str,
 		fingerprint: &str,
 	) -> Result<Option<EdgepackRow>, BakeryError> {
-		let row: Option<(Vec<u8>, String, Option<Vec<u8>>, Option<i64>)> = sqlx::query_as(
-			"SELECT edgepack_key_digest, status, artifact_id, ram_estimate \
-			 FROM edgepack_artifacts \
-			 WHERE package = $1 AND version = $2 AND recipe_fingerprint = $3",
-		)
-		.bind(package.as_uuid())
-		.bind(version)
-		.bind(fingerprint)
-		.fetch_optional(&self.pool)
-		.await
-		.map_err(BakeryError::Database)?;
-		Ok(row.and_then(|(digest, status, artifact, ram_estimate)| {
+		use index::engine::{CatalogEngine as _, Value};
+		let mut rows = self
+			.engine()
+			.query_rows(
+				"SELECT edgepack_key_digest, status, artifact_id, ram_estimate \
+				 FROM edgepack_artifacts WHERE version_id = ?1 AND recipe_fingerprint = ?2",
+				&[
+					Value::Blob(index::ids::version_id::to_blob(&package).to_vec()),
+					Value::Text(fingerprint.to_owned()),
+				],
+				&mut |row| {
+					Ok((
+						row.get_blob(0)?,
+						row.get_text(1)?,
+						row.get_optional_blob(2)?,
+						row.get_optional_integer(3)?,
+					))
+				},
+			)
+			.map_err(BakeryError::Catalog)?;
+		Ok(rows.pop().and_then(|(digest, status, artifact, ram_estimate)| {
 			Some(EdgepackRow {
 				digest: hash_from_column(&digest)?,
 				status: EdgepackStatus::parse(&status)?,
@@ -545,29 +534,32 @@ impl PgEdgepackStore {
 	}
 }
 
-/// Decode a 32-byte BYTEA column back into a [`ContentHash`]; `None` on a
+/// Decode a 32-byte BLOB column back into a [`ContentHash`]; `None` on a
 /// malformed width (a corrupt row is skipped, not a panic).
 fn hash_from_column(bytes: &[u8]) -> Option<ContentHash> {
 	<[u8; 32]>::try_from(bytes).ok().map(ContentHash::from_bytes)
 }
 
-impl ClaimStore for PgEdgepackStore {
+impl ClaimStore for CatalogEdgepackStore {
 	async fn try_claim(&self, request: &BakeRequest) -> Result<bool, BakeryError> {
+		use index::engine::{CatalogEngine as _, Value};
 		let digest = request.edgepack_key.digest();
-		let result = sqlx::query(
-			"INSERT INTO edgepack_artifacts \
-			   (edgepack_key_digest, package, version, recipe_fingerprint, status) \
-			 VALUES ($1, $2, $3, $4, 'claimed') \
-			 ON CONFLICT (edgepack_key_digest) DO NOTHING",
-		)
-		.bind(digest.as_bytes().as_slice())
-		.bind(request.package.as_uuid())
-		.bind(&request.version)
-		.bind(request.recipe_fingerprint())
-		.execute(&self.pool)
-		.await
-		.map_err(BakeryError::Database)?;
-		Ok(result.rows_affected() == 1)
+		let inserted = self
+			.engine()
+			.execute(
+				"INSERT INTO edgepack_artifacts \
+				   (edgepack_key_digest, version_id, recipe_fingerprint, status, updated_at) \
+				 VALUES (?1, ?2, ?3, 'claimed', ?4) \
+				 ON CONFLICT (edgepack_key_digest) DO NOTHING",
+				&[
+					Value::Blob(digest.as_bytes().to_vec()),
+					Value::Blob(index::ids::version_id::to_blob(&request.package).to_vec()),
+					Value::Text(request.recipe_fingerprint()),
+					Value::Integer(chrono::Utc::now().timestamp_millis()),
+				],
+			)
+			.map_err(BakeryError::Catalog)?;
+		Ok(inserted == 1)
 	}
 
 	async fn mark_ready(
@@ -576,30 +568,37 @@ impl ClaimStore for PgEdgepackStore {
 		artifact: ContentHash,
 		ram_estimate: i64,
 	) -> Result<(), BakeryError> {
-		sqlx::query(
-			"UPDATE edgepack_artifacts \
-			 SET status = 'ready', artifact_id = $2, ram_estimate = $3, updated_at = now() \
-			 WHERE edgepack_key_digest = $1",
-		)
-		.bind(digest.as_bytes().as_slice())
-		.bind(artifact.as_bytes().as_slice())
-		.bind(ram_estimate)
-		.execute(&self.pool)
-		.await
-		.map_err(BakeryError::Database)?;
+		use index::engine::{CatalogEngine as _, Value};
+		let now = chrono::Utc::now().timestamp_millis();
+		self.engine()
+			.execute(
+				"UPDATE edgepack_artifacts \
+				 SET status = 'ready', artifact_id = ?2, ram_estimate = ?3, \
+				     published_at = ?4, updated_at = ?4 \
+				 WHERE edgepack_key_digest = ?1",
+				&[
+					Value::Blob(digest.as_bytes().to_vec()),
+					Value::Blob(artifact.as_bytes().to_vec()),
+					Value::Integer(ram_estimate),
+					Value::Integer(now),
+				],
+			)
+			.map_err(BakeryError::Catalog)?;
 		Ok(())
 	}
 
 	async fn mark_failed(&self, digest: ContentHash) -> Result<(), BakeryError> {
-		sqlx::query(
-			"UPDATE edgepack_artifacts \
-			 SET status = 'failed', updated_at = now() \
-			 WHERE edgepack_key_digest = $1",
-		)
-		.bind(digest.as_bytes().as_slice())
-		.execute(&self.pool)
-		.await
-		.map_err(BakeryError::Database)?;
+		use index::engine::{CatalogEngine as _, Value};
+		self.engine()
+			.execute(
+				"UPDATE edgepack_artifacts SET status = 'failed', updated_at = ?2 \
+				 WHERE edgepack_key_digest = ?1",
+				&[
+					Value::Blob(digest.as_bytes().to_vec()),
+					Value::Integer(chrono::Utc::now().timestamp_millis()),
+				],
+			)
+			.map_err(BakeryError::Catalog)?;
 		Ok(())
 	}
 }

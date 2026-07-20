@@ -48,7 +48,7 @@ pub fn aggregate(probes: &[Probe]) -> Health {
 	/// relational spine (identity, lifecycle, queue, outbox) and the blob store
 	/// (the durable root every read plane derives from). The derived stores
 	/// (qdrant / terminus / tantivy) only degrade their own surfaces.
-	const REQUIRED: [BackendKind; 2] = [BackendKind::Postgres, BackendKind::ObjectStore];
+	const REQUIRED: [BackendKind; 2] = [BackendKind::Catalog, BackendKind::ObjectStore];
 
 	let impaired: Vec<BackendKind> = probes
 		.iter()

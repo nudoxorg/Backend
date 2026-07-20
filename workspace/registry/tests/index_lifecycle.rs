@@ -149,8 +149,8 @@ fn progress_is_monotonic_and_completes() {
 ///
 /// Assert: requesting a re-index of a `Stored` package transitions it back to
 ///   `Progressing` on the same record (no separate outcome object).
-#[test]
-fn reindex_mutates_state_in_place() {
+#[tokio::test]
+async fn reindex_mutates_state_in_place() {
     let package = common::rust_package("serde", "1.0.0");
 
     // The state machine has one mutable slot per package: the same binding
@@ -160,25 +160,35 @@ fn reindex_mutates_state_in_place() {
     state = ResolutionState::Progressing(Phase::Acquiring);
     assert_eq!(state, ResolutionState::Progressing(Phase::Acquiring));
 
-    // And the persisted mutator is a single-row upsert keyed on the package —
-    // `ON CONFLICT (package_id) DO UPDATE`, mutating the existing record
-    // rather than inserting a fresh outcome row.
-    let (sql, _values) = registry::schema::queries::index::set_state(package.id(), &state)
-        .expect("the mutator statement builds");
-    assert!(
-        sql.contains("ON CONFLICT (\"package_id\")") && sql.contains("UPDATE"),
-        "set_state must upsert the one lifecycle row in place, got: {sql}"
+    // The catalog mutator is a single-row upsert keyed on the package —
+    // applying set_state twice for the same package must converge on the last value.
+    let (store, _writer) = common::catalog_store("reindex_mutates_state_in_place");
+    store
+        .upsert(&common::global_package(
+            package.clone(),
+            ResolutionState::Stored { hash: ContentHash::of_bytes(b"old snapshot") },
+        ))
+        .await
+        .expect("initial registration succeeds");
+    store
+        .set_state(package.id(), &ResolutionState::Progressing(Phase::Acquiring))
+        .await
+        .expect("re-indexing transition records");
+    assert_eq!(
+        store.get_state(package.id()).await.expect("state resolves"),
+        ResolutionState::Progressing(Phase::Acquiring),
+        "set_state must update the one lifecycle row in place"
     );
 }
 
 /// A NuGet-origin C# package is a first-class lifecycle entry.
 ///
 /// Assert: a C# / NuGet coordinate set produces a valid package id, its
-/// lifecycle states round-trip through the codec, and the `set_state` upsert
+/// lifecycle states round-trip through the codec, and the catalog upsert
 /// targets the same single-row slot (origin is baked into the id hash, so a
 /// NuGet package never aliases a crates.io package with the same name).
-#[test]
-fn nuget_csharp_package_is_a_first_class_lifecycle_entry() {
+#[tokio::test]
+async fn nuget_csharp_package_is_a_first_class_lifecycle_entry() {
     // Newtonsoft.Json — a widely-known NuGet package; its name uses the same
     // dotted-namespace convention as C# type names.
     let package = common::csharp_package("Newtonsoft.Json", "13.0.3");
@@ -206,14 +216,29 @@ fn nuget_csharp_package_is_a_first_class_lifecycle_entry() {
         assert_eq!(decoded, state, "lifecycle state must round-trip for a NuGet package");
     }
 
-    // The `set_state` upsert targets the one lifecycle row keyed on the package
-    // id — for NuGet, the id encodes the origin, so NuGet Newtonsoft.Json never
+    // The catalog upsert targets the one lifecycle row keyed on the package id.
+    // For NuGet, the id encodes the origin, so NuGet Newtonsoft.Json never
     // aliases a hypothetical crates.io package of the same name.
+    let (store, _writer) = common::catalog_store("nuget_csharp_package_is_a_first_class_lifecycle_entry");
+    let nuget_pkg = common::csharp_package("Newtonsoft.Json", "13.0.3");
+    let crates_pkg_with_same_name = common::rust_package("Newtonsoft.Json", "13.0.3");
+    assert_ne!(
+        nuget_pkg.id(),
+        crates_pkg_with_same_name.id(),
+        "origin baked into id: NuGet and crates.io package with same name must have distinct ids"
+    );
     let progressing = ResolutionState::Progressing(Phase::Extracting);
-    let (sql, _values) = registry::schema::queries::index::set_state(package.id(), &progressing)
-        .expect("set_state builds for a NuGet package");
-    assert!(
-        sql.contains("ON CONFLICT (\"package_id\")") && sql.contains("UPDATE"),
-        "set_state must upsert in place for NuGet packages too, got: {sql}"
+    store
+        .upsert(&common::global_package(nuget_pkg.clone(), ResolutionState::Unindexed { needed: false }))
+        .await
+        .expect("NuGet package registers");
+    store
+        .set_state(nuget_pkg.id(), &progressing)
+        .await
+        .expect("set_state works for a NuGet package");
+    assert_eq!(
+        store.get_state(nuget_pkg.id()).await.expect("state resolves"),
+        progressing,
+        "set_state must upsert in place for NuGet packages"
     );
 }

@@ -19,3 +19,7 @@ semver     = { version = "1.0", features = ["serde"] }
 uv-pep440  = { version = "0.0.59", features = ["serde", "version-ranges"] }
 toml       = "0.8"
 quick-xml  = "0.37"
+ron        = "0.12"
+
+[dev-dependencies]
+proptest   = "1"

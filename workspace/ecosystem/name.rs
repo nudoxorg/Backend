@@ -118,6 +118,10 @@ impl StructuredName {
 
 			// Nix flake outputs are addressed by the project slug.
 			Language::Nix => vec![self.name.to_string()],
+
+			// C/C++ has no language-level module path; the repo slug is the
+			// identity, so the terminal name segment is the only sensible root.
+			Language::Cpp => vec![self.name.to_string()],
 		}
 	}
 }

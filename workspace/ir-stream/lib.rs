@@ -18,7 +18,8 @@
 //! 1. Producer sends [`StreamFrame::Hello`] (version + job + producer id).
 //! 2. Producer streams any number of [`StreamFrame::Symbols`],
 //!    [`StreamFrame::Links`], [`StreamFrame::SourceDigest`],
-//!    [`StreamFrame::Occurrences`], and [`StreamFrame::Progress`] frames.
+//!    [`StreamFrame::Occurrences`], [`StreamFrame::Bodies`], and
+//!    [`StreamFrame::Progress`] frames.
 //! 3. Producer terminates with exactly one [`StreamFrame::Finish`] or
 //!    [`StreamFrame::Abort`].
 //!
@@ -42,7 +43,7 @@ pub mod sink;
 
 pub use error::StreamError;
 pub use frame::{
-    FailureKindWire, PhaseWire, ProducerId, StreamFrame, WireEntry, WireLink,
+    BodyWire, FailureKindWire, PhaseWire, ProducerId, StreamFrame, WireEntry, WireLink,
     IR_STREAM_VERSION, IR_STREAM_VSOCK_PORT, MAX_FRAME_BYTES,
 };
 pub use io::{FrameReader, FrameWriter};

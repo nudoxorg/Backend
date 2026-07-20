@@ -15,17 +15,13 @@ use registry::{
 	GlobalPackage,
 	metadata::SearchFacets,
 	search::{
-		PackageSearchDeps, PackageSearchRequest, RegistryQuery, SearchKey, retrieve_and_rank,
+		PackageSearchDeps, PackageSearchRequest, SearchKey, retrieve_and_rank,
 		retrieve_and_rank_page, search_page, tantivy::PackageIndex,
 	},
 };
 use smol_str::SmolStr;
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
-
-fn query(text: &str) -> RegistryQuery {
-	RegistryQuery { text: text.to_owned(), ecosystem: None, limit: 10, after: None }
-}
 
 fn request(text: &str) -> PackageSearchRequest {
 	PackageSearchRequest {
@@ -115,7 +111,7 @@ async fn pipeline_exact_name_wins_over_spam() {
 	let hits = retrieve_and_rank(
 		&index,
 		&request("tokio"),
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("pipeline executes");
@@ -166,7 +162,7 @@ async fn pipeline_lang_rust_filter_excludes_other_ecosystems() {
 	let hits = retrieve_and_rank(
 		&index,
 		&request("lang:rust serde"),
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("lang:rust query executes");
@@ -194,7 +190,7 @@ async fn pipeline_lang_rust_filter_excludes_other_ecosystems() {
 	let api_hits = retrieve_and_rank(
 		&index,
 		&api_req,
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("API-scoped query executes");
@@ -238,7 +234,7 @@ async fn pipeline_synonyms_expand_recalls_keyword_only_package() {
 	let without = retrieve_and_rank(
 		&index,
 		&req,
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("plain query executes");
@@ -252,7 +248,7 @@ async fn pipeline_synonyms_expand_recalls_keyword_only_package() {
 	let with = retrieve_and_rank(
 		&index,
 		&req,
-		PackageSearchDeps { synonyms: Some(&synonyms) },
+		PackageSearchDeps { synonyms: Some(&synonyms), ..Default::default() },
 	)
 	.await
 	.expect("synonym-expanded pipeline executes");
@@ -289,7 +285,7 @@ async fn pipeline_license_only_allquery_does_not_panic() {
 	let hits = retrieve_and_rank(
 		&index,
 		&request("license:mit"),
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("license-only AllQuery path must not panic");
@@ -319,7 +315,7 @@ async fn pipeline_dep_filter_no_matches_returns_empty() {
 	let hits = retrieve_and_rank(
 		&index,
 		&request("dep:nonexistent-crate-xyz"),
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("dep: with no matches must return Ok(empty), not Err");
@@ -360,7 +356,7 @@ async fn pipeline_pagination_page1_plus_page2_equals_full_order() {
 			after: None,
 			semantic: Vec::new(),
 		},
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("full order");
@@ -377,7 +373,7 @@ async fn pipeline_pagination_page1_plus_page2_equals_full_order() {
 			after: None,
 			semantic: Vec::new(),
 		},
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("page 1");
@@ -396,7 +392,7 @@ async fn pipeline_pagination_page1_plus_page2_equals_full_order() {
 			after: Some(cursor),
 			semantic: Vec::new(),
 		},
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("page 2");
@@ -425,11 +421,11 @@ async fn search_page_wrapper_matches_pipeline_page() {
 	let tokio = rust_record("tokio");
 	let index = searchable_index(&directory, &[serde.clone(), tokio]);
 
-	let via_wrapper = search_page(&index, &query("serde"), None).await.expect("search_page");
+	let via_wrapper = search_page(&index, &request("serde"), None).await.expect("search_page");
 	let via_pipeline = retrieve_and_rank_page(
 		&index,
 		&request("serde"),
-		PackageSearchDeps { synonyms: None },
+		PackageSearchDeps { synonyms: None, ..Default::default() },
 	)
 	.await
 	.expect("retrieve_and_rank_page");

@@ -1,8 +1,6 @@
 //! The query, filter, and match types that describe a search request and its results.
 
-use std::num::NonZeroU32;
-
-use heart::{Cursor, Language, PackageVersion, Score};
+use heart::{Cursor, Language, PackageVersion, PageSpecification, Score};
 use nonempty::NonEmpty;
 use crate::registry::package::PackageName;
 use serde::{Deserialize, Serialize};
@@ -131,17 +129,12 @@ impl Filter {
 	}
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Pagination {
-	pub limit: NonZeroU32,
-	pub after: Option<String>,
-}
-
 /// A complete search request: what to find, how to narrow it.
 pub struct Search<'a> {
 	pub query: Query,
 	pub filter: Filter,
-	pub page: Pagination,
+	/// Keyset-pagination spec: how many results to return and where to resume from.
+	pub page: PageSpecification,
 	// scope field removed — AccessContext was deleted from heart
 	pub _lifetime: std::marker::PhantomData<&'a ()>,
 }

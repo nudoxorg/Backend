@@ -20,9 +20,11 @@ use heart::content::{ContentHash, JobKey};
 use crate::error::StreamError;
 use nudox_change::StableRef;
 
+use nudox_change::IntroId;
+
 use crate::frame::{
-    FailureKindWire, PhaseWire, ProducerId, StreamFrame, WireEntry, WireLink, SINK_BATCH_ENTRIES,
-    MAX_FRAME_BYTES,
+    BodyWire, FailureKindWire, PhaseWire, ProducerId, StreamFrame, WireEntry, WireLink,
+    SINK_BATCH_ENTRIES, MAX_FRAME_BYTES,
 };
 use crate::io::FrameWriter;
 
@@ -135,6 +137,44 @@ impl<W: Write> SymbolSink<W> {
         }
         self.writer
             .write_frame(&StreamFrame::Links { from, batch })?;
+        Ok(())
+    }
+
+    /// Flush a single [`nudox_ir::BodyEmbed`] as a [`StreamFrame::Bodies`] frame.
+    ///
+    /// `intro` is the content-derived identity of the owning entry (never an
+    /// arena index). This is a convenience shim over [`SymbolSink::emit_bodies`].
+    ///
+    /// Body facts do not count towards the emitted-symbol total: bodies are an
+    /// extension slot on the entry, not a new entry. `self.emitted` is not
+    /// incremented.
+    pub fn emit_body(
+        &mut self,
+        intro: IntroId,
+        body: nudox_ir::BodyEmbed,
+    ) -> Result<(), StreamError> {
+        self.emit_bodies(std::iter::once(BodyWire { intro, body }))
+    }
+
+    /// Flush a batch of [`BodyWire`] records as a single [`StreamFrame::Bodies`] frame.
+    ///
+    /// All records in `bodies` are collected into one frame. The caller is
+    /// responsible for keeping the encoded frame under [`MAX_FRAME_BYTES`]; for
+    /// very large batches call `emit_bodies` once per chunk. Returns `Ok(())`
+    /// immediately if the iterator is empty.
+    ///
+    /// Body facts do not count towards the emitted-symbol total: bodies are an
+    /// extension slot on the entry, not a new entry. `self.emitted` is not
+    /// incremented.
+    pub fn emit_bodies(
+        &mut self,
+        bodies: impl IntoIterator<Item = BodyWire>,
+    ) -> Result<(), StreamError> {
+        let batch: Vec<BodyWire> = bodies.into_iter().collect();
+        if batch.is_empty() {
+            return Ok(());
+        }
+        self.writer.write_frame(&StreamFrame::Bodies { batch })?;
         Ok(())
     }
 

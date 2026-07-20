@@ -62,6 +62,30 @@ impl RouteInputs {
 			claimed_hot: Vec::new(),
 		}
 	}
+
+	/// Lower the wire routing knobs from the one query algebra
+	/// ([`heart::query::Routing`]) into the server-side routing inputs. A serving
+	/// request is online by definition; the client's claimed hot-set narrows the
+	/// server's dense stage (§20.5).
+	///
+	/// The `heart::query` enums are the wire vocabulary; they are mapped onto the
+	/// re-exported [`vector_core::routing`] enums by hand here (the two are
+	/// foreign to this crate, so no blanket `From` impl is possible without
+	/// touching `vector_core`).
+	pub fn from_wire(routing: &heart::query::Routing) -> Self {
+		let quality = match routing.quality {
+			heart::query::QualityMode::Local => QualityMode::Local,
+			heart::query::QualityMode::Parity => QualityMode::Parity,
+			heart::query::QualityMode::Premium => QualityMode::Premium,
+			heart::query::QualityMode::Deep => QualityMode::Deep,
+		};
+		let scope = match routing.reach {
+			heart::query::QueryReach::Project => QueryScope::Project,
+			heart::query::QueryReach::Deps => QueryScope::Deps,
+			heart::query::QueryReach::Org => QueryScope::Org,
+		};
+		Self { scope, quality, online: true, claimed_hot: routing.hot_packages.clone() }
+	}
 }
 
 /// Which dense collection answers Stage-1 on this server.

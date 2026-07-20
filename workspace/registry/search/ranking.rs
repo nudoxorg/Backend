@@ -1156,6 +1156,28 @@ mod tests {
 		assert!(pos < 5, "dependents=100 candidate should be pulled into top 5, got pos {pos}");
 	}
 
+	/// REGISTRYLESS RL-12 / §9: cpp has no download source, so a cpp candidate
+	/// with `downloads = None` **and** `dependents = None` takes the
+	/// downloads-absent skip path in [`Candidate::popularity_weight`] and lands on
+	/// the fairness floor — never penalized for a signal its ecosystem cannot
+	/// provide. This exercises the existing `tracing::debug!` skip branch for cpp.
+	#[test]
+	fn cpp_absent_downloads_uses_fairness_floor() {
+		let floor: u64 = 42;
+		let cpp_no_signals = Candidate {
+			ecosystem: Language::Cpp,
+			downloads: None,
+			dependents: None,
+			popularity_pct: None,
+			..make("github.com/madler/zlib", 1.0, 0.5, None, &[])
+		};
+		assert_eq!(
+			cpp_no_signals.popularity_weight(floor),
+			floor,
+			"a cpp candidate with no download/dependent signal must fall to the fairness floor"
+		);
+	}
+
 	/// Withdrawn candidate is demoted below an otherwise-equal listed one but
 	/// still present in output.
 	#[test]

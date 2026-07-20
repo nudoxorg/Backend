@@ -1,0 +1,51 @@
+[package]
+name = "index"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+# A test-only in-memory implementation of the engine facade, backed by rusqlite,
+# so the catalog's unit/property tests run without the (still-building)
+# rusqdoltlite engine (INDEX-PLAN ID-20). NEVER a product mode: its versioning
+# calls are honest fakes (a recorded commit log), documented as test-only.
+# rusqlite is already a hard dependency (scratch store), so this feature only
+# flips on the extra facade module.
+test-engine = []
+# The real DoltLite-backed facade implementation. OFF by default because
+# rusqdoltlite is being built by another workstream and does not compile yet
+# (INDEX-PLAN ID-20). Turn on once WS1 lands rusqdoltlite. The rest of the crate
+# — schema, MetaStore, scratch, migrations — compiles and is tested against the
+# in-memory facade without this feature.
+dolt-engine = ["dep:rusqdoltlite"]
+default = ["test-engine"]
+
+[dependencies]
+heart = { path = "../heart" }
+rusqdoltlite = { path = "../rusqdoltlite", optional = true }
+
+# The ephemeral scratch store (jobs/wanted/sessions/claims) is plain rusqlite,
+# delete-anytime semantics, never on remotes (INDEX-PLAN ID-2). Also backs the
+# test-engine facade. `bundled` so tests need no system SQLite.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Migrations are sea-query-built DDL statements (INDEX-PLAN ID-5, §13).
+sea-query = { version = "0.32" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23", features = ["v4", "v5", "serde"] }
+blake3 = "1.8"
+smol_str = { version = "0.2", features = ["serde"] }
+thiserror = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+# The property/adversarial tests run against the in-memory facade.
+rusqlite = { version = "0.32", features = ["bundled"] }

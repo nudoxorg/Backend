@@ -355,6 +355,13 @@ impl<M: EmbeddingModel> Indexer<M> {
                     ensure_trailing_slash(url)
                 )
             }
+            // The registry-less `cpp` plane acquires source by git checkout
+            // (RL-14, §7.4), not by archive download — there is no URL to build.
+            RegistryOrigin::Git => {
+                return Err(ServerError::Internal(
+                    InternalError::GitOriginHasNoArchiveUrl,
+                ));
+            }
         };
 
         url::Url::parse(&raw_url_string).map_err(|_| {

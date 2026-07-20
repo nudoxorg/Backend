@@ -34,7 +34,9 @@ use std::io::Read;
 use std::num::NonZeroU64;
 
 use heart::content::{ContentHash, JobKey};
-use ir_stream::{FailureKindWire, PhaseWire, ProducerId, Received, StreamReceiver, WireEntry};
+use ir_stream::{
+    BodyWire, FailureKindWire, PhaseWire, ProducerId, Received, StreamReceiver, WireEntry,
+};
 use libpijul::changestore::ChangeStore;
 
 use crate::error::VcsError;
@@ -113,6 +115,11 @@ pub enum StreamedRecording {
         sources: Vec<SourceDigestEntry>,
         /// Raw occurrence section bytes (opaque; concatenation of all chunks).
         occurrences: Vec<u8>,
+        /// Merged treesitter+oracle body facts emitted during the stream, keyed
+        /// by [`nudox_change::IntroId`]. These are the implementation-plane
+        /// companion of the declaration entries (INDEX-PLAN §5.1); the caller
+        /// attaches them to the matching entry's `.nb` companion channel.
+        bodies: Vec<BodyWire>,
         /// The last progress update emitted before `Finish`, if any.
         last_progress: Option<ProgressSnapshot>,
     },
@@ -186,6 +193,7 @@ where
     // Provenance accumulators.
     let mut sources: Vec<SourceDigestEntry> = Vec::new();
     let mut occurrences: Vec<u8> = Vec::new();
+    let mut bodies: Vec<BodyWire> = Vec::new();
     let mut last_progress: Option<ProgressSnapshot> = None;
 
     // Checkpoint tracking.
@@ -267,6 +275,14 @@ where
                 occurrences.extend_from_slice(&chunk);
             }
 
+            Received::Bodies(batch) => {
+                // Body facts are an additive extension slot on the entry
+                // (INDEX-PLAN §5.1); accumulate them for the caller to attach
+                // to each entry's `.nb` companion channel. They do not stage a
+                // declaration entry and do not move the declaration bytes.
+                bodies.extend(batch);
+            }
+
             Received::Progress { emitted, phase } => {
                 last_progress = Some(ProgressSnapshot { emitted, phase });
             }
@@ -280,6 +296,7 @@ where
                     producer_digest,
                     sources,
                     occurrences,
+                    bodies,
                     last_progress,
                 });
             }

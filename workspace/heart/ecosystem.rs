@@ -40,6 +40,11 @@ pub enum Toolchain {
 
 	/// The .NET SDK version whose Roslyn the oracle ran as.
 	CSharp { sdk: Version },
+
+	/// The C/C++ toolchain (clang/libclang oracle) version the sources were
+	/// analyzed against. IR production for `cpp` is governed by the IR plane
+	/// (RL-15); this records the analyzer version for provenance.
+	Cpp { compiler: Version },
 }
 
 impl From<&Toolchain> for Language {
@@ -53,6 +58,7 @@ impl From<&Toolchain> for Language {
 			Toolchain::Java { .. } => Language::Java,
 			Toolchain::Nix { .. } => Language::Nix,
 			Toolchain::CSharp { .. } => Language::CSharp,
+			Toolchain::Cpp { .. } => Language::Cpp,
 		}
 	}
 }

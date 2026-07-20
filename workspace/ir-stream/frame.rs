@@ -18,6 +18,36 @@ use nudox_ir::{kind::KindDiscriminant, wire::OwnedEntryPayload};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// BodyWire
+// ---------------------------------------------------------------------------
+
+/// The merged treesitter+oracle body facts for one entry, keyed by the entry's
+/// content-derived [`IntroId`].
+///
+/// # K27 discipline
+///
+/// `intro` is a *content-derived* identity (BLAKE3 of the introduction
+/// preimage), never a transient arena index. Producers compute it with
+/// `nudox_ir::intro::bootstrap_intro_id` and transmit it verbatim so the host
+/// can attach the body facts to the correct entry without depending on stream
+/// order. This preserves the K27 invariant: no arena indices appear in any
+/// frame.
+///
+/// # Body plane separation
+///
+/// A `BodyWire` travels in a [`StreamFrame::Bodies`] frame, which is kept
+/// separate from [`StreamFrame::Symbols`] so the host can stage declaration
+/// and implementation facts independently. Both frames share the same
+/// `IntroId` as the join key.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct BodyWire {
+    /// Content-derived identity of the owning entry (never an arena index).
+    pub intro: IntroId,
+    /// The merged body facts for this entry.
+    pub body: nudox_ir::BodyEmbed,
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -279,6 +309,22 @@ pub enum StreamFrame {
         section: Vec<u8>,
     },
 
+    /// A batch of merged body facts, one [`BodyWire`] per entry.
+    ///
+    /// Body facts travel in their own frame type (separate from
+    /// [`StreamFrame::Symbols`]) so the host can stage declaration and
+    /// implementation facts independently. The join key is
+    /// [`BodyWire::intro`], which matches the [`WireEntry::parent`] /
+    /// [`nudox_change::IntroId`] used in the declaration plane.
+    ///
+    /// Producers call [`crate::SymbolSink::emit_body`] or
+    /// [`crate::SymbolSink::emit_bodies`] to produce these frames.
+    /// The receiver surfaces them as [`crate::Received::Bodies`].
+    Bodies {
+        /// The body-fact records in this batch.
+        batch: Vec<BodyWire>,
+    },
+
     /// A progress update from the producer.
     Progress {
         /// Number of IR entries emitted so far (running total).
@@ -318,6 +364,7 @@ impl StreamFrame {
             StreamFrame::Links { .. } => "Links",
             StreamFrame::SourceDigest { .. } => "SourceDigest",
             StreamFrame::Occurrences { .. } => "Occurrences",
+            StreamFrame::Bodies { .. } => "Bodies",
             StreamFrame::Progress { .. } => "Progress",
             StreamFrame::Finish { .. } => "Finish",
             StreamFrame::Abort { .. } => "Abort",

@@ -12,13 +12,13 @@ use heart::{Language, ResolutionState};
 use registry::{
     GlobalPackage,
     metadata::SearchFacets,
-    search::{RegistryQuery, search_page, tantivy::PackageIndex},
+    search::{PackageSearchRequest, search_page, tantivy::PackageIndex},
 };
 use smol_str::SmolStr;
 
 /// A first-page query for `text`, unscoped unless narrowed.
-fn query(text: &str) -> RegistryQuery {
-    RegistryQuery { text: text.to_owned(), ecosystem: None, limit: 10, after: None }
+fn query(text: &str) -> PackageSearchRequest {
+    PackageSearchRequest { text: text.to_owned(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() }
 }
 
 /// An unindexed global record for a rust package (single-token names keep the
@@ -87,11 +87,9 @@ async fn tantivy_index_is_derived_from_postgres() {
     assert_eq!(advanced.position, 42, "absorbing must advance the watermark");
     assert!(!index.query("serde", 10).expect("query executes").is_empty());
 
-    // Gated: the same derivation, polled from a real postgres.
-    let Some(pool) = common::postgres_pool("tantivy_index_is_derived_from_postgres").await else {
-        return;
-    };
-    let store = common::global_store(pool.clone()).await;
+    // Catalog: the same derivation, now driven from the in-memory catalog store.
+    let (store, writer) = common::catalog_store("tantivy_index_is_derived_from_catalog");
+    let outbox = registry::coordination::Outbox::new(std::sync::Arc::clone(&writer));
     let name = common::unique_rust_name("derived");
     let package = common::rust_package(&name, "1.0.0");
     store
@@ -100,22 +98,17 @@ async fn tantivy_index_is_derived_from_postgres() {
             ResolutionState::Unindexed { needed: false },
         ))
         .await
-        .expect("the package lands in postgres");
+        .expect("the package lands in the catalog");
 
-    let sync_directory = common::TempDir::new("replica-postgres-sync");
+    let sync_directory = common::TempDir::new("replica-catalog-sync");
     let mut replica = PackageIndex::open(sync_directory.path()).expect("replica opens");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        replica.sync_from(&pool).await.expect("the replica polls postgres");
-        let hits = replica.query(&name, 10).expect("query executes");
-        if hits.iter().any(|(id, _)| *id == package.id()) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the package never became searchable after syncing from postgres"
-        );
-    }
+    // sync_from now takes (&GlobalStore, &Outbox).
+    replica.sync_from(&store, &outbox).await.expect("the replica polls the catalog");
+    let hits = replica.query(&name, 10).expect("query executes");
+    assert!(
+        hits.iter().any(|(id, _)| *id == package.id()),
+        "the package must be searchable after syncing from the catalog"
+    );
 }
 
 /// Sync watermark survives reopen next to the index directory.
@@ -181,7 +174,7 @@ async fn multi_parent_packages_collapse_to_one_result() {
 ///
 /// The search surface takes no `heart::access` context yet (a gap against this
 /// spec — the module docs promise one); the scoping that exists today is the
-/// per-ecosystem restriction on [`RegistryQuery`], which the engine enforces
+/// per-ecosystem restriction on [`PackageSearchRequest`], which the engine enforces
 /// as a hard result filter.
 #[tokio::test]
 async fn registry_search_respects_access_scope() {
@@ -198,7 +191,7 @@ async fn registry_search_respects_access_scope() {
     assert_eq!(open.items.len(), 2, "both ecosystems match without a scope");
 
     // ...scoped, only the permitted slice surfaces.
-    let scoped = RegistryQuery { ecosystem: Some(Language::Python), ..query("httpclient") };
+    let scoped = PackageSearchRequest { ecosystem: Some(Language::Python), ..query("httpclient") };
     let page = search_page(&index, &scoped, None).await.expect("the scoped query executes");
     assert_eq!(page.items.len(), 1, "the scope must filter, not merely rank");
     assert_eq!(page.items[0].value.id, python_side.id);
@@ -249,7 +242,7 @@ async fn nuget_csharp_package_is_searchable_and_scopes_correctly() {
     );
 
     // CSharp-scoped: only the NuGet record surfaces.
-    let scoped = RegistryQuery { ecosystem: Some(Language::CSharp), ..query("json") };
+    let scoped = PackageSearchRequest { ecosystem: Some(Language::CSharp), ..query("json") };
     let page = search_page(&index, &scoped, None).await.expect("the scoped query executes");
     assert_eq!(page.items.len(), 1, "the CSharp scope must exclude non-C# packages");
     assert_eq!(page.items[0].value.id, nuget_side.id, "the NuGet record must surface");
@@ -371,7 +364,7 @@ async fn keyset_pagination_is_seam_free_across_pages() {
     // The single, unpaged total order: one full-pipeline run large enough to
     // hold everything the pages will visit.
     let unpaged =
-        search_page(&index, &RegistryQuery { limit: 100, ..query("async") }, None)
+        search_page(&index, &PackageSearchRequest { limit: 100, ..query("async") }, None)
             .await
             .expect("the unpaged query executes");
     let total_order: Vec<_> = unpaged.items.iter().map(|s| s.value.id).collect();
@@ -383,7 +376,7 @@ async fn keyset_pagination_is_seam_free_across_pages() {
     let mut seen = std::collections::HashSet::new();
     let mut after = None;
     loop {
-        let q = RegistryQuery {
+        let q = PackageSearchRequest {
             limit: page_size,
             after: after.clone(),
             ..query("async")
@@ -454,11 +447,12 @@ async fn structured_lang_go_finds_go_package_only() {
     let rust_mux = rust_record_with_facets("mux", 500_000, &["multiplexer"]);
     let index = searchable_index(&directory, &[go_mux.clone(), rust_mux]);
 
-    let scoped_q = RegistryQuery {
+    let scoped_q = PackageSearchRequest {
         text: "lang:go mux".to_owned(),
         ecosystem: None,
         limit: 10,
         after: None,
+        semantic: Vec::new(),
     };
     let page = search_page(&index, &scoped_q, None).await.expect("query executes");
     // Only Go results.
@@ -505,11 +499,12 @@ async fn structured_types_node_exact_match() {
     let index = searchable_index(&directory, &[types_node.clone(), other]);
 
     // Query with scope:types token to find @types scoped packages.
-    let q = RegistryQuery {
+    let q = PackageSearchRequest {
         text: "scope:types node".to_owned(),
         ecosystem: Some(Language::Typescript),
         limit: 10,
         after: None,
+        semantic: Vec::new(),
     };
     let page = search_page(&index, &q, None).await.expect("query executes");
     assert!(
@@ -533,11 +528,12 @@ async fn structured_spring_boot_matches_via_namespace() {
 
     // The query `spring boot` should match via name_ns (org.springframework.boot
     // splits into subtokens: org, springframework, boot) and name_tokens (spring, boot).
-    let q = RegistryQuery {
+    let q = PackageSearchRequest {
         text: "spring boot".to_owned(),
         ecosystem: Some(Language::Java),
         limit: 10,
         after: None,
+        semantic: Vec::new(),
     };
     let page = search_page(&index, &q, None).await.expect("query executes");
     assert!(
@@ -558,7 +554,7 @@ async fn structured_fuzzy_typo_finds_getuserbyid() {
     let index = searchable_index(&directory, &[correct.clone(), unrelated]);
 
     // The typo query (missing 'r'): "getUseById" → single token of len 10 → fuzzy fires.
-    let q = RegistryQuery { text: "getUseById".to_owned(), ecosystem: None, limit: 10, after: None };
+    let q = PackageSearchRequest { text: "getUseById".to_owned(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
     let page = search_page(&index, &q, None).await.expect("query executes");
     // getUserById may surface either via fuzzy or via subtoken matching.
     assert!(
@@ -585,7 +581,7 @@ async fn structured_ienumerable_matches_subtoken_i_alone_no_crash() {
     let index = searchable_index(&directory, std::slice::from_ref(&ienumerable));
 
     // `IEnumerable` should match.
-    let q_match = RegistryQuery { text: "IEnumerable".to_owned(), ecosystem: None, limit: 10, after: None };
+    let q_match = PackageSearchRequest { text: "IEnumerable".to_owned(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
     let page = search_page(&index, &q_match, None).await.expect("query executes");
     assert!(
         page.items.iter().any(|h| h.value.id == ienumerable.id),
@@ -594,7 +590,7 @@ async fn structured_ienumerable_matches_subtoken_i_alone_no_crash() {
 
     // Bare `i` query (T2 subtoken filter drops len<2 tokens) must not crash and
     // return empty (the `i` subtoken is filtered out of the Must-conjunction).
-    let q_i = RegistryQuery { text: "i".to_owned(), ecosystem: None, limit: 10, after: None };
+    let q_i = PackageSearchRequest { text: "i".to_owned(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
     // Should not panic — result may be empty or return some match.
     let _page_i = search_page(&index, &q_i, None).await.expect("single-char 'i' query must not crash");
 }
@@ -611,11 +607,12 @@ async fn structured_ecosystem_and_namespace_combined() {
     let rust_crate = rust_record("spring-core");
     let index = searchable_index(&directory, &[java_spring.clone(), rust_crate]);
 
-    let q = RegistryQuery {
+    let q = PackageSearchRequest {
         text: "group:org.springframework spring-core".to_owned(),
         ecosystem: Some(Language::Java),
         limit: 10,
         after: None,
+        semantic: Vec::new(),
     };
     let page = search_page(&index, &q, None).await.expect("query executes");
     // Java + namespace filter: only the Java package.
@@ -637,11 +634,12 @@ async fn structured_namespace_only_does_not_crash() {
     let index = searchable_index(&directory, &[spring]);
 
     // Empty terms after namespace extraction is allowed (§8.1).
-    let q = RegistryQuery {
+    let q = PackageSearchRequest {
         text: "group:org.springframework".to_owned(),
         ecosystem: None,
         limit: 10,
         after: None,
+        semantic: Vec::new(),
     };
     let _page = search_page(&index, &q, None).await.expect("namespace-only query must not crash");
 }
@@ -695,7 +693,7 @@ async fn structured_adversarial_grammar_chars() {
         "Option<T>",
         "react-query",
     ] {
-        let q = RegistryQuery { text: bad.to_string(), ecosystem: None, limit: 10, after: None };
+        let q = PackageSearchRequest { text: bad.to_string(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
         search_page(&index, &q, None).await
             .unwrap_or_else(|_| heart::search::Page { items: vec![], next: None });
     }
@@ -709,7 +707,7 @@ async fn structured_adversarial_1024_boundary() {
     let index = searchable_index(&directory, &[r]);
 
     let at_limit = "a".repeat(1024);
-    let q = RegistryQuery { text: at_limit, ecosystem: None, limit: 10, after: None };
+    let q = PackageSearchRequest { text: at_limit, ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
     let _page = search_page(&index, &q, None).await.expect("1024-char query must not crash");
 }
 
@@ -720,7 +718,7 @@ async fn structured_adversarial_unicode() {
     let r = rust_record("unicode-lib");
     let index = searchable_index(&directory, &[r]);
 
-    let q = RegistryQuery { text: "résumé 日本語 🦀".to_owned(), ecosystem: None, limit: 10, after: None };
+    let q = PackageSearchRequest { text: "résumé 日本語 🦀".to_owned(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
     let _page = search_page(&index, &q, None).await.expect("unicode query must not crash");
 }
 
@@ -733,7 +731,7 @@ async fn structured_adversarial_all_stopwords() {
 
     // "library" and "for" are in ENGLISH_STOPWORDS — the ident tokenizer may
     // still produce them as subtokens; the query must not crash.
-    let q = RegistryQuery { text: "library for".to_owned(), ecosystem: None, limit: 10, after: None };
+    let q = PackageSearchRequest { text: "library for".to_owned(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
     let _page = search_page(&index, &q, None).await.expect("all-stopword query must not crash");
 }
 
@@ -861,11 +859,12 @@ async fn v3_dep_filter_narrows_results() {
     );
     let index = searchable_index(&directory, &[with_serde.clone(), without_serde.clone()]);
 
-    let dep_q = RegistryQuery {
+    let dep_q = PackageSearchRequest {
         text: "dep:serde json".to_owned(),
         ecosystem: None,
         limit: 10,
         after: None,
+        semantic: Vec::new(),
     };
     let page = search_page(&index, &dep_q, None).await.expect("dep: query executes");
     assert!(
@@ -901,7 +900,7 @@ async fn v3_dep_only_query_works_with_allquery() {
     );
     let index = searchable_index(&directory, &[async_crate.clone(), sync_crate.clone()]);
 
-    let q = RegistryQuery { text: "dep:tokio".to_owned(), ecosystem: None, limit: 10, after: None };
+    let q = PackageSearchRequest { text: "dep:tokio".to_owned(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
     let page = search_page(&index, &q, None).await.expect("dep-only query must not crash");
     assert!(
         page.items.iter().any(|h| h.value.id == async_crate.id),
@@ -935,11 +934,12 @@ async fn v3_license_filter_narrows_results() {
     );
     let index = searchable_index(&directory, &[mit_pkg.clone(), apache_pkg.clone()]);
 
-    let q = RegistryQuery {
+    let q = PackageSearchRequest {
         text: "license:mit http".to_owned(),
         ecosystem: None,
         limit: 10,
         after: None,
+        semantic: Vec::new(),
     };
     let page = search_page(&index, &q, None).await.expect("license: query executes");
     assert!(
@@ -972,7 +972,7 @@ async fn v3_license_only_query_works_with_allquery() {
     );
     let index = searchable_index(&directory, &[mit_pkg.clone(), gpl_pkg.clone()]);
 
-    let q = RegistryQuery { text: "license:mit".to_owned(), ecosystem: None, limit: 10, after: None };
+    let q = PackageSearchRequest { text: "license:mit".to_owned(), ecosystem: None, limit: 10, after: None, semantic: Vec::new() };
     let page = search_page(&index, &q, None).await.expect("license-only query must not crash");
     assert!(
         page.items.iter().any(|h| h.value.id == mit_pkg.id),

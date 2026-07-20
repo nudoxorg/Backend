@@ -429,13 +429,18 @@ pub(crate) async fn cas_gc<M: EmbeddingModel>(server: Arc<Server<M>>) {
 	}
 }
 
-/// Keep every source's replica-local package index caught up to postgres.
+/// Keep every source's replica-local package index caught up to the catalog.
 #[tracing::instrument(skip_all, name = "package_index_poller")]
 pub(crate) async fn package_index_poller<M: EmbeddingModel>(server: Arc<Server<M>>) {
 	let interval = server.config().limits.poll_interval;
 	loop {
 		for sourced in server.federation().in_precedence() {
-			if let Err(error) = sourced.value.packages.synchronize().await {
+			if let Err(error) = sourced
+				.value
+				.packages
+				.synchronize(&sourced.value.global_store, &sourced.value.outbox)
+				.await
+			{
 				tracing::warn!(source = %sourced.source, error = %error, "package index sync failed");
 			}
 		}
@@ -586,6 +591,8 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
 		Language::Go => RegistryOrigin::GoProxy,
 		Language::Java => RegistryOrigin::MavenCentral,
 		Language::Nix => RegistryOrigin::FlakeHub,
+		// `cpp` followers are git-native (RL-1); there is no upstream registry.
+		Language::Cpp => RegistryOrigin::Git,
 	};
 
 	let client = registry::upstream::UpstreamClient::new();
@@ -669,8 +676,8 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
 							let sentinel = heart::content::ContentHash::of_bytes(
 								&initialized.package.as_uuid().to_bytes_le(),
 							);
-							if let Err(e) = server.base().outbox.append_delete(initialized.package, sentinel).await {
-								tracing::warn!(%lang, name = event.name(), error = %e, "catalog withdraw: outbox append_delete failed");
+							if let Err(e) = server.base().outbox.emit_withdraw_intents_for_version(initialized.package, sentinel).await {
+								tracing::warn!(%lang, name = event.name(), error = %e, "catalog withdraw: outbox tombstones failed");
 							}
 							registered += 1;
 						}

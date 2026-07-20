@@ -1,30 +1,31 @@
-//! The transactional outbox — how blob/manifest creation fans out to the
-//! derived read-plane stores.
+//! The transactional outbox — how stored generations fan out to the derived
+//! read-plane stores, now backed by the catalog's outbox table
+//! (INDEX-PLAN ID-3, §11 loop 3).
 //!
-//! When a new package generation is emitted, the registry records one
-//! [`OutboxEntry`] per downstream sink in the *same* transaction that records
-//! the manifest. Derived stores (qdrant vector index, terminus graph, tantivy
-//! text index) each poll the outbox from their own watermark and materialize
-//! what they missed. This is the standard transactional-outbox pattern: it makes
-//! "the manifest exists but the vector index never heard about it" impossible
-//! without a distributed transaction.
+//! When a new package generation is emitted, the registry records one outbox
+//! row per downstream sink alongside the business write. Derived stores
+//! (tantivy text, vector, usage reverse-index) each poll the outbox from their
+//! own watermark and materialize what they missed. Delivery is **at-least-
+//! once**: a crash between projection and watermark advance redelivers, so
+//! every projection is idempotent by `(package, generation)` and the watermark
+//! skip-guard makes redelivery observable rather than silent.
 //!
-//! Idempotency is enforced by a unique `(package, generation, kind)` dedupe key,
-//! so re-emitting the same generation (e.g. after a retry) never double-fans.
+//! The old postgres advisory locks are gone: the catalog has a single writer
+//! and one logical drainer per sink (INDEX-PLAN ID-1); in-process serialization
+//! is a per-sink mutex ([`Outbox::try_lock_sink`]).
 
-use chrono::{DateTime, Utc};
-use heart::{
-	BackendKind, Cold, Connect, ConnectError, ConnectFailure, Live, PackageId, ResolutionState,
-	content::ContentHash,
-};
-use sqlx::{Row, postgres::PgRow};
-use strum::IntoEnumIterator;
+use chrono::{DateTime, TimeZone, Utc};
+use std::sync::Arc;
 
-use crate::{
-	error::OutboxError,
-	index::GlobalStore,
-	schema::{codec, queries},
-};
+use heart::{PackageId, ResolutionState, content::ContentHash};
+
+use index::engine::VersioningEngine;
+use index::enums::{OutboxOperation, SinkKind as CatalogSinkKind};
+use index::store::writer::CatalogWriter;
+use index::store::{apply, lifecycle, read};
+
+use crate::error::OutboxError;
+use crate::index::GlobalStore;
 
 /// What the outbox consumer should do when it sees this entry.
 ///
@@ -33,8 +34,7 @@ use crate::{
 /// by its upstream registry and search visibility should end.
 ///
 /// **CAS / blob data is never touched by a Delete intent.** The mirror keeps
-/// full history; only the search-plane projections (tantivy, qdrant, terminus)
-/// lose visibility. This is documented at every materialization site below.
+/// full history; only the search-plane projections lose visibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OutboxOp {
 	/// Materialize (upsert) the package's symbols into the sink.
@@ -44,8 +44,7 @@ pub enum OutboxOp {
 	Delete,
 }
 
-/// A single fan-out intent: "package `X` reached generation `G`; sink `K` should
-/// materialize it."
+/// A single fan-out intent: "package `X` changed; sink `K` should materialize."
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OutboxEntry {
 	/// The monotonic outbox sequence id — the watermark cursor pollers advance.
@@ -71,376 +70,247 @@ pub struct OutboxEntry {
 )]
 pub struct OutboxSeq(pub i64);
 
-/// Which derived read-plane store a fan-out intent targets. One intent is
-/// recorded per kind on every emit.
+/// Which derived read-plane store a fan-out intent targets.
 ///
 /// This is the shared [`heart::DerivedStore`]; the outbox names it `SinkKind`
 /// (its role here is a fan-out sink), but it is the *same type* the server's
 /// rebuild path uses, so the two can never drift.
 pub use heart::DerivedStore as SinkKind;
 
-/// The transactional outbox over postgres. `S` is the connection typestate.
-pub struct Outbox<S = Live> {
-	pool: sqlx::PgPool,
-	_state: std::marker::PhantomData<S>,
-}
-
-impl Outbox<Cold> {
-	/// Configure an outbox over a pool (unverified).
-	pub fn new(pool: sqlx::PgPool) -> Self { Self { pool, _state: std::marker::PhantomData } }
-}
-
-impl Connect for Outbox<Cold> {
-	type Live = Outbox<Live>;
-
-	/// Verify the pool + outbox schema, then go [`Live`].
-	async fn connect(self) -> Result<Self::Live, ConnectError> {
-		sqlx::query("SELECT 1 FROM outbox LIMIT 0")
-			.execute(&self.pool)
-			.await
-			.map_err(|_| {
-				ConnectError::new(BackendKind::Postgres, ConnectFailure::SchemaMismatch)
-			})?;
-		Ok(Outbox { pool: self.pool, _state: std::marker::PhantomData })
+/// Map the serving vocabulary onto the catalog's sink enum.
+///
+/// `Graph` maps to `UsageIndex`: the Terminus graph plane is dead
+/// (INDEX-PLAN §14) and the third projection is the usage reverse-index.
+pub fn catalog_sink(kind: SinkKind) -> CatalogSinkKind {
+	match kind {
+		SinkKind::Text => CatalogSinkKind::Text,
+		SinkKind::Vector => CatalogSinkKind::Vector,
+		SinkKind::Graph => CatalogSinkKind::UsageIndex,
 	}
 }
 
-/// Reassemble an [`OutboxEntry`] from a result row. Column order matches
-/// [`queries::outbox::read_since`]: seq, package_id, generation, sink_kind,
-/// op, created_at.
-fn row_to_entry(row: &PgRow) -> Result<OutboxEntry, OutboxError> {
-	let seq: i64 = row.try_get(0).map_err(OutboxError::Database)?;
-	let package_uuid: uuid::Uuid = row.try_get(1).map_err(OutboxError::Database)?;
-	let kind_tok: String = row.try_get(3).map_err(OutboxError::Database)?;
-	let op_tok: String = row.try_get(4).map_err(OutboxError::Database)?;
-	let created_at: DateTime<Utc> = row.try_get(5).map_err(OutboxError::Database)?;
-
-	let kind = codec::sink_kind_from_token(&kind_tok).map_err(OutboxError::Codec)?;
-	// Unknown op tokens default to Upsert for forwards-compat with rows written
-	// before the op column existed.
-	let op = codec::outbox_op_from_token(&op_tok).unwrap_or(OutboxOp::Upsert);
-
-	Ok(OutboxEntry {
-		id: OutboxSeq(seq),
-		package: codec::package_id_from_uuid(package_uuid),
-		kind,
-		op,
-		created_at,
-	})
+fn serving_sink(kind: CatalogSinkKind) -> SinkKind {
+	match kind {
+		CatalogSinkKind::Text => SinkKind::Text,
+		CatalogSinkKind::Vector => SinkKind::Vector,
+		CatalogSinkKind::UsageIndex => SinkKind::Graph,
+	}
 }
 
-impl Outbox<Live> {
-	/// Append fan-out intents for a freshly-emitted generation — one per
-	/// [`SinkKind`]. Deduped on `(package, generation, kind)`: re-appending an
-	/// existing intent is a silent idempotent no-op.
-	///
-	/// Intended to run inside the same transaction that records the manifest;
-	/// accepts an executor so the caller controls the transaction boundary.
+/// The transactional outbox over the catalog's single writer.
+pub struct Outbox<Engine: VersioningEngine> {
+	writer: Arc<CatalogWriter<Engine>>,
+	/// One in-process guard per sink — the advisory-lock replacement
+	/// (single logical drainer per sink; INDEX-PLAN ID-1).
+	sink_guards: [Arc<tokio::sync::Mutex<()>>; 3],
+}
+
+impl<Engine: VersioningEngine> Clone for Outbox<Engine> {
+	fn clone(&self) -> Self {
+		Self {
+			writer: Arc::clone(&self.writer),
+			sink_guards: self.sink_guards.clone(),
+		}
+	}
+}
+
+impl<Engine: VersioningEngine + Send + Sync> Outbox<Engine> {
+	/// Wrap the shared catalog writer.
+	pub fn new(writer: Arc<CatalogWriter<Engine>>) -> Self {
+		Self {
+			writer,
+			sink_guards: [
+				Arc::new(tokio::sync::Mutex::new(())),
+				Arc::new(tokio::sync::Mutex::new(())),
+				Arc::new(tokio::sync::Mutex::new(())),
+			],
+		}
+	}
+
+	fn engine(&self) -> &Engine {
+		self.writer.engine()
+	}
+
+	fn emit(
+		&self,
+		package: PackageId,
+		snapshot: Option<ContentHash>,
+		kind: SinkKind,
+		op: OutboxOperation,
+	) -> Result<(), OutboxError> {
+		apply::emit_outbox_row(
+			self.engine(),
+			Some(index::ids::version_id::to_blob(&package).to_vec()),
+			snapshot.map(|hash| hash.as_bytes().to_vec()),
+			catalog_sink(kind),
+			op,
+		)
+		.map_err(OutboxError::Catalog)
+	}
+
+	/// Fan `package`'s `snapshot` out to `kinds` (one row per sink).
 	pub async fn append(
 		&self,
 		package: PackageId,
 		snapshot: ContentHash,
 		kinds: &[SinkKind],
 	) -> Result<(), OutboxError> {
-		let mut tx = self.pool.begin().await.map_err(OutboxError::Database)?;
 		for &kind in kinds {
-			let (sql, vals) = queries::outbox::append_one(package, snapshot, kind);
-			sqlx::query_with(&sql, vals)
-				.execute(&mut *tx)
-				.await
-				.map_err(OutboxError::Database)?;
+			self.emit(package, Some(snapshot), kind, OutboxOperation::Upsert)?;
 		}
-		tx.commit().await.map_err(OutboxError::Database)?;
 		Ok(())
 	}
 
 	/// Record that `package` reached `generation` **and** fan it out to every
-	/// derived sink, atomically. This is the transactional-outbox boundary: the
-	/// `parse_status` → `Stored` state transition and the one-row-per-sink outbox
-	/// appends commit in a *single* transaction, so "the manifest is stored but a
-	/// derived store never heard about it" is impossible without a distributed
-	/// transaction. On rollback, neither the state nor the intents persist.
-	///
-	/// The caller passes the `GlobalStore` whose pool this outbox shares so the
-	/// state write and the outbox writes run on the same connection/transaction.
-	///
-	/// `facets` are the derived [`crate::metadata::SearchFacets`] for this generation (keywords +
-	/// quality); they are written into the *same* `parse_status` row, in the same
-	/// transaction, so the search-relevant metadata can never diverge from the
-	/// `Stored` state that owns it. This mirrors how `Failure` rides the lifecycle
-	/// row: a nullable jsonb column, written alongside the state transition.
-	/// `None` clears the column (writes `NULL`), so a re-emit without extracted
-	/// metadata does not strand stale facets.
+	/// derived sink. The `Stored` transition (lifecycle columns + generation
+	/// row + text outbox row) lands first; facets and the remaining sink rows
+	/// follow. Each step is an idempotent upsert, so a crash mid-sequence
+	/// re-converges on the next emit — at-least-once, never divergent.
 	pub async fn record_stored(
 		&self,
-		index: &GlobalStore,
+		index: &GlobalStore<Engine>,
 		package: PackageId,
 		snapshot: ContentHash,
 		facets: Option<&crate::metadata::SearchFacets>,
 	) -> Result<(), OutboxError> {
-		let mut tx = self.pool.begin().await.map_err(OutboxError::Database)?;
-
-		// 1. Transition the lifecycle row to Stored { snapshot } in this txn.
-		let stored = ResolutionState::Stored { hash: snapshot };
-		GlobalStore::set_state_transaction(&mut tx, package, &stored)
+		index
+			.set_state(package, &ResolutionState::Stored { hash: snapshot })
 			.await
 			.map_err(OutboxError::Index)?;
-
-		// 2. Persist the derived search facets on the same lifecycle row, in the
-		//    same txn — the facets analog of the `failure` jsonb write. Runs after
-		//    the `set_state` upsert has guaranteed the row exists, and never
-		//    disturbs the state/phase/hash columns.
-		let (facets_sql, facets_vals) =
-			queries::index::set_facets(package, facets).map_err(OutboxError::Codec)?;
-		sqlx::query_with(&facets_sql, facets_vals)
-			.execute(&mut *tx)
-			.await
-			.map_err(OutboxError::Database)?;
-
-		// 3. Bump packages.updated_at so the tantivy changed_since poll sees
-		//    facet-only updates (S5: set_facets only touches parse_status.updated_at,
-		//    but the search sync polls packages.updated_at).
-		let (touch_sql, touch_vals) = queries::index::touch_package(package);
-		sqlx::query_with(&touch_sql, touch_vals)
-			.execute(&mut *tx)
-			.await
-			.map_err(OutboxError::Database)?;
-
-		// 4. Fan out one idempotent intent per sink in the *same* txn.
-		let (sql, vals) = queries::outbox::append_all(package, snapshot);
-		sqlx::query_with(&sql, vals)
-			.execute(&mut *tx)
-			.await
-			.map_err(OutboxError::Database)?;
-
-		tx.commit().await.map_err(OutboxError::Database)?;
-		let _ = index; // pool is shared via `self.pool`; `index` documents the invariant.
+		if let Some(facets) = facets {
+			let (keywords, quality_ppm, extras) =
+				crate::schema::catalog_map::facets_to_row(facets).map_err(OutboxError::Map)?;
+			lifecycle::set_facets(
+				self.engine(),
+				package,
+				keywords.as_deref(),
+				quality_ppm,
+				extras.as_deref(),
+			)
+			.map_err(OutboxError::Catalog)?;
+		}
+		// The lifecycle write already emitted the Text row; add the others.
+		self.emit(package, Some(snapshot), SinkKind::Vector, OutboxOperation::Upsert)?;
+		self.emit(package, Some(snapshot), SinkKind::Graph, OutboxOperation::Upsert)?;
 		Ok(())
 	}
 
-	/// Emit `Delete` tombstone intents for every version of a package that is
-	/// `Withdrawn` according to a freshly-observed listing snapshot.
-	///
-	/// # Seam — call from the resolve/refresh path (P3 gap)
-	///
-	/// This function is **ready to call** but is not yet wired to its production
-	/// trigger: the `ResolveResult::observed_listing` field (in
-	/// `registry/resolve.rs`) is populated at resolve time but never passed to
-	/// `GlobalStore::set_listing` nor to this function in the current server
-	/// coordination pipeline. Once P3's listing-persistence lands (i.e., the
-	/// server's indexing coordinator calls `set_listing` for each observed version),
-	/// this function should be called there for every version whose
-	/// `ListingStatus::Withdrawn` is freshly observed.
-	///
-	/// Until then, Withdrawn status from the resolve path does not produce outbox
-	/// Delete intents. The catalog-follower path (`Withdrawn` events from
-	/// `catalog_follower_worker`) bypasses this function and calls
-	/// `append_delete` directly, so that path is fully wired.
-	///
-	/// **Seam location**: `server/coordination/indexing.rs` (the `drive_job` /
-	/// post-resolve hook) — after `set_listing` is called, call this function
-	/// for each version whose listing transitioned to `Withdrawn`.
+	/// Emit `Delete` tombstones for a withdrawn version across every sink.
 	pub async fn emit_withdraw_intents_for_version(
 		&self,
 		package: PackageId,
-		generation: ContentHash,
+		snapshot: ContentHash,
 	) -> Result<(), OutboxError> {
-		self.append_delete(package, generation).await
+		for kind in [SinkKind::Text, SinkKind::Vector, SinkKind::Graph] {
+			self.emit(package, Some(snapshot), kind, OutboxOperation::Delete)?;
+		}
+		Ok(())
 	}
 
-	/// Record `Delete` tombstone intents for every derived sink — the mirror
-	/// path for a Withdrawn package. The semantics are symmetric to
-	/// [`Self::append`] but write `op = 'delete'` on every row.
-	///
-	/// **CAS / blob history is untouched.** Only search-plane visibility ends.
-	/// Idempotent via the same `(package, generation, sink_kind)` dedupe key.
+	/// Append a single `Delete` tombstone for one sink.
 	pub async fn append_delete(
 		&self,
 		package: PackageId,
-		generation: ContentHash,
+		snapshot: ContentHash,
+		kind: SinkKind,
 	) -> Result<(), OutboxError> {
-		let mut tx = self.pool.begin().await.map_err(OutboxError::Database)?;
-		for kind in SinkKind::iter() {
-			let (sql, vals) = queries::outbox::append_one_with_op(package, generation, kind, OutboxOp::Delete);
-			sqlx::query_with(&sql, vals)
-				.execute(&mut *tx)
-				.await
-				.map_err(OutboxError::Database)?;
-		}
-		tx.commit().await.map_err(OutboxError::Database)?;
-		Ok(())
+		self.emit(package, Some(snapshot), kind, OutboxOperation::Delete)
 	}
 
-	/// Read up to `limit` intents for `kind` strictly after `since`, in sequence
-	/// order — the poll one derived store performs against its watermark.
+	/// Read up to `limit` entries for `kind` with sequence beyond `after`.
 	pub async fn read_since(
 		&self,
 		kind: SinkKind,
-		since: OutboxSeq,
+		after: OutboxSeq,
 		limit: usize,
 	) -> Result<Vec<OutboxEntry>, OutboxError> {
-		let (sql, vals) = queries::outbox::read_since(kind, since.0, limit as u64);
-		let rows = sqlx::query_with(&sql, vals)
-			.fetch_all(&self.pool)
-			.await
-			.map_err(OutboxError::Database)?;
-		rows.iter().map(row_to_entry).collect()
+		let rows = read::outbox_read_since(self.engine(), catalog_sink(kind), after.0, limit)
+			.map_err(OutboxError::Catalog)?;
+		rows.into_iter()
+			.map(|row| {
+				let package = row.version_id.ok_or(OutboxError::MissingVersion { seq: row.seq })?;
+				Ok(OutboxEntry {
+					id: OutboxSeq(row.seq),
+					package,
+					kind: serving_sink(row.sink_kind),
+					op: match row.op {
+						OutboxOperation::Upsert => OutboxOp::Upsert,
+						OutboxOperation::Delete => OutboxOp::Delete,
+					},
+					created_at: Utc
+						.timestamp_millis_opt(row.created_at)
+						.single()
+						.unwrap_or_else(Utc::now),
+				})
+			})
+			.collect()
 	}
 
-	/// The highest sequence id recorded for `kind` — the head a poller measures
-	/// its lag against.
+	/// The newest sequence recorded for `kind` (0 when empty).
 	pub async fn head(&self, kind: SinkKind) -> Result<OutboxSeq, OutboxError> {
-		let (sql, vals) = queries::outbox::head(kind);
-		let row = sqlx::query_with(&sql, vals)
-			.fetch_one(&self.pool)
-			.await
-			.map_err(OutboxError::Database)?;
-		let seq: Option<i64> = row.try_get(0).map_err(OutboxError::Database)?;
-		Ok(OutboxSeq(seq.unwrap_or(0)))
+		read::outbox_head(self.engine(), catalog_sink(kind))
+			.map(OutboxSeq)
+			.map_err(OutboxError::Catalog)
 	}
 
-	/// Advance the durable per-consumer watermark for `kind` to `seq` (monotonic;
-	/// a lower `seq` is a no-op via `GREATEST`).
+	/// Advance `kind`'s watermark to `seq` (monotonic; regressions are typed
+	/// errors from the catalog layer).
 	pub async fn advance_watermark(&self, kind: SinkKind, seq: OutboxSeq) -> Result<(), OutboxError> {
-		let (sql, vals) = queries::outbox::advance_watermark(kind, seq.0);
-		sqlx::query_with(&sql, vals)
-			.execute(&self.pool)
-			.await
-			.map_err(OutboxError::Database)?;
-		Ok(())
+		apply::advance_sink_watermark(
+			self.engine(),
+			catalog_sink(kind),
+			seq.0,
+			Utc::now().timestamp_millis(),
+		)
+		.map_err(OutboxError::Catalog)
 	}
 
-	/// Try to become the sole fleet-wide drainer of `kind` via a postgres
-	/// **session-level advisory lock** (`pg_try_advisory_lock`), returning a
-	/// [`SinkLockGuard`] iff this replica won the lock.
-	///
-	/// This is the replica-safety fix for outbox consumption (DAEMON-PLAN §2.5 /
-	/// §6.1): without it, two gateway replicas polling the same sink race on the
-	/// shared watermark and can double-materialize. With it, exactly one replica
-	/// drains a given sink at a time; the others get `None` and skip this tick,
-	/// retrying next poll (so failover is automatic when the holder dies and its
-	/// connection — and thus its lock — drops). Consumers are idempotent
-	/// upserts, so even a brief overlap on failover is safe.
-	///
-	/// The lock lives on the guard's pinned connection and is released when the
-	/// guard is dropped (explicit `pg_advisory_unlock`, plus the backstop that
-	/// dropping the connection frees all its session locks).
+	/// Take the in-process drain guard for `kind`, or `None` when another local
+	/// drainer holds it. Replaces the pg advisory lock (single process per
+	/// deployment drains a sink; INDEX-PLAN single-writer discipline).
 	pub async fn try_lock_sink(&self, kind: SinkKind) -> Result<Option<SinkLockGuard>, OutboxError> {
-		let mut conn = self.pool.acquire().await.map_err(OutboxError::Database)?;
-		let (sql, vals) = queries::outbox::try_advisory_lock(kind);
-		let row = sqlx::query_with(&sql, vals)
-			.fetch_one(&mut *conn)
-			.await
-			.map_err(OutboxError::Database)?;
-		let acquired: bool = row.try_get(0).map_err(OutboxError::Database)?;
-		if acquired {
-			Ok(Some(SinkLockGuard { conn: Some(conn), kind }))
-		} else {
-			// Not ours this tick — drop the connection back to the pool untouched.
-			Ok(None)
+		let slot = sink_slot(kind);
+		match Arc::clone(&self.sink_guards[slot]).try_lock_owned() {
+			Ok(permit) => Ok(Some(SinkLockGuard { _permit: permit, kind })),
+			Err(_) => Ok(None),
 		}
 	}
 
-	/// Reclaim consumed outbox rows: delete every intent at or below the minimum
-	/// durable watermark across **all** sinks — i.e. every row that every sink has
-	/// already materialized. Returns the number of rows deleted.
-	///
-	/// This is the conservative half of the CAS GC duty (DAEMON-PLAN §5-ops). The
-	/// floor is computed by [`queries::outbox::min_consumed_watermark`], which
-	/// returns `0` unless **every** sink has a watermark row — so a sink that has
-	/// never advanced (no row yet) forces the floor to `0` and nothing is deleted.
-	/// Because `seq` is a `bigserial` starting at 1, a floor of `0` matches no row.
-	/// The net effect: an outbox row is only ever purged once it is provably below
-	/// every sink's consumed position, so re-delivery is never needed for it again.
-	///
-	/// The delete runs as a single statement; a crash mid-GC simply leaves the
-	/// remaining consumed rows for the next tick (the operation is idempotent —
-	/// re-running deletes nothing new once the floor is stable).
+	/// Drop outbox rows consumed by every sink. Returns rows removed.
 	pub async fn gc_consumed(&self) -> Result<u64, OutboxError> {
-		let (floor_sql, floor_vals) = queries::outbox::min_consumed_watermark();
-		let row = sqlx::query_with(&floor_sql, floor_vals)
-			.fetch_one(&self.pool)
-			.await
-			.map_err(OutboxError::Database)?;
-		let floor: i64 = row.try_get(0).map_err(OutboxError::Database)?;
-		if floor <= 0 {
-			// No sink-wide floor yet (a sink without a watermark row, or nothing
-			// consumed): reclaim nothing this tick.
-			return Ok(0);
-		}
-		let (del_sql, del_vals) = queries::outbox::delete_consumed_below(floor);
-		let result = sqlx::query_with(&del_sql, del_vals)
-			.execute(&self.pool)
-			.await
-			.map_err(OutboxError::Database)?;
-		Ok(result.rows_affected())
+		read::outbox_gc(self.engine()).map_err(OutboxError::Catalog)
 	}
 
-	/// Read a consumer's durable watermark (0 if never advanced).
+	/// The stored watermark for `kind` (0 when never advanced).
 	pub async fn read_watermark(&self, kind: SinkKind) -> Result<OutboxSeq, OutboxError> {
-		let (sql, vals) = queries::outbox::read_watermark(kind);
-		let row = sqlx::query_with(&sql, vals)
-			.fetch_optional(&self.pool)
-			.await
-			.map_err(OutboxError::Database)?;
-		match row {
-			Some(r) => {
-				let seq: i64 = r.try_get(0).map_err(OutboxError::Database)?;
-				Ok(OutboxSeq(seq))
-			}
-			None => Ok(OutboxSeq(0)),
-		}
+		read::current_watermark(self.engine(), catalog_sink(kind))
+			.map(OutboxSeq)
+			.map_err(OutboxError::Catalog)
 	}
 }
 
-/// Proof-of-ownership guard for a per-sink outbox drain (see
-/// [`Outbox::try_lock_sink`]). While it lives, this replica holds the sink's
-/// postgres session-level advisory lock, so no other replica will drain the same
-/// sink. Dropping it releases the lock.
-///
-/// Release happens two ways, belt-and-suspenders:
-/// - [`SinkLockGuard::release`] runs `pg_advisory_unlock` explicitly (the clean
-///   path, so the connection returns to the pool lock-free and reusable);
-/// - `Drop` (best-effort) returns the pinned connection to the pool; postgres
-///   frees every session-level advisory lock a connection held when it is reset
-///   for reuse, so the lock never leaks even if `release` was skipped.
-///
-/// Prefer `release().await` at the end of a drain; `Drop` is the crash/early-exit
-/// backstop.
+fn sink_slot(kind: SinkKind) -> usize {
+	match kind {
+		SinkKind::Text => 0,
+		SinkKind::Vector => 1,
+		SinkKind::Graph => 2,
+	}
+}
+
+/// Holds the in-process drain right for one sink until dropped or released.
 pub struct SinkLockGuard {
-	// `Option` so `release` can take the connection out and unlock explicitly,
-	// leaving `Drop` a no-op on the clean path.
-	conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+	_permit: tokio::sync::OwnedMutexGuard<()>,
 	kind: SinkKind,
 }
 
 impl SinkLockGuard {
-	/// Explicitly release the advisory lock (`pg_advisory_unlock`) on the pinned
-	/// connection, then return it to the pool. The clean shutdown of a drain tick.
-	pub async fn release(mut self) -> Result<(), OutboxError> {
-		if let Some(mut conn) = self.conn.take() {
-			let (sql, vals) = queries::outbox::advisory_unlock(self.kind);
-			sqlx::query_with(&sql, vals)
-				.execute(&mut *conn)
-				.await
-				.map_err(OutboxError::Database)?;
-		}
+	/// Explicit release (drop also releases; this exists for call-site clarity).
+	pub async fn release(self) -> Result<(), OutboxError> {
 		Ok(())
 	}
 
-	/// The sink this guard holds the drain lock for.
-	pub fn kind(&self) -> SinkKind { self.kind }
-}
-
-impl Drop for SinkLockGuard {
-	fn drop(&mut self) {
-		// If `release` was not called, just drop the pinned connection. postgres
-		// releases session-level advisory locks when the backing connection is
-		// reset on return to the pool, so the lock is freed either way — we cannot
-		// run an async `pg_advisory_unlock` from a sync `Drop`.
-		if self.conn.take().is_some() {
-			tracing::debug!(sink = %self.kind, "sink drain lock dropped without explicit release");
-		}
+	/// Which sink this guard serializes.
+	pub fn kind(&self) -> SinkKind {
+		self.kind
 	}
 }
-

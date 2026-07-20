@@ -117,7 +117,7 @@ pub enum Deployment {
 	Production,
 }
 
-/// A node's role in the daemon fleet. Every node consumes the same postgres
+/// A node's role in the daemon fleet. Every node consumes the same catalog
 /// queue and writes the same CAS; a role only selects which background loops
 /// this process runs (DAEMON-PLAN §Phase 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -200,9 +200,10 @@ pub struct Endpoints {
 	/// The Qdrant collection symbol vectors live in.
 	#[serde(default = "defaults::qdrant_collection")]
 	pub qdrant_collection: SmolStr,
-	/// The Postgres global index (connection URL; secret).
-	#[serde(with = "secret_url")]
-	pub postgres: SecretString,
+	/// The directory holding this source's DoltLite catalog (`catalog.dolt`).
+	/// The versioned relational spine (INDEX-PLAN ID-1); opened locally, no
+	/// connection URL, no credentials.
+	pub catalog_directory: std::path::PathBuf,
 	/// The object-store base (S3/GCS/local) for content-addressed blobs.
 	pub object_store: Url,
 	/// The embedding endpoint (OpenAI-compatible `/v1/embeddings` shape) the
@@ -442,7 +443,7 @@ impl ServerConfiguration {
 	/// Structural validation of the merged configuration: source names must be
 	/// non-empty and unique (they seed the deterministic source identities).
 	///
-	/// **Boot guard**: when [`Deployment::Production`] any source whose postgres
+	/// **Boot guard**: when [`Deployment::Production`] any source whose
 	/// URL or TerminusDB password is still the well-known development default is
 	/// a hard error — the server refuses to start rather than silently connecting
 	/// a production graph store with publicly-known credentials.
@@ -503,7 +504,7 @@ impl Endpoints {
 			terminus_password: defaults::terminus_password(),
 			qdrant: parse_static("http://127.0.0.1:6334"),
 			qdrant_collection: defaults::qdrant_collection(),
-			postgres: SecretString::from("postgres://nudox:nudox@127.0.0.1:5432/nudox"),
+			catalog_directory: std::path::PathBuf::from("./data/catalog"),
 			object_store: object_store_default(),
 			embeddings: defaults::embeddings(),
 			embeddings_api_key: None,
@@ -519,20 +520,12 @@ impl Endpoints {
 	/// In production, reject well-known default credentials before any network
 	/// connection is opened.
 	///
-	/// The postgres URL default is `postgres://nudox:nudox@127.0.0.1:5432/nudox`
-	/// and the TerminusDB password default is `root` — both are public, so they
-	/// must not be used in a production deployment.
+	/// The TerminusDB password default is `root` — public, so it must not be
+	/// used in a production deployment. (The catalog needs no credentials: it
+	/// is a local DoltLite engine.)
 	fn assert_not_default_credentials(&self) -> Result<(), ConfigError> {
-		const DEFAULT_POSTGRES: &str = "postgres://nudox:nudox@127.0.0.1:5432/nudox";
 		const DEFAULT_TERMINUS_PASSWORD: &str = "root";
 
-		if self.postgres.expose_secret() == DEFAULT_POSTGRES {
-			return Err(ConfigError::Validation(
-				ConfigValidationError::DefaultCredentialInProduction {
-					field: "endpoints.postgres",
-				},
-			));
-		}
 		if self.terminus_password.expose_secret() == DEFAULT_TERMINUS_PASSWORD {
 			return Err(ConfigError::Validation(
 				ConfigValidationError::DefaultCredentialInProduction {

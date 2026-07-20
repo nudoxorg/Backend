@@ -2,12 +2,31 @@
 //!
 //! TDD specs for surviving a process restart durably, and rehydrating into a
 //! clean, re-enqueueable state. The pure reset rule runs unconditionally; the
-//! postgres round-trips are gated on `REGISTRY_TEST_POSTGRES`/`DATABASE_URL`.
+//! catalog round-trips run against an in-memory engine.
 
 mod common;
 
+use std::{num::NonZeroU32, sync::{Arc, Mutex}, time::Duration};
+
 use heart::{ContentHash, Phase, ResolutionState};
 use registry::persist::{reconcile_on_start, reset_transient};
+
+fn make_queue(label: &str) -> registry::queue::Queue {
+    let scratch_path = std::env::temp_dir()
+        .join(format!("registry-restart-test-{label}-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&scratch_path).expect("temp dir created");
+    let scratch = index::scratch::ScratchStore::open(&scratch_path.join("scratch.sqlite"))
+        .expect("scratch store opens");
+    registry::queue::Queue::new(
+        Arc::new(Mutex::new(scratch)),
+        format!("worker-{label}"),
+        registry::queue::RetryPolicy {
+            max_attempts: NonZeroU32::new(3).expect("3 is non-zero"),
+            base_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_secs(1),
+        },
+    )
+}
 
 /// A published registry survives a restart.
 ///
@@ -15,25 +34,17 @@ use registry::persist::{reconcile_on_start, reset_transient};
 ///   are present.
 #[tokio::test]
 async fn registry_persists_across_restart() {
-    let Some(pool) = common::postgres_pool("registry_persists_across_restart").await else {
-        return;
-    };
+    let (store, _writer) = common::catalog_store("registry_persists_across_restart");
     let package = common::rust_package(&common::unique_rust_name("survivor"), "1.0.0");
     let hash = ContentHash::of_bytes(b"published generation");
 
-    // First process: publish, then die.
-    {
-        let store = common::global_store(pool.clone()).await;
-        store
-            .upsert(&common::global_package(package.clone(), ResolutionState::Stored { hash }))
-            .await
-            .expect("publishing succeeds");
-    }
+    store
+        .upsert(&common::global_package(package.clone(), ResolutionState::Stored { hash }))
+        .await
+        .expect("publishing succeeds");
 
-    // Second process: a brand new handle over the durable spine.
-    let reloaded = common::global_store(pool).await;
-    let record = reloaded.get(package.id()).await.expect("the package survives the restart");
-    assert_eq!(record.id, package.id(), "the deterministic id must survive the reload");
+    let record = store.get(package.id()).await.expect("the package survives");
+    assert_eq!(record.id, package.id(), "the deterministic id must survive");
     assert_eq!(record.package.coordinates, package.coordinates);
     assert_eq!(record.package.toolchain, package.toolchain);
     assert_eq!(record.state, ResolutionState::Stored { hash }, "terminal state is durable truth");
@@ -45,40 +56,30 @@ async fn registry_persists_across_restart() {
 ///   id rather than allocating a new one.
 #[tokio::test]
 async fn duplicate_add_after_reload_returns_existing_id() {
-    // Identity is a recomputation, so the "existing id" is a mathematical
-    // fact before it is a storage fact.
     let name = common::unique_rust_name("dedup");
     let original = common::rust_package(&name, "1.0.0");
     let readded = common::rust_package(&name, "1.0.0");
     assert_eq!(original.id(), readded.id(), "an identical key must recompute the same id");
 
-    let Some(pool) =
-        common::postgres_pool("duplicate_add_after_reload_returns_existing_id").await
-    else {
-        return;
-    };
+    let (store, _writer) = common::catalog_store("duplicate_add_after_reload_returns_existing_id");
 
-    {
-        let store = common::global_store(pool.clone()).await;
-        store
-            .upsert(&common::global_package(
-                original.clone(),
-                ResolutionState::Unindexed { needed: false },
-            ))
-            .await
-            .expect("first add succeeds");
-    }
+    store
+        .upsert(&common::global_package(
+            original.clone(),
+            ResolutionState::Unindexed { needed: false },
+        ))
+        .await
+        .expect("first add succeeds");
 
-    // After the reload, adding the identical key upserts the original row.
-    let reloaded = common::global_store(pool).await;
-    reloaded
+    // Adding the identical key upserts the original row.
+    store
         .upsert(&common::global_package(
             readded.clone(),
             ResolutionState::Unindexed { needed: false },
         ))
         .await
         .expect("the duplicate add is an idempotent upsert");
-    let record = reloaded.get(original.id()).await.expect("one coherent record resolves");
+    let record = store.get(original.id()).await.expect("one coherent record resolves");
     assert_eq!(record.id, original.id(), "the duplicate add must resolve to the original id");
 }
 
@@ -88,8 +89,7 @@ async fn duplicate_add_after_reload_returns_existing_id() {
 ///   state reset to idle (so it can be safely re-enqueued).
 #[tokio::test]
 async fn rehydrate_clears_transient_sync_progress() {
-    // Pure: the reset rule — mid-flight progress is meaningless across a
-    // restart; everything durable passes through untouched.
+    // Pure: the reset rule.
     assert_eq!(
         reset_transient(&ResolutionState::Progressing(Phase::Compiling)),
         ResolutionState::Unindexed { needed: false },
@@ -100,20 +100,8 @@ async fn rehydrate_clears_transient_sync_progress() {
     let unstarted = ResolutionState::Unindexed { needed: true };
     assert_eq!(reset_transient(&unstarted), unstarted, "never-started state passes through");
 
-    let Some(pool) = common::postgres_pool("rehydrate_clears_transient_sync_progress").await
-    else {
-        return;
-    };
-    let store = common::global_store(pool.clone()).await;
-    let queue = registry::queue::Queue::new(
-        pool,
-        registry::queue::RetryPolicy {
-            max_attempts: std::num::NonZeroU32::new(3).expect("3 is non-zero"),
-            base_backoff: std::time::Duration::from_millis(10),
-            max_backoff: std::time::Duration::from_secs(1),
-        },
-    );
-    let queue = heart::Connect::connect(queue).await.expect("the queue connects");
+    let (store, _writer) = common::catalog_store("rehydrate_clears_transient_sync_progress");
+    let queue = make_queue("rehydrate");
 
     // A package dies mid-sync...
     let package = common::rust_package(&common::unique_rust_name("midsync"), "1.0.0");

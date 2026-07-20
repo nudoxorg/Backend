@@ -131,6 +131,8 @@ fn name_part_skip(ecosystem: Language) -> &'static [&'static str] {
 		Language::Java => &["java", "jdk"],
 		Language::CSharp => &["net", "dotnet"],
 		Language::Nix => &["nix"],
+		// C/C++ naming noise: the `lib` prefix and the language words themselves.
+		Language::Cpp => &["lib", "cpp", "cxx", "c"],
 	}
 }
 

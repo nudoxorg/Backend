@@ -30,7 +30,7 @@ use crate::coordination::SinkKind;
 /// is kept total so a corrupt row surfaces an error rather than a panic.
 ///
 /// Deep refactor: sub-variants for token kinds, #[from] for Name/Version,
-/// concrete sources, no lossy to_string when wrapping sqlx.
+/// concrete sources, no lossy to_string when wrapping engine errors.
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
 	/// A discriminant token was not a member of its domain (fine-grained).
@@ -81,10 +81,6 @@ pub enum CodecError {
 	/// A custom origin token could not be reconstituted into a base URL.
 	#[error("custom origin token does not name a valid base URL")]
 	Origin { token: String, #[source] source: url::ParseError },
-
-	/// Sqlx row decode surfaced with source (for search/index wrappers).
-	#[error("codec sqlx decode")]
-	SqlxDecode { domain: &'static str, #[source] source: sqlx::Error },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -357,6 +353,9 @@ pub fn origin_from_token(token: &str) -> Result<heart::RegistryOrigin, CodecErro
 		"nuget" => Ok(heart::RegistryOrigin::NuGet),
 		"goproxy" => Ok(heart::RegistryOrigin::GoProxy),
 		"maven-central" => Ok(heart::RegistryOrigin::MavenCentral),
+		// The registry-less git plane (RL-1) round-trips through its stable
+		// `"git"` token; without this arm it would misdecode as a Custom origin.
+		"git" => Ok(heart::RegistryOrigin::Git),
 		custom => {
 			let url = url::Url::parse(&format!("https://{custom}"))
 				.map_err(|source| CodecError::Origin { token: custom.to_owned(), source })?;

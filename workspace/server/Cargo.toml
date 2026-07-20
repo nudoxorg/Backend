@@ -28,6 +28,10 @@ heart    = { path = "../heart", features = ["telemetry"] }
 ecosystem = { path = "../ecosystem" }
 ir       = { path = "../ir" }
 registry = { path = "../registry" }
+# The versioned catalog + ephemeral scratch store (INDEX-PLAN). The top-level
+# binary selects the real DoltLite engine (`dolt-engine`); the scratch store
+# (jobs/wanted/sessions/claims) needs no engine feature.
+index    = { path = "../index", features = ["dolt-engine"] }
 # Vector plane (09-vector §20): routing/shard-key/admission vocabulary and the
 # qdrant-edge shard builder the bakery drives. Written in parallel; the APIs
 # used here are the frozen §20 client/server-split surface.
@@ -61,28 +65,6 @@ qdrant-client = "1.18"
 
 # ── Full-text search ──────────────────────────────────────────────────────────
 tantivy = "0.22"
-
-# ── SQL / postgres ────────────────────────────────────────────────────────────
-sqlx = { version = "0.8", default-features = false, features = [
-    "runtime-tokio-rustls",
-    "macros",
-    "postgres",
-    "uuid",
-    "json",
-    "chrono",
-    "migrate",
-] }
-libsqlite3-sys = { version = "0.30", features = ["bundled"] }
-
-# ── Query builder (registry schema) ──────────────────────────────────────────
-sea-query        = { version = "0.32" }
-sea-query-binder = { version = "0.7", features = [
-    "runtime-tokio-rustls",
-    "sqlx-postgres",
-    "with-chrono",
-    "with-json",
-    "with-uuid",
-] }
 
 # ── Serialization ─────────────────────────────────────────────────────────────
 serde      = { version = "1.0", features = ["derive"] }

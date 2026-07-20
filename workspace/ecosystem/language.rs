@@ -57,6 +57,12 @@ pub enum Language {
 	/// <https://dotnet.microsoft.com/>. .NET / NuGet packages, extracted from
 	/// compiled assemblies (metadata) or source via a Roslyn oracle.
 	CSharp,
+
+	/// C and C++ (`"cpp"` covers both — RL-2). The registry-less, git-native
+	/// ecosystem: identity is a normalized repository slug, versions come from
+	/// tags with a Go-style pseudo-version fallback, and curated registries
+	/// (vcpkg/Conan/Homebrew) are demoted to alias/version feeds.
+	Cpp,
 }
 
 impl Language {
@@ -81,6 +87,7 @@ impl Language {
 			"c#" | "cs" | "dotnet" => Some(Language::CSharp),
 			"golang" => Some(Language::Go),
 			"py" => Some(Language::Python),
+			"c" | "c++" | "cxx" | "cc" => Some(Language::Cpp),
 			token => token.parse().ok(),
 		}
 	}

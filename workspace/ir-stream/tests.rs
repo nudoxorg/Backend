@@ -24,9 +24,11 @@ use nudox_ir::{
 };
 use nudox_ir::symbol::Visibility;
 
+use nudox_ir::{BodyEmbed, BodyMergeNote, OracleBody, TreesitterBody, merge_body};
+
 use crate::{
-    FailureKindWire, FrameReader, FrameWriter, PhaseWire, ProducerId, Received, StreamError,
-    StreamFrame, StreamReceiver, SymbolSink, WireEntry, WireLink, IR_STREAM_VERSION,
+    BodyWire, FailureKindWire, FrameReader, FrameWriter, PhaseWire, ProducerId, Received,
+    StreamError, StreamFrame, StreamReceiver, SymbolSink, WireEntry, WireLink, IR_STREAM_VERSION,
     MAX_FRAME_BYTES,
 };
 
@@ -163,6 +165,7 @@ fn test_full_roundtrip() {
                 source_digests += 1;
             }
             Some(Received::Occurrences(_)) => {}
+            Some(Received::Bodies(_)) => {}
             Some(Received::Progress { phase, .. }) => {
                 assert_eq!(phase, PhaseWire::Emit);
                 progress_seen = true;
@@ -609,6 +612,89 @@ fn test_producer_id_validation() {
     assert!(ProducerId::new("").is_none());
     assert!(ProducerId::new("x".repeat(128)).is_some());
     assert!(ProducerId::new("x".repeat(129)).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Test: bodies frame round-trips through sink → receiver
+// ---------------------------------------------------------------------------
+
+/// Verifies that `emit_body` produces a `StreamFrame::Bodies` frame that
+/// `StreamReceiver` decodes into `Received::Bodies` with identical content.
+/// Both `BodyEmbed::Absent` and a `BodyEmbed::Present` built via `merge_body`
+/// are exercised so both enum arms are tested.
+#[test]
+fn bodies_frame_round_trips() {
+    let buf = SharedBuf::new();
+    let mut sink = SymbolSink::hello(buf.clone(), make_job(), make_producer()).unwrap();
+
+    // Emit an Absent body for intro seed 0xAA.
+    let intro_absent = IntroId::from_raw([0xAA; 32]);
+    sink.emit_body(intro_absent, BodyEmbed::Absent).unwrap();
+
+    // Build a Present body via merge_body (the normative path).
+    let tree = TreesitterBody {
+        root_kind: Some("function_item".into()),
+        ..Default::default()
+    };
+    let oracle = OracleBody::default();
+    // tree is non-empty (root_kind is set), so merge_body returns Present.
+    let present_body = merge_body(
+        ecosystem::Language::Rust,
+        tree,
+        oracle,
+        BodyMergeNote::treesitter_only(),
+    );
+    let intro_present = IntroId::from_raw([0xBB; 32]);
+    sink.emit_body(intro_present, present_body.clone()).unwrap();
+
+    // Also exercise emit_bodies with a batch of two (Absent + Present again).
+    let batch = vec![
+        BodyWire { intro: IntroId::from_raw([0xCC; 32]), body: BodyEmbed::Absent },
+        BodyWire { intro: IntroId::from_raw([0xDD; 32]), body: present_body.clone() },
+    ];
+    sink.emit_bodies(batch.clone()).unwrap();
+
+    // Finish the stream (no symbol entries — emitted count is 0).
+    sink.finish(make_content_hash(0x42)).unwrap();
+
+    // Drive the receiver and collect all Bodies events.
+    let cursor = std::io::Cursor::new(buf.bytes());
+    let mut rx = StreamReceiver::new(cursor);
+    rx.accept().unwrap();
+
+    let mut received_wires: Vec<BodyWire> = Vec::new();
+    loop {
+        match rx.recv().unwrap() {
+            Some(Received::Bodies(wires)) => received_wires.extend(wires),
+            Some(Received::Finish { emitted, .. }) => {
+                assert_eq!(emitted, 0, "no symbol entries were emitted");
+                break;
+            }
+            Some(Received::Abort { .. }) => panic!("unexpected Abort"),
+            None => break,
+            _ => {}
+        }
+    }
+
+    // We expect 4 BodyWire records total: 2 from individual emit_body calls +
+    // 2 from the emit_bodies batch. They may arrive in 2 separate frames or
+    // one, depending on how the sink batches them; we flatten by intro id.
+    assert_eq!(received_wires.len(), 4, "expected 4 BodyWire records total");
+
+    // First record: Absent for 0xAA.
+    let first = received_wires.iter().find(|w| w.intro == IntroId::from_raw([0xAA; 32])).unwrap();
+    assert!(first.body.is_absent(), "0xAA intro must be Absent");
+
+    // Second record: Present for 0xBB (matches present_body).
+    let second = received_wires.iter().find(|w| w.intro == IntroId::from_raw([0xBB; 32])).unwrap();
+    assert_eq!(second.body, present_body, "0xBB intro must match the built Present body");
+
+    // Batch records from emit_bodies: 0xCC Absent, 0xDD Present.
+    let cc = received_wires.iter().find(|w| w.intro == IntroId::from_raw([0xCC; 32])).unwrap();
+    assert!(cc.body.is_absent(), "0xCC intro must be Absent");
+
+    let dd = received_wires.iter().find(|w| w.intro == IntroId::from_raw([0xDD; 32])).unwrap();
+    assert_eq!(dd.body, present_body, "0xDD intro must match the built Present body");
 }
 
 // ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ pub mod blob;
 pub mod compiled;
 pub mod coordination;
 pub mod error;
+pub mod graph;
 pub mod health;
 pub mod identity;
 pub mod index;

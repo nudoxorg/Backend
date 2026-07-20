@@ -48,6 +48,12 @@ pub enum ServerError {
     /// An internal invariant broke (→ 500).
     #[error(transparent)]
     Internal(#[from] InternalError),
+
+    /// A well-formed request targeted a surface that is typed and routed but not
+    /// yet backed by its projection (e.g. `Target::Usages` before WS5's reverse
+    /// `occ` index lands) (→ 501).
+    #[error(transparent)]
+    Unsupported(#[from] crate::registry::search::usages::UsageQueryError),
 }
 
 /// Why a search query (literal or abstract) was rejected. Lives here (in the
@@ -238,6 +244,13 @@ pub enum InternalError {
     #[error("malformed archive url for {raw}")]
     MalformedArchiveUrl { raw: String },
 
+    /// A git-native (`RegistryOrigin::Git`) package was routed through the
+    /// archive-download path. The registry-less `cpp` plane acquires source by
+    /// checking out a rev (RL-14, §7.4), never by downloading a tarball, so this
+    /// code path is not applicable to it.
+    #[error("git-origin packages are acquired by checkout, not archive download")]
+    GitOriginHasNoArchiveUrl,
+
     /// An upstream registry fetch failed (non-404).
     #[error("upstream fetch failed: {reason}")]
     UpstreamFetch { reason: String },
@@ -298,6 +311,20 @@ impl ServerError {
             // ones still surface as unavailable until retry succeeds.
             ServerError::Compile(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ServerError::Config(_) | ServerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            // Usage-query outcomes map to distinct honest statuses:
+            // - `UnsupportedTarget`: the projection type is not implemented → 501.
+            // - `IndexUnavailable`: the surface is wired but no reverse index is
+            //   loaded for the scope yet → 503 (come back later), never a 200
+            //   with a fake empty body.
+            // - `UnresolvableTarget`: the requested symbol is malformed → 400.
+            ServerError::Unsupported(reason) => {
+                use crate::registry::search::usages::UsageQueryError;
+                match reason {
+                    UsageQueryError::UnsupportedTarget => StatusCode::NOT_IMPLEMENTED,
+                    UsageQueryError::IndexUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                    UsageQueryError::UnresolvableTarget { .. } => StatusCode::BAD_REQUEST,
+                }
+            }
         }
     }
 }

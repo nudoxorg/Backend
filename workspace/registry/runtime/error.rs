@@ -274,9 +274,13 @@ pub enum TextError {
 	#[error("text index engine error")]
 	Engine(#[source] tantivy::TantivyError),
 
-	/// The postgres poll that feeds the index failed.
-	#[error("text index poll (postgres) failed")]
-	Poll(#[source] sqlx::Error),
+	/// The catalog-outbox poll that feeds the index failed.
+	#[error("text index poll (catalog outbox) failed")]
+	Poll(#[source] crate::error::OutboxError),
+
+	/// Loading a changed package's symbols from the catalog failed.
+	#[error("text index symbol load failed")]
+	Symbols(#[source] crate::error::IndexError),
 
 	/// A query could not be parsed into a tantivy query.
 	#[error("malformed text query: {0}")]
@@ -298,8 +302,10 @@ pub enum TextError {
 impl Retryable for TextError {
 	fn is_retryable(&self) -> bool {
 		match self {
-			// A local-disk index blip or a transient postgres fault is worth a retry.
-			TextError::Io(_) | TextError::Poll(_) => true,
+			// A local-disk index blip is worth a retry; catalog faults are
+			// structural (local engine), matching IndexError's posture.
+			TextError::Io(_) => true,
+			TextError::Poll(_) | TextError::Symbols(_) => false,
 			TextError::Engine(_)
 			| TextError::Query(_)
 			| TextError::Cursor(_)
@@ -320,10 +326,10 @@ pub enum SessionError {
 	#[error("session snapshot codec error")]
 	Codec(#[source] serde_json::Error),
 
-	/// The postgres-backed session store's query failed (only the
-	/// [`crate::runtime::session::PgSessionStore`] path).
-	#[error("session database operation failed")]
-	Database(#[source] sqlx::Error),
+	/// The scratch-backed session store's query failed (the
+	/// [`crate::runtime::session::ScratchSessionStore`] path, INDEX-PLAN IP-4).
+	#[error("session scratch-store operation failed")]
+	Scratch(#[source] index::scratch::ScratchError),
 
 	/// The referenced session id was not open.
 	#[error("session not found")]
@@ -334,10 +340,9 @@ impl Retryable for SessionError {
 	fn is_retryable(&self) -> bool {
 		match self {
 			SessionError::Io(_) => true,
-			SessionError::Database(e) => matches!(
-				e,
-				sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::WorkerCrashed
-			),
+			// A local sqlite scratch fault (e.g. a transient lock) is worth a
+			// retry; a codec/not-found error is not.
+			SessionError::Scratch(_) => true,
 			_ => false,
 		}
 	}

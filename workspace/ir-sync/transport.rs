@@ -222,6 +222,14 @@ pub struct SyncService<C: ChangeIo, A: ApplyHook> {
     apply_hook: Arc<A>,
     /// The iroh node ID of the sender; used to connect for blob fetches.
     sender_endpoint_id: iroh::EndpointId,
+    /// Endpoints enrolled to push IR changes to this receiver (INDEX-PLAN
+    /// ID-18: the same trust gate the ObjectPack plane uses). A connection from
+    /// any endpoint outside this set is refused with
+    /// [`SyncError::RemoteRefused`] before any bytes are processed.
+    ///
+    /// Defaults to `{ sender_endpoint_id }` so existing single-sender wiring is
+    /// unchanged; callers may widen it via [`SyncService::enroll`].
+    enrolled: Vec<iroh::EndpointId>,
 }
 
 impl<C: ChangeIo + 'static, A: ApplyHook + 'static> SyncService<C, A> {
@@ -280,7 +288,25 @@ impl<C: ChangeIo + 'static, A: ApplyHook + 'static> SyncService<C, A> {
             change_io,
             apply_hook,
             sender_endpoint_id,
+            // Default trust: only the configured sender may push.
+            enrolled: vec![sender_endpoint_id],
         })
+    }
+
+    /// Enroll an additional endpoint permitted to push IR changes to this
+    /// receiver (INDEX-PLAN ID-18). Additive: the configured sender is always
+    /// enrolled; this widens the set (e.g. an edge Remote host trusting several
+    /// devices). Returns `self` for builder-style chaining.
+    pub fn enroll(mut self, endpoint: iroh::EndpointId) -> Self {
+        if !self.enrolled.contains(&endpoint) {
+            self.enrolled.push(endpoint);
+        }
+        self
+    }
+
+    /// Whether `endpoint` is enrolled to push to this receiver.
+    fn is_enrolled(&self, endpoint: &iroh::EndpointId) -> bool {
+        self.enrolled.iter().any(|allowed| allowed == endpoint)
     }
 
     /// Access the underlying iroh endpoint (needed to share addresses in tests).
@@ -315,6 +341,16 @@ impl<C: ChangeIo + 'static, A: ApplyHook + 'static> SyncService<C, A> {
 
         let conn = accepting.await
             .map_err(|e| SyncError::Transport(e.to_string()))?;
+
+        // Trust gate (INDEX-PLAN ID-18): reject pushes from endpoints that are
+        // not enrolled, before any announcement bytes are read or applied.
+        let remote_endpoint_id = conn.remote_id();
+        if !self.is_enrolled(&remote_endpoint_id) {
+            conn.close(0u32.into(), b"not enrolled");
+            return Err(SyncError::RemoteRefused(format!(
+                "push from non-enrolled endpoint {remote_endpoint_id}"
+            )));
+        }
 
         self.handle_connection(conn).await
     }

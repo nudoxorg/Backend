@@ -21,7 +21,7 @@ use crate::registry::runtime::graph::{GraphStore, RelationKind, expansion::Expan
 use crate::registry::runtime::vector::EmbeddingModel;
 
 pub use planner::SearchPlanner;
-pub use query::{AbstractQuery, Filter, Pagination, Query, Search, SymbolCursor};
+pub use query::{AbstractQuery, Filter, Query, Search, SymbolCursor};
 
 use crate::SourceStores;
 use crate::error::{BadRequestReason, ServerError, ServerResult};

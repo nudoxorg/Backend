@@ -16,4 +16,5 @@
 pub mod health;
 pub mod indexing;
 pub mod initialization;
+pub mod packages;
 pub mod search;

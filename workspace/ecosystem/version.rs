@@ -32,6 +32,8 @@ pub enum AnyVersion {
 	NuGet(NuGetVersion),
 	Go(GoVersion),
 	Maven(MavenVersion),
+	/// C/C++ registry-less four-kind version (`Tag ▸ Date ▸ Pseudo ▸ Raw`).
+	Cpp(crate::cpp::version::CppVersion),
 }
 
 impl AnyVersion {
@@ -44,6 +46,7 @@ impl AnyVersion {
 			(AnyVersion::NuGet(a), AnyVersion::NuGet(b)) => Some(a.cmp(b)),
 			(AnyVersion::Go(a), AnyVersion::Go(b)) => Some(a.cmp(b)),
 			(AnyVersion::Maven(a), AnyVersion::Maven(b)) => Some(a.cmp(b)),
+			(AnyVersion::Cpp(a), AnyVersion::Cpp(b)) => Some(a.cmp(b)),
 			_ => None,
 		}
 	}
@@ -55,6 +58,7 @@ impl AnyVersion {
 			AnyVersion::NuGet(v) => v.is_prerelease(),
 			AnyVersion::Go(v) => v.is_prerelease(),
 			AnyVersion::Maven(v) => v.is_prerelease(),
+			AnyVersion::Cpp(v) => v.is_prerelease(),
 		}
 	}
 }

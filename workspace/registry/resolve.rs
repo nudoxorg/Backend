@@ -212,6 +212,9 @@ fn semver_matches(range: &semver::VersionReq, candidate: &PackageVersion) -> boo
 		PackageVersion::Python(_) => false,
 		// Go/Java via git tags; NuGet via interval notation, not semver range.
 		PackageVersion::Go(_) | PackageVersion::Java(_) | PackageVersion::CSharp(_) => false,
+		// Cpp ranges live in the cpp grammar (Tag caret semantics only,
+		// REGISTRYLESS-PLAN §3.3), never in a semver::VersionReq.
+		PackageVersion::Cpp(_) => false,
 	}
 }
 
@@ -295,6 +298,9 @@ fn versions_base_url(origin: &RegistryOrigin) -> String {
 		RegistryOrigin::NuGet => String::from("https://api.nuget.org"),
 		RegistryOrigin::GoProxy => String::from("https://proxy.golang.org"),
 		RegistryOrigin::MavenCentral => String::from("https://repo1.maven.org/maven2"),
+		// The registry-less git plane has no HTTP registry base (RL-14): its
+		// listing is `git ls-remote` output, never a fetched URL.
+		RegistryOrigin::Git => String::new(),
 		RegistryOrigin::Custom { url, .. } => url.as_str().trim_end_matches('/').to_owned(),
 	}
 }
@@ -311,6 +317,10 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		RegistryOrigin::NuGet => String::from("https://api.nuget.org"),
 		RegistryOrigin::GoProxy => String::from("https://proxy.golang.org"),
 		RegistryOrigin::MavenCentral => String::from("https://repo1.maven.org/maven2"),
+		// The registry-less `cpp` plane has no base URL: the listing is
+		// `git ls-remote` output the IO layer intercepts (RL-14). The base is
+		// empty; the marker is built from the slug in the ecosystem arm below.
+		RegistryOrigin::Git => String::new(),
 		RegistryOrigin::Custom { url, .. } => url.as_str().trim_end_matches('/').to_owned(),
 	};
 	match name.ecosystem() {
@@ -339,6 +349,9 @@ fn versions_url(origin: &RegistryOrigin, name: &PackageName) -> String {
 		// FlakeHub resolution has bespoke semantics handled by the Nix
 		// producer's `traversal` module, not this generic registry path.
 		Language::Nix => format!("{base}/f/{}/releases", name.canonical()),
+		// `cpp` is git-native (RL-14): the "listing URL" is the ls-remote marker
+		// the IO layer intercepts and runs `git ls-remote --tags --heads` for.
+		Language::Cpp => format!("git+ls-remote://{}", name.canonical()),
 	}
 }
 

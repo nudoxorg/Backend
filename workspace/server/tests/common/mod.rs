@@ -9,7 +9,8 @@ use std::sync::Arc;
 use heart::{EntryUri, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
 use registry::runtime::text::TextIndex;
 use server::authz::{Principal, ReadCap, WriteCap};
-use server::search::query::{Filter, Pagination, Query, Search};
+use heart::PageSpecification;
+use server::search::query::{Filter, Query, Search};
 use server::{Server, ServerConfiguration};
 use smol_str::SmolStr;
 
@@ -89,11 +90,8 @@ pub fn literal_search(query: &str, limit: u32) -> Search<'static> {
 }
 
 /// A page of `limit` results from the start.
-pub fn page(limit: u32) -> Pagination {
-    Pagination {
-        limit: std::num::NonZeroU32::new(limit).expect("fixture limits are non-zero"),
-        after: None,
-    }
+pub fn page(limit: u32) -> PageSpecification {
+    PageSpecification { limit, cursor: None }
 }
 
 /// A unique temporary directory removed on drop (for tantivy replicas and

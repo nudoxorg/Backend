@@ -10,8 +10,11 @@
 
 use heart::{PackageId, ResolutionState};
 
+use index::engine::VersioningEngine;
+use index::enums::ParseState;
+use index::store::lifecycle;
+
 use crate::{error::RegistryError, index::GlobalStore, queue::Queue};
-use crate::schema::{codec, queries};
 
 /// The outcome of a restart reconciliation: what was reset and re-enqueued.
 #[derive(Debug, Clone, Default)]
@@ -26,47 +29,27 @@ pub struct Recovered {
 /// On startup, find every package stuck mid-sync, reset its transient state, and
 /// re-enqueue it.
 ///
-/// Reads the global index for all [`ResolutionState::Progressing`] packages,
-/// transitions each back to `Unindexed { needed: false }` (a clean,
-/// re-enqueueable state) in one transaction, and enqueues them. Idempotent: safe
-/// to run on every boot.
+/// Reads the catalog for all `in_progress` versions, transitions each back to
+/// `Unindexed { needed: false }` (a clean, re-enqueueable state), drops every
+/// stale scratch lease, and enqueues them. Idempotent: safe to run on every boot.
 #[tracing::instrument(skip_all)]
-pub async fn reconcile_on_start(
-	index: &GlobalStore,
+pub async fn reconcile_on_start<Engine: VersioningEngine + Send + Sync>(
+	index: &GlobalStore<Engine>,
 	queue: &Queue,
 ) -> Result<Recovered, RegistryError> {
-	use sqlx::Row;
-
-	use crate::error::IndexError;
-
-	let pool = index.pool();
-
 	// 1. Which packages were stranded mid-sync?
-	let (select_sql, select_vals) = queries::index::select_progressing();
-	let rows = sqlx::query_with(&select_sql, select_vals)
-		.fetch_all(pool)
-		.await
-		.map_err(IndexError::Database)?;
-	let reset: Vec<PackageId> = rows
-		.iter()
-		.map(|row| row.try_get::<uuid::Uuid, _>(0).map(codec::package_id_from_uuid))
-		.collect::<Result<_, _>>()
-		.map_err(IndexError::Database)?;
+	let reset = lifecycle::versions_in_state(index.writer().engine(), ParseState::InProgress)
+		.map_err(crate::error::IndexError::Catalog)?;
 
-	// 2. Reset every transient row and drop every stale lease, atomically —
-	//    a half-applied recovery would be worse than none.
-	let mut tx = pool.begin().await.map_err(IndexError::BeginTx)?;
-	let (reset_sql, reset_vals) = queries::persist::reset_transient_parse_status();
-	sqlx::query_with(&reset_sql, reset_vals)
-		.execute(&mut *tx)
-		.await
-		.map_err(IndexError::Database)?;
-	let (lease_sql, lease_vals) = queries::persist::clear_all_leases();
-	sqlx::query_with(&lease_sql, lease_vals)
-		.execute(&mut *tx)
-		.await
-		.map_err(IndexError::Database)?;
-	tx.commit().await.map_err(IndexError::Commit)?;
+	// 2. Reset every transient row, then drop every stale lease. Each reset is
+	//    an idempotent single-row write; a crash mid-loop just re-runs on the
+	//    next boot (the survivors are still `in_progress`).
+	for package in &reset {
+		index
+			.set_state(*package, &ResolutionState::Unindexed { needed: false })
+			.await?;
+	}
+	queue.clear_all_leases().await?;
 
 	// 3. Re-enqueue each recovered package (idempotent per package).
 	let mut requeued = Vec::with_capacity(reset.len());

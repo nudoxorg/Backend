@@ -2,16 +2,21 @@
 #![feature(return_type_notation)]
 
 pub mod access;
+pub mod availability;
 pub mod cache;
 pub mod connection;
 pub mod content;
 pub mod cursor;
+pub mod deployment;
 pub mod ecosystem;
+pub mod egress;
 pub mod error;
 pub mod health;
 pub mod identity;
+pub mod object_pack;
 pub mod package;
 pub mod progress;
+pub mod query;
 pub mod score;
 pub mod search;
 pub mod sink;
@@ -28,11 +33,14 @@ pub mod version;
 pub mod telemetry;
 
 pub use access::{Federation, Source, SourceId, SourceRole, Sourced};
+pub use availability::{AvailabilityStoreId, IrAvailability, ObjectAvailability};
 pub use health::{assert_probe_future_send, timed as timed_probe, Probe, Probeable};
 pub use connection::{Cold, Connect, Live};
 pub use content::{ContentHash, ContentHasher, Freshness, JobKey};
 pub use cursor::{Advisory, Cursor, CursorError, Enforced, PolicyTag, SnapshotPolicy};
+pub use deployment::{DeploymentKind, DeploymentProfile, TrustedRemote};
 pub use ecosystem::{Edition, Language, Toolchain};
+pub use egress::{EgressDenied, EgressPolicy, EgressRequest, HostGlob};
 pub use error::{
     BackendKind, ConnectError, ConnectFailure, ErrorDetails, Failure, FailureKind, Phase, ResolutionState,
     Retryable, StoreError,
@@ -41,7 +49,13 @@ pub use identity::{
     CargoVersionError, EntryUri, Id, NameError, NpmVersionError, Package, PackageId,
     PackageCoordinates, PackageVersion, PythonVersionError, RegistryOrigin, SymbolId, VersionError,
 };
+pub use object_pack::{MemberKey, MemberRecord, ObjectPackId};
 pub use progress::{JobProgress, Percent, Progressive};
+pub use query::{
+    AsOf, CatalogCommitHash, PageSpecification, QualityMode, Query, QueryEngine, QueryMode,
+    QueryReach, RankSpecification, Routing, Scope, StableReference, StableReferenceError, Target,
+    UnixMilliseconds,
+};
 pub use score::{Score, Scored};
 pub use search::Page;
 pub use sink::DerivedStore;

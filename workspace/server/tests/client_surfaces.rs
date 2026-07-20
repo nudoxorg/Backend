@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use heart::SymbolKind;
-use server::http::dto::SearchRequestDto;
 use server::search::SearchPlanner;
 use server::search::planner::Plan;
 use server::search::query::Query;
@@ -18,20 +17,11 @@ use server::search::symbols::SymbolTextSurface;
 
 /// The default item-search response is backed by tantivy.
 ///
-/// Assert: a wire request without the semantic opt-in lowers to a literal
-///   query, plans precise, and is answered by the text index.
+/// Assert: a non-semantic internal search request lowers to a literal query,
+///   plans precise, and is answered by the text index.
 #[tokio::test]
 async fn default_item_search_is_tantivy() {
-    let wire = SearchRequestDto {
-        query: "Deserialize".into(),
-        semantic: false,
-        ecosystems: Vec::new(),
-        packages: Vec::new(),
-        limit: std::num::NonZeroU32::new(8).expect("eight is non-zero"),
-        cursor: None,
-        session: None,
-    };
-    let request = wire.into_search().expect("a plain query lowers cleanly");
+    let request = common::literal_search("Deserialize", 8);
     assert!(
         matches!(request.query, Query::Literal(_)),
         "no semantic opt-in ⇒ the literal (tantivy) surface"

@@ -90,7 +90,7 @@ impl<M: EmbeddingModel> Server<M> {
 		let limit = NonZeroUsize::new(page_limit(request)).unwrap_or(NonZeroUsize::MIN);
 		let after = request
 			.page
-			.after
+			.cursor
 			.as_deref()
 			.map(|token| {
 				heart::Cursor::<_, heart::Advisory>::decode(token)
@@ -133,4 +133,4 @@ impl<M: EmbeddingModel> Server<M> {
 }
 
 /// The requested page size, widened to the merge vocabulary.
-fn page_limit(request: &Search<'_>) -> usize { request.page.limit.get() as usize }
+fn page_limit(request: &Search<'_>) -> usize { request.page.limit as usize }

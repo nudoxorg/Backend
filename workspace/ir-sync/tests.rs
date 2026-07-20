@@ -267,6 +267,74 @@ async fn test_missing_change_on_sender() {
     }
 }
 
+/// A push from an endpoint that is not the enrolled sender is refused with a
+/// typed `RemoteRefused`, and nothing is applied (INDEX-PLAN ID-18 trust gate).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_push_from_non_enrolled_endpoint_rejected() {
+    let bytes = b"a change from an untrusted peer";
+    let id = change_id_for_bytes(bytes);
+
+    let sender_io = Arc::new(MemChangeIo::new());
+    sender_io.insert(id.clone(), bytes.to_vec());
+    let receiver_io = Arc::new(MemChangeIo::new());
+    let hook = Arc::new(RecordingApplyHook::new());
+
+    let lookup = MemoryLookup::new();
+    let sender_key = iroh::SecretKey::generate();
+    let receiver_key = iroh::SecretKey::generate();
+    let sender_id = sender_key.public();
+    let receiver_id = receiver_key.public();
+
+    // The receiver is told to trust some OTHER endpoint, not this sender.
+    let unrelated_trusted = iroh::SecretKey::generate().public();
+
+    let service = SyncService::new_with_key(
+        receiver_io.clone(),
+        hook.clone(),
+        unrelated_trusted,
+        Some(lookup.clone()),
+        receiver_key,
+    )
+    .await
+    .expect("service bind");
+    lookup.add_endpoint_info(service.endpoint().addr());
+
+    let syncer = Syncer::new_with_key(
+        sender_io,
+        RemoteConfig { node_id: receiver_id },
+        Some(lookup.clone()),
+        sender_key,
+    )
+    .await
+    .expect("syncer bind");
+    lookup.add_endpoint_info(syncer.endpoint().addr());
+
+    let accept_task = tokio::spawn(async move { service.accept_one().await });
+
+    let event = MergeEvent {
+        channel: test_channel(),
+        tip: id.clone(),
+        new_changes: vec![id.clone()],
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(10), syncer.on_merge(event)).await;
+
+    let recv_result = tokio::time::timeout(Duration::from_secs(10), accept_task)
+        .await
+        .expect("no accept timeout")
+        .expect("join ok");
+
+    match recv_result {
+        Err(SyncError::RemoteRefused(_)) => {}
+        other => panic!("expected RemoteRefused for non-enrolled push, got {other:?}"),
+    }
+    assert!(
+        !receiver_io.has_change(&id).unwrap(),
+        "no change from a non-enrolled peer should be stored"
+    );
+    assert!(hook.calls().is_empty(), "apply must not fire for non-enrolled peer");
+    let _ = sender_id; // documented for symmetry with make_pair
+}
+
 /// Re-announcing an already-synced tip is a no-op: applied == 0.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_idempotent_resync() {

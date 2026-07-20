@@ -1,9 +1,9 @@
-//! Diagram: **postgres handles all metadata associated with a package, including
+//! Diagram: **catalog handles all metadata associated with a package, including
 //! its canonical GUID and the hash of its code/treesitter representation.**
 //!
 //! TDD specs for `registry::metadata`. GUID assignment is deterministic (not
-//! allocated), so identity facts run pure; the postgres persistence halves are
-//! gated on `REGISTRY_TEST_POSTGRES`/`DATABASE_URL`.
+//! allocated), so identity facts run pure; the catalog persistence halves run
+//! against an in-memory store.
 //!
 //! Note: `Minter`, `hash::package_generation`, and `hash::freshness` were
 //! removed (superseded). Tests that exclusively exercised those are deleted;
@@ -20,7 +20,7 @@ use registry::{
 
 /// A package is assigned a canonical, version-agnostic GUID.
 ///
-/// Assert: registering a package yields a stable GUID recorded in postgres.
+/// Assert: registering a package yields a stable GUID recorded in the catalog.
 #[tokio::test]
 async fn package_gets_a_canonical_guid() {
     // Pure: the GUID is a deterministic coordinate fingerprint.
@@ -29,9 +29,8 @@ async fn package_gets_a_canonical_guid() {
     assert_eq!(guid, common::rust_coordinates("serde", "1.0.0").id());
     assert_eq!(guid.as_uuid().get_version_num(), 5, "package GUIDs are UUIDv5 fingerprints");
 
-    // Gated: registering persists the identity row under that GUID.
-    let Some(pool) = common::postgres_pool("package_gets_a_canonical_guid").await else { return };
-    let store = common::global_store(pool).await;
+    // Catalog: registering persists the identity row under that GUID.
+    let (store, _writer) = common::catalog_store("package_gets_a_canonical_guid");
     let registered = common::rust_package(&common::unique_rust_name("guid"), "1.0.0");
     store
         .upsert(&common::global_package(
@@ -50,20 +49,15 @@ async fn package_gets_a_canonical_guid() {
 /// Assert: GUID assignment is idempotent (deterministic identity).
 #[tokio::test]
 async fn guid_is_stable_across_reregistration() {
-    // Pure: identity is a recomputation, so two independent registrations of
-    // the same coordinates cannot disagree — including across the crates.io
-    // `_`/`-` naming equivalence.
+    // Pure: identity is a recomputation.
     assert_eq!(
         common::rust_coordinates("serde-json", "1.0.0").id(),
         common::rust_coordinates("serde_json", "1.0.0").id(),
         "name normalization must fold into one GUID"
     );
 
-    // Gated: re-registering upserts the same row rather than forking identity.
-    let Some(pool) = common::postgres_pool("guid_is_stable_across_reregistration").await else {
-        return;
-    };
-    let store = common::global_store(pool).await;
+    // Catalog: re-registering upserts the same row rather than forking identity.
+    let (store, _writer) = common::catalog_store("guid_is_stable_across_reregistration");
     let package = common::rust_package(&common::unique_rust_name("stable"), "1.0.0");
     let record =
         common::global_package(package.clone(), ResolutionState::Unindexed { needed: false });
@@ -83,7 +77,7 @@ async fn code_treesitter_hash_is_recorded() {
     let representation_hash = ContentHash::of_bytes(b"representative-hash-fixture");
 
     // Pure: the persisted column projection of `Stored { hash }` carries the
-    // hash losslessly — exactly 32 bytes in, the same hash back out.
+    // hash losslessly.
     let stored = ResolutionState::Stored { hash: representation_hash };
     let columns = codec::state_to_columns(&stored).expect("Stored projects onto columns");
     let recorded = columns.content_hash.expect("Stored must persist its content hash");
@@ -95,11 +89,8 @@ async fn code_treesitter_hash_is_recorded() {
         "the recorded hash must decode back to the same representation hash"
     );
 
-    // Gated: postgres serves the recorded hash back for freshness checks.
-    let Some(pool) = common::postgres_pool("code_treesitter_hash_is_recorded").await else {
-        return;
-    };
-    let store = common::global_store(pool).await;
+    // Catalog: serves the recorded hash back for freshness checks.
+    let (store, _writer) = common::catalog_store("code_treesitter_hash_is_recorded");
     let registered = common::rust_package(&common::unique_rust_name("hashed"), "1.0.0");
     store
         .upsert(&common::global_package(
@@ -123,8 +114,7 @@ async fn metadata_links_guid_to_cross_store_ids() {
     let package = common::rust_package("serde", "1.0.0");
     let guid = package.id();
 
-    // The blob ref: the object-store pointer location is derived from the GUID
-    // alone, so holding the GUID is holding the blob address.
+    // The blob ref: the object-store pointer location is derived from the GUID alone.
     assert_eq!(
         Store::pointer_path(&package.coordinates).to_string(),
         format!("ptr/{}", guid.as_uuid()),
@@ -141,15 +131,13 @@ async fn metadata_links_guid_to_cross_store_ids() {
         uri.canonical().starts_with(&guid.to_string()),
         "the graph URI is rooted at the GUID"
     );
-    // Symbol ids derive directly from EntryUri::symbol_id (the live contract).
     assert_eq!(
         uri.symbol_id(common::test_instance().token()),
         uri.symbol_id(common::test_instance().token()),
         "symbol id derivation must be deterministic"
     );
 
-    // The metadata row itself pairs the GUID with the per-store link bitmap —
-    // the join the read plane uses to know where this generation landed.
+    // The metadata row itself pairs the GUID with the per-store link bitmap.
     let row = PackageMetadata { id: guid, links: StoreLinks { vector: true, graph: true, text: false } };
     assert_eq!(row.id, guid);
     assert!(!row.links.fully_linked(), "the bitmap must expose the not-yet-linked text store");

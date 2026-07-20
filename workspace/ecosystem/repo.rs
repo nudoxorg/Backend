@@ -162,12 +162,66 @@ fn is_slug_chars(s: &str) -> bool {
 /// owner-only URL (`https://github.com`, `https://github.com/user`) is not a
 /// repository identity, and admitting it would cluster unrelated packages
 /// under one slug.
+///
+/// For known forges the path is first passed through [`reduce_forge_path`], so
+/// a release/archive/blob download URL collapses to its `owner/repo` root.
 fn slug_from_host_path(host: &str, path: &str) -> Option<RepoSlug> {
 	if host.is_empty() || !path.contains('/') {
 		return None;
 	}
-	let combined = format!("{}/{}", host.to_ascii_lowercase(), path.to_ascii_lowercase());
+	let host = host.to_ascii_lowercase();
+	let path = reduce_forge_path(&host, path);
+	let combined = format!("{}/{}", host, path.to_ascii_lowercase());
 	Some(RepoSlug(SmolStr::from(combined)))
+}
+
+/// Forges whose `owner/repo` root can be recovered from a deeper download or
+/// browse URL by truncating at a well-known sub-path marker.
+const KNOWN_FORGES: &[&str] = &["github.com", "gitlab.com", "codeberg.org", "bitbucket.org"];
+
+/// Sub-path markers that separate a forge's `owner/repo` root from a
+/// release/archive/browse tail. When any of these appears *past* the
+/// `owner/repo` prefix the tail is noise (a release tarball path, a blob view,
+/// an archive download) and the slug reduces to the first two segments.
+///
+/// GitLab subgroups (`gitlab.com/a/b/c` **project** URLs) carry NO marker, so
+/// they are never truncated — only a marker-bearing path reduces.
+const FORGE_SUBPATH_MARKERS: &[&str] = &[
+	"releases", "archive", "-", "downloads", "get", "raw", "blob", "tree",
+];
+
+/// Reduce a known-forge path to its `owner/repo` root when it extends past the
+/// root through a recognized sub-path marker (`/releases/`, `/archive/`,
+/// `/-/archive/`, `/downloads/`, `/get/`, `/raw/`, `/blob/`, `/tree/`).
+///
+/// * Unknown hosts are returned untouched — on an arbitrary host the identity
+///   **is** the whole URL and guessing an `owner/repo` split would mis-cluster.
+/// * A known-forge path with no marker (a plain `owner/repo`, or a GitLab
+///   subgroup `owner/group/project`) is returned untouched.
+///
+/// Reduction keeps the first two segments (`owner/repo`); the marker must sit at
+/// segment index ≥ 2, i.e. strictly past the `owner/repo` prefix, so a repo
+/// literally named `archive` or `raw` at the root is not itself a marker.
+fn reduce_forge_path<'a>(host: &str, path: &'a str) -> &'a str {
+	if !KNOWN_FORGES.contains(&host) {
+		return path;
+	}
+	let segments: Vec<&str> = path.split('/').collect();
+	if segments.len() <= 2 {
+		return path;
+	}
+	// Scan segments strictly past `owner/repo` for the first marker.
+	let has_marker = segments[2..]
+		.iter()
+		.any(|segment| FORGE_SUBPATH_MARKERS.contains(&segment.to_ascii_lowercase().as_str()));
+	if !has_marker {
+		return path;
+	}
+	// Reduce to `owner/repo` — the prefix up to (but excluding) the third `/`.
+	match path.match_indices('/').nth(1) {
+		Some((index, _)) => &path[..index],
+		None => path,
+	}
 }
 
 /// Strip a `#fragment` suffix.
@@ -241,6 +295,87 @@ mod tests {
 			slug("https://gitlab.com/group/subgroup/project"),
 			"gitlab.com/group/subgroup/project"
 		);
+	}
+
+	// ── Known-forge sub-path reduction ────────────────────────────────────────
+
+	#[test]
+	fn github_release_download_reduces_to_owner_repo() {
+		assert_eq!(
+			slug("https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"),
+			"github.com/madler/zlib"
+		);
+	}
+
+	#[test]
+	fn github_archive_reduces() {
+		assert_eq!(
+			slug("https://github.com/owner/repo/archive/refs/tags/v2.0.0.tar.gz"),
+			"github.com/owner/repo"
+		);
+	}
+
+	#[test]
+	fn github_blob_and_tree_reduce() {
+		assert_eq!(slug("https://github.com/owner/repo/blob/main/src/lib.rs"), "github.com/owner/repo");
+		assert_eq!(slug("https://github.com/owner/repo/tree/main/src"), "github.com/owner/repo");
+	}
+
+	#[test]
+	fn github_raw_reduces() {
+		assert_eq!(slug("https://github.com/owner/repo/raw/main/f"), "github.com/owner/repo");
+	}
+
+	#[test]
+	fn gitlab_dash_archive_reduces() {
+		assert_eq!(
+			slug("https://gitlab.com/owner/repo/-/archive/v1.0/repo-v1.0.tar.gz"),
+			"gitlab.com/owner/repo"
+		);
+	}
+
+	#[test]
+	fn codeberg_releases_reduces() {
+		assert_eq!(
+			slug("https://codeberg.org/forgejo/forgejo/releases/download/v1.0/forgejo.tar.gz"),
+			"codeberg.org/forgejo/forgejo"
+		);
+	}
+
+	#[test]
+	fn bitbucket_get_and_downloads_reduce() {
+		assert_eq!(slug("https://bitbucket.org/owner/repo/get/v1.0.tar.gz"), "bitbucket.org/owner/repo");
+		assert_eq!(
+			slug("https://bitbucket.org/owner/repo/downloads/repo-1.0.tar.gz"),
+			"bitbucket.org/owner/repo"
+		);
+	}
+
+	#[test]
+	fn gitlab_subgroup_without_marker_not_reduced() {
+		// `gitlab.com/a/b/c` project URLs (no sub-path marker) MUST stay whole —
+		// truncating a subgroup project to `a/b` would mis-cluster it.
+		assert_eq!(slug("https://gitlab.com/a/b/c"), "gitlab.com/a/b/c");
+		assert_eq!(
+			slug("https://gitlab.com/group/subgroup/project"),
+			"gitlab.com/group/subgroup/project"
+		);
+	}
+
+	#[test]
+	fn unknown_host_path_not_reduced() {
+		// An arbitrary host: identity IS the whole URL path; a `/releases/` tail
+		// on an unknown forge is NOT reduced (we do not guess owner/repo).
+		assert_eq!(
+			slug("https://sourceware.org/git/glibc/releases/download/v1/glibc.tar.gz"),
+			"sourceware.org/git/glibc/releases/download/v1/glibc.tar.gz"
+		);
+	}
+
+	#[test]
+	fn known_forge_plain_owner_repo_untouched() {
+		// No marker → unchanged even on a known forge.
+		assert_eq!(slug("https://github.com/madler/zlib"), "github.com/madler/zlib");
 	}
 
 	// ── npm shorthands ────────────────────────────────────────────────────────

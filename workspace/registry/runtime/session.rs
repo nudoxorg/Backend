@@ -242,85 +242,106 @@ impl SessionStore for MemorySessionStore {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PgSessionStore — a postgres-backed SessionStore for horizontally-scaled
-// gateways (DAEMON-PLAN §2.5: sessions → postgres so any replica serves any
-// session). Additive; `MemorySessionStore` remains the single-node default.
+// ScratchSessionStore — a scratch-backed SessionStore (INDEX-PLAN ID-2, ID-19).
+//
+// Exploration-graph sessions live in the ephemeral `scratch.sqlite` `sessions`
+// table (`graph_state` column), not the versioned catalog: they are working
+// state, delete-anytime, never replicated. This replaces the former
+// postgres-backed store as part of the Postgres exit (INDEX-PLAN IP-4).
+// `MemorySessionStore` remains the pure in-process option; this one is durable
+// across a process's own restart via the on-disk scratch database.
 // ─────────────────────────────────────────────────────────────────────────────
 
-use sqlx::Row as _;
+use std::sync::Mutex;
 
-/// A postgres-backed [`SessionStore`]: each session's [`SessionGraph`] is one
-/// `jsonb` row keyed by session uuid, so **any** gateway replica can open or
-/// extend **any** session (replacing the node-local `MemorySessionStore`, whose
-/// state is invisible to sibling replicas).
+use index::scratch::{ScratchError, ScratchStore};
+
+/// The placeholder writer host recorded for exploration-graph sessions.
 ///
-/// Concurrency is correct without a CRDT-on-the-wire: [`merge_into`] does its
-/// read → merge → write inside one transaction under a `SELECT ... FOR UPDATE`
-/// row lock, so two replicas merging deltas into the same session **serialize**
-/// and neither delta is lost. Because [`SessionGraph::merge`] is a
-/// join-semilattice union (idempotent, commutative, associative), the serialized
-/// order is irrelevant — the result is the least upper bound either way. That is
-/// what makes the persisted store safe under concurrent replicas.
+/// The scratch `sessions` table's `writer_host` column exists for the
+/// writer-sticky catalog-read guarantee (ID-19); exploration-graph sessions do
+/// not participate in that routing, so they are all pinned to this single
+/// sentinel. Keeping the column non-null lets one table serve both concerns.
+const EXPLORATION_WRITER_HOST: &str = "exploration";
+
+/// A [`SessionStore`] backed by the ephemeral [`ScratchStore`]: each session's
+/// [`SessionGraph`] is one JSON `graph_state` row keyed by the session uuid.
 ///
-/// The single `sessions` table is created (`IF NOT EXISTS`) by
-/// [`PgSessionStore::migrate`]; it is intentionally self-contained so the runtime
-/// crate need not depend on the registry schema module.
-pub struct PgSessionStore {
-	pool: sqlx::PgPool,
+/// The scratch store is a single `rusqlite` connection (`!Sync`), so it is held
+/// behind a [`Mutex`]. Every method does its read → merge → write entirely under
+/// the lock and never holds the guard across an `.await`, so concurrent
+/// [`SessionStore::merge_into`] calls on the same session **serialize** and no
+/// delta is lost. Because [`SessionGraph::merge`] is a join-semilattice union
+/// (idempotent, commutative, associative) the serialized order is irrelevant —
+/// the result is the least upper bound either way.
+pub struct ScratchSessionStore {
+	scratch: Mutex<ScratchStore>,
 }
 
-impl PgSessionStore {
-	/// Wrap a postgres pool. Call [`migrate`](Self::migrate) once before use to
-	/// ensure the backing table exists.
-	pub fn new(pool: sqlx::PgPool) -> Self { Self { pool } }
+impl ScratchSessionStore {
+	/// Wrap an already-opened [`ScratchStore`]. The scratch schema (including the
+	/// `sessions` table) is created by [`ScratchStore::open`], so there is no
+	/// separate migrate step.
+	pub fn new(scratch: ScratchStore) -> Self {
+		Self { scratch: Mutex::new(scratch) }
+	}
 
-	/// Create the `sessions` table if absent (`id uuid PK`, `graph jsonb`,
-	/// `updated_at timestamptz`). Idempotent — safe to call on every boot.
-	pub async fn migrate(&self) -> Result<(), SessionError> {
-		sqlx::query(
-			"CREATE TABLE IF NOT EXISTS sessions (\
-			   id uuid PRIMARY KEY, \
-			   graph jsonb NOT NULL, \
-			   updated_at timestamptz NOT NULL DEFAULT now()\
-			 )",
-		)
-		.execute(&self.pool)
-		.await
-		.map_err(SessionError::Database)?;
+	/// The lock is only ever held over infallible-to-acquire scratch calls and is
+	/// never held across an `.await`, so poisoning (a panic while held) is
+	/// unreachable; the `expect` documents that.
+	fn locked(&self) -> std::sync::MutexGuard<'_, ScratchStore> {
+		self.scratch
+			.lock()
+			.expect("scratch session mutex is never poisoned: guarded sections cannot panic")
+	}
+
+	/// Ensure a session row exists (idempotent), reading nothing back.
+	fn ensure_row(store: &ScratchStore, session: SessionId) -> Result<(), SessionError> {
+		let session_id = session.as_uuid().to_string();
+		if store.get_session(&session_id).map_err(scratch_error)?.is_none() {
+			// Create pins the sentinel writer host; a lost race (a concurrent
+			// creator winning) surfaces as a UNIQUE violation which we treat as
+			// "already exists".
+			match store.create_session(&session_id, EXPLORATION_WRITER_HOST, now_unix()) {
+				Ok(()) => {}
+				Err(error) if error.is_unique_violation() => {}
+				Err(other) => return Err(scratch_error(other)),
+			}
+		}
 		Ok(())
 	}
 
-	/// Read a session's stored graph, if the row exists.
-	async fn read_row(&self, session: SessionId) -> Result<Option<SessionGraph>, SessionError> {
-		let row = sqlx::query("SELECT graph FROM sessions WHERE id = $1")
-			.bind(session.as_uuid())
-			.fetch_optional(&self.pool)
-			.await
-			.map_err(SessionError::Database)?;
-		match row {
-			Some(r) => {
-				let json: serde_json::Value = r.try_get(0).map_err(SessionError::Database)?;
-				let graph = serde_json::from_value(json).map_err(SessionError::Codec)?;
-				Ok(Some(graph))
-			}
+	/// Read a session's stored graph, if the row exists and carries a graph.
+	fn read_graph(
+		store: &ScratchStore,
+		session: SessionId,
+	) -> Result<Option<SessionGraph>, SessionError> {
+		let session_id = session.as_uuid().to_string();
+		match store.session_graph_state(&session_id).map_err(scratch_error)? {
+			Some(json) => Ok(Some(serde_json::from_str(&json).map_err(SessionError::Codec)?)),
 			None => Ok(None),
 		}
 	}
+
+	/// Write a session's graph back to `graph_state`.
+	fn write_graph(
+		store: &ScratchStore,
+		session: SessionId,
+		graph: &SessionGraph,
+	) -> Result<(), SessionError> {
+		let session_id = session.as_uuid().to_string();
+		let json = serde_json::to_string(graph).map_err(SessionError::Codec)?;
+		store
+			.set_session_graph_state(&session_id, Some(&json), now_unix())
+			.map_err(scratch_error)
+	}
 }
 
-impl SessionStore for PgSessionStore {
+impl SessionStore for ScratchSessionStore {
 	async fn open(&self, session: SessionId) -> Result<Arc<SessionGraph>, SessionError> {
-		// Ensure a row exists (empty graph) and return the current graph. The
-		// upsert is `DO NOTHING` so a concurrent open never clobbers accumulated
-		// state; we then read the authoritative row back.
-		let empty = serde_json::to_value(SessionGraph::empty()).map_err(SessionError::Codec)?;
-		sqlx::query("INSERT INTO sessions (id, graph) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
-			.bind(session.as_uuid())
-			.bind(&empty)
-			.execute(&self.pool)
-			.await
-			.map_err(SessionError::Database)?;
-		let graph = self.read_row(session).await?.unwrap_or_default();
+		let store = self.locked();
+		Self::ensure_row(&store, session)?;
+		let graph = Self::read_graph(&store, session)?.unwrap_or_default();
 		Ok(Arc::new(graph))
 	}
 
@@ -329,69 +350,124 @@ impl SessionStore for PgSessionStore {
 		session: SessionId,
 		delta: SessionGraph,
 	) -> Result<Arc<SessionGraph>, SessionError> {
-		// Serialize concurrent merges on the same session with a row lock: read
-		// the current graph FOR UPDATE, union the delta, write it back — all in
-		// one transaction. Semilattice union makes the interleaving irrelevant;
-		// the lock only guarantees no lost update.
-		let mut tx = self.pool.begin().await.map_err(SessionError::Database)?;
-
-		// Ensure the row exists so `FOR UPDATE` has something to lock.
-		let empty = serde_json::to_value(SessionGraph::empty()).map_err(SessionError::Codec)?;
-		sqlx::query("INSERT INTO sessions (id, graph) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
-			.bind(session.as_uuid())
-			.bind(&empty)
-			.execute(&mut *tx)
-			.await
-			.map_err(SessionError::Database)?;
-
-		let row = sqlx::query("SELECT graph FROM sessions WHERE id = $1 FOR UPDATE")
-			.bind(session.as_uuid())
-			.fetch_one(&mut *tx)
-			.await
-			.map_err(SessionError::Database)?;
-		let json: serde_json::Value = row.try_get(0).map_err(SessionError::Database)?;
-		let mut current: SessionGraph = serde_json::from_value(json).map_err(SessionError::Codec)?;
-
+		// The whole read → merge → write runs under the scratch mutex, so two
+		// tasks merging into the same session serialize; semilattice union makes
+		// the interleaving irrelevant.
+		let store = self.locked();
+		Self::ensure_row(&store, session)?;
+		let mut current = Self::read_graph(&store, session)?.unwrap_or_default();
 		current.merge(delta);
-		let merged_json = serde_json::to_value(&current).map_err(SessionError::Codec)?;
-		sqlx::query("UPDATE sessions SET graph = $2, updated_at = now() WHERE id = $1")
-			.bind(session.as_uuid())
-			.bind(&merged_json)
-			.execute(&mut *tx)
-			.await
-			.map_err(SessionError::Database)?;
-
-		tx.commit().await.map_err(SessionError::Database)?;
+		Self::write_graph(&store, session, &current)?;
 		Ok(Arc::new(current))
 	}
 
 	async fn snapshot(&self, session: SessionId) -> Result<Arc<SessionGraph>, SessionError> {
-		self.read_row(session).await?.map(Arc::new).ok_or(SessionError::NotFound)
+		let store = self.locked();
+		Self::read_graph(&store, session)?.map(Arc::new).ok_or(SessionError::NotFound)
 	}
 
 	async fn clear(&self, session: SessionId) -> Result<(), SessionError> {
 		// Reset the graph to empty rather than deleting the row, mirroring
 		// `MemorySessionStore::clear` (which keeps an empty session live).
-		let empty = serde_json::to_value(SessionGraph::empty()).map_err(SessionError::Codec)?;
-		sqlx::query(
-			"INSERT INTO sessions (id, graph) VALUES ($1, $2) \
-			 ON CONFLICT (id) DO UPDATE SET graph = $2, updated_at = now()",
-		)
-		.bind(session.as_uuid())
-		.bind(&empty)
-		.execute(&self.pool)
-		.await
-		.map_err(SessionError::Database)?;
-		Ok(())
+		let store = self.locked();
+		Self::ensure_row(&store, session)?;
+		Self::write_graph(&store, session, &SessionGraph::empty())
 	}
 
 	async fn persist(&self, _session: SessionId) -> Result<(), SessionError> {
-		// Every mutation already commits durably to postgres, so there is no
-		// separate flush step — `persist` is a no-op for the pg-backed store.
+		// Every mutation already commits durably to the scratch sqlite file, so
+		// there is no separate flush step — `persist` is a no-op here.
 		Ok(())
 	}
 
 	async fn load(&self, session: SessionId) -> Result<Option<Arc<SessionGraph>>, SessionError> {
-		Ok(self.read_row(session).await?.map(Arc::new))
+		let store = self.locked();
+		Ok(Self::read_graph(&store, session)?.map(Arc::new))
+	}
+}
+
+/// Wall-clock seconds since the Unix epoch, for the scratch `last_seen_at` /
+/// `created_at` bookkeeping columns.
+fn now_unix() -> i64 {
+	std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map(|d| d.as_secs() as i64)
+		.unwrap_or(0)
+}
+
+/// Lift a scratch-store error into the session error surface.
+fn scratch_error(error: ScratchError) -> SessionError {
+	SessionError::Scratch(error)
+}
+
+#[cfg(test)]
+mod scratch_session_tests {
+	use super::*;
+
+	fn store() -> ScratchSessionStore {
+		ScratchSessionStore::new(
+			ScratchStore::open_in_memory().expect("in-memory scratch open must not fail"),
+		)
+	}
+
+	fn edge(from: SymbolId, to: SymbolId) -> Edge {
+		Edge { from, kind: RelationKind::Reference, to }
+	}
+
+	#[tokio::test]
+	async fn open_then_merge_round_trips_through_scratch() {
+		let sessions = store();
+		let id = SessionId::new_random();
+
+		// A fresh session opens empty.
+		let opened = sessions.open(id).await.expect("open must succeed");
+		assert!(opened.is_empty());
+
+		// Merge accumulates and is durable to a re-open (same store).
+		let a = SymbolId::new_random();
+		let b = SymbolId::new_random();
+		let mut delta = SessionGraph::empty();
+		delta.nodes.insert(a);
+		delta.nodes.insert(b);
+		delta.edges.insert(edge(a, b));
+		let merged = sessions.merge_into(id, delta).await.expect("merge must succeed");
+		assert_eq!(merged.nodes.len(), 2);
+		assert_eq!(merged.edges.len(), 1);
+
+		let reopened = sessions.open(id).await.expect("reopen must succeed");
+		assert_eq!(reopened.nodes.len(), 2, "graph must survive re-open via scratch");
+	}
+
+	#[tokio::test]
+	async fn merge_is_idempotent_and_isolated() {
+		let sessions = store();
+		let first = SessionId::new_random();
+		let second = SessionId::new_random();
+
+		let a = SymbolId::new_random();
+		let mut delta = SessionGraph::empty();
+		delta.nodes.insert(a);
+
+		sessions.merge_into(first, delta.clone()).await.expect("merge must succeed");
+		// Idempotent: re-merging the same delta does not grow the graph.
+		let again = sessions.merge_into(first, delta).await.expect("merge must succeed");
+		assert_eq!(again.nodes.len(), 1);
+
+		// Isolated: the second session is untouched.
+		let other = sessions.open(second).await.expect("open must succeed");
+		assert!(other.is_empty());
+	}
+
+	#[tokio::test]
+	async fn clear_empties_but_keeps_session_live() {
+		let sessions = store();
+		let id = SessionId::new_random();
+		let mut delta = SessionGraph::empty();
+		delta.nodes.insert(SymbolId::new_random());
+		sessions.merge_into(id, delta).await.expect("merge must succeed");
+
+		sessions.clear(id).await.expect("clear must succeed");
+		let after = sessions.open(id).await.expect("open must succeed");
+		assert!(after.is_empty(), "cleared session opens empty but still exists");
 	}
 }

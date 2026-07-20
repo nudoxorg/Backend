@@ -41,8 +41,7 @@ const NEUTRAL_QUALITY: f32 = 0.5;
 
 /// Canonical high-level package search request.
 ///
-/// Built once by callers (or by thin [`super::RegistryQuery`] wrappers) and
-/// fed exclusively into [`retrieve_and_rank`].
+/// Built once by callers and fed exclusively into [`retrieve_and_rank`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageSearchRequest {
 	/// Free-text query (package name / description / keywords), may include
@@ -65,20 +64,6 @@ pub struct PackageSearchRequest {
 	pub semantic: Vec<PackageId>,
 }
 
-impl PackageSearchRequest {
-	/// Construct a request from a [`super::RegistryQuery`] plus optional
-	/// semantic ids (hybrid seam).
-	pub fn from_registry(query: &super::RegistryQuery, semantic: &[PackageId]) -> Self {
-		Self {
-			text: query.text.clone(),
-			ecosystem: query.ecosystem,
-			limit: query.limit,
-			after: query.after.clone(),
-			semantic: semantic.to_vec(),
-		}
-	}
-}
-
 /// Optional runtime deps for the retrieval pipeline.
 ///
 /// Spell-check index will land here later; keep the struct open for that.
@@ -87,6 +72,13 @@ pub struct PackageSearchDeps<'a> {
 	/// When `Some`, free terms are synonym-expanded before the tantivy query
 	/// (populates [`StructuredQuery::expanded_terms`]).
 	pub synonyms: Option<&'a Synonyms>,
+
+	/// When `Some`, a `cpp`-scoped bare-token query is alias-expanded to its
+	/// canonical stem name before the tantivy query (REGISTRYLESS §9, P8 — the
+	/// "users never type slugs" hook). Catalog-backed; injected by the server,
+	/// which holds both the `MetaStore` and this pipeline. `None` disables
+	/// expansion (the default; every non-cpp path is unaffected regardless).
+	pub alias_expander: Option<&'a dyn super::alias::AliasExpander>,
 }
 
 /// **The only high-level entry** for package discovery.
@@ -105,6 +97,12 @@ pub async fn retrieve_and_rank(
 	// Over-fetch so filtering, de-dup, and cursor resume still fill a page.
 	let over_fetch = req.limit.max(1) * 4 + 32;
 	let mut sq = StructuredQuery::parse(&req.text, req.ecosystem);
+	// P8: a cpp-scoped bare token (`zlib`) is rewritten to its canonical stem
+	// name (`github.com/madler/zlib`) before search, so users never type slugs.
+	// A miss, a non-cpp scope, or a non-bare token is a pass-through.
+	if let Some(expander) = deps.alias_expander {
+		super::alias::expand_cpp_bare_token(sq.ecosystem, &mut sq.terms, expander);
+	}
 	if let Some(synonyms) = deps.synonyms {
 		sq.expand_synonyms(synonyms);
 	}
@@ -312,11 +310,9 @@ pub async fn retrieve_and_rank_page(
 		}
 		cursor.after
 	});
-	let resumed = hits.into_iter().filter(|hit| {
-		after.is_none_or(|(score, id)| {
-			hit.score < score || (hit.score == score && hit.value.id > id)
-		})
-	});
+	let resumed = hits
+		.into_iter()
+		.filter(|hit| super::keyset_is_after(after, hit.score, hit.value.id));
 
 	let limit = req.limit.max(1);
 	let mut items: Vec<Scored<GlobalPackage>> = resumed.take(limit + 1).collect();

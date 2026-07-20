@@ -80,6 +80,8 @@ fn provisional_toolchain(ecosystem: Language) -> Toolchain {
 		Language::Java => Toolchain::Java { compiler: semver::Version::new(23, 0, 0) },
 		Language::CSharp => Toolchain::CSharp { sdk: semver::Version::new(10, 0, 0) },
 		Language::Nix => Toolchain::Nix { evaluator: semver::Version::new(0, 1, 0) },
+		// C/C++ analyzed via a clang/libclang oracle (IR plane, RL-15).
+		Language::Cpp => Toolchain::Cpp { compiler: semver::Version::new(18, 0, 0) },
 	}
 }
 
