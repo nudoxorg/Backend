@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use axum::{Json, extract::State};
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 use serde::Serialize;
 
 use crate::Server;

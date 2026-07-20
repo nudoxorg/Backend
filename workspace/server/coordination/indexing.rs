@@ -24,7 +24,7 @@ use futures::StreamExt;
 use heart::{
     ContentHash, FailureKind, JobProgress, PackageId, Percent, Phase, ResolutionState,
 };
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 
 use crate::compiler_client::CompilerClient;
 use crate::error::{BadRequestReason, InternalError, ServerError, ServerResult};

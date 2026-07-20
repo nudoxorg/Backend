@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use heart::PackageId;
 use crate::registry::coordination::{OutboxEntry, OutboxOp, SinkKind};
-use registry::runtime::vector::{
+use registry::vector::{
 	EmbedRole, EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose, SymbolPoint,
 };
 

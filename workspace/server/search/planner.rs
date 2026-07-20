@@ -1,11 +1,11 @@
 //! The search planner — the only place a *user-facing* [`SemanticGate`] is
 //! minted via [`SemanticGate::issue`]. Store readiness probes use the separate
-//! [`SemanticGate::for_readiness`] constructor (see `registry::runtime::vector::gate`).
+//! [`SemanticGate::for_readiness`] constructor (see `registry::vector::gate`).
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use registry::runtime::vector::SemanticGate;
+use registry::vector::SemanticGate;
 
 use crate::search::query::{AbstractQuery, Query, Search};
 

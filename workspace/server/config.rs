@@ -640,7 +640,7 @@ pub enum ConfigValidationError {
 	/// Terminus organization name failed validation (carries the rich GraphNameError
 	/// A Qdrant collection name failed validation (carries the rich CollectionNameError).
 	#[error("invalid qdrant collection name")]
-	InvalidQdrantCollection(#[from] registry::runtime::vector::CollectionNameError),
+	InvalidQdrantCollection(#[from] registry::vector::CollectionNameError),
 
 	/// A well-known default credential is present in a production deployment.
 	///

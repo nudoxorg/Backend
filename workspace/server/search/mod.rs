@@ -16,7 +16,7 @@ use std::collections::HashSet;
 
 use futures::Stream;
 use heart::{SymbolId, Scored, StoreError, Symbol};
-use crate::registry::runtime::vector::EmbeddingModel;
+use crate::registry::vector::EmbeddingModel;
 
 pub use planner::SearchPlanner;
 pub use query::{AbstractQuery, Filter, Query, Search, SymbolCursor};

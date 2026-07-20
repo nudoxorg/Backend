@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use registry::runtime::error::{EmbedError, EmbedRejectionReason};
-use registry::runtime::vector::{EmbedRole, Embedder, Embedding, EmbeddingModel, EmbeddingPurpose, ModelId};
+use registry::vector::{EmbedRole, Embedder, Embedding, EmbeddingModel, EmbeddingPurpose, ModelId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use url::Url;

@@ -17,8 +17,6 @@ use std::time::Duration;
 
 use heart::{ConnectError, Retryable};
 
-use crate::runtime::vector::CollectionNameError;
-
 /// Classified reasons why a graph (Terminus/WOQL) query was rejected or failed
 /// to execute. Carries structured data (never a bare string) so callers can
 /// match explicitly and no diagnostic information is lost to formatting.
@@ -215,10 +213,6 @@ pub enum VectorError {
 	#[error("vector store connection failed")]
 	Connect(#[source] ConnectError),
 
-	/// A collection name failed validation.
-	#[error("invalid collection name")]
-	Collection(#[source] CollectionNameError),
-
 	/// The qdrant client/transport failed.
 	#[error("vector transport error")]
 	Transport(#[source] qdrant_client::QdrantError),
@@ -238,7 +232,7 @@ impl Retryable for VectorError {
 			VectorError::Connect(e) => e.is_retryable(),
 			VectorError::Embed(e) => e.is_retryable(),
 			VectorError::Transport(_) => true,
-			VectorError::Collection(_) | VectorError::Payload(_) => false,
+			VectorError::Payload(_) => false,
 		}
 	}
 
@@ -348,7 +342,7 @@ impl Retryable for SessionError {
 	}
 }
 
-/// Failures from an [`crate::runtime::vector::Embedder`] — a network model can fail,
+/// Failures from an [`vector_core::Embedder`] — a network model can fail,
 /// time out, or rate-limit, so embedding is fallible and batched.
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {

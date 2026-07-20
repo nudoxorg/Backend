@@ -25,7 +25,7 @@
 //! the claimed packages from its Stage-1 rather than double-answering them.
 //!
 //! [`SearchPlanner`]: crate::search::SearchPlanner
-//! [`SemanticGate`]: registry::runtime::vector::SemanticGate
+//! [`SemanticGate`]: registry::vector::SemanticGate
 
 use std::collections::HashSet;
 

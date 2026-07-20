@@ -32,7 +32,7 @@ use axum::{
 	http::StatusCode,
 	response::{IntoResponse, Response},
 };
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 
 use crate::Server;
 use crate::authz::Principal;

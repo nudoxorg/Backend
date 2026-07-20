@@ -11,7 +11,7 @@ use futures::TryStreamExt;
 use heart::query::{PageSpecification, Query as WireQuery};
 use heart::{Cursor, Page, Scored};
 
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 
 use crate::Server;
 use crate::authz::ReadCap;

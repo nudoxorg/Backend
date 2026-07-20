@@ -6,7 +6,7 @@ use crate::registry::identity::PackageCoordinates;
 use crate::registry::{GlobalPackage, Package, RegistryError, error::IndexError};
 use serde::{Deserialize, Serialize};
 
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::WriteCap;
 use crate::error::ServerResult;

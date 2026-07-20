@@ -19,7 +19,7 @@ use axum::{
 use heart::PackageId;
 use serde::Serialize;
 
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::AdminPrincipal;
 use crate::error::ServerResult;

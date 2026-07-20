@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 
 use futures::Stream;
 use heart::{Live, SymbolId, Scored};
-use registry::runtime::vector::{
+use registry::vector::{
 	EmbedRole, Embedder, Embedding, EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose,
 	Semantic, SemanticGate,
 };

@@ -23,7 +23,7 @@ use heart::query::{Query, QueryMode, Target};
 use heart::{Page, Score, Scored, Sourced, Symbol, SymbolId};
 use registry::runtime::session::{SessionGraph, SessionId, SessionStore};
 
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::Principal;
 use crate::error::{BadRequestReason, ServerError, ServerResult};

@@ -46,6 +46,9 @@ pub mod schema;
 pub mod search;
 pub mod store;
 pub mod upstream;
+/// The serving-side vector plane (semantic gate + embedding cache) over the pure
+/// `vector-core` machinery.
+pub mod vector;
 
 use heart::{PackageId, ResolutionState, Toolchain};
 use serde::{Deserialize, Serialize};

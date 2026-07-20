@@ -7811,6 +7811,7 @@ dependencies = [
  "url",
  "uuid",
  "uv-pep440",
+ "vector-core",
  "zip 2.4.2",
  "zstd",
 ]
@@ -8692,6 +8693,7 @@ dependencies = [
  "uv-pep440",
  "vector-core",
  "vector-local",
+ "vector-remote",
  "which",
  "zstd",
 ]

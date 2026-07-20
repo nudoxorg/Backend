@@ -37,6 +37,7 @@ index    = { path = "../index", features = ["dolt-engine"] }
 # used here are the frozen §20 client/server-split surface.
 vector-core  = { path = "../vector-core" }
 vector-local = { path = "../vector-local" }
+vector-remote = { path = "../vector-remote" }
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
 tokio        = { version = "1.52",  features = ["full"] }

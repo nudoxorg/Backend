@@ -5,9 +5,8 @@
 //! ## The read plane, in four stores
 //! - [`text`] — tantivy, the **default** search surface. Replica-local: each
 //!   server replica owns its own tantivy directory, built from a durable
-//!   postgres watermark. Cheap, precise name/signature lookup.
-//! - [`vector`] — qdrant, the **gated** semantic surface. Heavy, so it is only
-//!   ever reached with an explicit [`vector::SemanticGate`] capability.
+//!   catalog watermark. Cheap, precise name/signature lookup.
+//! - The semantic (vector) surface lives in [`crate::vector`] over `vector-core`.
 //! - [`session`] — per-session exploration state: a join-semilattice of the
 //!   nodes/edges a user has accumulated, merged monotonically.
 //!
@@ -26,6 +25,5 @@ pub mod error;
 pub(crate) mod pagination;
 pub mod session;
 pub mod text;
-pub mod vector;
 
 pub use error::RuntimeError;

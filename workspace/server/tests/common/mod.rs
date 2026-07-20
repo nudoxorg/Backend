@@ -16,7 +16,7 @@ use smol_str::SmolStr;
 
 /// The embedding-model brand every test monomorphizes over. Small and local —
 /// the brand only matters for type identity here, never for real vectors.
-pub type TestModel = registry::runtime::vector::models::E5Small;
+pub type TestModel = registry::vector::models::E5Small;
 
 /// The graph-instance token test symbol ids are salted with.
 pub const TEST_INSTANCE: &str = "test-org/test-db";
@@ -65,14 +65,14 @@ pub fn populated_text_index(dir: &Path, symbols: &[Symbol]) -> TextIndex {
 }
 
 /// A test read capability — mints a read cap from the anonymous principal.
-pub fn read_cap<M: registry::runtime::vector::EmbeddingModel>(server: &Server<M>) -> ReadCap {
+pub fn read_cap<M: registry::vector::EmbeddingModel>(server: &Server<M>) -> ReadCap {
     server
         .authorize_read(&Principal::anonymous(), "test.read")
         .expect("allow-all policy always grants a read cap in tests")
 }
 
 /// A test write capability — mints a write cap from the anonymous principal.
-pub fn write_cap<M: registry::runtime::vector::EmbeddingModel>(server: &Server<M>) -> WriteCap {
+pub fn write_cap<M: registry::vector::EmbeddingModel>(server: &Server<M>) -> WriteCap {
     server
         .authorize_write(&Principal::anonymous(), "test.write")
         .expect("allow-all policy always grants a write cap in tests")

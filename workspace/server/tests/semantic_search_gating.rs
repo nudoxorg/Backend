@@ -1,7 +1,7 @@
 //! Diagram rule: **qdrant semantic search is heavy and must be explicitly gated
 //! — never implicit.** The default search surface is tantivy text search.
 //!
-//! Specs for `server::search::planner` + `registry::runtime::vector::SemanticGate`. The
+//! Specs for `server::search::planner` + `registry::vector::SemanticGate`. The
 //! gate itself is type-enforced (`Semantic::search` consumes a `SemanticGate`
 //! by value — there is no ungated entry point to compile against), so these
 //! specs pin the planner: the one place a gate may be minted.

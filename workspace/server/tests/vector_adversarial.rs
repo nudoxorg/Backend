@@ -774,12 +774,12 @@ fn rerank_request_dto_unknown_field_tolerance() {
 // §9 — Registry vector cache: role-split keys count as 2 entries toward capacity
 // ─────────────────────────────────────────────────────────────────────────────
 
-// We test the EmbeddingKey type from registry::runtime::vector::cache directly.
+// We test the EmbeddingKey type from registry::vector::cache directly.
 // The cache itself is async (moka), so we test the key semantics here, and
 // the eviction behavior in a tokio runtime.
 
-use registry::runtime::vector::{EmbedRole, EmbeddingKey};
-use registry::runtime::vector::model::E5Small;
+use registry::vector::{EmbedRole, EmbeddingKey};
+use registry::vector::model::E5Small;
 
 /// Same text under Query and Document roles produces DISTINCT keys.
 /// This means a cache with capacity=1 holding a query embedding for text T
@@ -817,8 +817,8 @@ fn embed_role_split_same_text_two_distinct_keys() {
 /// counts as 2 entries toward capacity".
 #[tokio::test]
 async fn cache_capacity_counts_both_roles_separately() {
-    use registry::runtime::vector::cache::EmbeddingCache;
-    use registry::runtime::vector::model::E5Small;
+    use registry::vector::cache::EmbeddingCache;
+    use registry::vector::model::E5Small;
 
     // capacity = 2 (1 query + 1 document for the same text both fit)
     let cache: EmbeddingCache<E5Small> = EmbeddingCache::new(2);
@@ -849,10 +849,10 @@ async fn cache_capacity_counts_both_roles_separately() {
 /// A cache shared across models must not return embeddings from the wrong model.
 #[test]
 fn embed_model_id_part_of_key() {
-    use registry::runtime::vector::model::E5Small;
+    use registry::vector::model::E5Small;
     // Use two different model id strings.
     let model_a = E5Small::id();
-    let model_b = registry::runtime::vector::model::ModelId::new("some/other-model");
+    let model_b = registry::vector::model::ModelId::new("some/other-model");
     let text = "async fn main()";
 
     let key_a = EmbeddingKey::new(model_a, EmbedRole::Query, text);

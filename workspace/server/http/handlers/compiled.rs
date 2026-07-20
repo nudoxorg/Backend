@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use axum::{Json, extract::State};
 use registry::compiled::CompiledStore;
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 
 use crate::Server;
 use crate::authz::Principal;

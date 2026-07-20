@@ -106,8 +106,8 @@ pub struct Server<M: EmbeddingModel> {
 	federation: Federation<SourceStores<M>>,
 
 	/// The query planner — the only place a *user-facing* semantic gate is
-	/// minted ([`registry::runtime::vector::SemanticGate::issue`]). Store readiness uses
-	/// the separate [`registry::runtime::vector::SemanticGate::for_readiness`] constructor.
+	/// minted ([`registry::vector::SemanticGate::issue`]). Store readiness uses
+	/// the separate [`registry::vector::SemanticGate::for_readiness`] constructor.
 	planner: crate::search::SearchPlanner,
 
 	/// The (model-branded) query embedder behind the gated semantic path.

@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use heart::{ContentHash, PackageId};
 use registry::blob::creation::PendingSection;
-use registry::runtime::vector::{
+use registry::vector::{
 	EmbedRole, EmbeddingCache, EmbeddingKey, EmbeddingModel, EmbeddingPurpose,
 };
 use vector_core::model::{Metric, ModelId};

@@ -7,7 +7,7 @@
 use heart::{BackendKind, PackageId, Probeable, ResolutionState};
 use crate::registry::error::IndexError;
 
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 use crate::error::ServerResult;
 use crate::{Server, SourceStores};
 

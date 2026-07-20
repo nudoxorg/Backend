@@ -10,7 +10,7 @@ use server::{Server, ServerConfiguration};
 /// brand, so a store built for a *different model* (not merely a different
 /// dimension) cannot be wired in. Switching models is a deliberate recompile +
 /// migration.
-type EmbedModel = registry::runtime::vector::models::OpenAi3Small;
+type EmbedModel = registry::vector::models::OpenAi3Small;
 
 /// Fast general-purpose allocator for the serving path.
 #[global_allocator]

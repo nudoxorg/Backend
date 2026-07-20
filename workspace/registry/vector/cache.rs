@@ -13,13 +13,7 @@
 use heart::ContentHash;
 use moka::future::Cache;
 
-use crate::runtime::{
-	error::EmbedError,
-	vector::{
-		embedding::{EmbedRole, Embedder, Embedding, EmbeddingPurpose},
-		model::{EmbeddingModel, ModelId},
-	},
-};
+use vector_core::{EmbedError, EmbedRole, Embedder, Embedding, EmbeddingModel, ModelId};
 
 /// The cache key: which model produced the vector, the retrieval role, and the
 /// content hash of the exact text that was embedded.
@@ -72,14 +66,13 @@ impl<M: EmbeddingModel> EmbeddingCache<M> {
 		key: EmbeddingKey,
 		embedder: &E,
 		text: &str,
-		purpose: EmbeddingPurpose,
 	) -> Result<Embedding<M>, EmbedError> {
 		if let Some(hit) = self.inner.get(&key).await {
 			tracing::debug!(model = %key.model, role = ?key.role, "embedding cache hit");
 			return Ok(hit);
 		}
 		let role = key.role;
-		let embedding = embedder.embed(text, purpose, role).await?;
+		let embedding = embedder.embed(text, role).await?;
 		self.inner.insert(key, embedding.clone()).await;
 		Ok(embedding)
 	}
@@ -93,14 +86,14 @@ impl<M: EmbeddingModel> EmbeddingCache<M> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::runtime::vector::model::{E5Small, EmbeddingModel};
+	use vector_core::{EmbeddingModel, JinaCodeV2};
 
 	/// Verify that Query and Document roles produce distinct cache entries for
 	/// identical text, so a query embedding never collides with a document
 	/// embedding in the cache.
 	#[test]
 	fn embed_role_is_part_of_cache_key() {
-		let model = E5Small::id();
+		let model = JinaCodeV2::id();
 		let text = "fn search(query: &str) -> Vec<Symbol>";
 
 		let query_key = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);
@@ -111,7 +104,7 @@ mod tests {
 
 	#[test]
 	fn same_text_same_role_same_key() {
-		let model = E5Small::id();
+		let model = JinaCodeV2::id();
 		let text = "fn search(query: &str) -> Vec<Symbol>";
 
 		let k1 = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);

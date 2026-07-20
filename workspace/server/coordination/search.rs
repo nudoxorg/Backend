@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 use futures::{Stream, StreamExt};
 use heart::{SymbolId, Scored, Sourced, Symbol};
 
-use registry::runtime::vector::EmbeddingModel;
+use registry::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::ReadCap;
 use crate::error::{BadRequestReason, InternalError, ServerError};
@@ -80,7 +80,7 @@ impl<M: EmbeddingModel> Server<M> {
 	/// ids into symbols, and merge overlay-over-base.
 	async fn semantic_hits(
 		&self,
-		gate: registry::runtime::vector::SemanticGate,
+		gate: registry::vector::SemanticGate,
 		request: &Search<'_>,
 	) -> Result<Vec<Scored<Symbol>>, ServerError> {
 		let Query::Abstract(query) = &request.query else {
