@@ -29,10 +29,8 @@ use heart::{PackageId, Scored, cursor::Cursor, ecosystem::Language, search::Page
 
 use crate::{GlobalPackage, error::SearchError, metadata::Synonyms};
 
-use super::{
-	SearchKey, entity, finite_score, interleave, multi_parent, policy, popularity, ranking,
-	rrf, structured::StructuredQuery, tantivy::PackageIndex,
-};
+use super::{SearchKey, finite_score, ranking, structured::StructuredQuery, tantivy::PackageIndex};
+use super::ranking::{entity, interleave, multi_parent, policy, popularity, rrf};
 
 /// The quality assigned to a package with no extracted facets yet — a neutral
 /// midpoint so the fusion multiplier neither erases (`0.0`) nor inflates such a
@@ -236,7 +234,7 @@ pub async fn retrieve_and_rank(
 			);
 			let name = package.package.coordinates.name.canonical().to_string();
 			let verified_repo =
-				facets_verified_repo || super::gates::verified_repo(&name, repo_slug);
+				facets_verified_repo || super::ranking::gates::verified_repo(&name, repo_slug);
 			ranking::Candidate {
 				item: package,
 				name,

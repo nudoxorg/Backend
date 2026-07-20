@@ -9,7 +9,7 @@
 
 use heart::ecosystem::Language;
 
-use super::ranking::Candidate;
+use super::cascade::Candidate;
 
 /// Round-robin interleave of per-ecosystem ranked candidate lists into one SERP.
 ///

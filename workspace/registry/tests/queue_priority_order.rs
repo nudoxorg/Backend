@@ -6,12 +6,7 @@
 //! verified **without a live postgres**. The end-to-end DB ordering is covered by
 //! the (postgres-gated) queue integration tests.
 
-use chrono::{DateTime, Utc};
 use registry::queue::{runnable_order, Priority};
-
-fn at(secs: i64) -> DateTime<Utc> {
-	DateTime::from_timestamp(secs, 0).expect("in-range timestamp")
-}
 
 #[test]
 fn priority_default_is_normal_zero() {
@@ -29,16 +24,16 @@ fn priority_orders_naturally_ascending() {
 
 #[test]
 fn higher_priority_is_claimed_first() {
-	let high = (Priority::new(10), at(1_000));
-	let low = (Priority::new(0), at(10)); // older, but lower priority
+	let high = (Priority::new(10), 1_000i64);
+	let low = (Priority::new(0), 10i64); // older, but lower priority
 	assert_eq!(runnable_order(high, low), std::cmp::Ordering::Less);
 	assert_eq!(runnable_order(low, high), std::cmp::Ordering::Greater);
 }
 
 #[test]
 fn equal_priority_breaks_ties_fifo() {
-	let older = (Priority::new(5), at(100));
-	let newer = (Priority::new(5), at(200));
+	let older = (Priority::new(5), 100i64);
+	let newer = (Priority::new(5), 200i64);
 	assert_eq!(runnable_order(older, newer), std::cmp::Ordering::Less);
 	assert_eq!(runnable_order(newer, older), std::cmp::Ordering::Greater);
 	assert_eq!(runnable_order(older, older), std::cmp::Ordering::Equal);
@@ -49,19 +44,19 @@ fn sorting_a_batch_matches_dequeue_order() {
 	// A shuffled batch sorted by `runnable_order` must come out
 	// highest-priority-first, FIFO within a priority.
 	let mut batch = vec![
-		(Priority::new(0), at(50)),
-		(Priority::new(10), at(300)),
-		(Priority::new(10), at(100)),
-		(Priority::new(5), at(10)),
+		(Priority::new(0), 50i64),
+		(Priority::new(10), 300i64),
+		(Priority::new(10), 100i64),
+		(Priority::new(5), 10i64),
 	];
 	batch.sort_by(|&a, &b| runnable_order(a, b));
 	assert_eq!(
 		batch,
 		vec![
-			(Priority::new(10), at(100)), // highest prio, oldest of the two
-			(Priority::new(10), at(300)),
-			(Priority::new(5), at(10)),
-			(Priority::new(0), at(50)),
+			(Priority::new(10), 100i64), // highest prio, oldest of the two
+			(Priority::new(10), 300i64),
+			(Priority::new(5), 10i64),
+			(Priority::new(0), 50i64),
 		]
 	);
 }

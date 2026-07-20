@@ -11,7 +11,7 @@ mod common;
 
 use std::sync::Arc;
 
-use heart::{Connect, ContentHash};
+use heart::{Connect, ContentHash, ResolutionState};
 use object_store::{ObjectStore, memory::InMemory};
 use registry::{
     BlobManifest, GlobalPackage, Store,
@@ -114,7 +114,7 @@ async fn qdrant_rebuilds_from_blobs() {
     catalog_store
         .upsert(&common::global_package(
             package.clone(),
-            heart::ResolutionState::Unindexed { needed: false },
+            ResolutionState::Unindexed { needed: false },
         ))
         .await
         .expect("package registers for outbox test");
@@ -192,7 +192,7 @@ async fn terminus_rebuilds_from_blobs() {
     catalog_store
         .upsert(&common::global_package(
             package.clone(),
-            heart::ResolutionState::Unindexed { needed: false },
+            ResolutionState::Unindexed { needed: false },
         ))
         .await
         .expect("package registers for outbox test");

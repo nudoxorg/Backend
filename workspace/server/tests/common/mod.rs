@@ -122,14 +122,14 @@ impl Drop for TempDir {
 /// The fully-assembled server the infrastructure-gated specs run against, or
 /// `None` (with a skip note) when the backends are not opted in / reachable —
 /// so the suite stays green offline while remaining a real test where the
-/// stack (postgres, qdrant, terminus, object store) exists.
+/// stack (catalog, qdrant, terminus, object store) exists.
 ///
 /// Opt in with `SERVER_TEST_BACKENDS=1`; endpoints come from the same
 /// `NUDOX_*` layering production uses, defaulting to localhost.
 pub async fn assembled_server(test: &str) -> Option<(Arc<Server<TestModel>>, TempDir)> {
     if std::env::var_os("SERVER_TEST_BACKENDS").is_none() {
         eprintln!(
-            "skipping {test}: set SERVER_TEST_BACKENDS=1 (with postgres/qdrant/terminus/object \
+            "skipping {test}: set SERVER_TEST_BACKENDS=1 (with catalog/qdrant/terminus/object \
              store reachable) to run server integration tests"
         );
         return None;

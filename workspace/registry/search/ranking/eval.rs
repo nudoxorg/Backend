@@ -3,7 +3,7 @@
 //! Every boost/constant change becomes a measured experiment instead of vibes.
 //! The module is **pure and deterministic**: no IO, no RNG, no timestamps.
 //! All computation is over the serde types defined here and the pipeline in
-//! [`super::ranking`].
+//! [`super::cascade`].
 //!
 //! # Workflow
 //!
@@ -16,7 +16,7 @@
 use heart::ecosystem::Language;
 use smol_str::SmolStr;
 
-use super::ranking::{Candidate, rank_full};
+use super::cascade::{Candidate, rank_full};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 

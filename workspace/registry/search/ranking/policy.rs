@@ -8,7 +8,7 @@
 use heart::ecosystem::Language;
 
 use super::intent::{QueryIntent, classify_intent};
-use super::ranking::{Candidate, RankingConfig, rank_full_with, rank_with};
+use super::cascade::{Candidate, RankingConfig, rank_full_with, rank_with};
 
 /// Bundled ranking knobs + intent-aware helpers.
 ///

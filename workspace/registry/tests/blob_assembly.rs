@@ -6,7 +6,7 @@
 
 mod common;
 
-use heart::{Connect, ContentHash, Retryable};
+use heart::{Connect, ContentHash, ResolutionState, Retryable};
 use registry::Store;
 
 /// A blob is assembled from all three resolutions: the source files, the IR
@@ -72,11 +72,11 @@ async fn emit_uploads_and_signals() {
     catalog_store
         .upsert(&common::global_package(
             package.clone(),
-            heart::ResolutionState::Unindexed { needed: false },
+            ResolutionState::Unindexed { needed: false },
         ))
         .await
         .expect("package registered for outbox test");
-    let generation = heart::ContentHash::of_bytes(b"generation");
+    let generation = ContentHash::of_bytes(b"generation");
     outbox
         .append(package.id(), generation, &[SinkKind::Text, SinkKind::Vector, SinkKind::Graph])
         .await

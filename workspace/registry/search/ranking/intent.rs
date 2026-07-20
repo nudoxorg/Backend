@@ -1,7 +1,7 @@
 //! Query-intent classification for package search ranking.
 //!
 //! Callers that want intent-aware ranking must go through
-//! [`super::policy::RankingPolicy`] (or [`super::ranking::rank_with_intent`]) so
+//! [`super::policy::RankingPolicy`] (or [`super::cascade::rank_with_intent`]) so
 //! the Navigate / Explore distinction cannot be skipped accidentally.
 
 use ecosystem::search::{DEFAULT_SPECIFICITY_SEPARATORS, SearchNorms};

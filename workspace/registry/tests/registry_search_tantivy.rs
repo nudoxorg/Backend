@@ -1,10 +1,9 @@
-//! Diagram: **postgres also handles search for the registry**, and **tantivy is
-//! the abstraction over the information we get from postgres for registry
+//! Diagram: **the catalog feeds search for the registry**, and **tantivy is
+//! the abstraction over the information we get from the catalog for registry
 //! search, isolating the multi-parent setup.**
 //!
 //! TDD specs for `registry::search`. The replica-local tantivy index runs in
-//! tempdirs offline; the postgres-sync half is gated on
-//! `REGISTRY_TEST_POSTGRES`/`DATABASE_URL`.
+//! tempdirs offline; the catalog-sync half runs against an in-memory engine.
 
 mod common;
 
@@ -99,6 +98,12 @@ async fn tantivy_index_is_derived_from_postgres() {
         ))
         .await
         .expect("the package lands in the catalog");
+    // record_stored sets state to Stored AND emits a Text outbox intent.
+    let generation = heart::ContentHash::of_bytes(b"catalog-sync-test");
+    outbox
+        .record_stored(&store, package.id(), generation, None)
+        .await
+        .expect("record_stored emits the text-sink outbox entry");
 
     let sync_directory = common::TempDir::new("replica-catalog-sync");
     let mut replica = PackageIndex::open(sync_directory.path()).expect("replica opens");

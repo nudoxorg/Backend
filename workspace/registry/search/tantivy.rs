@@ -8,7 +8,7 @@
 //! - `name_ns`     TEXT(ident)   — namespace segments space-joined
 //! - `description` TEXT          — from SearchFacets.description (S2)
 //! - `keywords`    TEXT          — from SearchFacets.keyword_text() plus
-//!   index-time name separator parts ([`super::enrich`]; no separate `extra` field)
+//!   index-time name separator parts ([`super::ranking::enrich`]; no separate `extra` field)
 //! - `ecosystem`   STRING|STORED — language token (Must filter, Q4)
 //! - `record`      STORED        — full serialized GlobalPackage (hydrate)
 //! - `deps`        STRING        — one value per facets.dependencies slug (multi-valued)
@@ -319,12 +319,12 @@ impl PackageIndex {
 				.as_ref()
 				.map(|f| f.keyword_text())
 				.unwrap_or_default();
-			let enrichment = super::enrich::enrich_package_text(
+			let enrichment = super::ranking::enrich::enrich_package_text(
 				&search_surface_lower,
 				&base_keywords,
 				eco,
 			);
-			let keywords_text = super::enrich::merge_keywords(&base_keywords, &enrichment);
+			let keywords_text = super::ranking::enrich::merge_keywords(&base_keywords, &enrichment);
 
 			// v4 FAST ranking columns — always written so every doc has values.
 			// popularity_pct_ppm: facets.popularity_pct (0..=10000) → scale to

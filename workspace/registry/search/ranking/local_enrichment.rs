@@ -20,7 +20,7 @@
 //! # Bonus hard cap
 //!
 //! Default total additive bonus is well below core
-//! [`super::ranking::RankingConfig::exact_name_bonus`] (`10.0`). Combined with
+//! [`super::cascade::RankingConfig::exact_name_bonus`] (`10.0`). Combined with
 //! [`LocalEnrichment::max_rank_climb`], a used-before package may rise a few
 //! slots but cannot overtake a far-higher exact-quality head item.
 

@@ -77,43 +77,20 @@ fn upload_timeout_is_two_seconds() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Boot guard: production + default credentials → hard error
+// Boot guard: production + default terminus password → hard error
 // ──────────────────────────────────────────────────────────────────────────────
-
-/// Production + default postgres URL → validation error naming the field.
-///
-/// Assert: a `production` deployment with the stock `postgres://nudox:nudox@…`
-///   URL must be rejected at `validate()` before any network connection opens.
-#[test]
-fn production_with_default_postgres_is_rejected() {
-    let mut configuration = ServerConfiguration::default();
-    configuration.deployment = Deployment::Production;
-    // postgres URL is still the default ("postgres://nudox:nudox@127.0.0.1:5432/nudox")
-    // terminus_password is still "root" too, but postgres is checked first.
-
-    let error = configuration.validate().expect_err(
-        "production + default postgres must be a hard validation error",
-    );
-    let message = error.to_string();
-    assert!(
-        message.contains("endpoints.postgres"),
-        "error must name the unsafe field; got: {message}"
-    );
-}
 
 /// Production + default terminus password → validation error naming the field.
 ///
-/// Assert: if postgres is customised but terminus_password is still `root`,
-///   `validate()` must reject with the terminus field named.
+/// Assert: a `production` deployment with the stock `root` TerminusDB password
+///   must be rejected at `validate()` before any network connection opens.
+/// The catalog needs no credentials (local DoltLite engine), so the only
+/// credential guard is `endpoints.terminus_password`.
 #[test]
 fn production_with_default_terminus_password_is_rejected() {
-    use secrecy::SecretString;
-
     let mut configuration = ServerConfiguration::default();
     configuration.deployment = Deployment::Production;
-    // Override postgres so that check passes and we reach the password check.
-    configuration.definitive.endpoints.postgres =
-        SecretString::from("postgres://prod_user:s3cr3t@db.example.com:5432/prod");
+    // terminus_password is still "root" (the default).
 
     let error = configuration.validate().expect_err(
         "production + default terminus password must be a hard validation error",
@@ -125,22 +102,20 @@ fn production_with_default_terminus_password_is_rejected() {
     );
 }
 
-/// Production + both credentials non-default → validation passes.
+/// Production + non-default terminus password → validation passes.
 ///
-/// Assert: once both secrets are overridden, `validate()` returns `Ok`.
+/// Assert: once the terminus password is overridden, `validate()` returns `Ok`.
 #[test]
 fn production_with_real_credentials_passes_validation() {
     use secrecy::SecretString;
 
     let mut configuration = ServerConfiguration::default();
     configuration.deployment = Deployment::Production;
-    configuration.definitive.endpoints.postgres =
-        SecretString::from("postgres://prod_user:s3cr3t@db.example.com:5432/prod");
     configuration.definitive.endpoints.terminus_password =
         SecretString::from("sup3r_s3cr3t_terminus_pw");
 
     configuration.validate().expect(
-        "production with non-default credentials must pass structural validation",
+        "production with non-default terminus password must pass structural validation",
     );
 }
 

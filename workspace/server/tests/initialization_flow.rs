@@ -4,7 +4,7 @@
 //! tiers, pulling down if unfresh · updates postgres status · loads into pg ·
 //! ensure init (if not send req) · return responses".
 //!
-//! The decision table is pure and always runs; the postgres-loading round-trips
+//! The decision table is pure and always runs; the catalog-loading round-trips
 //! are opt-in via `SERVER_TEST_BACKENDS`.
 
 mod common;
@@ -94,13 +94,13 @@ async fn ensure_init_returns_or_requests() {
     assert_eq!(second.package, first.package, "identity is deterministic");
 }
 
-/// Initialization loads the library into postgres (pg).
+/// Initialization loads the library into the catalog.
 ///
-/// Assert: after init, postgres holds the package's metadata + status.
+/// Assert: after init, the catalog holds the package's metadata + status.
 #[tokio::test]
-async fn initialization_loads_into_postgres() {
+async fn initialization_loads_into_catalog() {
     let Some((server, _data)) =
-        common::assembled_server("initialization_loads_into_postgres").await
+        common::assembled_server("initialization_loads_into_catalog").await
     else {
         return;
     };
@@ -112,7 +112,7 @@ async fn initialization_loads_into_postgres() {
         .parse_status(initialized.package)
         .await
         .expect("the status lookup answers")
-        .expect("the ensured package now has a postgres row");
+        .expect("the ensured package now has a catalog row");
     assert!(
         matches!(state, ResolutionState::Unindexed { needed: true } | ResolutionState::Progressing(_)),
         "the loaded row is on the pipeline's leading edge, got {state:?}"

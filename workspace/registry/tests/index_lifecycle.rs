@@ -221,7 +221,9 @@ async fn nuget_csharp_package_is_a_first_class_lifecycle_entry() {
     // aliases a hypothetical crates.io package of the same name.
     let (store, _writer) = common::catalog_store("nuget_csharp_package_is_a_first_class_lifecycle_entry");
     let nuget_pkg = common::csharp_package("Newtonsoft.Json", "13.0.3");
-    let crates_pkg_with_same_name = common::rust_package("Newtonsoft.Json", "13.0.3");
+    // Use a Rust-valid name for the id-collision check (Rust names can't have dots);
+    // origin is baked into the id hash, so even identical names produce distinct ids.
+    let crates_pkg_with_same_name = common::rust_package("newtonsoft-json", "13.0.3");
     assert_ne!(
         nuget_pkg.id(),
         crates_pkg_with_same_name.id(),

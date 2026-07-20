@@ -1,6 +1,6 @@
 //! Diagram flow: **indexing** (`server::coordination::indexing`).
 //!
-//! "runs computer · update postgres (tantivy polls) · generate blob information".
+//! "runs computer · update catalog (tantivy polls) · generate blob information".
 //!
 //! These drive one real indexing job end to end (acquire → extract → compile →
 //! emit), so they need the live stack *and* network access to the package
@@ -64,22 +64,22 @@ async fn indexing_generates_blob_information() {
     assert_eq!(recomputed, snapshot, "blob info persisted content-addressed and reproducible");
 }
 
-/// Indexing updates postgres status; tantivy picks it up by polling.
+/// Indexing updates catalog status; tantivy picks it up by polling.
 ///
-/// Assert: indexing writes status to postgres (push) and appends a text-sink
+/// Assert: indexing writes status to the catalog (push) and appends a text-sink
 ///   intent to the outbox — the tantivy replica *pulls* from that watermark,
 ///   never receives a direct push.
 #[tokio::test]
-async fn indexing_updates_postgres_and_tantivy_polls() {
+async fn indexing_updates_catalog_and_tantivy_polls() {
     let Some((server, _data)) =
-        common::assembled_server("indexing_updates_postgres_and_tantivy_polls").await
+        common::assembled_server("indexing_updates_catalog_and_tantivy_polls").await
     else {
         return;
     };
     let (package, indexer) = ensured_job(&server).await;
     indexer.run_indexing_job(package).await.expect("the pipeline completes");
 
-    // Push half: postgres holds the terminal status.
+    // Push half: catalog holds the terminal status.
     let state = server.parse_status(package).await.expect("status answers");
     assert!(matches!(state, Some(ResolutionState::Stored { .. })));
 

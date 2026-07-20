@@ -22,13 +22,10 @@ fn policy() -> RetryPolicy {
     }
 }
 
-/// A fresh scratch-backed queue.
+/// A fresh scratch-backed queue backed by an in-memory SQLite database.
 fn make_queue(label: &str) -> Queue {
-    let scratch_path = std::env::temp_dir()
-        .join(format!("registry-queue-test-{label}-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&scratch_path).expect("temp dir created");
-    let scratch = index::scratch::ScratchStore::open(&scratch_path.join("scratch.sqlite"))
-        .expect("scratch store opens");
+    let scratch = index::scratch::ScratchStore::open_in_memory()
+        .expect("in-memory scratch store opens");
     Queue::new(Arc::new(Mutex::new(scratch)), format!("worker-{label}"), policy())
 }
 

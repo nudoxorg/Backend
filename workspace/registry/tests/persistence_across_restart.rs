@@ -11,12 +11,10 @@ use std::{num::NonZeroU32, sync::{Arc, Mutex}, time::Duration};
 use heart::{ContentHash, Phase, ResolutionState};
 use registry::persist::{reconcile_on_start, reset_transient};
 
+
 fn make_queue(label: &str) -> registry::queue::Queue {
-    let scratch_path = std::env::temp_dir()
-        .join(format!("registry-restart-test-{label}-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&scratch_path).expect("temp dir created");
-    let scratch = index::scratch::ScratchStore::open(&scratch_path.join("scratch.sqlite"))
-        .expect("scratch store opens");
+    let scratch = index::scratch::ScratchStore::open_in_memory()
+        .expect("in-memory scratch store opens");
     registry::queue::Queue::new(
         Arc::new(Mutex::new(scratch)),
         format!("worker-{label}"),

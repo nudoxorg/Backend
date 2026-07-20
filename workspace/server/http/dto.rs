@@ -240,22 +240,6 @@ pub struct CompiledLookupResponse {
     pub results: Vec<CompiledLookupEntry>,
 }
 
-/// The wire error a DTO field rejection projects to.
-/// Deprecated in favor of direct construction of `BadRequestReason` variants
-/// (which are `Into<ServerError>` via the `#[from]` chain). Kept only for
-/// any remaining call sites during the transition.
-#[allow(dead_code)]
-fn bad_request(error: impl std::fmt::Display) -> ServerError {
-	// Fallback only; prefer typed.
-	crate::error::BadRequestReason::MalformedQuery(
-		crate::error::QueryError::Malformed {
-			detail: error.to_string(),
-			query: String::new(),
-		},
-	)
-	.into()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthDto {
 	pub ready: bool,
@@ -398,7 +382,7 @@ mod tests {
 			version: "0.4.2".to_owned(),
 			model_id: "jinaai/jina-embeddings-v2-base-code".to_owned(),
 			recipe_id: crate::bakery::RECIPE_ID.to_owned(),
-			quant_profile: crate::bakery::QUANT_PROFILE.to_owned(),
+			quant_profile: vector_core::quant::QP1,
 			edge_format_version: vector_core::shard::EDGE_FORMAT_VERSION,
 		};
 
@@ -421,7 +405,7 @@ mod tests {
 		assert!(!object.contains_key("artifact_id"), "artifact_id elided while pending");
 		assert!(!object.contains_key("ram_estimate"), "ram_estimate elided while pending");
 		assert_eq!(object["status"], "pending");
-		assert_eq!(object["quant_profile"], crate::bakery::QUANT_PROFILE);
+		assert_eq!(object["quant_profile"], quant_profile_token(&vector_core::quant::QP1));
 
 		// Ready: artifact + estimate present, digests lower-hex.
 		let row = crate::bakery::EdgepackRow {

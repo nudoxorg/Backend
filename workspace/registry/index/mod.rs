@@ -385,7 +385,7 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     /// facet write emits an outbox row, so the tantivy sync refolds exactly the
     /// packages whose counts moved.
     pub async fn refresh_dependents(&self) -> Result<u64, IndexError> {
-        use crate::search::dependents::{DependencyRow, count_dependents};
+        use crate::search::ranking::dependents::{DependencyRow, count_dependents};
 
         let pages = self.collect_facet_pages()?;
         let rows: Vec<DependencyRow> = pages
@@ -422,7 +422,7 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     /// the stored value changes.
     pub async fn refresh_popularity_percentiles(&self) -> Result<u64, IndexError> {
         use crate::metadata::SearchFacets;
-        use crate::search::popularity::{DEPENDENT_DOWNLOAD_EQUIV, assign_percentiles};
+        use crate::search::ranking::popularity::{DEPENDENT_DOWNLOAD_EQUIV, assign_percentiles};
         use std::collections::HashMap;
 
         let pages = self.collect_facet_pages()?;

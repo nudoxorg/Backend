@@ -15,39 +15,38 @@ use heart::{PackageId, Scored, search::Page};
 
 use crate::{GlobalPackage, error::SearchError, metadata::Synonyms};
 
+// Retrieval / query-parse plane (the `search` root).
 pub mod alias;
-pub mod dependents;
-pub mod enrich;
-pub mod entity;
-pub mod eval;
-pub mod gates;
 pub mod health;
-pub mod intent;
-pub mod interleave;
-pub mod listing_signals;
-pub mod local_enrichment;
-pub mod multi_parent;
 pub mod pipeline;
-pub mod policy;
-pub mod popularity;
-pub mod ranking;
-pub mod rrf;
 pub mod spell;
-pub mod squat;
 pub mod structured;
 pub mod tantivy;
 pub mod usages;
 
+// Ranking plane (signals, the scoring cascade, gates, fusion, interleave, eval).
+pub mod ranking;
+
+// Modules whose paths are referenced by name from outside the crate
+// (`registry::search::{gates,listing_signals,squat,local_enrichment}` in
+// `server::coordination::indexing` and `gui`) are re-exported so the move into
+// `ranking/` stays source-compatible.
+pub use ranking::{gates, listing_signals, local_enrichment, squat};
+
+// pipeline.rs uses `super::popularity` and `super::rrf` by module path;
+// re-export so those references resolve without moving the pipeline file.
+pub use ranking::{eval, interleave, multi_parent, policy, popularity, rrf};
+
 pub use alias::{AliasConfidence, AliasExpander, ResolvedAlias, expand_cpp_bare_token, presence_facet};
 pub use health::PackageIndexHealth;
-pub use local_enrichment::{
+pub use ranking::local_enrichment::{
 	DepRelation, EnrichedHit, HitSource, LocalContext, LocalEnrichment, LocalLabel,
 	LocalOnlyPackage, RankedItem, UsageStat,
 };
 pub use pipeline::{
 	PackageSearchDeps, PackageSearchRequest, retrieve_and_rank, retrieve_and_rank_page,
 };
-pub use popularity::assign_percentiles;
+pub use ranking::popularity::assign_percentiles;
 pub use structured::StructuredQuery;
 pub use usages::{
 	ReverseIndexUsageBackend, Unsupported, Usage, UsageQueryBackend, UsageQueryError,
