@@ -34,9 +34,6 @@
 //!
 //! [`ObjectPackId`]: heart::object_pack::ObjectPackId
 
-use bao_tree::io::outboard::PreOrderMemOutboard;
-use bao_tree::io::sync::{decode_ranges, encode_ranges_validated};
-use bao_tree::{BlockSize, ChunkNum, ChunkRanges};
 use bytes::Bytes;
 use heart::content::ContentHash;
 use heart::object_pack::MemberKey;
@@ -44,17 +41,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::pack::error::{PackError, PackResult};
 
-/// The Bao block size used for every outboard we generate.
-///
-/// [`BlockSize::ZERO`] means one chunk group == one 1 KiB BLAKE3 chunk (no
-/// grouping). This is the iroh-blobs default, so an outboard we generate is
-/// directly interoperable with an iroh-blobs verified stream. It is a **format
-/// constant** for the sidecar: changing it changes every outboard's bytes.
-pub const BAO_BLOCK_SIZE: BlockSize = BlockSize::ZERO;
-
-/// The number of uncompressed bytes covered by one BLAKE3 chunk at
-/// [`BAO_BLOCK_SIZE`] (1024). Used to translate a byte range into a chunk range.
-pub const BAO_CHUNK_BYTES: u64 = 1024;
+// The raw bao Merkle math (generate / encode-range / verify-range over a 32-byte
+// BLAKE3 root and plain byte slices) now lives once in the shared `transport`
+// crate (CONSOLIDATION-NOTES §8b). This module keeps only the pack-format
+// wrapper: the `MemberOutboard`/`OutboardSidecar` types keyed by `MemberKey`.
+pub use transport::bao::{BAO_BLOCK_SIZE, BAO_CHUNK_BYTES};
 
 /// The on-disk sidecar file extension (NDPK OutBoard).
 pub const OUTBOARD_FILE_EXTENSION: &str = "ndob";
@@ -86,23 +77,21 @@ impl MemberOutboard {
     /// concatenated in order), because the Bao tree spans the entire logical
     /// content.
     pub fn generate(key: MemberKey, uncompressed: &[u8]) -> Self {
-        let outboard = PreOrderMemOutboard::create(uncompressed, BAO_BLOCK_SIZE);
-        let root_hash = ContentHash::from_bytes(*outboard.root.as_bytes());
+        let outboard = transport::bao::generate(uncompressed);
         MemberOutboard {
             key,
-            root_hash,
-            uncompressed_length: uncompressed.len() as u64,
-            outboard_bytes: outboard.data,
+            root_hash: ContentHash::from_bytes(outboard.root),
+            uncompressed_length: outboard.length,
+            outboard_bytes: outboard.bytes,
         }
     }
 
-    /// Reconstruct a [`PreOrderMemOutboard`] from the stored parts so it can
-    /// drive [`encode_ranges_validated`].
-    fn to_pre_order(&self) -> PreOrderMemOutboard<&[u8]> {
-        PreOrderMemOutboard {
-            root: blake3::Hash::from_bytes(*self.root_hash.as_bytes()),
-            tree: bao_tree::BaoTree::new(self.uncompressed_length, BAO_BLOCK_SIZE),
-            data: self.outboard_bytes.as_slice(),
+    /// Reconstruct the shared [`transport::bao::Outboard`] from the stored parts.
+    fn to_transport(&self) -> transport::bao::Outboard {
+        transport::bao::Outboard {
+            root: *self.root_hash.as_bytes(),
+            length: self.uncompressed_length,
+            bytes: self.outboard_bytes.clone(),
         }
     }
 
@@ -129,35 +118,21 @@ impl MemberOutboard {
         start: u64,
         end: u64,
     ) -> PackResult<Bytes> {
-        if start > end || end > self.uncompressed_length {
-            return Err(PackError::RangeOutOfBounds {
-                start,
-                end,
-                member_length: self.uncompressed_length,
-            });
-        }
-
-        let ranges = byte_range_to_chunk_ranges(start, end);
-        let mut encoded: Vec<u8> = Vec::new();
-        encode_ranges_validated(member_uncompressed, self.to_pre_order(), &ranges, &mut encoded)
-            .map_err(|error| PackError::BaoEncode { detail: error.to_string() })?;
-        Ok(Bytes::from(encoded))
+        transport::bao::encode_range(&self.to_transport(), member_uncompressed, start, end)
+            .map_err(bao_error_to_pack)
     }
 }
 
-/// Translate an uncompressed byte range `[start, end)` into the BLAKE3 chunk
-/// range that fully covers it (chunks are 1 KiB at [`BAO_BLOCK_SIZE`]).
-///
-/// Verified streaming operates on whole chunks, so we round the start down and
-/// the end up to chunk boundaries; the receiver then slices out the exact bytes.
-fn byte_range_to_chunk_ranges(start: u64, end: u64) -> ChunkRanges {
-    if start >= end {
-        return ChunkRanges::empty();
+/// Map a shared [`transport::bao::BaoError`] onto the pack-format [`PackError`]
+/// so the transfer error surface is unchanged for downstream callers.
+fn bao_error_to_pack(error: transport::bao::BaoError) -> PackError {
+    match error {
+        transport::bao::BaoError::RangeOutOfBounds { start, end, length } => {
+            PackError::RangeOutOfBounds { start, end, member_length: length }
+        }
+        transport::bao::BaoError::Encode(detail) => PackError::BaoEncode { detail },
+        transport::bao::BaoError::Decode(detail) => PackError::BaoDecode { detail },
     }
-    let first_chunk = start / BAO_CHUNK_BYTES;
-    // Round the exclusive end up to the next chunk boundary.
-    let last_chunk = end.div_ceil(BAO_CHUNK_BYTES);
-    ChunkRanges::from(ChunkNum(first_chunk)..ChunkNum(last_chunk))
 }
 
 /// Verify a Bao-encoded range on the receiver and return the *exact* requested
@@ -179,35 +154,14 @@ pub fn verify_bao_range(
     start: u64,
     end: u64,
 ) -> PackResult<Bytes> {
-    if start > end || end > uncompressed_length {
-        return Err(PackError::RangeOutOfBounds {
-            start,
-            end,
-            member_length: uncompressed_length,
-        });
-    }
-    if start == end {
-        return Ok(Bytes::new());
-    }
-
-    let ranges = byte_range_to_chunk_ranges(start, end);
-    let tree = bao_tree::BaoTree::new(uncompressed_length, BAO_BLOCK_SIZE);
-    let root = blake3::Hash::from_bytes(*root_hash.as_bytes());
-
-    // We only need to *verify* (not persist) the outboard on the receiver, so we
-    // decode into a scratch buffer sized to the whole blob with an EmptyOutboard
-    // that discards interior hashes after checking them.
-    let mut target: Vec<u8> = vec![0u8; uncompressed_length as usize];
-    let empty_outboard = bao_tree::io::outboard::EmptyOutboard { tree, root };
-    decode_ranges(encoded, &ranges, &mut target[..], empty_outboard)
-        .map_err(|error| PackError::BaoDecode { detail: error.to_string() })?;
-
-    // `target` now holds verified bytes in the covered chunk range; the bytes
-    // outside the covered chunks are still zero, but the requested sub-range is
-    // fully inside the covered chunks by construction.
-    let requested_start = start as usize;
-    let requested_end = end as usize;
-    Ok(Bytes::copy_from_slice(&target[requested_start..requested_end]))
+    transport::bao::verify_range(
+        root_hash.as_bytes(),
+        uncompressed_length,
+        encoded,
+        start,
+        end,
+    )
+    .map_err(bao_error_to_pack)
 }
 
 /// The complete set of outboards for one pack, serialized as a single sidecar

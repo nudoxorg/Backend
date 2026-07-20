@@ -37,6 +37,7 @@ pub mod format;
 pub mod outboard;
 pub mod reader;
 pub mod store;
+pub mod sync;
 pub mod transport;
 pub mod tree;
 
@@ -45,6 +46,7 @@ pub use error::PackError;
 pub use outboard::{MemberOutboard, OutboardSidecar, verify_bao_range};
 pub use reader::ObjectPackReader;
 pub use store::{FilesystemObjectPackStore, ObjectPackStore};
+pub use sync::{ObjectPackApplyHook, ObjectPackContentIo};
 pub use transport::{
     ObjectPackFetcher, ObjectPackProvider, ProvideTarget, provide_to_trusted,
 };

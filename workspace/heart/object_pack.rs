@@ -17,6 +17,12 @@ use crate::content::ContentHash;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ObjectPackId(pub ContentHash);
 
+impl std::fmt::Display for ObjectPackId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.hex())
+    }
+}
+
 /// A `/`-separated path relative to the pack's tree root; never absolute,
 /// never containing `.` or `..` segments.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

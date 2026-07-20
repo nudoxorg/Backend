@@ -25,12 +25,15 @@ ir           = { path = "../ir" }
 ecosystem    = { path = "../ecosystem" }
 heart        = { path = "../heart" }
 
-# ── iroh transport plane ────────────────────────────────────────────────────
-# iroh provides the QUIC transport layer with Ed25519 node identity.
+# ── content-transfer plane ──────────────────────────────────────────────────
+# The ONE shared iroh/iroh-blobs provide-fetch (CONSOLIDATION-NOTES §8b): the
+# bespoke endpoint + blob store wiring moved here; `sync::transport` is now just
+# the IR control protocol over `transport::{blob, endpoint, frame}`.
+transport = { path = "../transport" }
+# iroh is still used directly by the sync tests + repo_glue (SecretKey /
+# EndpointId / MemoryLookup vocabulary); the blob store (iroh-blobs) is gone.
 iroh = { version = "1.0.2", default-features = false, features = ["tls-ring"] }
-# iroh-blobs provides the BLAKE3-verified blob store and BlobsProtocol handler.
-iroh-blobs = { version = "0.103.0", default-features = false }
-# tokio for the async iroh transport.
+# tokio for the async transport.
 tokio = { version = "1.53.0", features = ["rt", "sync", "time", "macros"] }
 # tempfile for atomic write in FsChangeIo::write.
 tempfile = "3"

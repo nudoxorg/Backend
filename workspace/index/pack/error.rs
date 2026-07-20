@@ -211,5 +211,18 @@ pub enum PackError {
     Io(#[from] std::io::Error),
 }
 
+/// Map a shared [`heart::sync::SyncError`] (produced by the `transport` crate's
+/// framing / endpoint helpers) onto the pack-format [`PackError`] so the pack
+/// transport surface is unchanged. Codec failures stay codec failures; every
+/// other transport-plane failure folds into [`PackError::Transport`].
+impl From<heart::sync::SyncError> for PackError {
+    fn from(error: heart::sync::SyncError) -> Self {
+        match error {
+            heart::sync::SyncError::Codec(detail) => PackError::Codec { detail },
+            other => PackError::Transport { detail: other.to_string() },
+        }
+    }
+}
+
 /// Convenience alias for engine results.
 pub type PackResult<T> = std::result::Result<T, PackError>;

@@ -66,14 +66,15 @@ postcard = { version = "1.1", features = ["alloc"] }
 zstd = "0.13"
 bytes = "1"
 memmap2 = "0.9"
-# Bao verified-streaming tree (outboard gen + verified range encode/decode).
-# Pinned to the iroh-blobs-locked version; sync engine only.
-bao-tree = { version = "0.16.0", default-features = false }
-range-collections = "0.4.6"
-# iroh transport (INDEX-PLAN §7.2): QUIC + Ed25519 endpoint identity; in-memory
-# BLAKE3 blob store + BlobsProtocol for pack-member transfer.
+# The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b): the
+# bespoke bao outboard math + iroh endpoint/framing that `index::pack` carried
+# moved here. `index::pack::{outboard, transport}` now wrap `transport::{bao,
+# endpoint, frame}`. iroh-blobs + bao-tree + range-collections are gone from
+# this crate's direct deps.
+transport = { path = "../transport" }
+# iroh is still used directly by `index::pack::transport` + the object-pack
+# tests (Endpoint / SecretKey / MemoryLookup vocabulary).
 iroh = { version = "1.0.2", default-features = false, features = ["tls-ring"] }
-iroh-blobs = { version = "0.103.0", default-features = false }
 tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 
 # ── Server-fold + registry-salvage (§8/§9a): the data/storage/coordination plane ─

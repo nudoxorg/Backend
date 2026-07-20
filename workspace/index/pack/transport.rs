@@ -45,11 +45,15 @@ use heart::object_pack::{MemberKey, ObjectPackId};
 use iroh::Endpoint;
 use iroh::address_lookup::MemoryLookup;
 use serde::{Deserialize, Serialize};
+use transport::endpoint::bind_endpoint;
+use transport::frame::{recv_framed, send_framed};
+
+use heart::sync::ContentIo as _;
 
 use crate::pack::error::PackError;
 use crate::pack::outboard::{MemberOutboard, verify_bao_range};
-use crate::pack::reader::ObjectPackReader;
 use crate::pack::store::{EndpointId, ObjectPackStore};
+use crate::pack::sync::ObjectPackContentIo;
 
 /// ALPN for the ObjectPack member/pack transfer protocol (INDEX-PLAN §7.2).
 pub const OBJECT_PACK_ALPN: &[u8] = b"nudox/object-pack/1";
@@ -195,25 +199,8 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
         address_lookup: Option<MemoryLookup>,
         secret_key: iroh::SecretKey,
     ) -> Result<Self, PackError> {
-        use iroh::endpoint::presets;
-
-        let mut builder = Endpoint::builder(presets::Minimal)
-            .secret_key(secret_key)
-            .alpns(vec![OBJECT_PACK_ALPN.to_vec()]);
-
-        if let Some(lookup) = address_lookup {
-            builder = builder
-                .address_lookup(lookup)
-                .bind_addr("127.0.0.1:0")
-                .map_err(|error| PackError::Transport { detail: error.to_string() })?
-                .bind_addr("[::1]:0")
-                .map_err(|error| PackError::Transport { detail: error.to_string() })?;
-        }
-
-        let endpoint = builder
-            .bind()
-            .await
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+        let endpoint =
+            bind_endpoint(vec![OBJECT_PACK_ALPN.to_vec()], secret_key, address_lookup).await?;
 
         Ok(Self { endpoint, store, enrolled })
     }
@@ -269,7 +256,7 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
             });
         }
 
-        let request: PackRequest = recv_framed(&mut recv).await?;
+        let request: PackRequest = recv_framed(&mut recv, FRAME_CAP_BYTES).await?;
         let response = self.serve(&request);
 
         send_framed(&mut send, &response).await?;
@@ -290,13 +277,18 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
     fn serve_inner(&self, request: &PackRequest) -> Result<PackResponse, PackError> {
         match request {
             PackRequest::WholePack { id } => {
-                if !self.store.has(id) {
+                // Use the heart::sync seam for has/read so the provider routes
+                // through ContentIo rather than calling the store directly.
+                let io = ObjectPackContentIo::new(Arc::clone(&self.store));
+                if !io.has(id).unwrap_or(false) {
                     return Err(PackError::MemberNotFound {
                         // No dedicated "pack not found"; reuse a typed miss.
                         key: MemberKey::Meta { name: "<whole-pack>".into() },
                     });
                 }
-                let pack_bytes = self.store.read_pack_bytes(id)?.to_vec();
+                let pack_bytes = io
+                    .read(id)
+                    .map_err(|e| PackError::Transport { detail: e.to_string() })?;
                 let outboards = self.store.read_all_outboards(id)?;
                 Ok(PackResponse::WholePack { pack_bytes, outboards })
             }
@@ -350,25 +342,8 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
         address_lookup: Option<MemoryLookup>,
         secret_key: iroh::SecretKey,
     ) -> Result<Self, PackError> {
-        use iroh::endpoint::presets;
-
-        let mut builder = Endpoint::builder(presets::Minimal)
-            .secret_key(secret_key)
-            .alpns(vec![OBJECT_PACK_ALPN.to_vec()]);
-
-        if let Some(lookup) = address_lookup {
-            builder = builder
-                .address_lookup(lookup)
-                .bind_addr("127.0.0.1:0")
-                .map_err(|error| PackError::Transport { detail: error.to_string() })?
-                .bind_addr("[::1]:0")
-                .map_err(|error| PackError::Transport { detail: error.to_string() })?;
-        }
-
-        let endpoint = builder
-            .bind()
-            .await
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+        let endpoint =
+            bind_endpoint(vec![OBJECT_PACK_ALPN.to_vec()], secret_key, address_lookup).await?;
 
         Ok(Self { endpoint, store })
     }
@@ -381,9 +356,14 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
     /// Fetch a whole pack from `provider`, verify it against `id`, and install
     /// it atomically into the local store.
     ///
-    /// The install goes through [`ObjectPackStore::install_pack`], which
-    /// re-derives the id from the received bytes and refuses a mismatch
-    /// (tempfile + rename gives all-or-nothing durability).
+    /// The flow goes through the `heart::sync` seam:
+    /// 1. Transport (iroh): receive raw bytes from the provider.
+    /// 2. [`ObjectPackContentIo::verify`]: re-derive the [`ObjectPackId`] from
+    ///    the bytes' TOC and reject a mismatch — the content-address check.
+    /// 3. [`ObjectPackContentIo::write`]: atomic install into the local store
+    ///    (the trait is the seam; `install_pack` does tempfile + rename).
+    /// 4. [`crate::pack::store::ObjectPackStore::install_pack`]: re-called with
+    ///    outboards so the sidecar is written alongside the pack.
     pub async fn fetch_whole_pack(
         &self,
         id: &ObjectPackId,
@@ -398,11 +378,21 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
 
         match response {
             PackResponse::WholePack { pack_bytes, outboards } => {
-                // Verify identity before install: re-derive id from the bytes.
-                let reader = ObjectPackReader::open_bytes(Bytes::from(pack_bytes.clone()))?;
-                if reader.id() != *id {
-                    return Err(PackError::FetchedIdMismatch);
-                }
+                // Route through the heart::sync seam (verify → write), then
+                // re-install with outboards so the sidecar is durable.
+                let io = ObjectPackContentIo::new(Arc::clone(&self.store));
+
+                // Step 1: content-address verify (re-derives ObjectPackId from TOC).
+                io.verify(id, &pack_bytes)
+                    .map_err(|e| PackError::Transport { detail: e.to_string() })?;
+
+                // Step 2: write through the seam (atomic install, no outboards yet).
+                io.write(id, &pack_bytes)
+                    .map_err(|e| PackError::Transport { detail: e.to_string() })?;
+
+                // Step 3: re-install with outboards to write the sidecar (the
+                // store's install_pack is idempotent on the pack file itself;
+                // only the sidecar changes vs. the previous call).
                 self.store.install_pack(id, &pack_bytes, &outboards)
             }
             PackResponse::Refused { reason } => {
@@ -483,7 +473,7 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
         send.finish()
             .map_err(|error| PackError::Transport { detail: error.to_string() })?;
 
-        let response: PackResponse = recv_framed(&mut recv).await?;
+        let response: PackResponse = recv_framed(&mut recv, FRAME_CAP_BYTES).await?;
         connection.close(0u32.into(), b"done");
         Ok(response)
     }
@@ -520,44 +510,7 @@ pub async fn provide_to_trusted<S: ObjectPackStore + 'static>(
     Ok(target)
 }
 
-// ---------------------------------------------------------------------------
-// Framing (identical discipline to ir-sync)
-// ---------------------------------------------------------------------------
-
-/// Send a postcard-encoded value as a length-prefixed frame.
-async fn send_framed<T: Serialize>(
-    send: &mut iroh::endpoint::SendStream,
-    value: &T,
-) -> Result<(), PackError> {
-    let encoded = postcard::to_allocvec(value)
-        .map_err(|error| PackError::Codec { detail: error.to_string() })?;
-    let length_prefix = (encoded.len() as u64).to_le_bytes();
-    send.write_all(&length_prefix)
-        .await
-        .map_err(|error| PackError::Transport { detail: error.to_string() })?;
-    send.write_all(&encoded)
-        .await
-        .map_err(|error| PackError::Transport { detail: error.to_string() })?;
-    Ok(())
-}
-
-/// Read a length-prefixed postcard frame.
-async fn recv_framed<T: for<'de> Deserialize<'de>>(
-    recv: &mut iroh::endpoint::RecvStream,
-) -> Result<T, PackError> {
-    let mut length_buffer = [0u8; 8];
-    recv.read_exact(&mut length_buffer)
-        .await
-        .map_err(|error| PackError::Transport { detail: error.to_string() })?;
-    let length = u64::from_le_bytes(length_buffer) as usize;
-    if length > FRAME_CAP_BYTES {
-        return Err(PackError::Transport {
-            detail: format!("frame too large: {length} bytes"),
-        });
-    }
-    let mut buffer = vec![0u8; length];
-    recv.read_exact(&mut buffer)
-        .await
-        .map_err(|error| PackError::Transport { detail: error.to_string() })?;
-    postcard::from_bytes(&buffer).map_err(|error| PackError::Codec { detail: error.to_string() })
-}
+// The bespoke length-prefixed postcard framing lived here and in ir-sync
+// verbatim; it now lives once in `transport::frame` (CONSOLIDATION-NOTES §8b).
+// The `FRAME_CAP_BYTES` above is passed to `transport::frame::recv_framed` as
+// the per-call declared-length cap (whole-pack payloads are large).
