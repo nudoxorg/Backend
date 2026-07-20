@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use nudox_change::{IntroId, PackageLineageId, StableRef};
+use nudox_ir::change::{IntroId, PackageLineageId, StableRef};
 use nudox_ir::wire::{KindWire, OwnedEntryPayload, TypeRefWire};
 use nudox_ir::IrView;
 
@@ -222,7 +222,7 @@ impl ReversePositionIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
     use nudox_ir::view::Occurrence;
     use nudox_ir::vocab::{Confidence, ReferenceKind, RelSpan};
     use nudox_ir::kind::KindDiscriminant;

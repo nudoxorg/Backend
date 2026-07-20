@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use nudox_change::{IntroId, StableRef};
+use nudox_ir::change::{IntroId, StableRef};
 use nudox_ir::wire::{
     ConstWire, EnumWire, FieldWire, FunctionWire, GenericParamWire, ImplWire, KindWire,
     OwnedEntryPayload, ParamWire, PrimitiveWire, RecordWire, ReexportWire, StaticWire, TraitWire,
@@ -200,7 +200,7 @@ pub fn substitute_and_reseal(payload: &OwnedEntryPayload, sigma: &Sigma) -> Owne
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::{EcosystemId, PackageLineageId, PackageName};
+    use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
     use nudox_ir::kind::KindDiscriminant;
     use nudox_ir::symbol::Visibility;
     use nudox_ir::wire::{EntryPayloadFlags, FnSigFlags, SymbolWire};

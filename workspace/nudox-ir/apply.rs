@@ -1,7 +1,7 @@
 //! [`PristineIntroTable`] — the materialized IR of one package at a channel tip.
 //!
 //! This is a pure **container**: a map of live entries keyed by
-//! [`nudox_change::IntroId`], plus their parent edges and links. It is *not* a
+//! [`crate::change::IntroId`], plus their parent edges and links. It is *not* a
 //! change engine — libpijul (via `nudox-ir-vcs`) owns changes, dependencies,
 //! apply, unrecord, and all provenance (which change introduced or deleted
 //! what). A symbol absent from the table simply has no file at the channel
@@ -11,8 +11,8 @@
 
 use rustc_hash::FxHashMap;
 
-use nudox_change::domain::LinkDomainKey;
-use nudox_change::{IntroId, StableRef};
+use crate::change::domain::LinkDomainKey;
+use crate::change::{IntroId, StableRef};
 
 use crate::kind::KindDiscriminant;
 use crate::wire::OwnedEntryPayload;
@@ -117,7 +117,7 @@ mod tests {
     use crate::wire::{
         EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, SymbolWire,
     };
-    use nudox_change::{EcosystemId, PackageLineageId, PackageName};
+    use crate::change::{EcosystemId, PackageLineageId, PackageName};
 
     fn payload(name: &str, module: bool) -> OwnedEntryPayload {
         let sym = SymbolWire {

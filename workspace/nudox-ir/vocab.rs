@@ -6,7 +6,7 @@
 //! category of a body reference), and [`RelSpan`] (a span expressed relative to
 //! the owning entry's span start).
 //!
-//! The declaration plane already speaks [`nudox_change::StableRef`]; the body
+//! The declaration plane already speaks [`crate::change::StableRef`]; the body
 //! plane adds only these small, frozen scalars. The wire encoding of every
 //! variant is its explicit `#[repr(u8)]` discriminant and must never be
 //! renumbered — the values are part of the `nudox.body.v1` format.

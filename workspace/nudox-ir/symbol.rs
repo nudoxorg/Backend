@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use nudox_change::StableRef;
+use crate::change::StableRef;
 
 use crate::index::StrId;
 

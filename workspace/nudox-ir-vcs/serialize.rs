@@ -8,7 +8,7 @@
 //! [`IntroId`] (canonical owner, determined by byte comparison). Cross-package
 //! links: the local endpoint always owns the entry.
 
-use nudox_change::{IntroId, StableRef};
+use nudox_ir::change::{IntroId, StableRef};
 use nudox_ir::kind::KindDiscriminant;
 use serde::{Deserialize, Serialize};
 

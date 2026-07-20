@@ -11,6 +11,14 @@ workspace = true
 path = "lib.rs"
 
 [dependencies]
+# First-party: the repo-side glue (`repo_glue`, formerly the `nudox-sync` crate)
+# drives an `IrRepository` over libpijul's filesystem changestore.
+heart        = { path = "../heart" }
+nudox-ir-vcs = { path = "../nudox-ir-vcs" }
+libpijul = "=1.0.0-beta.11"
+anyhow   = "1.0"
+tempfile = "3"
+
 # iroh provides the QUIC transport layer with Ed25519 node identity.
 # We use Minimal preset + MemoryLookup for in-process tests; RelayMode::Disabled
 # keeps tests offline.
@@ -34,4 +42,5 @@ blake3 = "1.8.5"
 tokio = { version = "1.53.0", features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
+nudox-ir     = { path = "../nudox-ir" }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "time"] }

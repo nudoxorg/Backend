@@ -44,8 +44,8 @@
 //! | `0x00` | Arch (pointer-sized)                 |
 //! | `0x01` | then u32le = Fixed(n) bits            |
 
-use nudox_change::encode::encode_str;
-use nudox_change::ContentBlake3;
+use crate::change::encode::encode_str;
+use crate::change::ContentBlake3;
 
 use crate::index::TypeFingerprintId;
 use crate::wire::{FnSigFlags, ParamWire, PrimitiveWire, SelfKind, TypeRefWire, TypeWire, WidthWire};
@@ -303,7 +303,7 @@ pub fn fnsig_flag_bytes(sig: &FnSigFlags) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_change::IntroId;
+    use crate::change::IntroId;
 
     fn dummy_intro() -> IntroId {
         IntroId::from_raw([0u8; 32])

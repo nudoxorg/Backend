@@ -18,11 +18,11 @@ use libpijul::working_copy::memory::Memory as MemWc;
 use libpijul::working_copy::{WorkingCopy, WorkingCopyRead};
 use libpijul::{MutTxnTExt, TxnTExt};
 
-use nudox_change::{ChangeSetFingerprint, IntroId, PackageLineageId, StableRef};
+use nudox_ir::change::{ChangeSetFingerprint, IntroId, PackageLineageId, StableRef};
 use nudox_ir::apply::{LinkRecord, PristineIntroTable};
 use nudox_ir::kind::KindDiscriminant;
 use nudox_ir::wire::OwnedEntryPayload;
-use nudox_ir_archive::{seal_from_entries, SealEntry, SealedArchive};
+use crate::archive::{seal_from_entries, SealEntry, SealedArchive};
 
 use crate::checkout::MaterializedIndex;
 use crate::error::VcsError;
@@ -696,7 +696,7 @@ where
             table.insert_live(intro, payload, view.parent());
 
             for link in view.links() {
-                let self_ref = nudox_change::StableRef::new(package_id.clone(), intro);
+                let self_ref = nudox_ir::change::StableRef::new(package_id.clone(), intro);
                 table.insert_link(LinkRecord {
                     a: self_ref,
                     b: link.other.clone(),
@@ -1945,7 +1945,7 @@ where
             .filter(|p| is_symbol_path(p))
             .collect();
 
-        let tip_intros: std::collections::HashSet<nudox_change::IntroId> = symbol_paths
+        let tip_intros: std::collections::HashSet<nudox_ir::change::IntroId> = symbol_paths
             .iter()
             .filter_map(|p| {
                 let hex = intro_hex_of(p)?;
@@ -1958,7 +1958,7 @@ where
                             let lo = (chunk[1] as char).to_digit(16)? as u8;
                             bytes[i] = (hi << 4) | lo;
                         }
-                        Some(nudox_change::IntroId::from_raw(bytes))
+                        Some(nudox_ir::change::IntroId::from_raw(bytes))
                     })
             })
             .collect();
@@ -2015,7 +2015,7 @@ where
     }
 
     /// `pub(crate)` reference to the package id for session.rs.
-    pub(crate) fn package_id(&self) -> &nudox_change::PackageLineageId {
+    pub(crate) fn package_id(&self) -> &nudox_ir::change::PackageLineageId {
         &self.package
     }
 
@@ -2120,7 +2120,7 @@ fn parse_intro_hex(hex: &str, path: &str) -> Result<IntroId, VcsError> {
 #[cfg(test)]
 mod delta_tests {
     use super::*;
-    use nudox_change::{EcosystemId, PackageName};
+    use nudox_ir::change::{EcosystemId, PackageName};
     use nudox_ir::apply::PristineIntroTable;
     use nudox_ir::kind::KindDiscriminant;
     use nudox_ir::symbol::Visibility;

@@ -18,7 +18,7 @@
 //! them. Where a fact cannot be known it is treated conservatively (excluded),
 //! never fabricated.
 
-use nudox_change::{IntroId, PackageLineageId, StableRef};
+use crate::change::{IntroId, PackageLineageId, StableRef};
 
 use crate::symbol::Visibility;
 use crate::view::IrView;
@@ -320,7 +320,7 @@ mod tests {
     use super::*;
     use crate::kind::KindDiscriminant;
     use crate::wire::{EntryPayloadFlags, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire};
-    use nudox_change::{EcosystemId, PackageLineageId, PackageName};
+    use crate::change::{EcosystemId, PackageLineageId, PackageName};
 
     fn pkg() -> PackageLineageId {
         PackageLineageId::new(EcosystemId::new("rust"), PackageName::new("demo"))

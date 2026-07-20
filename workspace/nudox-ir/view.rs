@@ -14,7 +14,7 @@
 
 use rustc_hash::FxHashMap;
 
-use nudox_change::{IntroId, PackageLineageId, StableRef};
+use crate::change::{IntroId, PackageLineageId, StableRef};
 
 use crate::apply::{LinkRecord, PristineIntroTable};
 use crate::body::BodyEmbed;

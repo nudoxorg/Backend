@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use ir_stream::StreamError;
+use crate::protocol::StreamError;
 
 /// Unified error type for all VCS operations.
 #[derive(Debug, Error)]
@@ -16,7 +16,7 @@ pub enum VcsError {
 
     /// Archive sealing failure.
     #[error("seal error: {0}")]
-    Seal(#[from] nudox_ir_archive::SealError),
+    Seal(#[from] crate::archive::SealError),
 
     /// A `symbols/*` file contained unexpected or empty content.
     #[error("corrupt symbol file at path '{path}': {reason}")]

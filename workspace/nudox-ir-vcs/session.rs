@@ -22,7 +22,7 @@ use libpijul::record::{Algorithm, Builder};
 use libpijul::working_copy::{WorkingCopy, WorkingCopyRead};
 use libpijul::{MutTxnTExt, TxnTExt};
 
-use nudox_change::{IntroId, StableRef};
+use nudox_ir::change::{IntroId, StableRef};
 use nudox_ir::apply::PristineIntroTable;
 use nudox_ir::wire::OwnedEntryPayload;
 
@@ -468,7 +468,7 @@ where
                 .map(|l| {
                     let durable_other = sigma.get(&l.other.intro).copied().unwrap_or(l.other.intro);
                     LinkWire {
-                        other: nudox_change::StableRef::new(l.other.package.clone(), durable_other),
+                        other: nudox_ir::change::StableRef::new(l.other.package.clone(), durable_other),
                         kind_self: l.kind_self,
                         kind_other: l.kind_other,
                     }

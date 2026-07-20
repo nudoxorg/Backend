@@ -86,7 +86,7 @@ pub enum EntryInner {
 /// Produced by the [`crate::builder::EntryBuilder`] and stored in
 /// [`EntryArena`]. Arena indices (`ArenaIdx`) are valid only for the arena
 /// that owns this entry; cross-session identity is carried by
-/// [`nudox_change::IntroId`].
+/// [`crate::change::IntroId`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     /// Language-agnostic symbol metadata.

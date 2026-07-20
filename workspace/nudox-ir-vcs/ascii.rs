@@ -6,7 +6,7 @@
 //! `typeref`: `S:<64hex>` (Same) | `F:<eco>/<pkg>#<64hex>` (Foreign)
 //! `typeexpr`: `self|never|any|prim:…|tuple:…|slice:…|array:…|union:…|intersection:…`
 
-use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
 use nudox_ir::wire::{PrimitiveWire, TypeRefWire, TypeWire, WidthWire};
 
 // ---------------------------------------------------------------------------

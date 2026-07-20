@@ -33,23 +33,17 @@ members = [
     # sandbox rejoins the cargo workspace: it is the home of SmolvmCage and the
     # budget/typestate layer; ir-stream is the guest→host IR streaming protocol.
     "workspace/compiler/sandbox",
-    "workspace/ir-stream",
     "workspace/ir-sync",
-    "workspace/nudox-sync",
     # ── IR-native VCS plane ──────────────────────────────────────────────────
     # The IR data model + serve archive + generation identity are the domain;
     # libpijul (via nudox-ir-vcs) is the change engine — we do NOT reimplement
     # patch theory. `nudox-ir-channel` is retired (its custom in-memory change
     # store was exactly that reimplementation) and is no longer built.
-    "workspace/nudox-change",
     "workspace/nudox-ir",
-    "workspace/nudox-ir-archive",
-    "workspace/nudox-ir-manifest",
+    # nudox-ir-vcs now also houses the former nudox-ir-archive, nudox-ir-diff,
+    # nudox-semver, and ir-stream crates as its `archive`/`diff`/`semver`/
+    # `protocol` submodules (IR-plane consolidation, 12 crates → 3).
     "workspace/nudox-ir-vcs",
-    # Semantic classification plane (SEMANTIC-IR-VCS-PLAN P3–P5): structural
-    # delta projection + IR-only ApiSurface/semver. Engine-neutral (no libpijul).
-    "workspace/nudox-ir-diff",
-    "workspace/nudox-semver",
     # Depth-1 structured record (DEPTH1 plan §3): the frozen F1 key registry +
     # the field-aware pairing function. Leaf crate; the vendored libpijul fork
     # links it as its only nudox dependency.

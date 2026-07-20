@@ -8,7 +8,7 @@
 //! use nudox_ir_vcs::stream::{record_stream, StreamPolicy, StreamedRecording};
 //!
 //! # fn example() -> Result<(), nudox_ir_vcs::VcsError> {
-//! # use nudox_change::{EcosystemId, PackageLineageId, PackageName};
+//! # use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
 //! # use nudox_ir_vcs::repo::IrRepository;
 //! # let pkg = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("mylib"));
 //! # let mut repo = IrRepository::in_memory(pkg, "main").unwrap();
@@ -34,7 +34,7 @@ use std::io::Read;
 use std::num::NonZeroU64;
 
 use heart::content::{ContentHash, JobKey};
-use ir_stream::{
+use crate::protocol::{
     BodyWire, FailureKindWire, PhaseWire, ProducerId, Received, StreamReceiver, WireEntry,
 };
 use libpijul::changestore::ChangeStore;
@@ -116,7 +116,7 @@ pub enum StreamedRecording {
         /// Raw occurrence section bytes (opaque; concatenation of all chunks).
         occurrences: Vec<u8>,
         /// Merged treesitter+oracle body facts emitted during the stream, keyed
-        /// by [`nudox_change::IntroId`]. These are the implementation-plane
+        /// by [`nudox_ir::change::IntroId`]. These are the implementation-plane
         /// companion of the declaration entries (INDEX-PLAN §5.1); the caller
         /// attaches them to the matching entry's `.nb` companion channel.
         bodies: Vec<BodyWire>,
@@ -166,7 +166,7 @@ pub enum StreamedRecording {
 ///
 /// # Errors
 ///
-/// Any [`ir_stream::StreamError`] (framing violation, count mismatch,
+/// Any [`crate::protocol::StreamError`] (framing violation, count mismatch,
 /// truncation, decode failure, version mismatch) causes `session.abandon()` to
 /// be called best-effort before returning [`VcsError::Stream`].
 ///
@@ -207,7 +207,7 @@ where
             Ok(None) => {
                 // Clean EOF without Finish/Abort — treated as truncation.
                 let _ = session.abandon();
-                return Err(VcsError::Stream(ir_stream::StreamError::Protocol(
+                return Err(VcsError::Stream(crate::protocol::StreamError::Protocol(
                     "stream ended without Finish or Abort".into(),
                 )));
             }
@@ -318,11 +318,11 @@ where
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Convert `ir_stream::WireLink` vec to `crate::serialize::LinkWire` vec.
+/// Convert `crate::protocol::WireLink` vec to `crate::serialize::LinkWire` vec.
 ///
 /// The two types are structurally identical; this is a crate-boundary rename
 /// with no data transformation.
-fn convert_links(src: Vec<ir_stream::WireLink>) -> Vec<LinkWire> {
+fn convert_links(src: Vec<crate::protocol::WireLink>) -> Vec<LinkWire> {
     src.into_iter()
         .map(|wl| LinkWire {
             other: wl.other,

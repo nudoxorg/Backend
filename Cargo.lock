@@ -4233,27 +4233,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "ir-stream"
-version = "0.1.0"
-dependencies = [
- "ecosystem",
- "heart",
- "nudox-change",
- "nudox-ir",
- "postcard",
- "serde",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "ir-sync"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "blake3",
+ "heart",
  "iroh",
  "iroh-blobs",
+ "libpijul",
+ "nudox-ir",
+ "nudox-ir-vcs",
  "postcard",
  "serde",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -5840,15 +5833,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nudox-change"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "serde",
- "smol_str",
-]
-
-[[package]]
 name = "nudox-f1"
 version = "0.1.0"
 dependencies = [
@@ -5862,7 +5846,8 @@ dependencies = [
  "async-trait",
  "blake3",
  "ecosystem",
- "nudox-change",
+ "heart",
+ "nonempty",
  "postcard",
  "proptest",
  "rustc-hash 1.1.0",
@@ -5872,101 +5857,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "nudox-ir-archive"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "nudox-change",
- "nudox-ir",
- "postcard",
- "rustc-hash 1.1.0",
- "serde",
- "smol_str",
- "thiserror 1.0.69",
- "yoke",
- "zerocopy",
-]
-
-[[package]]
-name = "nudox-ir-diff"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "nudox-change",
- "nudox-ir",
- "postcard",
- "serde",
- "smol_str",
-]
-
-[[package]]
-name = "nudox-ir-manifest"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "heart",
- "nonempty",
- "nudox-change",
- "postcard",
- "semver",
- "serde",
- "smol_str",
- "thiserror 1.0.69",
- "uuid",
-]
-
-[[package]]
 name = "nudox-ir-vcs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "ecosystem",
  "governor",
  "heart",
- "ir-stream",
  "jiff",
  "libpijul",
  "moka",
- "nudox-change",
  "nudox-f1",
  "nudox-ir",
- "nudox-ir-archive",
- "nudox-ir-diff",
- "nudox-ir-manifest",
  "postcard",
+ "rustc-hash 1.1.0",
  "serde",
  "smol_str",
  "tempfile",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "nudox-semver"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "nudox-change",
- "nudox-ir",
- "nudox-ir-diff",
- "serde",
- "smol_str",
-]
-
-[[package]]
-name = "nudox-sync"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "heart",
- "ir-sync",
- "iroh",
- "libpijul",
- "nudox-change",
- "nudox-ir",
- "nudox-ir-vcs",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
+ "yoke",
+ "zerocopy",
 ]
 
 [[package]]
@@ -7874,7 +7785,6 @@ dependencies = [
  "ir",
  "moka",
  "nonempty",
- "nudox-change",
  "nudox-ir",
  "nutype",
  "object_store",

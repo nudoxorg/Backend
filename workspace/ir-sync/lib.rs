@@ -37,9 +37,15 @@
 pub mod types;
 pub mod transport;
 pub mod io;
+/// Repo-side glue between the IR VCS (`nudox-ir-vcs`) and this iroh change-sync
+/// transport: the filesystem `ChangeIo`, the `IrRepository` apply hook, and the
+/// merge-event constructors. Folded in from the former `nudox-sync` crate.
+pub mod repo_glue;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_repo_glue;
 
 pub use types::{
     ChangeId, ChannelRef, PackageName, TipAnnouncement, SyncAck, VerifyError, SyncError,
@@ -47,3 +53,7 @@ pub use types::{
 };
 pub use io::{ChangeIo, ApplyHook, MemChangeIo};
 pub use transport::{Syncer, SyncService, RemoteConfig};
+pub use repo_glue::{
+    FsChangeIo, RepoApplyHook, SyncGlueError, TrustGateError, merge_event,
+    trusted_provide_endpoint,
+};

@@ -12,7 +12,7 @@
 //! channel-tip Merkle that identifies its reconstructable IR (and keys the
 //! serve cache).
 
-use nudox_change::ChangeSetFingerprint;
+use nudox_ir::change::ChangeSetFingerprint;
 use smol_str::SmolStr;
 
 use crate::error::VcsError;

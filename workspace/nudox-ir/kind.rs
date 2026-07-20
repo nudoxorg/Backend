@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::index::{self, sealed};
-use nudox_change::{IntroId, StableRef};
+use crate::change::{IntroId, StableRef};
 
 // ---------------------------------------------------------------------------
 // KindDiscriminant

@@ -4,7 +4,7 @@
 
 #![cfg(test)]
 
-use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName};
+use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 use nudox_ir::apply::PristineIntroTable;
 use nudox_ir::kind::KindDiscriminant;
 use nudox_ir::symbol::Visibility;

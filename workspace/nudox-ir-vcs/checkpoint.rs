@@ -19,7 +19,7 @@
 //! checkpoint ages out and v3's is sealed in its place.
 //!
 //! [`materialize_ref_incremental`]: crate::repo::IrRepository::materialize_ref_incremental
-//! [`SealedArchive`]: nudox_ir_archive::SealedArchive
+//! [`SealedArchive`]: crate::archive::SealedArchive
 //! [`MaterializedIndex`]: crate::checkout::MaterializedIndex
 
 use std::num::NonZeroU32;
@@ -28,7 +28,7 @@ use std::sync::Arc;
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use libpijul::changestore::ChangeStore;
 use moka::sync::Cache;
-use nudox_ir_archive::SealedArchive;
+use crate::archive::SealedArchive;
 
 use crate::checkout::MaterializedIndex;
 use crate::error::VcsError;
@@ -268,7 +268,7 @@ impl CheckpointCache {
 mod tests {
     use super::*;
 
-    use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName};
+    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
     use nudox_ir::apply::PristineIntroTable;
     use nudox_ir::kind::KindDiscriminant;
     use nudox_ir::symbol::Visibility;

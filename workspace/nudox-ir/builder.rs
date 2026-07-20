@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use nudox_change::{IntroId, PackageLineageId};
+use crate::change::{IntroId, PackageLineageId};
 
 use crate::entry::{Entry, EntryArena, EntryInner, Node, StringInterner};
 use crate::index::{ArenaIdx, PackageIdx, RawEntryIdx, StrId};
@@ -451,7 +451,7 @@ impl EntryBuilder {
         span: ByteSpan,
         parent: Option<ArenaIdx>,
         doc: Option<&str>,
-        target: nudox_change::StableRef,
+        target: crate::change::StableRef,
     ) -> ArenaIdx {
         let sym_wire = Self::make_symbol_wire(name, visibility, source_path, span, doc);
         self.push_entry(
@@ -685,7 +685,7 @@ mod tests {
     use crate::wire::{ImplFlags, TraitFlags, TypeWire, VariantForm};
 
     fn cargo_pkg() -> PackageLineageId {
-        use nudox_change::{EcosystemId, PackageName};
+        use crate::change::{EcosystemId, PackageName};
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("mylib"))
     }
 
@@ -764,7 +764,7 @@ mod tests {
     #[test]
     fn overloaded_functions_get_distinct_intros() {
         use crate::wire::ParamWire;
-        use nudox_change::IntroId;
+        use crate::change::IntroId;
 
         let mut builder = EntryBuilder::new();
         let pkg = cargo_pkg();
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn add_new_kinds_all_compile() {
         // Smoke test: verifies all add_* variants are callable and produce payloads.
-        use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+        use crate::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
 
         let pkg = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("smoke"));
         let mut b = EntryBuilder::new();
@@ -852,7 +852,7 @@ mod tests {
     /// skeleton never enters the preimage.
     #[test]
     fn unique_fn_id_stable_across_signature_change() {
-        use nudox_change::IntroId;
+        use crate::change::IntroId;
 
         let pkg = cargo_pkg();
         let param = |raw: u8| ParamWire { name: Some("x".into()), ty: TypeRefWire::Same(IntroId::from_raw([raw; 32])) };
@@ -884,7 +884,7 @@ mod tests {
         gen2.add_function("f", Visibility::Public, "src/lib.rs", ByteSpan::new(1, 2), None, None, vec![], vec![]);
         gen2.add_function(
             "f", Visibility::Public, "src/lib.rs", ByteSpan::new(3, 4), None, None,
-            vec![ParamWire { name: None, ty: TypeRefWire::Same(nudox_change::IntroId::from_raw([9u8; 32])) }],
+            vec![ParamWire { name: None, ty: TypeRefWire::Same(crate::change::IntroId::from_raw([9u8; 32])) }],
             vec![],
         );
         let flipped_id = gen2.seal_payloads(&pkg)[0].0;

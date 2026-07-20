@@ -3,7 +3,7 @@
 //! The durable IR unit is a per-package set of [`entry::Entry`] values
 //! (`Symbol` + `Node` + kind body), addressed *within a generation* by typed
 //! [`index::EntryIdx`] handles and *across generations / on the wire* by
-//! [`nudox_change::IntroId`] / [`nudox_change::StableRef`].
+//! [`crate::change::IntroId`] / [`crate::change::StableRef`].
 //!
 //! This crate owns the **data model** only — the entry/symbol/kind types, the
 //! wire twins, the deterministic [`intro`] bootstrap, the type-[`skeleton`]
@@ -16,6 +16,14 @@
 //! Spec context: `.research/ir-vcs/design/SEMANTIC-IR-VCS-PLAN.md` and brief
 //! `06-new-ir-rewrite.md` (data model); the change-algebra sections are
 //! superseded by the libpijul-backed VCS.
+
+// ── Folded-in leaf planes (formerly sibling crates) ─────────────────────────
+/// Content-addressed identity primitives (formerly the `nudox-change` crate):
+/// domain-separated BLAKE3 hashes, `IntroId`/`ChangeId`/`StableRef`, encode.
+pub mod change;
+/// Generation manifest + `GenerationStamp` derivation (formerly the
+/// `nudox-ir-manifest` crate): `BlobManifestV3`, outbox staging.
+pub mod manifest;
 
 pub mod apply;
 pub mod body;

@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use nudox_change::{ContentBlake3, IntroId, StableRef};
+use crate::change::{ContentBlake3, IntroId, StableRef};
 
 use crate::kind::KindDiscriminant;
 use crate::symbol::Visibility;
@@ -866,9 +866,9 @@ mod tests {
             (
                 KindWire::Reexport(ReexportWire {
                     target: StableRef::new(
-                        nudox_change::PackageLineageId::new(
-                            nudox_change::EcosystemId::new("cargo"),
-                            nudox_change::PackageName::new("foo"),
+                        crate::change::PackageLineageId::new(
+                            crate::change::EcosystemId::new("cargo"),
+                            crate::change::PackageName::new("foo"),
                         ),
                         IntroId::from_raw([0u8; 32]),
                     ),

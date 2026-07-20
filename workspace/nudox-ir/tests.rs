@@ -8,7 +8,7 @@
 use crate::apply::PristineIntroTable;
 use crate::builder::EntryBuilder;
 use crate::symbol::{ByteSpan, Visibility};
-use nudox_change::{EcosystemId, PackageLineageId, PackageName};
+use crate::change::{EcosystemId, PackageLineageId, PackageName};
 
 fn pkg() -> PackageLineageId {
     PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("mylib"))

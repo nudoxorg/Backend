@@ -13,7 +13,7 @@
 use ecosystem::Language;
 use proptest::prelude::*;
 
-use nudox_change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+use crate::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
 
 use crate::body::{
     merge_body, overlapping_call, BodyCall, BodyEmbed, BodyFacts, BodyMergeNote, OracleBody,

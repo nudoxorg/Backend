@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use moka::sync::Cache;
-use nudox_ir_archive::SealedArchive;
+use crate::archive::SealedArchive;
 
 use crate::version::VersionState;
 

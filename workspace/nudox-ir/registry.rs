@@ -25,7 +25,7 @@ use std::sync::RwLock;
 
 use async_trait::async_trait;
 
-use nudox_change::{IntroId, PackageLineageId, StableRef};
+use crate::change::{IntroId, PackageLineageId, StableRef};
 
 use crate::apply::PristineIntroTable;
 use crate::index::EntryKind;
@@ -252,7 +252,7 @@ mod tests {
     use crate::kind::KindDiscriminant;
     use crate::symbol::Visibility;
     use crate::wire::{EntryPayloadFlags, KindWire, OwnedEntryPayload, SymbolWire};
-    use nudox_change::{EcosystemId, PackageName};
+    use crate::change::{EcosystemId, PackageName};
 
     fn make_pkg() -> PackageLineageId {
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("testpkg"))
