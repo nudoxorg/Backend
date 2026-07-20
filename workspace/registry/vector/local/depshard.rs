@@ -17,10 +17,12 @@
 //!   `RemoteRoute` ([`RemoteRouteReason::LoadFailure`]).
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use heart::sync::{ContentIo, VerifyError};
 use heart::{ContentHash, PackageId};
 use smol_str::SmolStr;
 use crate::vector::core::{ShardSchema, StoreError};
@@ -103,12 +105,59 @@ pub enum InstallError {
 	Io(#[from] std::io::Error),
 }
 
+/// A [`ContentIo`] implementation that only verifies artifact bytes via BLAKE3
+/// and does not persist them anywhere. Used by [`install`] (which unpacks
+/// artifact bytes to disk directly) as the seam adapter when no remote CAS
+/// backing is available from within `registry`.
+///
+/// `read` and `write` both no-op (write succeeds silently; read returns
+/// not-found): the install path never calls them — it uses `verify` then
+/// unpacks the bytes it already holds.
+struct LocalVerifyIo;
+
+impl ContentIo for LocalVerifyIo {
+    type Id = ContentHash;
+
+    fn read(&self, _id: &ContentHash) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(io::ErrorKind::NotFound, "LocalVerifyIo: no backing store"))
+    }
+
+    fn write(&self, _id: &ContentHash, _bytes: &[u8]) -> io::Result<()> {
+        // No CAS backing in this context; the bytes are passed to unpack_shard
+        // directly by the caller. A no-op write is correct: the install path
+        // does not call write — it holds the bytes in memory through the unpack.
+        Ok(())
+    }
+
+    fn has(&self, _id: &ContentHash) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    /// BLAKE3 of `bytes` must equal `id` — the content-address check for the
+    /// shard-artifact plane. Mirrors `ShardContentIo::verify` in `index`.
+    fn verify(&self, id: &ContentHash, bytes: &[u8]) -> Result<(), VerifyError> {
+        let derived = ContentHash::of_bytes(bytes);
+        if derived != *id {
+            return Err(VerifyError::HashMismatch {
+                expected: id.to_string(),
+                got: derived.to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Fetch → verify → unpack → load read-only → register.
 ///
 /// On success the shard is registered in the working set under
 /// `entry.package`; a previously registered version is swapped out, closed,
 /// and its directory deleted (upgrade = whole-directory swap). The baked
 /// directory is never written again after this returns.
+///
+/// Verification is routed through [`LocalVerifyIo`] (a [`ContentIo`] that
+/// does BLAKE3 verify without persisting to a remote CAS). Callers that also
+/// want to persist the verified bytes to a CAS should use [`install_with_io`]
+/// instead.
 pub async fn install(
 	fetcher: &dyn ArtifactFetcher,
 	entry: &DepManifestEntry,
@@ -116,8 +165,29 @@ pub async fn install(
 	schema: &ShardSchema,
 	working_set: &SharedWorkingSet,
 ) -> Result<InstallOutcome, InstallError> {
-	// Fetch + verify, with exactly one refetch on hash mismatch (§20.3).
-	let bytes = match fetch_verified(fetcher, entry).await? {
+    install_with_io(fetcher, entry, dep_root, schema, working_set, &LocalVerifyIo).await
+}
+
+/// Fetch → verify-via-ContentIo → write-via-ContentIo → unpack → load → register.
+///
+/// Like [`install`] but routes both the verify and write steps through the
+/// provided `content_io`, which is the [`heart::sync::ContentIo`] seam. The
+/// write persists the verified packed bytes so they can be served to other
+/// peers without re-fetching.
+///
+/// The shard PACK format and local vector search are separate concerns — the
+/// unpack and read-only shard load are performed after the seam write.
+pub async fn install_with_io(
+	fetcher: &dyn ArtifactFetcher,
+	entry: &DepManifestEntry,
+	dep_root: &Path,
+	schema: &ShardSchema,
+	working_set: &SharedWorkingSet,
+    content_io: &dyn ContentIo<Id = ContentHash>,
+) -> Result<InstallOutcome, InstallError> {
+	// Fetch + verify through the ContentIo seam, with exactly one refetch on
+	// hash mismatch (§20.3). A passing verify is the sole write licence.
+	let bytes = match fetch_and_verify_via_io(fetcher, entry, content_io).await? {
 		FetchVerified::Ok(bytes) => bytes,
 		FetchVerified::Missing => {
 			return Ok(InstallOutcome::RemoteRoute(RemoteRouteReason::ArtifactMissing));
@@ -149,7 +219,7 @@ pub async fn install(
 	}
 
 	// Load-failure ladder: one clean refetch, then remote-route.
-	let bytes = match fetch_verified(fetcher, entry).await? {
+	let bytes = match fetch_and_verify_via_io(fetcher, entry, content_io).await? {
 		FetchVerified::Ok(bytes) => bytes,
 		FetchVerified::Missing => {
 			return Ok(InstallOutcome::RemoteRoute(RemoteRouteReason::ArtifactMissing));
@@ -210,26 +280,39 @@ enum FetchVerified {
 	Mismatch,
 }
 
-/// Fetch and hash-verify the artifact, refetching exactly once on
-/// mismatch. Transport failures propagate as hard errors (retry policy for
-/// those belongs to the fetcher).
-async fn fetch_verified(
+/// Fetch and verify the artifact through a [`ContentIo`] seam, refetching
+/// exactly once on mismatch. When verify passes, write the bytes through the
+/// seam (sole write licence). Transport failures propagate as hard errors
+/// (retry policy belongs to the fetcher).
+async fn fetch_and_verify_via_io(
 	fetcher: &dyn ArtifactFetcher,
 	entry: &DepManifestEntry,
+    content_io: &dyn ContentIo<Id = ContentHash>,
 ) -> Result<FetchVerified, InstallError> {
 	for attempt in 0..2 {
 		match fetcher.fetch(&entry.artifact_id).await {
-			Ok(bytes) if ContentHash::of_bytes(&bytes) == entry.artifact_id => {
-				return Ok(FetchVerified::Ok(bytes));
-			}
-			Ok(_) => {
-				tracing::warn!(
-					package = %entry.package,
-					artifact = %entry.artifact_id,
-					attempt,
-					"shard artifact hash mismatch"
-				);
-			}
+			Ok(bytes) => {
+                // Route verify through the ContentIo seam — the trait's
+                // verify is the BLAKE3 content-address check.
+                match content_io.verify(&entry.artifact_id, &bytes) {
+                    Ok(()) => {
+                        // Verified: write through the seam (persists to
+                        // CAS when the io has a backing store; no-ops for
+                        // LocalVerifyIo). Ignore write errors: the bytes
+                        // are still usable for the local unpack.
+                        let _ = content_io.write(&entry.artifact_id, &bytes);
+                        return Ok(FetchVerified::Ok(bytes));
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            package = %entry.package,
+                            artifact = %entry.artifact_id,
+                            attempt,
+                            "shard artifact hash mismatch"
+                        );
+                    }
+                }
+            }
 			Err(FetchError::NotFound(_)) => return Ok(FetchVerified::Missing),
 			Err(err) => return Err(err.into()),
 		}

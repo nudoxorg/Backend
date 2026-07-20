@@ -44,7 +44,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use heart::{ContentHash, PackageId};
-use registry::blob::creation::PendingSection;
+use heart::sync::ContentIo as _;
+use index::shard_sync::ShardContentIo;
 use registry::vector::{EmbedRole, EmbeddingCache, EmbeddingKey, EmbeddingModel};
 use vector::model::{Metric, ModelId};
 use vector::quant::QuantProfile;
@@ -342,13 +343,15 @@ pub async fn bake_package<M: EmbeddingModel>(
 		.await
 		.map_err(|join_err| BakeryError::Io(std::io::Error::other(join_err)))??;
 
-	stores
-		.blobs
-		.put_section(&PendingSection {
-			hash: artifact_hash,
-			bytes: bytes::Bytes::from(artifact_bytes),
-		})
-		.await?;
+	// Route the CAS write through the ShardContentIo seam (heart::sync::ContentIo).
+	// verify is the sole write licence; write is idempotent (re-put of identical
+	// bytes under the same hash is a no-op in the CAS backend).
+	// Store<Live> is Clone (shared Arc<dyn ObjectStore> backend).
+	let shard_io = ShardContentIo::new(Arc::new(stores.blobs.clone()));
+	shard_io.verify(&artifact_hash, &artifact_bytes)
+		.map_err(|e| BakeryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
+	shard_io.write(&artifact_hash, &artifact_bytes)
+		.map_err(BakeryError::Io)?;
 
 	let ram_estimate = vector::admission::ram_estimate_bytes(n_symbols as u64) as i64;
 	Ok(BakedArtifact { artifact: artifact_hash, ram_estimate, symbols: n_symbols })

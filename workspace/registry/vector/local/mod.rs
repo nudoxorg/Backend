@@ -28,7 +28,7 @@ pub use compact::{
 };
 pub use depshard::{
 	ArtifactFetcher, DepManifestEntry, FetchError, InstallError, InstallOutcome, RemoteRouteReason,
-	evict, install,
+	evict, install, install_with_io,
 };
 pub use fanout::{SharedWorkingSet, WorkingSet, merge_hits};
 pub use hotset::{AdmissionState, HotSetManager, InstallPlan, PackageStats, apply_plan, diff_plan};

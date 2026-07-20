@@ -44,6 +44,14 @@ pub struct Store<S = Live> {
 	_state: std::marker::PhantomData<S>,
 }
 
+impl<S> Clone for Store<S> {
+    /// Clone shares the underlying `Arc<dyn ObjectStore>` backend; no
+    /// deep copy is performed.
+    fn clone(&self) -> Self {
+        Self { backend: Arc::clone(&self.backend), _state: std::marker::PhantomData }
+    }
+}
+
 impl Store<Cold> {
 	/// Wrap an object-store backend without verifying reachability. The choice of
 	/// backend (`AmazonS3`, `GoogleCloudStorage`, `LocalFileSystem`, ...) is where

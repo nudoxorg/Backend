@@ -753,7 +753,7 @@ impl SmolvmRuntime {
 ///
 /// `ImageDigest::to_string()` is `sha256:<hex>`; smolvm's `validate_vm_name`
 /// rejects `:`, so we key on the hex only (collision-free per digest).
-fn golden_vm_name(image: &ImageDigest) -> String {
+pub(crate) fn golden_vm_name(image: &ImageDigest) -> String {
 	let s = image.to_string();
 	let hex = s.strip_prefix("sha256:").unwrap_or(&s);
 	// Keep it short and unambiguous; the full hex keeps distinct digests distinct.

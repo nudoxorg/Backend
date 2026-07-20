@@ -73,6 +73,10 @@ pub mod health;
 /// The shard-bakery ledger (`edgepack_artifacts` claim store); the vector-bake
 /// compute is staged to `registry::vector` / the client composition (§8).
 pub mod bakery;
+/// `heart::sync::ContentIo` implementation for vector edge-shard artifacts:
+/// [`shard_sync::ShardContentIo`] wraps the CAS store and is the seam through
+/// which baked shard bytes are persisted and dep-shard installs are verified.
+pub mod shard_sync;
 /// Shared upstream HTTP client + catalog followers (crates/nuget pollers, §8).
 pub mod upstream;
 /// The global catalog store glue (`GlobalStore<Engine>` + `InstanceToken`);
