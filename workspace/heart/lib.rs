@@ -4,6 +4,9 @@
 pub mod access;
 pub mod availability;
 pub mod cache;
+/// Client glue (§8): the typed wire DTOs and capability vocabulary a client
+/// uses to compose the `index` and `registry` layers. Transport-free.
+pub mod client;
 pub mod connection;
 pub mod content;
 pub mod cursor;
@@ -14,6 +17,7 @@ pub mod error;
 pub mod health;
 pub mod identity;
 pub mod object_pack;
+pub mod page;
 pub mod package;
 pub mod progress;
 pub mod query;
@@ -21,6 +25,9 @@ pub mod score;
 pub mod search;
 pub mod sink;
 pub mod symbol;
+/// The generic content-addressed sync seam (`ContentIo`/`ApplyHook`), shared by
+/// the IR VCS change-sync and the object-pack member-sync planes.
+pub mod sync;
 pub mod tenant;
 pub mod version;
 

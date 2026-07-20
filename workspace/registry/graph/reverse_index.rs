@@ -19,9 +19,9 @@
 
 use std::collections::BTreeMap;
 
-use nudox_ir::change::{IntroId, PackageLineageId, StableRef};
-use nudox_ir::wire::{KindWire, OwnedEntryPayload, TypeRefWire};
-use nudox_ir::IrView;
+use ir::change::{IntroId, PackageLineageId, StableRef};
+use ir::wire::{KindWire, OwnedEntryPayload, TypeRefWire};
+use ir::IrView;
 
 // ---------------------------------------------------------------------------
 // SCHEMA_VERSION
@@ -222,15 +222,15 @@ impl ReversePositionIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
-    use nudox_ir::view::Occurrence;
-    use nudox_ir::vocab::{Confidence, ReferenceKind, RelSpan};
-    use nudox_ir::kind::KindDiscriminant;
-    use nudox_ir::wire::{
+    use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+    use ir::view::Occurrence;
+    use ir::vocab::{Confidence, ReferenceKind, RelSpan};
+    use ir::kind::KindDiscriminant;
+    use ir::wire::{
         EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, SymbolWire, TraitFlags,
         TraitWire,
     };
-    use nudox_ir::IrView;
+    use ir::IrView;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -255,7 +255,7 @@ mod tests {
     fn sym(name: &str) -> SymbolWire {
         SymbolWire {
             name: name.into(),
-            visibility: nudox_ir::symbol::Visibility::Public,
+            visibility: ir::symbol::Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".into(),
             span_start: 0,
@@ -268,8 +268,8 @@ mod tests {
         }
     }
 
-    fn module_payload(name: &str) -> nudox_ir::wire::OwnedEntryPayload {
-        nudox_ir::wire::OwnedEntryPayload::sealed(
+    fn module_payload(name: &str) -> ir::wire::OwnedEntryPayload {
+        ir::wire::OwnedEntryPayload::sealed(
             sym(name),
             KindDiscriminant::Module,
             KindWire::Module(ModuleWire {}),
@@ -277,8 +277,8 @@ mod tests {
         )
     }
 
-    fn fn_payload(name: &str) -> nudox_ir::wire::OwnedEntryPayload {
-        nudox_ir::wire::OwnedEntryPayload::sealed(
+    fn fn_payload(name: &str) -> ir::wire::OwnedEntryPayload {
+        ir::wire::OwnedEntryPayload::sealed(
             sym(name),
             KindDiscriminant::Function,
             KindWire::Function(FunctionWire {
@@ -292,8 +292,8 @@ mod tests {
         )
     }
 
-    fn trait_payload_with_super(name: &str, super_ref: TypeRefWire) -> nudox_ir::wire::OwnedEntryPayload {
-        nudox_ir::wire::OwnedEntryPayload::sealed(
+    fn trait_payload_with_super(name: &str, super_ref: TypeRefWire) -> ir::wire::OwnedEntryPayload {
+        ir::wire::OwnedEntryPayload::sealed(
             sym(name),
             KindDiscriminant::Trait,
             KindWire::Trait(TraitWire {

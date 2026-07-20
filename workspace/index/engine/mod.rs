@@ -19,9 +19,12 @@
 use std::fmt;
 
 pub mod memory;
+pub mod stmt;
 
 #[cfg(feature = "dolt-engine")]
 pub mod dolt;
+
+pub use stmt::{exec, query};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Values
@@ -239,29 +242,21 @@ pub trait VersioningEngine: CatalogEngine {
         unix_milliseconds: i64,
     ) -> Result<Option<CommitHash>, EngineError>;
 
-    /// Read one table **as of** a historical commit reference (INDEX-PLAN §9,
-    /// §18 scenario 1: "dependents of X at time T via catalog only").
+    /// Read one entity table **as of** a historical commit reference
+    /// (INDEX-PLAN §9, §18 scenario 1).
     ///
-    /// `table` is the plain table name; `commit_reference` is a DoltLite ref
-    /// (a commit hash, `HEAD~N`, or a branch name). The real engine rewrites the
-    /// read against the point-in-time table-valued function `dolt_at_<table>(ref)`
-    /// (the vendored engine exposes no `AS OF <ts>` SQL). `where_clause` is
-    /// appended verbatim after the table expression, so it **must** be
-    /// caller-controlled text with any user values bound through `params`
-    /// (`?`-placeholders), never interpolated — the same injection discipline as
-    /// every other statement in this crate.
-    ///
-    /// `table` is validated against a known catalog table name before use, so a
-    /// crafted `table` string can never reach the SQL text.
-    fn query_rows_at<T>(
+    /// `Ent` is the SeaORM entity (the table is the entity itself — no
+    /// parallel name enum). `configure` receives a sea-query select whose
+    /// `FROM` is already set (tip table for the memory fake; the entity's
+    /// [`crate::entity::Historical::DOLT_AT`] TVF for the real engine) and
+    /// only adds columns / WHERE.
+    fn query_rows_at<Ent, T>(
         &self,
         commit_reference: &str,
-        table: &str,
-        projection: &str,
-        where_clause: &str,
-        params: &[Value],
+        configure: &mut dyn FnMut(&mut sea_orm::sea_query::SelectStatement),
         map: &mut dyn FnMut(&dyn Row) -> Result<T, EngineError>,
     ) -> Result<Vec<T>, EngineError>
     where
-        Self: Sized;
+        Self: Sized,
+        Ent: crate::entity::Historical;
 }

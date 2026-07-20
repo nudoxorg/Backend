@@ -1,0 +1,56 @@
+# transport — the ONE shared content-transfer plane (CONSOLIDATION-NOTES §8b/§8c).
+#
+# The bao/iroh "provide a content-addressed blob / fetch+verify it" logic used
+# to exist twice: `ir-vcs::sync` had a bespoke iroh endpoint + iroh-blobs
+# provide/fetch for pijul change files, and `index::pack` had its own iroh
+# endpoint + framed request/response for NDPK members. Same mechanism, twice.
+#
+# This crate holds it once, abstracted:
+#   * `endpoint` — the iroh `presets::Minimal` endpoint builder (secret key,
+#     optional in-process `MemoryLookup`, loopback bind) both planes copied.
+#   * `frame`    — the length-prefixed postcard bi-stream framing both planes
+#     copied verbatim (differing only in u32 vs u64 length prefix — unified).
+#   * `blob`     — an iroh-blobs `MemStore` `Provider`/`Fetcher`: serve a
+#     content-addressed blob by hash, fetch a blob by transport-hash into
+#     size-capped bytes for the caller's `ContentIo::verify`.
+#   * `bao`      — bao-tree outboard generate / verified-range encode / decode
+#     (the sidecar math `index::pack` owned).
+#
+# heart stays iroh-free: this crate deps `heart` only for the `heart::sync`
+# error vocabulary (`SyncError`/`VerifyError`), never the reverse.
+[package]
+name = "transport"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+# The abstract seam + error vocabulary. heart is iroh-free; this crate is the
+# concrete transport that lives beside it.
+heart = { path = "../heart" }
+
+# ── iroh transport plane ─────────────────────────────────────────────────────
+# QUIC transport with Ed25519 endpoint identity. Versions pinned in lockstep
+# with the planes that used to carry these deps directly (ir-vcs, index).
+iroh = { version = "1.0.2", default-features = false, features = ["tls-ring"] }
+# BLAKE3-verified blob store + BlobsProtocol handler (the opaque-blob path).
+iroh-blobs = { version = "0.103.0", default-features = false }
+# Bao Merkle-tree outboards for verified range streaming (the typed-range path).
+bao-tree = { version = "0.16.0", default-features = false }
+# async runtime for the iroh transport.
+tokio = { version = "1.53.0", features = ["rt", "sync", "time", "macros"] }
+
+bytes = "1"
+blake3 = "1.8"
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["use-std", "alloc"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "time"] }

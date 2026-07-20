@@ -175,7 +175,7 @@ pub enum QueryMode {
 /// The quality tier a client requests for the dense stage (09-vector §20.5).
 ///
 /// Owned in `heart` so the wire contract stays decoupled from the vector-core
-/// vocabulary it lowers into; `vector_core::routing::QualityMode` maps `From`
+/// vocabulary it lowers into; `vector::routing::QualityMode` maps `From`
 /// this. Absent on the wire → [`QualityMode::Parity`] (a serving request is
 /// online by definition; `Local` is the client-side default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,7 +200,7 @@ impl Default for QualityMode {
 /// What slice of the world a dense query addresses (09-vector §20.5).
 ///
 /// Named `QueryReach` in the wire algebra to avoid colliding with [`Scope`]
-/// (the ecosystem/package narrowing); `vector_core::routing::QueryScope` maps
+/// (the ecosystem/package narrowing); `vector::routing::QueryScope` maps
 /// `From` this. Absent on the wire → [`QueryReach::Org`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

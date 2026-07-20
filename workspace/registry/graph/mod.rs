@@ -3,7 +3,7 @@
 //!
 //! The graph module provides two orthogonal layers:
 //!
-//! 1. [`reverse_index`] — a disposable projection rebuilt from an [`nudox_ir::IrView`]
+//! 1. [`reverse_index`] — a disposable projection rebuilt from an [`ir::IrView`]
 //!    at a known `(channel_tip, schema_version)` key. It materialises the reverse
 //!    occurrence and type-reference postings so look-ups are O(log n) instead of a
 //!    linear scan over all occurrences.

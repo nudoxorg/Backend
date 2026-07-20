@@ -70,6 +70,10 @@ sandbox    → smolvm, heart
 
 ## 1. Target architecture (proposed — derive from INDEX-PLAN §21 + memory)
 
+> **⚠ SUPERSEDED by §7 (2026-07-20 user redirect).** The crate set below (6 backend
+> crates incl. `server`; vector→`registry::vector`; object-pack→`index`) is the OLD
+> target. Read §7 for the current one. Kept for history/rationale.
+
 **Three workspaces. Backend never deps libpijul. IR may dep heart.**
 
 ### BACKEND workspace — 6 crates
@@ -234,6 +238,11 @@ This is the "two-architecture fork" from memory: compiler/registry duplicate cap
 
 ## 5. Open structural decisions (need confirm before big moves)
 
+> **⚠ Decisions here PARTLY SUPERSEDED by §7 (2026-07-20 redirect):** object-pack
+> now → sync (not index); vector → one standalone `vector` crate (not registry);
+> `server` dissolves into `registry`; rusqdoltlite → `vendor/`; ir-sync → `heart::sync`
+> trait + IR-plane impl. The "session order" and sandbox note still hold.
+
 6 BACKEND crates: `ecosystem`, `heart`, `index`, `registry`, `ingestor`, `server`. + `sandbox` (compile plane, outside the 6).
 **Decisions LOCKED (2026-07-20):**
 - object-pack **→ `index::object_pack`** (persistence plane).
@@ -302,4 +311,351 @@ GUI workspace
 - 2026-07-20: **Terminus full-send — landmine verified:** `registry::index::TerminusInstance` is a MISNAMED **identity-namespace token** (`{org}/{db}` salts every global `SymbolId` — `registry/identity.rs` + `GlobalStore::mint`), its own doc says "name is historical; no graph database involved." → **KEEP+RENAME `TerminusInstance`→`InstanceToken`**; DELETE only the real graph store `registry::runtime::graph`. server config org/db feeds the token (keep, rename) while terminus URL/user/password are pure graph-store (drop). Old SymbolId graph surface (get_occurrences/references/expand) is superseded by StableRef `Target::Usages` (already wired to `usage_backend`, honest 503 until IR materialized). Footprint ~25 files.
 - 2026-07-20: **Terminus full-send DROP — DONE, committed `138e6392`, lib green.** Deleted `registry/runtime/graph` (Terminus/WOQL client + expansion/structure + graph tests). `TerminusInstance`→`InstanceToken` (identity salt, kept). `RelationKind`→`registry::runtime::session`. server: removed `Graph<Live>` from SourceStores/assembly/health; config dropped terminus URL/user/password + default-cred guard, kept org/db as `instance_organization`/`instance_database`; poll graph sink = documented no-op; `related_hits` = honest-empty (IR reverse-index/`Target::Usages` is the surface; IP-7 materialization pending). `cargo check -p registry -p server` green. **Follow-up: test files referencing terminus config / old graph surface need updating** (server/tests/server_config.rs, server/tests/symbol_store.rs, client_surfaces, registry session tests fixed already).
 - 2026-07-20: **Vector full-swap PARKED** (was mid-`git mv` when IR completed; moves reverted, trivially redoable). Next: fold vector-core/local/embed/remote → `registry::vector` (features), retire old `registry::runtime::vector`, repoint server to new plane types (`VectorStore`/`VectorPoint`/`SearchRequest`/`RemoteStore`), relocate `SemanticGate`+`EmbeddingCache` once, drop E5Small/OpenAi3Small, remove 4 workspace members. NO shim/redundancy per user.
+- 2026-07-20: **Vector server store-rewire — DONE, `cargo check --workspace` GREEN, server lib+tests green.** The §5b store-rewire is complete (the earlier WIP `1d244e85` had left server non-compiling):
+  - `SourceStores.semantics: Semantic<M,Live>` → **`vector_remote::store::RemoteStore<M>`**. Construction in `connect_source`: build `Arc<Qdrant>`, `CollectionConfig::for_model::<M>()`, `ensure_collection(...)` (idempotent; *is* the connection check — no `Connect` typestate), `RemoteStore::new`. blobs keep their `Connect`. `qdrant_collection` config field left vestigial (collection is frozen-per-M).
+  - New store capabilities added to `vector-remote` (we own it): `CollectionConfig::for_model::<M>()` (sealed Jina→parity / Voyage→premium), `RemoteStore::delete_by_package(&str)` (payload-`package` filter-delete — the trait `delete` is by-`PointId` only), and `impl heart::health::Probeable for RemoteStore` (qdrant `health_check`).
+  - `poll::materialize_vector`: `SymbolPoint`+`uploader().oneshot()` → `VectorPoint{ id: PointId::from_symbol, vector, payload }` + `VectorStore::upsert`. `poll::delete_vector`: `delete_package_points` → `delete_by_package(package.uuid)`.
+  - **PointId↔SymbolId round-trip**: new `PointId::from_symbol` is a *derived* v5 uuid (not the symbol uuid), so `symbol_id` is stashed in payload; `search/semantic` recovers `SymbolId` from `payload["symbol_id"]`. One shared payload builder: `bakery::symbol_payload` (now `pub(crate)`, keys `language`/`package`/`kind`/`symbol_id`) reused by poll — matches `ensure_collection` indexes.
+  - `search/semantic/mod.rs SemanticSurface`: `store.search(gate,…stream…)` → gate-check + `RemoteStore::search(SearchRequest{vector,filter,limit,score_threshold})` → map `SearchHit`→`Scored<SymbolId>`. **Pagination reconciled**: keyset over `(Score, SymbolId)` — `score_threshold` prunes below cursor score server-side, client-side sort (score desc, id asc) + skip-past-cursor + truncate; resume over-fetches capped at `MAX_FETCH=4096`.
+  - `embedder.rs HttpEmbedder`: old `Embedder` (model()+3-arg embed w/ purpose) → **`vector_core::Embedder`** (`#[async_trait]`, `runtime()->EmbedRuntimeInfo`, 2-arg `embed(text, role)`; purpose dropped from the embed path). Rich `EmbedRejectionReason` collapsed into `vector_core::EmbedError::Backend(String)`. `EmbeddingCache::get_or_embed` is now 3-arg (no purpose) — `poll`+`bakery` updated.
+  - **Error glue**: `registry::runtime::error` gained `VectorError::Store(#[source] vector_core::StoreError)` + `From<vector_core::StoreError>`/`From<vector_core::EmbedError>` for `RuntimeError` so `ServerError::Runtime(e.into())` bridges the new plane. `bakery::BakeryError::Embed` → `#[from] vector_core::EmbedError`.
+  - `main.rs EmbedModel` → `registry::vector::JinaCodeV2`; `config.rs` dropped dead `InvalidQdrantCollection(CollectionNameError)`; test harness `TestModel` → `JinaCodeV2`.
+  - **Un-parked test binaries** (vector_adversarial/vector_bakery_rerank/common): `models::E5Small`/`OpenAi3Small`→`JinaCodeV2`, `registry::vector::model::*`→`registry::vector::*` + `use vector_core::EmbeddingModel`, dead `BakeryError::Database(sqlx)`→`Io`, `EdgepackKey` typed-field fixups, EdgepackStatus dup import. **Bonus real bug fixed**: `route_stage_one` left `rerank=true` offline (no dense collection, no network reranker) → now gated on `online` (surfaced by un-parking `routing_offline_all_qualities_precise_only`).
+  - ⚠ Pre-existing red (NOT mine, `voyage.rs` untouched): `vector-remote` unit test `voyage::tests::token_cap_exact_boundary_math_1188_fits` fails — Voyage chunk-cap math, orthogonal to the store rewire.
+  - Still deferred (per §5b/§304): the *structural* fold of the 4 vector-* crates into `registry::vector` + removing the 4 workspace members (server still deps `vector-core/local/remote` directly). The rewire proves the seam; the crate-collapse is a mechanical follow-up.
 - DEFERRED (own lanes): broad `FooError`→`module::Error` renames (ripple into server imports); vector 4→1 fold (`server` vector *test* files still on old `registry::runtime::vector::EmbeddingModel` — the two-architecture fork); stale Postgres/Terminus comments in fork-territory files; Terminus drop (blocked, above).
+
+---
+
+## 7. REVISED TARGET (2026-07-20 — user redirect; supersedes §1/§5/§6)
+
+Directive (verbatim intent): *ir-sync = a generic sync crate that lives in heart,
+implementing a trait we reuse throughout; IR gets a submodule that implements it.
+All vector stuff in one crate with abstractions handling local/remote. object-pack
+is part of sync. rusqdoltlite → vendor. **`server` shouldn't exist — registry IS
+the server**; a thin `client` (connecting glue, serves nothing) lives in heart.*
+
+Clarified (2026-07-20 Q&A):
+- **Serving:** `registry` **is** the server. The `server` crate dissolves into it.
+- **Sync:** the generic **trait lives in `heart::sync`** (light; NO libpijul/iroh/
+  object_store deps). The **transport + concrete impl live in the IR plane** (heavy).
+- **Approach:** plan-first (this section) → sign-off → execute crate-by-crate.
+
+### 7.1 Crate set — BACKEND (4 cargo crates + vendor)
+
+> **⚠ REVISED 2026-07-20:** `ingestor` **folds into `index`** (user: "ingestor should be
+> moved to index"). So the backend is **4 crates**: `ecosystem`, `heart`, `index`
+> (+ingestor), `registry` (=server), plus the standalone `vector` crate it consumes.
+> The `ir` plane (one crate + `nudox-f1` leaf) and GUI are separate workspaces.
+> Item 6 below (`ingestor` as its own crate) is superseded — see item 3.
+
+1. **`ecosystem`** — leaf. Unchanged.
+2. **`heart`** — domain vocab **＋ `heart::sync`** (the generic `Sync`-style trait +
+   its vocab: change id, watermark/cursor, transport-agnostic; libpijul/iroh-free)
+   **＋ `heart::client`** — the connecting glue (typed wire/request types + a client
+   that *talks to* registry). Serves nothing. This is also the crate the GUI's thin
+   client used to be (§6 old "client" → `heart::client`).
+3. **`index`** — catalog plane (schema v4, MetaStore, outbox, migrations, scratch)
+   **＋ the folded-in `ingestor`** (feeds + grit GitMonitor + advisories → `index::ingest`
+   or similar; keep the separate ingest *process*/bin, now built from `index`). Deps the
+   vendored engine at **`vendor/rusqdoltlite`** (path dep; no longer a workspace member).
+4. **`vector`** — ONE crate = merge `vector-core` + `vector-local` + `vector-remote`
+   + `vector-embed`. The **local↔remote distinction is the trait abstraction**
+   (`VectorStore<M>` / `Embedder`, already the seam proven in §6/§5b): `vector::local`
+   (qdrant-edge), `vector::remote` (qdrant client + rerank), `vector::embed` (onnx,
+   behind feature `onnx`), `vector::core` vocab always-on. Features: `local`,
+   `remote`, `onnx`. Consumed by `registry`.
+5. **`registry`** — **THE server** (library + binary). Absorbs the former `server`
+   crate wholesale: `http/{router,dto,handlers}`, `coordination/`, `poll` (outbox/
+   vector/text consumers), `bakery/`, `save/`, `authz`, `config`, `compiler_client`,
+   `rerank`, `main` (the bin). server's `search/{planner,routing,semantic,embedder}`
+   merges into registry's existing `search/`. Keeps its serving spine (search/graph/
+   blob/compiled/metadata/resolve/runtime). Deps: heart, ecosystem, ir, index, vector.
+6. ~~**`ingestor`**~~ — **SUPERSEDED: folded into `index`** (item 3). May still absorb
+   `registry/upstream/` pollers (they're feeds) as part of the index ingest plane.
+
+`sandbox` (SmolvmCage) stays outside the set (compile plane), as before.
+
+### 7.2 Crate set — IR workspace
+
+> **⚠ REVISED 2026-07-20 (user: "f1 should be simplified/folded too; ir-vcs should be
+> folded into ir itself").** The IR plane collapses to essentially ONE crate + the f1
+> leaf:
+> - **`ir`** = `nudox-ir` **∪ `nudox-ir-vcs`** ∪ (ir-sync's `transport`+`repo_glue`).
+>   Modules: `model`/`change`/`manifest`/`archive`/`diff`/`repo`/`semver`/`vcs`/`sync`.
+>   **libpijul + iroh linked.** Implements `heart::sync` in `ir::sync`. Retire the
+>   `nudox-ir-vcs` and `ir-sync` crates (folded in).
+> - **`nudox-f1`** — **CANNOT fold into `ir`**: the vendored libpijul fork
+>   (`workspace/vendor/libpijul`) depends on `nudox-f1`, and `ir` depends on libpijul →
+>   folding f1 into ir makes `ir → libpijul → ir`, a cargo cycle. So f1 stays a **leaf,
+>   but SIMPLIFIED in place** (prune/merge its `pair`/`registry`/`lib`). Full removal
+>   would require fork surgery (inline f1 into the libpijul fork) — deferred / needs an
+>   explicit call.
+> - **Consequence:** the old "backend never deps libpijul" law is **RETIRED** — `registry`
+>   needs IR types, so it transitively links libpijul via `ir`. Accepted per the directive.
+> - **Legacy `workspace/ir` crate** (old JSON schema, separate from nudox-ir) still backs
+>   registry's blob/protocol wire format (`ir::syntax`). Keep the merged crate named
+>   `nudox-ir` (or rename legacy) to avoid the name clash; the registry-off-legacy-ir
+>   migration stays a separate deferred blocker.
+>
+> Original (now-superseded) §7.2 text follows.
+
+- **`ir`** (light, **libpijul/iroh-free — backend deps ONLY this**): model + f1 + change
+  + manifest. Backend-facing.
+- **`ir-vcs`** (heavy, libpijul + iroh linked): archive/diff/repo/semver **＋ `ir_vcs::sync`**
+  = **one concrete impl of `heart::sync`** (pijul change files over iroh) + its iroh
+  transport + the libpijul `repo_glue`. `nudox-f1` stays the leaf for the libpijul fork.
+
+**`heart::sync` has (at least) TWO implementors** (2026-07-20 user note — this is what
+makes the trait generic, not speculative):
+1. `ir-vcs::sync` — pijul changes, verified by pijul hash, applied to a libpijul channel.
+2. **`object-pack`** — NDPK members/packs over iroh, verified by BLAKE3/bao outboard.
+   object-pack therefore **stays its own standalone crate** (deps `heart` + iroh; NO
+   libpijul) that *implements* `heart::sync`; it is **NOT** folded into ir-vcs. registry
+   (snippet range-get) + ingestor (seal) keep depping `object-pack` directly — no
+   libpijul leak. (This supersedes the earlier "object-pack → ir_vcs::sync" idea and
+   resolves the object-pack consumer reconciliation below.)
+
+So the topology law holds: `heart` owns the generic *trait* (iroh/libpijul-free);
+`ir-vcs` and `object-pack` each own an *impl* + its own iroh transport; `registry` codes
+against `heart::sync` and gets the impls **injected at the binary** — registry never deps
+libpijul (it may dep object-pack, which is libpijul-free).
+
+### 7.3 GUI
+
+- `gui` uses **`heart::client`** (the former thin `client` crate is now that module).
+
+### 7.4 Override table vs §1/§5
+
+| item | OLD (§1/§5) | NEW (§7) |
+|---|---|---|
+| server | 1 of 6 backend crates | **dissolved → folded into `registry`** |
+| vector | fold 4 → `registry::vector` (features) | **one standalone `vector` crate** (features local/remote/onnx) |
+| object-pack | → `index::object_pack` | **stays standalone; implements `heart::sync`** (2nd impl alongside ir-vcs; libpijul-free) |
+| rusqdoltlite | → `index::engine` fold | **→ `vendor/rusqdoltlite`** (path dep from index) |
+| ir-sync | merge ir-stream+ir-sync+nudox-sync → `ir-sync` crate | **generic trait → `heart::sync`; impl → `ir_vcs::sync`**; ir-stream (guest↔host protocol) stays with ir-vcs |
+| client | thin `client` crate (GUI ws) | **→ `heart::client`** |
+| backend crate count | 6 | **5 + vendor** |
+
+### 7.5 Open reconciliations (resolve during execution, flag if blocking)
+
+- **`heart::sync` trait shape** — must fit BOTH implementors (ir-vcs pijul changes +
+  object-pack NDPK members). From today's `ir-sync`, the transport-agnostic seam is:
+  - `ContentIo` (generalize `ChangeIo`): `read/write/has(id)` + `verify(id, bytes)` —
+    content-addressed item I/O, generic over the item-`Id` type. (ir-vcs Id = pijul
+    `ChangeId`; object-pack Id = NDPK member/pack hash.)
+  - `ApplyHook` (generalize): apply an ordered set of ids to a target ref, return the
+    new tip. (ir-vcs = libpijul channel apply; object-pack = install into a pack/store.)
+  - generic vocab: `VerifyError`, `SyncError`, and an `Announcement<H>` / `Ack` generic
+    over the *transport* hash `H` (so `IrohHash` and its `From<iroh_blobs::Hash>` stay
+    OUT of heart — each impl instantiates `H`). `heart::sync` stays iroh/libpijul-free.
+  The two iroh transports (ir-vcs's + object-pack's) are NOT shared for now — each crate
+  keeps its own provide/fetch wiring calling the heart traits. A shared light
+  `iroh-transport` helper is a possible later dedup, not this pass.
+  Open still: is the catalog **outbox fan-out** also a `heart::sync` consumer? Deferred —
+  don't force it into the trait this pass; revisit once the two blob-sync impls fit.
+- **object-pack placement — RESOLVED (see §7.2):** stays a standalone libpijul-free crate
+  implementing `heart::sync`; NOT folded into ir-vcs. registry + ingestor keep depping it.
+- **`heart::client` vs `heart` purity.** heart is "pure vocab." A client that opens
+  connections adds reqwest/transport weight. Keep it behind a `client` feature so
+  non-client heart consumers (ecosystem-adjacent crates) don't pull it.
+- **registry-absorbs-server ripple.** server's `crate::registry::…` re-export paths,
+  the `Server<M>` type, `SourceStores<M>`, config, and the bin all move in. Big but
+  mechanical; the model brand `M` monomorphization travels with it. `heart::client`
+  takes the wire DTOs (http/dto) that a caller needs.
+- **vector crate name/location.** standalone top-level `workspace/vector` (not under
+  registry). registry deps it with `features=["local","remote","onnx"]`.
+
+### 7.6 Build order — LIVE STATUS (2026-07-20)
+
+0. ✅ vector server store-rewire — the trait seam registry needs.
+1. ✅ **rusqdoltlite → `vendor/`** (sonnet; green).
+2. ✅ **vector 4 → 1 `vector` crate** (sonnet; green). + nudox-ir test-dep fix.
+3a. ✅ **`heart::sync` trait created** (`ContentIo`/`ApplyHook`/`VerifyError`/`SyncError`;
+    generic over item-`Id`/`Target`/`Tip`; fits both IR + object-pack). heart green.
+3b. ⏳ **IR crate merge** `nudox-ir-vcs` → `nudox-ir` (sonnet, IN FLIGHT). Retire the crate.
+    (User: "ir-vcs should be folded into ir itself.")
+3c. ⬜ **ir-sync → `nudox_ir::sync`** on the heart traits (FsChangeIo⇒`ContentIo`,
+    RepoApplyHook⇒`ApplyHook`; IR-concrete announce/hash types move in); retire ir-sync.
+3d. ⬜ **simplify `nudox-f1` in place** (CANNOT fold into ir — libpijul-fork↔f1 cycle §7.2).
+4.  ⬜ **object-pack implements `heart::sync`** (2nd impl; stays standalone, libpijul-free).
+4b. ⬜ **ingestor → `index`** (user directive; fold feeds/git-monitor into the catalog crate,
+    keep the ingest process/bin built from index; sonnet).
+5.  ⬜ **server → registry dissolve** — **USE A REAL OPUS SUBAGENT** (user: "pretty
+    cross-cutting"). Fold server's modules/bin/search into registry; stand up
+    `heart::client` from the wire DTOs; server crate retired.
+6.  ⬜ Cleanups: FooError→module::Error, stale comments, member-list prune, green.
+
+Each step ends `cargo check --workspace` (+ `--tests`) green before the next. Steps are
+serialized (shared tree + root `Cargo.toml`); no parallel crate-move agents.
+
+---
+
+## 8. RE-LAYERING (2026-07-20 user redirect — supersedes §7 crate roles)
+
+**The core insight: `index` and `registry` are SEPARATE LAYERS that do not reference each
+other. The client/GUI composes them.** (User: "registry shouldn't have ANY reference to
+doltlite/index… it's up to the client/GUI to hook them up.")
+
+### Layer map
+- **`heart`** — vocab + `sync` + **`page`/pagination** (moved from `registry::runtime::pagination`;
+  generic over a `Stream`/`Vec`) + **`client`** (glue that hooks index+registry; serves nothing).
+  NO session layer (deleted — "weird and needless").
+- **`index`** — THE data / storage / coordination layer, where "most of this happens". Absorbs:
+  doltlite (vendored), **ingest** (done), **outbox** ("not a registry problem"), **job queue**,
+  **blob/CAS** storage, **object-pack** (user: "object-pack should be in index"), **crates/nuget
+  upstream pollers** (user: "crates/nuget stuff should just be in index"), and the salvageable
+  bits of the user-deleted `registry/{blob,index,queue,runtime}` modules + server's coordination.
+- **`registry`** — ONLY **graph + vector**. `registry::graph` (Trustfall) + `registry::vector`
+  (the standalone `vector` crate folds IN here — user: "move vector here"). Queries = **exactly
+  what Trustfall can express, no further wrapping**; graph and vector are two different things.
+  **NO** index/doltlite/queue/outbox/session/text-search/blob. Deps: heart, nudox-ir, qdrant,
+  trustfall (NOT index).
+- **`nudox-ir`** — IR plane (done). registry deps it for the graph.
+- **`nudox-f1`** — leaf, simplified (cycle-blocked from folding into ir).
+- **`ecosystem`** — leaf for now; deferred split (`Language`→heart, rest→index) — cycle §8 note.
+- **`server`** — **DISSOLVED**: coordination/poll/outbox-consumers/save/bakery/config → `index`;
+  graph/vector query handlers → `registry`; pagination/client/wire-DTOs → `heart`.
+- **GONE as crates:** server, standalone `vector`, (ingestor/ir-sync/nudox-ir-vcs already folded).
+
+### Cycle constraints (flagged, cycle-safe handling chosen)
+- `ecosystem → index` blocked (`heart→ecosystem`, `index→heart`). Deferred; needs Language-hoist.
+- `f1 → ir` blocked (libpijul-fork→f1). f1 stays leaf, simplified.
+- `object-pack → index`: OK (object-pack deps heart+iroh; no cycle). Folds into `index::pack`.
+
+### Salvage (user-deleted registry files — recover via `git show HEAD:<path>`)
+- `registry/runtime/pagination.rs` (keyset_page) → **`heart::page`** (generic).
+- `registry/runtime/text/*` + `search/tantivy.rs` + tokenizer → **dropped from registry**
+  (no search outside graph/vector); relocate to index only if the data layer needs text lookup.
+- `registry/blob/*` (creation/emit) → **`index`** (blob/CAS is storage).
+- `registry/index/mod.rs` (GlobalStore glue), `queue/mod.rs`, `runtime/session.rs` → index or dropped.
+- `registry/runtime/error.rs` → split per surviving module.
+
+### OPEN (flag for user)
+- **HTTP serving surface:** with registry = graph/vector-only and index = data, there is no single
+  "server". Interpretation: each layer exposes its own surface; a thin composition (heart::client or
+  a small bin) is the client/GUI's job. Confirm if a monolithic serving bin should exist anywhere.
+
+### 8b. Shared bao/iroh transport (2026-07-20 user note)
+The bao/iroh content-fetch logic must be **abstracted and shared**, not duplicated. Today
+`object-pack` has custom bao/outboard code AND `nudox_ir::sync` has its own iroh transport —
+same mechanism twice. Target: extract ONE well-abstracted iroh/bao provide-fetch (a small
+transport crate, since `heart` must stay iroh-free — `heart::sync` is only the abstract
+`ContentIo`/`ApplyHook` seam). Both `index::pack` and `nudox_ir::sync` depend on it and wire
+their `ContentIo`/`ApplyHook` impls over it. No custom per-plane bao. QUEUED follow-up (after
+the registry/server re-layering settles — needs pack already in index).
+
+### 8c. ONE persistence/streaming/transfer trait — the north star (2026-07-20 user)
+"All of this persistence/streaming/transfer logic could really just use one good trait,
+especially since they're unified by the local/remote distinction." So `heart::sync`
+(`ContentIo`/`ApplyHook`) + the shared bao/iroh transport (§8b) is THE single seam for
+content-addressed persist → verify → transfer → apply, across ALL of:
+- IR changes (`nudox_ir::sync`)  — pijul change files
+- object packs (`index::pack`)   — NDPK members
+- **vector edge shards** (bakery/dep-shard install) — a baked shard is a content-addressed
+  pack; bake=persist-local+publish, install=fetch-remote+verify+apply. Same loop. The
+  `vector::local`↔`vector::remote` distinction IS the local(persist)/remote(fetch) axis.
+Boundary (my read, confirm): the trait covers PERSISTENCE/TRANSFER only. The live QUERY
+surfaces (`VectorStore::search`, graph Trustfall) stay separate — same store, but querying
+≠ shipping. CAPSTONE task: once vector (→registry::vector), pack (→index::pack), and IR sync
+have all landed, retarget their shard/pack/change transfer onto the one `heart::sync` seam +
+one bao/iroh transport, deleting the per-plane custom transfer/bao code.
+
+## 9. LANDED (2026-07-20, agent fan-out)
+- ✅ **rusqdoltlite → vendor**, **vector 4→1** (then → registry::vector, below), **IR plane → one `nudox-ir`** (nudox-ir-vcs + ir-sync folded; ir-sync's transport/repo_glue = `nudox_ir::sync` on `heart::sync::{ContentIo,ApplyHook}`), **ingestor → `index::ingest`**.
+- ✅ **f1 ELIMINATED** — inlined into the vendored libpijul fork (`libpijul::nudox_f1`); nudox-ir reaches it via `libpijul::nudox_f1::registry`; crate + dir + member gone. `cargo check -p nudox-ir` green.
+- ✅ **registry = graph + vector ONLY** — `registry::graph` (Trustfall adapter + reverse index, over nudox-ir) + `registry::vector` (the folded-in vector plane, features local/remote/onnx). **`index` dep SEVERED** — registry compiles standalone (all feature combos + tests). No queue/outbox/session/blob/text-search.
+- ✅ **V-GOLD-1 realized** — the smolvm infra DOES expose the hot-start path (`LaunchFeatures.forkable/snapshot_dir`, `agent::fork::prepare_fork` = memfd RAM snapshot + qcow2 CoW-clone, ~250ms). `SmolvmRuntime::fork_golden` now does TRUE CoW fork-from-warm-golden (option 2b), one-VM-per-job teardown preserved. `sandbox` green, 77 tests pass. Residual: in-RAM golden secrets CoW-inherited by clones (golden-image packaging constraint upstream; benign for toolchain base images).
+
+### 9a. Salvage list — registry deletions to fold into `index` (deferred pass; `git show HEAD:<path>`)
+Storage/serving bits the registry-repurpose deleted, worth recovering INTO `index` when its SeaORM
+migration is stable: `store.rs`, `persist.rs`, `coordination.rs`, `schema/{mod,catalog_map,codec}.rs`,
+`compiled/{mod,client}.rs`, `metadata/{mod,rich,heuristics,hash}.rs`, `resolve.rs`,
+`ingest/{mod,extract}.rs`, `package.rs`, `identity.rs`, `protocol.rs`, `health/mod.rs`, `error.rs`,
+the search plane `search/{mod,pipeline,structured,tantivy,alias,usages,spell,health}.rs` + `search/ranking/*`,
+and `upstream/{catalog,crates_catalog,nuget_catalog}.rs` (→ ingest, per §8 crates/nuget-in-index).
+Also: `registry/tests/vector/*` (18 UNTRACKED files on old flat `vector::` paths) are orphaned (no
+`tests/vector.rs` root, not compiled) — port to `registry::vector::core::*` or drop in a later vector-test pass.
+
+### 9b. STILL GATED on the `index` SeaORM migration (fan out when index compiles)
+server dissolve → index/registry/heart · object-pack → `index::pack` · ecosystem split (Language→heart, rest→index)
+· salvage §9a into index · §8b/§8c one bao/iroh transport under `heart::sync` (IR + pack + vector-shard transfer).
+
+### 9c. SERVER DISSOLVE — in progress (2026-07-20)
+- ✅ **heart destination LANDED** — `heart::client` created (`pub mod client`): `client::dto` (add-package /
+  compiled-lookup / rerank / health wire DTOs, transport-free, own typed validation errors — no `ServerError`)
+  + `client::authz` (`TenantId`, `ReadCap`/`WriteCap`/`AdminCap`, `Principal`/`AdminPrincipal` vocab; cap minting
+  via `Cap::mint`, composition-only; the axum `FromRequestParts` + `impl Server<M>` minting stay STAGED). heart
+  stays axum/reqwest-free. `cargo check -p heart` + `cargo test -p heart --no-run` green.
+- ✅ **registry destination = NO CHANGE NEEDED** — registry already exposes its full graph/vector *library* query
+  surface (`registry::graph` Trustfall + `registry::vector::{VectorStore::search, remote::rerank, …}`), already
+  green + index-free. Server's "graph/vector query handlers" are all `State<Arc<Server<M>>>`-coupled axum handlers
+  that pull BOTH catalog(index) AND vector — they are composition, not library, so they CANNOT go in registry
+  (registry must stay index-free and is not an axum server). Server's `rerank.rs` proxy is SUPERSEDED by the
+  canonical `registry::vector::remote::rerank`. → registry stays graph+vector only, index-free. Handlers STAGED.
+- ✅ **index destination — §9a substrate SALVAGED + bakery ledger FOLDED** (`cargo check -p index` + `cargo test
+  -p index --no-run` green, 0 errors). All §9a files recovered via `git show HEAD:workspace/registry/<path>` into
+  `index::{cas`(=former `store.rs`)`, blob, catalog`(=former `index/mod.rs`, renamed to dodge crate-name
+  collision)`, coordination`(=`Outbox<E>`)`, queue, compiled, metadata, search`(+ranking)`, runtime`(text index +
+  pagination/error)`, upstream`(crates/nuget followers)`, resolve, health, schema, identity, package, error}`.
+  Added `index → registry` dep (cycle-safe: registry is index-free) for `registry::vector` bakery-key types +
+  `registry::graph::ReversePositionIndex` in `search::usages`; + `nudox-ir` + the tantivy/qdrant/object_store/
+  reqwest/etc serving deps (versions copied from server). `runtime/error.rs` BLOCKER resolved (dropped
+  `VectorError::Collection` → deleted `CollectionNameError`). **`bakery` ledger** (`CatalogEdgepackStore<E>`,
+  `EdgepackRow`/`Status`, `edgepack_key`, `RECIPE_ID`) folded into `index::bakery`.
+  - **NOT salvaged/STAGED:** compiler-daemon `protocol.rs` (dead — cage is ephemeral); `blob` reference-extraction
+    round-trip (used deleted legacy `ir` crate → replaced with self-contained `Reference`/`RefTarget` postcard
+    types, ir-plane conversion staged); bakery vector-bake *compute* + `bakery_worker` (index-free
+    `registry::vector` shard-build over `Server<M>` — composition).
+  - **`coordination/`, `poll.rs`, `save/` STAYED STAGED** (not folded): `impl Server<M>`/`SourceStores<M>`
+    orchestration bound to `HttpEmbedder<M>`/authz/ServerError/compiler_client — the composition that DRIVES the
+    index substrate, not the substrate. §8-correct split: substrate in `index`, driver in composition.
+- ✅ **composition LANDED — new `workspace/driver` crate** (2026-07-20; `cargo check -p driver`,
+  `cargo build -p driver --bin driver`, `cargo test -p driver --no-run` all green, 0 errors). The staged
+  `server/{lib,main,http/,config,error,authz,coordination,poll,save,search,bakery,rerank,tests}` were moved into
+  `workspace/driver/` and rewired onto the re-layered planes. `workspace/server/` DELETED; the parked root
+  `Cargo.toml` member replaced by `"workspace/driver"`. Composition shape:
+  - **`Driver<M>`** (was `Server<M>`; a `pub type Server<M> = Driver<M>` alias avoided a crate-wide rename) —
+    holds `config` + a `Federation<SourceStores<M>>` (each source = `GlobalStore<DoltEngine>` + `cas::Store` blobs
+    + `Queue` + `Outbox` + `RemoteStore<M>` semantics + `TextIndex` + `PackageSearchIndex`) + the query planner +
+    `HttpEmbedder<M>` + `EmbeddingCache<M>` + scratch `ScratchSessionStore` + `ObjectCompiledStore` + optional
+    bakery ledger + reverse-index usage backend. It COMPOSES the layers; no domain logic.
+  - **Layer-facade shim** (`driver::lib.rs`): rather than rewrite ~13k lines of moved `use`s, the crate re-projects
+    the layers under the old monolithic paths — a crate-local `mod registry` re-exports the `index::*` data-plane
+    modules under their old names + real `::registry`'s `graph`/`vector` (the extern `registry` crate is aliased to
+    `xregistry` in `Cargo.toml` so bare `registry::…` resolves to the facade), and a `mod vector` flattens
+    `::registry::vector::core::*` back to top level. `use crate::{registry, vector};` injected where bare paths are
+    used at module scope.
+  - **authz DEDUPED** against `heart::client::authz`: driver's `authz.rs` now re-exports `TenantId`/`ReadCap`/
+    `WriteCap`/`AdminCap` from heart; keeps only the composition parts (local `Principal`/`AdminPrincipal` — must be
+    local for the axum `FromRequestParts` orphan rule — + the `impl Server<M>` `authorize_*` minting via `Cap::mint`).
+  - **`http/dto.rs` NOT deduped** against `heart::client::dto`: driver's copies are `ServerError`-coupled
+    (`validate()`/`into_coordinates() -> Result<_, ServerError>`, `register_custom_registries`, `DepshardManifestDto`,
+    `hit()` over `registry::compiled::CompiledHit`) — composition HTTP wiring, not pure vocab; left as-is.
+  - **RECOVERED driver-local** (were NOT salvaged into `index`, pulled via `git show HEAD:workspace/registry/<path>`):
+    `session` (the exploration-graph semilattice, ex `registry::runtime::session`) and `ingest` (the untrusted-archive
+    extraction `ingest_archive`/`EntryAllowlist`/`ExtractionLimits`, ex `registry::ingest`; `index::ingest` is the
+    git-monitor plane). Both rewired onto `index::{blob,error,runtime,scratch}`.
+  - **`compiler_client.rs` stays DELETED** (compiler daemon gone — cage is ephemeral). Fallout: `error.rs`
+    `ServerError::Compile` variant dropped; `Indexer::new` no longer takes a `CompilerClient`; the vector-plane
+    errors got their own `ServerError::{Vector,Embed}` variants (the vector plane is now `registry::vector`, a
+    different crate from `index::runtime`, so its errors no longer fold through `RuntimeError`).
+  - **STUBBED (one handler/phase)** — `coordination::indexing::Indexer::execute_compile_phase` returns
+    `ServerError::Internal(InternalError::Other{…})` (the compile-daemon `CompileRequest`/`CompileResponse` wire
+    protocol is gone). `// TODO(driver): rewire the compile phase onto the ephemeral SmolvmCage` marks it. Extract +
+    emit phases around it are intact; only IR production on a forge node is stubbed (fails loudly, idempotent retry).
+  - **`rerank.rs` KEPT** as the composition's rerank client (the canonical `registry::vector::remote::rerank` plane
+    stays the library surface; the handler wiring is composition).
+
+### 8d. Compiler golden snapshots = a 4th `heart::sync` consumer (2026-07-20 user)
+The smolvm hot-restore path is ALSO content-addressed persistence/transfer and must ride the
+same `heart::sync` seam (§8c), not a bespoke path:
+- `GoldenPool` (`ImageDigest → GoldenId`) is a content-addressed snapshot registry.
+- `prepare_golden(image)` = PERSIST a golden (memfd RAM snapshot + qcow2 CoW base) → `ContentIo::write`.
+- `fork_golden` = fetch/verify/RESTORE a golden into an ephemeral clone → `ContentIo::read`/`verify` + `ApplyHook`.
+- "the remote might use it at scale" = golden snapshots FETCHED/shared across the fleet via the one
+  shared bao/iroh transport (§8b) — a remote registers goldens, edge nodes fork-restore them.
+So the unified trait now has FOUR implementors: IR changes, object packs (index::pack), vector edge
+shards, and **compiler golden snapshots** (sandbox). CAPSTONE (after server dissolve + the crates
+settle): retarget `SmolvmRuntime`'s golden persist/restore onto `heart::sync` + the shared transport,
+deleting the bespoke snapshot plumbing; the fleet-scale golden sharing then comes for free.

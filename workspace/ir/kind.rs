@@ -1,334 +1,297 @@
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-#[cfg(feature = "serde")]
+//! Kind discriminants, in-memory kind bodies, and per-kind marker structs.
+//!
+//! # Hierarchy
+//!
+//! - [`KindDiscriminant`] — the frozen `u16` wire tag; serialized into change
+//!   payloads and hashed into `IntroId` preimages.
+//! - [`Kind`] — the rich in-memory kind body for arena entries.
+//! - Marker structs (`ModuleMarker`, `RecordMarker`, …) — zero-sized types used
+//!   as the phantom type parameter of [`crate::index::EntryIdx`]; each implements
+//!   [`crate::index::EntryKind`].
+//!
+//! # Notes
+//!
+//! The `Type` / `TypeRef` / `Primitive` / `Width` tree is the canonical
+//! in-memory representation of type expressions. Wire serialization is handled
+//! separately by the `*Wire` variants in [`crate::wire`].
+
 use serde::{Deserialize, Serialize};
 
-use crate::{
-	entry::NudoxPath,
-	function::Function,
-	generics::{ConstExpr, Generics},
-	module::Module,
-	protocols::{TraitDef, TraitImpl},
-	record::{Record, SumType},
-	ty::Type,
-};
+use crate::index::{self, sealed};
+use crate::change::{IntroId, StableRef};
 
-/// Typed payload for constants and variables — type and optional value so
-/// resolution and docs retain the binding's contract (not just the name).
+// ---------------------------------------------------------------------------
+// KindDiscriminant
+// ---------------------------------------------------------------------------
+
+/// Frozen wire discriminant for each entry kind.
 ///
-/// Producers that cannot yet recover a type leave both fields `None`; that is
-/// equivalent to the historical empty `()` payload.
-#[derive(Debug, Clone, PartialEq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct TypedBinding {
-	/// The binding's type, when known.
-	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-	pub ty: Option<Type>,
-	/// Compile-time value (literals, simple expressions), when known.
-	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-	pub value: Option<ConstExpr>,
-	/// Whether the binding is mutable (`let mut`, `static mut`, Python non-Final, …).
-	/// `None` when the producer does not distinguish mutability.
-	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-	pub mutable: Option<bool>,
+/// The numeric values are part of the stable wire format and **must never be
+/// reused or renumbered**. New kinds get new numbers above the current maximum.
+// frozen — never renumber/reorder
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Debug)]
+#[repr(u16)]
+pub enum KindDiscriminant {
+    /// A namespace / module.
+    Module = 1,
+    /// A product / struct / class / record.
+    Record = 2,
+    /// A field or member of a record.
+    Field = 3,
+    /// A function, method, or callable.
+    Function = 4,
+    /// A type alias, typedef, or type declaration.
+    Type = 5,
+    /// A trait definition.
+    Trait = 6,
+    /// A trait implementation (`impl Trait for Type`) or inherent impl.
+    Impl = 7,
+    /// An enum type.
+    Enum = 8,
+    /// A variant of an enum.
+    Variant = 9,
+    /// A constant declaration.
+    Const = 10,
+    /// A static declaration.
+    Static = 11,
+    /// A re-export (`pub use …`).
+    Reexport = 12,
 }
 
-/// Payload for type aliases / typedefs, preserving declaration-site generics.
+impl KindDiscriminant {
+    /// Convert a raw `u16` to a discriminant, returning `None` for unknown values.
+    #[inline]
+    pub fn from_u16(v: u16) -> Option<Self> {
+        match v {
+            1 => Some(Self::Module),
+            2 => Some(Self::Record),
+            3 => Some(Self::Field),
+            4 => Some(Self::Function),
+            5 => Some(Self::Type),
+            6 => Some(Self::Trait),
+            7 => Some(Self::Impl),
+            8 => Some(Self::Enum),
+            9 => Some(Self::Variant),
+            10 => Some(Self::Const),
+            11 => Some(Self::Static),
+            12 => Some(Self::Reexport),
+            _ => None,
+        }
+    }
+
+    /// The frozen wire `u16` for this discriminant.
+    #[inline]
+    pub fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-kind marker structs
+// ---------------------------------------------------------------------------
+
+/// Kind marker for module / namespace entries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ModuleMarker;
+
+/// Kind marker for record / struct / class entries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RecordMarker;
+
+/// Kind marker for field entries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct FieldMarker;
+
+/// Kind marker for function / method entries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct FunctionMarker;
+
+/// Kind marker for type alias / typedef entries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TypeMarker;
+
+// Implement the sealed EntryKind trait for each marker.
+impl sealed::Sealed for ModuleMarker {}
+impl index::EntryKind for ModuleMarker {}
+
+impl sealed::Sealed for RecordMarker {}
+impl index::EntryKind for RecordMarker {}
+
+impl sealed::Sealed for FieldMarker {}
+impl index::EntryKind for FieldMarker {}
+
+impl sealed::Sealed for FunctionMarker {}
+impl index::EntryKind for FunctionMarker {}
+
+impl sealed::Sealed for TypeMarker {}
+impl index::EntryKind for TypeMarker {}
+
+// ---------------------------------------------------------------------------
+// Width
+// ---------------------------------------------------------------------------
+
+/// Bit-width of a primitive numeric type.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum Width {
+    /// Pointer-sized (platform-dependent).
+    Arch,
+    /// A fixed number of bits (e.g. 8, 16, 32, 64, 128).
+    Fixed(u32),
+}
+
+// ---------------------------------------------------------------------------
+// TypeRef
+// ---------------------------------------------------------------------------
+
+/// A reference to a type: either a same-package intro or a cross-package
+/// foreign reference.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum TypeRef {
+    /// Same-package type introduction.
+    Same(IntroId),
+    /// Cross-package type, identified by a stable ref.
+    Foreign(StableRef),
+}
+
+// ---------------------------------------------------------------------------
+// Primitive
+// ---------------------------------------------------------------------------
+
+/// Primitive (scalar or pointer) types.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum Primitive {
+    /// An integer with optional sign and width.
+    Integer { signed: bool, width: Width },
+    /// A floating-point number.
+    Float(Width),
+    /// Boolean.
+    Bool,
+    /// Unicode character.
+    Char,
+    /// String slice (language-specific semantics).
+    Str,
+    /// Mutable raw pointer.
+    MutPointer(Box<TypeRef>),
+    /// Immutable raw pointer.
+    ConstPointer(Box<TypeRef>),
+    /// A reference (borrow), optionally mutable, optionally with a lifetime.
+    Reference {
+        /// Optional named lifetime (e.g. `"'a"`).
+        lifetime: Option<String>,
+        mutable: bool,
+        ty: Box<TypeRef>,
+    },
+    /// Language-specific builtin not covered by the above (e.g. `"never"`,
+    /// `"void"`, `"dynamic"`).
+    Builtin(String),
+}
+
+// ---------------------------------------------------------------------------
+// Type
+// ---------------------------------------------------------------------------
+
+/// An in-memory type expression attached to a [`Kind::Type`] entry.
 ///
-/// Historical `Entry::TypeAlias(Symbol<Type>)` only stored the RHS; generic
-/// parameters on `type Foo<T> = …` / `type IsString<T> = …` were discarded.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct TypeAliasBody {
-	/// Generic parameters on the alias declaration, if any.
-	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-	pub generics: Option<Generics>,
-	/// The right-hand side type.
-	pub target: Type,
+/// Structural types (Tuple, Union, Intersection, …) nest `TypeRef`s which may
+/// point into the same package (by `IntroId`) or across packages (by `StableRef`).
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum Type {
+    /// A `self` / `Self` type parameter.
+    SelfType,
+    /// A primitive type.
+    Primitive(Primitive),
+    /// A product (tuple / anonymous struct).
+    Tuple(Vec<TypeRef>),
+    /// A variable-length slice.
+    Slice(Box<TypeRef>),
+    /// A fixed-length array.
+    Array { ty: Box<TypeRef>, length: u64 },
+    /// A coproduct / union.
+    Union(Vec<TypeRef>),
+    /// A structural intersection.
+    Intersection(Vec<TypeRef>),
+    /// The bottom / uninhabited type.
+    Never,
+    /// A top / unknown type (`any`, `object`, …).
+    Any,
 }
 
-impl From<Type> for TypeAliasBody {
-	fn from(target: Type) -> Self {
-		Self { generics: None, target }
-	}
-}
+// ---------------------------------------------------------------------------
+// Kind
+// ---------------------------------------------------------------------------
 
-impl TypeAliasBody {
-	pub fn plain(target: Type) -> Self {
-		Self { generics: None, target }
-	}
-
-	pub fn with_generics(generics: Option<Generics>, target: Type) -> Self {
-		Self { generics, target }
-	}
-}
-
-/// The visibility of an entry in the source language.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum Visibility {
-	Public,
-	Private,
-	Protected,
-
-	/// Module-internal (e.g., Rust `pub(crate)`, C# `internal`).
-	Internal,
-
-	/// Package-scoped (e.g., Java package-private).
-	Package,
-}
-
-/// Deprecation marker for a documented entry (e.g. Rust `#[deprecated]`).
+/// The in-memory kind body of an arena [`crate::entry::Entry`].
 ///
-/// `since` / `note` mirror the `#[deprecated(since = "…", note = "…")]`
-/// payload; both are optional since a bare `#[deprecated]` carries neither, and
-/// some producers can only detect *that* an item is deprecated (not the text).
-#[derive(Debug, Clone, PartialEq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Deprecation {
-	/// Version the item was deprecated in, if stated (`since = "1.2.0"`).
-	pub since: Option<String>,
-	/// Human-facing deprecation note, if stated (`note = "use X instead"`).
-	pub note: Option<String>,
+/// Corresponds 1-to-1 with [`KindDiscriminant`], but carries rich data. Wire
+/// serialization is handled by [`crate::wire::KindWire`].
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum Kind {
+    /// A module or namespace.
+    Module,
+    /// A record / struct / class.
+    Record,
+    /// A field or member.
+    Field,
+    /// A function or callable.
+    Function,
+    /// A type alias or declaration.
+    Type(Type),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Symbol<T> {
-	pub name:          String,
-	pub path:          NudoxPath,
-	pub aliases:       Option<HashSet<Vec<String>>>,
-	pub visibility:    Visibility,
-	pub documentation: Option<String>,
-
-	/// Deprecation marker, when the source item is deprecated. Optional and
-	/// `#[serde(default)]` so older payloads (and producers that never set it)
-	/// deserialize unchanged.
-	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-	pub deprecation:   Option<Deprecation>,
-
-	/// Resolved intra-doc links: `link text → target path`. Feeds the
-	/// `mentions` edge in linked-data emit. Optional / `#[serde(default)]` so
-	/// producers that do not resolve doc links serialize unchanged.
-	#[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-	pub doc_links:     Option<HashMap<String, NudoxPath>>,
-
-	pub inner:         T,
+impl Kind {
+    /// The frozen discriminant for this kind variant.
+    #[inline]
+    pub fn discriminant(&self) -> KindDiscriminant {
+        match self {
+            Kind::Module => KindDiscriminant::Module,
+            Kind::Record => KindDiscriminant::Record,
+            Kind::Field => KindDiscriminant::Field,
+            Kind::Function => KindDiscriminant::Function,
+            Kind::Type(_) => KindDiscriminant::Type,
+        }
+    }
 }
 
-impl<T> Symbol<T> {
-	pub fn placeholder(inner: T) -> Self {
-		Self {
-			name: String::new(),
-			path: NudoxPath::Local(std::path::PathBuf::new()),
-			aliases: None,
-			visibility: Visibility::Public,
-			documentation: None,
-			deprecation: None,
-			doc_links: None,
-			inner,
-		}
-	}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-	pub fn clone_with<U>(&self, inner: U) -> Symbol<U> {
-		Symbol {
-			name: self.name.clone(),
-			path: self.path.clone(),
-			aliases: self.aliases.clone(),
-			visibility: self.visibility.clone(),
-			documentation: self.documentation.clone(),
-			deprecation: self.deprecation.clone(),
-			doc_links: self.doc_links.clone(),
-			inner,
-		}
-	}
-}
+    #[test]
+    fn kind_discriminant_roundtrip() {
+        for disc in [
+            KindDiscriminant::Module,
+            KindDiscriminant::Record,
+            KindDiscriminant::Field,
+            KindDiscriminant::Function,
+            KindDiscriminant::Type,
+            KindDiscriminant::Trait,
+            KindDiscriminant::Impl,
+            KindDiscriminant::Enum,
+            KindDiscriminant::Variant,
+            KindDiscriminant::Const,
+            KindDiscriminant::Static,
+            KindDiscriminant::Reexport,
+        ] {
+            assert_eq!(KindDiscriminant::from_u16(disc.as_u16()), Some(disc));
+        }
+        assert_eq!(KindDiscriminant::from_u16(0), None);
+        assert_eq!(KindDiscriminant::from_u16(13), None);
+        assert_eq!(KindDiscriminant::from_u16(99), None);
+    }
 
-/// The syntactic / semantic kind of a documented API entry.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "kind", content = "value"))]
-pub enum Entry {
-	/// A namespace, package, or module — a container for other entries.
-	Module(Symbol<Module>),
-
-	/// A product type: struct, class, record, or data class.
-	RecordType(Symbol<Record>),
-
-	/// Unlinked, free-form documentation (prose articles, guides, etc.).
-	Info(Symbol<String>),
-
-	/// An anonymous or tagged union of concrete types.
-	UnionType(Symbol<Vec<Type>>),
-
-	/// A trait, protocol, or interface definition.
-	TraitDef(Symbol<TraitDef>),
-
-	/// A concrete implementation of a trait or protocol for a specific type.
-	TraitImpl(Symbol<TraitImpl>),
-
-	/// An algebraic sum type: enum, discriminated union, or sealed class.
-	///
-	/// Payload is a full [`SumType`] container (variants **plus** methods,
-	/// supers, generics, underlying type) so resolution is not lost to
-	/// free-floating dual-emits alone.
-	SumType(Symbol<SumType>),
-
-	/// A function, method, or lambda with its full signature.
-	Function(Symbol<Function>),
-
-	/// A type alias, typedef, or `using` alias.
-	TypeAlias(Symbol<TypeAliasBody>),
-
-	/// A named constant or immutable global binding.
-	Constant(Symbol<TypedBinding>),
-
-	/// A mutable global or static variable.
-	Variable(Symbol<TypedBinding>),
-
-	/// A macro, template, or code-generation hook.
-	Macro(Symbol<()>),
-
-	/// A built-in primitive type (integer, float, bool, …).
-	PrimitiveType(Symbol<()>),
-
-	/// A field or property of a containing type.
-	///
-	/// When the producer recovers a type it lives on [`TypedBinding::ty`]; the
-	/// historical unit payload left field types only in documentation.
-	Field(Symbol<TypedBinding>),
-
-	/// An event, signal, or callback definition.
-	///
-	/// The delegate / handler type is stored on [`TypedBinding::ty`] when known.
-	Event(Symbol<TypedBinding>),
-}
-
-impl Entry {
-	pub fn path(&self) -> &NudoxPath {
-		match self {
-			Entry::Module(s) => &s.path,
-			Entry::RecordType(s) => &s.path,
-			Entry::Info(s) => &s.path,
-			Entry::UnionType(s) => &s.path,
-			Entry::TraitDef(s) => &s.path,
-			Entry::TraitImpl(s) => &s.path,
-			Entry::SumType(s) => &s.path,
-			Entry::Function(s) => &s.path,
-			Entry::TypeAlias(s) => &s.path,
-			Entry::Constant(s) => &s.path,
-			Entry::Variable(s) => &s.path,
-			Entry::Macro(s) => &s.path,
-			Entry::PrimitiveType(s) => &s.path,
-			Entry::Field(s) => &s.path,
-			Entry::Event(s) => &s.path,
-		}
-	}
-
-	pub fn name(&self) -> &str {
-		match self {
-			Entry::Module(s) => &s.name,
-			Entry::RecordType(s) => &s.name,
-			Entry::Info(s) => &s.name,
-			Entry::UnionType(s) => &s.name,
-			Entry::TraitDef(s) => &s.name,
-			Entry::TraitImpl(s) => &s.name,
-			Entry::SumType(s) => &s.name,
-			Entry::Function(s) => &s.name,
-			Entry::TypeAlias(s) => &s.name,
-			Entry::Constant(s) => &s.name,
-			Entry::Variable(s) => &s.name,
-			Entry::Macro(s) => &s.name,
-			Entry::PrimitiveType(s) => &s.name,
-			Entry::Field(s) => &s.name,
-			Entry::Event(s) => &s.name,
-		}
-	}
-
-	pub fn kind_tag(&self) -> &'static str {
-		match self {
-			Entry::Module(_) => "module",
-			Entry::Info(_) => "info",
-			Entry::Constant(_) => "constant",
-			Entry::Variable(_) => "variable",
-			Entry::Macro(_) => "macro",
-			Entry::PrimitiveType(_) => "primitive_type",
-			Entry::Event(_) => "event",
-			Entry::Field(_) => "field",
-			Entry::RecordType(_) => "record",
-			Entry::UnionType(_) => "union",
-			Entry::TraitDef(_) => "trait_def",
-			Entry::TraitImpl(_) => "trait_impl",
-			Entry::SumType(_) => "sum_type",
-			Entry::TypeAlias(_) => "type_alias",
-			Entry::Function(_) => "function",
-		}
-	}
-
-	/// The attached documentation string, if any.
-	pub fn documentation(&self) -> Option<&str> {
-		match self {
-			Entry::Module(s) => s.documentation.as_deref(),
-			Entry::RecordType(s) => s.documentation.as_deref(),
-			Entry::Info(s) => s.documentation.as_deref(),
-			Entry::UnionType(s) => s.documentation.as_deref(),
-			Entry::TraitDef(s) => s.documentation.as_deref(),
-			Entry::TraitImpl(s) => s.documentation.as_deref(),
-			Entry::SumType(s) => s.documentation.as_deref(),
-			Entry::Function(s) => s.documentation.as_deref(),
-			Entry::TypeAlias(s) => s.documentation.as_deref(),
-			Entry::Constant(s) => s.documentation.as_deref(),
-			Entry::Variable(s) => s.documentation.as_deref(),
-			Entry::Macro(s) => s.documentation.as_deref(),
-			Entry::PrimitiveType(s) => s.documentation.as_deref(),
-			Entry::Field(s) => s.documentation.as_deref(),
-			Entry::Event(s) => s.documentation.as_deref(),
-		}
-	}
-
-	/// The set of alias paths for this entry, if any.
-	pub fn aliases(&self) -> Option<&HashSet<Vec<String>>> {
-		match self {
-			Entry::Module(s) => s.aliases.as_ref(),
-			Entry::RecordType(s) => s.aliases.as_ref(),
-			Entry::Info(s) => s.aliases.as_ref(),
-			Entry::UnionType(s) => s.aliases.as_ref(),
-			Entry::TraitDef(s) => s.aliases.as_ref(),
-			Entry::TraitImpl(s) => s.aliases.as_ref(),
-			Entry::SumType(s) => s.aliases.as_ref(),
-			Entry::Function(s) => s.aliases.as_ref(),
-			Entry::TypeAlias(s) => s.aliases.as_ref(),
-			Entry::Constant(s) => s.aliases.as_ref(),
-			Entry::Variable(s) => s.aliases.as_ref(),
-			Entry::Macro(s) => s.aliases.as_ref(),
-			Entry::PrimitiveType(s) => s.aliases.as_ref(),
-			Entry::Field(s) => s.aliases.as_ref(),
-			Entry::Event(s) => s.aliases.as_ref(),
-		}
-	}
-
-	pub fn schema_class(&self) -> &'static str {
-		match self {
-			Entry::Module(_) => "Module",
-			Entry::RecordType(_) => "RecordType",
-			Entry::Info(_) => "Info",
-			Entry::UnionType(_) => "UnionType",
-			Entry::TraitDef(_) => "TraitDef",
-			Entry::TraitImpl(_) => "TraitImpl",
-			Entry::SumType(_) => "SumType",
-			Entry::Function(_) => "Function",
-			Entry::TypeAlias(_) => "TypeAlias",
-			Entry::Constant(_) => "Constant",
-			Entry::Variable(_) => "Variable",
-			Entry::Macro(_) => "Macro",
-			Entry::PrimitiveType(_) => "PrimitiveType",
-			Entry::Field(_) => "Field",
-			Entry::Event(_) => "Event",
-		}
-	}
-}
-
-impl std::fmt::Display for Entry {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{}", self.kind_tag())
-	}
+    #[test]
+    fn kind_discriminant_values() {
+        assert_eq!(KindDiscriminant::Module as u16, 1);
+        assert_eq!(KindDiscriminant::Record as u16, 2);
+        assert_eq!(KindDiscriminant::Field as u16, 3);
+        assert_eq!(KindDiscriminant::Function as u16, 4);
+        assert_eq!(KindDiscriminant::Type as u16, 5);
+        assert_eq!(KindDiscriminant::Trait as u16, 6);
+        assert_eq!(KindDiscriminant::Impl as u16, 7);
+        assert_eq!(KindDiscriminant::Enum as u16, 8);
+        assert_eq!(KindDiscriminant::Variant as u16, 9);
+        assert_eq!(KindDiscriminant::Const as u16, 10);
+        assert_eq!(KindDiscriminant::Static as u16, 11);
+        assert_eq!(KindDiscriminant::Reexport as u16, 12);
+    }
 }

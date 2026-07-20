@@ -16,10 +16,10 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use nudox_ir::change::{IntroId, PackageLineageId, StableRef};
-use nudox_ir::view::Occurrence;
-use nudox_ir::wire::OwnedEntryPayload;
-use nudox_ir::IrView;
+use ir::change::{IntroId, PackageLineageId, StableRef};
+use ir::view::Occurrence;
+use ir::wire::OwnedEntryPayload;
+use ir::IrView;
 
 use crate::graph::reverse_index::{typerefs_of_entry, ReversePositionIndex};
 
@@ -211,14 +211,14 @@ pub fn execute_graph_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
-    use nudox_ir::view::Occurrence;
-    use nudox_ir::vocab::{Confidence, ReferenceKind, RelSpan};
-    use nudox_ir::kind::KindDiscriminant;
-    use nudox_ir::wire::{
+    use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+    use ir::view::Occurrence;
+    use ir::vocab::{Confidence, ReferenceKind, RelSpan};
+    use ir::kind::KindDiscriminant;
+    use ir::wire::{
         EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, SymbolWire,
     };
-    use nudox_ir::IrView;
+    use ir::IrView;
 
     use crate::graph::reverse_index::{ReverseIndexKey, ReversePositionIndex, SCHEMA_VERSION};
 
@@ -241,7 +241,7 @@ mod tests {
     fn sym(name: &str) -> SymbolWire {
         SymbolWire {
             name: name.into(),
-            visibility: nudox_ir::symbol::Visibility::Public,
+            visibility: ir::symbol::Visibility::Public,
             documentation: None,
             source_path: "src/lib.rs".into(),
             span_start: 0,

@@ -196,3 +196,93 @@ hash_id! {
 pub fn object_pack_hash(id: &heart::ObjectPackId) -> ObjectPackHash {
     ObjectPackHash::from_bytes(*id.0.as_bytes())
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SeaORM value types — so id newtypes can be entity fields directly
+// ─────────────────────────────────────────────────────────────────────────────
+
+macro_rules! impl_sea_blob_id {
+    ($ty:ty) => {
+        impl From<$ty> for sea_orm::Value {
+            fn from(value: $ty) -> Self {
+                sea_orm::Value::Bytes(Some(Box::new(value.to_blob().to_vec())))
+            }
+        }
+
+        impl sea_orm::TryGetable for $ty {
+            fn try_get_by<I: sea_orm::ColIdx>(
+                res: &sea_orm::QueryResult,
+                idx: I,
+            ) -> Result<Self, sea_orm::TryGetError> {
+                let bytes: Vec<u8> = res.try_get_by(idx)?;
+                <$ty>::from_blob(&bytes).map_err(|error| {
+                    sea_orm::TryGetError::DbErr(sea_orm::DbErr::Type(error.to_string()))
+                })
+            }
+        }
+
+        impl sea_orm::sea_query::ValueType for $ty {
+            fn try_from(
+                v: sea_orm::Value,
+            ) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
+                match v {
+                    sea_orm::Value::Bytes(Some(bytes)) => {
+                        <$ty>::from_blob(&bytes).map_err(|_| sea_orm::sea_query::ValueTypeErr)
+                    }
+                    _ => Err(sea_orm::sea_query::ValueTypeErr),
+                }
+            }
+
+            fn type_name() -> String {
+                stringify!($ty).to_owned()
+            }
+
+            fn array_type() -> sea_orm::sea_query::ArrayType {
+                sea_orm::sea_query::ArrayType::Bytes
+            }
+
+            fn column_type() -> sea_orm::ColumnType {
+                sea_orm::ColumnType::Blob
+            }
+        }
+
+        impl sea_orm::sea_query::Nullable for $ty {
+            fn null() -> sea_orm::Value {
+                sea_orm::Value::Bytes(None)
+            }
+        }
+    };
+}
+
+impl_sea_blob_id!(PackageStemId);
+impl_sea_blob_id!(StoreId);
+impl_sea_blob_id!(AdvisoryId);
+impl_sea_blob_id!(GenerationStamp);
+impl_sea_blob_id!(ChannelTip);
+impl_sea_blob_id!(JobKeyHash);
+impl_sea_blob_id!(ObjectPackHash);
+impl_sea_blob_id!(IntroIdHash);
+impl_sea_blob_id!(EdgepackKeyDigest);
+
+/// SeaORM requires primary-key value types to implement [`TryFromU64`] for
+/// autoincrement conversion. Our blob ids are never autoincrement, so this
+/// always errors if called.
+macro_rules! impl_try_from_u64 {
+    ($ty:ty) => {
+        impl sea_orm::TryFromU64 for $ty {
+            fn try_from_u64(_: u64) -> Result<Self, sea_orm::DbErr> {
+                Err(sea_orm::DbErr::ConvertFromU64(stringify!($ty)))
+            }
+        }
+    };
+}
+
+impl_try_from_u64!(PackageStemId);
+impl_try_from_u64!(StoreId);
+impl_try_from_u64!(AdvisoryId);
+impl_try_from_u64!(GenerationStamp);
+impl_try_from_u64!(ChannelTip);
+impl_try_from_u64!(JobKeyHash);
+impl_try_from_u64!(ObjectPackHash);
+impl_try_from_u64!(IntroIdHash);
+impl_try_from_u64!(EdgepackKeyDigest);

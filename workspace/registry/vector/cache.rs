@@ -13,7 +13,7 @@
 use heart::ContentHash;
 use moka::future::Cache;
 
-use vector_core::{EmbedError, EmbedRole, Embedder, Embedding, EmbeddingModel, ModelId};
+use crate::vector::{EmbedError, EmbedRole, Embedder, Embedding, EmbeddingModel, ModelId};
 
 /// The cache key: which model produced the vector, the retrieval role, and the
 /// content hash of the exact text that was embedded.
@@ -86,7 +86,7 @@ impl<M: EmbeddingModel> EmbeddingCache<M> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use vector_core::{EmbeddingModel, JinaCodeV2};
+	use crate::vector::{EmbeddingModel, JinaCodeV2};
 
 	/// Verify that Query and Document roles produce distinct cache entries for
 	/// identical text, so a query embedding never collides with a document

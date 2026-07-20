@@ -1,15 +1,14 @@
-//! The `TEXT`-enum columns of schema v4 (INDEX-PLAN §8) + the two registryless
-//! additions (REGISTRYLESS-PLAN §5), as real Rust enums with **total** codecs.
+//! Catalog `TEXT`-enum columns as SeaORM [`ActiveEnum`]s (INDEX-PLAN §8 +
+//! REGISTRYLESS-PLAN §5).
 //!
-//! Each enum:
-//! - renders to its stored token via [`TextEnum::as_token`],
-//! - parses back via [`TextEnum::from_token`], returning
-//!   [`TextEnumError::UnknownVariant`] on an unrecognized token — a typed error,
-//!   never a panic (adversarial requirement),
-//! - round-trips for every variant (proved in tests).
+//! Each enum is both:
+//! - a SeaORM [`ActiveEnum`] (typed model fields, schema-aware column types),
+//! - a total [`TextEnum`] codec (`as_token` / `from_token` / `all_variants`) so
+//!   non-ORM call sites and property tests keep a panic-free unknown-token path.
 
 use std::fmt;
 
+use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Why a stored token could not be decoded into a typed enum variant.
@@ -33,8 +32,8 @@ pub trait TextEnum: Sized + Copy + 'static {
     fn all_variants() -> &'static [Self];
 }
 
-/// Declare a total `TEXT`-enum codec: variants ⇔ tokens, with round-trip tests.
-macro_rules! text_enum {
+/// Declare a SeaORM ActiveEnum + total TextEnum codec: variants ⇔ tokens.
+macro_rules! catalog_enum {
     (
         $(#[$meta:meta])*
         $name:ident {
@@ -42,9 +41,25 @@ macro_rules! text_enum {
         }
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            Hash,
+            Serialize,
+            Deserialize,
+            EnumIter,
+            DeriveActiveEnum,
+        )]
+        #[sea_orm(rs_type = "String", db_type = "Text")]
         pub enum $name {
-            $( $(#[$variant_meta])* $variant ),+
+            $(
+                $(#[$variant_meta])*
+                #[sea_orm(string_value = $token)]
+                $variant
+            ),+
         }
 
         impl TextEnum for $name {
@@ -77,7 +92,7 @@ macro_rules! text_enum {
     };
 }
 
-text_enum! {
+catalog_enum! {
     /// `versions.parse_state` — pipeline lifecycle of a version (INDEX-PLAN §8).
     ParseState {
         /// Discovered, not yet attempted.
@@ -93,7 +108,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `generations.ir_status` — IR seal state, **always set** (INDEX-PLAN ID-15).
     IrStatus {
         /// No IR store linked / no work yet.
@@ -107,7 +122,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `versions.source_kind` — where source bytes came from (INDEX-PLAN ID-13).
     SourceKind {
         /// A git checkout at `source_rev` (preferred).
@@ -119,7 +134,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `listing_events.status` — bitemporal listing lifecycle (INDEX-PLAN §8).
     ListingStatus {
         /// Publicly listed / installable.
@@ -133,7 +148,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `stores.kind` — the four store families (INDEX-PLAN §8).
     StoreKind {
         /// Local libpijul IR repository.
@@ -147,7 +162,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `generation_locations.status` / `object_locations.status` (INDEX-PLAN §8).
     LocationStatus {
         /// Present at this store.
@@ -159,7 +174,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `outbox.sink_kind` / `sink_watermarks.sink_kind` — projection fan-out
     /// targets (INDEX-PLAN ID-3). Mirrors the sinks the followers drain.
     SinkKind {
@@ -172,7 +187,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `outbox.op` — the mutation a projection follower must apply (INDEX-PLAN §8).
     OutboxOperation {
         /// Insert or replace the projected row(s).
@@ -182,7 +197,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `edges.kind` — the dependency mechanism (INDEX-PLAN §8 + REGISTRYLESS RL-5).
     /// The registryless C/C++ vocabulary is included so the column is total.
     EdgeKind {
@@ -209,7 +224,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `edges.source` — provenance of an edge fact (INDEX-PLAN §8, REGISTRYLESS RL-5).
     EdgeSource {
         /// A registry/feed listing.
@@ -223,7 +238,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `package_aliases.confidence` / `repo_lineage.confidence`
     /// (REGISTRYLESS-PLAN §3.2, §5).
     AliasConfidence {
@@ -236,7 +251,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `repo_lineage.relation` (REGISTRYLESS-PLAN §5, RL-16).
     LineageRelation {
         /// A real fork with its own diverged commits.
@@ -246,7 +261,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `repo_lineage.evidence` (REGISTRYLESS-PLAN §5, §3.6).
     LineageEvidence {
         /// Shared git ancestry / merge-base (primary).
@@ -256,7 +271,7 @@ text_enum! {
     }
 }
 
-text_enum! {
+catalog_enum! {
     /// `compile_cache.kind` (INDEX-PLAN §8).
     CompileCacheKind {
         /// An L0 IR tip reference.

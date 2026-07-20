@@ -34,6 +34,11 @@ pub mod key;
 #[cfg(feature = "zstd")]
 pub mod tag;
 
+/// Frozen F1 key registry + field-aware line pairer (formerly the standalone
+/// `nudox-f1` leaf crate, inlined to break the `nudox-ir → libpijul → nudox-f1`
+/// dependency cycle).
+pub mod nudox_f1;
+
 #[cfg(test)]
 mod tests;
 

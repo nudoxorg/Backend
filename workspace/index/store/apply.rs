@@ -1,33 +1,30 @@
 //! Applying [`CatalogOp`]s (INDEX-PLAN ID-3) and generation registration
 //! (ID-15), plus the monotonic sink-watermark advance.
 //!
-//! [`apply_ops`] runs the **whole batch in one transaction**: every business
-//! mutation and the outbox rows it fans out are written together, so a failing
-//! op leaves no partial rows and no orphan outbox rows (the transaction rolls
-//! back). Statement text is centralized here; table row structs supply column
-//! names and value binders.
+//! Writes are SeaORM `ActiveModel` inserts with `OnConflict`; the catalog
+//! engine only sees the rendered [`Statement`].
 
-use crate::engine::{CatalogEngine, Value};
-use crate::enums::{OutboxOperation, SinkKind, TextEnum};
-use crate::ids::version_id;
-use crate::protocol::CatalogOp;
-use crate::tables::{
-    advisories, aliases, edges, facets, generations, git_watermarks, lineage, listing, outbox,
-    packages, repo_facts, sink_watermarks, versions,
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ActiveValue::Set, DbBackend, EntityTrait, QueryTrait};
+
+use crate::engine::{self, CatalogEngine};
+use crate::entity::{
+    advisories, edges, facets, generations, git_watermarks, listing_events, outbox, packages,
+    package_aliases, repo_facts, repo_lineage, sink_watermarks, versions,
 };
+use crate::enums::{OutboxOperation, ParseState, SinkKind, SourceKind};
+use crate::ids::PackageId;
+use crate::protocol::CatalogOp;
 
 use super::read::current_watermark;
 use super::{ApplyReport, GenerationRegistration, MetaError};
 
 /// Apply a batch of ops atomically, emitting outbox fan-out rows in the same
-/// transaction (ID-3). Returns counts for observability.
+/// transaction (ID-3).
 pub fn apply_ops<E: CatalogEngine>(
     engine: &E,
     ops: &[CatalogOp],
 ) -> Result<ApplyReport, MetaError> {
-    // The transaction closure cannot return our rich MetaError (the facade
-    // speaks EngineError), so we stash any typed codec/logic error out-of-band
-    // and surface it after the rollback.
     let mut report = ApplyReport::default();
     let mut deferred: Option<MetaError> = None;
 
@@ -40,8 +37,6 @@ pub fn apply_ops<E: CatalogEngine>(
                     report.outbox_rows += outbox_rows;
                 }
                 Err(error) => {
-                    // Convert the failure into an EngineError so the facade rolls
-                    // back, remembering the typed error for the caller.
                     let engine_error = match error {
                         MetaError::Engine(inner) => inner,
                         other => {
@@ -63,36 +58,32 @@ pub fn apply_ops<E: CatalogEngine>(
     }
 }
 
-/// Apply one op against the transaction handle, returning how many outbox rows
-/// it emitted.
 fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError> {
     match op {
         CatalogOp::UpsertPackage { stem, repo_url } => {
-            let sql = format!(
-                "INSERT INTO {table} ({cols}) VALUES (?1,?2,?3,?4,?5,?6,?7) \
-                 ON CONFLICT({stem_id}) DO UPDATE SET \
-                 {ecosystem}=excluded.{ecosystem}, {name_struct}=excluded.{name_struct}, \
-                 {name_canonical}=excluded.{name_canonical}, {name_original}=excluded.{name_original}, \
-                 {repo_url}=excluded.{repo_url}",
-                table = packages::TABLE,
-                cols = packages::PackageRow::INSERT_COLUMNS.join(","),
-                stem_id = packages::columns::STEM_ID,
-                ecosystem = packages::columns::ECOSYSTEM,
-                name_struct = packages::columns::NAME_STRUCT,
-                name_canonical = packages::columns::NAME_CANONICAL,
-                name_original = packages::columns::NAME_ORIGINAL,
-                repo_url = packages::columns::REPO_URL,
-            );
-            let row = packages::PackageRow {
-                stem_id: stem.stem_id,
-                ecosystem: stem.ecosystem,
-                name_struct: stem.name_struct.clone(),
-                name_canonical: stem.name_canonical.clone(),
-                name_original: stem.name_original.clone(),
-                repo_url: repo_url.clone(),
-                created_at: now_placeholder(),
+            let am = packages::ActiveModel {
+                stem_id: Set(stem.stem_id),
+                ecosystem: Set(stem.ecosystem.as_token().to_owned()),
+                name_struct: Set(stem.name_struct.clone()),
+                name_canonical: Set(stem.name_canonical.clone()),
+                name_original: Set(stem.name_original.clone()),
+                repo_url: Set(repo_url.clone()),
+                created_at: Set(now_placeholder()),
             };
-            tx.execute(&sql, &row.bind())?;
+            let stmt = packages::Entity::insert(am)
+                .on_conflict(
+                    OnConflict::column(packages::Column::StemId)
+                        .update_columns([
+                            packages::Column::Ecosystem,
+                            packages::Column::NameStruct,
+                            packages::Column::NameCanonical,
+                            packages::Column::NameOriginal,
+                            packages::Column::RepoUrl,
+                        ])
+                        .to_owned(),
+                )
+                .build(DbBackend::Sqlite);
+            engine::exec(tx, stmt)?;
             Ok(0)
         }
 
@@ -115,10 +106,9 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
                 facet_wire,
                 source.as_ref(),
             )?;
-            // Fan out to the text sink: a new/updated version is searchable.
             emit_outbox_row(
                 tx,
-                Some(version_id::to_blob(&coordinates.version_id).to_vec()),
+                Some(coordinates.version_id),
                 None,
                 SinkKind::Text,
                 OutboxOperation::Upsert,
@@ -127,31 +117,28 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
         }
 
         CatalogOp::SetRepoFacts { stem, facts } => {
-            let sql = format!(
-                "INSERT INTO {table} ({s},{stars},{last},{arch},{branch},{fetched}) \
-                 VALUES (?1,?2,?3,?4,?5,?6) \
-                 ON CONFLICT({s}) DO UPDATE SET \
-                 {stars}=excluded.{stars}, {last}=excluded.{last}, {arch}=excluded.{arch}, \
-                 {branch}=excluded.{branch}, {fetched}=excluded.{fetched}",
-                table = repo_facts::TABLE,
-                s = repo_facts::columns::STEM_ID,
-                stars = repo_facts::columns::STARS,
-                last = repo_facts::columns::LAST_ACTIVITY_AT,
-                arch = repo_facts::columns::ARCHIVED,
-                branch = repo_facts::columns::DEFAULT_BRANCH,
-                fetched = repo_facts::columns::FETCHED_AT,
-            );
-            tx.execute(
-                &sql,
-                &[
-                    Value::Blob(stem.to_blob().to_vec()),
-                    crate::codec::bind_optional_integer(facts.stars),
-                    crate::codec::bind_optional_integer(facts.last_activity_at),
-                    crate::codec::bind_bool(facts.archived),
-                    crate::codec::bind_optional_text(facts.default_branch.clone()),
-                    Value::Integer(facts.fetched_at),
-                ],
-            )?;
+            let am = repo_facts::ActiveModel {
+                stem_id: Set(*stem),
+                stars: Set(facts.stars),
+                last_activity_at: Set(facts.last_activity_at),
+                archived: Set(facts.archived),
+                default_branch: Set(facts.default_branch.clone()),
+                fetched_at: Set(facts.fetched_at),
+            };
+            let stmt = repo_facts::Entity::insert(am)
+                .on_conflict(
+                    OnConflict::column(repo_facts::Column::StemId)
+                        .update_columns([
+                            repo_facts::Column::Stars,
+                            repo_facts::Column::LastActivityAt,
+                            repo_facts::Column::Archived,
+                            repo_facts::Column::DefaultBranch,
+                            repo_facts::Column::FetchedAt,
+                        ])
+                        .to_owned(),
+                )
+                .build(DbBackend::Sqlite);
+            engine::exec(tx, stmt)?;
             Ok(0)
         }
 
@@ -161,66 +148,49 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             valid_from,
             reason,
         } => {
-            let sql = format!(
-                "INSERT INTO {table} ({v},{s},{r},{vf},{vt},{rec}) VALUES (?1,?2,?3,?4,?5,?6)",
-                table = listing::TABLE,
-                v = listing::columns::VERSION_ID,
-                s = listing::columns::STATUS,
-                r = listing::columns::REASON,
-                vf = listing::columns::VALID_FROM,
-                vt = listing::columns::VALID_TO,
-                rec = listing::columns::RECORDED_AT,
-            );
-            tx.execute(
-                &sql,
-                &[
-                    Value::Blob(version_id::to_blob(version).to_vec()),
-                    Value::Text(status.as_token().to_owned()),
-                    crate::codec::bind_optional_text(reason.clone()),
-                    Value::Integer(*valid_from),
-                    Value::Null,
-                    Value::Integer(now_placeholder()),
-                ],
-            )?;
+            let am = listing_events::ActiveModel {
+                seq: sea_orm::ActiveValue::NotSet,
+                version_id: Set(*version.as_uuid()),
+                status: Set(*status),
+                reason: Set(reason.clone()),
+                valid_from: Set(*valid_from),
+                valid_to: Set(None),
+                recorded_at: Set(now_placeholder()),
+            };
+            let stmt = listing_events::Entity::insert(am).build(DbBackend::Sqlite);
+            engine::exec(tx, stmt)?;
             Ok(0)
         }
 
         CatalogOp::UpsertAdvisory { advisory } => {
-            let sql = format!(
-                "INSERT INTO {table} ({id},{s},{vr},{sev},{sum},{url},{vf},{vt},{rec}) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
-                 ON CONFLICT({id}) DO UPDATE SET \
-                 {s}=excluded.{s}, {vr}=excluded.{vr}, {sev}=excluded.{sev}, \
-                 {sum}=excluded.{sum}, {url}=excluded.{url}, {vf}=excluded.{vf}, \
-                 {vt}=excluded.{vt}, {rec}=excluded.{rec}",
-                table = advisories::TABLE,
-                id = advisories::columns::ID,
-                s = advisories::columns::STEM_ID,
-                vr = advisories::columns::VERSION_RANGE,
-                sev = advisories::columns::SEVERITY,
-                sum = advisories::columns::SUMMARY,
-                url = advisories::columns::URL,
-                vf = advisories::columns::VALID_FROM,
-                vt = advisories::columns::VALID_TO,
-                rec = advisories::columns::RECORDED_AT,
-            );
-            tx.execute(
-                &sql,
-                &[
-                    Value::Blob(advisory.id.to_blob().to_vec()),
-                    match advisory.stem_id {
-                        Some(stem) => Value::Blob(stem.to_blob().to_vec()),
-                        None => Value::Null,
-                    },
-                    crate::codec::bind_optional_text(advisory.version_range.clone()),
-                    crate::codec::bind_optional_text(advisory.severity.clone()),
-                    crate::codec::bind_optional_text(advisory.summary.clone()),
-                    crate::codec::bind_optional_text(advisory.url.clone()),
-                    Value::Integer(advisory.valid_from),
-                    crate::codec::bind_optional_integer(advisory.valid_to),
-                    Value::Integer(advisory.recorded_at),
-                ],
-            )?;
+            let am = advisories::ActiveModel {
+                id: Set(advisory.id),
+                stem_id: Set(advisory.stem_id),
+                version_range: Set(advisory.version_range.clone()),
+                severity: Set(advisory.severity.clone()),
+                summary: Set(advisory.summary.clone()),
+                url: Set(advisory.url.clone()),
+                valid_from: Set(advisory.valid_from),
+                valid_to: Set(advisory.valid_to),
+                recorded_at: Set(advisory.recorded_at),
+            };
+            let stmt = advisories::Entity::insert(am)
+                .on_conflict(
+                    OnConflict::column(advisories::Column::Id)
+                        .update_columns([
+                            advisories::Column::StemId,
+                            advisories::Column::VersionRange,
+                            advisories::Column::Severity,
+                            advisories::Column::Summary,
+                            advisories::Column::Url,
+                            advisories::Column::ValidFrom,
+                            advisories::Column::ValidTo,
+                            advisories::Column::RecordedAt,
+                        ])
+                        .to_owned(),
+                )
+                .build(DbBackend::Sqlite);
+            engine::exec(tx, stmt)?;
             Ok(0)
         }
 
@@ -229,23 +199,23 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             rev,
             checked_at,
         } => {
-            let sql = format!(
-                "INSERT INTO {table} ({s},{lr},{lc},{le}) VALUES (?1,?2,?3,NULL) \
-                 ON CONFLICT({s}) DO UPDATE SET {lr}=excluded.{lr}, {lc}=excluded.{lc}",
-                table = git_watermarks::TABLE,
-                s = git_watermarks::columns::STEM_ID,
-                lr = git_watermarks::columns::LAST_REV,
-                lc = git_watermarks::columns::LAST_CHECKED_AT,
-                le = git_watermarks::columns::LAST_ERROR,
-            );
-            tx.execute(
-                &sql,
-                &[
-                    Value::Blob(stem.to_blob().to_vec()),
-                    Value::Text(rev.0.to_string()),
-                    Value::Integer(*checked_at),
-                ],
-            )?;
+            let am = git_watermarks::ActiveModel {
+                stem_id: Set(*stem),
+                last_rev: Set(Some(rev.0.to_string())),
+                last_checked_at: Set(*checked_at),
+                last_error: Set(None),
+            };
+            let stmt = git_watermarks::Entity::insert(am)
+                .on_conflict(
+                    OnConflict::column(git_watermarks::Column::StemId)
+                        .update_columns([
+                            git_watermarks::Column::LastRev,
+                            git_watermarks::Column::LastCheckedAt,
+                        ])
+                        .to_owned(),
+                )
+                .build(DbBackend::Sqlite);
+            engine::exec(tx, stmt)?;
             Ok(0)
         }
 
@@ -254,51 +224,47 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             status,
             generation,
         } => {
-            // Update the version's generation IR status; if a gen stamp is
-            // supplied, upsert the generation row's status too.
             if let Some(gen_wire) = generation {
-                let sql = format!(
-                    "INSERT INTO {table} ({gs},{vid},{ct},{irs}) VALUES (?1,?2,?3,?4) \
-                     ON CONFLICT({gs}) DO UPDATE SET {ct}=excluded.{ct}, {irs}=excluded.{irs}",
-                    table = generations::TABLE,
-                    gs = generations::columns::GEN_STAMP,
-                    vid = generations::columns::VERSION_ID,
-                    ct = generations::columns::CHANNEL_TIP,
-                    irs = generations::columns::IR_STATUS,
-                );
-                tx.execute(
-                    &sql,
-                    &[
-                        Value::Blob(gen_wire.gen_stamp.to_blob().to_vec()),
-                        Value::Blob(version_id::to_blob(version).to_vec()),
-                        match gen_wire.channel_tip {
-                            Some(tip) => Value::Blob(tip.to_blob().to_vec()),
-                            None => Value::Null,
-                        },
-                        Value::Text(status.as_token().to_owned()),
-                    ],
-                )?;
+                let am = generations::ActiveModel {
+                    gen_stamp: Set(gen_wire.gen_stamp),
+                    version_id: Set(*version.as_uuid()),
+                    channel_tip: Set(gen_wire.channel_tip),
+                    job_key: Set(None),
+                    producer_toolchain: Set(None),
+                    sealed_at: Set(None),
+                    ir_status: Set(*status),
+                    resolution_stats: Set(None),
+                };
+                let stmt = generations::Entity::insert(am)
+                    .on_conflict(
+                        OnConflict::column(generations::Column::GenStamp)
+                            .update_columns([
+                                generations::Column::ChannelTip,
+                                generations::Column::IrStatus,
+                            ])
+                            .to_owned(),
+                    )
+                    .build(DbBackend::Sqlite);
+                engine::exec(tx, stmt)?;
             }
             Ok(0)
         }
 
         CatalogOp::Refresh { stem } => {
-            // A refresh only bumps the git watermark's checked time so the
-            // monitor re-enumerates; no business rows change.
-            let sql = format!(
-                "INSERT INTO {table} ({s},{lc}) VALUES (?1,?2) \
-                 ON CONFLICT({s}) DO UPDATE SET {lc}=excluded.{lc}",
-                table = git_watermarks::TABLE,
-                s = git_watermarks::columns::STEM_ID,
-                lc = git_watermarks::columns::LAST_CHECKED_AT,
-            );
-            tx.execute(
-                &sql,
-                &[
-                    Value::Blob(stem.to_blob().to_vec()),
-                    Value::Integer(now_placeholder()),
-                ],
-            )?;
+            let am = git_watermarks::ActiveModel {
+                stem_id: Set(*stem),
+                last_rev: Set(None),
+                last_checked_at: Set(now_placeholder()),
+                last_error: Set(None),
+            };
+            let stmt = git_watermarks::Entity::insert(am)
+                .on_conflict(
+                    OnConflict::column(git_watermarks::Column::StemId)
+                        .update_columns([git_watermarks::Column::LastCheckedAt])
+                        .to_owned(),
+                )
+                .build(DbBackend::Sqlite);
+            engine::exec(tx, stmt)?;
             Ok(0)
         }
 
@@ -309,29 +275,30 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             stem,
             confidence,
         } => {
-            let sql = format!(
-                "INSERT INTO {table} ({eco},{ak},{al},{s},{c},{rec}) VALUES (?1,?2,?3,?4,?5,?6) \
-                 ON CONFLICT({eco},{ak},{al}) DO UPDATE SET \
-                 {s}=excluded.{s}, {c}=excluded.{c}, {rec}=excluded.{rec}",
-                table = aliases::TABLE,
-                eco = aliases::columns::ECOSYSTEM,
-                ak = aliases::columns::ALIAS_KIND,
-                al = aliases::columns::ALIAS,
-                s = aliases::columns::STEM_ID,
-                c = aliases::columns::CONFIDENCE,
-                rec = aliases::columns::RECORDED_AT,
-            );
-            tx.execute(
-                &sql,
-                &[
-                    Value::Text(ecosystem.as_token().to_owned()),
-                    Value::Text(kind.to_string()),
-                    Value::Text(alias.to_string()),
-                    Value::Blob(stem.to_blob().to_vec()),
-                    Value::Text(confidence.as_token().to_owned()),
-                    Value::Integer(now_placeholder()),
-                ],
-            )?;
+            let am = package_aliases::ActiveModel {
+                ecosystem: Set(ecosystem.as_token().to_owned()),
+                alias_kind: Set(kind.to_string()),
+                alias: Set(alias.to_string()),
+                stem_id: Set(*stem),
+                confidence: Set(*confidence),
+                recorded_at: Set(now_placeholder()),
+            };
+            let stmt = package_aliases::Entity::insert(am)
+                .on_conflict(
+                    OnConflict::columns([
+                        package_aliases::Column::Ecosystem,
+                        package_aliases::Column::AliasKind,
+                        package_aliases::Column::Alias,
+                    ])
+                    .update_columns([
+                        package_aliases::Column::StemId,
+                        package_aliases::Column::Confidence,
+                        package_aliases::Column::RecordedAt,
+                    ])
+                    .to_owned(),
+                )
+                .build(DbBackend::Sqlite);
+            engine::exec(tx, stmt)?;
             Ok(0)
         }
 
@@ -344,47 +311,39 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             overlap_ratio,
             confidence,
         } => {
-            let sql = format!(
-                "INSERT INTO {table} ({s},{rel},{tgt},{ev},{fpr},{ovr},{c},{rec}) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
-                 ON CONFLICT({s},{rel},{tgt}) DO UPDATE SET \
-                 {ev}=excluded.{ev}, {fpr}=excluded.{fpr}, {ovr}=excluded.{ovr}, \
-                 {c}=excluded.{c}, {rec}=excluded.{rec}",
-                table = lineage::TABLE,
-                s = lineage::columns::STEM_ID,
-                rel = lineage::columns::RELATION,
-                tgt = lineage::columns::TARGET_STEM,
-                ev = lineage::columns::EVIDENCE,
-                fpr = lineage::columns::FORK_POINT_REV,
-                ovr = lineage::columns::OVERLAP_RATIO,
-                c = lineage::columns::CONFIDENCE,
-                rec = lineage::columns::RECORDED_AT,
-            );
-            tx.execute(
-                &sql,
-                &[
-                    Value::Blob(stem.to_blob().to_vec()),
-                    Value::Text(relation.as_token().to_owned()),
-                    Value::Blob(target.to_blob().to_vec()),
-                    Value::Text(evidence.as_token().to_owned()),
-                    match fork_point_rev {
-                        Some(rev) => Value::Text(rev.0.to_string()),
-                        None => Value::Null,
-                    },
-                    match overlap_ratio {
-                        Some(ratio) => Value::Real(f64::from(*ratio)),
-                        None => Value::Null,
-                    },
-                    Value::Text(confidence.as_token().to_owned()),
-                    Value::Integer(now_placeholder()),
-                ],
-            )?;
+            let am = repo_lineage::ActiveModel {
+                stem_id: Set(*stem),
+                relation: Set(*relation),
+                target_stem: Set(*target),
+                evidence: Set(*evidence),
+                fork_point_rev: Set(fork_point_rev.as_ref().map(|r| r.0.to_string())),
+                overlap_ratio: Set(overlap_ratio.map(f64::from)),
+                confidence: Set(*confidence),
+                recorded_at: Set(now_placeholder()),
+            };
+            let stmt = repo_lineage::Entity::insert(am)
+                .on_conflict(
+                    OnConflict::columns([
+                        repo_lineage::Column::StemId,
+                        repo_lineage::Column::Relation,
+                        repo_lineage::Column::TargetStem,
+                    ])
+                    .update_columns([
+                        repo_lineage::Column::Evidence,
+                        repo_lineage::Column::ForkPointRev,
+                        repo_lineage::Column::OverlapRatio,
+                        repo_lineage::Column::Confidence,
+                        repo_lineage::Column::RecordedAt,
+                    ])
+                    .to_owned(),
+                )
+                .build(DbBackend::Sqlite);
+            engine::exec(tx, stmt)?;
             Ok(0)
         }
     }
 }
 
-/// Insert the version row plus its edges and facets.
 #[allow(clippy::too_many_arguments)]
 fn upsert_version(
     tx: &dyn CatalogEngine,
@@ -396,195 +355,155 @@ fn upsert_version(
     facet_wire: &crate::protocol::FacetWire,
     source: Option<&crate::protocol::SourceAcquisitionWire>,
 ) -> Result<(), MetaError> {
-    let row = versions::VersionRow {
-        id: coordinates.version_id,
-        stem_id: coordinates.stem_id,
-        version_canonical: coordinates.version_canonical.clone(),
-        version_original: coordinates.version_original.clone(),
-        published_at,
-        toolchain: toolchain.map(|t| t.0.to_string()),
-        license_spdx: license.map(|s| s.to_owned()),
-        yanked_upstream: false,
-        parse_state: crate::enums::ParseState::Pending,
-        parse_phase: None,
-        attempts: 0,
-        failure: None,
-        source_kind: source
-            .map(|s| s.source_kind)
-            .unwrap_or(crate::enums::SourceKind::Unknown),
-        source_pack: source.and_then(|s| s.source_pack),
-        source_rev: source.and_then(|s| s.source_rev.clone()),
-        registry_checksum: source.and_then(|s| s.registry_checksum.clone()),
-        registry_package_uri: source.and_then(|s| s.registry_package_uri.clone()),
+    // Metadata upsert only — never touch lifecycle columns on conflict.
+    let source_kind = source.map(|s| s.source_kind).unwrap_or(SourceKind::Unknown);
+    let am = versions::ActiveModel {
+        id: Set(*coordinates.version_id.as_uuid()),
+        stem_id: Set(coordinates.stem_id),
+        version_canonical: Set(coordinates.version_canonical.clone()),
+        version_original: Set(coordinates.version_original.clone()),
+        published_at: Set(published_at),
+        toolchain: Set(toolchain.map(|t| t.0.to_string())),
+        license_spdx: Set(license.map(|s| s.to_owned())),
+        yanked_upstream: Set(false),
+        parse_state: Set(ParseState::Pending),
+        parse_phase: Set(None),
+        attempts: Set(0),
+        failure: Set(None),
+        source_kind: Set(source_kind),
+        source_pack: Set(source.and_then(|s| s.source_pack)),
+        source_rev: Set(source.and_then(|s| s.source_rev.clone())),
+        registry_checksum: Set(source.and_then(|s| s.registry_checksum.clone())),
+        registry_package_uri: Set(source.and_then(|s| s.registry_package_uri.clone())),
     };
-    let placeholders = (1..=versions::VersionRow::INSERT_COLUMNS.len())
-        .map(|index| format!("?{index}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    // Upsert on the primary key `id`, refreshing every *metadata* column from
-    // the incoming row (a bare `stem=excluded.stem` would silently drop all
-    // other updated fields on a re-ingest of the same version) — but never the
-    // lifecycle columns: a feed refresh must not reset a version that is
-    // mid-compile or `Stored` back to `Pending` (see `store::lifecycle`, which
-    // is the only writer of those columns after insert).
-    const LIFECYCLE_COLUMNS: [&str; 4] = [
-        versions::columns::PARSE_STATE,
-        versions::columns::PARSE_PHASE,
-        versions::columns::ATTEMPTS,
-        versions::columns::FAILURE,
-    ];
-    let update_assignments = versions::VersionRow::INSERT_COLUMNS
-        .iter()
-        .filter(|column| **column != versions::columns::ID)
-        .filter(|column| !LIFECYCLE_COLUMNS.contains(*column))
-        .map(|column| format!("{column}=excluded.{column}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "INSERT INTO {table} ({cols}) VALUES ({placeholders}) \
-         ON CONFLICT({id}) DO UPDATE SET {update_assignments}",
-        table = versions::TABLE,
-        cols = versions::VersionRow::INSERT_COLUMNS.join(","),
-        id = versions::columns::ID,
-    );
-    tx.execute(&sql, &row.bind())?;
+    let stmt = versions::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(versions::Column::Id)
+                .update_columns([
+                    versions::Column::StemId,
+                    versions::Column::VersionCanonical,
+                    versions::Column::VersionOriginal,
+                    versions::Column::PublishedAt,
+                    versions::Column::Toolchain,
+                    versions::Column::LicenseSpdx,
+                    versions::Column::YankedUpstream,
+                    versions::Column::SourceKind,
+                    versions::Column::SourcePack,
+                    versions::Column::SourceRev,
+                    versions::Column::RegistryChecksum,
+                    versions::Column::RegistryPackageUri,
+                ])
+                .to_owned(),
+        )
+        .build(DbBackend::Sqlite);
+    engine::exec(tx, stmt)?;
 
     for edge in edge_wires {
-        let sql = format!(
-            "INSERT INTO {table} ({dv},{de},{dn},{req},{rs},{k},{src}) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7) \
-             ON CONFLICT({dv},{de},{dn},{k}) DO UPDATE SET \
-             {req}=excluded.{req}, {rs}=excluded.{rs}, {src}=excluded.{src}",
-            table = edges::TABLE,
-            dv = edges::columns::DEPENDENT_VERSION,
-            de = edges::columns::DEP_ECOSYSTEM,
-            dn = edges::columns::DEP_NAME_CANONICAL,
-            req = edges::columns::REQUIREMENT,
-            rs = edges::columns::RESOLVED_STEM,
-            k = edges::columns::KIND,
-            src = edges::columns::SOURCE,
-        );
-        tx.execute(
-            &sql,
-            &[
-                Value::Blob(version_id::to_blob(&coordinates.version_id).to_vec()),
-                Value::Text(edge.dep_ecosystem.as_token().to_owned()),
-                Value::Text(edge.dep_name_canonical.clone()),
-                Value::Text(edge.requirement.clone()),
-                match edge.resolved_stem {
-                    Some(stem) => Value::Blob(stem.to_blob().to_vec()),
-                    None => Value::Null,
-                },
-                Value::Text(edge.kind.as_token().to_owned()),
-                Value::Text(edge.source.as_token().to_owned()),
-            ],
-        )?;
+        let am = edges::ActiveModel {
+            dependent_version: Set(*coordinates.version_id.as_uuid()),
+            dep_ecosystem: Set(edge.dep_ecosystem.as_token().to_owned()),
+            dep_name_canonical: Set(edge.dep_name_canonical.clone()),
+            kind: Set(edge.kind),
+            requirement: Set(edge.requirement.clone()),
+            resolved_stem: Set(edge.resolved_stem),
+            source: Set(edge.source),
+        };
+        let stmt = edges::Entity::insert(am)
+            .on_conflict(
+                OnConflict::columns([
+                    edges::Column::DependentVersion,
+                    edges::Column::DepEcosystem,
+                    edges::Column::DepNameCanonical,
+                    edges::Column::Kind,
+                ])
+                .update_columns([
+                    edges::Column::Requirement,
+                    edges::Column::ResolvedStem,
+                    edges::Column::Source,
+                ])
+                .to_owned(),
+            )
+            .build(DbBackend::Sqlite);
+        engine::exec(tx, stmt)?;
     }
 
-    let sql = format!(
-        "INSERT INTO {table} ({v},{kw},{q},{ex}) VALUES (?1,?2,?3,?4) \
-         ON CONFLICT({v}) DO UPDATE SET {kw}=excluded.{kw}, {q}=excluded.{q}, {ex}=excluded.{ex}",
-        table = facets::TABLE,
-        v = facets::columns::VERSION_ID,
-        kw = facets::columns::KEYWORDS,
-        q = facets::columns::QUALITY_PPM,
-        ex = facets::columns::EXTRAS,
-    );
-    tx.execute(
-        &sql,
-        &[
-            Value::Blob(version_id::to_blob(&coordinates.version_id).to_vec()),
-            crate::codec::bind_optional_text(facet_wire.keywords.clone()),
-            crate::codec::bind_optional_integer(facet_wire.quality_ppm),
-            crate::codec::bind_optional_text(facet_wire.extras.clone()),
-        ],
-    )?;
+    let am = facets::ActiveModel {
+        version_id: Set(*coordinates.version_id.as_uuid()),
+        keywords: Set(facet_wire.keywords.clone()),
+        quality_ppm: Set(facet_wire.quality_ppm),
+        extras: Set(facet_wire.extras.clone()),
+    };
+    let stmt = facets::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(facets::Column::VersionId)
+                .update_columns([
+                    facets::Column::Keywords,
+                    facets::Column::QualityPpm,
+                    facets::Column::Extras,
+                ])
+                .to_owned(),
+        )
+        .build(DbBackend::Sqlite);
+    engine::exec(tx, stmt)?;
 
-    let _ = published_at;
     Ok(())
 }
 
-/// Insert one outbox row (version- or generation-scoped).
-/// Emit one outbox row in the caller's transaction (ID-3). Shared with the
-/// lifecycle write path (`store::lifecycle`) and the registry's explicit
-/// fan-out intents, which flip state outside `apply_ops` but must fan out
-/// identically.
+/// Emit one outbox row in the caller's transaction (ID-3).
 pub fn emit_outbox_row(
     tx: &dyn CatalogEngine,
-    version_blob: Option<Vec<u8>>,
-    gen_blob: Option<Vec<u8>>,
+    version: Option<PackageId>,
+    gen_stamp: Option<crate::ids::GenerationStamp>,
     sink: SinkKind,
     op: OutboxOperation,
 ) -> Result<(), MetaError> {
-    let sql = format!(
-        "INSERT INTO {table} ({cols}) VALUES (?1,?2,?3,?4,?5)",
-        table = outbox::TABLE,
-        cols = outbox::OutboxRow::INSERT_COLUMNS.join(","),
-    );
-    tx.execute(
-        &sql,
-        &[
-            match version_blob {
-                Some(bytes) => Value::Blob(bytes),
-                None => Value::Null,
-            },
-            match gen_blob {
-                Some(bytes) => Value::Blob(bytes),
-                None => Value::Null,
-            },
-            Value::Text(sink.as_token().to_owned()),
-            Value::Text(op.as_token().to_owned()),
-            Value::Integer(now_placeholder()),
-        ],
-    )?;
+    let am = outbox::ActiveModel {
+        seq: sea_orm::ActiveValue::NotSet,
+        version_id: Set(version.map(|id| *id.as_uuid())),
+        gen_stamp: Set(gen_stamp),
+        sink_kind: Set(sink),
+        op: Set(op),
+        created_at: Set(now_placeholder()),
+    };
+    let stmt = outbox::Entity::insert(am).build(DbBackend::Sqlite);
+    engine::exec(tx, stmt)?;
     Ok(())
 }
 
-/// Register (or update) a generation row (ID-15). Standalone (not part of an op
-/// batch), but still a single statement.
+/// Register (or update) a generation row (ID-15).
 pub fn register_generation<E: CatalogEngine>(
     engine: &E,
     registration: GenerationRegistration,
 ) -> Result<(), MetaError> {
-    let placeholders = (1..=8).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "INSERT INTO {table} ({gs},{vid},{ct},{jk},{pt},{sa},{irs},{stats}) VALUES ({placeholders}) \
-         ON CONFLICT({gs}) DO UPDATE SET \
-         {ct}=excluded.{ct}, {jk}=excluded.{jk}, {pt}=excluded.{pt}, \
-         {sa}=excluded.{sa}, {irs}=excluded.{irs}, {stats}=excluded.{stats}",
-        table = generations::TABLE,
-        gs = generations::columns::GEN_STAMP,
-        vid = generations::columns::VERSION_ID,
-        ct = generations::columns::CHANNEL_TIP,
-        jk = generations::columns::JOB_KEY,
-        pt = generations::columns::PRODUCER_TOOLCHAIN,
-        sa = generations::columns::SEALED_AT,
-        irs = generations::columns::IR_STATUS,
-        stats = generations::columns::RESOLUTION_STATS,
-    );
-    engine.execute(
-        &sql,
-        &[
-            Value::Blob(registration.gen_stamp.to_blob().to_vec()),
-            Value::Blob(version_id::to_blob(&registration.version_id).to_vec()),
-            match registration.channel_tip {
-                Some(tip) => Value::Blob(tip.to_blob().to_vec()),
-                None => Value::Null,
-            },
-            match registration.job_key {
-                Some(key) => Value::Blob(key.to_blob().to_vec()),
-                None => Value::Null,
-            },
-            crate::codec::bind_optional_text(registration.producer_toolchain),
-            crate::codec::bind_optional_integer(registration.sealed_at),
-            Value::Text(registration.ir_status.as_token().to_owned()),
-            crate::codec::bind_optional_text(registration.resolution_stats),
-        ],
-    )?;
+    let am = generations::ActiveModel {
+        gen_stamp: Set(registration.gen_stamp),
+        version_id: Set(*registration.version_id.as_uuid()),
+        channel_tip: Set(registration.channel_tip),
+        job_key: Set(registration.job_key),
+        producer_toolchain: Set(registration.producer_toolchain),
+        sealed_at: Set(registration.sealed_at),
+        ir_status: Set(registration.ir_status),
+        resolution_stats: Set(registration.resolution_stats),
+    };
+    let stmt = generations::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(generations::Column::GenStamp)
+                .update_columns([
+                    generations::Column::ChannelTip,
+                    generations::Column::JobKey,
+                    generations::Column::ProducerToolchain,
+                    generations::Column::SealedAt,
+                    generations::Column::IrStatus,
+                    generations::Column::ResolutionStats,
+                ])
+                .to_owned(),
+        )
+        .build(DbBackend::Sqlite);
+    engine::exec(engine, stmt)?;
     Ok(())
 }
 
-/// Advance a sink watermark, rejecting a regression (monotonicity guard).
+/// Advance a sink watermark, rejecting a regression.
 pub fn advance_sink_watermark<E: CatalogEngine>(
     engine: &E,
     sink: SinkKind,
@@ -599,29 +518,25 @@ pub fn advance_sink_watermark<E: CatalogEngine>(
             requested: last_seq,
         });
     }
-    let sql = format!(
-        "INSERT INTO {table} ({sk},{ls},{ua}) VALUES (?1,?2,?3) \
-         ON CONFLICT({sk}) DO UPDATE SET {ls}=excluded.{ls}, {ua}=excluded.{ua}",
-        table = sink_watermarks::TABLE,
-        sk = sink_watermarks::columns::SINK_KIND,
-        ls = sink_watermarks::columns::LAST_SEQ,
-        ua = sink_watermarks::columns::UPDATED_AT,
-    );
-    engine.execute(
-        &sql,
-        &[
-            Value::Text(sink.as_token().to_owned()),
-            Value::Integer(last_seq),
-            Value::Integer(updated_at),
-        ],
-    )?;
+    let am = sink_watermarks::ActiveModel {
+        sink_kind: Set(sink),
+        last_seq: Set(last_seq),
+        updated_at: Set(updated_at),
+    };
+    let stmt = sink_watermarks::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(sink_watermarks::Column::SinkKind)
+                .update_columns([
+                    sink_watermarks::Column::LastSeq,
+                    sink_watermarks::Column::UpdatedAt,
+                ])
+                .to_owned(),
+        )
+        .build(DbBackend::Sqlite);
+    engine::exec(engine, stmt)?;
     Ok(())
 }
 
-/// A placeholder "now" for fields the wire op did not carry. The catalog is
-/// commit-timestamped by DoltLite; row-level `created_at`/`recorded_at` here are
-/// best-effort and monotone within a process. Kept as one function so a real
-/// clock injection is a one-line change.
 fn now_placeholder() -> i64 {
     use std::sync::atomic::{AtomicI64, Ordering};
     static CLOCK: AtomicI64 = AtomicI64::new(1);

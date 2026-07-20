@@ -21,6 +21,9 @@ use std::sync::Mutex;
 use rusqlite::types::{Value as SqliteValue, ValueRef};
 use rusqlite::Connection as SqliteConnection;
 
+use sea_orm::sea_query::Query;
+
+use super::stmt;
 use super::{
     BranchName, CatalogEngine, CommitHash, EngineError, MergeOutcome, Row, Value, VersioningEngine,
 };
@@ -341,7 +344,9 @@ impl VersioningEngine for MemoryEngine {
     fn dolt_merge(&self, from: &BranchName) -> Result<MergeOutcome, EngineError> {
         // The fake never conflicts: it records a synthetic merge commit on the
         // current branch.
-        let merge = self.dolt_commit(&format!("merge {}", from.0))?;
+        let mut message = String::from("merge ");
+        message.push_str(&from.0);
+        let merge = self.dolt_commit(&message)?;
         Ok(MergeOutcome::Clean { commit: merge })
     }
 
@@ -379,30 +384,19 @@ impl VersioningEngine for MemoryEngine {
             .map(|commit| commit.hash.clone()))
     }
 
-    fn query_rows_at<T>(
+    fn query_rows_at<Ent, T>(
         &self,
         _commit_reference: &str,
-        table: &str,
-        projection: &str,
-        where_clause: &str,
-        params: &[Value],
+        configure: &mut dyn FnMut(&mut sea_orm::sea_query::SelectStatement),
         map: &mut dyn FnMut(&dyn Row) -> Result<T, EngineError>,
-    ) -> Result<Vec<T>, EngineError> {
-        // The fake has no prolly-tree per-commit table state, so it reads the
-        // *current* table (honest limitation, documented at the type level). It
-        // still validates the table name and honors the caller's bound where
-        // clause, so callers exercise the same code path they will hit in
-        // production.
-        if !crate::tables::is_known_table(table) {
-            return Err(EngineError::Statement(format!(
-                "unknown catalog table {table:?} in historical read"
-            )));
-        }
-        let sql = if where_clause.is_empty() {
-            format!("SELECT {projection} FROM {table}")
-        } else {
-            format!("SELECT {projection} FROM {table} WHERE {where_clause}")
-        };
-        self.query_rows(&sql, params, map)
+    ) -> Result<Vec<T>, EngineError>
+    where
+        Ent: crate::entity::Historical,
+    {
+        // No prolly-tree history: read the tip table (documented limitation).
+        let mut select = Query::select();
+        select.from(Ent::default());
+        configure(&mut select);
+        stmt::query_select(self, select, map)
     }
 }

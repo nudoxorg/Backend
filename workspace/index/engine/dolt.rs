@@ -25,6 +25,9 @@ use std::sync::Mutex;
 
 use rusqdoltlite as engine;
 
+use sea_orm::sea_query::{Alias, Expr, Func, Query};
+
+use super::stmt;
 use super::{
     BranchName, CatalogEngine, CommitHash, EngineError, MergeOutcome, Row, Value, VersioningEngine,
 };
@@ -353,36 +356,24 @@ impl VersioningEngine for DoltEngine {
         Ok(resolved.map(|hash| CommitHash(hash.into_string())))
     }
 
-    fn query_rows_at<T>(
+    fn query_rows_at<Ent, T>(
         &self,
         commit_reference: &str,
-        table: &str,
-        projection: &str,
-        where_clause: &str,
-        params: &[Value],
+        configure: &mut dyn FnMut(&mut sea_orm::sea_query::SelectStatement),
         map: &mut dyn FnMut(&dyn Row) -> Result<T, EngineError>,
-    ) -> Result<Vec<T>, EngineError> {
-        // Validate the table name against the known schema so a crafted `table`
-        // string can never reach SQL text. `commit_reference` is passed as a
-        // *bound* parameter to the `dolt_at_<table>(?)` TVF, so it cannot inject
-        // either.
-        if !crate::tables::is_known_table(table) {
-            return Err(EngineError::Statement(format!(
-                "unknown catalog table {table:?} in historical read"
-            )));
-        }
-        let mut bound = Vec::with_capacity(params.len() + 1);
-        bound.push(Value::Text(commit_reference.to_owned()));
-        bound.extend_from_slice(params);
-        // `dolt_at_<table>(?)` — the point-in-time table-valued function. The
-        // caller's `where_clause` uses `?` placeholders bound through `params`
-        // (which follow the ref placeholder).
-        let sql = if where_clause.is_empty() {
-            format!("SELECT {projection} FROM dolt_at_{table}(?)")
-        } else {
-            format!("SELECT {projection} FROM dolt_at_{table}(?) WHERE {where_clause}")
-        };
-        self.query_rows(&sql, &bound, map)
+    ) -> Result<Vec<T>, EngineError>
+    where
+        Ent: crate::entity::Historical,
+    {
+        // Entity owns its `dolt_at_*` TVF name; commit ref is bound, not
+        // interpolated. Building the select stays in sea-query (typed).
+        let mut select = Query::select();
+        select.from_function(
+            Func::cust(Alias::new(Ent::DOLT_AT)).arg(Expr::val(commit_reference)),
+            Alias::new("as_of"),
+        );
+        configure(&mut select);
+        stmt::query_select(self, select, map)
     }
 }
 

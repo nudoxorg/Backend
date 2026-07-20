@@ -122,26 +122,29 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
     writer.commit_batch("ingest tower").expect("second commit");
 
     // Present state has two packages.
-    let now_count: Vec<i64> = writer
-        .engine()
-        .query_rows("SELECT count(*) FROM packages", &[], &mut |row| {
-            row.get_integer(0)
-        })
-        .expect("count now");
+    use index::engine::stmt;
+    use sea_orm::sea_query::{Asterisk, Expr, Func, Query};
+    let mut tip = Query::select();
+    tip.from(index::entity::packages::Entity::default())
+        .expr(Func::count(Expr::col(Asterisk)));
+    let now_count: Vec<i64> = stmt::query_select(writer.engine(), tip, &mut |row| {
+        row.get_integer(0)
+    })
+    .expect("count now");
     assert_eq!(now_count, vec![2]);
 
     // As of one commit back (HEAD~1) there was exactly one package.
+    use sea_orm::sea_query::{Asterisk, Expr, Func};
     let past_count: Vec<i64> = writer
         .engine()
-        .query_rows_at(
+        .query_rows_at::<index::entity::packages::Entity, _>(
             "HEAD~1",
-            "packages",
-            "count(*)",
-            "",
-            &[],
+            &mut |q| {
+                q.expr(Func::count(Expr::col(Asterisk)));
+            },
             &mut |row| row.get_integer(0),
         )
-        .expect("historical count via dolt_at_packages");
+        .expect("historical count via packages::Entity DOLT_AT");
     assert_eq!(past_count, vec![1], "one commit back had a single package");
 
     // The `at()` view resolves a pinned commit for the first commit's instant.
