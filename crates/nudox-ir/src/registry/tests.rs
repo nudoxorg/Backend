@@ -40,30 +40,30 @@ fn serialize_deserialize() {
 fn build_registry() -> Registry<DummyRegistryResolver> {
     let registry = Registry::default();
 
-    registry.build_package_ir(dummy_package("/pkg-0"), dummy_symbol("pkg-0"), |b| {
-        b.create(0, dummy_symbol("mod_1"), |_| Module);
-        b.create(1, dummy_symbol("record_2"), |_| Record { fields: list![] });
+    registry.build_package_ir(package("/pkg-0"), symbol("pkg-0"), |b| {
+        b.create(0, symbol("mod_1"), |_| Module);
+        b.create(1, symbol("record_2"), |_| Record { fields: list![] });
     });
 
-    registry.build_package_ir(dummy_package("/pkg-1"), dummy_symbol("pkg-1"), |b| {
-        b.create(2, dummy_symbol("mod_1"), |_| Module);
+    registry.build_package_ir(package("/pkg-1"), symbol("pkg-1"), |b| {
+        b.create(2, symbol("mod_1"), |_| Module);
 
-        b.create(3, dummy_symbol("record_2"), |_| Record { fields: list![] });
+        b.create(3, symbol("record_2"), |_| Record { fields: list![] });
 
-        b.create(4, dummy_symbol("mod_3"), |b| {
-            b.create(5, dummy_symbol("mod_4"), |_| Module);
-            b.create(6, dummy_symbol("record_5"), |_| Record { fields: list![] });
+        b.create(4, symbol("mod_3"), |b| {
+            b.create(5, symbol("mod_4"), |_| Module);
+            b.create(6, symbol("record_5"), |_| Record { fields: list![] });
 
             Module
         });
 
-        b.create(7, dummy_symbol("record_6"), |b| {
+        b.create(7, symbol("record_6"), |b| {
             Record::builder()
                 .fields(
                     ["field_7", "field_8", "field_9"]
                         .into_iter()
                         .enumerate()
-                        .map(|(idx, sym)| b.create(idx + 8, dummy_symbol(sym), |_| Field {})),
+                        .map(|(idx, sym)| b.create(idx + 8, symbol(sym), |_| Field {})),
                 )
                 .build(b)
         });

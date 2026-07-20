@@ -19,7 +19,6 @@ impl<T> Deref for TypedEntry<T> {
 }
 
 impl<T: EntryKind> TypedEntry<T> {
-    #[expect(unused)]
     pub(crate) fn new(entry: &Entry) -> &Self {
         // Safety: `TypedEntry` is `repr(transparent)` and there are no possibilities
         // for UB as all operations are checked before accessing the inner Kind

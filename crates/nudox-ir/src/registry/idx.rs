@@ -19,11 +19,11 @@ impl<T> EntryIdx<T> {
         self.index
     }
 
-    pub(super) fn raw(self) -> RawEntryIdx {
+    pub fn raw(self) -> RawEntryIdx {
         self.cast()
     }
 
-    pub(super) fn typed<U>(self) -> EntryIdx<U>
+    pub fn typed<U>(self) -> EntryIdx<U>
     where
         U: EntryKind,
     {

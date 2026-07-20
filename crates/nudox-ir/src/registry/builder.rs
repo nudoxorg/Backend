@@ -225,6 +225,10 @@ mod tests {
 
     use super::*;
 
+    fn idx<T>(id: usize) -> EntryIdx<T> {
+        EntryIdx::new(id)
+    }
+
     fn pid() -> PackageId {
         PackageId::path("/")
     }
@@ -252,7 +256,7 @@ mod tests {
         EntryBuilder::builder()
             .id(root_uid())
             .idx(index)
-            .build(dummy_symbol(sym), None, build)
+            .build(symbol(sym), None, build)
     }
 
     #[test]
@@ -275,7 +279,7 @@ mod tests {
             let fields = ["field1", "field2", "field3"]
                 .into_iter()
                 .enumerate()
-                .map(|(idx, field)| b.create(idx, dummy_symbol(field), |_| Field {}))
+                .map(|(idx, field)| b.create(idx, symbol(field), |_| Field {}))
                 .collect();
 
             Record { fields }
@@ -301,14 +305,14 @@ mod tests {
     #[test]
     fn links_emitted_correctly() {
         let built = build(idx(0), "root", |b| {
-            let struct_idx_1 = b.create(1, dummy_symbol("struct1"), |b| {
-                let f1 = b.create(2, dummy_symbol("f1"), |_| Field {});
+            let struct_idx_1 = b.create(1, symbol("struct1"), |b| {
+                let f1 = b.create(2, symbol("f1"), |_| Field {});
                 b.link(f1);
 
                 Record { fields: list![f1] }
             });
 
-            let struct_idx_2 = b.create(3, dummy_symbol("struct2"), |_| Record { fields: list![] });
+            let struct_idx_2 = b.create(3, symbol("struct2"), |_| Record { fields: list![] });
 
             b.link(struct_idx_1);
             b.link(struct_idx_2);

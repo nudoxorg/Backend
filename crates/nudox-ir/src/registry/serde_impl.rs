@@ -14,11 +14,7 @@ impl<R: RegistryResolver> Registry<R> {
         T: serde::Deserialize<'de>,
         D: serde::Deserializer<'de>,
     {
-        DeserContext {
-            state: &self.state,
-            deser: |d| erased_serde::deserialize::<UniqueId<R::EntryId>>(d).map(UniqueId::upcast),
-        }
-        .deserialize(deserializer)
+        DeserContext::new::<R>(&self.state).deserialize(deserializer)
     }
 }
 
@@ -27,6 +23,10 @@ pub struct DeserContext<'a> {
     deser: DeserFn,
 }
 
+// newtype wrapper to give it a TypeId
+// and auto-implement erased_serde::Context
+// so that we can pass it into/out of our
+// Deserialize implementations
 struct DeserFnCx {
     deser: DeserFn,
 }
@@ -43,6 +43,15 @@ impl DeserContext<'_> {
             deserializer,
             (self.state, &DeserFnCx { deser: self.deser }),
         )
+    }
+}
+
+impl<'a> DeserContext<'a> {
+    pub(super) fn new<R: RegistryResolver>(state: &'a RegistryState) -> Self {
+        DeserContext {
+            state,
+            deser: |d| erased_serde::deserialize::<UniqueId<R::EntryId>>(d).map(UniqueId::upcast),
+        }
     }
 }
 
@@ -72,11 +81,11 @@ impl<'de, T> serde::Deserialize<'de> for EntryIdx<T> {
         serde_context::context_scope(|cx| {
             let state = cx.get::<RegistryState>().map_err(D::Error::custom)?;
 
-            let DeserFnCx { deser } = cx.get::<DeserFnCx>().map_err(D::Error::custom)?;
+            let deser_fn = cx.get::<DeserFnCx>().map_err(D::Error::custom)?;
 
             let deserializer = &mut <dyn erased_serde::Deserializer>::erase(deserializer);
 
-            let id = deser(deserializer).map_err(D::Error::custom)?;
+            let id = (deser_fn.deser)(deserializer).map_err(D::Error::custom)?;
 
             Ok(state.unique_id_to_entry_idx(id).cast())
         })

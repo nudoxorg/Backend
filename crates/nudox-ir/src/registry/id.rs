@@ -27,10 +27,8 @@ impl<T: ?Sized> UniqueId<T> {
     pub fn entry(&self) -> Option<&T> {
         self.entry.as_deref()
     }
-}
 
-impl<T: ?Sized> UniqueId<T> {
-    pub(super) fn root(package: PackageId) -> Self {
+    pub fn root(package: PackageId) -> Self {
         UniqueId {
             package,
             entry: None,
@@ -39,7 +37,7 @@ impl<T: ?Sized> UniqueId<T> {
 }
 
 impl<T> UniqueId<T> {
-    pub(super) fn new(package: PackageId, entry: T) -> Self {
+    pub fn new(package: PackageId, entry: T) -> Self {
         UniqueId {
             package,
             entry: Some(Box::new(entry)),
@@ -70,7 +68,6 @@ impl ErasedUniqueId {
         UniqueId { package, entry }
     }
 
-    #[cfg_attr(not(test), expect(unused))]
     pub(super) fn downcast_ref<R: RegistryResolver>(&self) -> &UniqueId<R::EntryId> {
         if self
             .entry

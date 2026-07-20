@@ -9,7 +9,12 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use crate::{package::PackageMeta, symbol::Symbol};
+use crate::{
+    entry::{Entry, TypedEntry},
+    kind::EntryKind,
+    package::PackageMeta,
+    symbol::Symbol,
+};
 
 use self::{
     id::ErasedUniqueId,
@@ -27,7 +32,6 @@ pub use self::{
 
 #[derive(Default)]
 pub struct Registry<R> {
-    #[expect(unused)]
     resolver: R,
     state: RegistryState,
 }
@@ -41,6 +45,32 @@ impl<R: RegistryResolver> Registry<R> {
     ) {
         self.state.build_package_ir(pkg, sym, build)
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = RawEntryIdx> {
+        self.state.iter()
+    }
+
+    pub fn resolve_id(&self, idx: RawEntryIdx) -> &UniqueId<R::EntryId> {
+        self.state.resolve_id::<R>(idx)
+    }
+
+    pub fn resolve_idx(&self, id: UniqueId<R::EntryId>) -> RawEntryIdx {
+        self.state.resolve_idx::<R>(id)
+    }
+
+    pub async fn resolve_entry(&self, idx: RawEntryIdx) -> Result<&Entry, R::Error> {
+        self.state.resolve_entry(idx, &self.resolver).await
+    }
+
+    pub async fn resolve_typed_entry<T: EntryKind>(
+        &self,
+        idx: EntryIdx<T>,
+    ) -> Result<&TypedEntry<T>, R::Error> {
+        self.state
+            .resolve_entry(idx.raw(), &self.resolver)
+            .await
+            .map(TypedEntry::new)
+    }
 }
 
 impl<R> Registry<R> {
@@ -50,10 +80,12 @@ impl<R> Registry<R> {
             state: RegistryState::new(),
         }
     }
-}
 
-// allow test_helpers to create EntryIdx's
-#[cfg(test)]
-pub(crate) fn new_idx<T>(index: usize) -> EntryIdx<T> {
-    EntryIdx::new(index)
+    pub fn resolver(&self) -> &R {
+        &self.resolver
+    }
+
+    pub fn resolver_mut(&mut self) -> &mut R {
+        &mut self.resolver
+    }
 }

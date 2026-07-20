@@ -577,6 +577,7 @@ dependencies = [
  "serde_context",
  "serde_json",
  "thiserror",
+ "tokio",
  "triomphe",
  "vfs",
 ]

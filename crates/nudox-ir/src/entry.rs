@@ -13,7 +13,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub(crate) const fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
+    pub const fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
         Self {
             sym,
             node,
@@ -21,7 +21,7 @@ impl Entry {
         }
     }
 
-    pub(crate) const fn reference(sym: Symbol, node: Node, idx: RawEntryIdx) -> Self {
+    pub const fn reference(sym: Symbol, node: Node, idx: RawEntryIdx) -> Self {
         Self {
             sym,
             node,

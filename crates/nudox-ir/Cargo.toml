@@ -14,6 +14,7 @@ parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true }
 serde_context = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 triomphe = { workspace = true }
 
 [dev-dependencies]
