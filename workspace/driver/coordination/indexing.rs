@@ -230,13 +230,12 @@ impl<M: EmbeddingModel> Indexer<M> {
         })??;
 
         // ── 3. Hand the produced IR bytes to the emit path ────────────────────
-        // TODO(driver): decode the producer's IR frames (NdIrF1) from `ir_bytes`
-        // into blob sections on `builder` and the symbol identifier list the
-        // emit/facets path expects. The exact on-wire IR framing is emitted by
-        // the producer provisioned in the golden toolchain image (Buck2 compiler
-        // tree), so the decoder lands with the producer contract. Until then we
-        // stage the raw IR as a single section on the builder (so it is not
-        // dropped) and return the identifiers we can already recover — none yet.
+        // `ingest_ir_bytes` decodes the producer's NdIrF1 stream via
+        // `ir_vcs::protocol::StreamReceiver`: Symbols frames become the IR blob
+        // section + the returned symbol identifier list, and Bodies frames are
+        // lowered into the blob `ReferenceSet` (oracle calls / type mentions).
+        // The producer binary is provisioned in the golden toolchain image; the
+        // on-wire framing contract is honored here.
         let identifiers = ingest_ir_bytes(builder, &ir_bytes);
 
         tracing::info!(
@@ -937,10 +936,10 @@ fn run_producer_in_cage(
     };
 
     // ── Budget: RO source root, ephemeral scratch overlay, network OFF ────────
-    // TODO(driver): add the RO toolchain store roots (rustup/cargo/GOROOT/…) once
-    // the assembled `ToolchainSet`/`ToolchainImageStore` is threaded into the
-    // Indexer; on the sealed-image plane those roots live inside the golden's
-    // guest image, so the host-side RO binds are empty here.
+    // By design (sealed-image plane): the toolchain roots (rustup/cargo/GOROOT/…)
+    // live INSIDE the golden guest image, so there are NO host-side RO toolchain
+    // binds — only the package source is bound RO. A host-bind toolchain plane
+    // would extend this `FsGrant`; the golden-image plane does not need it.
     let fs = FsGrant::scratch(scratch_root).ro(source_root);
     let budget = CapabilityBudget::new(
         fs,

@@ -34,6 +34,7 @@
 use heart::SourceId;
 use heart::sync::{ContentIo, SyncError, VerifyError};
 use transport::EndpointId;
+use transport::announce::{Announcement, send_announcement};
 use transport::blob::{Fetcher, Provider, TransportHash};
 
 use crate::config::{ServerConfiguration, SourceConfig};
@@ -197,23 +198,53 @@ impl FederationSync {
 			SyncMode::Fleet => false,
 		};
 
-		// Remote fan-out: publish the verified bytes to the provider once, then
-		// announce the (id, transport_hash) pairing to each configured target.
-		// (Actually opening a control stream to each peer to deliver the
-		// announcement is the transport plane's job; here we compute the pairing
-		// and record the intended pushes — see the TODO below.)
+		// Remote fan-out: publish the verified bytes to the provider once, open a
+		// control-ALPN stream to each peer, and deliver the (id, transport_hash)
+		// announcement so the peer can pull the blob.  A delivery failure to one
+		// target is logged and recorded (`delivered: false`) but does NOT abort
+		// the others — partial fan-out is preferred over a full stop.
 		let mut pushes = Vec::with_capacity(self.targets.len());
 		if !self.targets.is_empty() {
 			let transport_hash = provider.add_bytes(bytes.to_vec()).await?;
+			let ann = Announcement {
+				id: id.to_string(),
+				transport_hash,
+			};
 			for target in &self.targets {
-				// TODO(driver): open the control-ALPN stream to `target.endpoint`
-				// and send the announcement frame carrying `(id, transport_hash)`
-				// so the peer's `pull` can fetch it. The bytes are already served
-				// by `provider`; this records the intended push per target.
+				let delivered = match send_announcement(
+					provider.endpoint(),
+					target.endpoint,
+					&ann,
+				)
+				.await
+				{
+					Ok(ack) => {
+						if !ack.accepted {
+							tracing::warn!(
+								source = ?target.source,
+								endpoint = ?target.endpoint,
+								id = %ann.id,
+								"federation push: peer rejected announcement",
+							);
+						}
+						ack.accepted
+					}
+					Err(error) => {
+						tracing::warn!(
+							%error,
+							source = ?target.source,
+							endpoint = ?target.endpoint,
+							id = %ann.id,
+							"federation push: delivery failed, continuing",
+						);
+						false
+					}
+				};
 				pushes.push(PushRecord {
 					source: target.source,
 					endpoint: target.endpoint,
 					transport_hash,
+					delivered,
 				});
 			}
 		}
@@ -259,15 +290,25 @@ impl FederationSync {
 	}
 }
 
-/// A recorded intended push of a replicated item to one remote target.
+/// A recorded push of a replicated item to one remote target.
+///
+/// `delivered` is `true` when the peer accepted the announcement over the
+/// wire; `false` when the delivery attempt failed (the bytes are still served
+/// by the [`Provider`] so the peer can pull on its next reconnect if desired).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PushRecord {
 	/// The remote source the item is pushed to.
 	pub source: SourceId,
-	/// The endpoint the announcement is (to be) delivered to.
+	/// The endpoint the announcement was sent to.
 	pub endpoint: EndpointId,
 	/// The transport hash the peer fetches the served bytes by.
 	pub transport_hash: TransportHash,
+	/// Whether the peer accepted the announcement over the wire.
+	///
+	/// `false` either means the connection failed or the peer replied
+	/// `Ack { accepted: false }`. The delivery failure is logged; other
+	/// targets are still attempted.
+	pub delivered: bool,
 }
 
 /// The outcome of [`FederationSync::replicate`].
@@ -353,9 +394,10 @@ mod tests {
 	}
 
 	fn a_target() -> RemoteTarget {
-		// A fixed endpoint id derived from a fixed secret key — deterministic and
-		// needs no live endpoint (replicate only records the push, it does not
-		// deliver it in this unit test).
+		// A fixed endpoint id derived from a fixed secret key — no listener is
+		// bound at this endpoint in the unit tests, so `send_announcement` will
+		// fail to connect and `PushRecord::delivered` will be `false`. That is
+		// the expected outcome for the "attempt delivery, log failure" path.
 		let secret = transport::SecretKey::from_bytes(&[7u8; 32]);
 		RemoteTarget {
 			source: heart::Id::from_name(&heart::access::source::NAMESPACE, b"overlay"),
@@ -385,10 +427,13 @@ mod tests {
 			.await
 			.expect("replicate");
 
-		// Local write happened, and one push was recorded per remote target.
+		// Local write happened, and one push was attempted per remote target.
+		// `delivered` is false because no listener is bound in the unit test —
+		// the connection attempt fails, `replicate` logs and continues.
 		assert!(out.wrote_local);
 		assert!(io.contains("item-1"));
 		assert_eq!(out.pushes.len(), 1);
+		assert!(!out.pushes[0].delivered);
 	}
 
 	#[tokio::test]
@@ -402,10 +447,12 @@ mod tests {
 			.await
 			.expect("replicate");
 
-		// Fleet node: no local store, only the push to central.
+		// Fleet node: no local store, delivery attempt to central was made.
+		// `delivered` is false because no listener is bound in the unit test.
 		assert!(!out.wrote_local);
 		assert!(!io.contains("item-2"));
 		assert_eq!(out.pushes.len(), 1);
+		assert!(!out.pushes[0].delivered);
 	}
 
 	#[tokio::test]

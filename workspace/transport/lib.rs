@@ -28,11 +28,13 @@
 //! trust. Verification stays with the caller's `ContentIo::verify` (opaque
 //! path) or is intrinsic to the bao slice (range path).
 
+pub mod announce;
 pub mod bao;
 pub mod blob;
 pub mod endpoint;
 pub mod frame;
 
+pub use announce::{ANNOUNCE_ALPN, Announcement, Ack as AnnounceAck, send_announcement, serve_announcements};
 pub use bao::{BaoError, Outboard};
 pub use blob::{BLOBS_ALPN, Fetcher, Provider, TransportHash};
 pub use endpoint::{AddressLookup, EndpointId, SecretKey, bind_endpoint};

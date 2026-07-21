@@ -23,7 +23,10 @@ pub use iroh_blobs::ALPN as BLOBS_ALPN;
 /// Produced by [`Provider::add_bytes`], announced by the caller alongside its
 /// own content-address id, and consumed by [`Fetcher::fetch`]. Distinct from
 /// the caller's `ContentIo::Id`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// Serde is derived so [`TransportHash`] can travel inside postcard-framed
+/// announcement messages (see [`crate::announce`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TransportHash(pub [u8; 32]);
 
 impl From<iroh_blobs::Hash> for TransportHash {
