@@ -219,7 +219,7 @@ impl<M: EmbeddingModel> Indexer<M> {
             .unwrap_or_else(|| toolchain_image_digest_placeholder(language));
         let cage_name = name.clone();
         let ir_bytes = tokio::task::spawn_blocking(move || {
-            run_producer_in_cage(&cage_name, profile, image, &source_root, &scratch_root)
+            run_producer_in_cage(&cage_name, language, profile, image, &source_root, &scratch_root)
         })
         .await
         .map_err(|join| {
@@ -674,20 +674,144 @@ fn not_found(coordinates: &PackageCoordinates) -> ServerError {
 
 // ── Compile phase: cage lifecycle helpers ─────────────────────────────────
 
-/// The producer entrypoint inside the guest toolchain image.
-///
-/// TODO(driver): exact producer invocation is provisioned in the golden
-/// toolchain image (Buck2 compiler tree). The producer binary + its argv are
-/// baked into each language's OCI toolchain image (they are *not* a cargo dep
-/// of this crate), so this const is the placeholder guest path the cage execs.
-/// The real per-language argv (source root, out format, IR-stream socket) is
-/// finalized with the producer contract in the golden image.
-const PRODUCER_ENTRYPOINT: &str = "/opt/nudox/bin/producer";
-
 /// Guest mount point (via the virtiofs tag `ro0`) for the materialized source
 /// tree. The cage projects `FsGrant.read_only[0]` to `/mnt/ro0` inside the VM
 /// (see `sandbox::smolvm_backend::translate_mounts`).
 const GUEST_SOURCE_MOUNT: &str = "/mnt/ro0";
+
+/// The per-language producer invocation contract.
+///
+/// This is the **code-level** specification of HOW each producer is invoked.
+/// The golden toolchain OCI images (built by the Buck2 compiler tree) fulfill
+/// this contract by shipping the producer binary at `entrypoint` and honouring
+/// the `args` convention. The cage on the host side merely execs these bytes;
+/// the content of the image is a deployment concern, not a code concern.
+///
+/// # Convention
+///
+/// Every producer binary follows the same interface:
+/// - `--source <path>`  : the RO-mounted source tree inside the guest VM
+///                        (always [`GUEST_SOURCE_MOUNT`]).
+/// - `--emit ndirf1`    : emit IR on stdout in the NdIrF1 / `ir-stream`
+///                        postcard-framed protocol (SMOLVM-PLAN §6.1).
+///
+/// Language-specific additional flags (e.g. `--edition 2021` for Rust,
+/// `--target-jdk 21` for Java) follow after `--emit ndirf1`; they are
+/// listed per-language below.
+///
+/// # Guest paths
+///
+/// All binary paths are absolute guest paths within the language toolchain
+/// image (e.g. `/opt/nudox/rust/bin/nudox-rust-producer`). The host never
+/// resolves these paths; the image's `PATH` is irrelevant because the cage
+/// execs the binary directly.
+pub struct ProducerInvocation {
+    /// Absolute guest path to the producer binary.
+    pub entrypoint: &'static str,
+    /// Argv (excluding argv0). Passed verbatim to the cage exec.
+    pub args: &'static [&'static str],
+}
+
+/// Return the producer invocation contract for `language`.
+///
+/// Each arm names the guest entrypoint + the fixed argv the cage passes.
+/// The golden toolchain image for that language must ship the binary at this
+/// path and must accept this argv without modification.
+pub fn producer_command(language: index::ecosystem::Language) -> ProducerInvocation {
+    use index::ecosystem::Language;
+    match language {
+        // Rust: nudox-rust-producer (ra_ap-backed) — reads Cargo sources at
+        // GUEST_SOURCE_MOUNT, emits NdIrF1 IR on stdout. `--edition 2021` is
+        // the default; the producer overrides it per-crate from Cargo.toml.
+        Language::Rust => ProducerInvocation {
+            entrypoint: "/opt/nudox/rust/bin/nudox-rust-producer",
+            args: &[
+                "--source", GUEST_SOURCE_MOUNT,
+                "--emit", "ndirf1",
+                "--edition", "2021",
+            ],
+        },
+
+        // Java: nudox-java-producer (Doclet/javac-oracle-backed) — reads
+        // Maven/Gradle sources at GUEST_SOURCE_MOUNT, emits NdIrF1.
+        // `--target-jdk 21` is the baseline; the producer auto-detects from
+        // pom.xml/build.gradle when available.
+        Language::Java => ProducerInvocation {
+            entrypoint: "/opt/nudox/java/bin/nudox-java-producer",
+            args: &[
+                "--source", GUEST_SOURCE_MOUNT,
+                "--emit", "ndirf1",
+                "--target-jdk", "21",
+            ],
+        },
+
+        // Go: nudox-go-producer (go/types-backed) — reads Go module sources.
+        // `--module-root` instructs the producer to treat GUEST_SOURCE_MOUNT
+        // as the module root (go.mod must be present at that path).
+        Language::Go => ProducerInvocation {
+            entrypoint: "/opt/nudox/go/bin/nudox-go-producer",
+            args: &[
+                "--source", GUEST_SOURCE_MOUNT,
+                "--emit", "ndirf1",
+                "--module-root", GUEST_SOURCE_MOUNT,
+            ],
+        },
+
+        // C#: nudox-csharp-producer (Roslyn-backed) — reads .NET sources.
+        // `--target-tfm net9.0` is the baseline target framework moniker; the
+        // producer overrides it from the .csproj when available.
+        Language::CSharp => ProducerInvocation {
+            entrypoint: "/opt/nudox/dotnet/bin/nudox-csharp-producer",
+            args: &[
+                "--source", GUEST_SOURCE_MOUNT,
+                "--emit", "ndirf1",
+                "--target-tfm", "net9.0",
+            ],
+        },
+
+        // Nix: nudox-nix-producer (snix-eval-backed) — evaluates the Nix
+        // flake at GUEST_SOURCE_MOUNT and emits IR for derivation symbols.
+        // `--flake` instructs the producer to look for a `flake.nix` at the
+        // source root and evaluate the default package set.
+        Language::Nix => ProducerInvocation {
+            entrypoint: "/opt/nudox/nix/bin/nudox-nix-producer",
+            args: &[
+                "--source", GUEST_SOURCE_MOUNT,
+                "--emit", "ndirf1",
+                "--flake",
+            ],
+        },
+
+        // TypeScript: nudox-ts-producer (OXC-backed static parser, LOW tier).
+        // OXC operates on the source tree directly; no separate oracle binary.
+        Language::Typescript => ProducerInvocation {
+            entrypoint: "/opt/nudox/ts/bin/nudox-ts-producer",
+            args: &[
+                "--source", GUEST_SOURCE_MOUNT,
+                "--emit", "ndirf1",
+            ],
+        },
+
+        // Python: nudox-python-producer (pyrefly/static-parse-backed, LOW tier).
+        Language::Python => ProducerInvocation {
+            entrypoint: "/opt/nudox/python/bin/nudox-python-producer",
+            args: &[
+                "--source", GUEST_SOURCE_MOUNT,
+                "--emit", "ndirf1",
+            ],
+        },
+
+        // C/C++: nudox-cpp-producer (tree-sitter static parse, LOW tier).
+        // No compiler oracle yet; source-only, git-checkout plane (RL-14 §7.4).
+        Language::Cpp => ProducerInvocation {
+            entrypoint: "/opt/nudox/cpp/bin/nudox-cpp-producer",
+            args: &[
+                "--source", GUEST_SOURCE_MOUNT,
+                "--emit", "ndirf1",
+            ],
+        },
+    }
+}
 
 /// Map a package language onto the sandbox [`ProducerProfile`] whose resource
 /// ceilings + threat tier the compile runs under.
@@ -764,9 +888,11 @@ fn materialize_sources(
 ///
 /// This is the real cage lifecycle: `prepare_golden` (idempotent) → `fork_golden`
 /// → `Cage::run` → teardown (the clone's `kill` runs inside `run`). The producer
-/// argv is the one precise TODO (see [`PRODUCER_ENTRYPOINT`]).
+/// argv is resolved by [`producer_command`], which specifies the per-language
+/// invocation contract that the golden toolchain images fulfil.
 fn run_producer_in_cage(
     package: &str,
+    language: index::ecosystem::Language,
     profile: sandbox::ProducerProfile,
     image: sandbox::ImageDigest,
     source_root: &std::path::Path,
@@ -824,13 +950,14 @@ fn run_producer_in_cage(
     );
 
     // ── The producer invocation ───────────────────────────────────────────────
-    // TODO(driver): exact producer invocation is provisioned in the golden
-    // toolchain image (Buck2 compiler tree). The producer reads the RO source
-    // tree at `GUEST_SOURCE_MOUNT` and writes IR frames to stdout; the concrete
-    // argv (out format flags, IR-stream socket) is finalized with that contract.
+    // `producer_command` specifies the per-language invocation contract (guest
+    // binary path + argv) that the golden toolchain OCI image fulfils. The cage
+    // execs this verbatim; the binary inside the image reads the RO source tree
+    // at GUEST_SOURCE_MOUNT and streams NdIrF1 IR frames on its stdout.
+    let inv = producer_command(language);
     let command = SealedCommand::new(
-        PRODUCER_ENTRYPOINT,
-        [GUEST_SOURCE_MOUNT],
+        inv.entrypoint,
+        inv.args.iter().copied(),
         budget,
     );
 
@@ -882,13 +1009,35 @@ fn run_producer_in_cage(
 /// - **IR section** (`builder.set_ir`): postcard-serialized
 ///   `Vec<ir::wire::OwnedEntryPayload>` — one entry per `Symbols` batch entry,
 ///   in stream order. This is what the IR-plane apply/checkout machinery reads.
-/// - **References section** (`builder.set_references`): an empty
-///   [`ReferenceSet`] is attached here; the occurrence bytes from the stream
-///   (`Received::Occurrences`) are the implementation-plane occurrence frames
-///   for the `.nb` companion channel and are not yet wired into the references
-///   slot (that seam is INDEX-PLAN §5.1, deferred).
-///   TODO(driver): feed the occurrence bytes through the reference-extraction
-///   contract once the occurrence format is pinned in the producer contract.
+/// - **References section** (`builder.set_references`): a [`ReferenceSet`]
+///   derived from the `Bodies` frames in the stream (INDEX-PLAN §5.1).
+///
+/// # References derivation (INDEX-PLAN §5.1)
+///
+/// The `Occurrences` frames carry opaque producer-specific bytes with no
+/// public decoder in `ir` or `ir-vcs` (the format is intentionally producer-
+/// private and the host records them opaquely — see `stream::StreamedRecording`).
+/// The `Bodies` frames, however, carry fully decoded [`ir::BodyEmbed`] values
+/// with oracle-resolved call targets ([`ir::OracleCall`]) and type mentions
+/// ([`ir::OracleTypeMention`]) — both carry a [`ir::change::StableRef`] that
+/// identifies the target symbol across packages.
+///
+/// Policy (documented here, not a §5.1 blocker):
+/// - We extract *oracle-resolved* references only (`Confidence >= Index`),
+///   since tree-sitter call-name facts have no stable cross-package target.
+/// - The `Reference::span_start`/`span_end` are the `RelSpan` bounds relative
+///   to the owning entry's declaration span start (not absolute file offsets).
+///   This is correct for the use case: the reference store holds relative
+///   spans and the caller reconstructs absolute ones from the symbol's
+///   `span_start` when needed.
+/// - `RefTarget`: a cross-package target (`StableRef.package` ≠ owning entry's
+///   package name) maps to `RefTarget::External { path: intro_hex, dependency:
+///   "ecosystem:name" }`; a same-package target maps to
+///   `RefTarget::Local(intro_hex)`. Using `intro_hex` as the `path` is
+///   intentional: we don't have source file paths for target symbols (only for
+///   source symbols from `SymbolWire::source_path`); the `intro_hex` is the
+///   durable, wire-stable identity that the IR-plane apply/checkout machinery
+///   resolves to a symbol path on demand.
 ///
 /// # Aborted / empty streams
 ///
@@ -897,7 +1046,8 @@ fn run_producer_in_cage(
 /// empty) and an empty identifier list is returned. A failed stream decode
 /// (framing error, version mismatch) logs a warning and degrades the same way.
 fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
-    use ir_vcs::protocol::{Received, StreamReceiver};
+    use ir::change::IntroId;
+    use ir_vcs::protocol::{BodyWire, Received, StreamReceiver};
 
     let mut rx = StreamReceiver::new(std::io::Cursor::new(ir_bytes));
 
@@ -914,24 +1064,52 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
 
     let mut payloads: Vec<ir::wire::OwnedEntryPayload> = Vec::new();
     let mut identifiers: Vec<String> = Vec::new();
+    // IntroId → source_path from the Symbols batches: used to group
+    // oracle-derived references by their owning entry's source file.
+    let mut intro_to_path: HashMap<IntroId, String> = HashMap::new();
+    // Owning package name (ecosystem:name) from the first Symbol — needed to
+    // distinguish Local vs External RefTarget. We derive it lazily from the
+    // StableRef on the first WireEntry; if no symbols arrive it stays None
+    // and all targets default to External (the conservative choice).
+    let mut owning_pkg_key: Option<String> = None;
+    // Bodies frames: accumulated across all batches for post-loop reference
+    // extraction (they can arrive interleaved with Symbols).
+    let mut bodies: Vec<BodyWire> = Vec::new();
 
     loop {
         match rx.recv() {
             Ok(Some(Received::Symbols(batch))) => {
                 for entry in batch {
+                    // Record source_path for this intro for reference grouping.
+                    let intro = entry.stable.intro;
+                    let src_path = entry.payload.symbol.source_path.clone();
+                    intro_to_path.entry(intro).or_insert_with(|| src_path);
+
+                    // Capture the owning package key (ecosystem:name) once.
+                    if owning_pkg_key.is_none() {
+                        let pkg = &entry.stable.package;
+                        owning_pkg_key = Some(format!(
+                            "{}:{}",
+                            pkg.ecosystem.as_str(),
+                            pkg.name.as_str()
+                        ));
+                    }
+
                     identifiers.push(entry.payload.symbol.name.clone());
                     payloads.push(entry.payload);
                 }
             }
+            Ok(Some(Received::Bodies(batch))) => {
+                bodies.extend(batch);
+            }
             Ok(Some(Received::Links { .. }))
             | Ok(Some(Received::SourceDigest { .. }))
             | Ok(Some(Received::Progress { .. }))
-            | Ok(Some(Received::Bodies(_)))
             | Ok(Some(Received::Occurrences(_))) => {
-                // TODO(driver): wire Occurrences into the ReferenceSet once the
-                // occurrence-to-reference mapping is pinned in the producer
-                // contract (INDEX-PLAN §5.1). SourceDigest provenance and Bodies
-                // (.nb companion channel) are similarly deferred.
+                // Occurrences bytes are opaque (producer-private format, no public
+                // decoder in ir/ir-vcs) — accumulated in stream.rs as raw bytes
+                // for provenance; not decoded here. SourceDigest provenance is
+                // similarly out of scope for the reference slot.
             }
             Ok(Some(Received::Finish { .. })) | Ok(None) => {
                 break;
@@ -972,13 +1150,140 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
         }
     }
 
-    // Attach an empty reference set (occurrence wiring deferred — see above).
-    let empty_refs = crate::registry::blob::ReferenceSet { by_file: Vec::new() };
-    if let Err(err) = builder.set_references(&empty_refs) {
-        tracing::warn!(error = %err, "set_references failed on empty reference set");
+    // ── Derive the ReferenceSet from the Bodies frames (INDEX-PLAN §5.1) ──────
+    //
+    // For each BodyWire, look up the owning entry's source file via
+    // `intro_to_path`, then extract oracle-resolved references from
+    // `BodyEmbed::Present(BodyFacts)`. Oracle calls and type mentions both
+    // carry a StableRef target with Confidence >= Index.
+    //
+    // Policy: only emit references with a resolved `target` (OracleCall.target
+    // = Some) and at confidence >= Index (already implied by the oracle tier,
+    // but explicit for clarity). Tree-sitter call-name facts on the
+    // `TreesitterBody` side have no cross-package stable target and are
+    // skipped (they contribute call-site counts, not cross-reference graph
+    // edges, per §5.1 merge rule 3 / Confidence::GRAPH_FLOOR).
+    let ref_set = build_reference_set_from_bodies(&bodies, &intro_to_path, owning_pkg_key.as_deref());
+    tracing::debug!(
+        by_file = ref_set.by_file.len(),
+        total_refs = ref_set.by_file.iter().map(|f| f.references.len()).sum::<usize>(),
+        "reference set derived from Bodies frames"
+    );
+
+    if let Err(err) = builder.set_references(&ref_set) {
+        tracing::warn!(error = %err, "set_references failed; attaching empty reference set");
+        let empty_refs = crate::registry::blob::ReferenceSet { by_file: Vec::new() };
+        let _ = builder.set_references(&empty_refs);
     }
 
     identifiers
+}
+
+/// Derive a [`ReferenceSet`] from the accumulated `Bodies` frames.
+///
+/// See `ingest_ir_bytes` for the policy rationale. This is a pure function
+/// (no I/O) so it can be unit-tested independently.
+///
+/// # Policy
+/// - `OracleCall` with `target: Some(stable_ref)` → `Reference` with
+///   `kind = stable_ref.kind as u8`, span from `rel_span`.
+/// - `OracleTypeMention` → `Reference` with kind discriminant for
+///   `ReferenceKind::TypeReference` (2).
+/// - `RefTarget::Local(intro_hex)` when `stable_ref.package` matches
+///   `owning_pkg` (same-package reference). Otherwise
+///   `RefTarget::External { path: intro_hex, dependency: "eco:name" }`.
+/// - References are grouped by the owning entry's `source_path`; entries
+///   whose `intro` is not in `intro_to_path` are grouped under the sentinel
+///   path `"<unknown>"` (body arrived without a matching Symbol frame).
+fn build_reference_set_from_bodies(
+    bodies: &[ir_vcs::protocol::BodyWire],
+    intro_to_path: &HashMap<ir::change::IntroId, String>,
+    owning_pkg: Option<&str>,
+) -> crate::registry::blob::ReferenceSet {
+    use crate::registry::blob::{FileReferences, Reference, ReferenceSet};
+    use ir::{BodyEmbed, ReferenceKind};
+    use smol_str::SmolStr;
+
+    // Per-file accumulator: file_path → Vec<Reference>.
+    let mut by_file: HashMap<SmolStr, Vec<Reference>> = HashMap::new();
+
+    for bw in bodies {
+        let src_path = intro_to_path
+            .get(&bw.intro)
+            .map(|s| SmolStr::from(s.as_str()))
+            .unwrap_or_else(|| SmolStr::new("<unknown>"));
+
+        let refs = by_file.entry(src_path).or_default();
+
+        if let BodyEmbed::Present(facts) = &bw.body {
+            // Oracle calls: only those with a resolved target.
+            for call in &facts.oracle.calls {
+                let Some(ref stable) = call.target else { continue };
+                // Policy: emit only graph-worthy references (Confidence >= Index).
+                if !call.confidence.is_graph_worthy() {
+                    continue;
+                }
+                let target = make_ref_target(stable, owning_pkg);
+                refs.push(Reference {
+                    target,
+                    span_start: call.rel_span.start as u64,
+                    span_end: call.rel_span.end as u64,
+                    kind: call.kind as u8,
+                });
+            }
+
+            // Oracle type mentions: all resolved (no target-less form).
+            for mention in &facts.oracle.type_mentions {
+                let target = make_ref_target(&mention.ty, owning_pkg);
+                refs.push(Reference {
+                    target,
+                    span_start: mention.rel_span.start as u64,
+                    span_end: mention.rel_span.end as u64,
+                    kind: ReferenceKind::TypeReference as u8,
+                });
+            }
+        }
+    }
+
+    // Discard empty file buckets (entries with Absent bodies contribute nothing).
+    let file_refs: Vec<FileReferences> = by_file
+        .into_iter()
+        .filter(|(_, refs)| !refs.is_empty())
+        .map(|(path, references)| FileReferences { path, references })
+        .collect();
+
+    ReferenceSet { by_file: file_refs }
+}
+
+/// Map a [`ir::change::StableRef`] to a [`crate::registry::blob::RefTarget`].
+///
+/// The `path` component is the target symbol's `IntroId` in hex — the durable,
+/// wire-stable identity the IR plane uses. Source file paths for target symbols
+/// are not available at this stage (the host would need to look them up from the
+/// IR store, which is an async operation not available in the blocking decode
+/// path). The `intro_hex` is sufficient for cross-reference graph edges; the
+/// IR graph adapter resolves it to a file path on demand.
+fn make_ref_target(
+    stable: &ir::change::StableRef,
+    owning_pkg: Option<&str>,
+) -> crate::registry::blob::RefTarget {
+    use crate::registry::blob::RefTarget;
+
+    let intro_hex = stable.intro.to_hex();
+    let target_pkg_key = format!(
+        "{}:{}",
+        stable.package.ecosystem.as_str(),
+        stable.package.name.as_str()
+    );
+
+    if owning_pkg == Some(target_pkg_key.as_str()) {
+        RefTarget::Local(intro_hex)
+    } else {
+        RefTarget::External {
+            path: intro_hex,
+            dependency: target_pkg_key,
+        }
+    }
 }
 
 /// Attach an empty IR section and an empty reference section to `builder` so
