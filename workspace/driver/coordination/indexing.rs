@@ -44,6 +44,13 @@ pub struct Indexer<M: EmbeddingModel> {
     server: Arc<Server<M>>,
     acquisition: registry::upstream::UpstreamClient,
     fractions: Mutex<HashMap<PackageId, Percent>>,
+    /// OCI toolchain image metadata store. When `Some`, `execute_compile_phase`
+    /// looks up the real `ImageDigest` for each language's toolchain before
+    /// calling `prepare_golden`/`fork_golden` — keying the golden pool by the
+    /// content-addressed image rather than a per-language placeholder.
+    /// `None` (the default) keeps the deterministic placeholder so the code
+    /// path is exercised without provisioned images.
+    toolchain_images: Option<Arc<sandbox::ToolchainImageStore>>,
 }
 
 impl<M: EmbeddingModel> Indexer<M> {
@@ -55,7 +62,19 @@ impl<M: EmbeddingModel> Indexer<M> {
             server,
             acquisition: registry::upstream::UpstreamClient::new(),
             fractions: Mutex::new(HashMap::new()),
+            toolchain_images: None,
         }
+    }
+
+    /// Attach a [`sandbox::ToolchainImageStore`] so the compile phase can look
+    /// up real OCI image digests instead of per-language placeholders.
+    ///
+    /// Call this once at server assembly time on a forge node. Non-forge
+    /// (gateway-only) nodes never reach the compile phase, so the store stays
+    /// `None` there — that is correct and intentional.
+    pub fn with_toolchain_images(mut self, store: sandbox::ToolchainImageStore) -> Self {
+        self.toolchain_images = Some(Arc::new(store));
+        self
     }
 
     pub fn server(&self) -> &Arc<Server<M>> {
@@ -192,7 +211,12 @@ impl<M: EmbeddingModel> Indexer<M> {
         // The cage is a synchronous, CPU/VM-bound boundary; run it off the async
         // reactor via `spawn_blocking` so heartbeats/other jobs keep flowing.
         let profile = producer_profile(language);
-        let image = toolchain_image_digest(language);
+        let image = self
+            .toolchain_images
+            .as_deref()
+            .and_then(|store| store.lookup(profile))
+            .map(|img| img.config_digest)
+            .unwrap_or_else(|| toolchain_image_digest_placeholder(language));
         let cage_name = name.clone();
         let ir_bytes = tokio::task::spawn_blocking(move || {
             run_producer_in_cage(&cage_name, profile, image, &source_root, &scratch_root)
@@ -684,18 +708,20 @@ fn producer_profile(language: index::ecosystem::Language) -> sandbox::ProducerPr
     }
 }
 
-/// Resolve the toolchain-image digest whose warm golden this language's compile
-/// forks from.
+/// Fallback toolchain-image digest used when no [`sandbox::ToolchainImageStore`]
+/// is wired into the [`Indexer`] (e.g. when images are not yet provisioned on
+/// this forge node, or in development without a full OCI image store).
 ///
-/// TODO(driver): the real digests come from the `ToolchainImageStore`
-/// (`sandbox::ToolchainImageSet`) populated by the Buck2 compiler tree at
-/// assemble — one OCI image per language toolchain. Until that store is threaded
-/// into the `Indexer`, we key the golden pool by a deterministic per-language
-/// placeholder digest so `prepare_golden`/`fork_golden` are exercised for real
-/// (distinct languages get distinct goldens) without inventing image content.
-fn toolchain_image_digest(language: index::ecosystem::Language) -> sandbox::ImageDigest {
-    // Deterministic, collision-free-per-language placeholder: byte 0 = the
-    // language token's first byte, rest zero. Replaced by the store lookup.
+/// Returns a deterministic, collision-free-per-language placeholder so
+/// `prepare_golden`/`fork_golden` are exercised for real (distinct languages
+/// get distinct goldens) without inventing image content. Each byte 0 is the
+/// first byte of the language token, rest zero.
+///
+/// The `Indexer::with_toolchain_images` call wires in the real
+/// `ToolchainImageStore`; once images are provisioned the store lookup in
+/// `execute_compile_phase` supersedes this function for every language whose
+/// image is registered. This fallback fires only for the not-found case.
+fn toolchain_image_digest_placeholder(language: index::ecosystem::Language) -> sandbox::ImageDigest {
     let mut bytes = [0u8; 32];
     if let Some(&b0) = language.as_token().as_bytes().first() {
         bytes[0] = b0;
@@ -841,18 +867,129 @@ fn run_producer_in_cage(
     Ok(output.stdout)
 }
 
-/// Stage the raw producer IR onto the builder as a single section so it is not
-/// dropped, and return the symbol identifiers recoverable so far.
+/// Decode the cage producer's IR stream bytes, stage them onto `builder`, and
+/// return the symbol identifier list for the emit/facets path.
 ///
-/// TODO(driver): decode the producer's IR frames (NdIrF1) into typed blob
-/// sections + the identifier list. The framing is emitted by the golden-image
-/// producer (Buck2 compiler tree); the decoder lands with that contract. Until
-/// then no identifiers are recoverable and the facet extractor degrades to the
-/// name-only path (which it already handles).
-fn ingest_ir_bytes(_builder: &mut BlobBuilder, _ir_bytes: &[u8]) -> Vec<String> {
-    // TODO(driver): `_builder.add_section(...)` for the IR blob + parse
-    // identifiers once the IR decode contract is provisioned in the golden image.
-    Vec::new()
+/// # Wire format
+///
+/// The producer writes a postcard-framed `ir-stream` protocol (SMOLVM-PLAN
+/// §6.1/§6.2) onto its stdout. Each frame is `[u32 LE length][postcard bytes]`.
+/// [`ir_vcs::protocol::StreamReceiver`] handles framing, ordering enforcement,
+/// and emitted-count validation.
+///
+/// # Sections staged onto `builder`
+///
+/// - **IR section** (`builder.set_ir`): postcard-serialized
+///   `Vec<ir::wire::OwnedEntryPayload>` — one entry per `Symbols` batch entry,
+///   in stream order. This is what the IR-plane apply/checkout machinery reads.
+/// - **References section** (`builder.set_references`): an empty
+///   [`ReferenceSet`] is attached here; the occurrence bytes from the stream
+///   (`Received::Occurrences`) are the implementation-plane occurrence frames
+///   for the `.nb` companion channel and are not yet wired into the references
+///   slot (that seam is INDEX-PLAN §5.1, deferred).
+///   TODO(driver): feed the occurrence bytes through the reference-extraction
+///   contract once the occurrence format is pinned in the producer contract.
+///
+/// # Aborted / empty streams
+///
+/// An `Abort` frame is treated as a non-fatal producer failure: the builder
+/// sections are still attached with whatever was received so far (possibly
+/// empty) and an empty identifier list is returned. A failed stream decode
+/// (framing error, version mismatch) logs a warning and degrades the same way.
+fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
+    use ir_vcs::protocol::{Received, StreamReceiver};
+
+    let mut rx = StreamReceiver::new(std::io::Cursor::new(ir_bytes));
+
+    // Handshake: the Hello frame carries the job key and producer id.
+    // A missing or malformed Hello means the producer wrote nothing usable.
+    match rx.accept() {
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!(error = %err, "IR stream has no Hello frame; attaching empty IR section");
+            attach_empty_ir_sections(builder);
+            return Vec::new();
+        }
+    }
+
+    let mut payloads: Vec<ir::wire::OwnedEntryPayload> = Vec::new();
+    let mut identifiers: Vec<String> = Vec::new();
+
+    loop {
+        match rx.recv() {
+            Ok(Some(Received::Symbols(batch))) => {
+                for entry in batch {
+                    identifiers.push(entry.payload.symbol.name.clone());
+                    payloads.push(entry.payload);
+                }
+            }
+            Ok(Some(Received::Links { .. }))
+            | Ok(Some(Received::SourceDigest { .. }))
+            | Ok(Some(Received::Progress { .. }))
+            | Ok(Some(Received::Bodies(_)))
+            | Ok(Some(Received::Occurrences(_))) => {
+                // TODO(driver): wire Occurrences into the ReferenceSet once the
+                // occurrence-to-reference mapping is pinned in the producer
+                // contract (INDEX-PLAN §5.1). SourceDigest provenance and Bodies
+                // (.nb companion channel) are similarly deferred.
+            }
+            Ok(Some(Received::Finish { .. })) | Ok(None) => {
+                break;
+            }
+            Ok(Some(Received::Abort { failure, message })) => {
+                tracing::warn!(
+                    ?failure,
+                    message,
+                    "IR stream producer aborted; identifiers recovered so far: {}",
+                    identifiers.len()
+                );
+                break;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    identifiers = identifiers.len(),
+                    "IR stream decode error; using identifiers recovered so far"
+                );
+                break;
+            }
+        }
+    }
+
+    // Serialize the collected payloads as the IR blob section.
+    match postcard::to_allocvec(&payloads) {
+        Ok(ir_blob) => {
+            if let Err(err) = builder.set_ir(bytes::Bytes::from(ir_blob)) {
+                tracing::warn!(error = %err, "set_ir failed; attaching empty IR section");
+                attach_empty_ir_sections(builder);
+                return Vec::new();
+            }
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "IR payload serialization failed; attaching empty IR section");
+            attach_empty_ir_sections(builder);
+            return Vec::new();
+        }
+    }
+
+    // Attach an empty reference set (occurrence wiring deferred — see above).
+    let empty_refs = crate::registry::blob::ReferenceSet { by_file: Vec::new() };
+    if let Err(err) = builder.set_references(&empty_refs) {
+        tracing::warn!(error = %err, "set_references failed on empty reference set");
+    }
+
+    identifiers
+}
+
+/// Attach an empty IR section and an empty reference section to `builder` so
+/// that `finalize()` does not fail with `MissingIrSection` or
+/// `MissingReferencesSection`. Used when the stream is empty or undecodable.
+fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
+    let empty_payloads: Vec<ir::wire::OwnedEntryPayload> = Vec::new();
+    let ir_blob = postcard::to_allocvec(&empty_payloads).unwrap_or_default();
+    let _ = builder.set_ir(bytes::Bytes::from(ir_blob));
+    let empty_refs = crate::registry::blob::ReferenceSet { by_file: Vec::new() };
+    let _ = builder.set_references(&empty_refs);
 }
 
 fn ensure_trailing_slash(url: &url::Url) -> String {

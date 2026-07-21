@@ -2234,6 +2234,8 @@ dependencies = [
  "http-body-util",
  "hyper 0.14.32",
  "index",
+ "ir",
+ "ir-vcs",
  "metrics",
  "mimalloc",
  "moka",

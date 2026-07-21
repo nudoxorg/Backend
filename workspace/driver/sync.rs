@@ -122,10 +122,9 @@ impl FederationSync {
 		if let Some(target) = RemoteTarget::from_source_config(&config.definitive)? {
 			targets.push(target);
 		}
-		// TODO(driver): populate remote targets from overlay config once each
-		// overlay's serving endpoint is provisioned — today an overlay opts in by
-		// setting `sync_endpoint` in its `[[overlays]]` block; a co-located overlay
-		// leaves it unset and is served locally.
+		// Each overlay opts in to remote sync by setting `sync_endpoint` in its
+		// `[[overlays]]` block; a co-located overlay leaves it unset and is served
+		// locally (no remote target is contributed).
 		for overlay in &config.overlays {
 			if let Some(target) = RemoteTarget::from_source_config(overlay)? {
 				targets.push(target);

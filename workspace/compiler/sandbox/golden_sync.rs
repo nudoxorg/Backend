@@ -12,6 +12,31 @@
 //! implement for their planes; the transport that moves the bytes is a caller
 //! concern (the `transport` crate), never wired here — `heart` stays iroh-free.
 //!
+//! # Live-golden checkpoint in `read` (V-GOLD-2 gap closed)
+//!
+//! When the golden is currently running forkable (its control socket is live),
+//! `read` drives a **fresh RAM checkpoint** before packing by sending the smolvm
+//! `FORK <dir>` command directly to the golden's control socket. This uses the
+//! same `smolvm::agent::fork::{control_socket_path, control_socket_cmd}` pair
+//! that `prepare_fork` uses internally, but without registering a clone in the DB
+//! or CoW-cloning disks — we only need the memfd snapshot write half.
+//!
+//! The snapshot is written to `<golden_data_dir>/fork-snapshots/CURRENT/`, a
+//! well-known sentinel name inside the golden's own data dir. The Landlock
+//! confinement that restricts the frozen golden VMM to its own data dir is
+//! satisfied because the snapshot path is a subdirectory of `vm_data_dir(golden)`.
+//! A prior stale `CURRENT/` is removed before the FORK command so the snapshot
+//! is always fresh.
+//!
+//! If the control socket does not exist (golden not running, or this node is only
+//! a receiver of a replicated golden), `read` falls back to packing whatever
+//! snapshot state is already on disk — the pre-gap behaviour.
+//!
+//! The `FORK` command pauses the golden and writes its checkpoint; on success the
+//! golden stays paused (frozen) as the shared CoW base, exactly as after any
+//! `prepare_fork` call. Subsequent `fork_golden` calls still work: the golden's
+//! control socket continues to answer `STATUS` and `FORK` while frozen.
+//!
 //! # The content-address unit
 //!
 //! `type Id = ImageDigest` — the toolchain-image content hash that keys a golden
@@ -58,6 +83,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use smolvm::agent::fork::{control_socket_cmd, control_socket_path};
 use smolvm::agent::vm_data_dir;
 
 use heart::sync::{ContentIo, VerifyError};
@@ -108,17 +134,116 @@ impl GoldenContentIo {
     fn snapshot_dir(id: &ImageDigest) -> PathBuf {
         vm_data_dir(&golden_vm_name(id))
     }
+
+    /// If the golden is currently live and forkable (its control socket exists
+    /// and answers `STATUS OK`), drive a fresh RAM + device checkpoint by
+    /// sending `FORK <checkpoint_dir>` to its control socket.
+    ///
+    /// The checkpoint is written to `<golden_data_dir>/fork-snapshots/CURRENT/`,
+    /// a sentinel subdirectory of the golden's own data dir (required by smolvm's
+    /// Landlock confinement: the frozen golden VMM can only write inside its own
+    /// data dir). A stale `CURRENT/` from a prior checkpoint is removed first.
+    ///
+    /// After `FORK` the golden is paused/frozen as the shared CoW base — exactly
+    /// the same post-fork state as any `prepare_fork` call, and subsequent
+    /// `fork_golden` operations continue to work from that frozen base.
+    ///
+    /// Returns `Ok(())` on success (checkpoint written), `Ok(())` silently when
+    /// the golden is not live (no control socket → nothing to checkpoint, caller
+    /// packs existing on-disk state), and `Err` only on a genuine control-socket
+    /// protocol failure (socket present but command failed).
+    fn checkpoint_live_golden(id: &ImageDigest) -> io::Result<()> {
+        let name = golden_vm_name(id);
+        let ctl = control_socket_path(&name);
+
+        // No control socket → golden not running forkable on this node.
+        // Fall through; read() will pack whatever is on disk.
+        if !ctl.exists() {
+            return Ok(());
+        }
+
+        // Probe STATUS first: a frozen (previously-forked) golden still answers
+        // STATUS and can be checkpointed again; a golden that is merely paused
+        // by the OS reports paused, which is still forkable.
+        let status = control_socket_cmd(&ctl, "STATUS").map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("golden '{name}' control socket STATUS failed: {e}"),
+            )
+        })?;
+        if !status.starts_with("OK") {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("golden '{name}' not ready for checkpoint: {status}"),
+            ));
+        }
+
+        // Write the fresh checkpoint into fork-snapshots/CURRENT/ inside the
+        // golden's own data dir (Landlock-safe: the frozen VMM is confined there).
+        let gdir = vm_data_dir(&name);
+        let checkpoint_dir = gdir.join("fork-snapshots").join("CURRENT");
+
+        // Remove a stale checkpoint from a prior read() call so the snapshot
+        // is always fresh (not a replay of old RAM state).
+        if checkpoint_dir.exists() {
+            std::fs::remove_dir_all(&checkpoint_dir).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("remove stale checkpoint dir: {e}"),
+                )
+            })?;
+        }
+        std::fs::create_dir_all(&checkpoint_dir).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("create checkpoint dir: {e}"),
+            )
+        })?;
+
+        // Drive the FORK command: freezes the golden, writes memfd RAM + device
+        // snapshot to checkpoint_dir. On success the golden stays paused as
+        // the shared CoW base; subsequent fork_golden calls still work.
+        let reply =
+            control_socket_cmd(&ctl, &format!("FORK {}", checkpoint_dir.display())).map_err(
+                |e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("golden '{name}' FORK command failed: {e}"),
+                    )
+                },
+            )?;
+        if !reply.starts_with("OK") {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("golden '{name}' FORK returned non-OK: {reply}"),
+            ));
+        }
+
+        tracing::debug!(
+            golden = %name,
+            checkpoint = %checkpoint_dir.display(),
+            "live golden checkpointed before pack (V-GOLD-2)"
+        );
+        Ok(())
+    }
 }
 
 impl ContentIo for GoldenContentIo {
     /// The toolchain-image content hash that keys a golden.
     type Id = ImageDigest;
 
-    /// Read = pack the golden's `snapshot_dir` into a deterministic archive.
+    /// Read = checkpoint the live golden (if running), then pack the golden's
+    /// `snapshot_dir` into a deterministic archive.
     ///
-    /// This is what a remote fetches to replicate the golden. Errors with
-    /// [`io::ErrorKind::NotFound`] when no golden is registered for `id` (nothing
-    /// to pack — the caller should announce only ids it holds).
+    /// When the golden's control socket is live, `read` first drives a fresh
+    /// memfd RAM + device checkpoint via the `FORK` control-socket command
+    /// (see [`Self::checkpoint_live_golden`] for the mechanism). This ensures
+    /// the packed bytes reflect current golden RAM, not a stale on-disk snapshot.
+    /// When the golden is not live on this node (no control socket), `read`
+    /// falls back to packing the persisted snapshot dir as-is.
+    ///
+    /// Errors with [`io::ErrorKind::NotFound`] when no golden is registered for
+    /// `id` (nothing to pack — the caller should announce only ids it holds).
     fn read(&self, id: &ImageDigest) -> io::Result<Vec<u8>> {
         if self.pool.lookup(id).is_none() {
             return Err(io::Error::new(
@@ -133,6 +258,10 @@ impl ContentIo for GoldenContentIo {
                 format!("golden snapshot dir missing for {id}: {}", dir.display()),
             ));
         }
+        // Drive a fresh RAM checkpoint of the live golden before packing, so the
+        // packed bytes capture current golden state rather than a prior stale
+        // snapshot. Falls through silently when the golden is not live here.
+        Self::checkpoint_live_golden(id)?;
         pack_snapshot(id, &dir)
     }
 
@@ -495,5 +624,21 @@ mod tests {
         let io = GoldenContentIo::new(Arc::new(GoldenPool::new()));
         assert_eq!(io.max_item_bytes(), MAX_GOLDEN_BYTES);
         assert!(io.max_item_bytes() >= 1 << 30, "at least 1 GiB");
+    }
+
+    /// `checkpoint_live_golden` is a no-op (Ok) when there is no control socket —
+    /// that is the state on a receiver node or when the golden hasn't been started
+    /// yet. Exercises the early-return path without needing a live VM.
+    #[test]
+    fn checkpoint_live_golden_is_noop_when_no_control_socket() {
+        // An ImageDigest whose corresponding golden_vm_name has no control socket.
+        let id = digest(0x88);
+        // golden_vm_name(id) -> "nudox-golden-<hex>"; no smolvm process runs here,
+        // so vm_data_dir("nudox-golden-<hex>")/control.sock does not exist.
+        let result = GoldenContentIo::checkpoint_live_golden(&id);
+        assert!(
+            result.is_ok(),
+            "no control socket → checkpoint must be a silent no-op: {result:?}"
+        );
     }
 }

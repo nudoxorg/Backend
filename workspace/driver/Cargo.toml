@@ -43,6 +43,14 @@ transport = { path = "../transport" }
 # compile phase forks-from-golden and runs the producer inside. The compiler
 # daemon is gone; IR is produced by a microVM per job, driven from here.
 sandbox   = { path = "../compiler/sandbox" }
+# Guest→host IR stream decoder (SMOLVM-PLAN §6.2): `StreamReceiver` parses the
+# postcard-framed producer output from the cage stdout into `WireEntry` batches.
+# Driver is the first layer to link ir-vcs (libpijul lives here, not in
+# index/registry which stay libpijul-free).
+ir-vcs    = { path = "../ir-vcs" }
+# IR data-model types (OwnedEntryPayload, SymbolWire, …) used by the stream
+# decoder in ingest_ir_bytes. This is the light, libpijul-FREE data model.
+ir        = { path = "../ir" }
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
 tokio        = { version = "1.52",  features = ["full"] }

@@ -98,7 +98,7 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
     // ── outbox claim + changed_since cursor ───────────────────────────────────
     let claimed = writer.outbox_claim(SinkKind::Text, 16).expect("claim outbox");
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].version_id, Some(version(1)));
+    assert_eq!(claimed[0].version_id, Some(*version(1).as_uuid()));
 
     let page = writer
         .changed_since(CatalogCursor::default())
@@ -134,7 +134,6 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
     assert_eq!(now_count, vec![2]);
 
     // As of one commit back (HEAD~1) there was exactly one package.
-    use sea_orm::sea_query::{Asterisk, Expr, Func};
     let past_count: Vec<i64> = writer
         .engine()
         .query_rows_at::<index::entity::packages::Entity, _>(
