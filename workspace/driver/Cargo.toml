@@ -35,6 +35,10 @@ heart    = { path = "../heart", features = ["telemetry"] }
 # / `vector::…` in the moved modules then resolve to the crate-local facades.
 xregistry = { package = "registry", path = "../registry", features = ["local", "remote"] }
 index    = { path = "../index", features = ["dolt-engine"] }
+# The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b/§8c).
+# `driver::sync` (the federation sync orchestrator, §8e) fans a verified content
+# item across the federation topology over `heart::sync` + this transport.
+transport = { path = "../transport" }
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
 tokio        = { version = "1.52",  features = ["full"] }

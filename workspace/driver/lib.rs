@@ -102,6 +102,9 @@ mod poll;
 pub mod rerank;
 pub mod save;
 pub mod search;
+/// The federation-aware sync driver (CONSOLIDATION-NOTES §8e): fan a verified
+/// content item across the federation topology over `heart::sync` + `transport`.
+pub mod sync;
 
 use std::num::NonZeroU32;
 use std::sync::Arc;

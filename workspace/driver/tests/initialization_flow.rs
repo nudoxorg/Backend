@@ -10,6 +10,7 @@
 mod common;
 
 use heart::{ContentHash, Failure, Freshness, Phase, ResolutionState};
+use index::ecosystem::PackageNameExt as _;
 use driver::coordination::initialization::{
     InitializationDecision, initialization_decision,
 };

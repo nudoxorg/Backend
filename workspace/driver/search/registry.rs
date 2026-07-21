@@ -160,6 +160,7 @@ impl RegistrySearchSurface {
 #[cfg(test)]
 mod tests {
 	use heart::{Edition, Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain};
+	use index::ecosystem::PackageNameExt as _;
 	use crate::registry::{
 		GlobalPackage, Package,
 		metadata::SearchFacets,

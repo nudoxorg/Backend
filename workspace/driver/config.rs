@@ -176,6 +176,17 @@ pub struct SourceConfig {
 	/// fine for development, explicit for production.
 	#[serde(default)]
 	pub data_directory: Option<PathBuf>,
+
+	/// The remote iroh sync endpoint this source is served from, if it is a
+	/// *remote* overlay (CONSOLIDATION-NOTES §8e). Held as the hex-encoded iroh
+	/// [`EndpointId`](transport::EndpointId) so `config` stays iroh-free; the
+	/// [`crate::sync`] driver parses it into a concrete endpoint when it derives
+	/// the federation's push/pull targets. `None` (the default) means this source
+	/// is served locally on this node — the definitive base and any co-located
+	/// overlays leave it unset; only a genuinely off-node overlay/central store
+	/// sets it.
+	#[serde(default)]
+	pub sync_endpoint: Option<SmolStr>,
 }
 
 /// The typed set of backing-store endpoints. Each is named and required; there
@@ -362,6 +373,7 @@ impl Default for ServerConfiguration {
 				name: SmolStr::new_static("definitive"),
 				endpoints: Endpoints::localhost_defaults(),
 				data_directory: None,
+				sync_endpoint: None,
 			},
 			overlays: Vec::new(),
 			custom_registries: Vec::new(),

@@ -3,6 +3,7 @@
 mod common;
 
 use heart::{Language, Name, Symbol, SymbolKind};
+use index::ecosystem::PackageNameExt as _;
 use driver::search::query::PackageSelector;
 use smol_str::SmolStr;
 

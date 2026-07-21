@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use futures::TryStreamExt;
 use heart::{PackageId, ResolutionState, Scored, Symbol};
+use index::ecosystem::PackageNameExt as _;
 use driver::registry::coordination::{OutboxSeq, SinkKind};
 use driver::Server;
 

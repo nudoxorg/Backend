@@ -9,6 +9,7 @@ mod common;
 
 use futures::StreamExt;
 use heart::SymbolKind;
+use index::ecosystem::PackageNameExt as _;
 use driver::search::SearchPlanner;
 use driver::search::planner::Plan;
 use driver::search::query::{AbstractQuery, Filter, PackageSelector, Query, Search};

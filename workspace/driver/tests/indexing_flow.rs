@@ -11,6 +11,7 @@ mod common;
 use std::sync::Arc;
 
 use heart::ResolutionState;
+use index::ecosystem::PackageNameExt as _;
 use driver::registry::coordination::{OutboxSeq, SinkKind};
 use driver::coordination::indexing::Indexer;
 

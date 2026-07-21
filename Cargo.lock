@@ -2263,6 +2263,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "transport",
  "url",
  "uuid",
  "uv-pep440",

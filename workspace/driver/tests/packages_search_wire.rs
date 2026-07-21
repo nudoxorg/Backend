@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use heart::{
 	Edition, Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain,
 };
+use index::ecosystem::PackageNameExt as _;
 use registry::{
 	GlobalPackage, Package,
 	metadata::{SearchFacets, Synonyms},
