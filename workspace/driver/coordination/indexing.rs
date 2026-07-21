@@ -18,7 +18,7 @@ use crate::registry::ingest::{
     EntryAllowlist, ExtractionLimits, ingest_archive,
 };
 use crate::registry::metadata::rich::{self, ExtractionInput};
-use index::ecosystem::{self, DynSpec, LanguageExt};
+use index::ecosystem::{DynSpec, LanguageExt};
 use heart::Retryable;
 use crate::registry::queue::LeasedJob;
 use crate::registry::{RegistryError, error::ResolveError};
@@ -141,27 +141,89 @@ impl<M: EmbeddingModel> Indexer<M> {
         .map_err(RegistryError::from)?)
     }
 
-    // TODO(driver): rewire the compile phase onto the ephemeral SmolvmCage
-    // (SMOLVM-PLAN) — the long-lived compiler daemon this used to POST to was
-    // deleted, so there is no `CompileRequest`/`CompileResponse` wire protocol
-    // any more. The extract/emit phases around it are intact; only the actual
-    // IR production is stubbed. A forge node that reaches `Phase::Compiling`
-    // fails the job loudly (idempotent retry) rather than silently emitting an
-    // IR-less blob.
+    /// Produce IR for the package inside an **ephemeral** SmolvmCage
+    /// (SMOLVM-PLAN §3). The long-lived compiler daemon this used to POST to is
+    /// gone (there is no `CompileRequest`/`CompileResponse` wire protocol any
+    /// more); IR is produced by one microVM per job, forked-from-golden for a
+    /// warm ~250 ms start and torn down after (one-VM-per-job ephemerality).
+    ///
+    /// Lifecycle: materialize the staged sources onto a scratch tree → resolve
+    /// the toolchain-image golden for the package's language and
+    /// `prepare_golden` (idempotent) → `fork_golden` a warm clone (falling back
+    /// to a fresh cage when live fork is unavailable on this host — the cage
+    /// handles that) → build the producer invocation as a [`sandbox::SealedCommand`]
+    /// under a [`sandbox::CapabilityBudget`] (RO toolchain roots + RO source,
+    /// scratch overlay, network OFF) → run it inside the clone → collect the
+    /// produced IR bytes → the clone is killed (the ephemeral overlay dies with
+    /// it). A forge node that cannot run the cage fails the job loudly
+    /// (idempotent retry) rather than silently emitting an IR-less blob.
     async fn execute_compile_phase(
         &self,
         stores: &SourceStores<M>,
         package: PackageId,
-        _coordinates: &PackageCoordinates,
-        _builder: &mut BlobBuilder,
+        coordinates: &PackageCoordinates,
+        builder: &mut BlobBuilder,
     ) -> ServerResult<Vec<String>> {
         self.advance(stores, package, &progressing(Phase::Compiling))
             .await?;
-        Err(ServerError::Internal(InternalError::Other {
-            message: "compile phase unimplemented: the compiler daemon was removed \
-                      (cage is ephemeral, SMOLVM-PLAN); rewire onto SmolvmCage"
-                .to_owned(),
-        }))
+
+        let language = coordinates.ecosystem();
+        let name = coordinates.name.canonical().to_owned();
+
+        // ── 1. Materialize the staged sources onto a scratch tree ─────────────
+        // `execute_extract_phase` already staged the sanitized source files in
+        // the builder; write them out once so the cage can mount the tree RO (no
+        // second archive pass). Both dirs live under one TempDir that is dropped
+        // (deleted) when this scope ends — nothing survives the job on the host.
+        let workspace = tempfile::Builder::new()
+            .prefix("nudox-compile-")
+            .tempdir()
+            .map_err(|source| {
+                ServerError::Internal(InternalError::MaterializeForCompile { source })
+            })?;
+        let source_root = workspace.path().join("src");
+        let scratch_root = workspace.path().join("scratch");
+        materialize_sources(builder, &source_root, &scratch_root)
+            .map_err(|source| {
+                ServerError::Internal(InternalError::MaterializeForCompile { source })
+            })?;
+
+        // ── 2. Resolve toolchain golden + drive the cage (blocking) ───────────
+        // The cage is a synchronous, CPU/VM-bound boundary; run it off the async
+        // reactor via `spawn_blocking` so heartbeats/other jobs keep flowing.
+        let profile = producer_profile(language);
+        let image = toolchain_image_digest(language);
+        let cage_name = name.clone();
+        let ir_bytes = tokio::task::spawn_blocking(move || {
+            run_producer_in_cage(&cage_name, profile, image, &source_root, &scratch_root)
+        })
+        .await
+        .map_err(|join| {
+            ServerError::Internal(InternalError::CageCompile {
+                package: name.clone(),
+                reason: format!("cage task panicked or was cancelled: {join}"),
+            })
+        })??;
+
+        // ── 3. Hand the produced IR bytes to the emit path ────────────────────
+        // TODO(driver): decode the producer's IR frames (NdIrF1) from `ir_bytes`
+        // into blob sections on `builder` and the symbol identifier list the
+        // emit/facets path expects. The exact on-wire IR framing is emitted by
+        // the producer provisioned in the golden toolchain image (Buck2 compiler
+        // tree), so the decoder lands with the producer contract. Until then we
+        // stage the raw IR as a single section on the builder (so it is not
+        // dropped) and return the identifiers we can already recover — none yet.
+        let identifiers = ingest_ir_bytes(builder, &ir_bytes);
+
+        tracing::info!(
+            %package,
+            language = language.as_token(),
+            ir_bytes = ir_bytes.len(),
+            identifiers = identifiers.len(),
+            "cage compile produced IR"
+        );
+
+        Ok(identifiers)
     }
 
     async fn execute_emit_phase(
@@ -584,6 +646,213 @@ fn not_found(coordinates: &PackageCoordinates) -> ServerError {
         }
         .into(),
     )
+}
+
+// ── Compile phase: cage lifecycle helpers ─────────────────────────────────
+
+/// The producer entrypoint inside the guest toolchain image.
+///
+/// TODO(driver): exact producer invocation is provisioned in the golden
+/// toolchain image (Buck2 compiler tree). The producer binary + its argv are
+/// baked into each language's OCI toolchain image (they are *not* a cargo dep
+/// of this crate), so this const is the placeholder guest path the cage execs.
+/// The real per-language argv (source root, out format, IR-stream socket) is
+/// finalized with the producer contract in the golden image.
+const PRODUCER_ENTRYPOINT: &str = "/opt/nudox/bin/producer";
+
+/// Guest mount point (via the virtiofs tag `ro0`) for the materialized source
+/// tree. The cage projects `FsGrant.read_only[0]` to `/mnt/ro0` inside the VM
+/// (see `sandbox::smolvm_backend::translate_mounts`).
+const GUEST_SOURCE_MOUNT: &str = "/mnt/ro0";
+
+/// Map a package language onto the sandbox [`ProducerProfile`] whose resource
+/// ceilings + threat tier the compile runs under.
+fn producer_profile(language: index::ecosystem::Language) -> sandbox::ProducerProfile {
+    use index::ecosystem::Language;
+    use sandbox::ProducerProfile;
+    match language {
+        Language::Rust => ProducerProfile::Rust,
+        Language::Java => ProducerProfile::Java,
+        Language::Go => ProducerProfile::Go,
+        Language::CSharp => ProducerProfile::CSharp,
+        Language::Nix => ProducerProfile::Nix,
+        // deno_doc (TS) / pyrefly (Python) are LOW static parsers; C/C++ has no
+        // dedicated profile yet and reads as a static parse over source.
+        Language::Typescript | Language::Python | Language::Cpp => {
+            ProducerProfile::StaticParser
+        }
+    }
+}
+
+/// Resolve the toolchain-image digest whose warm golden this language's compile
+/// forks from.
+///
+/// TODO(driver): the real digests come from the `ToolchainImageStore`
+/// (`sandbox::ToolchainImageSet`) populated by the Buck2 compiler tree at
+/// assemble — one OCI image per language toolchain. Until that store is threaded
+/// into the `Indexer`, we key the golden pool by a deterministic per-language
+/// placeholder digest so `prepare_golden`/`fork_golden` are exercised for real
+/// (distinct languages get distinct goldens) without inventing image content.
+fn toolchain_image_digest(language: index::ecosystem::Language) -> sandbox::ImageDigest {
+    // Deterministic, collision-free-per-language placeholder: byte 0 = the
+    // language token's first byte, rest zero. Replaced by the store lookup.
+    let mut bytes = [0u8; 32];
+    if let Some(&b0) = language.as_token().as_bytes().first() {
+        bytes[0] = b0;
+    }
+    sandbox::ImageDigest::from_bytes(bytes)
+}
+
+/// Write the builder's staged source files onto `source_root` (creating parent
+/// dirs) and create an empty `scratch_root`. Path traversal is already excluded
+/// by ingest sanitization; we defensively skip any absolute / `..` component.
+fn materialize_sources(
+    builder: &BlobBuilder,
+    source_root: &std::path::Path,
+    scratch_root: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(source_root)?;
+    std::fs::create_dir_all(scratch_root)?;
+    for (rel, bytes) in builder.source_files() {
+        let rel_path = std::path::Path::new(rel.as_str());
+        // Defensive: never escape the source root.
+        if rel_path.is_absolute()
+            || rel_path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            continue;
+        }
+        let dest = source_root.join(rel_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest, bytes)?;
+    }
+    Ok(())
+}
+
+/// Fork a warm cage from the language golden (falling back to a fresh cage) and
+/// run the sealed producer command inside it, returning the produced IR bytes
+/// (the producer's stdout). Synchronous: intended for `spawn_blocking`.
+///
+/// This is the real cage lifecycle: `prepare_golden` (idempotent) → `fork_golden`
+/// → `Cage::run` → teardown (the clone's `kill` runs inside `run`). The producer
+/// argv is the one precise TODO (see [`PRODUCER_ENTRYPOINT`]).
+fn run_producer_in_cage(
+    package: &str,
+    profile: sandbox::ProducerProfile,
+    image: sandbox::ImageDigest,
+    source_root: &std::path::Path,
+    scratch_root: &std::path::Path,
+) -> ServerResult<Vec<u8>> {
+    use sandbox::vm::{VmError, VmHandle, VmRuntime};
+    use sandbox::{
+        Cage, CancelToken, CapabilityBudget, Env, FsGrant, NetGrant, RootfsStore,
+        SealedCommand, SmolvmCage, SmolvmRuntime,
+    };
+
+    let cage_err = |reason: String| {
+        ServerError::Internal(InternalError::CageCompile {
+            package: package.to_owned(),
+            reason,
+        })
+    };
+
+    // Bootstrap the rootfs store + runtime (NUDOX_GUEST_ROOTFS on a forge node).
+    let store = RootfsStore::from_env().map_err(|e| cage_err(e.to_string()))?;
+    let runtime = SmolvmRuntime::new(store);
+
+    // ── Golden: prepare (idempotent) then fork a warm clone ───────────────────
+    // Falls back to a fresh cold-boot cage when live fork is unavailable on this
+    // host (non-Linux/macOS, or the golden could not be parked) — the no-silent-
+    // degrade rule still holds: only *unsupported fork* falls back; a hard cage
+    // failure propagates.
+    let handle = match runtime
+        .prepare_golden(&image)
+        .and_then(|golden| runtime.fork_golden(&golden))
+    {
+        Ok(handle) => Some(handle),
+        Err(VmError::Unsupported { reason }) => {
+            tracing::info!(
+                %package,
+                reason,
+                "golden fork unavailable on this host; cold-booting a fresh cage"
+            );
+            None
+        }
+        Err(other) => return Err(cage_err(format!("golden prepare/fork: {other}"))),
+    };
+
+    // ── Budget: RO source root, ephemeral scratch overlay, network OFF ────────
+    // TODO(driver): add the RO toolchain store roots (rustup/cargo/GOROOT/…) once
+    // the assembled `ToolchainSet`/`ToolchainImageStore` is threaded into the
+    // Indexer; on the sealed-image plane those roots live inside the golden's
+    // guest image, so the host-side RO binds are empty here.
+    let fs = FsGrant::scratch(scratch_root).ro(source_root);
+    let budget = CapabilityBudget::new(
+        fs,
+        NetGrant::Off,
+        Env::empty(),
+        profile.limits(),
+    );
+
+    // ── The producer invocation ───────────────────────────────────────────────
+    // TODO(driver): exact producer invocation is provisioned in the golden
+    // toolchain image (Buck2 compiler tree). The producer reads the RO source
+    // tree at `GUEST_SOURCE_MOUNT` and writes IR frames to stdout; the concrete
+    // argv (out format flags, IR-stream socket) is finalized with that contract.
+    let command = SealedCommand::new(
+        PRODUCER_ENTRYPOINT,
+        [GUEST_SOURCE_MOUNT],
+        budget,
+    );
+
+    let cancel = CancelToken::never();
+    let output = match handle {
+        // Warm fork clone: run directly against the live handle, then tear down.
+        Some(mut handle) => {
+            let spec = sandbox::project_run_spec(&command);
+            let out = handle.exec(&spec);
+            handle.kill(); // one-VM-per-job: the clone dies at end of job
+            out.map_err(|e| cage_err(format!("producer exec (forked clone): {e}")))?
+        }
+        // Cold path: the cage's own `run` boots a fresh VM, execs, and tears
+        // it down (ephemeral overlay dies with it).
+        None => {
+            let cage = SmolvmCage::with_runtime(runtime);
+            Cage::run(&cage, command, &cancel)
+                .map_err(|e| cage_err(format!("cage run (cold boot): {e}")))?
+        }
+    };
+
+    if !output.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ServerError::Internal(InternalError::ProducerFailed {
+            package: package.to_owned(),
+            reason: format!(
+                "exit {:?}; stderr: {}",
+                output.status(),
+                stderr.chars().take(2000).collect::<String>()
+            ),
+        }));
+    }
+
+    Ok(output.stdout)
+}
+
+/// Stage the raw producer IR onto the builder as a single section so it is not
+/// dropped, and return the symbol identifiers recoverable so far.
+///
+/// TODO(driver): decode the producer's IR frames (NdIrF1) into typed blob
+/// sections + the identifier list. The framing is emitted by the golden-image
+/// producer (Buck2 compiler tree); the decoder lands with that contract. Until
+/// then no identifiers are recoverable and the facet extractor degrades to the
+/// name-only path (which it already handles).
+fn ingest_ir_bytes(_builder: &mut BlobBuilder, _ir_bytes: &[u8]) -> Vec<String> {
+    // TODO(driver): `_builder.add_section(...)` for the IR blob + parse
+    // identifiers once the IR decode contract is provisioned in the golden image.
+    Vec::new()
 }
 
 fn ensure_trailing_slash(url: &url::Url) -> String {

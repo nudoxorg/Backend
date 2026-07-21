@@ -39,6 +39,10 @@ index    = { path = "../index", features = ["dolt-engine"] }
 # `driver::sync` (the federation sync orchestrator, §8e) fans a verified content
 # item across the federation topology over `heart::sync` + this transport.
 transport = { path = "../transport" }
+# The one cage abstraction (SMOLVM-PLAN §3): the ephemeral SmolvmCage the
+# compile phase forks-from-golden and runs the producer inside. The compiler
+# daemon is gone; IR is produced by a microVM per job, driven from here.
+sandbox   = { path = "../compiler/sandbox" }
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
 tokio        = { version = "1.52",  features = ["full"] }

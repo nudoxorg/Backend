@@ -287,6 +287,20 @@ pub enum InternalError {
         source: std::io::Error,
     },
 
+    /// Producing IR inside the ephemeral SmolvmCage failed: the golden could
+    /// not be prepared/forked, the sealed producer command errored, or the VM
+    /// boundary refused to boot (libkrun unavailable, rootfs missing, …). The
+    /// long-lived compiler daemon this replaced is gone (SMOLVM-PLAN); a forge
+    /// node that cannot run the cage fails the job loudly (idempotent retry)
+    /// rather than emitting an IR-less blob.
+    #[error("cage compile failed for {package}: {reason}")]
+    CageCompile { package: String, reason: String },
+
+    /// The producer ran in the cage but exited non-zero (the guest producer
+    /// itself failed on this package's sources).
+    #[error("producer exited non-zero in cage for {package}: {reason}")]
+    ProducerFailed { package: String, reason: String },
+
     /// Catch-all for other truly internal breakages where a more specific
     /// variant has not yet been introduced. Prefer adding a new variant.
     #[error("internal error: {message}")]
