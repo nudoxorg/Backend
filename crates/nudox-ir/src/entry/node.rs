@@ -1,27 +1,30 @@
-use crate::{List, registry::RawEntryIdx};
+use crate::{List, index::UntypedEntryIndex, visitor::Visitor};
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Node {
-    pub parent: Option<RawEntryIdx>,
-    pub children: List<RawEntryIdx>,
+    pub parent: Option<UntypedEntryIndex>,
+    pub children: List<UntypedEntryIndex>,
 }
 
 impl Node {
-    pub fn new(parent: RawEntryIdx, children: impl IntoIterator<Item = RawEntryIdx>) -> Self {
+    pub fn new(
+        parent: UntypedEntryIndex,
+        children: impl IntoIterator<Item = UntypedEntryIndex>,
+    ) -> Self {
         Self::build(Some(parent), children)
     }
 
-    pub fn root(children: impl IntoIterator<Item = RawEntryIdx>) -> Self {
+    pub fn root(children: impl IntoIterator<Item = UntypedEntryIndex>) -> Self {
         Self::build(None, children)
     }
 
-    pub fn leaf(parent: RawEntryIdx) -> Self {
+    pub fn leaf(parent: UntypedEntryIndex) -> Self {
         Self::build(Some(parent), [])
     }
 
     pub fn build(
-        parent: Option<RawEntryIdx>,
-        children: impl IntoIterator<Item = RawEntryIdx>,
+        parent: Option<UntypedEntryIndex>,
+        children: impl IntoIterator<Item = UntypedEntryIndex>,
     ) -> Self {
         Node {
             parent,

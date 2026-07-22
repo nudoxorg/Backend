@@ -1,11 +1,13 @@
 use std::{ops::Range, path::PathBuf};
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+use crate::visitor::Visitor;
+
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Visibility {
     Public,
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Symbol {
     pub name: String,
     pub visibility: Visibility,

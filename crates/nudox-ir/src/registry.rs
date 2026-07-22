@@ -1,79 +1,24 @@
-mod builder;
-mod id;
-mod idx;
-mod link;
 mod resolver;
-mod serde_impl;
 mod state;
-
-#[cfg(test)]
-mod tests;
 
 use crate::{
     entry::{Entry, TypedEntry},
+    id::UniqueId,
+    index::{EntryIndex, UntypedEntryIndex},
     kind::EntryKind,
-    package::PackageMeta,
-    symbol::Symbol,
 };
 
-use self::{
-    id::ErasedUniqueId,
-    state::{RegistryState, StoredEntry},
-};
+use self::state::RegistryState;
 
-pub use self::{
-    builder::EntryBuilder,
-    id::{EntryId, UniqueId},
-    idx::{EntryIdx, RawEntryIdx},
-    link::EntryLink,
-    resolver::RegistryResolver,
-    serde_impl::DeserContext,
-};
+pub use self::resolver::RegistryResolver;
 
 #[derive(Default)]
-pub struct Registry<R> {
+pub struct Registry<R: RegistryResolver> {
     resolver: R,
-    state: RegistryState,
+    state: RegistryState<R>,
 }
 
 impl<R: RegistryResolver> Registry<R> {
-    pub fn build_package_ir(
-        &self,
-        pkg: PackageMeta,
-        sym: Symbol,
-        build: impl Fn(&mut EntryBuilder<R>),
-    ) {
-        self.state.build_package_ir(pkg, sym, build)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = RawEntryIdx> {
-        self.state.iter()
-    }
-
-    pub fn resolve_id(&self, idx: RawEntryIdx) -> &UniqueId<R::EntryId> {
-        self.state.resolve_id::<R>(idx)
-    }
-
-    pub fn resolve_idx(&self, id: UniqueId<R::EntryId>) -> RawEntryIdx {
-        self.state.resolve_idx::<R>(id)
-    }
-
-    pub async fn resolve_entry(&self, idx: RawEntryIdx) -> Result<&Entry, R::Error> {
-        self.state.resolve_entry(idx, &self.resolver).await
-    }
-
-    pub async fn resolve_typed_entry<T: EntryKind>(
-        &self,
-        idx: EntryIdx<T>,
-    ) -> Result<&TypedEntry<T>, R::Error> {
-        self.state
-            .resolve_entry(idx.raw(), &self.resolver)
-            .await
-            .map(TypedEntry::new)
-    }
-}
-
-impl<R> Registry<R> {
     pub fn new(resolver: R) -> Self {
         Registry {
             resolver,
@@ -87,5 +32,39 @@ impl<R> Registry<R> {
 
     pub fn resolver_mut(&mut self) -> &mut R {
         &mut self.resolver
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = UntypedEntryIndex> {
+        self.state.iter()
+    }
+
+    pub fn resolve_id(&self, idx: UntypedEntryIndex) -> &UniqueId<R::EntryId> {
+        self.state.resolve_idx_to_id(idx)
+    }
+
+    pub fn resolved_loaded_id(&self, id: &UniqueId<R::EntryId>) -> Option<UntypedEntryIndex> {
+        self.state.resolve_loaded_id(id)
+    }
+
+    pub fn resolve_id_to_idx(&self, id: UniqueId<R::EntryId>) -> UntypedEntryIndex {
+        self.state.resolve_id_to_idx(id)
+    }
+
+    pub fn resolve_loaded_entry(&self, idx: UntypedEntryIndex) -> Option<&Entry> {
+        self.state.resolve_loaded_entry(idx)
+    }
+
+    pub async fn resolve_entry(&self, idx: UntypedEntryIndex) -> Result<&Entry, R::Error> {
+        self.state.resolve_entry(idx, &self.resolver).await
+    }
+
+    pub async fn resolve_typed_entry<T: EntryKind>(
+        &self,
+        idx: EntryIndex<T>,
+    ) -> Result<&TypedEntry<T>, R::Error> {
+        self.state
+            .resolve_entry(idx.raw(), &self.resolver)
+            .await
+            .map(TypedEntry::new)
     }
 }

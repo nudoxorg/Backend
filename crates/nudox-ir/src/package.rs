@@ -1,8 +1,10 @@
-mod id;
+use crate::id::UniqueId;
 
-pub use self::id::{PackageId, PackageIdView};
+pub use crate::id::{PackageId, PackageIdView};
 
-pub struct PackageMeta {
-    pub id: PackageId,
-    // TODO: fill out the rest
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct PackageInfo<Id> {
+    pub(crate) id: PackageId,
+    pub(crate) exports: Vec<Id>,
+    pub(crate) imports: Vec<UniqueId<Id>>,
 }

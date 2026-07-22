@@ -3,12 +3,12 @@
 use std::path::PathBuf;
 
 pub use nudox_ir::{
-    entry::{Entry, Node},
+    entry::{Entry, Node, Symbol, Visibility},
+    id::UniqueId,
+    index::UntypedEntryIndex,
     kind::EntryKind,
     kinds::*,
     package::{PackageId, PackageMeta},
-    registry::{RawEntryIdx, UniqueId},
-    symbol::{Symbol, Visibility},
 };
 
 pub fn entry<T>(name: &str, node: Node, kind: T) -> Entry
@@ -29,26 +29,22 @@ pub fn symbol(name: impl Into<String>) -> Symbol {
 }
 
 #[allow(unused)]
-pub fn n(parent: RawEntryIdx, children: impl IntoIterator<Item = RawEntryIdx>) -> Node {
+pub fn n(parent: UntypedEntryIndex, children: impl IntoIterator<Item = UntypedEntryIndex>) -> Node {
     Node::new(parent, children)
 }
 
 pub mod n {
     use super::*;
 
-    pub fn root(children: impl IntoIterator<Item = RawEntryIdx>) -> Node {
+    pub fn root(children: impl IntoIterator<Item = UntypedEntryIndex>) -> Node {
         Node::root(children)
     }
 
-    pub fn leaf(parent: RawEntryIdx) -> Node {
+    pub fn leaf(parent: UntypedEntryIndex) -> Node {
         Node::leaf(parent)
     }
 }
 
-macro_rules! list {
-	($($tt:tt)*) => {
-		(::std::vec!($($tt)*)).into_boxed_slice()
-	};
+pub(crate) macro list($($tt:tt)*) {
+	vec![$($tt)*].into_boxed_slice()
 }
-
-pub(crate) use list;

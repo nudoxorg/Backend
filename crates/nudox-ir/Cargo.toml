@@ -5,15 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bimap = { workspace = true }
 bon = { workspace = true }
-dashmap = { workspace = true }
 elsa = { workspace = true }
-erased-serde = { workspace = true }
 ouroboros = { workspace = true }
+papaya = { workspace = true }
 parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true }
-serde_context = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 triomphe = { workspace = true }
 

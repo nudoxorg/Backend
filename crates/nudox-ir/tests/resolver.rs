@@ -1,13 +1,16 @@
+use serde::Deserialize;
 use vfs::{
     async_vfs::{AsyncMemoryFS, AsyncVfsPath},
     error::VfsErrorKind,
 };
 
-use nudox_ir::{
-    entry::Entry,
-    package::PackageIdView,
-    registry::{DeserContext, RegistryResolver, UniqueId},
-};
+// use nudox_ir::{
+//     entry::Entry,
+//     id::UniqueId,
+//     package::{PackageId, PackageIdView, PackageInfo},
+//     registry::RegistryResolver,
+// };
+use nudox_ir::prelude::*;
 
 pub struct ExampleResolver {
     fs: AsyncVfsPath,
@@ -38,11 +41,7 @@ impl RegistryResolver for ExampleResolver {
 
     type Error = ResolverError;
 
-    async fn load_unique_id(
-        &self,
-        id: &UniqueId<Self::EntryId>,
-        cx: DeserContext<'_>,
-    ) -> Result<Entry, Self::Error> {
+    async fn load_unique_id(&self, id: &UniqueId<Self::EntryId>) -> Result<Entry, Self::Error> {
         let package = match id.package().view() {
             PackageIdView::Path(path) => format!("{}", path.display()),
         };
@@ -64,8 +63,15 @@ impl RegistryResolver for ExampleResolver {
 
         let deserializer = &mut serde_json::Deserializer::from_str(&file);
 
-        let entry = cx.deserialize(deserializer)?;
+        let entry = Entry::deserialize(deserializer)?;
 
         Ok(entry)
+    }
+
+    async fn load_package_info(
+        &self,
+        _id: PackageId,
+    ) -> Result<PackageInfo<Self::EntryId>, Self::Error> {
+        todo!()
     }
 }
