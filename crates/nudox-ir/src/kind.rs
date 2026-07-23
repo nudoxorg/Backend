@@ -12,8 +12,13 @@ register_kinds! {
     /// A field or property of a containing type.
     Field,
 
+    /// A function, method, or lambda.
     Function,
 
+    /// A single parameter of a function.
+    Param,
+
+    /// A type expression.
     Type,
 }
 
