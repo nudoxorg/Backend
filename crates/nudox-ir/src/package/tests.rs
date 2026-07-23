@@ -11,12 +11,14 @@ fn sym(name: &str) -> Symbol {
     Symbol {
         name: name.to_owned(),
         visibility: Visibility::Public,
-        documentation: String::new(),
+        documentation: None,
+        cfg: None,
         source: PathBuf::new(),
         span: 0..0,
         aliases: Vec::new().into(),
         deprecation: None,
         doc_links: Vec::new().into(),
+        attributes: Vec::new().into(),
     }
 }
 
@@ -81,6 +83,7 @@ fn builds_and_wires_every_kind() {
                 .generics(Generics::builder().params([t]).constraints([]).build())
                 .fields([value])
                 .super_types([])
+                .index_signatures([])
                 .build()
         });
 
@@ -172,6 +175,22 @@ fn builds_and_wires_every_kind() {
             Enum::builder().variants([ok, err]).build()
         });
 
+        // An exported declarative macro `macro_rules! tally`.
+        root.create(id(), sym("tally"), |_| {
+            Macro::builder().kind(MacroKind::Declarative).build()
+        });
+
+        // An `extern "C"` foreign function.
+        root.create(id(), sym("puts"), |_| {
+            Function::builder()
+                .input_params([])
+                .output_params([])
+                .modifiers([])
+                .abi("C".to_owned())
+                .implemented(false)
+                .build()
+        });
+
         // A generic free function `const fn identity<T>(x: T) -> T`.
         root.create(id(), sym("identity"), |mut f| {
             let t = f.create(id(), sym("T"), |_| type_param());
@@ -209,6 +228,7 @@ fn builds_and_wires_every_kind() {
                 Kind::Const(_) => "const",
                 Kind::Static(_) => "static",
                 Kind::Alias(_) => "alias",
+                Kind::Macro(_) => "macro",
                 Kind::Type(_) => "type",
             },
             EntryInner::Reference(_) => "reference",
@@ -219,7 +239,7 @@ fn builds_and_wires_every_kind() {
     // Every Kind must be represented at least once.
     for kind in [
         "module", "record", "enum", "variant", "field", "function", "param", "generic", "trait",
-        "impl", "const", "static", "alias", "type",
+        "impl", "const", "static", "alias", "macro", "type",
     ] {
         assert!(
             counts.get(kind).copied().unwrap_or(0) > 0,

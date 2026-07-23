@@ -28,6 +28,10 @@ pub struct Function {
     /// Signature-level modifiers (`async`, `const`, `unsafe`, …).
     pub modifiers: List<FnModifier>,
 
+    /// The foreign ABI, if the function is `extern` (`Some("C")` for
+    /// `extern "C"`); `None` for a native-ABI function.
+    pub abi: Option<String>,
+
     /// Whether the function has a body. `false` for a required trait method or
     /// an `extern`/abstract declaration.
     pub implemented: bool,
@@ -50,6 +54,7 @@ impl Function {
         #[builder(with = FromIterator::from_iter)] input_params: List<EntryIndex<Param>>,
         #[builder(with = FromIterator::from_iter)] output_params: List<EntryIndex<Param>>,
         #[builder(with = FromIterator::from_iter)] modifiers: List<FnModifier>,
+        abi: Option<String>,
         #[builder(default = true)] implemented: bool,
     ) -> Self {
         Function {
@@ -58,6 +63,7 @@ impl Function {
             input_params,
             output_params,
             modifiers,
+            abi,
             implemented,
         }
     }
@@ -109,7 +115,4 @@ pub enum FnModifier {
 
     /// An abstract / pure-virtual method (`virtual … = 0`, `abstract`).
     Abstract,
-
-    /// An `extern` / foreign-ABI function.
-    Extern,
 }

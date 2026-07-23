@@ -174,6 +174,9 @@ pub struct FnType {
     /// Signature modifiers (`async`, `unsafe`, `const`, …).
     pub modifiers: List<FnModifier>,
 
+    /// The foreign ABI, if any (`Some("C")` for `extern "C" fn(...)`).
+    pub abi: Option<String>,
+
     /// A trailing C-style variadic (`printf(const char*, ...)`).
     pub c_variadic: bool,
 }

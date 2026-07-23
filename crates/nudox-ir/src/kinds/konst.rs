@@ -23,6 +23,9 @@ pub enum ConstExpr {
     /// A boolean literal.
     Bool(bool),
 
+    /// A character literal (`'a'`).
+    Char(char),
+
     /// A string literal.
     Str(String),
 

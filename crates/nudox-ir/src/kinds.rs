@@ -23,10 +23,10 @@ pub use self::{
         Bound, ConstParam, Constraint, Generic, GenericArg, Generics, LifetimeParam, TraitRef,
         TypeKind, TypeParam, TypeParamOrigin, Variance,
     },
-    item::{Alias, Const, Static},
+    item::{Alias, Const, Macro, MacroKind, Static},
     konst::{BinOp, ConstExpr, UnaryOp},
     param::{Param, ParamAttribute},
-    record::{Field, FieldAttribute, FieldKey, Record},
+    record::{Field, FieldAttribute, FieldKey, IndexSignature, Record},
     sum::{Enum, Variant},
     traits::{Impl, ImplAttribute, ImplPolarity, Trait, TraitAttribute},
     ty::{

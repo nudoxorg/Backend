@@ -81,3 +81,40 @@ impl Alias {
         }
     }
 }
+
+/// A macro definition, exposed as a first-class API symbol.
+///
+/// `macro_rules!` macros exported via `#[macro_export]`, procedural macros, and
+/// C preprocessor `#define`s are all real, referenceable public-API items.
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub struct Macro {
+    /// What flavour of macro this is.
+    pub kind: MacroKind,
+}
+
+#[bon::bon]
+impl Macro {
+    #[builder]
+    pub fn new(kind: MacroKind) -> Self {
+        Macro { kind }
+    }
+}
+
+/// The flavour of a [`Macro`] definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum MacroKind {
+    /// A declarative macro (`macro_rules!`, Rust 2.0 `macro`).
+    Declarative,
+
+    /// A function-like procedural macro (`foo!(…)`).
+    ProcFunction,
+
+    /// An attribute procedural macro (`#[foo]`).
+    ProcAttribute,
+
+    /// A derive procedural macro (`#[derive(Foo)]`).
+    ProcDerive,
+
+    /// A C/C++ preprocessor `#define`.
+    Preprocessor,
+}

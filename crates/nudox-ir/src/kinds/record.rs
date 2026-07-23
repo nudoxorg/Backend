@@ -20,6 +20,12 @@ pub struct Record {
 
     /// Base classes and implemented interfaces named directly by the record.
     pub super_types: List<EntryIndex<Type>>,
+
+    /// TypeScript-style index signatures (`{ [key: string]: number }`).
+    ///
+    /// Call and construct signatures (`{ (x): y }`, `{ new(x): y }`) are modelled
+    /// as child [`Function`](crate::kinds::Function) entries instead.
+    pub index_signatures: List<IndexSignature>,
 }
 
 #[bon::bon]
@@ -29,13 +35,26 @@ impl Record {
         #[builder(default)] generics: Generics,
         #[builder(with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>,
         #[builder(with = FromIterator::from_iter)] super_types: List<EntryIndex<Type>>,
+        #[builder(with = FromIterator::from_iter)] index_signatures: List<IndexSignature>,
     ) -> Self {
         Record {
             generics,
             fields,
             super_types,
+            index_signatures,
         }
     }
+}
+
+/// A TypeScript index signature describing dynamic keyed access
+/// (`{ [key: string]: number }`).
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub struct IndexSignature {
+    /// The key type (usually `string` or `number`).
+    pub key: EntryIndex<Type>,
+
+    /// The value type produced by keyed access.
+    pub value: EntryIndex<Type>,
 }
 
 /// A field or property of a containing type.

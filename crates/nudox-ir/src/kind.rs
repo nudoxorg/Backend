@@ -3,9 +3,8 @@ use std::any::Any;
 use crate::{kinds::*, visitor::Visitor};
 
 // Re-exports (the old `Reexport` Kind) are modelled by `EntryInner::Reference`,
-// not a distinct Kind. `Macro` and `Event` from the old tree are intentionally
-// omitted: preprocessor macros are not type-system entities, and events fold
-// into a `Field`/`Function` pair.
+// not a distinct Kind. `Event` (C#) folds into a `Field`/`Function` pair, and
+// free-form prose docs (`Info`) are out of scope for the type-system IR.
 register_kinds! {
     /// A namespace, package, or module — a container for other entries.
     Module,
@@ -45,6 +44,9 @@ register_kinds! {
 
     /// A type alias / associated type.
     Alias,
+
+    /// A macro definition (declarative, procedural, or preprocessor).
+    Macro,
 
     /// A type expression.
     Type,

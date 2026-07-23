@@ -1,6 +1,6 @@
 use std::{ops::Range, path::PathBuf};
 
-use crate::{List, index::UntypedEntryIndex, visitor::Visitor};
+use crate::{List, index::UntypedEntryIndex, kinds::ConstExpr, visitor::Visitor};
 
 /// The visibility of an entry in its source language.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
@@ -38,6 +38,52 @@ pub struct Deprecation {
     pub since: Option<String>,
 }
 
+/// A conditional-compilation guard controlling whether an entry is present
+/// (Rust `#[cfg(...)]`, C `#if`).
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum CfgExpr {
+    /// A bare flag (`#[cfg(test)]`, `#[cfg(unix)]`).
+    Flag(String),
+
+    /// A key/value option (`target_os = "linux"`, `feature = "serde"`).
+    Option { key: String, value: String },
+
+    /// Conjunction (`all(a, b)`).
+    All(List<CfgExpr>),
+
+    /// Disjunction (`any(a, b)`).
+    Any(List<CfgExpr>),
+
+    /// Negation (`not(a)`).
+    Not(Box<CfgExpr>),
+}
+
+/// A source-level attribute, annotation, or decorator attached to an entry.
+///
+/// Covers Rust `#[attr]`, C++ `[[attribute]]`, Java/C# annotations, and
+/// Python/TypeScript decorators uniformly.
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub struct Attribute {
+    /// The attribute name or path (`inline`, `serde`, `Override`, `nodiscard`).
+    pub path: String,
+
+    /// Structured arguments, if any (`serde(rename = "x")`, `@Column(name="id")`).
+    pub args: List<AttrArg>,
+}
+
+/// A single argument to an [`Attribute`].
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum AttrArg {
+    /// A positional literal value (`#[repr(C)]` → `C` as a name literal).
+    Lit(ConstExpr),
+
+    /// A named / keyword argument (`rename = "x"`).
+    Named { name: String, value: ConstExpr },
+
+    /// A nested attribute (`#[derive(Serialize)]`, `cfg(all(a, b))`).
+    Nested(Attribute),
+}
+
 /// The identifying and documentary metadata common to every entry.
 ///
 /// The `Kind` body carries the entry's *structure*; the `Symbol` carries who it
@@ -50,8 +96,12 @@ pub struct Symbol {
     /// The entry's visibility in its source language.
     pub visibility: Visibility,
 
-    /// Rendered documentation prose for the entry.
-    pub documentation: String,
+    /// Rendered documentation prose for the entry. `None` when no doc comment
+    /// was written — distinct from an empty one.
+    pub documentation: Option<String>,
+
+    /// The conditional-compilation guard under which the entry exists, if any.
+    pub cfg: Option<CfgExpr>,
 
     /// The source file the entry was declared in.
     pub source: PathBuf,
@@ -68,4 +118,7 @@ pub struct Symbol {
 
     /// Intra-doc links from this entry's documentation to other entries.
     pub doc_links: List<UntypedEntryIndex>,
+
+    /// Source-level attributes / annotations / decorators on the entry.
+    pub attributes: List<Attribute>,
 }

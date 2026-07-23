@@ -7,7 +7,7 @@ use crate::{index::UntypedEntryIndex, kind::Kind, visitor::Visitor};
 pub(crate) use self::node::Node;
 
 pub use self::{
-    symbol::{Symbol, Visibility},
+    symbol::{AttrArg, Attribute, CfgExpr, Deprecation, Symbol, Visibility},
     typed::TypedEntry,
 };
 
