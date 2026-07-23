@@ -9,17 +9,11 @@ pub struct UniqueId<T> {
 
 impl<T> UniqueId<T> {
     pub fn new(package: PackageId, entry: T) -> Self {
-        UniqueId {
-            package,
-            entry: Some(entry),
-        }
+        UniqueId::build(package, Some(entry))
     }
 
     pub fn root(package: PackageId) -> Self {
-        UniqueId {
-            package,
-            entry: None,
-        }
+        UniqueId::build(package, None)
     }
 
     pub fn package(&self) -> PackageId {
@@ -28,5 +22,9 @@ impl<T> UniqueId<T> {
 
     pub fn entry(&self) -> Option<&T> {
         self.entry.as_ref()
+    }
+
+    pub(crate) fn build(package: PackageId, entry: Option<T>) -> UniqueId<T> {
+        UniqueId { package, entry }
     }
 }

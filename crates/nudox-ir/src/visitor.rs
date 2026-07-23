@@ -1,11 +1,12 @@
 use crate::index::{EntryIndex, UntypedEntryIndex};
 
-// macro re-export
+// derive macro re-export
 pub(crate) use self::m::Visitor;
 
-#[expect(unused)]
 pub(crate) trait Visitor {
+    #[expect(dead_code)]
     fn visit(&self, f: impl Fn(UntypedEntryIndex));
+
     fn visit_mut(&mut self, f: impl Fn(&mut UntypedEntryIndex));
 }
 
@@ -38,17 +39,7 @@ mod default_impl {
         }
     }
 
-    impl<T: Visitor + ?Sized> Visitor for Box<T> {
-        fn visit(&self, f: impl Fn(UntypedEntryIndex)) {
-            (**self).visit(f);
-        }
-
-        fn visit_mut(&mut self, f: impl Fn(&mut UntypedEntryIndex)) {
-            (**self).visit_mut(f);
-        }
-    }
-
-    impl<T: Visitor> Visitor for [T] {
+    impl<T: Visitor> Visitor for Box<[T]> {
         fn visit(&self, f: impl Fn(UntypedEntryIndex)) {
             for it in self {
                 it.visit(&f);

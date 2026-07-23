@@ -8,6 +8,7 @@ license.workspace = true
 bimap = { workspace = true }
 bon = { workspace = true }
 elsa = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
 ouroboros = { workspace = true }
 papaya = { workspace = true }
 parking_lot = { workspace = true }

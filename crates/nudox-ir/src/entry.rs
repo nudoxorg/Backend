@@ -4,21 +4,34 @@ mod typed;
 
 use crate::{index::UntypedEntryIndex, kind::Kind, visitor::Visitor};
 
+pub(crate) use self::node::Node;
+
 pub use self::{
-    node::Node,
     symbol::{Symbol, Visibility},
     typed::TypedEntry,
 };
 
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
-    pub sym: Symbol,
-    pub node: Node,
-    pub kind: EntryInner,
+    sym: Symbol,
+    node: Node,
+    kind: EntryInner,
 }
 
 impl Entry {
-    pub const fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
+    pub fn sym(&self) -> &Symbol {
+        &self.sym
+    }
+
+    pub fn parent(&self) -> Option<UntypedEntryIndex> {
+        self.node.parent
+    }
+
+    pub fn children(&self) -> &[UntypedEntryIndex] {
+        &self.node.children
+    }
+
+    pub(crate) const fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
         Self {
             sym,
             node,
@@ -26,7 +39,7 @@ impl Entry {
         }
     }
 
-    pub const fn reference(sym: Symbol, node: Node, idx: UntypedEntryIndex) -> Self {
+    pub(crate) const fn reference(sym: Symbol, node: Node, idx: UntypedEntryIndex) -> Self {
         Self {
             sym,
             node,

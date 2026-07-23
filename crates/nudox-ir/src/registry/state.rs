@@ -13,7 +13,8 @@ use crate::{
 
 use super::RegistryResolver;
 
-const INVALID_ENTRY_IDX_MESSAGE: &str = ""; // TODO
+// TODO: better error message
+const INVALID_ENTRY_IDX_MESSAGE: &str = "got invalid EntryIndex (out of bounds index)";
 
 pub(super) struct RegistryState<R: RegistryResolver> {
     // TODO: papaya or dashmap?
@@ -153,11 +154,17 @@ struct Package {
 }
 
 impl Package {
-    fn new<R: RegistryResolver>(_info: PackageInfo<R::EntryId>, _state: &RegistryState<R>) -> Self {
-        // TODO
+    fn new<R: RegistryResolver>(info: PackageInfo<R::EntryId>, state: &RegistryState<R>) -> Self {
+        let package = info.id();
+
+        let (imports, exports) = info.iters();
+
         Package {
-            imports: Vec::new(),
-            exports: Vec::new(),
+            imports: imports.map(|id| state.resolve_id_to_idx(id)).collect(),
+            exports: exports
+                .map(|id| UniqueId::build(PackageId::clone(&package), id))
+                .map(|id| state.resolve_id_to_idx(id))
+                .collect(),
         }
     }
 

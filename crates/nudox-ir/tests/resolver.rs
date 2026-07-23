@@ -4,12 +4,6 @@ use vfs::{
     error::VfsErrorKind,
 };
 
-// use nudox_ir::{
-//     entry::Entry,
-//     id::UniqueId,
-//     package::{PackageId, PackageIdView, PackageInfo},
-//     registry::RegistryResolver,
-// };
 use nudox_ir::prelude::*;
 
 pub struct ExampleResolver {
@@ -34,6 +28,9 @@ pub enum ResolverError {
 
     #[error("entry not found")]
     MissingEntry(UniqueId<usize>),
+
+    #[error("package not found")]
+    MissingPackage(PackageId),
 }
 
 impl RegistryResolver for ExampleResolver {
@@ -70,8 +67,26 @@ impl RegistryResolver for ExampleResolver {
 
     async fn load_package_info(
         &self,
-        _id: PackageId,
+        id: PackageId,
     ) -> Result<PackageInfo<Self::EntryId>, Self::Error> {
-        todo!()
+        let package = match id.view() {
+            PackageIdView::Path(path) => format!("{}", path.display()),
+        };
+
+        let file = self.fs.join(package)?.join("info")?.read_to_string().await;
+
+        let file = match file {
+            Ok(file) => file,
+            Err(err) if matches!(err.kind(), VfsErrorKind::FileNotFound) => {
+                return Err(ResolverError::MissingPackage(id));
+            }
+            Err(err) => return Err(ResolverError::IO(err)),
+        };
+
+        let deserializer = &mut serde_json::Deserializer::from_str(&file);
+
+        let info = PackageInfo::deserialize(deserializer)?;
+
+        Ok(info)
     }
 }

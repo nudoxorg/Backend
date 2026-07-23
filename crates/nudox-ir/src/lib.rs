@@ -5,7 +5,6 @@
 
 mod visitor;
 
-pub mod builder;
 pub mod entry;
 pub mod id;
 pub mod index;
@@ -21,8 +20,17 @@ pub mod prelude {
         index::{EntryIndex, UntypedEntryIndex},
         kind::Kind,
         kinds::{self, *},
-        package::PackageInfo,
+        package::{IrPackage, PackageInfo},
         registry::{Registry, RegistryResolver},
+    };
+}
+
+pub mod build {
+    pub use crate::{
+        entry::{Entry, Symbol},
+        index::{EntryIndex, UntypedEntryIndex},
+        kinds::{self, *},
+        package::{EntryBuilder, IrPackage},
     };
 }
 

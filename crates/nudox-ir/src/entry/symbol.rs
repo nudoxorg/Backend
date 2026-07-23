@@ -11,7 +11,7 @@ pub enum Visibility {
 pub struct Symbol {
     pub name: String,
     pub visibility: Visibility,
-    pub documentation: Option<String>,
+    pub documentation: String,
     pub source: PathBuf,
     pub span: Range<usize>,
 }

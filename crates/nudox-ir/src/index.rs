@@ -45,18 +45,16 @@ impl<T> EntryIndex<T> {
         Self::build(index)
     }
 
-    #[expect(unused)]
-    pub(super) fn serialized(index: usize) -> Self {
+    pub(super) fn export(index: usize) -> Self {
         debug_assert_eq!(
             index | INDEX_SER_AVAILABLE_MASK,
             index,
-            "creating serialized index with unavailable bits"
+            "creating export index with unavailable bits"
         );
 
         Self::build(index | IS_SERIALIZED_MASK)
     }
 
-    #[expect(unused)]
     pub(super) fn import(index: usize) -> Self {
         debug_assert_eq!(
             index | INDEX_SER_AVAILABLE_MASK,
@@ -88,6 +86,12 @@ impl<T> EntryIndex<T> {
     pub(super) fn is_serialize(self) -> bool {
         // return if the serialized bit IS set
         self.index() & IS_SERIALIZED_MASK == IS_SERIALIZED_MASK
+    }
+
+    pub(super) fn is_export(self) -> bool {
+        debug_assert!(self.is_serialize());
+
+        self.index() & IS_IMPORT_MASK == 0
     }
 
     pub(super) fn is_import(self) -> bool {
