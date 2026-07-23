@@ -1,9 +1,20 @@
 use std::num::{NonZero, NonZeroU16};
 
-use crate::{List, index::EntryIndex, visitor::Visitor};
+use crate::{
+    List,
+    index::{EntryIndex, UntypedEntryIndex},
+    visitor::Visitor,
+};
 
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Type {
+    /// A reference to a named, nominal declaration — a record, enum, trait, or
+    /// alias — identified by the entry that defines it.
+    /// Ex: `MyStruct`, or the `Vec` constructor in `Vec<T>`.
+    // FIXME: generic arguments are not yet represented, so this names the bare
+    // declaration; `Vec<u8>` and `Vec<i32>` are presently indistinguishable.
+    Named(UntypedEntryIndex),
+
     /// A receiver/self type such as Rust `Self` or TypeScript `this`.
     SelfType,
 
