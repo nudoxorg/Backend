@@ -31,9 +31,14 @@ pub struct Function {
     /// Whether the function has a body. `false` for a required trait method or
     /// an `extern`/abstract declaration.
     pub implemented: bool,
-    // FIXME: explicitly-implemented protocols, overload sets, and the parsed
-    // tree-sitter body are not yet ported; overloads and bodies are large
-    // sub-designs of their own.
+    // NOTE: overload sets (C++/Java) are represented as sibling `Function`
+    // entries sharing a name, not a nested field, and a function that acts as a
+    // namespace (JS callable objects) carries its members as children — both
+    // fall out of the entry graph rather than needing dedicated fields.
+    //
+    // FIXME(body): the parsed tree-sitter function *body* — source text yoked to
+    // a syntax tree with resolved references — is a distinct concern from the IR
+    // type system and is tracked separately; it is not part of this Kind yet.
 }
 
 #[bon::bon]
