@@ -53,6 +53,16 @@ mod default_impl {
         }
     }
 
+    impl<T: Visitor> Visitor for Box<T> {
+        fn visit(&self, f: impl Fn(UntypedEntryIndex)) {
+            T::visit(self, f);
+        }
+
+        fn visit_mut(&mut self, f: impl Fn(&mut UntypedEntryIndex)) {
+            T::visit_mut(self, f);
+        }
+    }
+
     // standard integer types
     m::__default_impl_visitor!(u8, u16, u32, u64, u128, usize);
     m::__default_impl_visitor!(i8, i16, i32, i64, i128, isize);
@@ -151,7 +161,7 @@ mod m {
 
           	$(#[$meta:meta])*
           	$variant:ident {
-          		$($inner:ident: $ty:ty),* $(,)?
+          		$($(#[$fm:meta])* $inner:ident: $ty:ty),* $(,)?
           	},
 
           	$($rest:tt)*

@@ -1,29 +1,37 @@
-use crate::{List, index::EntryIndex, kinds::Type, visitor::Visitor};
+use crate::{
+    List,
+    index::EntryIndex,
+    kinds::{ConstExpr, Generics, Type},
+    visitor::Visitor,
+};
 
+/// A product type: struct, class, record, data class, or object type.
+///
+/// Inline methods, constructors, and nested items are modelled as child entries;
+/// this carries the record's fields, super-types, and generics.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Record {
-    /// The fields of the record, in declaration order.
-    ///
-    /// An empty list denotes a record with no statically-known fields — e.g. a
-    /// dynamic object in JavaScript/Python, or a unit struct.
+    /// Generic parameters and `where`-clause of the record.
+    pub generics: Generics,
+
+    /// The fields, in declaration order. Empty denotes a record with no
+    /// statically-known fields (a dynamic object, or a unit struct).
     pub fields: List<EntryIndex<Field>>,
 
-    /// Base classes, implemented interfaces, or otherwise explicitly-named
-    /// super-types of this record.
+    /// Base classes and implemented interfaces named directly by the record.
     pub super_types: List<EntryIndex<Type>>,
-    // FIXME: generics, inline methods/constructors, and index signatures are not
-    // yet ported. Methods are expected to become child Function entries once the
-    // builder grows nested-item support; generics await their own subsystem.
 }
 
 #[bon::bon]
 impl Record {
     #[builder]
     pub fn new(
+        #[builder(default)] generics: Generics,
         #[builder(with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>,
         #[builder(with = FromIterator::from_iter)] super_types: List<EntryIndex<Type>>,
     ) -> Self {
         Record {
+            generics,
             fields,
             super_types,
         }
@@ -40,14 +48,13 @@ pub struct Field {
     pub key: FieldKey,
 
     /// The declared type of the field, if known.
-    ///
-    /// Gradually-typed and dynamic languages may omit this.
     pub ty: Option<EntryIndex<Type>>,
 
     /// Field-level modifiers (mutability, optionality, storage).
     pub attributes: List<FieldAttribute>,
-    // FIXME: `default_value` (a `ConstExpr`) and source-level decorators are not
-    // yet ported; both await the const-expression / attribute subsystems.
+
+    /// The field's default / initializer value, if any.
+    pub default: Option<ConstExpr>,
 }
 
 #[bon::bon]
@@ -57,28 +64,31 @@ impl Field {
         key: FieldKey,
         ty: Option<EntryIndex<Type>>,
         #[builder(with = FromIterator::from_iter)] attributes: List<FieldAttribute>,
+        default: Option<ConstExpr>,
     ) -> Self {
         Field {
             key,
             ty,
             attributes,
+            default,
         }
     }
 }
 
 /// How a [`Field`] is keyed within its record.
 ///
-/// The textual name (when present) lives on the entry's `Symbol`; this only
-/// records the *shape* of the key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+/// The textual name (when present) lives on the entry's `Symbol`; this records
+/// the *shape* of the key.
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum FieldKey {
     /// A named field, keyed by the entry's `Symbol` name (`point.x`).
     Named,
 
     /// A positional field in a tuple or tuple-struct (`pair.0`).
     Positional(usize),
-    // FIXME: computed keys (`[Symbol.iterator]`, `["k" + i]`) are not yet
-    // representable; they await the const-expression subsystem.
+
+    /// A computed key (`[Symbol.iterator]`, `["k" + i]`).
+    Computed(ConstExpr),
 }
 
 /// A modifier applied to a [`Field`].
@@ -92,4 +102,10 @@ pub enum FieldAttribute {
 
     /// A static/class-level member rather than a per-instance one.
     Static,
+
+    /// A read-only field (`readonly`, `const` member, `final`).
+    ReadOnly,
+
+    /// A transient / non-serialized field.
+    Transient,
 }

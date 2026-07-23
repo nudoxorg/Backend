@@ -2,16 +2,10 @@ use std::any::Any;
 
 use crate::{kinds::*, visitor::Visitor};
 
-// FIXME(deferred-kinds): the following Kinds from the old `ir/` tree are not
-// yet ported, deliberately, to keep this pass focused:
-//   - Trait / Impl  — depend on the generics + constraints subsystem, which is
-//     intentionally cut for now (see the generics FIXMEs).
-//   - Const / Static — trivial to add once the const-expression subsystem for
-//     their initializers exists.
-//   - Alias (TypeAlias), Macro, Event — pending a decision on whether each
-//     earns a distinct Kind or folds into an existing one.
-// Re-exports (old `Reexport`) are already modelled by `EntryInner::Reference`,
-// not a Kind.
+// Re-exports (the old `Reexport` Kind) are modelled by `EntryInner::Reference`,
+// not a distinct Kind. `Macro` and `Event` from the old tree are intentionally
+// omitted: preprocessor macros are not type-system entities, and events fold
+// into a `Field`/`Function` pair.
 register_kinds! {
     /// A namespace, package, or module — a container for other entries.
     Module,
@@ -31,8 +25,26 @@ register_kinds! {
     /// A function, method, or lambda.
     Function,
 
-    /// A single parameter of a function.
+    /// A single value parameter of a function.
     Param,
+
+    /// A generic parameter — a type, lifetime, or const parameter.
+    Generic,
+
+    /// A trait, protocol, interface, or typeclass definition.
+    Trait,
+
+    /// A concrete `impl` block, inherent or trait.
+    Impl,
+
+    /// A named constant or immutable binding.
+    Const,
+
+    /// A mutable global or static variable.
+    Static,
+
+    /// A type alias / associated type.
+    Alias,
 
     /// A type expression.
     Type,

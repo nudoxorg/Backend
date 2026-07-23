@@ -1,22 +1,26 @@
-use crate::{List, index::EntryIndex, kinds::Type, visitor::Visitor};
+use crate::{
+    List,
+    index::EntryIndex,
+    kinds::{ConstExpr, Type},
+    visitor::Visitor,
+};
 
-/// A single parameter of a [`Function`](crate::kinds::Function).
+/// A single value parameter of a [`Function`](crate::kinds::Function) or function
+/// type.
 ///
-/// The parameter's name, visibility, and documentation live on the owning
-/// [`Entry`](crate::entry::Entry)'s [`Symbol`](crate::entry::Symbol); this
-/// carries only the parameter-specific data.
+/// The parameter's name lives on the owning [`Entry`](crate::entry::Entry)'s
+/// [`Symbol`](crate::entry::Symbol); this carries only the parameter-specific data.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Param {
     /// The declared type of the parameter, if present.
-    ///
-    /// Dynamically-typed languages (and inferred bindings) may omit this.
     pub ty: Option<EntryIndex<Type>>,
 
     /// Calling-convention and modifier attributes that cannot be inferred from
     /// the type alone.
     pub attributes: List<ParamAttribute>,
-    // FIXME: `default_value` (a `ConstExpr`) is not yet ported — it depends on
-    // the const-expression subsystem, which is intentionally deferred.
+
+    /// The default value used when the caller omits this argument.
+    pub default: Option<ConstExpr>,
 }
 
 #[bon::bon]
@@ -25,15 +29,17 @@ impl Param {
     pub fn new(
         ty: Option<EntryIndex<Type>>,
         #[builder(with = FromIterator::from_iter)] attributes: List<ParamAttribute>,
+        default: Option<ConstExpr>,
     ) -> Self {
-        Param { ty, attributes }
+        Param {
+            ty,
+            attributes,
+            default,
+        }
     }
 }
 
 /// A calling-convention or modifier attribute on a [`Param`].
-///
-/// These flags capture language-level modifiers that affect how a value is
-/// passed into or out of a function and cannot be recovered from the type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum ParamAttribute {
     /// Passed by mutable reference (Swift `inout`, C++ `&`).
