@@ -732,7 +732,7 @@ fn must_conjunction_of_terms(field: Field, tokens: &[String]) -> tantivy::query:
 /// Always returns concrete values (0 when facets are absent) so every document
 /// written by `absorb` has the columns present and collectors never see
 /// “field missing”.
-fn ranking_signals_from_facets(facets: Option<&crate::entity::facets::SearchFacets>) -> (u64, u64, u64) {
+fn ranking_signals_from_facets(facets: Option<&crate::metadata::SearchFacets>) -> (u64, u64, u64) {
     match facets {
         Some(facets) => {
             let quality_ppm = u64::from(facets.quality_ppm);
