@@ -39,7 +39,17 @@ mod default_impl {
         }
     }
 
-    impl<T: Visitor> Visitor for Box<[T]> {
+    impl<T: Visitor + ?Sized> Visitor for Box<T> {
+        fn visit(&self, f: impl Fn(UntypedEntryIndex)) {
+            (**self).visit(f);
+        }
+
+        fn visit_mut(&mut self, f: impl Fn(&mut UntypedEntryIndex)) {
+            (**self).visit_mut(f);
+        }
+    }
+
+    impl<T: Visitor> Visitor for [T] {
         fn visit(&self, f: impl Fn(UntypedEntryIndex)) {
             for it in self {
                 it.visit(&f);

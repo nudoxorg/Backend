@@ -1,8 +1,8 @@
 use std::num::{NonZero, NonZeroU16};
 
-use crate::{List, index::EntryIndex, visitor::Visitor};
+use crate::{List, visitor::Visitor};
 
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Type {
     /// A receiver/self type such as Rust `Self` or TypeScript `this`.
     SelfType,
@@ -13,23 +13,23 @@ pub enum Type {
 
     /// A fixed-length, heterogeneous collection of types.
     /// Ex: `(i32, String)`. An empty vec `()` represents the Unit type.
-    Tuple(List<EntryIndex<Type>>),
+    Tuple(List<Type>),
 
     /// A dynamically-sized view into a contiguous sequence.
     /// Ex: `[u8]` or `[]T`.
-    Slice(EntryIndex<Type>),
+    Slice(Box<Type>),
 
     /// A fixed-size contiguous sequence.
     /// Ex: `[i32; 4]` or `std::array<int, 4>`.
-    Array { ty: EntryIndex<Type>, length: usize },
+    Array { ty: Box<Type>, length: usize },
 
     /// An untagged union or sum of types.
     /// Ex: `string | number`.
-    Union(List<EntryIndex<Type>>),
+    Union(List<Type>),
 
     /// An intersection or combination of types.
     /// Ex: `Serializable & Cloneable`.
-    Intersection(List<EntryIndex<Type>>),
+    Intersection(List<Type>),
 
     /// Represents a type that cannot exist (Bottom Type).
     /// Ex: `!` in Rust, `never` in TypeScript, `NoReturn` in Python.
@@ -65,18 +65,18 @@ pub enum Primitive {
 
     /// A raw, mutable, unmanaged pointer.
     /// Ex: `*mut T`, `int*`.
-    MutPointer(EntryIndex<Type>),
+    MutPointer(Box<Type>),
 
     /// A raw, const, unmanaged pointer.
     /// Ex: `*const T`, `int *const`.
-    ConstPointer(EntryIndex<Type>),
+    ConstPointer(Box<Type>),
 
     /// A managed reference with optional lifetime/mutability tracking.
     /// Ex: `&'a mut T`.
     Reference {
         lifetime: Option<String>,
         mutable: bool,
-        ty: EntryIndex<Type>,
+        ty: Box<Type>,
     },
 
     /// An arbitrary primtive type, e.g. Date in JavaScript/TypeScript
