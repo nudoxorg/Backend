@@ -9,6 +9,12 @@ register_kinds! {
     /// A product type: struct, class, record, or data class.
     Record,
 
+    /// A sum type: enum, tagged union, or sealed hierarchy.
+    Enum,
+
+    /// A single variant of a sum type.
+    Variant,
+
     /// A field or property of a containing type.
     Field,
 
@@ -17,9 +23,6 @@ register_kinds! {
 
     /// A single parameter of a function.
     Param,
-
-    /// A type expression.
-    Type,
 }
 
 macro_rules! register_kinds {

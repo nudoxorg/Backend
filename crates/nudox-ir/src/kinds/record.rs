@@ -46,7 +46,7 @@ pub struct Field {
     /// The declared type of the field, if known.
     ///
     /// Gradually-typed and dynamic languages may omit this.
-    pub ty: Option<Box<Type>>,
+    pub ty: Option<Type>,
 
     /// Field-level modifiers (mutability, optionality, storage).
     pub attributes: List<FieldAttribute>,
@@ -57,7 +57,7 @@ impl Field {
     #[builder]
     pub fn new(
         key: FieldKey,
-        ty: Option<Box<Type>>,
+        ty: Option<Type>,
         #[builder(with = FromIterator::from_iter)] attributes: List<FieldAttribute>,
     ) -> Self {
         Field {

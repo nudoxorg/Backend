@@ -1,4 +1,4 @@
-use crate::{List, index::EntryIndex, kinds::Type, visitor::Visitor};
+use crate::{List, kinds::Type, visitor::Visitor};
 
 // FIXME: `default_value` (a `ConstExpr`) is not yet ported — it depends on
 // the const-expression subsystem, which is intentionally deferred.
@@ -9,7 +9,7 @@ pub struct Param {
     /// The declared type of the parameter, if present.
     ///
     /// Dynamically-typed languages (and inferred bindings) may omit this.
-    pub ty: Option<EntryIndex<Type>>,
+    pub ty: Option<Type>,
 
     /// Calling-convention and modifier attributes that cannot be inferred from
     /// the type alone.
@@ -20,7 +20,7 @@ pub struct Param {
 impl Param {
     #[builder]
     pub fn new(
-        ty: Option<EntryIndex<Type>>,
+        ty: Option<Type>,
         #[builder(with = FromIterator::from_iter)] attributes: List<ParamAttribute>,
     ) -> Self {
         Param { ty, attributes }
