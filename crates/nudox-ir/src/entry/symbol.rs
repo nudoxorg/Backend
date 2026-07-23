@@ -67,7 +67,8 @@ pub struct Attribute {
     /// The attribute name or path (`inline`, `serde`, `Override`, `nodiscard`).
     pub path: String,
 
-    /// Structured arguments, if any (`serde(rename = "x")`, `@Column(name="id")`).
+    /// Structured arguments, if any (`serde(rename = "x")`,
+    /// `@Column(name="id")`).
     pub args: List<AttrArg>,
 }
 

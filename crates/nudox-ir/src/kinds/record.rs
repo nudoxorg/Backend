@@ -23,8 +23,9 @@ pub struct Record {
 
     /// TypeScript-style index signatures (`{ [key: string]: number }`).
     ///
-    /// Call and construct signatures (`{ (x): y }`, `{ new(x): y }`) are modelled
-    /// as child [`Function`](crate::kinds::Function) entries instead.
+    /// Call and construct signatures (`{ (x): y }`, `{ new(x): y }`) are
+    /// modelled as child [`Function`](crate::kinds::Function) entries
+    /// instead.
     pub index_signatures: List<IndexSignature>,
 }
 
