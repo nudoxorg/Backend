@@ -14,6 +14,6 @@ pub struct Module;
 pub use self::{
     function::{FnModifier, Function, Receiver},
     param::{Param, ParamAttribute},
-    record::{Field, Record},
+    record::{Field, FieldAttribute, FieldKey, Record},
     ty::Type,
 };
