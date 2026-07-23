@@ -154,7 +154,8 @@ pub enum Bound {
     Lifetime(EntryIndex<Generic>),
 }
 
-/// A `where`-clause predicate that restricts how parameters may be instantiated.
+/// A `where`-clause predicate that restricts how parameters may be
+/// instantiated.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Constraint {
     /// A type must satisfy a bound (`T: Clone`, `T::Item: Display`).

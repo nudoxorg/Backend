@@ -35,9 +35,9 @@ fn trait_ref(def: crate::index::EntryIndex<Trait>) -> TraitRef {
     }
 }
 
-/// Build a package exercising every fleshed-out Kind and its builder — traits and
-/// supertraits, generics, impls, consts, statics, aliases, sums, and a rich type
-/// or two — then walk it back out and assert every Kind is represented.
+/// Build a package exercising every fleshed-out Kind and its builder — traits
+/// and supertraits, generics, impls, consts, statics, aliases, sums, and a rich
+/// type or two — then walk it back out and assert every Kind is represented.
 #[test]
 fn builds_and_wires_every_kind() {
     let mut next_id = 0usize;
@@ -140,7 +140,10 @@ fn builds_and_wires_every_kind() {
                     width: Width::W32,
                 })
             });
-            Const::builder().ty(i32_ty).value(ConstExpr::Int(100)).build()
+            Const::builder()
+                .ty(i32_ty)
+                .value(ConstExpr::Int(100))
+                .build()
         });
 
         // A mutable static `static mut COUNTER: i32;`.
@@ -215,11 +218,17 @@ fn builds_and_wires_every_kind() {
         "module", "record", "enum", "variant", "field", "function", "param", "generic", "trait",
         "impl", "const", "static", "alias", "type",
     ] {
-        assert!(counts.get(kind).copied().unwrap_or(0) > 0, "missing kind: {kind}");
+        assert!(
+            counts.get(kind).copied().unwrap_or(0) > 0,
+            "missing kind: {kind}"
+        );
     }
 
     assert_eq!(counts["module"], 1, "exactly one root module");
     assert_eq!(counts["trait"], 2, "Sized + Container");
     assert_eq!(counts["variant"], 2, "Ok + Err");
-    assert_eq!(counts["alias"], 2, "Container::Item (required) + impl Item = i32");
+    assert_eq!(
+        counts["alias"], 2,
+        "Container::Item (required) + impl Item = i32"
+    );
 }

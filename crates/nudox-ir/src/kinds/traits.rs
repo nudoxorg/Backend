@@ -8,10 +8,10 @@ use crate::{
 /// A trait, protocol, interface, or typeclass definition.
 ///
 /// Required and provided members — methods, associated types, and associated
-/// constants — are modelled as child entries ([`Function`](crate::kinds::Function),
-/// [`Alias`](crate::kinds::Alias), [`Const`](crate::kinds::Const)) reached
-/// through the owning entry's children, so the trait body itself only carries
-/// the cross-cutting header data.
+/// constants — are modelled as child entries
+/// ([`Function`](crate::kinds::Function), [`Alias`](crate::kinds::Alias),
+/// [`Const`](crate::kinds::Const)) reached through the owning entry's children,
+/// so the trait body itself only carries the cross-cutting header data.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Trait {
     /// Generic parameters and `where`-clause of the trait.
@@ -100,7 +100,8 @@ pub enum TraitAttribute {
     /// The trait is sealed (implementable only in its defining crate).
     Sealed,
 
-    /// A single-abstract-method / functional interface (Java `@FunctionalInterface`).
+    /// A single-abstract-method / functional interface (Java
+    /// `@FunctionalInterface`).
     Functional,
 }
 

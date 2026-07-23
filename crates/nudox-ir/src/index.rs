@@ -2,9 +2,9 @@ use std::{fmt, hash, marker::PhantomData, num::NonZeroUsize};
 
 use crate::kind::EntryKind;
 
-// An `EntryIndex` wraps a `NonZeroUsize` whose raw value (`bits`) encodes both a
-// table position (the low, "available" bits) and up to two reserved flag bits in
-// the high positions:
+// An `EntryIndex` wraps a `NonZeroUsize` whose raw value (`bits`) encodes both
+// a table position (the low, "available" bits) and up to two reserved flag bits
+// in the high positions:
 //   - bit N-1 (`IS_SERIALIZED_MASK`): set while the index is in serialized form
 //     (an export or import) and clear once resolved to an arena position.
 //   - bit N-2 (`IS_IMPORT_MASK`): distinguishes imports from exports.
@@ -94,7 +94,10 @@ impl<T> EntryIndex<T> {
         }
     }
 
-    #[expect(dead_code, reason = "consumed by the (not-yet-written) resolution pass")]
+    #[expect(
+        dead_code,
+        reason = "consumed by the (not-yet-written) resolution pass"
+    )]
     pub(super) fn is_resolved(self) -> bool {
         // resolved iff the serialized bit is _NOT_ set
         self.bits() & IS_SERIALIZED_MASK == 0

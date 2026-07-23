@@ -9,9 +9,9 @@ use crate::{
 
 /// A type expression.
 ///
-/// Structural forms nest other [`Type`] entries by [`EntryIndex`]; nominal forms
-/// point at the declaration that introduces the type. The variant set spans the
-/// Rust, C/C++, TypeScript, Java/C#, and ML-family type systems.
+/// Structural forms nest other [`Type`] entries by [`EntryIndex`]; nominal
+/// forms point at the declaration that introduces the type. The variant set
+/// spans the Rust, C/C++, TypeScript, Java/C#, and ML-family type systems.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Type {
     /// A nominal reference to a declaration, with generic arguments.
@@ -104,7 +104,8 @@ pub enum Type {
     /// A structural intersection (`Serializable & Cloneable`).
     Intersection(List<EntryIndex<Type>>),
 
-    /// A type-level operator (`keyof T`, `readonly T`, `typeof x`, `decltype(e)`).
+    /// A type-level operator (`keyof T`, `readonly T`, `typeof x`,
+    /// `decltype(e)`).
     Operator {
         op: TypeOperator,
         ty: EntryIndex<Type>,
@@ -219,7 +220,8 @@ pub enum PredicateSubject {
     Param(EntryIndex<Param>),
 }
 
-/// A language-level primitive (scalar) type, independent of target architecture.
+/// A language-level primitive (scalar) type, independent of target
+/// architecture.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Primitive {
     Integer {

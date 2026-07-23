@@ -12,7 +12,8 @@ pub struct Const {
     /// The declared type of the constant.
     pub ty: Option<EntryIndex<Type>>,
 
-    /// The initializer. `None` for a *required* associated const with no default.
+    /// The initializer. `None` for a *required* associated const with no
+    /// default.
     pub value: Option<ConstExpr>,
 }
 

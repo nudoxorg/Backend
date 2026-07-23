@@ -78,7 +78,8 @@ pub enum Receiver {
     /// Mutable reference (`&mut self`, Swift `mutating`).
     MutRef,
 
-    /// An arbitrary receiver type (Rust arbitrary self types, `self: Rc<Self>`).
+    /// An arbitrary receiver type (Rust arbitrary self types, `self:
+    /// Rc<Self>`).
     Arbitrary(EntryIndex<Type>),
 }
 

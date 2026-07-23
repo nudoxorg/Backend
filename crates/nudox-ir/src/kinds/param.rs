@@ -5,11 +5,12 @@ use crate::{
     visitor::Visitor,
 };
 
-/// A single value parameter of a [`Function`](crate::kinds::Function) or function
-/// type.
+/// A single value parameter of a [`Function`](crate::kinds::Function) or
+/// function type.
 ///
 /// The parameter's name lives on the owning [`Entry`](crate::entry::Entry)'s
-/// [`Symbol`](crate::entry::Symbol); this carries only the parameter-specific data.
+/// [`Symbol`](crate::entry::Symbol); this carries only the parameter-specific
+/// data.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Param {
     /// The declared type of the parameter, if present.

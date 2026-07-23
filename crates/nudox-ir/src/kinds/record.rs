@@ -7,8 +7,8 @@ use crate::{
 
 /// A product type: struct, class, record, data class, or object type.
 ///
-/// Inline methods, constructors, and nested items are modelled as child entries;
-/// this carries the record's fields, super-types, and generics.
+/// Inline methods, constructors, and nested items are modelled as child
+/// entries; this carries the record's fields, super-types, and generics.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Record {
     /// Generic parameters and `where`-clause of the record.

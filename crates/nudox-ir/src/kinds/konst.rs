@@ -16,7 +16,8 @@ pub enum ConstExpr {
     Int(i128),
 
     /// A floating-point literal, stored as its IEEE-754 bit pattern so the
-    /// expression tree stays `Eq`/`Hash`-able and lossless. See [`ConstExpr::float`].
+    /// expression tree stays `Eq`/`Hash`-able and lossless. See
+    /// [`ConstExpr::float`].
     Float(u64),
 
     /// A boolean literal.
@@ -25,8 +26,9 @@ pub enum ConstExpr {
     /// A string literal.
     Str(String),
 
-    /// A resolved reference to a named binding — a [`Const`](crate::kinds::Const)
-    /// or a const [`Generic`](crate::kinds::Generic) parameter.
+    /// A resolved reference to a named binding — a
+    /// [`Const`](crate::kinds::Const) or a const
+    /// [`Generic`](crate::kinds::Generic) parameter.
     Path(UntypedEntryIndex),
 
     /// An as-yet-unresolved named binding (e.g. `MAX`, `N`).
@@ -46,10 +48,7 @@ pub enum ConstExpr {
     },
 
     /// A const function / intrinsic call (`size_of::<T>()`, `min(A, B)`).
-    Call {
-        func: String,
-        args: List<ConstExpr>,
-    },
+    Call { func: String, args: List<ConstExpr> },
 
     /// A type ascription used in dependent contexts (`(expr : Ty)`).
     Ascription {
