@@ -83,9 +83,7 @@ fn builds_and_wires_every_kind() {
 
         // A sum type `enum Shape { Unit }`.
         root.create(id(), sym("Shape"), |mut en| {
-            let unit = en.create(id(), sym("Unit"), |_| {
-                Variant::builder().fields([]).build()
-            });
+            let unit = en.create(id(), sym("Unit"), |_| Variant::builder().fields([]).build());
 
             Enum::builder().variants([unit]).build()
         });

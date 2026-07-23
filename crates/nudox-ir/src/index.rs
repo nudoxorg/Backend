@@ -5,9 +5,9 @@ use crate::kind::EntryKind;
 // FIXME: NonZeroUsize handling needs to be carefully considered wrt the bit
 // checks we do, and needs plenty of tests
 //
-// FIXME(reserved-bits): the first end-to-end exercise of the builder export path
-// (`package::tests::builds_and_wires_every_kind`, currently `#[ignore]`d) surfaces
-// three concrete bugs in this module that no prior code hit:
+// FIXME(reserved-bits): the first end-to-end exercise of the builder export
+// path (`package::tests::builds_and_wires_every_kind`, currently `#[ignore]`d)
+// surfaces three concrete bugs in this module that no prior code hit:
 //   1. The "no reserved bits set" asserts use `index | MASK == index`, which is
 //      only ever true when *all* available bits are already set. It should be
 //      `index & !MASK == 0` (equivalently `index & MASK == index`). Affects
@@ -19,8 +19,8 @@ use crate::kind::EntryKind;
 //   3. `index()` conflates the raw stored logical value with a resolved arena
 //      position; the raw-bit accessors need to read `self.index.get() - 1`
 //      directly rather than through the resolved-only `index()`.
-// Fixing these is a focused index-module change with its own tests, deliberately
-// kept out of the Kind-variants work.
+// Fixing these is a focused index-module change with its own tests,
+// deliberately kept out of the Kind-variants work.
 
 #[repr(transparent)]
 pub struct EntryIndex<T> {

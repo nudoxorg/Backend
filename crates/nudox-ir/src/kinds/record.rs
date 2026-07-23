@@ -58,7 +58,11 @@ impl Field {
         ty: Option<EntryIndex<Type>>,
         #[builder(with = FromIterator::from_iter)] attributes: List<FieldAttribute>,
     ) -> Self {
-        Field { key, ty, attributes }
+        Field {
+            key,
+            ty,
+            attributes,
+        }
     }
 }
 
