@@ -31,6 +31,10 @@ impl Entry {
         &self.node.children
     }
 
+    pub fn kind(&self) -> &EntryInner {
+        &self.kind
+    }
+
     pub(crate) const fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
         Self {
             sym,

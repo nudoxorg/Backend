@@ -88,9 +88,7 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
 
         let mut children = Vec::new();
 
-        let idx = id
-            .map(|id| ir.info.create_export(id))
-            .unwrap_or(ir.info.root_export());
+        let idx = id.map_or(ir.info.root_export(), |id| ir.info.create_export(id));
 
         let kind = build(EntryBuilder {
             ir,
