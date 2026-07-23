@@ -2,6 +2,16 @@ use std::any::Any;
 
 use crate::{kinds::*, visitor::Visitor};
 
+// FIXME(deferred-kinds): the following Kinds from the old `ir/` tree are not yet
+// ported, deliberately, to keep this pass focused:
+//   - Trait / Impl  — depend on the generics + constraints subsystem, which is
+//                      intentionally cut for now (see the generics FIXMEs).
+//   - Const / Static — trivial to add once the const-expression subsystem for
+//                      their initializers exists.
+//   - Alias (TypeAlias), Macro, Event — pending a decision on whether each earns
+//                      a distinct Kind or folds into an existing one.
+// Re-exports (old `Reexport`) are already modelled by `EntryInner::Reference`,
+// not a Kind.
 register_kinds! {
     /// A namespace, package, or module — a container for other entries.
     Module,
