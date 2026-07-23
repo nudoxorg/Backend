@@ -6,15 +6,26 @@ use crate::kind::EntryKind;
 // checks we do, and needs plenty of tests
 
 #[repr(transparent)]
-pub struct EntryIndex<T> {
+pub struct EntryIndex<T: Indexable> {
     index: NonZeroUsize,
     _p: PhantomData<fn() -> T>,
 }
 
 pub type UntypedEntryIndex = EntryIndex<private::UntypedMarker>;
 
+pub trait Indexable: private::Sealed {}
+
+impl<T: EntryKind> Indexable for T {}
+impl Indexable for private::UntypedMarker {}
+
 mod private {
     pub struct UntypedMarker;
+
+    pub trait Sealed {}
+
+    impl<T: super::EntryKind> Sealed for T {}
+
+    impl Sealed for UntypedMarker {}
 }
 
 // we reserve 2 bits for serialized indices.
@@ -34,7 +45,7 @@ const IS_IMPORT_MASK: usize = 1 << (usize::BITS - 2);
 const INDEX_RES_RESERVED_BITS: u32 = 1;
 const INDEX_RES_AVAILABLE_MASK: usize = !(usize::MAX << (usize::BITS - INDEX_RES_RESERVED_BITS));
 
-impl<T> EntryIndex<T> {
+impl<T: Indexable> EntryIndex<T> {
     pub(super) fn resolved(index: usize) -> Self {
         debug_assert_eq!(
             index | INDEX_RES_AVAILABLE_MASK,
@@ -111,12 +122,12 @@ impl<T> EntryIndex<T> {
         self.cast()
     }
 
-    pub(crate) fn cast_mut<U>(&mut self) -> &mut EntryIndex<U> {
+    pub(crate) fn cast_mut<U: Indexable>(&mut self) -> &mut EntryIndex<U> {
         // Safety: repr(transparent)
         unsafe { &mut *std::ptr::from_mut(self).cast() }
     }
 
-    pub(super) fn cast<U>(self) -> EntryIndex<U> {
+    pub(super) fn cast<U: Indexable>(self) -> EntryIndex<U> {
         EntryIndex {
             index: self.index,
             _p: PhantomData,
@@ -124,7 +135,7 @@ impl<T> EntryIndex<T> {
     }
 }
 
-impl<T> serde::Serialize for EntryIndex<T> {
+impl<T: Indexable> serde::Serialize for EntryIndex<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -141,7 +152,7 @@ impl<T> serde::Serialize for EntryIndex<T> {
     }
 }
 
-impl<'de, T> serde::Deserialize<'de> for EntryIndex<T> {
+impl<'de, T: Indexable> serde::Deserialize<'de> for EntryIndex<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -162,41 +173,41 @@ impl<'de, T> serde::Deserialize<'de> for EntryIndex<T> {
     }
 }
 
-impl<T> Clone for EntryIndex<T> {
+impl<T: Indexable> Clone for EntryIndex<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Copy for EntryIndex<T> {}
+impl<T: Indexable> Copy for EntryIndex<T> {}
 
-impl<T> fmt::Debug for EntryIndex<T> {
+impl<T: Indexable> fmt::Debug for EntryIndex<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("EntryIdx").field(&self.index).finish()
     }
 }
 
-impl<T> PartialEq for EntryIndex<T> {
+impl<T: Indexable> PartialEq for EntryIndex<T> {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index
     }
 }
 
-impl<T> Eq for EntryIndex<T> {}
+impl<T: Indexable> Eq for EntryIndex<T> {}
 
-impl<T> PartialOrd for EntryIndex<T> {
+impl<T: Indexable> PartialOrd for EntryIndex<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<T> Ord for EntryIndex<T> {
+impl<T: Indexable> Ord for EntryIndex<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         Ord::cmp(&self.index, &other.index)
     }
 }
 
-impl<T> hash::Hash for EntryIndex<T> {
+impl<T: Indexable> hash::Hash for EntryIndex<T> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.index.hash(state);
     }

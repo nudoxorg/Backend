@@ -1,4 +1,4 @@
-use crate::index::{EntryIndex, UntypedEntryIndex};
+use crate::index::{EntryIndex, Indexable, UntypedEntryIndex};
 
 // derive macro re-export
 pub(crate) use self::m::Visitor;
@@ -10,7 +10,7 @@ pub(crate) trait Visitor {
     fn visit_mut(&mut self, f: impl Fn(&mut UntypedEntryIndex));
 }
 
-impl<T> Visitor for EntryIndex<T> {
+impl<T: Indexable> Visitor for EntryIndex<T> {
     fn visit(&self, f: impl Fn(UntypedEntryIndex)) {
         f(self.raw());
     }
