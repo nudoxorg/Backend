@@ -17,5 +17,5 @@ pub use self::{
     param::{Param, ParamAttribute},
     record::{Field, FieldAttribute, FieldKey, Record},
     sum::{Enum, Variant},
-    ty::Type,
+    ty::{Primitive, Type, Width},
 };
