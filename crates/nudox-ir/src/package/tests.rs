@@ -14,6 +14,9 @@ fn sym(name: &str) -> Symbol {
         documentation: String::new(),
         source: PathBuf::new(),
         span: 0..0,
+        aliases: Vec::new().into(),
+        deprecation: None,
+        doc_links: Vec::new().into(),
     }
 }
 
