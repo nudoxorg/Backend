@@ -1,5 +1,6 @@
 //! Diagram rule: **qdrant semantic search is heavy and must be explicitly gated
-//! — never implicit.** The default search surface is tantivy text search.
+//! — never implicit.** The default plan is precise (literal); semantic only
+//! runs under an issued gate.
 //!
 //! Specs for `driver::search::planner` + `registry::vector::SemanticGate`. The
 //! gate itself is type-enforced (`Semantic::search` consumes a `SemanticGate`
@@ -16,7 +17,7 @@ use driver::search::SearchPlanner;
 use driver::search::planner::Plan;
 use driver::search::query::{AbstractQuery, Filter, Query, Search};
 
-/// A plain search request uses the precise (tantivy) surface, not qdrant.
+/// A plain search request uses the precise surface, not qdrant.
 ///
 /// Act: plan a default search (no semantic opt-in ⇒ a literal query).
 /// Assert: the plan is precise — no gate is minted, so the qdrant/embedder

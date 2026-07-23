@@ -46,8 +46,7 @@ impl LiteralQuery {
 				snippet: trimmed.chars().skip(position.saturating_sub(8)).take(32).collect(),
 			});
 		}
-		// Raw string, no tantivy-grammar escaping — the search path uses a
-		// hand-built BooleanQuery tree that never passes text to QueryParser.
+		// Raw string kept as-is — no query-grammar escaping on this path.
 		Ok(Self(trimmed.to_owned()))
 	}
 

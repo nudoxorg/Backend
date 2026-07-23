@@ -213,11 +213,14 @@ pub struct Endpoints {
 	pub catalog_directory: std::path::PathBuf,
 	/// The object-store base (S3/GCS/local) for content-addressed blobs.
 	pub object_store: Url,
-	/// The embedding endpoint (OpenAI-compatible `/v1/embeddings` shape) the
-	/// gated semantic path embeds queries against.
+	/// The embedding endpoint the gated semantic path embeds queries against.
+	/// Accepts either the full OpenAI-compatible path (`…/v1/embeddings`) or
+	/// the base (`…/v1`); the driver drives it through [`embedrs`]
+	/// (`openai_compatible`), which posts to `{base}/embeddings`.
 	#[serde(default = "defaults::embeddings")]
 	pub embeddings: Url,
 	/// The bearer token presented to the embedding endpoint, if it wants one.
+	/// Optional for local servers (ollama/TEI) that ignore Authorization.
 	#[serde(default, with = "optional_secret")]
 	pub embeddings_api_key: Option<SecretString>,
 }
@@ -404,9 +407,6 @@ impl SourceConfig {
 			.clone()
 			.unwrap_or_else(|| std::env::temp_dir().join("nudox").join(self.name.as_str()))
 	}
-
-	/// This source's replica-local tantivy *symbol* index directory.
-	pub fn text_index_directory(&self) -> PathBuf { self.data_directory().join("text") }
 
 	/// This source's replica-local tantivy *package* index directory.
 	pub fn package_index_directory(&self) -> PathBuf { self.data_directory().join("packages") }

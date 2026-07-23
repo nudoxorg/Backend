@@ -71,14 +71,19 @@ hyper      = { version = "0.14" }
 # ── HTTP client (reqwest) ─────────────────────────────────────────────────────
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# ── Embeddings (unified cloud + compatible OpenAI wire) ───────────────────────
+# Replaces the hand-rolled OpenAI `/v1/embeddings` client in
+# `search::semantic::embedder`. Cloud providers + OpenAI-compatible local
+# servers (ollama, vllm, TEI) through one interface; backoff/timeout/batch
+# chunking come free. `local` (candle MiniLM) is not enabled — durable
+# vectors stay on the branded model endpoint / ONNX path.
+embedrs = { version = "0.4", features = ["tracing"] }
+
 # ── Object store ──────────────────────────────────────────────────────────────
 object_store = { version = "0.11" }
 
 # ── Vector store ──────────────────────────────────────────────────────────────
 qdrant-client = "1.18"
-
-# ── Full-text search ──────────────────────────────────────────────────────────
-tantivy = "0.22"
 
 # ── Serialization ─────────────────────────────────────────────────────────────
 serde      = { version = "1.0", features = ["derive"] }

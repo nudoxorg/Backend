@@ -1,6 +1,6 @@
 //! Shared fixtures for the server integration tests: symbol/package
-//! constructors, a populated replica-local text index, and the env-gated
-//! assembly of a full `Server` over live localhost backends.
+//! constructors and the env-gated assembly of a full `Server` over live
+//! localhost backends.
 #![allow(dead_code, reason = "each integration test binary uses its own subset")]
 
 #[allow(unused_imports)]
@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use heart::{EntryUri, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
-use registry::runtime::text::TextIndex;
 use driver::authz::{Principal, ReadCap, WriteCap};
 use heart::PageSpecification;
 use driver::search::query::{Filter, Query, Search};
@@ -60,14 +59,6 @@ pub fn absent_symbol_id() -> SymbolId {
     uri.symbol_id(TEST_INSTANCE)
 }
 
-/// A replica-local text index over `dir`, populated and committed.
-pub fn populated_text_index(dir: &Path, symbols: &[Symbol]) -> TextIndex {
-    let index = TextIndex::open_or_create(dir).expect("a fresh temp dir opens as an index");
-    index.upsert_batch(symbols).expect("fixture symbols index cleanly");
-    index.commit().expect("the fixture commit succeeds");
-    index
-}
-
 /// A test read capability — mints a read cap from the anonymous principal.
 pub fn read_cap<M: registry::vector::EmbeddingModel>(server: &Server<M>) -> ReadCap {
     server
@@ -98,7 +89,7 @@ pub fn page(limit: u32) -> PageSpecification {
     PageSpecification { limit, cursor: None }
 }
 
-/// A unique temporary directory removed on drop (for tantivy replicas and
+/// A unique temporary directory removed on drop (for package-index replicas and
 /// per-test server data directories).
 pub struct TempDir {
     path: PathBuf,

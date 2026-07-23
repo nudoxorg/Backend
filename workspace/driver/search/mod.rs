@@ -4,13 +4,17 @@
 //! [`Search`] with a *stream* of [`Scored`] hits (never a materialized `Vec`);
 //! a [`SymbolStore`] additionally walks graph relationships. Streams are
 //! keyset-paginated via the query's [`query::Page`] cursor.
+//!
+//! Precise (literal) symbol search used to ride a replica-local tantivy
+//! `TextIndex`. That plane is gone: literal queries answer empty, identity
+//! lookup is pending a catalog `symbols_proj` read, and gated semantic search
+//! (qdrant) remains the live symbol surface.
 
 pub mod planner;
 pub mod query;
 pub mod registry;
 pub mod routing;
 pub mod semantic;
-pub mod symbols;
 
 use std::collections::HashSet;
 
@@ -22,8 +26,7 @@ pub use planner::SearchPlanner;
 pub use query::{AbstractQuery, Filter, Query, Search, SymbolCursor};
 
 use crate::SourceStores;
-use crate::error::{BadRequestReason, ServerError, ServerResult};
-use crate::search::symbols::SymbolTextSurface;
+use crate::error::ServerError;
 
 /// A store/target that answers searches with a stream of scored results.
 pub trait SearchTarget {
@@ -85,14 +88,20 @@ where
 
 impl<M: EmbeddingModel> SourceStores<M> {
 	/// Look one symbol up by its durable id within this source.
-	pub async fn symbol_by_id(&self, id: SymbolId) -> ServerResult<Option<Symbol>> {
-		SymbolTextSurface::over(&self.text).find(id).await
+	///
+	/// Symbol identity used to be answered by the replica-local tantivy text
+	/// index. That plane is removed; catalog `symbols_proj` lookup is the
+	/// intended replacement and is not wired yet. Callers (resolve, semantic
+	/// hydrate) honestly get `None` rather than a wrong hit from a dead index.
+	pub async fn symbol_by_id(&self, _id: SymbolId) -> Result<Option<Symbol>, ServerError> {
+		Ok(None)
 	}
 }
 
-// ── One federated source is itself a full symbol store: precise search over its
-// text index, identity lookup, and graph walking. The server's federation logic
-// composes these per-source stores overlay-first.
+// ── One federated source is itself a full symbol store: identity lookup and
+// graph walking. Literal/precise search no longer has a backend; the server's
+// federation logic still composes these per-source stores overlay-first so the
+// semantic path and expand keep a uniform shape.
 
 impl<M: EmbeddingModel> SearchTarget for SourceStores<M> {
 	type Item = Symbol;
@@ -100,18 +109,12 @@ impl<M: EmbeddingModel> SearchTarget for SourceStores<M> {
 
 	async fn search(
 		&self,
-		request: &Search<'_>,
+		_request: &Search<'_>,
 	) -> Result<impl Stream<Item = Result<Scored<Symbol>, ServerError>> + Send, ServerError> {
-		// Whatever surface the request planned for, *this* target is the precise
-		// one: an abstract query degrades to its raw text here.
-		let literal = match &request.query {
-			Query::Literal(literal) => literal.clone(),
-			Query::Abstract(query) => query::LiteralQuery::parse(query.text())
-				.map_err(BadRequestReason::from)?,
-		};
-		let surface = SymbolTextSurface::over(&self.text);
-		let hits = surface.collect(&literal, &request.page, &request.filter).await?;
-		Ok(futures::stream::iter(hits.into_iter().map(Ok)))
+		// Precise symbol search (tantivy TextIndex) was removed. Literal queries
+		// and degraded abstract queries answer empty here; gated semantic search
+		// is planned separately and never reaches this arm.
+		Ok(futures::stream::empty())
 	}
 
 	async fn get_by_id(&self, id: SymbolId) -> Result<Option<Symbol>, ServerError> {

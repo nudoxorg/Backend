@@ -61,8 +61,9 @@ impl<M: EmbeddingModel> Server<M> {
 
 	fn planner(&self) -> &crate::search::SearchPlanner { &self.planner }
 
-	/// The precise (tantivy) arm: query every source's text surface, merge
-	/// overlay-over-base, rank by score, bound by the requested page.
+	/// The precise arm: once backed by replica-local symbol tantivy; that plane
+	/// is gone, so this merges empty per-source pages (still federation-shaped
+	/// for when a catalog/IR name surface lands).
 	async fn precise_hits(&self, request: &Search<'_>) -> Result<Vec<Scored<Symbol>>, ServerError> {
 		let mut groups = Vec::new();
 		for sourced in self.federation().in_precedence() {

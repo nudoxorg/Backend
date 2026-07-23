@@ -1,5 +1,6 @@
-//! Read handlers: precise symbol search (default), gated semantic search,
-//! package search, usage lookup, and graph expand.
+//! Read handlers: symbol search (gated semantic is the live path; precise
+//! answers empty after the symbol-tantivy drop), package search, usage lookup,
+//! and graph expand.
 //!
 //! Every read handler deserializes the one query algebra
 //! ([`heart::query::Query`]) directly — the wire *is* the domain (INDEX-PLAN

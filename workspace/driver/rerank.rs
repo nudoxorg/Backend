@@ -2,8 +2,9 @@
 //!
 //! This pass does **not** self-host the cross-encoder: the default
 //! implementation, [`HttpProxyReranker`], forwards to a configured external
-//! rerank endpoint — the exact mirror of the [`HttpEmbedder`] pattern (typed
-//! client, OpenAI/TEI-style wire shape, optional bearer token, hard timeout).
+//! rerank endpoint — the mirror of the embedder pattern (typed client,
+//! OpenAI/TEI-style wire shape, optional bearer token, hard timeout). The
+//! embedder itself now rides [`embedrs`]; this proxy is still hand-rolled.
 //!
 //! # Latency budget (§20.7 / §20.9)
 //!

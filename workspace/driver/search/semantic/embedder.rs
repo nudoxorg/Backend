@@ -1,121 +1,102 @@
-//! The concrete query embedder: an OpenAI-compatible `/v1/embeddings` HTTP
-//! client, branded with the compiled-in model `M` so its vectors can only feed
-//! a store of the same model.
+//! The concrete query/document embedder: [`embedrs`] over an OpenAI-compatible
+//! (or hosted) embeddings endpoint, branded with the compiled-in model `M` so
+//! its vectors can only feed a store of the same model.
+//!
+//! Config still names a full embeddings URL (`…/v1/embeddings`) plus optional
+//! bearer token; we strip the trailing `/embeddings` segment for
+//! [`embedrs::Client::openai_compatible`], which posts to `{base}/embeddings`.
 
 #[allow(unused_imports)]
 use crate::{registry};
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use embedrs::{BackoffConfig, Client as EmbedrsClient, InputType};
 use registry::vector::{
 	AccelKind, EmbedError, EmbedRole, EmbedRuntimeInfo, Embedder, Embedding, EmbeddingModel, ModelId,
 };
 use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
 use url::Url;
 
 /// How long one embedding round-trip may take before it is a timeout.
 const EMBEDDING_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How many texts this client will accept in one `embed_batch` round-trip. The
-/// OpenAI-compatible wire has no hard ceiling; this is a self-imposed batching
-/// hint surfaced through [`EmbedRuntimeInfo`].
+/// How many texts this client will accept in one `embed_batch` round-trip.
+/// Surfaced through [`EmbedRuntimeInfo`]; embedrs chunks to the provider's own
+/// max when the batch is larger.
 const MAX_BATCH: usize = 512;
 
 /// A conservative input-window hint for the runtime self-description. The HTTP
 /// backend enforces its own real limit server-side; this is only advisory.
 const MAX_SEQ_LEN: usize = 8192;
 
-/// An embedder speaking the ubiquitous OpenAI embeddings wire shape
-/// (`{"model": ..., "input": [...]}` → `{"data": [{"embedding": [...]}, ...]}`),
-/// which local servers (ollama, vllm, TEI) and the hosted APIs all serve.
+/// An embedder speaking the ubiquitous OpenAI embeddings wire shape via
+/// [`embedrs`], which local servers (ollama, vllm, TEI) and hosted APIs all
+/// serve. Branded with `M` so dimension + model-id mismatches fail at the
+/// [`Embedding::from_vec`] boundary.
 pub struct HttpEmbedder<M: EmbeddingModel> {
-	client: reqwest::Client,
-	endpoint: Url,
-	api_key: Option<SecretString>,
+	client: EmbedrsClient,
 	model: ModelId,
 	_brand: PhantomData<fn() -> M>,
 }
 
 impl<M: EmbeddingModel> HttpEmbedder<M> {
 	/// Configure an embedder against an endpoint (and optional bearer token).
+	///
+	/// `endpoint` may be either the full embeddings URL (`…/v1/embeddings`) or
+	/// the OpenAI-style base (`…/v1`); both resolve to the same embedrs base.
 	pub fn new(endpoint: Url, api_key: Option<SecretString>) -> Self {
+		let base_url = openai_compatible_base(&endpoint);
+		// embedrs always installs a Bearer header; empty string is fine for
+		// local servers that ignore Authorization (e.g. stock ollama).
+		let key = api_key
+			.as_ref()
+			.map(|k| k.expose_secret().to_owned())
+			.unwrap_or_default();
+
+		let client = EmbedrsClient::openai_compatible(key, base_url)
+			.with_model(M::id().as_str().to_owned())
+			.with_timeout(EMBEDDING_TIMEOUT)
+			// 429/503: exponential backoff (previous client failed immediately).
+			.with_retry_backoff(BackoffConfig::default());
+
 		Self {
-			client: reqwest::Client::new(),
-			endpoint,
-			api_key,
+			client,
 			model: M::id(),
 			_brand: PhantomData,
 		}
 	}
 
-	/// One wire round-trip for a batch of inputs, positionally aligned.
-	///
-	/// The new vector plane's [`EmbedError`] carries a single `Backend(String)`
-	/// escape hatch rather than a rich rejection taxonomy, so transport, HTTP,
-	/// and decode failures are all surfaced through it with a message that names
-	/// what went wrong (the detail is preserved in the string, never lost).
-	async fn request(&self, texts: &[&str]) -> Result<Vec<Embedding<M>>, EmbedError> {
-		let payload = serde_json::json!({
-			"model": self.model.as_str(),
-			"input": texts,
-		});
-		let body = serde_json::to_vec(&payload)
-			.map_err(|error| EmbedError::Backend(format!("request serialization failed: {error}")))?;
+	/// One embedrs round-trip for a batch of inputs, positionally aligned.
+	async fn request(
+		&self,
+		texts: &[&str],
+		role: EmbedRole,
+	) -> Result<Vec<Embedding<M>>, EmbedError> {
+		let owned: Vec<String> = texts.iter().map(|t| (*t).to_owned()).collect();
+		let input_type = role_to_input_type(role);
 
-		let mut request = self
+		let result = self
 			.client
-			.post(self.endpoint.clone())
-			.header("content-type", "application/json")
-			.timeout(EMBEDDING_TIMEOUT)
-			.body(body);
-		if let Some(api_key) = &self.api_key {
-			request = request.bearer_auth(api_key.expose_secret());
-		}
-
-		let response = request
-			.send()
+			.embed(owned)
+			.input_type(input_type)
 			.await
-			.map_err(|error| EmbedError::Backend(format!("embedding transport error: {error}")))?;
-		let status = response.status();
-		if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-			let retry_after = response
-				.headers()
-				.get("retry-after")
-				.and_then(|value| value.to_str().ok())
-				.unwrap_or("unspecified")
-				.to_owned();
-			return Err(EmbedError::Backend(format!(
-				"embedding backend rate-limited (retry-after: {retry_after})"
-			)));
-		}
-		if !status.is_success() {
-			let message = response.text().await.unwrap_or_default();
-			let body: String = message.chars().take(512).collect();
-			return Err(EmbedError::Backend(format!(
-				"embedding provider returned {status}: {body}"
-			)));
-		}
+			.map_err(map_embedrs_error)?;
 
-		let bytes = response
-			.bytes()
-			.await
-			.map_err(|error| EmbedError::Backend(format!("embedding transport error: {error}")))?;
-		let decoded: WireResponse = serde_json::from_slice(&bytes)
-			.map_err(|error| EmbedError::Backend(format!("malformed embedding response: {error}")))?;
-		if decoded.data.len() != texts.len() {
+		if result.embeddings.len() != texts.len() {
 			return Err(EmbedError::Backend(format!(
 				"embedding batch size mismatch: expected {}, received {}",
 				texts.len(),
-				decoded.data.len()
+				result.embeddings.len()
 			)));
 		}
-		// `Embedding::from_vec` validates exact dimension + finiteness against the
-		// brand `M`, so a wrong-length or NaN row is rejected at this boundary.
-		decoded
-			.data
+
+		// `Embedding::from_vec` validates exact dimension + finiteness against
+		// the brand `M`, so a wrong-length or NaN row is rejected here.
+		result
+			.embeddings
 			.into_iter()
-			.map(|row| Embedding::from_vec(row.embedding))
+			.map(Embedding::from_vec)
 			.collect()
 	}
 }
@@ -136,14 +117,11 @@ impl<M: EmbeddingModel> Embedder for HttpEmbedder<M> {
 		texts: &[&str],
 		role: EmbedRole,
 	) -> Result<Vec<Embedding<M>>, EmbedError> {
-		// OpenAI-compatible endpoints do not distinguish query vs document role;
-		// `role` is accepted for interface uniformity but not sent on the wire.
-		// It is traced here so callers can audit what role was intended.
 		tracing::trace!(count = texts.len(), ?role, model = %self.model, "embedding batch");
 		if texts.is_empty() {
 			return Ok(Vec::new());
 		}
-		self.request(texts).await
+		self.request(texts, role).await
 	}
 
 	/// This is a *network* embedder: its output is not the bit-canonical int8
@@ -156,18 +134,83 @@ impl<M: EmbeddingModel> Embedder for HttpEmbedder<M> {
 			max_batch: MAX_BATCH,
 			max_seq_len: MAX_SEQ_LEN,
 			weights_sha256: None,
-			ort_package_id: "http-openai-embeddings".into(),
+			ort_package_id: "embedrs-openai-compatible".into(),
 		}
 	}
 }
 
-/// The subset of the OpenAI embeddings response the server reads.
-#[derive(Deserialize)]
-struct WireResponse {
-	data: Vec<WireEmbedding>,
+/// Map our retrieval-asymmetry role onto embedrs' input-type hint. Providers
+/// that ignore the field (plain OpenAI-compatible) no-op; Voyage/Jina/Cohere
+/// honoring it keeps query vs document encoding correct when the same client
+/// is pointed at those APIs.
+fn role_to_input_type(role: EmbedRole) -> InputType {
+	match role {
+		EmbedRole::Query => InputType::SearchQuery,
+		EmbedRole::Document => InputType::SearchDocument,
+	}
 }
 
-#[derive(Deserialize)]
-struct WireEmbedding {
-	embedding: Vec<f32>,
+/// Convert a configured embeddings URL into the base embedrs expects
+/// (`{base}/embeddings` is the POST path). Accepts both the full path and the
+/// already-stripped base so operators can write either.
+fn openai_compatible_base(endpoint: &Url) -> String {
+	let s = endpoint.as_str().trim_end_matches('/');
+	s.strip_suffix("/embeddings")
+		.map(|base| base.trim_end_matches('/').to_owned())
+		.unwrap_or_else(|| s.to_owned())
+}
+
+/// Fold embedrs errors into the plane's single `Backend(String)` escape hatch,
+/// preserving the detail that matters for ops (status, timeout, transport).
+fn map_embedrs_error(error: embedrs::Error) -> EmbedError {
+	let message = match &error {
+		embedrs::Error::Api { status, message, .. } => {
+			let body: String = message.chars().take(512).collect();
+			if *status == 429 {
+				format!("embedding backend rate-limited (HTTP 429): {body}")
+			} else {
+				format!("embedding provider returned {status}: {body}")
+			}
+		}
+		embedrs::Error::Timeout(duration) => {
+			format!("embedding transport timeout after {duration:?}")
+		}
+		embedrs::Error::Http(inner) => format!("embedding transport error: {inner}"),
+		embedrs::Error::Json(inner) => format!("malformed embedding response: {inner}"),
+		embedrs::Error::InputTooLarge(size, max) => {
+			format!("embedding batch too large: {size} texts (provider max {max})")
+		}
+		other => format!("embedding backend error: {other}"),
+	};
+	EmbedError::Backend(message)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn strips_embeddings_suffix() {
+		let full = Url::parse("http://127.0.0.1:11434/v1/embeddings").unwrap();
+		assert_eq!(openai_compatible_base(&full), "http://127.0.0.1:11434/v1");
+
+		let with_slash = Url::parse("http://127.0.0.1:11434/v1/embeddings/").unwrap();
+		// Url::as_str keeps trailing slash only when present in input path; trim handles both.
+		assert_eq!(openai_compatible_base(&with_slash), "http://127.0.0.1:11434/v1");
+	}
+
+	#[test]
+	fn leaves_base_url_alone() {
+		let base = Url::parse("http://127.0.0.1:11434/v1").unwrap();
+		assert_eq!(openai_compatible_base(&base), "http://127.0.0.1:11434/v1");
+	}
+
+	#[test]
+	fn role_mapping_is_asymmetric() {
+		assert!(matches!(role_to_input_type(EmbedRole::Query), InputType::SearchQuery));
+		assert!(matches!(
+			role_to_input_type(EmbedRole::Document),
+			InputType::SearchDocument
+		));
+	}
 }

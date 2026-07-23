@@ -1,6 +1,6 @@
 //! Diagram flow: **indexing** (`driver::coordination::indexing`).
 //!
-//! "runs computer · update catalog (tantivy polls) · generate blob information".
+//! "runs computer · update catalog (package index polls) · generate blob information".
 //!
 //! These drive one real indexing job end to end (acquire → extract → compile →
 //! emit), so they need the live stack *and* network access to the package
@@ -65,15 +65,15 @@ async fn indexing_generates_blob_information() {
     assert_eq!(recomputed, snapshot, "blob info persisted content-addressed and reproducible");
 }
 
-/// Indexing updates catalog status; tantivy picks it up by polling.
+/// Indexing updates catalog status; the package index picks it up by polling.
 ///
 /// Assert: indexing writes status to the catalog (push) and appends a text-sink
-///   intent to the outbox — the tantivy replica *pulls* from that watermark,
-///   never receives a direct push.
+///   intent to the outbox — the package-index replica *pulls* from that
+///   watermark, never receives a direct push.
 #[tokio::test]
-async fn indexing_updates_catalog_and_tantivy_polls() {
+async fn indexing_updates_catalog_and_package_index_polls() {
     let Some((server, _data)) =
-        common::assembled_server("indexing_updates_catalog_and_tantivy_polls").await
+        common::assembled_server("indexing_updates_catalog_and_package_index_polls").await
     else {
         return;
     };
@@ -85,7 +85,7 @@ async fn indexing_updates_catalog_and_tantivy_polls() {
     assert!(matches!(state, Some(ResolutionState::Stored { .. })));
 
     // Pull half: the text sink's fan-out intent waits on the outbox for the
-    // replica-local poller — nothing wrote to tantivy directly.
+    // package-index poller — nothing wrote the package index directly.
     let intents = server
         .outbox()
         .read_since(SinkKind::Text, OutboxSeq(0), 1024)
@@ -93,7 +93,7 @@ async fn indexing_updates_catalog_and_tantivy_polls() {
         .expect("the outbox answers");
     assert!(
         intents.iter().any(|entry| entry.package == package),
-        "the emit phase left a text-sink intent for the poller to consume"
+        "the emit phase left a text-sink intent for the package-index poller"
     );
 }
 

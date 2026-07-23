@@ -145,28 +145,24 @@ async fn consume_once<M: EmbeddingModel>(
 ///
 /// **`Upsert`** — reads the package's symbol projection from the global index
 /// and writes it into the sink:
-/// - [`SinkKind::Text`] upserts symbols into the replica-local tantivy package
-///   index (upsert-by-id, the same write the text [`Poller`] performs);
+/// - [`SinkKind::Text`] is consumed by the package-index poller (replica-local
+///   package tantivy); the outbox consumer advances the watermark only;
 /// - [`SinkKind::Vector`] embeds each symbol and upserts a [`VectorPoint`] into
 ///   qdrant (keyed by a symbol-derived point id, so a re-embed replaces in place);
-/// - [`SinkKind::Graph`] writes the `Symbol` documents into terminus (keyed by
-///   `@id`, so a re-insert replaces in place).
+/// - [`SinkKind::Graph`] is a no-op until the IR reverse-position index lands.
 ///
 /// **`Delete`** — removes the package's search projection from the sink.
 /// **Blob / CAS data is never touched** — the mirror keeps full history; only
 /// search visibility ends. Per sink:
-/// - [`SinkKind::Text`] issues a `delete_term` on the `package_id` field of
-///   the tantivy package index, then commits;
+/// - [`SinkKind::Text`] issues a `delete_term` on the package index, then commits;
 /// - [`SinkKind::Vector`] deletes all qdrant points whose payload
 ///   `package` field matches the package uuid;
-/// - [`SinkKind::Graph`] deletes all `Symbol` documents for this package via
-///   a WOQL triple-match + `DeleteDocument` query.
+/// - [`SinkKind::Graph`] nothing to tombstone yet.
 ///
 /// Every write is idempotent (upsert-by-id / replace-by-key / delete-missing-
 /// is-ok), so the outbox may re-deliver on crash without corrupting the
 /// projection.
 ///
-/// [`Poller`]: registry::runtime::text::Poller
 /// [`GlobalStore::symbols_for`]: registry::index::GlobalStore::symbols_for
 async fn materialize<M: EmbeddingModel>(
 	server: &Server<M>,
@@ -175,18 +171,23 @@ async fn materialize<M: EmbeddingModel>(
 ) -> ServerResult<()> {
 	match entry.op {
 		OutboxOp::Upsert => {
-			// The symbol projection is the shared input to every sink: read it
-			// once from the global index (mirrors the `upsert_symbol` write). An
+			// The symbol projection is the shared input to the vector sink. An
 			// intent for a package with no persisted symbols is a well-formed
-			// empty materialization.
-			let symbols = stores
-				.global_store
-				.symbols_for(entry.package)
-				.await
-				.map_err(crate::registry::RegistryError::from)?;
+			// empty materialization. Text-sink upserts are pulled by the
+			// package-index poller independently of this consumer.
+			let symbols = match entry.kind {
+				SinkKind::Vector => stores
+					.global_store
+					.symbols_for(entry.package)
+					.await
+					.map_err(crate::registry::RegistryError::from)?,
+				SinkKind::Text | SinkKind::Graph => Vec::new(),
+			};
 
 			match entry.kind {
-				SinkKind::Text => materialize_text(stores, &symbols)?,
+				// Package tantivy is kept current by `package_index_poller`,
+				// which reads the same Text-sink outbox under its own watermark.
+				SinkKind::Text => {}
 				SinkKind::Vector => {
 					materialize_vector(server.embedder(), server.embedding_cache(), stores, &symbols).await?
 				}
@@ -210,7 +211,7 @@ async fn materialize<M: EmbeddingModel>(
 			// Mirror tombstone: remove this package's search projection.
 			// Blob / CAS data is retained — mirror keeps full history.
 			match entry.kind {
-				SinkKind::Text => delete_text(stores, entry.package).await?,
+				SinkKind::Text => delete_package_from_index(stores, entry.package).await?,
 				SinkKind::Vector => delete_vector(stores, entry.package).await?,
 				// See the upsert arm: the graph/usage plane moved to the IR
 				// reverse index (Terminus removed); nothing to tombstone here yet.
@@ -226,24 +227,6 @@ async fn materialize<M: EmbeddingModel>(
 		}
 	}
 	Ok(())
-}
-
-/// Text sink: upsert the package's symbols into the replica-local tantivy index.
-/// Upsert-by-id and a single commit — exactly the write the text [`Poller`]
-/// performs, so replay is a no-op.
-///
-/// [`Poller`]: registry::runtime::text::Poller
-fn materialize_text<M: EmbeddingModel>(
-	stores: &SourceStores<M>,
-	symbols: &[heart::Symbol],
-) -> ServerResult<()> {
-	if symbols.is_empty() {
-		return Ok(());
-	}
-	stores
-		.text
-		.upsert_batch(symbols)
-		.map_err(|error| crate::error::ServerError::Runtime(error.into()))
 }
 
 /// Vector sink: embed each symbol's fully-qualified name (as code) and upsert a
@@ -298,9 +281,8 @@ async fn materialize_vector<M: EmbeddingModel>(
 // never touched — the mirror retains full history; only search visibility ends.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Text sink: remove the package document from the replica-local tantivy
-/// package index.
-async fn delete_text<M: EmbeddingModel>(
+/// Text sink: remove the package document from the replica-local package index.
+async fn delete_package_from_index<M: EmbeddingModel>(
 	stores: &SourceStores<M>,
 	package: PackageId,
 ) -> ServerResult<()> {
@@ -696,30 +678,4 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
 	}
 }
 
-/// Watch each source's text-sink watermark lag (outbox head minus consumed
-/// position) and surface it as a gauge, so a stalled text index is visible
-/// before users notice stale search.
-#[tracing::instrument(skip_all, name = "text_index_poller")]
-pub(crate) async fn text_index_poller<M: EmbeddingModel>(server: Arc<Server<M>>) {
-	let interval = server.config().limits.poll_interval;
-	loop {
-		for sourced in server.federation().in_precedence() {
-			let outbox = &sourced.value.outbox;
-			let lag = async {
-				let head = outbox.head(SinkKind::Text).await?;
-				let consumed = outbox.read_watermark(SinkKind::Text).await?;
-				Ok::<i64, crate::registry::error::OutboxError>((head.0 - consumed.0).max(0))
-			};
-			match lag.await {
-				Ok(pending) => {
-					metrics::gauge!("text_index_watermark_lag", "source" => sourced.source.to_string())
-						.set(pending as f64);
-				}
-				Err(error) => {
-					tracing::warn!(source = %sourced.source, error = %error, "text watermark poll failed");
-				}
-			}
-		}
-		tokio::time::sleep(interval).await;
-	}
-}
+

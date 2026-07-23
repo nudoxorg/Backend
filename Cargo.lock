@@ -2224,6 +2224,7 @@ dependencies = [
  "bytes",
  "chrono",
  "data-encoding",
+ "embedrs",
  "figment",
  "flate2",
  "futures",
@@ -2254,7 +2255,6 @@ dependencies = [
  "serde_json",
  "smol_str",
  "strum 0.26.3",
- "tantivy",
  "tar",
  "tempfile",
  "thiserror 1.0.69",
@@ -2394,6 +2394,22 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "embedrs"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f12e976d6f955f40bded50cc8022927e9c72161a2ce0f6aeeb9c622bc57ab57c"
+dependencies = [
+ "futures",
+ "rand 0.10.2",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "encode_unicode"
@@ -7490,6 +7506,7 @@ version = "0.11.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560"
 dependencies = [
+ "aws-lc-rs",
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
@@ -8035,9 +8052,12 @@ dependencies = [
  "log",
  "percent-encoding",
  "pin-project-lite",
+ "quinn",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

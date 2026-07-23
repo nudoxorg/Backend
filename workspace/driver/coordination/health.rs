@@ -65,12 +65,14 @@ impl<M: EmbeddingModel> Server<M> {
 }
 
 /// Probe one source's backends concurrently via [`Probeable`].
+///
+/// The replica-local package index is pure process-local state (opened at
+/// assemble); it is not a remote backend and is not probed here.
 async fn probe_source<M: EmbeddingModel>(stores: &SourceStores<M>) -> Vec<heart::Probe> {
-	let (catalog, object_store, qdrant, tantivy) = tokio::join!(
+	let (catalog, object_store, qdrant) = tokio::join!(
 		stores.global_store.probe(),
 		stores.blobs.probe(),
 		stores.semantics.probe(),
-		stores.text.probe(),
 	);
-	vec![catalog, object_store, qdrant, tantivy]
+	vec![catalog, object_store, qdrant]
 }

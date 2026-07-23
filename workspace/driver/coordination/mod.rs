@@ -2,7 +2,7 @@
 //!
 //! The durability model is **postgres-as-WAL + derived stores as pollers**: a
 //! publish is one postgres transaction (package row + parse-status + outbox
-//! entry); every derived store (qdrant/terminus/tantivy) is a poller with its
+//! entry); every derived store (qdrant / package-index / graph) is a poller with its
 //! own durable cursor. So the coordination layer here only ever *enqueues* and
 //! *records intents* — it never fans out synchronously, and a partial failure
 //! converges on retry rather than corrupting a subset of stores.

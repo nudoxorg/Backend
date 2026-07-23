@@ -48,7 +48,7 @@ pub mod registry {
 	// driver-locally — see `crate::ingest`.
 	pub use crate::ingest;
 
-	/// Runtime sub-facade: `index::runtime` (text/error) plus the driver-local
+	/// Runtime sub-facade: `index::runtime` error types plus the driver-local
 	/// `session` module (the exploration-graph semilattice that was NOT salvaged
 	/// into `index`; recovered here — see `crate::session`).
 	pub mod runtime {
@@ -120,7 +120,6 @@ use crate::registry::{
 	queue::{Queue, RetryPolicy},
 };
 use index::compiled::ObjectCompiledStore;
-use index::runtime::text::TextIndex;
 use crate::session::ScratchSessionStore;
 use crate::registry::vector::{EmbeddingCache, EmbeddingModel};
 use crate::vector::remote::store::{CollectionConfig, RemoteStore, ensure_collection};
@@ -168,9 +167,7 @@ pub struct SourceStores<M: EmbeddingModel> {
 	/// Semantic/vector store (qdrant): the remote index client, bound to the
 	/// collection schema for the compiled-in model brand `M`.
 	pub semantics: RemoteStore<M>,
-	/// Replica-local precise-search index (tantivy) for this source.
-	pub text: TextIndex,
-	/// Replica-local package-search index (tantivy over the postgres package
+	/// Replica-local package-search index (tantivy over the package catalog
 	/// projection), shared with the sync poller.
 	pub packages: Arc<PackageSearchIndex>,
 }
@@ -425,22 +422,14 @@ impl<M: EmbeddingModel> Driver<M> {
 		// The blob store still carries the `Connect` typestate; bring it up.
 		let blobs = blobs_cold.connect().await?;
 
-		// The text index is replica-local: opened/rebuilt from this source's
-		// persisted watermark, not "connected".
-		let text_dir: std::path::PathBuf = cfg.text_index_directory();
-		std::fs::create_dir_all(&text_dir)
-			.map_err(|error| ServerError::Runtime(registry::runtime::error::TextError::Io(error).into()))?;
-		let text =
-			TextIndex::open_or_create(&text_dir).map_err(|e| ServerError::Runtime(e.into()))?;
-
-		// So is the package-search index, fed by the sync poller off the
-		// catalog outbox feed.
+		// The package-search index is replica-local, fed by the sync poller off
+		// the catalog outbox feed.
 		let packages_dir = cfg.package_index_directory();
 		std::fs::create_dir_all(&packages_dir)
 			.map_err(|error| ServerError::Runtime(registry::runtime::error::TextError::Io(error).into()))?;
 		let packages = Arc::new(PackageSearchIndex::open(&packages_dir)?);
 
-		Ok(SourceStores { global_store, blobs, queue, outbox, semantics, text, packages })
+		Ok(SourceStores { global_store, blobs, queue, outbox, semantics, packages })
 	}
 
 	/// The resolved configuration.
@@ -470,9 +459,6 @@ impl<M: EmbeddingModel> Driver<M> {
 
 	/// The definitive base's semantic store handle.
 	pub fn semantics(&self) -> &RemoteStore<M> { &self.base().semantics }
-
-	/// The definitive base's text index.
-	pub fn text(&self) -> &TextIndex { &self.base().text }
 
 	/// The model-branded query embedder behind the gated semantic path — also the
 	/// embedder the vector fan-out consumer drives to materialize symbol points.
@@ -553,7 +539,6 @@ impl<M: EmbeddingModel> Driver<M> {
 			}
 			pollers.spawn(poll::package_index_poller(Arc::clone(&self)));
 			pollers.spawn(poll::package_signals_poller(Arc::clone(&self)));
-			pollers.spawn(poll::text_index_poller(Arc::clone(&self)));
 			// Storage reclamation (CAS GC): purge consumed outbox rows below every
 			// sink's watermark. The delete is idempotent, so overlapping replicas
 			// are harmless — no advisory lock needed. Blob GC is a documented TODO

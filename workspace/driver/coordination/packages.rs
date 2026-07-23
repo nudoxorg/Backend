@@ -6,7 +6,7 @@
 //! cursor.
 
 #[allow(unused_imports)]
-use crate::{registry};
+use crate::registry;
 use std::sync::Arc;
 
 use futures::TryStreamExt;
@@ -43,8 +43,9 @@ impl<M: EmbeddingModel> Server<M> {
         let page = &query.page;
         let limit = page_limit(page);
 
-        let execution_query =
-            ExecutionQuery::Literal(LiteralQuery::parse(&query.text).map_err(BadRequestReason::from)?);
+        let execution_query = ExecutionQuery::Literal(
+            LiteralQuery::parse(&query.text).map_err(BadRequestReason::from)?,
+        );
 
         // Package search scopes to at most one ecosystem for v1:
         // - empty `scope.ecosystems` → unscoped (all ecosystems; `lang:` tokens
@@ -75,9 +76,7 @@ impl<M: EmbeddingModel> Server<M> {
         let snapshot = self.base().packages.snapshot().await;
         let resumed: Vec<Scored<GlobalPackage>> = items
             .into_iter()
-            .filter(|hit| {
-                crate::registry::search::keyset_is_after(after, hit.score, hit.value.id)
-            })
+            .filter(|hit| crate::registry::search::keyset_is_after(after, hit.score, hit.value.id))
             .take(limit)
             .collect();
 
@@ -87,52 +86,10 @@ impl<M: EmbeddingModel> Server<M> {
             .map(|last| Cursor::<SearchKey>::new((last.score, last.value.id), snapshot).encode());
 
         tracing::debug!(hits = resumed.len(), "package search served");
-        Ok(Page { items: resumed, next })
-    }
-
-    /// Answer a `Target::Usages` query — every recorded use of one symbol, from
-    /// the reverse `occ` index ([`registry::graph::ReversePositionIndex`],
-    /// INDEX-PLAN §5.5). The caller must hold a [`ReadCap`].
-    ///
-    /// Delegates to the server's [`ReverseIndexUsageBackend`]. When an IR view +
-    /// reverse index are loaded for the queried package, this returns the real
-    /// paged uses; when none is loaded for the scope it returns the typed
-    /// `IndexUnavailable` (surfaced as `503`), never a `501` and never a fake
-    /// empty page — a client can tell "not materialized here yet" apart from
-    /// "this symbol genuinely has no uses" (a populated empty page).
-    pub async fn usages(
-        &self,
-        _cap: &ReadCap,
-        query: &WireQuery,
-    ) -> ServerResult<Page<Usage>> {
-        let heart::query::Target::Usages { of } = &query.target else {
-            // The router only dispatches `Target::Usages` here.
-            return Err(BadRequestReason::MissingField { field: "target.Usages.of" }.into());
-        };
-        self.usage_backend()
-            .usages(of, &query.page)
-            .map_err(ServerError::from)
-    }
-
-    /// Decode the opaque package-search resume token, if any, as its keyset.
-    ///
-    /// A malformed token is a typed client error; a token anchored to an older
-    /// snapshot is tolerated (the newer order is served), matching the symbol
-    /// paginator's defence-in-depth posture.
-    fn decode_package_cursor(
-        &self,
-        page: &PageSpecification,
-    ) -> ServerResult<Option<SearchKey>> {
-        let Some(token) = page.cursor.as_deref() else {
-            return Ok(None);
-        };
-        let cursor = Cursor::<SearchKey>::decode(token).map_err(|source| {
-            ServerError::from(BadRequestReason::InvalidCursor {
-                token: token.to_owned(),
-                source,
-            })
-        })?;
-        Ok(Some(cursor.after))
+        Ok(Page {
+            items: resumed,
+            next,
+        })
     }
 }
 
