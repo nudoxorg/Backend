@@ -19,13 +19,7 @@ fn sym(name: &str) -> Symbol {
 
 /// Build a package exercising every fleshed-out Kind and its builder, then walk
 /// it back out to assert the graph wired up as expected.
-///
-/// This compiles — proving every Kind builder composes through `EntryBuilder` —
-/// but is `#[ignore]`d at runtime because it is the first code to ever exercise
-/// the `EntryIndex` export path, which surfaces three pre-existing bugs in the
-/// reserved-bit logic (see the FIXME in `index.rs`). Un-ignore once that lands.
 #[test]
-#[ignore = "blocked on pre-existing EntryIndex reserved-bit bugs; see index.rs FIXME"]
 fn builds_and_wires_every_kind() {
     let mut next_id = 0usize;
     let mut id = || {

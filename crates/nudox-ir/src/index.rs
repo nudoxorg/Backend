@@ -2,25 +2,13 @@ use std::{fmt, hash, marker::PhantomData, num::NonZeroUsize};
 
 use crate::kind::EntryKind;
 
-// FIXME: NonZeroUsize handling needs to be carefully considered wrt the bit
-// checks we do, and needs plenty of tests
-//
-// FIXME(reserved-bits): the first end-to-end exercise of the builder export
-// path (`package::tests::builds_and_wires_every_kind`, currently `#[ignore]`d)
-// surfaces three concrete bugs in this module that no prior code hit:
-//   1. The "no reserved bits set" asserts use `index | MASK == index`, which is
-//      only ever true when *all* available bits are already set. It should be
-//      `index & !MASK == 0` (equivalently `index & MASK == index`). Affects
-//      `resolved`, `export`, and `import`.
-//   2. `index()` `debug_assert!`s `is_resolved()`, but `is_resolved()`,
-//      `is_serialize()`, and `is_import()` all call `index()` — infinite
-//      recursion in debug builds, and the assert also wrongly fires for
-//      legitimately-serialized (export/import) indices.
-//   3. `index()` conflates the raw stored logical value with a resolved arena
-//      position; the raw-bit accessors need to read `self.index.get() - 1`
-//      directly rather than through the resolved-only `index()`.
-// Fixing these is a focused index-module change with its own tests,
-// deliberately kept out of the Kind-variants work.
+// An `EntryIndex` wraps a `NonZeroUsize` whose raw value (`bits`) encodes both a
+// table position (the low, "available" bits) and up to two reserved flag bits in
+// the high positions:
+//   - bit N-1 (`IS_SERIALIZED_MASK`): set while the index is in serialized form
+//     (an export or import) and clear once resolved to an arena position.
+//   - bit N-2 (`IS_IMPORT_MASK`): distinguishes imports from exports.
+// The stored `NonZeroUsize` is `bits + 1`, so position 0 is representable.
 
 #[repr(transparent)]
 pub struct EntryIndex<T> {
@@ -54,7 +42,7 @@ const INDEX_RES_AVAILABLE_MASK: usize = !(usize::MAX << (usize::BITS - INDEX_RES
 impl<T> EntryIndex<T> {
     pub(super) fn resolved(index: usize) -> Self {
         debug_assert_eq!(
-            index | INDEX_RES_AVAILABLE_MASK,
+            index & INDEX_RES_AVAILABLE_MASK,
             index,
             "creating resolved index with unavailable bits"
         );
@@ -64,7 +52,7 @@ impl<T> EntryIndex<T> {
 
     pub(super) fn export(index: usize) -> Self {
         debug_assert_eq!(
-            index | INDEX_SER_AVAILABLE_MASK,
+            index & INDEX_SER_AVAILABLE_MASK,
             index,
             "creating export index with unavailable bits"
         );
@@ -74,7 +62,7 @@ impl<T> EntryIndex<T> {
 
     pub(super) fn import(index: usize) -> Self {
         debug_assert_eq!(
-            index | INDEX_SER_AVAILABLE_MASK,
+            index & INDEX_SER_AVAILABLE_MASK,
             index,
             "creating import index with unavailable bits"
         );
@@ -89,32 +77,44 @@ impl<T> EntryIndex<T> {
         }
     }
 
-    pub(super) fn index(self) -> usize {
-        debug_assert!(self.is_resolved(), "using unresolved EntryIdx");
-
+    /// The raw stored value, flag bits included.
+    fn bits(self) -> usize {
         self.index.get() - 1
     }
 
+    /// The table/arena position, with the reserved flag bits masked away.
+    ///
+    /// Works for resolved indices (only the top bit is reserved) as well as
+    /// export/import indices (the top two bits are reserved).
+    pub(super) fn index(self) -> usize {
+        if self.is_serialize() {
+            self.bits() & INDEX_SER_AVAILABLE_MASK
+        } else {
+            self.bits() & INDEX_RES_AVAILABLE_MASK
+        }
+    }
+
+    #[expect(dead_code, reason = "consumed by the (not-yet-written) resolution pass")]
     pub(super) fn is_resolved(self) -> bool {
-        // return if the serialized bit is _NOT_ set
-        self.index() & IS_SERIALIZED_MASK == 0
+        // resolved iff the serialized bit is _NOT_ set
+        self.bits() & IS_SERIALIZED_MASK == 0
     }
 
     pub(super) fn is_serialize(self) -> bool {
-        // return if the serialized bit IS set
-        self.index() & IS_SERIALIZED_MASK == IS_SERIALIZED_MASK
+        // serialized iff the serialized bit IS set
+        self.bits() & IS_SERIALIZED_MASK == IS_SERIALIZED_MASK
     }
 
     pub(super) fn is_export(self) -> bool {
         debug_assert!(self.is_serialize());
 
-        self.index() & IS_IMPORT_MASK == 0
+        self.bits() & IS_IMPORT_MASK == 0
     }
 
     pub(super) fn is_import(self) -> bool {
         debug_assert!(self.is_serialize());
 
-        self.index() & IS_IMPORT_MASK == IS_IMPORT_MASK
+        self.bits() & IS_IMPORT_MASK == IS_IMPORT_MASK
     }
 
     pub fn raw(self) -> UntypedEntryIndex {
@@ -154,7 +154,9 @@ impl<T> serde::Serialize for EntryIndex<T> {
             ));
         }
 
-        self.index.serialize(serializer)
+        // Write the flag-encoded logical value; `build` (used on deserialize)
+        // re-adds the `+ 1`, so we must not write the stored `NonZero` directly.
+        self.bits().serialize(serializer)
     }
 }
 
