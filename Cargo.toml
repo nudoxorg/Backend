@@ -11,54 +11,57 @@
 [workspace]
 resolver = "3"
 members = [
-    # The per-ecosystem spec crate (ECOSYSTEM-PLAN): the leaf everything else
-    # reads "what does ecosystem X need?" from. `Language` lives here; heart
-    # re-exports it.
-    "workspace/ecosystem",
+    # The per-ecosystem spec (ECOSYSTEM-PLAN) is now folded into the catalog
+    # crate as `index::ecosystem` — it is used only by `index` (+ `driver`,
+    # which composes `index`). `Language` itself lives in `heart` (the light
+    # shared vocabulary), keeping the index-free planes (`ir`, `registry`) off
+    # the catalog link path.
     "workspace/heart",
-    "workspace/ir",
+    # ── INDEX catalog plane (INDEX-PLAN) ─────────────────────────────────────
+    # rusqdoltlite (now under vendor/) binds the vendored DoltLite engine
+    # (versioned SQLite); it is a path dep of `index`, not a workspace member.
+    # index is the catalog crate (schema v4, MetaStore, outbox, migrations);
+    # the feed/git-monitor process plane now lives in `index::ingest` (the
+    # `ingest` binary is built from the index crate).
+    "workspace/index",
+    # ObjectPack (INDEX-PLAN §6): the NDPK container family is now folded into
+    # the storage layer as `index::pack` (§8: object-pack is part of index).
+    # Legacy `ir` crate (old JSON schema) deleted — dead (superseded by nudox-ir).
     "workspace/registry",
-    "workspace/server",
+    # `driver` is the composition/serving crate (§8): the ONLY place `index` +
+    # `registry` + `heart::client` are composed into an axum binary. It is the
+    # dissolved `server` crate, rewired onto the re-layered planes.
+    "workspace/driver",
     # ── Sealed-compute plane (SMOLVM-PLAN) ───────────────────────────────────
     # sandbox rejoins the cargo workspace: it is the home of SmolvmCage and the
     # budget/typestate layer; ir-stream is the guest→host IR streaming protocol.
     "workspace/compiler/sandbox",
-    "workspace/ir-stream",
-    "workspace/ir-sync",
-    "workspace/nudox-sync",
+    # ir-sync folded into nudox-ir::sync (heart::sync trait impls)
     # ── IR-native VCS plane ──────────────────────────────────────────────────
-    # The IR data model + serve archive + generation identity are the domain;
-    # libpijul (via nudox-ir-vcs) is the change engine — we do NOT reimplement
-    # patch theory. `nudox-ir-channel` is retired (its custom in-memory change
-    # store was exactly that reimplementation) and is no longer built.
-    "workspace/nudox-change",
-    "workspace/nudox-ir",
-    "workspace/nudox-ir-archive",
-    "workspace/nudox-ir-manifest",
-    "workspace/nudox-ir-vcs",
-    # Semantic classification plane (SEMANTIC-IR-VCS-PLAN P3–P5): structural
-    # delta projection + IR-only ApiSurface/semver. Engine-neutral (no libpijul).
-    "workspace/nudox-ir-diff",
-    "workspace/nudox-semver",
-    # Depth-1 structured record (DEPTH1 plan §3): the frozen F1 key registry +
-    # the field-aware pairing function. Leaf crate; the vendored libpijul fork
-    # links it as its only nudox dependency.
-    "workspace/nudox-f1",
+    # The IR data model is split into a light, libpijul-FREE `ir` (the model
+    # everyone reads — entry/symbol/kind/wire/change/view/vocab/…) and a heavy
+    # `ir-vcs` (the libpijul/iroh-linked patch engine / serve / diff / semver /
+    # transfer). `registry` reads only the light `ir` and no longer transitively
+    # links libpijul.
+    "workspace/ir",
+    "workspace/ir-vcs",
+    # ── Shared content-transfer plane (CONSOLIDATION-NOTES §8b/§8c) ───────────
+    # The ONE abstracted iroh/iroh-blobs + bao provide-fetch. heart stays
+    # iroh-free (only the `heart::sync` seam); the concrete transport lives
+    # here and every `ContentIo` implementor (ir-vcs::sync, index::pack, …)
+    # wires its provide/fetch over this crate. No per-plane bespoke bao/iroh.
+    "workspace/transport",
     # ── Vector plane (09-vector §20 / 09b / 09c) ─────────────────────────────
-    # vector-core is the pure shared plane (recipe, embed_key, routing,
-    # admission, store traits); vector-local is the qdrant-edge client store;
-    # vector-embed is the fastembed/ort CPU-canonical runtime (feature "onnx");
-    # vector-remote is the qdrant-client parity/premium + Voyage/rerank plane.
-    "workspace/vector-core",
-    "workspace/vector-local",
-    "workspace/vector-embed",
-    "workspace/vector-remote",
+    # The former standalone `vector` crate is now folded into `registry::vector`
+    # (§8 re-layering: registry = graph + vector). Its core/local/remote/embed
+    # planes live under `workspace/registry/vector/` gated by the same
+    # `local`/`remote`/`onnx` features on the registry crate.
 ]
 
 # Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
 # requirement in the workspace resolves to the vendored fork (build metadata
 # `+nudox.N` is ignored in semver comparison). Fork diff = src/diff/diff.rs +
-# Cargo.toml only; regenerable patch at workspace/vendor/libpijul-fork.patch.
+# src/nudox_f1/ + Cargo.toml; regenerable patch at workspace/vendor/libpijul-fork.patch.
 [patch.crates-io]
 libpijul = { path = "workspace/vendor/libpijul" }
 # qdrant-edge 0.7.2 verbatim except `#![recursion_limit = "256"]` in lib.rs:

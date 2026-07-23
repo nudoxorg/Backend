@@ -13,7 +13,7 @@ use heart::{
 #[test]
 fn providers_are_addressed_through_sources() {
     for backend in
-        [BackendKind::Terminus, BackendKind::Qdrant, BackendKind::Tantivy, BackendKind::Postgres]
+        [BackendKind::Terminus, BackendKind::Qdrant, BackendKind::Tantivy, BackendKind::Catalog]
     {
         let source = Source::new("provider".into(), backend);
         assert_eq!(source.backend, backend);

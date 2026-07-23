@@ -1,0 +1,75 @@
+[
+  {
+    "name": "zlib",
+    "desc": "General-purpose lossless data-compression library",
+    "license": "Zlib",
+    "homepage": "https://zlib.net/",
+    "versions": {
+      "stable": "1.3.1",
+      "head": null,
+      "bottle": true
+    },
+    "urls": {
+      "stable": {
+        "url": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+        "tag": null,
+        "revision": null,
+        "checksum": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+      }
+    },
+    "dependencies": [],
+    "build_dependencies": []
+  },
+  {
+    "name": "openssl@3",
+    "desc": "Cryptography and SSL/TLS Toolkit",
+    "license": "Apache-2.0",
+    "homepage": "https://openssl-library.org/",
+    "versions": {
+      "stable": "3.4.0",
+      "head": null,
+      "bottle": true
+    },
+    "urls": {
+      "stable": {
+        "url": "https://www.openssl.org/source/openssl-3.4.0.tar.gz",
+        "tag": null,
+        "revision": null,
+        "checksum": "e15dda82fe2fe8139dc2ac21a36d4ca01d5313c75f99f46c4e8a27709b7294bf"
+      }
+    },
+    "dependencies": [
+      "ca-certificates"
+    ],
+    "build_dependencies": []
+  },
+  {
+    "name": "curl",
+    "desc": "Get a file from an HTTP, HTTPS or FTP server",
+    "license": "curl",
+    "homepage": "https://curl.se/",
+    "versions": {
+      "stable": "8.11.0",
+      "head": null,
+      "bottle": true
+    },
+    "urls": {
+      "stable": {
+        "url": "https://curl.se/download/curl-8.11.0.tar.bz2",
+        "tag": null,
+        "revision": null,
+        "checksum": "db59cf0d671ca6e7f5c2c5ec177084a33a79e04e0e2855f5e5c9b9c6bacae3b0"
+      }
+    },
+    "dependencies": [
+      "brotli",
+      "libnghttp2",
+      "openssl@3",
+      "rtmpdump",
+      "zstd"
+    ],
+    "build_dependencies": [
+      "pkgconf"
+    ]
+  }
+]

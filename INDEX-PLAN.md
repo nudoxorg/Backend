@@ -1,672 +1,1149 @@
-# INDEX-PLAN.md — The Versioned Catalog and Registry Unification
+# INDEX-PLAN.md — Greenfield Catalog, Dual Deployment, IR Universe
 
-Status: **normative full vision** · 2026-07-19 (rev 2 — no hedges, dual-plane iroh sync, serve-when-available)
-Reading order: assumes ECOSYSTEM-PLAN.md (sealed `EcosystemSpec`, `StructuredQuery`,
-`CatalogFollower`, listing/withdrawn semantics), LIBRARIFICATION-PLAN.md (GD-1..40), and
-SMOLVM-PLAN.md (SmolvmCage, RecordingSession, golden forks). Where this plan and
-LIBRARIFICATION disagree, **this plan wins**; supersessions are marked **[supersedes …]**.
+**Status:** Rev 3 — **normative master** · 2026-07-19  
+**Posture:** greenfield · **no fallbacks** · no dual stacks · no “phase-2 maybe”  
+**Audience:** implementers (including juniors). Prefer following this file over older research when they disagree.
 
-Greenfield rule: no data migration from Postgres. Build the spine, cut over, delete. No row port.
+**Companions (owned elsewhere, cited not duplicated):**
+- IR types / F1 / channels: `.research/ir-vcs/design/SEMANTIC-IR-VCS-PLAN.md` (SIV) + as-built `nudox-ir-vcs`
+- Resolution = IR frames: `.research/resolution/04-ir-unification.md` (**U-*** decisions — folded here as **UR-***)
+- Ecosystem specs / followers: `ECOSYSTEM-PLAN.md`
+- Smolvm cage / streaming: `SMOLVM-PLAN.md` (amended by this doc for promote + goldens)
+- GUI UX: `GUI-PLAN.md` (stores-over-client; **no** Ladybug; no client graph engine)
 
-**Non-negotiable posture:** this document describes **one complete architecture**, not a menu of
-fallbacks. There is no plain-SQLite escape hatch, no “Phase-2 maybe iroh,” no optional dual stack
-left intentionally half-dead. If a piece is hard, it is still in scope and is designed here.
+**Explicitly dead (do not implement):**
+Postgres · Litestream · Doltgres · Ladybug · Terminus · ApiSurface structure · OccurrenceSeal /
+references-layer CAS · dual vector stacks · public IPFS · naked doltlite-remotesrv · client-side
+graph engines · registry tarball as primary source (`.crate` / nuget nupkg / etc. as SoT)
 
----
-
-## 0. Purpose
-
-One embedded, **versioned** SQLite catalog — the INDEX — is the single owner of the
-package/metadata dimension: identity, versions, generations, IR-store locations, repo facts,
-toolchain, license, popularity, listing state, dependency edges, overlay bookkeeping, and the
-outbox. The IR plane (**nudox-ir-vcs / libpijul channels** — pristine + changestore + tips,
-smolvm-produced seals) remains the single owner of the IR dimension. There is **no parallel
-local artifact CAS for IR**: change files are already content-addressed by pijul hash; the
-channel is the store (`ir-sync` / SMOLVM-PLAN). Source *file* bodies (if kept) stay on a thin
-source-object path; they are not a second IR SoT. Everything else — tantivy, vectors, graph
-stores, compile stage/golden caches — is a disposable projection rebuilt from those two
-sovereigns (GD-14).
-
-Postgres exits completely (~8–11k LOC deleted in the purge ledger). Ingestion parsing leaves the
-serving binary. Search stays in-house. Overlays, offline, multi-host HA, backups, and AS OF
-reads are one mechanism: **catalog commit/branch/merge + iroh sync of catalog chunks and IR
-change-files**. Serve as soon as truth is available **somewhere** reachable — local VCS repo,
-peer, or enterprise remote — while background sync merges work into the main store as fast as the
-network allows.
-
-The monorepo splits: IR plane → its own workspace; backend → five crates + ingestor; GUI → client
-abstractions. Functionality ledger (§13) records keep/improve/cut with settled verdicts.
-
----
-
-## 1. Ownership map
-
-```
-            SOVEREIGN STORES                         DERIVED (disposable)
-┌──────────────────────────────────┐      ┌──────────────────────────────────────┐
-│ INDEX  catalog.dolt (rusqdolt-   │─────▶│ tantivy package + symbol indices     │
-│ lite): packages, versions,       │─────▶│ qdrant vectors (vector-* plane)      │
-│ generations, stores, locations,  │─────▶│ terminus / graph projections         │
-│ edges, facts, listing, overlays, │─────▶│ GUI local enrichment                 │
-│ outbox, watermarks, compile cache│      └──────────────────────────────────────┘
-│ tips (JobKey → gen pointers)     │
-├──────────────────────────────────┤
-│ IR PLANE  libpijul VCS           │      EPHEMERAL (never versioned)
-│ (nudox-ir-vcs, smolvm seals):    │      ┌──────────────────────────────────────┐
-│ pristine + changestore + tips,   │      │ scratch.sqlite: jobs, leases, wanted,│
-│ PackageArchive as materialize    │      │ sessions, bakery claims              │
-│ of channel state — NOT a second  │      └──────────────────────────────────────┘
-│ local IR CAS                     │
-└──────────────────────────────────┘
-```
-
-**Division of history:** IR channel log answers symbol-level “what changed between v1 and v1.1.”
-Catalog commit graph answers metadata-level “what did the index believe last Tuesday / when was
-this withdrawn / dependents at release time.” Catalog stores **pointers** (tip/change hashes,
-store locations, JobKeys) — never symbol bodies. No dual-write of IR into SQL; no parallel
-`cas/` dump of sealed IR beside the changestore. **[refines GD-32; aligns with ir-sync:
-“no parallel CAS for artifacts”]**
-
-**Critical coupling (not optional):** knowing a generation exists is useless without being able
-to **apply its change closure**. Catalog sync and IR VCS sync are co-designed (§9). Location
-rows are the map; iroh moves **pijul change files** (and optional source objects / compile-cache
-blobs) with Bao verified streaming.
-
----
-
-## 2. Ground decisions
-
-**ID-1 — Engine: `rusqdoltlite` (DoltLite) is the catalog engine on server and client.**
-No alternate engine. Vendor + pin `rusqdoltlite` 0.40.x (rusqlite API over DoltHub’s DoltLite:
-prolly-tree single file, SQLite acceptance suite, `dolt_*` SQL). VCS ops are SQL functions
-(`dolt_commit`, `dolt_branch`, `dolt_merge`, `dolt_push`/`pull`/`clone`, `dolt_at_<table>`,
-`dolt_diff_*`, `dolt_conflicts_*`, `dolt_gc`, `dolt_rebase`, `dolt_hashof`). sea-query SQL passes
-through. Litestream is out. sqlx is out (sync writer thread). **[supersedes GD-2 sqlx+Litestream;
-keeps single-writer shape]**
-
-**ID-2 — Two files per plane: `catalog.dolt` + `scratch.sqlite`.**
-Versioned file = merge-meaningful durable state only. Scratch (plain rusqlite, disposable) =
-job leases, wanted-queue, **session graphs** (writer-sticky exploration state), bakery claims.
-Sessions are not product truth and do not enter remotes.
-
-**ID-3 — Outbox stays in `catalog.dolt`; only sink fan-out mechanism.**
-Sink intents are business semantics, not `dolt_diff` interpretation. Written in the same
-transaction as the catalog mutation. Single writer is the lock. **[keeps LIBRARIFICATION §16.2]**
-
-**ID-4 — Single writer on the advertised `main` (or enterprise primary); batch heartbeats.**
-One writer thread, connection pinned to the write branch. `dolt_commit` after ingest batches,
-listing events, bakery publishes, sealed generations, and periodic timer. Readers pool;
-per-connection branch isolation for overlays / AS OF. Never branch-switch with dirty working set.
-
-**ID-5 — Schema v4: package / version / generation split; real edges; first-class columns.**
-See §5. Locations and multi-store registry are first-class. JSON only for open-ended extras.
-
-**ID-6 — `catalog_table!` macro: one definition → DDL + row codecs + tantivy fields + wire.**
-Drift between shapes is a compile error.
-
-**ID-7 — One query algebra.** `Query` in `heart` is wire and domain: text + scope + rank +
-`at: Option<AsOf>` + `page: PageSpec`. All package surfaces lower into it. `StructuredQuery`
-remains the internal parse product (ECOSYSTEM §8.1). Deleted: `RegistryQuery`, both package
-search request types, `PackageSearchDeps`, server `Pagination`, package half of
-`SearchRequestDto`, GUI wire sextet.
-
-**ID-8 — Pagination only at the top of `Query`; single cursor site inside the engine.**
-
-**ID-9 — Wire = domain** for `Query`, `Page`, `Scored`, package hits.
-
-**ID-10 — Ingestion is external; serving never links a feed parser.**
-`workspace/ingestor` owns official-registry followers and multi-host *ingestion points* for
-ecosystems without a single registry. Emits `CatalogOp` only. Forge is sealed compute, not
-ingest; it writes through `MetaStore` in-process.
-
-**ID-11 — Ranking within-ecosystem only; dependents dominate.**
-Per-eco percentiles. C# being smaller than Rust never crosses the interleave boundary.
-Fusion weights (resolved, not open): within an ecosystem, after retrieval gates,
-`score = 0.45 * dependents_pct + 0.25 * downloads_pct + 0.20 * text/semantic_fusion +
-0.10 * quality/freshness`. Direct-dependency-of-scoped-set is a hard boost (not a free weight)
-when `scope.deps` / `dep_set` is set. Weights are constants in code; the eval harness (NDCG)
-may only **confirm** regressions — changing weights is a deliberate commit, not a runtime knob.
-**[closes former O-3]**
-
-**ID-12 — Overlays are branches/remotes of the catalog; federation mounts catalogs.**
-Merge policy by table class:
-- **upstream-authoritative** (packages, versions, feed facts) → `--theirs` toward authority
-- **device-owned** (local pins, locally sealed gens on device branches) → `--ours` until promoted
-- **union** (`generation_locations`, `listing_events`, `stores`, compile-cache tips) → additive,
-  no conflict by construction
-Unresolved rows block commit and surface as typed `OverlayConflict` — never silent drop.
-
-**ID-13 — Offline is a branch, not a mode.** Writes go to `local/<device-id>`. Reconnect =
-background iroh sync of IR + catalog merge/push. No special “offline API.”
-
-**ID-14 — HA, backups, read scaling, and peer assist are remote topology over iroh.**
-Writer pushes `main` after commit batches (RPO = seconds). Replicas and enterprise mirrors are
-clones that pull. Backups = dedicated backup remote + commit-boundary file snapshots. DR =
-clone from backup + projection rebuild + watermark replay; CI-scheduled, release-blocking.
-
-**ID-15 — All cross-host sync is iroh; Bao verified streaming is mandatory.**
-**[supersedes GD-30 half-measures and former “HTTP remotesrv + later iroh”]**
-**[aligns ir-sync: VCS-native IR distribution — no parallel IR artifact CAS]**
-
-| What moves | How |
+**Supersessions (full, not “refines”):**
+| Old | New |
 |---|---|
-| **IR change files** (libpijul changestore objects) | `iroh-blobs` over ALPN used by `ir-sync` / `nudox-sync`: hash = pijul change id (revalidated on deserialize); Bao stream; receiver `ChangeIo::write` → `ApplyHook` advances channel tip |
-| Catalog prolly chunks / remotes | Same iroh fabric: catalog remote protocol **tunneled** over authenticated iroh streams (ALPN `nudox/catalog-sync/1`), not naked `doltlite-remotesrv` on the public internet |
-| Compile cache (L1 stage, goldens) + optional **source** objects | Same iroh-blobs fabric; content-addressed helpers — **not** a second IR history store |
-| Control / authz / grants | HTTP(S) control plane remains for principal auth, DownloadGrant minting, wanted-queue, search APIs |
-
-Naked `doltlite-remotesrv` is **banned** on untrusted networks. In-process or loopback remotesrv
-is allowed only as an implementation detail behind the iroh catalog ALPN, with mTLS or ticket
-auth terminating at our edge. `file://` remotes remain valid on shared volumes (dev, same-host).
-
-IR readiness for generation G = required change closure present in the local **changestore** and
-applied to the channel tip (pijul hash verify on load) — **not** “bytes in a local cas/ tree.”
-
-**ID-16 — Point-in-time reads are typed.** `AsOf::Commit(hash) | AsOf::Time(ts)` via `dolt_log`
-+ `dolt_at_<table>()`. Table names only from macro `Iden`s. Bitemporal columns only on
-`listing_events` (and advisories): `valid_from` / `valid_to`. Everything else is commit history.
-
-**Retention (resolved — former O-1 / R-11):** DoltLite exposes **`dolt_gc()`** (stop-the-world
-mark-and-sweep of unreachable prolly chunks; exclusive access; idempotent) and **`dolt_rebase`**
-with interactive actions including `squash` / `fixup` / `drop` (atomic; abort restores pre-rebase
-state). Policy:
-
-1. **External contract default is `AsOf::Time`.** Pinned GUI views and public APIs prefer time;
-   resolve to commit at query time. Survives squash of intermediate commits if timestamps remain.
-2. **`AsOf::Commit` is supported** for ops, drills, and short-lived pins. Documented retention:
-   commit hashes on `main` are stable for **≥ 90 days** after creation unless a sealed ops
-   procedure runs history rewrite (forbidden on `main` / `overlay/*` by transport policy).
-3. **GC:** scheduled `dolt_gc` after deleting abandoned `local/*` and `pre-migrate-vN` branches;
-   never GC while exclusive writer is applying; gate on IP-0 proof of exclusive access semantics.
-4. **Squash:** allowed only on abandoned device branches and pre-merge cleanup of local lines —
-   never on protected `main` without a versioned migration procedure that rewrites advertised pins.
-5. **Shallow re-clone is ops recovery**, not the product retention plan; it invalidates old commit
-   pins and is runbook-only.
-
-**ID-17 — Projection discipline unchanged.** schema_version wipe/resync; sealed gens only trigger
-indexing (GD-28); rebuild from `changed_since` + outbox; projections never backed up.
-
-**ID-18 — Mine `feat/index-sqlite-package-search`, do not merge package-search.** Seed `index`
-crate from its Catalog/codecs/changed_since; port to rusqdoltlite + schema v4; drop Litestream.
-
-**ID-19 — `Catalog` / `MetaStore` trait split (GD-5).** One rusqdoltlite implementation; GUI uses
-the same crate (per-device clone).
-
-**ID-20 — Engine facade is modularity, not a second design.** Every `dolt_*` call lives in
-`index::engine` so tests and ops have one choke point. **There is no plain-rusqlite fallback.**
-IP-0 must prove open/commit/branch/merge/at/push/pull/conflicts/gc on macOS arm64/x86_64 + Linux
-and bench within **2×** of current Postgres ingest rates for batched upserts / point reads /
-`changed_since` at 1M rows. Fail the spike ⇒ stop and fix the engine path; do not ship a
-degraded “overlays = separate files” product under this plan’s name.
-
-**ID-21 — Three workspaces** (backend / IR / GUI). See §4.
-
-**ID-22 — Functionality ledger (§13):** keep / improve / cut with **settled verdicts** (no open
-sign-off blanks). Ruthlessness targets implementations, not silent capability loss.
-
-**ID-23 — Dead code is a build error after purge.** vector-embed / vector-remote are **wired**
-under registry features (`edge` / `onnx` / `remote`), not left compiled-and-orphaned. Legacy
-`registry/runtime/vector` is **deleted** — one vector plane only.
-
-**ID-24 — Dual-plane end-to-end is normative (catalog map + IR VCS territory).**
-Seal a generation ⇒ record into **local IrRepository** (changestore + channel tip) ⇒ register
-`generations` + `generation_locations` ⇒ **background** iroh publish of **change files** (merge-
-triggered per `ir-sync`) + catalog commits ⇒ any host that can reach a `present` IR store
-somewhere may fetch/apply the change closure and serve ⇒ merge into enterprise `main` ASAP per
-policy. See §3. Location `pending` must never be treated as healthy IR for paths that need a
-materialized package; metadata search may still rank the package if the catalog row is merged.
-
-**ID-25 — Serve-when-available.**
-Serving resolves IR by: (1) local changestore has required changes + tip applied, else (2) any
-reachable peer/remote IR store with `present` (iroh Get change files → verify pijul hash →
-apply), else (3) `pending` / missing → 503/partial with structured `Availability`. Search and
-package metadata do not wait for local apply. IR-backed expand may proceed as soon as the
-needed change closure is applied (or stream apply as files arrive).
-
-**ID-26 — Local commits compile in smolvm; promote shares incremental state.**
-**[amends SMOLVM-PLAN SV-6 for trusted promote paths]**
-
-- **Local-only work** (device branch, offline, enterprise edge host): all compiles run in
-  **SmolvmCage** (SMOLVM-PLAN). Streaming IR → host `RecordingSession` → **one channel record**
-  at seal into the **local IrRepository** (not a parallel `cas/` put of IR); catalog rows on
-  `local/<device-id>` or edge branch; `generation_locations` mark that VCS store `present`.
-- **Background sync:** iroh pushes **change files** + catalog commits without blocking the
-  UI/API that already has a local tip.
-- **When local work lands on the remote primary** (merge to `main` / enterprise authority):
-  1. Catalog merge (union locations; promote device-owned gens to authority policy).
-  2. IR: remote imports change files, verifies pijul hashes, applies to its channel, confirms
-     tip (`ir-sync` MergeEvent path) — remote location `present`.
-  3. **Share smolvm-adjacent incremental state** that is safe and content-keyed (helpers only):
-     - L0 JobKey → gen_stamp / tip hash — catalog `compile_cache` tips once tip verified.
-     - L1 stage postcard objects — content-addressed, read-mostly share over iroh (compile
-       accelerator, **not** IR history).
-     - L3 toolchain image digests — already shared by construction.
-     - **Golden fork / warm checkpoint artifacts** keyed by `(image_digest, producer_version)` —
-       published as content-addressed objects + `compile_cache` tips so the next host skips cold
-       boots when the golden matches. Ephemeral guest scratch and mutable L2 language caches
-       (`target/`, GOCACHE) are **never** shared across trust boundaries.
-  4. Merge into the main store **as soon as** catalog merge commits and IR tip verify succeed —
-     no batching window beyond the existing writer heartbeat.
-- **Trust:** remote admits channel tips only after **pijul change-hash verify** on every file
-  (deserialize + recompute). Untrusted guest output cannot mint identity for another package
-  (host assigns IntroIds / seal — GD-39 / SV-10). Trusted promote (enrolled device, mTLS/ticket)
-  may publish L0/L1 helpers; anonymous clients stay read-only on those helpers (SV-7).
-
-**ID-27 — Sessions are writer-sticky by design.**
-Exploration graphs live in writer-local scratch. Session routes pin/redirect to the writer.
-Not a temporary cut — intentional exclusion from the commit graph and from iroh catalog sync.
-If multi-active session sharing is ever required, it becomes an explicit shared-scratch service;
-it does not reintroduce Postgres.
+| GD-2 sqlx + Litestream INDEX | **ID-1** rusqdoltlite `catalog.dolt` + §12 ops/DR |
+| GD-32 no versioned SQL | **Overturned.** Metadata history **is** DoltLite commit graph. IR history remains libpijul. |
+| GD-30 catalog-only-HTTP + S3 CAS IR SoT | HTTP for **query/control**; iroh+Bao for **all bulk transfer**; IR = changestore |
+| GD-34 Ladybug | Dead. Graph = Trustfall over IR memory + disposable reverse-index projection |
+| GD-13 Terminus hot graph | Dead as product. No Terminus in serving path |
+| SV-6 local never upload | **ID-26:** local → **trusted remotes only**; those objects become mainline cache when promoted |
+| LIBRARIFICATION dual CAS layouts | Object plane = **ObjectPack** (§6) + IR changestore (§5); no parallel IR `cas/` history |
 
 ---
 
-## 3. Dual-plane sync and the end-to-end generation story
+## 0. What “ops” means (and what was missing)
 
-### 3.0 IR storage is the VCS — not a local CAS
+Earlier audits said “no replacement **ops**” after killing Litestream. That did **not** mean
+CatalogOps. It meant **operational runbook numbers**: how you back up, restore, measure RPO/RTO,
+run multi-host HA. Those numbers live in **§12**. They are first-class, not an afterthought.
 
-Normative (from `workspace/ir-sync` and `nudox-ir-vcs`):
+---
 
-> The compile/serve plane is fully VCS-native: a package's IR history lives in libpijul
-> channels. Pijul change files are already content-addressed. There is **no** parallel CAS
-> for IR artifacts.
+## 1. Purpose (one paragraph)
 
-| Concern | Store |
-|---|---|
-| IR history / tip / materialize | `IrRepository`: pristine + **changestore** (`<repo>/changes/`) + channel |
-| PackageArchive / yoke views | **Derived** by materializing the channel — cacheable, never a second SoT |
-| Source file bodies (optional path) | Thin source-object path (`BlobManifest.files` role) — not IR |
-| L1 stage / goldens | Compile accelerators in `compile_cache` + iroh objects — not IR history |
-| Catalog metadata | `catalog.dolt` only |
+Build a greenfield system with two sovereign planes:
 
-Sync trigger for IR: **merge onto a durable channel** → `MergeEvent` → `Syncer::on_merge`
-(iroh provide of change files). Not a background sweep of a `cas/` tree.
+1. **INDEX catalog** (`catalog.dolt` via rusqdoltlite) — packages, versions, generations,
+   locations, edges, repo facts, advisories, git-monitor watermarks, outbox, overlays.
+2. **IR plane** (libpijul `IrRepository`) — symbol history, `occ` frames, materialize views.
+   Tree-sitter and oracles are **producers** into the same IR. No references layer. No ApiSurface
+   object. Graph queries are Trustfall over IR (+ a disposable reverse index for speed).
 
-### 3.1 Two planes, one fabric
+**Object plane** (source trees, ObjectPack, goldens, compile stages) is content-addressed and
+moved only over **iroh + Bao**. Simple HTTP stays for search/auth/control JSON.
+
+Deploy as **two configurations of the same crates** (§3):
+- **Remote / coordinated** — multi-compiler, multi-host, HA, enterprise remotes.
+- **Embedded / GUI** — one process, one compiler, local catalog clone, offline branches.
+
+Migrations are sea-query + snapshot branches (catalog) and format_version envelopes (IR/objects)
+— always rebuildable projections, never dual-write ladders.
+
+---
+
+## 2. Ownership map
 
 ```
-                 HOST A (edge / desktop)              HOST B (enterprise / replica)
-              ┌─────────────────────────┐          ┌─────────────────────────┐
- smolvm ─────▶│ IrRepository (present)  │──iroh───▶│ IrRepository            │
- seal         │ changestore + tip       │  change  │ apply + confirm tip     │
-              │ (+ L1/golden helpers)   │  files   │ (fetch-on-demand OK)    │
-              └───────────┬─────────────┘  Bao     └────────────▲────────────┘
-                          │ write catalog rows                  │ resolve by tip/hash
-                          ▼                                     │
-              ┌─────────────────────────┐  iroh    ┌────────────┴────────────┐
-              │ catalog.dolt            │─────────▶│ catalog.dolt            │
-              │ gens + locations + tips │  catalog │ merge → main            │
-              └─────────────────────────┘  ALPN    └────────────┬────────────┘
-                                                                ▼
-                                                         serve / search / expand
+ SOVEREIGN                         DISPOSABLE (rebuild anytime)
+┌────────────────────────────┐    ┌──────────────────────────────────┐
+│ catalog.dolt (DoltLite)    │───▶│ tantivy package + symbol          │
+│  metadata + locations +    │───▶│ reverse-position usage index     │
+│  outbox + overlays         │───▶│ vector plane (one stack)         │
+├────────────────────────────┤    │ moniker/export reflection caches │
+│ IrRepository (libpijul)    │───▶│ Trustfall adapter (in-memory)    │
+│  channel + changestore     │    └──────────────────────────────────┘
+│  entries + occ frames      │
+├────────────────────────────┤    EPHEMERAL
+│ ObjectPack store           │    scratch.sqlite: jobs, wanted,
+│  source trees (not .crate) │    sessions (writer-sticky), claims
+│  goldens, L1 stages        │
+└────────────────────────────┘
 ```
 
-### 3.2 State machine (produce → locate → sync → serve)
+**Division of history**
+- Catalog commit graph → “what did metadata believe at T?” (dependents, listing, advisories).
+- IR channel → “what did symbols / occs look like between gens?”
+- ObjectPack → content-addressed blobs; no product history of its own beyond hash identity.
 
-| Step | INDEX (catalog) | IR (VCS / smolvm) |
+---
+
+## 3. Two deployment shapes (librarification intent)
+
+Same crates, different feature sets and process topology.
+
+| Concern | `Deployment::Remote` | `Deployment::Embedded` |
 |---|---|---|
-| 1. Compile | — | SmolvmCage; ir-stream → RecordingSession; optional channel checkpoints |
-| 2. Seal | — | `finish()` records change(s) into **local changestore**; tip advances; `gen_stamp` / tip hash |
-| 3. Register | `generations` row; `generation_locations (local_vcs)=present`; optional remote `pending`; outbox; `dolt_commit` on device/edge branch | — |
-| 4. Serve locally | Metadata immediate | Materialize from **local channel tip** |
-| 5. Background / on-merge publish | Push/merge catalog over iroh catalog ALPN | `ir-sync`: provide change files over iroh; remote verify + apply → location `pending→present` |
-| 6. Remote/peer serve | After pull/merge: package known | Fetch missing changes if not local; serve when tip applicable from **any** `present` IR store |
-| 7. Promote to main | Merge device branch → `main`; union locations; admit compile_cache tips | Same change files (content-addressed); goldens/L1 helpers shared per ID-26 |
-| 8. Failure | Catalog without IR tip: search OK, IR paths → Availability miss | Channel without catalog row: seal path always registers first |
+| Process | `server` + `ingestor` + N forge workers | GUI process embeds `index`+`registry`+one forge |
+| Compilers | Coordinated pool (Kueue/fleet optional); many SmolvmCage | **Exactly one** SmolvmCage / one toolchain plane |
+| Catalog | Writer host + iroh pull replicas | Local `catalog.dolt` clone; branch `local/<device>` offline |
+| IR | Shared enterprise IrRepository stores | Local IrRepository under app data dir |
+| ObjectPack | Regional iroh providers (durable substrate OK) | Local ObjectPack + trusted-remote provide |
+| Talks to | Many JobKeys, HA | One compiler; may pull from trusted remote |
 
-**Invariant:** never mark `generation_locations.status = present` until the host can load and
-hash-verify the required change files and apply them to the announced tip.
+```rust
+// heart/deployment.rs — freeze early
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeploymentKind { Remote, Embedded }
 
-### 3.3 Availability model (API)
+pub struct DeploymentProfile {
+    pub kind: DeploymentKind,
+    /// Remote: N; Embedded: always 1.
+    pub max_concurrent_cages: NonZeroUsize,
+    pub trusted_remotes: Vec<TrustedRemote>,
+    pub catalog_path: PathBuf,
+    pub ir_repo_root: PathBuf,
+    pub object_pack_root: PathBuf,
+}
+```
+
+---
+
+## 4. Ground decisions (complete list)
+
+**ID-1 — Catalog engine = rusqdoltlite (DoltLite) only.**  
+No plain-SQLite product mode. Vendor+pin. `dolt_commit` / merge / at / gc / rebase available.  
+Litestream and sqlx are gone. Single writer thread on advertised `main`.
+
+**ID-2 — `catalog.dolt` + `scratch.sqlite`.**  
+Scratch: jobs, wanted, sessions, claims — never on remotes.
+
+**ID-3 — Outbox in catalog is the only projection fan-out.**  
+Same transaction as business write. Typed ops (§8).
+
+**ID-4 — Batch heartbeat commits** after ingest batches, listing, forge seal register, git-monitor
+updates, bakery, timer.
+
+**ID-5 — Schema v4** (§8). Fully typed via `catalog_table!`. Painful migrations = sea-query +  
+`pre-migrate-vN` snapshot branch + rollback = checkout.
+
+**ID-6 — One Query algebra** in heart (§9). Wire = domain.
+
+**ID-7 — Ingestor external on Remote; optional in-process on Embedded for tests only.**  
+Serving binary never links feed parsers in Remote builds.
+
+**ID-8 — Ranking within-eco only.** Fixed fusion (ID-11 of rev2 kept):  
+`0.45*dependents_pct + 0.25*downloads_pct + 0.20*text_semantic + 0.10*quality`.  
+Scoped deps hard-boost. Eval harness guards regressions only.
+
+**ID-9 — Overlays = branches/remotes.** Merge policy: upstream-authoritative / device-owned /
+union (`generation_locations`, `listing_events`, `stores`, `object_locations`).
+
+**ID-10 — Offline = branch `local/<device-id>`**, not a mode.
+
+**ID-11 — HTTP control + query; iroh+Bao for all bulk data.**  
+HTTP: search, authz, wanted long-poll, health, grants, thin JSON.  
+iroh: catalog prolly chunks, IR change files, ObjectPack members, goldens, L1 stages.
+
+**ID-12 — IR is the universe (fold 04-ir-unification).**  
+- No `ApiSurface` structure — pure reflections: `exported` / `monikers` / `boundary`.  
+- Tree-sitter + oracle = producers on one ir-stream; treesitter is **embedded inside every
+  producer path** (not a parallel pipeline) — see §5.1.  
+- Occurrences = `occ` IR frames on enclosing entry (relative spans).  
+- **Examples / usages = queries over IR** (`Target::Usages`, Trustfall) — never a corpus table.  
+- Function/method **bodies**: treesitter (or oracle body facts) are **directly embedded on the
+  owning entry** as body payload — they need **not** share the same shape as surface entry IR
+  (kinds/params/types). Body is an extension slot of the entry, versioned with it, not a sibling
+  store.  
+- No OccurrenceSeal, no references CAS, no `occurrences_ref`.  
+- Monikers: **committed**, fully typed (`MonikerPath`, `IntroId`, `StableRef`).  
+- Graph: **Trustfall over IR memory** + disposable reverse-index for reverse queries.  
+  No Ladybug. No Terminus.
+
+**ID-13 — Source provenance + ObjectPack reconstruction (all ecosystems).**  
+For each **published version** (e.g. `axum@0.7.9`) the catalog **always** records:
+
+1. **Registry identity** — ecosystem + name + version as published (crates.io / npm / …).  
+2. **Where we took source from** (`source_kind` + provenance columns):  
+   - Prefer **git** (grit): `repo_url` + `source_rev` (tag/commit that maps to that release).  
+   - Else **reconstruct** from the registry package artifact (`.crate`, nupkg, maven sources jar,
+     npm tarball, …): unpack once into a **deterministic tree**, seal as **ObjectPack** (not
+     stored *as* `.crate`). `source_kind = reconstructed_registry_package`. Preserve
+     **registry checksum** so quality of information matches the published artifact.  
+3. **`source_pack`** = ObjectPackId of that tree (git checkout or reconstructed).  
+
+We never open live registry CDN packages at query time. Snippets = ObjectPack range-get + IR
+spans. Same pattern for every language’s “published package blob.”
+
+**ID-14 — Indexer dual mandate.**  
+1. **Registry metadata plane:** versions, deps, license, downloads, yank, **advisories /
+   deprecation / security** (listing_events + advisory tables).  
+2. **Git plane (primary signal for source):** monitor upstream repos with **grit**
+   (`grit-lib`), update index entries (tips, tags, default branch), enqueue IR work when
+   source changes. Watermarks in catalog.
+
+**ID-15 — IR generation state always registered.**  
+Even with **no IR store linked yet**, catalog rows track parse/IR pipeline state
+(`parse_state`, `gen_stamp?`, `channel_tip?`, `ir_status`). Locations may be empty/`pending`.
+
+**ID-16 — ObjectPack unifies packs.**  
+One container family replaces separate ad-hoc `cas/` dumps + ndpk/ndix product split:
+zstd frames + TOC with **byte-range addressable members** (Bao outboard optional for large
+objects; TOC enables single-snippet range get). See §6.
+
+**ID-17 — SmolvmCage is first-class and reproducible.**  
+Built from **nix** toolchain images; content-digest identity. Goldens are ObjectPack members
+transferred over iroh. Same image digest + producer_version ⇒ shareable golden.
+
+**ID-18 — Local uploads only to trusted remotes.**  
+Enrolled devices may `provide` ObjectPack/IR changes to remotes on their trust list. When
+work lands on mainline, those objects **are** the cache (content-addressed) — no second upload
+path. Anonymous clients are read-only on shared helpers.
+
+**ID-19 — Sessions writer-sticky in scratch.** Exploration graphs only.
+
+**ID-20 — Engine facade is modularity, not a second product.**  
+`index::engine` wraps all `dolt_*`. Fail IP-0 ⇒ stop; do not ship non-versioned product.
+
+**ID-21 — Three workspaces** (backend / ir / gui). Crate **names are free**; topology rules
+matter (backend never deps libpijul; IR may dep heart).
+
+**ID-22 — Painless persistence evolution.**  
+Catalog: sea-query migrations + `pre-migrate-vN` branches.  
+IR: format_version on envelopes; never mutate old change bytes.  
+ObjectPack: version byte in header; readers support N,N-1.  
+Projections: wipe on schema_version bump.
+
+**ID-23 — One vector plane** (vector-core + registry features). Delete legacy runtime/vector.
+
+---
+
+## 5. IR plane (implementer contract)
+
+### 5.1 Producers (oracle + treesitter embedded)
+
+Every producer path **runs treesitter and oracle contributions into one body**, not “oracle
+or treesitter.” The host always gets a single ir-stream. Treesitter is embedded *inside* every
+producer (or as a mandatory fill pass on the same session):
+
+- **Surface definitions** — oracle when available; treesitter dumb tier otherwise (same entry wire).  
+- **Bodies** — **union of both**: take **as much as possible** from treesitter *and* from the
+  oracle. Never drop one side because the other “won.” Merge is additive with confidence
+  precedence on *conflicts*, not replacement of whole payloads.
+
+Body structure is **embedded on the entry** (slot below). Shape may differ from surface
+`EntryInner` (kinds/params/types) — still IR, versioned with the entry, queryable. Finding
+examples / call sites remains **IR query**, not a treesitter sidecar DB.
+
+```rust
+// ir-stream / producer boundary
+pub trait IrProducer: Send {
+    fn language(&self) -> Language;
+    /// Stream wire entries + unresolved ref facts + body contributions into the host session.
+    fn lower(
+        &self,
+        inputs: &SealedInputs,
+        sink: &mut dyn IrStreamSink,
+    ) -> Result<ProducerReport, ProducerError>;
+}
+
+/// On the entry — not a parallel IR universe.
+/// Spans are relative to the owning entry's span start (O(delta) / U-3).
+#[derive(Clone, Debug)]
+pub enum BodyEmbed {
+    /// No implementation body (type alias, forward decl, pure interface, empty module, …).
+    Absent,
+    /// Normative non-absent case: **merged** treesitter + oracle facts.
+    /// Always populate every channel each tier can fill; do not ship Treesitter-only or
+    /// Oracle-only as the steady-state product shape when both ran.
+    Present(BodyFacts),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BodyFacts {
+    pub lang: Language,
+    /// CST-derived structure (always filled when treesitter ran on this body).
+    pub tree: TreesitterBody,
+    /// Semantic outline from the language oracle (filled when oracle analyzed this body).
+    pub oracle: OracleBody,
+    /// Cross-tier merge metadata (what each side contributed; for honesty / debug).
+    pub merge: BodyMergeNote,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TreesitterBody {
+    pub locals: Vec<LocalBind>,
+    pub calls: Vec<BodyCall>,           // name + receiver + rel_span (pre- or post-resolve)
+    pub control: Vec<ControlSketch>,  // if/match/loop sketches — coarse is fine
+    pub imports_in_body: Vec<BodyImport>, // rare; usually module-level
+    pub root_kind: Option<SmolStr>,   // CST root for debug, not identity
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct OracleBody {
+    /// Prefer StableRef when oracle resolved; else name-level for host ladder.
+    pub calls: Vec<OracleCall>,
+    pub type_mentions: Vec<OracleTypeMention>,
+    pub reads_writes: Vec<OracleAccess>, // optional semantic dataflow crumbs
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BodyMergeNote {
+    pub treesitter_ran: bool,
+    pub oracle_ran: bool,
+    /// On overlapping call spans: Oracle confidence wins target; treesitter keeps structure.
+    pub conflict_policy: &'static str, // "oracle_target_treesitter_span"
+}
+
+#[derive(Clone, Debug)]
+pub struct BodyCall {
+    pub name: SmolStr,
+    pub receiver: Option<SmolStr>,
+    pub rel_span: RelSpan, // (u32, u32) relative to entry span start
+}
+
+#[derive(Clone, Debug)]
+pub struct OracleCall {
+    pub target: Option<StableRef>, // None ⇒ host resolve still pending
+    pub kind: ReferenceKind,       // call | mcall | …
+    pub conf: Confidence,          // typically Oracle
+    pub rel_span: RelSpan,
+}
+
+/// Host-side merge after both tiers emit for the same entry (normative).
+pub fn merge_body(tree: TreesitterBody, oracle: OracleBody, note: BodyMergeNote) -> BodyEmbed {
+    if tree.is_empty() && oracle.is_empty() {
+        return BodyEmbed::Absent;
+    }
+    BodyEmbed::Present(BodyFacts { lang: tree.lang_or(oracle.lang), tree, oracle, merge: note })
+}
+```
+
+**Merge rules (implementers — do not invent softer ones):**
+
+1. If the entry has no body → `Absent`.  
+2. If either tier produced any fact → `Present` with **both** `tree` and `oracle` structs
+   filled to the max that tier produced (empty vecs only if that tier truly saw nothing).  
+3. Overlapping call/type spans: keep **treesitter** structural fields; set **oracle**
+   `StableRef` / higher `Confidence` on the matching span; never delete the other tier’s
+   non-overlapping facts.  
+4. Host `resolve_occurrences` still writes `occ` frames from the union of call sites; body
+   embed remains for structure / snippet context.  
+5. Forbidden steady-state: shipping only `TreesitterBody` or only `OracleBody` as the enum
+   when both producers ran for that package.
+
+**Examples are not a store.** “Show me uses of `Router::new`” =  
+`Query { target: Usages { of: stable_ref }, … }` / Trustfall over `occ` frames; snippet windows
+via ObjectPack range + entry/occ rel-span; body embed enriches “what’s inside this example
+function.” Staleness = U-9. No `UsageCorpus` table.
+
+Oracle duty **(d):** emit resolved references at `Confidence::Oracle`.  
+Treesitter: always run on impl bodies (and surface when no oracle).
+
+#### 5.1.1 Worked example — merged `BodyEmbed` (normative)
+
+Source (Rust):
+
+```rust
+/// Route a request.
+pub fn route(req: Request) -> Response {
+    let path = req.uri().path();
+    if path.starts_with("/api") {
+        handle_api(req)
+    } else {
+        handle_static(req)
+    }
+}
+```
+
+**Surface entry** (unchanged shape — not BodyEmbed):
+
+```text
+kind: Function · moniker: route · vis: pub
+params: [(req, Request)] · return: Response
+doc: "Route a request."
+span: src/lib.rs 10:0–18:1
+```
+
+**BodyEmbed::Present** after both tiers (what we store on the entry):
+
+```rust
+BodyEmbed::Present(BodyFacts {
+    lang: Language::Rust,
+    tree: TreesitterBody {
+        locals: vec![
+            LocalBind { name: "path".into(), kind: LocalKind::Let, rel_span: r(2, 8, 2, 12) },
+        ],
+        calls: vec![
+            BodyCall { name: "uri".into(),         receiver: Some("req".into()),  rel_span: r(2, 15, 2, 18) },
+            BodyCall { name: "path".into(),        receiver: Some("uri".into()),  rel_span: r(2, 20, 2, 24) },
+            BodyCall { name: "starts_with".into(), receiver: Some("path".into()), rel_span: r(3, 13, 3, 24) },
+            BodyCall { name: "handle_api".into(),  receiver: None,                rel_span: r(4, 8, 4, 18) },
+            BodyCall { name: "handle_static".into(), receiver: None,              rel_span: r(6, 8, 6, 21) },
+        ],
+        control: vec![
+            ControlSketch::If {
+                cond: r(3, 7, 3, 35),
+                then_arm: r(4, 8, 4, 24),
+                else_arm: Some(r(6, 8, 6, 27)),
+            },
+        ],
+        imports_in_body: vec![],
+        root_kind: Some("function_item".into()),
+    },
+    oracle: OracleBody {
+        calls: vec![
+            // same spans as treesitter where possible — StableRef filled
+            OracleCall {
+                target: Some(StableRef::parse("F:rust/http#…uri…").unwrap()),
+                kind: ReferenceKind::MethodCall,
+                conf: Confidence::Oracle,
+                rel_span: r(2, 15, 2, 24), // may cover uri().path() chain as oracle sees it
+            },
+            OracleCall {
+                target: Some(StableRef::same(intro_handle_api)),
+                kind: ReferenceKind::Call,
+                conf: Confidence::Oracle,
+                rel_span: r(4, 8, 4, 18),
+            },
+            OracleCall {
+                target: Some(StableRef::same(intro_handle_static)),
+                kind: ReferenceKind::Call,
+                conf: Confidence::Oracle,
+                rel_span: r(6, 8, 6, 21),
+            },
+        ],
+        type_mentions: vec![
+            OracleTypeMention { ty: StableRef::parse("F:rust/http#…Request…").unwrap(), rel_span: r(0, 14, 0, 21) },
+            OracleTypeMention { ty: StableRef::parse("F:rust/http#…Response…").unwrap(), rel_span: r(0, 25, 0, 33) },
+        ],
+        reads_writes: vec![],
+    },
+    merge: BodyMergeNote {
+        treesitter_ran: true,
+        oracle_ran: true,
+        conflict_policy: "oracle_target_treesitter_span",
+    },
+})
+```
+
+What each side uniquely kept (union, not pick-one):
+
+| Fact | Treesitter | Oracle |
+|---|---|---|
+| local `path` | yes | often no |
+| `if` structure | yes | often no |
+| `handle_api` call span | yes | yes + **StableRef** |
+| `Request`/`Response` type mentions | weak/name | yes + **StableRef** |
+| CST `root_kind` | yes | no |
+
+**`occ` frames** (still on this entry, after host resolve) are separate from BodyEmbed but
+fed by the **union** of call sites:
+
+```text
+occ  F:rust/…#handle_api     call  orc  <rel>
+occ  F:rust/…#handle_static  call  orc  <rel>
+```
+
+Usages query for `handle_api` does not read BodyEmbed; it reads reverse `occ`.  
+UI “open this example’s impl outline” may read `BodyFacts.tree.control` + `oracle.calls`.
+
+### 5.2 Host session (already largely as-built)
+
+```rust
+// nudox-ir-vcs — normative use
+impl<C: ChangeStore> IrRepository<C> {
+    pub fn begin_recording(&self, job: JobKey) -> Result<RecordingSession<'_, C>, VcsError>;
+}
+
+impl RecordingSession<'_, _> {
+    pub fn stage(&mut self, batch: StagedEntryBatch) -> Result<StageReport, VcsError>;
+    /// Host resolve ladder (U-5): binds unresolved refs → occ frames on owners.
+    pub fn resolve_occurrences(&mut self, deps: &dyn DepIrProvider) -> Result<ResolutionStats, VcsError>;
+    pub fn checkpoint(&mut self, msg: &str) -> Result<Option<ChangeHashHex>, VcsError>;
+    pub fn finish(self) -> Result<FinishReport, VcsError>; // one change; tip for gen pin
+    pub fn abandon(self) -> Result<(), VcsError>;
+}
+```
+
+**Deleted APIs (do not reintroduce):** `ApiSurface`, `DepSurfaceProvider`, `OccurrenceSeal`,
+`stage_occurrences` as a separate plane, `SymbolTable` / `MergedSymbolTable`,
+`Extraction`/`RawDefinition`/`RawReference` as public types.
+
+### 5.3 Reflections (pure)
+
+```rust
+// nudox-ir or registry/reflect — pure, no I/O
+pub fn exported(ir: &IrView, policy: &ExportPolicy, cfg: &CfgAssignment, id: IntroId) -> bool;
+
+pub fn monikers<'a>(
+    ir: &'a IrView,
+    policy: &ExportPolicy,
+    cfg: &CfgAssignment,
+) -> impl Iterator<Item = (MonikerPath, IntroId)> + 'a;
+
+pub fn boundary<'a>(
+    ir: &'a IrView,
+    policy: &ExportPolicy,
+    cfg: &CfgAssignment,
+) -> impl Iterator<Item = (MonikerPath, StableRef)> + 'a;
+
+pub trait DepIrProvider: Send + Sync {
+    fn ir(&self, pkg: &PackageLineageId, pin: &DepPin) -> Result<Arc<IrView>, DepMissing>;
+}
+```
+
+Caches of moniker maps: disposable, keyed by `(channel_tip, policy_id, cfg_id)`, never synced.
+
+### 5.4 `occ` frame (grammar frozen in 04-ir-unification §3)
+
+Relative spans on the **owning entry**. σ rewrites targets. Unbound refs → `ResolutionStats`
+in `GenerationMeta` only.
+
+### 5.5 Graph = Trustfall + reverse index
+
+```rust
+// registry/graph/trustfall_adapter.rs
+pub struct IrTrustfallAdapter<'a> {
+    pub ir: &'a IrView,
+    /// Optional speed layer: reverse occ/typeref postings for this tip.
+    pub reverse: Option<&'a ReversePositionIndex>,
+}
+
+// Adapter exposes vertices: Entry, Occ, Package, …
+// Edges: Member, OccTarget, TypeRef, Lineage, DependsOn (from catalog edges join)
+
+pub fn execute_graph_query(
+    adapter: &IrTrustfallAdapter<'_>,
+    query: &str, // Trustfall query string or typed builder
+    args: BTreeMap<Arc<str>, FieldValue>,
+) -> Result<Vec<BTreeMap<Arc<str>, FieldValue>>, GraphQueryError>;
+```
+
+**HTTP routes** (still JSON — thin results, not bulk IR):
+
+| Route | Meaning |
+|---|---|
+| `Query { target: Usages { of }, … }` | reverse occ |
+| `GET /v1/symbols/:ref/implementors` | reverse iof/super |
+| `GET /v1/symbols/:ref/mentions` | reverse typeref |
+| `GET /v1/symbols/:ref/lineage` | continuity |
+| `POST /v1/expand` | neighborhood (existing) |
+
+Bulk IR transfer never goes through these routes — clients already holding IR use Trustfall
+locally (Embedded) or fetch change files via iroh then query.
+
+**Replacement points (delete):**
+- `registry/runtime/graph/*` if Terminus-coupled  
+- Any Ladybug feature flags  
+- `terminus-client` from server path  
+
+---
+
+## 6. ObjectPack (source + goldens + stages)
+
+### 6.1 Why
+
+Need range-addressable, highly compressed storage that can serve “one snippet” without
+loading a whole tree — and fold former `.ndpk`/`.ndix` roles into **one** format.
+
+### 6.2 Format (normative sketch)
+
+```
+ObjectPack v1
+  magic: b"NDPK"
+  version: u16 = 1
+  flags: u16
+  toc_offset: u64
+  toc_len: u64
+  -- members (zstd frames, optionally Bao-capable) --
+  -- TOC: sorted (path or role key) → (offset, uncompressed_len, compressed_len, blake3) --
+```
+
+```rust
+// heart/object_pack.rs
+pub struct ObjectPackId(ContentBlake3); // root hash of TOC+policy
+
+pub enum MemberKey {
+    Source { path: RelativePath },
+    Golden { image_digest: ImageDigest, producer_version: u32 },
+    Stage { job_key: JobKey, stage: StageName },
+    Meta { name: SmolStr },
+}
+
+pub trait ObjectPackStore: Send + Sync {
+    fn put_pack(&self, builder: ObjectPackBuilder) -> Result<ObjectPackId, PackError>;
+    fn has(&self, id: &ObjectPackId) -> bool;
+    /// Range get: single member or byte range within member (for snippet windows).
+    fn get_member_range(
+        &self,
+        id: &ObjectPackId,
+        key: &MemberKey,
+        range: Range<u64>,
+    ) -> Result<Bytes, PackError>;
+    fn provide_iroh(&self, id: &ObjectPackId) -> Result<(), PackError>;
+    fn fetch_iroh(&self, id: &ObjectPackId, from: &EndpointId) -> Result<(), PackError>;
+}
+```
+
+Compression: zstd (trained dicts optional per eco later). Large members (≥1 MiB): generate
+Bao outboard at put for verified range streaming over iroh.
+
+### 6.3 Source acquisition policy (yes — reconstruction is in the plan)
+
+**In scope for every ecosystem that ships a packaged artifact:** download once → normalize tree
+→ ObjectPack. We keep the **same information quality** as the registry artifact (checksum,
+file set) without retaining the vendor container format (no `.crate` / `.nupkg` blob as the
+working representation).
+
+```rust
+pub enum SourceAcquisition {
+    /// Preferred: grit clone/fetch at GitRev for this published version.
+    Git {
+        url: RepoUrl,
+        rev: GitRev,
+        /// Still record registry checksum of the published package for cross-check.
+        registry_checksum: Option<ContentBlake3>,
+    },
+    /// Reconstruct: unpack .crate / nupkg / npm tgz / maven sources — then ObjectPack.
+    /// Quality ≡ registry artifact; format ≡ our ObjectPack (rangeable zstd + TOC).
+    ReconstructedRegistryPackage {
+        registry: RegistryId,
+        /// e.g. crates.io package sha256 for axum 0.7.9
+        checksum: ContentBlake3,
+        /// ephemeral fetch locator; not used at query time after pack exists
+        package_uri: String,
+    },
+}
+
+pub struct VersionProvenance {
+    /// Published coordinates (axum @ 0.7.9 on crates.io).
+    pub registry_id: RegistryId,
+    pub version: VersionCanonical,
+    pub registry_checksum: Option<ContentBlake3>,
+    /// Where source ObjectPack came from.
+    pub acquisition: SourceAcquisition,
+    pub source_pack: ObjectPackId,
+}
+
+// NEVER: "serve/search opens live .crate from CDN as working tree"
+```
+
+**Per-item index row (e.g. axum):** yes — for that published version we store:
+
+| Field | Example |
+|---|---|
+| package stem + version | `rust` / `axum` / `0.7.9` |
+| `packages.repo_url` | upstream git URL from metadata |
+| `versions.source_rev` | **git ref (tag/commit) used when kind=git** |
+| `versions.registry_checksum` | crates.io checksum of the published `.crate` |
+| `versions.source_pack` | ObjectPackId of materialised tree |
+| `versions.source_kind` | `git` or `reconstructed_registry_package` |
+
+So: the index knows **which published version** and **which VCS ref (or reconstructed pack)**
+backs it — not “whatever is on main of the repo today.”
+
+**crates.io:** sparse/git index = versions + dep requirements. `.crate` may differ from a git
+tag (cargo package filters). Prefer repository + release tag/commit; else reconstruct from
+`.crate` once; always keep checksum.
+
+### 6.4 Git monitoring (grit)
+
+```rust
+// ingestor/git_monitor.rs
+pub struct GitMonitor {
+    grit: grit_lib::repo::Repository, // or grit-lib session per url
+    catalog: MetaStoreHandle,
+}
+
+impl GitMonitor {
+    /// Poll or receive hooks; update repo_facts + enqueue CatalogOp::SourceMoved.
+    pub async fn tick(&self, stem: PackageStemId) -> Result<(), MonitorError>;
+}
+```
+
+Catalog holds `git_watermarks(stem_id, last_rev, last_checked_at)`.
+
+---
+
+## 7. Dual-plane sync (catalog + IR + ObjectPack)
+
+```
+produce (SmolvmCage) → record IR channel → put ObjectPack(source/stage/golden)
+  → register catalog (gens, locations, ir_status)
+  → background iroh provide to trusted remotes
+  → other hosts: fetch on demand; serve when available SOMEWHERE
+  → promote branch → main: same content hashes = instant cache hit
+```
+
+### 7.1 Availability
 
 ```rust
 pub enum IrAvailability {
-    Local,               // changestore has closure; tip applied on this host
-    Remote { store_id }, // another IR store has present; fetch+apply possible now
-    Pending,             // catalog knows gen; change closure not reachable/verified yet
-    Missing,             // no location rows / evicted
+    Local,                 // tip applied locally
+    Remote { store_id: StoreId },
+    Pending,               // catalog knows gen; IR not fetchable yet
+    Missing,
+}
+
+pub enum ObjectAvailability { /* same shape for ObjectPackId */ }
+```
+
+### 7.2 Transport matrix
+
+| Payload | Transport | Auth |
+|---|---|---|
+| Search hits, expand JSON, health | HTTP `/v1` | session/principal |
+| Catalog prolly chunks | iroh ALPN `nudox/catalog-sync/1` | ticket / mTLS |
+| IR change files | iroh (`ir-sync`) | same trust domain |
+| ObjectPack members | iroh-blobs + Bao | DownloadGrant for non-trusted paths; trusted remotes enrolled |
+| Golden VM images | ObjectPack `MemberKey::Golden` over iroh | trusted remotes |
+
+### 7.3 Trusted remote upload (ID-18)
+
+```rust
+pub struct TrustedRemote {
+    pub name: RemoteName,
+    pub endpoint: EndpointId,
+    pub can_provide: bool, // local may upload
+    pub can_fetch: bool,
+}
+
+/// On seal (Embedded or edge Remote host):
+/// 1. local present
+/// 2. if online && trusted_remotes: provide IR changes + ObjectPack in background
+/// 3. catalog push/merge when policy allows
+/// When mainline already has the same hashes → zero extra work (cache hit)
+```
+
+---
+
+## 8. Schema v4 (catalog.dolt) — implementer DDL source
+
+All via `catalog_table!`. Codecs total. Migrations = list of `TableCreateStatement` /
+`TableAlterStatement` from same macro.
+
+```
+packages
+  stem_id BLOB16 PK
+  ecosystem TEXT NOT NULL
+  name_struct TEXT NOT NULL          -- purl / StructuredName canonical wire
+  name_canonical TEXT NOT NULL
+  name_original TEXT NOT NULL
+  repo_url TEXT
+  created_at INTEGER NOT NULL
+  UNIQUE(ecosystem, name_canonical)
+
+versions
+  id BLOB16 PK                        -- PackageId instance
+  stem_id BLOB16 FK NOT NULL
+  version_canonical TEXT NOT NULL
+  version_original TEXT NOT NULL
+  published_at INTEGER
+  toolchain TEXT                      -- json ToolchainSet digest/ref
+  license_spdx TEXT
+  yanked_upstream INTEGER NOT NULL DEFAULT 0
+  parse_state TEXT NOT NULL           -- enum ParseState
+  parse_phase TEXT
+  attempts INTEGER NOT NULL DEFAULT 0
+  failure TEXT                        -- json Failure
+  source_kind TEXT NOT NULL           -- git | reconstructed_registry_package | unknown
+  source_pack BLOB32                  -- ObjectPackId of source tree (nullable until acquired)
+  source_rev TEXT                     -- GitRev (tag/commit) when kind=git
+  registry_checksum TEXT              -- published artifact checksum (crates.io sha256, npm integrity, …)
+  registry_package_uri TEXT           -- how we fetched the package blob if reconstructed (not opened live later)
+  UNIQUE(stem_id, version_canonical)
+
+  -- Provenance example: axum 0.7.9
+  --   ecosystem=rust, name_canonical=axum, version_canonical=0.7.9
+  --   repo_url on packages (e.g. https://github.com/tokio-rs/axum)
+  --   source_kind=git, source_rev=<tag or commit for 0.7.9>, source_pack=<ObjectPackId>
+  --   registry_checksum=<crates.io .crate sha256> always kept for honesty even when source is git
+
+generations
+  gen_stamp BLOB32 PK                 -- GenerationStamp domain (typed newtype)
+  version_id BLOB16 FK NOT NULL
+  channel_tip BLOB32                  -- nullable until first seal
+  job_key BLOB32
+  producer_toolchain TEXT
+  sealed_at INTEGER
+  ir_status TEXT NOT NULL             -- none|pending|sealed|failed  ← always set
+  resolution_stats TEXT               -- json optional advisory
+
+stores
+  store_id BLOB16 PK
+  kind TEXT NOT NULL                  -- ir_vcs_local|ir_vcs_iroh|object_pack_local|object_pack_iroh
+  endpoint TEXT NOT NULL
+  healthy INTEGER NOT NULL
+  added_at INTEGER NOT NULL
+
+generation_locations
+  gen_stamp BLOB32
+  store_id BLOB16
+  status TEXT NOT NULL                -- present|pending|evicted
+  PRIMARY KEY (gen_stamp, store_id)
+
+object_locations
+  object_id BLOB32                    -- ObjectPackId
+  store_id BLOB16
+  status TEXT NOT NULL
+  PRIMARY KEY (object_id, store_id)
+
+compile_cache
+  job_key BLOB32 PK
+  kind TEXT NOT NULL                  -- l0_tip|l1_stage|golden
+  gen_stamp BLOB32
+  object_id BLOB32                    -- ObjectPack member pack or tip ref
+  image_digest TEXT
+  updated_at INTEGER NOT NULL
+
+edges
+  dependent_version BLOB16 NOT NULL
+  dep_ecosystem TEXT NOT NULL
+  dep_name_canonical TEXT NOT NULL
+  requirement TEXT NOT NULL
+  resolved_stem BLOB16
+  kind TEXT NOT NULL
+  source TEXT NOT NULL                -- feed|manifest|git
+  PRIMARY KEY (dependent_version, dep_ecosystem, dep_name_canonical, kind)
+
+repo_facts
+  stem_id BLOB16 PK
+  stars INTEGER
+  last_activity_at INTEGER
+  archived INTEGER NOT NULL DEFAULT 0
+  default_branch TEXT
+  fetched_at INTEGER NOT NULL
+
+git_watermarks
+  stem_id BLOB16 PK
+  last_rev TEXT
+  last_checked_at INTEGER NOT NULL
+  last_error TEXT
+
+popularity
+  ecosystem TEXT NOT NULL
+  stem_id BLOB16 NOT NULL
+  downloads INTEGER
+  downloads_pct_ppm INTEGER
+  dependents_pct_ppm INTEGER
+  computed_at INTEGER NOT NULL
+  PRIMARY KEY (ecosystem, stem_id)
+
+facets
+  version_id BLOB16 PK
+  keywords TEXT
+  quality_ppm INTEGER
+  extras TEXT
+
+listing_events
+  seq INTEGER PRIMARY KEY AUTOINCREMENT
+  version_id BLOB16 NOT NULL
+  status TEXT NOT NULL                -- listed|withdrawn|advisory|deprecated
+  reason TEXT
+  valid_from INTEGER NOT NULL
+  valid_to INTEGER
+  recorded_at INTEGER NOT NULL
+
+advisories
+  id BLOB16 PK
+  stem_id BLOB16
+  version_range TEXT
+  severity TEXT
+  summary TEXT
+  url TEXT
+  valid_from INTEGER NOT NULL
+  valid_to INTEGER
+  recorded_at INTEGER NOT NULL
+
+-- symbols table: SEARCH PROJECTION SHAPE ONLY (outbox materialize), not identity SoT
+-- Identity = IntroId in IR. This table is wiped with tantivy.
+symbols_proj
+  intro_id BLOB32 NOT NULL
+  version_id BLOB16 NOT NULL
+  gen_stamp BLOB32 NOT NULL
+  moniker TEXT NOT NULL
+  kind TEXT NOT NULL
+  PRIMARY KEY (gen_stamp, intro_id)
+
+outbox
+  seq INTEGER PRIMARY KEY AUTOINCREMENT
+  version_id BLOB16
+  gen_stamp BLOB32
+  sink_kind TEXT NOT NULL             -- text|vector|usage_index
+  op TEXT NOT NULL                    -- upsert|delete  (typed enum in Rust)
+  created_at INTEGER NOT NULL
+
+sink_watermarks
+  sink_kind TEXT PK
+  last_seq INTEGER NOT NULL
+  updated_at INTEGER NOT NULL
+
+overlays
+  name TEXT PK
+  remote_endpoint TEXT
+  branch TEXT NOT NULL
+  precedence INTEGER NOT NULL
+  last_merged_commit TEXT
+  added_at INTEGER NOT NULL
+
+edgepack_artifacts
+  edgepack_key_digest BLOB PK
+  version_id BLOB16 NOT NULL
+  recipe_fingerprint TEXT NOT NULL
+  artifact_id BLOB
+  ram_estimate INTEGER
+  published_at INTEGER
+
+schema_meta
+  -- user_version via rusqdoltlite_migration runner
+```
+
+### 8.1 CatalogOp (ingestor → writer)
+
+```rust
+// index/protocol.rs
+#[derive(Serialize, Deserialize)]
+pub enum CatalogOp {
+    UpsertPackage { stem: PackageStemWire, repo_url: Option<String> },
+    UpsertVersion {
+        coordinates: VersionCoordinates,
+        published_at: Option<UnixMs>,
+        toolchain: Option<ToolchainRef>,
+        license: Option<String>,
+        edges: Vec<EdgeWire>,
+        facets: FacetWire,
+        source: Option<SourceAcquisitionWire>,
+    },
+    SetRepoFacts { stem: PackageStemId, facts: RepoFactsWire },
+    SetListing { version: PackageId, status: ListingStatus, valid_from: UnixMs, reason: Option<String> },
+    UpsertAdvisory { advisory: AdvisoryWire },
+    SourceMoved { stem: PackageStemId, rev: GitRev, checked_at: UnixMs },
+    SetIrStatus { version: PackageId, status: IrStatus, gen: Option<GenStampWire> },
+    Refresh { stem: PackageStemId },
+}
+
+pub trait MetaStore: Catalog {
+    fn apply_ops(&self, ops: &[CatalogOp]) -> Result<ApplyReport, MetaError>;
+    fn register_generation(&self, reg: GenerationRegistration) -> Result<(), MetaError>;
+    fn outbox_claim(&self, sink: SinkKind, limit: usize) -> Result<Vec<OutboxRow>, MetaError>;
+    // …
+}
+
+pub trait Catalog: Send + Sync {
+    fn get_package(&self, id: PackageId) -> Result<Option<PackageRow>, MetaError>;
+    fn changed_since(&self, cursor: CatalogCursor) -> Result<ChangedPage, MetaError>;
+    fn at(&self, as_of: AsOf) -> CatalogAsOf<'_>;
 }
 ```
 
-Search hits may include availability for the hit’s pinned generation. Expand/IR routes use it for
-status codes and client retry/backoff while sync continues.
-
-### 3.4 Store registry
-
-`stores.kind ∈ { ir_vcs_local, ir_vcs_iroh, compile_cache_iroh }`. An IR store URI points at a
-reachable **IrRepository** (path or iroh endpoint that serves change files), not a generic
-`cas/{blake3}` IR dump. S3 may back enterprise iroh providers as durable substrate for **change
-files and compile helpers**; clients still speak iroh. **[supersedes residual HTTPS blob plane
-and parallel local IR CAS as product default]**
-
-### 3.5 Offline
-
-1. Offline: seal into local IrRepository → local location `present` → catalog on `local/<device-id>`.
-2. Online: background steps 5–7 without user mode switch (merge-triggered IR sync + catalog push).
-3. Conflicts: ID-12 policy for catalog; IR apply follows libpijul single-writer channel rules.
-
 ---
 
-## 4. Workspace and crate topology
-
-Backend collapses to **six** members (five abstractions + ingestor). IR leaves the backend
-lockfile (~112k LOC). GUI hosts `client`.
-
-```
-Backend/workspace/
-  heart      Query kernel, wire, cache, content-hash types, vector-core absorbed
-  ecosystem  sealed zero-IO spec leaf (stays standalone)
-  index      rusqdoltlite engine, schema v4, Catalog/MetaStore, overlays, iroh catalog
-             sync adapter, scratch, CatalogOp, backup/DR
-  registry   search v3, runtime/text, compiled store, vector-* features;
-             − legacy runtime/vector, − schema/index/queue/pg coordination, − ingest/upstream
-  server     HTTP shell, workers, forge glue, outbox followers, iroh provider wiring
-  ingestor   external binary: CatalogFollower + upstream clients → CatalogOp
-
-Backend/ir/
-  ir, nudox-*, ir-stream, ir-sync (VCS change distribution), nudox-sync,
-  nudox-ir-vcs (IrRepository), compiler + SmolvmCage, vendor/libpijul
-
-workspace/gui/
-  lindsey · client (LocalEnrichment, local catalog, offline branch, desktop vector edge)
-```
-
-Cross-workspace rules:
-1. Backend deps only `ir` data-model crate — never nudox-ir-vcs/libpijul.
-2. IR may dep `heart` only among backend crates.
-3. GUI deps backend one-way; gpui never enters backend.
-
-vector-local/embed/remote fold into registry features `edge` / `onnx` / `remote`. Server reaches
-vectors only through registry features.
-
----
-
-## 5. Schema v4 (`catalog.dolt`)
-
-All tables via `catalog_table!` (ID-6). Columns abbreviated; macro is normative.
-
-```
-packages            stem_id BLOB16 PK · ecosystem TEXT · name_struct TEXT(purl) ·
-                    name_canonical TEXT · name_original TEXT · repo_url TEXT? ·
-                    created_at INT   [UNIQUE (ecosystem, name_canonical)]
-versions            id BLOB16 PK · stem_id FK · version_canonical TEXT ·
-                    version_original TEXT · published_at INT? · toolchain TEXT(json) ·
-                    license_spdx TEXT? · yanked_upstream INT01 ·
-                    parse_state TEXT · parse_phase TEXT? · attempts INT · failure TEXT(json)?
-                    [UNIQUE (stem_id, version_canonical)]
-generations         gen_stamp BLOB32 PK · version_id FK ·
-                    channel_tip BLOB32 ·              ← libpijul tip / seal change id
-                    producer_toolchain TEXT · sealed_at INT · job_key BLOB32?
-stores              store_id BLOB16 PK ·
-                    kind TEXT(ir_vcs_local|ir_vcs_iroh|compile_cache_iroh) ·
-                    endpoint TEXT · added_at INT · healthy INT01
-                    ← IR stores = IrRepository endpoints, not cas/ trees
-generation_locations gen_stamp FK · store_id FK ·
-                    status TEXT(present|pending|evicted) ·
-                    PK (gen_stamp, store_id)          ← union-merge, append-only
-compile_cache       job_key BLOB32 PK · gen_stamp FK? · tip_hash BLOB32? ·
-                    kind TEXT(l0_tip|l1_stage|golden) ·
-                    object_hash BLOB32 · image_digest TEXT? · updated_at INT
-                    ← compile accelerators only (ID-26); never IR SoT
-edges               dependent_version FK · dep_ecosystem TEXT · dep_name_canonical TEXT ·
-                    requirement TEXT · resolved_stem FK? · kind TEXT ·
-                    source TEXT(feed|manifest)
-repo_facts          stem_id FK · stars INT? · last_activity_at INT? · archived INT01 ·
-                    fetched_at INT
-popularity          ecosystem TEXT · stem_id FK · downloads INT? ·
-                    downloads_pct_ppm INT? · dependents_pct_ppm INT? ·
-                    computed_at INT · PK (ecosystem, stem_id)
-facets              version_id FK PK · keywords TEXT(json) · quality_ppm INT ·
-                    extras TEXT(json)
-listing_events      seq INTPK · version_id FK · status TEXT · reason TEXT? ·
-                    valid_from INT · valid_to INT? · recorded_at INT
-symbols             id BLOB16 PK · version_id FK · fq_name TEXT · kind TEXT · gen_stamp BLOB32
-outbox              seq INTPK AUTOINC · version_id FK · gen_stamp BLOB32 ·
-                    sink_kind TEXT · op TEXT · created_at INT
-sink_watermarks     sink_kind TEXT PK · last_seq INT · updated_at INT
-overlays            name TEXT PK · remote_url TEXT? · branch TEXT · precedence INT ·
-                    last_merged_commit TEXT? · added_at INT
-edgepack_artifacts  edgepack_key_digest BLOB PK · version_id FK ·
-                    recipe_fingerprint TEXT · artifact_id BLOB? ·
-                    ram_estimate INT? · published_at INT
-schema_meta         user_version via rusqdoltlite_migration; sea-query DDL;
-                    pre-migrate-vN snapshot branch before each migration
-```
-
-`scratch.sqlite`: `jobs`, `wanted`, `sessions`, `edgepack_claims`.
-
-Deliberately absent: `parse_status` table (on `versions`), jobs in versioned file, sessions in
-catalog, symbol-content history in SQL, duplicate JSON for first-class columns.
-
-### 5.1 `catalog_table!`
-
-One macro invocation per table emits Iden, `TableCreateStatement`, typed row + total codecs
-(uuid→BLOB16, hash→BLOB32, time→INTEGER unix-ms, enums→TEXT), and search field specs. Migrations
-consume the same statements. Wire `From<Row>` in heart.
-
----
-
-## 6. Query algebra
+## 9. Query algebra + search
 
 ```rust
+// heart/query.rs
+#[derive(Serialize, Deserialize)]
 pub struct Query {
-    pub target: Target,       // Packages | Symbols
-    pub text: String,         // → StructuredQuery inside engine
-    pub scope: Scope,         // ecosystems, namespace, deps, license, packages, dep_set
+    pub target: Target,
+    pub text: String,
+    pub scope: Scope,
     pub rank: RankSpec,
-    pub at: Option<AsOf>,     // Commit | Time — prefer Time externally (ID-16)
-    pub page: PageSpec,       // limit + after cursor — sole pagination site
+    pub at: Option<AsOf>,   // prefer AsOf::Time externally
+    pub page: PageSpec,
+}
+
+pub enum Target {
+    Packages,
+    Symbols,
+    Usages { of: StableRef },
+}
+
+pub enum AsOf {
+    Commit(CommitHash),
+    Time(UnixMs),
 }
 
 impl SearchEngine {
-    pub fn search(&self, q: &Query) -> Result<Page<Hit>>;
+    pub fn search(&self, q: &Query) -> Result<Page<Hit>, SearchError>;
 }
 ```
 
-Retrieve → gate → rank (ID-11) → interleave → page once. Symbol search shares Scope/PageSpec
-behind `Target::Symbols` (NDJSON streaming remains without resume cursor — settled).
+**Replacement points:** delete `RegistryQuery`, dual `PackageSearchRequest`, `PackageSearchDeps`,
+server `Pagination`, package half of `SearchRequestDto`, GUI wire sextet, handler double-cursor.
+
+Pagination **only** via `PageSpec` inside the engine after rank.
 
 ---
 
-## 7. Serving
+## 10. SmolvmCage (first-class, reproducible)
 
-Server state after cutover: mounted catalogs (base + overlays) each with projections;
-SearchEngine per mount; embedder + cache; compiler client; compiled store; heuristics; scratch;
-**iroh endpoint** (blobs + catalog ALPN). No `PgPool`s.
+```rust
+// compiler/sandbox/smolvm.rs — already exists; make it THE cage
+pub struct SmolvmCage<R: VmRuntime> { /* … */ }
 
-Loops:
-1. **op apply** — system-authz `CatalogOp` → writer + outbox + commit  
-2. **outbox followers** — text / vector / graph  
-3. **iroh catalog pull** — replicas / mirrors  
-4. **iroh IR change provide/fetch + apply-on-demand** — serve-when-available (`ir-sync`)  
-5. **forge** — smolvm seal into IrRepository → MetaStore gens/locations/symbols (single writer)  
-6. **bakery** — ledger in catalog, claims in scratch  
-7. **background promote** — device/edge branches → main + compile_cache admit (ID-26)
-
-Ingestor split at IP-5; until then followers may still run in-process against MetaStore so feeds
-never pause across IP-4.
-
----
-
-## 8. Ingestion plane
-
-`CatalogOp`: `UpsertPackage`, `UpsertVersion { … edges, facets }`, `SetRepoFacts`,
-`SetListing { status, valid_from, reason }`, `Refresh { stem }`. Ingestor parses; server
-validates `EcosystemSpec`.
-
-Official registries only as truth sources. Multiple big hosts / no central registry ⇒ multiple
-**ingestion points** (same op stream shape). No feed parser in the serving binary after IP-5.
-
-Demand-pull: `wanted` in scratch; long-poll `/v1/ingest/wanted`; lease rows; writer-only access.
-
-Withdrawn: op → `listing_events` + outbox deletes → projection tombstones.
-
-Edges: from feed/manifest where available; Go/etc. partial until ECOSYSTEM P3 — ranking falls
-back to popularity percentile for those ecos without pretending dependents exist.
-
----
-
-## 9. Overlays, HA, offline (mechanics)
-
-Branch names: `main`, `local/<device-id>`, `overlay/<name>`, `pre-migrate-vN`. Remotes named by
-role (`origin`, `backup`, enterprise mirrors) — addresses are iroh endpoint IDs + tickets, not
-raw HTTP remotesrv URLs on the public net.
-
-Sync engines:
-
-```
-IR:   merge on durable channel → ir-sync provide/fetch change files → verify → apply tip
-INDEX: pull catalog → merge(policy) → resolve-or-surface → commit → push  (iroh catalog ALPN)
+impl<R: VmRuntime> Cage for SmolvmCage<R> {
+    fn id(&self) -> CageId { CageId("smolvm-microvm") }
+    // project CapabilityBudget → VmConfig (nix image by digest)
+}
 ```
 
-Readers stay on pre-merge catalog commit during reconcile (no mid-sync mixing). Overlay
-projections are **delta-sized** via `dolt_diff_*` against `last_merged_commit`.
+**Reproducibility rules:**
+1. Toolchain images built with nix (`workspace/compiler/image.nix` + SMOLVM toolchain packs).
+2. Image identity = OCI digest; JobKey includes that digest.
+3. Golden: after warm boot of image digest D, checkpoint → ObjectPack `MemberKey::Golden` →
+   iroh provide to trusted remotes.
+4. Restore golden only if `image_digest` + `producer_version` match; else rebuild.
 
-Writer topology: CatalogOp apply and session routes live on the **advertised writer**. Replicas
-redirect writes; promote swings the advertisement. Protected branches: force-push / history
-rewrite rejected on `main` and `overlay/*` at the catalog ALPN layer.
-
-Failure drills (tests, not docs): writer death + promote; offline device merge with conflicts;
-backup restore; torn change put (no `present` without pijul verify); catalog merge without IR tip
-(Availability); promote shares golden/L1 helpers and next host hits compile_cache.
+**Embedded:** one cage. **Remote:** pool of goldens per digest, still content-keyed.
 
 ---
 
-## 10. Versioning and bitemporality
+## 11. Serving loops (Remote)
 
-- Dependents at time T → `Query { scope.deps, at: Time(t) }` → `dolt_at_edges` / `dolt_at_versions`
-- Listing malicious “true since March, learned today” → `listing_events` valid_from vs recorded_at
-- GUI version pin → generation’s seal + that gen’s IR via locations (ID-24/25)
-- History endpoint → `dolt_history_*` / `dolt_diff_*` without new storage
-- Retention → ID-16 (gc + prefer AsOf::Time + protected main)
+1. HTTP router — Query, expand, usages, authz, wanted, grants, health  
+2. CatalogOp apply (writer)  
+3. Outbox followers → tantivy / vector / usage reverse-index  
+4. iroh catalog pull (replicas)  
+5. ir-sync provide/fetch  
+6. ObjectPack provide/fetch  
+7. Forge: SmolvmCage → RecordingSession → register_generation  
+8. GitMonitor + registry followers (ingestor process)  
+9. Promote local/edge branches → main (background)  
+10. Bakery  
 
----
-
-## 11. Ranking notes
-
-Within-eco relative percentiles only. Dependents from real `edges` reverse aggregate (incremental,
-not full-corpus sweep). Fusion constants in ID-11. Unscoped queries:
-`rank_per_ecosystem_and_interleave` after per-eco rank.
-
----
-
-## 12. Vector plane
-
-**One** implementation: vector-core (in heart) + registry features edge/onnx/remote.  
-**Delete** `registry/runtime/vector` (~970 LOC). No dual stack.
+**Embedded:** same libraries; single-threaded writer; one forge; no multi-replica sessions.
 
 ---
 
-## 13. Functionality ledger
+## 12. Ops & DR (replacement for Litestream “ops”)
 
-**keep** / **improve** / **cut** (settled).
-
-**Serving routes — keep/improve:**  
-`/packages/search` (Query + AS OF + one cursor) · symbol search streams · `/expand` · `/packages*` ·
-`/v1/compiled/lookup` · depshards · `/v1/rerank` · **`/sessions/:id` (scratch, writer-sticky —
-ID-27)** · admin verify/rebuild · health (catalog/commit + overlay + iroh probes).  
-New: `/v1/packages/{id}/history`, overlay admin, `/v1/ingest/wanted`, availability on IR routes.
-
-**Workers — keep/improve:** ingestor followers · forge/smolvm · outbox ×3 · package-index via
-outbox/`changed_since` · signals via SQL aggregates · cas_gc (+ commit reachability) · bakery ·
-**iroh provide/fetch + promote loop**.
-
-**Search — keep** all v3 features; **improve** dependents + AS OF + availability-aware IR.
-
-**GUI — keep** search/enrichment; **improve** offline catalog branch, conflict surfacing, heart wire.
-
-**Ops — keep** authz, watermarks, GC invariant, DR drill; **add** multi-host iroh HA, backup
-remotes, promote-and-share compile cache.
-
-**Settled cuts / design choices (former sign-offs):**
-1. Sessions: writer-sticky scratch — **accepted** (ID-27).
-2. Legacy runtime/vector: **deleted** in favor of vector-* (ID-23).
-3. Symbol-search: no resume cursor — **accepted** (parity with today’s NDJSON).
-
----
-
-## 14. Deletion ledger
-
-| What | LOC |
+| Metric / drill | Normative value |
 |---|---|
-| Postgres spine (schema, GlobalStore, queue, outbox, session, pools, pg workers, …) | ~8,000 |
-| Search shims + query sprawl + GUI wire dupes | ~1,600 |
-| Legacy vector stack | ~970 |
-| **Direct deletions** | **~10,600** |
-| Ingest/upstream/resolve/rich → ingestor | ~3,750 **moved** |
-| IR plane out of backend workspace | ~112,000 **re-homed** |
-| Superseded branch not merged | ~11,600 avoided |
-
-New code (order of magnitude, full vision): index crate + iroh dual-plane + promote/compile_cache
-+ query/serving swap ≈ **15–25k** written/rewritten across IP-0..IP-7 — not a pure delete.
-
----
-
-## 15. Build order
-
-| Phase | Content | Gate |
-|---|---|---|
-| **IP-0 Engine + iroh fabric** | Vendor rusqdoltlite; sea-query binder 0.40; prove commit/branch/merge/at/push/pull/conflicts/**gc**/rebase; two-process **iroh** catalog + **ir-sync change-file** sync; pijul hash + Bao verify; bench ≤2× PG; macOS arm64/x86_64 + Linux | All green or **stop** (no fallback product) |
-| **IP-0b Re-home** | git mv IR workspace; vector-core → heart; vector-* → registry features; client crate scaffold | Three workspaces build |
-| **IP-1 Index crate** | schema v4, facade, MetaStore, scratch, migrations, location + compile_cache tables | Property tests, codec goldens |
-| **IP-2 Query kernel** | heart Query/AsOf/Page; GUI on heart types | Serde goldens |
-| **IP-3 Projections** | outbox → tantivy/vector/graph; dependents/popularity SQL | Rebuild-from-empty; NDCG floor |
-| **IP-4 Serving swap + purge** | mounted catalogs; delete Postgres; sessions sticky; vector legacy gone; iroh in server state | Integration + `/v1` conformance |
-| **IP-5 Ingestor** | external process; wanted-queue; withdrawn E2E | Separate-process itest |
-| **IP-6 Dual-plane topology** | overlay merge; ir-sync change distribution; serve-when-available; promote-to-main + compile_cache/golden share; replica pull; backup remote; offline device; DR drill | E2E test §3.2; two-writer property tests; Availability cases |
-| **IP-7 Time travel** | AsOf surfaces; dependents-at-time; history endpoint; retention jobs (`dolt_gc`, branch GC) | AS OF tests; 90-day commit policy enforced in ops tests |
-
-IP-0 is a hard gate for the architecture. IP-1..3 can parallelize after facade signatures freeze.
-IP-4 is cutover. IP-6 is where “overlays are king” becomes real — not optional polish.
+| Writer RPO to backup remote | ≤ 30s (push after each commit batch; timer ≤ 30s) |
+| Read replica lag | pull on outbox-head advance or ≤ 5s poll |
+| Catalog restore | clone from backup remote OR file snapshot at commit boundary + `dolt` open |
+| Projection rebuild | wipe tantivy/vector/usage_index; replay outbox + `changed_since` |
+| IR restore | re-fetch change closure from any `present` store; apply tips |
+| ObjectPack restore | re-fetch by ObjectPackId from providers |
+| DR drill | CI weekly: kill writer → promote replica → search green; restore backup → green |
+| `dolt_gc` | weekly on abandoned `local/*`; exclusive window; never force-rewrite `main` history |
+| Commit pin policy | Prefer `AsOf::Time`; `AsOf::Commit` stable ≥ 90d on `main` |
 
 ---
 
-## 16. Risks (no open product questions)
+## 13. Migrations (painless)
 
-| # | Risk | Response (designed, not deferred) |
-|---|---|---|
-| R-1 | rusqdoltlite youth | Vendor/pin; DoltLite is DoltHub-maintained with `dolt_gc`/rebase; facade choke point; IP-0 hard gate |
-| R-2 | sea-query-rusqlite 0.38 vs 0.40 | Vendor-fork binder |
-| R-3 | Write path slower than SQLite | IP-0 2× budget; batch heartbeats (ID-4) |
-| R-4 | Catalog remote auth | Never naked remotesrv; iroh ALPN + tickets/mTLS (ID-15) |
-| R-5 | Prolly format longevity | Backup remote + sea-query dump-to-plain-sqlite **export** for disaster archive (not a runtime engine alternative) |
-| R-6 | Commit-graph growth | Batch commits; branch GC; `dolt_gc`; AsOf::Time default (ID-16) |
-| R-7 | Merge conflicts | Table-class policy; typed surface; union tables can’t conflict |
-| R-8 | Three lockfiles drift | CI builds all workspaces; backend↔IR surface = `ir` only |
-| R-9 | GUI wire break | IP-2 single change + goldens |
-| R-10 | Fold vs in-flight work | IP-0b only after search v3 commit; pure git mv |
-| R-11 | Commit pin invalidation | Protected main; AsOf::Time default; rebase only off protected lines (ID-16) |
-| R-12 | Serve before IR tip applicable | Availability enum; never lie `present` without changestore apply (ID-24/25) |
-| R-13 | Poisoned local promote | Pijul change-hash verify + host seal ownership before tip/compile_cache admit (ID-26) |
-| R-14 | Smolvm golden staleness | Key by image_digest + producer_version; miss ⇒ rebuild golden (SMOLVM V9) |
-
-### Resolved research notes (former open questions)
-
-| Former | Resolution |
+| Store | Mechanism |
 |---|---|
-| **O-1** DoltLite GC/squash? | **Yes.** `SELECT dolt_gc();` mark-and-sweep exclusive; `dolt_rebase` supports squash/fixup/drop. Policy in ID-16. |
-| **O-2** Catalog transport on iroh? | **Yes, required.** Dual-plane iroh: catalog ALPN + **IR change-file** sync (`ir-sync`). No parallel IR CAS. ID-15/24. |
-| **O-3** Fusion weights? | **Fixed constants** in ID-11; eval harness guards regressions only. |
-| **O-4** Sign-off blanks? | **Settled** in §13 / ID-23 / ID-27. |
+| catalog.dolt | `rusqdoltlite_migration` + sea-query; `pre-migrate-vN` branch before run; fail ⇒ checkout |
+| IR changes | immutable; new format_version on new changes only |
+| ObjectPack | header version; readers support current and previous |
+| projections | `schema_version` marker file; mismatch ⇒ full rebuild |
+| scratch | delete anytime |
 
 ---
 
-## 17. What this plan refuses
+## 14. Dead code / replacement map (beginner checklist)
 
-- Postgres or Litestream as catalog substrate  
-- Plain SQLite as a “versioning-free fallback product”  
-- Dual vector stacks  
-- Feed parsers inside the serving binary (post IP-5)  
-- Naked doltlite-remotesrv on untrusted networks  
-- iroh-docs / CRDT multi-writer as the package catalog  
-- Public IPFS swarm as distribution  
-- Silent merge resolution  
-- Marking IR `present` without pijul change-hash verify + apply  
-- A parallel local **IR artifact CAS** beside the changestore  
-- Sharing mutable language build dirs (`target/`, etc.) across trust boundaries  
-- Shipping overlays/HA/offline as a later “maybe” after a non-versioned spine  
+| Delete / stop using | Replace with |
+|---|---|
+| Postgres pools, schema, PgSessionStore, Litestream | `index` crate + scratch sessions |
+| `registry/runtime/vector` legacy | vector-* features |
+| Terminus client in server | Trustfall + usage reverse index |
+| Ladybug | nothing (dead) |
+| ApiSurface / DepSurfaceProvider | reflections + DepIrProvider |
+| OccurrenceSeal / occurrences_ref / syntax/occurrence sidecar | `occ` frames + host resolve |
+| SymbolTable / MergedSymbolTable | monikers reflection |
+| Serving `.crate` as source | ObjectPack from git (grit) or reconstructed pack |
+| Dual query DTOs | `heart::Query` |
+| iroh-docs catalog | DoltLite remotes over iroh ALPN |
+| Public IPFS | refuse |
 
 ---
 
-*End of INDEX-PLAN rev 2. Companions: ECOSYSTEM-PLAN, LIBRARIFICATION-PLAN, SMOLVM-PLAN
-(ID-26 amends SV-6 promote path), `ir-sync` (VCS-native IR — no parallel CAS), edge-tech iroh
-(elevated to sole transfer fabric), DoltLite docs (`dolt_gc`, `dolt_rebase`, remotes warning).*
+## 15. Build order (gates a junior can run)
+
+| Phase | Deliverable | Gate (must pass) |
+|---|---|---|
+| **IP-0** | rusqdoltlite vendor; engine facade; iroh catalog+ir-sync+ObjectPack smoke; macOS+Linux | open/commit/merge/gc; two-process iroh; Bao range get; bench ≤2× old PG ingest |
+| **IP-0b** | Re-home IR workspace; kill Terminus/Ladybug deps from backend graph | `cargo build` three workspaces |
+| **IP-1** | `index` crate schema v4 + MetaStore + scratch + migrations | property: codec, migrate up/down via branch |
+| **IP-2** | heart Query/AsOf/Page; GUI client types switch | serde goldens |
+| **IP-3** | Projections: tantivy + usage reverse index; outbox typed | rebuild-from-empty; NDCG floor |
+| **IP-4** | Server swap; delete Postgres; Trustfall route; SmolvmCage only cage | integration `/v1` green |
+| **IP-5** | Ingestor: registry followers + grit GitMonitor + advisories | separate process itest |
+| **IP-6** | Dual-plane topology: trusted provide, serve-when-available, promote, offline branch | E2E §7; Availability cases |
+| **IP-7** | `occ` + resolve-in-session + moniker reflections + usages Query | O-1..O-11 from 04-ir-unification §7 |
+| **IP-8** | ObjectPack production path; source policy; golden iroh share | pack range-get; golden restore hit |
+| **IP-9** | AsOf surfaces; retention jobs | time-travel tests |
+
+---
+
+## 16. GUI / client (subagent scope)
+
+**Out of this file’s implementation detail**, but normative constraints for the GUI subagent:
+
+1. Embedded profile only (`DeploymentKind::Embedded`).  
+2. **No Ladybug.** Graph UI calls HTTP routes or local Trustfall over fetched IR.  
+3. **No Terminus.**  
+4. Offline: `local/<device-id>` catalog branch + local IrRepository + local ObjectPack.  
+5. Trusted remote list in settings; background provide.  
+6. Wire types from `heart` only (`Query`, pages, `StableRef`, `Confidence`).  
+7. SmolvmCage for local compile; goldens from ObjectPack when present.
+
+---
+
+## 17. Risks (no open product questions)
+
+| Risk | Response |
+|---|---|
+| rusqdoltlite youth | Vendor; IP-0 hard gate |
+| Git tag ≠ `.crate` tree | Prefer git; record reconstructed packs with checksum honesty |
+| grit-lib maturity | Pin version; thin adapter trait `GitRepo` so grit is swappable **only at adapter** — not a second product design |
+| Trustfall perf | Reverse index projection for hot reverse queries; Trustfall for flexible queries |
+| Commit growth | batch commits + dolt_gc + AsOf::Time |
+| Poisoned promote | pijul verify + BLAKE3 ObjectPack verify before present |
+
+---
+
+## 18. Acceptance scenarios (product)
+
+1. **Metadata AS OF** — dependents of X at time T via catalog only.  
+2. **IR AS OF** — symbol + occ at channel tip pinned by gen.  
+3. **No live .crate serve** — search hit → snippet from ObjectPack (git or reconstructed pack).  
+3b. **Provenance** — axum@X row carries registry checksum + source_rev/source_pack used.  
+4. **Git move** — grit sees new tag → CatalogOp → IR job.  
+5. **Advisory** — listing_events/advisories bitemporal.  
+6. **Offline seal** — device branch; reconnect provide; mainline cache hit.  
+7. **Trusted upload** — only enrolled remotes accept provide.  
+8. **Golden share** — host B restores golden via iroh; cage cold-start skipped.  
+9. **Usages query** — Trustfall/reverse index; no Terminus.  
+10. **Reflection only** — monikers() over IR; no ApiSurface artifact on disk.  
+11. **IR status without store** — version row `ir_status=pending`, locations empty; UI honest.  
+12. **Migrate catalog** — pre-migrate branch; rollback checkout works.
+
+---
+
+## 19. Reading order for a beginner implementer
+
+1. This file §§1–4 (decisions)  
+2. §5 IR + 04-ir-unification U-decisions  
+3. §6 ObjectPack + §7 sync  
+4. §8 schema + CatalogOp  
+5. §9 Query  
+6. §10 Smolvm  
+7. §15 phases in order; never skip IP-0  
+8. ECOSYSTEM-PLAN for follower details  
+9. SMOLVM-PLAN for cage budgets (minus dead SV-6 never-upload — use ID-18)
+
+---
+
+*End INDEX-PLAN rev 3. Greenfield. No fallbacks. IR is the universe. Catalog is versioned SQL. Data moves on iroh+Bao. HTTP stays thin. Graph is Trustfall. Source is git/ObjectPack. Indexer watches registries and grit. Smolvm is reproducible nix.*

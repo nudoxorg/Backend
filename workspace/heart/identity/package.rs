@@ -99,6 +99,10 @@ pub enum PackageVersion {
     /// `+rev` build metadata is preserved but ignored in ordering (FlakeHub
     /// patch numbers are monotonic commit counts, so ordering stays correct).
     Nix(semver::Version),
+    /// C/C++ registry-less version string (git tag, vcpkg `version-date`,
+    /// Go-style pseudo-version, or a raw lexical fallback). Kept as the raw
+    /// string; ordering/grammar live in `ecosystem::cpp::version::CppVersion`.
+    Cpp(String),
 }
 
 impl TryFrom<(Language, &str)> for PackageVersion {
@@ -125,6 +129,10 @@ impl TryFrom<(Language, &str)> for PackageVersion {
             Language::Go => Ok(Self::Go(raw.to_owned())),
             Language::Java => Ok(Self::Java(raw.to_owned())),
             Language::CSharp => Ok(Self::CSharp(raw.to_owned())),
+            // C/C++ versions are validated by the ecosystem `CppVersion`
+            // grammar (total: every string is at worst a `Raw`), so the raw
+            // string is always accepted here.
+            Language::Cpp => Ok(Self::Cpp(raw.to_owned())),
             Language::Nix => {
                 let v = semver::Version::parse(raw)
                     .map_err(|source| NixVersionError { raw: raw.to_owned(), source })?;
@@ -142,9 +150,10 @@ impl PackageVersion {
                 v.to_string()
             }
             PackageVersion::Python(v) => v.to_string(),
-            PackageVersion::Go(v) | PackageVersion::Java(v) | PackageVersion::CSharp(v) => {
-                v.clone()
-            }
+            PackageVersion::Go(v)
+            | PackageVersion::Java(v)
+            | PackageVersion::CSharp(v)
+            | PackageVersion::Cpp(v) => v.clone(),
         }
     }
 }
@@ -159,6 +168,7 @@ impl From<&PackageVersion> for Language {
             PackageVersion::Java(_) => Language::Java,
             PackageVersion::CSharp(_) => Language::CSharp,
             PackageVersion::Nix(_) => Language::Nix,
+            PackageVersion::Cpp(_) => Language::Cpp,
         }
     }
 }
@@ -178,6 +188,10 @@ pub enum RegistryOrigin {
     GoProxy,
     /// repo1.maven.org — Maven Central (sources jar preferred).
     MavenCentral,
+    /// A git repository is the package (the registry-less `cpp` plane, RL-1):
+    /// there is no registry, identity is the repo slug, and source is acquired
+    /// by checking out a rev rather than downloading from a registry.
+    Git,
     Custom { name: SmolStr, url: url::Url },
 }
 
@@ -191,6 +205,7 @@ impl RegistryOrigin {
             RegistryOrigin::NuGet => Cow::Borrowed("nuget"),
             RegistryOrigin::GoProxy => Cow::Borrowed("goproxy"),
             RegistryOrigin::MavenCentral => Cow::Borrowed("maven-central"),
+            RegistryOrigin::Git => Cow::Borrowed("git"),
             RegistryOrigin::Custom { name, .. } => Cow::Owned(name.to_string()),
         }
     }

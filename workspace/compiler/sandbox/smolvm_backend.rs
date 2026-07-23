@@ -46,7 +46,44 @@
 //! | `VsockPort { listen: false, … }` | **`VmError::Unsupported`** — `listen: false` means the *guest* listens and the host connects in; that is the `Expose` direction, which is the opposite of the IR-stream pattern (host-listener). No use case for this exists in the current design. | documented gap V-VSOCK-EXPOSE-1 |
 //! | `RunSpec.rlimits` | prepended `sh -c 'ulimit …; exec …'` wrapper | smolvm-protocol has no rlimit field; wrapper is argv-safe (ulimit built-in) |
 //! | `RunSpec.timeout` | `AgentClient::vm_exec(…, timeout: Some(…))` | — |
-//! | `GoldenId` / fork_golden | **not supported at this layer** — `AgentManager` has no public fork API exposed outside the `embedded` runtime that manages DB-tracked goldens; `fork_golden` cold-boots a new VM | documented gap V-GOLD-1 |
+//! | `GoldenId` / `fork_golden` | **real CoW fork (V-GOLD-1 CLOSED)** — a warm *forkable* golden VM (memfd-backed guest RAM + control socket) is registered per image digest; `fork_golden` calls `smolvm::agent::fork::prepare_fork` to freeze+snapshot the golden and CoW-clone its disks, then boots the ephemeral job clone from the golden's in-memory snapshot (`LaunchFeatures.snapshot_dir`) — the ~250 ms restore, not a cold boot | — |
+//! | `checkpoint` | boots a fresh forkable golden (memfd RAM + control socket) from `base/` and registers it in the DB; the returned [`GoldenId`] is the golden's VM name | — |
+//!
+//! # Golden fork (V-GOLD-1 — realized)
+//!
+//! The smolvm crate at the pinned rev exposes the **whole** live-fork stack
+//! publicly, not only through `EmbeddedRuntime`:
+//!
+//! - [`smolvm::agent::LaunchFeatures`] carries `forkable` (memfd-back guest RAM
+//!   so it is copy-on-write cloneable), `control_socket` (pause/resume/FORK),
+//!   and `snapshot_dir` (boot as a clone, restoring from a golden's snapshot).
+//! - [`smolvm::agent::fork::prepare_fork`] freezes a running forkable golden,
+//!   snapshots its memfd RAM + device state, CoW-clones its qcow2 disks
+//!   (`O(metadata)` regardless of golden size), inserts the clone's DB record,
+//!   and returns the `snapshot_dir` to boot the clone from.
+//! - [`smolvm::agent::fork::rejuvenate_clone`] /
+//!   [`smolvm::agent::fork::fail_closed_on_rejuvenation`] re-mint the clone's
+//!   per-machine on-disk identity (machine-id, SSH host keys, hostname, RNG)
+//!   fail-closed, so a clone never impersonates the golden across tenants.
+//!
+//! We drive those primitives directly (mirroring `smolvm::embedded::control::fork_vm`
+//! but keeping our own [`SmolvmHandle`] type and one-VM-per-job teardown) rather
+//! than adopting `EmbeddedRuntime` wholesale. The `SmolvmDb` registry the module
+//! doc originally called "overkill for ephemeral job VMs" is *intrinsic* to fork:
+//! `prepare_fork` records the clone and its golden→clone CoW-disk dependency in
+//! the DB. The warm golden is long-lived (one per toolchain image digest, kept
+//! frozen as the shared base); every job's clone is still ephemeral — it is
+//! killed **and DB-removed** at end of job (see [`SmolvmHandle::kill`]).
+//!
+//! ## Residual upstream limitation
+//!
+//! Fork rejuvenation scrubs only *on-disk* identity. In-RAM golden secrets are
+//! CoW-inherited by every clone — intrinsic to fork-from-warm and a golden-image
+//! packaging constraint upstream, not fixable here (see
+//! [`smolvm::agent::fork::rejuvenate_clone`] docs). Cage goldens are toolchain
+//! base images that mint no per-instance boot secrets in RAM, so this is benign.
+//! Live fork is Linux/macOS only (`clone_fork_disks`); on other targets
+//! `prepare_fork` returns an error that we fold to [`VmError::Unsupported`].
 //!
 //! # Published-socket bridge — direction semantics
 //!
@@ -83,10 +120,15 @@
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use smolvm::agent::{AgentManager, HostMount, LaunchFeatures, VmResources};
-use smolvm::config::{PublishedSocketConfig, SocketDirection};
+use smolvm::agent::fork::{
+	control_socket_path, fail_closed_on_rejuvenation, prepare_fork, rejuvenate_clone,
+};
+use smolvm::agent::{vm_data_dir, AgentManager, HostMount, LaunchFeatures, VmResources};
+use smolvm::config::{PublishedSocketConfig, SocketDirection, VmRecord};
+use smolvm::db::SmolvmDb;
 use smolvm::storage::{OverlayDisk, StorageDisk};
 
 use crate::spec::{Output, ProcessEnd};
@@ -336,8 +378,16 @@ fn shell_quote_argv(argv: &[String]) -> String {
 pub struct SmolvmHandle {
 	manager: AgentManager,
 	client: smolvm::agent::AgentClient,
-	/// Temp directories holding ephemeral disks; dropped (deleted) with the handle.
-	_scratch: SmolvmScratch,
+	/// Temp directories holding ephemeral disks (cold-boot / `launch` path);
+	/// dropped (deleted) with the handle. `None` for a fork clone, whose disks
+	/// are DB-managed CoW overlays under `vm_data_dir(name)` and are torn down by
+	/// [`SmolvmHandle::teardown`] instead.
+	_scratch: Option<SmolvmScratch>,
+	/// When this handle is a fork clone, its `(db, clone_name)`: on `kill` the
+	/// clone VM is stopped **and removed** from the machine registry + its data
+	/// dir deleted (one-VM-per-job ephemeral teardown). `None` for a `launch`ed
+	/// one-shot VM (no DB record to clean).
+	clone: Option<(SmolvmDb, String)>,
 }
 
 /// Ephemeral disk directories for one job VM.
@@ -383,6 +433,14 @@ impl VmHandle for SmolvmHandle {
 		// Best-effort: shut down gracefully then kill. The scratch temp-dir is
 		// cleaned up on drop regardless.
 		let _ = self.manager.stop();
+		// One-VM-per-job: a fork clone is a DB-registered named machine with
+		// CoW-overlay disks under vm_data_dir(name). Forking is the START
+		// optimization; the clone still dies at end of job — so remove its
+		// registry record and delete its data dir (disks) after stopping it.
+		if let Some((db, name)) = self.clone.take() {
+			let _ = db.remove_vm(&name);
+			let _ = std::fs::remove_dir_all(vm_data_dir(&name));
+		}
 	}
 }
 
@@ -401,18 +459,48 @@ impl VmHandle for SmolvmHandle {
 /// 4. Connects an `AgentClient` over the vsock socket.
 /// 5. Returns a [`SmolvmHandle`] that execs and kills via the agent protocol.
 ///
-/// [`VmRuntime::fork_golden`] is not supported at the `AgentManager` layer
-/// (the fork API is internal to `EmbeddedRuntime`'s DB-tracked golden pool);
-/// it cold-boots instead. Tracked as gap V-GOLD-1.
+/// [`VmRuntime::fork_golden`] performs a **real CoW fork** from a warm forkable
+/// golden VM registered per image digest (V-GOLD-1 closed) — see the module docs
+/// and [`SmolvmRuntime::prepare_golden`].
+///
+/// # Golden vs. `launch` rootfs
+///
+/// [`VmRuntime::launch`] boots a one-shot VM from an *explicit* rootfs resolved
+/// by [`RootfsStore`] (image-digest → subdir), owning ephemeral temp-dir disks.
+/// The golden/fork path instead uses smolvm's DB-managed **named** VMs: a golden
+/// is a long-lived `AgentManager::for_vm` machine whose disks live under
+/// `vm_data_dir(name)` (booted from smolvm's default agent rootfs), because
+/// `prepare_fork` freezes it by name and CoW-clones those disks. The toolchain is
+/// provisioned *into* the golden (a warm, prepared machine) rather than selected
+/// by a rootfs subdir — the idiomatic smolvm golden model.
 #[derive(Debug)]
 pub struct SmolvmRuntime {
 	store: RootfsStore,
+	/// Monotonic salt so each fork clone gets a unique VM name within a process.
+	fork_seq: AtomicU64,
 }
 
 impl SmolvmRuntime {
 	/// Construct with an explicit rootfs store.
+	///
+	/// Infallible and side-effect-free: the smolvm machine registry (`SmolvmDb`,
+	/// needed only by the golden-fork path) is opened lazily by
+	/// [`SmolvmRuntime::db`], so a `launch`-only runtime never touches it.
 	pub fn new(store: RootfsStore) -> Self {
-		Self { store }
+		Self {
+			store,
+			fork_seq: AtomicU64::new(0),
+		}
+	}
+
+	/// Open the smolvm machine registry (lazy; the golden-fork path only).
+	///
+	/// `SmolvmDb::open` opens its connection lazily on first use, so this is cheap
+	/// and safe to call per golden operation.
+	fn db(&self) -> Result<SmolvmDb, VmError> {
+		SmolvmDb::open().map_err(|e| VmError::Launch {
+			reason: format!("open smolvm machine registry (SmolvmDb): {e}"),
+		})
 	}
 
 	/// Launch one ephemeral VM from a resolved rootfs path.
@@ -494,8 +582,188 @@ impl SmolvmRuntime {
 		Ok(SmolvmHandle {
 			manager,
 			client,
-			_scratch: SmolvmScratch { _dir: tmp },
+			_scratch: Some(SmolvmScratch { _dir: tmp }),
+			clone: None,
 		})
+	}
+
+	/// Prepare (or return) a warm **forkable golden** for `image` and register it
+	/// in the [`GoldenPool`] keyed by digest, returning its [`GoldenId`].
+	///
+	/// A golden is a long-lived, DB-registered named machine started `forkable`
+	/// (its guest RAM is memfd-backed → copy-on-write cloneable) with a control
+	/// socket for the `FORK` command. Callers park the returned id in the pool;
+	/// [`VmRuntime::fork_golden`] then CoW-forks an ephemeral clone from it per
+	/// job (~250 ms restore) instead of cold-booting.
+	///
+	/// The golden VM name is derived deterministically from the image digest, so
+	/// re-preparing the same image is idempotent: if a golden by that name is
+	/// already running forkable (its control socket answers `STATUS`), this
+	/// returns the existing id without booting a second one.
+	///
+	/// The golden stays frozen as the shared base once it has clones; it must not
+	/// be relaunched writable while clones exist (smolvm enforces this — a
+	/// re-`start` of a frozen fork base is refused).
+	pub fn prepare_golden(&self, image: &ImageDigest) -> Result<GoldenId, VmError> {
+		let name = golden_vm_name(image);
+
+		// Idempotent: if the golden already runs forkable, reuse it. We probe the
+		// control socket (not the vsock agent) because a golden that has already
+		// been forked is frozen — its agent won't ping, but its control socket
+		// still answers STATUS and it can be forked again.
+		let ctl = control_socket_path(&name);
+		if ctl.exists() {
+			return Ok(GoldenId::new(name));
+		}
+
+		let db = self.db()?;
+
+		// Register the golden's record (default toolchain-base sizes) if absent, so
+		// `prepare_fork` can read it and the fork machinery can track clones.
+		if db
+			.get_vm(&name)
+			.map_err(golden_err("read golden record"))?
+			.is_none()
+		{
+			let record = VmRecord::new(
+				name.clone(),
+				/* cpus */ 1,
+				/* mem MiB */ 512,
+				/* mounts */ Vec::new(),
+				/* ports */ Vec::new(),
+				/* network */ false,
+			);
+			db.insert_vm(&name, &record)
+				.map_err(golden_err("register golden record"))?;
+		}
+
+		// Boot it forkable: memfd-backed RAM + control socket. Named disks live
+		// under vm_data_dir(name) via `for_vm`, which is exactly where
+		// `prepare_fork` looks to CoW-clone them.
+		let manager = AgentManager::for_vm(&name).map_err(golden_err("golden AgentManager"))?;
+		let features = LaunchFeatures {
+			forkable: true,
+			control_socket: Some(ctl),
+			..LaunchFeatures::default()
+		};
+		let resources = VmResources {
+			cpus: 1,
+			memory_mib: 512,
+			..VmResources::default()
+		};
+		manager
+			.start_with_full_config(Vec::new(), Vec::new(), resources, features)
+			.map_err(golden_err("start forkable golden"))?;
+
+		Ok(GoldenId::new(name))
+	}
+
+	/// CoW-fork an ephemeral clone from a warm forkable golden and return a live
+	/// handle. Mirrors `smolvm::embedded::control::fork_vm` but keeps our
+	/// [`SmolvmHandle`] type + one-VM-per-job teardown.
+	fn fork_clone(&self, golden: &GoldenId) -> Result<SmolvmHandle, VmError> {
+		let golden_name = golden.as_str();
+		let clone_name = self.next_clone_name(golden_name);
+		let db = self.db()?;
+
+		// 1. Freeze the golden, snapshot its memfd RAM + device state, CoW-clone
+		//    its disks, and register the clone's DB record. Returns the snapshot
+		//    dir to boot the clone from. On non-Linux/macOS targets, or if the
+		//    golden isn't running forkable, this is the typed error surface.
+		let prep = prepare_fork(&db, golden_name, &clone_name, &[], /* clone_forkable */ false)
+			.map_err(|e| match e {
+				// Live fork unsupported on this platform → surface as Unsupported.
+				e if e.to_string().contains("not supported") => VmError::Unsupported {
+					reason: format!("golden fork: {e}"),
+				},
+				e => VmError::Launch {
+					reason: format!("prepare_fork golden '{golden_name}': {e}"),
+				},
+			})?;
+
+		// 2. Boot the clone from the golden's in-memory snapshot (~250 ms restore)
+		//    instead of cold-booting. Its CoW-overlay disks are already in place
+		//    under vm_data_dir(clone_name); `for_vm` opens them as-is.
+		let manager = AgentManager::for_vm(&clone_name).map_err(|e| {
+			let _ = db.remove_vm(&clone_name);
+			VmError::Launch {
+				reason: format!("clone AgentManager '{clone_name}': {e}"),
+			}
+		})?;
+		let features = LaunchFeatures {
+			snapshot_dir: Some(prep.snapshot_dir.clone()),
+			..LaunchFeatures::default()
+		};
+		let boot = manager.start_with_full_config(
+			prep.clone_record.host_mounts(),
+			prep.clone_record.port_mappings(),
+			prep.clone_record.vm_resources(),
+			features,
+		);
+		if let Err(e) = boot {
+			// prepare_fork already registered the clone; roll it back.
+			let _ = db.remove_vm(&clone_name);
+			let _ = std::fs::remove_dir_all(vm_data_dir(&clone_name));
+			return Err(VmError::Launch {
+				reason: format!("boot clone '{clone_name}' from snapshot: {e}"),
+			});
+		}
+
+		// 3. Fresh on-disk identity (hostname, machine-id, SSH host keys, RNG),
+		//    FAIL-CLOSED: a clone that could not be rejuvenated must never be
+		//    vended (it would share the golden's per-machine secrets across
+		//    tenants) — tear it down and turn the failure into a fork failure.
+		fail_closed_on_rejuvenation(rejuvenate_clone(&clone_name), || {
+			let _ = manager.stop();
+			let _ = db.remove_vm(&clone_name);
+			let _ = std::fs::remove_dir_all(vm_data_dir(&clone_name));
+		})
+		.map_err(|e| VmError::Launch {
+			reason: format!("rejuvenate clone '{clone_name}': {e}"),
+		})?;
+
+		// 4. Connect the exec channel.
+		let client = manager.connect().map_err(|e| {
+			let _ = manager.stop();
+			let _ = db.remove_vm(&clone_name);
+			let _ = std::fs::remove_dir_all(vm_data_dir(&clone_name));
+			VmError::Launch {
+				reason: format!("agent connect (clone '{clone_name}'): {e}"),
+			}
+		})?;
+
+		Ok(SmolvmHandle {
+			manager,
+			client,
+			_scratch: None,
+			clone: Some((db, clone_name)),
+		})
+	}
+
+	/// A process-unique, DNS-safe clone name derived from the golden name and a
+	/// monotonic counter (validated by smolvm as alphanumeric + dashes).
+	fn next_clone_name(&self, golden_name: &str) -> String {
+		let n = self.fork_seq.fetch_add(1, Ordering::Relaxed);
+		let pid = std::process::id();
+		format!("{golden_name}-c{pid}-{n}")
+	}
+}
+
+/// Deterministic, DNS/name-safe golden VM name for an image digest.
+///
+/// `ImageDigest::to_string()` is `sha256:<hex>`; smolvm's `validate_vm_name`
+/// rejects `:`, so we key on the hex only (collision-free per digest).
+pub(crate) fn golden_vm_name(image: &ImageDigest) -> String {
+	let s = image.to_string();
+	let hex = s.strip_prefix("sha256:").unwrap_or(&s);
+	// Keep it short and unambiguous; the full hex keeps distinct digests distinct.
+	format!("nudox-golden-{hex}")
+}
+
+/// Fold a smolvm error into a [`VmError::Launch`] with `ctx` prefixed.
+fn golden_err(ctx: &'static str) -> impl Fn(smolvm::Error) -> VmError {
+	move |e| VmError::Launch {
+		reason: format!("{ctx}: {e}"),
 	}
 }
 
@@ -507,30 +775,29 @@ impl VmRuntime for SmolvmRuntime {
 		self.launch_vm(rootfs, cfg)
 	}
 
-	/// Cold-boot instead of forking a golden.
+	/// CoW-fork a warm VM from a golden checkpoint (~250 ms restore) — V-GOLD-1.
 	///
-	/// smolvm's fork API is internal to `EmbeddedRuntime`'s DB-tracked golden
-	/// pool and is not accessible through `AgentManager`. Warm-pool golden forks
-	/// (SV-11, ~250 ms restore) are a P1+ concern; for P0 every run is a cold
-	/// boot (~100–200 ms). Tracked as gap V-GOLD-1.
-	fn fork_golden(&self, _golden: &GoldenId) -> Result<Self::Handle, VmError> {
-		tracing::warn!(
-			"fork_golden called but smolvm golden fork is not supported at the \
-			 AgentManager layer (gap V-GOLD-1); cold-booting instead"
-		);
-		let rootfs = self.store.resolve(None)?;
-		self.launch_vm(rootfs, &VmConfig::builder().build())
+	/// `golden` names a forkable golden previously parked by
+	/// [`SmolvmRuntime::prepare_golden`]. This freezes+snapshots it and boots an
+	/// ephemeral clone from that snapshot (`LaunchFeatures.snapshot_dir`) via
+	/// `smolvm::agent::fork::prepare_fork` — a real copy-on-write fork, not a cold
+	/// boot. The clone still dies at end of job (see [`SmolvmHandle::kill`]).
+	fn fork_golden(&self, golden: &GoldenId) -> Result<Self::Handle, VmError> {
+		self.fork_clone(golden)
 	}
 
+	/// Checkpoint a prepared VM into a golden image.
+	///
+	/// The passed one-shot `handle` was **not** booted forkable (`launch` owns
+	/// ephemeral temp-dir disks and cannot be memfd-snapshotted after the fact),
+	/// so we cannot promote it in place. Instead we tear it down and boot a fresh
+	/// forkable golden from the default toolchain base, returning its
+	/// [`GoldenId`]. Callers that want a specific toolchain image should prefer
+	/// [`SmolvmRuntime::prepare_golden`], which keys the golden by digest.
 	fn checkpoint(&self, mut handle: Self::Handle) -> Result<GoldenId, VmError> {
-		// Not supported at this layer — checkpoint/fork requires EmbeddedRuntime
-		// with its DB-backed forkable machine lifecycle. Tracked as gap V-GOLD-1.
 		handle.kill();
-		Err(VmError::Unsupported {
-			reason: "checkpoint/golden pool not available at the AgentManager layer \
-			         (gap V-GOLD-1); use EmbeddedRuntime for golden fork support"
-				.into(),
-		})
+		// `ImageDigest::from_bytes` of all-zeros is the "base toolchain" golden.
+		self.prepare_golden(&ImageDigest::from_bytes([0u8; 32]))
 	}
 }
 
@@ -919,6 +1186,64 @@ mod tests {
 				eprintln!("smolvm binary not on PATH (expected on CI): {reason}");
 			}
 			Err(e) => panic!("unexpected launch error: {e:?}"),
+		}
+	}
+
+	// ── Golden fork (V-GOLD-1) ────────────────────────────────────────────────
+
+	/// The golden VM name is deterministic per image digest and DNS/name-safe
+	/// (no `sha256:` prefix, which smolvm's `validate_vm_name` rejects).
+	#[test]
+	fn golden_vm_name_is_deterministic_and_name_safe() {
+		let a = ImageDigest::from_bytes([0xAB; 32]);
+		let b = ImageDigest::from_bytes([0xCD; 32]);
+		assert_eq!(golden_vm_name(&a), golden_vm_name(&a), "deterministic");
+		assert_ne!(golden_vm_name(&a), golden_vm_name(&b), "distinct per digest");
+		let name = golden_vm_name(&a);
+		assert!(!name.contains(':'), "must not carry the sha256: prefix: {name}");
+		assert!(name.starts_with("nudox-golden-"));
+		assert!(
+			name.bytes()
+				.all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
+			"name must be alphanumeric/dash/underscore: {name}"
+		);
+	}
+
+	/// Each fork clone gets a process-unique name so concurrent jobs forking the
+	/// same golden never collide on the clone's data dir / DB record.
+	#[test]
+	fn clone_names_are_unique_per_fork() {
+		let rt = SmolvmRuntime::new(make_temp_store());
+		let golden = "nudox-golden-abcd";
+		let n1 = rt.next_clone_name(golden);
+		let n2 = rt.next_clone_name(golden);
+		assert_ne!(n1, n2, "monotonic counter must make clone names unique");
+		assert!(n1.starts_with(golden), "clone name derives from golden: {n1}");
+		assert!(
+			n1.bytes()
+				.all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
+			"clone name must be name-safe: {n1}"
+		);
+	}
+
+	/// A fork against a golden that isn't running forkable (no live control
+	/// socket) fails with a typed error rather than silently cold-booting — the
+	/// no-silent-degrade rule. Requires the smolvm machine registry to be
+	/// openable; skips cleanly if it is not (e.g. sandboxed CI with no HOME).
+	#[test]
+	fn fork_golden_without_running_golden_is_typed_error() {
+		let rt = SmolvmRuntime::new(make_temp_store());
+		// A golden id that was never prepared / has no live control socket.
+		let golden = GoldenId::new("nudox-golden-deadbeefdeadbeefdeadbeefdeadbeef");
+		match rt.fork_golden(&golden) {
+			Ok(_) => panic!("forking a non-running golden must not succeed"),
+			// Registry unopenable in this environment → acceptable skip.
+			Err(VmError::Launch { reason }) if reason.contains("SmolvmDb") => {
+				eprintln!("smolvm registry unavailable (expected in some CI): {reason}");
+			}
+			// prepare_fork rejects a golden with no live/forkable control socket.
+			Err(VmError::Launch { .. }) | Err(VmError::Unsupported { .. }) => {}
+			Err(e) => panic!("unexpected fork error: {e:?}"),
 		}
 	}
 

@@ -232,7 +232,7 @@ impl D {
 fn is_f1(lines: &[Line]) -> bool {
     lines
         .first()
-        .map_or(false, |l| l.l == nudox_f1::registry::MAGIC_LINE)
+        .map_or(false, |l| l.l == crate::nudox_f1::registry::MAGIC_LINE)
 }
 
 /// NUDOX FORK. Field-grained pairing for F1 blobs: bridge `nudox_f1::line_diff`
@@ -241,7 +241,7 @@ fn is_f1(lines: &[Line]) -> bool {
 fn f1_diff(lines_a: &[Line], lines_b: &[Line], stop_early: bool) -> D {
     let a: Vec<&[u8]> = lines_a.iter().map(|l| l.l).collect();
     let b: Vec<&[u8]> = lines_b.iter().map(|l| l.l).collect();
-    let mut r: Vec<Replacement> = nudox_f1::pair::line_diff(&a, &b)
+    let mut r: Vec<Replacement> = crate::nudox_f1::pair::line_diff(&a, &b)
         .into_iter()
         .map(|e| Replacement {
             old: e.old,

@@ -91,6 +91,8 @@
 !/workspace/compiler/tests/fixtures/**/*.java
 !/workspace/compiler/tests/fixtures/**/go.mod
 !/workspace/compiler/tests/fixtures/**/go.sum
+# Index ingest test fixtures (moved from workspace/ingestor).
+!/workspace/index/tests/fixtures/*.json
 
 # insta snapshot expectations (accepted `.snap` files) for the producer /
 # renderer snapshot tests. These are the committed test baselines; insta's

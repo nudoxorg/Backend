@@ -27,8 +27,8 @@ pub trait Retryable {
     Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize,
 )]
 pub enum BackendKind {
-    /// The global index / relational spine.
-    Postgres,
+    /// The global index / relational spine (the versioned catalog).
+    Catalog,
 
     /// The semantic vector store.
     Qdrant,

@@ -1,8 +1,10 @@
+pub mod derive;
 pub mod id;
 pub mod namespace;
 pub mod package;
 pub mod symbol;
 
+pub use derive::{frame_identity_parts, package_id_from_parts};
 pub use id::Id;
 pub use package::{
     CargoVersionError, NameError, NpmVersionError, Package, PackageId, PackageVersion,

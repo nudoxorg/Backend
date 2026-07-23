@@ -103,5 +103,10 @@ fn run_producer<C: ForgeContext>(
 			})
 		}
 		Language::Nix => seal_and_run!(NixProducer),
+		// C/C++ IR production (clang oracle vs treesitter skeleton) is IR-plane
+		// work governed by 04-ir-unification (RL-15) and not yet wired; the
+		// catalog plane (identity/versions/edges) is live, but there is no
+		// producer backend, so generation is unsupported for `cpp` today.
+		Language::Cpp => Err(GenerateError::UnsupportedEcosystem),
 	}
 }

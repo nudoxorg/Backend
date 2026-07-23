@@ -1,3 +1,15 @@
+# ir — the light IR data model (libpijul-FREE).
+#
+# Owns the arena identity types (`ArenaIdx`, `EntryIdx<T>`, `StrId`, …), the
+# `Entry`/`Node`/`Symbol` model, the `register_kinds!` machinery + wire twins,
+# the `IrAtom` change atom, the within-change order normalizer, the linear
+# single-writer pristine + apply, the deterministic `IntroId` bootstrap, the
+# type-skeleton opcode encoder, and the `Registry` resolve surface. The `change`
+# submodule supplies the identity primitives; `manifest` the generation stamp.
+#
+# This crate is what `registry` (and later everyone) reads. It MUST NOT depend
+# on `libpijul` or `iroh` — the heavy patch/serve/diff/semver/transfer engine
+# lives in the sibling `ir-vcs` crate.
 [package]
 name = "ir"
 edition.workspace = true
@@ -8,25 +20,28 @@ license.workspace = true
 workspace = true
 
 [lib]
-# Sources live directly in the crate root (no src/ subdirectory).
 path = "lib.rs"
 
-[features]
-default = ["facet", "serde"]
-facet = ["dep:facet"]
-serde = ["dep:serde"]
-
 [dependencies]
-# Optional: only compiled when the corresponding feature is active.
-facet = { version = "0.42", optional = true }
-serde = { version = "1.0", optional = true }
+# Body facts carry the language they were produced for; the canonical
+# `Language` enum lives in `heart` (the light shared vocabulary), so `ir` reads
+# `heart::Language` and never links the `ecosystem` spec crate — keeping the
+# `registry` (which deps `ir`) off the catalog/`index` link path.
+heart        = { path = "../heart" }
 
-# Always required.
-arborium_tree_sitter = { package = "arborium-tree-sitter", version = "2.18" }
-rustc_hash = { package = "rustc-hash", version = "1.1" }
-strum = { version = "0.26", features = ["derive"] }
+blake3 = "1.8"
+smol_str = { version = "0.2", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["use-std", "alloc"] }
 thiserror = "1.0"
-yoke = "0.8"
+rustc-hash = { package = "rustc-hash", version = "1.1" }
+async-trait = "0.1"
+# Required by the folded-in `manifest` module (non-empty file lists).
+nonempty = { version = "0.11", features = ["serialize"] }
 
 [dev-dependencies]
-arborium = { version = "2.18", features = ["lang-rust"] }
+postcard = { version = "1.1", features = ["alloc", "use-std"] }
+proptest = "1.5"
+# The manifest/generation test modules build fixture generation stamps.
+uuid = { version = "1.23", features = ["v5"] }
+semver = "1.0"

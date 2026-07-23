@@ -1,0 +1,17 @@
+[package]
+name = "rusqdoltlite"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+
+[build-dependencies]
+# Compiles the vendored DoltLite C amalgamation into a static library.
+cc = "1"
