@@ -1,6 +1,7 @@
 pub mod function;
 pub mod param;
 pub mod record;
+pub mod sum;
 pub mod ty;
 // pub mod generics;
 // pub mod protocols;
@@ -15,5 +16,6 @@ pub use self::{
     function::{FnModifier, Function, Receiver},
     param::{Param, ParamAttribute},
     record::{Field, FieldAttribute, FieldKey, Record},
+    sum::{Enum, Variant},
     ty::Type,
 };
