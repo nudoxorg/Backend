@@ -1,6 +1,8 @@
 mod resolver;
 mod state;
 
+use parking_lot::Mutex;
+
 use crate::{
     entry::{Entry, TypedEntry},
     id::UniqueId,
@@ -14,24 +16,16 @@ pub use self::resolver::RegistryResolver;
 
 #[derive(Default)]
 pub struct Registry<R: RegistryResolver> {
-    resolver: R,
+    resolver: Mutex<R>,
     state: RegistryState<R>,
 }
 
 impl<R: RegistryResolver> Registry<R> {
     pub fn new(resolver: R) -> Self {
         Registry {
-            resolver,
+            resolver: Mutex::new(resolver),
             state: RegistryState::new(),
         }
-    }
-
-    pub fn resolver(&self) -> &R {
-        &self.resolver
-    }
-
-    pub fn resolver_mut(&mut self) -> &mut R {
-        &mut self.resolver
     }
 
     pub fn iter(&self) -> impl Iterator<Item = UntypedEntryIndex> {
@@ -55,7 +49,9 @@ impl<R: RegistryResolver> Registry<R> {
     }
 
     pub async fn resolve_entry(&self, idx: UntypedEntryIndex) -> Result<&Entry, R::Error> {
-        self.state.resolve_entry(idx, &self.resolver).await
+        self.state
+            .resolve_entry(idx, &mut self.resolver.lock())
+            .await
     }
 
     pub async fn resolve_typed_entry<T: EntryKind>(
@@ -63,7 +59,7 @@ impl<R: RegistryResolver> Registry<R> {
         idx: EntryIndex<T>,
     ) -> Result<&TypedEntry<T>, R::Error> {
         self.state
-            .resolve_entry(idx.raw(), &self.resolver)
+            .resolve_entry(idx.raw(), &mut self.resolver.lock())
             .await
             .map(TypedEntry::new)
     }

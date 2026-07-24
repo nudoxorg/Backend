@@ -84,7 +84,7 @@ impl<R: RegistryResolver> RegistryState<R> {
     pub(super) async fn resolve_entry(
         &self,
         idx: UntypedEntryIndex,
-        resolver: &R,
+        resolver: &mut R,
     ) -> Result<&Entry, R::Error> {
         let entry = self
             .inner

@@ -16,12 +16,12 @@ pub trait RegistryResolver: Sized + 'static {
     type Error: Error;
 
     fn load_unique_id(
-        &self,
+        &mut self,
         id: &UniqueId<Self::EntryId>,
     ) -> impl Future<Output = Result<Entry, Self::Error>>;
 
     fn load_package_info(
-        &self,
+        &mut self,
         id: PackageId,
     ) -> impl Future<Output = Result<PackageInfo<Self::EntryId>, Self::Error>>;
 }

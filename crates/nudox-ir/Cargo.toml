@@ -21,4 +21,4 @@ triomphe = { workspace = true }
 itertools = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-vfs = { workspace = true, features = ["async-vfs"] }
+vfs = { workspace = true }

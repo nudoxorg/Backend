@@ -1,20 +1,51 @@
-use serde::Deserialize;
-use vfs::{
-    async_vfs::{AsyncMemoryFS, AsyncVfsPath},
-    error::VfsErrorKind,
-};
+use serde::{Deserialize, Serialize};
+use vfs::{MemoryFS, VfsPath, error::VfsErrorKind};
 
 use nudox_ir::prelude::*;
 
 pub struct ExampleResolver {
-    fs: AsyncVfsPath,
+    fs: VfsPath,
 }
 
 impl ExampleResolver {
     pub fn new() -> Self {
         ExampleResolver {
-            fs: AsyncVfsPath::new(AsyncMemoryFS::new()),
+            fs: VfsPath::new(MemoryFS::new()),
         }
+    }
+
+    pub fn from_package(package: IrPackage<usize>) -> Self {
+        let fs = VfsPath::new(MemoryFS::new());
+
+        let dir = match package.info().id().view() {
+            PackageIdView::Path(path) => fs.join(format!("{}", path.display())).unwrap(),
+        };
+
+        let file = dir.join("info").unwrap().create_file().unwrap();
+
+        let serializer = &mut serde_json::Serializer::new(file);
+
+        package
+            .info()
+            .serialize(serializer)
+            .expect("serializing PackageInfo failed");
+
+        for (id, entry) in package.iter() {
+            let id = match id {
+                Some(id) => format!("{id}"),
+                None => String::from("root"),
+            };
+
+            let file = dir.join(id).unwrap().create_file().unwrap();
+
+            let serializer = &mut serde_json::Serializer::new(file);
+
+            entry
+                .serialize(serializer)
+                .expect("serializing Entry failed");
+        }
+
+        ExampleResolver { fs }
     }
 }
 
@@ -38,7 +69,7 @@ impl RegistryResolver for ExampleResolver {
 
     type Error = ResolverError;
 
-    async fn load_unique_id(&self, id: &UniqueId<Self::EntryId>) -> Result<Entry, Self::Error> {
+    async fn load_unique_id(&mut self, id: &UniqueId<Self::EntryId>) -> Result<Entry, Self::Error> {
         let package = match id.package().view() {
             PackageIdView::Path(path) => format!("{}", path.display()),
         };
@@ -48,7 +79,7 @@ impl RegistryResolver for ExampleResolver {
             None => String::from("root"),
         };
 
-        let file = self.fs.join(package)?.join(entry)?.read_to_string().await;
+        let file = self.fs.join(package)?.join(entry)?.open_file();
 
         let file = match file {
             Ok(file) => file,
@@ -58,7 +89,7 @@ impl RegistryResolver for ExampleResolver {
             Err(err) => return Err(ResolverError::IO(err)),
         };
 
-        let deserializer = &mut serde_json::Deserializer::from_str(&file);
+        let deserializer = &mut serde_json::Deserializer::from_reader(file);
 
         let entry = Entry::deserialize(deserializer)?;
 
@@ -66,14 +97,14 @@ impl RegistryResolver for ExampleResolver {
     }
 
     async fn load_package_info(
-        &self,
+        &mut self,
         id: PackageId,
     ) -> Result<PackageInfo<Self::EntryId>, Self::Error> {
         let package = match id.view() {
             PackageIdView::Path(path) => format!("{}", path.display()),
         };
 
-        let file = self.fs.join(package)?.join("info")?.read_to_string().await;
+        let file = self.fs.join(package)?.join("info")?.open_file();
 
         let file = match file {
             Ok(file) => file,
@@ -83,7 +114,7 @@ impl RegistryResolver for ExampleResolver {
             Err(err) => return Err(ResolverError::IO(err)),
         };
 
-        let deserializer = &mut serde_json::Deserializer::from_str(&file);
+        let deserializer = &mut serde_json::Deserializer::from_reader(file);
 
         let info = PackageInfo::deserialize(deserializer)?;
 
