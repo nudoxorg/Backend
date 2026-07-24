@@ -1,7 +1,7 @@
 use elsa::sync::FrozenVec;
 use papaya::HashMap;
 use rustc_hash::FxBuildHasher;
-use tokio::sync::OnceCell;
+use tokio::sync::{Mutex, OnceCell};
 
 use crate::{
     entry::Entry,
@@ -84,7 +84,7 @@ impl<R: RegistryResolver> RegistryState<R> {
     pub(super) async fn resolve_entry(
         &self,
         idx: UntypedEntryIndex,
-        resolver: &mut R,
+        resolver: &Mutex<R>,
     ) -> Result<&Entry, R::Error> {
         let entry = self
             .inner
@@ -103,13 +103,15 @@ impl<R: RegistryResolver> RegistryState<R> {
                     .package
                     .get_or_try_init(async || {
                         resolver
+                            .lock()
+                            .await
                             .load_package_info(entry.id.package())
                             .await
                             .map(|info| Package::new(info, self))
                     })
                     .await?;
 
-                let mut entry = resolver.load_unique_id(&entry.id).await?;
+                let mut entry = resolver.lock().await.load_unique_id(&entry.id).await?;
 
                 entry.visit_mut(&|idx| *idx = package.resolve(*idx));
 

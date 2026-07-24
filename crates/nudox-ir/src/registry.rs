@@ -52,18 +52,13 @@ impl<R: RegistryResolver> Registry<R> {
     }
 
     pub async fn resolve_entry(&self, idx: UntypedEntryIndex) -> Result<&Entry, R::Error> {
-        self.state
-            .resolve_entry(idx, &mut *self.resolver.lock().await)
-            .await
+        self.state.resolve_entry(idx, &self.resolver).await
     }
 
     pub async fn resolve_typed_entry<T: EntryKind>(
         &self,
         idx: EntryIndex<T>,
     ) -> Result<&TypedEntry<T>, R::Error> {
-        self.state
-            .resolve_entry(idx.raw(), &mut *self.resolver.lock().await)
-            .await
-            .map(TypedEntry::new)
+        self.resolve_entry(idx.raw()).await.map(TypedEntry::new)
     }
 }
