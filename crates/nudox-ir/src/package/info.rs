@@ -64,4 +64,11 @@ impl<Id: Eq + Hash> PackageInfo<Id> {
 
         UntypedEntryIndex::import(idx)
     }
+
+    #[cfg(test)]
+    pub(crate) fn export_id_to_idx(&self, id: &Id) -> Option<UntypedEntryIndex> {
+        self.exports
+            .get_index_of(id)
+            .map(|idx| UntypedEntryIndex::export(idx + 1))
+    }
 }

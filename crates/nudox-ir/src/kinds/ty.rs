@@ -40,6 +40,58 @@ pub enum Type {
     Any,
 }
 
+impl Type {
+    pub const U8: Self = Type::Primitive(Primitive::Integer {
+        signed: false,
+        width: Width::W8,
+    });
+
+    pub const U16: Self = Type::Primitive(Primitive::Integer {
+        signed: false,
+        width: Width::W16,
+    });
+
+    pub const U32: Self = Type::Primitive(Primitive::Integer {
+        signed: false,
+        width: Width::W32,
+    });
+
+    pub const U64: Self = Type::Primitive(Primitive::Integer {
+        signed: false,
+        width: Width::W64,
+    });
+
+    pub const U128: Self = Type::Primitive(Primitive::Integer {
+        signed: false,
+        width: Width::W128,
+    });
+
+    pub const I8: Self = Type::Primitive(Primitive::Integer {
+        signed: true,
+        width: Width::W8,
+    });
+
+    pub const I16: Self = Type::Primitive(Primitive::Integer {
+        signed: true,
+        width: Width::W16,
+    });
+
+    pub const I32: Self = Type::Primitive(Primitive::Integer {
+        signed: true,
+        width: Width::W32,
+    });
+
+    pub const I64: Self = Type::Primitive(Primitive::Integer {
+        signed: true,
+        width: Width::W64,
+    });
+
+    pub const I128: Self = Type::Primitive(Primitive::Integer {
+        signed: true,
+        width: Width::W128,
+    });
+}
+
 /// A language-level primitive type, independent of any target architecture.
 #[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Primitive {
