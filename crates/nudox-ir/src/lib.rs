@@ -27,7 +27,8 @@ pub mod prelude {
 
 pub mod build {
     pub use crate::{
-        entry::{Entry, Symbol},
+        entry::{Entry, Symbol, Visibility},
+        id::{PackageId, UniqueId},
         index::{EntryIndex, UntypedEntryIndex},
         kinds::{self, function::*, record::*, ty::*, *},
         package::{EntryBuilder, IrPackage},
@@ -35,3 +36,6 @@ pub mod build {
 }
 
 pub(crate) type List<T> = Box<[T]>;
+
+#[cfg(test)]
+mod test_helpers;

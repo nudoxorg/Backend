@@ -91,7 +91,6 @@ impl<T: Indexable> EntryIndex<T> {
         self.raw_index()
     }
 
-    #[expect(dead_code)]
     pub(super) fn import_index(self) -> usize {
         debug_assert!(self.is_import(), "using non-import EntryIndex");
 

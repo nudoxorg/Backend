@@ -8,18 +8,15 @@ pub struct ExampleResolver {
 }
 
 impl ExampleResolver {
-    pub fn new() -> Self {
-        ExampleResolver {
-            fs: VfsPath::new(MemoryFS::new()),
-        }
-    }
-
     pub fn from_package(package: IrPackage<usize>) -> Self {
         let fs = VfsPath::new(MemoryFS::new());
 
         let dir = match package.info().id().view() {
             PackageIdView::Path(path) => fs.join(format!("{}", path.display())).unwrap(),
         };
+
+        dir.create_dir()
+            .expect("failed to create directory for package");
 
         let file = dir.join("info").unwrap().create_file().unwrap();
 

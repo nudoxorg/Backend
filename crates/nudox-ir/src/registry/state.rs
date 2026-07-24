@@ -111,7 +111,7 @@ impl<R: RegistryResolver> RegistryState<R> {
 
                 let mut entry = resolver.load_unique_id(&entry.id).await?;
 
-                entry.visit_mut(|idx| *idx = package.resolve(*idx));
+                entry.visit_mut(&|idx| *idx = package.resolve(*idx));
 
                 Ok(entry)
             })
@@ -170,9 +170,9 @@ impl Package {
 
     fn resolve(&self, idx: UntypedEntryIndex) -> UntypedEntryIndex {
         if idx.is_import() {
-            self.imports[idx.resolved_index()]
+            self.imports[idx.import_index()]
         } else {
-            self.exports[idx.resolved_index()]
+            self.exports[idx.export_index()]
         }
     }
 }

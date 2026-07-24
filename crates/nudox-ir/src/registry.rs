@@ -1,6 +1,9 @@
 mod resolver;
 mod state;
 
+#[cfg(test)]
+mod tests;
+
 use parking_lot::Mutex;
 
 use crate::{
@@ -32,7 +35,7 @@ impl<R: RegistryResolver> Registry<R> {
         self.state.iter()
     }
 
-    pub fn resolve_id(&self, idx: UntypedEntryIndex) -> &UniqueId<R::EntryId> {
+    pub fn resolve_idx_to_id(&self, idx: UntypedEntryIndex) -> &UniqueId<R::EntryId> {
         self.state.resolve_idx_to_id(idx)
     }
 

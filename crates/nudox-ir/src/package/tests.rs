@@ -1,12 +1,6 @@
-use std::path::PathBuf;
-
 use itertools::Itertools;
 
-use crate::{
-    build::*,
-    entry::{EntryInner, Node, Symbol, Visibility},
-    kind::{EntryKind, Kind},
-};
+use crate::test_helpers::*;
 
 use super::*;
 
@@ -145,34 +139,4 @@ fn builds_and_wires_every_kind() {
             entry(sym("Unit"), n::leaf(idx(6)), Variant::builder().build()),
         ],
     );
-}
-
-fn sym(name: &str) -> Symbol {
-    Symbol {
-        name: name.to_owned(),
-        visibility: Visibility::Public,
-        documentation: String::new(),
-        source: PathBuf::new(),
-        span: 0..0,
-    }
-}
-
-fn entry<T: EntryKind>(sym: Symbol, node: Node, kind: T) -> Entry {
-    Entry::new(sym, node, kind.into_kind())
-}
-
-fn n(parent: UntypedEntryIndex, children: impl IntoIterator<Item = UntypedEntryIndex>) -> Node {
-    Node::build(parent, children)
-}
-
-mod n {
-    use super::*;
-
-    pub fn leaf(parent: UntypedEntryIndex) -> Node {
-        Node::build(parent, [])
-    }
-
-    pub fn root(children: impl IntoIterator<Item = UntypedEntryIndex>) -> Node {
-        Node::build(None, children)
-    }
 }
