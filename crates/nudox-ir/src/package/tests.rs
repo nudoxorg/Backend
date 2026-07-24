@@ -84,8 +84,6 @@ fn builds_and_wires_every_kind() {
 
     let mut counts = std::collections::HashMap::<&str, usize>::new();
 
-    eprintln!("1");
-
     for (_, entry) in pkg.iter() {
         let tag = match entry.kind() {
             EntryInner::Owned(kind) => match kind {
@@ -101,8 +99,6 @@ fn builds_and_wires_every_kind() {
         };
         *counts.entry(tag).or_default() += 1;
     }
-
-    eprintln!("2");
 
     assert_eq!(counts["module"], 1, "one root module");
     assert_eq!(counts["record"], 1);
