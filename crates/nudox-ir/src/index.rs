@@ -48,7 +48,7 @@ const INDEX_RES_AVAILABLE_MASK: usize = !(usize::MAX << (usize::BITS - INDEX_RES
 impl<T: Indexable> EntryIndex<T> {
     pub(super) fn resolved(index: usize) -> Self {
         debug_assert_eq!(
-            index | INDEX_RES_AVAILABLE_MASK,
+            index & INDEX_RES_AVAILABLE_MASK,
             index,
             "creating resolved index with unavailable bits"
         );
@@ -58,7 +58,7 @@ impl<T: Indexable> EntryIndex<T> {
 
     pub(super) fn export(index: usize) -> Self {
         debug_assert_eq!(
-            index | INDEX_SER_AVAILABLE_MASK,
+            index & INDEX_SER_AVAILABLE_MASK,
             index,
             "creating export index with unavailable bits"
         );
@@ -68,7 +68,7 @@ impl<T: Indexable> EntryIndex<T> {
 
     pub(super) fn import(index: usize) -> Self {
         debug_assert_eq!(
-            index | INDEX_SER_AVAILABLE_MASK,
+            index & INDEX_SER_AVAILABLE_MASK,
             index,
             "creating import index with unavailable bits"
         );
@@ -77,38 +77,53 @@ impl<T: Indexable> EntryIndex<T> {
     }
 
     fn build(index: usize) -> Self {
+        assert_ne!(index, usize::MAX);
+
         EntryIndex {
             index: NonZeroUsize::new(index + 1).unwrap(),
             _p: PhantomData,
         }
     }
 
-    pub(super) fn index(self) -> usize {
-        debug_assert!(self.is_resolved(), "using unresolved EntryIdx");
+    pub(super) fn resolved_index(self) -> usize {
+        debug_assert!(self.is_resolved(), "using unresolved EntryIndex");
 
-        self.index.get() - 1
+        self.raw_index()
+    }
+
+    #[expect(dead_code)]
+    pub(super) fn import_index(self) -> usize {
+        debug_assert!(self.is_import(), "using non-import EntryIndex");
+
+        self.raw_index() & !(IS_SERIALIZED_MASK & IS_IMPORT_MASK)
+    }
+
+    pub(super) fn export_index(self) -> usize {
+        debug_assert!(self.is_export(), "using non-export EntryIndex");
+
+        self.raw_index() & !IS_SERIALIZED_MASK
     }
 
     pub(super) fn is_resolved(self) -> bool {
         // return if the serialized bit is _NOT_ set
-        self.index() & IS_SERIALIZED_MASK == 0
+        self.raw_index() & IS_SERIALIZED_MASK == 0
     }
 
     pub(super) fn is_serialize(self) -> bool {
         // return if the serialized bit IS set
-        self.index() & IS_SERIALIZED_MASK == IS_SERIALIZED_MASK
+        self.raw_index() & IS_SERIALIZED_MASK == IS_SERIALIZED_MASK
     }
 
     pub(super) fn is_export(self) -> bool {
         debug_assert!(self.is_serialize());
 
-        self.index() & IS_IMPORT_MASK == 0
+        self.raw_index() & IS_IMPORT_MASK == 0
     }
 
     pub(super) fn is_import(self) -> bool {
         debug_assert!(self.is_serialize());
 
-        self.index() & IS_IMPORT_MASK == IS_IMPORT_MASK
+        self.raw_index() & IS_IMPORT_MASK == IS_IMPORT_MASK
     }
 
     pub fn raw(self) -> UntypedEntryIndex {
@@ -132,6 +147,10 @@ impl<T: Indexable> EntryIndex<T> {
             index: self.index,
             _p: PhantomData,
         }
+    }
+
+    fn raw_index(self) -> usize {
+        self.index.get() - 1
     }
 }
 

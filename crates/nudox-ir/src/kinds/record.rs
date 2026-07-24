@@ -21,8 +21,8 @@ pub struct Record {
 impl Record {
     #[builder]
     pub fn new(
-        #[builder(with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>,
-        #[builder(with = FromIterator::from_iter)] super_types: List<Type>,
+        #[builder(default, with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>,
+        #[builder(default, with = FromIterator::from_iter)] super_types: List<Type>,
     ) -> Self {
         Record {
             fields,
@@ -58,7 +58,7 @@ impl Field {
     pub fn new(
         key: FieldKey,
         ty: Option<Type>,
-        #[builder(with = FromIterator::from_iter)] attributes: List<FieldAttribute>,
+        #[builder(default, with = FromIterator::from_iter)] attributes: List<FieldAttribute>,
     ) -> Self {
         Field {
             key,

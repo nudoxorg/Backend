@@ -30,9 +30,9 @@ impl Function {
     #[builder]
     pub fn new(
         receiver: Option<Receiver>,
-        #[builder(with = FromIterator::from_iter)] input_params: List<EntryIndex<Param>>,
-        #[builder(with = FromIterator::from_iter)] output_params: List<EntryIndex<Param>>,
-        #[builder(with = FromIterator::from_iter)] modifiers: List<FnModifier>,
+        #[builder(default, with = FromIterator::from_iter)] input_params: List<EntryIndex<Param>>,
+        #[builder(default, with = FromIterator::from_iter)] output_params: List<EntryIndex<Param>>,
+        #[builder(default, with = FromIterator::from_iter)] modifiers: List<FnModifier>,
     ) -> Self {
         Function {
             receiver,

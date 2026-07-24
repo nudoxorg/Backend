@@ -88,7 +88,7 @@ impl<R: RegistryResolver> RegistryState<R> {
     ) -> Result<&Entry, R::Error> {
         let entry = self
             .inner
-            .with_entries(|entries| entries.get(idx.index()))
+            .with_entries(|entries| entries.get(idx.resolved_index()))
             .expect(INVALID_ENTRY_IDX_MESSAGE);
 
         entry
@@ -129,7 +129,7 @@ impl<R: RegistryResolver> RegistryState<R> {
 
     fn idx_to_stored_entry(&self, idx: UntypedEntryIndex) -> &StoredEntry<R::EntryId> {
         self.inner
-            .with_entries(|e| e.get(idx.index()))
+            .with_entries(|e| e.get(idx.resolved_index()))
             .expect(INVALID_ENTRY_IDX_MESSAGE)
     }
 }
@@ -170,9 +170,9 @@ impl Package {
 
     fn resolve(&self, idx: UntypedEntryIndex) -> UntypedEntryIndex {
         if idx.is_import() {
-            self.imports[idx.index()]
+            self.imports[idx.resolved_index()]
         } else {
-            self.exports[idx.index()]
+            self.exports[idx.resolved_index()]
         }
     }
 }

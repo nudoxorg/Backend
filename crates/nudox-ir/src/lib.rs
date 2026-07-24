@@ -29,7 +29,7 @@ pub mod build {
     pub use crate::{
         entry::{Entry, Symbol},
         index::{EntryIndex, UntypedEntryIndex},
-        kinds::{self, *},
+        kinds::{self, function::*, record::*, ty::*, *},
         package::{EntryBuilder, IrPackage},
     };
 }

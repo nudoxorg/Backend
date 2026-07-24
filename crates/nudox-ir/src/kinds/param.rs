@@ -21,7 +21,7 @@ impl Param {
     #[builder]
     pub fn new(
         ty: Option<Type>,
-        #[builder(with = FromIterator::from_iter)] attributes: List<ParamAttribute>,
+        #[builder(default, with = FromIterator::from_iter)] attributes: List<ParamAttribute>,
     ) -> Self {
         Param { ty, attributes }
     }

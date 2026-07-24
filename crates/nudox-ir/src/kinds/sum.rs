@@ -14,7 +14,7 @@ pub struct Enum {
 impl Enum {
     #[builder]
     pub fn new(
-        #[builder(with = FromIterator::from_iter)] variants: List<EntryIndex<Variant>>,
+        #[builder(default, with = FromIterator::from_iter)] variants: List<EntryIndex<Variant>>,
     ) -> Self {
         Enum { variants }
     }
@@ -37,7 +37,9 @@ pub struct Variant {
 #[bon::bon]
 impl Variant {
     #[builder]
-    pub fn new(#[builder(with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>) -> Self {
+    pub fn new(
+        #[builder(default, with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>,
+    ) -> Self {
         Variant { fields }
     }
 }

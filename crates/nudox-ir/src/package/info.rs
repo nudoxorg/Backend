@@ -53,7 +53,7 @@ impl<Id: Eq + Hash> PackageInfo<Id> {
     pub(super) fn export_idx_to_id(&self, idx: UntypedEntryIndex) -> Option<&Id> {
         assert!(idx.is_export());
 
-        match idx.index() {
+        match idx.export_index() {
             0 => None,
             i => Some(&self.exports[i - 1]),
         }
