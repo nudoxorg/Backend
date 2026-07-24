@@ -4,7 +4,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use parking_lot::Mutex;
+use tokio::sync::Mutex;
 
 use crate::{
     entry::{Entry, TypedEntry},
@@ -53,7 +53,7 @@ impl<R: RegistryResolver> Registry<R> {
 
     pub async fn resolve_entry(&self, idx: UntypedEntryIndex) -> Result<&Entry, R::Error> {
         self.state
-            .resolve_entry(idx, &mut self.resolver.lock())
+            .resolve_entry(idx, &mut *self.resolver.lock().await)
             .await
     }
 
@@ -62,7 +62,7 @@ impl<R: RegistryResolver> Registry<R> {
         idx: EntryIndex<T>,
     ) -> Result<&TypedEntry<T>, R::Error> {
         self.state
-            .resolve_entry(idx.raw(), &mut self.resolver.lock())
+            .resolve_entry(idx.raw(), &mut *self.resolver.lock().await)
             .await
             .map(TypedEntry::new)
     }
