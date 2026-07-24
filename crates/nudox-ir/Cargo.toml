@@ -11,7 +11,6 @@ elsa = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 ouroboros = { workspace = true }
 papaya = { workspace = true }
-parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
