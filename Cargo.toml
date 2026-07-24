@@ -23,7 +23,6 @@ yoke = { version = "0.8", features = ["derive"] }
 arborium-tree-sitter = "2"
 arborium = { version = "2", default-features = false }
 
-bimap = "0.6"
 bon = "3.9"
 elsa = "1.11"
 indexmap = "2"
