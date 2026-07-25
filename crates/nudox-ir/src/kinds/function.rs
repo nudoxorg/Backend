@@ -1,8 +1,14 @@
-use crate::{List, index::EntryIndex, kinds::Param, visitor::Visitor};
+use crate::{
+    List,
+    index::EntryIndex,
+    kinds::{GenericParam, Param, WherePred},
+    visitor::Visitor,
+};
 
-// FIXME: generics, overloads, explicitly-implemented protocols, and the
-// parsed function body are not yet ported. Generics in particular await the
-// dedicated generics subsystem, which is intentionally deferred.
+// Generics and where-clauses are now modelled via `generics:
+// List<GenericParam>` and `wheres: List<WherePred>` (bounds represented as
+// `List<Type>`). Remaining deferred items: overloads, explicitly-implemented
+// protocols, the parsed function body, const-expressions, and variance.
 
 /// A function, method, or lambda with its full signature.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
@@ -23,6 +29,12 @@ pub struct Function {
 
     /// Signature-level modifiers (`async`, `const`, `unsafe`, …).
     pub modifiers: List<FnModifier>,
+
+    /// Generic parameters declared on this function, in declaration order.
+    pub generics: List<GenericParam>,
+
+    /// Where-clause predicates for this function, in declaration order.
+    pub wheres: List<WherePred>,
 }
 
 #[bon::bon]
@@ -33,12 +45,16 @@ impl Function {
         #[builder(default, with = FromIterator::from_iter)] input_params: List<EntryIndex<Param>>,
         #[builder(default, with = FromIterator::from_iter)] output_params: List<EntryIndex<Param>>,
         #[builder(default, with = FromIterator::from_iter)] modifiers: List<FnModifier>,
+        #[builder(default, with = FromIterator::from_iter)] generics: List<GenericParam>,
+        #[builder(default, with = FromIterator::from_iter)] wheres: List<WherePred>,
     ) -> Self {
         Function {
             receiver,
             input_params,
             output_params,
             modifiers,
+            generics,
+            wheres,
         }
     }
 }

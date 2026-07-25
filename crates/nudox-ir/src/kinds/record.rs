@@ -1,11 +1,36 @@
-use crate::{List, index::EntryIndex, kinds::Type, visitor::Visitor};
+use crate::{
+    List,
+    index::EntryIndex,
+    kinds::{GenericParam, Type, WherePred},
+    visitor::Visitor,
+};
 
-// FIXME: generics, inline methods/constructors, and index signatures are not
-// yet ported. Methods are expected to become child Function entries once the
-// builder grows nested-item support; generics await their own subsystem.
+// Generics and where-clauses are now modelled via `generics:
+// List<GenericParam>` and `wheres: List<WherePred>` (bounds represented as
+// `List<Type>`). Remaining deferred items: inline methods/constructors, index
+// signatures, const-expressions, variance, and associated-item lists.
+
+/// The syntactic form of a record type.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize, Default,
+)]
+pub enum RecordForm {
+    /// A named-field struct (`struct Foo { x: i32 }`).
+    #[default]
+    Struct,
+
+    /// A tuple struct (`struct Foo(i32, i32)`).
+    Tuple,
+
+    /// A unit struct (`struct Foo`).
+    Unit,
+}
 
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Record {
+    /// The syntactic form of this record type.
+    pub form: RecordForm,
+
     /// The fields of the record, in declaration order.
     ///
     /// An empty list denotes a record with no statically-known fields — e.g. a
@@ -15,18 +40,30 @@ pub struct Record {
     /// Base classes, implemented interfaces, or otherwise explicitly-named
     /// super-types of this record.
     pub super_types: List<Type>,
+
+    /// Generic parameters declared on this record, in declaration order.
+    pub generics: List<GenericParam>,
+
+    /// Where-clause predicates for this record, in declaration order.
+    pub wheres: List<WherePred>,
 }
 
 #[bon::bon]
 impl Record {
     #[builder]
     pub fn new(
+        #[builder(default)] form: RecordForm,
         #[builder(default, with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>,
         #[builder(default, with = FromIterator::from_iter)] super_types: List<Type>,
+        #[builder(default, with = FromIterator::from_iter)] generics: List<GenericParam>,
+        #[builder(default, with = FromIterator::from_iter)] wheres: List<WherePred>,
     ) -> Self {
         Record {
+            form,
             fields,
             super_types,
+            generics,
+            wheres,
         }
     }
 }

@@ -113,12 +113,16 @@ impl<R: RegistryResolver> Registry<R> {
         self.state.resolve_entry(idx, &self.resolver).await
     }
 
-    /// Convenience wrapper around [`resolve_entry`](Self::resolve_entry) that
-    /// re-types the index.
+    /// Resolves `idx` and downcasts to `&TypedEntry<T>`.
+    ///
+    /// Returns `Ok(Some(_))` on success, `Ok(None)` when the entry exists but
+    /// its kind does not match `T` (kind mismatch — no panic), and `Err(_)`
+    /// when the entry cannot be loaded at all.
     pub async fn resolve_typed_entry<T: EntryKind>(
         &self,
         idx: EntryIndex<T>,
-    ) -> Result<&TypedEntry<T>, R::Error> {
-        self.resolve_entry(idx.raw()).await.map(TypedEntry::new)
+    ) -> Result<Option<&TypedEntry<T>>, R::Error> {
+        let entry = self.resolve_entry(idx.raw()).await?;
+        Ok(entry.downcast::<T>())
     }
 }

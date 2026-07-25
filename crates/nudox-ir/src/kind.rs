@@ -4,80 +4,112 @@ use crate::{kinds::*, visitor::Visitor};
 
 register_kinds! {
     /// A namespace, package, or module — a container for other entries.
-    Module,
+    Module = 1,
 
     /// A product type: struct, class, record, or data class.
-    Record,
-
-    /// A sum type: enum, tagged union, or sealed hierarchy.
-    Enum,
-
-    /// A single variant of a sum type.
-    Variant,
+    Record = 2,
 
     /// A field or property of a containing type.
-    Field,
+    Field = 3,
 
     /// A function, method, or lambda.
-    Function,
+    Function = 4,
+
+    // Value 5 is intentionally reserved for a future `Type` kind.
+
+    /// A trait, interface, or protocol definition.
+    Trait = 6,
+
+    /// A trait implementation or inherent impl block.
+    Impl = 7,
+
+    /// A sum type: enum, tagged union, or sealed hierarchy.
+    Enum = 8,
+
+    /// A single variant of a sum type.
+    Variant = 9,
+
+    /// A compile-time constant declaration.
+    Const = 10,
+
+    /// A static variable declaration.
+    Static = 11,
+
+    /// A re-export (public alias) entry; target is in EntryInner::Reference.
+    Reexport = 12,
 
     /// A single parameter of a function.
-    Param,
+    Param = 13,
 }
 
 macro_rules! register_kinds {
-	($($(#[$meta:meta])* $kind:ident,)*) => {
-		#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
-		pub enum Kind {
-			$(
-			$(#[$meta])*
-			$kind($kind),
-			)*
-		}
+  ($($(#[$meta:meta])* $kind:ident = $disc:literal,)*) => {
+    #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+    pub enum Kind {
+      $(
+      $(#[$meta])*
+      $kind($kind),
+      )*
+    }
 
-		impl Kind {
-			#[expect(unused)]
-			pub(crate) fn discriminant(&self) -> KindDiscriminant {
-				match self {
-					$(
-					Kind::$kind(_) => KindDiscriminant::$kind,
-					)*
-				}
-			}
-		}
+    impl Kind {
+      pub(crate) fn discriminant(&self) -> KindDiscriminant {
+        match self {
+          $(
+          Kind::$kind(_) => KindDiscriminant::$kind,
+          )*
+        }
+      }
 
-		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-		pub enum KindDiscriminant {
-			$(
-			$(#[$meta])*
-			$kind,
-			)*
-		}
+      pub(crate) fn variant_as_dyn(&self) -> &dyn Any {
+        match self {
+          $(
+          Kind::$kind(it) => it,
+          )*
+        }
+      }
+    }
 
-		pub trait EntryKind: Any + private::Sealed {
-			fn into_kind(self) -> Kind
-			where
-				Self: Sized;
+    #[repr(u16)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum KindDiscriminant {
+      $(
+      $(#[$meta])*
+      $kind = $disc,
+      )*
+    }
 
-			fn discriminant() -> KindDiscriminant
-			where
-				Self: Sized;
-		}
+    impl KindDiscriminant {
+      /// Returns the wire-stable `u16` value for this discriminant.
+      pub fn as_u16(self) -> u16 {
+        self as u16
+      }
+    }
 
-		mod private {
-			pub trait Sealed {}
-		}
+    pub trait EntryKind: Any + private::Sealed {
+      fn into_kind(self) -> Kind
+      where
+        Self: Sized;
 
-		$(
-		impl private::Sealed for $kind {}
+      fn discriminant() -> KindDiscriminant
+      where
+        Self: Sized;
+    }
 
-		impl EntryKind for $kind {
-			fn into_kind(self) -> Kind { Kind::$kind(self) }
+    mod private {
+      pub trait Sealed {}
+    }
 
-			fn discriminant() -> KindDiscriminant { KindDiscriminant::$kind }
-		}
-		)*
-	}
+    $(
+    impl private::Sealed for $kind {}
+
+    impl EntryKind for $kind {
+      fn into_kind(self) -> Kind { Kind::$kind(self) }
+
+      fn discriminant() -> KindDiscriminant { KindDiscriminant::$kind }
+    }
+    )*
+  }
 }
 
 use register_kinds;

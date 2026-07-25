@@ -1,9 +1,14 @@
+pub mod const_;
 pub mod function;
+pub mod generics;
+pub mod impl_;
 pub mod param;
 pub mod record;
+pub mod reexport;
+pub mod static_;
 pub mod sum;
+pub mod trait_;
 pub mod ty;
-// pub mod generics;
 // pub mod protocols;
 // pub mod syntax;
 
@@ -13,9 +18,15 @@ use crate::visitor::Visitor;
 pub struct Module;
 
 pub use self::{
+    const_::Const,
     function::{FnModifier, Function},
+    generics::{GenericParam, WherePred},
+    impl_::{Impl, ImplFlags},
     param::{Param, ParamAttribute},
-    record::{Field, Record},
-    sum::{Enum, Variant},
+    record::{Field, FieldAttribute, FieldKey, Record, RecordForm},
+    reexport::Reexport,
+    static_::Static,
+    sum::{Enum, Variant, VariantForm},
+    trait_::{Trait, TraitFlags},
     ty::Type,
 };

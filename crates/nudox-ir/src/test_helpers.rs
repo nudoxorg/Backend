@@ -23,6 +23,9 @@ pub(crate) fn sym(name: &str) -> Symbol {
         documentation: String::new(),
         source: PathBuf::new(),
         span: 0..0,
+        aliases: Box::new([]),
+        deprecation: None,
+        doc_links: Box::new([]),
     }
 }
 

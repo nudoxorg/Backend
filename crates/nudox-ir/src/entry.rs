@@ -85,3 +85,13 @@ pub enum EntryInner {
     Owned(Kind),
     Reference(UntypedEntryIndex),
 }
+
+impl EntryInner {
+    /// Returns the inner [`Kind`] if this is an `Owned` entry, else `None`.
+    pub(crate) fn as_owned_kind(&self) -> Option<&Kind> {
+        match self {
+            EntryInner::Owned(k) => Some(k),
+            EntryInner::Reference(_) => None,
+        }
+    }
+}
