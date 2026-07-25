@@ -15,7 +15,8 @@
 //! 1. The oracle already emits it as a stable, unique key on every symbol.
 //! 2. It is the natural key for `<see cref=…>` resolution — `refer(doc_id)`
 //!    makes forward cref links resolve for free without a separate phase.
-//! 3. It is cross-referenceable across packages (same format as NuGet XML docs).
+//! 3. It is cross-referenceable across packages (same format as NuGet XML
+//!    docs).
 //!
 //! ## One pass, no intermediate tree
 //!
@@ -159,14 +160,20 @@ fn doc_links_from_map(
 
     if let Some(m) = map {
         for (cref, doc_id) in m {
-            out.push(DocLink { target: doc_id.clone(), label: Some(cref.clone()) });
+            out.push(DocLink {
+                target: doc_id.clone(),
+                label: Some(cref.clone()),
+            });
         }
     }
 
     // <seealso cref=…> references from XML doc comments.
     if let Some(p) = parsed {
         for sa in &p.see_also {
-            out.push(DocLink { target: sa.clone(), label: None });
+            out.push(DocLink {
+                target: sa.clone(),
+                label: None,
+            });
         }
     }
 
@@ -179,7 +186,10 @@ fn render_attrs(attrs: &[schema::Attr]) -> Box<[AttrTok]> {
         .iter()
         .map(|a| {
             let rendered = types::render_attribute(a);
-            AttrTok { token: rendered, arg: None }
+            AttrTok {
+                token: rendered,
+                arg: None,
+            }
         })
         .collect()
 }
@@ -232,7 +242,11 @@ fn build_documentation(
     sections.extend(extra.iter().cloned());
 
     if let Some(dep) = deprecated {
-        let label = if dep.is_error { "Deprecated (error)" } else { "Deprecated" };
+        let label = if dep.is_error {
+            "Deprecated (error)"
+        } else {
+            "Deprecated"
+        };
         let note = match &dep.message {
             Some(msg) if !msg.is_empty() => format!("{label}: {msg}"),
             _ => format!("{label}."),
@@ -244,7 +258,8 @@ fn build_documentation(
 }
 
 /// The accessibility of a type declaration: the first access-modifier token
-/// in `modifiers`, defaulting to `"internal"` (C# top-level / namespace default).
+/// in `modifiers`, defaulting to `"internal"` (C# top-level / namespace
+/// default).
 fn type_visibility(decl: &TypeDecl) -> Visibility {
     for m in &decl.modifiers {
         if matches!(
@@ -266,8 +281,9 @@ fn type_visibility(decl: &TypeDecl) -> Visibility {
 /// The `C# form` keyword (e.g. `class` / `struct` / `record class`) plus
 /// non-access modifiers — stamped into documentation.
 fn declared_note(kind: &str, modifiers: &[String]) -> String {
-    const INTERESTING: &[&str] =
-        &["static", "sealed", "abstract", "readonly", "ref", "partial", "unsafe", "new"];
+    const INTERESTING: &[&str] = &[
+        "static", "sealed", "abstract", "readonly", "ref", "partial", "unsafe", "new",
+    ];
     let mut parts: Vec<&str> = modifiers
         .iter()
         .map(String::as_str)
@@ -328,7 +344,10 @@ fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
         extra.push("Hidden (`EditorBrowsable(Never)`).".to_string());
     }
     if let Some(receiver) = &decl.extension_receiver {
-        extra.push(format!("Extension block for `{}`.", types::type_display(receiver)));
+        extra.push(format!(
+            "Extension block for `{}`.",
+            types::type_display(receiver)
+        ));
     }
     if !decl.interfaces.is_empty() {
         let ifaces: Vec<String> = decl.interfaces.iter().map(types::type_display).collect();
@@ -352,7 +371,9 @@ fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
     let super_types_list: Box<[Type]> = {
         let mut list = Vec::new();
         if let Some(base) = &decl.base_type {
-            let implicit = base.named_name().is_some_and(|n| IMPLICIT_BASES.contains(&n));
+            let implicit = base
+                .named_name()
+                .is_some_and(|n| IMPLICIT_BASES.contains(&n));
             if !implicit {
                 list.push(types::lower_type(base));
             }
@@ -363,7 +384,8 @@ fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
         list.into_boxed_slice()
     };
 
-    // Determine record form: structs are Struct; others Struct (no Tuple/Unit needed).
+    // Determine record form: structs are Struct; others Struct (no Tuple/Unit
+    // needed).
     let form = match decl.kind.as_str() {
         "STRUCT" | "RECORD_STRUCT" => RecordForm::Struct,
         _ => RecordForm::Struct,
@@ -374,8 +396,8 @@ fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
 
     // We build the field and method refs before calling declare to get the refs.
     // However, Lowering::declare takes the kind by value. Since fields/methods are
-    // children (separate entries), we declare them after declaring the parent, using
-    // Lowering::refer to get refs we embed in Record::fields.
+    // children (separate entries), we declare them after declaring the parent,
+    // using Lowering::refer to get refs we embed in Record::fields.
 
     // Step 1: collect field refs (forward-refers; fields will be declared after).
     let mut field_refs: Vec<Ref<Field>> = Vec::new();
@@ -519,7 +541,11 @@ fn lower_enum(decl: &TypeDecl, out: &mut Lowering<String>) {
             extra.push(format!("Underlying type: `{name}`."));
         }
     }
-    if decl.attributes.iter().any(|a| a.ty.ends_with("FlagsAttribute")) {
+    if decl
+        .attributes
+        .iter()
+        .any(|a| a.ty.ends_with("FlagsAttribute"))
+    {
         extra.push("`[Flags]` — a bit-field enumeration.".to_string());
     }
     if decl.hidden {
@@ -552,7 +578,12 @@ fn lower_enum(decl: &TypeDecl, out: &mut Lowering<String>) {
     out.declare(type_doc_id.clone(), parent.clone(), sym, enum_kind);
 
     // Declare each variant.
-    for f in decl.members.fields.iter().filter(|f| f.is_const || f.constant.is_some()) {
+    for f in decl
+        .members
+        .fields
+        .iter()
+        .filter(|f| f.is_const || f.constant.is_some())
+    {
         lower_enum_variant(f, &type_doc_id, out);
     }
 
@@ -649,7 +680,7 @@ fn lower_field(f: &schema::Field, parent_id: &str, out: &mut Lowering<String>) {
 
     let field_kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(Some(types::lower_type(&f.ty)))
+        .ty(types::lower_type(&f.ty))
         .attributes(attrs)
         .build();
 
@@ -679,7 +710,7 @@ fn lower_const_field(f: &schema::Field, parent_id: &str, out: &mut Lowering<Stri
 
     let const_kind = Const::builder()
         .ty(types::lower_type(&f.ty))
-        .value(f.constant.clone())
+        .maybe_value(f.constant.clone())
         .build();
 
     out.declare(const_id, Some(parent_id.to_string()), sym, const_kind);
@@ -724,7 +755,7 @@ fn lower_property(p: &schema::Property, parent_id: &str, out: &mut Lowering<Stri
 
     let field_kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(Some(types::lower_type(&p.ty)))
+        .ty(types::lower_type(&p.ty))
         .attributes(attrs)
         .build();
 
@@ -771,7 +802,7 @@ fn lower_indexer(p: &schema::Property, parent_id: &str, out: &mut Lowering<Strin
 
     let field_kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(Some(types::lower_type(&p.ty)))
+        .ty(types::lower_type(&p.ty))
         .attributes(attrs)
         .build();
 
@@ -811,7 +842,7 @@ fn lower_event(e: &schema::Event, parent_id: &str, out: &mut Lowering<String>) {
 
     let field_kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(Some(types::lower_type(&e.ty)))
+        .ty(types::lower_type(&e.ty))
         .attributes(attrs)
         .build();
 
@@ -846,7 +877,12 @@ fn accessor_note(p: &schema::Property) -> String {
 /// Lower a method, constructor, operator, or conversion to a Function entry.
 /// `in_interface` is true when the parent is an interface (so `is_abstract`
 /// drives `is_defaulted` inversion).
-fn lower_method(m: &schema::Method, parent_id: &str, in_interface: bool, out: &mut Lowering<String>) {
+fn lower_method(
+    m: &schema::Method,
+    parent_id: &str,
+    in_interface: bool,
+    out: &mut Lowering<String>,
+) {
     let method_id = method_doc_id(m, parent_id);
     let parsed = xmldoc::parse_opt(m.doc.as_deref());
 
@@ -909,7 +945,7 @@ fn lower_method(m: &schema::Method, parent_id: &str, in_interface: bool, out: &m
     let (generics, wheres) = types::lower_type_params(&m.type_params);
 
     let fn_kind = Function::builder()
-        .receiver(receiver)
+        .maybe_receiver(receiver)
         .input_params(input_refs)
         .output_params(output_refs)
         .modifiers(modifiers)
@@ -988,11 +1024,16 @@ fn lower_param(
     };
 
     let param_kind = Param::builder()
-        .ty(Some(types::lower_type(&p.ty)))
+        .ty(types::lower_type(&p.ty))
         .attributes(attrs)
         .build();
 
-    out.declare(param_id, Some(parent_method_id.to_string()), sym, param_kind);
+    out.declare(
+        param_id,
+        Some(parent_method_id.to_string()),
+        sym,
+        param_kind,
+    );
 }
 
 fn lower_return_param(
@@ -1029,7 +1070,7 @@ fn lower_return_param(
         cfg: None,
     };
 
-    let param_kind = Param::builder().ty(Some(ty)).build();
+    let param_kind = Param::builder().ty(ty).build();
     out.declare(ret_id, Some(parent_method_id.to_string()), sym, param_kind);
 }
 
@@ -1048,7 +1089,10 @@ fn lower_exception_param(
         span: 0..0,
         aliases: Box::new([]),
         deprecation: None,
-        doc_links: Box::new([DocLink { target: cref.to_string(), label: None }]),
+        doc_links: Box::new([DocLink {
+            target: cref.to_string(),
+            label: None,
+        }]),
         attrs: Box::new([]),
         cfg: None,
     };
@@ -1057,7 +1101,12 @@ fn lower_exception_param(
         .attributes([ParamAttribute::Optional])
         .build();
 
-    out.declare(exc_id.to_string(), Some(parent_method_id.to_string()), sym, param_kind);
+    out.declare(
+        exc_id.to_string(),
+        Some(parent_method_id.to_string()),
+        sym,
+        param_kind,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1082,7 +1131,11 @@ fn lower_enum_variant(f: &schema::Field, parent_id: &str, out: &mut Lowering<Str
         documentation: doc_parts.join("\n\n"),
         source: PathBuf::new(),
         span: 0..0,
-        aliases: if f.doc_id.is_empty() { Box::new([]) } else { Box::new([f.doc_id.clone()]) },
+        aliases: if f.doc_id.is_empty() {
+            Box::new([])
+        } else {
+            Box::new([f.doc_id.clone()])
+        },
         deprecation: deprecation_of(f.deprecated.as_ref()),
         doc_links: Box::new([]),
         attrs: render_attrs(&f.attributes),
@@ -1091,7 +1144,7 @@ fn lower_enum_variant(f: &schema::Field, parent_id: &str, out: &mut Lowering<Str
 
     let variant_kind = Variant::builder()
         .form(VariantForm::Unit)
-        .discr(f.constant.clone())
+        .maybe_discr(f.constant.clone())
         .build();
 
     out.declare(vid, Some(parent_id.to_string()), sym, variant_kind);
@@ -1156,16 +1209,36 @@ fn signature_is_unsafe(m: &schema::Method) -> bool {
 fn method_declaration_notes(m: &schema::Method) -> Vec<String> {
     let mut notes = Vec::new();
     let mut mods: Vec<&str> = Vec::new();
-    if m.is_static { mods.push("static"); }
-    if m.is_abstract { mods.push("abstract"); }
-    if m.is_virtual { mods.push("virtual"); }
-    if m.is_override { mods.push("override"); }
-    if m.is_sealed { mods.push("sealed"); }
-    if m.is_extern { mods.push("extern"); }
-    if m.is_readonly { mods.push("readonly"); }
-    if m.is_extension_method { mods.push("extension"); }
+    if m.is_static {
+        mods.push("static");
+    }
+    if m.is_abstract {
+        mods.push("abstract");
+    }
+    if m.is_virtual {
+        mods.push("virtual");
+    }
+    if m.is_override {
+        mods.push("override");
+    }
+    if m.is_sealed {
+        mods.push("sealed");
+    }
+    if m.is_extern {
+        mods.push("extern");
+    }
+    if m.is_readonly {
+        mods.push("readonly");
+    }
+    if m.is_extension_method {
+        mods.push("extension");
+    }
     if m.returns_by_ref {
-        mods.push(if m.returns_by_ref_readonly { "ref readonly return" } else { "ref return" });
+        mods.push(if m.returns_by_ref_readonly {
+            "ref readonly return"
+        } else {
+            "ref return"
+        });
     }
     match m.operator_kind.as_str() {
         "implicit" => mods.push("implicit operator"),

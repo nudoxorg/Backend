@@ -6,9 +6,9 @@
 //! * **Named / alias** → `Type::Nominal(RawRef)` obtained via
 //!   `Lowering::refer`, or `Type::Apply { base, args }` for instantiated
 //!   generic named types.
-//! * **Pointer** (`*T`) → `Type::Primitive(Primitive::MutPointer(elem))` —
-//!   Go pointers are GC-managed, freely mutable, and carry no borrow
-//!   discipline; `MutPointer` over-claims less than a reference type.
+//! * **Pointer** (`*T`) → `Type::Primitive(Primitive::MutPointer(elem))` — Go
+//!   pointers are GC-managed, freely mutable, and carry no borrow discipline;
+//!   `MutPointer` over-claims less than a reference type.
 //! * **Slice** (`[]T`) → `Type::Slice(elem)`.
 //! * **Array** (`[N]T`) → `Type::Array { ty: elem, length: N }`.
 //! * **Map** (`map[K]V`) — no direct IR type.  Lowered as
@@ -16,19 +16,19 @@
 //!   However, since "map" is not a real declared type, we cannot refer to it.
 //!   Instead we fall back to `Type::Any` with a logged note and return
 //!   `ProducerError::Unsupported` at the call site when the caller wants
-//!   precision.  In practice the IR has no map primitive — see the
-//!   UNCERTAINTY note in the report.
+//!   precision.  In practice the IR has no map primitive — see the UNCERTAINTY
+//!   note in the report.
 //! * **Chan** — similarly no IR type; lowered as `Type::Any` (unsupported).
 //! * **Func type** → `Type::Tuple` of param + result types as a fallback;
-//!   structural function pointers cannot be faithfully round-tripped without
-//!   a dedicated IR variant.  Returned as `Type::Any` (see uncertainty note).
-//! * **Struct literal** (anonymous) → `Type::Any` (no inline struct literal
-//!   in the new IR; the old IR had `RecordLiteral`).
+//!   structural function pointers cannot be faithfully round-tripped without a
+//!   dedicated IR variant.  Returned as `Type::Any` (see uncertainty note).
+//! * **Struct literal** (anonymous) → `Type::Any` (no inline struct literal in
+//!   the new IR; the old IR had `RecordLiteral`).
 //! * **Interface literal** → `Type::Any` (same gap; the old IR had
 //!   `Intersection`/`RecordLiteral`).
 //! * **Constraint union** → `Type::Union(parts)`.
-//! * **TypeParam** → `Type::SelfType` placeholder (no GenericParam type-var
-//!   in the new IR's `Type` enum — see uncertainty note).
+//! * **TypeParam** → `Type::SelfType` placeholder (no GenericParam type-var in
+//!   the new IR's `Type` enum — see uncertainty note).
 //! * **Basic** types → `Type::Primitive(...)` or `Type::Primitive(Str)` etc.
 
 use nudox_ir::kinds::{
@@ -214,7 +214,8 @@ pub fn lower_basic(name: &str) -> Type {
     }
 }
 
-/// Lower a receiver kind from oracle method metadata into [`nudox_ir::kinds::function::Receiver`].
+/// Lower a receiver kind from oracle method metadata into
+/// [`nudox_ir::kinds::function::Receiver`].
 ///
 /// Go receiver semantics:
 /// * `pointer_recv = true` → `&mut self` style → `MutRef`.
@@ -271,16 +272,34 @@ mod tests {
 
     #[test]
     fn basic_primitives() {
-        assert!(matches!(lower_basic("bool"), Type::Primitive(Primitive::Bool)));
-        assert!(matches!(lower_basic("string"), Type::Primitive(Primitive::Str)));
+        assert!(matches!(
+            lower_basic("bool"),
+            Type::Primitive(Primitive::Bool)
+        ));
+        assert!(matches!(
+            lower_basic("string"),
+            Type::Primitive(Primitive::Str)
+        ));
         assert!(matches!(lower_basic("int32"), Type::I32));
-        assert!(matches!(lower_basic("float64"), Type::Primitive(Primitive::Float(Width::W64))));
-        assert!(matches!(lower_basic("rune"), Type::Primitive(Primitive::Char)));
+        assert!(matches!(
+            lower_basic("float64"),
+            Type::Primitive(Primitive::Float(Width::W64))
+        ));
+        assert!(matches!(
+            lower_basic("rune"),
+            Type::Primitive(Primitive::Char)
+        ));
     }
 
     #[test]
     fn untyped_prefix_stripped() {
-        assert!(matches!(lower_basic("untyped int"), Type::Primitive(Primitive::Integer { signed: true, width: Width::Arch })));
+        assert!(matches!(
+            lower_basic("untyped int"),
+            Type::Primitive(Primitive::Integer {
+                signed: true,
+                width: Width::Arch
+            })
+        ));
     }
 
     #[test]

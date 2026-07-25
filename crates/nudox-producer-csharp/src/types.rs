@@ -10,7 +10,8 @@
 //!   drops the annotation entirely (no noise for old assemblies).  See below.
 //! * `dynamic` → `Type::Any`.
 //! * `System.Void` → `Type::Tuple([])` (unit).
-//! * Unresolved `Error` nodes → `Type::Any` (the oracle already logged the gap).
+//! * Unresolved `Error` nodes → `Type::Any` (the oracle already logged the
+//!   gap).
 //!
 //! # Nullability representation decision
 //!
@@ -25,7 +26,7 @@
 //! preserving choice available in the current IR.  Downstream consumers can
 //! pattern-match `Union` to recover the T.
 
-use nudox_ir::build::{GenericParam, Primitive, Type, Width, WherePred};
+use nudox_ir::build::{GenericParam, Primitive, Type, WherePred, Width};
 
 use crate::schema::{self, Nullability, TypeSig};
 
@@ -72,7 +73,13 @@ fn lower_type_depth(t: &TypeSig, depth: usize) -> Type {
     }
 
     match t {
-        TypeSig::Named { name, args, owner, nullable, .. } => {
+        TypeSig::Named {
+            name,
+            args,
+            owner,
+            nullable,
+            ..
+        } => {
             let base = lower_named(name, args, owner.as_deref(), depth);
             apply_nullable(base, nullable)
         }
@@ -100,7 +107,11 @@ fn lower_type_depth(t: &TypeSig, depth: usize) -> Type {
         // loses the rectangular shape).  UNCERTAINTY: no `Type::Array { rank }`
         // exists in the new IR; `Type::Array` has a `length: usize` for
         // fixed-size, not rank. We use `Slice` for all ranks.
-        TypeSig::Array { element, rank: _, nullable } => {
+        TypeSig::Array {
+            element,
+            rank: _,
+            nullable,
+        } => {
             let elem = lower_type_depth(element, depth + 1);
             let base = Type::Slice(Box::new(elem));
             apply_nullable(base, nullable)
@@ -114,7 +125,11 @@ fn lower_type_depth(t: &TypeSig, depth: usize) -> Type {
 
         // Function pointer (`delegate*<...>`): calling convention is dropped
         // (no slot in the new IR).
-        TypeSig::FuncPtr { params, return_type, .. } => {
+        TypeSig::FuncPtr {
+            params,
+            return_type,
+            ..
+        } => {
             // UNCERTAINTY: the new IR has no `FunctionPointer` type variant.
             // The old IR had `IrType::FunctionPointer`. We cannot faithfully
             // represent this; return Any and note the gap.
@@ -177,9 +192,14 @@ fn lower_named(name: &str, args: &[TypeSig], owner: Option<&TypeSig>, depth: usi
         Type::Any
     } else {
         // Generic application: `List<T>` etc. Base is also Any for now.
-        let type_args: Box<[Type]> =
-            args.iter().map(|a| lower_type_depth(a, depth + 1)).collect();
-        Type::Apply { base: Box::new(Type::Any), args: type_args }
+        let type_args: Box<[Type]> = args
+            .iter()
+            .map(|a| lower_type_depth(a, depth + 1))
+            .collect();
+        Type::Apply {
+            base: Box::new(Type::Any),
+            args: type_args,
+        }
     }
 }
 
@@ -187,25 +207,55 @@ fn lower_named(name: &str, args: &[TypeSig], owner: Option<&TypeSig>, depth: usi
 fn lower_primitive(name: &str) -> Option<Type> {
     let prim = match name {
         "System.Boolean" => Type::Primitive(Primitive::Bool),
-        "System.SByte" => Type::Primitive(Primitive::Integer { signed: true, width: Width::W8 }),
-        "System.Int16" => Type::Primitive(Primitive::Integer { signed: true, width: Width::W16 }),
-        "System.Int32" => Type::Primitive(Primitive::Integer { signed: true, width: Width::W32 }),
-        "System.Int64" => Type::Primitive(Primitive::Integer { signed: true, width: Width::W64 }),
-        "System.Int128" => Type::Primitive(Primitive::Integer { signed: true, width: Width::W128 }),
-        "System.Byte" => Type::Primitive(Primitive::Integer { signed: false, width: Width::W8 }),
-        "System.UInt16" => Type::Primitive(Primitive::Integer { signed: false, width: Width::W16 }),
-        "System.UInt32" => Type::Primitive(Primitive::Integer { signed: false, width: Width::W32 }),
-        "System.UInt64" => Type::Primitive(Primitive::Integer { signed: false, width: Width::W64 }),
-        "System.UInt128" => {
-            Type::Primitive(Primitive::Integer { signed: false, width: Width::W128 })
-        }
+        "System.SByte" => Type::Primitive(Primitive::Integer {
+            signed: true,
+            width: Width::W8,
+        }),
+        "System.Int16" => Type::Primitive(Primitive::Integer {
+            signed: true,
+            width: Width::W16,
+        }),
+        "System.Int32" => Type::Primitive(Primitive::Integer {
+            signed: true,
+            width: Width::W32,
+        }),
+        "System.Int64" => Type::Primitive(Primitive::Integer {
+            signed: true,
+            width: Width::W64,
+        }),
+        "System.Int128" => Type::Primitive(Primitive::Integer {
+            signed: true,
+            width: Width::W128,
+        }),
+        "System.Byte" => Type::Primitive(Primitive::Integer {
+            signed: false,
+            width: Width::W8,
+        }),
+        "System.UInt16" => Type::Primitive(Primitive::Integer {
+            signed: false,
+            width: Width::W16,
+        }),
+        "System.UInt32" => Type::Primitive(Primitive::Integer {
+            signed: false,
+            width: Width::W32,
+        }),
+        "System.UInt64" => Type::Primitive(Primitive::Integer {
+            signed: false,
+            width: Width::W64,
+        }),
+        "System.UInt128" => Type::Primitive(Primitive::Integer {
+            signed: false,
+            width: Width::W128,
+        }),
         // Native ints.
-        "nint" | "System.IntPtr" => {
-            Type::Primitive(Primitive::Integer { signed: true, width: Width::Arch })
-        }
-        "nuint" | "System.UIntPtr" => {
-            Type::Primitive(Primitive::Integer { signed: false, width: Width::Arch })
-        }
+        "nint" | "System.IntPtr" => Type::Primitive(Primitive::Integer {
+            signed: true,
+            width: Width::Arch,
+        }),
+        "nuint" | "System.UIntPtr" => Type::Primitive(Primitive::Integer {
+            signed: false,
+            width: Width::Arch,
+        }),
         "System.Half" => Type::Primitive(Primitive::Float(Width::W16)),
         "System.Single" => Type::Primitive(Primitive::Float(Width::W32)),
         "System.Double" => Type::Primitive(Primitive::Float(Width::W64)),
@@ -254,16 +304,14 @@ fn apply_nullable(base: Type, nullable: &str) -> Type {
 /// `unmanaged`, `allows ref struct`) have no structural slot; they ride as
 /// synthetic `WherePred` bounds with `target = Type::Any` and a `Builtin` name
 /// prefixed `csharp:` so they are never confused with real interface FQNs.
-pub fn lower_type_params(
-    type_params: &[schema::TypeParam],
-) -> (Vec<GenericParam>, Vec<WherePred>) {
+pub fn lower_type_params(type_params: &[schema::TypeParam]) -> (Vec<GenericParam>, Vec<WherePred>) {
     let mut params = Vec::with_capacity(type_params.len());
     let mut wheres = Vec::new();
 
     for tp in type_params {
         params.push(GenericParam::Type {
             name: tp.name.clone(),
-            bounds: Box::new([]),   // explicit-type bounds go into `wheres`
+            bounds: Box::new([]), // explicit-type bounds go into `wheres`
             default: None,
         });
 
@@ -292,7 +340,10 @@ pub fn lower_type_params(
         for bound_sig in &c.types {
             let bound_ty = lower_type(bound_sig);
             let target = Type::Primitive(Primitive::Builtin(tp.name.clone()));
-            wheres.push(WherePred { target, bounds: Box::new([bound_ty]) });
+            wheres.push(WherePred {
+                target,
+                bounds: Box::new([bound_ty]),
+            });
         }
     }
 
@@ -368,7 +419,11 @@ pub fn type_display(t: &TypeSig) -> String {
             format!("{}[{commas}]", type_display(element))
         }
         TypeSig::Pointer { pointee } => format!("{}*", type_display(pointee)),
-        TypeSig::FuncPtr { params, return_type, .. } => {
+        TypeSig::FuncPtr {
+            params,
+            return_type,
+            ..
+        } => {
             let mut parts: Vec<String> = params.iter().map(type_display).collect();
             if let Some(ret) = return_type {
                 parts.push(type_display(ret));

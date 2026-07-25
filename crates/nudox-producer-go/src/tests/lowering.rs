@@ -168,10 +168,7 @@ const FIXTURE_JSON: &str = r#"
 // ---------------------------------------------------------------------------
 
 fn lineage() -> PackageLineageId {
-    PackageLineageId::new(
-        EcosystemId::new("go"),
-        PackageName::new("example.com/m"),
-    )
+    PackageLineageId::new(EcosystemId::new("go"), PackageName::new("example.com/m"))
 }
 
 fn lower_fixture() -> nudox_ir::package::IrPackage<GoId> {
@@ -227,29 +224,44 @@ fn struct_fields_declared() {
     let height = pkg.iter().find(|(_, e)| e.sym().name == "Height");
     assert!(width.is_some(), "Width field must be declared");
     assert!(height.is_some(), "Height field must be declared");
-    assert!(width.unwrap().1.downcast::<Field>().is_some(), "Width must be a Field");
-    assert!(height.unwrap().1.downcast::<Field>().is_some(), "Height must be a Field");
+    assert!(
+        width.unwrap().1.downcast::<Field>().is_some(),
+        "Width must be a Field"
+    );
+    assert!(
+        height.unwrap().1.downcast::<Field>().is_some(),
+        "Height must be a Field"
+    );
 }
 
+/// The fixture declares `Area` twice: once as a method on the `Rect` struct
+/// (value receiver) and once as a member of the `Shape` interface (no
+/// receiver — an interface method is a requirement, not a bound method). So
+/// this asserts on the *set*, which also pins that the two are kept as
+/// distinct declarations rather than merged.
 #[test]
 fn method_declared_with_receiver() {
+    use nudox_ir::kinds::function::Receiver;
+
     let pkg = lower_fixture();
-    let area = pkg
+    let receivers: Vec<Option<Receiver>> = pkg
         .iter()
-        .find(|(_, e)| e.sym().name == "Area")
-        .expect("Area method must be declared");
-    let fn_body = area
-        .1
-        .downcast::<Function>()
-        .expect("Area must be a Function");
-    // Area is a value receiver method.
+        .filter(|(_, e)| e.sym().name == "Area")
+        .map(|(_, e)| {
+            e.downcast::<Function>()
+                .expect("every Area must be a Function")
+                .body()
+                .receiver
+        })
+        .collect();
+
     assert!(
-        matches!(
-            fn_body.body().receiver,
-            Some(nudox_ir::kinds::function::Receiver::Owned)
-        ),
-        "value receiver must be Owned, got {:?}",
-        fn_body.body().receiver
+        receivers.contains(&Some(Receiver::Owned)),
+        "the Rect.Area value-receiver method must lower to Receiver::Owned, got {receivers:?}"
+    );
+    assert!(
+        receivers.contains(&None),
+        "the Shape.Area interface requirement must carry no receiver, got {receivers:?}"
     );
 }
 
@@ -312,8 +324,14 @@ fn iota_enum_variants_declared() {
         .expect("Green variant must be declared");
 
     use nudox_ir::kinds::Variant;
-    assert!(red.1.downcast::<Variant>().is_some(), "Red must be a Variant");
-    assert!(green.1.downcast::<Variant>().is_some(), "Green must be a Variant");
+    assert!(
+        red.1.downcast::<Variant>().is_some(),
+        "Red must be a Variant"
+    );
+    assert!(
+        green.1.downcast::<Variant>().is_some(),
+        "Green must be a Variant"
+    );
 
     // Discriminants preserved.
     assert_eq!(
@@ -321,7 +339,13 @@ fn iota_enum_variants_declared() {
         Some("0")
     );
     assert_eq!(
-        green.1.downcast::<Variant>().unwrap().body().discr.as_deref(),
+        green
+            .1
+            .downcast::<Variant>()
+            .unwrap()
+            .body()
+            .discr
+            .as_deref(),
         Some("1")
     );
 }
@@ -357,8 +381,16 @@ fn generic_func_scale_multi_input_output() {
         .downcast::<Function>()
         .expect("Scale must be a Function");
     // Scale(s S, factor float64) float64 → 2 inputs, 1 output.
-    assert_eq!(fn_body.body().input_params.len(), 2, "Scale must have 2 input params");
-    assert_eq!(fn_body.body().output_params.len(), 1, "Scale must have 1 output param");
+    assert_eq!(
+        fn_body.body().input_params.len(),
+        2,
+        "Scale must have 2 input params"
+    );
+    assert_eq!(
+        fn_body.body().output_params.len(),
+        1,
+        "Scale must have 1 output param"
+    );
 }
 
 #[test]
@@ -368,10 +400,7 @@ fn const_pi_declared() {
         .iter()
         .find(|(_, e)| e.sym().name == "Pi")
         .expect("Pi must be declared");
-    assert!(
-        pi.1.downcast::<Const>().is_some(),
-        "Pi must be a Const"
-    );
+    assert!(pi.1.downcast::<Const>().is_some(), "Pi must be a Const");
     assert_eq!(
         pi.1.downcast::<Const>().unwrap().body().value.as_deref(),
         Some("3.14159265358979323846264338327950288")

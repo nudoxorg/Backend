@@ -22,7 +22,10 @@ pub enum GoError {
     /// Callers should log this and continue; the symbol is omitted from
     /// the output rather than silently dropped.
     #[error("unsupported Go construct `{symbol}`: {reason}")]
-    Unsupported { symbol: String, reason: &'static str },
+    Unsupported {
+        symbol: String,
+        reason: &'static str,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, GoError>;

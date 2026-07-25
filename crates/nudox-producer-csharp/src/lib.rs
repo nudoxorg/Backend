@@ -2,19 +2,20 @@
 //!
 //! # Crate structure
 //!
-//! - [`schema`]  — Serde mirror of the Roslyn oracle's JSON output. Zero IR calls;
-//!   pure salvage from `workspace/compiler/compile/csharp/schema.rs`.
+//! - [`schema`]  — Serde mirror of the Roslyn oracle's JSON output. Zero IR
+//!   calls; pure salvage from `workspace/compiler/compile/csharp/schema.rs`.
 //! - [`xmldoc`]  — C# XML documentation-comment parsing. Pure salvage from
-//!   `workspace/compiler/compile/csharp/xmldoc.rs`, adapted for the self-contained
-//!   `simple_name` helper.
-//! - [`types`]   — TypeSig → nudox-ir `Type` mapping; accessibility → Visibility;
-//!   attribute rendering; generic params/where-preds.
-//! - [`lower`]   — One-pass lowering of a flat `Extraction` into `Lowering<String>`,
-//!   where `String` is the Roslyn DocumentationCommentId (`T:Ns.Type` / `M:…`).
+//!   `workspace/compiler/compile/csharp/xmldoc.rs`, adapted for the
+//!   self-contained `simple_name` helper.
+//! - [`types`]   — TypeSig → nudox-ir `Type` mapping; accessibility →
+//!   Visibility; attribute rendering; generic params/where-preds.
+//! - [`lower`]   — One-pass lowering of a flat `Extraction` into
+//!   `Lowering<String>`, where `String` is the Roslyn DocumentationCommentId
+//!   (`T:Ns.Type` / `M:…`).
 //! - [`error`]   — `ProducerError` type.
 //! - [`producer`] — `CSharpProducer` implementing the (not-yet-published)
-//!   `nudox-producer` trait contract. Coded against the published contract signature;
-//!   compiles standalone without the `nudox-producer` crate.
+//!   `nudox-producer` trait contract. Coded against the published contract
+//!   signature; compiles standalone without the `nudox-producer` crate.
 //!
 //! # Oracle command contract
 //!
@@ -32,10 +33,11 @@
 //!
 //! # Id choice
 //!
-//! `Self::Id = String` where the string is the Roslyn **DocumentationCommentId**
-//! (e.g. `T:System.Collections.Generic.List\`1`, `M:Foo.Bar.Method(System.Int32)`).
-//! This is already unique, stable, and emitted by the oracle on every symbol —
-//! it is the natural join key for `<see cref=…>` resolution via `Lowering::refer`.
+//! `Self::Id = String` where the string is the Roslyn
+//! **DocumentationCommentId** (e.g. `T:System.Collections.Generic.List\`1`,
+//! `M:Foo.Bar.Method(System.Int32)`). This is already unique, stable, and
+//! emitted by the oracle on every symbol — it is the natural join key for `<see
+//! cref=…>` resolution via `Lowering::refer`.
 
 pub mod error;
 pub mod lower;
@@ -66,7 +68,9 @@ use std::path::PathBuf;
 pub fn parse_extraction(json: &[u8]) -> Result<Extraction, ProducerError> {
     let extraction: Extraction = serde_json::from_slice(json)?;
     if extraction.format != 1 {
-        return Err(ProducerError::UnsupportedFormat { format: extraction.format });
+        return Err(ProducerError::UnsupportedFormat {
+            format: extraction.format,
+        });
     }
     if extraction.types.is_empty() {
         return Err(ProducerError::NoTypes);
@@ -80,7 +84,9 @@ pub fn parse_extraction(json: &[u8]) -> Result<Extraction, ProducerError> {
 /// Returns an error if the lowering finish step detects undeclared refs,
 /// duplicates, or cycles.  In practice the oracle ensures doc-ids are unique
 /// and non-cyclic, but we validate for safety.
-pub fn lower(extraction: &Extraction) -> Result<nudox_ir::package::IrPackage<String>, ProducerError> {
+pub fn lower(
+    extraction: &Extraction,
+) -> Result<nudox_ir::package::IrPackage<String>, ProducerError> {
     let assembly_name = if extraction.assembly.name.is_empty() {
         "assembly"
     } else {
@@ -105,5 +111,7 @@ pub fn lower(extraction: &Extraction) -> Result<nudox_ir::package::IrPackage<Str
 
     lower::lower_extraction(extraction, &mut lowering);
 
-    lowering.finish().map_err(|e| ProducerError::oracle(format!("{e}")))
+    lowering
+        .finish()
+        .map_err(|e| ProducerError::oracle(format!("{e}")))
 }

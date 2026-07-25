@@ -52,10 +52,7 @@ pub enum GoId {
     /// A package: the import path is the id.
     Package { import_path: String },
     /// A package-level declaration (type, alias, func, const, var).
-    Item {
-        import_path: String,
-        name: String,
-    },
+    Item { import_path: String, name: String },
     /// A method or struct field, child of a named type.
     Member {
         import_path: String,
@@ -151,20 +148,13 @@ fn detect_iota_enums<'a>(pkg: &'a oracle::Package) -> IotaEnums<'a> {
 // ---------------------------------------------------------------------------
 
 /// Build a minimal [`Symbol`] for a declaration.
-fn sym_for(
-    name: &str,
-    doc: &str,
-    exported: bool,
-    pos: Option<&oracle::Pos>,
-) -> Symbol {
+fn sym_for(name: &str, doc: &str, exported: bool, pos: Option<&oracle::Pos>) -> Symbol {
     let vis = if exported {
         Visibility::Public
     } else {
         Visibility::Package
     };
-    let source = pos
-        .map(|p| PathBuf::from(&p.file))
-        .unwrap_or_default();
+    let source = pos.map(|p| PathBuf::from(&p.file)).unwrap_or_default();
     // Span: we only have line/col from the oracle, not byte offsets.
     // Store 0..0 — downstream consumers that need byte spans will re-parse.
     Symbol {
@@ -216,10 +206,7 @@ pub fn lower_output(
 }
 
 /// Lower a single oracle package into the `Lowering` sink.
-fn lower_package(
-    pkg: &oracle::Package,
-    low: &mut Lowering<GoId>,
-) -> Result<()> {
+fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>) -> Result<()> {
     let pkg_id = GoId::Package {
         import_path: pkg.import_path.clone(),
     };
@@ -428,8 +415,13 @@ fn lower_interface(
 
             let msym = sym_for(&sig.name, &actual_doc, sig.exported, sig.pos.as_ref());
 
-            let (input_refs, output_refs) =
-                lower_sig_params_into_lowering(pkg, &decl.name, &sig.name, sig.signature.as_ref(), low);
+            let (input_refs, output_refs) = lower_sig_params_into_lowering(
+                pkg,
+                &decl.name,
+                &sig.name,
+                sig.signature.as_ref(),
+                low,
+            );
 
             let fn_kind = Function::builder()
                 // Interface methods have no receiver in the IR sense (they are
@@ -796,7 +788,14 @@ fn lower_sig_params_into_lowering(
         let param_id = GoId::Member {
             import_path: pkg.import_path.clone(),
             type_name: format!("{type_name}::{fn_name}"),
-            member_name: format!("param:{}", if p.name.is_empty() { i.to_string() } else { p.name.clone() }),
+            member_name: format!(
+                "param:{}",
+                if p.name.is_empty() {
+                    i.to_string()
+                } else {
+                    p.name.clone()
+                }
+            ),
         };
         let is_last_variadic = variadic && i == last_param;
         let attrs: Vec<ParamAttribute> = if is_last_variadic {
@@ -821,7 +820,14 @@ fn lower_sig_params_into_lowering(
         let result_id = GoId::Member {
             import_path: pkg.import_path.clone(),
             type_name: format!("{type_name}::{fn_name}"),
-            member_name: format!("result:{}", if r.name.is_empty() { i.to_string() } else { r.name.clone() }),
+            member_name: format!(
+                "result:{}",
+                if r.name.is_empty() {
+                    i.to_string()
+                } else {
+                    r.name.clone()
+                }
+            ),
         };
         let ty = r.r#type.as_ref().map(types::lower_type);
         let rname = if r.name.is_empty() {

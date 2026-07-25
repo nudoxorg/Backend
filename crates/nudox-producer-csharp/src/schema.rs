@@ -387,7 +387,8 @@ pub struct Method {
     pub type_params: Vec<TypeParam>,
     #[serde(default)]
     pub parameters: Vec<Param>,
-    /// `None` for constructors and `void` returns is a `named{name:"System.Void"}`.
+    /// `None` for constructors and `void` returns is a
+    /// `named{name:"System.Void"}`.
     pub return_type: Option<TypeSig>,
     #[serde(default)]
     pub returns_by_ref: bool,
@@ -396,7 +397,8 @@ pub struct Method {
     /// The explicitly-implemented interface member (`IFoo.Bar`), if any.
     pub explicit_interface: Option<String>,
     /// `"none"` | `"implicit"` | `"explicit"` | `"checked"` (conversions/ops).
-    /// Oracle emits JSON `null` for non-operators; treat as default (empty/`none`).
+    /// Oracle emits JSON `null` for non-operators; treat as default
+    /// (empty/`none`).
     #[serde(default, deserialize_with = "null_as_default")]
     pub operator_kind: String,
     #[serde(default)]
@@ -451,7 +453,8 @@ pub enum TypeSig {
         /// `"none"` (oblivious) | `"annotated"` (`T?`) | `"notAnnotated"`.
         #[serde(default)]
         nullable: String,
-        /// Roslyn `TypeKind` (`Class`/`Struct`/`Interface`/`Enum`/`Delegate`/…).
+        /// Roslyn `TypeKind`
+        /// (`Class`/`Struct`/`Interface`/`Enum`/`Delegate`/…).
         #[serde(default)]
         type_kind: String,
     },

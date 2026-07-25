@@ -44,7 +44,9 @@ pub enum ProducerError {
 
 impl ProducerError {
     pub fn oracle(msg: impl Into<String>) -> Self {
-        ProducerError::Oracle { message: msg.into() }
+        ProducerError::Oracle {
+            message: msg.into(),
+        }
     }
 
     pub fn unsupported(symbol: impl Into<String>, reason: impl Into<String>) -> Self {

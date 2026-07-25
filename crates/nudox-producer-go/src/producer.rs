@@ -4,10 +4,10 @@
 //! trait contract (described in the mission brief; the actual trait crate is
 //! being authored by the prodcore agent in parallel).
 //!
-//! **Compilation gate:** This module contains `#[cfg(feature = "producer-trait")]`
-//! guards so the crate compiles even before `nudox-producer` (the trait crate)
-//! lands.  Once `nudox-producer` is stable, add it as a dependency and remove
-//! the `cfg` guards.
+//! **Compilation gate:** This module contains `#[cfg(feature =
+//! "producer-trait")]` guards so the crate compiles even before
+//! `nudox-producer` (the trait crate) lands.  Once `nudox-producer` is stable,
+//! add it as a dependency and remove the `cfg` guards.
 //!
 //! ## Oracle invocation contract
 //!
@@ -73,16 +73,16 @@ impl GoProducer {
     /// yet exist as a Cargo dependency.  Once it does, replace this body with a
     /// call to `nudox_producer::oracle_subprocess(oracle_bin, &[module_root])`.
     ///
-    /// UNCERTAINTY: The `oracle_subprocess` helper's exact signature is unknown.
-    /// The brief says it "runs a command and deserializes stdout as JSON, turning
-    /// a non-zero exit into a typed error carrying stderr."  This implementation
-    /// matches that description but may need adjustment when the real helper
-    /// lands.
+    /// UNCERTAINTY: The `oracle_subprocess` helper's exact signature is
+    /// unknown. The brief says it "runs a command and deserializes stdout
+    /// as JSON, turning a non-zero exit into a typed error carrying
+    /// stderr."  This implementation matches that description but may need
+    /// adjustment when the real helper lands.
     pub fn invoke_oracle(&self, module_root: &std::path::Path) -> Result<oracle::Output> {
         // Locate the oracle binary.  In a real build this would come from the
         // sandbox/ExecPlan machinery.
-        let oracle_bin = std::env::var("NUDOX_GO_ORACLE_BIN")
-            .unwrap_or_else(|_| "nudox-go-oracle".to_string());
+        let oracle_bin =
+            std::env::var("NUDOX_GO_ORACLE_BIN").unwrap_or_else(|_| "nudox-go-oracle".to_string());
 
         let output = std::process::Command::new(&oracle_bin)
             .arg(module_root)
@@ -94,15 +94,12 @@ impl GoProducer {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
             return Err(GoError::Oracle {
-                detail: format!(
-                    "oracle exited with status {}: {stderr}",
-                    output.status
-                ),
+                detail: format!("oracle exited with status {}: {stderr}", output.status),
             });
         }
 
-        let oracle: oracle::Output = serde_json::from_slice(&output.stdout)
-            .map_err(GoError::Json)?;
+        let oracle: oracle::Output =
+            serde_json::from_slice(&output.stdout).map_err(GoError::Json)?;
         Ok(oracle)
     }
 

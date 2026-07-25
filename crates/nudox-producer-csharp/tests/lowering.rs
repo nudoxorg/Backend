@@ -400,10 +400,7 @@ fn lower_fixture_succeeds() {
     assert!(!entries.is_empty(), "package must have entries");
 
     // Check all three types are present by name.
-    let names: Vec<&str> = entries
-        .iter()
-        .map(|(_, e)| e.sym().name.as_str())
-        .collect();
+    let names: Vec<&str> = entries.iter().map(|(_, e)| e.sym().name.as_str()).collect();
 
     assert!(names.contains(&"IAnimal"), "IAnimal must be present");
     assert!(names.contains(&"Dog"), "Dog must be present");
@@ -423,7 +420,10 @@ fn interface_entry_is_present_and_named() {
     // Verify it's a Trait kind.
     use nudox_ir::kind::Kind;
     assert!(
-        matches!(ianimal.1.kind(), nudox_ir::entry::EntryInner::Owned(Kind::Trait(_))),
+        matches!(
+            ianimal.1.kind(),
+            nudox_ir::entry::EntryInner::Owned(Kind::Trait(_))
+        ),
         "IAnimal must be a Trait kind"
     );
 }
@@ -440,7 +440,10 @@ fn enum_entry_has_variants() {
 
     use nudox_ir::kind::Kind;
     assert!(
-        matches!(animal_kind.1.kind(), nudox_ir::entry::EntryInner::Owned(Kind::Enum(_))),
+        matches!(
+            animal_kind.1.kind(),
+            nudox_ir::entry::EntryInner::Owned(Kind::Enum(_))
+        ),
         "AnimalKind must be an Enum kind"
     );
 
@@ -448,10 +451,17 @@ fn enum_entry_has_variants() {
     let variants: Vec<_> = pkg
         .iter()
         .filter(|(_, e)| {
-            matches!(e.kind(), nudox_ir::entry::EntryInner::Owned(Kind::Variant(_)))
+            matches!(
+                e.kind(),
+                nudox_ir::entry::EntryInner::Owned(Kind::Variant(_))
+            )
         })
         .collect();
-    assert_eq!(variants.len(), 2, "AnimalKind must have 2 variants (Dog, Cat)");
+    assert_eq!(
+        variants.len(),
+        2,
+        "AnimalKind must have 2 variants (Dog, Cat)"
+    );
 }
 
 #[test]
@@ -459,17 +469,27 @@ fn dog_has_fields_and_methods() {
     let extraction = parse_extraction(FIXTURE.as_bytes()).expect("fixture should parse");
     let pkg = lower(&extraction).expect("lowering should succeed");
 
-    // Dog should have at least: _name (Field), Name (Field/property), Speak (Function).
+    // Dog should have at least: _name (Field), Name (Field/property), Speak
+    // (Function).
     let field_names: Vec<&str> = pkg
         .iter()
         .filter(|(_, e)| {
-            matches!(e.kind(), nudox_ir::entry::EntryInner::Owned(nudox_ir::kind::Kind::Field(_)))
+            matches!(
+                e.kind(),
+                nudox_ir::entry::EntryInner::Owned(nudox_ir::kind::Kind::Field(_))
+            )
         })
         .map(|(_, e)| e.sym().name.as_str())
         .collect();
 
-    assert!(field_names.contains(&"_name"), "_name field must be present");
-    assert!(field_names.contains(&"Name"), "Name property must be present");
+    assert!(
+        field_names.contains(&"_name"),
+        "_name field must be present"
+    );
+    assert!(
+        field_names.contains(&"Name"),
+        "Name property must be present"
+    );
 }
 
 #[test]
@@ -477,22 +497,29 @@ fn generic_method_with_constraint_is_present() {
     let extraction = parse_extraction(FIXTURE.as_bytes()).expect("fixture should parse");
     let pkg = lower(&extraction).expect("lowering should succeed");
 
-    let find = pkg
-        .iter()
-        .find(|(_, e)| e.sym().name == "Find");
+    let find = pkg.iter().find(|(_, e)| e.sym().name == "Find");
     assert!(find.is_some(), "Find generic method must be present");
 
     let (_, entry) = find.unwrap();
     use nudox_ir::kind::Kind;
     assert!(
-        matches!(entry.kind(), nudox_ir::entry::EntryInner::Owned(Kind::Function(_))),
+        matches!(
+            entry.kind(),
+            nudox_ir::entry::EntryInner::Owned(Kind::Function(_))
+        ),
         "Find must be a Function kind"
     );
 
     // The Function should have generics (at least 1 GenericParam for T).
     if let nudox_ir::entry::EntryInner::Owned(Kind::Function(f)) = entry.kind() {
-        assert!(!f.generics.is_empty(), "Find must have at least one generic param");
-        assert!(!f.wheres.is_empty(), "Find must have at least one where predicate for `class` constraint");
+        assert!(
+            !f.generics.is_empty(),
+            "Find must have at least one generic param"
+        );
+        assert!(
+            !f.wheres.is_empty(),
+            "Find must have at least one where predicate for `class` constraint"
+        );
     }
 }
 
@@ -534,7 +561,10 @@ fn unsupported_format_returns_error() {
     let bad_json = r#"{"format": 99, "assembly": {"name":"x"}, "diagnostics": {}, "types": [{"docId":"T:X","qualifiedName":"X","simpleName":"X","kind":"CLASS","namespace":"","modifiers":[],"typeParams":[],"interfaces":[],"attributes":[],"hidden":false,"forwarded":false,"docInherited":false,"members":{"fields":[],"properties":[],"events":[],"constructors":[],"methods":[],"operators":[],"conversions":[],"indexers":[],"nested":[]}}]}"#;
     let err = parse_extraction(bad_json.as_bytes()).expect_err("must fail");
     assert!(
-        matches!(err, nudox_producer_csharp::ProducerError::UnsupportedFormat { .. }),
+        matches!(
+            err,
+            nudox_producer_csharp::ProducerError::UnsupportedFormat { .. }
+        ),
         "expected UnsupportedFormat error"
     );
 }

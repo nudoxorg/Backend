@@ -11,11 +11,9 @@
 //! decoding; unknown tags still degrade to their text content rather than
 //! failing (doc comments are often slightly broken).
 
-use std::collections::HashMap;
-use std::io::Cursor;
+use std::{collections::HashMap, io::Cursor};
 
-use quick_xml::events::Event;
-use quick_xml::Reader;
+use quick_xml::{Reader, events::Event};
 
 /// A parsed C# doc comment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,7 +51,11 @@ impl ParsedDoc {
         for ex in &self.examples {
             sections.push(format!("Example:\n{ex}"));
         }
-        if sections.is_empty() { None } else { Some(sections.join("\n\n")) }
+        if sections.is_empty() {
+            None
+        } else {
+            Some(sections.join("\n\n"))
+        }
     }
 }
 
@@ -247,11 +249,9 @@ fn top_level_elements(xml: &str) -> Vec<(String, String, String)> {
                 }
             }
             Ok(Event::Text(t)) => {
-                // quick-xml 0.37+: decode bytes then expand the XML named entities.
-                let raw = t
-                    .decode()
-                    .map(|c| c.into_owned())
-                    .unwrap_or_else(|_| String::from_utf8_lossy(t.as_ref()).into_owned());
+                // quick-xml 0.37: `BytesText` has no `decode()`; take the raw
+                // bytes and expand the XML named entities ourselves.
+                let raw = String::from_utf8_lossy(t.as_ref()).into_owned();
                 let text = decode_entities(&raw);
                 if let Some((_, _, inner)) = stack.last_mut() {
                     inner.push_str(&text);
@@ -263,21 +263,8 @@ fn top_level_elements(xml: &str) -> Vec<(String, String, String)> {
                     inner.push_str(&text);
                 }
             }
-            Ok(Event::GeneralRef(t)) => {
-                // Named entity reference not expanded by unescape above.
-                let raw = String::from_utf8_lossy(t.as_ref());
-                let expanded = match raw.as_ref() {
-                    "lt" => "<".to_string(),
-                    "gt" => ">".to_string(),
-                    "amp" => "&".to_string(),
-                    "quot" => "\"".to_string(),
-                    "apos" => "'".to_string(),
-                    other => format!("&{other};"),
-                };
-                if let Some((_, _, inner)) = stack.last_mut() {
-                    inner.push_str(&expanded);
-                }
-            }
+            // quick-xml 0.37 has no `Event::GeneralRef`: named entities arrive
+            // inside `Event::Text` and are expanded by `decode_entities` above.
             Ok(Event::Eof) => break,
             Ok(_) => {}
             Err(_) => break,
@@ -504,13 +491,9 @@ mod tests {
 
     #[test]
     fn langword_and_entities() {
-        let xml =
-            r#"<summary>Returns <see langword="true"/> if a &lt; b.</summary>"#;
+        let xml = r#"<summary>Returns <see langword="true"/> if a &lt; b.</summary>"#;
         let parsed = parse(xml);
-        assert_eq!(
-            parsed.summary.as_deref(),
-            Some("Returns `true` if a < b.")
-        );
+        assert_eq!(parsed.summary.as_deref(), Some("Returns `true` if a < b."));
     }
 
     #[test]
