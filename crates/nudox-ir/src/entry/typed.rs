@@ -4,6 +4,10 @@ use crate::kind::EntryKind;
 
 use super::Entry;
 
+/// A typed view over an [`Entry`].
+///
+/// `TypedEntry<T>` is a wrapper around `Entry` with a phantom type parameter.
+/// It derefs to `Entry`, so all entry methods are available without unwrapping.
 #[repr(transparent)]
 pub struct TypedEntry<T> {
     inner: Entry,
