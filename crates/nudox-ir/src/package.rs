@@ -1,5 +1,6 @@
 mod builder;
 mod info;
+mod seal;
 
 #[cfg(test)]
 mod tests;
