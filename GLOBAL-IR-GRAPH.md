@@ -551,6 +551,17 @@ axis only, with its content axis demoted from "id" to "continuity signal."
 
 ### 6.6 The unified similarity surface: pq-grams (one decomposition, three resolutions)
 
+> **Superseded in detail by [`CONTINUITY-PQGRAM-PLAN.md`](CONTINUITY-PQGRAM-PLAN.md)** — the
+> adversarially-hardened §6.6 subdoc. It corrects the load-bearing soundness claim below (pq-gram
+> distance is a **pseudo-metric** and a lower bound on *fanout-weighted* TED only at `p=1`, **not**
+> on the `IrCost`/unit TED we verify with — so the *provable* prune moves to `max(size, label-hist
+> L1/2, degree-hist L1/3)` while pq-distance+MinHash stay in the *retrieval/rank* role), separates
+> the intra-package plane (feed `continuity.rs::compute_sigma`, don't replace it) from a new
+> corpus/cross-package provenance plane, relocates the genuine new signal to the **body region
+> tree**, fixes the scope gate (key continuity on the `IntroId`-set delta, not `api_surface_hash`),
+> and ports the never-merge safety gates onto the metric. The snippet below is retained as the
+> original sketch; where they differ, the subdoc wins.
+
 Similarity runs **only on the id-changing case** — exact keys handle the rest:
 
 ```

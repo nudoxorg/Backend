@@ -277,9 +277,12 @@ where
 
             Received::Bodies(batch) => {
                 // Body facts are an additive extension slot on the entry
-                // (INDEX-PLAN §5.1); accumulate them for the caller to attach
-                // to each entry's `.nb` companion channel. They do not stage a
-                // declaration entry and do not move the declaration bytes.
+                // (INDEX-PLAN §5.1). They are (a) staged into the session so
+                // Phase B can feed the body axis into the continuity matcher and
+                // persist the `.nb` companion at the durable id, and (b) still
+                // handed to the caller for any out-of-band attachment. They do
+                // not stage a declaration entry and do not move declaration bytes.
+                session.stage_bodies(&batch);
                 bodies.extend(batch);
             }
 

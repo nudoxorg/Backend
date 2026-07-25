@@ -12,6 +12,7 @@
 //! cascade (K-Subst-Cascade), writes the final WC state, records a change
 //! with [`GenerationMeta`], and returns [`FinishReport`].
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write as IoWrite;
@@ -25,7 +26,10 @@ use libpijul::{MutTxnTExt, TxnTExt};
 use ir::change::{IntroId, StableRef};
 use ir::apply::PristineIntroTable;
 use ir::wire::OwnedEntryPayload;
+use ir::BodyEmbed;
+use ir::body_wire::{body_path, deserialize_body, serialize_body};
 
+use crate::protocol::BodyWire;
 use crate::continuity;
 use crate::f1::ContinuitySummary;
 use crate::error::VcsError;
@@ -150,6 +154,11 @@ pub struct RecordingSession<'r, C: ChangeStore> {
     /// Wire-id → (payload, parent, links) for all staged entries.
     /// Kept so Phase B can run the σ cascade and rewrite files.
     staged_payloads: HashMap<IntroId, (OwnedEntryPayload, Option<IntroId>, Vec<LinkWire>)>,
+    /// Wire-id → merged body facts (the implementation-plane `.nb` companion).
+    /// Populated by [`stage_bodies`](Self::stage_bodies); Phase B feeds these to
+    /// the continuity matcher (body axis) and rewrites the `.nb` path wire→durable
+    /// in the σ cascade.
+    staged_bodies: HashMap<IntroId, BodyEmbed>,
     /// Intros present in the WC at session start (populated by `begin_recording`).
     pub(crate) tip_intros: HashSet<IntroId>,
     /// Tip table materialized at begin_recording for Phase B continuity matching.
@@ -178,6 +187,7 @@ where
         Self {
             repo,
             staged_payloads: HashMap::new(),
+            staged_bodies: HashMap::new(),
             tip_intros,
             tip_table,
             wc_paths: None,
@@ -421,6 +431,21 @@ where
         self.record_and_apply(msg, Vec::new())
     }
 
+    /// Stage merged body facts for staged symbols (Phase A).
+    ///
+    /// A [`BodyWire`] is the implementation-plane companion of a declaration
+    /// entry, keyed by the same wire-id. Bodies are remembered in memory (not
+    /// written to the working copy yet); Phase B ([`finish`](Self::finish)):
+    /// (1) feeds them to the continuity matcher as the **body axis** signal, and
+    /// (2) writes each to its `.nb` companion path at the *durable* id in the σ
+    /// cascade. Calling this with an intro that never gets a matching `stage`
+    /// entry simply leaves an orphan body that the cascade skips.
+    pub fn stage_bodies(&mut self, batch: &[BodyWire]) {
+        for bw in batch {
+            self.staged_bodies.insert(bw.intro, bw.body.clone());
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Phase B: finish
     // -----------------------------------------------------------------------
@@ -443,9 +468,38 @@ where
                 })
                 .collect();
 
-        // --- Phase B: continuity matching ---
-        let (sigma, continuity) =
-            continuity::compute_sigma(&self.tip_table, &staged_wire_entries);
+        // --- Body maps for the continuity body axis (§3.7) ---
+        // Staged bodies are keyed by wire-id; tip bodies are materialized from
+        // the working-copy `.nb` companions written by a prior generation's σ
+        // cascade (empty on the first generation that carries bodies — the body
+        // axis then abstains, which is never-merge-safe).
+        let staged_bodies_bt: BTreeMap<IntroId, BodyEmbed> = self
+            .staged_bodies
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        let mut tip_bodies_bt: BTreeMap<IntroId, BodyEmbed> = BTreeMap::new();
+        for (tip_id, _payload) in self.tip_table.live_entries() {
+            let mut buf = Vec::new();
+            if self
+                .repo
+                .working_copy_ref()
+                .read_file(&body_path(tip_id), &mut buf)
+                .is_ok()
+                && !buf.is_empty()
+                && let Ok(body) = deserialize_body(&buf)
+            {
+                tip_bodies_bt.insert(tip_id, body);
+            }
+        }
+
+        // --- Phase B: continuity matching (declaration + body axis) ---
+        let (sigma, continuity) = continuity::compute_sigma_with_bodies(
+            &self.tip_table,
+            &staged_wire_entries,
+            &staged_bodies_bt,
+            &tip_bodies_bt,
+        );
 
         // --- σ cascade: rewrite all staged files with durable ids ---
         let txn = self.repo.arc_txn_pub()?;
@@ -510,6 +564,37 @@ where
                     }
             }
             let _ = self.repo.working_copy_ref().touch(&new_path, mtime_floor);
+
+            // σ cascade for the `.nb` body companion: persist the staged body at
+            // the durable path, mirroring the declaration-file handling above so
+            // a reused durable id keeps its body and a wire→durable remap moves it.
+            if let Some(body) = self.staged_bodies.get(wire_id)
+                && let Ok(body_bytes) = serialize_body(body)
+            {
+                let new_bpath = body_path(durable_id);
+                if durable_id != *wire_id {
+                    let old_bpath = body_path(*wire_id);
+                    let _ = self.repo.working_copy_ref().remove_path(&old_bpath, false);
+                    let _ = txn.write().remove_file(&old_bpath);
+                    self.repo.working_copy_ref().add_file(&new_bpath, body_bytes);
+                    let _ = txn.write().add_file(&new_bpath, 0);
+                } else {
+                    let mut existing = Vec::new();
+                    let _ = self.repo.working_copy_ref().read_file(&new_bpath, &mut existing);
+                    if existing.is_empty() {
+                        self.repo.working_copy_ref().add_file(&new_bpath, body_bytes);
+                        let _ = txn.write().add_file(&new_bpath, 0);
+                    } else if existing != body_bytes
+                        && let Ok(mut w) = self
+                            .repo
+                            .working_copy_ref()
+                            .write_file(&new_bpath, libpijul::pristine::Inode::ROOT)
+                    {
+                        let _ = w.write_all(&body_bytes);
+                    }
+                }
+                let _ = self.repo.working_copy_ref().touch(&new_bpath, mtime_floor);
+            }
         }
 
         // --- Deletions ---
@@ -525,6 +610,10 @@ where
             let path = symbol_path(*intro);
             let _ = self.repo.working_copy_ref().remove_path(&path, false);
             let _ = txn.write().remove_file(&path);
+            // Remove the `.nb` body companion for the deleted symbol, if any.
+            let bpath = body_path(*intro);
+            let _ = self.repo.working_copy_ref().remove_path(&bpath, false);
+            let _ = txn.write().remove_file(&bpath);
         }
 
         txn.commit().map_err(|e| {

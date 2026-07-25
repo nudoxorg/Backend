@@ -19,10 +19,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ir::change::IntroId;
+use ir::change::{IntroId, StableRef};
 use ir::apply::PristineIntroTable;
 use ir::kind::KindDiscriminant;
 use ir::wire::OwnedEntryPayload;
+use ir::BodyEmbed;
 
 use crate::f1::{compute_api_surface_hash, ContinuityOp, ContinuitySummary, RenameEdge};
 use ir::serialize::LinkWire;
@@ -38,6 +39,51 @@ const W_SIG_KEY: i32 = 15;
 const W_DOC_EQ: i32 = 10;
 const W_SRC_EQ: i32 = 5;
 const W_ALIAS_OVERLAP: i32 = 5;
+
+/// Body axis (CONTINUITY-PQGRAM-PLAN §3.7): the *resolved-callee multiset overlap*
+/// is a rewrite-robust "does the same work" signal — edit-stable because callees
+/// are keyed by their own `IntroId` (via `StableRef`), so a callee's own rename
+/// does not perturb it. This is the honest body signal available today, before the
+/// pq-gram body profile ships. Both weights sit **below** `THRESHOLD_SOFT` (30) so
+/// the body signal can only *promote* a candidate another exact signal surfaced —
+/// it is never the sole High contributor (never-merge discipline).
+const W_BODY_CALLS_NEAR: i32 = 12;
+const W_BODY_CALLS_MID: i32 = 6;
+/// Below this many resolved callees on either side the overlap is statistically
+/// meaningless (the tiny-body floor, §5.2) — the body axis abstains (score 0).
+const MIN_BODY_CALLS: usize = 2;
+
+/// Bucketed resolved-callee overlap between two bodies. Integer-only (Jaccard
+/// compared by cross-multiplication — no `f32` in a decision, §6.3). Returns 0
+/// when either body is absent, below the call floor, or too dissimilar.
+fn body_call_score(wire: Option<&BodyEmbed>, tip: Option<&BodyEmbed>) -> i32 {
+    let (Some(wire), Some(tip)) = (wire, tip) else {
+        return 0;
+    };
+    let (Some(wf), Some(tf)) = (wire.facts(), tip.facts()) else {
+        return 0;
+    };
+    let wset: BTreeSet<&StableRef> =
+        wf.oracle.calls.iter().filter_map(|c| c.target.as_ref()).collect();
+    let tset: BTreeSet<&StableRef> =
+        tf.oracle.calls.iter().filter_map(|c| c.target.as_ref()).collect();
+    if wset.len() < MIN_BODY_CALLS || tset.len() < MIN_BODY_CALLS {
+        return 0; // abstain — never-merge-safe
+    }
+    let inter = wset.intersection(&tset).count();
+    let union = wset.union(&tset).count();
+    if union == 0 {
+        return 0;
+    }
+    // near: Jaccard ≥ 0.80 ; mid: Jaccard ≥ 0.50 (as integer cross-mults).
+    if inter * 100 >= union * 80 {
+        W_BODY_CALLS_NEAR
+    } else if inter * 100 >= union * 50 {
+        W_BODY_CALLS_MID
+    } else {
+        0
+    }
+}
 
 /// Minimum total score for a High-confidence match.
 const THRESHOLD_HIGH: i32 = 60;
@@ -153,6 +199,7 @@ fn candidates_for(
 // Scoring
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn score_pair(
     wire_payload: &OwnedEntryPayload,
     wire_parent: Option<IntroId>,
@@ -160,6 +207,8 @@ fn score_pair(
     tip_id: IntroId,
     tip_payload: &OwnedEntryPayload,
     tip_table: &PristineIntroTable,
+    wire_body: Option<&BodyEmbed>,
+    tip_body: Option<&BodyEmbed>,
 ) -> i32 {
     let mut score = 0i32;
 
@@ -226,6 +275,10 @@ fn score_pair(
         score += W_ALIAS_OVERLAP;
     }
 
+    // body axis (§3.7): resolved-callee overlap. Abstains (0) when either body is
+    // absent/tiny; ≤12 so it can only promote a candidate, never solely match.
+    score += body_call_score(wire_body, tip_body);
+
     score
 }
 
@@ -257,10 +310,28 @@ fn check_r_child(
 
 /// Compute σ: wire-id → durable-id from tip table + staged entries.
 ///
-/// Returns the sigma map and a [`ContinuitySummary`] of ops.
+/// Returns the sigma map and a [`ContinuitySummary`] of ops. This is the
+/// declaration-only entry point; it delegates to [`compute_sigma_with_bodies`]
+/// with empty body maps (the body axis then abstains).
 pub fn compute_sigma(
     tip_table: &PristineIntroTable,
     staged: &[(IntroId, OwnedEntryPayload, Option<IntroId>, Vec<LinkWire>)],
+) -> (BTreeMap<IntroId, IntroId>, ContinuitySummary) {
+    let empty: BTreeMap<IntroId, BodyEmbed> = BTreeMap::new();
+    compute_sigma_with_bodies(tip_table, staged, &empty, &empty)
+}
+
+/// Compute σ with the **body axis** (CONTINUITY-PQGRAM-PLAN §3.7) enabled.
+///
+/// `staged_bodies` maps each staged **wire-id** to its merged body; `tip_bodies`
+/// maps each **durable tip-id** to the previous generation's body (materialized
+/// from the `.nb` companions). Where a body is missing on either side the body
+/// signal contributes 0 — never-merge-safe by construction.
+pub fn compute_sigma_with_bodies(
+    tip_table: &PristineIntroTable,
+    staged: &[(IntroId, OwnedEntryPayload, Option<IntroId>, Vec<LinkWire>)],
+    staged_bodies: &BTreeMap<IntroId, BodyEmbed>,
+    tip_bodies: &BTreeMap<IntroId, BodyEmbed>,
 ) -> (BTreeMap<IntroId, IntroId>, ContinuitySummary) {
     // Collect tip entries into a map for fast access.
     let tip_map: BTreeMap<IntroId, &OwnedEntryPayload> = tip_table.live_entries().collect();
@@ -341,7 +412,16 @@ pub fn compute_sigma(
             if wire_payload.kind_disc != tip_payload.kind_disc {
                 continue;
             }
-            let score = score_pair(wire_payload, wire_parent, &sigma, *tip_id, tip_payload, tip_table);
+            let score = score_pair(
+                wire_payload,
+                wire_parent,
+                &sigma,
+                *tip_id,
+                tip_payload,
+                tip_table,
+                staged_bodies.get(wire_id),
+                tip_bodies.get(tip_id),
+            );
             if score >= THRESHOLD_SOFT {
                 all_pairs.push((score, *wire_id, *tip_id));
             }
