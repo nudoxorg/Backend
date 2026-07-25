@@ -93,6 +93,31 @@ impl<M: EmbeddingModel> Server<M> {
     }
 }
 
+impl<M: EmbeddingModel> Server<M> {
+    /// Decode the opaque pagination token from `page` into the keyset anchor for
+    /// package search (`(Score, PackageId)`), or `None` when the page has no
+    /// cursor (first-page request). Surfaces a `400` client error on a malformed
+    /// token rather than silently ignoring it.
+    pub(crate) fn decode_package_cursor(
+        &self,
+        page: &PageSpecification,
+    ) -> ServerResult<Option<crate::registry::search::SearchKey>> {
+        page.cursor
+            .as_deref()
+            .map(|token| {
+                Cursor::<crate::registry::search::SearchKey>::decode(token)
+                    .map(|cursor| cursor.after)
+                    .map_err(|source| {
+                        ServerError::from(BadRequestReason::InvalidCursor {
+                            token: token.to_owned(),
+                            source,
+                        })
+                    })
+            })
+            .transpose()
+    }
+}
+
 /// The requested page size as a `usize`, clamped so a zero limit still returns
 /// at least one hit.
 fn page_limit(page: &PageSpecification) -> usize {

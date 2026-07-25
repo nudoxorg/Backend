@@ -16,6 +16,7 @@ use crate::search::planner::Plan;
 use crate::search::query::{Query, Search};
 use crate::search::semantic::SemanticSurface;
 use crate::search::{SearchTarget, SearchPlanner, SymbolStore, merge_overlay_first};
+use crate::registry::search::usages::UsageQueryBackend as _;
 
 impl<M: EmbeddingModel> Server<M> {
 	/// Search for symbols. The caller must hold a [`ReadCap`] proving that
@@ -57,6 +58,27 @@ impl<M: EmbeddingModel> Server<M> {
 			groups.push(sourced.value.related_hits(hit).await?);
 		}
 		Ok(merge_overlay_first(groups, |symbol| symbol.id, usize::MAX))
+	}
+
+	/// Query the usage-query backend for every recorded use of one symbol.
+	/// The caller must hold a [`ReadCap`] and supply a query whose target is
+	/// `Target::Usages { of }`. Delegates to the process-local
+	/// [`ReverseIndexUsageBackend`](crate::registry::search::ReverseIndexUsageBackend);
+	/// returns `503` when no index is loaded for the requested scope.
+	pub async fn usages(
+		&self,
+		_cap: &ReadCap,
+		query: &heart::query::Query,
+	) -> Result<heart::Page<crate::registry::search::usages::Usage>, ServerError> {
+		let heart::query::Target::Usages { ref of } = query.target else {
+			return Err(crate::error::BadRequestReason::MissingField {
+				field: "target must be Usages { of } for /usages",
+			}
+			.into());
+		};
+		self.usage_backend()
+			.usages(of, &query.page)
+			.map_err(Into::into)
 	}
 
 	fn planner(&self) -> &crate::search::SearchPlanner { &self.planner }
