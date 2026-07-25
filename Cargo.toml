@@ -77,6 +77,7 @@ dead_code = "warn"
 
 [workspace.dependencies]
 bon = "3.9"
+clang = "1.0"
 elsa = "1.11"
 indexmap = "2"
 itertools = "0.15"

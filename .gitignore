@@ -42,6 +42,11 @@
 # Manifests that tests scaffold at runtime stay ignored.
 /workspace/compiler/tests/fixtures/**/Cargo.toml
 
+# C/C++ parser fixtures
+!/compiler/src/core/clang/tests/**/*.c
+!/compiler/src/core/clang/tests/**/*.cpp
+!/compiler/src/core/clang/tests/**/compile_commands.json
+
 # Nix
 !/flake.nix
 !/flake.lock
@@ -162,3 +167,5 @@
 /build/third-party/.cargo
 /build/third-party/.cargo-tmp
 
+# Allow nested gitignores
+!/**/.gitignore

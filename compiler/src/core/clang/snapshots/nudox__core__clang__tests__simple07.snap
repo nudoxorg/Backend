@@ -1,0 +1,652 @@
+---
+source: compiler/src/core/clang/tests.rs
+expression: "&entries"
+---
+[
+    SumType(
+        Symbol {
+            name: "Mode",
+            path: Local(
+                "coverage::Mode",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Runtime mode.",
+            ),
+            inner: [
+                SumVariant {
+                    name: "Idle",
+                    data: None,
+                    documentation: Some(
+                        "Waiting for work.",
+                    ),
+                },
+                SumVariant {
+                    name: "Busy",
+                    data: None,
+                    documentation: None,
+                },
+            ],
+        },
+    ),
+    Variable(
+        Symbol {
+            name: "internal_counter",
+            path: Local(
+                "coverage::internal_counter",
+            ),
+            aliases: None,
+            visibility: Internal,
+            documentation: None,
+            inner: (),
+        },
+    ),
+    Constant(
+        Symbol {
+            name: "max_items",
+            path: Local(
+                "coverage::max_items",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: (),
+        },
+    ),
+    Variable(
+        Symbol {
+            name: "fixed_values",
+            path: Local(
+                "coverage::fixed_values",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: (),
+        },
+    ),
+    TypeAlias(
+        Symbol {
+            name: "Callback",
+            path: Local(
+                "coverage::Callback",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: RawPointer {
+                is_mutable: true,
+                type: FunctionPointer(
+                    FunctionPointer {
+                        inputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "arg0",
+                                        type: Some(
+                                            Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: None,
+                                    },
+                                ),
+                                Literal(
+                                    LiteralParameter {
+                                        name: "arg1",
+                                        type: Some(
+                                            Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: None,
+                                    },
+                                ),
+                            ],
+                        ),
+                        outputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "",
+                                        type: Some(
+                                            Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: None,
+                                    },
+                                ),
+                            ],
+                        ),
+                        attributes: None,
+                    },
+                ),
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "apply",
+            path: Local(
+                "coverage::apply",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Exercise callable and reference type shapes.",
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "callback",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Callback",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "bias",
+                                type: Some(
+                                    BorrowedRef {
+                                        lifetime: None,
+                                        is_mutable: false,
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                                attributes: Some(
+                                    [
+                                        Borrowing,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "scratch",
+                                type: Some(
+                                    BorrowedRef {
+                                        lifetime: None,
+                                        is_mutable: true,
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                                attributes: Some(
+                                    [
+                                        Inout,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "...",
+                                type: Some(
+                                    Variadic(
+                                        Any,
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Variadic,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: Some(
+                    [
+                        Variadic,
+                    ],
+                ),
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: false,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "pointer_shapes",
+            path: Local(
+                "coverage::pointer_shapes",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Exercise pointer constness and nesting.",
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "readonly_ptr",
+                                type: Some(
+                                    RawPointer {
+                                        is_mutable: false,
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "mutable_ptr",
+                                type: Some(
+                                    RawPointer {
+                                        is_mutable: true,
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "fixed_ptr",
+                                type: Some(
+                                    RawPointer {
+                                        is_mutable: true,
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "nested_ptr",
+                                type: Some(
+                                    RawPointer {
+                                        is_mutable: true,
+                                        type: RawPointer {
+                                            is_mutable: false,
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    },
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: false,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "destructor",
+            path: Local(
+                "coverage::Convertible::destructor",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Void,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Owned,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "operator int",
+            path: Local(
+                "coverage::Convertible::operator int",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    RecordType(
+        Symbol {
+            name: "Convertible",
+            path: Local(
+                "coverage::Convertible",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Record {
+                name: Some(
+                    "Convertible",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "secret",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Protected,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Void,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                Owned,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                    ],
+                ),
+                methods: Some(
+                    [
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Primitive(
+                                                    Int(
+                                                        W32,
+                                                    ),
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                    ],
+                ),
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "coverage::Convertible::destructor",
+                        ),
+                        Local(
+                            "coverage::Convertible::operator int",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    Module(
+        Symbol {
+            name: "coverage",
+            path: Local(
+                "coverage",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "coverage::Mode",
+                        ),
+                        Local(
+                            "coverage::internal_counter",
+                        ),
+                        Local(
+                            "coverage::max_items",
+                        ),
+                        Local(
+                            "coverage::fixed_values",
+                        ),
+                        Local(
+                            "coverage::Callback",
+                        ),
+                        Local(
+                            "coverage::apply",
+                        ),
+                        Local(
+                            "coverage::pointer_shapes",
+                        ),
+                        Local(
+                            "coverage::Convertible::destructor",
+                        ),
+                        Local(
+                            "coverage::Convertible::operator int",
+                        ),
+                        Local(
+                            "coverage::Convertible",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+]

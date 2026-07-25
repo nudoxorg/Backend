@@ -1,0 +1,306 @@
+---
+source: compiler/src/core/clang/tests.rs
+expression: "&entries"
+---
+[
+    Function(
+        Symbol {
+            name: "add",
+            path: Local(
+                "add",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "a",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "b",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "sub",
+            path: Local(
+                "sub",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "a",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "b",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "mul",
+            path: Local(
+                "mul",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "a",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "b",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "div",
+            path: Local(
+                "div",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "a",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "b",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+]

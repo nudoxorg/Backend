@@ -1,0 +1,701 @@
+---
+source: compiler/src/core/clang/tests.rs
+expression: "&entries"
+---
+[
+    RecordType(
+        Symbol {
+            name: "Holder",
+            path: Local(
+                "advanced::Holder",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Template storage wrapper.",
+            ),
+            inner: Record {
+                name: Some(
+                    "Holder",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "value",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "type-parameter-0-0",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "constructor",
+            path: Local(
+                "advanced::Adapter::constructor",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "initial",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "template-parameter-0-0<type-parameter-0-1>",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Void,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "get",
+            path: Local(
+                "advanced::Adapter::get",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "type-parameter-0-1",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "size",
+            path: Local(
+                "advanced::Adapter::size",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    RecordType(
+        Symbol {
+            name: "Adapter",
+            path: Local(
+                "advanced::Adapter",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Adapter with template-template, type, and value parameters.",
+            ),
+            inner: Record {
+                name: Some(
+                    "Adapter",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "Box",
+                                    ),
+                                    kind: Arrow(
+                                        Type,
+                                        Type,
+                                    ),
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                            Const(
+                                ConstParam {
+                                    name: "N",
+                                    type: TypeExpr {
+                                        name: "int",
+                                        args: [],
+                                    },
+                                    default_value: None,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "box",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "template-parameter-0-0<type-parameter-0-1>",
+                                        generic_args: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "initial",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "template-parameter-0-0<type-parameter-0-1>",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Void,
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                Static,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                    ],
+                ),
+                methods: Some(
+                    [
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "type-parameter-0-1",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                Primitive(
+                                                    Int(
+                                                        W32,
+                                                    ),
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                    ],
+                ),
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "advanced::Adapter::constructor",
+                        ),
+                        Local(
+                            "advanced::Adapter::get",
+                        ),
+                        Local(
+                            "advanced::Adapter::size",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "identity",
+            path: Local(
+                "advanced::identity",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Return the input unchanged.",
+            ),
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "type-parameter-0-0",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    Function(
+        Symbol {
+            name: "choose",
+            path: Local(
+                "advanced::choose",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "type-parameter-0-0",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                receiver: None,
+                overloads: Some(
+                    [
+                        Function {
+                            input_parameters: None,
+                            output_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "",
+                                            type: Some(
+                                                TypeReference(
+                                                    TypeReference {
+                                                        identifier: "type-parameter-0-0",
+                                                        generic_args: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            type_links: None,
+                            attributes: None,
+                            generics: Some(
+                                Generics {
+                                    params: [
+                                        Type(
+                                            TypeParam {
+                                                name: Some(
+                                                    "T",
+                                                ),
+                                                kind: Type,
+                                                variance: Invariant,
+                                                default_type: None,
+                                                params: None,
+                                                origin: Free,
+                                            },
+                                        ),
+                                    ],
+                                    constraints: [],
+                                },
+                            ),
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                            body: None,
+                        },
+                    ],
+                ),
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+                body: None,
+            },
+        },
+    ),
+    TypeAlias(
+        Symbol {
+            name: "IntHolder",
+            path: Local(
+                "advanced::IntHolder",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: TypeReference(
+                TypeReference {
+                    identifier: "Holder<int>",
+                    generic_args: Some(
+                        [
+                            Type(
+                                Primitive(
+                                    Int(
+                                        W32,
+                                    ),
+                                ),
+                            ),
+                        ],
+                    ),
+                },
+            ),
+        },
+    ),
+    Module(
+        Symbol {
+            name: "advanced",
+            path: Local(
+                "advanced",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "advanced::Holder",
+                        ),
+                        Local(
+                            "advanced::Adapter::constructor",
+                        ),
+                        Local(
+                            "advanced::Adapter::get",
+                        ),
+                        Local(
+                            "advanced::Adapter::size",
+                        ),
+                        Local(
+                            "advanced::Adapter",
+                        ),
+                        Local(
+                            "advanced::identity",
+                        ),
+                        Local(
+                            "advanced::choose",
+                        ),
+                        Local(
+                            "advanced::IntHolder",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+]
