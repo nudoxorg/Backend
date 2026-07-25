@@ -1,6 +1,6 @@
 use crate::{
     List,
-    index::EntryIndex,
+    index::Ref,
     kinds::{GenericParam, Type, WherePred},
     visitor::Visitor,
 };
@@ -35,7 +35,7 @@ pub struct Record {
     ///
     /// An empty list denotes a record with no statically-known fields — e.g. a
     /// dynamic object in JavaScript/Python, or a unit struct.
-    pub fields: List<EntryIndex<Field>>,
+    pub fields: List<Ref<Field>>,
 
     /// Base classes, implemented interfaces, or otherwise explicitly-named
     /// super-types of this record.
@@ -53,7 +53,7 @@ impl Record {
     #[builder]
     pub fn new(
         #[builder(default)] form: RecordForm,
-        #[builder(default, with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>,
+        #[builder(default, with = FromIterator::from_iter)] fields: List<Ref<Field>>,
         #[builder(default, with = FromIterator::from_iter)] super_types: List<Type>,
         #[builder(default, with = FromIterator::from_iter)] generics: List<GenericParam>,
         #[builder(default, with = FromIterator::from_iter)] wheres: List<WherePred>,

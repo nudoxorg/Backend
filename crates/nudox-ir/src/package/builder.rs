@@ -3,7 +3,7 @@ use std::hash::Hash;
 use crate::{
     entry::{Entry, Node, Symbol},
     id::UniqueId,
-    index::{EntryIndex, UntypedEntryIndex},
+    index::{Ref, UntypedEntryIndex},
     kind::EntryKind,
 };
 
@@ -48,7 +48,7 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
         id: Id,
         sym: Symbol,
         build: impl FnOnce(EntryBuilder<'_, Id>) -> T,
-    ) -> EntryIndex<T>
+    ) -> Ref<T>
     where
         T: EntryKind,
     {
@@ -56,14 +56,14 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
 
         self.children.push(idx);
 
-        idx.typed()
+        Ref::Local(idx.typed())
     }
 
     /// Create a re-export entry pointing to an existing entry.
     ///
     /// The returned index refers to the *re-export*, not the original.
     #[doc(alias = "create_reexport")]
-    pub fn create_ref<T>(&mut self, id: Id, sym: Symbol, other: EntryIndex<T>) -> EntryIndex<T>
+    pub fn create_ref<T>(&mut self, id: Id, sym: Symbol, other: Ref<T>) -> Ref<T>
     where
         T: EntryKind,
     {
@@ -71,33 +71,34 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
 
         self.ir.entries.push((
             idx,
-            Entry::reference(sym, Node::build(self.idx, []), other.raw()),
+            Entry::reference(sym, Node::build(Ref::Local(self.idx), []), other.into_raw()),
         ));
 
-        idx.typed()
+        Ref::Local(idx.typed())
     }
 
     /// Get a typed index for an entry already created (or about to be created)
     /// within this package.
     ///
-    /// # Panics
-    ///
-    /// Panics at IR validation time if `id` was never created.
-    pub fn index_of<T>(&mut self, id: Id) -> EntryIndex<T>
+    /// Passing an `Id` that is not actually created within the package will
+    /// lead to creating an invalid `PackageIr`. This will be caught at IR
+    /// validation time and **will panic**.
+    pub fn index_of<T>(&mut self, id: Id) -> Ref<T>
     where
         T: EntryKind,
     {
-        self.ir.info.create_export(id).typed()
+        Ref::Local(self.ir.info.create_export(id).typed())
     }
 
     /// Get an import index for a cross-package entry reference.
     ///
-    /// The returned index will be remapped at registry resolution time.
-    pub fn index_of_import<T>(&mut self, id: UniqueId<Id>) -> EntryIndex<T>
+    /// Passing a `UniqueId` that is not actually existant will result in an
+    /// error when trying to resolve the `Ref`.
+    pub fn index_of_import<T>(&mut self, id: UniqueId<Id>) -> Ref<T>
     where
         T: EntryKind,
     {
-        self.ir.info.create_import(id).typed()
+        Ref::Local(self.ir.info.create_import(id).typed())
     }
 
     pub(super) fn build<T>(
@@ -121,7 +122,7 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
             children: &mut children,
         });
 
-        let node = Node::build(parent, children);
+        let node = Node::build(parent.map(Ref::Local), children.into_iter().map(Ref::Local));
         let entry = Entry::new(sym, node, kind.into_kind());
 
         ir.entries.push((idx, entry));

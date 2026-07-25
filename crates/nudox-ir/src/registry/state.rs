@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, OnceCell};
 use crate::{
     entry::Entry,
     id::{PackageId, UniqueId},
-    index::UntypedEntryIndex,
+    index::{Ref, UntypedEntryIndex},
     package::PackageInfo,
     visitor::Visitor,
 };
@@ -113,7 +113,11 @@ impl<R: RegistryResolver> RegistryState<R> {
 
                 let mut entry = resolver.lock().await.load_unique_id(&entry.id).await?;
 
-                entry.visit_mut(&|idx| *idx = package.resolve(*idx));
+                entry.visit_mut(&|r| {
+                    if let Ref::Local(idx) = r {
+                        *idx = package.resolve(*idx);
+                    }
+                });
 
                 Ok(entry)
             })

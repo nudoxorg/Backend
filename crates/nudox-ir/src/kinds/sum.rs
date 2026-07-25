@@ -1,6 +1,6 @@
 use crate::{
     List,
-    index::EntryIndex,
+    index::Ref,
     kinds::{Field, GenericParam, WherePred},
     visitor::Visitor,
 };
@@ -15,7 +15,7 @@ use crate::{
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Enum {
     /// The variants of this sum type, in declaration order.
-    pub variants: List<EntryIndex<Variant>>,
+    pub variants: List<Ref<Variant>>,
 
     /// Generic parameters declared on this enum, in declaration order.
     pub generics: List<GenericParam>,
@@ -28,7 +28,7 @@ pub struct Enum {
 impl Enum {
     #[builder]
     pub fn new(
-        #[builder(default, with = FromIterator::from_iter)] variants: List<EntryIndex<Variant>>,
+        #[builder(default, with = FromIterator::from_iter)] variants: List<Ref<Variant>>,
         #[builder(default, with = FromIterator::from_iter)] generics: List<GenericParam>,
         #[builder(default, with = FromIterator::from_iter)] wheres: List<WherePred>,
     ) -> Self {
@@ -70,7 +70,7 @@ pub struct Variant {
     pub form: VariantForm,
 
     /// The variant's payload fields; empty for a unit variant.
-    pub fields: List<EntryIndex<Field>>,
+    pub fields: List<Ref<Field>>,
 }
 
 #[bon::bon]
@@ -78,7 +78,7 @@ impl Variant {
     #[builder]
     pub fn new(
         #[builder(default)] form: VariantForm,
-        #[builder(default, with = FromIterator::from_iter)] fields: List<EntryIndex<Field>>,
+        #[builder(default, with = FromIterator::from_iter)] fields: List<Ref<Field>>,
     ) -> Self {
         Variant { form, fields }
     }

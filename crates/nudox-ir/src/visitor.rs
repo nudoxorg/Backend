@@ -1,22 +1,17 @@
-use crate::index::{EntryIndex, Indexable, UntypedEntryIndex};
+use crate::index::{Indexable, RawRef, Ref};
 
 // derive macro re-export
 pub(crate) use self::m::Visitor;
 
+/// Walks every [`Ref`] in a value, so a single closure can lower/relocate all
+/// of them at once (e.g. `seal`'s `Local → Intro` lowering).
 pub(crate) trait Visitor {
-    #[expect(dead_code)]
-    fn visit(&self, f: &impl Fn(UntypedEntryIndex));
-
-    fn visit_mut(&mut self, f: &impl Fn(&mut UntypedEntryIndex));
+    fn visit_mut(&mut self, f: &impl Fn(&mut RawRef));
 }
 
-impl<T: Indexable> Visitor for EntryIndex<T> {
-    fn visit(&self, f: &impl Fn(UntypedEntryIndex)) {
-        f(self.raw());
-    }
-
-    fn visit_mut(&mut self, f: &impl Fn(&mut UntypedEntryIndex)) {
-        f(self.cast_mut());
+impl<T: Indexable> Visitor for Ref<T> {
+    fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
+        f(self.erase_mut());
     }
 }
 
@@ -26,13 +21,7 @@ mod default_impl {
     use super::*;
 
     impl<T: Visitor> Visitor for Option<T> {
-        fn visit(&self, f: &impl Fn(UntypedEntryIndex)) {
-            if let Some(it) = self {
-                it.visit(f);
-            }
-        }
-
-        fn visit_mut(&mut self, f: &impl Fn(&mut UntypedEntryIndex)) {
+        fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
             if let Some(it) = self {
                 it.visit_mut(f);
             }
@@ -40,23 +29,21 @@ mod default_impl {
     }
 
     impl<T: Visitor + ?Sized> Visitor for Box<T> {
-        fn visit(&self, f: &impl Fn(UntypedEntryIndex)) {
-            (**self).visit(f);
-        }
-
-        fn visit_mut(&mut self, f: &impl Fn(&mut UntypedEntryIndex)) {
+        fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
             (**self).visit_mut(f);
         }
     }
 
     impl<T: Visitor> Visitor for [T] {
-        fn visit(&self, f: &impl Fn(UntypedEntryIndex)) {
+        fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
             for it in self {
-                it.visit(f);
+                it.visit_mut(f);
             }
         }
+    }
 
-        fn visit_mut(&mut self, f: &impl Fn(&mut UntypedEntryIndex)) {
+    impl<T: Visitor> Visitor for Vec<T> {
+        fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
             for it in self {
                 it.visit_mut(f);
             }
@@ -87,7 +74,7 @@ mod m {
 	    	__default_impl_visitor!($ident);
 	    },
 
-	    // typical struct, calls `.visit` for all fields
+	    // typical struct, calls `.visit_mut` for all fields
 		derive() (
 	    	$(#[$meta:meta])*
 	    	$vis:vis struct $ident:ident {
@@ -100,13 +87,7 @@ mod m {
 	    	#[automatically_derived]
 	    	impl Visitor for $ident
 			{
-				fn visit(&self, f: &impl Fn(UntypedEntryIndex)) {
-					$(
-					self.$field.visit(f);
-					)*
-				}
-
-				fn visit_mut(&mut self, f: &impl Fn(&mut UntypedEntryIndex)) {
+				fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
 					$(
 					self.$field.visit_mut(f);
 					)*
@@ -264,19 +245,7 @@ mod m {
 	    	#[automatically_derived]
 	    	impl Visitor for $ident
 	    	{
-	    		fn visit(&self, f: &impl Fn(UntypedEntryIndex)) {
-	    			match self {
-	    				$(
-	    				$variant => {
-	    					$(
-	    					$expr.visit(f);
-		    				)*
-	    				}
-		    			)*
-	    			}
-	    		}
-
-	    		fn visit_mut(&mut self, f: &impl Fn(&mut UntypedEntryIndex)) {
+	    		fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
 	    			match self {
 	    				$(
 	    				$variant => {
@@ -295,8 +264,7 @@ mod m {
     pub(crate) macro __default_impl_visitor {
 	    ($ty:ty) => {
 	        impl $crate::visitor::Visitor for $ty {
-	            fn visit(&self, _: &impl Fn($crate::index::UntypedEntryIndex)) {}
-	            fn visit_mut(&mut self, _: &impl Fn(&mut $crate::index::UntypedEntryIndex)) {}
+	            fn visit_mut(&mut self, _: &impl Fn(&mut $crate::index::RawRef)) {}
 	        }
 	    },
 		($($ty:ty),*) => {

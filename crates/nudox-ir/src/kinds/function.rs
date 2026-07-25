@@ -1,6 +1,6 @@
 use crate::{
     List,
-    index::EntryIndex,
+    index::Ref,
     kinds::{GenericParam, Param, WherePred},
     visitor::Visitor,
 };
@@ -19,13 +19,13 @@ pub struct Function {
     pub receiver: Option<Receiver>,
 
     /// The input parameters, in declaration order.
-    pub input_params: List<EntryIndex<Param>>,
+    pub input_params: List<Ref<Param>>,
 
     /// The output parameters.
     ///
     /// Most languages have a single return type; multi-value returns (Go) and
     /// out-parameters are modelled as additional entries here.
-    pub output_params: List<EntryIndex<Param>>,
+    pub output_params: List<Ref<Param>>,
 
     /// Signature-level modifiers (`async`, `const`, `unsafe`, …).
     pub modifiers: List<FnModifier>,
@@ -42,8 +42,8 @@ impl Function {
     #[builder]
     pub fn new(
         receiver: Option<Receiver>,
-        #[builder(default, with = FromIterator::from_iter)] input_params: List<EntryIndex<Param>>,
-        #[builder(default, with = FromIterator::from_iter)] output_params: List<EntryIndex<Param>>,
+        #[builder(default, with = FromIterator::from_iter)] input_params: List<Ref<Param>>,
+        #[builder(default, with = FromIterator::from_iter)] output_params: List<Ref<Param>>,
         #[builder(default, with = FromIterator::from_iter)] modifiers: List<FnModifier>,
         #[builder(default, with = FromIterator::from_iter)] generics: List<GenericParam>,
         #[builder(default, with = FromIterator::from_iter)] wheres: List<WherePred>,

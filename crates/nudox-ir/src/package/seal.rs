@@ -18,11 +18,12 @@ use crate::{
     apply::PristineIntroTable,
     change::{IntroId, PackageLineageId},
     entry::{Entry, EntryInner},
-    index::{EntryIndex, UntypedEntryIndex},
+    index::{Ref, UntypedEntryIndex},
     intro::{Disambiguator, bootstrap_intro_id},
     kind::{Kind, KindDiscriminant},
     kinds::{Param, Type},
     skeleton::{function_signature_skeleton, trait_impl_skeleton},
+    visitor::Visitor,
 };
 
 use super::IrPackage;
@@ -59,12 +60,12 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         let mut parent_idxs: Vec<Option<UntypedEntryIndex>> = Vec::with_capacity(n);
         for (_, e) in &self.entries {
             let mut chain = Vec::new();
-            let mut cur = e.parent();
+            let mut cur = e.parent().and_then(|r| r.as_local());
             while let Some(pidx) = cur {
                 match by_idx.get(&pidx) {
                     Some(pe) => {
                         chain.push(pe.sym().name.clone());
-                        cur = pe.parent();
+                        cur = pe.parent().and_then(|r| r.as_local());
                     }
                     None => break,
                 }
@@ -77,7 +78,7 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                 // A within-arena forwarding alias is a re-export.
                 EntryInner::Reference(_) => KindDiscriminant::Reexport,
             });
-            parent_idxs.push(e.parent());
+            parent_idxs.push(e.parent().and_then(|r| r.as_local()));
         }
 
         // ── Pass 1: count collisions on the base key ──────────────────────────
@@ -142,11 +143,25 @@ impl<Id: Eq + Hash> IrPackage<Id> {
             .map(|opt| opt.and_then(|pidx| pos_of.get(&pidx)).map(|&pi| intros[pi]))
             .collect();
 
+        // Every arena index → its minted IntroId, for lowering in-body refs.
+        let intro_of: HashMap<UntypedEntryIndex, IntroId> =
+            pos_of.iter().map(|(idx, &i)| (*idx, intros[i])).collect();
+
         drop(by_idx); // end the borrow of `self.entries` before moving it
 
-        // ── Pass 3: materialize the table, moving each Entry in ───────────────
+        // ── Pass 3: lower every in-body `Local` ref → `Intro`, then move in ───
+        // One `visit_mut` per entry rewrites EVERY reference at once — kind-body
+        // refs (fields/params/variants), `Type` nominals, and the `Node` tree
+        // edges — making the table fully content-addressed (self-contained).
         let mut table = PristineIntroTable::new();
-        for (i, (_, entry)) in self.entries.into_iter().enumerate() {
+        for (i, (_, mut entry)) in self.entries.into_iter().enumerate() {
+            entry.visit_mut(&|r| {
+                if let Ref::Local(idx) = r
+                    && let Some(&intro) = intro_of.get(idx)
+                {
+                    *r = Ref::Intro(intro);
+                }
+            });
             table.insert_live(intros[i], entry, parents[i]);
         }
         table
@@ -156,16 +171,18 @@ impl<Id: Eq + Hash> IrPackage<Id> {
 /// Resolve each param handle to its declared type (if any) for the signature
 /// skeleton. An unresolvable or type-less param contributes `None`.
 fn resolve_param_tys(
-    params: &[EntryIndex<Param>],
+    params: &[Ref<Param>],
     by_idx: &HashMap<UntypedEntryIndex, &Entry>,
 ) -> Vec<Option<Type>> {
     params
         .iter()
-        .map(|pidx| {
-            by_idx.get(&pidx.raw()).and_then(|e| match e.kind() {
-                EntryInner::Owned(Kind::Param(p)) => p.ty.clone(),
-                _ => None,
-            })
+        .map(|pref| {
+            pref.as_local()
+                .and_then(|idx| by_idx.get(&idx.raw()))
+                .and_then(|e| match e.kind() {
+                    EntryInner::Owned(Kind::Param(p)) => p.ty.clone(),
+                    _ => None,
+                })
         })
         .collect()
 }
@@ -175,6 +192,8 @@ mod tests {
     use crate::{
         build::*,
         change::{EcosystemId, PackageName},
+        entry::EntryInner,
+        kind::Kind,
         test_helpers::{id_gen, sym},
     };
 
@@ -255,5 +274,38 @@ mod tests {
             mint(Type::I64),
             "a unique-named fn keeps its IntroId under a return-type change"
         );
+    }
+
+    /// Phase-1 proof: after seal, a record's field reference is LOWERED from an
+    /// arena-local index to a content-addressed `Ref::Intro` — the table is
+    /// self-contained (one `visit_mut` rewrote every ref).
+    #[test]
+    fn seal_lowers_in_body_refs_to_intro() {
+        let mut id = id_gen();
+        let pkg = IrPackage::build(PackageId::path("demo"), sym("root"), |mut root| {
+            root.create(id(), sym("Point"), |mut rec| {
+                let x = rec.create(id(), sym("x"), |_| {
+                    Field::builder().key(FieldKey::Named).ty(Type::I32).build()
+                });
+                Record::builder().fields([x]).build()
+            });
+        });
+
+        let table = pkg.seal(&lineage());
+        let (_, rec) = table.iter().find(|(_, e)| e.sym().name == "Point").unwrap();
+
+        match rec.kind() {
+            EntryInner::Owned(Kind::Record(r)) => {
+                assert_eq!(r.fields.len(), 1);
+                match &r.fields[0] {
+                    Ref::Intro(fi) => {
+                        assert!(table.contains(*fi), "field intro resolves in the table");
+                        assert_eq!(table.get(*fi).unwrap().sym().name, "x");
+                    }
+                    other => panic!("field ref must be lowered to Intro, got {other:?}"),
+                }
+            }
+            other => panic!("expected Record, got {other:?}"),
+        }
     }
 }

@@ -1,6 +1,9 @@
 use std::{fmt, hash, marker::PhantomData, num::NonZeroUsize};
 
-use crate::kind::EntryKind;
+use crate::{
+    change::{IntroId, StableRef},
+    kind::EntryKind,
+};
 
 // FIXME: NonZeroUsize handling needs to be carefully considered wrt the bit
 // checks we do, and needs plenty of tests
@@ -165,11 +168,6 @@ impl<T: Indexable> EntryIndex<T> {
         self.cast()
     }
 
-    pub(crate) fn cast_mut<U: Indexable>(&mut self) -> &mut EntryIndex<U> {
-        // Safety: repr(transparent)
-        unsafe { &mut *std::ptr::from_mut(self).cast() }
-    }
-
     pub(super) fn cast<U: Indexable>(self) -> EntryIndex<U> {
         EntryIndex {
             index: self.index,
@@ -273,5 +271,106 @@ impl<T: Indexable> Ord for EntryIndex<T> {
 impl<T: Indexable> hash::Hash for EntryIndex<T> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.index.hash(state);
+    }
+}
+
+// ── Ref: the ONE reference to another entry, across its lifecycle ───────────
+//
+// `Local` while building (arena-local index) → `Intro` after sealing
+// (same-package content id) → `Foreign` for a cross-package target. This single
+// type is used everywhere an entry points at another: kind bodies (fields,
+// params, variants), `Node` tree edges, and `Type` nominal references. `seal`
+// lowers every `Local` to `Intro` in one pass via the `Visitor`.
+
+/// A reference to another entry, resolved to whatever stage the IR is at.
+///
+/// Std trait impls are hand-written (no spurious `T: Trait` bound) because `T`
+/// is only a phantom marker — mirroring [`EntryIndex`].
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(bound = "")]
+pub enum Ref<T: Indexable> {
+    /// Arena-local, build-time only.
+    Local(EntryIndex<T>),
+    /// Same-package, content-addressed (post-seal).
+    Intro(IntroId),
+    /// Cross-package target.
+    Foreign(StableRef),
+}
+
+/// A kind-erased [`Ref`] — the currency of the [`crate::visitor::Visitor`].
+pub type RawRef = Ref<private::UntypedMarker>;
+
+impl<T: Indexable> Ref<T> {
+    /// The arena-local index, if this is still a build-time reference.
+    pub fn as_local(&self) -> Option<EntryIndex<T>> {
+        match self {
+            Ref::Local(idx) => Some(*idx),
+            _ => None,
+        }
+    }
+
+    /// Erase the kind marker, by value.
+    pub fn into_raw(self) -> RawRef {
+        match self {
+            Ref::Local(i) => Ref::Local(i.raw()),
+            Ref::Intro(i) => Ref::Intro(i),
+            Ref::Foreign(s) => Ref::Foreign(s),
+        }
+    }
+
+    /// Erase the kind marker. Safety: `Ref<T>` layout is independent of the
+    /// phantom `T` (only `Local` carries it, as a `repr(transparent)` index).
+    pub(crate) fn erase_mut(&mut self) -> &mut RawRef {
+        unsafe { &mut *std::ptr::from_mut(self).cast() }
+    }
+}
+
+impl<T: Indexable> From<EntryIndex<T>> for Ref<T> {
+    fn from(idx: EntryIndex<T>) -> Self {
+        Ref::Local(idx)
+    }
+}
+
+impl<T: Indexable> Clone for Ref<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Ref::Local(i) => Ref::Local(*i),
+            Ref::Intro(i) => Ref::Intro(*i),
+            Ref::Foreign(s) => Ref::Foreign(s.clone()),
+        }
+    }
+}
+
+impl<T: Indexable> PartialEq for Ref<T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Ref::Local(a), Ref::Local(b)) => a == b,
+            (Ref::Intro(a), Ref::Intro(b)) => a == b,
+            (Ref::Foreign(a), Ref::Foreign(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl<T: Indexable> Eq for Ref<T> {}
+
+impl<T: Indexable> hash::Hash for Ref<T> {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Ref::Local(i) => i.hash(state),
+            Ref::Intro(i) => i.hash(state),
+            Ref::Foreign(s) => s.hash(state),
+        }
+    }
+}
+
+impl<T: Indexable> fmt::Debug for Ref<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Ref::Local(i) => f.debug_tuple("Local").field(i).finish(),
+            Ref::Intro(i) => f.debug_tuple("Intro").field(i).finish(),
+            Ref::Foreign(s) => f.debug_tuple("Foreign").field(s).finish(),
+        }
     }
 }

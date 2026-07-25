@@ -2,7 +2,7 @@ mod node;
 mod symbol;
 mod typed;
 
-use crate::{index::UntypedEntryIndex, kind::Kind, visitor::Visitor};
+use crate::{index::RawRef, kind::Kind, visitor::Visitor};
 
 pub(crate) use self::node::Node;
 
@@ -51,11 +51,11 @@ impl Entry {
         &self.sym
     }
 
-    pub fn parent(&self) -> Option<UntypedEntryIndex> {
-        self.node.parent
+    pub fn parent(&self) -> Option<&RawRef> {
+        self.node.parent.as_ref()
     }
 
-    pub fn children(&self) -> &[UntypedEntryIndex] {
+    pub fn children(&self) -> &[RawRef] {
         &self.node.children
     }
 
@@ -71,7 +71,7 @@ impl Entry {
         }
     }
 
-    pub(crate) const fn reference(sym: Symbol, node: Node, idx: UntypedEntryIndex) -> Self {
+    pub(crate) fn reference(sym: Symbol, node: Node, idx: RawRef) -> Self {
         Self {
             sym,
             node,
@@ -83,7 +83,7 @@ impl Entry {
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum EntryInner {
     Owned(Kind),
-    Reference(UntypedEntryIndex),
+    Reference(RawRef),
 }
 
 impl EntryInner {

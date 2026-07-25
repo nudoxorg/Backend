@@ -103,7 +103,7 @@ fn builds_and_wires_every_kind() {
                 sym("Point"),
                 n(root, [2, 3].map(idx)),
                 Record::builder()
-                    .fields([2, 3].map(idx).map(EntryIndex::typed))
+                    .fields([2, 3].map(idx).map(EntryIndex::typed).map(Ref::Local))
                     .build(),
             ),
             entry(
@@ -128,7 +128,7 @@ fn builds_and_wires_every_kind() {
                 n(root, [idx(5)]),
                 Function::builder()
                     .receiver(Receiver::MutRef)
-                    .input_params([idx(5).typed()])
+                    .input_params([Ref::Local(idx(5).typed())])
                     .build(),
             ),
             entry(
@@ -139,7 +139,9 @@ fn builds_and_wires_every_kind() {
             entry(
                 sym("Shape"),
                 n(root, [idx(7)]),
-                Enum::builder().variants([idx(7).typed()]).build(),
+                Enum::builder()
+                    .variants([Ref::Local(idx(7).typed())])
+                    .build(),
             ),
             entry(sym("Unit"), n::leaf(idx(6)), Variant::builder().build()),
         ],

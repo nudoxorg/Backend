@@ -37,17 +37,17 @@ pub(crate) fn n(
     parent: UntypedEntryIndex,
     children: impl IntoIterator<Item = UntypedEntryIndex>,
 ) -> Node {
-    Node::build(parent, children)
+    Node::build(Ref::Local(parent), children.into_iter().map(Ref::Local))
 }
 
 pub(crate) mod n {
     use super::*;
 
     pub fn leaf(parent: UntypedEntryIndex) -> Node {
-        Node::build(parent, [])
+        Node::build(Ref::Local(parent), [])
     }
 
     pub fn root(children: impl IntoIterator<Item = UntypedEntryIndex>) -> Node {
-        Node::build(None, children)
+        Node::build(None::<RawRef>, children.into_iter().map(Ref::Local))
     }
 }
