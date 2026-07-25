@@ -460,36 +460,56 @@ where
     /// 6. Returns [`FinishReport`].
     pub fn finish(self) -> Result<FinishReport, VcsError> {
         // --- Collect all staged entries for the continuity matcher ---
-        let staged_wire_entries: Vec<(IntroId, OwnedEntryPayload, Option<IntroId>, Vec<LinkWire>)> =
+        // Sorted by wire-id: iteration order feeds `delta_hasher` below, and a
+        // HashMap's order is nondeterministic — sorting makes `delta_digest`
+        // reproducible (§7.6).
+        let mut staged_wire_entries: Vec<(IntroId, OwnedEntryPayload, Option<IntroId>, Vec<LinkWire>)> =
             self.staged_payloads
                 .iter()
                 .map(|(wire_id, (payload, parent, links))| {
                     (*wire_id, payload.clone(), *parent, links.clone())
                 })
                 .collect();
+        staged_wire_entries.sort_by_key(|(id, _, _, _)| *id);
+
+        // --- Candidate-deleted set: tip ids with no staged (wire) payload ---
+        // This is exactly the set the continuity matcher treats as deletion
+        // candidates (`compute_sigma`'s internal `deleted_ids`) — the ONLY tips
+        // whose bodies the matcher ever compares. Computed once, before σ, so we
+        // can (a) materialize only these tip bodies and (b) derive the final
+        // deletion set from it after σ.
+        let candidate_deleted: HashSet<IntroId> = self
+            .tip_intros
+            .iter()
+            .filter(|i| !self.staged_payloads.contains_key(*i))
+            .copied()
+            .collect();
 
         // --- Body maps for the continuity body axis (§3.7) ---
-        // Staged bodies are keyed by wire-id; tip bodies are materialized from
-        // the working-copy `.nb` companions written by a prior generation's σ
-        // cascade (empty on the first generation that carries bodies — the body
-        // axis then abstains, which is never-merge-safe).
+        // Staged bodies are keyed by wire-id. Tip bodies are materialized ONLY
+        // for the deletion candidates (the matcher never consults a preserved
+        // tip's body) — CONTINUITY-PQGRAM-PLAN §4.4 materialization deferral:
+        // O(|deleted|) `.nb` reads instead of O(|live|). They come from the
+        // working-copy `.nb` companions a prior generation's σ cascade wrote
+        // (empty on the first body-carrying generation → the axis abstains,
+        // which is never-merge-safe).
         let staged_bodies_bt: BTreeMap<IntroId, BodyEmbed> = self
             .staged_bodies
             .iter()
             .map(|(k, v)| (*k, v.clone()))
             .collect();
         let mut tip_bodies_bt: BTreeMap<IntroId, BodyEmbed> = BTreeMap::new();
-        for (tip_id, _payload) in self.tip_table.live_entries() {
+        for tip_id in &candidate_deleted {
             let mut buf = Vec::new();
             if self
                 .repo
                 .working_copy_ref()
-                .read_file(&body_path(tip_id), &mut buf)
+                .read_file(&body_path(*tip_id), &mut buf)
                 .is_ok()
                 && !buf.is_empty()
                 && let Ok(body) = deserialize_body(&buf)
             {
-                tip_bodies_bt.insert(tip_id, body);
+                tip_bodies_bt.insert(*tip_id, body);
             }
         }
 
@@ -566,44 +586,50 @@ where
             let _ = self.repo.working_copy_ref().touch(&new_path, mtime_floor);
 
             // σ cascade for the `.nb` body companion: persist the staged body at
-            // the durable path, mirroring the declaration-file handling above so
-            // a reused durable id keeps its body and a wire→durable remap moves it.
+            // the DURABLE path. Unlike the declaration file, a body is never
+            // written at the wire path (`stage_bodies` only buffers in memory),
+            // so there is no wire-path `.nb` to remove on a wire→durable remap.
+            // The durable `.nb` may or may not already exist (it does when the
+            // tip carried a body for this id — e.g. a rename reusing a durable id
+            // whose prior generation had a body), so create-or-overwrite, never a
+            // blind `add_file` on an already-tracked path. A body-only edit that
+            // serializes to identical bytes is skipped (no spurious change).
             if let Some(body) = self.staged_bodies.get(wire_id)
                 && let Ok(body_bytes) = serialize_body(body)
             {
                 let new_bpath = body_path(durable_id);
-                if durable_id != *wire_id {
-                    let old_bpath = body_path(*wire_id);
-                    let _ = self.repo.working_copy_ref().remove_path(&old_bpath, false);
-                    let _ = txn.write().remove_file(&old_bpath);
+                let mut existing = Vec::new();
+                let _ = self.repo.working_copy_ref().read_file(&new_bpath, &mut existing);
+                if existing.is_empty() {
                     self.repo.working_copy_ref().add_file(&new_bpath, body_bytes);
                     let _ = txn.write().add_file(&new_bpath, 0);
-                } else {
-                    let mut existing = Vec::new();
-                    let _ = self.repo.working_copy_ref().read_file(&new_bpath, &mut existing);
-                    if existing.is_empty() {
-                        self.repo.working_copy_ref().add_file(&new_bpath, body_bytes);
-                        let _ = txn.write().add_file(&new_bpath, 0);
-                    } else if existing != body_bytes
-                        && let Ok(mut w) = self
-                            .repo
-                            .working_copy_ref()
-                            .write_file(&new_bpath, libpijul::pristine::Inode::ROOT)
-                    {
-                        let _ = w.write_all(&body_bytes);
-                    }
+                } else if existing != body_bytes
+                    && let Ok(mut w) = self
+                        .repo
+                        .working_copy_ref()
+                        .write_file(&new_bpath, libpijul::pristine::Inode::ROOT)
+                {
+                    let _ = w.write_all(&body_bytes);
                 }
                 let _ = self.repo.working_copy_ref().touch(&new_bpath, mtime_floor);
             }
         }
 
         // --- Deletions ---
-        let to_delete: Vec<IntroId> = self
-            .tip_intros
+        // A candidate-deleted tip whose durable id is REUSED by σ (a rename/move
+        // target) is NOT a deletion — the σ cascade just rewrote its `.nir`/`.nb`
+        // with the new content at that same durable id. Excluding σ's durable
+        // targets keeps finish()'s working-copy deletions consistent with
+        // `compute_sigma`'s `Deleted` ops (which likewise exclude matched tips).
+        // Without this, every σ-matched rename would delete the very symbol it
+        // just reused — silent data loss.
+        let sigma_targets: HashSet<IntroId> = sigma.values().copied().collect();
+        let mut to_delete: Vec<IntroId> = candidate_deleted
             .iter()
-            .filter(|i| !self.staged_payloads.contains_key(*i))
+            .filter(|i| !sigma_targets.contains(*i))
             .copied()
             .collect();
+        to_delete.sort(); // deterministic deletion order
         let deleted = to_delete.len() as u64;
 
         for intro in &to_delete {
