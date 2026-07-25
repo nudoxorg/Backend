@@ -127,6 +127,8 @@ mod visitor;
 pub mod apply;
 pub mod body;
 pub mod change;
+pub mod codec;
+pub mod content;
 pub mod entry;
 pub mod id;
 pub mod index;
@@ -138,6 +140,7 @@ pub mod manifest;
 pub mod package;
 pub mod reflect;
 pub mod registry;
+pub mod relation;
 pub mod skeleton;
 pub mod view;
 pub mod vocab;
@@ -147,16 +150,26 @@ pub mod prelude {
         apply::PristineIntroTable,
         body::{BodyEmbed, BodyFacts, Language, merge_body},
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
+        codec::{
+            CodecError, HEADER_LEN, MAGIC_LEN, Plane, decode_body, decode_entry, encode_body,
+            encode_entry, intro_id_of, ir_path, is_ir_path,
+        },
+        content::{ENTRY_CONTENT_DOMAIN, entry_content_hash},
         entry::{AttrTok, CfgExpr, Deprecation, DocLink, Entry, Symbol},
         id::{PackageId, PackageIdView, UniqueId},
         index::{EntryIndex, RawRef, Ref, UntypedEntryIndex},
         kind::Kind,
         kinds::{self, *},
         lower::{Lowering, LoweringError},
-        manifest::{GenerationStamp, generation_stamp},
+        manifest::{
+            BlobManifest, CasKey, ChangeId, ChangeSetRef, ChannelName, FileEntry, GenerationStamp,
+            InMemoryOutbox, Outbox, OutboxEntry, OutboxError, PackageUuid, Toolchain,
+            generation_stamp, manifest_stamp,
+        },
         package::{IrPackage, PackageInfo},
         reflect::{ExportPolicy, exported, moniker_path, monikers},
         registry::{Registry, RegistryResolver},
+        relation::{RelEnd, Relation, RelationKey, RelationSet},
         view::IrView,
         vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
     };
@@ -167,15 +180,21 @@ pub mod build {
         apply::PristineIntroTable,
         body::{BodyEmbed, BodyFacts, Language, merge_body},
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
+        content::{ENTRY_CONTENT_DOMAIN, entry_content_hash},
         entry::{AttrTok, CfgExpr, Deprecation, DocLink, Entry, Symbol, Visibility},
         id::{PackageId, UniqueId},
         index::{EntryIndex, RawRef, Ref, UntypedEntryIndex},
         intro::{Disambiguator, bootstrap_intro_id},
         kinds::{self, function::*, record::*, ty::*, *},
         lower::{Lowering, LoweringError},
-        manifest::{GenerationStamp, generation_stamp},
+        manifest::{
+            BlobManifest, CasKey, ChangeId, ChangeSetRef, ChannelName, FileEntry, GenerationStamp,
+            InMemoryOutbox, Outbox, OutboxEntry, OutboxError, PackageUuid, Toolchain,
+            generation_stamp, manifest_stamp,
+        },
         package::{EntryBuilder, IrPackage},
         reflect::{ExportPolicy, exported, moniker_path, monikers},
+        relation::{RelEnd, Relation, RelationKey, RelationSet},
         skeleton::{function_signature_skeleton, trait_impl_skeleton},
         view::IrView,
         vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
