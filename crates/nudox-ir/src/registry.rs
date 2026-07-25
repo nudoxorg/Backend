@@ -42,7 +42,11 @@ pub use self::resolver::RegistryResolver;
 /// lock-free concurrent data structures.
 #[derive(Default)]
 pub struct Registry<R: RegistryResolver> {
+    // TODO: should we let the RegistryResolver provider handle internal mutation itself?
+    // that would add flexibilty, at the cost of implementors having to manage internal mutabilty
+    // themselves if they need to do mutation
     resolver: Mutex<R>,
+
     state: RegistryState<R>,
 }
 
