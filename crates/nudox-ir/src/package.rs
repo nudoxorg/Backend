@@ -16,6 +16,41 @@ pub use crate::id::{PackageId, PackageIdView};
 
 pub use self::{builder::EntryBuilder, info::PackageInfo};
 
+/// A built, serializable package IR.
+///
+/// `IrPackage` holds the complete IR for a single package: a tree of entries
+/// rooted at a [`Module`], along with the package's export and import tables.
+///
+/// # Construction
+///
+/// Packages are built using the closure-based builder pattern:
+///
+/// ```rust
+/// use nudox_ir::build::*;
+/// # let sym = |n: &str| Symbol {
+/// #     name: n.to_owned(),
+/// #     visibility: Visibility::Public,
+/// #     documentation: String::new(),
+/// #     source: std::path::PathBuf::new(),
+/// #     span: 0..0
+/// # };
+///
+/// let pkg = IrPackage::build(PackageId::path("my-pkg"), sym("root"), |mut root| {
+///     root.create("point_id", sym("Point"), |mut rec| {
+///         // ... add fields ...
+///         Record::builder().build()
+///     });
+/// });
+/// ```
+///
+/// The closure receives an [`EntryBuilder`] that tracks parent-child
+/// relationships automatically.
+///
+/// # Iteration
+///
+/// [`IrPackage::iter`] yields every entry. The `Option<&Id>`
+/// is `None` for the root module and `Some(id)` for every other entry,
+/// providing a mapping from the builder-level id to the entry.
 pub struct IrPackage<Id: Eq + Hash> {
     info: PackageInfo<Id>,
     entries: Vec<(UntypedEntryIndex, Entry)>,
