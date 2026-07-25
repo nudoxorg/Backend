@@ -5,11 +5,11 @@
 //!
 //! ```no_run
 //! use std::num::NonZeroU64;
-//! use nudox_ir_vcs::stream::{record_stream, StreamPolicy, StreamedRecording};
+//! use ir_vcs::stream::{record_stream, StreamPolicy, StreamedRecording};
 //!
-//! # fn example() -> Result<(), nudox_ir_vcs::VcsError> {
+//! # fn example() -> Result<(), ir_vcs::VcsError> {
 //! # use ir::change::{EcosystemId, PackageLineageId, PackageName};
-//! # use nudox_ir_vcs::repo::IrRepository;
+//! # use ir_vcs::repo::IrRepository;
 //! # let pkg = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("mylib"));
 //! # let mut repo = IrRepository::in_memory(pkg, "main").unwrap();
 //! # let transport: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(vec![]);
