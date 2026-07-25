@@ -1,28 +1,29 @@
 //! Sealing — the two-pass that assigns every arena entry its content-addressed
 //! [`IntroId`] and materializes a [`PristineIntroTable`].
 //!
-//! Build-time entries are addressed by arena-local [`EntryIndex`]; sealing lowers
-//! that to the durable, cross-generation [`IntroId`] identity by hashing each
-//! declaration's `(package, kind, ancestor-path, leaf-name, disambiguator)`.
-//! The disambiguator is selected per §4.3 and — unlike `workspace/ir` — its
-//! skeleton payload includes generics/wheres/negativity, so distinct overloads
-//! and impls never collide.
+//! Build-time entries are addressed by arena-local [`EntryIndex`]; sealing
+//! lowers that to the durable, cross-generation [`IntroId`] identity by hashing
+//! each declaration's `(package, kind, ancestor-path, leaf-name,
+//! disambiguator)`. The disambiguator is selected per §4.3 and — unlike
+//! `workspace/ir` — its skeleton payload includes generics/wheres/negativity,
+//! so distinct overloads and impls never collide.
 //!
 //! `seal` consumes the package: sealing moves each [`Entry`] into the table
 //! (nudox-ir's `Entry` is intentionally not `Clone`), which is the natural
 //! once-per-generation lifecycle.
 
-use std::collections::HashMap;
-use std::hash::Hash;
+use std::{collections::HashMap, hash::Hash};
 
-use crate::apply::PristineIntroTable;
-use crate::change::{IntroId, PackageLineageId};
-use crate::entry::{Entry, EntryInner};
-use crate::index::{EntryIndex, UntypedEntryIndex};
-use crate::intro::{Disambiguator, bootstrap_intro_id};
-use crate::kind::{Kind, KindDiscriminant};
-use crate::kinds::{Param, Type};
-use crate::skeleton::{function_signature_skeleton, trait_impl_skeleton};
+use crate::{
+    apply::PristineIntroTable,
+    change::{IntroId, PackageLineageId},
+    entry::{Entry, EntryInner},
+    index::{EntryIndex, UntypedEntryIndex},
+    intro::{Disambiguator, bootstrap_intro_id},
+    kind::{Kind, KindDiscriminant},
+    kinds::{Param, Type},
+    skeleton::{function_signature_skeleton, trait_impl_skeleton},
+};
 
 use super::IrPackage;
 
@@ -31,12 +32,13 @@ use super::IrPackage;
 type BaseKey = (u16, Vec<String>, String);
 
 impl<Id: Eq + Hash> IrPackage<Id> {
-    /// Seal this package under `lineage`, minting an [`IntroId`] for every entry
-    /// and returning the materialized [`PristineIntroTable`]. Consumes `self`.
+    /// Seal this package under `lineage`, minting an [`IntroId`] for every
+    /// entry and returning the materialized [`PristineIntroTable`].
+    /// Consumes `self`.
     ///
     /// `lineage` is the production package identity (ecosystem + name); it is a
-    /// parameter for now — the arena's internal `PackageId` is dev-only and will
-    /// be replaced by the lineage id when the registry is rewired.
+    /// parameter for now — the arena's internal `PackageId` is dev-only and
+    /// will be replaced by the lineage id when the registry is rewired.
     pub fn seal(self, lineage: &PackageLineageId) -> PristineIntroTable {
         // Resolution indices over the arena's export-addressed entries.
         let by_idx: HashMap<UntypedEntryIndex, &Entry> =
@@ -118,7 +120,10 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                 // Any other same-key collision: fall back to the source span.
                 _ if count >= 2 => {
                     let span = &e.sym().span;
-                    Disambiguator::Span { start: span.start, end: span.end }
+                    Disambiguator::Span {
+                        start: span.start,
+                        end: span.end,
+                    }
                 }
                 // Unique: signature-stable None.
                 _ => Disambiguator::None,
@@ -167,16 +172,18 @@ fn resolve_param_tys(
 
 #[cfg(test)]
 mod tests {
-    use crate::build::*;
-    use crate::change::{EcosystemId, PackageName};
-    use crate::test_helpers::{id_gen, sym};
+    use crate::{
+        build::*,
+        change::{EcosystemId, PackageName},
+        test_helpers::{id_gen, sym},
+    };
 
     fn lineage() -> PackageLineageId {
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("demo"))
     }
 
-    /// End-to-end: seal a package and confirm every entry is materialized with a
-    /// parent edge that matches the tree.
+    /// End-to-end: seal a package and confirm every entry is materialized with
+    /// a parent edge that matches the tree.
     #[test]
     fn seal_materializes_the_tree() {
         let mut id = id_gen();
@@ -199,9 +206,9 @@ mod tests {
         assert_eq!(roots, 1, "exactly one root (the module)");
     }
 
-    /// The collision fix, end-to-end: two overloaded functions differing only by a
-    /// generic bound must seal to DISTINCT IntroIds (they would collide under
-    /// workspace/ir's skeleton).
+    /// The collision fix, end-to-end: two overloaded functions differing only
+    /// by a generic bound must seal to DISTINCT IntroIds (they would
+    /// collide under workspace/ir's skeleton).
     #[test]
     fn overloads_seal_to_distinct_intros() {
         let mut id = id_gen();
