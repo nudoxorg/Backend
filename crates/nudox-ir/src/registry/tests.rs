@@ -4,6 +4,8 @@ mod resolver {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/resolver.rs"));
 }
 
+use std::assert_matches;
+
 use self::resolver::*;
 
 use crate::test_helpers::*;
@@ -16,14 +18,25 @@ async fn build_and_load_simple_package() -> Result<(), ResolverError> {
 
     let registry = Registry::new(resolver);
 
-    let root = registry.resolve_id_to_idx(UniqueId::root(PackageId::path("pkg")));
+    let root_idx = registry.resolve_id_to_idx(UniqueId::root(PackageId::path("pkg")));
 
-    let root = registry.resolve_entry(root).await?;
+    let root = registry.resolve_entry(root_idx).await?;
 
     assert_eq!(root.sym(), &sym("root"));
     assert_eq!(root.parent(), None);
     assert_eq!(root.children().len(), 3);
     assert_eq!(root.kind(), &EntryInner::Owned(Kind::Module(Module)));
+
+    let child_idx = registry.resolve_id_to_idx(UniqueId::new(PackageId::path("pkg"), 1));
+
+    let child = registry.resolve_entry(child_idx).await?;
+
+    assert_eq!(child.sym(), &sym("Point"));
+    assert_eq!(child.parent(), Some(root_idx));
+    assert_eq!(child.children().len(), 2);
+    assert_matches!(child.kind(), EntryInner::Owned(Kind::Record(Record { .. })));
+
+    assert_eq!(root.children()[0], child_idx);
 
     Ok(())
 }
