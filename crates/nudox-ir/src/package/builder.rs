@@ -12,8 +12,8 @@ use super::IrPackage;
 /// A scoped builder for constructing entries within an [`IrPackage`].
 ///
 /// `EntryBuilder` is the workhorse of IR construction. Each instance
-/// represents a single entry in the tree; calling [`create`] on it adds a
-/// child entry and records the parent-child relationship.
+/// represents a single entry in the tree; calling [`create`](Self::create) on
+/// it adds a child entry and records the parent-child relationship.
 ///
 /// # Automatic tree wiring
 ///
