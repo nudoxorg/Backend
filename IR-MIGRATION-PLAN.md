@@ -209,6 +209,69 @@ Java/TS/C#/Python producers emit). Unchanged from §0.6; decide before P-D.
 
 ---
 
+## 0.8 — P-D: the producer port (2026-07-25)
+
+`workspace/compiler` is **bit-rotted, not stale**: commit `dcc0b72c` (Jul 23) deleted both
+`workspace/ir/BUCK` *and* ten modules the producers call, and did not update them. It is the
+only copy of all seven producers. So P-D is a **rewrite salvaging the oracle layer**, not a
+repoint.
+
+**New home:** `crates/nudox-producer` (the shared contract) + `crates/nudox-producer-<lang>`,
+all Cargo members. The contract is two methods —
+
+```rust
+fn invoke(&self, src: &PackageSource) -> Result<Self::Oracle, ProducerError>;
+fn lower(&self, oracle: &Self::Oracle, out: &mut Lowering<Self::Id>) -> Result<(), ProducerError>;
+```
+
+— plus `produce()` = invoke → lower → finish → seal. Everything daemon-shaped in the old
+trait (`ExecPlan`, `SealedCommand`, `Captured`, `WorkerPool`, `ProducerProfile`, `ThreatTier`,
+`Mounts`, hermetic env) stays in the sandbox plane. `Lowering<Id>` is generic over the
+producer's *own* id, so no frontend invents a path scheme, and `refer` resolving
+later-declared ids means **one pass, no intermediate tree** — that is what deletes
+`NudoxPath`/`Index`/`wire_members` from all seven.
+
+### Dependency triage (measured, not guessed)
+
+| Lang | Oracle | Supply | Rank |
+|---|---|---|---|
+| Go / C# / Java | subprocess + JSON | none needed | **(a)** — only `serde` |
+| Rust | `ra_ap_*` | crates.io, lockstep `=0.0.341` (salsa keys break across versions) | **(a)** |
+| TypeScript | `oxc_*` | crates.io `=0.139.0`; `oxc_resolver` `=11.23.0` | **(a)** |
+| TypeScript (tsz) | `tsz_*` | git `dff7690` (`0.1.48`; crates.io only has 0.1.9) | (b) — opt-in, defer |
+| Python | `pyrefly` | git `3e17a690`; build.rs downloads a typeshed | (b) + 3 source bugs |
+| Nix | `snix_eval` | git `50b41ae`, **never on crates.io**, needs a local patch, **GPL-3.0** | **(c)** — vendor it |
+
+So Rust and TypeScript are *not* blocked, contrary to the first estimate. Only Nix needs
+build-system work.
+
+### Salvage map (measured `ir::` reference counts)
+
+- **Rust** (4,896): ~2,600 carries over (`load` 183/0 refs, `error` 328/0, `traversal` 332/0,
+  `producer` 85/0, `ctx` 440/2, `function` 283/2, `docs` 251/2, `generics` 269/1, `walk`
+  115/2, `source` 45/2). Rewrite is confined to `ra/ty.rs` (981/8) and `ra/item.rs` (1325/20).
+- **TypeScript** (7,251): ~1,300 carries over (`entry` 414/0, `graph` 328/0, `error` 132/0,
+  `jsdoc` 249/1, `facts` 156/1). Rewrite ~5,100, heaviest `extract/decl.rs` (1742/**24** —
+  low density for its size; most of it is OXC AST matching worth preserving).
+- **Python** (3,642): `docstring.rs` (760/**0**) is pure salvage; `types.rs` (745/**87**) is
+  the densest IR coupling anywhere.
+- **Nix** (5,563): ~2,450 carries over (`traversal` 723/0, `syntax` 673/0, `eval` 460/0,
+  `docs` 369/0, `error` 116/0). Rewrite `walker` 927/9, `options` 313/11, `sig` 571/5.
+- **Go**: `oracle.rs` (436/0). **C#**: `schema.rs` (541/0) + `xmldoc.rs` (488/0).
+  **Java**: `javadoc.rs` (796, near-zero).
+
+Pure rewrite, no salvage: `graph/from_ir.rs` (1,337) and `render/` (~3,500) — both map the
+deleted `ir::kind::Entry` and have no oracle logic.
+
+### Subprocess escape hatch
+**Nix** is the one place worth considering it: a snix-based JSON dumper would move the
+GPL-3.0 link out of our address space entirely. Costs a redesign of `walker.rs`'s
+closure↔rnix span fusion. Python's `pyrefly check` emits LSP diagnostics, not IR — not a
+shortcut. Rust and TS have no subprocess mode (ra_ap *is* the replacement for the old
+rustdoc subprocess).
+
+---
+
 ## 1. Target architecture
 
 The home crate ends up as one crate with a clear two-face design:
