@@ -9,6 +9,28 @@ use crate::{
 
 use super::IrPackage;
 
+/// A scoped builder for constructing entries within an [`IrPackage`].
+///
+/// `EntryBuilder` is the workhorse of IR construction. Each instance
+/// represents a single entry in the tree; calling [`create`] on it adds a
+/// child entry and records the parent-child relationship.
+///
+/// # Automatic tree wiring
+///
+/// When you call `builder.create(id, sym, |child| { … })`, the builder:
+///
+/// 1. Allocates an export index for the new entry.
+/// 2. Invokes the closure, passing a new `EntryBuilder` for the child.
+/// 3. The child builder collects any grandchildren added inside the closure.
+/// 4. The IR's tree structure is updated, linking parents and children.
+///
+/// This means you never manually set parent or child fields.
+///
+/// # Cross-package references
+///
+/// Use [`index_of`](Self::index_of) to reference entries within the same
+/// package, and [`index_of_import`](Self::index_of_import) to reference entries
+/// in other packages (by their [`UniqueId`]).
 pub struct EntryBuilder<'a, Id: Eq + Hash> {
     ir: &'a mut IrPackage<Id>,
     idx: UntypedEntryIndex,
@@ -16,7 +38,11 @@ pub struct EntryBuilder<'a, Id: Eq + Hash> {
 }
 
 impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
-    /// Creates a new entry and returns an `EntryIndex` that points to it.
+    /// Create a new child entry and return its typed index.
+    ///
+    /// The `build` closure receives a fresh `EntryBuilder` for the new entry,
+    /// and must return a value that implements [`EntryKind`]---typically one
+    /// of the kind builders like `Record::builder().build()`.
     pub fn create<T>(
         &mut self,
         id: Id,
@@ -33,8 +59,9 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
         idx.typed()
     }
 
-    /// Creates a reference/re-export entry that points to another entry,
-    /// and returns an `EntryIndex` that points to the re-export
+    /// Create a re-export entry pointing to an existing entry.
+    ///
+    /// The returned index refers to the *re-export*, not the original.
     #[doc(alias = "create_reexport")]
     pub fn create_ref<T>(&mut self, id: Id, sym: Symbol, other: EntryIndex<T>) -> EntryIndex<T>
     where
@@ -50,12 +77,12 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
         idx.typed()
     }
 
-    /// Returns an `EntryIndex` that refers to the entry that corresponds to
-    /// the given `Id`
+    /// Get a typed index for an entry already created (or about to be created)
+    /// within this package.
     ///
-    /// Passing an `Id` that is not actually created within the package will
-    /// lead to creating an invalid `PackageIr`. This will be caught at IR
-    /// validation time and **will panic**.
+    /// # Panics
+    ///
+    /// Panics at IR validation time if `id` was never created.
     pub fn index_of<T>(&mut self, id: Id) -> EntryIndex<T>
     where
         T: EntryKind,
@@ -63,11 +90,9 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
         self.ir.info.create_export(id).typed()
     }
 
-    /// Returns an `EntryIndex` that refers to the entry that corresponds to
-    /// the given `UniqueId`.
+    /// Get an import index for a cross-package entry reference.
     ///
-    /// Passing a `UniqueId` that is not actually existant will result in an
-    /// error when trying to resolve the `EntryIndex`.
+    /// The returned index will be remapped at registry resolution time.
     pub fn index_of_import<T>(&mut self, id: UniqueId<Id>) -> EntryIndex<T>
     where
         T: EntryKind,
