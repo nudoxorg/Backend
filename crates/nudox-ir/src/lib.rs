@@ -125,6 +125,7 @@
 mod visitor;
 
 pub mod apply;
+pub mod body;
 pub mod change;
 pub mod entry;
 pub mod id;
@@ -133,6 +134,7 @@ pub mod intro;
 pub mod kind;
 pub mod kinds;
 pub mod package;
+pub mod reflect;
 pub mod registry;
 pub mod skeleton;
 pub mod vocab;
@@ -140,6 +142,7 @@ pub mod vocab;
 pub mod prelude {
     pub use crate::{
         apply::PristineIntroTable,
+        body::{BodyEmbed, BodyFacts, Language, merge_body},
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         entry::{Entry, Symbol},
         id::{PackageId, PackageIdView, UniqueId},
@@ -147,6 +150,7 @@ pub mod prelude {
         kind::Kind,
         kinds::{self, *},
         package::{IrPackage, PackageInfo},
+        reflect::{ExportPolicy, exported, moniker_path, monikers},
         registry::{Registry, RegistryResolver},
         vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
     };
@@ -155,6 +159,7 @@ pub mod prelude {
 pub mod build {
     pub use crate::{
         apply::PristineIntroTable,
+        body::{BodyEmbed, BodyFacts, Language, merge_body},
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         entry::{Entry, Symbol, Visibility},
         id::{PackageId, UniqueId},
@@ -162,6 +167,7 @@ pub mod build {
         intro::{Disambiguator, bootstrap_intro_id},
         kinds::{self, function::*, record::*, ty::*, *},
         package::{EntryBuilder, IrPackage},
+        reflect::{ExportPolicy, exported, moniker_path, monikers},
         skeleton::{function_signature_skeleton, trait_impl_skeleton},
         vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
     };
