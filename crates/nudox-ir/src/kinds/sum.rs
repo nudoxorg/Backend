@@ -26,8 +26,8 @@ impl Enum {
 /// A single variant of an [`Enum`].
 ///
 /// Payload-carrying variants reference their payload as [`Field`] entries:
-/// tuple variants use [`FieldKey::Positional`](crate::kinds::FieldKey), struct
-/// variants use named fields, and unit variants carry none.
+/// tuple variants use [`FieldKey::Positional`](crate::kinds::record::FieldKey),
+/// struct variants use named fields, and unit variants carry none.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Variant {
     /// The variant's payload fields; empty for a unit variant.
