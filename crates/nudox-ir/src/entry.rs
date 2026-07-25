@@ -4,7 +4,7 @@ mod typed;
 
 use crate::{index::RawRef, kind::Kind, visitor::Visitor};
 
-pub(crate) use self::node::Node;
+pub use self::node::Node;
 
 pub use self::{
     symbol::{AttrTok, CfgExpr, Deprecation, DocLink, Symbol, Visibility},
@@ -63,7 +63,15 @@ impl Entry {
         &self.kind
     }
 
-    pub(crate) const fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
+    /// Construct an owned entry from its symbol, node, and kind.
+    ///
+    /// The `node` encodes the parent/children structural edges. For tests that
+    /// build a [`crate::apply::PristineIntroTable`] directly (bypassing the
+    /// `seal` pass), use [`crate::apply::PristineIntroTable::insert_live`] to
+    /// record the parent edge separately and pass a `Node` built from
+    /// `Node::build(None::<RawRef>, [])` — the table is the authority on
+    /// structural edges in the sealed representation.
+    pub fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
         Self {
             sym,
             node,
@@ -88,7 +96,10 @@ pub enum EntryInner {
 
 impl EntryInner {
     /// Returns the inner [`Kind`] if this is an `Owned` entry, else `None`.
-    pub(crate) fn as_owned_kind(&self) -> Option<&Kind> {
+    ///
+    /// Use this to match on the specific kind variant after retrieving an
+    /// entry from an [`crate::apply::PristineIntroTable`] or [`crate::view::IrView`].
+    pub fn as_owned_kind(&self) -> Option<&Kind> {
         match self {
             EntryInner::Owned(k) => Some(k),
             EntryInner::Reference(_) => None,

@@ -11,7 +11,7 @@
 //!   (the graph-worthy floor, §vocab).
 //!
 //! * **Reverse type-ref postings** (`ty_ref → [entry, …]`): built by scanning
-//!   [`KindWire::Impl`] (the implemented trait, via `of`) and [`KindWire::Trait`]
+//!   [`Kind::Impl`] (the implemented trait, via `of`) and [`Kind::Trait`]
 //!   (each entry in `supers`). Field-type mentions are left to a later wave (see
 //!   the `NOTE` in [`typerefs_of_entry`]).
 //!
@@ -20,8 +20,11 @@
 use std::collections::BTreeMap;
 
 use ir::change::{IntroId, PackageLineageId, StableRef};
-use ir::wire::{KindWire, OwnedEntryPayload, TypeRefWire};
-use ir::IrView;
+use ir::entry::Entry;
+use ir::index::{Ref, RawRef};
+use ir::kind::Kind;
+use ir::kinds::Type;
+use ir::view::IrView;
 
 // ---------------------------------------------------------------------------
 // SCHEMA_VERSION
@@ -54,64 +57,117 @@ pub struct ReverseIndexKey {
 }
 
 // ---------------------------------------------------------------------------
+// type_to_stable_ref  (private helper)
+// ---------------------------------------------------------------------------
+
+/// Extract a [`StableRef`] from a nudox-ir [`Type`] within a package context.
+///
+/// The extraction rules follow the design brief:
+///
+/// * [`Type::Nominal`] with a [`Ref::Intro`] → same-package `StableRef`.
+/// * [`Type::Nominal`] with a [`Ref::Foreign`] → the `StableRef` directly.
+/// * [`Type::Apply`] → recurse into `base` (a generic trait application such
+///   as `impl Iterator<Item = u32>` appears here; the old flat wire form
+///   silently dropped this case).
+/// * [`Type::Nominal`] with a [`Ref::Local`] must not appear in a sealed
+///   table; `seal` lowers every `Local` to `Intro`/`Foreign`. Treat as `None`
+///   and do not emit a posting for it.
+/// * All other [`Type`] variants carry no nominal reference and yield `None`.
+fn type_to_stable_ref(ty: &Type, package: &PackageLineageId) -> Option<StableRef> {
+    match ty {
+        Type::Nominal(raw_ref) => raw_ref_to_stable(raw_ref, package),
+        Type::Apply { base, .. } => {
+            // Recurse into the base of a generic application.
+            // E.g. `impl Iterator<Item = u32>` → base is `Nominal(Iterator)`.
+            // `base` is `&Box<Type>` via match ergonomics; Deref coercion
+            // converts it to `&Type` at the call site automatically.
+            type_to_stable_ref(base, package)
+        }
+        // Primitives, tuples, slices, arrays, unions, intersections, Never, Any,
+        // and SelfType carry no cross-package nominal reference at this wave.
+        _ => None,
+    }
+}
+
+/// Convert a [`RawRef`] (= [`Ref<UntypedMarker>`]) to a [`StableRef`].
+///
+/// `Ref::Intro(id)` → same-package reference using the given `package`.
+/// `Ref::Foreign(sr)` → used directly.
+/// `Ref::Local(_)` → `None` (must not appear post-seal; logged as a comment).
+#[inline]
+fn raw_ref_to_stable(raw: &RawRef, package: &PackageLineageId) -> Option<StableRef> {
+    match raw {
+        Ref::Intro(id) => Some(StableRef::new(package.clone(), *id)),
+        Ref::Foreign(sr) => Some(sr.clone()),
+        // Ref::Local must not appear in a sealed table — seal lowers every
+        // Local to Intro/Foreign in one pass.  Treat as None: no posting.
+        Ref::Local(_) => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // typerefs_of_entry  (shared helper — also used by trustfall_adapter)
 // ---------------------------------------------------------------------------
 
-/// Extract the load-bearing type references from one entry payload.
+/// Extract the load-bearing type references from one entry.
 ///
 /// Returns the [`StableRef`]s that are structurally load-bearing for graph
 /// edge construction:
 ///
-/// * For [`KindWire::Impl`]: the implemented trait (`of`, if present).
-/// * For [`KindWire::Trait`]: each supertrait in `supers`.
+/// * For [`Kind::Impl`]: the implemented trait (`of`, if present).
+/// * For [`Kind::Trait`]: each supertrait in `supers`.
 ///
-/// [`TypeRefWire::Same`] variants are converted to a [`StableRef`] against the
-/// `package` of the owning view; [`TypeRefWire::Foreign`] variants are used
-/// directly.
+/// Generic trait applications (e.g. `impl Iterator<Item = u32>`) appear as
+/// [`Type::Apply`] with a [`Type::Nominal`] base; `type_to_stable_ref` recurses
+/// into `base` so these are not silently dropped (the old flat-wire form missed
+/// this case).
 ///
-/// **NOTE:** field-type mentions (`KindWire::Field`, parameter types in
-/// `KindWire::Function`, etc.) are intentionally omitted here; they will be
+/// [`Ref::Local`] refs, which must not appear in a sealed table, yield no
+/// posting (see `raw_ref_to_stable`).
+///
+/// **NOTE:** field-type mentions (`Kind::Field`, parameter types in
+/// `Kind::Function`, etc.) are intentionally omitted here; they will be
 /// added in a later wave once the field-type graph edges are specced.
-pub fn typerefs_of_entry(
-    payload: &OwnedEntryPayload,
-    package: &PackageLineageId,
-) -> Vec<StableRef> {
+pub fn typerefs_of_entry(entry: &Entry, package: &PackageLineageId) -> Vec<StableRef> {
     let mut refs: Vec<StableRef> = Vec::new();
 
-    match &payload.kind {
-        KindWire::Impl(impl_wire) => {
+    let kind = match entry.kind().as_owned_kind() {
+        Some(k) => k,
+        None => return refs, // Reference entry — no kind body to inspect.
+    };
+
+    match kind {
+        Kind::Impl(impl_) => {
             // The implemented trait (e.g. `impl Display for T` → trait is load-bearing).
-            if let Some(of) = &impl_wire.of {
-                if let Some(sr) = typeref_to_stable(of, package) {
+            if let Some(of_ty) = &impl_.of {
+                if let Some(sr) = type_to_stable_ref(of_ty, package) {
                     refs.push(sr);
                 }
             }
         }
-        KindWire::Trait(trait_wire) => {
+        Kind::Trait(trait_) => {
             // Each supertrait (e.g. `trait Foo: Bar + Baz` → Bar and Baz).
-            for super_ref in trait_wire.supers.iter() {
-                if let Some(sr) = typeref_to_stable(super_ref, package) {
+            for super_ty in trait_.supers.iter() {
+                if let Some(sr) = type_to_stable_ref(super_ty, package) {
                     refs.push(sr);
                 }
             }
         }
         // All other kinds: no load-bearing type refs extracted in this wave.
-        _ => {}
+        Kind::Module(_)
+        | Kind::Record(_)
+        | Kind::Field(_)
+        | Kind::Function(_)
+        | Kind::Alias(_)
+        | Kind::Enum(_)
+        | Kind::Variant(_)
+        | Kind::Const(_)
+        | Kind::Static(_)
+        | Kind::Reexport(_)
+        | Kind::Param(_) => {}
     }
 
     refs
-}
-
-/// Convert a [`TypeRefWire`] to a [`StableRef`] within the given package context.
-///
-/// `Same(intro)` → `StableRef { package: package.clone(), intro }`.
-/// `Foreign(sr)` → `sr` directly (already a `StableRef`).
-#[inline]
-fn typeref_to_stable(tyref: &TypeRefWire, package: &PackageLineageId) -> Option<StableRef> {
-    match tyref {
-        TypeRefWire::Same(intro) => Some(StableRef::new(package.clone(), *intro)),
-        TypeRefWire::Foreign(sr) => Some(sr.clone()),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,16 +213,18 @@ impl ReversePositionIndex {
         let mut typeref_postings: BTreeMap<StableRef, Vec<IntroId>> = BTreeMap::new();
 
         // -- Occurrence reverse pass (graph-worthy only) --------------------
-        for occ in ir.all_occurrences() {
+        // `all_occurrences()` yields `(owner: IntroId, &Occurrence)` pairs.
+        // The owner is the first element; `Occurrence` itself has no `owner` field.
+        for (owner, occ) in ir.all_occurrences() {
             if occ.confidence.is_graph_worthy() {
-                occ_postings.entry(occ.target.clone()).or_default().push(occ.owner);
+                occ_postings.entry(occ.target.clone()).or_default().push(owner);
             }
         }
 
         // -- Type-ref reverse pass -----------------------------------------
         let package = ir.package();
-        for (intro, payload) in ir.entries() {
-            let refs = typerefs_of_entry(payload, package);
+        for (intro, entry) in ir.entries() {
+            let refs = typerefs_of_entry(entry, package);
             for sr in refs {
                 typeref_postings.entry(sr).or_default().push(intro);
             }
@@ -222,19 +280,52 @@ impl ReversePositionIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use ir::apply::PristineIntroTable;
     use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
-    use ir::view::Occurrence;
-    use ir::vocab::{Confidence, ReferenceKind, RelSpan};
-    use ir::kind::KindDiscriminant;
-    use ir::wire::{
-        EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, SymbolWire, TraitFlags,
-        TraitWire,
-    };
-    use ir::IrView;
+    use ir::entry::{Entry, Node, Symbol, Visibility};
+    use ir::index::Ref;
+    use ir::kind::Kind;
+    use ir::kinds::{Function, Module, Trait, Type};
+    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
+    use ir::view::IrView;
 
     // -----------------------------------------------------------------------
-    // Test helpers
+    // Local test helpers
     // -----------------------------------------------------------------------
+
+    /// Build a minimal [`Symbol`] with only a name; all other fields are empty/default.
+    fn sym(name: &str) -> Symbol {
+        Symbol {
+            name: name.to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        }
+    }
+
+    /// Build an owned [`Entry`] with a root `Node` (no pre-encoded parent or
+    /// children) and the given kind.  The parent edge is recorded separately by
+    /// [`PristineIntroTable::insert_live`]; keeping the `Node` empty avoids the
+    /// `Local`-ref lowering that `seal` would normally do.
+    fn entry(name: &str, kind: Kind) -> Entry {
+        Entry::new(sym(name), Node::build(None::<ir::index::RawRef>, []), kind)
+    }
+
+    fn module(name: &str) -> Entry {
+        entry(name, Kind::Module(Module))
+    }
+
+    fn function(name: &str) -> Entry {
+        entry(name, Kind::Function(Function::builder().build()))
+    }
 
     fn eco() -> EcosystemId {
         EcosystemId::new("cargo")
@@ -252,62 +343,16 @@ mod tests {
         StableRef::new(pkg_id(), intro(n))
     }
 
-    fn sym(name: &str) -> SymbolWire {
-        SymbolWire {
-            name: name.into(),
-            visibility: ir::symbol::Visibility::Public,
-            documentation: None,
-            source_path: "src/lib.rs".into(),
-            span_start: 0,
-            span_end: 10,
-            aliases: Vec::new(),
-            deprecation: None,
-            doc_links: Vec::new(),
-            attrs: Vec::new(),
-            cfg: None,
-        }
-    }
-
-    fn module_payload(name: &str) -> ir::wire::OwnedEntryPayload {
-        ir::wire::OwnedEntryPayload::sealed(
-            sym(name),
-            KindDiscriminant::Module,
-            KindWire::Module(ModuleWire {}),
-            EntryPayloadFlags::default(),
-        )
-    }
-
-    fn fn_payload(name: &str) -> ir::wire::OwnedEntryPayload {
-        ir::wire::OwnedEntryPayload::sealed(
-            sym(name),
-            KindDiscriminant::Function,
-            KindWire::Function(FunctionWire {
-                input_params: Box::new([]),
-                output_params: Box::new([]),
-                sig: FnSigFlags::default(),
-                generics: Box::new([]),
-                wheres: Box::new([]),
-            }),
-            EntryPayloadFlags::default(),
-        )
-    }
-
-    fn trait_payload_with_super(name: &str, super_ref: TypeRefWire) -> ir::wire::OwnedEntryPayload {
-        ir::wire::OwnedEntryPayload::sealed(
-            sym(name),
-            KindDiscriminant::Trait,
-            KindWire::Trait(TraitWire {
-                supers: Box::new([super_ref]),
-                flags: TraitFlags::default(),
-                generics: Box::new([]),
-                wheres: Box::new([]),
-            }),
-            EntryPayloadFlags::default(),
-        )
-    }
-
     fn default_key() -> ReverseIndexKey {
         ReverseIndexKey { channel_tip: [0u8; 32], schema_version: SCHEMA_VERSION }
+    }
+
+    /// Build a minimal [`IrView`] for `pkg_id()` with the given entries and
+    /// occurrences.  Entries are `(intro_byte, name, parent_byte_or_none)`;
+    /// occurrences are added via `view.add_occurrence(owner, occ)`.
+    fn make_view() -> IrView {
+        let table = PristineIntroTable::new();
+        IrView::with_package(pkg_id(), table)
     }
 
     // -----------------------------------------------------------------------
@@ -318,23 +363,21 @@ mod tests {
     /// at or above the graph floor.
     #[test]
     fn usages_of_returns_graph_worthy_owners() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("root"), None);
-        ir.insert_entry(intro(2), fn_payload("caller"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("callee"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("caller"), Some(intro(1)));
+        table.insert_live(intro(3), function("callee"), Some(intro(1)));
+        let mut view = IrView::with_package(pkg_id(), table);
 
         let target = sref_local(3);
 
         // Oracle occurrence (above floor) → should appear.
-        ir.insert_occurrence(Occurrence {
-            owner: intro(2),
-            target: target.clone(),
-            kind: ReferenceKind::FunctionCall,
-            confidence: Confidence::Oracle,
-            rel_span: RelSpan::new(0, 5),
-        });
+        view.add_occurrence(
+            intro(2),
+            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Oracle, RelSpan::new(0, 5)),
+        );
 
-        let idx = ReversePositionIndex::build(&ir, default_key());
+        let idx = ReversePositionIndex::build(&view, default_key());
         assert_eq!(idx.usages_of(&target), &[intro(2)]);
     }
 
@@ -342,23 +385,21 @@ mod tests {
     /// appear in the reverse-occurrence postings.
     #[test]
     fn syntactic_occurrence_is_excluded() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("root"), None);
-        ir.insert_entry(intro(2), fn_payload("caller"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("callee"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("caller"), Some(intro(1)));
+        table.insert_live(intro(3), function("callee"), Some(intro(1)));
+        let mut view = IrView::with_package(pkg_id(), table);
 
         let target = sref_local(3);
 
         // Syntactic only — below floor.
-        ir.insert_occurrence(Occurrence {
-            owner: intro(2),
-            target: target.clone(),
-            kind: ReferenceKind::FunctionCall,
-            confidence: Confidence::Syntactic,
-            rel_span: RelSpan::new(0, 5),
-        });
+        view.add_occurrence(
+            intro(2),
+            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Syntactic, RelSpan::new(0, 5)),
+        );
 
-        let idx = ReversePositionIndex::build(&ir, default_key());
+        let idx = ReversePositionIndex::build(&view, default_key());
         assert_eq!(
             idx.usages_of(&target),
             &[] as &[IntroId],
@@ -369,39 +410,35 @@ mod tests {
     /// `Confidence::Suffix` (also below floor) is likewise excluded.
     #[test]
     fn suffix_occurrence_is_excluded() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), fn_payload("a"), None);
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), function("a"), None);
+        let mut view = IrView::with_package(pkg_id(), table);
         let target = sref_local(2);
-        ir.insert_occurrence(Occurrence {
-            owner: intro(1),
-            target: target.clone(),
-            kind: ReferenceKind::TypeReference,
-            confidence: Confidence::Suffix,
-            rel_span: RelSpan::new(0, 3),
-        });
-        let idx = ReversePositionIndex::build(&ir, default_key());
+        view.add_occurrence(
+            intro(1),
+            Occurrence::new(target.clone(), ReferenceKind::TypeReference, Confidence::Suffix, RelSpan::new(0, 3)),
+        );
+        let idx = ReversePositionIndex::build(&view, default_key());
         assert_eq!(idx.usages_of(&target), &[] as &[IntroId]);
     }
 
     /// Building the index twice from the same view yields identical posting maps.
     #[test]
     fn build_is_deterministic() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("mod"), None);
-        ir.insert_entry(intro(2), fn_payload("a"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("b"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("mod"), None);
+        table.insert_live(intro(2), function("a"), Some(intro(1)));
+        table.insert_live(intro(3), function("b"), Some(intro(1)));
+        let mut view = IrView::with_package(pkg_id(), table);
 
         let target = sref_local(3);
-        ir.insert_occurrence(Occurrence {
-            owner: intro(2),
-            target: target.clone(),
-            kind: ReferenceKind::FunctionCall,
-            confidence: Confidence::Index,
-            rel_span: RelSpan::new(0, 4),
-        });
+        view.add_occurrence(
+            intro(2),
+            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Index, RelSpan::new(0, 4)),
+        );
 
-        let idx1 = ReversePositionIndex::build(&ir, default_key());
-        let idx2 = ReversePositionIndex::build(&ir, default_key());
+        let idx1 = ReversePositionIndex::build(&view, default_key());
+        let idx2 = ReversePositionIndex::build(&view, default_key());
 
         // Compare occ postings via the public API.
         assert_eq!(
@@ -422,19 +459,23 @@ mod tests {
     /// at the given StableRef.
     #[test]
     fn mentions_of_supertrait() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("mod"), None);
-
-        // A base trait (intro 2) and a derived trait (intro 3) that extends it.
-        ir.insert_entry(intro(2), fn_payload("BaseTrait"), Some(intro(1)));
-        let base_sr = sref_local(2);
-        ir.insert_entry(
-            intro(3),
-            trait_payload_with_super("DerivedTrait", TypeRefWire::Same(intro(2))),
-            Some(intro(1)),
+        // `BaseTrait` is intro(2); `DerivedTrait` (intro 3) extends it via a
+        // `Type::Nominal(Ref::Intro(intro(2)))` supertrait.
+        let base_intro = intro(2);
+        let base_ref = Type::Nominal(Ref::Intro(base_intro));
+        let derived_entry = entry(
+            "DerivedTrait",
+            Kind::Trait(Trait::builder().supers([base_ref]).build()),
         );
 
-        let idx = ReversePositionIndex::build(&ir, default_key());
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("mod"), None);
+        table.insert_live(intro(2), function("BaseTrait"), Some(intro(1)));
+        table.insert_live(intro(3), derived_entry, Some(intro(1)));
+        let view = IrView::with_package(pkg_id(), table);
+
+        let base_sr = sref_local(2);
+        let idx = ReversePositionIndex::build(&view, default_key());
         let mentions = idx.mentions_of(&base_sr);
         assert_eq!(mentions, &[intro(3)], "derived trait should appear in mentions of base");
     }
@@ -442,38 +483,30 @@ mod tests {
     /// Multiple owners for the same target are all captured and deduplicated.
     #[test]
     fn multiple_owners_for_same_target() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("mod"), None);
-        ir.insert_entry(intro(2), fn_payload("fn_a"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("fn_b"), Some(intro(1)));
-        ir.insert_entry(intro(4), fn_payload("target_fn"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("mod"), None);
+        table.insert_live(intro(2), function("fn_a"), Some(intro(1)));
+        table.insert_live(intro(3), function("fn_b"), Some(intro(1)));
+        table.insert_live(intro(4), function("target_fn"), Some(intro(1)));
+        let mut view = IrView::with_package(pkg_id(), table);
 
         let target = sref_local(4);
 
-        ir.insert_occurrence(Occurrence {
-            owner: intro(2),
-            target: target.clone(),
-            kind: ReferenceKind::FunctionCall,
-            confidence: Confidence::Import,
-            rel_span: RelSpan::new(0, 3),
-        });
-        ir.insert_occurrence(Occurrence {
-            owner: intro(3),
-            target: target.clone(),
-            kind: ReferenceKind::FunctionCall,
-            confidence: Confidence::Oracle,
-            rel_span: RelSpan::new(0, 3),
-        });
+        view.add_occurrence(
+            intro(2),
+            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Import, RelSpan::new(0, 3)),
+        );
+        view.add_occurrence(
+            intro(3),
+            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Oracle, RelSpan::new(0, 3)),
+        );
         // Duplicate from owner 2 (should dedup).
-        ir.insert_occurrence(Occurrence {
-            owner: intro(2),
-            target: target.clone(),
-            kind: ReferenceKind::MethodCall,
-            confidence: Confidence::Index,
-            rel_span: RelSpan::new(10, 15),
-        });
+        view.add_occurrence(
+            intro(2),
+            Occurrence::new(target.clone(), ReferenceKind::MethodCall, Confidence::Index, RelSpan::new(10, 15)),
+        );
 
-        let idx = ReversePositionIndex::build(&ir, default_key());
+        let idx = ReversePositionIndex::build(&view, default_key());
         let owners = idx.usages_of(&target);
         // Both intro(2) and intro(3), deduped and sorted.
         assert_eq!(owners, &[intro(2), intro(3)]);

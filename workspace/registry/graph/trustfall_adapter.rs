@@ -17,9 +17,9 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use ir::change::{IntroId, PackageLineageId, StableRef};
-use ir::view::Occurrence;
-use ir::wire::OwnedEntryPayload;
-use ir::IrView;
+use ir::entry::Entry;
+use ir::vocab::Occurrence;
+use ir::view::IrView;
 
 use crate::graph::reverse_index::{typerefs_of_entry, ReversePositionIndex};
 
@@ -33,14 +33,17 @@ use crate::graph::reverse_index::{typerefs_of_entry, ReversePositionIndex};
 /// `Generation`) can be added without breaking callers.
 #[derive(Clone, Debug)]
 pub enum GraphVertex<'a> {
-    /// A declaration entry: an intro + its sealed payload.
+    /// A declaration entry: an intro + its entry (symbol metadata + kind body).
     Entry {
         /// The stable, cross-package identity of this declaration.
         intro: IntroId,
-        /// The entry's declaration payload (symbol metadata + kind body).
-        payload: &'a OwnedEntryPayload,
+        /// The entry's declaration data.
+        entry: &'a Entry,
     },
     /// A resolved reference occurrence (the `occ` frames of §5.4).
+    ///
+    /// The occurrence owner is available via the map key in `IrView::all_occurrences`
+    /// (`(owner, &Occurrence)`); the vertex carries only the occurrence value.
     Occ(&'a Occurrence),
     /// The package lineage that owns the IR view.
     Package(&'a PackageLineageId),
@@ -118,7 +121,7 @@ impl<'a> IrTrustfallAdapter<'a> {
     /// Delegates to [`IrView::children_of`]; the iterator order matches the
     /// underlying `children_of` contract (ascending intro order).
     pub fn members(&self, parent: IntroId) -> impl Iterator<Item = IntroId> + '_ {
-        self.ir.children_of(parent)
+        self.ir.children_of(parent).iter().copied()
     }
 
     /// The resolved target of an occurrence (the `OccTarget` graph edge).
@@ -139,7 +142,7 @@ impl<'a> IrTrustfallAdapter<'a> {
     /// `typerefs_of_entry`).
     pub fn type_refs(&self, intro: IntroId) -> Vec<StableRef> {
         match self.ir.entry(intro) {
-            Some(payload) => typerefs_of_entry(payload, self.ir.package()),
+            Some(entry) => typerefs_of_entry(entry, self.ir.package()),
             None => Vec::new(),
         }
     }
@@ -162,6 +165,9 @@ impl<'a> IrTrustfallAdapter<'a> {
     /// **Slow path** (O(n)): scans all occurrences in the view, filtering to
     /// those that are graph-worthy *and* match `target`. Use the fast path in
     /// production by building a [`ReversePositionIndex`] first.
+    ///
+    /// `IrView::all_occurrences()` yields `(owner: IntroId, &Occurrence)` pairs;
+    /// the owner is the first tuple element.
     pub fn usages(&self, target: &StableRef) -> Vec<IntroId> {
         if let Some(rev) = self.reverse {
             // Fast path: O(log n) posting look-up.
@@ -172,8 +178,8 @@ impl<'a> IrTrustfallAdapter<'a> {
             // ReversePositionIndex once and use `with_reverse`.
             self.ir
                 .all_occurrences()
-                .filter(|occ| occ.confidence.is_graph_worthy() && &occ.target == target)
-                .map(|occ| occ.owner)
+                .filter(|(_, occ)| occ.confidence.is_graph_worthy() && &occ.target == target)
+                .map(|(owner, _)| owner)
                 .collect()
         }
     }
@@ -211,14 +217,15 @@ pub fn execute_graph_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use ir::apply::PristineIntroTable;
     use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
-    use ir::view::Occurrence;
-    use ir::vocab::{Confidence, ReferenceKind, RelSpan};
-    use ir::kind::KindDiscriminant;
-    use ir::wire::{
-        EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, SymbolWire,
-    };
-    use ir::IrView;
+    use ir::entry::{Entry, Node, Symbol, Visibility};
+    use ir::kind::Kind;
+    use ir::kinds::{Function, Module};
+    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
+    use ir::view::IrView;
 
     use crate::graph::reverse_index::{ReverseIndexKey, ReversePositionIndex, SCHEMA_VERSION};
 
@@ -238,44 +245,32 @@ mod tests {
         StableRef::new(pkg_id(), intro(n))
     }
 
-    fn sym(name: &str) -> SymbolWire {
-        SymbolWire {
-            name: name.into(),
-            visibility: ir::symbol::Visibility::Public,
-            documentation: None,
-            source_path: "src/lib.rs".into(),
-            span_start: 0,
-            span_end: 10,
-            aliases: Vec::new(),
+    /// Build a minimal [`Symbol`] with only a name; all other fields are empty/default.
+    fn sym(name: &str) -> Symbol {
+        Symbol {
+            name: name.to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
             deprecation: None,
-            doc_links: Vec::new(),
-            attrs: Vec::new(),
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
             cfg: None,
         }
     }
 
-    fn module_payload(name: &str) -> OwnedEntryPayload {
-        OwnedEntryPayload::sealed(
-            sym(name),
-            KindDiscriminant::Module,
-            KindWire::Module(ModuleWire {}),
-            EntryPayloadFlags::default(),
-        )
+    fn entry(name: &str, kind: Kind) -> Entry {
+        Entry::new(sym(name), Node::build(None::<ir::index::RawRef>, []), kind)
     }
 
-    fn fn_payload(name: &str) -> OwnedEntryPayload {
-        OwnedEntryPayload::sealed(
-            sym(name),
-            KindDiscriminant::Function,
-            KindWire::Function(FunctionWire {
-                input_params: Box::new([]),
-                output_params: Box::new([]),
-                sig: FnSigFlags::default(),
-                generics: Box::new([]),
-                wheres: Box::new([]),
-            }),
-            EntryPayloadFlags::default(),
-        )
+    fn module(name: &str) -> Entry {
+        entry(name, Kind::Module(Module))
+    }
+
+    fn function(name: &str) -> Entry {
+        entry(name, Kind::Function(Function::builder().build()))
     }
 
     fn default_key() -> ReverseIndexKey {
@@ -290,10 +285,11 @@ mod tests {
     /// assertion, because IrView returns children in ascending intro order).
     #[test]
     fn members_returns_both_children() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("root"), None);
-        ir.insert_entry(intro(2), fn_payload("child_a"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("child_b"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("child_a"), Some(intro(1)));
+        table.insert_live(intro(3), function("child_b"), Some(intro(1)));
+        let ir = IrView::with_package(pkg_id(), table);
 
         let adapter = IrTrustfallAdapter::new(&ir);
 
@@ -305,19 +301,17 @@ mod tests {
     /// `usages(&targetB)` returns `[A]` on the **slow path** (no reverse index).
     #[test]
     fn usages_slow_path_without_reverse() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("root"), None);
-        ir.insert_entry(intro(2), fn_payload("caller_a"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("callee_b"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("caller_a"), Some(intro(1)));
+        table.insert_live(intro(3), function("callee_b"), Some(intro(1)));
+        let mut ir = IrView::with_package(pkg_id(), table);
 
         let target = sref_local(3);
-        ir.insert_occurrence(Occurrence {
-            owner: intro(2),
-            target: target.clone(),
-            kind: ReferenceKind::FunctionCall,
-            confidence: Confidence::Oracle,
-            rel_span: RelSpan::new(0, 5),
-        });
+        ir.add_occurrence(
+            intro(2),
+            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Oracle, RelSpan::new(0, 5)),
+        );
 
         let adapter = IrTrustfallAdapter::new(&ir);
         let mut owners = adapter.usages(&target);
@@ -328,19 +322,17 @@ mod tests {
     /// `usages(&targetB)` returns `[A]` on the **fast path** (with reverse index).
     #[test]
     fn usages_fast_path_with_reverse() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("root"), None);
-        ir.insert_entry(intro(2), fn_payload("caller_a"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("callee_b"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("caller_a"), Some(intro(1)));
+        table.insert_live(intro(3), function("callee_b"), Some(intro(1)));
+        let mut ir = IrView::with_package(pkg_id(), table);
 
         let target = sref_local(3);
-        ir.insert_occurrence(Occurrence {
-            owner: intro(2),
-            target: target.clone(),
-            kind: ReferenceKind::FunctionCall,
-            confidence: Confidence::Oracle,
-            rel_span: RelSpan::new(0, 5),
-        });
+        ir.add_occurrence(
+            intro(2),
+            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Oracle, RelSpan::new(0, 5)),
+        );
 
         let reverse = ReversePositionIndex::build(&ir, default_key());
         let adapter = IrTrustfallAdapter::with_reverse(&ir, &reverse);
@@ -353,21 +345,19 @@ mod tests {
     /// Both paths (with and without reverse) agree on the same result.
     #[test]
     fn usages_slow_and_fast_paths_agree() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("root"), None);
-        ir.insert_entry(intro(2), fn_payload("a"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("b"), Some(intro(1)));
-        ir.insert_entry(intro(4), fn_payload("target"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("a"), Some(intro(1)));
+        table.insert_live(intro(3), function("b"), Some(intro(1)));
+        table.insert_live(intro(4), function("target"), Some(intro(1)));
+        let mut ir = IrView::with_package(pkg_id(), table);
 
         let target = sref_local(4);
         for owner in [intro(2), intro(3)] {
-            ir.insert_occurrence(Occurrence {
+            ir.add_occurrence(
                 owner,
-                target: target.clone(),
-                kind: ReferenceKind::FunctionCall,
-                confidence: Confidence::Import,
-                rel_span: RelSpan::new(0, 3),
-            });
+                Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Import, RelSpan::new(0, 3)),
+            );
         }
 
         let reverse = ReversePositionIndex::build(&ir, default_key());
@@ -387,10 +377,11 @@ mod tests {
     /// case, since neither child is an Impl or Trait).
     #[test]
     fn two_hop_members_then_type_refs() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("root"), None);
-        ir.insert_entry(intro(2), fn_payload("fn_a"), Some(intro(1)));
-        ir.insert_entry(intro(3), fn_payload("fn_b"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("fn_a"), Some(intro(1)));
+        table.insert_live(intro(3), function("fn_b"), Some(intro(1)));
+        let ir = IrView::with_package(pkg_id(), table);
 
         let adapter = IrTrustfallAdapter::new(&ir);
         let children: Vec<IntroId> = adapter.members(intro(1)).collect();
@@ -407,7 +398,7 @@ mod tests {
     /// `execute_graph_query` is a stub returning `Unsupported` this wave.
     #[test]
     fn execute_graph_query_is_stub() {
-        let ir = IrView::new(pkg_id());
+        let ir = IrView::with_package(pkg_id(), PristineIntroTable::new());
         let adapter = IrTrustfallAdapter::new(&ir);
         let result = execute_graph_query(&adapter, "{ Package { name } }", BTreeMap::new());
         assert!(
@@ -419,7 +410,7 @@ mod tests {
     /// `GraphVertex::typename` returns the correct type name for each shape.
     #[test]
     fn graph_vertex_typename() {
-        let ir = IrView::new(pkg_id());
+        let ir = IrView::with_package(pkg_id(), PristineIntroTable::new());
         let pkg_vertex = GraphVertex::Package(ir.package());
         assert_eq!(pkg_vertex.typename(), "Package");
     }
@@ -427,9 +418,10 @@ mod tests {
     /// `lineage` returns `None` for a root entry and `Some` for a child.
     #[test]
     fn lineage_edge() {
-        let mut ir = IrView::new(pkg_id());
-        ir.insert_entry(intro(1), module_payload("root"), None);
-        ir.insert_entry(intro(2), fn_payload("child"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("child"), Some(intro(1)));
+        let ir = IrView::with_package(pkg_id(), table);
 
         let adapter = IrTrustfallAdapter::new(&ir);
         assert_eq!(adapter.lineage(intro(1)), None);

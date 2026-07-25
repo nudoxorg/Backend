@@ -31,7 +31,7 @@ onnx   = ["embed", "dep:fastembed", "dep:tokenizers"]
 # NOT dep `index`/doltlite (§8: index is a separate storage layer the client
 # composes).
 heart    = { path = "../heart" }
-ir       = { path = "../ir" }
+ir       = { package = "nudox-ir", path = "../../crates/nudox-ir" }
 # Graph query layer — pinned to the exact patch so the schema API is stable.
 trustfall = "=0.8.1"
 

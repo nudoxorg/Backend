@@ -16,7 +16,11 @@
 use std::collections::HashMap;
 
 use crate::{
-    apply::PristineIntroTable, body::BodyEmbed, change::IntroId, entry::Entry, vocab::Occurrence,
+    apply::PristineIntroTable,
+    body::BodyEmbed,
+    change::{IntroId, PackageLineageId},
+    entry::Entry,
+    vocab::Occurrence,
 };
 
 // ---------------------------------------------------------------------------
@@ -26,14 +30,32 @@ use crate::{
 /// The read model overlaying the materialized declaration table with bodies
 /// and occurrences.
 ///
-/// Build one from a [`PristineIntroTable`], then call [`set_body`] and
-/// [`add_occurrence`] to populate the side maps. Query via the borrow-friendly
-/// accessors; every `&[]` return is cheaply obtained from a `HashMap` miss.
+/// # Construction
+///
+/// The primary constructor is [`IrView::with_package`], which binds a
+/// [`PackageLineageId`] to the view so that query layers (the graph adapter,
+/// the reverse-position index) can convert same-package [`IntroId`]s into
+/// [`crate::change::StableRef`]s without an out-of-band argument.
+///
+/// `IrView::new` is kept for callers that materialise a table first and attach
+/// the package identity in a second step; it defaults the identity to an empty
+/// placeholder and is appropriate only when the table is empty or the caller
+/// does not need `package()` (e.g. pure containment tests).
+///
+/// After construction, call [`set_body`] and [`add_occurrence`] to populate
+/// the side maps. Query via the borrow-friendly accessors; every `&[]` return
+/// is cheaply obtained from a `HashMap` miss.
 ///
 /// [`set_body`]: IrView::set_body
 /// [`add_occurrence`]: IrView::add_occurrence
 #[derive(Debug)]
 pub struct IrView {
+    /// The stable package lineage this view represents.
+    ///
+    /// Set at construction time via [`IrView::with_package`].  The graph
+    /// adapter and reverse-position index use this to convert same-package
+    /// [`IntroId`]s into [`crate::change::StableRef`]s.
+    package: PackageLineageId,
     table: PristineIntroTable,
     bodies: HashMap<IntroId, BodyEmbed>,
     /// Occurrences grouped by their owning entry (forward direction).
@@ -41,18 +63,55 @@ pub struct IrView {
 }
 
 impl IrView {
-    /// Construct an `IrView` wrapping an already-materialized declaration
-    /// table. The body and occurrence maps are empty; populate them with
-    /// [`set_body`] and [`add_occurrence`].
+    /// Construct an `IrView` for `package`, wrapping an already-materialized
+    /// declaration table. The body and occurrence maps are empty; populate
+    /// them with [`set_body`] and [`add_occurrence`].
+    ///
+    /// This is the primary constructor.  Use it whenever the package lineage
+    /// is known at build time — the graph adapter and reverse-position index
+    /// depend on `package()` to emit [`crate::change::StableRef`]s.
     ///
     /// [`set_body`]: IrView::set_body
     /// [`add_occurrence`]: IrView::add_occurrence
-    pub fn new(table: PristineIntroTable) -> Self {
+    pub fn with_package(package: PackageLineageId, table: PristineIntroTable) -> Self {
         Self {
+            package,
             table,
             bodies: HashMap::new(),
             occurrences: HashMap::new(),
         }
+    }
+
+    /// Construct an `IrView` wrapping an already-materialized declaration
+    /// table, with no package identity set.
+    ///
+    /// The package lineage is initialised to an empty placeholder
+    /// (`""` ecosystem and `""` name).  Callers that need `package()` to
+    /// return a meaningful value should use [`IrView::with_package`] instead.
+    /// This variant exists for pure containment tests and for callers that
+    /// populate the view before they know its lineage.
+    ///
+    /// [`set_body`]: IrView::set_body
+    /// [`add_occurrence`]: IrView::add_occurrence
+    pub fn new(table: PristineIntroTable) -> Self {
+        use crate::change::{EcosystemId, PackageName};
+        Self::with_package(
+            PackageLineageId::new(EcosystemId::new(""), PackageName::new("")),
+            table,
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Package identity
+    // -----------------------------------------------------------------------
+
+    /// The package lineage this view represents.
+    ///
+    /// Used by the graph adapter and reverse-position index to convert
+    /// same-package [`IntroId`]s into [`crate::change::StableRef`]s.
+    #[inline]
+    pub fn package(&self) -> &PackageLineageId {
+        &self.package
     }
 
     // -----------------------------------------------------------------------
@@ -187,7 +246,12 @@ mod tests {
             Some(parent_id),
         );
 
-        let mut view = IrView::new(table);
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("view-test-pkg"));
+        let mut view = IrView::with_package(lineage.clone(), table);
+
+        // --- package accessor ---
+        assert_eq!(view.package(), &lineage);
 
         // --- entry / is_live ---
         assert!(view.entry(parent_id).is_some(), "parent must be live");

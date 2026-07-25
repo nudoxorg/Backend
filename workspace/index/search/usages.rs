@@ -109,7 +109,7 @@ impl UsageQueryBackend for Unsupported {
 use std::sync::Arc;
 
 use ir::change::{IntroId, PackageLineageId, StableRef};
-use ir::IrView;
+use ir::view::IrView;
 
 use registry::graph::ReversePositionIndex;
 
@@ -199,18 +199,23 @@ impl UsageQueryBackend for ReverseIndexUsageBackend {
             scope.reverse.usages_of(&target).iter().copied().collect();
 
         // Project each matching occurrence into a thin wire `Usage`. We walk the
-        // view's occurrences (the source of `kind` + `rel_span`, which the
+        // view's occurrences (the source of `kind` + `span`, which the
         // owner-only posting list does not carry) and keep those whose target is
         // the symbol and whose owner the reverse index confirms.
+        //
+        // `IrView::all_occurrences()` yields `(owner: IntroId, &Occurrence)`;
+        // the owner is the first element of the pair — `Occurrence` itself has
+        // no `owner` field in nudox-ir.
         let package = scope.view.package();
         let mut uses: Vec<Usage> = scope
             .view
             .all_occurrences()
-            .filter(|occ| &occ.target == &target && owners.contains(&occ.owner))
-            .map(|occ| Usage {
-                within: stable_ref_to_wire(&StableRef::new(package.clone(), occ.owner)),
+            .filter(|(owner, occ)| &occ.target == &target && owners.contains(owner))
+            .map(|(owner, occ)| Usage {
+                within: stable_ref_to_wire(&StableRef::new(package.clone(), owner)),
                 kind: reference_kind_token(occ.kind).to_owned(),
-                relative_span: (occ.rel_span.start, occ.rel_span.end),
+                // nudox-ir `Occurrence` uses `span` (not `rel_span`).
+                relative_span: (occ.span.start, occ.span.end),
             })
             .collect();
 
@@ -316,14 +321,15 @@ fn paginate(uses: Vec<Usage>, page: &PageSpecification) -> Page<Usage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use ir::apply::PristineIntroTable;
     use ir::change::{EcosystemId, PackageLineageId, PackageName, StableRef};
-    use ir::view::Occurrence;
-    use ir::vocab::{Confidence, ReferenceKind, RelSpan};
-    use ir::wire::{
-        EntryPayloadFlags, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
-    };
-    use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
+    use ir::entry::{Entry, Node, Symbol, Visibility};
+    use ir::kind::Kind;
+    use ir::kinds::Module;
+    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
+    use ir::view::IrView;
 
     fn pkg() -> PackageLineageId {
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("demo"))
@@ -333,50 +339,44 @@ mod tests {
         ir::change::IntroId::from_raw([n; 32])
     }
 
-    fn module_payload(name: &str) -> OwnedEntryPayload {
-        OwnedEntryPayload::sealed(
-            SymbolWire {
-                name: name.into(),
-                visibility: Visibility::Public,
-                documentation: None,
-                source_path: "src/lib.rs".into(),
-                span_start: 0,
-                span_end: 10,
-                aliases: Vec::new(),
-                deprecation: None,
-                doc_links: Vec::new(),
-                attrs: Vec::new(),
-                cfg: None,
-            },
-            KindDiscriminant::Module,
-            KindWire::Module(ModuleWire {}),
-            EntryPayloadFlags::default(),
-        )
+    /// Build a minimal [`Symbol`] with only a name; all other fields are empty/default.
+    fn sym(name: &str) -> Symbol {
+        Symbol {
+            name: name.to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        }
+    }
+
+    fn module(name: &str) -> Entry {
+        Entry::new(sym(name), Node::build(None::<ir::index::RawRef>, []), Kind::Module(Module))
     }
 
     /// Build a view where owners `2` and `3` each hold one graph-worthy call to
     /// target `1`, plus a wire reference to that target.
     fn loaded_backend() -> (ReverseIndexUsageBackend, StableReference) {
-        let mut ir = IrView::new(pkg());
-        ir.insert_entry(intro(1), module_payload("target"), None);
-        ir.insert_entry(intro(2), module_payload("caller_a"), Some(intro(1)));
-        ir.insert_entry(intro(3), module_payload("caller_b"), Some(intro(1)));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("target"), None);
+        table.insert_live(intro(2), module("caller_a"), Some(intro(1)));
+        table.insert_live(intro(3), module("caller_b"), Some(intro(1)));
+        let mut ir = IrView::with_package(pkg(), table);
 
         let target = StableRef::new(pkg(), intro(1));
-        ir.insert_occurrence(Occurrence {
-            owner: intro(2),
-            target: target.clone(),
-            kind: ReferenceKind::FunctionCall,
-            confidence: Confidence::Index,
-            rel_span: RelSpan::new(4, 9),
-        });
-        ir.insert_occurrence(Occurrence {
-            owner: intro(3),
-            target: target.clone(),
-            kind: ReferenceKind::MethodCall,
-            confidence: Confidence::Index,
-            rel_span: RelSpan::new(1, 5),
-        });
+        ir.add_occurrence(
+            intro(2),
+            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Index, RelSpan::new(4, 9)),
+        );
+        ir.add_occurrence(
+            intro(3),
+            Occurrence::new(target.clone(), ReferenceKind::MethodCall, Confidence::Index, RelSpan::new(1, 5)),
+        );
 
         let key = registry::graph::ReverseIndexKey {
             channel_tip: [0u8; 32],

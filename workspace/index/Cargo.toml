@@ -90,7 +90,7 @@ tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "sync", "time
 # vector-shard types and any vector payload the folded code builds.
 registry = { path = "../registry", features = ["local", "remote"] }
 # The IR plane the graph reverse-index (usages projection) is built over.
-ir = { path = "../ir" }
+ir = { package = "nudox-ir", path = "../../crates/nudox-ir" }
 
 # Async / concurrency for the folded coordination/poll/save workers.
 futures = { version = "0.3", features = ["std", "async-await", "alloc"] }

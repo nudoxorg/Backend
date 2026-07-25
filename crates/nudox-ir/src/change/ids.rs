@@ -8,7 +8,7 @@ use crate::change::{
 };
 
 /// An ecosystem/registry namespace (`"cargo"`, `"npm"`, `"pypi"`, …).
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EcosystemId(String);
 
 impl EcosystemId {
@@ -30,7 +30,7 @@ impl core::fmt::Debug for EcosystemId {
 }
 
 /// A package name within its ecosystem.
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PackageName(String);
 
 impl PackageName {
@@ -54,7 +54,7 @@ impl core::fmt::Debug for PackageName {
 /// The production identity of a package *lineage* (ecosystem + name), stable
 /// across all its generations. This — not the arena-local `PackageIdx` and not
 /// brief-06's path-based POC id — is the key Registry/Change APIs use.
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PackageLineageId {
     pub ecosystem: EcosystemId,
     pub name: PackageName,
@@ -86,7 +86,7 @@ impl core::fmt::Debug for PackageLineageId {
 ///
 /// Canonical bytes (used as a hash-preimage fragment):
 /// `encode_str(ecosystem) || encode_str(name) || intro_bytes(32)`.
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct StableRef {
     pub package: PackageLineageId,
     pub intro: IntroId,
