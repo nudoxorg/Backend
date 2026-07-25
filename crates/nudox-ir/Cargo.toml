@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+blake3 = "1"
 bon = { workspace = true }
 elsa = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }

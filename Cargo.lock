@@ -6047,6 +6047,7 @@ dependencies = [
 name = "nudox-ir"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "bon",
  "elsa",
  "indexmap 2.14.0",

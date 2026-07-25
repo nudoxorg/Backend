@@ -124,6 +124,7 @@
 
 mod visitor;
 
+pub mod change;
 pub mod entry;
 pub mod id;
 pub mod index;
@@ -134,6 +135,7 @@ pub mod registry;
 
 pub mod prelude {
     pub use crate::{
+        change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         entry::{Entry, Symbol},
         id::{PackageId, PackageIdView, UniqueId},
         index::{EntryIndex, UntypedEntryIndex},
@@ -146,6 +148,7 @@ pub mod prelude {
 
 pub mod build {
     pub use crate::{
+        change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         entry::{Entry, Symbol, Visibility},
         id::{PackageId, UniqueId},
         index::{EntryIndex, UntypedEntryIndex},
