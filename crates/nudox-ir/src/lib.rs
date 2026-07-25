@@ -133,10 +133,12 @@ pub mod index;
 pub mod intro;
 pub mod kind;
 pub mod kinds;
+pub mod manifest;
 pub mod package;
 pub mod reflect;
 pub mod registry;
 pub mod skeleton;
+pub mod view;
 pub mod vocab;
 
 pub mod prelude {
@@ -149,9 +151,11 @@ pub mod prelude {
         index::{EntryIndex, UntypedEntryIndex},
         kind::Kind,
         kinds::{self, *},
+        manifest::{GenerationStamp, generation_stamp},
         package::{IrPackage, PackageInfo},
         reflect::{ExportPolicy, exported, moniker_path, monikers},
         registry::{Registry, RegistryResolver},
+        view::IrView,
         vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
     };
 }
@@ -166,9 +170,11 @@ pub mod build {
         index::{EntryIndex, UntypedEntryIndex},
         intro::{Disambiguator, bootstrap_intro_id},
         kinds::{self, function::*, record::*, ty::*, *},
+        manifest::{GenerationStamp, generation_stamp},
         package::{EntryBuilder, IrPackage},
         reflect::{ExportPolicy, exported, moniker_path, monikers},
         skeleton::{function_signature_skeleton, trait_impl_skeleton},
+        view::IrView,
         vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
     };
 }
