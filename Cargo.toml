@@ -51,11 +51,8 @@ members = [
     # here and every `ContentIo` implementor (ir-vcs::sync, index::pack, …)
     # wires its provide/fetch over this crate. No per-plane bespoke bao/iroh.
     "workspace/transport",
-    # ── Vector plane (09-vector §20 / 09b / 09c) ─────────────────────────────
-    # The former standalone `vector` crate is now folded into `registry::vector`
-    # (§8 re-layering: registry = graph + vector). Its core/local/remote/embed
-    # planes live under `workspace/registry/vector/` gated by the same
-    # `local`/`remote`/`onnx` features on the registry crate.
+    # ── nudox-ir crate (PR #2: ir-refactor) ──────────────────────────────────
+    "crates/nudox-ir",
 ]
 
 # Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
@@ -77,6 +74,21 @@ license = "MIT"
 [workspace.lints.rust]
 unused_imports = "warn"
 dead_code = "warn"
+
+[workspace.dependencies]
+bon = "3.9"
+elsa = "1.11"
+indexmap = "2"
+itertools = "0.15"
+ouroboros = "0.18"
+papaya = "0.2"
+rustc-hash = "2.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+triomphe = "0.1"
+vfs = "0.13"
 
 [workspace.lints.clippy]
 result_large_err = "allow"
