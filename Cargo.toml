@@ -53,8 +53,9 @@ members = [
     "workspace/transport",
     # ── nudox-ir crate (PR #2: ir-refactor) ──────────────────────────────────
     "crates/nudox-ir",
-    # ── nudox-producer: shared producer base contract ─────────────────────────
+    # ── Producer plane: shared contract + one crate per language ─────────────
     "crates/nudox-producer",
+    "crates/nudox-producer-go",
 ]
 
 # Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
