@@ -128,10 +128,12 @@ pub mod change;
 pub mod entry;
 pub mod id;
 pub mod index;
+pub mod intro;
 pub mod kind;
 pub mod kinds;
 pub mod package;
 pub mod registry;
+pub mod skeleton;
 
 pub mod prelude {
     pub use crate::{
@@ -152,8 +154,10 @@ pub mod build {
         entry::{Entry, Symbol, Visibility},
         id::{PackageId, UniqueId},
         index::{EntryIndex, UntypedEntryIndex},
+        intro::{Disambiguator, bootstrap_intro_id},
         kinds::{self, function::*, record::*, ty::*, *},
         package::{EntryBuilder, IrPackage},
+        skeleton::{function_signature_skeleton, trait_impl_skeleton},
     };
 }
 
