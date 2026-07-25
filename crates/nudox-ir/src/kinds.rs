@@ -1,4 +1,6 @@
+pub mod alias;
 pub mod const_;
+pub mod facts;
 pub mod function;
 pub mod generics;
 pub mod impl_;
@@ -18,8 +20,10 @@ use crate::visitor::Visitor;
 pub struct Module;
 
 pub use self::{
+    alias::Alias,
     const_::Const,
-    function::{FnModifier, Function},
+    facts::{AutoFact, AutoState, AutoTrait, Sealed, TriState},
+    function::{FnModifier, Function, Receiver},
     generics::{GenericParam, WherePred},
     impl_::{Impl, ImplFlags},
     param::{Param, ParamAttribute},

@@ -160,6 +160,8 @@ mod tests {
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
         }
     }
 

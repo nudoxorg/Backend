@@ -133,6 +133,7 @@ pub mod index;
 pub mod intro;
 pub mod kind;
 pub mod kinds;
+pub mod lower;
 pub mod manifest;
 pub mod package;
 pub mod reflect;
@@ -146,11 +147,12 @@ pub mod prelude {
         apply::PristineIntroTable,
         body::{BodyEmbed, BodyFacts, Language, merge_body},
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
-        entry::{Entry, Symbol},
+        entry::{AttrTok, CfgExpr, Deprecation, DocLink, Entry, Symbol},
         id::{PackageId, PackageIdView, UniqueId},
         index::{EntryIndex, RawRef, Ref, UntypedEntryIndex},
         kind::Kind,
         kinds::{self, *},
+        lower::{Lowering, LoweringError},
         manifest::{GenerationStamp, generation_stamp},
         package::{IrPackage, PackageInfo},
         reflect::{ExportPolicy, exported, moniker_path, monikers},
@@ -165,11 +167,12 @@ pub mod build {
         apply::PristineIntroTable,
         body::{BodyEmbed, BodyFacts, Language, merge_body},
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
-        entry::{Entry, Symbol, Visibility},
+        entry::{AttrTok, CfgExpr, Deprecation, DocLink, Entry, Symbol, Visibility},
         id::{PackageId, UniqueId},
         index::{EntryIndex, RawRef, Ref, UntypedEntryIndex},
         intro::{Disambiguator, bootstrap_intro_id},
         kinds::{self, function::*, record::*, ty::*, *},
+        lower::{Lowering, LoweringError},
         manifest::{GenerationStamp, generation_stamp},
         package::{EntryBuilder, IrPackage},
         reflect::{ExportPolicy, exported, moniker_path, monikers},

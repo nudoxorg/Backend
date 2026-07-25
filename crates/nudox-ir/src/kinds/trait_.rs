@@ -1,6 +1,6 @@
 use crate::{
     List,
-    kinds::{GenericParam, Type, WherePred},
+    kinds::{GenericParam, Sealed, TriState, Type, WherePred},
     visitor::Visitor,
 };
 
@@ -9,10 +9,11 @@ use crate::{
 // `List<Type>`). Remaining deferred items: associated types, associated consts,
 // const-expressions, and variance.
 
-/// Boolean modifiers for a [`Trait`] definition.
+/// Modifier flags for a [`Trait`] definition.
 ///
-/// All fields default to `false`, so existing builders that do not set `flags`
-/// continue to produce a plain safe non-auto non-sealed trait.
+/// The `Default` impl matches the old model's default: `dyn_compat: Unknown`,
+/// `sealed: None`, `is_unsafe: false`, `is_auto: false`. Builders that do not
+/// set `flags` continue to produce a plain, safe, non-auto, unsealed trait.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize, Default,
 )]
@@ -23,8 +24,18 @@ pub struct TraitFlags {
     /// `true` for an `auto trait` (e.g. `Send`, `Sync`).
     pub is_auto: bool,
 
-    /// `true` when the trait is sealed (not publicly implementable).
-    pub sealed: bool,
+    /// Object-safety / dyn-compatibility of this trait.
+    ///
+    /// `Unknown` when the oracle has not determined it; `Yes` means the trait
+    /// is dyn-compatible (`dyn Trait` is valid), `No` means it is not.
+    pub dyn_compat: TriState,
+
+    /// How thoroughly this trait is sealed against external implementation.
+    ///
+    /// `None` means no sealing evidence was found (trait may still be open);
+    /// `PubApi` means it is sealed via a public-supertrait-on-private-bound
+    /// pattern; `Full` means only the defining crate can implement it.
+    pub sealed: Sealed,
 }
 
 /// A trait, interface, or protocol definition.
@@ -64,5 +75,54 @@ impl Trait {
             generics,
             wheres,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `TraitFlags::default()` matches the old model: `dyn_compat = Unknown`,
+    /// `sealed = None` (gap 6).
+    #[test]
+    fn trait_flags_default() {
+        let flags = TraitFlags::default();
+        assert!(!flags.is_unsafe);
+        assert!(!flags.is_auto);
+        assert_eq!(flags.dyn_compat, TriState::Unknown);
+        assert_eq!(flags.sealed, Sealed::None);
+    }
+
+    /// Builder + serde round-trip for fully-populated `TraitFlags` (gap 6).
+    #[test]
+    fn trait_flags_roundtrip() {
+        let flags = TraitFlags {
+            is_unsafe: true,
+            is_auto: false,
+            dyn_compat: TriState::Yes,
+            sealed: Sealed::PubApi,
+        };
+        let t = Trait::builder().flags(flags).build();
+        assert_eq!(t.flags.dyn_compat, TriState::Yes);
+        assert_eq!(t.flags.sealed, Sealed::PubApi);
+
+        let json = serde_json::to_string(&t).expect("serialize failed");
+        let rt: Trait = serde_json::from_str(&json).expect("deserialize failed");
+        assert_eq!(t, rt);
+    }
+
+    /// `Sealed::Full` round-trips cleanly.
+    #[test]
+    fn sealed_full_roundtrip() {
+        let flags = TraitFlags {
+            sealed: Sealed::Full,
+            ..TraitFlags::default()
+        };
+        let json = serde_json::to_string(&flags).unwrap();
+        assert_eq!(flags, serde_json::from_str::<TraitFlags>(&json).unwrap());
     }
 }

@@ -58,6 +58,17 @@ pub struct IrPackage<Id: Eq + Hash> {
 }
 
 impl<Id: Eq + Hash> IrPackage<Id> {
+    /// Low-level constructor used by [`crate::lower::Lowering::finish`].
+    ///
+    /// Callers are responsible for ensuring the entries and info are
+    /// consistent. `finish` performs all validation before calling this.
+    pub(crate) fn from_parts(
+        info: PackageInfo<Id>,
+        entries: Vec<(UntypedEntryIndex, Entry)>,
+    ) -> Self {
+        IrPackage { info, entries }
+    }
+
     pub fn build(id: PackageId, sym: Symbol, build: impl FnOnce(EntryBuilder<Id>)) -> Self {
         let mut pkg = IrPackage {
             info: PackageInfo::new(id),

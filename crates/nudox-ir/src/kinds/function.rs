@@ -9,6 +9,13 @@ use crate::{
 // List<GenericParam>` and `wheres: List<WherePred>` (bounds represented as
 // `List<Type>`). Remaining deferred items: overloads, explicitly-implemented
 // protocols, the parsed function body, const-expressions, and variance.
+//
+// NOTE: `Receiver::Arbitrary` intentionally does not carry a concrete `Type`
+// payload.  Adding one would break `Copy` on `Receiver` (since `Type` contains
+// `Box` fields), and the existing `Visitor` / `serde` derives rely on it being
+// `Copy`.  The concrete receiver type is a resolution-plane concern deferred to
+// the IR-unification work; leave the FIXME comment gone and this note in its
+// place.
 
 /// A function, method, or lambda with its full signature.
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
@@ -35,6 +42,26 @@ pub struct Function {
 
     /// Where-clause predicates for this function, in declaration order.
     pub wheres: List<WherePred>,
+
+    /// Explicit ABI string, if present.
+    ///
+    /// Examples: `Some("C")` for `extern "C" fn`, `Some("Rust")` for
+    /// `extern "Rust" fn`, `None` for the language default ABI.
+    ///
+    /// Stored as a separate field rather than a `FnModifier::Abi(String)`
+    /// variant because `FnModifier` is `Copy` and adding a `String` payload
+    /// would break that. A plain `Option<String>` field matches the old
+    /// `FnSigFlags.abi` shape and keeps `FnModifier` `Copy` for callers that
+    /// pattern-match over the list without cloning.
+    pub abi: Option<String>,
+
+    /// `true` when this is a trait method that provides a default body.
+    ///
+    /// Corresponds to `FnSigFlags.defaulted` in the old model. Stored as a
+    /// bare field rather than a `FnModifier` variant for the same reason as
+    /// `abi`: `FnModifier` is `Copy` and a boolean flag does not need to live
+    /// in the modifiers list.
+    pub is_defaulted: bool,
 }
 
 #[bon::bon]
@@ -47,6 +74,8 @@ impl Function {
         #[builder(default, with = FromIterator::from_iter)] modifiers: List<FnModifier>,
         #[builder(default, with = FromIterator::from_iter)] generics: List<GenericParam>,
         #[builder(default, with = FromIterator::from_iter)] wheres: List<WherePred>,
+        abi: Option<String>,
+        #[builder(default)] is_defaulted: bool,
     ) -> Self {
         Function {
             receiver,
@@ -55,6 +84,8 @@ impl Function {
             modifiers,
             generics,
             wheres,
+            abi,
+            is_defaulted,
         }
     }
 }
@@ -71,9 +102,12 @@ pub enum Receiver {
     /// Mutable reference (`&mut self`, `mutating` in Swift).
     MutRef,
 
-    /// An arbitrary receiver type (Rust's arbitrary self types).
-    // FIXME: arbitrary receivers can name a concrete type (e.g. `self: Rc<Self>`);
-    // that type is not yet represented.
+    /// An arbitrary receiver type (e.g. `self: Rc<Self>`, `self: Pin<&mut
+    /// Self>`).
+    ///
+    /// The concrete type is not represented here: carrying it would require a
+    /// `Type` payload which breaks `Copy` on this enum. The concrete receiver
+    /// type is a resolution-plane concern; use the body plane for that detail.
     Arbitrary,
 }
 
@@ -94,4 +128,40 @@ pub enum FnModifier {
 
     /// Can suspend and resume between yields (a generator/coroutine).
     Generator,
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builder + serde round-trip for `Function.abi` and
+    /// `Function.is_defaulted` (gaps 4 and 5).
+    #[test]
+    fn function_abi_and_defaulted_roundtrip() {
+        let f = Function::builder()
+            .receiver(Receiver::SharedRef)
+            .modifiers([FnModifier::Unsafe])
+            .abi("C".to_owned())
+            .is_defaulted(true)
+            .build();
+
+        assert_eq!(f.abi.as_deref(), Some("C"));
+        assert!(f.is_defaulted);
+
+        let json = serde_json::to_string(&f).expect("serialize failed");
+        let rt: Function = serde_json::from_str(&json).expect("deserialize failed");
+        assert_eq!(f, rt);
+    }
+
+    /// `abi` and `is_defaulted` default to `None` / `false`.
+    #[test]
+    fn function_abi_defaulted_defaults() {
+        let f = Function::builder().build();
+        assert_eq!(f.abi, None);
+        assert!(!f.is_defaulted);
+    }
 }

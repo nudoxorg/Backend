@@ -1,5 +1,5 @@
-//! Sealing — the two-pass that assigns every arena entry its content-addressed
-//! [`IntroId`] and materializes a [`PristineIntroTable`].
+//! Sealing — the three-phase pass that assigns every arena entry its
+//! content-addressed [`IntroId`] and materializes a [`PristineIntroTable`].
 //!
 //! Build-time entries are addressed by arena-local [`EntryIndex`]; sealing
 //! lowers that to the durable, cross-generation [`IntroId`] identity by hashing
@@ -11,6 +11,36 @@
 //! `seal` consumes the package: sealing moves each [`Entry`] into the table
 //! (nudox-ir's `Entry` is intentionally not `Clone`), which is the natural
 //! once-per-generation lifecycle.
+//!
+//! # Three-phase structure
+//!
+//! The fix for the P-A identity gap (bare same-package nominals colliding)
+//! requires knowing each entry's [`IntroId`] *before* we build skeletons that
+//! reference other entries by local index. This is solved by one additional
+//! pre-pass:
+//!
+//! 1. **Path ids** — mint a `path_id` for every entry using
+//!    `Disambiguator::None`. This depends only on `(kind, ancestor-path,
+//!    leaf-name)` — no refs, no disambiguation payload — so it is
+//!    ref-independent and declaration-order-independent. For a unique entry its
+//!    `path_id` *is* its final `IntroId`; for colliding entries it is a
+//!    temporary key used only as a resolver inside the skeleton encoder.
+//!
+//! 2. **Disambiguate** — count collisions and build skeletons exactly as
+//!    before, except the [`Skeleton`] encoder resolves `Ref::Local(idx)` to the
+//!    entry's `path_id` via the map from phase 1. The resolved local and its
+//!    final intro encode byte-identically (`0x01` + 32 bytes), so skeletons are
+//!    stable across sealing.
+//!
+//! 3. **Mint + lower** — mint the final `IntroId` per entry with its real
+//!    disambiguator, then `visit_mut`-lower every `Local` ref to `Intro` and
+//!    insert into the [`PristineIntroTable`], exactly as before.
+//!
+//! # Termination argument
+//!
+//! Phase 1 reads only `(kind, ancestor-path, leaf-name)` — no skeleton, no
+//! refs. Phase 2 reads only the phase-1 output (the `path_ids` map). There
+//! is no backward edge; the computation terminates by construction.
 
 use std::{collections::HashMap, hash::Hash};
 
@@ -22,7 +52,7 @@ use crate::{
     intro::{Disambiguator, bootstrap_intro_id},
     kind::{Kind, KindDiscriminant},
     kinds::{Param, Type},
-    skeleton::{function_signature_skeleton, trait_impl_skeleton},
+    skeleton::Skeleton,
     visitor::Visitor,
 };
 
@@ -81,6 +111,29 @@ impl<Id: Eq + Hash> IrPackage<Id> {
             parent_idxs.push(e.parent().and_then(|r| r.as_local()));
         }
 
+        // ── Phase A: path ids — one `IntroId` per entry, ref-free ────────────
+        // Mint with `Disambiguator::None` for every entry.  This depends only
+        // on `(kind, ancestor-path, leaf-name)` — no refs, no skeleton — so it
+        // is declaration-order-independent.  For a unique entry this *is* its
+        // final IntroId; for colliding entries it is used purely as a resolver
+        // inside the skeleton encoder in Pass 2.
+        let path_ids: HashMap<UntypedEntryIndex, IntroId> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, (idx, _))| {
+                let seg_refs: Vec<&str> = segs[i].iter().map(String::as_str).collect();
+                let id = bootstrap_intro_id(
+                    lineage,
+                    discs[i],
+                    &seg_refs,
+                    &names[i],
+                    &Disambiguator::None,
+                );
+                (*idx, id)
+            })
+            .collect();
+
         // ── Pass 1: count collisions on the base key ──────────────────────────
         let mut counts: HashMap<BaseKey, u32> = HashMap::new();
         for i in 0..n {
@@ -88,7 +141,11 @@ impl<Id: Eq + Hash> IrPackage<Id> {
             *counts.entry(key).or_insert(0) += 1;
         }
 
-        // ── Pass 2: select disambiguator + mint IntroId per entry ─────────────
+        // ── Pass 2: select disambiguator + mint final IntroId per entry ───────
+        // Skeletons resolve `Ref::Local(idx)` via `path_ids`; a resolved local
+        // encodes byte-identically to `Ref::Intro(path_id)`.
+        let resolver = |idx: UntypedEntryIndex| path_ids.get(&idx).copied();
+
         let mut intros: Vec<IntroId> = Vec::with_capacity(n);
         for i in 0..n {
             let (_, e) = &self.entries[i];
@@ -101,14 +158,18 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                 EntryInner::Owned(Kind::Function(f)) if count >= 2 => {
                     let inputs = resolve_param_tys(&f.input_params, &by_idx);
                     let outputs = resolve_param_tys(&f.output_params, &by_idx);
-                    let skel =
-                        function_signature_skeleton(&inputs, &outputs, &f.generics, &f.wheres);
+                    let skel = Skeleton::new(&resolver).signature(
+                        &inputs,
+                        &outputs,
+                        &f.generics,
+                        &f.wheres,
+                    );
                     Disambiguator::FnOverload(skel.into_boxed_slice())
                 }
                 // Every impl: the (trait, self, generics, wheres, negative, blanket)
                 // skeleton — unconditionally, since impls share the `"impl"` name.
                 EntryInner::Owned(Kind::Impl(im)) => {
-                    let skel = trait_impl_skeleton(
+                    let skel = Skeleton::new(&resolver).trait_impl(
                         im.of.as_ref(),
                         &im.self_ty,
                         &im.generics,
@@ -147,7 +208,10 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         let intro_of: HashMap<UntypedEntryIndex, IntroId> =
             pos_of.iter().map(|(idx, &i)| (*idx, intros[i])).collect();
 
-        drop(by_idx); // end the borrow of `self.entries` before moving it
+        // `by_idx` is the only binding that borrows `self.entries`; end it here
+        // so pass 3 can consume them. (`path_ids`/`resolver` own their data and
+        // simply fall out of scope.)
+        drop(by_idx);
 
         // ── Pass 3: lower every in-body `Local` ref → `Intro`, then move in ───
         // One `visit_mut` per entry rewrites EVERY reference at once — kind-body
@@ -307,5 +371,78 @@ mod tests {
             }
             other => panic!("expected Record, got {other:?}"),
         }
+    }
+
+    /// P-A phase gate: two impls whose `self_ty` is a bare local nominal (`Bar`
+    /// and `Baz` respectively, no generic args) must seal to DISTINCT IntroIds.
+    ///
+    /// Before the path-id pre-pass both impls produced identical skeletons
+    /// (local refs encoded as the same `0x00` placeholder) and therefore
+    /// collided onto one IntroId — a silent overwrite in `PristineIntroTable`.
+    #[test]
+    fn bare_nominal_impls_seal_to_distinct_intros() {
+        let mut id = id_gen();
+        let pkg = IrPackage::build(PackageId::path("demo"), sym("root"), |mut root| {
+            // Declare Bar and Baz as records.
+            let bar_ref = root.create(id(), sym("Bar"), |_| Record::builder().build());
+            let baz_ref = root.create(id(), sym("Baz"), |_| Record::builder().build());
+
+            // Two impls: `impl Bar` and `impl Baz` (bare self-type, no generics).
+            root.create(id(), sym("impl"), |_| {
+                Impl::builder()
+                    .self_ty(Type::Nominal(bar_ref.into_raw()))
+                    .build()
+            });
+            root.create(id(), sym("impl"), |_| {
+                Impl::builder()
+                    .self_ty(Type::Nominal(baz_ref.into_raw()))
+                    .build()
+            });
+        });
+
+        let table = pkg.seal(&lineage());
+        // 1 module + Bar + Baz + 2 impls = 5 unique intros.
+        assert_eq!(
+            table.len(),
+            5,
+            "both impls must get distinct IntroIds (no silent overwrite)"
+        );
+    }
+
+    /// Determinism guard: sealing two identically-built packages yields
+    /// identical sets of IntroIds.
+    #[test]
+    fn seal_is_deterministic() {
+        let build_pkg = || {
+            let mut id = id_gen();
+            IrPackage::build(PackageId::path("demo"), sym("root"), |mut root| {
+                let bar_ref = root.create(id(), sym("Bar"), |_| Record::builder().build());
+                let baz_ref = root.create(id(), sym("Baz"), |_| Record::builder().build());
+                root.create(id(), sym("impl"), |_| {
+                    Impl::builder()
+                        .self_ty(Type::Nominal(bar_ref.into_raw()))
+                        .build()
+                });
+                root.create(id(), sym("impl"), |_| {
+                    Impl::builder()
+                        .self_ty(Type::Nominal(baz_ref.into_raw()))
+                        .build()
+                });
+            })
+        };
+
+        let mut ids_a: Vec<IntroId> = build_pkg()
+            .seal(&lineage())
+            .iter()
+            .map(|(i, _)| i)
+            .collect();
+        let mut ids_b: Vec<IntroId> = build_pkg()
+            .seal(&lineage())
+            .iter()
+            .map(|(i, _)| i)
+            .collect();
+        ids_a.sort();
+        ids_b.sort();
+        assert_eq!(ids_a, ids_b, "sealing is deterministic");
     }
 }

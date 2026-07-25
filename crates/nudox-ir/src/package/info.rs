@@ -32,7 +32,9 @@ impl<Id: Eq + Hash> PackageInfo<Id> {
         (imports, exports)
     }
 
-    pub(super) fn new(id: PackageId) -> Self {
+    // Widened to pub(crate) so that `lower::Lowering` (a top-level module) can
+    // construct a PackageInfo without going through EntryBuilder::build.
+    pub(crate) fn new(id: PackageId) -> Self {
         Self {
             id,
             exports: IndexSet::new(),
@@ -40,17 +42,20 @@ impl<Id: Eq + Hash> PackageInfo<Id> {
         }
     }
 
-    pub(super) fn root_export(&self) -> UntypedEntryIndex {
+    // Widened to pub(crate) so that `lower::Lowering` can obtain the root index.
+    pub(crate) fn root_export(&self) -> UntypedEntryIndex {
         UntypedEntryIndex::export(0)
     }
 
-    pub(super) fn create_export(&mut self, id: Id) -> UntypedEntryIndex {
+    // Widened to pub(crate) so that `lower::Lowering` can intern producer IDs.
+    pub(crate) fn create_export(&mut self, id: Id) -> UntypedEntryIndex {
         let (idx, _) = self.exports.insert_full(id);
 
         UntypedEntryIndex::export(idx + 1)
     }
 
-    pub(super) fn export_idx_to_id(&self, idx: UntypedEntryIndex) -> Option<&Id> {
+    // Widened to pub(crate) — needed for error reporting in `lower::Lowering`.
+    pub(crate) fn export_idx_to_id(&self, idx: UntypedEntryIndex) -> Option<&Id> {
         assert!(idx.is_export());
 
         match idx.export_index() {
@@ -59,7 +64,9 @@ impl<Id: Eq + Hash> PackageInfo<Id> {
         }
     }
 
-    pub(super) fn create_import(&mut self, id: UniqueId<Id>) -> UntypedEntryIndex {
+    // Widened to pub(crate) so that `lower::Lowering::declare_import_ref` can
+    // register cross-package import slots.
+    pub(crate) fn create_import(&mut self, id: UniqueId<Id>) -> UntypedEntryIndex {
         let (idx, _) = self.imports.insert_full(id);
 
         UntypedEntryIndex::import(idx)

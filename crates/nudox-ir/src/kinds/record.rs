@@ -1,7 +1,7 @@
 use crate::{
     List,
     index::Ref,
-    kinds::{GenericParam, Type, WherePred},
+    kinds::{AutoFact, GenericParam, Type, WherePred},
     visitor::Visitor,
 };
 
@@ -46,6 +46,13 @@ pub struct Record {
 
     /// Where-clause predicates for this record, in declaration order.
     pub wheres: List<WherePred>,
+
+    /// Recorded auto-trait implementation facts for this record type.
+    ///
+    /// Populated by oracle producers (rustdoc, ra) when they expose auto-trait
+    /// information; empty when unavailable. Downstream consumers use these for
+    /// thread-safety and unwind-safety reasoning without re-deriving bounds.
+    pub auto: List<AutoFact>,
 }
 
 #[bon::bon]
@@ -57,6 +64,7 @@ impl Record {
         #[builder(default, with = FromIterator::from_iter)] super_types: List<Type>,
         #[builder(default, with = FromIterator::from_iter)] generics: List<GenericParam>,
         #[builder(default, with = FromIterator::from_iter)] wheres: List<WherePred>,
+        #[builder(default, with = FromIterator::from_iter)] auto: List<AutoFact>,
     ) -> Self {
         Record {
             form,
@@ -64,12 +72,47 @@ impl Record {
             super_types,
             generics,
             wheres,
+            auto,
         }
     }
 }
 
-// FIXME: `default_value` (a `ConstExpr`) and source-level decorators are not
-// yet ported; both await the const-expression / attribute subsystems.
+// FIXME: `default_value` (a `ConstExpr`) is not yet ported; it awaits the
+// const-expression subsystem.
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kinds::facts::{AutoFact, AutoState, AutoTrait};
+
+    /// Builder + serde round-trip for `Record.auto` (gap 1).
+    #[test]
+    fn record_auto_roundtrip() {
+        let r = Record::builder()
+            .auto([
+                AutoFact {
+                    trait_: AutoTrait::Send,
+                    state: AutoState::Yes,
+                },
+                AutoFact {
+                    trait_: AutoTrait::Unpin,
+                    state: AutoState::Cond,
+                },
+            ])
+            .build();
+
+        assert_eq!(r.auto.len(), 2);
+        assert_eq!(r.auto[1].state, AutoState::Cond);
+
+        let json = serde_json::to_string(&r).expect("serialize failed");
+        let rt: Record = serde_json::from_str(&json).expect("deserialize failed");
+        assert_eq!(r, rt);
+    }
+}
 
 /// A field or property of a containing type.
 ///

@@ -7,7 +7,7 @@ use crate::{index::RawRef, kind::Kind, visitor::Visitor};
 pub(crate) use self::node::Node;
 
 pub use self::{
-    symbol::{Symbol, Visibility},
+    symbol::{AttrTok, CfgExpr, Deprecation, DocLink, Symbol, Visibility},
     typed::TypedEntry,
 };
 

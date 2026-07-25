@@ -8,14 +8,39 @@
 //! functions, or several `impl` blocks — must still receive **distinct** intro
 //! ids. The skeleton is the structural evidence that tells them apart.
 //!
-//! # The collision fix
+//! # The collision fix — two layers
 //!
-//! The sibling `workspace/ir` skeletons hash **only** the trait-ref + self-type
-//! (`trait_impl_skeleton`) or the param types (`function_signature_skeleton`),
-//! silently dropping `generics`, `where`-clauses, and impl negativity. That
-//! makes `impl<T: Copy> Foo for Bar<T>` and `impl<T: Clone> Foo for Bar<T>` —
-//! and a positive vs. a negative impl — collide onto one intro id. These
-//! encoders include all of that, closing the collision.
+//! **Layer 1 (was already landed):** The sibling `workspace/ir` skeletons hash
+//! **only** the trait-ref + self-type (`trait_impl_skeleton`) or the param
+//! types (`function_signature_skeleton`), silently dropping `generics`,
+//! `where`-clauses, and impl negativity. That makes `impl<T: Copy> Foo for
+//! Bar<T>` and `impl<T: Clone> Foo for Bar<T>` — and a positive vs. a negative
+//! impl — collide onto one intro id. These encoders include all of that.
+//!
+//! **Layer 2 (P-A, this module):** `Ref::Local` nominal bases — same-package
+//! types referenced before sealing is complete — previously all encoded as the
+//! single placeholder byte `0x00`, so `impl Foo for Bar` and `impl Foo for Baz`
+//! (bare same-package nominals, no generic arguments) produced identical
+//! skeletons and therefore identical intro ids. The fix uses a one-step
+//! *path-id pre-pass* in `seal`: every entry's id under `Disambiguator::None`
+//! is computed up front (it depends only on kind + ancestor path + name, with
+//! no refs), then passed into the skeleton encoder as a resolver. A resolved
+//! `Ref::Local(idx)` encodes **byte-identically to `Ref::Intro(path_id)`** —
+//! opcode `0x01` + 32 bytes — so the encoding is now one job: turn a reference
+//! into its target's id bytes.
+//!
+//! An unresolvable ref (one whose index is not in the path-id map — imports
+//! minted via `EntryBuilder::index_of_import`) still encodes as `0x00`
+//! ("unknown"). An import's target lives in a different package; it has no
+//! path-id within the current arena. The generic-arg layer still discriminates
+//! `Bar<u32>` from `Bar<String>` even when `Bar` itself cannot be resolved, so
+//! the common parameterised-type cases remain collision-free.
+//!
+//! # Termination argument
+//!
+//! The path-id pre-pass reads only `(kind, ancestor-path, leaf-name)` with
+//! `Disambiguator::None`; it touches no skeleton. The skeleton pass (Pass 2)
+//! reads only the path-id map produced by the pre-pass. There is no cycle.
 //!
 //! # Determinism rules (frozen — never change the opcodes/layout)
 //!
@@ -24,223 +49,346 @@
 //! - Generic-parameter **names are deliberately excluded**: renaming a type
 //!   parameter (`impl<T>` vs `impl<U>`) is alpha-equivalent and must not change
 //!   identity. Only the structural shape (kind + bounds + default) is hashed.
-//!
 //! - [`Type::Nominal`] and [`Type::Apply`] carry named types and their generic
-//!   arguments, so `Foo for Bar<u32>` and `Foo for Bar<String>` differ too. The
-//!   one residual gap is documented on [`ref_skeleton`]: a *same-package,
-//!   not-yet-sealed* nominal base hashes as a placeholder.
+//!   arguments, so `Foo for Bar<u32>` and `Foo for Bar<String>` differ too.
+//! - A `Ref::Local` that resolves through the path-id map encodes as opcode
+//!   `0x01` + 32 bytes, identical to `Ref::Intro`. A `Ref::Local` that does not
+//!   resolve (an import) encodes as `0x00`.
 
 use crate::{
-    change::encode::{encode_str, write_u16le, write_u32le, write_u64le},
-    index::{RawRef, Ref},
+    change::{
+        IntroId,
+        encode::{encode_str, write_u16le, write_u32le, write_u64le},
+    },
+    index::{RawRef, Ref, UntypedEntryIndex},
     kinds::{
         GenericParam, Type, WherePred,
         ty::{Primitive, Width},
     },
 };
 
-/// Opcode-per-variant structural encoding of a [`Type`].
-pub fn type_skeleton(ty: &Type, out: &mut Vec<u8>) {
-    match ty {
-        Type::SelfType => out.push(0x01),
-        Type::Primitive(p) => {
-            out.push(0x02);
-            primitive_skeleton(p, out);
-        }
-        Type::Tuple(ts) => {
-            out.push(0x03);
-            seq_skeleton(ts, out);
-        }
-        Type::Slice(t) => {
-            out.push(0x04);
-            type_skeleton(t, out);
-        }
-        Type::Array { ty, length } => {
-            out.push(0x05);
-            type_skeleton(ty, out);
-            write_u64le(out, *length as u64);
-        }
-        Type::Union(ts) => {
-            out.push(0x06);
-            seq_skeleton(ts, out);
-        }
-        Type::Intersection(ts) => {
-            out.push(0x07);
-            seq_skeleton(ts, out);
-        }
-        Type::Never => out.push(0x08),
-        Type::Any => out.push(0x09),
-        Type::Nominal(r) => {
-            out.push(0x0a);
-            ref_skeleton(r, out);
-        }
-        Type::Apply { base, args } => {
-            out.push(0x0b);
-            type_skeleton(base, out);
-            seq_skeleton(args, out);
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Skeleton writer
+// ---------------------------------------------------------------------------
 
-/// Structural encoding of a nominal reference.
+/// A write-once skeleton encoder that carries both the output buffer and a
+/// resolver for same-package nominal references.
 ///
-/// `Intro`/`Foreign` targets hash by their content bytes, so a cross-package or
-/// already-sealed nominal type fully discriminates. A `Local` target hashes as
-/// a stable placeholder: skeletons are computed during `seal` *before* refs are
-/// lowered, and a forward-referenced sibling's `IntroId` does not exist yet —
-/// hashing the arena index instead would make identity depend on declaration
-/// order, which is worse than under-discriminating.
+/// The resolver maps an arena-local [`UntypedEntryIndex`] to the entry's
+/// *path id* — the [`IntroId`] minted with `Disambiguator::None`. It returns
+/// `None` for indices that are not in the current arena (imports), which are
+/// encoded as the "unknown" placeholder.
 ///
-/// FIXME: same-package nominal *bases* therefore do not discriminate on their
-/// own (`Bar` vs `Baz` as a bare self-type). Their generic **arguments** do,
-/// which is what closes the `Bar<u32>` vs `Bar<String>` collision. A future
-/// seal pre-pass can resolve local nominals to their minted intro and drop this
-/// placeholder.
-fn ref_skeleton(r: &RawRef, out: &mut Vec<u8>) {
-    match r {
-        Ref::Local(_) => out.push(0x00),
-        Ref::Intro(i) => {
-            out.push(0x01);
-            out.extend_from_slice(i.as_bytes());
-        }
-        Ref::Foreign(s) => {
-            out.push(0x02);
-            out.extend_from_slice(&s.canonical_bytes());
-        }
-    }
+/// Use [`Skeleton::new`] when a resolver is available (the normal seal path)
+/// and [`Skeleton::unresolved`] when no local indices are expected (unit tests,
+/// foreign-only callers).
+pub struct Skeleton<'a> {
+    out: Vec<u8>,
+    /// Stack fat pointer — no heap allocation.
+    nominal: &'a dyn Fn(UntypedEntryIndex) -> Option<IntroId>,
 }
 
-fn primitive_skeleton(p: &Primitive, out: &mut Vec<u8>) {
-    match p {
-        Primitive::Integer { signed, width } => {
-            out.push(0x01);
-            out.push(*signed as u8);
-            width_skeleton(width, out);
-        }
-        Primitive::Float(w) => {
-            out.push(0x02);
-            width_skeleton(w, out);
-        }
-        Primitive::Bool => out.push(0x03),
-        Primitive::Char => out.push(0x04),
-        Primitive::Str => out.push(0x05),
-        Primitive::MutPointer(t) => {
-            out.push(0x06);
-            type_skeleton(t, out);
-        }
-        Primitive::ConstPointer(t) => {
-            out.push(0x07);
-            type_skeleton(t, out);
-        }
-        // The lifetime *name* is excluded (not identity-relevant); mutability and
-        // the referent shape are.
-        Primitive::Reference {
-            lifetime: _,
-            mutable,
-            ty,
-        } => {
-            out.push(0x08);
-            out.push(*mutable as u8);
-            type_skeleton(ty, out);
-        }
-        Primitive::Builtin(s) => {
-            out.push(0x09);
-            encode_str(out, s);
-        }
-    }
+/// Backing function for [`NO_RESOLVE`].
+fn no_resolve_fn(_: UntypedEntryIndex) -> Option<IntroId> {
+    None
 }
 
-fn width_skeleton(w: &Width, out: &mut Vec<u8>) {
-    match w {
-        Width::Fixed(n) => {
-            out.push(0x01);
-            write_u16le(out, n.get());
+/// A function-pointer resolver that always returns `None`, used by
+/// [`Skeleton::unresolved`]. Stored as a `fn` pointer so that `&NO_RESOLVE`
+/// is `&'static fn(...)` which coerces to `&'static dyn Fn(...)`.
+static NO_RESOLVE: fn(UntypedEntryIndex) -> Option<IntroId> = no_resolve_fn;
+
+impl<'a> Skeleton<'a> {
+    /// Create a new encoder backed by `resolver` for local-ref lookup.
+    pub fn new(resolver: &'a dyn Fn(UntypedEntryIndex) -> Option<IntroId>) -> Self {
+        Self {
+            out: Vec::new(),
+            nominal: resolver,
         }
-        Width::Arch => out.push(0x02),
     }
-}
 
-fn seq_skeleton(ts: &[Type], out: &mut Vec<u8>) {
-    write_u32le(out, ts.len() as u32);
-    for t in ts {
-        type_skeleton(t, out);
+    /// Create a new encoder that treats all local refs as unresolvable.
+    ///
+    /// Suitable for unit tests and callers whose types contain no
+    /// `Ref::Local` variants (e.g. foreign-only nominal refs).
+    pub fn unresolved() -> Self {
+        Self {
+            out: Vec::new(),
+            nominal: &NO_RESOLVE,
+        }
     }
-}
 
-/// Structural fingerprint of a generic-parameter list. Names are excluded
-/// (alpha-equivalence); kind + bounds + default are hashed. **Part of the
-/// fix.**
-pub fn generics_skeleton(params: &[GenericParam], out: &mut Vec<u8>) {
-    write_u32le(out, params.len() as u32);
-    for p in params {
-        match p {
-            GenericParam::Lifetime { name: _ } => out.push(0x01),
-            GenericParam::Type {
-                name: _,
-                bounds,
-                default,
-            } => {
-                out.push(0x02);
-                seq_skeleton(bounds, out);
-                match default {
-                    Some(t) => {
-                        out.push(0x01);
-                        type_skeleton(t, out);
+    /// Consume the encoder and return the finished byte buffer.
+    pub fn finish(self) -> Vec<u8> {
+        self.out
+    }
+
+    // -----------------------------------------------------------------------
+    // Public entry points
+    // -----------------------------------------------------------------------
+
+    /// Skeleton for `impl` disambiguation: `(trait-ref, self-type, generics,
+    /// wheres, negative, blanket)`. Including generics + wheres + flags is
+    /// what closes the `workspace/ir` collision; resolving local refs through
+    /// the path-id map closes the P-A collision.
+    pub fn trait_impl(
+        mut self,
+        of: Option<&Type>,
+        self_ty: &Type,
+        generics: &[GenericParam],
+        wheres: &[WherePred],
+        negative: bool,
+        blanket: bool,
+    ) -> Vec<u8> {
+        match of {
+            Some(t) => {
+                self.out.push(0x01);
+                self.ty(t);
+            }
+            None => self.out.push(0x00),
+        }
+        self.ty(self_ty);
+        self.generics(generics);
+        self.wheres(wheres);
+        self.out.push(negative as u8);
+        self.out.push(blanket as u8);
+        self.out
+    }
+
+    /// Skeleton for overload disambiguation: input types, output types,
+    /// generics, and where-clauses. Callers resolve `EntryIndex<Param>` →
+    /// `Param.ty` before calling.
+    pub fn signature(
+        mut self,
+        input_tys: &[Option<Type>],
+        output_tys: &[Option<Type>],
+        generics: &[GenericParam],
+        wheres: &[WherePred],
+    ) -> Vec<u8> {
+        self.opt_seq(input_tys);
+        self.opt_seq(output_tys);
+        self.generics(generics);
+        self.wheres(wheres);
+        self.out
+    }
+
+    // -----------------------------------------------------------------------
+    // Private recursive helpers
+    // -----------------------------------------------------------------------
+
+    fn ty(&mut self, ty: &Type) {
+        match ty {
+            Type::SelfType => self.out.push(0x01),
+            Type::Primitive(p) => {
+                self.out.push(0x02);
+                self.primitive(p);
+            }
+            Type::Tuple(ts) => {
+                self.out.push(0x03);
+                self.seq(ts);
+            }
+            Type::Slice(t) => {
+                self.out.push(0x04);
+                self.ty(t);
+            }
+            Type::Array { ty, length } => {
+                self.out.push(0x05);
+                self.ty(ty);
+                write_u64le(&mut self.out, *length as u64);
+            }
+            Type::Union(ts) => {
+                self.out.push(0x06);
+                self.seq(ts);
+            }
+            Type::Intersection(ts) => {
+                self.out.push(0x07);
+                self.seq(ts);
+            }
+            Type::Never => self.out.push(0x08),
+            Type::Any => self.out.push(0x09),
+            Type::Nominal(r) => {
+                self.out.push(0x0a);
+                self.ref_(r);
+            }
+            Type::Apply { base, args } => {
+                self.out.push(0x0b);
+                self.ty(base);
+                self.seq(args);
+            }
+        }
+    }
+
+    /// Encode a nominal reference.
+    ///
+    /// Opcodes:
+    /// - `0x00` — unknown / unresolvable (import, or no resolver provided).
+    /// - `0x01` + 32 bytes — a resolved entry: either `Ref::Intro(id)`
+    ///   directly, or `Ref::Local(idx)` resolved through the path-id map to its
+    ///   id. The two cases are **byte-identical** by construction.
+    /// - `0x02` + canonical bytes — a cross-package `Ref::Foreign`.
+    ///
+    /// Because a resolved local and an intro produce identical bytes, the
+    /// skeleton of any entry is **stable across sealing**: it encodes the same
+    /// bytes whether computed pre-seal (with the path-id resolver) or post-seal
+    /// (where every `Local` has already been rewritten to `Intro` by
+    /// `visit_mut`).
+    fn ref_(&mut self, r: &RawRef) {
+        match r {
+            Ref::Local(idx) => {
+                // Rebind into a `let` so the shared borrow of `self.nominal`
+                // ends before we mutably borrow `self.out`.
+                let resolved = (self.nominal)(*idx);
+                match resolved {
+                    Some(id) => {
+                        self.out.push(0x01);
+                        self.out.extend_from_slice(id.as_bytes());
                     }
-                    None => out.push(0x00),
+                    None => self.out.push(0x00),
                 }
             }
-            GenericParam::Const { name: _, ty } => {
-                out.push(0x03);
-                type_skeleton(ty, out);
+            Ref::Intro(i) => {
+                self.out.push(0x01);
+                self.out.extend_from_slice(i.as_bytes());
             }
+            Ref::Foreign(s) => {
+                self.out.push(0x02);
+                self.out.extend_from_slice(&s.canonical_bytes());
+            }
+        }
+    }
+
+    fn primitive(&mut self, p: &Primitive) {
+        match p {
+            Primitive::Integer { signed, width } => {
+                self.out.push(0x01);
+                self.out.push(*signed as u8);
+                self.width(width);
+            }
+            Primitive::Float(w) => {
+                self.out.push(0x02);
+                self.width(w);
+            }
+            Primitive::Bool => self.out.push(0x03),
+            Primitive::Char => self.out.push(0x04),
+            Primitive::Str => self.out.push(0x05),
+            Primitive::MutPointer(t) => {
+                self.out.push(0x06);
+                self.ty(t);
+            }
+            Primitive::ConstPointer(t) => {
+                self.out.push(0x07);
+                self.ty(t);
+            }
+            // The lifetime *name* is excluded (not identity-relevant); mutability
+            // and the referent shape are.
+            Primitive::Reference {
+                lifetime: _,
+                mutable,
+                ty,
+            } => {
+                self.out.push(0x08);
+                self.out.push(*mutable as u8);
+                self.ty(ty);
+            }
+            Primitive::Builtin(s) => {
+                self.out.push(0x09);
+                encode_str(&mut self.out, s);
+            }
+        }
+    }
+
+    fn width(&mut self, w: &Width) {
+        match w {
+            Width::Fixed(n) => {
+                self.out.push(0x01);
+                write_u16le(&mut self.out, n.get());
+            }
+            Width::Arch => self.out.push(0x02),
+        }
+    }
+
+    fn seq(&mut self, ts: &[Type]) {
+        write_u32le(&mut self.out, ts.len() as u32);
+        for t in ts {
+            self.ty(t);
+        }
+    }
+
+    fn opt_seq(&mut self, tys: &[Option<Type>]) {
+        write_u32le(&mut self.out, tys.len() as u32);
+        for t in tys {
+            match t {
+                Some(ty) => {
+                    self.out.push(0x01);
+                    self.ty(ty);
+                }
+                None => self.out.push(0x00),
+            }
+        }
+    }
+
+    /// Structural fingerprint of a generic-parameter list. Names are excluded
+    /// (alpha-equivalence); kind + bounds + default are hashed.
+    fn generics(&mut self, params: &[GenericParam]) {
+        write_u32le(&mut self.out, params.len() as u32);
+        for p in params {
+            match p {
+                GenericParam::Lifetime { name: _ } => self.out.push(0x01),
+                GenericParam::Type {
+                    name: _,
+                    bounds,
+                    default,
+                } => {
+                    self.out.push(0x02);
+                    self.seq(bounds);
+                    match default {
+                        Some(t) => {
+                            self.out.push(0x01);
+                            self.ty(t);
+                        }
+                        None => self.out.push(0x00),
+                    }
+                }
+                GenericParam::Const { name: _, ty } => {
+                    self.out.push(0x03);
+                    self.ty(ty);
+                }
+            }
+        }
+    }
+
+    /// Structural fingerprint of a `where`-clause list.
+    fn wheres(&mut self, preds: &[WherePred]) {
+        write_u32le(&mut self.out, preds.len() as u32);
+        for pred in preds {
+            self.ty(&pred.target);
+            self.seq(&pred.bounds);
         }
     }
 }
 
-/// Structural fingerprint of a `where`-clause list. **Part of the fix.**
-pub fn wheres_skeleton(preds: &[WherePred], out: &mut Vec<u8>) {
-    write_u32le(out, preds.len() as u32);
-    for pred in preds {
-        type_skeleton(&pred.target, out);
-        seq_skeleton(&pred.bounds, out);
-    }
-}
-
-fn opt_seq(tys: &[Option<Type>], out: &mut Vec<u8>) {
-    write_u32le(out, tys.len() as u32);
-    for t in tys {
-        match t {
-            Some(ty) => {
-                out.push(0x01);
-                type_skeleton(ty, out);
-            }
-            None => out.push(0x00),
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Convenience free functions (thin wrappers — the public API surface)
+// ---------------------------------------------------------------------------
 
 /// Signature skeleton for overload disambiguation: input types, output types,
 /// generics, and where-clauses. Callers resolve `EntryIndex<Param>` →
-/// `Param.ty` before calling. Including generics + wheres is the overload half
-/// of the fix.
+/// `Param.ty` before calling.
+///
+/// Uses no local-ref resolver; call [`Skeleton::new`] directly if you need one.
 pub fn function_signature_skeleton(
     input_tys: &[Option<Type>],
     output_tys: &[Option<Type>],
     generics: &[GenericParam],
     wheres: &[WherePred],
 ) -> Vec<u8> {
-    let mut out = Vec::new();
-    opt_seq(input_tys, &mut out);
-    opt_seq(output_tys, &mut out);
-    generics_skeleton(generics, &mut out);
-    wheres_skeleton(wheres, &mut out);
-    out
+    Skeleton::unresolved().signature(input_tys, output_tys, generics, wheres)
 }
 
 /// Skeleton for `impl` disambiguation: `(trait-ref, self-type, generics,
-/// wheres, negative, blanket)`. The trailing four are exactly what
-/// `workspace/ir` dropped, so distinct impls no longer collide.
+/// wheres, negative, blanket)`.
+///
+/// Uses no local-ref resolver; call [`Skeleton::new`] directly if you need one.
 pub fn trait_impl_skeleton(
     of: Option<&Type>,
     self_ty: &Type,
@@ -249,20 +397,7 @@ pub fn trait_impl_skeleton(
     negative: bool,
     blanket: bool,
 ) -> Vec<u8> {
-    let mut out = Vec::new();
-    match of {
-        Some(t) => {
-            out.push(0x01);
-            type_skeleton(t, &mut out);
-        }
-        None => out.push(0x00),
-    }
-    type_skeleton(self_ty, &mut out);
-    generics_skeleton(generics, &mut out);
-    wheres_skeleton(wheres, &mut out);
-    out.push(negative as u8);
-    out.push(blanket as u8);
-    out
+    Skeleton::unresolved().trait_impl(of, self_ty, generics, wheres, negative, blanket)
 }
 
 #[cfg(test)]
@@ -380,10 +515,15 @@ mod tests {
     fn distinct_sealed_nominals_discriminate() {
         let a = Type::Nominal(Ref::Intro(IntroId::from_raw([0xaa; 32])));
         let b = Type::Nominal(Ref::Intro(IntroId::from_raw([0xbb; 32])));
-        let (mut sa, mut sb) = (Vec::new(), Vec::new());
-        type_skeleton(&a, &mut sa);
-        type_skeleton(&b, &mut sb);
-        assert_ne!(sa, sb, "different nominal targets must differ");
+        let mut sa = Skeleton::unresolved();
+        let mut sb = Skeleton::unresolved();
+        sa.ty(&a);
+        sb.ty(&b);
+        assert_ne!(
+            sa.finish(),
+            sb.finish(),
+            "different nominal targets must differ"
+        );
     }
 
     /// Arity matters: `Bar<u32>` ≠ `Bar<u32, u32>`.
@@ -398,20 +538,61 @@ mod tests {
             base: base(),
             args: [Type::U32, Type::U32].into(),
         };
-        let (mut s1, mut s2) = (Vec::new(), Vec::new());
-        type_skeleton(&one, &mut s1);
-        type_skeleton(&two, &mut s2);
-        assert_ne!(s1, s2);
+        let mut s1 = Skeleton::unresolved();
+        let mut s2 = Skeleton::unresolved();
+        s1.ty(&one);
+        s2.ty(&two);
+        assert_ne!(s1.finish(), s2.finish());
     }
 
     /// Determinism: the same input always yields the same bytes.
     #[test]
     fn type_skeleton_is_deterministic() {
-        let mut a = Vec::new();
-        let mut b = Vec::new();
-        type_skeleton(&Type::Tuple([Type::I32, Type::Any].into()), &mut a);
-        type_skeleton(&Type::Tuple([Type::I32, Type::Any].into()), &mut b);
-        assert_eq!(a, b);
-        assert!(!a.is_empty());
+        let mut a = Skeleton::unresolved();
+        let mut b = Skeleton::unresolved();
+        a.ty(&Type::Tuple([Type::I32, Type::Any].into()));
+        b.ty(&Type::Tuple([Type::I32, Type::Any].into()));
+        let (fa, fb) = (a.finish(), b.finish());
+        assert_eq!(fa, fb);
+        assert!(!fa.is_empty());
+    }
+
+    /// P-A fix: a `Ref::Local` resolved through the path-id map encodes
+    /// byte-identically to a `Ref::Intro` carrying the same `IntroId`.
+    #[test]
+    fn resolved_local_is_byte_identical_to_intro() {
+        let id = IntroId::from_raw([0x42; 32]);
+        let fake_idx = UntypedEntryIndex::export(1);
+
+        // Resolver that always maps to `id`.
+        let resolver = |_: UntypedEntryIndex| Some(id);
+
+        let local_ty = Type::Nominal(Ref::Local(fake_idx));
+        let intro_ty = Type::Nominal(Ref::Intro(id));
+
+        let mut with_local = Skeleton::new(&resolver);
+        with_local.ty(&local_ty);
+        let bytes_local = with_local.finish();
+
+        let mut with_intro = Skeleton::unresolved();
+        with_intro.ty(&intro_ty);
+        let bytes_intro = with_intro.finish();
+
+        assert_eq!(
+            bytes_local, bytes_intro,
+            "Ref::Local resolved to path_id must encode identically to Ref::Intro(path_id)"
+        );
+    }
+
+    /// An unresolvable local ref (import) encodes as the 0x00 placeholder.
+    #[test]
+    fn unresolvable_local_encodes_as_placeholder() {
+        let fake_idx = UntypedEntryIndex::export(1);
+        let ty = Type::Nominal(Ref::Local(fake_idx));
+        let mut sk = Skeleton::unresolved();
+        sk.ty(&ty);
+        let bytes = sk.finish();
+        // opcode 0x0a (Nominal) then 0x00 (unknown ref).
+        assert_eq!(bytes, &[0x0a, 0x00]);
     }
 }

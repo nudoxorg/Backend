@@ -26,6 +26,8 @@ pub(crate) fn sym(name: &str) -> Symbol {
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([]),
+        attrs: Box::new([]),
+        cfg: None,
     }
 }
 

@@ -15,7 +15,18 @@ register_kinds! {
     /// A function, method, or lambda.
     Function = 4,
 
-    // Value 5 is intentionally reserved for a future `Type` kind.
+    /// A type alias (or abstract associated-type declaration).
+    ///
+    /// Covers Rust `type Foo = Bar<u32>;`, C/C++ `using Foo = Bar;`,
+    /// TypeScript `type Foo = …`, and associated-type declarations without a
+    /// target (`type Item;` / `type Item: Display;`).
+    ///
+    /// # Naming note
+    ///
+    /// The Rust identifier is `Alias` (not `Type`) to avoid a name collision
+    /// with `crate::kinds::ty::Type`, the type-*expression* enum.  The
+    /// wire discriminant **5** is unchanged from the reserved slot.
+    Alias = 5,
 
     /// A trait, interface, or protocol definition.
     Trait = 6,

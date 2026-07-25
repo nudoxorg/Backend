@@ -2,6 +2,68 @@ use std::{ops::Range, path::PathBuf};
 
 use crate::visitor::Visitor;
 
+// ---------------------------------------------------------------------------
+// AttrTok
+// ---------------------------------------------------------------------------
+
+/// A normalized attribute token on a symbol (§6.2 key 8 / §8.5).
+///
+/// `token` is an ecosystem-scoped opaque name; `arg` is an optional rendered
+/// argument.  Examples:
+///
+/// - `#[must_use]`        → `AttrTok { token: "must_use", arg: None }`
+/// - `#[repr(C)]`         → `AttrTok { token: "repr", arg: Some("C") }`
+/// - `#[doc(hidden)]`     → `AttrTok { token: "doc_hidden", arg: None }`
+///
+/// Unknown or complex attributes are still stored here as opaque tokens so
+/// that downstream consumers see *all* attributes, not just the ones the
+/// producer understands.
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub struct AttrTok {
+    /// Attribute name token (e.g. `"must_use"`, `"repr"`, `"doc_hidden"`).
+    pub token: String,
+
+    /// Optional argument text (e.g. `"C"` for `repr(C)`).
+    pub arg: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// CfgExpr
+// ---------------------------------------------------------------------------
+
+/// Normalized cfg predicate guarding a symbol (§8.6).
+///
+/// Mirrors the recursive boolean structure of `#[cfg(...)]` attributes.
+/// Producers normalise the attribute's token-tree into this form so that
+/// downstream analysis can reason about conditional compilation without
+/// re-parsing raw token streams.
+// frozen — never renumber/reorder variants
+#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum CfgExpr {
+    /// All inner predicates must hold (`cfg(all(...))`).
+    All(crate::List<CfgExpr>),
+
+    /// At least one inner predicate must hold (`cfg(any(...))`).
+    Any(crate::List<CfgExpr>),
+
+    /// The inner predicate must not hold (`cfg(not(...))`).
+    Not(Box<CfgExpr>),
+
+    /// A feature flag (`cfg(feature = "...")`).
+    Feature(String),
+
+    /// A target OS predicate (`cfg(target_os = "...")`).
+    TargetOs(String),
+
+    /// A target architecture predicate (`cfg(target_arch = "...")`).
+    TargetArch(String),
+
+    /// Any other cfg predicate not covered by the variants above.
+    ///
+    /// Stored as the raw predicate text so that no information is lost.
+    Other(String),
+}
+
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Visibility {
     /// Unrestricted access; visible to all.
@@ -43,6 +105,7 @@ mod tests {
 
     #[test]
     fn symbol_new_fields_serde_roundtrip() {
+        // Covers every field of Symbol including attrs and cfg (gap 7).
         let original = Symbol {
             name: "my_fn".to_owned(),
             visibility: Visibility::Crate,
@@ -58,6 +121,24 @@ mod tests {
                 target: "crate::new_fn".to_owned(),
                 label: Some("new_fn".to_owned()),
             }]),
+            attrs: Box::new([
+                AttrTok {
+                    token: "must_use".to_owned(),
+                    arg: None,
+                },
+                AttrTok {
+                    token: "repr".to_owned(),
+                    arg: Some("C".to_owned()),
+                },
+            ]),
+            cfg: Some(CfgExpr::All(Box::new([
+                CfgExpr::Feature("serde".to_owned()),
+                CfgExpr::Not(Box::new(CfgExpr::TargetOs("windows".to_owned()))),
+                CfgExpr::Any(Box::new([
+                    CfgExpr::TargetArch("x86_64".to_owned()),
+                    CfgExpr::Other("target_pointer_width = \"64\"".to_owned()),
+                ])),
+            ]))),
         };
 
         let json = serde_json::to_string(&original).expect("serialize failed");
@@ -95,4 +176,15 @@ pub struct Symbol {
     pub deprecation: Option<Deprecation>,
     /// Documentation cross-reference links.
     pub doc_links: crate::List<DocLink>,
+    /// Normalized attribute tokens on this symbol (§6.2 key 8 / §8.5).
+    ///
+    /// Empty when the producer does not emit attribute information for this
+    /// entry.  Consumers must not treat an empty list as "no attributes" — it
+    /// may simply mean the producer did not collect them.
+    pub attrs: crate::List<AttrTok>,
+    /// Cfg predicate guarding this symbol (§8.6), if any.
+    ///
+    /// `None` when the symbol is unconditionally compiled in (or when the
+    /// producer did not analyse cfg attributes).
+    pub cfg: Option<CfgExpr>,
 }

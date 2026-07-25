@@ -69,6 +69,7 @@ fn builds_and_wires_every_kind() {
                 Kind::Variant(_) => "variant",
                 Kind::Field(_) => "field",
                 Kind::Function(_) => "function",
+                Kind::Alias(_) => "alias",
                 Kind::Param(_) => "param",
                 Kind::Trait(_) => "trait",
                 Kind::Impl(_) => "impl",
@@ -326,7 +327,8 @@ fn form_and_flags_metadata() {
                 .flags(TraitFlags {
                     is_unsafe: true,
                     is_auto: true,
-                    sealed: false,
+                    dyn_compat: TriState::Unknown,
+                    sealed: Sealed::None,
                 })
                 .build()
         });
@@ -370,7 +372,8 @@ fn form_and_flags_metadata() {
     assert_eq!(trait_entry.body().flags, TraitFlags {
         is_unsafe: true,
         is_auto: true,
-        sealed: false
+        dyn_compat: TriState::Unknown,
+        sealed: Sealed::None,
     });
 
     // Struct-form variant.

@@ -17,6 +17,7 @@ tokio = { workspace = true, features = ["sync"] }
 triomphe = { workspace = true }
 
 [dev-dependencies]
+blake3 = "1"
 itertools = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
