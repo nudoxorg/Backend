@@ -94,7 +94,7 @@ impl<T: Indexable> EntryIndex<T> {
     pub(super) fn import_index(self) -> usize {
         debug_assert!(self.is_import(), "using non-import EntryIndex");
 
-        self.raw_index() & !(IS_SERIALIZED_MASK & IS_IMPORT_MASK)
+        self.raw_index() & !(IS_SERIALIZED_MASK | IS_IMPORT_MASK)
     }
 
     pub(super) fn export_index(self) -> usize {
@@ -177,9 +177,12 @@ impl<'de, T: Indexable> serde::Deserialize<'de> for EntryIndex<T> {
     {
         use serde::de::Error;
 
-        let index = usize::deserialize(deserializer)?;
+        let index = <_>::deserialize(deserializer)?;
 
-        let index = EntryIndex::build(index);
+        let index = EntryIndex {
+            index,
+            _p: PhantomData,
+        };
 
         if !index.is_serialize() {
             return Err(D::Error::custom(
@@ -201,7 +204,20 @@ impl<T: Indexable> Copy for EntryIndex<T> {}
 
 impl<T: Indexable> fmt::Debug for EntryIndex<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("EntryIdx").field(&self.index).finish()
+        let (kind, index) = if self.is_resolved() {
+            ("resolved", self.resolved_index())
+        } else if self.is_import() {
+            ("import", self.import_index())
+        } else if self.is_export() {
+            ("export", self.export_index())
+        } else {
+            unreachable!()
+        };
+
+        f.debug_struct("EntryIdx")
+            .field("kind", &kind)
+            .field("index", &index)
+            .finish()
     }
 }
 
