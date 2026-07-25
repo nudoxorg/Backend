@@ -5,6 +5,35 @@ use crate::kind::EntryKind;
 // FIXME: NonZeroUsize handling needs to be carefully considered wrt the bit
 // checks we do, and needs plenty of tests
 
+/// A (possibly typed) index into a store of [`Entry`s](crate::entry::Entry)
+///
+/// `EntryIndex` is the primary way entries reference each other.
+///
+/// # Internals
+///
+/// An index can be in one of three states, distinguished by reserved bits in
+/// the underlying `usize`:
+///
+/// | State        | MSB | MSB-1 | Meaning |
+/// |--------------|-----|-------|---------|
+/// | **Resolved** | 0   | —     | A runtime index into an in-memory entry store (a [`Registry`](crate::registry::Registry)). |
+/// | **Export**   | 1   | 0     | A static index into a package's export table. Embedded in serialized IR files. |
+/// | **Import**   | 1   | 1     | A static index into a package's import table. Also used in serialized IR. |
+///
+/// Resolved indices are ephemeral; export/import indices are stable across
+/// serialization round-trips (within their
+/// [`PackageInfo`](crate::package::PackageInfo)) context.
+///
+/// # Typed vs untyped
+///
+/// [`EntryIndex<T>`] carries a type parameter that implements [`Indexable`].
+/// When `T` is a concrete [`EntryKind`] like `Record` or `Function`, the index
+/// is *typed* and can be used with
+/// [`Registry::resolve_typed_entry`](crate::registry::Registry).
+///
+/// [`UntypedEntryIndex`] (aliased as `EntryIndex<UntypedMarker>`) erases the
+/// kind. It is used internally for parent/child links in the IR tree so that
+/// nodes can point to entries of any kind.
 #[repr(transparent)]
 pub struct EntryIndex<T: Indexable> {
     index: NonZeroUsize,
