@@ -1,6 +1,6 @@
 use std::num::{NonZero, NonZeroU16};
 
-use crate::{List, visitor::Visitor};
+use crate::{List, index::RawRef, visitor::Visitor};
 
 #[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Type {
@@ -38,6 +38,23 @@ pub enum Type {
     /// Represents the "All" type (Top Type).
     /// Ex: `any` or `unknown` in TypeScript, `Object` in Java.
     Any,
+
+    /// A **nominal** reference to a declared type (record/enum/trait/alias).
+    /// Ex: `Bar`, `std::string::String`, `java.util.List`.
+    ///
+    /// Untyped ([`RawRef`]) because a nominal type may name any type-like kind.
+    /// Like every other reference it is `Local` while building and lowered to
+    /// `Intro`/`Foreign` by [`seal`](crate::package), so it is
+    /// content-addressed in the sealed table.
+    Nominal(RawRef),
+
+    /// A **generic application** of a base type to arguments.
+    /// Ex: `Bar<u32>`, `Vec<T>`, `HashMap<K, V>`, `List<String>`.
+    ///
+    /// `base` is normally a [`Type::Nominal`]; `args` are the applied types.
+    /// This is what distinguishes `Foo for Bar<u32>` from `Foo for
+    /// Bar<String>`.
+    Apply { base: Box<Type>, args: List<Type> },
 }
 
 impl Type {

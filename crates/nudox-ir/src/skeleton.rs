@@ -25,14 +25,14 @@
 //!   parameter (`impl<T>` vs `impl<U>`) is alpha-equivalent and must not change
 //!   identity. Only the structural shape (kind + bounds + default) is hashed.
 //!
-//! FIXME: nudox-ir's [`Type`] is purely structural — it has no nominal type
-//! reference or generic *application* node yet, so `Foo for Bar<u32>` vs
-//! `Foo for Bar<String>` cannot be distinguished by the self-type (both reduce
-//! to the same structural shape). That awaits the Type-nominal-ref enrichment;
-//! bound-differentiated impls/overloads and negativity are fixed here.
+//! - [`Type::Nominal`] and [`Type::Apply`] carry named types and their generic
+//!   arguments, so `Foo for Bar<u32>` and `Foo for Bar<String>` differ too. The
+//!   one residual gap is documented on [`ref_skeleton`]: a *same-package,
+//!   not-yet-sealed* nominal base hashes as a placeholder.
 
 use crate::{
     change::encode::{encode_str, write_u16le, write_u32le, write_u64le},
+    index::{RawRef, Ref},
     kinds::{
         GenericParam, Type, WherePred,
         ty::{Primitive, Width},
@@ -70,6 +70,43 @@ pub fn type_skeleton(ty: &Type, out: &mut Vec<u8>) {
         }
         Type::Never => out.push(0x08),
         Type::Any => out.push(0x09),
+        Type::Nominal(r) => {
+            out.push(0x0a);
+            ref_skeleton(r, out);
+        }
+        Type::Apply { base, args } => {
+            out.push(0x0b);
+            type_skeleton(base, out);
+            seq_skeleton(args, out);
+        }
+    }
+}
+
+/// Structural encoding of a nominal reference.
+///
+/// `Intro`/`Foreign` targets hash by their content bytes, so a cross-package or
+/// already-sealed nominal type fully discriminates. A `Local` target hashes as
+/// a stable placeholder: skeletons are computed during `seal` *before* refs are
+/// lowered, and a forward-referenced sibling's `IntroId` does not exist yet —
+/// hashing the arena index instead would make identity depend on declaration
+/// order, which is worse than under-discriminating.
+///
+/// FIXME: same-package nominal *bases* therefore do not discriminate on their
+/// own (`Bar` vs `Baz` as a bare self-type). Their generic **arguments** do,
+/// which is what closes the `Bar<u32>` vs `Bar<String>` collision. A future
+/// seal pre-pass can resolve local nominals to their minted intro and drop this
+/// placeholder.
+fn ref_skeleton(r: &RawRef, out: &mut Vec<u8>) {
+    match r {
+        Ref::Local(_) => out.push(0x00),
+        Ref::Intro(i) => {
+            out.push(0x01);
+            out.extend_from_slice(i.as_bytes());
+        }
+        Ref::Foreign(s) => {
+            out.push(0x02);
+            out.extend_from_slice(&s.canonical_bytes());
+        }
     }
 }
 
@@ -231,6 +268,7 @@ pub fn trait_impl_skeleton(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::change::IntroId;
 
     fn ty_param(bound: Type) -> [GenericParam; 1] {
         [GenericParam::Type {
@@ -310,6 +348,60 @@ mod tests {
             sk_t, sk_u,
             "renaming a type parameter must not change identity"
         );
+    }
+
+    /// The deferred half of the collision fix, now closed: `impl Foo for
+    /// Bar<u32>` vs `impl Foo for Bar<String>` — same nominal base,
+    /// different generic argument — must not collide.
+    #[test]
+    fn generic_application_args_discriminate() {
+        let bar = |arg: Type| Type::Apply {
+            base: Box::new(Type::Nominal(Ref::Intro(IntroId::from_raw([0xba; 32])))),
+            args: [arg].into(),
+        };
+        let u32_impl = trait_impl_skeleton(None, &bar(Type::U32), &[], &[], false, false);
+        let str_impl = trait_impl_skeleton(
+            None,
+            &bar(Type::Primitive(Primitive::Str)),
+            &[],
+            &[],
+            false,
+            false,
+        );
+        assert_ne!(
+            u32_impl, str_impl,
+            "Foo for Bar<u32> and Foo for Bar<String> must not collide"
+        );
+    }
+
+    /// Distinct *sealed* nominal types discriminate (Intro targets hash by
+    /// bytes).
+    #[test]
+    fn distinct_sealed_nominals_discriminate() {
+        let a = Type::Nominal(Ref::Intro(IntroId::from_raw([0xaa; 32])));
+        let b = Type::Nominal(Ref::Intro(IntroId::from_raw([0xbb; 32])));
+        let (mut sa, mut sb) = (Vec::new(), Vec::new());
+        type_skeleton(&a, &mut sa);
+        type_skeleton(&b, &mut sb);
+        assert_ne!(sa, sb, "different nominal targets must differ");
+    }
+
+    /// Arity matters: `Bar<u32>` ≠ `Bar<u32, u32>`.
+    #[test]
+    fn generic_arity_discriminates() {
+        let base = || Box::new(Type::Nominal(Ref::Intro(IntroId::from_raw([0xba; 32]))));
+        let one = Type::Apply {
+            base: base(),
+            args: [Type::U32].into(),
+        };
+        let two = Type::Apply {
+            base: base(),
+            args: [Type::U32, Type::U32].into(),
+        };
+        let (mut s1, mut s2) = (Vec::new(), Vec::new());
+        type_skeleton(&one, &mut s1);
+        type_skeleton(&two, &mut s2);
+        assert_ne!(s1, s2);
     }
 
     /// Determinism: the same input always yields the same bytes.
