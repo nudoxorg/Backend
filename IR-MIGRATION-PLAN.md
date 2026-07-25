@@ -73,6 +73,142 @@ A three-adversary review (full verdict in `IR-NORTH-STAR.md` §0.5) changes seve
 
 ---
 
+## 0.6 — Built so far, and the next phases (2026-07-25)
+
+### Landed (on `main`, 56 tests, clippy-clean)
+
+`crates/nudox-ir` is now a rich, typed, content-addressed IR: 12 frozen-`u16` kinds with
+rich bodies, full-parity `Symbol`, forms/flags/generics, checked `downcast` (the `unsafe`
+typed-handle lie is gone), content-addressed identity (`IntroId`/`StableRef`, byte-verified
+against `workspace/ir`), collision-free `intro`+`skeleton`, `seal`, `PristineIntroTable`,
+occurrence `vocab`, dual-fidelity `body`, `reflect`, `IrView`, `GenerationStamp`.
+
+**The `Ref` unification (the big streamline).** One type is now *the* reference everywhere
+an entry points at another:
+
+```rust
+enum Ref<T> { Local(EntryIndex<T>), Intro(IntroId), Foreign(StableRef) }
+```
+
+It replaced `EntryIndex` in kind bodies, `UntypedEntryIndex` in `Node` tree edges, and the
+re-export forwarding ref — and it is what `Type::Nominal`/`Type::Apply` carry. The
+derive-`Visitor` was generalized to walk `&mut Ref` (its dead in-place `visit` dropped), so
+**`seal` lowers every `Local → Intro` in one `visit_mut` pass** — kind-body refs, type refs,
+and tree edges at once. That is the whole "Build→Canon" step, achieved with **no GAT, no
+type duplication, no wire twins** (exactly what the adversarial review recommended over the
+`Node<R>` design). `PristineIntroTable` is now genuinely self-contained.
+
+### Next phases, in order
+
+**P-A — close the residual identity gap (small, self-contained).**
+`ref_skeleton` hashes a *same-package, not-yet-sealed* nominal base as a placeholder, because
+skeletons are computed before refs are lowered and a forward-referenced sibling has no
+`IntroId` yet. Fix: split `seal` pass 2 into (a) mint intros for all entries using only
+name/path/kind + *structural* disambiguator evidence, then (b) resolve local nominals to
+those intros and recompute the skeleton-bearing disambiguators for impls/overloads. Needs a
+fixed-point/ordering rule for the mutually-recursive case (`impl Foo for Bar` where `Bar`'s
+own id depends on nothing circular — the two-tier split is what makes it terminate). Gate: a
+test where `impl Foo for Bar` and `impl Foo for Baz` (bare same-package nominals, no generic
+args) mint distinct ids.
+
+**P-B — the production API (`lower/`): builder + parser-combinators.**
+The D2 layer. `EntryBuilder` already returns `Ref<T>` and auto-tracks parent/children, so
+what remains is (1) per-kind `bon` builders that auto-emit graph links, and (2) the combinator
+vocabulary (`Lower<O>`, `map`/`and_then`/`alt`/`many`/`field`/`into_entry`) plus a shared
+`drive(root_nodes, grammar, pkg) -> IrPackage`. Producers then emit `Fact`s (`Declare`/
+`Relate`) and the store derives the tree — deleting `NudoxPath`/`Index`/`entries_by_path`/
+`wire_members` from all seven frontends. Land this **before** touching producers.
+
+**P-C — consumer cutover (~300 `use ir::` sites; the compatibility phase).**
+`ir-vcs` (deep: ~1,276 wire-twin refs, 13 concrete `KindWire` match arms in `diff/diff.rs`),
+then `registry`/`index`/`driver` (read-model only). Two honest sub-decisions to make first:
+(i) nudox-ir has **no `KindWire` twins** — consumers either move to matching the rich `Kind`
+directly (preferred; that *is* the twin-deletion win) or a compatibility shim is written;
+(ii) nudox-ir's `IntroId` is domain `nudox.intro.v3` and **not** byte-compatible with
+`workspace/ir`'s buggy v2, so cutover is a lineage reset, not a migration. Write the golden
+postcard **byte** snapshots (Rev 2's P0 gate — they still do not exist) before this phase.
+
+**P-D — producer repointing (7 languages, ~4,900 LOC).**
+Order by independence: Rust → Go → C# → Java → Python → Nix → TypeScript (TS/OXC last,
+heaviest cross-module linking). Make `workspace/compiler` a Cargo member so it builds in-tree.
+Gate per language: the existing `tests/snap_*.rs` insta snapshots reproduce.
+
+**Still open (decide before P-D):** overloads = N `IntroId`s (what `seal` does today) vs a
+`Group` node (what Java/TS/C#/Python producers actually emit — one node with an `overloads`
+array). These are contradictory; the producers' model may win on contact.
+
+---
+
+## 0.7 — P-A, P-B, richness parity and the cutover gate all landed (2026-07-25)
+
+`crates/nudox-ir`: **100 tests (92 unit + 8 golden), clippy clean.** All of §0.6's P-A and
+P-B is done, plus two phases §0.6 did not know were needed.
+
+**P-A closed the identity gap** with a one-step stratification rather than the two-tier
+provisional/final scheme §0.6 proposed. `path_id(e) = hash(kind, path, name,
+Disambiguator::None)` is ref-independent, so it is computable for every entry up front and
+terminates by construction. For an entry declared once at its path, `path_id` *is* its final
+`IntroId`. A resolved `Ref::Local` encodes byte-identically to `Ref::Intro`, so skeletons are
+now stable across sealing. `skeleton.rs` public surface: 10 items → 3.
+
+**P-B is `Lowering`, not combinators.** Producers get a flat item list with parent pointers;
+`create_export` already interns, so `declare`/`refer` are order-independent with no new
+machinery. The `Lower<O>`/`alt`/`many` vocabulary was *deliberately dropped*: combinators pay
+off over a uniform token stream, and the seven producers consume seven different typed ASTs
+that already pattern-match their own enums. `finish` also makes `IrPackage::is_valid` real
+(Undeclared/Duplicate/Cycle) — and the cycle case is load-bearing, because `seal` walks parent
+chains with no guard and **hangs** on a cycle today.
+
+**Two phases §0.6 missed**, both found by auditing nudox-ir against `workspace/ir`:
+
+- **`Alias` kind at frozen discriminant 5** — the one whole kind with no home. Named `Alias`
+  because `kinds::ty::Type` already exists. It deliberately does *not* feed the identity
+  skeleton: hashing `target` would make identity signature-dependent and sever a symbol's
+  history when its right-hand side is edited.
+- **Richness parity** — the new IR was *architecturally* better but **lost data** in seven
+  places. Now closed: auto-trait facts, variant discriminants, const values, fn `abi`/
+  `is_defaulted`, three-way `Sealed` + `TriState` dyn-compat, and `Symbol` `attrs`/`cfg`.
+  With nudox-ir's own gains (first-class `Param` entries with their own `IntroId`s,
+  `Type::Nominal`/`Apply`, inline `Type` bounds vs id-only `TypeRefWire`, `Ref<T>`, checked
+  `downcast`, collision-free skeletons), **"richer after cutover" is now true in data, not
+  just in architecture.**
+
+**The golden gate exists** (Rev 2's P0): one rich sealed fixture, six pins, one-command
+regeneration that fails so CI cannot leave it set — verified to actually guard by perturbing
+the fixture.
+
+### What P-C now needs (from the cutover inventory)
+
+Counts are measured, not estimated. `ir-vcs` ~395 refs, `registry` ~47, `index` ~29,
+`driver` ~13.
+
+- **Delete the `KindWire` twins, do not shim** — 328 `KindWire::` sites, but they are *pure
+  field comparators*; nudox-ir's rich `Kind` carries the same data. `diff/diff.rs` has 14
+  match arms, not 13.
+- **Order:** `registry/graph` → `index` → `driver` → `ir-vcs` (minus format) → `ir-vcs/diff`
+  → `f1.rs`/`blob.rs`. The last is the real bottleneck: NdIrF1 is the libpijul change format
+  and its key registry lives in the **vendored libpijul fork**, so a format change is
+  lock-step across both.
+- **v2 → v3 is a lineage reset, not a migration.** `.nir` filenames *are* IntroId hex and
+  pijul change files embed v2 ids, so those stores must be wiped and resealed. Good news: no
+  `.nir` files or change stores are committed to the repo, and `symbols_proj.intro_id` is
+  still a stub column — the blast radius is runtime stores only.
+- **Atomic pairs** (cannot be sequenced apart): `ir-vcs::protocol::BodyWire.body` carries
+  `ir::BodyEmbed` across the ir-vcs↔driver boundary; `IrView` is a different type in each
+  crate and both `registry` and `driver` take it.
+- **Still missing for P-C/P-D:** `OwnedEntryPayload` has no nudox-ir equivalent (the old
+  `PristineIntroTable` stores content-hashed payloads and uses `payload_hash` for fast-path
+  equality; nudox-ir stores `Entry` with no content hash); no NdIrF1 serializer; no link
+  records; `manifest` is a stub next to `BlobManifestV3`/`Outbox`; `body::Language` must be
+  unified with `heart::Language`.
+- **`workspace/compiler` calls an `ir` API that does not exist** (`ir::entry::NudoxPath`,
+  `ir::pipeline::Ir`). It is Buck2-only and not a cargo member — audit separately before P-D.
+
+**Still open:** overloads = N `IntroId`s (what `seal` does) vs a `Group` node (what the
+Java/TS/C#/Python producers emit). Unchanged from §0.6; decide before P-D.
+
+---
+
 ## 1. Target architecture
 
 The home crate ends up as one crate with a clear two-face design:
