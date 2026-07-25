@@ -15,7 +15,7 @@ pub enum PackageIdView<'a> {
 /// Identifies a package within the IR universe.
 ///
 /// A package is the unit of IR serialization and resolution. Entries within a
-/// package share a `PackageId` in their [`UniqueId`].
+/// package share a `PackageId` in their [`UniqueId`](super::UniqueId).
 ///
 /// # Variants
 ///

@@ -85,7 +85,8 @@ impl<R: RegistryResolver> Registry<R> {
     /// Allocate (or retrieve) an index for the given [`UniqueId`].
     ///
     /// This is synchronous and does not trigger I/O. The returned index can be
-    /// passed to [`resolve_entry`] to load the actual data.
+    /// passed to [`resolve_entry`](Self::resolve_entry) to load the actual
+    /// data.
     pub fn resolve_id_to_idx(&self, id: UniqueId<R::EntryId>) -> UntypedEntryIndex {
         self.state.resolve_id_to_idx(id)
     }
@@ -112,7 +113,8 @@ impl<R: RegistryResolver> Registry<R> {
         self.state.resolve_entry(idx, &self.resolver).await
     }
 
-    /// Convenience wrapper around [`resolve_entry`] that re-types the index.
+    /// Convenience wrapper around [`resolve_entry`](Self::resolve_entry) that
+    /// re-types the index.
     pub async fn resolve_typed_entry<T: EntryKind>(
         &self,
         idx: EntryIndex<T>,

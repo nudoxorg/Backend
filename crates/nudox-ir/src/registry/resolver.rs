@@ -10,7 +10,7 @@ use crate::{
 // TODO: can we actually guarantee the [# Contract] below? If we ever want to
 // support "unloading" entries, that would break this invariant
 
-/// Provides entry data to the [`Registry`] on demand.
+/// Provides entry data to the [`Registry`](super::Registry) on demand.
 ///
 /// Each tool that produces or consumes IRs implements this trait to bridge
 /// between the IR's abstract index space and concrete storage (files,
@@ -24,10 +24,10 @@ use crate::{
 ///
 /// # Contract
 ///
-/// The `Registry` guarantees that each `UniqueId` and `PackageId` will be
-/// loaded at most once. After the first call, results are cached. Implementors
-/// can therefore safely perform expensive work (network calls, file I/O)
-/// without worrying about redundant requests.
+/// The [`Registry`](super::Registry) guarantees that each `UniqueId` and
+/// `PackageId` will be loaded at most once. After the first call, results are
+/// cached. Implementors can therefore safely perform expensive work (network
+/// calls, file I/O) without worrying about redundant requests.
 ///
 /// # Concurrency
 ///
