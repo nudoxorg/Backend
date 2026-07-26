@@ -55,6 +55,42 @@ pub enum Type {
     /// This is what distinguishes `Foo for Bar<u32>` from `Foo for
     /// Bar<String>`.
     Apply { base: Box<Type>, args: List<Type> },
+
+    /// A reference to a **generic parameter**, by name.
+    /// Ex: the `T` in `fn id<T>(x: T) -> T`.
+    ///
+    /// This is a *use* of a type parameter, distinct from its *declaration* in
+    /// [`GenericParam`](crate::kinds::GenericParam). Without it, every producer
+    /// has to lower `T` to [`Type::Any`], which loses the link between a
+    /// signature and the parameter list that binds it — Go, C# and Java all
+    /// independently hit this.
+    ///
+    /// The name is carried verbatim. Note this makes a bare `TypeVar`
+    /// *not* alpha-equivalent; identity skeletons deliberately exclude generic
+    /// parameter names, so [`skeleton`](crate::skeleton) encodes only the
+    /// opcode and not the name.
+    TypeVar(String),
+
+    /// A use-site wildcard with optional bound.
+    /// Ex: Java `?`, `? extends T`, `? super T`; TypeScript's `unknown` in
+    /// variance position; Kotlin's `out`/`in` projections.
+    ///
+    /// `bound` is `None` for an unbounded wildcard (`?`).
+    Wildcard {
+        variance: Variance,
+        bound: Option<Box<Type>>,
+    },
+}
+
+/// Use-site variance for a [`Type::Wildcard`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum Variance {
+    /// Unbounded, or bound in neither direction (`?`).
+    Invariant,
+    /// Bounded above (`? extends T`, `out T`).
+    Covariant,
+    /// Bounded below (`? super T`, `in T`).
+    Contravariant,
 }
 
 impl Type {
