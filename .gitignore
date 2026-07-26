@@ -39,6 +39,9 @@
 !/Cargo.toml
 !/Cargo.lock
 !/workspace/**/Cargo.toml
+# Crates under /crates need the same allowance — without it a new crate's
+# manifest is silently ignored and the workspace fails to load.
+!/crates/**/Cargo.toml
 # Manifests that tests scaffold at runtime stay ignored.
 /workspace/compiler/tests/fixtures/**/Cargo.toml
 

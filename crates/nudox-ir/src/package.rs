@@ -33,7 +33,12 @@ pub use self::{builder::EntryBuilder, info::PackageInfo};
 /// #     visibility: Visibility::Public,
 /// #     documentation: String::new(),
 /// #     source: std::path::PathBuf::new(),
-/// #     span: 0..0
+/// #     span: 0..0,
+/// #     aliases: Box::new([]),
+/// #     deprecation: None,
+/// #     doc_links: Box::new([]),
+/// #     attrs: Box::new([]),
+/// #     cfg: None,
 /// # };
 ///
 /// let pkg = IrPackage::build(PackageId::path("my-pkg"), sym("root"), |mut root| {

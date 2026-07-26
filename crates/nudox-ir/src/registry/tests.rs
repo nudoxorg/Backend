@@ -8,7 +8,7 @@ use std::assert_matches;
 
 use self::resolver::*;
 
-use crate::test_helpers::*;
+use crate::{index::Ref, test_helpers::*};
 
 #[tokio::test]
 async fn build_and_load_simple_package() -> Result<(), ResolverError> {
@@ -32,11 +32,11 @@ async fn build_and_load_simple_package() -> Result<(), ResolverError> {
     let child = registry.resolve_entry(child_idx).await?;
 
     assert_eq!(child.sym(), &sym("Point"));
-    assert_eq!(child.parent(), Some(root_idx));
+    assert_eq!(child.parent(), Some(&Ref::Local(root_idx)));
     assert_eq!(child.children().len(), 2);
     assert_matches!(child.kind(), EntryInner::Owned(Kind::Record(Record { .. })));
 
-    assert_eq!(root.children()[0], child_idx);
+    assert_eq!(root.children()[0], Ref::Local(child_idx));
 
     Ok(())
 }

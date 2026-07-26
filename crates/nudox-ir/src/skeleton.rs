@@ -63,7 +63,7 @@ use crate::{
     index::{RawRef, Ref, UntypedEntryIndex},
     kinds::{
         GenericParam, Type, WherePred,
-        ty::{Primitive, Width},
+        ty::{Primitive, Variance, Width},
     },
 };
 
@@ -214,6 +214,25 @@ impl<'a> Skeleton<'a> {
                 self.out.push(0x0b);
                 self.ty(base);
                 self.seq(args);
+            }
+            // The *name* is deliberately excluded, exactly as it is for
+            // `GenericParam`: `fn f<T>(x: T)` and `fn f<U>(x: U)` are
+            // alpha-equivalent and must not get different identities.
+            Type::TypeVar(_) => self.out.push(0x0c),
+            Type::Wildcard { variance, bound } => {
+                self.out.push(0x0d);
+                self.out.push(match variance {
+                    Variance::Invariant => 0x01,
+                    Variance::Covariant => 0x02,
+                    Variance::Contravariant => 0x03,
+                });
+                match bound {
+                    Some(t) => {
+                        self.out.push(0x01);
+                        self.ty(t);
+                    }
+                    None => self.out.push(0x00),
+                }
             }
         }
     }

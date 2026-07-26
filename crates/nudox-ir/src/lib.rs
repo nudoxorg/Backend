@@ -30,7 +30,12 @@
 //! #     visibility: Visibility::Public,
 //! #     documentation: String::new(),
 //! #     source: std::path::PathBuf::new(),
-//! #     span: 0..0
+//! #     span: 0..0,
+//! #     aliases: Box::new([]),
+//! #     deprecation: None,
+//! #     doc_links: Box::new([]),
+//! #     attrs: Box::new([]),
+//! #     cfg: None,
 //! # };
 //! #
 //! # let make_id = |id| id;
@@ -83,7 +88,12 @@
 //! #           visibility: Visibility::Public,
 //! #           documentation: String::new(),
 //! #           source: std::path::PathBuf::new(),
-//! #           span: 0..0
+//! #           span: 0..0,
+//! #           aliases: Box::new([]),
+//! #           deprecation: None,
+//! #           doc_links: Box::new([]),
+//! #           attrs: Box::new([]),
+//! #           cfg: None,
 //! #     }
 //! # };
 //! #
@@ -107,10 +117,11 @@
 //!
 //! let root = registry.resolve_entry(root_idx).await?;
 //!
-//! for &child in root.children() {
-//!     let child = registry.resolve_entry(child).await?;
+//! for child in root.children() {
+//!     let child_idx = child.as_local().expect("unsealed refs are arena-local");
+//!     let child = registry.resolve_entry(child_idx).await?;
 //!
-//!     assert_eq!(child.parent(), Some(root_idx));
+//!     assert_eq!(child.parent(), Some(&Ref::Local(root_idx)));
 //! }
 //!
 //! #  Ok::<_, resolver::ResolverError>(())

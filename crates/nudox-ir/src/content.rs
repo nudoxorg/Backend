@@ -281,7 +281,7 @@ use crate::{
         FnModifier, Function, GenericParam, Impl, ImplFlags, Module, Param, ParamAttribute,
         Receiver, Record, RecordForm, Reexport, Sealed, Static, Trait, TraitFlags, TriState,
         Variant, VariantForm, WherePred,
-        ty::{Primitive, Type, Width},
+        ty::{Primitive, Type, Variance, Width},
     },
 };
 
@@ -852,6 +852,28 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
             out.push(0x0b);
             encode_type(out, base);
             encode_type_seq(out, args);
+        }
+        // Unlike the identity skeleton, the content hash is *total*: the type
+        // variable's name is part of what the producer emitted, so renaming it
+        // is a real content change even though it is identity-preserving.
+        Type::TypeVar(name) => {
+            out.push(0x0c);
+            encode_str(out, name);
+        }
+        Type::Wildcard { variance, bound } => {
+            out.push(0x0d);
+            out.push(match variance {
+                Variance::Invariant => 0x01,
+                Variance::Covariant => 0x02,
+                Variance::Contravariant => 0x03,
+            });
+            match bound {
+                Some(t) => {
+                    out.push(0x01);
+                    encode_type(out, t);
+                }
+                None => out.push(0x00),
+            }
         }
     }
 }
