@@ -27,8 +27,9 @@
 
 use gpui::KeyBinding;
 
-use crate::app::actions::{
 use gpui::prelude::*;
+
+use crate::app::actions::{
     ActivateTab1, ActivateTab2, ActivateTab3, ActivateTab4, ActivateTab5, ActivateTab6,
     ActivateTab7, ActivateTab8, ActivateTab9, CloseTab, CollapseTreeNode, ConfirmOverlay,
     Copy, CopySymbolUri, Cut, DeepLinkLine, DiffAgainstPrevious, DismissOverlay,
