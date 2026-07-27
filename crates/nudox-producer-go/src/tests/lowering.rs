@@ -6,7 +6,7 @@
 
 use nudox_ir::{
     change::{EcosystemId, PackageLineageId, PackageName},
-    kinds::{Alias, Const, Enum, Field, Function, Record, Static, Trait},
+    kinds::{ty::Type, Alias, Const, Enum, Field, Function, Record, Static, Trait},
     package::PackageId,
 };
 
@@ -452,5 +452,547 @@ fn method_parent_is_rect() {
         rect.1.children().len() >= 3,
         "Rect must have at least 3 children (Width, Height, Area), got {}",
         rect.1.children().len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Item 1: Named types lower to Nominal, not Any
+// ---------------------------------------------------------------------------
+
+/// A struct with a field whose type is another declared struct.  Before the
+/// fix, the field type was always `Type::Any`; now it must be `Type::Nominal`.
+const NOMINAL_FIELD_JSON: &str = r#"
+{
+  "module": { "path": "example.com/m", "dir": "/tmp/m", "goVersion": "1.22" },
+  "packages": [
+    {
+      "importPath": "example.com/m/geo",
+      "name": "geo",
+      "doc": "Package geo.",
+      "decls": [
+        {
+          "kind": "type",
+          "name": "Point",
+          "exported": true,
+          "doc": "Point is a 2D point.",
+          "underlying": {
+            "kind": "struct",
+            "fields": [
+              { "name": "X", "exported": true, "type": { "kind": "basic", "name": "float64" } },
+              { "name": "Y", "exported": true, "type": { "kind": "basic", "name": "float64" } }
+            ]
+          }
+        },
+        {
+          "kind": "type",
+          "name": "Rect",
+          "exported": true,
+          "doc": "Rect has two Point fields.",
+          "underlying": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "TopLeft",
+                "exported": true,
+                "type": { "kind": "named", "pkg": "example.com/m/geo", "name": "Point" }
+              },
+              {
+                "name": "BottomRight",
+                "exported": true,
+                "type": { "kind": "named", "pkg": "example.com/m/geo", "name": "Point" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+fn lower_nominal_fixture() -> nudox_ir::package::IrPackage<GoId> {
+    let producer = GoProducer;
+    producer
+        .lower_bytes(
+            NOMINAL_FIELD_JSON.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("nominal fixture must lower without error")
+}
+
+/// The key regression test: `TopLeft` must lower to `Type::Nominal`, not `Any`.
+#[test]
+fn struct_field_named_type_is_nominal_not_any() {
+    let pkg = lower_nominal_fixture();
+    let top_left = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "TopLeft")
+        .expect("TopLeft field must be declared");
+    let field_body = top_left
+        .1
+        .downcast::<Field>()
+        .expect("TopLeft must be a Field");
+    match field_body.body().ty.as_ref() {
+        Some(Type::Nominal(_)) => {}
+        other => panic!(
+            "TopLeft's type must be Type::Nominal (a named ref to Point), got {other:?}"
+        ),
+    }
+}
+
+/// Mirror check: primitive-typed fields must still lower to a Primitive, not
+/// accidentally become Nominal.
+#[test]
+fn struct_field_primitive_type_stays_primitive() {
+    let pkg = lower_nominal_fixture();
+    let x = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "X")
+        .expect("X field must be declared");
+    let field_body = x.1.downcast::<Field>().expect("X must be a Field");
+    match field_body.body().ty.as_ref() {
+        Some(Type::Primitive(_)) => {}
+        other => panic!("X's type must be Type::Primitive(Float), got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Item 2: TypeParam lowers to TypeVar, not SelfType
+// ---------------------------------------------------------------------------
+
+const GENERIC_STRUCT_JSON: &str = r#"
+{
+  "module": { "path": "example.com/m", "dir": "/tmp/m", "goVersion": "1.22" },
+  "packages": [
+    {
+      "importPath": "example.com/m/coll",
+      "name": "coll",
+      "doc": "Package coll.",
+      "decls": [
+        {
+          "kind": "type",
+          "name": "Box",
+          "exported": true,
+          "doc": "Box is a generic container.",
+          "typeParams": [
+            { "name": "T", "constraint": { "kind": "interface" } }
+          ],
+          "underlying": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "Value",
+                "exported": true,
+                "type": { "kind": "typeParam", "name": "T" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+fn lower_generic_struct_fixture() -> nudox_ir::package::IrPackage<GoId> {
+    let producer = GoProducer;
+    producer
+        .lower_bytes(
+            GENERIC_STRUCT_JSON.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("generic struct fixture must lower without error")
+}
+
+#[test]
+fn type_param_use_lowers_to_typevar_not_self_type() {
+    let pkg = lower_generic_struct_fixture();
+    let value_field = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Value")
+        .expect("Value field must be declared");
+    let field_body = value_field
+        .1
+        .downcast::<Field>()
+        .expect("Value must be a Field");
+    match field_body.body().ty.as_ref() {
+        Some(Type::TypeVar(name)) => {
+            assert_eq!(name, "T", "TypeVar name must match the type param name");
+        }
+        other => panic!(
+            "Value's type (a TypeParam use) must be Type::TypeVar, not {:?}",
+            other
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Item 3: implements facts → super_types
+// ---------------------------------------------------------------------------
+
+const IMPLEMENTS_JSON: &str = r#"
+{
+  "module": { "path": "example.com/m", "dir": "/tmp/m", "goVersion": "1.22" },
+  "packages": [
+    {
+      "importPath": "example.com/m/shapes",
+      "name": "shapes",
+      "doc": "Package shapes.",
+      "decls": [
+        {
+          "kind": "type",
+          "name": "Shape",
+          "exported": true,
+          "doc": "Shape is an interface.",
+          "underlying": {
+            "kind": "interface",
+            "explicitMethods": [
+              {
+                "name": "Area",
+                "exported": true,
+                "signature": { "kind": "func", "results": [{ "type": { "kind": "basic", "name": "float64" } }] }
+              }
+            ],
+            "allMethods": [
+              {
+                "name": "Area",
+                "exported": true,
+                "signature": { "kind": "func", "results": [{ "type": { "kind": "basic", "name": "float64" } }] }
+              }
+            ]
+          }
+        },
+        {
+          "kind": "type",
+          "name": "Circle",
+          "exported": true,
+          "doc": "Circle implements Shape.",
+          "underlying": {
+            "kind": "struct",
+            "fields": [
+              { "name": "Radius", "exported": true, "type": { "kind": "basic", "name": "float64" } }
+            ]
+          },
+          "implements": [
+            { "kind": "named", "pkg": "example.com/m/shapes", "name": "Shape" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+fn lower_implements_fixture() -> nudox_ir::package::IrPackage<GoId> {
+    let producer = GoProducer;
+    producer
+        .lower_bytes(
+            IMPLEMENTS_JSON.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("implements fixture must lower without error")
+}
+
+#[test]
+fn implements_populates_super_types() {
+    let pkg = lower_implements_fixture();
+    let circle = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Circle")
+        .expect("Circle must be declared");
+    let record_body = circle
+        .1
+        .downcast::<Record>()
+        .expect("Circle must be a Record");
+    let super_types = &record_body.body().super_types;
+    assert_eq!(
+        super_types.len(),
+        1,
+        "Circle must have exactly 1 super_type (Shape), got {}",
+        super_types.len()
+    );
+    // The super_type must be a Nominal ref, not Any.
+    assert!(
+        matches!(super_types[0], Type::Nominal(_)),
+        "super_type must be Type::Nominal(Shape ref), got {:?}",
+        super_types[0]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Item 4: Deprecation is parsed from doc strings
+// ---------------------------------------------------------------------------
+
+const DEPRECATED_JSON: &str = r#"
+{
+  "module": { "path": "example.com/m", "dir": "/tmp/m", "goVersion": "1.22" },
+  "packages": [
+    {
+      "importPath": "example.com/m/old",
+      "name": "old",
+      "doc": "Package old.",
+      "decls": [
+        {
+          "kind": "func",
+          "name": "OldFunc",
+          "exported": true,
+          "doc": "OldFunc does a thing.\n\nDeprecated: use NewFunc instead.",
+          "signature": { "kind": "func" }
+        },
+        {
+          "kind": "func",
+          "name": "NewFunc",
+          "exported": true,
+          "doc": "NewFunc does the thing better.",
+          "signature": { "kind": "func" }
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+fn lower_deprecated_fixture() -> nudox_ir::package::IrPackage<GoId> {
+    let producer = GoProducer;
+    producer
+        .lower_bytes(
+            DEPRECATED_JSON.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("deprecated fixture must lower without error")
+}
+
+#[test]
+fn deprecated_doc_populates_deprecation() {
+    let pkg = lower_deprecated_fixture();
+    let old_func = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "OldFunc")
+        .expect("OldFunc must be declared");
+    let dep = old_func.1.sym().deprecation.as_ref();
+    assert!(
+        dep.is_some(),
+        "OldFunc must have a Deprecation; doc contains 'Deprecated: use NewFunc instead.'"
+    );
+    let note = dep.unwrap().note.as_deref().unwrap_or("");
+    assert!(
+        note.contains("NewFunc"),
+        "Deprecation note must include the reason, got: {note:?}"
+    );
+}
+
+#[test]
+fn non_deprecated_func_has_no_deprecation() {
+    let pkg = lower_deprecated_fixture();
+    let new_func = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "NewFunc")
+        .expect("NewFunc must be declared");
+    assert!(
+        new_func.1.sym().deprecation.is_none(),
+        "NewFunc must not be deprecated"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Item 5: Struct field tags and embedded markers
+// ---------------------------------------------------------------------------
+
+const TAGS_JSON: &str = r#"
+{
+  "module": { "path": "example.com/m", "dir": "/tmp/m", "goVersion": "1.22" },
+  "packages": [
+    {
+      "importPath": "example.com/m/data",
+      "name": "data",
+      "doc": "Package data.",
+      "decls": [
+        {
+          "kind": "type",
+          "name": "Base",
+          "exported": true,
+          "doc": "Base is embedded.",
+          "underlying": { "kind": "struct", "fields": [] }
+        },
+        {
+          "kind": "type",
+          "name": "User",
+          "exported": true,
+          "doc": "User has tags and an embedded field.",
+          "underlying": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "Name",
+                "exported": true,
+                "tag": "json:\"name,omitempty\"",
+                "embedded": false,
+                "type": { "kind": "basic", "name": "string" }
+              },
+              {
+                "name": "Base",
+                "exported": true,
+                "tag": "",
+                "embedded": true,
+                "type": { "kind": "named", "pkg": "example.com/m/data", "name": "Base" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+fn lower_tags_fixture() -> nudox_ir::package::IrPackage<GoId> {
+    let producer = GoProducer;
+    producer
+        .lower_bytes(
+            TAGS_JSON.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("tags fixture must lower without error")
+}
+
+#[test]
+fn struct_field_tag_stored_in_attrs() {
+    let pkg = lower_tags_fixture();
+    // Find the Name field on User (there's also a Name field potentially
+    // on Base if any — use parent scoping through children count).
+    // Strategy: look for a Field with an attr token "tag".
+    let name_field = pkg
+        .iter()
+        .find(|(_, e)| {
+            e.sym().name == "Name"
+                && e.downcast::<Field>().is_some()
+                && e.sym().attrs.iter().any(|a| a.token == "tag")
+        })
+        .expect("Name field with tag attr must be declared");
+    let tag_attr = name_field
+        .1
+        .sym()
+        .attrs
+        .iter()
+        .find(|a| a.token == "tag")
+        .expect("tag attr must exist");
+    assert_eq!(
+        tag_attr.arg.as_deref(),
+        Some("json:\"name,omitempty\""),
+        "tag arg must be the raw struct tag"
+    );
+}
+
+#[test]
+fn embedded_field_marked_in_attrs() {
+    let pkg = lower_tags_fixture();
+    // The embedded Base field on User must carry an AttrTok { token: "embedded" }.
+    // There are two "Base" entries: the type itself and the embedded field.
+    // The embedded field has downcast::<Field>().is_some().
+    let embedded_field = pkg
+        .iter()
+        .find(|(_, e)| {
+            e.sym().name == "Base"
+                && e.downcast::<Field>().is_some()
+                && e.sym().attrs.iter().any(|a| a.token == "embedded")
+        })
+        .expect("Base embedded field must have embedded attr");
+    let _ = embedded_field; // assertion is in the find predicate
+}
+
+// ---------------------------------------------------------------------------
+// Item 7a: IsComparable → AttrTok on interface
+// ---------------------------------------------------------------------------
+
+const COMPARABLE_JSON: &str = r#"
+{
+  "module": { "path": "example.com/m", "dir": "/tmp/m", "goVersion": "1.22" },
+  "packages": [
+    {
+      "importPath": "example.com/m/cmp",
+      "name": "cmp",
+      "doc": "Package cmp.",
+      "decls": [
+        {
+          "kind": "type",
+          "name": "Keyed",
+          "exported": true,
+          "doc": "Keyed requires comparable.",
+          "underlying": {
+            "kind": "interface",
+            "isComparable": true,
+            "explicitMethods": [],
+            "allMethods": []
+          }
+        },
+        {
+          "kind": "type",
+          "name": "Open",
+          "exported": true,
+          "doc": "Open is a plain interface.",
+          "underlying": {
+            "kind": "interface",
+            "isComparable": false,
+            "explicitMethods": [
+              {
+                "name": "Do",
+                "exported": true,
+                "signature": { "kind": "func" }
+              }
+            ],
+            "allMethods": [
+              {
+                "name": "Do",
+                "exported": true,
+                "signature": { "kind": "func" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+fn lower_comparable_fixture() -> nudox_ir::package::IrPackage<GoId> {
+    let producer = GoProducer;
+    producer
+        .lower_bytes(
+            COMPARABLE_JSON.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("comparable fixture must lower without error")
+}
+
+#[test]
+fn is_comparable_surfaces_as_attr_tok() {
+    let pkg = lower_comparable_fixture();
+    let keyed = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Keyed")
+        .expect("Keyed interface must be declared");
+    assert!(
+        keyed.1.sym().attrs.iter().any(|a| a.token == "comparable"),
+        "Keyed (isComparable=true) must have AttrTok {{token: \"comparable\"}}"
+    );
+}
+
+#[test]
+fn non_comparable_interface_has_no_comparable_attr() {
+    let pkg = lower_comparable_fixture();
+    let open = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Open")
+        .expect("Open interface must be declared");
+    assert!(
+        !open.1.sym().attrs.iter().any(|a| a.token == "comparable"),
+        "Open (isComparable=false) must not have comparable attr"
     );
 }

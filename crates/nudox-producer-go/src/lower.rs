@@ -144,10 +144,105 @@ fn detect_iota_enums<'a>(pkg: &'a oracle::Package) -> IotaEnums<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Doc-string parsing
+// ---------------------------------------------------------------------------
+
+/// Parse a Go doc comment and populate `deprecation` and `doc_links` on a
+/// [`Symbol`].
+///
+/// The Go doc convention for deprecation is a paragraph beginning with
+/// `Deprecated: <reason>`.  We detect this in the raw doc text with a
+/// simple prefix scan.  Full go/doc block parsing (headings, code blocks,
+/// list items, link definitions) is available in the companion
+/// `workspace/compiler/compile/go/docstring.rs` parser; here we implement
+/// the minimum required by the mission brief.
+///
+/// Concretely:
+/// * If any line or the start of any paragraph begins with `Deprecated: `
+///   (case-sensitive, space-after-colon), we extract the rest of that line
+///   and any following non-blank lines as the deprecation notice.
+/// * `[Name]: URL` link-definition lines (go/doc format) are extracted as
+///   `DocLink { target: URL, label: Some(Name) }` entries.
+fn parse_doc(raw: &str) -> (Option<Deprecation>, Box<[DocLink]>) {
+    let mut deprecation: Option<Deprecation> = None;
+    let mut doc_links: Vec<DocLink> = Vec::new();
+
+    // --- Deprecation detection ---
+    // Walk paragraphs (separated by blank lines).  A paragraph that starts
+    // with "Deprecated: " carries the notice.  Everything from that line
+    // onward (within the paragraph) is the note.
+    let mut in_deprecated_para = false;
+    let mut deprecated_lines: Vec<&str> = Vec::new();
+    let mut prev_blank = true; // treat the start as a paragraph boundary
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        let is_blank = trimmed.is_empty();
+
+        if is_blank {
+            in_deprecated_para = false;
+            prev_blank = true;
+            continue;
+        }
+
+        // Paragraph start: check for Deprecated: prefix.
+        if prev_blank {
+            if let Some(rest) = trimmed.strip_prefix("Deprecated:") {
+                in_deprecated_para = true;
+                let note = rest.trim();
+                if !note.is_empty() {
+                    deprecated_lines.push(note);
+                }
+                prev_blank = false;
+                continue;
+            }
+        }
+
+        if in_deprecated_para {
+            deprecated_lines.push(trimmed);
+        }
+
+        // Link definition: `[Name]: URL`
+        if let Some(link) = parse_link_def(trimmed) {
+            doc_links.push(link);
+        }
+
+        prev_blank = false;
+    }
+
+    if !deprecated_lines.is_empty() {
+        let note = deprecated_lines.join(" ");
+        deprecation = Some(Deprecation {
+            note: Some(note),
+            since: None,
+        });
+    }
+
+    (deprecation, doc_links.into_boxed_slice())
+}
+
+/// Parse a go/doc link definition line `[Name]: URL`.
+///
+/// Returns `None` if the line does not match the expected pattern.
+fn parse_link_def(line: &str) -> Option<DocLink> {
+    let rest = line.strip_prefix('[')?;
+    let (name, tail) = rest.split_once("]:")?;
+    let url = tail.trim();
+    if name.is_empty() || url.is_empty() || url.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(DocLink {
+        target: url.to_string(),
+        label: Some(name.to_string()),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Symbol helpers
 // ---------------------------------------------------------------------------
 
-/// Build a minimal [`Symbol`] for a declaration.
+/// Build a [`Symbol`] for a declaration, parsing the doc string for
+/// deprecation notices and link definitions.
 fn sym_for(name: &str, doc: &str, exported: bool, pos: Option<&oracle::Pos>) -> Symbol {
     let vis = if exported {
         Visibility::Public
@@ -157,6 +252,7 @@ fn sym_for(name: &str, doc: &str, exported: bool, pos: Option<&oracle::Pos>) -> 
     let source = pos.map(|p| PathBuf::from(&p.file)).unwrap_or_default();
     // Span: we only have line/col from the oracle, not byte offsets.
     // Store 0..0 — downstream consumers that need byte spans will re-parse.
+    let (deprecation, doc_links) = parse_doc(doc);
     Symbol {
         name: name.to_owned(),
         visibility: vis,
@@ -164,8 +260,8 @@ fn sym_for(name: &str, doc: &str, exported: bool, pos: Option<&oracle::Pos>) -> 
         source,
         span: 0..0,
         aliases: Box::new([]),
-        deprecation: None,
-        doc_links: Box::new([]),
+        deprecation,
+        doc_links,
         attrs: Box::new([]),
         cfg: None,
     }
@@ -310,18 +406,23 @@ fn lower_struct(
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(types::lower_type_param_decl)
+        .map(|tp| types::lower_type_param_decl(tp, low))
         .collect();
 
-    // super_types: the `implements` list from the oracle maps to super_types
-    // as nominal Type refs.  We cannot produce Nominal refs without Lowering
-    // access to `refer` — this is an IR gap (see report).
-    // For now, leave super_types empty.
+    // Item 3: Populate super_types from the oracle's `implements` list.
+    // Each entry is a Named/Alias type ref — lower_type_with_lowering produces
+    // Type::Nominal(RawRef) for it, giving us a live edge in the type graph.
+    let super_types: Vec<Type> = decl
+        .implements
+        .iter()
+        .map(|iface_ty| types::lower_type_with_lowering(iface_ty, low))
+        .collect();
 
     let record = Record::builder()
         .form(RecordForm::Struct)
         .fields(field_refs)
         .generics(generics)
+        .super_types(super_types)
         .build();
 
     low.declare(item_id.clone(), Some(parent), sym, record);
@@ -338,16 +439,48 @@ fn lower_struct(
             .get(&f.name)
             .map(|s| s.as_str())
             .unwrap_or("");
-        let fsym = sym_for(&f.name, fdoc, f.exported, None);
-        let fty = f.r#type.as_ref().map(types::lower_type);
+        let mut fsym = sym_for(&f.name, fdoc, f.exported, None);
+
+        // Item 5: Struct field tags and embedded markers.
+        // Tags (`json:"name,omitempty"`) are real API surface and go into attrs.
+        // Embedded fields are marked with an "embedded" AttrTok.
+        let mut attrs: Vec<AttrTok> = Vec::new();
+        if f.embedded {
+            attrs.push(AttrTok {
+                token: "embedded".to_string(),
+                arg: None,
+            });
+        }
+        if !f.tag.is_empty() {
+            attrs.push(AttrTok {
+                token: "tag".to_string(),
+                arg: Some(f.tag.clone()),
+            });
+        }
+        fsym.attrs = attrs.into_boxed_slice();
 
         // Go struct fields are always assignable: mark Mutable.
-        // Tags and embedded metadata are not representable as FieldAttributes;
-        // both are dropped here — see report uncertainty list.
+        let mut field_attrs = vec![FieldAttribute::Mutable];
+        // Note: FieldAttribute has no Embedded variant; we use AttrTok above.
+        // If a dedicated FieldAttribute::Embedded is added to nudox-ir, the
+        // AttrTok approach should be replaced.
+        if f.embedded {
+            // Keep the embedded marker only in attrs (above); FieldAttribute
+            // has no Embedded variant in the current IR.
+            let _ = &mut field_attrs; // suppress unused-mut warning
+        }
+
+        // Field type: use lower_type_with_lowering so named types produce
+        // Nominal refs rather than Any.
+        let fty = f
+            .r#type
+            .as_ref()
+            .map(|t| types::lower_type_with_lowering(t, low));
+
         let field_kind = Field::builder()
             .key(FieldKey::Named)
             .maybe_ty(fty)
-            .attributes([FieldAttribute::Mutable])
+            .attributes(field_attrs)
             .build();
 
         low.declare(fid, Some(item_id.clone()), fsym, field_kind);
@@ -368,17 +501,30 @@ fn lower_interface(
     parent: GoId,
     low: &mut Lowering<GoId>,
 ) -> Result<()> {
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let mut sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(types::lower_type_param_decl)
+        .map(|tp| types::lower_type_param_decl(tp, low))
         .collect();
 
-    // supers: embedded named interfaces in the oracle's `embeddeds` list.
-    // We cannot produce `Type::Nominal` refs here without Lowering access —
-    // see report gap list.  Leave supers empty.
+    // Item 7a: surface IsComparable as an AttrTok.
+    // The underlying interface type carries `is_comparable`.
+    let is_comparable = decl
+        .underlying
+        .as_ref()
+        .map(|u| u.is_comparable)
+        .unwrap_or(false);
+    if is_comparable {
+        // AttrTok does not derive Clone; build the new list from scratch.
+        // (sym.attrs is empty for freshly-constructed symbols, so we know the
+        // previous list had no prior attrs — if it ever gains entries, extend here.)
+        sym.attrs = Box::new([AttrTok {
+            token: "comparable".to_string(),
+            arg: None,
+        }]);
+    }
 
     let trait_kind = Trait::builder()
         .flags(TraitFlags::default())
@@ -463,7 +609,7 @@ fn lower_newtype(
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(types::lower_type_param_decl)
+        .map(|tp| types::lower_type_param_decl(tp, low))
         .collect();
 
     let record = Record::builder()
@@ -474,8 +620,12 @@ fn lower_newtype(
 
     low.declare(item_id.clone(), Some(parent), sym, record);
 
-    // Declare the single inner field.
-    let underlying_ty = decl.underlying.as_ref().map(types::lower_type);
+    // Declare the single inner field using lower_type_with_lowering so
+    // named underlying types produce Nominal refs.
+    let underlying_ty = decl
+        .underlying
+        .as_ref()
+        .map(|t| types::lower_type_with_lowering(t, low));
     let inner_sym = sym_for("(inner)", "(underlying type field)", decl.exported, None);
     let inner_field = Field::builder()
         .key(FieldKey::Positional(0))
@@ -515,7 +665,7 @@ fn lower_iota_enum(
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(types::lower_type_param_decl)
+        .map(|tp| types::lower_type_param_decl(tp, low))
         .collect();
 
     let enum_kind = Enum::builder()
@@ -526,6 +676,13 @@ fn lower_iota_enum(
     low.declare(item_id.clone(), Some(parent), sym, enum_kind);
 
     // Declare each variant.
+    // Item 7b: discriminant values are stored as raw oracle strings.
+    // The oracle emits `constant.Value.ExactString()` which for integer iota
+    // constants is the decimal string ("0", "1", …).  A structured ConstExpr
+    // would require a `ConstExpr` enum in nudox-ir (int / float / bool / str /
+    // rational / var) — the old workspace/compiler/compile/go/types.rs had
+    // `parse_const_value` that produced such a struct.  Until nudox-ir adds
+    // `ConstExpr`, we store the best-available rendering: the raw string.
     for v in variants.iter() {
         let vid = GoId::Variant {
             import_path: pkg.import_path.clone(),
@@ -566,11 +723,15 @@ fn lower_alias(
     };
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
-    let target = decl.target.as_ref().map(types::lower_type);
+    // Use lower_type_with_lowering so named alias targets produce Nominal refs.
+    let target = decl
+        .target
+        .as_ref()
+        .map(|t| types::lower_type_with_lowering(t, low));
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(types::lower_type_param_decl)
+        .map(|tp| types::lower_type_param_decl(tp, low))
         .collect();
 
     let alias_kind = Alias::builder()
@@ -604,7 +765,7 @@ fn lower_func(
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(types::lower_type_param_decl)
+        .map(|tp| types::lower_type_param_decl(tp, low))
         .collect();
 
     // Variadic flag is captured on the last Param via ParamAttribute::Variadic
@@ -637,12 +798,15 @@ fn lower_const(
     };
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
+    // Use lower_type_with_lowering so named const types produce Nominal refs.
     let ty = decl
         .r#type
         .as_ref()
-        .map(types::lower_type)
+        .map(|t| types::lower_type_with_lowering(t, low))
         .unwrap_or(Type::Any);
 
+    // Item 7b: const values stored as raw oracle strings (ExactString from
+    // go/constant).  A structured ConstExpr would need nudox-ir support.
     let value = if decl.value.is_empty() {
         None
     } else {
@@ -670,10 +834,11 @@ fn lower_var(
     };
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
+    // Use lower_type_with_lowering so named var types produce Nominal refs.
     let ty = decl
         .r#type
         .as_ref()
-        .map(types::lower_type)
+        .map(|t| types::lower_type_with_lowering(t, low))
         .unwrap_or(Type::Any);
 
     let static_kind = Static::builder().ty(ty).mutable(true).build();
@@ -803,7 +968,11 @@ fn lower_sig_params_into_lowering(
         } else {
             vec![]
         };
-        let ty = p.r#type.as_ref().map(types::lower_type);
+        // Use lower_type_with_lowering so named param types produce Nominal refs.
+        let ty = p
+            .r#type
+            .as_ref()
+            .map(|t| types::lower_type_with_lowering(t, low));
         let pname = if p.name.is_empty() {
             format!("_{i}")
         } else {
@@ -829,7 +998,11 @@ fn lower_sig_params_into_lowering(
                 }
             ),
         };
-        let ty = r.r#type.as_ref().map(types::lower_type);
+        // Use lower_type_with_lowering so named result types produce Nominal refs.
+        let ty = r
+            .r#type
+            .as_ref()
+            .map(|t| types::lower_type_with_lowering(t, low));
         let rname = if r.name.is_empty() {
             format!("_{i}")
         } else {

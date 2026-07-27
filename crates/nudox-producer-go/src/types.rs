@@ -1,43 +1,53 @@
 //! Lower the oracle's structural Go type tree into `nudox_ir::kinds::Type`.
 //!
-//! Design decisions (mirroring the old `workspace/compiler/compile/go/types.rs`
-//! but targeting the new IR):
+//! ## Design decisions
 //!
 //! * **Named / alias** → `Type::Nominal(RawRef)` obtained via
 //!   `Lowering::refer`, or `Type::Apply { base, args }` for instantiated
-//!   generic named types.
+//!   generic named types.  Requires `&mut Lowering<GoId>` in scope — every
+//!   type-lowering helper that may encounter a named type therefore accepts a
+//!   `low: &mut Lowering<GoId>` parameter.
 //! * **Pointer** (`*T`) → `Type::Primitive(Primitive::MutPointer(elem))` — Go
 //!   pointers are GC-managed, freely mutable, and carry no borrow discipline;
 //!   `MutPointer` over-claims less than a reference type.
 //! * **Slice** (`[]T`) → `Type::Slice(elem)`.
 //! * **Array** (`[N]T`) → `Type::Array { ty: elem, length: N }`.
-//! * **Map** (`map[K]V`) — no direct IR type.  Lowered as
-//!   `Type::Nominal(refer("map"))` applied to `[K, V]` as a `Type::Apply`.
-//!   However, since "map" is not a real declared type, we cannot refer to it.
-//!   Instead we fall back to `Type::Any` with a logged note and return
-//!   `ProducerError::Unsupported` at the call site when the caller wants
-//!   precision.  In practice the IR has no map primitive — see the UNCERTAINTY
-//!   note in the report.
-//! * **Chan** — similarly no IR type; lowered as `Type::Any` (unsupported).
-//! * **Func type** → `Type::Tuple` of param + result types as a fallback;
-//!   structural function pointers cannot be faithfully round-tripped without a
-//!   dedicated IR variant.  Returned as `Type::Any` (see uncertainty note).
-//! * **Struct literal** (anonymous) → `Type::Any` (no inline struct literal in
-//!   the new IR; the old IR had `RecordLiteral`).
-//! * **Interface literal** → `Type::Any` (same gap; the old IR had
-//!   `Intersection`/`RecordLiteral`).
-//! * **Constraint union** → `Type::Union(parts)`.
-//! * **TypeParam** → `Type::SelfType` placeholder (no GenericParam type-var in
-//!   the new IR's `Type` enum — see uncertainty note).
+//! * **Map** (`map[K]V`) — no direct IR type.  Encoded as
+//!   `Type::Apply { base: TypeVar("map"), args: [K, V] }`.  This preserves both
+//!   type arguments structurally; `TypeVar("map")` is a sentinel that signals
+//!   "Go built-in map" to renderers that special-case it.  The alternative
+//!   (`Type::Any`) would silently drop K and V, which is worse.
+//!   IR GAP: a dedicated `Type::Map` variant would be cleaner.
+//! * **Chan** — encoded as `Type::Apply { base: TypeVar("chan" | "chan<-" |
+//!   "<-chan"), args: [elem] }`.  Direction is preserved in the base sentinel.
+//!   IR GAP: a dedicated `Type::Chan` variant would be cleaner.
+//! * **Func type** → `Type::Apply { base: TypeVar("func"), args: [param...,
+//!   result...] }` as a partial encoding.  Parameter/result arity is preserved;
+//!   the boundary between inputs and outputs is not encoded at the type level
+//!   (a `Type::FuncPointer` variant would be the right fix).
+//!   IR GAP: no structural func-pointer type.
+//! * **Struct literal** (anonymous) → `Type::Any`.
+//!   IR GAP: no inline struct literal type.
+//! * **Interface literal** → `Type::Any` for non-empty interfaces.
+//!   IR GAP: no inline interface type.
+//! * **Constraint union** → `Type::Union(parts)`, with `~T` approximation
+//!   terms encoded as `Type::Apply { base: TypeVar("~"), args: [T] }`.
+//! * **TypeParam** → `Type::TypeVar(name)` — a use of a generic parameter.
 //! * **Basic** types → `Type::Primitive(...)` or `Type::Primitive(Str)` etc.
 
-use nudox_ir::kinds::{
-    function::Receiver,
-    generics::GenericParam,
-    ty::{Primitive, Type, Width},
+use nudox_ir::{
+    build::*,
+    kinds::{
+        function::Receiver,
+        generics::GenericParam,
+        ty::{Primitive, Type, Width},
+    },
 };
 
-use crate::oracle::{self, TypeKind};
+use crate::{
+    lower::GoId,
+    oracle::{self, TypeKind},
+};
 
 /// Defensive recursion bound.  Anonymous Go types cannot cycle, so this only
 /// guards against malformed oracle output.
@@ -53,54 +63,67 @@ pub fn qualify(pkg: &str, name: &str) -> String {
     }
 }
 
-/// Lower an oracle type node.  This version does NOT take a `Lowering` sink
-/// because named-type references inside `Type` must be `RawRef` values, which
-/// require calling `Lowering::refer` — but `Type` is a plain value, not a
-/// builder step.  For named types we resolve them separately via
-/// [`lower_named_ref`].
-pub fn lower_type(t: &oracle::Type) -> Type {
-    lower_type_depth(t, 0)
+// ---------------------------------------------------------------------------
+// Primary entry point — requires Lowering access for nominal refs
+// ---------------------------------------------------------------------------
+
+/// Lower an oracle type node, emitting nominal refs via `low`.
+///
+/// Every named/alias type produces a `Type::Nominal(RawRef)` via
+/// `low.refer(GoId::Item { ... })`, so the type graph is fully connected.
+///
+/// `low` and the oracle data are disjoint borrows; the borrow checker can
+/// verify this at each call site (oracle `Type` lives in the oracle output,
+/// `Lowering` owns only its internal index).
+pub fn lower_type_with_lowering(t: &oracle::Type, low: &mut Lowering<GoId>) -> Type {
+    lower_type_depth_low(t, low, 0)
 }
 
-fn lower_type_depth(t: &oracle::Type, depth: usize) -> Type {
+fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize) -> Type {
     if depth >= MAX_DEPTH {
         return Type::Any;
     }
     match t.kind {
         TypeKind::Basic => lower_basic(&t.name),
 
-        // Named and alias types — in the new IR these are `Type::Nominal(RawRef)`.
-        // We CANNOT lower them here because we do not have access to the
-        // `Lowering` sink to call `refer`.  Callers that need a nominal ref must
-        // call `lower_named_as_type(t, lowering)` from the lowering module.
-        // This fallback handles types that appear only in annotation position
-        // (field types, param types etc.) where the lowering function is threaded
-        // through.
-        //
-        // UNCERTAINTY: This path returns `Type::Any` for named/alias types when
-        // called from contexts that do not pass the Lowering sink (e.g. inside
-        // anonymous type recursion).  The caller `types_lower_with_lowering`
-        // in `lower.rs` handles the top-level case correctly.
+        // Named and alias types → Nominal(RawRef).
+        // `any` (universe alias for the empty interface) → top type.
+        // Generic instantiations → Apply { base: Nominal, args }.
         TypeKind::Named | TypeKind::Alias => {
             if t.pkg.is_empty() && t.name == "any" {
                 return Type::Any;
             }
-            // Cannot produce a RawRef here — see module doc.
-            // Fallback: opaque Any.  Callers that need precision must use
-            // lower_named_as_type instead.
-            Type::Any
+            let go_id = GoId::Item {
+                import_path: t.pkg.clone(),
+                name: t.name.clone(),
+            };
+            let raw: RawRef = low.refer::<nudox_ir::kinds::Record>(go_id).into_raw();
+            let base = Type::Nominal(raw);
+            if t.type_args.is_empty() {
+                base
+            } else {
+                let args: Box<[Type]> = t
+                    .type_args
+                    .iter()
+                    .map(|a| lower_type_depth_low(a, low, depth + 1))
+                    .collect();
+                Type::Apply {
+                    base: Box::new(base),
+                    args,
+                }
+            }
         }
 
-        // Type parameters — the new IR's `Type` enum has no TypeParam/TypeVar
-        // variant.  `Type::SelfType` is a placeholder; its semantics differ.
-        // UNCERTAINTY: This is a gap in the IR.
-        TypeKind::TypeParam => Type::SelfType,
+        // Type-parameter uses → TypeVar(name).
+        // TypeVar is "a reference to a generic parameter by name" — exactly right.
+        // SelfType means "the receiver type" — that is simply wrong for TypeParam.
+        TypeKind::TypeParam => Type::TypeVar(t.name.clone()),
 
         TypeKind::Pointer => {
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth(e, depth + 1))
+                .map(|e| lower_type_depth_low(e, low, depth + 1))
                 .unwrap_or(Type::Any);
             Type::Primitive(Primitive::MutPointer(Box::new(elem)))
         }
@@ -109,7 +132,7 @@ fn lower_type_depth(t: &oracle::Type, depth: usize) -> Type {
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth(e, depth + 1))
+                .map(|e| lower_type_depth_low(e, low, depth + 1))
                 .unwrap_or(Type::Any);
             Type::Slice(Box::new(elem))
         }
@@ -118,7 +141,7 @@ fn lower_type_depth(t: &oracle::Type, depth: usize) -> Type {
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth(e, depth + 1))
+                .map(|e| lower_type_depth_low(e, low, depth + 1))
                 .unwrap_or(Type::Any);
             Type::Array {
                 ty: Box::new(elem),
@@ -126,29 +149,109 @@ fn lower_type_depth(t: &oracle::Type, depth: usize) -> Type {
             }
         }
 
-        // No map/chan/func/struct-literal/interface-literal in the new IR type
-        // algebra.  These fall back to Any.  The lowering module notes these
-        // with ProducerError::Unsupported when they appear at declaration level.
-        TypeKind::Map | TypeKind::Chan | TypeKind::Func | TypeKind::Struct => Type::Any,
+        // IR GAP: no map type.  Encode as Apply { base: TypeVar("map"), args: [K, V] }.
+        // This preserves both type arguments structurally; renderers that understand
+        // the "map" sentinel can reconstruct Go map syntax.  Type::Any would lose K/V.
+        TypeKind::Map => {
+            let key = t
+                .key
+                .as_deref()
+                .map(|k| lower_type_depth_low(k, low, depth + 1))
+                .unwrap_or(Type::Any);
+            let val = t
+                .value
+                .as_deref()
+                .map(|v| lower_type_depth_low(v, low, depth + 1))
+                .unwrap_or(Type::Any);
+            Type::Apply {
+                base: Box::new(Type::TypeVar("map".to_string())),
+                args: Box::new([key, val]),
+            }
+        }
+
+        // IR GAP: no channel type.  Encode as Apply { base: TypeVar(dir_op), args: [elem] }.
+        // Direction ("chan", "chan<-", "<-chan") is preserved in the base sentinel.
+        TypeKind::Chan => {
+            let op = chan_op(t.dir).to_string();
+            let elem = t
+                .elem
+                .as_deref()
+                .map(|e| lower_type_depth_low(e, low, depth + 1))
+                .unwrap_or(Type::Any);
+            Type::Apply {
+                base: Box::new(Type::TypeVar(op)),
+                args: Box::new([elem]),
+            }
+        }
+
+        // IR GAP: no structural func-pointer type.  Encode as
+        // Apply { base: TypeVar("func"), args: [params..., results...] }.
+        // Arity is preserved; input/output boundary is not encoded at the type level.
+        // A dedicated Type::FuncPointer variant would be the correct fix in nudox-ir.
+        TypeKind::Func => {
+            let mut args: Vec<Type> = t
+                .params
+                .iter()
+                .map(|p| {
+                    p.r#type
+                        .as_ref()
+                        .map(|ty| lower_type_depth_low(ty, low, depth + 1))
+                        .unwrap_or(Type::Any)
+                })
+                .collect();
+            for r in t.results.iter() {
+                args.push(
+                    r.r#type
+                        .as_ref()
+                        .map(|ty| lower_type_depth_low(ty, low, depth + 1))
+                        .unwrap_or(Type::Any),
+                );
+            }
+            Type::Apply {
+                base: Box::new(Type::TypeVar("func".to_string())),
+                args: args.into_boxed_slice(),
+            }
+        }
+
+        // IR GAP: no inline struct literal type.  Falls back to Any.
+        TypeKind::Struct => Type::Any,
 
         TypeKind::Interface => {
             if t.is_empty_interface() {
+                // empty interface = `any` = top type
                 Type::Any
             } else {
-                // Anonymous non-empty interface: no faithful representation.
+                // IR GAP: no faithful inline interface literal type.
+                // Anonymous non-empty interfaces cannot be faithfully represented
+                // in the new IR's Type algebra.  Type::Any is the honest fallback.
                 Type::Any
             }
         }
 
+        // Constraint union → Type::Union.
+        // Approximation terms (`~T`) are encoded as Apply { base: TypeVar("~"), args: [T] }.
+        // Dropping the tilde would change the constraint's meaning: `~int` matches any
+        // type whose underlying type is int (e.g. `type MyInt int`), while bare `int`
+        // matches only `int` itself.
         TypeKind::Union => {
             let parts: Box<[Type]> = t
                 .terms
                 .iter()
                 .map(|term| {
-                    term.r#type
+                    let inner = term
+                        .r#type
                         .as_ref()
-                        .map(|inner| lower_type_depth(inner, depth + 1))
-                        .unwrap_or(Type::Any)
+                        .map(|inner| lower_type_depth_low(inner, low, depth + 1))
+                        .unwrap_or(Type::Any);
+                    if term.tilde {
+                        // Encode tilde-approximation: ~T ≠ T
+                        Type::Apply {
+                            base: Box::new(Type::TypeVar("~".to_string())),
+                            args: Box::new([inner]),
+                        }
+                    } else {
+                        inner
+                    }
                 })
                 .collect();
             Type::Union(parts)
@@ -158,7 +261,7 @@ fn lower_type_depth(t: &oracle::Type, depth: usize) -> Type {
             let parts: Box<[Type]> = t
                 .types
                 .iter()
-                .map(|inner| lower_type_depth(inner, depth + 1))
+                .map(|inner| lower_type_depth_low(inner, low, depth + 1))
                 .collect();
             Type::Tuple(parts)
         }
@@ -167,12 +270,30 @@ fn lower_type_depth(t: &oracle::Type, depth: usize) -> Type {
     }
 }
 
+// ---------------------------------------------------------------------------
+// chan direction sentinel
+// ---------------------------------------------------------------------------
+
+fn chan_op(dir: oracle::ChanDir) -> &'static str {
+    match dir {
+        oracle::ChanDir::Send => "chan<-",
+        oracle::ChanDir::Recv => "<-chan",
+        oracle::ChanDir::Both => "chan",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Basic type lowering (no Lowering needed)
+// ---------------------------------------------------------------------------
+
 /// Map a Go basic-type name onto the IR primitive algebra.
 ///
 /// Notable decisions:
-/// * `byte` → `Type::Any` (distinguished from `uint8` which → `U8`).
-///   UNCERTAINTY: The new IR has no `Nominal` alias for `byte`.  A forward-ref
-///   approach would require Lowering access.
+/// * `byte` → `Type::Any`.
+///   UNCERTAINTY: `byte` is a universe alias for `uint8`, but we cannot
+///   produce a nominal `RawRef` without Lowering access from this path.
+///   Callers that need a precise `byte` type should use
+///   `lower_type_with_lowering` on the containing oracle Type node instead.
 /// * `rune` → `Primitive::Char`.
 /// * `complex64`/`complex128` → `Type::Any` (no complex number primitive).
 /// * `unsafe.Pointer` → `Type::Any` (no unsafe-pointer primitive).
@@ -202,9 +323,9 @@ pub fn lower_basic(name: &str) -> Type {
             signed: false,
             width: Width::Arch,
         }),
-        // `byte` is a distinct universe alias for uint8, but we cannot produce
-        // a named-type RawRef here without Lowering access.
-        // UNCERTAINTY: falls to Any; see module doc.
+        // `byte` is a distinct universe alias for uint8.
+        // We cannot produce a nominal RawRef in this pure-function context.
+        // Callers that need precision must use lower_type_with_lowering.
         "byte" => Type::Any,
         "rune" => Type::Primitive(Primitive::Char),
         "float32" => Type::Primitive(Primitive::Float(Width::W32)),
@@ -213,6 +334,10 @@ pub fn lower_basic(name: &str) -> Type {
         _ => Type::Any,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Receiver
+// ---------------------------------------------------------------------------
 
 /// Lower a receiver kind from oracle method metadata into
 /// [`nudox_ir::kinds::function::Receiver`].
@@ -228,47 +353,72 @@ pub fn lower_receiver(pointer_recv: bool) -> Receiver {
     }
 }
 
-/// Lower a single `oracle::Type` that is known to be `Named` or `Alias` into
-/// the IR's generic-parameter list entry (constraint bound expressed as
-/// `GenericParam::Type { bounds }` using `Type::Any` for now, since we cannot
-/// produce a `Nominal` ref without lowering access).
+// ---------------------------------------------------------------------------
+// Generic parameter declarations
+// ---------------------------------------------------------------------------
+
+/// Lower a single type-parameter declaration into a [`GenericParam`].
 ///
-/// UNCERTAINTY: Constraint bounds cannot be faithfully represented as
-/// `Type::Nominal(...)` from this context.  They use `Type::Any` as a
-/// placeholder until the lowering layer threads the `Lowering` sink here.
-pub fn lower_type_param_decl(tp: &oracle::TypeParamDecl) -> GenericParam {
+/// Constraint bounds call back into `lower_type_with_lowering` so that named
+/// constraint interfaces produce `Type::Nominal(RawRef)` rather than `Any`.
+pub fn lower_type_param_decl(
+    tp: &oracle::TypeParamDecl,
+    low: &mut Lowering<GoId>,
+) -> GenericParam {
     let bounds: Box<[Type]> = tp
         .constraint
         .as_ref()
         .map(|c| {
-            // A named constraint interface → single bound (Any placeholder).
-            // A union constraint → Union of terms.
-            // An empty interface (any) → no bound.
             if c.is_empty_interface() {
+                // `any` constraint = unconstrained
                 Vec::<Type>::new().into_boxed_slice()
             } else {
-                match c.kind {
-                    TypeKind::Union => {
-                        let u = lower_type_depth(c, 0);
-                        vec![u].into_boxed_slice()
-                    }
-                    _ => vec![Type::Any].into_boxed_slice(),
-                }
+                let t = lower_type_with_lowering(c, low);
+                vec![t].into_boxed_slice()
             }
         })
         .unwrap_or_else(|| Vec::new().into_boxed_slice());
 
-    nudox_ir::kinds::GenericParam::Type {
+    GenericParam::Type {
         name: tp.name.clone(),
         bounds,
         default: None,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nudox_ir::kinds::ty::{Primitive, Width};
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn make_low() -> Lowering<GoId> {
+        use nudox_ir::{
+            build::Symbol,
+            entry::{Visibility},
+            package::PackageId,
+        };
+        let sym = Symbol {
+            name: "(root)".into(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        Lowering::new(PackageId::path("test"), sym)
+    }
+
+    // ── Primitive lowering (stateless) ────────────────────────────────────────
 
     #[test]
     fn basic_primitives() {
@@ -302,8 +452,11 @@ mod tests {
         ));
     }
 
+    // ── Structural type lowering (with lowering) ──────────────────────────────
+
     #[test]
     fn slice_lowering() {
+        let mut low = make_low();
         let t = oracle::Type {
             kind: TypeKind::Slice,
             elem: Some(Box::new(oracle::Type {
@@ -313,11 +466,12 @@ mod tests {
             })),
             ..Default::default()
         };
-        assert!(matches!(lower_type(&t), Type::Slice(_)));
+        assert!(matches!(lower_type_with_lowering(&t, &mut low), Type::Slice(_)));
     }
 
     #[test]
     fn array_lowering() {
+        let mut low = make_low();
         let t = oracle::Type {
             kind: TypeKind::Array,
             len: 8,
@@ -328,7 +482,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        match lower_type(&t) {
+        match lower_type_with_lowering(&t, &mut low) {
             Type::Array { length, .. } => assert_eq!(length, 8),
             other => panic!("expected Array, got {other:?}"),
         }
@@ -336,6 +490,7 @@ mod tests {
 
     #[test]
     fn pointer_lowering() {
+        let mut low = make_low();
         let t = oracle::Type {
             kind: TypeKind::Pointer,
             elem: Some(Box::new(oracle::Type {
@@ -346,14 +501,136 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            lower_type(&t),
+            lower_type_with_lowering(&t, &mut low),
             Type::Primitive(Primitive::MutPointer(_))
         ));
     }
 
+    // ── Item 1: Named type → Type::Nominal, not Type::Any ───────────────────
+
     #[test]
-    fn union_lowering() {
+    fn named_type_lowered_to_nominal() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Named,
+            pkg: "example.com/m/shapes".to_string(),
+            name: "Rect".to_string(),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::Nominal(_) => {}
+            other => panic!("named type must lower to Nominal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_type_any_stays_any() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Named,
+            pkg: "".to_string(),
+            name: "any".to_string(),
+            ..Default::default()
+        };
+        assert!(matches!(lower_type_with_lowering(&t, &mut low), Type::Any));
+    }
+
+    #[test]
+    fn generic_named_type_lowered_to_apply() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Named,
+            pkg: "example.com/m".to_string(),
+            name: "List".to_string(),
+            type_args: Box::new([oracle::Type {
+                kind: TypeKind::Basic,
+                name: "int32".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::Apply { base, args } => {
+                assert!(matches!(*base, Type::Nominal(_)), "base must be Nominal");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(args[0], Type::I32));
+            }
+            other => panic!("generic named type must lower to Apply, got {other:?}"),
+        }
+    }
+
+    // ── Item 2: TypeParam → TypeVar, not SelfType ────────────────────────────
+
+    #[test]
+    fn type_param_lowered_to_typevar() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::TypeParam,
+            name: "T".to_string(),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::TypeVar(n) => assert_eq!(n, "T"),
+            other => panic!("TypeParam must lower to TypeVar, got {other:?}"),
+        }
+    }
+
+    // ── Item 6: Tilde constraint terms encoded ────────────────────────────────
+
+    #[test]
+    fn union_with_tilde_encodes_approximation() {
         use crate::oracle::{Term, Type as OType};
+        let mut low = make_low();
+        let t = OType {
+            kind: TypeKind::Union,
+            terms: Box::new([
+                Term {
+                    tilde: true,
+                    r#type: Some(OType {
+                        kind: TypeKind::Basic,
+                        name: "int".to_string(),
+                        ..Default::default()
+                    }),
+                },
+                Term {
+                    tilde: false,
+                    r#type: Some(OType {
+                        kind: TypeKind::Basic,
+                        name: "string".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            ]),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::Union(parts) => {
+                assert_eq!(parts.len(), 2);
+                // First term is tilde: must be Apply { base: TypeVar("~"), args: [int] }
+                match &parts[0] {
+                    Type::Apply { base, args } => {
+                        assert!(
+                            matches!(**base, Type::TypeVar(ref n) if n == "~"),
+                            "tilde term base must be TypeVar(\"~\")"
+                        );
+                        assert_eq!(args.len(), 1);
+                    }
+                    other => panic!("tilde term must be Apply{{TypeVar(\"~\")}}, got {other:?}"),
+                }
+                // Second term is bare int — must not be Apply.
+                assert!(
+                    !matches!(&parts[1], Type::Apply { .. }),
+                    "bare term must not be Apply"
+                );
+            }
+            other => panic!("expected Union, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn union_bare_terms_not_wrapped() {
+        use crate::oracle::{Term, Type as OType};
+        let mut low = make_low();
         let t = OType {
             kind: TypeKind::Union,
             terms: Box::new([
@@ -376,9 +653,70 @@ mod tests {
             ]),
             ..Default::default()
         };
-        match lower_type(&t) {
+        match lower_type_with_lowering(&t, &mut low) {
             Type::Union(parts) => assert_eq!(parts.len(), 2),
             other => panic!("expected Union, got {other:?}"),
+        }
+    }
+
+    // ── IR GAP: Map encodes K, V via Apply ───────────────────────────────────
+
+    #[test]
+    fn map_encoded_as_apply_with_kv() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Map,
+            key: Some(Box::new(oracle::Type {
+                kind: TypeKind::Basic,
+                name: "string".to_string(),
+                ..Default::default()
+            })),
+            value: Some(Box::new(oracle::Type {
+                kind: TypeKind::Basic,
+                name: "int32".to_string(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::Apply { base, args } => {
+                assert!(
+                    matches!(*base, Type::TypeVar(ref n) if n == "map"),
+                    "map base must be TypeVar(\"map\")"
+                );
+                assert_eq!(args.len(), 2, "map must have K and V args");
+                assert!(matches!(args[0], Type::Primitive(Primitive::Str)));
+                assert!(matches!(args[1], Type::I32));
+            }
+            other => panic!("map must lower to Apply, got {other:?}"),
+        }
+    }
+
+    // ── IR GAP: Chan encodes direction and elem ───────────────────────────────
+
+    #[test]
+    fn chan_encoded_as_apply_with_dir() {
+        use crate::oracle::ChanDir;
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Chan,
+            dir: ChanDir::Send,
+            elem: Some(Box::new(oracle::Type {
+                kind: TypeKind::Basic,
+                name: "int32".to_string(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::Apply { base, args } => {
+                assert!(
+                    matches!(*base, Type::TypeVar(ref n) if n == "chan<-"),
+                    "send chan must use sentinel chan<-"
+                );
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("chan must lower to Apply, got {other:?}"),
         }
     }
 }
