@@ -25,6 +25,9 @@ rustc-hash = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+# No `sync` feature: `tokio_util::sync::CancellationToken` is unconditional in
+# 0.7 (the feature list is codec/compat/io/net/rt/time/tracing), so asking for
+# one that does not exist fails resolution outright.
 tokio-util = { version = "0.7", default-features = false }
 tracing = { workspace = true }
 triomphe = { workspace = true }

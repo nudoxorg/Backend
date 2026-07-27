@@ -27,20 +27,56 @@ fn empty_adapter() -> Arc<CorpusAdapter> {
     Arc::new(CorpusAdapter::new(Corpus::new()))
 }
 
-/// Dummy variable values that cover every variable name used across all
-/// `.trustfall` files.  A missing variable causes a parse/validation error, so
-/// we supply plausible values for every name that appears in any query.
-fn all_dummy_vars() -> BTreeMap<String, FieldValue> {
-    [
-        ("key".to_owned(), FieldValue::String("cargo:foo#0000000000000000000000000000000000000000000000000000000000000000".into())),
-        ("package".to_owned(), FieldValue::String("cargo:foo".into())),
-        ("lineage".to_owned(), FieldValue::String("cargo:foo".into())),
-        ("name".to_owned(), FieldValue::String("my_fn".into())),
-        ("kind".to_owned(), FieldValue::String("Function".into())),
-        ("query".to_owned(), FieldValue::String("foo".into())),
-    ]
-    .into_iter()
-    .collect()
+/// A plausible value for every variable name any query might reference.
+fn dummy_value(name: &str) -> FieldValue {
+    match name {
+        "key" => FieldValue::String(
+            "cargo:foo#0000000000000000000000000000000000000000000000000000000000000000".into(),
+        ),
+        "package" | "lineage" => FieldValue::String("cargo:foo".into()),
+        "kind" => FieldValue::String("Function".into()),
+        // Anything else is a name-ish string; queries filter on strings.
+        _ => FieldValue::String("my_fn".into()),
+    }
+}
+
+/// The variables a specific query actually references.
+///
+/// Supplying the union of all variables to every query does not work: Trustfall
+/// rejects arguments a query does not use ("One or more of the provided
+/// arguments are not used in this query"), and rightly so — an unused argument
+/// is almost always a typo'd variable name that would otherwise pass silently.
+///
+/// So we scan the query text for `$ident` and supply exactly those. This also
+/// means adding a query with a new variable needs no edit here.
+fn vars_for(query: &str) -> BTreeMap<String, FieldValue> {
+    let mut names: Vec<String> = Vec::new();
+    let bytes = query.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            if end > start {
+                names.push(query[start..end].to_owned());
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|n| {
+            let v = dummy_value(&n);
+            (n, v)
+        })
+        .collect()
 }
 
 /// Walk `src/queries/` at runtime and assert every `.trustfall` file parses.
@@ -72,7 +108,7 @@ fn all_trustfall_queries_parse() {
             &schema,
             Arc::clone(&adapter),
             &query,
-            all_dummy_vars(),
+            vars_for(&query),
         )
         .unwrap_or_else(|e| {
             panic!(

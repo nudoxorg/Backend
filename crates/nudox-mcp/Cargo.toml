@@ -7,12 +7,24 @@ license.workspace = true
 # L4 of GUI-LOCAL-PLAN §L6: the MCP server lindsey hosts. A *view* of the
 # engine (LR-8) — every tool bottoms out in an `EngineHandle` call or a
 # `CorpusAdapter` query, never in a direct `nudox-ir` read.
+#
+# `nudox-graph` is a dependency only for `schema()` (LR-7: one schema, served
+# to agents verbatim). The `CorpusAdapter` itself is reached through
+# `EngineHandle::query`, because LR-9 says the engine owns every runtime and
+# the Trustfall result stream is `!Send`.
 
 [dependencies]
 nudox-engine = { path = "../nudox-engine" }
 nudox-graph = { path = "../nudox-graph" }
 
+# axum 0.8 is the version rmcp 2.2 itself tests `StreamableHttpService`
+# against (rmcp-2.2.0/Cargo.toml `[dev-dependencies.axum]`). `StreamableHttpService`
+# is a bare `tower_service::Service`; axum supplies the connection loop
+# (`axum::serve`), the router (`nest_service`) and the auth layer
+# (`middleware::from_fn_with_state`). No TLS: the listener is loopback-only.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 futures = { workspace = true }
+rand = "0.10"
 rmcp = { version = "2.2", features = ["server", "transport-streamable-http-server", "macros"] }
 schemars = { workspace = true }
 serde = { workspace = true }
@@ -20,9 +32,16 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macros"] }
 tracing = { workspace = true }
+# NOTE: no `tokio-util` dependency on purpose. Shutdown reuses the
+# `CancellationToken` that `StreamableHttpServerConfig::default()` already
+# owns, so this crate never has to name a `tokio_util` type and cannot drift
+# out of feature-sync with rmcp's own pin.
 
 [dev-dependencies]
 nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
+nudox-store = { path = "../nudox-store", features = ["fixtures"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macros", "io-util", "time"] }
+trustfall = { workspace = true }
 
 [lints]
 workspace = true

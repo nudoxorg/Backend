@@ -64,7 +64,7 @@ pub enum CfgExpr {
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Visibility {
     /// Unrestricted access; visible to all.
     Public,
