@@ -801,3 +801,141 @@ fn test_named_tuple_member_label_preserved() {
         other => panic!("expected NamedTupleElem for second member, got {other:?}"),
     }
 }
+
+// ── Verified: mapped / conditional / keyof types ───────────────────────────────
+//
+// The audit said UNCERTAIN.  These tests prove the actual behavior of the
+// OXC lowering path.  Results are documented in comments alongside the
+// assertions so the behavior is on record and not just assumed.
+
+/// `type K = keyof Person` — TSTypeOperatorType with operator=Keyof.
+///
+/// The OXC path maps this to:
+///   `TypeOwned::Apply { base: Nominal("Keyof"), args: [TypeVar("Person")] }`
+///
+/// The operator name comes from `format!("{:?}", op.operator)` which is the
+/// Debug-derived form of `TSTypeOperatorOperator::Keyof` = `"Keyof"` (Pascal
+/// case).  This is **meaningful** — not a silent drop — but the casing differs
+/// from the TypeScript keyword (`keyof` lowercase).  A future cleanup could
+/// normalize to lowercase; for now the representation is explicit and testable.
+#[test]
+fn test_keyof_type_lowers_to_apply() {
+    let src = r#"
+        export interface Person { name: string; age: number; }
+        export type PersonKeys = keyof Person;
+    "#;
+
+    let facts = parse_module(src, "keyof_test");
+    // PersonKeys is the second declaration.
+    let alias_decl = facts.declarations.iter().find(|d| d.name == "PersonKeys")
+        .expect("PersonKeys alias must be present");
+
+    let DeclBody::TypeAlias(body) = &alias_decl.body else {
+        panic!("expected TypeAlias for PersonKeys, got {:?}", std::mem::discriminant(&alias_decl.body));
+    };
+
+    // keyof T → Apply { base: Nominal("Keyof"), args: [TypeVar("Person") or Nominal("Person")] }
+    match &body.target {
+        TypeOwned::Apply { base, args } => {
+            // The operator name is the Debug-derived string.
+            match base.as_ref() {
+                TypeOwned::Nominal(name) => {
+                    assert_eq!(
+                        name, "Keyof",
+                        "keyof operator must be encoded as Nominal(\"Keyof\") — the Debug \
+                         form of TSTypeOperatorOperator::Keyof; got {name:?}"
+                    );
+                }
+                other => panic!("keyof base must be Nominal(\"Keyof\"), got {other:?}"),
+            }
+            assert_eq!(args.len(), 1, "keyof has one type argument (the operand)");
+            // The operand (Person) is either TypeVar or Nominal depending on heuristic.
+            match &args[0] {
+                TypeOwned::TypeVar(n) | TypeOwned::Nominal(n) => {
+                    assert_eq!(n, "Person", "keyof operand must be Person, got {n:?}");
+                }
+                other => panic!("keyof operand must be TypeVar/Nominal(\"Person\"), got {other:?}"),
+            }
+        }
+        other => panic!(
+            "keyof type must lower to TypeOwned::Apply, got {:?}\n\
+             If this is TypeOwned::Unsupported, the TSTypeOperatorType arm is broken.",
+            std::mem::discriminant(other)
+        ),
+    }
+}
+
+/// `type R = { readonly [P in keyof T]: T[P] }` — TSMappedType.
+///
+/// VERIFIED BROKEN: The OXC path returns `TypeOwned::Unsupported("mapped type")`
+/// for all `TSMappedType` nodes.  The fallback is **explicit** — there is a
+/// dedicated match arm with a named description string, not a `_ => Any` silent
+/// drop.  The IR gap is that `TypeOwned` (and therefore `nudox_ir::kinds::ty::Type`)
+/// has no `MappedType` variant.  To represent this faithfully, the IR would need:
+///
+/// ```text
+/// Type::MappedType { key_param: String, source: Box<Type>, body: Box<Type>, readonly: bool, optional: bool }
+/// ```
+///
+/// Until that lands, the fallback is `TypeOwned::Unsupported("mapped type")` which
+/// propagates to `nudox_ir::kinds::ty::Type::Any` in `emit.rs`.
+#[test]
+fn test_mapped_type_is_explicit_unsupported() {
+    let src = r#"
+        export type ReadonlyPerson<T> = { readonly [P in keyof T]: T[P] };
+    "#;
+
+    let facts = parse_module(src, "mapped_test");
+    let alias_decl = facts.declarations.iter().find(|d| d.name == "ReadonlyPerson")
+        .expect("ReadonlyPerson alias must be present");
+
+    let DeclBody::TypeAlias(body) = &alias_decl.body else {
+        panic!("expected TypeAlias, got {:?}", std::mem::discriminant(&alias_decl.body));
+    };
+
+    // VERIFIED: mapped types produce Unsupported, not a silent Any.
+    assert!(
+        matches!(&body.target, TypeOwned::Unsupported(msg) if msg == "mapped type"),
+        "mapped type must lower to TypeOwned::Unsupported(\"mapped type\"); \
+         got {:?} — if this is TypeOwned::Any the fallback is silent (a bug); \
+         if it is something else the arm changed",
+        body.target
+    );
+}
+
+/// `type C<T> = T extends string ? string : never` — TSConditionalType.
+///
+/// VERIFIED BROKEN: The OXC path returns `TypeOwned::Unsupported("conditional type")`
+/// for all `TSConditionalType` nodes.  The fallback is **explicit** — there is a
+/// dedicated match arm with a named description string, not a `_ => Any` drop.
+/// The IR gap: `TypeOwned` / `nudox_ir::kinds::ty::Type` has no conditional type
+/// variant.  A faithful representation would need:
+///
+/// ```text
+/// Type::Conditional { check: Box<Type>, extends: Box<Type>, then: Box<Type>, otherwise: Box<Type> }
+/// ```
+///
+/// Until that lands, the fallback is `TypeOwned::Unsupported("conditional type")`.
+#[test]
+fn test_conditional_type_is_explicit_unsupported() {
+    let src = r#"
+        export type IsString<T> = T extends string ? string : never;
+    "#;
+
+    let facts = parse_module(src, "conditional_test");
+    let alias_decl = facts.declarations.iter().find(|d| d.name == "IsString")
+        .expect("IsString alias must be present");
+
+    let DeclBody::TypeAlias(body) = &alias_decl.body else {
+        panic!("expected TypeAlias, got {:?}", std::mem::discriminant(&alias_decl.body));
+    };
+
+    // VERIFIED: conditional types produce Unsupported, not a silent Any.
+    assert!(
+        matches!(&body.target, TypeOwned::Unsupported(msg) if msg == "conditional type"),
+        "conditional type must lower to TypeOwned::Unsupported(\"conditional type\"); \
+         got {:?} — if this is TypeOwned::Any the fallback is silent (a bug); \
+         if it is something else the arm changed",
+        body.target
+    );
+}

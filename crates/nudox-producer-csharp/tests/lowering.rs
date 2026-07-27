@@ -1021,6 +1021,193 @@ fn exception_cref_is_not_output_param() {
     );
 }
 
+/// `Function::throws` must be populated from `<exception cref>` XML tags.
+///
+/// The fixture's `Parse` method documents one exception from a cross-package
+/// type (`System.ArgumentException`).  Cross-package exception types fall back
+/// to `Type::Any` (the same rule as other cross-package named types).
+/// `output_params` must still contain only the return value.
+#[test]
+fn function_throws_is_wired() {
+    use nudox_ir::{build::Type, entry::EntryInner, kind::Kind};
+
+    let extraction = parse_extraction(EXCEPTION_AND_DEFAULT_FIXTURE.as_bytes())
+        .expect("exception fixture must parse");
+    let pkg = lower(&extraction).expect("exception fixture must lower");
+
+    let parse_entry = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Parse")
+        .expect("Parse method must be present");
+
+    let fn_kind = match parse_entry.1.kind() {
+        EntryInner::Owned(Kind::Function(f)) => f,
+        other => panic!("Parse must be a Function, got {other:?}"),
+    };
+
+    // throws must have exactly one entry (System.ArgumentException).
+    assert_eq!(
+        fn_kind.throws.len(),
+        1,
+        "Parse::throws must have 1 entry (System.ArgumentException), got {}",
+        fn_kind.throws.len()
+    );
+
+    // System.ArgumentException is cross-package: the type is Type::Any.
+    assert!(
+        matches!(fn_kind.throws[0], Type::Any),
+        "cross-package exception type must lower to Type::Any, got {:?}",
+        fn_kind.throws[0]
+    );
+
+    // output_params still has only the return value, not the exception.
+    assert_eq!(
+        fn_kind.output_params.len(),
+        1,
+        "output_params must have exactly 1 entry (the return bool), not the exception"
+    );
+}
+
+/// When an exception type is declared within the same extraction, `throws`
+/// must produce `Type::Nominal`, not `Type::Any`.
+const INPACKAGE_THROWS_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "ThrowLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:ThrowLib.DomainException",
+      "qualifiedName": "ThrowLib.DomainException",
+      "simpleName": "DomainException",
+      "kind": "CLASS",
+      "namespace": "ThrowLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [], "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    },
+    {
+      "docId": "T:ThrowLib.Service",
+      "qualifiedName": "ThrowLib.Service",
+      "simpleName": "Service",
+      "kind": "CLASS",
+      "namespace": "ThrowLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [],
+        "events": [],
+        "constructors": [],
+        "methods": [
+          {
+            "name": "Execute",
+            "docId": "M:ThrowLib.Service.Execute",
+            "methodKind": "Ordinary",
+            "accessibility": "public",
+            "isStatic": false,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [],
+            "parameters": [],
+            "returnType": { "kind": "named", "name": "System.Void", "args": [], "owner": null, "nullable": "none", "typeKind": "Void" },
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": null,
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": "<summary>Executes the service.</summary><exception cref=\"T:ThrowLib.DomainException\">on domain error</exception>",
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ]
+}"#;
+
+#[test]
+fn inpackage_exception_type_lowers_to_nominal() {
+    use nudox_ir::{build::Type, entry::EntryInner, kind::Kind};
+
+    let extraction = parse_extraction(INPACKAGE_THROWS_FIXTURE.as_bytes())
+        .expect("inpackage throws fixture must parse");
+    let pkg = lower(&extraction).expect("inpackage throws fixture must lower");
+
+    let execute = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Execute")
+        .expect("Execute method must be present");
+
+    let fn_kind = match execute.1.kind() {
+        EntryInner::Owned(Kind::Function(f)) => f,
+        other => panic!("Execute must be a Function, got {other:?}"),
+    };
+
+    // throws must have 1 entry: DomainException, declared in the same extraction.
+    assert_eq!(
+        fn_kind.throws.len(),
+        1,
+        "Execute::throws must have 1 entry (DomainException)"
+    );
+
+    // DomainException is in the same extraction → must be Type::Nominal, not Any.
+    assert!(
+        matches!(fn_kind.throws[0], Type::Nominal(_)),
+        "in-package exception type must lower to Type::Nominal, got {:?}",
+        fn_kind.throws[0]
+    );
+
+    // output_params is empty (void return — no output param for void).
+    assert_eq!(
+        fn_kind.output_params.len(),
+        0,
+        "Execute has void return — output_params must be empty"
+    );
+}
+
 /// A parameter with `hasDefault: true` and `default: "1024"` must have
 /// `ParamAttribute::Optional` and its default text preserved in documentation.
 #[test]

@@ -1070,3 +1070,210 @@ fn non_comparable_interface_has_no_comparable_attr() {
         "Open (isComparable=false) must not have comparable attr"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Item 7c: Constraint interface type sets preserved in Trait::supers
+// ---------------------------------------------------------------------------
+//
+// `type Ordered interface { ~int | ~int8 | ~float64 | ~string }` is a Go
+// constraint whose full meaning is its type set, not its method set.  Before
+// the fix, `lower_interface` ignored `underlying.embeddeds` entirely; the type
+// set was silently dropped.  After the fix, each embedded is lowered via
+// `lower_type_with_lowering` and stored in `Trait::supers`.
+//
+// The oracle represents the union as a single embedded of kind=Union, whose
+// terms are the approximation/exact type terms.  `lower_type_with_lowering`
+// maps TypeKind::Union → Type::Union, with tilde terms encoded as
+// Apply { base: TypeVar("~"), args: [T] }.
+
+const CONSTRAINT_JSON: &str = r#"
+{
+  "module": { "path": "example.com/m", "dir": "/tmp/m", "goVersion": "1.22" },
+  "packages": [
+    {
+      "importPath": "example.com/m/constraints",
+      "name": "constraints",
+      "doc": "Package constraints.",
+      "decls": [
+        {
+          "kind": "type",
+          "name": "Ordered",
+          "exported": true,
+          "doc": "Ordered is a constraint for ordered types.",
+          "underlying": {
+            "kind": "interface",
+            "explicitMethods": [],
+            "allMethods": [],
+            "isComparable": false,
+            "embeddeds": [
+              {
+                "kind": "union",
+                "terms": [
+                  { "tilde": true,  "type": { "kind": "basic", "name": "int" } },
+                  { "tilde": true,  "type": { "kind": "basic", "name": "int8" } },
+                  { "tilde": true,  "type": { "kind": "basic", "name": "float64" } },
+                  { "tilde": true,  "type": { "kind": "basic", "name": "string" } }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+fn lower_constraint_fixture() -> nudox_ir::package::IrPackage<GoId> {
+    let producer = GoProducer;
+    producer
+        .lower_bytes(
+            CONSTRAINT_JSON.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("constraint fixture must lower without error")
+}
+
+/// A constraint interface must carry its type-set terms in `Trait::supers`.
+///
+/// `type Ordered interface { ~int | ~int8 | ~float64 | ~string }` has one
+/// embedded union with four terms.  The Trait::supers must contain exactly one
+/// entry (the Union), and that Union must have four arms, each of which is a
+/// tilde-approximation: `Apply { base: TypeVar("~"), args: [primitive] }`.
+#[test]
+fn constraint_type_set_survives_in_trait_supers() {
+    let pkg = lower_constraint_fixture();
+
+    let ordered = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Ordered")
+        .expect("Ordered interface must be declared");
+
+    let trait_body = ordered
+        .1
+        .downcast::<Trait>()
+        .expect("Ordered must be a Trait");
+
+    let supers = &trait_body.body().supers;
+    assert_eq!(
+        supers.len(),
+        1,
+        "Ordered has one embedded (the union); Trait::supers must have 1 entry, got {}",
+        supers.len()
+    );
+
+    // The single super must be a Union.
+    match &supers[0] {
+        Type::Union(arms) => {
+            assert_eq!(
+                arms.len(),
+                4,
+                "union must have 4 arms (int, int8, float64, string), got {}",
+                arms.len()
+            );
+
+            // Every arm must be a tilde term:
+            // Apply { base: TypeVar("~"), args: [primitive] }
+            for arm in arms.iter() {
+                match arm {
+                    Type::Apply { base, args } => {
+                        assert!(
+                            matches!(base.as_ref(), Type::TypeVar(n) if n == "~"),
+                            "each union arm base must be TypeVar(\"~\") (tilde encoding), got {base:?}"
+                        );
+                        assert_eq!(args.len(), 1, "each tilde arm has one argument (the type)");
+                    }
+                    other => panic!(
+                        "each union arm must be Apply{{TypeVar(\"~\"), [T]}} (tilde encoding), \
+                         got {other:?} — dropping tilde changes constraint semantics"
+                    ),
+                }
+            }
+        }
+        other => panic!(
+            "Ordered's single super must be Type::Union, got {other:?}; \
+             if this is Type::Any the type set was silently dropped"
+        ),
+    }
+}
+
+/// A constraint interface with no type set but a method set must still have
+/// empty supers (the fix must not add spurious supers for method-only interfaces).
+const METHOD_ONLY_IFACE_JSON: &str = r#"
+{
+  "module": { "path": "example.com/m", "dir": "/tmp/m", "goVersion": "1.22" },
+  "packages": [
+    {
+      "importPath": "example.com/m/io",
+      "name": "io",
+      "doc": "",
+      "decls": [
+        {
+          "kind": "type",
+          "name": "Reader",
+          "exported": true,
+          "doc": "Reader is an interface with only methods and no embedded type sets.",
+          "underlying": {
+            "kind": "interface",
+            "explicitMethods": [
+              {
+                "name": "Read",
+                "exported": true,
+                "signature": {
+                  "kind": "func",
+                  "params": [{ "name": "n", "type": { "kind": "basic", "name": "int" } }],
+                  "results": [
+                    { "name": "ok", "type": { "kind": "basic", "name": "bool" } }
+                  ]
+                }
+              }
+            ],
+            "allMethods": [
+              {
+                "name": "Read",
+                "exported": true,
+                "signature": {
+                  "kind": "func",
+                  "params": [{ "name": "n", "type": { "kind": "basic", "name": "int" } }],
+                  "results": [
+                    { "name": "ok", "type": { "kind": "basic", "name": "bool" } }
+                  ]
+                }
+              }
+            ],
+            "isComparable": false,
+            "embeddeds": []
+          }
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+#[test]
+fn method_only_interface_has_no_supers() {
+    let producer = GoProducer;
+    let pkg = producer
+        .lower_bytes(
+            METHOD_ONLY_IFACE_JSON.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("method-only interface fixture must lower");
+
+    let reader = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Reader")
+        .expect("Reader interface must be declared");
+
+    let trait_body = reader.1.downcast::<Trait>().expect("Reader must be a Trait");
+
+    assert!(
+        trait_body.body().supers.is_empty(),
+        "Reader (method-only interface, no embeddeds) must have empty Trait::supers, \
+         got {:?}",
+        trait_body.body().supers
+    );
+}

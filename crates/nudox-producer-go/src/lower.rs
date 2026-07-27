@@ -549,9 +549,34 @@ fn lower_interface(
         }]);
     }
 
+    // Item 7b: surface constraint type-set terms from `embeddeds`.
+    //
+    // A constraint interface (`type Ordered interface { ~int | ~float64 | ~string }`)
+    // carries its type-set as embedded union types in `underlying.embeddeds`.
+    // Each embedded is either:
+    //   - A named interface (embedded via `interface { SomeIface }`) — lower to
+    //     Type::Nominal so the Trait::supers edge is live.
+    //   - A union of approximation/exact terms (`~int | string`) — lower via
+    //     `lower_type_with_lowering` which handles TypeKind::Union and encodes
+    //     tilde terms as Apply { base: TypeVar("~"), args: [T] }.
+    //
+    // Without this, `type Ordered interface { ~int | ~float64 | ~string }` loses
+    // its entire type set at the IR boundary — the constraint becomes meaningless.
+    let supers: Vec<Type> = decl
+        .underlying
+        .as_ref()
+        .map(|u| {
+            u.embeddeds
+                .iter()
+                .map(|emb| types::lower_type_with_lowering(emb, low))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let trait_kind = Trait::builder()
         .flags(TraitFlags::default())
         .generics(generics)
+        .supers(supers)
         .build();
 
     low.declare(item_id.clone(), Some(parent), sym, trait_kind);

@@ -26,7 +26,13 @@ pub struct ParsedDoc {
     pub params: HashMap<String, String>,
     /// `<typeparam name> → description`.
     pub type_params: HashMap<String, String>,
-    /// `(exception cref, description)` in declaration order.
+    /// `(raw cref, description)` in declaration order.
+    ///
+    /// The cref is the **raw** XML attribute value (e.g.
+    /// `"T:System.ArgumentException"`), not the stripped display name.
+    /// Callers that need a display name should apply
+    /// [`strip_doc_id_prefix`] themselves; callers that need to resolve
+    /// the type (e.g. for `Function::throws`) need the full doc-id.
     pub exceptions: Vec<(String, String)>,
     /// `<example>` blocks.
     pub examples: Vec<String>,
@@ -94,9 +100,11 @@ pub fn parse(doc: &str) -> ParsedDoc {
                 }
             }
             "exception" => {
-                let cref = attr(&attrs, "cref")
-                    .map(|c| strip_doc_id_prefix(&c))
-                    .unwrap_or_default();
+                // Keep the raw cref (the full doc-id, e.g. "T:System.IO.IOException")
+                // so that lower.rs can resolve the exception type by doc-id.
+                // Do NOT strip_doc_id_prefix here; callers that want a display name
+                // should strip it themselves.
+                let cref = attr(&attrs, "cref").unwrap_or_default();
                 parsed.exceptions.push((cref, text));
             }
             "seealso" => {
@@ -478,7 +486,10 @@ mod tests {
         );
         assert_eq!(parsed.returns.as_deref(), Some("the sum"));
         assert_eq!(parsed.exceptions.len(), 1);
-        assert_eq!(parsed.exceptions[0].0, "OverflowException");
+        // The raw cref is preserved (NOT stripped) so that lower.rs can resolve
+        // the exception type by its Roslyn doc-id. Callers needing a display name
+        // apply strip_doc_id_prefix themselves.
+        assert_eq!(parsed.exceptions[0].0, "T:System.OverflowException");
         assert_eq!(parsed.exceptions[0].1, "on overflow");
     }
 

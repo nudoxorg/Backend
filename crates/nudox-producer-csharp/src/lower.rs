@@ -63,7 +63,7 @@ use nudox_ir::{
 use crate::{
     schema::{self, Extraction, TypeDecl},
     types,
-    xmldoc::{self, ParsedDoc},
+    xmldoc::{self, strip_doc_id_prefix, ParsedDoc},
 };
 
 // ---------------------------------------------------------------------------
@@ -1025,27 +1025,49 @@ fn lower_method(
     // These do NOT go into output_params.  Adding them there was the Java
     // producer's defect: a consumer reading `output_params` would think the
     // method *returns* its exceptions, which is wrong — C# exceptions are
-    // untyped at the call site.  Instead, each `<exception>` tag is surfaced
-    // as a `DocLink` on the method's symbol and as documentation text.
+    // untyped at the call site.
     //
-    // UNREPRESENTABLE (IR GAP): `Function` in nudox-ir has no `throws: List<Type>`
-    // field.  The mission called for populating it, but adding that field is a
-    // nudox-ir change (prohibited by scope).  Exceptions remain as:
-    //   - `doc_links` with `label = "throws"` (the cref, for link resolution).
-    //   - Prose in `documentation` (the description text, for display).
-    // No information is lost; it just is not structured as typed IR nodes.
+    // Exceptions are wired to THREE places:
+    //   1. `Function::throws` — structured `Type::Nominal` for each thrown
+    //      exception type (the cref is used directly as the lowering key, since
+    //      the oracle emits Roslyn doc-ids as the cref value and those are the
+    //      same keys we use for `Lowering::refer`).  We keep the `doc_links`
+    //      alongside because `throws` carries only the type, not the prose.
+    //   2. `doc_links` with `label = "throws"` (cref, for link resolution).
+    //   3. Prose in `documentation` (the description text, for display).
+    let mut throws_types: Vec<Type> = Vec::new();
     let mut exception_doc_links: Vec<DocLink> = Vec::new();
     let mut exception_notes: Vec<String> = Vec::new();
     if let Some(p) = &parsed {
         for (cref, text) in &p.exceptions {
+            // Wire the exception type into Function::throws.
+            //
+            // Strategy: the cref is a Roslyn doc-id of the form `T:FQN`.
+            // Strip the `T:` prefix to get the FQN, look it up in
+            // `name_to_doc_id` (which maps FQN → doc-id).  If found, the
+            // type is in the same extraction and we can produce a live
+            // Type::Nominal(Ref).  If not found (cross-package type, e.g.
+            // System.ArgumentException in a foreign assembly), fall back to
+            // Type::Any — consistent with how lower_type handles cross-package
+            // named types.
+            let fqn = cref.strip_prefix("T:").unwrap_or(cref.as_str());
+            let throws_ty = if let Some(doc_id) = name_to_doc_id.get(fqn) {
+                out.nominal::<Record>(doc_id.clone())
+            } else {
+                Type::Any
+            };
+            throws_types.push(throws_ty);
+
             exception_doc_links.push(DocLink {
                 target: cref.clone(),
                 label: Some("throws".to_string()),
             });
+            // For prose use the stripped display name (simple name without prefix).
+            let display = strip_doc_id_prefix(cref);
             if text.is_empty() {
-                exception_notes.push(format!("Throws `{cref}`."));
+                exception_notes.push(format!("Throws `{display}`."));
             } else {
-                exception_notes.push(format!("Throws `{cref}`: {text}"));
+                exception_notes.push(format!("Throws `{display}`: {text}"));
             }
         }
     }
@@ -1080,6 +1102,7 @@ fn lower_method(
         .generics(generics)
         .wheres(wheres)
         .is_defaulted(is_defaulted)
+        .throws(throws_types)
         .build();
 
     // Documentation: method modifiers + exception notes.
