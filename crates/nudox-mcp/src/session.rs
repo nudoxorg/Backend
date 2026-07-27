@@ -158,7 +158,10 @@ impl<'h> Unauthenticated<'h> {
 /// Carries no data: its *existence* is the whole payload. The private field
 /// makes it unconstructible outside this module, so every value of this type
 /// is genuinely the result of a successful [`Unauthenticated::authenticate`].
-#[derive(Debug)]
+///
+/// `Clone` and `'static` so it can be parked in an `http::Extensions`, which is
+/// how the transport layer hands the proof down to whatever runs next.
+#[derive(Debug, Clone, Copy)]
 pub struct Session {
     _private: (),
 }

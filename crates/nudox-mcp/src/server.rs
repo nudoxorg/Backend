@@ -1,31 +1,48 @@
-//! The `rmcp` server: tool dispatch plus the §L6 resource set.
+//! The `rmcp` server: the six §L6 tools plus the §L6 resource set.
+//!
+//! This module is the MCP *surface*. Every tool body immediately delegates to
+//! the matching `NudoxTools::do_*` method in [`crate::tools`], which is where
+//! the engine calls live. The split exists so that a tool's behaviour can be
+//! tested without a transport, and so that `#[tool_router]`'s expansion does
+//! not sit on top of the logic.
+//!
+//! # Tool descriptions are documentation
+//!
+//! A description string here is the *only* documentation an LLM client ever
+//! sees for a tool — there is no README, no rustdoc, and no type signature it
+//! can read. Each one therefore says what the tool returns, when to prefer it
+//! over the others, and what a `SymbolKey` looks like. The four typed tools
+//! announce themselves as the first choice and `graph_query` announces itself
+//! as the escape hatch, per §L6.
 //!
 //! # Resources
 //!
-//! §L6 asks for "the schema, and one resource per loaded package". Both are
-//! served here:
+//! §L6 asks for "the schema, and one resource per loaded package":
 //!
 //! * `nudox://schema` — the Trustfall SDL, identical to what `graph_schema`
-//!   returns. It is exposed as a *resource* as well as a tool because MCP
-//!   clients attach resources to a conversation up front, which is exactly when
-//!   an agent needs the schema — before it writes its first `graph_query`.
-//! * `nudox://package/{ecosystem}:{name}` — one per loaded package, listed
-//!   dynamically from the corpus so the set tracks what is actually loaded.
-//!
-//! The package list is resolved through [`NudoxTools::do_list_packages`], so
-//! resources bottom out in the same engine call the `list_packages` tool does
-//! (LR-8). There is no second path to the corpus.
+//!   returns. It is a resource *as well as* a tool because MCP clients attach
+//!   resources up front, which is exactly when an agent needs the schema —
+//!   before it writes its first `graph_query`.
+//! * `nudox://package/{ecosystem}:{name}` — one per loaded package, resolved
+//!   through the same engine call `list_packages` uses (LR-8). There is no
+//!   second path to the corpus.
 
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
-    ListResourcesResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo,
+    Implementation, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+    ServerInfo,
 };
 use rmcp::service::RequestContext;
-use rmcp::{ErrorData, RoleServer, ServerHandler, tool_handler};
+use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 
 use crate::error::McpError;
-use crate::tools::NudoxTools;
+use crate::tools::{
+    FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, GraphSchemaArgs, ListPackagesArgs, NudoxTools,
+    PackagesResult, QueryResult, SchemaResult, SearchResult, SearchSymbolsArgs, SymbolDoc,
+    UsagesResult,
+};
 
 /// URI of the schema resource.
 pub const SCHEMA_URI: &str = "nudox://schema";
@@ -35,43 +52,49 @@ pub const PACKAGE_URI_PREFIX: &str = "nudox://package/";
 
 /// Instructions surfaced to the MCP client at initialisation.
 ///
-/// This is the one place an agent is told how the tools relate to each other
-/// before it has called any of them, so it says which to reach for first.
+/// The one place an agent is told how the tools relate to each other before it
+/// has called any of them, so it says which to reach for first.
 const INSTRUCTIONS: &str = "\
-Local documentation and code-intelligence for the packages loaded in this \
-nudox workspace. All answers come from IR produced on this machine or verified \
-against a remote generation; every result carries a `provenance` field saying \
-which.
+Local documentation and code intelligence for the packages loaded in this nudox \
+workspace. Every answer comes from IR produced on this machine or verified \
+against a remote generation, and carries a `provenance` field saying which.
 
-Start with `list_packages` to see what is loaded, then `search_symbols` to \
-find a symbol by name, then `get_symbol` to read it in full. Use `find_usages` \
-to find a symbol's callers. Every one of these speaks the same key format, \
-`ecosystem:name#introhex`, so a key from one tool goes straight into another.
+Start with `list_packages` to see what is loaded, then `search_symbols` to find \
+a symbol by name, then `get_symbol` to read it in full. Use `find_usages` to \
+find a symbol's callers. All four speak the same key format, \
+`ecosystem:name#introhex`, so a key returned by one goes straight into another.
 
-Reach for `graph_query` only when those four cannot express the question — it \
-is an arbitrary Trustfall query over the corpus, and you must call \
+Reach for `graph_query` only when those four cannot express the question. It \
+runs an arbitrary Trustfall query over the corpus, and you must call \
 `graph_schema` first to learn the exact type, property and edge names.";
 
-/// The MCP server `lindsey` hosts.
+/// The MCP server `lindsey` hosts (§L6).
 ///
-/// A thin shell over [`NudoxTools`]: this type owns the `ServerHandler`
-/// obligations (server info, resources) and delegates every tool call to the
-/// router.
-#[derive(Clone, Debug)]
+/// `Clone` because rmcp builds one instance per MCP session; the clone is two
+/// `Arc` bumps and a shared route table.
+#[derive(Clone)]
 pub struct NudoxMcpServer {
-    /// The engine-backed tool set (LR-8).
+    /// The engine-backed tool logic (LR-8).
     tools: NudoxTools,
+    /// The rmcp route table, generated by `#[tool_router]`.
+    tool_router: ToolRouter<Self>,
+}
+
+impl std::fmt::Debug for NudoxMcpServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NudoxMcpServer").finish_non_exhaustive()
+    }
 }
 
 impl NudoxMcpServer {
     /// Build a server over an already-started engine.
     pub fn new(engine: nudox_engine::EngineHandle) -> Self {
-        Self { tools: NudoxTools::new(engine) }
+        Self::from_tools(NudoxTools::new(engine))
     }
 
     /// Build a server over an existing tool set.
     pub fn from_tools(tools: NudoxTools) -> Self {
-        Self { tools }
+        Self { tools, tool_router: Self::tool_router() }
     }
 
     /// The tool set this server exposes.
@@ -79,16 +102,11 @@ impl NudoxMcpServer {
         &self.tools
     }
 
-    /// The route table, for `#[tool_handler]`.
-    fn tool_router(&self) -> &ToolRouter<NudoxTools> {
-        &self.tools.tool_router
-    }
-
     /// Every resource this server serves right now.
     ///
     /// Recomputed per call rather than cached: packages load asynchronously
-    /// after start-up (LR-10 paints before data arrives), so a cached list
-    /// would report an empty workspace forever if a client happened to connect
+    /// after start-up (LR-10 paints before the data arrives), so a cached list
+    /// would report an empty workspace forever to a client that connected
     /// during seeding.
     async fn resources(&self) -> Result<Vec<Resource>, McpError> {
         let mut resources = vec![
@@ -103,17 +121,14 @@ Read this before writing a query.",
 
         for pkg in self.tools.do_list_packages().await?.packages {
             resources.push(
-                Resource::new(
-                    format!("{PACKAGE_URI_PREFIX}{}", pkg.lineage),
-                    pkg.name.clone(),
-                )
-                .with_title(pkg.lineage.clone())
-                .with_description(format!(
-                    "Package {} from the {} ecosystem. Its lineage key `{}` is the prefix of \
-every symbol key it declares, and is what `search_symbols`'s `packages` filter accepts.",
-                    pkg.name, pkg.ecosystem, pkg.lineage
-                ))
-                .with_mime_type("application/json"),
+                Resource::new(format!("{PACKAGE_URI_PREFIX}{}", pkg.lineage), pkg.name.clone())
+                    .with_title(pkg.lineage.clone())
+                    .with_description(format!(
+                        "Package {} from the {} ecosystem. Its lineage key `{}` prefixes every \
+symbol key it declares, and is what `search_symbols`'s `packages` filter accepts.",
+                        pkg.name, pkg.ecosystem, pkg.lineage
+                    ))
+                    .with_mime_type("application/json"),
             );
         }
 
@@ -121,19 +136,139 @@ every symbol key it declares, and is what `search_symbols`'s `packages` filter a
     }
 }
 
-#[tool_handler(router = self.tool_router())]
+// ---------------------------------------------------------------------------
+// Tools
+// ---------------------------------------------------------------------------
+
+#[tool_router(router = tool_router)]
+impl NudoxMcpServer {
+    /// Find symbols by name or kind across the loaded corpus.
+    #[tool(
+        name = "search_symbols",
+        description = "PREFER THIS FIRST when looking for a symbol by name. Searches the \
+loaded local corpus by symbol name and by kind, returning ranked hits — each with its stable \
+key, rendered signature (as text and as typed tokens), kind, trust provenance and relevance \
+score. A key looks like `ecosystem:name#introhex`, for example \
+`cargo:serde#3f1a…` with 64 hex characters after the `#`; pass it straight to `get_symbol` to \
+read the symbol or to `find_usages` to find its callers. Narrow with `kinds` (Function, Record, \
+Trait, Enum, Impl, Alias, Field, Const, Static, Module, Variant, Reexport, Param) and with \
+`packages` (each `ecosystem:name`; see `list_packages`). This matches names and kinds, not \
+documentation prose — for structural questions such as \"which types implement this trait\" or \
+\"what does this function reference\", use `graph_query`."
+    )]
+    pub async fn search_symbols(
+        &self,
+        Parameters(args): Parameters<SearchSymbolsArgs>,
+    ) -> Result<Json<SearchResult>, ErrorData> {
+        Ok(Json(self.tools.do_search(args).await?))
+    }
+
+    /// Read one symbol's full documentation page.
+    #[tool(
+        name = "get_symbol",
+        description = "PREFER THIS to read a symbol once you have its key. Returns one symbol's \
+complete documentation page: its signature (as text and as typed tokens whose type references \
+carry the key of the symbol they resolve to), its breadcrumb path, visibility, any deprecation \
+notice, its trust provenance, and every rendered section — prose, examples, code blocks, member \
+lists and field lists — in reading order. `key` must be `ecosystem:name#introhex` as returned by \
+`search_symbols`, `find_usages` or `graph_query`; it is the same key everywhere. This is the \
+highest-fidelity view of a single symbol and is always better than reassembling one from \
+`graph_query` properties."
+    )]
+    pub async fn get_symbol(
+        &self,
+        Parameters(args): Parameters<GetSymbolArgs>,
+    ) -> Result<Json<SymbolDoc>, ErrorData> {
+        Ok(Json(self.tools.do_get_symbol(args).await?))
+    }
+
+    /// Find the symbols that reference a given symbol.
+    #[tool(
+        name = "find_usages",
+        description = "PREFER THIS to answer \"who calls this?\" or \"what breaks if I change \
+this?\". Given a symbol key, returns the symbols holding a resolved reference to it — callers of \
+a function, users of a type — each with its own key, name and kind, so you can follow the chain \
+with `get_symbol`. Only references the producer resolved with index-grade confidence or better \
+are returned, so results are precise rather than textual: a name that merely appears in a comment \
+or belongs to an unrelated identifier will not show up. `key` must be `ecosystem:name#introhex`."
+    )]
+    pub async fn find_usages(
+        &self,
+        Parameters(args): Parameters<FindUsagesArgs>,
+    ) -> Result<Json<UsagesResult>, ErrorData> {
+        Ok(Json(self.tools.do_find_usages(args).await?))
+    }
+
+    /// List the packages currently loaded.
+    #[tool(
+        name = "list_packages",
+        description = "PREFER THIS FIRST to discover what is available before searching. Returns \
+every package loaded into the local corpus with its `ecosystem:name` lineage key, display name \
+and ecosystem. The lineage key prefixes every symbol key in that package and is exactly what \
+`search_symbols`'s `packages` filter accepts. If a package you expect is missing then it has not \
+been produced or loaded yet and no other tool will find symbols from it — this is how you tell \
+\"not indexed here\" apart from \"does not exist\"."
+    )]
+    pub async fn list_packages(
+        &self,
+        Parameters(_args): Parameters<ListPackagesArgs>,
+    ) -> Result<Json<PackagesResult>, ErrorData> {
+        Ok(Json(self.tools.do_list_packages().await?))
+    }
+
+    /// Run an arbitrary Trustfall query over the corpus.
+    #[tool(
+        name = "graph_query",
+        description = "THE ESCAPE HATCH — use it only when the four typed tools cannot express \
+the question. `search_symbols`, `get_symbol`, `find_usages` and `list_packages` are faster, \
+cheaper and better shaped for what they cover; come here for structural or relational questions \
+they do not, such as \"every public function in package X returning type Y\", \"all implementors \
+of this trait\", or a join across packages. Takes a Trustfall (GraphQL-subset) query plus string \
+variable bindings referenced as `$name`, and returns column names with positionally aligned \
+string cells, so `rows[i].cells[j]` is the value of `columns[j]`. ALWAYS call `graph_schema` \
+first and write the query against the exact type, property and edge names it returns — queries \
+are validated against that schema, so a guessed field name is an error rather than an empty \
+result."
+    )]
+    pub async fn graph_query(
+        &self,
+        Parameters(args): Parameters<GraphQueryArgs>,
+    ) -> Result<Json<QueryResult>, ErrorData> {
+        Ok(Json(self.tools.do_graph_query(args).await?))
+    }
+
+    /// Return the Trustfall schema `graph_query` is checked against.
+    #[tool(
+        name = "graph_schema",
+        description = "Returns, verbatim, the GraphQL SDL schema that `graph_query` queries are \
+validated against. Call this before writing any `graph_query`: it documents every queryable type \
+(Package; Symbol and its Function, Record, Trait, Impl, Enum, Field, Const and Alias \
+implementors; Occurrence), every scalar property, every edge (members, parent, usages, mentions, \
+implementors, occurrencesOf) and the cost of each traversal. It also documents the \
+`ecosystem:name#introhex` key format that every other tool consumes. The schema is fixed for the \
+life of the server, so one call per session is enough."
+    )]
+    pub async fn graph_schema(
+        &self,
+        Parameters(_args): Parameters<GraphSchemaArgs>,
+    ) -> Result<Json<SchemaResult>, ErrorData> {
+        Ok(Json(SchemaResult { schema: crate::SCHEMA_SDL.to_owned() }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ServerHandler
+// ---------------------------------------------------------------------------
+
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for NudoxMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::LATEST,
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .build(),
-            server_info: rmcp::model::Implementation::from_build_env(),
-            instructions: Some(INSTRUCTIONS.to_owned()),
-            meta: None,
-        }
+        ServerInfo::new(
+            ServerCapabilities::builder().enable_tools().enable_resources().build(),
+        )
+        .with_protocol_version(ProtocolVersion::LATEST)
+        .with_server_info(Implementation::from_build_env())
+        .with_instructions(INSTRUCTIONS)
     }
 
     async fn list_resources(
@@ -141,8 +276,7 @@ impl ServerHandler for NudoxMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        let resources = self.resources().await?;
-        Ok(ListResourcesResult { resources, next_cursor: None, meta: None })
+        Ok(ListResourcesResult::with_all_items(self.resources().await?))
     }
 
     async fn read_resource(
@@ -153,14 +287,14 @@ impl ServerHandler for NudoxMcpServer {
         let uri = request.uri;
 
         if uri == SCHEMA_URI {
-            return Ok(ReadResourceResult {
-                contents: vec![ResourceContents::text(crate::SCHEMA_SDL, &uri)],
-                meta: None,
-            });
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                crate::SCHEMA_SDL,
+                &uri,
+            )]));
         }
 
         if let Some(lineage) = uri.strip_prefix(PACKAGE_URI_PREFIX) {
-            let packages = self.tools.do_list_packages().await.map_err(McpError::from_engine)?;
+            let packages = self.tools.do_list_packages().await?;
             let found = packages
                 .packages
                 .into_iter()
@@ -169,10 +303,7 @@ impl ServerHandler for NudoxMcpServer {
             let body = serde_json::to_string_pretty(&found).map_err(|e| {
                 ErrorData::internal_error(format!("failed to encode package resource: {e}"), None)
             })?;
-            return Ok(ReadResourceResult {
-                contents: vec![ResourceContents::text(body, &uri)],
-                meta: None,
-            });
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(body, &uri)]));
         }
 
         Err(McpError::UnknownResource(uri).into())

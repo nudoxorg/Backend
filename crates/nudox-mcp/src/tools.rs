@@ -32,14 +32,8 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nudox_engine::wire::{
-    DocEvent, Gen, HitRow, KindDiscriminant, QueryEvent, SearchEvent, SharedStr,
-};
+use nudox_engine::wire::{DocEvent, Gen, HitRow, KindDiscriminant, QueryEvent, SearchEvent};
 use nudox_engine::{EngineHandle, GraphQuery, SearchQuery};
-use rmcp::ErrorData;
-use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -241,8 +235,11 @@ pub struct SchemaResult {
 
 /// The engine-backed implementation of the six §L6 tools.
 ///
-/// Cheap to clone: an `EngineHandle` is an `Arc` pair, and the router is a
-/// shared route table. rmcp clones this per MCP session.
+/// Holds the logic; [`crate::NudoxMcpServer`] holds the MCP surface that calls
+/// it. The split keeps every tool body testable without standing up a
+/// transport, and keeps `#[tool_router]`'s macro expansion off this file.
+///
+/// Cheap to clone: an `EngineHandle` is an `Arc` pair.
 #[derive(Clone)]
 pub struct NudoxTools {
     /// The one engine every tool goes through (LR-8).
@@ -251,8 +248,6 @@ pub struct NudoxTools {
     /// the `Gen` it answers; giving each tool call a fresh one keeps two
     /// concurrent MCP calls from reading each other's events.
     generation: std::sync::Arc<AtomicU64>,
-    /// The rmcp route table, built by `#[tool_router]`.
-    pub(crate) tool_router: ToolRouter<Self>,
 }
 
 impl std::fmt::Debug for NudoxTools {
@@ -264,11 +259,7 @@ impl std::fmt::Debug for NudoxTools {
 impl NudoxTools {
     /// Build the tool set over an already-started engine.
     pub fn new(engine: EngineHandle) -> Self {
-        Self {
-            engine,
-            generation: std::sync::Arc::new(AtomicU64::new(1)),
-            tool_router: Self::tool_router(),
-        }
+        Self { engine, generation: std::sync::Arc::new(AtomicU64::new(1)) }
     }
 
     /// The engine this tool set views.
@@ -282,146 +273,8 @@ impl NudoxTools {
     }
 }
 
-/// The router impl holds only `#[tool]` methods, matching rmcp's own examples —
-/// `#[tool_router]` rewrites this block, so anything else lives above.
-#[tool_router(router = tool_router)]
-impl NudoxTools {
-    // -- search_symbols ----------------------------------------------------
-
-    /// Find symbols by name or kind across the loaded corpus.
-    #[tool(
-        name = "search_symbols",
-        description = "PREFER THIS FIRST when looking for a symbol by name. Searches the \
-loaded local corpus by symbol name and kind and returns ranked hits, each with \
-its stable key, rendered signature, kind, trust provenance and relevance score. \
-A key looks like `ecosystem:name#introhex` (for example \
-`cargo:serde#3f1a...`, 64 hex characters after the `#`); feed it straight into \
-`get_symbol` to read the symbol, or `find_usages` to find its callers. Filter \
-with `kinds` (Function, Record, Trait, Enum, Impl, Alias, Field, Const, Static, \
-Module, Variant, Reexport, Param) and with `packages` (each `ecosystem:name`; \
-see `list_packages`). This searches names and kinds, not documentation prose \
-— for structural questions (\"which types implement this trait\", \"what does \
-this function call\") use `graph_query` instead."
-    )]
-    pub async fn search_symbols(
-        &self,
-        Parameters(args): Parameters<SearchSymbolsArgs>,
-    ) -> Result<Json<SearchResult>, ErrorData> {
-        Ok(Json(self.do_search(args).await?))
-    }
-
-    // -- get_symbol --------------------------------------------------------
-
-    /// Read one symbol's full documentation page.
-    #[tool(
-        name = "get_symbol",
-        description = "PREFER THIS to read a symbol once you have its key. Returns the \
-complete documentation page for one symbol: its signature (as text and as \
-typed tokens whose type references link to other symbols), its breadcrumb \
-path, its visibility, any deprecation notice, its trust provenance, and every \
-rendered documentation section — prose, examples, code blocks, member lists \
-and field lists — in reading order. `key` must be `ecosystem:name#introhex` \
-as returned by `search_symbols`, `find_usages` or `graph_query`; it is the \
-same key everywhere. This is the highest-fidelity view of a single symbol and \
-should be preferred over reconstructing one from `graph_query` properties."
-    )]
-    pub async fn get_symbol(
-        &self,
-        Parameters(args): Parameters<GetSymbolArgs>,
-    ) -> Result<Json<SymbolDoc>, ErrorData> {
-        Ok(Json(self.do_get_symbol(args).await?))
-    }
-
-    // -- find_usages -------------------------------------------------------
-
-    /// Find the symbols that reference a given symbol.
-    #[tool(
-        name = "find_usages",
-        description = "PREFER THIS to answer \"who calls this?\" or \"what would break if I \
-changed this?\". Given a symbol key, returns the symbols that hold a resolved \
-reference to it — callers of a function, users of a type — each with its own \
-key, name and kind, so you can follow the chain with `get_symbol`. Only \
-references the producer resolved with index-grade confidence or better are \
-returned, so results are precise rather than textual: a name that merely \
-appears in a comment or an unrelated identifier will not show up. `key` must \
-be `ecosystem:name#introhex`."
-    )]
-    pub async fn find_usages(
-        &self,
-        Parameters(args): Parameters<FindUsagesArgs>,
-    ) -> Result<Json<UsagesResult>, ErrorData> {
-        Ok(Json(self.do_find_usages(args).await?))
-    }
-
-    // -- list_packages -----------------------------------------------------
-
-    /// List the packages currently loaded.
-    #[tool(
-        name = "list_packages",
-        description = "PREFER THIS FIRST to discover what is available before searching. \
-Returns every package loaded into the local corpus, each with its \
-`ecosystem:name` lineage key, display name and ecosystem. The lineage key is \
-the prefix of every symbol key in that package and is exactly what \
-`search_symbols`'s `packages` filter accepts. If a package you expect is \
-missing it has not been produced or loaded yet, and no other tool will find \
-symbols from it — this tool is how you tell \"not indexed\" apart from \
-\"does not exist\"."
-    )]
-    pub async fn list_packages(
-        &self,
-        Parameters(_args): Parameters<ListPackagesArgs>,
-    ) -> Result<Json<PackagesResult>, ErrorData> {
-        Ok(Json(self.do_list_packages().await?))
-    }
-
-    // -- graph_query -------------------------------------------------------
-
-    /// Run an arbitrary Trustfall query over the corpus.
-    #[tool(
-        name = "graph_query",
-        description = "The escape hatch — use it only when the four typed tools cannot \
-express the question. `search_symbols`, `get_symbol`, `find_usages` and \
-`list_packages` are faster, cheaper and better-shaped for the questions they \
-cover; reach here for structural or relational queries they do not, such as \
-\"every public function in package X returning type Y\", \"all implementors of \
-this trait\", or joins across packages. Takes a Trustfall (GraphQL-subset) \
-query plus string variable bindings referenced as `$name`, and returns column \
-names with positionally-aligned string cells. ALWAYS call `graph_schema` first \
-and write the query against the exact type, property and edge names it \
-returns — queries are validated against that schema and a guessed field name \
-is an error, not an empty result."
-    )]
-    pub async fn graph_query(
-        &self,
-        Parameters(args): Parameters<GraphQueryArgs>,
-    ) -> Result<Json<QueryResult>, ErrorData> {
-        Ok(Json(self.do_graph_query(args).await?))
-    }
-
-    // -- graph_schema ------------------------------------------------------
-
-    /// Return the Trustfall schema `graph_query` is checked against.
-    #[tool(
-        name = "graph_schema",
-        description = "Returns the GraphQL SDL schema that `graph_query` queries are \
-validated against, verbatim. Call this before writing any `graph_query`: it \
-documents every queryable type (Package, Symbol and its Function/Record/Trait/\
-Impl/Enum/Field/Const/Alias implementors, Occurrence), every scalar property, \
-every edge (members, parent, usages, mentions, implementors, occurrencesOf), \
-and the cost of each traversal. It also documents the `key` format, \
-`ecosystem:name#introhex`, which every other tool consumes. The schema is \
-fixed for the life of the server, so one call per session is enough."
-    )]
-    pub async fn graph_schema(
-        &self,
-        Parameters(_args): Parameters<GraphSchemaArgs>,
-    ) -> Result<Json<SchemaResult>, ErrorData> {
-        Ok(Json(SchemaResult { schema: crate::SCHEMA_SDL.to_owned() }))
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Implementations (separate from the router impl so the macro stays readable)
+// Tool bodies — called by the `#[tool]` methods in `crate::server`
 // ---------------------------------------------------------------------------
 
 impl NudoxTools {
@@ -636,7 +489,7 @@ impl NudoxTools {
         while let Ok(event) = rx.recv_async().await {
             match event {
                 QueryEvent::Columns { columns: cols, .. } => {
-                    columns = cols.iter().map(SharedStr::to_string).collect();
+                    columns = cols.iter().map(|c| c.to_string()).collect();
                 }
                 QueryEvent::Rows { rows: batch, .. } => {
                     for row in batch.iter() {
@@ -645,7 +498,7 @@ impl NudoxTools {
                             break;
                         }
                         rows.push(QueryResultRow {
-                            cells: row.cells.iter().map(SharedStr::to_string).collect(),
+                            cells: row.cells.iter().map(|c| c.to_string()).collect(),
                         });
                     }
                 }

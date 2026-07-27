@@ -104,7 +104,7 @@ impl SymbolKeyDto {
             return Err(malformed("package name segment is empty"));
         }
         let intro = parse_intro_hex(intro_hex)
-            .ok_or_else(|| malformed("intro segment must be 64 lowercase hex characters"))?;
+            .ok_or_else(|| malformed("intro segment must be exactly 64 hex characters"))?;
 
         // The only two `nudox-ir` items this crate touches; see the
         // `TODO(engine)` note beside the dependency in Cargo.toml. Constructing
@@ -122,9 +122,10 @@ impl SymbolKeyDto {
 
 /// Decode a 64-character hex string into an `IntroId`.
 ///
-/// Rejects odd lengths, wrong lengths, and non-hex bytes; returns `None`
-/// rather than a partially-decoded id, so a truncated key can never resolve to
-/// a *different* symbol.
+/// Accepts either case on input and canonicalises to lowercase on the way out,
+/// so a key an agent upper-cased still resolves. Rejects any length other than
+/// 64 and any non-hex byte, returning `None` rather than a partially-decoded
+/// id — a truncated key must never resolve to a *different* symbol.
 fn parse_intro_hex(s: &str) -> Option<wire::IntroId> {
     if s.len() != 64 {
         return None;
