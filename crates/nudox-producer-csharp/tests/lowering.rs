@@ -578,3 +578,485 @@ fn empty_types_returns_error() {
         "expected NoTypes error"
     );
 }
+
+// ---------------------------------------------------------------------------
+// New tests for richness regressions
+// ---------------------------------------------------------------------------
+
+/// A fixture with two classes where `Handler` has a property whose type is
+/// `EventSource` — a named type declared in the same extraction.  After the
+/// fix, that property's IR type must be `Type::Nominal(...)`, not `Type::Any`.
+const NOMINAL_TYPE_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "NominalLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:NominalLib.EventSource",
+      "qualifiedName": "NominalLib.EventSource",
+      "simpleName": "EventSource",
+      "kind": "CLASS",
+      "namespace": "NominalLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": "<summary>An event source.</summary>",
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [], "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    },
+    {
+      "docId": "T:NominalLib.Handler",
+      "qualifiedName": "NominalLib.Handler",
+      "simpleName": "Handler",
+      "kind": "CLASS",
+      "namespace": "NominalLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [
+          {
+            "name": "Source",
+            "docId": "P:NominalLib.Handler.Source",
+            "type": { "kind": "named", "name": "NominalLib.EventSource", "args": [], "owner": null, "nullable": "notAnnotated", "typeKind": "Class" },
+            "accessibility": "public",
+            "getAccessibility": null,
+            "setAccessibility": null,
+            "setKind": "set",
+            "isRequired": false,
+            "isStatic": false,
+            "isIndexer": false,
+            "parameters": [],
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "events": [],
+        "constructors": [],
+        "methods": [],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ]
+}"#;
+
+/// Property whose type is another class in the same extraction must lower to
+/// `Type::Nominal`, not `Type::Any`.
+#[test]
+fn named_type_lowers_to_nominal_not_any() {
+    use nudox_ir::{build::Type, entry::EntryInner, kind::Kind};
+
+    let extraction = parse_extraction(NOMINAL_TYPE_FIXTURE.as_bytes())
+        .expect("nominal fixture must parse");
+    let pkg = lower(&extraction).expect("nominal fixture must lower");
+
+    // Find the `Source` property (a Field entry).
+    let source_entry = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Source")
+        .expect("Source property must be present");
+
+    let ty = match source_entry.1.kind() {
+        EntryInner::Owned(Kind::Field(f)) => f.ty.as_ref().expect("Source must have a type"),
+        other => panic!("Source must be a Field, got {other:?}"),
+    };
+
+    assert!(
+        matches!(ty, Type::Nominal(_)),
+        "Source.ty must be Type::Nominal (got {ty:?}); named types in the same \
+         extraction must resolve to Nominal, not Any"
+    );
+}
+
+/// A fixture with a generic method whose parameter uses a type parameter `T`.
+/// After the fix, the parameter type must be `Type::TypeVar("T")`, not `Any`.
+const TYPEVAR_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "GenLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:GenLib.Container",
+      "qualifiedName": "GenLib.Container",
+      "simpleName": "Container",
+      "kind": "CLASS",
+      "namespace": "GenLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [],
+        "events": [],
+        "constructors": [],
+        "methods": [
+          {
+            "name": "Wrap",
+            "docId": "M:GenLib.Container.Wrap``1(``0)",
+            "methodKind": "Ordinary",
+            "accessibility": "public",
+            "isStatic": true,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [
+              {
+                "name": "T",
+                "variance": "none",
+                "constraints": {
+                  "referenceType": false,
+                  "valueType": false,
+                  "notNull": false,
+                  "unmanaged": false,
+                  "constructor": false,
+                  "allowsRefLike": false,
+                  "types": []
+                }
+              }
+            ],
+            "parameters": [
+              {
+                "name": "value",
+                "type": { "kind": "typeParam", "name": "T", "ownerKind": "method", "nullable": "none" },
+                "refKind": "none",
+                "isParams": false,
+                "hasDefault": false,
+                "default": null,
+                "scoped": false,
+                "attributes": []
+              }
+            ],
+            "returnType": { "kind": "typeParam", "name": "T", "ownerKind": "method", "nullable": "none" },
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": null,
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ]
+}"#;
+
+/// Generic method parameter typed as a type-var `T` must lower to
+/// `Type::TypeVar("T")`, not `Type::Any`.
+#[test]
+fn type_param_use_lowers_to_typevar() {
+    use nudox_ir::{build::Type, entry::EntryInner, kind::Kind};
+
+    let extraction =
+        parse_extraction(TYPEVAR_FIXTURE.as_bytes()).expect("typevar fixture must parse");
+    let pkg = lower(&extraction).expect("typevar fixture must lower");
+
+    // Find the `value` parameter of Wrap.
+    let value_param = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "value")
+        .expect("value parameter must be present");
+
+    let ty = match value_param.1.kind() {
+        EntryInner::Owned(Kind::Param(p)) => p.ty.as_ref().expect("value param must have a type"),
+        other => panic!("value must be a Param, got {other:?}"),
+    };
+
+    assert!(
+        matches!(ty, Type::TypeVar(n) if n == "T"),
+        "value param type must be Type::TypeVar(\"T\"), got {ty:?}"
+    );
+}
+
+/// A fixture with a method that has a `<exception cref>` doc tag and a
+/// parameter with a default value.
+const EXCEPTION_AND_DEFAULT_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "ExLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:ExLib.Parser",
+      "qualifiedName": "ExLib.Parser",
+      "simpleName": "Parser",
+      "kind": "CLASS",
+      "namespace": "ExLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [],
+        "events": [
+          {
+            "name": "DataArrived",
+            "docId": "E:ExLib.Parser.DataArrived",
+            "type": { "kind": "named", "name": "System.EventHandler", "args": [], "owner": null, "nullable": "none", "typeKind": "Delegate" },
+            "accessibility": "public",
+            "addAccessibility": "internal",
+            "removeAccessibility": null,
+            "isStatic": false,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "constructors": [],
+        "methods": [
+          {
+            "name": "Parse",
+            "docId": "M:ExLib.Parser.Parse(System.String,System.Int32)",
+            "methodKind": "Ordinary",
+            "accessibility": "public",
+            "isStatic": false,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [],
+            "parameters": [
+              {
+                "name": "input",
+                "type": { "kind": "named", "name": "System.String", "args": [], "owner": null, "nullable": "notAnnotated", "typeKind": "Class" },
+                "refKind": "none",
+                "isParams": false,
+                "hasDefault": false,
+                "default": null,
+                "scoped": false,
+                "attributes": []
+              },
+              {
+                "name": "maxLen",
+                "type": { "kind": "named", "name": "System.Int32", "args": [], "owner": null, "nullable": "none", "typeKind": "Struct" },
+                "refKind": "none",
+                "isParams": false,
+                "hasDefault": true,
+                "default": "1024",
+                "scoped": false,
+                "attributes": []
+              }
+            ],
+            "returnType": { "kind": "named", "name": "System.Boolean", "args": [], "owner": null, "nullable": "none", "typeKind": "Struct" },
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": null,
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": "<summary>Parses the input.</summary><exception cref=\"T:System.ArgumentException\">on invalid input</exception>",
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ]
+}"#;
+
+/// Exception `<exception cref>` tags must NOT appear in `output_params`.
+/// They must appear as `doc_links` (with label "throws") on the method symbol
+/// and as prose in the method documentation.
+#[test]
+fn exception_cref_is_not_output_param() {
+    use nudox_ir::{entry::EntryInner, kind::Kind};
+
+    let extraction = parse_extraction(EXCEPTION_AND_DEFAULT_FIXTURE.as_bytes())
+        .expect("exception fixture must parse");
+    let pkg = lower(&extraction).expect("exception fixture must lower");
+
+    // Find the Parse function.
+    let parse_entry = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Parse")
+        .expect("Parse method must be present");
+
+    let fn_kind = match parse_entry.1.kind() {
+        EntryInner::Owned(Kind::Function(f)) => f,
+        other => panic!("Parse must be a Function, got {other:?}"),
+    };
+
+    // output_params must contain only the return value — not the exception.
+    assert_eq!(
+        fn_kind.output_params.len(),
+        1,
+        "Parse output_params must have exactly 1 entry (the return bool), \
+         not the exception; exceptions must not be in output_params"
+    );
+
+    // The method's doc_links must contain a "throws" link for ArgumentException.
+    let throws_link = parse_entry
+        .1
+        .sym()
+        .doc_links
+        .iter()
+        .find(|dl| dl.label.as_deref() == Some("throws"));
+    assert!(
+        throws_link.is_some(),
+        "Parse must have a 'throws' doc_link for ArgumentException"
+    );
+
+    // The exception description must appear in documentation prose.
+    assert!(
+        parse_entry
+            .1
+            .sym()
+            .documentation
+            .contains("ArgumentException"),
+        "Parse documentation must mention ArgumentException"
+    );
+}
+
+/// A parameter with `hasDefault: true` and `default: "1024"` must have
+/// `ParamAttribute::Optional` and its default text preserved in documentation.
+#[test]
+fn param_default_value_is_captured() {
+    use nudox_ir::{build::ParamAttribute, entry::EntryInner, kind::Kind};
+
+    let extraction = parse_extraction(EXCEPTION_AND_DEFAULT_FIXTURE.as_bytes())
+        .expect("exception fixture must parse");
+    let pkg = lower(&extraction).expect("exception fixture must lower");
+
+    let max_len = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "maxLen")
+        .expect("maxLen parameter must be present");
+
+    let param_kind = match max_len.1.kind() {
+        EntryInner::Owned(Kind::Param(p)) => p,
+        other => panic!("maxLen must be a Param, got {other:?}"),
+    };
+
+    assert!(
+        param_kind.attributes.contains(&ParamAttribute::Optional),
+        "maxLen must carry ParamAttribute::Optional"
+    );
+    assert!(
+        max_len.1.sym().documentation.contains("1024"),
+        "maxLen documentation must contain the default value text '1024'"
+    );
+}
+
+/// An event with asymmetric `add_accessibility` must surface that in its
+/// documentation.
+#[test]
+fn event_accessor_accessibility_is_documented() {
+    let extraction = parse_extraction(EXCEPTION_AND_DEFAULT_FIXTURE.as_bytes())
+        .expect("exception fixture must parse");
+    let pkg = lower(&extraction).expect("exception fixture must lower");
+
+    let event_entry = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "DataArrived")
+        .expect("DataArrived event must be present");
+
+    assert!(
+        event_entry
+            .1
+            .sym()
+            .documentation
+            .contains("Add accessor"),
+        "DataArrived documentation must mention asymmetric Add accessor accessibility"
+    );
+    assert!(
+        event_entry
+            .1
+            .sym()
+            .documentation
+            .contains("internal"),
+        "DataArrived documentation must contain 'internal' (the add_accessibility value)"
+    );
+}

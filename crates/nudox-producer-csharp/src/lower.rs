@@ -48,13 +48,12 @@
 //! | method/ctor/op        | `Function` (child of Record/Trait)    |
 //! | enum member           | `Variant` (child of Enum)             |
 
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use nudox_ir::{
     build::{
-        Alias, Const, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function, GenericParam,
-        Param, ParamAttribute, Primitive, Receiver, Record, RecordForm, Trait, Type, Variant,
-        VariantForm, WherePred,
+        Alias, Const, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function, Param,
+        ParamAttribute, Primitive, Receiver, Record, RecordForm, Trait, Type, Variant, VariantForm,
     },
     entry::{AttrTok, Deprecation, DocLink, Symbol, Visibility},
     index::Ref,
@@ -76,9 +75,25 @@ use crate::{
 /// All type declarations are processed in one pass.  Members of each type are
 /// declared as children in the same pass.  The caller calls
 /// `lowering.finish()` after this returns.
+///
+/// A `name_to_doc_id` map (FQN → doc-id) is built from the extraction up
+/// front so that named type references inside `TypeSig` trees can be resolved
+/// to `Type::Nominal(RawRef)` rather than falling back to `Type::Any`.
 pub fn lower_extraction(extraction: &Extraction, out: &mut Lowering<String>) {
+    // Build a FQN → doc-id lookup for all types in this extraction.
+    // Key: `TypeDecl::qualified_name` (metadata name with arity, e.g.
+    //   `"System.Collections.Generic.List\`1"`).
+    // Value: `TypeDecl::doc_id` (e.g. `"T:System.Collections.Generic.List\`1"`).
+    // Types with an empty doc_id are omitted (they have no stable key).
+    let name_to_doc_id: HashMap<String, String> = extraction
+        .types
+        .iter()
+        .filter(|t| !t.doc_id.is_empty())
+        .map(|t| (t.qualified_name.clone(), t.doc_id.clone()))
+        .collect();
+
     for decl in &extraction.types {
-        lower_type_decl(decl, out);
+        lower_type_decl(decl, &name_to_doc_id, out);
     }
 }
 
@@ -306,13 +321,17 @@ fn declared_note(kind: &str, modifiers: &[String]) -> String {
 // Top-level type dispatch
 // ---------------------------------------------------------------------------
 
-fn lower_type_decl(decl: &TypeDecl, out: &mut Lowering<String>) {
+fn lower_type_decl(
+    decl: &TypeDecl,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     match decl.kind.as_str() {
-        "INTERFACE" => lower_interface(decl, out),
-        "ENUM" => lower_enum(decl, out),
-        "DELEGATE" => lower_delegate(decl, out),
+        "INTERFACE" => lower_interface(decl, name_to_doc_id, out),
+        "ENUM" => lower_enum(decl, name_to_doc_id, out),
+        "DELEGATE" => lower_delegate(decl, name_to_doc_id, out),
         // CLASS / STRUCT / RECORD / RECORD_STRUCT share the Record shape.
-        _ => lower_class_like(decl, out),
+        _ => lower_class_like(decl, name_to_doc_id, out),
     }
 }
 
@@ -330,7 +349,11 @@ fn parent_ref(decl: &TypeDecl, out: &mut Lowering<String>) -> Option<String> {
 // Class / struct / record / record struct
 // ---------------------------------------------------------------------------
 
-fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
+fn lower_class_like(
+    decl: &TypeDecl,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     let parsed = xmldoc::parse_opt(decl.doc.as_deref());
     let parent = parent_ref(decl, out);
 
@@ -357,7 +380,7 @@ fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
     let sym = type_symbol(decl, parsed.as_ref(), &extra);
 
     // Lower generic params and where-preds.
-    let (generics, wheres) = types::lower_type_params(&decl.type_params);
+    let (generics, wheres) = types::lower_type_params(&decl.type_params, name_to_doc_id, out);
 
     // Super-types (base class + interfaces), excluding implicit ones.
     const IMPLICIT_BASES: &[&str] = &[
@@ -375,11 +398,11 @@ fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
                 .named_name()
                 .is_some_and(|n| IMPLICIT_BASES.contains(&n));
             if !implicit {
-                list.push(types::lower_type(base));
+                list.push(types::lower_type(base, name_to_doc_id, out));
             }
         }
         for iface in &decl.interfaces {
-            list.push(types::lower_type(iface));
+            list.push(types::lower_type(iface, name_to_doc_id, out));
         }
         list.into_boxed_slice()
     };
@@ -437,33 +460,33 @@ fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
     // Step 2: declare const fields as Const entries.
     for f in &decl.members.fields {
         if f.is_const {
-            lower_const_field(f, &type_doc_id, out);
+            lower_const_field(f, &type_doc_id, name_to_doc_id, out);
         } else {
-            lower_field(f, &type_doc_id, out);
+            lower_field(f, &type_doc_id, name_to_doc_id, out);
         }
     }
     for p in &decl.members.properties {
-        lower_property(p, &type_doc_id, out);
+        lower_property(p, &type_doc_id, name_to_doc_id, out);
     }
     for idx in &decl.members.indexers {
-        lower_indexer(idx, &type_doc_id, out);
+        lower_indexer(idx, &type_doc_id, name_to_doc_id, out);
     }
     for e in &decl.members.events {
-        lower_event(e, &type_doc_id, out);
+        lower_event(e, &type_doc_id, name_to_doc_id, out);
     }
 
     // Step 3: declare constructors and methods as Function entries.
     for m in &decl.members.constructors {
-        lower_method(m, &type_doc_id, false, out);
+        lower_method(m, &type_doc_id, false, name_to_doc_id, out);
     }
     for m in &decl.members.methods {
-        lower_method(m, &type_doc_id, false, out);
+        lower_method(m, &type_doc_id, false, name_to_doc_id, out);
     }
     for m in &decl.members.operators {
-        lower_method(m, &type_doc_id, false, out);
+        lower_method(m, &type_doc_id, false, name_to_doc_id, out);
     }
     for m in &decl.members.conversions {
-        lower_method(m, &type_doc_id, false, out);
+        lower_method(m, &type_doc_id, false, name_to_doc_id, out);
     }
 }
 
@@ -471,7 +494,11 @@ fn lower_class_like(decl: &TypeDecl, out: &mut Lowering<String>) {
 // Interface
 // ---------------------------------------------------------------------------
 
-fn lower_interface(decl: &TypeDecl, out: &mut Lowering<String>) {
+fn lower_interface(
+    decl: &TypeDecl,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     let parsed = xmldoc::parse_opt(decl.doc.as_deref());
     let parent = parent_ref(decl, out);
 
@@ -486,12 +513,12 @@ fn lower_interface(decl: &TypeDecl, out: &mut Lowering<String>) {
     }
 
     let sym = type_symbol(decl, parsed.as_ref(), &extra);
-    let (generics, wheres) = types::lower_type_params(&decl.type_params);
+    let (generics, wheres) = types::lower_type_params(&decl.type_params, name_to_doc_id, out);
 
     let supers: Box<[Type]> = decl
         .interfaces
         .iter()
-        .map(types::lower_type)
+        .map(|iface| types::lower_type(iface, name_to_doc_id, out))
         .collect::<Vec<_>>()
         .into_boxed_slice();
 
@@ -507,21 +534,21 @@ fn lower_interface(decl: &TypeDecl, out: &mut Lowering<String>) {
 
     // Properties as Field children.
     for p in &decl.members.properties {
-        lower_property(p, &type_doc_id, out);
+        lower_property(p, &type_doc_id, name_to_doc_id, out);
     }
     for idx in &decl.members.indexers {
-        lower_indexer(idx, &type_doc_id, out);
+        lower_indexer(idx, &type_doc_id, name_to_doc_id, out);
     }
     for e in &decl.members.events {
-        lower_event(e, &type_doc_id, out);
+        lower_event(e, &type_doc_id, name_to_doc_id, out);
     }
 
     // Methods (abstract = required, body-bearing = provided via is_defaulted).
     for m in &decl.members.methods {
-        lower_method(m, &type_doc_id, true, out);
+        lower_method(m, &type_doc_id, true, name_to_doc_id, out);
     }
     for m in &decl.members.operators {
-        lower_method(m, &type_doc_id, true, out);
+        lower_method(m, &type_doc_id, true, name_to_doc_id, out);
     }
 }
 
@@ -529,7 +556,11 @@ fn lower_interface(decl: &TypeDecl, out: &mut Lowering<String>) {
 // Enum
 // ---------------------------------------------------------------------------
 
-fn lower_enum(decl: &TypeDecl, out: &mut Lowering<String>) {
+fn lower_enum(
+    decl: &TypeDecl,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     let parsed = xmldoc::parse_opt(decl.doc.as_deref());
     let parent = parent_ref(decl, out);
 
@@ -553,7 +584,7 @@ fn lower_enum(decl: &TypeDecl, out: &mut Lowering<String>) {
     }
 
     let sym = type_symbol(decl, parsed.as_ref(), &extra);
-    let (generics, wheres) = types::lower_type_params(&decl.type_params);
+    let (generics, wheres) = types::lower_type_params(&decl.type_params, name_to_doc_id, out);
 
     let type_doc_id = decl.doc_id.clone();
 
@@ -589,7 +620,7 @@ fn lower_enum(decl: &TypeDecl, out: &mut Lowering<String>) {
 
     // Enum methods (rare but possible, e.g. extension methods).
     for m in &decl.members.methods {
-        lower_method(m, &type_doc_id, false, out);
+        lower_method(m, &type_doc_id, false, name_to_doc_id, out);
     }
 }
 
@@ -597,7 +628,11 @@ fn lower_enum(decl: &TypeDecl, out: &mut Lowering<String>) {
 // Delegate
 // ---------------------------------------------------------------------------
 
-fn lower_delegate(decl: &TypeDecl, out: &mut Lowering<String>) {
+fn lower_delegate(
+    decl: &TypeDecl,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     let parsed = xmldoc::parse_opt(decl.doc.as_deref());
     let parent = parent_ref(decl, out);
 
@@ -608,26 +643,35 @@ fn lower_delegate(decl: &TypeDecl, out: &mut Lowering<String>) {
         extra.push("Hidden (`EditorBrowsable(Never)`).".to_string());
     }
 
-    let sym = type_symbol(decl, parsed.as_ref(), &extra);
-    let (generics, wheres) = types::lower_type_params(&decl.type_params);
+    // Document the delegate's invoke signature in the doc string.
+    // KNOWN GAP: `FunctionPointer` type variant does not exist in the new
+    // ty.rs. An `Alias` with a structural target (a `Type::FunctionPointer {
+    // params, ret, calling_conv }` variant) would faithfully represent a
+    // delegate — until then we record the signature as a doc note and produce
+    // an `Alias` with `target = None`.
+    if let Some(sig) = &decl.delegate_sig {
+        let params_text: Vec<String> = sig
+            .params
+            .iter()
+            .map(|p| format!("{} {}", types::type_display(&p.ty), p.name))
+            .collect();
+        let ret_text = sig
+            .return_type
+            .as_ref()
+            .map(|t| types::type_display(t))
+            .unwrap_or_else(|| "void".to_string());
+        extra.push(format!(
+            "Invoke signature: `({}) → {}`",
+            params_text.join(", "),
+            ret_text
+        ));
+    }
 
-    // The delegate's invoke signature cannot be represented as a Function in the
-    // new IR without child entries for parameters — but delegates are types, not
-    // functions. We model as an Alias with target = Any (the fn-ptr form has no
-    // representation in the new Type algebra).
-    // UNCERTAINTY: FunctionPointer type variant does not exist in the new ty.rs.
-    let target = match &decl.delegate_sig {
-        Some(sig) => {
-            let ret = sig.return_type.as_ref().map(types::lower_type);
-            // Document return type in docs; cannot embed a fn-ptr in the type.
-            let _ = ret;
-            None // no structural target
-        }
-        None => None,
-    };
+    let sym = type_symbol(decl, parsed.as_ref(), &extra);
+    let (generics, wheres) = types::lower_type_params(&decl.type_params, name_to_doc_id, out);
 
     let alias_kind = Alias::builder()
-        .maybe_target(target)
+        .maybe_target(None) // no structural target — see KNOWN GAP above
         .generics(generics)
         .wheres(wheres)
         .build();
@@ -640,7 +684,12 @@ fn lower_delegate(decl: &TypeDecl, out: &mut Lowering<String>) {
 // Field members
 // ---------------------------------------------------------------------------
 
-fn lower_field(f: &schema::Field, parent_id: &str, out: &mut Lowering<String>) {
+fn lower_field(
+    f: &schema::Field,
+    parent_id: &str,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     let field_id = member_id(parent_id, "F", &f.name);
     let parsed = xmldoc::parse_opt(f.doc.as_deref());
 
@@ -680,14 +729,19 @@ fn lower_field(f: &schema::Field, parent_id: &str, out: &mut Lowering<String>) {
 
     let field_kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(types::lower_type(&f.ty))
+        .ty(types::lower_type(&f.ty, name_to_doc_id, out))
         .attributes(attrs)
         .build();
 
     out.declare(field_id, Some(parent_id.to_string()), sym, field_kind);
 }
 
-fn lower_const_field(f: &schema::Field, parent_id: &str, out: &mut Lowering<String>) {
+fn lower_const_field(
+    f: &schema::Field,
+    parent_id: &str,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     let const_id = member_id(parent_id, "CF", &f.name);
     let parsed = xmldoc::parse_opt(f.doc.as_deref());
 
@@ -708,15 +762,24 @@ fn lower_const_field(f: &schema::Field, parent_id: &str, out: &mut Lowering<Stri
         &extra,
     );
 
+    // The constant value is stored as a rendered display string (the oracle's
+    // `constant` field).  A structured const-expression representation is a
+    // Track B item: it would require a `ConstExpr` AST in the IR.  The
+    // rendered text is sufficient for display and basic search.
     let const_kind = Const::builder()
-        .ty(types::lower_type(&f.ty))
+        .ty(types::lower_type(&f.ty, name_to_doc_id, out))
         .maybe_value(f.constant.clone())
         .build();
 
     out.declare(const_id, Some(parent_id.to_string()), sym, const_kind);
 }
 
-fn lower_property(p: &schema::Property, parent_id: &str, out: &mut Lowering<String>) {
+fn lower_property(
+    p: &schema::Property,
+    parent_id: &str,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     let field_id = member_id(parent_id, "P", &p.name);
     let parsed = xmldoc::parse_opt(p.doc.as_deref());
 
@@ -755,14 +818,19 @@ fn lower_property(p: &schema::Property, parent_id: &str, out: &mut Lowering<Stri
 
     let field_kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(types::lower_type(&p.ty))
+        .ty(types::lower_type(&p.ty, name_to_doc_id, out))
         .attributes(attrs)
         .build();
 
     out.declare(field_id, Some(parent_id.to_string()), sym, field_kind);
 }
 
-fn lower_indexer(p: &schema::Property, parent_id: &str, out: &mut Lowering<String>) {
+fn lower_indexer(
+    p: &schema::Property,
+    parent_id: &str,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     // Indexers share the same member_id space as properties, but get a
     // distinct prefix to avoid collisions with a property of the same name.
     let field_id = member_id(parent_id, "IDX", &p.name);
@@ -802,14 +870,19 @@ fn lower_indexer(p: &schema::Property, parent_id: &str, out: &mut Lowering<Strin
 
     let field_kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(types::lower_type(&p.ty))
+        .ty(types::lower_type(&p.ty, name_to_doc_id, out))
         .attributes(attrs)
         .build();
 
     out.declare(field_id, Some(parent_id.to_string()), sym, field_kind);
 }
 
-fn lower_event(e: &schema::Event, parent_id: &str, out: &mut Lowering<String>) {
+fn lower_event(
+    e: &schema::Event,
+    parent_id: &str,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
     let field_id = member_id(parent_id, "E", &e.name);
     let parsed = xmldoc::parse_opt(e.doc.as_deref());
 
@@ -820,6 +893,18 @@ fn lower_event(e: &schema::Event, parent_id: &str, out: &mut Lowering<String>) {
     }
     if !e.accessibility.is_empty() {
         extra.push(format!("Declared: `{}`", e.accessibility));
+    }
+    // Surface asymmetric accessor accessibilities (add/remove can differ from
+    // the event's own declared accessibility).
+    if let Some(add_vis) = &e.add_accessibility {
+        if add_vis != &e.accessibility {
+            extra.push(format!("Add accessor: `{add_vis}`"));
+        }
+    }
+    if let Some(rem_vis) = &e.remove_accessibility {
+        if rem_vis != &e.accessibility {
+            extra.push(format!("Remove accessor: `{rem_vis}`"));
+        }
     }
     if e.hidden {
         extra.push("Hidden (`EditorBrowsable(Never)`).".to_string());
@@ -842,7 +927,7 @@ fn lower_event(e: &schema::Event, parent_id: &str, out: &mut Lowering<String>) {
 
     let field_kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(types::lower_type(&e.ty))
+        .ty(types::lower_type(&e.ty, name_to_doc_id, out))
         .attributes(attrs)
         .build();
 
@@ -881,6 +966,7 @@ fn lower_method(
     m: &schema::Method,
     parent_id: &str,
     in_interface: bool,
+    name_to_doc_id: &HashMap<String, String>,
     out: &mut Lowering<String>,
 ) {
     let method_id = method_doc_id(m, parent_id);
@@ -896,7 +982,7 @@ fn lower_method(
         input_refs.push(r);
     }
     for (i, p) in m.parameters.iter().enumerate() {
-        lower_param(p, i, m.is_extension_method, &method_id, out);
+        lower_param(p, i, m.is_extension_method, &method_id, name_to_doc_id, out);
     }
 
     // --- Output parameters (return value). ---
@@ -908,17 +994,37 @@ fn lower_method(
             let r: Ref<Param> = out.refer(ret_id.clone());
             output_refs.push(r);
             let parsed_returns = parsed.as_ref().and_then(|p| p.returns.clone());
-            lower_return_param(ret, m, &parsed_returns, &method_id, out);
+            lower_return_param(ret, m, &parsed_returns, &method_id, name_to_doc_id, out);
         }
     }
 
-    // Exception outputs (each <exception cref> → out param).
+    // Exception documentation from `<exception cref>` XML tags.
+    //
+    // These do NOT go into output_params.  Adding them there was the Java
+    // producer's defect: a consumer reading `output_params` would think the
+    // method *returns* its exceptions, which is wrong — C# exceptions are
+    // untyped at the call site.  Instead, each `<exception>` tag is surfaced
+    // as a `DocLink` on the method's symbol and as documentation text.
+    //
+    // KNOWN IR GAP: the IR has no `throws` slot on `Function`.  A future
+    // `Function::throws: List<Type>` field (parallel to Java's `throws`
+    // clause) would be the right home for this.  For now, exceptions are
+    // preserved as `doc_links` (the cref) plus documentation prose (the
+    // description text) on the method's own symbol — information is not lost,
+    // just not structured.
+    let mut exception_doc_links: Vec<DocLink> = Vec::new();
+    let mut exception_notes: Vec<String> = Vec::new();
     if let Some(p) = &parsed {
-        for (i, (cref, text)) in p.exceptions.iter().enumerate() {
-            let exc_id = format!("{method_id}#throws{i}");
-            let r: Ref<Param> = out.refer(exc_id.clone());
-            output_refs.push(r);
-            lower_exception_param(cref, text, &exc_id, &method_id, out);
+        for (cref, text) in &p.exceptions {
+            exception_doc_links.push(DocLink {
+                target: cref.clone(),
+                label: Some("throws".to_string()),
+            });
+            if text.is_empty() {
+                exception_notes.push(format!("Throws `{cref}`."));
+            } else {
+                exception_notes.push(format!("Throws `{cref}`: {text}"));
+            }
         }
     }
 
@@ -942,7 +1048,7 @@ fn lower_method(
     // For interface methods: body-bearing = is_defaulted.
     let is_defaulted = in_interface && !m.is_abstract;
 
-    let (generics, wheres) = types::lower_type_params(&m.type_params);
+    let (generics, wheres) = types::lower_type_params(&m.type_params, name_to_doc_id, out);
 
     let fn_kind = Function::builder()
         .maybe_receiver(receiver)
@@ -954,21 +1060,43 @@ fn lower_method(
         .is_defaulted(is_defaulted)
         .build();
 
-    // Documentation.
+    // Documentation: method modifiers + exception notes.
     let mut extra: Vec<String> = Vec::new();
     extra.extend(method_declaration_notes(m));
+    extra.extend(exception_notes);
     if m.hidden {
         extra.push("Hidden (`EditorBrowsable(Never)`).".to_string());
     }
 
-    let sym = member_symbol(
-        &method_display_name(m),
-        &m.accessibility,
-        parsed.as_ref(),
-        m.deprecated.as_ref(),
-        &m.attributes,
-        &extra,
-    );
+    // Build doc_links: merge oracle-provided links with exception crefs.
+    let mut method_doc_links: Vec<DocLink> = Vec::new();
+    if let Some(dl_map) = &m.doc_links {
+        for (cref, doc_id) in dl_map {
+            method_doc_links.push(DocLink {
+                target: doc_id.clone(),
+                label: Some(cref.clone()),
+            });
+        }
+    }
+    method_doc_links.extend(exception_doc_links);
+
+    let visibility = types::map_visibility(&m.accessibility);
+    let deprecation = deprecation_of(m.deprecated.as_ref());
+    let rendered_attrs = render_attrs(&m.attributes);
+    let documentation = build_documentation(parsed.as_ref(), &extra, m.deprecated.as_ref());
+
+    let sym = Symbol {
+        name: method_display_name(m),
+        visibility,
+        documentation,
+        source: PathBuf::new(),
+        span: 0..0,
+        aliases: Box::new([]),
+        deprecation,
+        doc_links: method_doc_links.into_boxed_slice(),
+        attrs: rendered_attrs,
+        cfg: None,
+    };
 
     out.declare(method_id, Some(parent_id.to_string()), sym, fn_kind);
 }
@@ -978,6 +1106,7 @@ fn lower_param(
     idx: usize,
     is_extension: bool,
     parent_method_id: &str,
+    name_to_doc_id: &HashMap<String, String>,
     out: &mut Lowering<String>,
 ) {
     let param_id = format!("{parent_method_id}#p{idx}");
@@ -1009,6 +1138,16 @@ fn lower_param(
     if p.scoped {
         doc_parts.push("scoped".to_string());
     }
+    // Capture the default-value text when the oracle provides it.
+    // The IR has no structured `ConstExpr` slot for default values yet.
+    // KNOWN IR GAP: `Param` needs a `default: Option<String>` field (or a
+    // structured `default: Option<ConstExpr>` once the const-expression
+    // subsystem exists) to carry default-value text without encoding it in
+    // the doc string.  For now we append it as a documentation note; the
+    // `ParamAttribute::Optional` flag already signals that a default exists.
+    if let Some(default_text) = &p.default {
+        doc_parts.push(format!("default: `{default_text}`"));
+    }
 
     let sym = Symbol {
         name: p.name.clone(),
@@ -1024,7 +1163,7 @@ fn lower_param(
     };
 
     let param_kind = Param::builder()
-        .ty(types::lower_type(&p.ty))
+        .ty(types::lower_type(&p.ty, name_to_doc_id, out))
         .attributes(attrs)
         .build();
 
@@ -1041,20 +1180,21 @@ fn lower_return_param(
     m: &schema::Method,
     returns_doc: &Option<String>,
     parent_method_id: &str,
+    name_to_doc_id: &HashMap<String, String>,
     out: &mut Lowering<String>,
 ) {
     let ret_id = format!("{parent_method_id}#ret");
 
     let ty = if m.returns_by_ref {
         // ref return → Reference type.
-        let inner = types::lower_type(ret);
+        let inner = types::lower_type(ret, name_to_doc_id, out);
         Type::Primitive(Primitive::Reference {
             lifetime: None,
             mutable: !m.returns_by_ref_readonly,
             ty: Box::new(inner),
         })
     } else {
-        types::lower_type(ret)
+        types::lower_type(ret, name_to_doc_id, out)
     };
 
     let sym = Symbol {
@@ -1072,41 +1212,6 @@ fn lower_return_param(
 
     let param_kind = Param::builder().ty(ty).build();
     out.declare(ret_id, Some(parent_method_id.to_string()), sym, param_kind);
-}
-
-fn lower_exception_param(
-    cref: &str,
-    text: &str,
-    exc_id: &str,
-    parent_method_id: &str,
-    out: &mut Lowering<String>,
-) {
-    let sym = Symbol {
-        name: "throws".to_string(),
-        visibility: Visibility::Public,
-        documentation: text.to_string(),
-        source: PathBuf::new(),
-        span: 0..0,
-        aliases: Box::new([]),
-        deprecation: None,
-        doc_links: Box::new([DocLink {
-            target: cref.to_string(),
-            label: None,
-        }]),
-        attrs: Box::new([]),
-        cfg: None,
-    };
-
-    let param_kind = Param::builder()
-        .attributes([ParamAttribute::Optional])
-        .build();
-
-    out.declare(
-        exc_id.to_string(),
-        Some(parent_method_id.to_string()),
-        sym,
-        param_kind,
-    );
 }
 
 // ---------------------------------------------------------------------------

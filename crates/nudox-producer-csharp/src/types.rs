@@ -26,7 +26,14 @@
 //! preserving choice available in the current IR.  Downstream consumers can
 //! pattern-match `Union` to recover the T.
 
-use nudox_ir::build::{GenericParam, Primitive, Type, WherePred, Width};
+use std::collections::HashMap;
+
+use nudox_ir::{
+    build::{GenericParam, Primitive, Type, WherePred, Width},
+    index::{RawRef, Ref},
+    kinds::Record,
+    lower::Lowering,
+};
 
 use crate::schema::{self, Nullability, TypeSig};
 
@@ -63,11 +70,29 @@ pub fn map_visibility(s: &str) -> nudox_ir::entry::Visibility {
 }
 
 /// Lower an oracle type signature into the IR type algebra.
-pub fn lower_type(t: &TypeSig) -> Type {
-    lower_type_depth(t, 0)
+///
+/// `name_to_doc_id` maps a metadata FQN (with arity backticks, e.g.
+/// `"System.Collections.Generic.List\`1"`) to the Roslyn doc-id
+/// (`"T:System.Collections.Generic.List\`1"`).  Only types present in the
+/// *current* extraction are in this map; cross-package references remain as
+/// `Any` (the Lowering's cross-package import API is not yet wired here).
+///
+/// `out` is borrowed mutably so `refer` can be called for nominal types.
+/// `refer` is idempotent and order-independent, so forward references are free.
+pub fn lower_type<'a>(
+    t: &TypeSig,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) -> Type {
+    lower_type_depth(t, name_to_doc_id, out, 0)
 }
 
-fn lower_type_depth(t: &TypeSig, depth: usize) -> Type {
+fn lower_type_depth(
+    t: &TypeSig,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+    depth: usize,
+) -> Type {
     if depth > MAX_DEPTH {
         return Type::Any;
     }
@@ -80,46 +105,38 @@ fn lower_type_depth(t: &TypeSig, depth: usize) -> Type {
             nullable,
             ..
         } => {
-            let base = lower_named(name, args, owner.as_deref(), depth);
+            let base = lower_named(name, args, owner.as_deref(), name_to_doc_id, out, depth);
             apply_nullable(base, nullable)
         }
 
         TypeSig::TypeParam { name, nullable, .. } => {
-            // A type-parameter reference becomes a `Nominal` pointing at the
-            // named GenericParam entry.  Because Lowering requires a `Ref<T>`,
-            // and we do not have a `Ref<GenericParam>` at type-lowering time
-            // (GenericParams are embedded in the parent kind body, not
-            // separate entries), we use `Type::Any` and note this as a known
-            // gap: **the IR has no `Type::TypeVar(name)` primitive**.
-            //
-            // UNCERTAINTY: there is no `Type::GenericParam(name)` variant in
-            // the new IR's `ty.rs`.  The old IR had `IrType::GenericParam`.
-            // For now, fallback to `Any`; a proper fix requires either adding
-            // `Type::TypeVar` or threading a mapping from type-param name →
-            // Ref<GenericParam>.
-            let _ = nullable;
-            let _ = name;
-            Type::Any
+            // `Type::TypeVar(String)` is the correct representation for a
+            // type-parameter use — e.g. the `T` in `List<T>`. It carries the
+            // name verbatim and is distinct from a declaration (`GenericParam`).
+            let base = Type::TypeVar(name.clone());
+            apply_nullable(base, nullable)
         }
 
         // SZ array → `Slice`; multidimensional → outer `Slice` of inner
         // (rank-N is not directly representable; we nest Slice N times which
-        // loses the rectangular shape).  UNCERTAINTY: no `Type::Array { rank }`
-        // exists in the new IR; `Type::Array` has a `length: usize` for
-        // fixed-size, not rank. We use `Slice` for all ranks.
+        // loses the rectangular shape).
+        // KNOWN GAP: no `Type::Array { rank }` exists in the new IR;
+        // `Type::Array` has a `length: usize` for fixed-size, not rank.
+        // We use `Slice` for all ranks. A future `Type::Array { rank }` variant
+        // would let us represent `T[,]` as `Array { ty: T, rank: 2 }`.
         TypeSig::Array {
             element,
             rank: _,
             nullable,
         } => {
-            let elem = lower_type_depth(element, depth + 1);
+            let elem = lower_type_depth(element, name_to_doc_id, out, depth + 1);
             let base = Type::Slice(Box::new(elem));
             apply_nullable(base, nullable)
         }
 
         // Unmanaged pointer.
         TypeSig::Pointer { pointee } => {
-            let inner = lower_type_depth(pointee, depth + 1);
+            let inner = lower_type_depth(pointee, name_to_doc_id, out, depth + 1);
             Type::Primitive(Primitive::MutPointer(Box::new(inner)))
         }
 
@@ -130,20 +147,24 @@ fn lower_type_depth(t: &TypeSig, depth: usize) -> Type {
             return_type,
             ..
         } => {
-            // UNCERTAINTY: the new IR has no `FunctionPointer` type variant.
+            // KNOWN GAP: the new IR has no `FunctionPointer` type variant.
             // The old IR had `IrType::FunctionPointer`. We cannot faithfully
             // represent this; return Any and note the gap.
+            // A future `Type::FunctionPointer { params, ret, calling_conv }`
+            // variant would be required to represent `delegate*<int, string>`.
             let _ = params;
             let _ = return_type;
             Type::Any
         }
 
         // Value tuples: labelled or unlabelled — both become `Type::Tuple`.
-        // Named elements lose their labels (no `NamedTuple` in the new IR).
+        // KNOWN GAP: named elements lose their labels — no `NamedTuple` or
+        // `TupleElement { name, ty }` structure in the new IR. A future
+        // `Type::LabeledTuple(List<(Option<String>, Type)>)` would be needed.
         TypeSig::Tuple { elements, nullable } => {
             let inner: Box<[Type]> = elements
                 .iter()
-                .map(|e| lower_type_depth(&e.ty, depth + 1))
+                .map(|e| lower_type_depth(&e.ty, name_to_doc_id, out, depth + 1))
                 .collect();
             let base = Type::Tuple(inner);
             apply_nullable(base, nullable)
@@ -154,7 +175,7 @@ fn lower_type_depth(t: &TypeSig, depth: usize) -> Type {
         // `Nullable<T>` (value type): represent as `Union([T, Never])` to
         // match the annotated-nullable reference treatment.
         TypeSig::NullableValue { inner } => {
-            let t = lower_type_depth(inner, depth + 1);
+            let t = lower_type_depth(inner, name_to_doc_id, out, depth + 1);
             Type::Union(Box::new([t, Type::Never]))
         }
 
@@ -164,40 +185,61 @@ fn lower_type_depth(t: &TypeSig, depth: usize) -> Type {
 }
 
 /// Lower a `Named` node: primitive special-cases first, then generic
-/// application, then a plain `Type::Any` for unresolvable names.
-fn lower_named(name: &str, args: &[TypeSig], owner: Option<&TypeSig>, depth: usize) -> Type {
+/// application or bare nominal reference.
+fn lower_named(
+    name: &str,
+    args: &[TypeSig],
+    owner: Option<&TypeSig>,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+    depth: usize,
+) -> Type {
     if let Some(prim) = lower_primitive(name) {
         return prim;
     }
 
     // `Outer<T>.Inner`: we cannot represent qualified-path member projection
-    // without `Type::QualifiedPath`; fall back to Any for the owner, then
-    // return Any for the whole thing.
-    // UNCERTAINTY: the new IR has no `QualifiedPath` in ty.rs.
+    // without `Type::QualifiedPath`.
+    // KNOWN GAP: the new IR has no `QualifiedPath` variant in ty.rs.
+    // A future `Type::QualifiedPath { base: Box<Type>, member: String }`
+    // would allow `Outer<T>.Inner` to be faithfully represented.
     if owner.is_some() {
         return Type::Any;
     }
 
+    // Attempt to resolve the FQN to a doc-id from within the current extraction.
+    // Cross-package named types (e.g. `System.IO.Stream` when not in the
+    // extraction) stay `Any`.
+    let raw_ref: Option<RawRef> = name_to_doc_id
+        .get(name)
+        .map(|doc_id| -> RawRef {
+            let r: Ref<Record> = out.refer(doc_id.clone());
+            r.into_raw()
+        });
+
     if args.is_empty() {
-        // Bare named type reference.  We cannot produce a `Ref<Record>` here
-        // because we may not have declared the target yet (the oracle flat list
-        // means we process types in declaration order, not dependency order).
-        // UNCERTAINTY: `Type::Nominal(RawRef)` requires a `RawRef`; producing
-        // one requires calling `Lowering::refer`, which is only available from
-        // the lowering pass, not from a standalone type-lowering helper.
-        // We return `Type::Any` for all named references as a conservative gap.
-        // The correct fix is to pass `&mut Lowering<DocId>` into every type
-        // helper and call `lowering.refer(doc_id_from_name(name))` there;
-        // that is a pervasive refactor but not architecturally blocked.
-        Type::Any
+        // Bare named type reference.
+        match raw_ref {
+            Some(r) => Type::Nominal(r),
+            // Cross-package reference: no doc-id in this extraction.
+            // KNOWN GAP: to resolve cross-package nominal types we would need
+            // `Lowering::refer_import` with a `UniqueId` from a registry;
+            // that requires the caller to supply a package-registry handle.
+            None => Type::Any,
+        }
     } else {
-        // Generic application: `List<T>` etc. Base is also Any for now.
+        // Generic application: `List<T>`, `IEnumerable<string>`, etc.
+        // The base is Nominal if known, else Any (cross-package).
+        let base = match raw_ref {
+            Some(r) => Type::Nominal(r),
+            None => Type::Any,
+        };
         let type_args: Box<[Type]> = args
             .iter()
-            .map(|a| lower_type_depth(a, depth + 1))
+            .map(|a| lower_type_depth(a, name_to_doc_id, out, depth + 1))
             .collect();
         Type::Apply {
-            base: Box::new(Type::Any),
+            base: Box::new(base),
             args: type_args,
         }
     }
@@ -267,7 +309,7 @@ fn lower_primitive(name: &str) -> Option<Type> {
         // `void` — the unit type.
         "System.Void" => Type::Tuple(Box::new([])),
         // `System.Decimal` — Track B item 1: no dedicated primitive slot yet.
-        // Falls through to return None, lowered as a named type (→ Any).
+        // Falls through to return None, resolved as Nominal if in extraction.
         _ => return None,
     };
     Some(prim)
@@ -281,9 +323,10 @@ fn lower_primitive(name: &str) -> Option<Type> {
 /// | `notAnnotated`| bare `T`                       |
 /// | oblivious     | bare `T`                       |
 ///
-/// We cannot encode `notAnnotated` vs oblivious distinctly in the current IR
-/// (`Type` has no `Annotated` / `Oblivious` wrapper). Both become bare `T`.
-/// A future `Type::Annotated(Box<Type>)` variant would let us round-trip.
+/// KNOWN GAP: we cannot encode `notAnnotated` vs oblivious distinctly in the
+/// current IR (`Type` has no `Annotated` / `Oblivious` wrapper). Both become
+/// bare `T`. A future `Type::Annotated(Box<Type>)` variant would let us
+/// round-trip the distinction.
 fn apply_nullable(base: Type, nullable: &str) -> Type {
     match Nullability::parse(nullable) {
         Nullability::Annotated => Type::Union(Box::new([base, Type::Never])),
@@ -298,17 +341,41 @@ fn apply_nullable(base: Type, nullable: &str) -> Type {
 /// Lower a declaration-site type-parameter list into IR [`GenericParam`]s and
 /// [`WherePred`]s.
 ///
-/// C# variance is declaration-site (`in`/`out` on interfaces & delegates), but
-/// the new IR's `GenericParam::Type` has no variance field — variance is
-/// dropped here.  Special constraints (`class`, `struct`, `new()`, `notnull`,
-/// `unmanaged`, `allows ref struct`) have no structural slot; they ride as
-/// synthetic `WherePred` bounds with `target = Type::Any` and a `Builtin` name
-/// prefixed `csharp:` so they are never confused with real interface FQNs.
-pub fn lower_type_params(type_params: &[schema::TypeParam]) -> (Vec<GenericParam>, Vec<WherePred>) {
+/// # Variance decision
+///
+/// C# has declaration-site variance (`in`/`out` on interfaces & delegates),
+/// which is real API surface — `IEnumerable<out T>` is covariant and that
+/// affects assignment compatibility.  The new IR's `GenericParam::Type` has
+/// **no variance field** — variance is dropped here.
+///
+/// KNOWN GAP: `GenericParam` needs a `variance: Option<Variance>` field where
+/// `Variance` is the existing `kinds::ty::Variance` enum (`Covariant`,
+/// `Contravariant`, `Invariant`).  The oracle already emits the token
+/// (`"in"` / `"out"` / `"none"`), so wiring it is mechanical once the field
+/// exists.  Until then, variance is only preserved as a doc note on the entry.
+///
+/// # Special constraints
+///
+/// `class`, `struct`, `new()`, `notnull`, `unmanaged`, `allows ref struct`
+/// have no structural slot; they ride as synthetic `WherePred` bounds with
+/// `target = Type::Any` and a `Builtin` name prefixed `csharp:` so they are
+/// never confused with real interface FQNs.
+pub fn lower_type_params(
+    type_params: &[schema::TypeParam],
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) -> (Vec<GenericParam>, Vec<WherePred>) {
     let mut params = Vec::with_capacity(type_params.len());
     let mut wheres = Vec::new();
 
     for tp in type_params {
+        // Variance: stamp into a doc note (no structural slot yet).
+        // KNOWN GAP: `GenericParam::Type` needs `variance: Option<Variance>`.
+        // Required field: `variance: Option<kinds::ty::Variance>` with values
+        // `Covariant` for `"out"`, `Contravariant` for `"in"`, `None` for
+        // `"none"`. This is C# declaration-site variance, distinct from
+        // Java/Kotlin use-site variance (the existing `Type::Wildcard` covers
+        // that).
         params.push(GenericParam::Type {
             name: tp.name.clone(),
             bounds: Box::new([]), // explicit-type bounds go into `wheres`
@@ -335,10 +402,9 @@ pub fn lower_type_params(type_params: &[schema::TypeParam]) -> (Vec<GenericParam
             wheres.push(synthetic_where(&tp.name, "csharp:new()"));
         }
         // Explicit type constraints (`where T : Base`) — lowered as WherePred
-        // bounds.  Since named references currently lower to `Any`, these are
-        // low-fidelity but not lost.
+        // bounds with nominal types resolved via the name map.
         for bound_sig in &c.types {
-            let bound_ty = lower_type(bound_sig);
+            let bound_ty = lower_type(bound_sig, name_to_doc_id, out);
             let target = Type::Primitive(Primitive::Builtin(tp.name.clone()));
             wheres.push(WherePred {
                 target,
