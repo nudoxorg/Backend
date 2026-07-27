@@ -49,8 +49,7 @@ use crate::{
     extract::{
         Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, EnumBody, FunctionBody,
         GenericParamOwned, InterfaceBody, LiteralOwned, MemberKind, MemberModifiers,
-        ModuleFacts, NamespaceBody, ReceiverKind,
-        StaticBody, TypeAliasBody, TypeOwned,
+        ModuleFacts, NamespaceBody, ReceiverKind, StaticBody, TypeAliasBody, TypeOwned,
     },
     id::TsId,
 };
@@ -207,6 +206,69 @@ fn emit_interface(
                 .build(),
         );
     }
+
+    // Emit index signatures as synthetic `__index[_N]` Function entries (item 5).
+    for (idx_num, idx_sig) in body.index_signatures.iter().enumerate() {
+        let synthetic_name = if idx_num == 0 {
+            format!("{}::__index", id.name)
+        } else {
+            format!("{}::__index_{}", id.name, idx_num)
+        };
+        let idx_id = TsId::new(id.module.clone(), &synthetic_name, 0);
+        let idx_sym = Symbol {
+            name: if idx_num == 0 { "__index".to_string() } else { format!("__index_{}", idx_num) },
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: id.module.clone(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        // Emit as a Function with the key as param and value as return type.
+        let key_param_body = crate::extract::ParamFact {
+            name: idx_sig.key_name.clone(),
+            ty: Some(idx_sig.key_ty.clone()),
+            is_optional: false,
+            is_rest: false,
+            is_readonly: false,
+        };
+        let index_fn_body = FunctionBody {
+            generics: Vec::new(),
+            params: vec![key_param_body],
+            return_type: Some(idx_sig.value_ty.clone()),
+            is_async: false,
+            is_generator: false,
+            has_body: false,
+            receiver: crate::extract::ReceiverKind::SharedRef,
+        };
+        emit_function(idx_id, Some(id.clone()), idx_sym, &index_fn_body, out);
+    }
+
+    // Emit construct signatures as synthetic `new[_N]` Function entries (item 6).
+    for (cs_num, cs) in body.construct_signatures.iter().enumerate() {
+        let synthetic_name = if cs_num == 0 {
+            format!("{}::new", id.name)
+        } else {
+            format!("{}::new_{}", id.name, cs_num)
+        };
+        let cs_id = TsId::new(id.module.clone(), &synthetic_name, 0);
+        let cs_sym = Symbol {
+            name: if cs_num == 0 { "new".to_string() } else { format!("new_{}", cs_num) },
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: id.module.clone(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        emit_function(cs_id, Some(id.clone()), cs_sym, cs, out);
+    }
 }
 
 // ── Class → Record ────────────────────────────────────────────────────────────
@@ -230,7 +292,7 @@ fn emit_class(
 
     for (idx, member) in body.members.iter().enumerate() {
         match &member.kind {
-            MemberKind::Property { ty } => {
+            MemberKind::Property { ty } | MemberKind::Accessor { ty } => {
                 let field_id = TsId::new(
                     id.module.clone(),
                     &format!("{}::{}", id.name, member.name),
@@ -251,7 +313,13 @@ fn emit_class(
                     attrs: Box::new([]),
                     cfg: None,
                 };
-                let attrs = field_attrs(&member.modifiers);
+                let mut attrs = field_attrs(&member.modifiers);
+                // Accessor is always mutable (both get + set).
+                if matches!(member.kind, MemberKind::Accessor { .. })
+                    && !attrs.contains(&FieldAttribute::Mutable)
+                {
+                    attrs.push(FieldAttribute::Mutable);
+                }
                 let _: Ref<Field> = out.declare(
                     field_id,
                     Some(id.clone()),
@@ -263,7 +331,7 @@ fn emit_class(
                         .build(),
                 );
             }
-            _ => {} // Methods are not fields in Record; they get their own emit below.
+            _ => {} // Methods / StaticBlock get their own emit below.
         }
     }
 
@@ -281,30 +349,82 @@ fn emit_class(
 
     // Emit method members.
     for (idx, member) in body.members.iter().enumerate() {
-        let sigs_ref: Vec<&FunctionBody> = match &member.kind {
-            MemberKind::Method(v) => v.iter().collect(),
-            MemberKind::Constructor(s) => vec![s],
-            MemberKind::Property { .. } => continue,
-        };
-        for (overload_idx, sig) in sigs_ref.iter().enumerate() {
-            let method_id = TsId::new(
-                id.module.clone(),
-                &format!("{}::{}", id.name, member.name),
-                (idx * 1000 + overload_idx) as u32,
-            );
-            let method_sym = Symbol {
-                name: member.name.clone(),
-                visibility: accessibility_to_visibility(member.modifiers.accessibility),
-                documentation: member.doc.doc.clone().unwrap_or_default(),
-                source: id.module.clone(),
-                span: 0..0,
-                aliases: Box::new([]),
-                deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
-                doc_links: Box::new([]),
-                attrs: Box::new([]),
-                cfg: None,
-            };
-            emit_function(method_id, Some(id.clone()), method_sym, sig, out);
+        match &member.kind {
+            MemberKind::Method(v) => {
+                let sigs_ref: Vec<&FunctionBody> = v.iter().collect();
+                for (overload_idx, sig) in sigs_ref.iter().enumerate() {
+                    let method_id = TsId::new(
+                        id.module.clone(),
+                        &format!("{}::{}", id.name, member.name),
+                        (idx * 1000 + overload_idx) as u32,
+                    );
+                    let method_sym = Symbol {
+                        name: member.name.clone(),
+                        visibility: accessibility_to_visibility(member.modifiers.accessibility),
+                        documentation: member.doc.doc.clone().unwrap_or_default(),
+                        source: id.module.clone(),
+                        span: 0..0,
+                        aliases: Box::new([]),
+                        deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
+                        doc_links: Box::new([]),
+                        attrs: Box::new([]),
+                        cfg: None,
+                    };
+                    emit_function(method_id, Some(id.clone()), method_sym, sig, out);
+                }
+            }
+            MemberKind::Constructor(s) => {
+                let method_id = TsId::new(
+                    id.module.clone(),
+                    &format!("{}::{}", id.name, member.name),
+                    (idx * 1000) as u32,
+                );
+                let method_sym = Symbol {
+                    name: member.name.clone(),
+                    visibility: accessibility_to_visibility(member.modifiers.accessibility),
+                    documentation: member.doc.doc.clone().unwrap_or_default(),
+                    source: id.module.clone(),
+                    span: 0..0,
+                    aliases: Box::new([]),
+                    deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
+                    doc_links: Box::new([]),
+                    attrs: Box::new([]),
+                    cfg: None,
+                };
+                emit_function(method_id, Some(id.clone()), method_sym, s, out);
+            }
+            // ── Item 4: Static block → synthetic Function (item 4) ────────
+            MemberKind::StaticBlock { name: block_name } => {
+                let sb_id = TsId::new(
+                    id.module.clone(),
+                    &format!("{}::{}", id.name, block_name),
+                    idx as u32,
+                );
+                let sb_sym = Symbol {
+                    name: block_name.clone(),
+                    visibility: Visibility::Private,
+                    documentation: String::new(),
+                    source: id.module.clone(),
+                    span: 0..0,
+                    aliases: Box::new([]),
+                    deprecation: None,
+                    doc_links: Box::new([]),
+                    attrs: Box::new([]),
+                    cfg: None,
+                };
+                let static_fn_body = FunctionBody {
+                    generics: Vec::new(),
+                    params: Vec::new(),
+                    return_type: None,
+                    is_async: false,
+                    is_generator: false,
+                    has_body: true,
+                    receiver: ReceiverKind::None,
+                };
+                emit_function(sb_id, Some(id.clone()), sb_sym, &static_fn_body, out);
+            }
+            // Fields / Accessors were already emitted above.
+            MemberKind::Property { .. } | MemberKind::Accessor { .. } => continue,
         }
     }
 }
@@ -717,6 +837,14 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             // Model `T[]` as a Slice.
             Type::Slice(Box::new(lower_type(inner)))
         }
+        // ── Named tuple element (item 10) ─────────────────────────────────
+        // The IR's Type::Tuple carries positional types only; there is no
+        // slot for element labels.  We emit the element type, which preserves
+        // the type information.  The label is held in TypeOwned::NamedTupleElem
+        // but is discarded at the IR boundary until nudox-ir adds a named-tuple
+        // element type.  See the TypeOwned::NamedTupleElem doc for the requested
+        // IR change signature.
+        TypeOwned::NamedTupleElem { ty, .. } => lower_type(ty),
         TypeOwned::Function(_) => Type::Primitive(Primitive::Builtin("Function".to_string())),
         TypeOwned::Literal(lit) => lower_literal(lit),
         TypeOwned::Unsupported(s) => Type::Primitive(Primitive::Builtin(s.clone())),

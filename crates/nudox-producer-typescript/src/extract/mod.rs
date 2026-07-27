@@ -244,6 +244,10 @@ pub struct InterfaceBody {
     pub methods: Vec<MethodFact>,
     pub properties: Vec<PropertyFact>,
     pub call_signatures: Vec<FunctionBody>,
+    /// `[k: string]: T` index signatures — emitted as synthetic `__index` methods.
+    pub index_signatures: Vec<IndexSignatureFact>,
+    /// `new (…): T` construct signatures — emitted as synthetic `new` methods.
+    pub construct_signatures: Vec<FunctionBody>,
 }
 
 #[derive(Debug)]
@@ -253,6 +257,8 @@ pub struct ClassBody {
     pub implements: Vec<TypeOwned>,
     pub members: Vec<MemberFact>,
     pub is_abstract: bool,
+    /// Decorators on the class itself.
+    pub decorators: Vec<AttrTok>,
 }
 
 #[derive(Debug)]
@@ -305,6 +311,24 @@ pub struct StaticBody {
     pub is_mutable: bool,
 }
 
+/// An index signature member: `[k: KeyName: KeyType]: ValueType`.
+#[derive(Debug)]
+pub struct IndexSignatureFact {
+    /// The key parameter name (e.g. `"k"` in `[k: string]`).
+    pub key_name: String,
+    /// The key type.
+    pub key_ty: TypeOwned,
+    /// The value type.
+    pub value_ty: TypeOwned,
+}
+
+/// A decorator stored on a class or member.
+#[derive(Debug, Clone)]
+pub struct AttrTok {
+    /// The raw source text of the decorator (e.g. `"@injectable"` or `"@MyDecorator(opts)"`).
+    pub token: String,
+}
+
 #[derive(Debug)]
 pub struct VariantFact {
     pub name: String,
@@ -335,6 +359,8 @@ pub struct MemberFact {
     pub kind: MemberKind,
     pub modifiers: MemberModifiers,
     pub doc: DocFacts,
+    /// Decorators on the member (e.g. `@readonly`, `@Column()`).
+    pub decorators: Vec<AttrTok>,
 }
 
 #[derive(Debug)]
@@ -342,6 +368,10 @@ pub enum MemberKind {
     Property { ty: Option<TypeOwned> },
     Method(Vec<FunctionBody>),
     Constructor(FunctionBody),
+    /// TC39 `accessor x: T` — auto-generates a getter/setter pair.
+    Accessor { ty: Option<TypeOwned> },
+    /// `static { … }` initializer block — synthetic `__static[_N]` function.
+    StaticBlock { name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +431,22 @@ pub enum TypeOwned {
     Union(Vec<TypeOwned>),
     Intersection(Vec<TypeOwned>),
     Tuple(Vec<TypeOwned>),
+    /// A named tuple element: `label: T` inside a `TSTupleType`.
+    ///
+    /// IR gap: `Type::Tuple` in nudox-ir carries only positional types; there is
+    /// no slot for element labels.  To carry this through without silent loss we
+    /// box the pair here and emit it to the IR as the element type alone.
+    ///
+    /// Requested IR change (nudox-ir):
+    ///
+    /// ```text
+    /// enum TupleElement { Positional(Type), Named { label: String, ty: Type } }
+    /// // Replace: Type::Tuple(List<Type>) with Type::Tuple(List<TupleElement>)
+    /// ```
+    ///
+    /// Once that change lands, `emit::lower_type` should map `NamedTupleElem`
+    /// to `TupleElement::Named { label, ty: lower_type(ty) }`.
+    NamedTupleElem { label: String, ty: Box<TypeOwned> },
     Array(Box<TypeOwned>),
     Function(Box<FunctionBody>),
     Literal(LiteralOwned),

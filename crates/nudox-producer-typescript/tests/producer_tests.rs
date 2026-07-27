@@ -23,7 +23,7 @@ use oxc_span::SourceType;
 use nudox_producer_typescript::extract::{
     decl::extract_module,
     jsdoc::parse_raw_jsdoc,
-    DeclBody, TypeOwned, ModuleFacts,
+    Accessibility, DeclBody, MemberKind, TypeOwned, ModuleFacts,
 };
 
 // ── Helper ─────────────────────────────────────────────────────────────────────
@@ -403,4 +403,299 @@ fn test_tsz_seam_documented() {
     // Constructing the default producer exercises the OwnedOracle path.
     let _producer: TypescriptProducer<OwnedOracle> = TypescriptProducer::new();
     // No panic = the seam is wired.
+}
+
+// ── Item 1+2: Constructor parameter properties + this.x synthesis ─────────────
+
+#[test]
+fn test_constructor_parameter_properties() {
+    let src = r#"
+        export class Vec2 {
+            constructor(public x: number, private readonly y: number) {}
+        }
+    "#;
+
+    let facts = parse_module(src, "vec2");
+    assert_eq!(facts.declarations.len(), 1);
+
+    let DeclBody::Class(body) = &facts.declarations[0].body else {
+        panic!("expected Class");
+    };
+
+    let props: Vec<_> = body.members.iter()
+        .filter(|m| matches!(m.kind, MemberKind::Property { .. }))
+        .collect();
+
+    let x = props.iter().find(|m| m.name == "x")
+        .expect("field `x` must be synthesised from parameter property");
+    assert_eq!(x.modifiers.accessibility, Accessibility::Public, "x is public");
+    assert!(!x.modifiers.is_readonly, "x is not readonly");
+
+    let y = props.iter().find(|m| m.name == "y")
+        .expect("field `y` must be synthesised from parameter property");
+    assert_eq!(y.modifiers.accessibility, Accessibility::Private, "y is private");
+    assert!(y.modifiers.is_readonly, "y is readonly");
+}
+
+#[test]
+fn test_this_field_synthesis() {
+    let src = r#"
+        export class Counter {
+            constructor() {
+                this.count = 0;
+                this.label = "counter";
+            }
+        }
+    "#;
+
+    let facts = parse_module(src, "counter");
+    let DeclBody::Class(body) = &facts.declarations[0].body else {
+        panic!("expected Class");
+    };
+
+    let props: Vec<_> = body.members.iter()
+        .filter(|m| matches!(m.kind, MemberKind::Property { .. }))
+        .collect();
+
+    assert!(
+        props.iter().any(|m| m.name == "count"),
+        "field `count` must be synthesised from `this.count = 0`; members: {:?}",
+        props.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
+    assert!(
+        props.iter().any(|m| m.name == "label"),
+        "field `label` must be synthesised from `this.label = …`"
+    );
+}
+
+// ── Item 3: Accessor properties ────────────────────────────────────────────────
+
+#[test]
+fn test_accessor_property() {
+    let src = r#"
+        export class Box {
+            accessor value: string = "";
+        }
+    "#;
+
+    let facts = parse_module(src, "box");
+    let DeclBody::Class(body) = &facts.declarations[0].body else {
+        panic!("expected Class");
+    };
+
+    let accessor = body.members.iter().find(|m| m.name == "value")
+        .expect("`accessor value` must appear as a member");
+
+    match &accessor.kind {
+        MemberKind::Accessor { ty } => {
+            assert!(
+                matches!(ty, Some(TypeOwned::String)),
+                "accessor value type should be string, got {ty:?}"
+            );
+        }
+        other => panic!("expected MemberKind::Accessor, got {other:?}"),
+    }
+
+    // The `accessor` decorator marker should be set.
+    assert!(
+        accessor.decorators.iter().any(|d| d.token == "accessor"),
+        "accessor member must carry 'accessor' decorator marker"
+    );
+}
+
+// ── Item 4: Static blocks ──────────────────────────────────────────────────────
+
+#[test]
+fn test_static_block() {
+    let src = r#"
+        export class Config {
+            static value: number = 0;
+            static {
+                Config.value = 42;
+            }
+        }
+    "#;
+
+    let facts = parse_module(src, "config");
+    let DeclBody::Class(body) = &facts.declarations[0].body else {
+        panic!("expected Class");
+    };
+
+    let static_block = body.members.iter().find(|m| {
+        matches!(&m.kind, MemberKind::StaticBlock { .. })
+    }).expect("static block must appear as a member");
+
+    match &static_block.kind {
+        MemberKind::StaticBlock { name } => {
+            assert_eq!(name, "__static", "first static block gets name `__static`");
+        }
+        other => panic!("expected StaticBlock, got {other:?}"),
+    }
+}
+
+// ── Item 5: Interface index signatures ─────────────────────────────────────────
+
+#[test]
+fn test_interface_index_signature() {
+    let src = r#"
+        export interface StringMap {
+            [k: string]: number;
+        }
+    "#;
+
+    let facts = parse_module(src, "strmap");
+    let DeclBody::Interface(body) = &facts.declarations[0].body else {
+        panic!("expected Interface");
+    };
+
+    assert_eq!(body.index_signatures.len(), 1, "one index signature");
+    let idx = &body.index_signatures[0];
+    assert_eq!(idx.key_name, "k");
+    assert!(matches!(idx.key_ty, TypeOwned::String), "key type is string");
+    assert!(matches!(idx.value_ty, TypeOwned::Number), "value type is number");
+}
+
+// ── Item 6: Interface construct signatures ──────────────────────────────────────
+
+#[test]
+fn test_interface_construct_signature() {
+    let src = r#"
+        export interface Factory {
+            new (name: string): object;
+        }
+    "#;
+
+    let facts = parse_module(src, "factory");
+    let DeclBody::Interface(body) = &facts.declarations[0].body else {
+        panic!("expected Interface");
+    };
+
+    assert_eq!(body.construct_signatures.len(), 1, "one construct signature");
+    let cs = &body.construct_signatures[0];
+    assert_eq!(cs.params.len(), 1, "one parameter `name`");
+    assert_eq!(cs.params[0].name, "name");
+    assert!(matches!(cs.params[0].ty, Some(TypeOwned::String)), "param type is string");
+}
+
+// ── Item 7: Decorators on class and members ────────────────────────────────────
+
+#[test]
+fn test_class_and_member_decorators() {
+    // OXC supports decorators in TS parsing mode.
+    let src = r#"
+        @sealed
+        export class Service {
+            @readonly
+            name: string = "";
+        }
+    "#;
+
+    let facts = parse_module(src, "service");
+    let DeclBody::Class(body) = &facts.declarations[0].body else {
+        panic!("expected Class");
+    };
+
+    // Class-level decorator.
+    assert!(
+        !body.decorators.is_empty(),
+        "class `Service` must have at least one decorator; got none"
+    );
+    assert!(
+        body.decorators.iter().any(|d| d.token.contains("sealed")),
+        "class decorator must contain 'sealed'; got {:?}",
+        body.decorators
+    );
+
+    // Member-level decorator.
+    let name_member = body.members.iter().find(|m| m.name == "name")
+        .expect("field `name` must be present");
+    assert!(
+        !name_member.decorators.is_empty(),
+        "field `name` must have at least one decorator"
+    );
+    assert!(
+        name_member.decorators.iter().any(|d| d.token.contains("readonly")),
+        "field decorator must contain 'readonly'"
+    );
+}
+
+// ── Item 8: Constructor type in type position ───────────────────────────────────
+
+#[test]
+fn test_constructor_type_in_position() {
+    let src = r#"
+        export type Newable = new (arg: string) => object;
+    "#;
+
+    let facts = parse_module(src, "newable");
+    let DeclBody::TypeAlias(body) = &facts.declarations[0].body else {
+        panic!("expected TypeAlias");
+    };
+
+    match &body.target {
+        TypeOwned::Function(f) => {
+            assert_eq!(f.params.len(), 1, "constructor type has one param");
+            assert_eq!(f.params[0].name, "arg");
+            assert!(matches!(f.params[0].ty, Some(TypeOwned::String)));
+        }
+        other => panic!("expected TypeOwned::Function for constructor type, got {other:?}"),
+    }
+}
+
+// ── Item 9: Import types ───────────────────────────────────────────────────────
+
+#[test]
+fn test_import_type_lowers_to_nominal() {
+    let src = r#"
+        export type Foo = import("./bar").Baz;
+    "#;
+
+    let facts = parse_module(src, "importtype");
+    let DeclBody::TypeAlias(body) = &facts.declarations[0].body else {
+        panic!("expected TypeAlias");
+    };
+
+    match &body.target {
+        TypeOwned::Nominal(name) => {
+            assert_eq!(name, "Baz", "import type qualifier should be Baz");
+        }
+        other => panic!("expected TypeOwned::Nominal for import type, got {other:?}"),
+    }
+}
+
+// ── Item 10: Named tuple member labels ─────────────────────────────────────────
+
+#[test]
+fn test_named_tuple_member_label_preserved() {
+    let src = r#"
+        export type Range = [start: number, end: number];
+    "#;
+
+    let facts = parse_module(src, "range");
+    let DeclBody::TypeAlias(body) = &facts.declarations[0].body else {
+        panic!("expected TypeAlias");
+    };
+
+    let TypeOwned::Tuple(members) = &body.target else {
+        panic!("expected Tuple, got {:?}", std::mem::discriminant(&body.target));
+    };
+
+    assert_eq!(members.len(), 2, "two tuple members");
+
+    // Both must be NamedTupleElem, not a bare Number (label stripping bug).
+    match &members[0] {
+        TypeOwned::NamedTupleElem { label, ty } => {
+            assert_eq!(label, "start", "first label is 'start'");
+            assert!(matches!(ty.as_ref(), TypeOwned::Number), "start type is number");
+        }
+        other => panic!("expected NamedTupleElem for first member, got {other:?}"),
+    }
+
+    match &members[1] {
+        TypeOwned::NamedTupleElem { label, ty } => {
+            assert_eq!(label, "end", "second label is 'end'");
+            assert!(matches!(ty.as_ref(), TypeOwned::Number), "end type is number");
+        }
+        other => panic!("expected NamedTupleElem for second member, got {other:?}"),
+    }
 }

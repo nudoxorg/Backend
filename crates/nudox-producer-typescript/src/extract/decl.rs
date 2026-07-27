@@ -19,8 +19,9 @@
 use std::path::Path;
 
 use oxc_ast::ast::{
-    BindingPattern, Class, ClassElement, Declaration, Expression, ExportDefaultDeclarationKind,
-    Function, MethodDefinitionKind, MethodDefinitionType, PropertyKey, Statement,
+    AccessorPropertyType, AssignmentOperator, AssignmentTarget, BindingPattern, Class,
+    ClassElement, Declaration, Expression, ExportDefaultDeclarationKind, Function,
+    MethodDefinitionKind, MethodDefinitionType, PropertyDefinitionType, PropertyKey, Statement,
     TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
     TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName,
     TSSignature, VariableDeclaration, VariableDeclarationKind,
@@ -34,10 +35,10 @@ use oxc_syntax::module_record::{
 use super::{
     jsdoc,
     types::{lower_ts_type, lower_type_params},
-    Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, DocFacts, EnumBody, ExportTable,
-    FunctionBody, ImportFact, ImportName, IndirectExport, InterfaceBody, MemberFact, MemberKind,
-    MemberModifiers, MethodFact, ModuleFacts, NamespaceBody, ParamFact, PropertyFact,
-    ReceiverKind, StarExport, StaticBody, TypeAliasBody, VariantFact,
+    Accessibility, AttrTok, ClassBody, ConstBody, DeclBody, DeclFact, DocFacts, EnumBody,
+    ExportTable, FunctionBody, ImportFact, ImportName, IndirectExport, IndexSignatureFact,
+    InterfaceBody, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts, NamespaceBody,
+    ParamFact, PropertyFact, ReceiverKind, StarExport, StaticBody, TypeAliasBody, VariantFact,
 };
 
 // ── Entry point ────────────────────────────────────────────────────────────────
@@ -572,14 +573,123 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
 
     let is_abstract = cls.r#abstract;
 
-    let members: Vec<MemberFact> = cls
+    // Class-level decorators (item 7).
+    let decorators: Vec<AttrTok> = cls
+        .decorators
+        .iter()
+        .map(|d| AttrTok { token: d.span.source_text(source).to_string() })
+        .collect();
+
+    // First pass: collect non-constructor members from the AST.
+    let mut members: Vec<MemberFact> = cls
         .body
         .body
         .iter()
         .filter_map(|elem| lower_class_element(elem, source))
         .collect();
 
-    ClassBody { generics, extends, implements, members, is_abstract }
+    // Build a set of already-declared field names (from PropertyDefinition).
+    let mut declared_field_names: std::collections::HashSet<String> = members
+        .iter()
+        .filter_map(|m| match &m.kind {
+            MemberKind::Property { .. } | MemberKind::Accessor { .. } => Some(m.name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // ── Constructor parameter properties (item 1) ────────────────────────
+    // `constructor(public x: T, private readonly y: U)` synthesises fields.
+    let ctor_elem = cls.body.body.iter().find(|elem| {
+        matches!(
+            elem,
+            ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Constructor
+        )
+    });
+    if let Some(ClassElement::MethodDefinition(ctor)) = ctor_elem {
+        for param in ctor.value.params.items.iter() {
+            // Only parameter properties: must have accessibility OR readonly.
+            if param.accessibility.is_none() && !param.readonly {
+                continue;
+            }
+            let name = binding_pattern_name(&param.pattern)
+                .unwrap_or_else(|| "_".to_string());
+            if !declared_field_names.insert(name.clone()) {
+                continue; // already declared as a PropertyDefinition
+            }
+            let accessibility = ts_accessibility(&param.accessibility);
+            let is_readonly = param.readonly;
+            let modifiers = MemberModifiers {
+                accessibility,
+                is_static: false,
+                is_readonly,
+                is_optional: param.optional,
+                is_abstract: false,
+            };
+            let ty = param
+                .type_annotation
+                .as_ref()
+                .map(|ann| lower_ts_type(&ann.type_annotation, source));
+            members.push(MemberFact {
+                name,
+                kind: MemberKind::Property { ty },
+                modifiers,
+                doc: DocFacts::default(),
+                decorators: Vec::new(),
+            });
+        }
+
+        // ── this.x = … field synthesis (item 2) ─────────────────────────
+        // Walk constructor body for `this.<name> = …` assignments.
+        if let Some(ref ctor_body) = ctor.value.body {
+            let mut synth_seen: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for stmt in ctor_body.statements.iter() {
+                if let Statement::ExpressionStatement(expr_stmt) = stmt {
+                    if let Expression::AssignmentExpression(assign) = &expr_stmt.expression {
+                        if assign.operator == AssignmentOperator::Assign {
+                            if let AssignmentTarget::StaticMemberExpression(mem) = &assign.left {
+                                if matches!(&mem.object, Expression::ThisExpression(_)) {
+                                    let prop_name = mem.property.name.to_string();
+                                    if !declared_field_names.contains(&prop_name)
+                                        && synth_seen.insert(prop_name.clone())
+                                    {
+                                        declared_field_names.insert(prop_name.clone());
+                                        members.push(MemberFact {
+                                            name: prop_name,
+                                            kind: MemberKind::Property { ty: None },
+                                            modifiers: MemberModifiers::default(),
+                                            doc: DocFacts::default(),
+                                            decorators: Vec::new(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Rename static block placeholders with sequential names ───────────
+    // StaticBlock members are initially emitted with the placeholder name.
+    // We rename them here to `__static`, `__static_1`, `__static_2`, … in
+    // declaration order.
+    let mut static_count: usize = 0;
+    for m in members.iter_mut() {
+        if let MemberKind::StaticBlock { ref mut name } = m.kind {
+            let real_name = if static_count == 0 {
+                "__static".to_string()
+            } else {
+                format!("__static_{}", static_count)
+            };
+            static_count += 1;
+            *name = real_name.clone();
+            m.name = real_name;
+        }
+    }
+
+    ClassBody { generics, extends, implements, members, is_abstract, decorators }
 }
 
 fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<MemberFact> {
@@ -601,6 +711,12 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                 is_optional: m.optional,
                 is_abstract,
             };
+            // Decorators on the method (item 7).
+            let decorators: Vec<AttrTok> = m
+                .decorators
+                .iter()
+                .map(|d| AttrTok { token: d.span.source_text(source).to_string() })
+                .collect();
             let sig = lower_function(&m.value, source);
             Some(MemberFact {
                 name,
@@ -610,6 +726,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                 },
                 modifiers,
                 doc: DocFacts::default(),
+                decorators,
             })
         }
 
@@ -620,6 +737,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
             let is_static = p.r#static;
             let is_readonly = p.readonly;
             let is_optional = p.optional;
+            let is_abstract = p.r#type == PropertyDefinitionType::TSAbstractPropertyDefinition;
             let modifiers = MemberModifiers {
                 accessibility: if is_private_field {
                     Accessibility::PrivateField
@@ -629,22 +747,94 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                 is_static,
                 is_readonly,
                 is_optional,
-                is_abstract: false,
+                is_abstract,
             };
             let ty = p
                 .type_annotation
                 .as_ref()
                 .map(|ann| lower_ts_type(&ann.type_annotation, source));
+            // Decorators on the property (item 7).
+            let decorators: Vec<AttrTok> = p
+                .decorators
+                .iter()
+                .map(|d| AttrTok { token: d.span.source_text(source).to_string() })
+                .collect();
             Some(MemberFact {
                 name,
                 kind: MemberKind::Property { ty },
                 modifiers,
                 doc: DocFacts::default(),
+                decorators,
             })
         }
 
-        // Static blocks, accessor properties, etc. — unsupported.
-        _ => None,
+        // ── Item 3: Accessor property (`accessor x: T`) ───────────────────
+        // The TC39 `accessor` keyword auto-creates a getter/setter pair.
+        // We surface it as a distinct `MemberKind::Accessor` member so emit
+        // can record it as a Field with an `accessor` decorator.
+        ClassElement::AccessorProperty(ap) => {
+            let name = property_key_name(&ap.key, source);
+            let accessibility = ts_accessibility(&ap.accessibility);
+            let is_private_field = matches!(ap.key, PropertyKey::PrivateIdentifier(_));
+            let is_static = ap.r#static;
+            let is_abstract = ap.r#type == AccessorPropertyType::TSAbstractAccessorProperty;
+            let modifiers = MemberModifiers {
+                accessibility: if is_private_field {
+                    Accessibility::PrivateField
+                } else {
+                    accessibility
+                },
+                is_static,
+                is_readonly: false, // accessor is read+write
+                is_optional: false,
+                is_abstract,
+            };
+            let ty = ap
+                .type_annotation
+                .as_ref()
+                .map(|ann| lower_ts_type(&ann.type_annotation, source));
+            // Decorators on the accessor (item 7).
+            let mut decorators: Vec<AttrTok> = ap
+                .decorators
+                .iter()
+                .map(|d| AttrTok { token: d.span.source_text(source).to_string() })
+                .collect();
+            // Synthetic marker so downstream consumers can tell accessor from plain property.
+            decorators.push(AttrTok { token: "accessor".to_string() });
+            Some(MemberFact {
+                name,
+                kind: MemberKind::Accessor { ty },
+                modifiers,
+                doc: DocFacts::default(),
+                decorators,
+            })
+        }
+
+        // ── Item 4: Static initializer block (`static { … }`) ────────────
+        // No type-level surface, but must not be silently dropped.
+        // Emit as `MemberKind::StaticBlock` with a synthetic name; emit.rs
+        // will translate this to a synthetic Function child.
+        ClassElement::StaticBlock(_sb) => {
+            // The caller (`lower_class`) assigns the unique __static[_N] name.
+            // We emit a placeholder here; lower_class re-names them in order.
+            Some(MemberFact {
+                name: "__static_placeholder".to_string(),
+                kind: MemberKind::StaticBlock { name: "__static".to_string() },
+                modifiers: MemberModifiers {
+                    accessibility: Accessibility::Private,
+                    is_static: true,
+                    is_readonly: false,
+                    is_optional: false,
+                    is_abstract: false,
+                },
+                doc: DocFacts::default(),
+                decorators: Vec::new(),
+            })
+        }
+
+        // TSIndexSignature does not produce a MemberFact — it is handled
+        // separately in the interface path and is not a class member kind.
+        ClassElement::TSIndexSignature(_) => None,
     }
 }
 
@@ -683,6 +873,8 @@ fn lower_interface<'a>(
     let mut methods: Vec<MethodFact> = Vec::new();
     let mut properties: Vec<PropertyFact> = Vec::new();
     let mut call_signatures: Vec<FunctionBody> = Vec::new();
+    let mut index_signatures: Vec<IndexSignatureFact> = Vec::new();
+    let mut construct_signatures: Vec<FunctionBody> = Vec::new();
 
     for sig in iface.body.body.iter() {
         match sig {
@@ -763,13 +955,52 @@ fn lower_interface<'a>(
                     receiver: ReceiverKind::None,
                 });
             }
-            // Index signatures: unsupported in the new IR (no indexer kind).
-            // Construct signatures: fall through.
-            _ => {}
+            // ── Item 5: Index signatures (`[k: string]: T`) ───────────────
+            TSSignature::TSIndexSignature(idx) => {
+                // TSIndexSignature has `parameters: Vec<TSIndexSignatureNameBinding>`
+                // and `type_annotation: TSTypeAnnotation`.
+                // Each parameter has a `name` (BindingIdentifier) and `type_annotation`.
+                if let Some(param) = idx.parameters.first() {
+                    let key_name = param.name.as_str().to_string();
+                    let key_ty = lower_ts_type(&param.type_annotation.type_annotation, source);
+                    let value_ty = lower_ts_type(&idx.type_annotation.type_annotation, source);
+                    index_signatures.push(IndexSignatureFact { key_name, key_ty, value_ty });
+                }
+            }
+            // ── Item 6: Construct signatures (`new (…): T`) ───────────────
+            TSSignature::TSConstructSignatureDeclaration(cs) => {
+                let params = lower_formal_parameters(&cs.params, source, false);
+                let return_type = cs
+                    .return_type
+                    .as_ref()
+                    .map(|ann| lower_ts_type(&ann.type_annotation, source));
+                let generics = cs
+                    .type_parameters
+                    .as_ref()
+                    .map(|tp| lower_type_params(tp, source))
+                    .unwrap_or_default();
+                construct_signatures.push(FunctionBody {
+                    generics,
+                    params,
+                    return_type,
+                    is_async: false,
+                    is_generator: false,
+                    has_body: false,
+                    receiver: ReceiverKind::None,
+                });
+            }
         }
     }
 
-    InterfaceBody { generics, extends, methods, properties, call_signatures }
+    InterfaceBody {
+        generics,
+        extends,
+        methods,
+        properties,
+        call_signatures,
+        index_signatures,
+        construct_signatures,
+    }
 }
 
 fn lower_enum<'a>(e: &TSEnumDeclaration<'a>) -> EnumBody {

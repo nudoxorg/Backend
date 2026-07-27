@@ -220,7 +220,25 @@ fn lower_ts_type_impl<'a>(
         }
 
         // ── Import type ────────────────────────────────────────────────────
-        TSType::TSImportType(_) => TypeOwned::Unsupported("import type".to_string()),
+        // `import("mod").Foo` or `import("mod")` — lower to a type reference
+        // using the qualifier name (if present) or the module specifier.
+        // This is item 9: no longer Unsupported where a slot exists.
+        TSType::TSImportType(imp) => {
+            let name = match &imp.qualifier {
+                Some(q) => import_type_qualifier_to_string(q),
+                None => imp.source.value.as_str().to_string(),
+            };
+            if let Some(args) = &imp.type_arguments {
+                let lowered_args: Vec<TypeOwned> =
+                    args.params.iter().map(|p| lower_ts_type_impl(p, source, type_params)).collect();
+                TypeOwned::Apply {
+                    base: Box::new(TypeOwned::Nominal(name)),
+                    args: lowered_args,
+                }
+            } else {
+                TypeOwned::Nominal(name)
+            }
+        }
 
         // ── Type literal (object shape) ────────────────────────────────────
         TSType::TSTypeLiteral(_) => TypeOwned::Unsupported("type literal".to_string()),
@@ -232,7 +250,28 @@ fn lower_ts_type_impl<'a>(
         TSType::TSParenthesizedType(p) => lower_ts_type_impl(&p.type_annotation, source, type_params),
 
         // ── Constructor type ───────────────────────────────────────────────
-        TSType::TSConstructorType(_) => TypeOwned::Unsupported("constructor type".to_string()),
+        // `new () => T` — lowered to a function type (item 8).
+        // The IR's `TypeOwned::Function` slot exists; using Unsupported here
+        // would be the exact bug class we are eliminating.
+        TSType::TSConstructorType(c) => {
+            let params = lower_formal_params(&c.params, source, type_params);
+            let return_type =
+                Some(lower_ts_type_impl(&c.return_type.type_annotation, source, type_params));
+            let generics = c
+                .type_parameters
+                .as_ref()
+                .map(|tp| lower_type_params(tp, source))
+                .unwrap_or_default();
+            TypeOwned::Function(Box::new(FunctionBody {
+                generics,
+                params,
+                return_type,
+                is_async: false,
+                is_generator: false,
+                has_body: false,
+                receiver: ReceiverKind::None,
+            }))
+        }
 
         // ── JS types (constructed types) ───────────────────────────────────
         TSType::JSDocNullableType(n) => lower_ts_type_impl(&n.type_annotation, source, type_params),
@@ -308,6 +347,18 @@ fn ts_type_name_to_string(name: &TSTypeName<'_>) -> String {
     }
 }
 
+/// Flatten a `TSImportTypeQualifier` chain into a dotted string.
+/// Used for `import("mod").Foo.Bar` → `"Foo.Bar"`.
+fn import_type_qualifier_to_string(q: &oxc_ast::ast::TSImportTypeQualifier<'_>) -> String {
+    use oxc_ast::ast::TSImportTypeQualifier;
+    match q {
+        TSImportTypeQualifier::Identifier(id) => id.name.as_str().to_string(),
+        TSImportTypeQualifier::QualifiedName(qn) => {
+            format!("{}.{}", import_type_qualifier_to_string(&qn.left), qn.right.name.as_str())
+        }
+    }
+}
+
 fn lower_ts_tuple_element<'a>(
     elem: &oxc_ast::ast::TSTupleElement<'a>,
     source: &'a str,
@@ -321,8 +372,15 @@ fn lower_ts_tuple_element<'a>(
         TSTupleElement::TSRestType(r) => {
             TypeOwned::Array(Box::new(lower_ts_type_impl(&r.type_annotation, source, type_params)))
         }
+        // ── Item 10: Named tuple member — preserve the label (item 10) ────
+        // Previously the label was stripped, which is a silent data loss.
+        // We emit TypeOwned::NamedTupleElem so the label survives into the IR
+        // pipeline. emit.rs maps this to the element type (IR gap; see
+        // TypeOwned::NamedTupleElem doc for the requested IR change).
         TSTupleElement::TSNamedTupleMember(m) => {
-            lower_ts_tuple_element(&m.element_type, source, type_params)
+            let label = m.label.name.to_string();
+            let ty = lower_ts_tuple_element(&m.element_type, source, type_params);
+            TypeOwned::NamedTupleElem { label, ty: Box::new(ty) }
         }
         other => {
             // UNCERTAINTY: `TSTupleElement::as_ts_type()` exists in 0.139.0.
