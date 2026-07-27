@@ -140,6 +140,196 @@ pub enum Type {
         // The annotation, using the same AttrTok type as Symbol::attrs.
         annotation: AttrTok,
     },
+
+    // ─── TypeScript-specific structural types ───────────────────────────────
+
+    /// A TypeScript **conditional type**: `Check extends Extends ? Then : Else`.
+    ///
+    /// TypeScript conditional types let types branch on assignability:
+    /// `T extends string ? A : B` resolves to `A` when `T` is assignable to
+    /// `string`, and `B` otherwise. The four arms are all load-bearing:
+    /// `check` is the type under test, `extends_ty` is the bound, `then_ty`
+    /// is taken when the condition holds, `else_ty` when it fails.
+    ///
+    /// Previously emitted as `Type::Unsupported` / `Type::Any` by the
+    /// TypeScript producer, erasing the entire conditional structure.
+    Conditional {
+        check: Box<Type>,
+        extends_ty: Box<Type>,
+        then_ty: Box<Type>,
+        else_ty: Box<Type>,
+    },
+
+    /// A TypeScript **mapped type**: `{ readonly [P in keyof T]?: T[P] }`.
+    ///
+    /// Mapped types iterate over the keys of a source type and produce a new
+    /// object type. `key_var` is the bound variable name (alpha-equivalent —
+    /// excluded from the skeleton); `source` is the type being iterated;
+    /// `value` is the body type per property; `readonly` and `optional` are
+    /// tri-state modifiers. A bare `bool` cannot represent the three TS states
+    /// (`+`/`-`/absent) — see [`MappedModifier`].
+    ///
+    /// **Identity decision:** `readonly` and `optional` are identity-relevant.
+    /// `{ readonly [P in K]: V }` and `{ [P in K]: V }` have different
+    /// assignability rules. `key_var` is alpha-equivalent and excluded from the
+    /// skeleton, like `TypeVar` names and `GenericParam` names.
+    ///
+    /// Previously emitted as `Type::Unsupported` / `Type::Any` by the
+    /// TypeScript producer.
+    Mapped {
+        key_var: String,
+        source: Box<Type>,
+        value: Box<Type>,
+        readonly: MappedModifier,
+        optional: MappedModifier,
+    },
+
+    /// A TypeScript **template literal type**: `` `prefix-${T}` ``.
+    ///
+    /// Alternates fixed string spans with interpolated type positions via
+    /// [`TemplatePart`]. The literal text IS identity-relevant: `` `a-${T}` ``
+    /// and `` `b-${T}` `` are distinct types.
+    ///
+    /// Previously emitted as `Type::Unsupported` / `Type::Any` by the
+    /// TypeScript producer.
+    TemplateLiteral(List<TemplatePart>),
+
+    // ─── Anonymous structural types (Go + TypeScript) ───────────────────────
+
+    /// An **anonymous structural record** type: Go's `struct { X int }` or a
+    /// TypeScript object-literal type `{ x: number; y?: string }`.
+    ///
+    /// Named records (declared with a name) are `Type::Nominal`. This variant
+    /// covers inline structural types with no nominal name. Fields carry name,
+    /// type, `optional`, and `readonly` — both Go and TypeScript expose these
+    /// at the type level. For Go anonymous interfaces (method sets), `form` is
+    /// `AnonRecordForm::Interface` and each method's `ty` is a
+    /// `Type::FunctionPointer`. This unifies struct and interface anonymous
+    /// types under one variant rather than duplicating encoding infrastructure.
+    ///
+    /// Previously emitted as `Type::Any` by Go and TypeScript producers.
+    AnonymousRecord {
+        form: AnonRecordForm,
+        members: List<AnonField>,
+    },
+
+    // ─── Rust-specific types ────────────────────────────────────────────────
+
+    /// Rust **`impl Trait`** in argument or return position.
+    ///
+    /// An opaque existential type: the compiler selects a concrete type
+    /// statically; the call site only sees the bound set. Distinct from
+    /// `dyn Trait` (see [`Type::DynTrait`]): `impl Trait` is zero-cost static
+    /// dispatch; `dyn Trait` is a fat-pointer with dynamic dispatch. Collapsing
+    /// them into one variant with a flag would obscure this fundamental
+    /// semantic difference.
+    ///
+    /// Previously emitted as `Type::Any` by the Rust producer.
+    ImplTrait(List<Type>),
+
+    /// Rust **`dyn Trait`** (dynamic dispatch, fat-pointer object).
+    ///
+    /// A fat pointer with a vtable, requiring object safety. Previously
+    /// squeezed into `Type::Intersection`, which loses the distinction between
+    /// a structural intersection (`A & B`) and a trait-object type
+    /// (`dyn A + B`). Separate from [`Type::ImplTrait`] — see that variant for
+    /// the full rationale.
+    DynTrait(List<Type>),
+
+    /// A **placeholder type** the producer could not resolve.
+    ///
+    /// Rust's `_` wildcard, clang's `__auto_type`, or any type the producer
+    /// encountered but could not lower. Distinct from [`Type::Any`]:
+    ///
+    /// - `Any` — the type is genuinely dynamic/unconstrained at the language level.
+    /// - `Inferred` — a specific type exists but the producer could not determine it.
+    ///
+    /// Conflating them makes it impossible to distinguish a real dynamic type
+    /// from a producer resolution gap.
+    ///
+    /// **Note on foreign-ref fallbacks:** cross-package references falling back
+    /// to `Type::Any` are NOT a type-system gap and do not belong here.
+    /// `Ref::Foreign(StableRef)` already exists for that case; the fallback is
+    /// an acquisition-boundary problem (producers have no registry handle),
+    /// not a missing type variant.
+    Inferred,
+
+    /// A **qualified path** expression: `<T as Trait>::Assoc` (Rust) or
+    /// `Outer<T>.Inner` (C#).
+    ///
+    /// `self_ty` is the base type; `trait_ref` is the disambiguation trait
+    /// (`None` for C#-style dot-qualified paths); `assoc` is the associated
+    /// item name.
+    ///
+    /// Previously emitted as `Type::Any` by both the Rust and C# producers.
+    QualifiedPath {
+        self_ty: Box<Type>,
+        trait_ref: Option<Box<Type>>,
+        assoc: String,
+    },
+}
+
+// ─── Supporting types for the new variants ──────────────────────────────────
+
+/// A tri-state modifier on a mapped type's `readonly` or `optional` position.
+///
+/// TypeScript distinguishes three states:
+/// - `Add` (`readonly` / `+readonly` / `?` / `+?`) — explicitly added.
+/// - `Remove` (`-readonly` / `-?`) — explicitly removed from the source type.
+/// - `Absent` — not mentioned; inherited from the source type.
+///
+/// A bare `bool` cannot represent this: `Add` and `Absent` would collapse
+/// into the same value, losing either the removal or the inheritance case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum MappedModifier {
+    /// Modifier explicitly added (`readonly` / `+readonly` / `?` / `+?`).
+    Add,
+    /// Modifier explicitly removed (`-readonly` / `-?`).
+    Remove,
+    /// Modifier absent — inherited from the source type.
+    Absent,
+}
+
+/// A single part of a [`Type::TemplateLiteral`].
+///
+/// Template literal types alternate fixed string spans with interpolated
+/// type positions: `` `error-${Code}: ${Message}` `` is
+/// `Literal("error-") | Interpolated(Code) | Literal(": ") | Interpolated(Message)`.
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum TemplatePart {
+    /// A fixed string literal span (e.g. `"error-"`).
+    Literal(String),
+    /// An interpolated type position (e.g. `Code` or `number`).
+    Interpolated(Box<Type>),
+}
+
+/// The form of an [`Type::AnonymousRecord`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum AnonRecordForm {
+    /// An anonymous struct (`struct { X int }` in Go; `{ x: number }` in
+    /// TypeScript).
+    Struct,
+    /// An anonymous interface / method-set type (`interface { Foo() bool }` in
+    /// Go).
+    Interface,
+}
+
+/// A member of an [`Type::AnonymousRecord`].
+///
+/// Used for both struct fields (Go / TypeScript) and interface methods (Go).
+/// For methods the `ty` field carries a [`Type::FunctionPointer`].
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub struct AnonField {
+    /// The member name.
+    pub name: String,
+    /// The member type.
+    pub ty: Type,
+    /// Whether the member is optional (`foo?: T` in TypeScript). Always
+    /// `false` for Go struct fields and interface methods.
+    pub optional: bool,
+    /// Whether the member is read-only (`readonly foo: T` in TypeScript).
+    /// Always `false` for Go struct fields and interface methods.
+    pub readonly: bool,
 }
 
 /// A single element inside a [`Type::Tuple`], optionally labelled.
@@ -574,5 +764,303 @@ mod tests {
             .into(),
         );
         assert_ne!(ty_skeleton(&ab), ty_skeleton(&xy));
+    }
+
+    // ── Type::Conditional ─────────────────────────────────────────────────────
+
+    #[test]
+    fn conditional_roundtrip() {
+        let c = Type::Conditional {
+            check: Box::new(Type::TypeVar("T".to_owned())),
+            extends_ty: Box::new(Type::Primitive(Primitive::Str)),
+            then_ty: Box::new(Type::Primitive(Primitive::Bool)),
+            else_ty: Box::new(Type::Never),
+        };
+        let json = serde_json::to_string(&c).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(c, back);
+    }
+
+    /// Two Conditionals differing only in then_ty must have distinct skeletons.
+    #[test]
+    fn conditional_then_changes_skeleton() {
+        let c1 = Type::Conditional {
+            check: Box::new(Type::TypeVar("T".to_owned())),
+            extends_ty: Box::new(Type::Primitive(Primitive::Str)),
+            then_ty: Box::new(Type::Primitive(Primitive::Bool)),
+            else_ty: Box::new(Type::Never),
+        };
+        let c2 = Type::Conditional {
+            check: Box::new(Type::TypeVar("T".to_owned())),
+            extends_ty: Box::new(Type::Primitive(Primitive::Str)),
+            then_ty: Box::new(Type::I32),
+            else_ty: Box::new(Type::Never),
+        };
+        assert_ne!(ty_skeleton(&c1), ty_skeleton(&c2));
+    }
+
+    // ── Type::Mapped ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn mapped_roundtrip() {
+        let m = Type::Mapped {
+            key_var: "P".to_owned(),
+            source: Box::new(Type::TypeVar("T".to_owned())),
+            value: Box::new(Type::Any),
+            readonly: MappedModifier::Add,
+            optional: MappedModifier::Remove,
+        };
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(m, back);
+    }
+
+    /// `{ readonly [P in K]: V }` and `{ [P in K]: V }` must have distinct
+    /// skeletons — the readonly modifier is identity-relevant.
+    #[test]
+    fn mapped_readonly_changes_skeleton() {
+        let with_readonly = Type::Mapped {
+            key_var: "P".to_owned(),
+            source: Box::new(Type::Any),
+            value: Box::new(Type::Any),
+            readonly: MappedModifier::Add,
+            optional: MappedModifier::Absent,
+        };
+        let without_readonly = Type::Mapped {
+            key_var: "P".to_owned(),
+            source: Box::new(Type::Any),
+            value: Box::new(Type::Any),
+            readonly: MappedModifier::Absent,
+            optional: MappedModifier::Absent,
+        };
+        assert_ne!(ty_skeleton(&with_readonly), ty_skeleton(&without_readonly));
+    }
+
+    /// The key_var name is alpha-equivalent — two Mapped types differing only
+    /// in key_var name must have the SAME skeleton.
+    #[test]
+    fn mapped_key_var_is_alpha_equivalent_in_skeleton() {
+        let with_p = Type::Mapped {
+            key_var: "P".to_owned(),
+            source: Box::new(Type::Any),
+            value: Box::new(Type::Any),
+            readonly: MappedModifier::Absent,
+            optional: MappedModifier::Absent,
+        };
+        let with_k = Type::Mapped {
+            key_var: "K".to_owned(),
+            source: Box::new(Type::Any),
+            value: Box::new(Type::Any),
+            readonly: MappedModifier::Absent,
+            optional: MappedModifier::Absent,
+        };
+        assert_eq!(
+            ty_skeleton(&with_p),
+            ty_skeleton(&with_k),
+            "key_var name is alpha-equivalent — must not change the skeleton"
+        );
+    }
+
+    // ── Type::TemplateLiteral ─────────────────────────────────────────────────
+
+    #[test]
+    fn template_literal_roundtrip() {
+        let tl = Type::TemplateLiteral(
+            [
+                TemplatePart::Literal("error-".to_owned()),
+                TemplatePart::Interpolated(Box::new(Type::TypeVar("Code".to_owned()))),
+            ]
+            .into(),
+        );
+        let json = serde_json::to_string(&tl).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(tl, back);
+    }
+
+    /// `error-${T}` and `warning-${T}` must have distinct skeletons.
+    #[test]
+    fn template_literal_text_changes_skeleton() {
+        let error_t = Type::TemplateLiteral(
+            [
+                TemplatePart::Literal("error-".to_owned()),
+                TemplatePart::Interpolated(Box::new(Type::TypeVar("T".to_owned()))),
+            ]
+            .into(),
+        );
+        let warning_t = Type::TemplateLiteral(
+            [
+                TemplatePart::Literal("warning-".to_owned()),
+                TemplatePart::Interpolated(Box::new(Type::TypeVar("T".to_owned()))),
+            ]
+            .into(),
+        );
+        assert_ne!(ty_skeleton(&error_t), ty_skeleton(&warning_t));
+    }
+
+    // ── Type::AnonymousRecord ─────────────────────────────────────────────────
+
+    #[test]
+    fn anonymous_record_struct_roundtrip() {
+        let ar = Type::AnonymousRecord {
+            form: AnonRecordForm::Struct,
+            members: [
+                AnonField { name: "x".to_owned(), ty: Type::I32, optional: false, readonly: false },
+                AnonField { name: "y".to_owned(), ty: Type::I32, optional: true, readonly: true },
+            ]
+            .into(),
+        };
+        let json = serde_json::to_string(&ar).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(ar, back);
+    }
+
+    #[test]
+    fn anonymous_record_interface_roundtrip() {
+        let ar = Type::AnonymousRecord {
+            form: AnonRecordForm::Interface,
+            members: [AnonField {
+                name: "Foo".to_owned(),
+                ty: Type::FunctionPointer { params: [].into(), ret: None, abi: None },
+                optional: false,
+                readonly: false,
+            }]
+            .into(),
+        };
+        let json = serde_json::to_string(&ar).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(ar, back);
+    }
+
+    /// `{ x: number }` and `{ x?: number }` must have different skeletons.
+    #[test]
+    fn anonymous_record_optional_changes_skeleton() {
+        let required = Type::AnonymousRecord {
+            form: AnonRecordForm::Struct,
+            members: [AnonField { name: "x".to_owned(), ty: Type::I32, optional: false, readonly: false }]
+                .into(),
+        };
+        let optional = Type::AnonymousRecord {
+            form: AnonRecordForm::Struct,
+            members: [AnonField { name: "x".to_owned(), ty: Type::I32, optional: true, readonly: false }]
+                .into(),
+        };
+        assert_ne!(ty_skeleton(&required), ty_skeleton(&optional));
+    }
+
+    /// Struct form and interface form must have different skeletons.
+    #[test]
+    fn anonymous_record_form_changes_skeleton() {
+        let s = Type::AnonymousRecord { form: AnonRecordForm::Struct, members: [].into() };
+        let i = Type::AnonymousRecord { form: AnonRecordForm::Interface, members: [].into() };
+        assert_ne!(ty_skeleton(&s), ty_skeleton(&i));
+    }
+
+    // ── Type::ImplTrait + Type::DynTrait ──────────────────────────────────────
+
+    #[test]
+    fn impl_trait_roundtrip() {
+        let it = Type::ImplTrait([Type::Any, Type::SelfType].into());
+        let json = serde_json::to_string(&it).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(it, back);
+    }
+
+    #[test]
+    fn dyn_trait_roundtrip() {
+        let dt = Type::DynTrait([Type::Any].into());
+        let json = serde_json::to_string(&dt).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dt, back);
+    }
+
+    /// `impl Trait` and `dyn Trait` with the same bounds must have DIFFERENT
+    /// skeletons — they are distinct types with distinct dispatch semantics.
+    #[test]
+    fn impl_trait_vs_dyn_trait_differ_in_skeleton() {
+        let impl_t = Type::ImplTrait([Type::Any].into());
+        let dyn_t = Type::DynTrait([Type::Any].into());
+        assert_ne!(ty_skeleton(&impl_t), ty_skeleton(&dyn_t));
+    }
+
+    #[test]
+    fn impl_trait_bounds_change_skeleton() {
+        let impl_a = Type::ImplTrait([Type::Any].into());
+        let impl_b = Type::ImplTrait([Type::Never].into());
+        assert_ne!(ty_skeleton(&impl_a), ty_skeleton(&impl_b));
+    }
+
+    // ── Type::Inferred ────────────────────────────────────────────────────────
+
+    #[test]
+    fn inferred_roundtrip() {
+        let json = serde_json::to_string(&Type::Inferred).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(Type::Inferred, back);
+    }
+
+    /// Inferred and Any must have distinct skeletons.
+    #[test]
+    fn inferred_vs_any_differ_in_skeleton() {
+        assert_ne!(ty_skeleton(&Type::Inferred), ty_skeleton(&Type::Any));
+    }
+
+    // ── Type::QualifiedPath ───────────────────────────────────────────────────
+
+    #[test]
+    fn qualified_path_roundtrip() {
+        let qp = Type::QualifiedPath {
+            self_ty: Box::new(Type::TypeVar("T".to_owned())),
+            trait_ref: Some(Box::new(Type::Any)),
+            assoc: "Item".to_owned(),
+        };
+        let json = serde_json::to_string(&qp).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(qp, back);
+    }
+
+    #[test]
+    fn qualified_path_no_trait_ref_roundtrip() {
+        let qp = Type::QualifiedPath {
+            self_ty: Box::new(Type::Any),
+            trait_ref: None,
+            assoc: "Inner".to_owned(),
+        };
+        let json = serde_json::to_string(&qp).expect("serialize");
+        let back: Type = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(qp, back);
+    }
+
+    /// `<T as Iterator>::Item` and `<T as Iterator>::IntoIter` must have
+    /// distinct skeletons.
+    #[test]
+    fn qualified_path_assoc_changes_skeleton() {
+        let item = Type::QualifiedPath {
+            self_ty: Box::new(Type::TypeVar("T".to_owned())),
+            trait_ref: Some(Box::new(Type::Any)),
+            assoc: "Item".to_owned(),
+        };
+        let into_iter = Type::QualifiedPath {
+            self_ty: Box::new(Type::TypeVar("T".to_owned())),
+            trait_ref: Some(Box::new(Type::Any)),
+            assoc: "IntoIter".to_owned(),
+        };
+        assert_ne!(ty_skeleton(&item), ty_skeleton(&into_iter));
+    }
+
+    /// A QualifiedPath with a trait_ref and one without must have distinct
+    /// skeletons: `<T as Foo>::Bar` and `T.Bar` are structurally different.
+    #[test]
+    fn qualified_path_trait_ref_presence_changes_skeleton() {
+        let with_trait = Type::QualifiedPath {
+            self_ty: Box::new(Type::Any),
+            trait_ref: Some(Box::new(Type::Any)),
+            assoc: "Bar".to_owned(),
+        };
+        let without_trait = Type::QualifiedPath {
+            self_ty: Box::new(Type::Any),
+            trait_ref: None,
+            assoc: "Bar".to_owned(),
+        };
+        assert_ne!(ty_skeleton(&with_trait), ty_skeleton(&without_trait));
     }
 }

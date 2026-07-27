@@ -103,6 +103,40 @@
 //! | Any             | 0x09   |
 //! | Nominal         | 0x0a   |
 //! | Apply           | 0x0b   |
+//! | TypeVar         | 0x0c   |
+//! | Wildcard        | 0x0d   |
+//! | FunctionPointer | 0x0e   |
+//! | Annotated       | 0x0f   |
+//! | Conditional     | 0x10   |
+//! | Mapped          | 0x11   |
+//! | TemplateLiteral | 0x12   |
+//! | AnonymousRecord | 0x13   |
+//! | ImplTrait       | 0x14   |
+//! | DynTrait        | 0x15   |
+//! | Inferred        | 0x16   |
+//! | QualifiedPath   | 0x17   |
+//!
+//! ## `MappedModifier` opcodes
+//!
+//! | Variant | Opcode |
+//! |---------|--------|
+//! | Add     | 0x01   |
+//! | Remove  | 0x02   |
+//! | Absent  | 0x03   |
+//!
+//! ## `TemplatePart` opcodes
+//!
+//! | Variant      | Opcode |
+//! |--------------|--------|
+//! | Literal      | 0x01   |
+//! | Interpolated | 0x02   |
+//!
+//! ## `AnonRecordForm` opcodes
+//!
+//! | Variant   | Opcode |
+//! |-----------|--------|
+//! | Struct    | 0x01   |
+//! | Interface | 0x02   |
 //!
 //! ## `Primitive` opcodes
 //!
@@ -281,7 +315,7 @@ use crate::{
         FnModifier, Function, GenericParam, Impl, ImplFlags, Module, Param, ParamAttribute,
         Receiver, Record, RecordForm, Reexport, Sealed, Static, Trait, TraitFlags, TriState,
         Variant, VariantForm, WherePred,
-        ty::{Primitive, TupleElement, Type, Variance, Width},
+        ty::{AnonRecordForm, MappedModifier, Primitive, TemplatePart, TupleElement, Type, Variance, Width},
     },
 };
 
@@ -895,6 +929,71 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
             encode_type(out, inner);
             encode_attr_tok(out, annotation);
         }
+        Type::Conditional { check, extends_ty, then_ty, else_ty } => {
+            out.push(0x10);
+            encode_type(out, check);
+            encode_type(out, extends_ty);
+            encode_type(out, then_ty);
+            encode_type(out, else_ty);
+        }
+        // Content hash includes key_var verbatim (unlike the skeleton, which
+        // excludes it as alpha-equivalent).
+        Type::Mapped { key_var, source, value, readonly, optional } => {
+            out.push(0x11);
+            encode_str(out, key_var);
+            encode_type(out, source);
+            encode_type(out, value);
+            encode_mapped_modifier(out, readonly);
+            encode_mapped_modifier(out, optional);
+        }
+        Type::TemplateLiteral(parts) => {
+            out.push(0x12);
+            write_u32le(out, parts.len() as u32);
+            for part in parts.iter() {
+                match part {
+                    TemplatePart::Literal(s) => {
+                        out.push(0x01);
+                        encode_str(out, s);
+                    }
+                    TemplatePart::Interpolated(t) => {
+                        out.push(0x02);
+                        encode_type(out, t);
+                    }
+                }
+            }
+        }
+        Type::AnonymousRecord { form, members } => {
+            out.push(0x13);
+            encode_anon_record_form(out, form);
+            write_u32le(out, members.len() as u32);
+            for m in members.iter() {
+                encode_str(out, &m.name);
+                encode_type(out, &m.ty);
+                out.push(m.optional as u8);
+                out.push(m.readonly as u8);
+            }
+        }
+        Type::ImplTrait(bounds) => {
+            out.push(0x14);
+            encode_type_seq(out, bounds);
+        }
+        Type::DynTrait(bounds) => {
+            out.push(0x15);
+            encode_type_seq(out, bounds);
+        }
+        Type::Inferred => out.push(0x16),
+        Type::QualifiedPath { self_ty, trait_ref, assoc } => {
+            out.push(0x17);
+            encode_type(out, self_ty);
+            match trait_ref {
+                Some(t) => {
+                    out.push(0x01);
+                    encode_type(out, t);
+                }
+                None => out.push(0x00),
+            }
+            encode_str(out, assoc);
+        }
     }
 }
 
@@ -922,6 +1021,23 @@ fn encode_variance(out: &mut Vec<u8>, v: &Variance) {
         Variance::Invariant => 0x01,
         Variance::Covariant => 0x02,
         Variance::Contravariant => 0x03,
+    });
+}
+
+fn encode_mapped_modifier(out: &mut Vec<u8>, m: &MappedModifier) {
+    // No _ wildcard.
+    out.push(match m {
+        MappedModifier::Add => 0x01,
+        MappedModifier::Remove => 0x02,
+        MappedModifier::Absent => 0x03,
+    });
+}
+
+fn encode_anon_record_form(out: &mut Vec<u8>, f: &AnonRecordForm) {
+    // No _ wildcard.
+    out.push(match f {
+        AnonRecordForm::Struct => 0x01,
+        AnonRecordForm::Interface => 0x02,
     });
 }
 

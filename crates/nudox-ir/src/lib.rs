@@ -160,7 +160,11 @@ pub mod vocab;
 pub mod prelude {
     pub use crate::{
         apply::PristineIntroTable,
-        body::{BodyEmbed, BodyFacts, Language, merge_body},
+        body::{
+            AccessMode, BodyCall, BodyEmbed, BodyFacts, BodyImport, BodyMergeNote,
+            ConflictPolicy, ControlSketch, Language, LocalBind, LocalKind, OracleAccess,
+            OracleBody, OracleCall, OracleTypeMention, TreesitterBody, merge_body, overlapping_call,
+        },
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         codec::{
             CodecError, HEADER_LEN, MAGIC_LEN, Plane, decode_body, decode_entry, encode_body,
@@ -190,7 +194,11 @@ pub mod prelude {
 pub mod build {
     pub use crate::{
         apply::PristineIntroTable,
-        body::{BodyEmbed, BodyFacts, Language, merge_body},
+        body::{
+            AccessMode, BodyCall, BodyEmbed, BodyFacts, BodyImport, BodyMergeNote,
+            ConflictPolicy, ControlSketch, Language, LocalBind, LocalKind, OracleAccess,
+            OracleBody, OracleCall, OracleTypeMention, TreesitterBody, merge_body, overlapping_call,
+        },
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         content::{ENTRY_CONTENT_DOMAIN, entry_content_hash},
         entry::{AttrTok, CfgExpr, Deprecation, DocLink, Entry, EntryInner, Node, Symbol, Visibility},

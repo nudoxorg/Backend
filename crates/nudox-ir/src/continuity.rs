@@ -415,30 +415,37 @@ fn oracle_ref_set(facts: &BodyFacts) -> BTreeSet<&StableRef> {
         }
     }
     for tm in &facts.oracle.type_mentions {
-        set.insert(tm);
+        // OracleTypeMention carries the StableRef in `.ty`
+        set.insert(&tm.ty);
     }
     set
 }
 
-/// Coarse control-flow shape `(n_if, n_match, n_loop)`, each saturated to
-/// fit in a `u8`. Equality means "same rough branch structure", not exact
-/// counts. Uses `ControlSketch` from nudox-ir's body module, which is a
-/// flat `(If | Match | Loop)` enum (no span/arm data).
+/// Coarse control-flow shape `(n_if, n_match, n_loop, total_match_arms)`, each
+/// saturated to fit in a `u8`. Equality means "same rough branch structure",
+/// not exact counts.
 ///
-/// NOTE: Unlike the ir-vcs prototype, nudox-ir's `ControlSketch` does not
-/// carry arm counts — the comparison is coarser. That is acceptable under
-/// never-merge: a false abstention (missing a match) is a safe false split,
-/// never a false merge.
-fn ctrl_shape(facts: &BodyFacts) -> (u8, u8, u8) {
-    let (mut n_if, mut n_match, mut n_loop) = (0u32, 0u32, 0u32);
+/// The arm count from `Match { arms }` is included so a function with 3 match
+/// arms is distinguishable from one with 1 at the coarse level — it's a
+/// corroborator, not a precision signal.
+fn ctrl_shape(facts: &BodyFacts) -> (u8, u8, u8, u8) {
+    let (mut n_if, mut n_match, mut n_loop, mut n_arms) = (0u32, 0u32, 0u32, 0u32);
     for sketch in &facts.tree.control {
         match sketch {
-            ControlSketch::If => n_if += 1,
-            ControlSketch::Match => n_match += 1,
-            ControlSketch::Loop => n_loop += 1,
+            ControlSketch::If { .. } => n_if += 1,
+            ControlSketch::Match { arms, .. } => {
+                n_match += 1;
+                n_arms += arms.len() as u32;
+            }
+            ControlSketch::Loop { .. } => n_loop += 1,
         }
     }
-    (n_if.min(7) as u8, n_match.min(7) as u8, n_loop.min(7) as u8)
+    (
+        n_if.min(7) as u8,
+        n_match.min(7) as u8,
+        n_loop.min(7) as u8,
+        n_arms.min(15) as u8,
+    )
 }
 
 /// Compute the body-similarity score between two entries' bodies.
@@ -466,23 +473,23 @@ fn body_similarity_score(next_body: Option<&BodyEmbed>, prior_body: Option<&Body
 
     let mut score = 0i32;
 
-    // Sub-signal A: resolved-ref Jaccard — requires the oracle on both sides.
-    // nudox-ir's `BodyFacts` does not carry a `merge.oracle_ran` flag like
-    // the ir-vcs counterpart; we treat a non-empty `oracle.calls` or
-    // `oracle.type_mentions` as evidence the oracle ran on that side.
-    // Abstaining when either side is empty is correct: no oracle output means
-    // no resolved refs, so Jaccard is 0/0 — undefined and uninformative.
-    let nset = oracle_ref_set(nf);
-    let pset = oracle_ref_set(pf);
-    if nset.len() >= MIN_BODY_REFS && pset.len() >= MIN_BODY_REFS {
-        let inter = nset.intersection(&pset).count();
-        let union = nset.union(&pset).count();
-        if union > 0 {
-            // Jaccard thresholds as integer cross-multiplications (no f32).
-            if inter * 100 >= union * 80 {
-                score += W_BODY_REFS_NEAR;
-            } else if inter * 100 >= union * 50 {
-                score += W_BODY_REFS_MID;
+    // Sub-signal A: resolved-ref Jaccard.
+    // Gate on `merge.oracle_ran` on BOTH sides — a treesitter-only body has
+    // no resolved `StableRef` targets, so Jaccard is meaningless and must
+    // abstain. This is the fidelity gate for the never-merge safety property.
+    if nf.merge.oracle_ran && pf.merge.oracle_ran {
+        let nset = oracle_ref_set(nf);
+        let pset = oracle_ref_set(pf);
+        if nset.len() >= MIN_BODY_REFS && pset.len() >= MIN_BODY_REFS {
+            let inter = nset.intersection(&pset).count();
+            let union = nset.union(&pset).count();
+            if union > 0 {
+                // Jaccard thresholds as integer cross-multiplications (no f32).
+                if inter * 100 >= union * 80 {
+                    score += W_BODY_REFS_NEAR;
+                } else if inter * 100 >= union * 50 {
+                    score += W_BODY_REFS_MID;
+                }
             }
         }
     }
@@ -626,18 +633,35 @@ struct ScoreDetail {
     body_score: i32,
 }
 
-fn score_pair(
-    next_entry: &Entry,
+/// All inputs to [`score_pair`], collected into a named struct to keep the
+/// argument count under Clippy's threshold (7) without changing any scoring
+/// behaviour.
+struct ScoreInputs<'a> {
+    next_entry: &'a Entry,
     next_disc: KindDiscriminant,
     next_parent: Option<IntroId>,
-    sigma: &BTreeMap<IntroId, IntroId>,
+    sigma: &'a BTreeMap<IntroId, IntroId>,
     prior_id: IntroId,
-    prior_entry: &Entry,
-    prior: &IrView,
-    next_body: Option<&BodyEmbed>,
-    prior_body: Option<&BodyEmbed>,
-    policy: &Policy,
-) -> ScoreDetail {
+    prior_entry: &'a Entry,
+    prior: &'a IrView,
+    next_body: Option<&'a BodyEmbed>,
+    prior_body: Option<&'a BodyEmbed>,
+    policy: &'a Policy,
+}
+
+fn score_pair(inp: &ScoreInputs<'_>) -> ScoreDetail {
+    let ScoreInputs {
+        next_entry,
+        next_disc,
+        next_parent,
+        sigma,
+        prior_id,
+        prior_entry,
+        prior,
+        next_body,
+        prior_body,
+        policy,
+    } = inp;
     let mut total = 0i32;
 
     // Shape hash equal (+50)
@@ -655,14 +679,14 @@ fn score_pair(
     // Parent continuity (+15): wire parent resolves to the same durable id
     // as the prior entry's parent.
     let next_durable_parent = next_parent.map(|p| sigma.get(&p).copied().unwrap_or(p));
-    let prior_parent = prior.parent_of(prior_id);
+    let prior_parent = prior.parent_of(*prior_id);
     let parent_matched = next_durable_parent == prior_parent;
     if parent_matched {
         total += W_PARENT_CONT;
     }
 
     // Function signature key (+15, Function kind only)
-    let sig_matched = if next_disc == KindDiscriminant::Function
+    let sig_matched = if *next_disc == KindDiscriminant::Function
         && prior_entry.kind().discriminant() == Some(KindDiscriminant::Function)
     {
         if let (Kind::Function(nf), Kind::Function(pf)) = (
@@ -709,7 +733,7 @@ fn score_pair(
 
     // Body axis: resolved-ref overlap + coarse control-flow shape.
     let body_score = if policy.enable_body_axis {
-        body_similarity_score(next_body, prior_body)
+        body_similarity_score(*next_body, *prior_body)
     } else {
         0
     };
@@ -916,18 +940,18 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
                 continue;
             }
 
-            let detail = score_pair(
+            let detail = score_pair(&ScoreInputs {
                 next_entry,
-                disc,
+                next_disc: disc,
                 next_parent,
-                &sigma,
-                *prior_id,
+                sigma: &sigma,
+                prior_id: *prior_id,
                 prior_entry,
-                prev,
-                next.body(next_id),
-                prev.body(*prior_id),
+                prior: prev,
+                next_body: next.body(next_id),
+                prior_body: prev.body(*prior_id),
                 policy,
-            );
+            });
 
             if detail.total >= policy.threshold_soft {
                 all_pairs.push((detail.total, next_id, *prior_id));
@@ -976,8 +1000,18 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
         }
         // Compute detail for evidence construction.
         let rov_detail = if let (Some(ne), Some(pe)) = (next.entry(next_id), prior_map.get(&prior_id)) {
-            score_pair(ne, disc, next_parent, &sigma, prior_id, pe, prev,
-                next.body(next_id), prev.body(prior_id), policy)
+            score_pair(&ScoreInputs {
+                next_entry: ne,
+                next_disc: disc,
+                next_parent,
+                sigma: &sigma,
+                prior_id,
+                prior_entry: pe,
+                prior: prev,
+                next_body: next.body(next_id),
+                prior_body: prev.body(prior_id),
+                policy,
+            })
         } else {
             ScoreDetail {
                 total: 0, shape_matched: false, name_matched: true,
@@ -1039,10 +1073,18 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
         // Re-score to get per-axis detail for the evidence record.
         let Some(next_entry) = next.entry(next_id) else { continue };
         let Some(prior_entry) = prior_map.get(&prior_id) else { continue };
-        let detail = score_pair(
-            next_entry, disc, next_parent, &sigma, prior_id, prior_entry, prev,
-            next.body(next_id), prev.body(prior_id), policy,
-        );
+        let detail = score_pair(&ScoreInputs {
+            next_entry,
+            next_disc: disc,
+            next_parent,
+            sigma: &sigma,
+            prior_id,
+            prior_entry,
+            prior: prev,
+            next_body: next.body(next_id),
+            prior_body: prev.body(prior_id),
+            policy,
+        });
         sigma.insert(next_id, prior_id);
         assigned_next.insert(next_id);
         assigned_prior.insert(prior_id);
@@ -1182,7 +1224,7 @@ mod tests {
     use super::*;
     use crate::{
         apply::PristineIntroTable,
-        body::{BodyEmbed, BodyFacts, Language, OracleBody, OracleCall, TreesitterBody},
+        body::{BodyEmbed, BodyMergeNote, Language, OracleBody, OracleCall, TreesitterBody, merge_body},
         change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         entry::{Node, Symbol, Visibility},
         index::RawRef,
@@ -1304,14 +1346,15 @@ mod tests {
                 target: Some(stable_ref(name)),
                 kind: ReferenceKind::FunctionCall,
                 confidence: Confidence::Oracle,
-                span: RelSpan::new((i * 10) as u32, (i * 10 + 5) as u32),
+                rel_span: RelSpan::new((i * 10) as u32, (i * 10 + 5) as u32),
             })
             .collect();
-        BodyEmbed::Present(BodyFacts {
-            language: Language::Rust,
-            tree: TreesitterBody::default(),
-            oracle: OracleBody { calls, type_mentions: vec![], reads_writes: vec![] },
-        })
+        merge_body(
+            Language::Rust,
+            TreesitterBody::default(),
+            OracleBody { calls, type_mentions: vec![], reads_writes: vec![] },
+            BodyMergeNote::both_ran(),
+        )
     }
 
     fn is_continued(s: &Substitution, next: IntroId, prior: IntroId) -> bool {

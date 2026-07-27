@@ -391,7 +391,7 @@ mod tests {
     use super::*;
     use crate::{
         body::{
-            BodyCall, BodyEmbed, BodyFacts, ControlSketch, Language, LocalBind, LocalKind,
+            BodyCall, BodyEmbed, Language, LocalBind, LocalKind,
             OracleBody, OracleCall, TreesitterBody,
         },
         change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
@@ -448,31 +448,38 @@ mod tests {
     }
 
     fn make_body_embed() -> BodyEmbed {
-        BodyEmbed::Present(BodyFacts {
-            language: Language::Rust,
-            tree: TreesitterBody {
+        use crate::body::{BodyMergeNote, OracleTypeMention, merge_body};
+        merge_body(
+            Language::Rust,
+            TreesitterBody {
                 locals: vec![LocalBind {
                     name: "x".to_owned(),
                     kind: LocalKind::Let,
-                    span: RelSpan::new(0, 10),
+                    rel_span: RelSpan::new(0, 10),
                 }],
                 calls: vec![BodyCall {
                     name: "foo".to_owned(),
-                    span: RelSpan::new(10, 20),
+                    receiver: None,
+                    rel_span: RelSpan::new(10, 20),
                 }],
-                control: vec![ControlSketch::If],
+                control: vec![],
+                ..Default::default()
             },
-            oracle: OracleBody {
+            OracleBody {
                 calls: vec![OracleCall {
                     target: Some(make_stable_ref("foo")),
                     kind: ReferenceKind::FunctionCall,
                     confidence: Confidence::Oracle,
-                    span: RelSpan::new(10, 20),
+                    rel_span: RelSpan::new(10, 20),
                 }],
-                type_mentions: vec![make_stable_ref("Bar")],
+                type_mentions: vec![OracleTypeMention {
+                    ty: make_stable_ref("Bar"),
+                    rel_span: RelSpan::new(5, 8),
+                }],
                 reads_writes: vec![],
             },
-        })
+            BodyMergeNote::both_ran(),
+        )
     }
 
     // ── 1. Entry round-trip ───────────────────────────────────────────────────

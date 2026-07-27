@@ -199,6 +199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4087686b4b0a3427190bae57a1d9a478dbb2d40c5dc1bd6e2b6d797913bdd348"
+dependencies = [
+ "object",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3427,7 +3436,7 @@ dependencies = [
  "sha1 0.11.0",
  "sha2 0.11.0",
  "shell-words",
- "similar",
+ "similar 3.1.1",
  "tempfile",
  "thiserror 2.0.19",
  "time",
@@ -4479,6 +4488,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "insta"
+version = "1.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar 2.7.0",
+ "tempfile",
+]
+
+[[package]]
 name = "instant"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5131,6 +5152,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01ed659c5f428031b9c1fb7de6729af2eb491654d4bcd416a5b5b704986b9658"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "json5"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "733a844dbd6fef128e98cb4487b887cb55454d92cd9994b1bafe004fabbe670c"
+dependencies = [
+ "serde",
+ "ucd-trie",
 ]
 
 [[package]]
@@ -6382,6 +6413,7 @@ dependencies = [
 name = "nudox-producer-go"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "nudox-ir",
  "serde",
  "serde_json",
@@ -6425,6 +6457,7 @@ dependencies = [
  "ra_ap_syntax",
  "ra_ap_vfs",
  "rustc-hash 2.1.3",
+ "serde_json",
  "smol_str 0.3.6",
  "tracing",
 ]
@@ -6443,8 +6476,14 @@ dependencies = [
  "oxc_semantic",
  "oxc_span",
  "oxc_syntax",
+ "rustc-hash 2.1.3",
  "serde_json",
+ "tempfile",
  "tracing",
+ "tsz-binder",
+ "tsz-checker",
+ "tsz-core",
+ "tsz-solver",
 ]
 
 [[package]]
@@ -8076,6 +8115,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
 dependencies = [
  "prost 0.13.5",
+]
+
+[[package]]
+name = "psm"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "645dbe486e346d9b5de3ef16ede18c26e6c70ad97418f4874b8b1889d6e761ea"
+dependencies = [
+ "ar_archive_writer",
+ "cc",
 ]
 
 [[package]]
@@ -10346,6 +10395,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "serde_bytes"
 version = "0.11.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10661,6 +10721,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "similar"
@@ -11234,6 +11300,19 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "stacker"
+version = "0.1.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "640c8cdd92b6b12f5bcb1803ca3bbf5ab96e5e6b6b96b9ab77dabe9e880b3190"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "psm",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "static_assertions"
@@ -12395,6 +12474,178 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tsz-binder"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "stacker",
+ "tracing",
+ "tsz-common",
+ "tsz-parser",
+ "tsz-scanner",
+]
+
+[[package]]
+name = "tsz-checker"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "dashmap",
+ "rustc-hash 2.1.3",
+ "serde_json",
+ "smallvec",
+ "stacker",
+ "tracing",
+ "tsz-binder",
+ "tsz-common",
+ "tsz-lowering",
+ "tsz-parser",
+ "tsz-scanner",
+ "tsz-solver",
+ "web-time",
+]
+
+[[package]]
+name = "tsz-common"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "memchr",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+ "web-time",
+]
+
+[[package]]
+name = "tsz-core"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "anyhow",
+ "bincode 2.0.1",
+ "indexmap 2.14.0",
+ "once_cell",
+ "rayon",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tracing",
+ "tsz-binder",
+ "tsz-checker",
+ "tsz-common",
+ "tsz-emitter",
+ "tsz-lowering",
+ "tsz-lsp",
+ "tsz-parser",
+ "tsz-scanner",
+ "tsz-solver",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "tsz-emitter"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "memchr",
+ "rustc-hash 2.1.3",
+ "serde_json",
+ "tracing",
+ "tsz-binder",
+ "tsz-common",
+ "tsz-parser",
+ "tsz-scanner",
+ "tsz-solver",
+]
+
+[[package]]
+name = "tsz-lowering"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "indexmap 2.14.0",
+ "rustc-hash 2.1.3",
+ "tracing",
+ "tsz-binder",
+ "tsz-common",
+ "tsz-parser",
+ "tsz-scanner",
+ "tsz-solver",
+]
+
+[[package]]
+name = "tsz-lsp"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "globset",
+ "json5",
+ "regex",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+ "stacker",
+ "tracing",
+ "tsz-binder",
+ "tsz-checker",
+ "tsz-common",
+ "tsz-parser",
+ "tsz-scanner",
+ "tsz-solver",
+ "walkdir",
+ "web-time",
+]
+
+[[package]]
+name = "tsz-parser"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "rustc-hash 2.1.3",
+ "serde",
+ "tracing",
+ "tsz-common",
+ "tsz-scanner",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "tsz-scanner"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "serde",
+ "tsz-common",
+ "unicode-ident",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "tsz-solver"
+version = "0.1.48"
+source = "git+https://github.com/tsz-org/tsz.git?rev=dff7690987e3183847545feebe9c45ab6b83a006#dff7690987e3183847545feebe9c45ab6b83a006"
+dependencies = [
+ "bitflags 2.13.1",
+ "dashmap",
+ "ena",
+ "fixedbitset 0.5.7",
+ "rustc-hash 2.1.3",
+ "serde",
+ "smallvec",
+ "stacker",
+ "tracing",
+ "tsz-binder",
+ "tsz-common",
+ "tsz-scanner",
+]
 
 [[package]]
 name = "tungstenite"

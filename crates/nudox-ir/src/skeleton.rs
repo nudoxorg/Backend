@@ -63,7 +63,7 @@ use crate::{
     index::{RawRef, Ref, UntypedEntryIndex},
     kinds::{
         GenericParam, Type, WherePred,
-        ty::{Primitive, TupleElement, Variance, Width},
+        ty::{AnonRecordForm, MappedModifier, Primitive, TemplatePart, TupleElement, Variance, Width},
     },
 };
 
@@ -265,6 +265,76 @@ impl<'a> Skeleton<'a> {
                     None => self.out.push(0x00),
                 }
             }
+            // All four arms are identity-relevant.
+            Type::Conditional { check, extends_ty, then_ty, else_ty } => {
+                self.out.push(0x10);
+                self.ty(check);
+                self.ty(extends_ty);
+                self.ty(then_ty);
+                self.ty(else_ty);
+            }
+            // source, value, and modifiers are identity-relevant.
+            // key_var is alpha-equivalent (excluded, like TypeVar names).
+            Type::Mapped { key_var: _, source, value, readonly, optional } => {
+                self.out.push(0x11);
+                self.ty(source);
+                self.ty(value);
+                self.mapped_modifier(readonly);
+                self.mapped_modifier(optional);
+            }
+            // Literal spans ARE identity-relevant.
+            Type::TemplateLiteral(parts) => {
+                self.out.push(0x12);
+                write_u32le(&mut self.out, parts.len() as u32);
+                for part in parts.iter() {
+                    match part {
+                        TemplatePart::Literal(s) => {
+                            self.out.push(0x01);
+                            encode_str(&mut self.out, s);
+                        }
+                        TemplatePart::Interpolated(t) => {
+                            self.out.push(0x02);
+                            self.ty(t);
+                        }
+                    }
+                }
+            }
+            // Form, member names, types, optional, and readonly are all
+            // identity-relevant.
+            Type::AnonymousRecord { form, members } => {
+                self.out.push(0x13);
+                self.anon_record_form(form);
+                write_u32le(&mut self.out, members.len() as u32);
+                for m in members.iter() {
+                    encode_str(&mut self.out, &m.name);
+                    self.ty(&m.ty);
+                    self.out.push(m.optional as u8);
+                    self.out.push(m.readonly as u8);
+                }
+            }
+            Type::ImplTrait(bounds) => {
+                self.out.push(0x14);
+                self.seq(bounds);
+            }
+            Type::DynTrait(bounds) => {
+                self.out.push(0x15);
+                self.seq(bounds);
+            }
+            // Inferred encodes as its opcode only — every `_` is structurally
+            // identical to every other.
+            Type::Inferred => self.out.push(0x16),
+            Type::QualifiedPath { self_ty, trait_ref, assoc } => {
+                self.out.push(0x17);
+                self.ty(self_ty);
+                match trait_ref {
+                    Some(t) => {
+                        self.out.push(0x01);
+                        self.ty(t);
+                    }
+                    None => self.out.push(0x00),
+                }
+                encode_str(&mut self.out, assoc);
+            }
         }
     }
 
@@ -392,6 +462,21 @@ impl<'a> Skeleton<'a> {
             Variance::Invariant => 0x01,
             Variance::Covariant => 0x02,
             Variance::Contravariant => 0x03,
+        });
+    }
+
+    fn mapped_modifier(&mut self, m: &MappedModifier) {
+        self.out.push(match m {
+            MappedModifier::Add => 0x01,
+            MappedModifier::Remove => 0x02,
+            MappedModifier::Absent => 0x03,
+        });
+    }
+
+    fn anon_record_form(&mut self, f: &AnonRecordForm) {
+        self.out.push(match f {
+            AnonRecordForm::Struct => 0x01,
+            AnonRecordForm::Interface => 0x02,
         });
     }
 
