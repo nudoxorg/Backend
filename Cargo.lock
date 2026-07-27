@@ -1336,6 +1336,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "clang"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34c6913be3a1c94f52fb975cdec7ef5a7b69de10a55de66dcbc30d7046b85fa1"
+dependencies = [
+ "clang-sys",
+ "libc",
+]
+
+[[package]]
+name = "clang-sys"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
+dependencies = [
+ "glob",
+ "libc",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6333,6 +6353,16 @@ dependencies = [
  "nudox-ir",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nudox-producer-clang"
+version = "0.1.0"
+dependencies = [
+ "clang",
+ "nudox-ir",
+ "nudox-producer",
+ "tempfile",
 ]
 
 [[package]]

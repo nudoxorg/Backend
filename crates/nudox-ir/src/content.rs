@@ -537,6 +537,7 @@ fn encode_record_form(out: &mut Vec<u8>, form: &RecordForm) {
         RecordForm::Struct => out.push(0x01),
         RecordForm::Tuple => out.push(0x02),
         RecordForm::Unit => out.push(0x03),
+        RecordForm::Union => out.push(0x04),
     }
 }
 

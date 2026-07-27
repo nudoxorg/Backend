@@ -24,6 +24,12 @@ pub enum RecordForm {
 
     /// A unit struct (`struct Foo`).
     Unit,
+
+    /// An untagged union whose fields share storage (C/C++ `union`, Rust
+    /// `union`). Distinct from [`RecordForm::Struct`]: the fields are
+    /// alternatives rather than co-resident members, which changes both layout
+    /// and semantics — collapsing it to `Struct` misreports the type.
+    Union,
 }
 
 #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
