@@ -43,6 +43,14 @@ pub struct StatusBar {
     /// Warning/error count; `None` hides the chip entirely rather than showing
     /// a zero, because "0 problems" is noise once you have read it twice.
     diagnostics: Option<u32>,
+    /// Pre-rendered diagnostics chip.
+    ///
+    /// Formatted once when the count changes, not per frame (§1.1.4). GPUI
+    /// caches shaped text by `(text, font, size)`, so a `SharedString` that
+    /// keeps its identity is nearly free to re-render — while a `format!` in
+    /// the render body allocates and re-shapes on every one of the 120 frames
+    /// a second this bar is visible.
+    diagnostics_label: SharedString,
     /// The loopback endpoint of the hosted MCP server (GUI-LOCAL-PLAN §L6),
     /// or `None` before it has bound its port.
     mcp_endpoint: Option<SharedString>,
@@ -63,6 +71,7 @@ impl StatusBar {
             packages_label: SharedString::from("no packages"),
             sync_label: SharedString::from("idle"),
             diagnostics: None,
+            diagnostics_label: SharedString::default(),
             mcp_endpoint: None,
             frame_p95_ms: None,
             frame_label: SharedString::from("—"),
@@ -84,6 +93,11 @@ impl StatusBar {
     /// Report the diagnostics count; `None` hides the chip.
     pub fn set_diagnostics(&mut self, count: Option<u32>, cx: &mut Context<Self>) {
         self.diagnostics = count;
+        // Format here, once, rather than in every frame of `render`.
+        self.diagnostics_label = match count {
+            Some(n) => SharedString::from(format!("⚠ {n}")),
+            None => SharedString::default(),
+        };
         cx.notify();
     }
 
@@ -164,7 +178,7 @@ impl Render for StatusBar {
             )
             .child(segment(div().child(self.sync_label.clone()).into_any_element()));
 
-        if let Some(count) = self.diagnostics {
+        if self.diagnostics.is_some() {
             bar = bar.child(
                 div()
                     .id("status.diagnostics")
@@ -173,7 +187,7 @@ impl Render for StatusBar {
                     .text_color(colours.warn)
                     .cursor_pointer()
                     .hover(|s| s.bg(colours.bg_hover))
-                    .child(SharedString::from(format!("⚠ {count}"))),
+                    .child(self.diagnostics_label.clone()),
             );
         }
 

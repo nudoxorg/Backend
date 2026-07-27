@@ -30,6 +30,13 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee3
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "c112e7b482b6b9c53a8c43deaf5847b94a29ad82", package = "gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "c112e7b482b6b9c53a8c43deaf5847b94a29ad82", package = "gpui-component-assets" }
 
+# ── The engine (GUI-LOCAL-PLAN §L0) ──────────────────────────────────────────
+# The ONLY backend crate lindsey may name. The dependency law is one-directional
+# and linted: lindsey → engine → {graph, store} → ir. Reaching past the engine
+# to nudox-ir/-store/-graph directly is a review-blocking finding, because it
+# would let a view depend on the shape of the IR rather than on the protocol.
+nudox-engine = { path = "../../crates/nudox-engine", features = ["fixtures"] }
+
 # ── Bridge & support ─────────────────────────────────────────────────────────
 anyhow = "1"
 flume = "0.11"
