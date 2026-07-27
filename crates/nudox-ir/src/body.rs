@@ -48,6 +48,34 @@ pub enum Language {
     Other,
 }
 
+impl Language {
+    /// The canonical lowercase tag for this language.
+    ///
+    /// One rendering, shared by log lines, error messages, MCP output and UI
+    /// labels — see the note on `PackageLineageId`'s `Display`. These tags are
+    /// wire-visible, so treat them as frozen: renaming one is a format change.
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::TypeScript => "typescript",
+            Self::Go => "go",
+            Self::Java => "java",
+            Self::Python => "python",
+            Self::CSharp => "csharp",
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::Nix => "nix",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl core::fmt::Display for Language {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.tag())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BodyEmbed
 // ---------------------------------------------------------------------------

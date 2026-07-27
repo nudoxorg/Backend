@@ -1,0 +1,46 @@
+[package]
+name = "lindsey"
+version = "0.1.0"
+edition = "2024"
+
+# Standalone package with its own lockfile — not a member of the monorepo
+# Cargo workspace (keeps gpui out of the backend dependency graph). The
+# local-first engine crates it consumes are root-workspace members reached
+# by path; cargo resolves them into this lockfile independently.
+[workspace]
+
+[lib]
+name = "lindsey"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lindsey"
+path = "src/main.rs"
+
+[dependencies]
+# ── GPUI, pinned exactly (GUI-PLAN LD-10) ────────────────────────────────────
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+# `runtime_shaders` is load-bearing, not an optimisation knob: without it
+# `gpui_macos/build.rs:23` shells out to the `metal` CLI at build time, which
+# needs the full Xcode Metal Toolchain component. With it (`build.rs:21`) the
+# shaders are stitched into the binary and compiled in-process by Metal at
+# startup, so the build needs no Xcode toolchain at all. gpui-component's own
+# workspace sets this flag for the same reason — it is the supported path.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "c112e7b482b6b9c53a8c43deaf5847b94a29ad82", package = "gpui-component" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "c112e7b482b6b9c53a8c43deaf5847b94a29ad82", package = "gpui-component-assets" }
+
+# ── Bridge & support ─────────────────────────────────────────────────────────
+anyhow = "1"
+flume = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints.rust]
+unused_imports = "warn"
+dead_code = "warn"
+
+[profile.release]
+lto = "thin"

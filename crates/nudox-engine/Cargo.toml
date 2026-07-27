@@ -1,0 +1,37 @@
+[package]
+name = "nudox-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# L3 of GUI-LOCAL-PLAN §L0: the streaming facade. Owns the runtimes (LR-9),
+# the wire protocol (§L2) and the chunker (LR-3/LR-4). This is the ONLY crate
+# `lindsey` talks to, and it is deliberately gpui-free so the whole protocol
+# is testable without a window.
+
+[features]
+default = []
+fixtures = ["nudox-store/fixtures"]
+
+[dependencies]
+nudox-ir = { path = "../nudox-ir" }
+nudox-store = { path = "../nudox-store" }
+nudox-graph = { path = "../nudox-graph" }
+
+flume = { workspace = true }
+futures = { workspace = true }
+pulldown-cmark = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-util = { version = "0.7", default-features = false }
+tracing = { workspace = true }
+triomphe = { workspace = true }
+trustfall = { workspace = true }
+
+[dev-dependencies]
+nudox-store = { path = "../nudox-store", features = ["fixtures"] }
+
+[lints]
+workspace = true

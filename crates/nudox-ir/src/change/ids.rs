@@ -118,6 +118,43 @@ impl core::fmt::Debug for StableRef {
     }
 }
 
+// ── Display ─────────────────────────────────────────────────────────────────
+//
+// These identifiers are not merely internal keys: they are shown to people —
+// in error messages ("package cargo:serde is not loaded"), in MCP tool output,
+// in log lines and as UI labels. Giving them one canonical rendering here means
+// all of those surfaces agree, instead of every call site inventing its own
+// `format!`.
+
+impl core::fmt::Display for EcosystemId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl core::fmt::Display for PackageName {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// `ecosystem:name` — e.g. `cargo:serde`, `npm:react`.
+///
+/// The separator is `:` rather than `/` so the rendering stays unambiguous for
+/// scoped package names (`npm:@scope/pkg`).
+impl core::fmt::Display for PackageLineageId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}:{}", self.ecosystem, self.name)
+    }
+}
+
+/// `ecosystem:name#introhex` — the canonical human rendering of a `StableRef`.
+impl core::fmt::Display for StableRef {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}#{}", self.package, self.intro.to_hex())
+    }
+}
+
 /// Kind-discriminant fragment used inside link-domain-key preimages. The IR
 /// crate's `KindDiscriminant` is a `u16`; this crate accepts the raw `u16` so
 /// it need not depend on external arena types.
