@@ -25,11 +25,12 @@ use std::{fmt, hash::Hash};
 use indexmap::IndexMap;
 
 use crate::{
+    List,
     entry::{Entry, Node, Symbol},
     id::UniqueId,
     index::{RawRef, Ref, UntypedEntryIndex},
     kind::{EntryKind, Kind},
-    kinds::Module,
+    kinds::{Module, Type},
     package::{IrPackage, PackageId, PackageInfo},
 };
 
@@ -255,6 +256,49 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
     /// The flat equivalent of [`EntryBuilder::index_of_import`].
     pub fn refer_import<T: EntryKind>(&mut self, id: UniqueId<Id>) -> Ref<T> {
         Ref::Local(self.info.create_import(id).typed())
+    }
+
+    // ── Type construction ─────────────────────────────────────────────────────
+    //
+    // These exist because building a nominal type by hand is a three-step dance
+    // — `refer` for a `Ref<T>`, `into_raw` to erase the marker, then wrap in
+    // `Type::Nominal` — and the step needs the sink, which per-language type
+    // lowering helpers typically do not have in scope. Every producer that
+    // lacked these fell back to `Type::Any` for *all* named types, which erases
+    // the entire type graph. Making the correct thing a one-liner is the fix.
+
+    /// A nominal reference to a declared type: `Foo`.
+    ///
+    /// Order-independent — `id` need not be declared yet, so a field may name a
+    /// type defined later in the same package with no pre-pass.
+    ///
+    /// Prefer this over hand-building `Type::Nominal`; if you find yourself
+    /// reaching for [`Type::Any`] because a helper cannot see the sink, thread
+    /// the sink instead.
+    pub fn nominal<T: EntryKind>(&mut self, id: Id) -> Type {
+        Type::Nominal(self.refer::<T>(id).into_raw())
+    }
+
+    /// A nominal reference to a type in a **different** package.
+    pub fn nominal_import<T: EntryKind>(&mut self, id: UniqueId<Id>) -> Type {
+        Type::Nominal(self.refer_import::<T>(id).into_raw())
+    }
+
+    /// A generic application of a declared type: `Foo<A, B>`.
+    ///
+    /// With no arguments this is just [`nominal`](Self::nominal) — callers
+    /// lowering a possibly-generic type can use this unconditionally.
+    pub fn apply<T: EntryKind>(&mut self, id: Id, args: impl IntoIterator<Item = Type>) -> Type {
+        let args: List<Type> = args.into_iter().collect();
+        let base = self.nominal::<T>(id);
+        if args.is_empty() {
+            base
+        } else {
+            Type::Apply {
+                base: Box::new(base),
+                args,
+            }
+        }
     }
 
     // ── finish ────────────────────────────────────────────────────────────────
@@ -533,6 +577,76 @@ mod tests {
                 "IntroId {intro:?} from nested build missing in flat build"
             );
         }
+    }
+
+    // ── 2b. Type construction on the sink ────────────────────────────────────
+
+    /// The defect these helpers exist to prevent: four independent producers
+    /// lowered every named type to `Type::Any`, because building a nominal type
+    /// needed the sink and their type helpers did not have it. A field naming a
+    /// type declared *later* must survive as a real reference through `seal`.
+    #[test]
+    fn nominal_survives_forward_reference_and_seal() {
+        let mut low: Lowering<usize> = Lowering::new(PackageId::path("pkg"), sym("root"));
+
+        // `Holder.value: Payload` — Payload is not declared until below.
+        let value_ty = low.nominal::<Record>(2);
+        let field = low.declare(
+            3,
+            Some(1),
+            sym("value"),
+            Field::builder().key(FieldKey::Named).ty(value_ty).build(),
+        );
+        low.declare(
+            1,
+            None,
+            sym("Holder"),
+            Record::builder().fields([field]).build(),
+        );
+        low.declare(2, None, sym("Payload"), Record::builder().build());
+
+        let table = low
+            .finish()
+            .expect("forward-referenced nominal must resolve")
+            .seal(&lineage());
+
+        let (_, value) = table
+            .iter()
+            .find(|(_, e)| e.sym().name == "value")
+            .expect("field must be sealed");
+        let payload = table
+            .iter()
+            .find(|(_, e)| e.sym().name == "Payload")
+            .expect("Payload must be sealed")
+            .0;
+
+        match value.kind().as_owned_kind() {
+            Some(crate::kind::Kind::Field(f)) => match f.ty.as_ref().expect("field must have a type") {
+                // Post-seal the ref is content-addressed and points at Payload.
+                Type::Nominal(Ref::Intro(id)) => assert_eq!(
+                    *id, payload,
+                    "the nominal must resolve to Payload's IntroId"
+                ),
+                other => panic!("expected a lowered Type::Nominal, got {other:?}"),
+            },
+            other => panic!("expected a Field, got {other:?}"),
+        }
+    }
+
+    /// `apply` with no arguments is exactly `nominal`, so a producer lowering a
+    /// possibly-generic type can call it unconditionally.
+    #[test]
+    fn apply_without_args_is_plain_nominal() {
+        let mut low: Lowering<usize> = Lowering::new(PackageId::path("pkg"), sym("root"));
+        let bare = low.apply::<Record>(1, []);
+        let nominal = low.nominal::<Record>(1);
+        assert_eq!(bare, nominal);
+
+        let generic = low.apply::<Record>(1, [Type::I32]);
+        assert!(
+            matches!(generic, Type::Apply { .. }),
+            "with args it must be an Apply, got {generic:?}"
+        );
     }
 
     // ── 3. Forward reference in kind body ────────────────────────────────────
