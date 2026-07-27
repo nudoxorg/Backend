@@ -21,11 +21,10 @@
 //! * **Chan** — encoded as `Type::Apply { base: TypeVar("chan" | "chan<-" |
 //!   "<-chan"), args: [elem] }`.  Direction is preserved in the base sentinel.
 //!   IR GAP: a dedicated `Type::Chan` variant would be cleaner.
-//! * **Func type** → `Type::Apply { base: TypeVar("func"), args: [param...,
-//!   result...] }` as a partial encoding.  Parameter/result arity is preserved;
-//!   the boundary between inputs and outputs is not encoded at the type level
-//!   (a `Type::FuncPointer` variant would be the right fix).
-//!   IR GAP: no structural func-pointer type.
+//! * **Func type** → `Type::FunctionPointer { params, ret, abi: None }`.
+//!   Single return → `ret = Some(T)`.  Multi-return → `ret = Some(Tuple(...))`.
+//!   No return → `ret = None`.  Previously used `Apply { TypeVar("func") }`
+//!   which abused `TypeVar` and lost the input/output boundary.
 //! * **Struct literal** (anonymous) → `Type::Any`.
 //!   IR GAP: no inline struct literal type.
 //! * **Interface literal** → `Type::Any` for non-empty interfaces.
@@ -40,7 +39,7 @@ use nudox_ir::{
     kinds::{
         function::Receiver,
         generics::GenericParam,
-        ty::{Primitive, Type, Width},
+        ty::{Primitive, TupleElement, Type, Width},
     },
 };
 
@@ -184,12 +183,27 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
             }
         }
 
-        // IR GAP: no structural func-pointer type.  Encode as
-        // Apply { base: TypeVar("func"), args: [params..., results...] }.
-        // Arity is preserved; input/output boundary is not encoded at the type level.
-        // A dedicated Type::FuncPointer variant would be the correct fix in nudox-ir.
+        // Go `func(P...) R` anonymous function type.
+        //
+        // Previously encoded as `Apply { base: TypeVar("func"), args: [P..., R...] }`,
+        // which abused `TypeVar` (a "reference to a generic parameter by name") as a
+        // sentinel and lost the boundary between inputs and outputs at the type level.
+        //
+        // Now lowered to `Type::FunctionPointer { params, ret, abi }`:
+        //   - `params`: all parameter types in order.
+        //   - `ret`:    single return → `Some(Box<Type>)`.
+        //               multi-return → `Some(Box<Type::Tuple([Positional(R1), ...])))`.
+        //               no return    → `None`.
+        //   - `abi`:    None — Go has no calling-convention annotation.
+        //
+        // Map/chan sentinels stay as Apply { base: TypeVar("map"|"chan"|...) } because:
+        //   1. They are built-in collection types, not callable types — `FunctionPointer`
+        //      would be semantically wrong.
+        //   2. They do preserve their type arguments (K, V / elem + dir) structurally.
+        //   3. The IR has no dedicated `Type::Map` or `Type::Chan` variant; until one
+        //      is added the sentinel encoding is the least-lossy available option.
         TypeKind::Func => {
-            let mut args: Vec<Type> = t
+            let param_types: Box<[Type]> = t
                 .params
                 .iter()
                 .map(|p| {
@@ -199,17 +213,40 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                         .unwrap_or(Type::Any)
                 })
                 .collect();
-            for r in t.results.iter() {
-                args.push(
-                    r.r#type
+
+            let ret: Option<Box<Type>> = match t.results.len() {
+                0 => None,
+                1 => {
+                    let r = &t.results[0];
+                    let ty = r
+                        .r#type
                         .as_ref()
                         .map(|ty| lower_type_depth_low(ty, low, depth + 1))
-                        .unwrap_or(Type::Any),
-                );
-            }
-            Type::Apply {
-                base: Box::new(Type::TypeVar("func".to_string())),
-                args: args.into_boxed_slice(),
+                        .unwrap_or(Type::Any);
+                    Some(Box::new(ty))
+                }
+                _ => {
+                    // Multi-value return: collect results into a positional Tuple.
+                    let elems: Box<[TupleElement]> = t
+                        .results
+                        .iter()
+                        .map(|r| {
+                            let ty = r
+                                .r#type
+                                .as_ref()
+                                .map(|ty| lower_type_depth_low(ty, low, depth + 1))
+                                .unwrap_or(Type::Any);
+                            TupleElement::Positional(ty)
+                        })
+                        .collect();
+                    Some(Box::new(Type::Tuple(elems)))
+                }
+            };
+
+            Type::FunctionPointer {
+                params: param_types,
+                ret,
+                abi: None, // Go has no calling-convention annotation.
             }
         }
 
@@ -258,10 +295,10 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
         }
 
         TypeKind::Tuple => {
-            let parts: Box<[Type]> = t
+            let parts: Box<[TupleElement]> = t
                 .types
                 .iter()
-                .map(|inner| lower_type_depth_low(inner, low, depth + 1))
+                .map(|inner| TupleElement::Positional(lower_type_depth_low(inner, low, depth + 1)))
                 .collect();
             Type::Tuple(parts)
         }
@@ -383,6 +420,12 @@ pub fn lower_type_param_decl(
         name: tp.name.clone(),
         bounds,
         default: None,
+        // Go has no declaration-site variance (`in`/`out`): the language only
+        // supports use-site variance via type parameter constraints and
+        // interface embedding. `None` is the correct value — it means
+        // "unspecified / invariant by default", which is what every Go type
+        // parameter is.
+        variance: None,
     }
 }
 
@@ -717,6 +760,143 @@ mod tests {
                 assert_eq!(args.len(), 1);
             }
             other => panic!("chan must lower to Apply, got {other:?}"),
+        }
+    }
+
+    // ── Func type → Type::FunctionPointer (not TypeVar sentinel) ─────────────
+
+    /// `func(string) int` must lower to `Type::FunctionPointer { params: [Str],
+    /// ret: Some(I32), abi: None }` — not the old `Apply { TypeVar("func") }`.
+    #[test]
+    fn func_type_lowered_to_function_pointer() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Func,
+            params: Box::new([oracle::Param {
+                name: "s".to_string(),
+                r#type: Some(oracle::Type {
+                    kind: TypeKind::Basic,
+                    name: "string".to_string(),
+                    ..Default::default()
+                }),
+            }]),
+            results: Box::new([oracle::Param {
+                name: "".to_string(),
+                r#type: Some(oracle::Type {
+                    kind: TypeKind::Basic,
+                    name: "int32".to_string(),
+                    ..Default::default()
+                }),
+            }]),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::FunctionPointer { params, ret, abi } => {
+                assert_eq!(params.len(), 1, "func(string) must have 1 param");
+                assert!(
+                    matches!(params[0], Type::Primitive(Primitive::Str)),
+                    "param must be Str, got {:?}",
+                    params[0]
+                );
+                let ret_ty = ret.expect("func(string) int must have a return type");
+                assert!(
+                    matches!(*ret_ty, Type::I32),
+                    "return type must be I32, got {ret_ty:?}"
+                );
+                assert!(abi.is_none(), "Go func types have no ABI annotation");
+            }
+            // Must NOT fall through to Apply or any other variant.
+            other => panic!(
+                "func(string) int must lower to Type::FunctionPointer, got {other:?}"
+            ),
+        }
+    }
+
+    /// `func(int, bool) (string, error)` — multi-return must be wrapped in a
+    /// positional Tuple as the `ret` field.
+    #[test]
+    fn func_type_multi_return_wrapped_in_tuple() {
+        use nudox_ir::kinds::ty::TupleElement;
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Func,
+            params: Box::new([
+                oracle::Param {
+                    name: "_0".to_string(),
+                    r#type: Some(oracle::Type {
+                        kind: TypeKind::Basic,
+                        name: "int32".to_string(),
+                        ..Default::default()
+                    }),
+                },
+                oracle::Param {
+                    name: "_1".to_string(),
+                    r#type: Some(oracle::Type {
+                        kind: TypeKind::Basic,
+                        name: "bool".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            ]),
+            results: Box::new([
+                oracle::Param {
+                    name: "".to_string(),
+                    r#type: Some(oracle::Type {
+                        kind: TypeKind::Basic,
+                        name: "string".to_string(),
+                        ..Default::default()
+                    }),
+                },
+                oracle::Param {
+                    name: "".to_string(),
+                    r#type: Some(oracle::Type {
+                        kind: TypeKind::Basic,
+                        name: "error".to_string(), // lowered to Any (universe type)
+                        ..Default::default()
+                    }),
+                },
+            ]),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::FunctionPointer { params, ret, .. } => {
+                assert_eq!(params.len(), 2, "2 input params");
+                let ret_ty = ret.expect("multi-return func must have ret");
+                match *ret_ty {
+                    Type::Tuple(ref elems) => {
+                        assert_eq!(elems.len(), 2, "2 return values wrapped in Tuple");
+                        // All multi-return elements are positional (Go has no named returns
+                        // at the type level — names are local to the function body).
+                        for e in elems.iter() {
+                            assert!(
+                                matches!(e, TupleElement::Positional(_)),
+                                "multi-return elements must be Positional, got {e:?}"
+                            );
+                        }
+                    }
+                    other => panic!("multi-return must wrap in Tuple, got {other:?}"),
+                }
+            }
+            other => panic!("func type must lower to FunctionPointer, got {other:?}"),
+        }
+    }
+
+    /// `func()` with no params and no return must lower to
+    /// `FunctionPointer { params: [], ret: None, abi: None }`.
+    #[test]
+    fn func_type_no_params_no_return() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Func,
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::FunctionPointer { params, ret, abi } => {
+                assert!(params.is_empty(), "func() must have 0 params");
+                assert!(ret.is_none(), "func() must have no return type");
+                assert!(abi.is_none(), "func() must have no ABI");
+            }
+            other => panic!("empty func type must lower to FunctionPointer, got {other:?}"),
         }
     }
 }

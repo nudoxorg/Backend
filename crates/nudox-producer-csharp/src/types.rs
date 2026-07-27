@@ -29,9 +29,10 @@
 use std::collections::HashMap;
 
 use nudox_ir::{
-    build::{GenericParam, Primitive, Type, WherePred, Width},
+    build::{GenericParam, Primitive, TupleElement, Type, WherePred, Width},
+    entry::AttrTok,
     index::{RawRef, Ref},
-    kinds::Record,
+    kinds::{ty::Variance, Record},
     lower::Lowering,
 };
 
@@ -140,31 +141,78 @@ fn lower_type_depth(
             Type::Primitive(Primitive::MutPointer(Box::new(inner)))
         }
 
-        // Function pointer (`delegate*<...>`): calling convention is dropped
-        // (no slot in the new IR).
+        // Function pointer (`delegate*<int, string>` / `delegate* unmanaged[Cdecl]<...>`).
+        //
+        // C# `delegate*<P1, ..., Pn, Ret>` is a structural callable type, not a
+        // delegate class — it has no implicit boxing and its calling convention is
+        // part of its identity.  Previously lowered to `Type::Any`, which silently
+        // dropped all parameter and return type information.
+        //
+        // Calling-convention mapping:
+        //   - Managed (default):  `call_conv` is empty / "managed"  → `abi = None`.
+        //   - Unmanaged default:  `call_conv = "unmanaged"` + no modifiers → `abi = Some("unmanaged")`.
+        //   - Unmanaged specific: `unmanaged_call_convs = ["Cdecl"]` etc.
+        //     → `abi = Some("Cdecl")` (first modifier; multiple convs are joined with ",").
         TypeSig::FuncPtr {
             params,
             return_type,
-            ..
+            call_conv,
+            unmanaged_call_convs,
         } => {
-            // KNOWN GAP: the new IR has no `FunctionPointer` type variant.
-            // The old IR had `IrType::FunctionPointer`. We cannot faithfully
-            // represent this; return Any and note the gap.
-            // A future `Type::FunctionPointer { params, ret, calling_conv }`
-            // variant would be required to represent `delegate*<int, string>`.
-            let _ = params;
-            let _ = return_type;
-            Type::Any
+            let ir_params: Box<[Type]> = params
+                .iter()
+                .map(|p| lower_type_depth(p, name_to_doc_id, out, depth + 1))
+                .collect();
+
+            let ir_ret: Option<Box<Type>> = return_type.as_deref().and_then(|r| {
+                let t = lower_type_depth(r, name_to_doc_id, out, depth + 1);
+                // `void` return → None (no return type).
+                match &t {
+                    Type::Tuple(elems) if elems.is_empty() => None,
+                    _ => Some(Box::new(t)),
+                }
+            });
+
+            // Derive ABI string from the oracle's calling-convention fields.
+            let abi: Option<String> = if !unmanaged_call_convs.is_empty() {
+                // Specific unmanaged convention(s): "Cdecl", "StdCall", etc.
+                // Multiple modifiers are legal C# syntax; join them.
+                Some(unmanaged_call_convs.join(","))
+            } else if call_conv == "unmanaged" {
+                // Unmanaged with no specific modifier: platform default unmanaged ABI.
+                Some("unmanaged".to_string())
+            } else {
+                // Managed (default ABI) or empty/unknown — no annotation needed.
+                None
+            };
+
+            Type::FunctionPointer {
+                params: ir_params,
+                ret: ir_ret,
+                abi,
+            }
         }
 
-        // Value tuples: labelled or unlabelled — both become `Type::Tuple`.
-        // KNOWN GAP: named elements lose their labels — no `NamedTuple` or
-        // `TupleElement { name, ty }` structure in the new IR. A future
-        // `Type::LabeledTuple(List<(Option<String>, Type)>)` would be needed.
+        // Value tuples: `(int, string)` (positional) or `(int start, int end)` (named).
+        //
+        // C# oracle emits `TupleElement { name: Option<String>, ty: TypeSig }`.
+        // When `name` is `Some(label)` (non-empty), the element is a *named* tuple
+        // element and its label is part of the API surface — e.g. the two overloads
+        // `M((int x, int y))` and `M((int start, int end))` differ in their labels.
+        // Previously all labels were dropped; now `TupleElement::Named` preserves them.
         TypeSig::Tuple { elements, nullable } => {
-            let inner: Box<[Type]> = elements
+            let inner: Box<[TupleElement]> = elements
                 .iter()
-                .map(|e| lower_type_depth(&e.ty, name_to_doc_id, out, depth + 1))
+                .map(|e| {
+                    let ty = lower_type_depth(&e.ty, name_to_doc_id, out, depth + 1);
+                    match &e.name {
+                        Some(label) if !label.is_empty() => TupleElement::Named {
+                            label: label.clone(),
+                            ty,
+                        },
+                        _ => TupleElement::Positional(ty),
+                    }
+                })
                 .collect();
             let base = Type::Tuple(inner);
             apply_nullable(base, nullable)
@@ -317,20 +365,34 @@ fn lower_primitive(name: &str) -> Option<Type> {
 
 /// Apply 3-state nullability.
 ///
-/// | oracle token  | IR form                        |
-/// |---------------|--------------------------------|
-/// | `annotated`   | `Union([T, Never])`  (`T?`)    |
-/// | `notAnnotated`| bare `T`                       |
-/// | oblivious     | bare `T`                       |
+/// | oracle token  | IR form                                                  |
+/// |---------------|----------------------------------------------------------|
+/// | `annotated`   | `Union([T, Never])`  (`T?` — may be null)                |
+/// | `notAnnotated`| `Annotated { inner: T, annotation: "notAnnotated" }`     |
+/// | oblivious     | bare `T` (no NRT context; old assemblies)                |
 ///
-/// KNOWN GAP: we cannot encode `notAnnotated` vs oblivious distinctly in the
-/// current IR (`Type` has no `Annotated` / `Oblivious` wrapper). Both become
-/// bare `T`. A future `Type::Annotated(Box<Type>)` variant would let us
-/// round-trip the distinction.
+/// **Why distinguish `notAnnotated` from oblivious?**  In a nullable-enabled
+/// context `string` (notAnnotated) explicitly asserts non-null — the author
+/// said "this parameter is never null".  Oblivious `string` (old assembly or
+/// disabled NRT) makes no such assertion.  Collapsing both to bare `T` drops
+/// that guarantee and makes it impossible to surface "this type was declared
+/// non-null" in the index, which is the single most-requested nullability fact.
+///
+/// `Type::Annotated` with `annotation.token = "notAnnotated"` encodes this
+/// without inventing a new type variant; downstream consumers can strip the
+/// wrapper to recover `T` or inspect the annotation to determine nullability
+/// status.
 fn apply_nullable(base: Type, nullable: &str) -> Type {
     match Nullability::parse(nullable) {
         Nullability::Annotated => Type::Union(Box::new([base, Type::Never])),
-        Nullability::NotAnnotated | Nullability::Oblivious => base,
+        Nullability::NotAnnotated => Type::Annotated {
+            inner: Box::new(base),
+            annotation: AttrTok {
+                token: "notAnnotated".to_string(),
+                arg: None,
+            },
+        },
+        Nullability::Oblivious => base,
     }
 }
 
@@ -341,18 +403,22 @@ fn apply_nullable(base: Type, nullable: &str) -> Type {
 /// Lower a declaration-site type-parameter list into IR [`GenericParam`]s and
 /// [`WherePred`]s.
 ///
-/// # Variance decision
+/// # Variance
 ///
 /// C# has declaration-site variance (`in`/`out` on interfaces & delegates),
 /// which is real API surface — `IEnumerable<out T>` is covariant and that
-/// affects assignment compatibility.  The new IR's `GenericParam::Type` has
-/// **no variance field** — variance is dropped here.
+/// affects assignment compatibility.  The oracle emits `"in"` / `"out"` /
+/// `"none"` on every type parameter.  These are now wired to
+/// `GenericParam::Type::variance`:
 ///
-/// KNOWN GAP: `GenericParam` needs a `variance: Option<Variance>` field where
-/// `Variance` is the existing `kinds::ty::Variance` enum (`Covariant`,
-/// `Contravariant`, `Invariant`).  The oracle already emits the token
-/// (`"in"` / `"out"` / `"none"`), so wiring it is mechanical once the field
-/// exists.  Until then, variance is only preserved as a doc note on the entry.
+/// | Oracle token | IR value                    |
+/// |--------------|-----------------------------|
+/// | `"out"`      | `Some(Variance::Covariant)` |
+/// | `"in"`       | `Some(Variance::Contravariant)` |
+/// | `"none"` / _ | `None` (unspecified)        |
+///
+/// `None` means "no annotation in source" — the case for most type params on
+/// classes and structs (where variance is neither declared nor meaningful).
 ///
 /// # Special constraints
 ///
@@ -369,17 +435,21 @@ pub fn lower_type_params(
     let mut wheres = Vec::new();
 
     for tp in type_params {
-        // Variance: stamp into a doc note (no structural slot yet).
-        // KNOWN GAP: `GenericParam::Type` needs `variance: Option<Variance>`.
-        // Required field: `variance: Option<kinds::ty::Variance>` with values
-        // `Covariant` for `"out"`, `Contravariant` for `"in"`, `None` for
-        // `"none"`. This is C# declaration-site variance, distinct from
-        // Java/Kotlin use-site variance (the existing `Type::Wildcard` covers
-        // that).
+        // Wire declaration-site variance from the oracle token.
+        // `"out"` = covariant (C# output position, widens safely).
+        // `"in"`  = contravariant (C# input position, narrows safely).
+        // `"none"` or anything else = no annotation (invariant by default).
+        let variance: Option<Variance> = match tp.variance.as_str() {
+            "out" => Some(Variance::Covariant),
+            "in" => Some(Variance::Contravariant),
+            _ => None,
+        };
+
         params.push(GenericParam::Type {
             name: tp.name.clone(),
             bounds: Box::new([]), // explicit-type bounds go into `wheres`
             default: None,
+            variance,
         });
 
         let c = &tp.constraints;

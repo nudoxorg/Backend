@@ -676,8 +676,14 @@ const NOMINAL_TYPE_FIXTURE: &str = r#"{
   ]
 }"#;
 
-/// Property whose type is another class in the same extraction must lower to
-/// `Type::Nominal`, not `Type::Any`.
+/// Property whose type is another class in the same extraction must resolve to
+/// a nominal reference, not `Type::Any`.
+///
+/// The fixture uses `"nullable": "notAnnotated"` on the Source property type,
+/// so the IR type is `Annotated { inner: Nominal(...), annotation: "notAnnotated" }`.
+/// The test asserts two things:
+///   1. The type is NOT `Type::Any` (the regression).
+///   2. The inner type (stripping the nullability annotation) IS `Type::Nominal`.
 #[test]
 fn named_type_lowers_to_nominal_not_any() {
     use nudox_ir::{build::Type, entry::EntryInner, kind::Kind};
@@ -697,10 +703,25 @@ fn named_type_lowers_to_nominal_not_any() {
         other => panic!("Source must be a Field, got {other:?}"),
     };
 
+    // The nullable annotation ("notAnnotated") wraps the underlying Nominal in
+    // Type::Annotated.  Peel the annotation layer to reach the base type.
+    let base_ty = match ty {
+        Type::Annotated { inner, annotation } => {
+            assert_eq!(
+                annotation.token, "notAnnotated",
+                "annotation token must be 'notAnnotated'"
+            );
+            inner.as_ref()
+        }
+        // Oblivious nullability (no annotation) produces a bare type directly.
+        other => other,
+    };
+
     assert!(
-        matches!(ty, Type::Nominal(_)),
-        "Source.ty must be Type::Nominal (got {ty:?}); named types in the same \
-         extraction must resolve to Nominal, not Any"
+        matches!(base_ty, Type::Nominal(_)),
+        "Source.ty (after stripping nullability annotation) must be Type::Nominal, \
+         not Type::Any (got {base_ty:?}); named types in the same extraction must \
+         resolve to Nominal"
     );
 }
 
@@ -1059,4 +1080,378 @@ fn event_accessor_accessibility_is_documented() {
             .contains("internal"),
         "DataArrived documentation must contain 'internal' (the add_accessibility value)"
     );
+}
+
+// ---------------------------------------------------------------------------
+// New tests for features adopted from nudox-ir
+// ---------------------------------------------------------------------------
+
+/// A fixture that exercises declaration-site variance on generic type parameters.
+///
+/// `IEnumerable<out T>` (covariant) and `IComparer<in T>` (contravariant) are
+/// canonical C# examples.  The oracle emits `"out"` / `"in"` / `"none"` as the
+/// `variance` token on each TypeParam.
+const VARIANCE_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "VarLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:VarLib.IReadable`1",
+      "qualifiedName": "VarLib.IReadable`1",
+      "simpleName": "IReadable",
+      "kind": "INTERFACE",
+      "namespace": "VarLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [
+        {
+          "name": "T",
+          "variance": "out",
+          "constraints": {
+            "referenceType": false, "valueType": false, "notNull": false,
+            "unmanaged": false, "constructor": false, "allowsRefLike": false, "types": []
+          }
+        }
+      ],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [],
+                   "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    },
+    {
+      "docId": "T:VarLib.IWritable`1",
+      "qualifiedName": "VarLib.IWritable`1",
+      "simpleName": "IWritable",
+      "kind": "INTERFACE",
+      "namespace": "VarLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [
+        {
+          "name": "T",
+          "variance": "in",
+          "constraints": {
+            "referenceType": false, "valueType": false, "notNull": false,
+            "unmanaged": false, "constructor": false, "allowsRefLike": false, "types": []
+          }
+        }
+      ],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [],
+                   "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    }
+  ]
+}"#;
+
+/// Declaration-site variance (`out T` → Covariant, `in T` → Contravariant) must
+/// be preserved in `GenericParam::Type::variance`.
+#[test]
+fn variance_round_trip() {
+    use nudox_ir::{entry::EntryInner, kind::Kind, kinds::generics::GenericParam, kinds::ty::Variance};
+
+    let extraction =
+        parse_extraction(VARIANCE_FIXTURE.as_bytes()).expect("variance fixture must parse");
+    let pkg = lower(&extraction).expect("variance fixture must lower");
+
+    // IReadable<out T> → Covariant.
+    let readable = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "IReadable")
+        .expect("IReadable must be present");
+
+    let readable_generics = match readable.1.kind() {
+        EntryInner::Owned(Kind::Trait(t)) => &t.generics,
+        other => panic!("IReadable must be a Trait, got {other:?}"),
+    };
+    assert_eq!(readable_generics.len(), 1, "IReadable must have exactly one generic param");
+    match &readable_generics[0] {
+        GenericParam::Type { name, variance, .. } => {
+            assert_eq!(name, "T");
+            assert_eq!(
+                *variance,
+                Some(Variance::Covariant),
+                "IReadable<out T>: T must be Covariant, got {variance:?}"
+            );
+        }
+        other => panic!("expected GenericParam::Type, got {other:?}"),
+    }
+
+    // IWritable<in T> → Contravariant.
+    let writable = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "IWritable")
+        .expect("IWritable must be present");
+
+    let writable_generics = match writable.1.kind() {
+        EntryInner::Owned(Kind::Trait(t)) => &t.generics,
+        other => panic!("IWritable must be a Trait, got {other:?}"),
+    };
+    assert_eq!(writable_generics.len(), 1, "IWritable must have exactly one generic param");
+    match &writable_generics[0] {
+        GenericParam::Type { name, variance, .. } => {
+            assert_eq!(name, "T");
+            assert_eq!(
+                *variance,
+                Some(Variance::Contravariant),
+                "IWritable<in T>: T must be Contravariant, got {variance:?}"
+            );
+        }
+        other => panic!("expected GenericParam::Type, got {other:?}"),
+    }
+}
+
+/// A fixture with a delegate type that has a structured invoke signature.
+const DELEGATE_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "DelLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:DelLib.Transformer",
+      "qualifiedName": "DelLib.Transformer",
+      "simpleName": "Transformer",
+      "kind": "DELEGATE",
+      "namespace": "DelLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": {
+        "params": [
+          {
+            "name": "input",
+            "type": { "kind": "named", "name": "System.String", "args": [], "owner": null, "nullable": "notAnnotated", "typeKind": "Class" },
+            "refKind": "none",
+            "isParams": false,
+            "hasDefault": false,
+            "default": null,
+            "scoped": false,
+            "attributes": []
+          }
+        ],
+        "return": { "kind": "named", "name": "System.Int32", "args": [], "owner": null, "nullable": "none", "typeKind": "Struct" }
+      },
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [],
+                   "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    }
+  ]
+}"#;
+
+/// A delegate must lower to `Alias { target: Some(Type::FunctionPointer { ... }) }`.
+/// Previously delegates produced `Alias { target: None }`, discarding all type info.
+#[test]
+fn delegate_lowers_to_function_pointer_alias() {
+    use nudox_ir::{build::Type, entry::EntryInner, kind::Kind};
+
+    let extraction =
+        parse_extraction(DELEGATE_FIXTURE.as_bytes()).expect("delegate fixture must parse");
+    let pkg = lower(&extraction).expect("delegate fixture must lower");
+
+    let transformer = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Transformer")
+        .expect("Transformer delegate must be present");
+
+    let alias_body = match transformer.1.kind() {
+        EntryInner::Owned(Kind::Alias(a)) => a,
+        other => panic!("Transformer must be an Alias, got {other:?}"),
+    };
+
+    let target = alias_body
+        .target
+        .as_ref()
+        .expect("Transformer alias must have a structural target (was None before)");
+
+    match target {
+        Type::FunctionPointer { params, ret, abi } => {
+            assert_eq!(params.len(), 1, "Transformer has one input parameter (string)");
+            // Return type: System.Int32 → I32 primitive.
+            assert!(ret.is_some(), "Transformer has a return type (int)");
+            assert!(
+                abi.is_none(),
+                "managed delegate must have abi = None, got {abi:?}"
+            );
+        }
+        other => panic!(
+            "Transformer alias target must be Type::FunctionPointer, got {other:?}"
+        ),
+    }
+}
+
+/// A fixture with a labelled value tuple `(int start, int end)`.
+const LABELLED_TUPLE_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "TupLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:TupLib.RangeUtil",
+      "qualifiedName": "TupLib.RangeUtil",
+      "simpleName": "RangeUtil",
+      "kind": "CLASS",
+      "namespace": "TupLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [],
+        "events": [],
+        "constructors": [],
+        "methods": [
+          {
+            "name": "GetRange",
+            "docId": "M:TupLib.RangeUtil.GetRange",
+            "methodKind": "Ordinary",
+            "accessibility": "public",
+            "isStatic": true,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [],
+            "parameters": [],
+            "returnType": {
+              "kind": "tuple",
+              "elements": [
+                { "name": "start", "type": { "kind": "named", "name": "System.Int32", "args": [], "owner": null, "nullable": "none", "typeKind": "Struct" } },
+                { "name": "end",   "type": { "kind": "named", "name": "System.Int32", "args": [], "owner": null, "nullable": "none", "typeKind": "Struct" } }
+              ],
+              "nullable": ""
+            },
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": null,
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ]
+}"#;
+
+/// A method returning `(int start, int end)` must lower to a `Type::Tuple`
+/// whose elements are `TupleElement::Named`, preserving the labels.
+/// Previously all labels were dropped (all elements became `Positional`).
+#[test]
+fn labelled_tuple_preserves_labels() {
+    use nudox_ir::{build::Type, entry::EntryInner, kind::Kind, kinds::ty::TupleElement};
+
+    let extraction =
+        parse_extraction(LABELLED_TUPLE_FIXTURE.as_bytes()).expect("labelled-tuple fixture must parse");
+    let pkg = lower(&extraction).expect("labelled-tuple fixture must lower");
+
+    // The return Param of GetRange is an anonymous entry (name = "") whose
+    // type is the labelled tuple.  Since this is the only method in the
+    // fixture, the only anonymous Param is the return value of GetRange.
+    // Strategy: find the Param entry whose type is a Tuple.
+    let return_param = pkg
+        .iter()
+        .find(|(_, e)| {
+            if let EntryInner::Owned(Kind::Param(p)) = e.kind() {
+                matches!(p.ty.as_ref(), Some(Type::Tuple(_)))
+            } else {
+                false
+            }
+        })
+        .expect("must find a Param whose type is a Tuple (the GetRange return)");
+
+    let ty = match return_param.1.kind() {
+        EntryInner::Owned(Kind::Param(p)) => p.ty.as_ref().expect("return param must have a type"),
+        other => panic!("return param must be a Param, got {other:?}"),
+    };
+
+    match ty {
+        Type::Tuple(elems) => {
+            assert_eq!(elems.len(), 2, "tuple must have 2 elements");
+            match &elems[0] {
+                TupleElement::Named { label, .. } => {
+                    assert_eq!(label, "start", "first element label must be 'start'");
+                }
+                TupleElement::Positional(_) => {
+                    panic!("first element must be Named{{start}}, not Positional")
+                }
+            }
+            match &elems[1] {
+                TupleElement::Named { label, .. } => {
+                    assert_eq!(label, "end", "second element label must be 'end'");
+                }
+                TupleElement::Positional(_) => {
+                    panic!("second element must be Named{{end}}, not Positional")
+                }
+            }
+        }
+        other => panic!("return type of GetRange must be Type::Tuple, got {other:?}"),
+    }
 }

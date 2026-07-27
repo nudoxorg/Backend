@@ -40,7 +40,7 @@
 //! | class/struct/record   | `Record`                              |
 //! | interface             | `Trait`                               |
 //! | enum                  | `Enum` + `Variant` per member         |
-//! | delegate              | `Alias` (target = fn-ptr or Any)      |
+//! | delegate              | `Alias` (target = `Type::FunctionPointer`) |
 //! | field (non-const)     | `Field` (child of Record)             |
 //! | field `const`         | `Const` (child of Record/Enum)        |
 //! | property/indexer      | `Field` (child of Record/Trait)       |
@@ -643,13 +643,10 @@ fn lower_delegate(
         extra.push("Hidden (`EditorBrowsable(Never)`).".to_string());
     }
 
-    // Document the delegate's invoke signature in the doc string.
-    // KNOWN GAP: `FunctionPointer` type variant does not exist in the new
-    // ty.rs. An `Alias` with a structural target (a `Type::FunctionPointer {
-    // params, ret, calling_conv }` variant) would faithfully represent a
-    // delegate — until then we record the signature as a doc note and produce
-    // an `Alias` with `target = None`.
-    if let Some(sig) = &decl.delegate_sig {
+    // Document the delegate's invoke signature in the doc string (kept for
+    // rendering, complementary to the structural target below).
+    // Also build a `Type::FunctionPointer` target for the `Alias` entry.
+    let delegate_target: Option<Type> = if let Some(sig) = &decl.delegate_sig {
         let params_text: Vec<String> = sig
             .params
             .iter()
@@ -665,13 +662,38 @@ fn lower_delegate(
             params_text.join(", "),
             ret_text
         ));
-    }
+
+        // Structural FunctionPointer target: delegates are managed callable
+        // types, so `abi = None` (no unmanaged calling convention).
+        let ir_params: Box<[Type]> = sig
+            .params
+            .iter()
+            .map(|p| types::lower_type(&p.ty, name_to_doc_id, out))
+            .collect();
+
+        let ir_ret = sig.return_type.as_ref().and_then(|r| {
+            let t = types::lower_type(r, name_to_doc_id, out);
+            // `void` (empty Tuple) return → None (no return type).
+            match &t {
+                Type::Tuple(elems) if elems.is_empty() => None,
+                _ => Some(Box::new(t)),
+            }
+        });
+
+        Some(Type::FunctionPointer {
+            params: ir_params,
+            ret: ir_ret,
+            abi: None, // managed delegate; no unmanaged calling convention.
+        })
+    } else {
+        None
+    };
 
     let sym = type_symbol(decl, parsed.as_ref(), &extra);
     let (generics, wheres) = types::lower_type_params(&decl.type_params, name_to_doc_id, out);
 
     let alias_kind = Alias::builder()
-        .maybe_target(None) // no structural target — see KNOWN GAP above
+        .maybe_target(delegate_target)
         .generics(generics)
         .wheres(wheres)
         .build();
@@ -1006,12 +1028,12 @@ fn lower_method(
     // untyped at the call site.  Instead, each `<exception>` tag is surfaced
     // as a `DocLink` on the method's symbol and as documentation text.
     //
-    // KNOWN IR GAP: the IR has no `throws` slot on `Function`.  A future
-    // `Function::throws: List<Type>` field (parallel to Java's `throws`
-    // clause) would be the right home for this.  For now, exceptions are
-    // preserved as `doc_links` (the cref) plus documentation prose (the
-    // description text) on the method's own symbol — information is not lost,
-    // just not structured.
+    // UNREPRESENTABLE (IR GAP): `Function` in nudox-ir has no `throws: List<Type>`
+    // field.  The mission called for populating it, but adding that field is a
+    // nudox-ir change (prohibited by scope).  Exceptions remain as:
+    //   - `doc_links` with `label = "throws"` (the cref, for link resolution).
+    //   - Prose in `documentation` (the description text, for display).
+    // No information is lost; it just is not structured as typed IR nodes.
     let mut exception_doc_links: Vec<DocLink> = Vec::new();
     let mut exception_notes: Vec<String> = Vec::new();
     if let Some(p) = &parsed {
