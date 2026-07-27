@@ -113,9 +113,7 @@ where
     }
 }
 
-// Blanket: OwnedOracle converts to itself (the default tier).
-impl From<OwnedOracle> for OwnedOracle {
-    fn from(o: OwnedOracle) -> Self {
-        o
-    }
-}
+// Note: `From<OwnedOracle> for OwnedOracle` is NOT implemented here because
+// `impl<T> From<T> for T` already exists in core (the reflexive blanket impl).
+// The `where O: From<OwnedOracle>` bound on `Producer for TypescriptProducer<O>`
+// is satisfied for `O = OwnedOracle` by the core blanket impl.

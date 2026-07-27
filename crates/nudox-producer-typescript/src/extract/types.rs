@@ -89,7 +89,7 @@ fn lower_ts_type_impl<'a>(
             // type arguments. If caller supplied a type-params set, use it;
             // otherwise apply the single-identifier heuristic.
             let is_simple_id = !name.contains('.');
-            let is_type_var = tr.type_parameters.is_none() && is_simple_id && {
+            let is_type_var = tr.type_arguments.is_none() && is_simple_id && {
                 match type_params {
                     Some(set) => set.contains(&name),
                     // Heuristic: bare single identifier without type args is
@@ -101,7 +101,7 @@ fn lower_ts_type_impl<'a>(
 
             if is_type_var {
                 TypeOwned::TypeVar(name)
-            } else if let Some(args) = &tr.type_parameters {
+            } else if let Some(args) = &tr.type_arguments {
                 let lowered_args: Vec<TypeOwned> =
                     args.params.iter().map(|p| lower_ts_type_impl(p, source, type_params)).collect();
                 TypeOwned::Apply {
@@ -141,10 +141,7 @@ fn lower_ts_type_impl<'a>(
         // ── Function types ─────────────────────────────────────────────────
         TSType::TSFunctionType(f) => {
             let params = lower_formal_params(&f.params, source, type_params);
-            let return_type = f
-                .return_type
-                .as_ref()
-                .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
+            let return_type = Some(lower_ts_type_impl(&f.return_type.type_annotation, source, type_params));
             let generics = f
                 .type_parameters
                 .as_ref()
@@ -229,17 +226,13 @@ fn lower_ts_type_impl<'a>(
         TSType::TSTypeLiteral(_) => TypeOwned::Unsupported("type literal".to_string()),
 
         // ── Named tuple member (internal, shouldn't appear at top level) ───
-        TSType::TSNamedTupleMember(m) => lower_ts_type_impl(&m.element_type, source, type_params),
-
-        // ── Rest / optional (internal variants) ───────────────────────────
-        TSType::TSRestType(r) => {
-            let inner = lower_ts_type_impl(&r.type_annotation, source, type_params);
-            TypeOwned::Array(Box::new(inner))
-        }
-        TSType::TSOptionalType(o) => lower_ts_type_impl(&o.type_annotation, source, type_params),
+        TSType::TSNamedTupleMember(m) => lower_ts_tuple_element(&m.element_type, source, type_params),
 
         // ── Parenthesized ─────────────────────────────────────────────────
         TSType::TSParenthesizedType(p) => lower_ts_type_impl(&p.type_annotation, source, type_params),
+
+        // ── Constructor type ───────────────────────────────────────────────
+        TSType::TSConstructorType(_) => TypeOwned::Unsupported("constructor type".to_string()),
 
         // ── JS types (constructed types) ───────────────────────────────────
         TSType::JSDocNullableType(n) => lower_ts_type_impl(&n.type_annotation, source, type_params),
@@ -283,9 +276,14 @@ fn lower_ts_literal(lit: &TSLiteral<'_>) -> TypeOwned {
             TypeOwned::Literal(LiteralOwned::String(s.value.to_string()))
         }
         TSLiteral::BigIntLiteral(b) => {
-            TypeOwned::Literal(LiteralOwned::BigInt(b.raw.to_string()))
+            // `raw` is `Option<Str<'_>>` in 0.139.0; fall back to `value` (base-10).
+            let repr = b
+                .raw
+                .as_ref()
+                .map(|s| s.as_str().to_string())
+                .unwrap_or_else(|| b.value.as_str().to_string());
+            TypeOwned::Literal(LiteralOwned::BigInt(repr))
         }
-        TSLiteral::NullLiteral(_) => TypeOwned::Literal(LiteralOwned::Null),
         TSLiteral::TemplateLiteral(_) => {
             TypeOwned::Unsupported("template literal type".to_string())
         }
@@ -294,7 +292,6 @@ fn lower_ts_literal(lit: &TSLiteral<'_>) -> TypeOwned {
             let span_text = format!("{:?}", u);
             TypeOwned::Literal(LiteralOwned::Number(span_text))
         }
-        TSLiteral::Identifier(id) => TypeOwned::Nominal(id.name.to_string()),
     }
 }
 
@@ -325,7 +322,7 @@ fn lower_ts_tuple_element<'a>(
             TypeOwned::Array(Box::new(lower_ts_type_impl(&r.type_annotation, source, type_params)))
         }
         TSTupleElement::TSNamedTupleMember(m) => {
-            lower_ts_type_impl(&m.element_type, source, type_params)
+            lower_ts_tuple_element(&m.element_type, source, type_params)
         }
         other => {
             // UNCERTAINTY: `TSTupleElement::as_ts_type()` exists in 0.139.0.
@@ -356,7 +353,6 @@ fn lower_formal_params<'a>(
             continue;
         }
         let ty = param
-            .pattern
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
@@ -374,7 +370,7 @@ fn lower_formal_params<'a>(
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
-        let name = binding_pattern_name(&rest.argument.argument);
+        let name = binding_pattern_name(&rest.rest.argument);
         out.push(ParamFact {
             name: name.unwrap_or_else(|| "...rest".to_string()),
             ty,

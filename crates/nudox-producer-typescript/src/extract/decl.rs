@@ -20,13 +20,13 @@ use std::path::Path;
 
 use oxc_ast::ast::{
     BindingPattern, Class, ClassElement, Declaration, Expression, ExportDefaultDeclarationKind,
-    Function, MethodDefinitionKind, PropertyKey, Statement,
+    Function, MethodDefinitionKind, MethodDefinitionType, PropertyKey, Statement,
     TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
     TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName,
-    TSSignature, TSTypeAliasDeclaration, VariableDeclaration, VariableDeclarationKind,
+    TSSignature, VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_semantic::Semantic;
-use oxc_span::{GetSpan, SourceType};
+use oxc_span::GetSpan;
 use oxc_syntax::module_record::{
     ExportExportName, ExportImportName, ExportLocalName, ImportImportName, ModuleRecord,
 };
@@ -171,7 +171,7 @@ fn extract_statement<'a>(
             }
         }
 
-        Statement::VariableDeclaration(v) => {
+        Statement::VariableDeclaration(_v) => {
             let decl = stmt.as_declaration().expect("VariableDeclaration is a Declaration");
             extract_declaration(decl, source, semantic, path, false, false, name_counts)
         }
@@ -429,8 +429,6 @@ fn extract_default_export<'a>(
 // ── Kind-specific lowering ─────────────────────────────────────────────────────
 
 fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
-    use oxc_ast::ast::FormalParameters;
-
     let has_body = f.body.is_some();
 
     // Detect `this` pseudo-parameter → shared receiver.
@@ -485,7 +483,6 @@ fn lower_formal_parameters<'a>(
         let name = binding_pattern_name(&param.pattern)
             .unwrap_or_else(|| "_".to_string());
         let ty = param
-            .pattern
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
@@ -503,7 +500,7 @@ fn lower_formal_parameters<'a>(
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
-        let name = binding_pattern_name(&rest.argument.argument)
+        let name = binding_pattern_name(&rest.rest.argument)
             .unwrap_or_else(|| "...rest".to_string());
         out.push(ParamFact { name, ty, is_optional: false, is_rest: true, is_readonly: false });
     }
@@ -530,7 +527,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
                 other => other.span().source_text(source).to_string(),
             };
             let args: Vec<super::TypeOwned> = cls
-                .super_type_parameters
+                .super_type_arguments
                 .as_ref()
                 .map(|tp| tp.params.iter().map(|t| lower_ts_type(t, source)).collect())
                 .unwrap_or_default();
@@ -552,8 +549,9 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
         .implements
         .iter()
         .map(|i| {
+            use oxc_ast::ast::TSTypeName;
             let name = match &i.expression {
-                Expression::Identifier(id) => id.name.to_string(),
+                TSTypeName::IdentifierReference(id) => id.name.to_string(),
                 other => other.span().source_text(source).to_string(),
             };
             let args: Vec<super::TypeOwned> = i
@@ -591,7 +589,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
             let accessibility = ts_accessibility(&m.accessibility);
             let is_private_field = matches!(m.key, PropertyKey::PrivateIdentifier(_));
             let is_static = m.r#static;
-            let is_abstract = m.r#abstract;
+            let is_abstract = m.r#type == MethodDefinitionType::TSAbstractMethodDefinition;
             let modifiers = MemberModifiers {
                 accessibility: if is_private_field {
                     Accessibility::PrivateField
@@ -653,7 +651,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
 fn lower_interface<'a>(
     iface: &TSInterfaceDeclaration<'a>,
     source: &'a str,
-    semantic: &Semantic<'a>,
+    _semantic: &Semantic<'a>,
 ) -> InterfaceBody {
     let generics = iface
         .type_parameters
@@ -670,7 +668,7 @@ fn lower_interface<'a>(
                 Expression::Identifier(id) => id.name.to_string(),
                 other => format!("{:?}", other.span().source_text(source)),
             };
-            if let Some(tp) = &h.type_parameters {
+            if let Some(tp) = &h.type_arguments {
                 let args: Vec<_> = tp.params.iter().map(|p| lower_ts_type(p, source)).collect();
                 super::TypeOwned::Apply {
                     base: Box::new(super::TypeOwned::Nominal(name)),
@@ -692,19 +690,17 @@ fn lower_interface<'a>(
                 let name = property_key_name(&m.key, source);
                 let modifiers = MemberModifiers {
                     accessibility: Accessibility::Public,
-                    is_static: m.r#static,
+                    is_static: false,
                     is_readonly: false,
                     is_optional: m.optional,
                     is_abstract: false,
                 };
-                let params = lower_formal_parameters(&m.value.params, source, false);
+                let params = lower_formal_parameters(&m.params, source, false);
                 let return_type = m
-                    .value
                     .return_type
                     .as_ref()
                     .map(|ann| lower_ts_type(&ann.type_annotation, source));
                 let generics = m
-                    .value
                     .type_parameters
                     .as_ref()
                     .map(|tp| lower_type_params(tp, source))
@@ -734,7 +730,7 @@ fn lower_interface<'a>(
                     .map(|ann| lower_ts_type(&ann.type_annotation, source));
                 let modifiers = MemberModifiers {
                     accessibility: Accessibility::Public,
-                    is_static: p.r#static,
+                    is_static: false,
                     is_readonly: p.readonly,
                     is_optional: p.optional,
                     is_abstract: false,
@@ -779,11 +775,12 @@ fn lower_interface<'a>(
 fn lower_enum<'a>(e: &TSEnumDeclaration<'a>) -> EnumBody {
     let is_const = e.r#const;
     let variants: Vec<VariantFact> = e
+        .body
         .members
         .iter()
         .map(|m| {
             let name = match &m.id {
-                TSEnumMemberName::StaticIdentifier(id) => id.name.to_string(),
+                TSEnumMemberName::Identifier(id) => id.name.to_string(),
                 TSEnumMemberName::String(s) => s.value.to_string(),
                 other => format!("{:?}", other),
             };
@@ -805,7 +802,7 @@ fn lower_enum<'a>(e: &TSEnumDeclaration<'a>) -> EnumBody {
 fn lower_variable<'a>(
     v: &VariableDeclaration<'a>,
     source: &'a str,
-    semantic: &Semantic<'a>,
+    semantic: &'a Semantic<'a>,
     path: &Path,
     is_exported: bool,
     name_counts: &mut std::collections::HashMap<String, u32>,
@@ -824,8 +821,7 @@ fn lower_variable<'a>(
             continue;
         }
         let discriminant = bump_count(&name, name_counts);
-        let ty = d.id
-            .type_annotation
+        let ty = d.type_annotation
             .as_ref()
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
         let value = d.init.as_ref().map(|e| format!("{:?}", e.span().source_text(source)));
@@ -857,9 +853,9 @@ fn lower_variable<'a>(
 }
 
 fn lower_namespace<'a>(
-    m: &TSModuleDeclaration<'a>,
+    m: &'a TSModuleDeclaration<'a>,
     source: &'a str,
-    semantic: &Semantic<'a>,
+    semantic: &'a Semantic<'a>,
     path: &Path,
     is_exported: bool,
     is_default: bool,

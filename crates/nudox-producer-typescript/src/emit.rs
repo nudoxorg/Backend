@@ -48,9 +48,9 @@ use nudox_ir::lower::Lowering;
 use crate::{
     extract::{
         Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, EnumBody, FunctionBody,
-        GenericParamOwned, InterfaceBody, LiteralOwned, MemberFact, MemberKind, MemberModifiers,
-        MethodFact, ModuleFacts, NamespaceBody, ParamFact, PropertyFact, ReceiverKind,
-        StaticBody, TypeAliasBody, TypeOwned, VariantFact,
+        GenericParamOwned, InterfaceBody, LiteralOwned, MemberKind, MemberModifiers,
+        ModuleFacts, NamespaceBody, ReceiverKind,
+        StaticBody, TypeAliasBody, TypeOwned,
     },
     id::TsId,
 };
@@ -281,35 +281,30 @@ fn emit_class(
 
     // Emit method members.
     for (idx, member) in body.members.iter().enumerate() {
-        match &member.kind {
-            MemberKind::Method(sigs) | MemberKind::Constructor(_) => {
-                let sigs_ref: Vec<&FunctionBody> = match &member.kind {
-                    MemberKind::Method(v) => v.iter().collect(),
-                    MemberKind::Constructor(s) => vec![s],
-                    _ => unreachable!(),
-                };
-                for (overload_idx, sig) in sigs_ref.iter().enumerate() {
-                    let method_id = TsId::new(
-                        id.module.clone(),
-                        &format!("{}::{}", id.name, member.name),
-                        (idx * 1000 + overload_idx) as u32,
-                    );
-                    let method_sym = Symbol {
-                        name: member.name.clone(),
-                        visibility: accessibility_to_visibility(member.modifiers.accessibility),
-                        documentation: member.doc.doc.clone().unwrap_or_default(),
-                        source: id.module.clone(),
-                        span: 0..0,
-                        aliases: Box::new([]),
-                        deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
-                        doc_links: Box::new([]),
-                        attrs: Box::new([]),
-                        cfg: None,
-                    };
-                    emit_function(method_id, Some(id.clone()), method_sym, sig, out);
-                }
-            }
-            _ => {}
+        let sigs_ref: Vec<&FunctionBody> = match &member.kind {
+            MemberKind::Method(v) => v.iter().collect(),
+            MemberKind::Constructor(s) => vec![s],
+            MemberKind::Property { .. } => continue,
+        };
+        for (overload_idx, sig) in sigs_ref.iter().enumerate() {
+            let method_id = TsId::new(
+                id.module.clone(),
+                &format!("{}::{}", id.name, member.name),
+                (idx * 1000 + overload_idx) as u32,
+            );
+            let method_sym = Symbol {
+                name: member.name.clone(),
+                visibility: accessibility_to_visibility(member.modifiers.accessibility),
+                documentation: member.doc.doc.clone().unwrap_or_default(),
+                source: id.module.clone(),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            };
+            emit_function(method_id, Some(id.clone()), method_sym, sig, out);
         }
     }
 }
@@ -624,7 +619,7 @@ fn emit_inline_reexport(
     module_request: &str,
     import_name: &str,
     out: &mut Lowering<TsId>,
-    module_index: &HashMap<&Path, &str>,
+    _module_index: &HashMap<&Path, &str>,
 ) {
     let target_path = resolve_module_path(&id.module, module_request);
     if let Some(tp) = target_path {
@@ -697,16 +692,9 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
         }
         TypeOwned::TypeVar(name) => {
             // TypeVar represents a generic type parameter use (e.g. `T` in `Array<T>`).
-            //
-            // IR gap: `nudox_ir::kinds::ty::Type` does not yet have a `TypeVar(String)`
-            // variant (as of 2026-07-25). When it lands, replace this arm with:
-            //   Type::TypeVar(name.clone())
-            //
-            // For now we emit it as a `Builtin` so the name is at least preserved in
-            // a round-trip. This will not produce correct `Nominal`/`RawRef` resolution,
-            // but it is semantically safe: `TypeVar` uses only appear inside generic
-            // bodies and the produced IR is still structurally valid.
-            Type::Primitive(Primitive::Builtin(name.clone()))
+            // `Type::TypeVar(String)` exists in nudox-ir as of the dual-fidelity body
+            // plane commit. Use it directly.
+            Type::TypeVar(name.clone())
         }
         TypeOwned::Apply { base, args } => {
             let base_ty = lower_type(base);

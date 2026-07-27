@@ -48,13 +48,14 @@ fn parse_module(src: &str, name: &str) -> ModuleFacts {
 
     assert!(!parse.panicked, "OXC parser panicked on: {src}");
 
+    // Note: JSDoc is automatic with the `jsdoc` feature; no `with_jsdoc` method in 0.139.0.
+    // Module record lives on the parse result in 0.139.0, not on Semantic.
     let semantic_result = SemanticBuilder::new()
         .with_check_syntax_error(false)
-        .with_jsdoc(true)
         .build(&parse.program);
 
     let semantic = semantic_result.semantic;
-    let module_record = semantic.module_record();
+    let module_record = &parse.module_record;
 
     extract_module(
         src,

@@ -4,7 +4,7 @@
 //! `ModuleFacts` contains no arena references. This is how the OXC lifetime
 //! problem is solved: all data is owned before the arena is dropped.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub mod decl;
 pub mod jsdoc;
@@ -344,7 +344,7 @@ pub enum MemberKind {
     Constructor(FunctionBody),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParamFact {
     pub name: String,
     pub ty: Option<TypeOwned>,

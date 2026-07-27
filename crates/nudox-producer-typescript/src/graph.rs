@@ -87,13 +87,15 @@ pub fn build_and_extract(
             // but the method name in 0.139.0 may differ. Removed to avoid a compile error.
             // If scope-tree child ids are needed for JSDoc lookup, add back via the
             // correct method name.
+            // Note: JSDoc parsing is automatic when the `jsdoc` feature is enabled.
+            // `SemanticBuilder` in 0.139.0 has no `with_jsdoc` method.
             let semantic_result = SemanticBuilder::new()
                 .with_check_syntax_error(false)
-                .with_jsdoc(true)
                 .build(&parse.program);
 
             let semantic = semantic_result.semantic;
-            let module_record = semantic.module_record();
+            // In 0.139.0 the module record lives on the parse result, not on Semantic.
+            let module_record = &parse.module_record;
 
             // ── Enqueue imports ───────────────────────────────────────────────
             let parent_dir = module_path.parent().unwrap_or(root);
