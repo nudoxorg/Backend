@@ -9,3 +9,6 @@ nudox-ir = { path = "../nudox-ir" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = "1.43.2"

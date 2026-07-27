@@ -267,6 +267,29 @@ fn sym_for(name: &str, doc: &str, exported: bool, pos: Option<&oracle::Pos>) -> 
     }
 }
 
+/// Build the four search-entry-point aliases for a method.
+///
+/// Go methods are identified by receiver type and method name.  A search
+/// index must be able to find `Server.Close` by several query forms:
+///
+/// 1. `"TypeName.MethodName"` — short dotted form (the canonical Go notation).
+/// 2. `"TypeName MethodName"` — space-separated, so a tokenizing full-text
+///    index can match documents that mention the type and method separately.
+/// 3. `"import_path.TypeName.MethodName"` — fully qualified dotted form, for
+///    users who qualify their queries with the package path.
+/// 4. `"import_path TypeName.MethodName"` — package path plus the dotted
+///    method form, for package-scoped search (a common IDE query pattern).
+///
+/// Interface methods (no receiver) do NOT get aliases because they are
+/// requirements, not implementations; their identity is the interface itself.
+fn method_aliases(import_path: &str, type_name: &str, method_name: &str) -> Box<[String]> {
+    let dotted = format!("{type_name}.{method_name}");
+    let spaced = format!("{type_name} {method_name}");
+    let full_dotted = format!("{import_path}.{type_name}.{method_name}");
+    let pkg_dotted = format!("{import_path} {type_name}.{method_name}");
+    Box::new([dotted, spaced, full_dotted, pkg_dotted])
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -894,7 +917,10 @@ fn lower_one_method(
         method.doc.clone()
     };
 
-    let msym = sym_for(&method.name, &doc, method.exported, method.pos.as_ref());
+    let mut msym = sym_for(&method.name, &doc, method.exported, method.pos.as_ref());
+    // Populate the four search-entry-point aliases so the method can be
+    // found by short name, dotted form, and fully-qualified variants.
+    msym.aliases = method_aliases(&pkg.import_path, &type_decl.name, &method.name);
     let receiver = types::lower_receiver(method.pointer_recv);
 
     let (input_refs, output_refs) = lower_sig_params_into_lowering(

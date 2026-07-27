@@ -906,6 +906,80 @@ fn embedded_field_marked_in_attrs() {
 }
 
 // ---------------------------------------------------------------------------
+// Alias generation: methods carry four search-entry-point aliases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn method_aliases_populated() {
+    // FIXTURE_JSON has Rect.Area (value receiver).
+    // The four expected aliases (see lower::method_aliases):
+    //   1. "Rect.Area"                             — short dotted
+    //   2. "Rect Area"                             — short space-separated
+    //   3. "example.com/m/shapes.Rect.Area"        — full dotted
+    //   4. "example.com/m/shapes Rect.Area"        — package + dotted
+    let pkg = lower_fixture();
+
+    // Find the concrete Rect.Area method (the one with a receiver), not
+    // the Shape.Area interface requirement (which has no receiver and no aliases).
+    let area_method = pkg
+        .iter()
+        .find(|(_, e)| {
+            e.sym().name == "Area"
+                && e.downcast::<Function>()
+                    .map(|f| f.body().receiver.is_some())
+                    .unwrap_or(false)
+        })
+        .expect("Rect.Area method with receiver must be declared");
+
+    let aliases = &area_method.1.sym().aliases;
+    assert_eq!(
+        aliases.len(),
+        4,
+        "Rect.Area must carry exactly 4 aliases, got {}: {aliases:?}",
+        aliases.len()
+    );
+
+    let alias_set: std::collections::BTreeSet<&str> =
+        aliases.iter().map(|s| s.as_str()).collect();
+
+    for expected in &[
+        "Rect.Area",
+        "Rect Area",
+        "example.com/m/shapes.Rect.Area",
+        "example.com/m/shapes Rect.Area",
+    ] {
+        assert!(
+            alias_set.contains(*expected),
+            "Rect.Area aliases must contain {expected:?}, got {alias_set:?}"
+        );
+    }
+}
+
+#[test]
+fn interface_method_has_no_aliases() {
+    // The Shape.Area interface requirement must NOT carry receiver-method aliases.
+    // Interface methods are requirements, not implementations; they live under
+    // their trait and are found by navigating to the trait, not by dotted lookup.
+    let pkg = lower_fixture();
+
+    let shape_area = pkg
+        .iter()
+        .find(|(_, e)| {
+            e.sym().name == "Area"
+                && e.downcast::<Function>()
+                    .map(|f| f.body().receiver.is_none())
+                    .unwrap_or(false)
+        })
+        .expect("Shape.Area interface method (no receiver) must be declared");
+
+    assert!(
+        shape_area.1.sym().aliases.is_empty(),
+        "interface method requirements must not carry receiver aliases, got {:?}",
+        shape_area.1.sym().aliases
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Item 7a: IsComparable → AttrTok on interface
 // ---------------------------------------------------------------------------
 
