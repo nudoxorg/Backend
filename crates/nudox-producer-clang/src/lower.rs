@@ -1,6 +1,39 @@
 //! Lower a [`ClangOracle`] into the nudox-ir [`Lowering`] sink.
 //!
 //! One pass; no intermediate tree; order-independent.
+//!
+//! # `Type::FunctionPointer`
+//!
+//! C function pointers (`void (*)(int, bool)`) previously degraded to
+//! `Type::Any`. They now lower to `Type::FunctionPointer { params, ret, abi }`.
+//! The ABI field is `None` (C default); libclang does not surface
+//! `__attribute__((stdcall))` etc. at this level.
+//!
+//! # `Type::Annotated` — not wired for `const`/`volatile`
+//!
+//! `const` and `volatile` qualifiers are structural parts of the C/C++ type
+//! system, NOT source-level annotations. They are represented in the oracle
+//! as distinct type wrappers (`OracleType::ConstPointer`, the `mutable` flag
+//! on `LValueRef`/`Reference`, etc.) and are already lowered faithfully to
+//! `Primitive::ConstPointer` / `Primitive::MutPointer` / `Reference { mutable }`.
+//! Wrapping them again in `Type::Annotated` would duplicate the information
+//! already in those structural variants and mislead consumers that treat
+//! `Annotated` as a source-level attribute rather than a type qualifier.
+//!
+//! `__attribute__` spellings are similarly structural in practice (alignment,
+//! calling convention, visibility) and are not surfaced as type-level data by
+//! libclang at the oracle boundary; wiring them to `Type::Annotated` would
+//! require a new oracle field that does not exist.
+//!
+//! Conclusion: `Type::Annotated` is intentionally NOT wired for C/C++ in this
+//! producer. If a future oracle version exposes `__attribute__` or
+//! `[[nodiscard]]` type annotations, a new `OracleType::Annotated { inner, attr }`
+//! variant and a trivial match arm would be the right extension point.
+//!
+//! # `GenericParam::Type::variance`
+//!
+//! C++ template type parameters have no declaration-site variance keyword.
+//! Variance is `None` for all `GenericParam::Type` entries from this producer.
 
 use std::path::PathBuf;
 
@@ -444,10 +477,22 @@ fn lower_type(ty: &OracleType) -> Type {
         },
         OracleType::Slice(inner) => Type::Slice(Box::new(lower_type(inner))),
         OracleType::FnPtr { ret, params } => {
-            // No FunctionPointer in nudox-ir kinds — model as Any.
-            // This is an IR gap: nudox-ir/kinds/ty.rs has no FnPtr variant.
-            let _ = (ret, params);
-            Type::Any
+            // C function pointers lower to Type::FunctionPointer.
+            // `params` are the positional parameter types in order.
+            // `ret` is the return type; if void, lower to None (no return).
+            // ABI is None (C default / language default — no __attribute__ ABI
+            // annotation is surfaced at this level by libclang).
+            let lowered_params: Vec<Type> = params.iter().map(lower_type).collect();
+            let lowered_ret = if matches!(ret.as_ref(), OracleType::Void) {
+                None
+            } else {
+                Some(Box::new(lower_type(ret)))
+            };
+            Type::FunctionPointer {
+                params: lowered_params.into_boxed_slice(),
+                ret: lowered_ret,
+                abi: None,
+            }
         }
         OracleType::Named { name, args } if args.is_empty() => {
             // Pure nominal reference; no apply args.
@@ -483,6 +528,11 @@ fn lower_generic_param(p: &OracleGenericParam) -> GenericParam {
             name: name.clone(),
             bounds: Box::new([]),
             default: None,
+            // C++ template type parameters have no declaration-site variance
+            // annotation in the language — there is no `in`/`out` keyword at
+            // the template parameter list level (unlike C# generic interfaces).
+            // libclang does not report covariance/contravariance. Use None.
+            variance: None,
         },
         OracleGenericParam::Const { name, ty } => GenericParam::Const {
             name: name.clone(),
@@ -494,6 +544,8 @@ fn lower_generic_param(p: &OracleGenericParam) -> GenericParam {
                 name: name.clone(),
                 bounds: Box::new([]),
                 default: None,
+                // Same variance note as OracleGenericParam::Type above.
+                variance: None,
             }
         }
     }

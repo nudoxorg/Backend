@@ -15,7 +15,8 @@ use crate::{
     oracle::OracleType,
 };
 use nudox_ir::{
-    kinds::Record,
+    kind::Kind,
+    kinds::{Record, ty::Type},
     lower::Lowering,
 };
 use std::path::Path;
@@ -452,4 +453,160 @@ union Value {
         nudox_ir::kinds::RecordForm::Union,
         "a C union must lower to RecordForm::Union, not collapse to Struct"
     );
+}
+
+// ── C function pointer → Type::FunctionPointer ────────────────────────────────
+
+/// A typedef for a function pointer `typedef int (*BinaryOp)(int, int)`.
+///
+/// libclang represents this as `MutPointer(FnPtr { ret, params })` — the `*`
+/// in `(*BinaryOp)` is a real pointer. The oracle faithfully preserves that:
+/// `OracleType::MutPointer(Box::new(OracleType::FnPtr { .. }))`.
+///
+/// The lowering chain is therefore:
+///   `MutPointer(FnPtr { .. })` →
+///   `Primitive::MutPointer(FunctionPointer { params: [i32, i32], ret: Some(i32), abi: None })`
+///
+/// This is the correct structural representation: the typedef names a pointer to
+/// a function, not a bare function type. The `FunctionPointer` inside the pointer
+/// carries the parameter and return types without degrading to `Type::Any`.
+#[test]
+fn c_function_pointer_lowers_to_function_pointer() {
+    let clang = match try_clang() {
+        Some(c) => c,
+        None => {
+            eprintln!("SKIP c_function_pointer_lowers_to_function_pointer: libclang unavailable");
+            return;
+        }
+    };
+    let index = Index::new(&clang, false, false);
+
+    // A typedef that aliases a function pointer type.
+    let src = r#"
+typedef int (*BinaryOp)(int, int);
+"#;
+
+    let oracle = parse_c(&index, src);
+
+    // Find the alias for BinaryOp and check its target type.
+    let alias = oracle
+        .aliases
+        .iter()
+        .find(|a| a.name == "BinaryOp")
+        .expect("BinaryOp typedef must be in the oracle");
+
+    // libclang wraps function pointer typedefs as MutPointer(FnPtr { .. })
+    // because the `(*Name)` syntax declares a pointer to the function type.
+    assert!(
+        matches!(&alias.target, OracleType::MutPointer(inner) if matches!(inner.as_ref(), OracleType::FnPtr { .. })),
+        "BinaryOp target must be OracleType::MutPointer(FnPtr {{ .. }}); got {:?}",
+        alias.target
+    );
+
+    // Lower the oracle and check the IR type.
+    let pkg_id = nudox_ir::package::PackageId::path("/tmp");
+    let root_sym = nudox_ir::entry::Symbol {
+        name: "test".to_owned(),
+        visibility: nudox_ir::entry::Visibility::Public,
+        documentation: String::new(),
+        source: std::path::PathBuf::from("/tmp"),
+        span: 0..0,
+        aliases: Box::new([]),
+        deprecation: None,
+        doc_links: Box::new([]),
+        attrs: Box::new([]),
+        cfg: None,
+    };
+    let mut sink = Lowering::new(pkg_id, root_sym);
+    lower_oracle(&oracle, &mut sink);
+    let pkg = sink.finish().expect("finish must succeed");
+
+    let alias_entry = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "BinaryOp")
+        .expect("BinaryOp must be in the IR");
+
+    let kind = alias_entry.1.kind().as_owned_kind().expect("must be Owned");
+    match kind {
+        Kind::Alias(a) => {
+            let target = a.target.as_ref().expect("BinaryOp alias must have a target");
+            // The target is Primitive::MutPointer(FunctionPointer { .. }).
+            match target {
+                Type::Primitive(nudox_ir::kinds::ty::Primitive::MutPointer(inner)) => {
+                    assert!(
+                        matches!(inner.as_ref(), Type::FunctionPointer { .. }),
+                        "inner of MutPointer must be FunctionPointer; got {:?}", inner
+                    );
+                    if let Type::FunctionPointer { params, ret, abi } = inner.as_ref() {
+                        // int (*)(int, int) → 2 int params, int return, no ABI.
+                        assert_eq!(params.len(), 2, "BinaryOp must have 2 params");
+                        assert!(ret.is_some(), "BinaryOp must have a return type");
+                        assert!(abi.is_none(), "BinaryOp has no explicit ABI");
+                    }
+                }
+                other => panic!("BinaryOp alias target must be Primitive::MutPointer(FunctionPointer); got {other:?}"),
+            }
+        }
+        other => panic!("BinaryOp IR entry must be an Alias, got {other:?}"),
+    }
+}
+
+/// A function accepting a void-returning function pointer `typedef void (*Callback)(void)`.
+#[test]
+fn void_function_pointer_has_none_return() {
+    let clang = match try_clang() {
+        Some(c) => c,
+        None => {
+            eprintln!("SKIP void_function_pointer_has_none_return: libclang unavailable");
+            return;
+        }
+    };
+    let index = Index::new(&clang, false, false);
+
+    let src = r#"
+typedef void (*Callback)(void);
+"#;
+
+    let oracle = parse_c(&index, src);
+
+    let alias = oracle.aliases.iter().find(|a| a.name == "Callback").expect("Callback");
+
+    let pkg_id = nudox_ir::package::PackageId::path("/tmp");
+    let root_sym = nudox_ir::entry::Symbol {
+        name: "test".to_owned(),
+        visibility: nudox_ir::entry::Visibility::Public,
+        documentation: String::new(),
+        source: std::path::PathBuf::from("/tmp"),
+        span: 0..0,
+        aliases: Box::new([]),
+        deprecation: None,
+        doc_links: Box::new([]),
+        attrs: Box::new([]),
+        cfg: None,
+    };
+    let mut sink = Lowering::new(pkg_id, root_sym);
+    lower_oracle(&oracle, &mut sink);
+    let pkg = sink.finish().expect("finish must succeed");
+
+    let entry = pkg.iter().find(|(_, e)| e.sym().name == "Callback").expect("Callback in IR");
+    let kind = entry.1.kind().as_owned_kind().expect("must be Owned");
+    match kind {
+        Kind::Alias(a) => {
+            let target = a.target.as_ref().expect("Callback alias must have a target");
+            // MutPointer(FunctionPointer { ret: None, .. }) — see BinaryOp test for rationale.
+            match target {
+                Type::Primitive(nudox_ir::kinds::ty::Primitive::MutPointer(inner)) => {
+                    match inner.as_ref() {
+                        Type::FunctionPointer { ret, .. } => {
+                            assert!(ret.is_none(), "void-returning fn ptr must have ret = None");
+                        }
+                        other => panic!("inner of Callback MutPointer must be FunctionPointer; got {other:?}"),
+                    }
+                }
+                other => panic!("Callback target must be Primitive::MutPointer(FunctionPointer); got {other:?}"),
+            }
+        }
+        other => panic!("Callback must be Alias; got {other:?}"),
+    }
+    let _ = alias; // checked via oracle above
 }

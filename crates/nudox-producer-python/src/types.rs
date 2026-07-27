@@ -10,7 +10,7 @@
 //! | `T` (type var / PEP 695)   | `Type::TypeVar(name)` — NEVER `Any`          |
 //! | `Optional[T]`              | `Type::Union([lower(T), Never])` *see note   |
 //! | `Union[A, B]` / `A \| B`  | `Type::Union([…])`                           |
-//! | `Tuple[A, B]`              | `Type::Tuple([…])`                           |
+//! | `Tuple[A, B]`              | `Type::Tuple([TupleElement::Positional(…)]…)`|
 //! | `list[T]` / slice-like     | `Type::Slice(lower(T))`                      |
 //! | `None`                     | `Type::Primitive(Primitive::Builtin("None"))`|
 //! | `Self` / `self`            | `Type::SelfType`                             |
@@ -18,6 +18,39 @@
 //! | `Foo` (same-pkg nominal)   | `Type::Nominal(Ref::Intro(..))`              |
 //! | `int`, `float`, `bool`…    | `Type::Primitive(…)`                         |
 //! | `Foo` (nominal, external)  | `Type::Any` (no UniqueId/StableRef yet)      |
+//! | `Annotated[T, meta…]`      | `Type::Annotated { inner: lower(T), …}`      |
+//!
+//! # Note on `Tuple[A, B]`
+//!
+//! `Type::Tuple` now holds `List<TupleElement>`. Python tuples have no per-element
+//! labels (no C# / TypeScript named-tuple equivalents), so every element is
+//! wrapped as `TupleElement::Positional(lower(element))`.
+//!
+//! # Note on `Annotated[T, meta]` (PEP 593)
+//!
+//! `Annotated[T, meta]` previously lowered to `Type::Any`, losing both the
+//! underlying type and the metadata. We now emit `Type::Annotated`, wrapping
+//! the lowered inner type. Multiple metadata items are stacked as nested
+//! `Annotated` layers: outermost = last metadata item (so the first unwrap
+//! gives the innermost annotation, ultimately reaching `inner = lower(T)`).
+//!
+//! # Note on `ParamSpec` / `TypeVarTuple`
+//!
+//! Both are currently represented in the oracle as `TypeData::TypeVar(name)`.
+//! They lower to `Type::TypeVar(name)` just like ordinary `TypeVar`. The IR
+//! has no distinct `ParamSpec` or `TypeVarTuple` variant. A future IR
+//! extension could add these, but the information loss is acceptable for now:
+//! `ParamSpec` is callable-signature-level metadata not reachable via the
+//! kind-level type algebra, and `TypeVarTuple` (PEP 646) is a variadic
+//! specialisation that the current Trustfall schema has no policy for.
+//!
+//! # Note on declaration-site variance (`TypeVar(covariant=True)`)
+//!
+//! Pyrefly does NOT surface declaration-site variance (`covariant`/`contravariant`
+//! flags on `TypeVar`) in the oracle data as of this implementation. When it
+//! does, `GenericParamData` should gain a `variance: Option<Variance>` field
+//! and `lower_generics` should map `True` → `Some(Variance::Covariant)` /
+//! `False` → `Some(Variance::Contravariant)`. Until then `variance: None`.
 //!
 //! # Note on `Optional[T]` / `None`
 //!
@@ -47,7 +80,8 @@
 
 use std::collections::HashSet;
 
-use nudox_ir::kinds::ty::{Primitive, Type, Width};
+use nudox_ir::entry::AttrTok;
+use nudox_ir::kinds::ty::{Primitive, TupleElement, Type, Width};
 use nudox_ir::kinds::{GenericParam, Record};
 use nudox_ir::lower::Lowering;
 use std::num::NonZeroU16;
@@ -163,11 +197,34 @@ pub fn lower_type(ty: &TypeData, out: &mut Lowering<PythonId>, known_ids: &HashS
         }
 
         TypeData::Tuple(elements) => {
+            // Python tuples have no per-element labels; wrap every element as
+            // TupleElement::Positional so the IR shape is correct.
             let mut lowered = Vec::with_capacity(elements.len());
             for e in elements {
-                lowered.push(lower_type(e, out, known_ids));
+                lowered.push(TupleElement::Positional(lower_type(e, out, known_ids)));
             }
             Type::Tuple(lowered.into_boxed_slice())
+        }
+
+        TypeData::Annotated { inner, metadata } => {
+            // PEP 593: `Annotated[T, meta1, meta2, …]`.
+            // Lower the inner type first, then stack each metadata item as a
+            // nested `Type::Annotated` layer. The first metadata item becomes
+            // the outermost wrapper (so unwrapping once gives the next layer).
+            // `AttrTok::arg` carries the metadata string as-is; `token` is
+            // fixed to `"Annotated"` to make the annotation source identifiable
+            // without text-searching the arg.
+            let mut ty = lower_type(inner, out, known_ids);
+            for meta in metadata {
+                ty = Type::Annotated {
+                    inner: Box::new(ty),
+                    annotation: AttrTok {
+                        token: "Annotated".to_owned(),
+                        arg: Some(meta.clone()),
+                    },
+                };
+            }
+            ty
         }
 
         TypeData::Slice(inner) => Type::Slice(Box::new(lower_type(inner, out, known_ids))),
@@ -260,6 +317,12 @@ pub fn lower_generics(
             name: p.name.clone(),
             bounds: bounds.into_boxed_slice(),
             default,
+            // Pyrefly does not surface declaration-site variance (covariant/
+            // contravariant flags on TypeVar) in the oracle. When it does,
+            // GenericParamData should gain a `variance` field and this should
+            // map True → Some(Variance::Covariant), False → Contravariant.
+            // For now: None (unspecified / no annotation in source).
+            variance: None,
         });
     }
     result.into_boxed_slice()
@@ -408,10 +471,11 @@ mod tests {
         let lowered = lower_generics(&params, &mut sink, &empty_ids());
         assert_eq!(lowered.len(), 1);
         match &lowered[0] {
-            GenericParam::Type { name, bounds, default } => {
+            GenericParam::Type { name, bounds, default, variance } => {
                 assert_eq!(name, "T");
                 assert_eq!(bounds.len(), 1);
                 assert!(default.is_none());
+                assert!(variance.is_none(), "Python TypeVar has no declaration-site variance");
             }
             other => panic!("expected GenericParam::Type, got {other:?}"),
         }
@@ -605,7 +669,7 @@ mod tests {
         let lowered = lower_generics(&params, &mut sink, &known);
         assert_eq!(lowered.len(), 1);
         match &lowered[0] {
-            GenericParam::Type { name, bounds, .. } => {
+            GenericParam::Type { name, bounds, variance, .. } => {
                 assert_eq!(name, "T");
                 assert_eq!(bounds.len(), 1);
                 assert!(
@@ -613,6 +677,7 @@ mod tests {
                     "bound on same-package class must be Nominal, got {:?}",
                     bounds[0]
                 );
+                assert!(variance.is_none(), "Python TypeVar has no declaration-site variance");
             }
             other => panic!("expected GenericParam::Type, got {other:?}"),
         }
@@ -637,5 +702,101 @@ mod tests {
             Record::builder().build(),
         );
         sink.finish().expect("must finish successfully");
+    }
+
+    // ── New: Annotated[T, meta] (PEP 593) ─────────────────────────────────────
+
+    /// `Annotated[int, "validator"]` lowers to
+    /// `Type::Annotated { inner: Primitive(Integer), annotation: AttrTok { token: "Annotated", arg: Some("validator") } }`.
+    #[test]
+    fn annotated_single_metadata_round_trip() {
+        use crate::oracle::TypeData;
+
+        let ty = TypeData::Annotated {
+            inner: Box::new(TypeData::Nominal("builtins.int".to_string())),
+            metadata: vec!["validator".to_string()],
+        };
+        let mut sink = make_sink();
+        let lowered = lower_type(&ty, &mut sink, &empty_ids());
+        match lowered {
+            Type::Annotated { ref inner, ref annotation } => {
+                assert_eq!(annotation.token, "Annotated");
+                assert_eq!(annotation.arg.as_deref(), Some("validator"));
+                assert!(
+                    matches!(**inner, Type::Primitive(Primitive::Integer { .. })),
+                    "inner must be int primitive; got {inner:?}"
+                );
+            }
+            other => panic!("expected Type::Annotated, got {other:?}"),
+        }
+    }
+
+    /// Multiple metadata items stack as nested `Annotated` layers.
+    #[test]
+    fn annotated_multiple_metadata_stacks() {
+        use crate::oracle::TypeData;
+
+        let ty = TypeData::Annotated {
+            inner: Box::new(TypeData::Nominal("builtins.str".to_string())),
+            metadata: vec!["meta1".to_string(), "meta2".to_string()],
+        };
+        let mut sink = make_sink();
+        let lowered = lower_type(&ty, &mut sink, &empty_ids());
+        // Outer layer wraps meta2 (last), inner layer wraps meta1 (first).
+        match &lowered {
+            Type::Annotated { inner: outer_inner, annotation } => {
+                assert_eq!(annotation.arg.as_deref(), Some("meta2"));
+                match outer_inner.as_ref() {
+                    Type::Annotated { inner: inner_inner, annotation: inner_ann } => {
+                        assert_eq!(inner_ann.arg.as_deref(), Some("meta1"));
+                        assert!(matches!(**inner_inner, Type::Primitive(Primitive::Str)));
+                    }
+                    other => panic!("expected nested Annotated; got {other:?}"),
+                }
+            }
+            other => panic!("expected Annotated; got {other:?}"),
+        }
+    }
+
+    /// `Annotated` with no metadata items degrades to the inner type directly
+    /// (no Annotated wrapper when there's nothing to annotate with).
+    #[test]
+    fn annotated_no_metadata_returns_inner() {
+        use crate::oracle::TypeData;
+
+        let ty = TypeData::Annotated {
+            inner: Box::new(TypeData::Never),
+            metadata: vec![],
+        };
+        let mut sink = make_sink();
+        let lowered = lower_type(&ty, &mut sink, &empty_ids());
+        assert_eq!(lowered, Type::Never, "empty-metadata Annotated must lower to inner type");
+    }
+
+    // ── New: Tuple wraps elements as TupleElement::Positional ─────────────────
+
+    /// Python tuples lower to `Type::Tuple(List<TupleElement::Positional>)`.
+    #[test]
+    fn tuple_elements_are_positional() {
+        use crate::oracle::TypeData;
+
+        let ty = TypeData::Tuple(vec![
+            TypeData::Nominal("builtins.int".to_string()),
+            TypeData::Nominal("builtins.str".to_string()),
+        ]);
+        let mut sink = make_sink();
+        let lowered = lower_type(&ty, &mut sink, &empty_ids());
+        match lowered {
+            Type::Tuple(ref elements) => {
+                assert_eq!(elements.len(), 2);
+                for e in elements.iter() {
+                    assert!(
+                        matches!(e, TupleElement::Positional(_)),
+                        "Python tuple elements must be Positional, not Named; got {e:?}"
+                    );
+                }
+            }
+            other => panic!("expected Type::Tuple, got {other:?}"),
+        }
     }
 }

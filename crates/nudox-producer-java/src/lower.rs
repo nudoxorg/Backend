@@ -52,18 +52,17 @@
 //!
 //! ## `throws` (checked exceptions)
 //!
-//! Thrown types are **not** modelled as output parameters — that would
-//! conflate exceptions with return values. Instead each thrown type's qualified
-//! name and the `@throws` javadoc description are folded into the method's
-//! `documentation` string under a "Throws:" section. The method's `Symbol.attrs`
-//! also carries one `AttrTok { token: "throws", arg: Some(qualified_name) }` per
-//! thrown type so that structured consumers can parse them without re-parsing
-//! the documentation prose.
+//! Thrown types are lowered directly into `Function::throws: List<Type>` —
+//! the structured slot that exists for exactly this purpose. The prose "Throws:"
+//! section in `documentation` is retained for rendering, but the `throws`
+//! `AttrTok` that was previously written to `Symbol.attrs` is **dropped**:
+//! `Function::throws` supersedes it for structured consumers. Callers that
+//! previously read `Symbol::attrs` looking for `token == "throws"` should
+//! switch to reading `Function::throws` from the kind payload.
 //!
-//! **Gap:** The IR has no `Function::throws: List<Type>` field. A dedicated
-//! slot would allow typed querying of the throws clause without text parsing.
-//! If added, it should carry `List<Type>` (not names) so the types remain
-//! graph-addressable.  The `Symbol.attrs` encoding above is an interim bridge.
+//! External thrown types (e.g. `java.io.IOException` not in the current
+//! oracle extraction) lower to `Type::Any`; this is the same best-effort
+//! degradation applied to all external type references.
 //!
 //! ## Java-specific constructs not representable in the IR
 //!
@@ -80,11 +79,18 @@
 //! * Sealing: `TraitFlags::sealed` encodes interface sealing; permitted
 //!   subtypes ride documentation sections.
 //!
-//! **Gap — TypeOperator:** The old IR had `Type::TypeOperator` for type-use
-//! annotations. `nudox-ir`'s `Type` enum (kinds/ty.rs) does **not** have this
-//! variant. Type-use annotations are therefore dropped silently rather than
-//! preserved as wrappers. This is an IR gap that a future `Type::Annotated`
-//! variant could fill.
+//! ## Type-use annotations (`Type::Annotated`)
+//!
+//! The `TypeMirror::Declared`, `Primitive`, `Typevar`, and `Array` variants all
+//! carry an `annotations: Vec<Annotation>` field that the oracle populates for
+//! type-use annotations (e.g. `@NonNull String`). We now wire these into
+//! `Type::Annotated { inner, annotation }` wrapping the lowered inner type.
+//! Multiple annotations stack: the outermost `AttrTok` is the first annotation
+//! in declaration order; remaining annotations wrap further inward.
+//! If there are no annotations the inner type is returned directly.
+//! The `annotation.ty` field (the annotation class name) maps to
+//! `AttrTok::token`; the annotation has no simple string arg in the Java
+//! model (values are structured), so `AttrTok::arg` is set to `None`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -375,45 +381,51 @@ fn lower_type_depth(
     }
 
     match t {
-        TypeMirror::Primitive { name, .. } => lower_primitive(name),
+        TypeMirror::Primitive { name, annotations } => {
+            let inner = lower_primitive(name);
+            wrap_annotated(inner, annotations)
+        }
         TypeMirror::Void => Type::Tuple(Box::new([])),
-        TypeMirror::Declared { name, args, .. } => {
+        TypeMirror::Declared { name, args, annotations, .. } => {
             // java.lang.Object is the top type — map to Any.
-            if name.as_ref() == "java.lang.Object" {
-                return Type::Any;
-            }
-            // If the type is not in the current extraction (e.g. java.util.List
-            // from the JDK or a dependency not included in the oracle run), emit
-            // Type::Any rather than refer()-ing to an unknown id — that would
-            // cause Lowering::finish to fail with Undeclared.
-            if !known.contains(name.as_ref()) {
-                return Type::Any;
-            }
-            // Type is known locally: refer() to it and produce a Nominal.
-            let nominal: RawRef = low
-                .refer::<nudox_ir::kinds::record::Record>(JavaId::type_(name.as_ref()))
-                .into_raw();
-            if args.is_empty() {
-                Type::Nominal(nominal)
+            let base = if name.as_ref() == "java.lang.Object" {
+                Type::Any
+            } else if !known.contains(name.as_ref()) {
+                // If the type is not in the current extraction (e.g. java.util.List
+                // from the JDK or a dependency not included in the oracle run), emit
+                // Type::Any rather than refer()-ing to an unknown id — that would
+                // cause Lowering::finish to fail with Undeclared.
+                Type::Any
             } else {
-                let args_lowered: Vec<Type> = args
-                    .iter()
-                    .map(|a| lower_type_depth(low, known, a, depth + 1))
-                    .collect();
-                Type::Apply {
-                    base: Box::new(Type::Nominal(nominal)),
-                    args: args_lowered.into_boxed_slice(),
+                // Type is known locally: refer() to it and produce a Nominal.
+                let nominal: RawRef = low
+                    .refer::<nudox_ir::kinds::record::Record>(JavaId::type_(name.as_ref()))
+                    .into_raw();
+                if args.is_empty() {
+                    Type::Nominal(nominal)
+                } else {
+                    let args_lowered: Vec<Type> = args
+                        .iter()
+                        .map(|a| lower_type_depth(low, known, a, depth + 1))
+                        .collect();
+                    Type::Apply {
+                        base: Box::new(Type::Nominal(nominal)),
+                        args: args_lowered.into_boxed_slice(),
+                    }
                 }
-            }
+            };
+            wrap_annotated(base, annotations)
         }
-        TypeMirror::Array { component, .. } => {
-            Type::Slice(Box::new(lower_type_depth(low, known, component, depth + 1)))
+        TypeMirror::Array { component, annotations } => {
+            let inner = Type::Slice(Box::new(lower_type_depth(low, known, component, depth + 1)));
+            wrap_annotated(inner, annotations)
         }
-        TypeMirror::Typevar { name, .. } => {
+        TypeMirror::Typevar { name, annotations } => {
             // A use of a type parameter (e.g. `T` in `List<T>`).
             // `Type::TypeVar` carries the name verbatim; the owning declaration
             // lives in the `generics` list of the enclosing kind.
-            Type::TypeVar(name.to_string())
+            let inner = Type::TypeVar(name.to_string());
+            wrap_annotated(inner, annotations)
         }
         TypeMirror::Wildcard { extends_bound, super_bound } => {
             // Java wildcards map directly to `Type::Wildcard`.
@@ -466,6 +478,35 @@ fn lower_type_depth(
     }
 }
 
+/// Wrap a lowered `Type` in zero or more `Type::Annotated` layers, one per
+/// type-use annotation in declaration order (outermost = first).
+///
+/// Java annotations on types (e.g. `@NonNull String`, `@Nullable List<T>`) are
+/// represented in the `TypeMirror` schema as `annotations: Vec<Annotation>` on
+/// each type-mirror variant. We wire them into `Type::Annotated` so that
+/// structured consumers can read them without text parsing.
+///
+/// **`AttrTok::arg` is `None`** for all Java type-use annotations: the
+/// annotation's argument structure (`annotation.values`) is a `HashMap<String,
+/// Value>` which has no lossless mapping to a single string. Consumers that
+/// need the argument values must inspect the documentation prose (where the
+/// Oracle renders them) or handle them via a future structured annotation-value
+/// field in the IR.
+fn wrap_annotated(mut ty: Type, annotations: &[crate::schema::Annotation]) -> Type {
+    // We apply annotations outermost-first (index 0 is the first declared
+    // annotation and therefore the outermost wrapper).
+    for ann in annotations {
+        ty = Type::Annotated {
+            inner: Box::new(ty),
+            annotation: AttrTok {
+                token: ann.ty.to_string(),
+                arg: None,
+            },
+        };
+    }
+    ty
+}
+
 fn lower_primitive(name: &str) -> Type {
     match name {
         "boolean" => Type::Primitive(Primitive::Bool),
@@ -505,6 +546,12 @@ fn lower_type_params(
             name: tp.name.to_string(),
             bounds: bounds.clone().into_boxed_slice(),
             default: None,
+            // Java has no declaration-site variance: type parameters are always
+            // invariant by language spec. Use-site variance (wildcards) is handled
+            // separately via Type::Wildcard. Producers must use None here, not
+            // Some(Variance::Invariant), which is reserved for explicitly annotated
+            // invariance.
+            variance: None,
         });
 
         // Also emit WherePred for complex multi-bounds.
@@ -1186,21 +1233,16 @@ fn lower_method(
         }
     }
 
-    // Thrown exceptions are NOT modelled as output parameters — that conflates
-    // exceptions with return values. They are recorded in two places:
-    //   1. The `Symbol.attrs` list: one `AttrTok { token: "throws", arg: qualified_name }`
-    //      per thrown type, for structured consumption without text parsing.
-    //   2. A "Throws:" prose section in `documentation`, carrying the @throws
-    //      javadoc descriptions that the oracle parsed.
-    // The thrown types are also lowered and stored locally for the attrs below,
-    // but they do not create any new entry (no output Param entries).
-    let throws_attrs: Vec<AttrTok> = m
+    // Lower the declared throws clause into `Function::throws: List<Type>`.
+    // The IR now has a dedicated structured slot for this purpose; the old
+    // `Symbol.attrs` encoding (AttrTok { token: "throws", arg: qualified_name })
+    // is superseded and dropped. The prose "Throws:" documentation section is
+    // retained for rendering. External exception types (not in this extraction)
+    // lower to Type::Any — the same best-effort degradation used everywhere.
+    let throws_types: Vec<Type> = m
         .thrown
         .iter()
-        .filter_map(|thrown| {
-            let name = thrown.declared_name()?;
-            Some(AttrTok { token: "throws".to_owned(), arg: Some(name.to_owned()) })
-        })
+        .map(|thrown| lower_type(ctx, thrown))
         .collect();
 
     // --- Modifiers. -------------------------------------------------------
@@ -1298,9 +1340,7 @@ fn lower_method(
     let doc_links: Vec<String> = parsed.as_ref().map(|p| p.links.clone()).unwrap_or_default();
     let depr = make_deprecation(m.deprecated, &m.annotations, parsed.as_ref());
 
-    // Build the symbol; patch in throws attrs after construction because make_sym
-    // has no throws parameter.
-    let mut sym = make_sym(
+    let sym = make_sym(
         m.name.as_ref(),
         visibility(&m.modifiers),
         if doc_sections.is_empty() { None } else { Some(doc_sections.join("\n\n")) },
@@ -1309,11 +1349,10 @@ fn lower_method(
         src,
         line,
     );
-    if !throws_attrs.is_empty() {
-        sym.attrs = throws_attrs.into_boxed_slice();
-    }
 
     // Build the function — instance methods get SharedRef receiver; static get none.
+    // throws_types is populated from the `throws` clause above and wired into
+    // Function::throws (the dedicated structured slot).
     let is_static = has_modifier(&m.modifiers, Modifier::Static);
     let function = if is_static {
         nudox_ir::kinds::function::Function::builder()
@@ -1322,6 +1361,7 @@ fn lower_method(
             .modifiers(fn_mods)
             .generics(fn_generics)
             .wheres(fn_wheres)
+            .throws(throws_types)
             .is_defaulted(is_provided)
             .build()
     } else {
@@ -1332,6 +1372,7 @@ fn lower_method(
             .modifiers(fn_mods)
             .generics(fn_generics)
             .wheres(fn_wheres)
+            .throws(throws_types)
             .is_defaulted(is_provided)
             .build()
     };
@@ -2301,14 +2342,16 @@ mod tests {
         );
     }
 
-    // --- Throws are in documentation/attrs, NOT output params ----------------
+    // --- Throws are in Function::throws, NOT output params or Symbol::attrs ---
 
     /// A method declaring `throws IOException` must NOT produce an output
-    /// parameter named "throws". The thrown type must appear in:
-    ///   (a) the method symbol's `attrs` as `AttrTok { token: "throws", .. }`
-    ///   (b) the method's `documentation` text under a "Throws:" section.
+    /// parameter named "throws". The thrown type must appear in
+    /// `Function::throws` (the dedicated structured slot), and the method
+    /// documentation must carry a "Throws:" prose section for rendering.
+    /// The old `Symbol::attrs` encoding (`AttrTok { token: "throws", .. }`)
+    /// is superseded and must NOT be present.
     #[test]
-    fn throws_in_attrs_and_docs_not_output_params() {
+    fn throws_in_function_throws_not_attrs_or_output_params() {
         let json = r#"{
           "format": 1,
           "javaVersion": "21",
@@ -2390,21 +2433,106 @@ mod tests {
             );
         }
 
-        // The `write` method's symbol must carry a `throws` AttrTok.
         let write_entry = pkg
             .iter()
             .find(|(_, e)| e.sym().name == "write")
             .expect("write method must exist");
+
+        // The `write` method's symbol must NOT carry a `throws` AttrTok.
+        // The structured Function::throws slot supersedes Symbol::attrs.
         let has_throws_attr = write_entry.1.sym().attrs.iter().any(|a| a.token == "throws");
         assert!(
-            has_throws_attr,
-            "write's symbol attrs must carry a `throws` AttrTok for the declared exception"
+            !has_throws_attr,
+            "write's symbol attrs must NOT carry a `throws` AttrTok — use Function::throws instead"
         );
+
+        // Function::throws must carry exactly one entry (java.io.IOException → Type::Any
+        // since it is not in the current extraction).
+        let kind = write_entry.1.kind().as_owned_kind().expect("write must be Owned");
+        match kind {
+            nudox_ir::kind::Kind::Function(f) => {
+                assert_eq!(
+                    f.throws.len(), 1,
+                    "Function::throws must have 1 entry for the declared IOException"
+                );
+                // External type: lowers to Type::Any.
+                assert!(
+                    matches!(f.throws[0], Type::Any),
+                    "IOException (external) must lower to Type::Any in Function::throws"
+                );
+            }
+            other => panic!("write kind must be Function, got {other:?}"),
+        }
 
         // The `write` method's documentation must mention "Throws:".
         assert!(
             write_entry.1.sym().documentation.contains("Throws:"),
             "write's documentation must contain a 'Throws:' section"
+        );
+    }
+
+    // --- Type::Annotated from Java type-use annotations ----------------------
+
+    /// `@NonNull String` in a type-use position lowers to
+    /// `Type::Annotated { inner: Nominal/Any, annotation: AttrTok { token: "com.example.NonNull", .. } }`.
+    /// This test exercises `wrap_annotated` directly via `lower_type`.
+    #[test]
+    fn annotated_type_mirrors_lower_to_type_annotated() {
+        use crate::schema::{Annotation, TypeMirror};
+        use nudox_ir::build::Lowering as NirLowering;
+        use nudox_ir::kinds::ty::Type;
+
+        let pkg_id = PackageId::path("ann:test:1.0");
+        let root_sym = Symbol {
+            name: "ann".to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        let mut low: NirLowering<JavaId> = NirLowering::new(pkg_id, root_sym);
+        let types: Vec<schema::TypeDecl> = Vec::new();
+        let mut ctx = LoweringCtx::new(&mut low, &types);
+
+        // `@com.example.NonNull String` — declared annotation on a Declared type.
+        // java.lang.String is external (not in known_qualified), so inner = Type::Any.
+        let annotated_string = TypeMirror::Declared {
+            name: "java.lang.String".into(),
+            args: vec![],
+            owner: None,
+            annotations: vec![Annotation {
+                ty: "com.example.NonNull".into(),
+                values: Default::default(),
+            }],
+        };
+        let result = lower_type(&mut ctx, &annotated_string);
+        assert!(
+            matches!(result, Type::Annotated { ref annotation, .. } if annotation.token == "com.example.NonNull"),
+            "annotated type must lower to Type::Annotated with correct token; got {result:?}"
+        );
+        if let Type::Annotated { inner, .. } = result {
+            assert!(
+                matches!(*inner, Type::Any),
+                "inner of annotated external type must be Type::Any; got {inner:?}"
+            );
+        }
+
+        // Unannotated type — must lower to plain Type::Any (no Annotated wrapper).
+        let plain_string = TypeMirror::Declared {
+            name: "java.lang.String".into(),
+            args: vec![],
+            owner: None,
+            annotations: vec![],
+        };
+        let plain_result = lower_type(&mut ctx, &plain_string);
+        assert!(
+            matches!(plain_result, Type::Any),
+            "unannotated external type must lower to plain Type::Any; got {plain_result:?}"
         );
     }
 }

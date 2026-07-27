@@ -267,6 +267,23 @@ pub enum TypeData {
     SelfType,
     /// Python `None` → lowered to `Nominal("builtins.NoneType")`.
     NoneType,
+    /// PEP 593 `Annotated[T, meta, …]`.
+    ///
+    /// The first element is the underlying type; the remaining elements are
+    /// metadata annotations (validator instances, doc strings, etc.).
+    /// We record the underlying type as `inner` and each metadata item's
+    /// string representation (from the oracle) as an `AttrTok`.
+    ///
+    /// Because metadata is arbitrary Python objects, the oracle surfaces them
+    /// as unstructured strings. We store only the first annotation token (the
+    /// most common case is a single metadata item). If a future oracle version
+    /// surfaces typed metadata we can extend the payload without a schema break.
+    Annotated {
+        /// The annotated type (first arg to `Annotated[…]`).
+        inner: Box<TypeData>,
+        /// Metadata annotations (second-and-beyond args), as oracle strings.
+        metadata: Vec<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
