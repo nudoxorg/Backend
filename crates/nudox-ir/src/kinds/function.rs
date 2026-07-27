@@ -1,7 +1,7 @@
 use crate::{
     List,
     index::Ref,
-    kinds::{GenericParam, Param, WherePred},
+    kinds::{GenericParam, Param, WherePred, ty::Type},
     visitor::Visitor,
 };
 
@@ -62,6 +62,23 @@ pub struct Function {
     /// `abi`: `FnModifier` is `Copy` and a boolean flag does not need to live
     /// in the modifiers list.
     pub is_defaulted: bool,
+
+    /// The checked exception types this function declares it may throw, in
+    /// declaration order.
+    ///
+    /// Requested independently by Java and C# producers (2 of 7). Both had
+    /// modelled thrown exceptions as *output parameters* so that a consumer
+    /// reading `output_params` would conclude the method *returns* its
+    /// exceptions — a semantic confusion that was backed out before landing.
+    ///
+    /// - Java: `throws IOException, SQLException` in the method signature.
+    /// - C#: exception documentation via `<exception cref="...">` that the
+    ///   Roslyn oracle surfaces as type references.
+    ///
+    /// An empty list means the function declares no checked throws. Producers
+    /// for languages without checked exceptions (Rust, Go, C/C++, TypeScript,
+    /// Python) leave this empty.
+    pub throws: List<Type>,
 }
 
 #[bon::bon]
@@ -76,6 +93,7 @@ impl Function {
         #[builder(default, with = FromIterator::from_iter)] wheres: List<WherePred>,
         abi: Option<String>,
         #[builder(default)] is_defaulted: bool,
+        #[builder(default, with = FromIterator::from_iter)] throws: List<Type>,
     ) -> Self {
         Function {
             receiver,
@@ -86,6 +104,7 @@ impl Function {
             wheres,
             abi,
             is_defaulted,
+            throws,
         }
     }
 }
@@ -163,5 +182,31 @@ mod tests {
         let f = Function::builder().build();
         assert_eq!(f.abi, None);
         assert!(!f.is_defaulted);
+    }
+
+    /// Builder + serde round-trip for `Function.throws`.
+    ///
+    /// Java `throws IOException, SQLException` and C# exception annotations
+    /// are recorded here, not as output_params.
+    #[test]
+    fn function_throws_roundtrip() {
+        use crate::kinds::ty::{Primitive, Type};
+
+        let f = Function::builder()
+            .throws([Type::Primitive(Primitive::Str), Type::Any])
+            .build();
+
+        assert_eq!(f.throws.len(), 2);
+
+        let json = serde_json::to_string(&f).expect("serialize");
+        let rt: Function = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(f, rt);
+    }
+
+    /// `throws` defaults to an empty list.
+    #[test]
+    fn function_throws_default_empty() {
+        let f = Function::builder().build();
+        assert!(f.throws.is_empty());
     }
 }

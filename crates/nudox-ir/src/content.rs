@@ -281,7 +281,7 @@ use crate::{
         FnModifier, Function, GenericParam, Impl, ImplFlags, Module, Param, ParamAttribute,
         Receiver, Record, RecordForm, Reexport, Sealed, Static, Trait, TraitFlags, TriState,
         Variant, VariantForm, WherePred,
-        ty::{Primitive, Type, Variance, Width},
+        ty::{Primitive, TupleElement, Type, Variance, Width},
     },
 };
 
@@ -601,6 +601,8 @@ fn encode_function(out: &mut Vec<u8>, f: &Function) {
     encode_opt_str(out, f.abi.as_deref());
     // is_defaulted
     out.push(f.is_defaulted as u8);
+    // throws: checked exception types (Java / C#)
+    encode_type_seq(out, &f.throws);
 }
 
 fn encode_receiver(out: &mut Vec<u8>, r: &Receiver) {
@@ -772,11 +774,20 @@ fn encode_generic_param(out: &mut Vec<u8>, p: &GenericParam) {
             name,
             bounds,
             default,
+            variance,
         } => {
             out.push(0x02);
             encode_str(out, name);
             encode_type_seq(out, bounds);
             encode_opt_type(out, default.as_ref());
+            // Variance: 0x00 = None; otherwise 0x01 + variance opcode.
+            match variance {
+                None => out.push(0x00),
+                Some(v) => {
+                    out.push(0x01);
+                    encode_variance(out, v);
+                }
+            }
         }
         GenericParam::Const { name, ty } => {
             out.push(0x03);
@@ -823,9 +834,9 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
             out.push(0x02);
             encode_primitive(out, p);
         }
-        Type::Tuple(ts) => {
+        Type::Tuple(elems) => {
             out.push(0x03);
-            encode_type_seq(out, ts);
+            encode_tuple_elements(out, elems);
         }
         Type::Slice(t) => {
             out.push(0x04);
@@ -864,11 +875,7 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
         }
         Type::Wildcard { variance, bound } => {
             out.push(0x0d);
-            out.push(match variance {
-                Variance::Invariant => 0x01,
-                Variance::Covariant => 0x02,
-                Variance::Contravariant => 0x03,
-            });
+            encode_variance(out, variance);
             match bound {
                 Some(t) => {
                     out.push(0x01);
@@ -877,7 +884,45 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
                 None => out.push(0x00),
             }
         }
+        Type::FunctionPointer { params, ret, abi } => {
+            out.push(0x0e);
+            encode_type_seq(out, params);
+            encode_opt_type(out, ret.as_deref());
+            encode_opt_str(out, abi.as_deref());
+        }
+        Type::Annotated { inner, annotation } => {
+            out.push(0x0f);
+            encode_type(out, inner);
+            encode_attr_tok(out, annotation);
+        }
     }
+}
+
+fn encode_tuple_elements(out: &mut Vec<u8>, elems: &[TupleElement]) {
+    write_u32le(out, elems.len() as u32);
+    for elem in elems {
+        // No _ wildcard.
+        match elem {
+            TupleElement::Positional(t) => {
+                out.push(0x01);
+                encode_type(out, t);
+            }
+            TupleElement::Named { label, ty } => {
+                out.push(0x02);
+                encode_str(out, label);
+                encode_type(out, ty);
+            }
+        }
+    }
+}
+
+fn encode_variance(out: &mut Vec<u8>, v: &Variance) {
+    // No _ wildcard.
+    out.push(match v {
+        Variance::Invariant => 0x01,
+        Variance::Covariant => 0x02,
+        Variance::Contravariant => 0x03,
+    });
 }
 
 fn encode_primitive(out: &mut Vec<u8>, p: &Primitive) {
@@ -1258,7 +1303,7 @@ mod tests {
     /// failure message here) or an accident (investigate before merging).
     #[test]
     fn golden_content_hash() {
-        const EXPECTED: &str = "c8ede486df3eae0aaf1c3cdce829d39d612f68a3deae523618a7dc6befb8b488";
+        const EXPECTED: &str = "1d22e68ccc87cb32ca22ec5702ac36fe5c372977723a963dd83eaf8c187a299d";
 
         let sym = Symbol {
             name: "do_work".to_owned(),
@@ -1294,6 +1339,7 @@ mod tests {
                 name: "T".to_owned(),
                 bounds: Box::new([Type::Nominal(Ref::Intro(intro_target))]),
                 default: None,
+                variance: None,
             }])
             .wheres([WherePred {
                 target: Type::SelfType,

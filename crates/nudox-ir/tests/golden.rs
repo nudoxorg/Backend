@@ -203,6 +203,7 @@ fn build_fixture() -> PristineIntroTable {
                             name: "T".to_owned(),
                             bounds: [Type::Any].into(),
                             default: Some(Type::I32),
+                            variance: None,
                         }])
                         .build()
                 });
@@ -231,6 +232,7 @@ fn build_fixture() -> PristineIntroTable {
                         name: "Output".to_owned(),
                         bounds: [].into(),
                         default: None,
+                        variance: None,
                     }])
                     .build()
             });
@@ -247,6 +249,7 @@ fn build_fixture() -> PristineIntroTable {
                         name: "T".to_owned(),
                         bounds: [Type::Any].into(),
                         default: None,
+                        variance: None,
                     }])
                     .wheres([WherePred {
                         target: Type::SelfType,
@@ -331,10 +334,13 @@ fn build_fixture() -> PristineIntroTable {
 /// Protects: the complete identity surface — any addition/removal/rename of a
 /// fixture entry will be caught here, as will any change to the preimage
 /// layout.
+/// Regenerated after adding `Option<Variance>` to `GenericParam::Type`: the
+/// inherent `impl<T>` block's TraitImpl skeleton now includes the `0x00`
+/// variance byte, shifting its IntroId from `392cad...` to `b590aea5...`.
+/// All `draw` overload and non-generic-parametric entry IntroIds are unchanged.
 const GOLDEN_ALL_INTROS: &str = "180f88881f2936e77ab58068891192cf787b4b042e0b7026fd64b11cf2642ab3
 1e32f087e4f66330f1893215e4875394b646d4f7fa1087e3e89a5c4e1dca23c7
 288eb4ea598beae88b9583ee3178aa391e746b98dd6de3ea7c846de60dffd12d
-392cad2275b16211abf979ff8d60f6356e4da3871ad553f623420231f78bb778
 40e2154e4707fb09d85e85da085213030bd2716a8dc50b6e6fd8143207389380
 65a9b7a7d5d6c742650dd2af7b82b732cf5c512efdc94b8b829154bfb4b76fd6
 677e51b6218d2f908d3c0bcf6f140dd29fdff379904703c68d884578adc22322
@@ -344,6 +350,7 @@ const GOLDEN_ALL_INTROS: &str = "180f88881f2936e77ab58068891192cf787b4b042e0b702
 97dd77abd83754862615cf82cfe7061f963af6520e300938105d339c7f4c7bb8
 9a194e0f26f40d66125f6b269e58a199d25d6aad9d7f92fc34ea9c0a3395fa3c
 b2606e8c9f8c87ff06900a1caa6771061e0de130a83b859bf3c4393115abe48b
+b590aea5f628727931faa120fca7896703b9a13ab395b2d77f0f2514d4dcf57f
 b7cb8642b7d21884265deb2bf6695d4447590c8e9f371b051657f2b0fafd81eb
 c083bfa3cb3b50fa89c7741f90a057a57e054d79707abf54c093c5828a9e4721
 cedcd1c892a2c7e1e5d2c3e2cfd2ab8d565f3f946265952ad5ea159ee7c53271
@@ -360,7 +367,7 @@ f31fad1178c5fff29493c908322618c6c24d15c76f00f2cae539f5a322c0e677";
 /// postcard because postcard is not a workspace dependency. A digest is used
 /// rather than embedding kilobytes of JSON, which would make diffs unreadable.
 /// Protects: the on-wire encoding of every entry kind and every field value.
-const GOLDEN_ENTRIES_B3: &str = "249ddc99a7083bb66d86ddc13620035eca6427e6af09f345f8efdb48e4407221";
+const GOLDEN_ENTRIES_B3: &str = "87d953a9543e331942a6415482c6c73d2fa6c9341cc4a1c7200280ca5770dfaa";
 
 /// IntroId of the sorted-first `draw` overload.
 /// Which overload this is depends on how their BLAKE3 digests sort; run
@@ -374,12 +381,16 @@ const GOLDEN_DRAW_SECOND: &str = "e53f0223fca9d00f3432d446d419fcd053fca2c328c272
 
 /// IntroId of the sorted-first `impl` entry.
 /// Protects: the TraitImpl disambiguator for one of the two impl variants.
-const GOLDEN_IMPL_FIRST: &str = "392cad2275b16211abf979ff8d60f6356e4da3871ad553f623420231f78bb778";
+/// Regenerated: the inherent impl's skeleton changed (variance byte added to
+/// GenericParam::Type encoding), producing a new IntroId `b590aea5...`. The
+/// negative blanket impl has no generics so its IntroId `8010fb61...` is stable.
+const GOLDEN_IMPL_FIRST: &str = "8010fb61a1e8be835748a320cd008624f5665d3747abefe4f63ebdc661b4ed81";
 
 /// IntroId of the sorted-second `impl` entry.
 /// Protects: the TraitImpl disambiguator — specifically that `negative=true`
 /// and `blanket=true` produce a distinct skeleton from the inherent impl.
-const GOLDEN_IMPL_SECOND: &str = "8010fb61a1e8be835748a320cd008624f5665d3747abefe4f63ebdc661b4ed81";
+/// Regenerated: see GOLDEN_IMPL_FIRST note above.
+const GOLDEN_IMPL_SECOND: &str = "b590aea5f628727931faa120fca7896703b9a13ab395b2d77f0f2514d4dcf57f";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Helpers shared by the regeneration path and the assertion path

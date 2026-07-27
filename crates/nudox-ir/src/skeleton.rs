@@ -63,7 +63,7 @@ use crate::{
     index::{RawRef, Ref, UntypedEntryIndex},
     kinds::{
         GenericParam, Type, WherePred,
-        ty::{Primitive, Variance, Width},
+        ty::{Primitive, TupleElement, Variance, Width},
     },
 };
 
@@ -183,9 +183,9 @@ impl<'a> Skeleton<'a> {
                 self.out.push(0x02);
                 self.primitive(p);
             }
-            Type::Tuple(ts) => {
+            Type::Tuple(elems) => {
                 self.out.push(0x03);
-                self.seq(ts);
+                self.tuple_elements(elems);
             }
             Type::Slice(t) => {
                 self.out.push(0x04);
@@ -221,15 +221,46 @@ impl<'a> Skeleton<'a> {
             Type::TypeVar(_) => self.out.push(0x0c),
             Type::Wildcard { variance, bound } => {
                 self.out.push(0x0d);
-                self.out.push(match variance {
-                    Variance::Invariant => 0x01,
-                    Variance::Covariant => 0x02,
-                    Variance::Contravariant => 0x03,
-                });
+                self.variance(variance);
                 match bound {
                     Some(t) => {
                         self.out.push(0x01);
                         self.ty(t);
+                    }
+                    None => self.out.push(0x00),
+                }
+            }
+            // Params, return type, and ABI are all identity-relevant:
+            // fn(i32)->bool and fn(i64)->bool are distinct types; and
+            // delegate*<> and delegate* unmanaged[Cdecl]<> differ by ABI.
+            Type::FunctionPointer { params, ret, abi } => {
+                self.out.push(0x0e);
+                self.seq(params);
+                match ret {
+                    Some(t) => {
+                        self.out.push(0x01);
+                        self.ty(t);
+                    }
+                    None => self.out.push(0x00),
+                }
+                match abi {
+                    Some(s) => {
+                        self.out.push(0x01);
+                        encode_str(&mut self.out, s);
+                    }
+                    None => self.out.push(0x00),
+                }
+            }
+            // Annotation is identity-relevant: @NonNull String and String
+            // (unannotated) are distinct types with different contracts.
+            Type::Annotated { inner, annotation } => {
+                self.out.push(0x0f);
+                self.ty(inner);
+                encode_str(&mut self.out, &annotation.token);
+                match &annotation.arg {
+                    Some(s) => {
+                        self.out.push(0x01);
+                        encode_str(&mut self.out, s);
                     }
                     None => self.out.push(0x00),
                 }
@@ -333,6 +364,37 @@ impl<'a> Skeleton<'a> {
         }
     }
 
+    /// Encode a sequence of tuple elements.
+    ///
+    /// **Identity decision:** the label IS included — `(int start, int end)` and
+    /// `(int, int)` are distinct C# types with different member-access semantics,
+    /// and two overloads differing only in tuple-element labelling must not
+    /// collide.
+    fn tuple_elements(&mut self, elems: &[TupleElement]) {
+        write_u32le(&mut self.out, elems.len() as u32);
+        for elem in elems {
+            match elem {
+                TupleElement::Positional(t) => {
+                    self.out.push(0x01);
+                    self.ty(t);
+                }
+                TupleElement::Named { label, ty } => {
+                    self.out.push(0x02);
+                    encode_str(&mut self.out, label);
+                    self.ty(ty);
+                }
+            }
+        }
+    }
+
+    fn variance(&mut self, v: &Variance) {
+        self.out.push(match v {
+            Variance::Invariant => 0x01,
+            Variance::Covariant => 0x02,
+            Variance::Contravariant => 0x03,
+        });
+    }
+
     fn opt_seq(&mut self, tys: &[Option<Type>]) {
         write_u32le(&mut self.out, tys.len() as u32);
         for t in tys {
@@ -347,7 +409,12 @@ impl<'a> Skeleton<'a> {
     }
 
     /// Structural fingerprint of a generic-parameter list. Names are excluded
-    /// (alpha-equivalence); kind + bounds + default are hashed.
+    /// (alpha-equivalence); kind + bounds + default + variance are hashed.
+    ///
+    /// **Variance in identity:** declaration-site variance (`in`/`out` in C#)
+    /// IS included. `interface IFoo<in T>` and `interface IFoo<out T>` are
+    /// structurally distinct — a consumer seeing only the skeleton must be able
+    /// to tell them apart. Variance is not alpha-equivalent detail.
     fn generics(&mut self, params: &[GenericParam]) {
         write_u32le(&mut self.out, params.len() as u32);
         for p in params {
@@ -357,6 +424,7 @@ impl<'a> Skeleton<'a> {
                     name: _,
                     bounds,
                     default,
+                    variance,
                 } => {
                     self.out.push(0x02);
                     self.seq(bounds);
@@ -366,6 +434,14 @@ impl<'a> Skeleton<'a> {
                             self.ty(t);
                         }
                         None => self.out.push(0x00),
+                    }
+                    // Variance: 0x00 = None (unspecified); otherwise 0x01 + opcode.
+                    match variance {
+                        None => self.out.push(0x00),
+                        Some(v) => {
+                            self.out.push(0x01);
+                            self.variance(v);
+                        }
                     }
                 }
                 GenericParam::Const { name: _, ty } => {
@@ -429,6 +505,7 @@ mod tests {
             name: "T".to_owned(),
             bounds: [bound].into(),
             default: None,
+            variance: None,
         }]
     }
 
@@ -490,11 +567,13 @@ mod tests {
             name: "T".to_owned(),
             bounds: [Type::Any].into(),
             default: None,
+            variance: None,
         }];
         let u = [GenericParam::Type {
             name: "U".to_owned(),
             bounds: [Type::Any].into(),
             default: None,
+            variance: None,
         }];
         let sk_t = trait_impl_skeleton(None, &Type::Any, &t, &[], false, false);
         let sk_u = trait_impl_skeleton(None, &Type::Any, &u, &[], false, false);
@@ -567,10 +646,17 @@ mod tests {
     /// Determinism: the same input always yields the same bytes.
     #[test]
     fn type_skeleton_is_deterministic() {
+        let tup = Type::Tuple(
+            [
+                TupleElement::Positional(Type::I32),
+                TupleElement::Positional(Type::Any),
+            ]
+            .into(),
+        );
         let mut a = Skeleton::unresolved();
         let mut b = Skeleton::unresolved();
-        a.ty(&Type::Tuple([Type::I32, Type::Any].into()));
-        b.ty(&Type::Tuple([Type::I32, Type::Any].into()));
+        a.ty(&tup);
+        b.ty(&tup.clone());
         let (fa, fb) = (a.finish(), b.finish());
         assert_eq!(fa, fb);
         assert!(!fa.is_empty());

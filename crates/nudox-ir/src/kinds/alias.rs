@@ -141,6 +141,7 @@ mod tests {
                 name: "T".to_owned(),
                 bounds: Box::new([]),
                 default: None,
+                variance: None,
             }])
             .build();
 
@@ -209,6 +210,7 @@ mod tests {
                 name: "T".to_owned(),
                 bounds: Box::new([]),
                 default: None,
+                variance: None,
             }])
             .wheres([WherePred {
                 target: Type::SelfType,

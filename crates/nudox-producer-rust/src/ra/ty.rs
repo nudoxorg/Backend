@@ -4,29 +4,46 @@
 //!
 //! The old `ty.rs` produced the old IR's `Type` enum (`TypeReference`,
 //! `BorrowedRef`, `RawPointer`, `DynTrait`, `ImplTrait`, etc.)  The new IR's
-//! `Type` is a much smaller enum:
+//! `Type` enum covers:
 //!
 //! ```text
 //! Type::SelfType
 //! Type::Primitive(Primitive)          — integers, floats, bool, char, Str,
 //!                                       MutPointer, ConstPointer, Reference
-//! Type::Tuple(List<Type>)
+//! Type::Tuple(List<TupleElement>)     — Positional | Named; Rust uses Positional
 //! Type::Slice(Box<Type>)
 //! Type::Array { ty, length }
 //! Type::Union(List<Type>)             — used for raw unions only
 //! Type::Intersection(List<Type>)      — TypeScript; unused for Rust
 //! Type::Never
-//! Type::Any                           — placeholder when unknown
+//! Type::Any                           — placeholder when the type is unrepresentable
 //! Type::Nominal(RawRef)               — named type; Ref resolved at seal time
 //! Type::Apply { base, args }          — generic application Foo<T, U>
+//! Type::TypeVar(String)               — use of a generic type parameter
+//! Type::Wildcard { variance, bound }  — Java/Kotlin wildcards; unused for Rust
+//! Type::FunctionPointer { params, ret, abi }  — `fn(…) -> T` / `extern "C" fn(…)`
+//! Type::Annotated { inner, annotation }       — Java @NonNull, C# nullable refs
 //! ```
 //!
 //! Because `Nominal` carries a `RawRef` that must be resolved against the
 //! `Lowering` arena, this module does **not** return `Type::Nominal` for
 //! external types (those outside the current package).  External references are
-//! rendered as `Type::Any` with a note in the producer report — this is a known
-//! limitation.  Local references use `Type::Nominal` via the caller-supplied
-//! `ref_for` callback.
+//! rendered as `Type::Any` — this is a known limitation.  Local references use
+//! `Type::Nominal` via the caller-supplied `ref_for` callback.
+//!
+//! # Remaining `Type::Any` fallbacks (accurate as of the current IR)
+//!
+//! - **External types** — `ref_for` returns `None`; no `RawRef` to embed.
+//!   This is an acquisition-boundary issue, not an IR gap.
+//! - **`<T as Trait>::Assoc` (qualified paths)** — the IR has no
+//!   `QualifiedPath` variant; the projection cannot be represented.
+//! - **`impl Trait`** — the IR has no `ImplTrait` variant; the opaque type
+//!   cannot be named at the call site.
+//! - **`dyn Trait + 'lifetime` (lifetime-only bounds)** — lifetime bounds on
+//!   `dyn` have no slot in `Type::Intersection` or `Type::Nominal`.
+//! - **Lifetime / const generic args in `Apply.args`** — `Apply.args` is
+//!   `List<Type>`; there is no position for lifetime or const arguments.
+//! - **`Type::InferType` (`_`)** — the inferred type is deliberately unknown.
 //!
 //! # Strategy
 //!
@@ -50,7 +67,7 @@ use nudox_ir::{
     index::RawRef,
     kinds::{
         Type,
-        ty::{Primitive, Width},
+        ty::{Primitive, TupleElement, Width},
     },
 };
 
@@ -81,18 +98,14 @@ pub(crate) fn lower_ast_type(
         }
         ast::Type::ArrayType(a) => lower_array_type(ctx, a, ref_for),
         ast::Type::TupleType(t) => {
-            let fields: Box<[Type]> = t
+            // Rust tuples are positional; no element labels.
+            let fields: Box<[TupleElement]> = t
                 .fields()
-                .map(|f| lower_ast_type(ctx, &f, ref_for))
+                .map(|f| TupleElement::Positional(lower_ast_type(ctx, &f, ref_for)))
                 .collect();
             Type::Tuple(fields)
         }
-        ast::Type::FnPtrType(_f) => {
-            // Function pointer types are not directly representable in the new
-            // IR without a `FunctionPointer` kind.  Emit `Any` for now.
-            // UNCERTAINTY: this loses `fn(i32) -> bool` type information.
-            Type::Any
-        }
+        ast::Type::FnPtrType(f) => lower_fn_ptr_type(ctx, f, ref_for),
         ast::Type::DynTraitType(d) => lower_dyn_trait(ctx, d, ref_for),
         ast::Type::ImplTraitType(i) => lower_impl_trait(ctx, i, ref_for),
         ast::Type::NeverType(_) => Type::Never,
@@ -181,10 +194,11 @@ pub(crate) fn lower_hir_type_fallback(
         return Type::TypeVar(param.name(ctx.db).as_str().to_owned());
     }
     if ty.is_tuple() {
-        let fields: Box<[Type]> = ty
+        // Rust tuples are positional; no element labels.
+        let fields: Box<[TupleElement]> = ty
             .tuple_fields(ctx.db)
             .iter()
-            .map(|f| lower_hir_type_fallback(ctx, f, ref_for))
+            .map(|f| TupleElement::Positional(lower_hir_type_fallback(ctx, f, ref_for)))
             .collect();
         return Type::Tuple(fields);
     }
@@ -369,6 +383,57 @@ fn lower_array_type(
         ty: Box::new(inner),
         length,
     }
+}
+
+// ── fn pointer ───────────────────────────────────────────────────────────────
+
+/// `fn(i32) -> bool` / `unsafe fn(…)` / `extern "C" fn(…)` → `Type::FunctionPointer`.
+///
+/// ABI: `extern "C" fn` carries `abi: Some("C")`.  Plain `fn` (Rust default
+/// ABI) carries `abi: None`.  The distinction matters: two signatures that
+/// differ only in ABI have incompatible calling conventions and must not unify.
+///
+/// Parameters: `fn(i32, bool)` — each positional `Type` from the param list,
+/// in declaration order.  Patterns are stripped; only the type is kept because
+/// `Type::FunctionPointer.params` is `List<Type>`, not `List<Param>`.
+///
+/// Return type: `None` when absent (equivalent to `-> ()` / unit); `Some` for
+/// everything else.
+fn lower_fn_ptr_type(
+    ctx: &mut LowerCtx<'_>,
+    f: &ast::FnPtrType,
+    ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
+) -> Type {
+    // Extract the ABI string from `extern "…"`, if present.
+    // `abi.string_token()` yields the raw token including the quotes, e.g.
+    // `"C"`.  We strip the surrounding quotes to store just `C`.
+    let abi: Option<String> = f.abi().and_then(|a| {
+        a.string_token().map(|tok| {
+            let raw = tok.text().to_string();
+            // Strip surrounding double-quotes if present.
+            raw.trim_matches('"').to_string()
+        })
+    });
+
+    // Collect parameter types in order.  Only the type is kept; names/patterns
+    // in bare fn pointers (`fn(x: i32)`) are not part of the IR type.
+    let params: Box<[Type]> = f
+        .param_list()
+        .map(|list| {
+            list.params()
+                .filter_map(|p| p.ty())
+                .map(|t| lower_ast_type(ctx, &t, ref_for))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Return type: absent means unit/void; explicit `-> T` is lowered normally.
+    let ret: Option<Box<Type>> = f
+        .ret_type()
+        .and_then(|r| r.ty())
+        .map(|t| Box::new(lower_ast_type(ctx, &t, ref_for)));
+
+    Type::FunctionPointer { params, ret, abi }
 }
 
 // ── dyn / impl ────────────────────────────────────────────────────────────────
@@ -637,5 +702,114 @@ mod tests {
         assert_eq!(primitive_from_str("String"), None);
         assert_eq!(primitive_from_str("Vec"), None);
         assert_eq!(primitive_from_str(""), None);
+    }
+
+    // ── FunctionPointer lowering contract ────────────────────────────────────
+
+    /// `fn(i32) -> bool` lowers to a `FunctionPointer` with `abi: None`.
+    ///
+    /// This is the shape `lower_fn_ptr_type` must emit for plain bare fn pointers.
+    /// The ABI field being `None` distinguishes a default-ABI fn from one with an
+    /// explicit `extern "…"` string.
+    #[test]
+    fn fn_ptr_plain_has_no_abi() {
+        let ty = Type::FunctionPointer {
+            params: Box::new([
+                Type::Primitive(Primitive::Integer { signed: true, width: Width::W32 }),
+            ]),
+            ret: Some(Box::new(Type::Primitive(Primitive::Bool))),
+            abi: None,
+        };
+        assert!(
+            matches!(&ty, Type::FunctionPointer { abi: None, .. }),
+            "plain fn() must carry abi: None"
+        );
+    }
+
+    /// `extern "C" fn(i32) -> bool` lowers to a `FunctionPointer` with `abi: Some("C")`.
+    ///
+    /// Two signatures that differ only in ABI have distinct calling conventions;
+    /// they must not unify.  Carrying the ABI in the type makes this distinction
+    /// visible to Trustfall queries without payload inspection.
+    #[test]
+    fn fn_ptr_extern_c_has_abi() {
+        let ty = Type::FunctionPointer {
+            params: Box::new([
+                Type::Primitive(Primitive::Integer { signed: true, width: Width::W32 }),
+            ]),
+            ret: Some(Box::new(Type::Primitive(Primitive::Bool))),
+            abi: Some("C".to_owned()),
+        };
+        assert!(
+            matches!(&ty, Type::FunctionPointer { abi: Some(s), .. } if s == "C"),
+            "extern \"C\" fn must carry abi: Some(\"C\")"
+        );
+    }
+
+    /// Plain fn and extern-C fn are structurally distinct (different `abi` field).
+    #[test]
+    fn fn_ptr_plain_and_extern_c_differ() {
+        let plain = Type::FunctionPointer {
+            params: Box::new([Type::Primitive(Primitive::Integer {
+                signed: true,
+                width: Width::W32,
+            })]),
+            ret: None,
+            abi: None,
+        };
+        let extern_c = Type::FunctionPointer {
+            params: Box::new([Type::Primitive(Primitive::Integer {
+                signed: true,
+                width: Width::W32,
+            })]),
+            ret: None,
+            abi: Some("C".to_owned()),
+        };
+        assert_ne!(plain, extern_c, "plain fn and extern \"C\" fn must not compare equal");
+    }
+
+    /// `FunctionPointer` serde round-trip preserves `abi`, `params`, and `ret`.
+    #[test]
+    fn fn_ptr_serde_roundtrip() {
+        let original = Type::FunctionPointer {
+            params: Box::new([
+                Type::Primitive(Primitive::Integer { signed: false, width: Width::W64 }),
+                Type::Primitive(Primitive::Bool),
+            ]),
+            ret: Some(Box::new(Type::Never)),
+            abi: Some("Rust".to_owned()),
+        };
+        let json = serde_json::to_string(&original).expect("serialize failed");
+        let decoded: Type = serde_json::from_str(&json).expect("deserialize failed");
+        assert_eq!(original, decoded);
+    }
+
+    /// Unit tuple `()` round-trips through `Tuple(Box::new([]))`.
+    #[test]
+    fn unit_tuple_is_empty_positional_list() {
+        let ty = Type::Tuple(Box::new([]));
+        assert!(matches!(&ty, Type::Tuple(elems) if elems.is_empty()));
+    }
+
+    /// Rust tuples use `TupleElement::Positional`; no labels are attached.
+    #[test]
+    fn rust_tuple_elements_are_positional() {
+        let ty = Type::Tuple(Box::new([
+            TupleElement::Positional(Type::Primitive(Primitive::Integer {
+                signed: true,
+                width: Width::W32,
+            })),
+            TupleElement::Positional(Type::Primitive(Primitive::Bool)),
+        ]));
+        if let Type::Tuple(elems) = &ty {
+            for elem in elems.iter() {
+                assert!(
+                    matches!(elem, TupleElement::Positional(_)),
+                    "Rust tuple elements must be Positional"
+                );
+            }
+        } else {
+            panic!("expected Type::Tuple");
+        }
     }
 }

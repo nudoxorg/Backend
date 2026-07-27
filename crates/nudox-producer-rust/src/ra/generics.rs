@@ -68,7 +68,14 @@ pub(crate) fn lower_generics(
                         .default_type()
                         .map(|t| ty::lower_ast_type(ctx, &t, ref_for));
 
-                    ir_params.push(GenericParam::Type { name, bounds, default });
+                    ir_params.push(GenericParam::Type {
+                        name,
+                        bounds,
+                        default,
+                        // Rust has no declaration-site variance annotation; the
+                        // compiler infers it from usage.  None = unspecified.
+                        variance: None,
+                    });
                 }
                 ast::GenericParam::ConstParam(cp) => {
                     let name = cp
@@ -211,8 +218,10 @@ mod tests {
             name: "T".to_owned(),
             bounds: Box::new([]),
             default: None,
+            // Rust has no declaration-site variance annotation; None = unspecified.
+            variance: None,
         };
-        assert!(matches!(gp, GenericParam::Type { name, bounds, default }
+        assert!(matches!(gp, GenericParam::Type { name, bounds, default, variance: _ }
             if name == "T" && bounds.is_empty() && default.is_none()
         ));
     }

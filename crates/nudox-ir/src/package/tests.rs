@@ -251,6 +251,7 @@ fn generics_and_where_clauses_round_trip() {
                     name: "T".to_owned(),
                     bounds: [Type::Any].into(),
                     default: None,
+                    variance: None,
                 }])
                 .build()
         });
@@ -281,6 +282,7 @@ fn generics_and_where_clauses_round_trip() {
         name: "T".to_owned(),
         bounds: [Type::Any].into(),
         default: None,
+        variance: None,
     });
     assert!(container.body().wheres.is_empty());
 

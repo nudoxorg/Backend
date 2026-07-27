@@ -18,7 +18,7 @@ use crate::visitor::Visitor;
 /// Unknown or complex attributes are still stored here as opaque tokens so
 /// that downstream consumers see *all* attributes, not just the ones the
 /// producer understands.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct AttrTok {
     /// Attribute name token (e.g. `"must_use"`, `"repr"`, `"doc_hidden"`).
     pub token: String,

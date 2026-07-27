@@ -303,6 +303,7 @@ mod tests {
                             name: "T".to_owned(),
                             bounds: [bound].into(),
                             default: None,
+                            variance: None,
                         }])
                         .build()
                 });
