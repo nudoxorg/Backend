@@ -210,6 +210,8 @@ impl<'db> LowerCtx<'db> {
             .map(|segs| segs.join("::"))
             .collect();
 
+        let attrs = docs::symbol_attrs(self, def);
+
         Some(SymbolParts {
             name,
             visibility,
@@ -218,6 +220,7 @@ impl<'db> LowerCtx<'db> {
             deprecation,
             doc_links: doc_links.unwrap_or_default(),
             cfg,
+            attrs,
         })
     }
 
@@ -367,6 +370,8 @@ pub(crate) struct SymbolParts {
     pub(crate) doc_links: Vec<DocLink>,
     /// Rendered cfg predicate string, if any.
     pub(crate) cfg: Option<nudox_ir::entry::CfgExpr>,
+    /// Normalized attribute tokens (§6.2 key 8 / §8.5).
+    pub(crate) attrs: Box<[nudox_ir::entry::AttrTok]>,
 }
 
 impl SymbolParts {
@@ -385,7 +390,7 @@ impl SymbolParts {
             aliases: self.aliases.into_boxed_slice(),
             deprecation: self.deprecation,
             doc_links: self.doc_links.into_boxed_slice(),
-            attrs: Box::new([]), // see below
+            attrs: self.attrs,
             cfg: self.cfg,
         }
     }

@@ -14,7 +14,7 @@
 //!   parsing is best-effort; unknown forms fall through to `CfgExpr::Other`.
 
 use ra_ap_hir::{
-    Adt, DocLinkDef, HasAttrs, IsInnerDoc, ModuleDef, resolve_doc_path_on,
+    Adt, DocLinkDef, HasAttrs, HasSource, IsInnerDoc, ModuleDef, resolve_doc_path_on,
 };
 use ra_ap_syntax::AstToken;
 use ra_ap_syntax::{
@@ -281,21 +281,170 @@ fn is_pathish(s: &str) -> bool {
 
 /// Extract well-known attribute tokens from a `ModuleDef` for `Symbol.attrs`.
 ///
-/// Only a representative subset is produced: `must_use`, `repr(...)`,
-/// `doc(hidden)`.  The full attribute list is intentionally not scraped — that
-/// would require walking raw token trees for every item and is deferred.
+/// # What this covers
 ///
-/// UNCERTAINTY: `ra_ap_hir::HasAttrs::attrs(db)` returns an `AttrsWithOwner`
-/// but the public API for iterating individual `#[...]` attributes on arbitrary
-/// `ModuleDef` items is limited in ra_ap 0.0.341.  Confirmed fields:
-/// `is_deprecated()`, `cfgs()`, `hir_docs()`.  Iterating arbitrary attrs
-/// requires either a downcast to a specific HIR item type or use of
-/// `hir_def::attr::Attrs`, which is not fully pub in ra_ap.
-/// The `attrs` field on `Symbol` is therefore emitted empty here; this is
-/// documented in the producer report as a known gap.
+/// The HIR-level `AttrsWithOwner` in ra_ap 0.0.341 is a **flag-based** system
+/// with named boolean predicates only:
+/// - `is_doc_hidden()` → `AttrTok { token: "doc_hidden", arg: None }`
+/// - `is_non_exhaustive()` → `AttrTok { token: "non_exhaustive", arg: None }`
+/// - `is_deprecated()` → handled separately in `Symbol.deprecation`
+///
+/// There is no `is_must_use()` or `repr()` on `AttrsWithOwner`; those flags
+/// live on `AttrFlags` in `ra_ap_hir_def`, which is not part of the public
+/// `ra_ap_hir` API.  We therefore supplement the HIR flags with a best-effort
+/// AST scan via `HasSource` → `HasAttrs::attrs()` (the *syntax-level* trait
+/// which returns `AstChildren<ast::Attr>`).  This covers:
+/// - `#[must_use]` / `#[must_use = "..."]`
+/// - `#[repr(...)]`
+/// - `#[doc(hidden)]`    (cross-check with HIR flag)
+/// - `#[non_exhaustive]` (cross-check with HIR flag)
+///
+/// Unknown attributes that don't match well-known names are emitted as
+/// `AttrTok { token: <name>, arg: <token-tree text> }` so no info is lost.
 pub(crate) fn symbol_attrs(
-    _ctx: &LowerCtx<'_>,
-    _def: ModuleDef,
+    ctx: &LowerCtx<'_>,
+    def: ModuleDef,
 ) -> Box<[nudox_ir::entry::AttrTok]> {
-    Box::new([])
+    let mut out: Vec<nudox_ir::entry::AttrTok> = Vec::new();
+
+    // ── HIR flags (flag-based; always available) ──────────────────────────────
+    let hir_attrs = def.attrs(ctx.db);
+    if hir_attrs.is_doc_hidden() {
+        out.push(nudox_ir::entry::AttrTok { token: "doc_hidden".into(), arg: None });
+    }
+    if hir_attrs.is_non_exhaustive() {
+        out.push(nudox_ir::entry::AttrTok { token: "non_exhaustive".into(), arg: None });
+    }
+
+    // ── AST scan (for repr, must_use, and anything else) ─────────────────────
+    // We retrieve the AST source node for each concrete ModuleDef kind.  The
+    // `ast::HasAttrs` trait provides `attrs()` → `AstChildren<ast::Attr>`.
+    // Each `ast::Attr` gives us `simple_name()` (the attribute name) and
+    // `as_simple_call()` (name + token-tree for call-style attrs like `repr(C)`).
+    let ast_attrs: Option<Vec<ast::Attr>> = match def {
+        ModuleDef::Function(f) => ctx.sema.source(f).or_else(|| f.source(ctx.db))
+            .map(|s| s.value.attrs().collect()),
+        ModuleDef::Adt(Adt::Struct(s)) => ctx.sema.source(s).or_else(|| s.source(ctx.db))
+            .map(|s| s.value.attrs().collect()),
+        ModuleDef::Adt(Adt::Enum(e)) => ctx.sema.source(e).or_else(|| e.source(ctx.db))
+            .map(|s| s.value.attrs().collect()),
+        ModuleDef::Adt(Adt::Union(u)) => ctx.sema.source(u).or_else(|| u.source(ctx.db))
+            .map(|s| s.value.attrs().collect()),
+        ModuleDef::Trait(t) => ctx.sema.source(t).or_else(|| t.source(ctx.db))
+            .map(|s| s.value.attrs().collect()),
+        ModuleDef::TypeAlias(ta) => ctx.sema.source(ta).or_else(|| ta.source(ctx.db))
+            .map(|s| s.value.attrs().collect()),
+        ModuleDef::Const(c) => ctx.sema.source(c).or_else(|| c.source(ctx.db))
+            .map(|s| s.value.attrs().collect()),
+        ModuleDef::Static(s) => ctx.sema.source(s).or_else(|| s.source(ctx.db))
+            .map(|s| s.value.attrs().collect()),
+        // Modules, macros, builtin types, and enum variants don't have a
+        // direct AST source from which to read attrs here.
+        _ => None,
+    };
+
+    if let Some(attrs) = ast_attrs {
+        for attr in attrs {
+            // Only outer attrs (`#[...]`); skip inner attrs (`#![...]`).
+            match attr.kind() {
+                ra_ap_syntax::ast::AttrKind::Inner => continue,
+                ra_ap_syntax::ast::AttrKind::Outer => {}
+            }
+            let token = match attr.simple_name() {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            // Skip cfg, derive, doc — cfg is handled separately; derive and
+            // doc don't belong in attrs.
+            if matches!(token.as_str(), "cfg" | "cfg_attr" | "derive" | "doc") {
+                continue;
+            }
+            let arg = attr.as_simple_call().map(|(_, tt)| tt.syntax().text().to_string());
+            // Deduplicate: skip if we already have this token (HIR flags may
+            // have already added doc_hidden / non_exhaustive above).
+            if out.iter().any(|a| a.token == token) {
+                continue;
+            }
+            out.push(nudox_ir::entry::AttrTok { token, arg });
+        }
+    }
+
+    out.into_boxed_slice()
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use ra_ap_syntax::{AstNode, Edition, SourceFile, ast::{HasAttrs as AstHasAttrs, HasModuleItem}};
+    use nudox_ir::entry::AttrTok;
+
+    // ── Fix 4: #[must_use] #[repr(C)] produce non-empty attrs ────────────────
+
+    /// Parse a struct snippet via ra_ap_syntax and verify that the outer
+    /// attributes `#[must_use]` and `#[repr(C)]` are recoverable via the AST
+    /// `attrs()` iterator.  This exercises the same code path that
+    /// `symbol_attrs` uses, without needing a full RA database.
+    #[test]
+    fn ast_attrs_must_use_repr_extracted() {
+        let src = r#"
+            #[must_use = "use the value"]
+            #[repr(C)]
+            #[doc(hidden)]
+            pub struct Foo;
+        "#;
+
+        let parsed = SourceFile::parse(src, Edition::Edition2021);
+        let file = parsed.tree();
+
+        let struct_node = file
+            .items()
+            .find_map(|it| match it {
+                ra_ap_syntax::ast::Item::Struct(s) => Some(s),
+                _ => None,
+            })
+            .expect("struct not found");
+
+        let mut found_must_use = false;
+        let mut found_repr = false;
+
+        for attr in struct_node.attrs() {
+            // Only outer attrs.
+            match attr.kind() {
+                ra_ap_syntax::ast::AttrKind::Inner => continue,
+                ra_ap_syntax::ast::AttrKind::Outer => {}
+            }
+            let name = match attr.simple_name() {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            match name.as_str() {
+                "must_use" => found_must_use = true,
+                "repr" => {
+                    found_repr = true;
+                    // Verify the arg is available as the token-tree text.
+                    let arg = attr
+                        .as_simple_call()
+                        .map(|(_, tt)| tt.syntax().text().to_string());
+                    assert!(
+                        arg.is_some(),
+                        "repr attribute must have a token-tree argument"
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        assert!(found_must_use, "#[must_use] must be discoverable via AST attrs()");
+        assert!(found_repr, "#[repr(C)] must be discoverable via AST attrs()");
+
+        // Also verify AttrTok serde round-trip (fix 4 IR contract).
+        let toks: Vec<AttrTok> = vec![
+            AttrTok { token: "must_use".into(), arg: Some("use the value".into()) },
+            AttrTok { token: "repr".into(), arg: Some("(C)".into()) },
+        ];
+        let json = serde_json::to_string(&toks).expect("serialize");
+        let rt: Vec<AttrTok> = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(toks, rt, "AttrTok must serde round-trip");
+    }
 }

@@ -450,6 +450,17 @@ fn lower_macro_type(
 ///
 /// Only `TypeArg` entries are kept; lifetime and const args are dropped because
 /// the new IR's `Apply.args` is `List<Type>` with no lifetime/const positions.
+///
+/// Public within the crate so that `item.rs` can recover written supertrait
+/// args (e.g. `Bar<u32>` in `trait Foo: Bar<u32>`) via the AST path.
+pub(crate) fn last_segment_type_args_pub(
+    ctx: &mut LowerCtx<'_>,
+    path: &ast::Path,
+    ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
+) -> Vec<Type> {
+    last_segment_type_args(ctx, path, ref_for)
+}
+
 fn last_segment_type_args(
     ctx: &mut LowerCtx<'_>,
     path: &ast::Path,

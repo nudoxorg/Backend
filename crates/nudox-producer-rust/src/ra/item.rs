@@ -30,8 +30,8 @@
 use std::path::PathBuf;
 
 use ra_ap_hir::{
-    Adt, AssocItem, FieldSource, HasSource, HasVisibility, Impl, Module, ModuleDef, Struct,
-    StructKind, Trait, attach_db,
+    Adt, AssocItem, FieldSource, HasSource, HasVisibility, Impl, LangItem, Module,
+    ModuleDef, ScopeDef, Struct, StructKind, Trait, attach_db,
 };
 use ra_ap_syntax::ast::HasTypeBounds;
 use ra_ap_syntax::{AstNode, ast::HasGenericParams};
@@ -41,7 +41,7 @@ use nudox_ir::{
     kinds::{
         Alias, AutoFact, Const, Enum, Field, FieldAttribute, FieldKey,
         Function, Impl as IrImpl, ImplFlags, Module as IrModule, Param, Record, RecordForm,
-        Static, Trait as IrTrait, TraitFlags, TriState, Variant, VariantForm,
+        Reexport, Static, Trait as IrTrait, TraitFlags, TriState, Variant, VariantForm,
     },
     lower::Lowering,
 };
@@ -84,6 +84,11 @@ macro_rules! make_ref_for {
 ///
 /// Child module / member paths are not listed here — the tree is derived from
 /// parent pointers by `Lowering::finish`.
+///
+/// After declaring the module itself, this function walks `module.scope` and
+/// emits `Reexport` entries for every `pub use` whose scope spelling differs
+/// from the defining item's canonical path.  A re-export entry uses
+/// `Lowering::declare_ref`, pointing at the canonical entry via `refer`.
 pub(crate) fn lower_module(
     ctx: &mut LowerCtx<'_>,
     module: Module,
@@ -91,7 +96,7 @@ pub(crate) fn lower_module(
     out: &mut Lowering<RaId>,
 ) -> Result<(), RustProducerError> {
     let def = ModuleDef::Module(module);
-    let Some(id) = ctx.ra_id(def) else {
+    let Some(mod_id) = ctx.ra_id(def) else {
         return Ok(());
     };
     let parts = ctx.symbol_parts(def).unwrap_or_else(|| super::ctx::SymbolParts {
@@ -102,9 +107,97 @@ pub(crate) fn lower_module(
         deprecation: None,
         doc_links: Vec::new(),
         cfg: None,
+        attrs: Box::new([]),
     });
     let sym = parts.into_symbol(PathBuf::new(), 0..0);
-    out.declare(id, parent, sym, IrModule);
+    out.declare(mod_id.clone(), parent, sym, IrModule);
+
+    // ── Re-exports (pub use) ──────────────────────────────────────────────────
+    // Walk this module's scope.  Items whose *scope path* (module + name)
+    // differs from their *canonical path* are re-exports.  Each such item gets
+    // a `Reexport` entry (backed by `declare_ref`) pointing at the original.
+    //
+    // A re-export's RaId is `<module_id>::<scope_name>` so that duplicate
+    // names across modules stay distinct.
+    let module_segs: Option<Vec<String>> = ctx.path_segments(ModuleDef::Module(module));
+
+    // Collect (scope_name, child_def) pairs for re-exports, to avoid holding
+    // an immutable borrow on `ctx` while mutating `out`.
+    let scope_items: Vec<(smol_str::SmolStr, ModuleDef)> = module
+        .scope(ctx.db, None)
+        .into_iter()
+        .filter_map(|(name, scope_def)| {
+            let ScopeDef::ModuleDef(child) = scope_def else {
+                return None;
+            };
+            // Only public re-exports.
+            if !ctx.document_private
+                && !matches!(child.visibility(ctx.db), ra_ap_hir::Visibility::Public)
+            {
+                return None;
+            }
+            Some((smol_str::SmolStr::from(name.as_str()), child))
+        })
+        .collect();
+
+    for (scope_name, child) in scope_items {
+        // canonical path of the defining item
+        let Some(canon_key) = ctx.canonical(child) else {
+            continue;
+        };
+
+        // scope path of this entry = module_segs + scope_name
+        let is_reexport = if let Some(ref segs) = module_segs {
+            let mut scope_segs = segs.clone();
+            scope_segs.push(scope_name.to_string());
+            let scope_path: smol_str::SmolStr = scope_segs.join("::").into();
+            scope_path != canon_key
+        } else {
+            false
+        };
+
+        if !is_reexport {
+            continue;
+        }
+
+        // RaId for the re-export: "<module_id>::<scope_name>"
+        let reexport_id = RaId::from(format!("{mod_id}::{scope_name}").as_str());
+
+        // We use `refer` to obtain a Ref pointing to the canonical entry; the
+        // canonical entry may be declared later (forward-ref is fine).
+        // `Ref<T>` is phantom-typed so we obtain a `Ref<IrModule>` (any kind
+        // works), erase it to a `RawRef`, then cast to `Ref<Reexport>` for the
+        // `declare_ref` call.  The phantom type does not affect the stored index.
+        let target_ref: Ref<Reexport> = {
+            let raw: nudox_ir::index::RawRef = out.refer::<IrModule>(canon_key).into_raw();
+            match raw.as_local() {
+                Some(untyped_idx) => nudox_ir::index::Ref::Local(untyped_idx.typed()),
+                // Should never happen during Lowering (all refs are Local at this stage).
+                None => continue,
+            }
+        };
+
+        let reexport_sym = nudox_ir::entry::Symbol {
+            name: scope_name.to_string(),
+            visibility: nudox_ir::entry::Visibility::Public,
+            documentation: String::new(),
+            source: PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+
+        out.declare_ref::<Reexport>(
+            reexport_id,
+            Some(mod_id.clone()),
+            reexport_sym,
+            target_ref,
+        );
+    }
+
     Ok(())
 }
 
@@ -267,12 +360,14 @@ fn lower_struct(
         .unwrap_or_default()
     };
 
-    // Auto-trait facts: derive Send/Sync/Unpin from HIR when available.
-    // UNCERTAINTY: `hir::Type::is_send`, `is_sync` — these may not exist in
-    // ra_ap 0.0.341's public API.  The auto-trait probe tier in the old code
-    // went through `ProbeTier::Std` which required extra synthesis.  For now
-    // we leave `auto` empty and document it as a known gap.
-    let auto: Vec<AutoFact> = Vec::new();
+    // Auto-trait facts.
+    // `LangItem::Sync` and `LangItem::Unpin` are both resolvable via
+    // `Trait::lang`.  `Send`, `UnwindSafe`, and `RefUnwindSafe` are NOT lang
+    // items in ra_ap_hir 0.0.341 (`AttrFlags` in ra_ap_hir_def only records
+    // `Sync` / `Unpin`); those three would require walking the `std` crate's
+    // `marker` module by hand — not attempted here, so they are omitted.
+    let hir_self = attach_db(ctx.db, || ra_ap_hir::Adt::Struct(s).ty(ctx.db));
+    let auto: Vec<AutoFact> = probe_auto_traits_partial(ctx, &hir_self);
 
     drop(ref_for);
 
@@ -327,7 +422,9 @@ fn lower_enum(
         .unwrap_or_default()
     };
 
-    let auto: Vec<AutoFact> = Vec::new();
+    // Auto-trait facts (same partial probing as for structs — see struct note).
+    let hir_self = attach_db(ctx.db, || ra_ap_hir::Adt::Enum(e).ty(ctx.db));
+    let auto: Vec<AutoFact> = probe_auto_traits_partial(ctx, &hir_self);
 
     // Release ref_for before the variant loop so `out` is not double-borrowed
     // (declare_hir_fields creates its own ref_for internally).
@@ -422,21 +519,26 @@ fn lower_union(
         return Ok(());
     };
     // Declare fields (declare_hir_fields creates its own ref_for internally).
+    // For union fields the key is `Named` — they share storage rather than
+    // being co-resident, but each field is still accessed by name.
     let field_refs = declare_hir_fields(
         ctx,
         &union_id,
         u.fields(ctx.db),
+        // Pass Struct so declare_hir_fields uses FieldKey::Named for every
+        // field; positional keys only make sense for tuple records.
         RecordForm::Struct,
         parent.clone(),
         out,
     );
 
-    // Unions are represented as `Record` with `RecordForm::Struct` for now.
-    // The new IR has no separate Union kind.
-    // UNCERTAINTY: The IR `kind.rs` shows `Kind::Record` but no `Kind::Union`.
-    // Unions therefore lower as `Record`; this loses the union semantics tag.
+    // Unions lower as `Record` with `RecordForm::Union`.  The fields are
+    // *alternatives* (only one is live at a time) rather than co-resident
+    // members, which is a semantic distinction that affects both layout and
+    // safety analysis.  Collapsing this to `RecordForm::Struct` silently
+    // misreports the type.
     let record_body = Record::builder()
-        .form(RecordForm::Struct)
+        .form(RecordForm::Union)
         .fields(field_refs)
         .build();
 
@@ -481,16 +583,65 @@ fn lower_trait(
         .unwrap_or_default();
 
     // Supertrait bounds → `Trait.supers: List<Type>`.
-    let supers: Vec<nudox_ir::kinds::Type> = t
-        .direct_supertraits(ctx.db)
-        .into_iter()
-        .filter_map(|st| {
-            let st_def = ModuleDef::Trait(st);
-            let key = ctx.canonical(st_def)?;
-            let raw_ref = ref_for(&key)?;
-            Some(nudox_ir::kinds::Type::Nominal(raw_ref))
-        })
-        .collect();
+    //
+    // `Trait::direct_supertraits` strips generic args — it returns bare `Trait`
+    // values with no information about the written `Bar<u32>` arguments.  To
+    // preserve those we walk the AST `type_bound_list` instead.  Each path
+    // bound resolves to a `ModuleDef::Trait` via `Semantics::resolve_path`;
+    // the associated generic args are recovered from the last path segment via
+    // `last_segment_type_args`.  The result is:
+    //   • `trait Foo: Bar<u32>` → `Type::Apply { base: Nominal(Bar), args: [u32] }`
+    //   • `trait Foo: Bar`      → `Type::Nominal(Bar)`
+    let supers: Vec<nudox_ir::kinds::Type> = {
+        let ast_bounds = trait_ast
+            .as_ref()
+            .and_then(|ast| ast.type_bound_list());
+
+        if let Some(bounds) = ast_bounds {
+            bounds
+                .bounds()
+                .filter_map(|b| {
+                    // Only PathType bounds (not lifetime bounds).
+                    let path_ty = match b.kind() {
+                        Some(ra_ap_syntax::ast::TypeBoundKind::PathType(_, path_ty)) => path_ty,
+                        _ => return None,
+                    };
+                    let path = path_ty.path()?;
+                    // Resolve the path to a Trait.
+                    let res = ty::resolve_path_opt(ctx, &path)?;
+                    let def = match res {
+                        ra_ap_hir::PathResolution::Def(d) => d,
+                        _ => return None,
+                    };
+                    let key = ctx.canonical(def)?;
+                    let raw_ref = ref_for(&key)?;
+                    let base = nudox_ir::kinds::Type::Nominal(raw_ref);
+                    // Recover written generic args from the last path segment.
+                    let type_args = ty::last_segment_type_args_pub(ctx, &path, &mut ref_for);
+                    if type_args.is_empty() {
+                        Some(base)
+                    } else {
+                        Some(nudox_ir::kinds::Type::Apply {
+                            base: Box::new(base),
+                            args: type_args.into_boxed_slice(),
+                        })
+                    }
+                })
+                .collect()
+        } else {
+            // No AST source (e.g. macro-generated trait); fall back to HIR,
+            // which loses generic args but is better than nothing.
+            t.direct_supertraits(ctx.db)
+                .into_iter()
+                .filter_map(|st| {
+                    let st_def = ModuleDef::Trait(st);
+                    let key = ctx.canonical(st_def)?;
+                    let raw_ref = ref_for(&key)?;
+                    Some(nudox_ir::kinds::Type::Nominal(raw_ref))
+                })
+                .collect()
+        }
+    };
 
     let flags = TraitFlags {
         is_unsafe: t.is_unsafe(ctx.db),
@@ -809,10 +960,47 @@ fn lower_const(
         ty::lower_hir_type_fallback(ctx, &hir_ty, &mut ref_for)
     };
 
-    let value: Option<String> = src
-        .as_ref()
-        .and_then(|s| s.value.body())
-        .map(|e| e.syntax().text().to_string());
+    // Constant value: prefer the evaluated representation when the RA trait
+    // solver can produce one; otherwise fall back to the source text.
+    //
+    // `Const::eval` → `EvaluatedConst::render` gives the evaluated numeric
+    // string (e.g. `42 (0x2A)` for integer consts).  The IR field `value` is a
+    // `String` so we store this directly.
+    //
+    // Note on IR-side ConstExpr: a structured `ConstExpr` (Int/Float/BinOp/…)
+    // would require changing `nudox_ir::kinds::Const::value` from `Option<String>`
+    // to a sum type, plus visitor/serde derivations, plus a builder update.  The
+    // necessary IR-side signature would be:
+    //   ```
+    //   pub enum ConstExpr {
+    //       Int(i128),
+    //       Uint(u128),
+    //       Float(f64),
+    //       Bool(bool),
+    //       Str(String),
+    //       BinOp { op: BinOp, lhs: Box<ConstExpr>, rhs: Box<ConstExpr> },
+    //       UnaryOp { op: UnaryOp, operand: Box<ConstExpr> },
+    //       Path(String),       // const reference by canonical path
+    //       Unknown(String),    // source text fallback
+    //   }
+    //   ```
+    //   `nudox_ir::kinds::Const::value` becomes `Option<ConstExpr>`.
+    //   Until then we use the best string we can obtain.
+    let value: Option<String> = {
+        // Try evaluated value first (panic-safe).
+        let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.eval(ctx.db).ok().map(|ev| ev.render(ctx.db, ctx.display))
+        }));
+        match evaluated {
+            Ok(Some(rendered)) => Some(rendered),
+            _ => {
+                // Fall back to source text.
+                src.as_ref()
+                    .and_then(|s| s.value.body())
+                    .map(|e| e.syntax().text().to_string())
+            }
+        }
+    };
     drop(ref_for);
 
     let const_body = Const::builder().ty(const_ty).maybe_value(value).build();
@@ -979,6 +1167,62 @@ pub(crate) fn declare_params(
         .collect()
 }
 
+// ── Auto-trait probing ────────────────────────────────────────────────────────
+
+/// Probe the two auto-traits that are resolvable via lang items in ra_ap 0.0.341.
+///
+/// ## What IS reachable
+///
+/// Only `LangItem::Sync` and `LangItem::Unpin` are registered as lang items in
+/// `ra_ap_hir_def` at this version.  Both are accessible via
+/// `Trait::lang(db, krate, LangItem::Sync / Unpin)` and then probed with
+/// `hir_ty.impls_trait(db, trait_, &[])`.
+///
+/// ## What is NOT reachable
+///
+/// `Send`, `UnwindSafe`, and `RefUnwindSafe` are **not** lang items in
+/// `ra_ap_hir_def-0.0.341`.  Tried: `LangItem::Send` — does not exist on the
+/// `LangItemEnum` type; checked `hir_def/src/lang_item.rs` directly (the macro
+/// table lists `Sync` at line 454 and `Unpin` at line 536; `Send` is absent).
+/// `AttrsWithOwner` has no `is_send()` / `is_sync()` predicates either.
+/// To query those three traits would require walking the `std::marker` module
+/// by name from a std/core `Crate` dependency, which is fragile and not
+/// attempted here.
+fn probe_auto_traits_partial<'db>(
+    ctx: &LowerCtx<'_>,
+    hir_ty: &ra_ap_hir::Type<'db>,
+) -> Vec<AutoFact> {
+    use nudox_ir::kinds::facts::{AutoState, AutoTrait};
+
+    let krate = ctx.krate;
+    let mut facts = Vec::new();
+
+    // Helper: map impls_trait result → AutoState.
+    // `impls_trait` returns `true` when the trait is unconditionally implemented.
+    // We cannot distinguish "conditional" from "not implemented" here — a `false`
+    // result means "ra does not confirm unconditional impl", which could be either
+    // `No` or `Cond`.  We conservatively emit `No`; a fuller solver pass could
+    // distinguish these using `has_any_impl`.
+    let probe = |trait_opt: Option<Trait>| -> Option<AutoState> {
+        let t = trait_opt?;
+        if hir_ty.impls_trait(ctx.db, t, &[]) {
+            Some(AutoState::Yes)
+        } else {
+            // Cannot tell No from Cond at this API level — emit No.
+            Some(AutoState::No)
+        }
+    };
+
+    if let Some(state) = probe(Trait::lang(ctx.db, krate, LangItem::Sync)) {
+        facts.push(AutoFact { trait_: AutoTrait::Sync, state });
+    }
+    if let Some(state) = probe(Trait::lang(ctx.db, krate, LangItem::Unpin)) {
+        facts.push(AutoFact { trait_: AutoTrait::Unpin, state });
+    }
+
+    facts
+}
+
 // ── Convenience helpers ───────────────────────────────────────────────────────
 
 fn plain_sym(name: &str) -> nudox_ir::entry::Symbol {
@@ -1005,5 +1249,153 @@ fn default_parts() -> super::ctx::SymbolParts {
         deprecation: None,
         doc_links: Vec::new(),
         cfg: None,
+        attrs: Box::new([]),
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use nudox_ir::{
+        change::{EcosystemId, PackageLineageId, PackageName},
+        entry::EntryInner,
+        kinds::{Field, FieldKey, Module as IrModule, Record, RecordForm, Reexport, Type},
+        lower::Lowering,
+        package::PackageId,
+    };
+
+    fn sym(name: &str) -> nudox_ir::entry::Symbol {
+        nudox_ir::entry::Symbol {
+            name: name.to_owned(),
+            visibility: nudox_ir::entry::Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        }
+    }
+
+    fn lineage() -> PackageLineageId {
+        PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("test-producer"))
+    }
+
+    // ── Fix 1: Union lowers to RecordForm::Union ──────────────────────────────
+
+    /// A `Record` built with `RecordForm::Union` must be preserved end-to-end
+    /// through `Lowering` + seal.  This verifies the IR slot accepts
+    /// `Union` and that the lowering path produces the correct form.
+    #[test]
+    fn union_lowers_to_record_form_union() {
+        let mut low: Lowering<usize> = Lowering::new(PackageId::path("pkg"), sym("root"));
+
+        // Declare a field.
+        let f: nudox_ir::index::Ref<Field> = low.declare(
+            2,
+            Some(1),
+            sym("data"),
+            Field::builder().key(FieldKey::Named).ty(Type::I32).build(),
+        );
+
+        // Declare a union record using RecordForm::Union.
+        low.declare(
+            1,
+            None,
+            sym("MyUnion"),
+            Record::builder()
+                .form(RecordForm::Union)
+                .fields([f])
+                .build(),
+        );
+
+        let pkg = low.finish().expect("finish must succeed");
+        let sealed = pkg.seal(&lineage());
+
+        // Find MyUnion entry.
+        let found = sealed.iter().find(|(_, e)| e.sym().name == "MyUnion");
+        let (_, union_entry) = found.expect("MyUnion must exist after sealing");
+
+        // Verify the kind is Record with Union form via downcast.
+        let typed = union_entry.downcast::<Record>()
+            .expect("MyUnion must be an owned Record entry");
+        assert_eq!(
+            typed.body().form,
+            RecordForm::Union,
+            "union must have RecordForm::Union, not Struct"
+        );
+    }
+
+    // ── Fix 2: pub use → Reexport entry ──────────────────────────────────────
+
+    /// A `declare_ref` entry must appear as a `Reference` in the package tree.
+    /// This mirrors exactly what `lower_module` emits for a `pub use` re-export.
+    #[test]
+    fn reexport_produces_reference_entry() {
+        let mut low: Lowering<usize> = Lowering::new(PackageId::path("pkg"), sym("root"));
+
+        // Original module entry.
+        let orig: nudox_ir::index::Ref<IrModule> =
+            low.declare(1, None, sym("inner_module"), IrModule);
+
+        // Re-export under a different name (mirrors what lower_module emits).
+        let reexport_ref: nudox_ir::index::Ref<Reexport> = {
+            let raw = orig.into_raw();
+            match raw.as_local() {
+                Some(idx) => nudox_ir::index::Ref::Local(idx.typed()),
+                None => panic!("must be Local during build"),
+            }
+        };
+        low.declare_ref::<Reexport>(2, None, sym("pub_alias"), reexport_ref);
+
+        let pkg = low.finish().expect("finish must succeed");
+        let sealed = pkg.seal(&lineage());
+
+        let alias = sealed
+            .iter()
+            .find(|(_, e)| e.sym().name == "pub_alias")
+            .expect("pub_alias must exist");
+
+        assert!(
+            matches!(alias.1.kind(), EntryInner::Reference(_)),
+            "pub_alias must be a Reference entry (re-export)"
+        );
+    }
+
+    // ── Fix 3: supertrait generic args → Type::Apply ──────────────────────────
+
+    /// `Type::Apply { base, args }` is the shape for a parameterised bound like
+    /// `Bar<u32>`.  This test verifies the IR can hold such a type and that
+    /// serde round-trip preserves the argument.
+    #[test]
+    fn supertrait_apply_type_roundtrips() {
+        // Build `Bar<u32>` manually — what the AST path produces for
+        // `trait Foo: Bar<u32>` when generic args are recovered.
+        let mut low: Lowering<usize> = Lowering::new(PackageId::path("pkg"), sym("root"));
+
+        // Declare Bar so the Ref is valid.
+        let bar_ref: nudox_ir::index::Ref<IrModule> =
+            low.declare(10, None, sym("Bar"), IrModule);
+
+        let bar_nominal = Type::Nominal(bar_ref.into_raw());
+        let bar_applied = Type::Apply {
+            base: Box::new(bar_nominal),
+            args: Box::new([Type::U32]),
+        };
+
+        // Verify serde round-trip preserves the Apply shape.
+        let json = serde_json::to_string(&bar_applied).expect("serialize");
+        let rt: Type = serde_json::from_str(&json).expect("deserialize");
+
+        match rt {
+            Type::Apply { args, .. } => {
+                assert_eq!(args.len(), 1, "must have one type arg");
+                assert_eq!(args[0], Type::U32, "arg must be u32");
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
     }
 }

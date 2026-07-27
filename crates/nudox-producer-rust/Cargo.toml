@@ -30,3 +30,4 @@ smol_str   = "0.3"
 tracing    = "0.1"
 
 [dev-dependencies]
+serde_json = { workspace = true }
