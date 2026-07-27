@@ -55,6 +55,7 @@
 //! and are filtered before reaching this layer (handled in the oracle invoke
 //! step). TypeVar *uses* in type annotations lower to `Type::TypeVar(name)`.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use nudox_ir::{
@@ -82,8 +83,59 @@ use crate::{
 ///
 /// Called from [`PythonProducer::lower`].
 pub fn emit_package(oracle: &PythonOracle, out: &mut Lowering<PythonId>) {
+    // Build the set of all fully-qualified IDs declared in this package so
+    // that `lower_type` can resolve same-package nominals to real Refs instead
+    // of falling back to `Type::Any`.
+    let known_ids = collect_known_ids(oracle);
+
     for module in &oracle.modules {
-        emit_module(module, out);
+        emit_module(module, out, &known_ids);
+    }
+}
+
+/// Walk the oracle and collect every PythonId string that will be declared.
+///
+/// This is a cheap pre-pass (no allocation per item, just string clones) that
+/// lets `lower_type` answer "is this name same-package?" without requiring a
+/// two-pass emission loop.
+fn collect_known_ids(oracle: &PythonOracle) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for module in &oracle.modules {
+        ids.insert(module.name.clone());
+        for item in &module.items {
+            collect_item_ids(item, &mut ids);
+        }
+    }
+    ids
+}
+
+fn collect_item_ids(item: &ItemData, ids: &mut HashSet<String>) {
+    ids.insert(item.id.0.clone());
+    match &item.body {
+        ItemBody::Class(cls) => {
+            for field in &cls.fields {
+                ids.insert(format!("{}.{}", item.id.as_str(), field.name));
+            }
+            for method in &cls.methods {
+                collect_item_ids(method, ids);
+            }
+            for nested in &cls.nested {
+                collect_item_ids(nested, ids);
+            }
+        }
+        ItemBody::Function(func) => {
+            for param in &func.params {
+                if param.name != "self" && param.name != "cls" {
+                    ids.insert(format!("{}.{}", item.id.as_str(), param.name));
+                }
+            }
+        }
+        ItemBody::Overloaded(branches) => {
+            for (i, _branch) in branches.iter().enumerate() {
+                ids.insert(format!("{}#{i}", item.id.as_str()));
+            }
+        }
+        ItemBody::Module | ItemBody::Const(_) | ItemBody::Alias(_) => {}
     }
 }
 
@@ -91,7 +143,7 @@ pub fn emit_package(oracle: &PythonOracle, out: &mut Lowering<PythonId>) {
 // Module
 // ---------------------------------------------------------------------------
 
-fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>) {
+fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>, known_ids: &HashSet<String>) {
     let module_id = PythonId::new(module.name.clone());
     let sym = make_sym(
         &module.name,
@@ -103,7 +155,7 @@ fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>) {
     out.declare(module_id.clone(), None, sym, Module);
 
     for item in &module.items {
-        emit_item(item, Some(module_id.clone()), out);
+        emit_item(item, Some(module_id.clone()), out, known_ids);
     }
 }
 
@@ -111,14 +163,19 @@ fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>) {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-fn emit_item(item: &ItemData, parent: Option<PythonId>, out: &mut Lowering<PythonId>) {
+fn emit_item(
+    item: &ItemData,
+    parent: Option<PythonId>,
+    out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
+) {
     match &item.body {
         ItemBody::Module => {
             let sym = make_sym_item(item);
             out.declare(item.id.clone(), parent, sym, Module);
         }
-        ItemBody::Class(cls) => emit_class(item, cls, parent, out),
-        ItemBody::Function(func) => emit_function(item, func, parent, out),
+        ItemBody::Class(cls) => emit_class(item, cls, parent, out, known_ids),
+        ItemBody::Function(func) => emit_function(item, func, parent, out, known_ids),
         ItemBody::Overloaded(branches) => {
             // Each overload is a separate declaration with id = `base#N`.
             for (i, branch) in branches.iter().enumerate() {
@@ -130,12 +187,12 @@ fn emit_item(item: &ItemData, parent: Option<PythonId>, out: &mut Lowering<Pytho
                     item.deprecation.as_ref(),
                     &item.decorators,
                 );
-                let fn_kind = build_function_kind(branch);
+                let fn_kind = build_function_kind(branch, out, known_ids);
                 out.declare(overload_id, parent.clone(), sym, fn_kind);
             }
         }
-        ItemBody::Const(c) => emit_const(item, c, parent, out),
-        ItemBody::Alias(a) => emit_alias(item, a, parent, out),
+        ItemBody::Const(c) => emit_const(item, c, parent, out, known_ids),
+        ItemBody::Alias(a) => emit_alias(item, a, parent, out, known_ids),
     }
 }
 
@@ -148,35 +205,35 @@ fn emit_class(
     cls: &crate::oracle::ClassData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
 ) {
     let class_id = item.id.clone();
 
     // --- Enum subclass ---
     if cls.form == ClassForm::Enum {
-        emit_enum(item, cls, parent, out);
+        emit_enum(item, cls, parent, out, known_ids);
         return;
     }
 
     // --- Protocol → Trait ---
     if cls.form == ClassForm::Protocol {
-        emit_protocol(item, cls, parent, out);
+        emit_protocol(item, cls, parent, out, known_ids);
         return;
     }
 
     // --- Plain / Dataclass / TypedDict / NamedTuple → Record ---
-    let generics: Box<[_]> = types::lower_generics(&cls.generics);
-    let super_types: Box<[_]> = cls
-        .super_types
-        .iter()
-        .map(|t| types::lower_type(t))
-        .collect();
+    let generics: Box<[_]> = types::lower_generics(&cls.generics, out, known_ids);
+    let mut super_types: Vec<_> = Vec::with_capacity(cls.super_types.len());
+    for t in &cls.super_types {
+        super_types.push(types::lower_type(t, out, known_ids));
+    }
 
     // Emit fields first (they need to be declared before the Record refers to them).
     let mut field_refs = Vec::with_capacity(cls.fields.len());
     for field in &cls.fields {
         let field_id = PythonId::new(format!("{}.{}", class_id.as_str(), field.name));
         let field_sym = make_field_sym(field, class_id.as_str());
-        let field_kind = build_field_kind(field);
+        let field_kind = build_field_kind(field, out, known_ids);
         let field_ref = out.declare(field_id, Some(class_id.clone()), field_sym, field_kind);
         field_refs.push(field_ref);
     }
@@ -196,11 +253,11 @@ fn emit_class(
 
     // Emit methods.
     for method in &cls.methods {
-        emit_item(method, Some(class_id.clone()), out);
+        emit_item(method, Some(class_id.clone()), out, known_ids);
     }
     // Emit nested classes.
     for nested in &cls.nested {
-        emit_item(nested, Some(class_id.clone()), out);
+        emit_item(nested, Some(class_id.clone()), out, known_ids);
     }
 }
 
@@ -209,9 +266,10 @@ fn emit_enum(
     cls: &crate::oracle::ClassData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
 ) {
     let enum_id = item.id.clone();
-    let generics: Box<[_]> = types::lower_generics(&cls.generics);
+    let generics: Box<[_]> = types::lower_generics(&cls.generics, out, known_ids);
 
     // Emit variants.
     let mut variant_refs = Vec::with_capacity(cls.fields.len());
@@ -219,7 +277,10 @@ fn emit_enum(
         let variant_id = PythonId::new(format!("{}.{}", enum_id.as_str(), field.name));
         let variant_sym = make_field_sym(field, enum_id.as_str());
         // Enum fields: unit variants carrying an optional value in `discr`.
-        let value_str = field.ty.as_ref().map(|t| format!("{:?}", types::lower_type(t)));
+        let value_str = field
+            .ty
+            .as_ref()
+            .map(|t| format!("{:?}", types::lower_type(t, out, known_ids)));
         let variant_kind = Variant::builder()
             .form(VariantForm::Unit)
             .maybe_discr(value_str)
@@ -238,7 +299,7 @@ fn emit_enum(
 
     // Enum classes may also have methods (e.g. custom __str__).
     for method in &cls.methods {
-        emit_item(method, Some(enum_id.clone()), out);
+        emit_item(method, Some(enum_id.clone()), out, known_ids);
     }
 }
 
@@ -247,14 +308,14 @@ fn emit_protocol(
     cls: &crate::oracle::ClassData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
 ) {
     let trait_id = item.id.clone();
-    let generics: Box<[_]> = types::lower_generics(&cls.generics);
-    let supers: Box<[_]> = cls
-        .super_types
-        .iter()
-        .map(|t| types::lower_type(t))
-        .collect();
+    let generics: Box<[_]> = types::lower_generics(&cls.generics, out, known_ids);
+    let mut supers: Vec<_> = Vec::with_capacity(cls.super_types.len());
+    for t in &cls.super_types {
+        supers.push(types::lower_type(t, out, known_ids));
+    }
 
     let trait_kind = Trait::builder()
         .flags(TraitFlags::default())
@@ -267,7 +328,7 @@ fn emit_protocol(
 
     // Protocol methods.
     for method in &cls.methods {
-        emit_item(method, Some(trait_id.clone()), out);
+        emit_item(method, Some(trait_id.clone()), out, known_ids);
     }
 }
 
@@ -280,6 +341,7 @@ fn emit_function(
     func: &FunctionData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
 ) {
     let fn_id = item.id.clone();
 
@@ -294,10 +356,7 @@ fn emit_function(
         let param_sym = Symbol {
             name: param.name.clone(),
             visibility: Visibility::Private,
-            documentation: param
-                .doc_description
-                .clone()
-                .unwrap_or_default(),
+            documentation: param.doc_description.clone().unwrap_or_default(),
             source: PathBuf::new(),
             span: 0..0,
             aliases: Box::new([]),
@@ -306,7 +365,7 @@ fn emit_function(
             attrs: Box::new([]),
             cfg: None,
         };
-        let ty = param.ty.as_ref().map(|t| types::lower_type(t));
+        let ty = param.ty.as_ref().map(|t| types::lower_type(t, out, known_ids));
         let mut attrs = Vec::new();
         match param.kind {
             ParamKind::PositionalOnly => attrs.push(ParamAttribute::Inout), // closest available
@@ -319,8 +378,7 @@ fn emit_function(
             attrs.push(ParamAttribute::Optional);
         }
         let param_kind = Param::builder().maybe_ty(ty).attributes(attrs).build();
-        let param_ref =
-            out.declare(param_id, Some(fn_id.clone()), param_sym, param_kind);
+        let param_ref = out.declare(param_id, Some(fn_id.clone()), param_sym, param_kind);
         param_refs.push(param_ref);
     }
 
@@ -341,13 +399,13 @@ fn emit_function(
             cfg: None,
         };
         let ret_kind = Param::builder()
-            .maybe_ty(Some(types::lower_type(ret_ty)))
+            .maybe_ty(Some(types::lower_type(ret_ty, out, known_ids)))
             .build();
         let ret_ref = out.declare(ret_id, Some(fn_id.clone()), ret_sym, ret_kind);
         output_refs.push(ret_ref);
     }
 
-    let fn_kind = build_function_kind(func);
+    let fn_kind = build_function_kind(func, out, known_ids);
     // Override input/output with our declared param refs.
     let fn_kind = Function::builder()
         .maybe_receiver(fn_kind.receiver)
@@ -363,7 +421,11 @@ fn emit_function(
 
 /// Build a `Function` kind body from oracle data, WITHOUT emitting param children.
 /// Used for overload branches where we want the function shape without children.
-fn build_function_kind(func: &FunctionData) -> Function {
+fn build_function_kind(
+    func: &FunctionData,
+    out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
+) -> Function {
     let receiver = match func.receiver {
         ReceiverKind::SharedRef => Some(nudox_ir::kinds::Receiver::SharedRef),
         ReceiverKind::ClassMethod => None, // modeled via attrs
@@ -376,7 +438,7 @@ fn build_function_kind(func: &FunctionData) -> Function {
         modifiers.push(FnModifier::Async);
     }
 
-    let generics: Vec<_> = types::lower_generics(&func.generics).into_vec();
+    let generics: Vec<_> = types::lower_generics(&func.generics, out, known_ids).into_vec();
 
     Function::builder()
         .maybe_receiver(receiver)
@@ -395,17 +457,15 @@ fn emit_const(
     c: &crate::oracle::ConstData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
 ) {
     let ty = c
         .ty
         .as_ref()
-        .map(|t| types::lower_type(t))
+        .map(|t| types::lower_type(t, out, known_ids))
         .unwrap_or(nudox_ir::kinds::Type::Any);
 
-    let const_kind = Const::builder()
-        .ty(ty)
-        .maybe_value(c.value.clone())
-        .build();
+    let const_kind = Const::builder().ty(ty).maybe_value(c.value.clone()).build();
 
     let sym = make_sym_item(item);
     out.declare(item.id.clone(), parent, sym, const_kind);
@@ -416,14 +476,12 @@ fn emit_alias(
     a: &crate::oracle::AliasData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
 ) {
-    let target = a.target.as_ref().map(|t| types::lower_type(t));
-    let generics: Box<[_]> = types::lower_generics(&a.generics);
+    let target = a.target.as_ref().map(|t| types::lower_type(t, out, known_ids));
+    let generics: Box<[_]> = types::lower_generics(&a.generics, out, known_ids);
 
-    let alias_kind = Alias::builder()
-        .maybe_target(target)
-        .generics(generics)
-        .build();
+    let alias_kind = Alias::builder().maybe_target(target).generics(generics).build();
 
     let sym = make_sym_item(item);
     out.declare(item.id.clone(), parent, sym, alias_kind);
@@ -503,8 +561,15 @@ fn make_field_sym(field: &FieldData, class_name: &str) -> Symbol {
     }
 }
 
-fn build_field_kind(field: &FieldData) -> Field {
-    let ty = field.ty.as_ref().map(|t| types::lower_type(t));
+fn build_field_kind(
+    field: &FieldData,
+    out: &mut Lowering<PythonId>,
+    known_ids: &HashSet<String>,
+) -> Field {
+    let ty = field
+        .ty
+        .as_ref()
+        .map(|t| types::lower_type(t, out, known_ids));
     let mut attrs = Vec::new();
     if !field.is_final && !field.is_class_var {
         attrs.push(FieldAttribute::Mutable);
@@ -529,7 +594,8 @@ fn build_field_kind(field: &FieldData) -> Field {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oracle::{ClassData, ConstData, FunctionData, ReceiverKind};
+    use crate::oracle::{ConstData, FunctionData, ReceiverKind};
+    use nudox_ir::kinds::ty::Type;
     use nudox_ir::package::PackageId;
 
     fn root_sym() -> Symbol {
@@ -583,8 +649,7 @@ mod tests {
         let oracle = PythonOracle {
             modules: vec![simple_module("my_module", vec![])],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
         // root + module = 2
@@ -599,8 +664,7 @@ mod tests {
                 vec![simple_function("my_module.greet", "greet", false)],
             )],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
         // root + module + function = 3
@@ -619,8 +683,7 @@ mod tests {
                 vec![simple_function("my_module.fetch", "fetch", true)],
             )],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
 
@@ -692,8 +755,7 @@ mod tests {
         let oracle = PythonOracle {
             modules: vec![simple_module("my_module", vec![overloaded_item])],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
 
@@ -750,8 +812,7 @@ mod tests {
         let oracle = PythonOracle {
             modules: vec![simple_module("my_module", vec![class_item])],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
 
@@ -809,8 +870,7 @@ mod tests {
         let oracle = PythonOracle {
             modules: vec![simple_module("my_module", vec![color_item])],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
 
@@ -855,8 +915,7 @@ mod tests {
         let oracle = PythonOracle {
             modules: vec![simple_module("my_module", vec![alias_item])],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
 
@@ -889,8 +948,7 @@ mod tests {
         let oracle = PythonOracle {
             modules: vec![simple_module("my_module", vec![const_item])],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
 
@@ -926,11 +984,7 @@ mod tests {
                 generics: vec![],
                 form: ClassForm::Protocol,
                 fields: vec![],
-                methods: vec![simple_function(
-                    "my_module.Drawable.draw",
-                    "draw",
-                    false,
-                )],
+                methods: vec![simple_function("my_module.Drawable.draw", "draw", false)],
                 nested: vec![],
             }),
         };
@@ -938,8 +992,7 @@ mod tests {
         let oracle = PythonOracle {
             modules: vec![simple_module("my_module", vec![protocol_item])],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
 
@@ -961,8 +1014,7 @@ mod tests {
                 vec![simple_function("my_module._helper", "_helper", false)],
             )],
         };
-        let mut sink: Lowering<PythonId> =
-            Lowering::new(PackageId::path("pkg"), root_sym());
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
         emit_package(&oracle, &mut sink);
         let pkg = sink.finish().expect("finish must succeed");
 
@@ -974,5 +1026,190 @@ mod tests {
             matches!(helper.1.sym().visibility, Visibility::Private),
             "_helper must be Private"
         );
+    }
+
+    /// A method that returns another class **declared later in the same package**
+    /// must lower to `Type::Nominal` (not `Type::Any`), and `finish` must succeed.
+    #[test]
+    fn method_returning_sibling_class_resolves_to_nominal() {
+        use crate::oracle::{ClassData, ClassForm, TypeData};
+
+        // Payload is declared AFTER Holder in oracle order — intentional.
+        let holder_item = ItemData {
+            id: PythonId::new("my_pkg.Holder"),
+            parent: None,
+            name: "Holder".to_owned(),
+            is_private: false,
+            documentation: None,
+            deprecation: None,
+            decorators: vec![],
+            body: ItemBody::Class(ClassData {
+                super_types: vec![],
+                generics: vec![],
+                form: ClassForm::Plain,
+                fields: vec![],
+                methods: vec![ItemData {
+                    id: PythonId::new("my_pkg.Holder.get_payload"),
+                    parent: Some(PythonId::new("my_pkg.Holder")),
+                    name: "get_payload".to_owned(),
+                    is_private: false,
+                    documentation: None,
+                    deprecation: None,
+                    decorators: vec![],
+                    body: ItemBody::Function(FunctionData {
+                        overload_index: 0,
+                        receiver: ReceiverKind::SharedRef,
+                        params: vec![],
+                        // Return type: Payload — declared later in the oracle.
+                        return_ty: Some(TypeData::Nominal("my_pkg.Payload".to_owned())),
+                        generics: vec![],
+                        is_async: false,
+                        is_abstract: false,
+                        is_stub: false,
+                    }),
+                }],
+                nested: vec![],
+            }),
+        };
+
+        let payload_item = ItemData {
+            id: PythonId::new("my_pkg.Payload"),
+            parent: None,
+            name: "Payload".to_owned(),
+            is_private: false,
+            documentation: None,
+            deprecation: None,
+            decorators: vec![],
+            body: ItemBody::Class(ClassData {
+                super_types: vec![],
+                generics: vec![],
+                form: ClassForm::Plain,
+                fields: vec![],
+                methods: vec![],
+                nested: vec![],
+            }),
+        };
+
+        let oracle = PythonOracle {
+            modules: vec![simple_module("my_pkg", vec![holder_item, payload_item])],
+        };
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
+        emit_package(&oracle, &mut sink);
+        // finish() succeeds iff the forward reference to Payload was properly
+        // declared (i.e., not left as Undeclared).
+        let pkg = sink.finish().expect(
+            "forward-declared same-package nominal must not leave any Undeclared entries",
+        );
+
+        assert!(
+            pkg.iter().any(|(_, e)| e.sym().name == "Payload"),
+            "Payload must be in the package"
+        );
+        assert!(
+            pkg.iter().any(|(_, e)| e.sym().name == "Holder"),
+            "Holder must be in the package"
+        );
+        assert!(
+            pkg.iter().any(|(_, e)| e.sym().name == "get_payload"),
+            "get_payload method must be in the package"
+        );
+    }
+
+    /// A same-package class used as a generic argument produces `Type::Apply`
+    /// whose base is `Type::Nominal`, not `Type::Any`.
+    #[test]
+    fn same_package_class_in_generic_apply_is_nominal() {
+        use crate::oracle::{AliasData, ClassData, ClassForm, TypeData};
+
+        // Container[Item] where both Container and Item are in the same package.
+        let container_item = ItemData {
+            id: PythonId::new("my_pkg.Container"),
+            parent: None,
+            name: "Container".to_owned(),
+            is_private: false,
+            documentation: None,
+            deprecation: None,
+            decorators: vec![],
+            body: ItemBody::Class(ClassData {
+                super_types: vec![],
+                generics: vec![],
+                form: ClassForm::Plain,
+                fields: vec![],
+                methods: vec![],
+                nested: vec![],
+            }),
+        };
+
+        let item_class = ItemData {
+            id: PythonId::new("my_pkg.Item"),
+            parent: None,
+            name: "Item".to_owned(),
+            is_private: false,
+            documentation: None,
+            deprecation: None,
+            decorators: vec![],
+            body: ItemBody::Class(ClassData {
+                super_types: vec![],
+                generics: vec![],
+                form: ClassForm::Plain,
+                fields: vec![],
+                methods: vec![],
+                nested: vec![],
+            }),
+        };
+
+        // An alias: MyAlias = Container[Item]
+        let alias_item = ItemData {
+            id: PythonId::new("my_pkg.MyAlias"),
+            parent: None,
+            name: "MyAlias".to_owned(),
+            is_private: false,
+            documentation: None,
+            deprecation: None,
+            decorators: vec![],
+            body: ItemBody::Alias(AliasData {
+                target: Some(TypeData::Apply {
+                    base: Box::new(TypeData::Nominal("my_pkg.Container".to_owned())),
+                    args: vec![TypeData::Nominal("my_pkg.Item".to_owned())],
+                }),
+                generics: vec![],
+            }),
+        };
+
+        let oracle = PythonOracle {
+            modules: vec![simple_module(
+                "my_pkg",
+                vec![container_item, item_class, alias_item],
+            )],
+        };
+        let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
+        emit_package(&oracle, &mut sink);
+        let pkg = sink.finish().expect("finish must succeed");
+
+        let alias_entry = pkg
+            .iter()
+            .find(|(_, e)| e.sym().name == "MyAlias")
+            .expect("MyAlias not found");
+        let alias_body = alias_entry
+            .1
+            .downcast::<Alias>()
+            .expect("MyAlias must be an Alias kind");
+
+        // The alias target must be Apply { base: Nominal(..), args: [Nominal(..)] }.
+        match alias_body.body().target.as_ref() {
+            Some(Type::Apply { base, args }) => {
+                assert!(
+                    matches!(base.as_ref(), Type::Nominal(_)),
+                    "Apply base must be Nominal for same-package Container, got {base:?}"
+                );
+                assert_eq!(args.len(), 1, "must have one type arg");
+                assert!(
+                    matches!(args[0], Type::Nominal(_)),
+                    "Apply arg must be Nominal for same-package Item, got {:?}",
+                    args[0]
+                );
+            }
+            other => panic!("expected Apply target, got {other:?}"),
+        }
     }
 }
