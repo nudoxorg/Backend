@@ -38,7 +38,7 @@ pub struct AttrTok {
 /// downstream analysis can reason about conditional compilation without
 /// re-parsing raw token streams.
 // frozen — never renumber/reorder variants
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum CfgExpr {
     /// All inner predicates must hold (`cfg(all(...))`).
     All(crate::List<CfgExpr>),
@@ -64,7 +64,7 @@ pub enum CfgExpr {
     Other(String),
 }
 
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum Visibility {
     /// Unrestricted access; visible to all.
     Public,
@@ -82,7 +82,7 @@ pub enum Visibility {
 
 /// A deprecated symbol, optionally carrying a human-readable note and
 /// the version in which the deprecation was introduced.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Deprecation {
     /// Human-readable explanation of the deprecation.
     pub note: Option<String>,
@@ -91,7 +91,7 @@ pub struct Deprecation {
 }
 
 /// A cross-reference link embedded in documentation.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct DocLink {
     /// The target symbol or URL that this link points to.
     pub target: String,
@@ -153,7 +153,7 @@ mod tests {
 /// The separation between `Symbol` and the entry's [`Kind`](crate::kind::Kind)
 /// is intentional: the same kind data (e.g. a `Record`) can be re-exported
 /// under different names, and each re-export carries its own `Symbol`.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Symbol {
     /// The entry's name as written in source code.
     pub name: String,

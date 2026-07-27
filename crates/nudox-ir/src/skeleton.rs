@@ -466,6 +466,21 @@ impl<'a> Skeleton<'a> {
 // Convenience free functions (thin wrappers — the public API surface)
 // ---------------------------------------------------------------------------
 
+/// Type fingerprint for a single [`Type`] expression.
+///
+/// Used by the archive's type-fingerprint index to group entries that share the
+/// same declared type (e.g. all `Field`s with type `u32`). The bytes are a
+/// deterministic, length-prefixed encoding of the type's structural shape;
+/// two types produce the same bytes iff they are structurally identical (no
+/// local-ref resolution — treat every `Ref::Local` as unknown).
+///
+/// Uses no local-ref resolver; call [`Skeleton::new`] directly if you need one.
+pub fn type_skeleton(ty: &crate::kinds::Type) -> Vec<u8> {
+    let mut s = Skeleton::unresolved();
+    s.ty(ty);
+    s.finish()
+}
+
 /// Signature skeleton for overload disambiguation: input types, output types,
 /// generics, and where-clauses. Callers resolve `EntryIndex<Param>` →
 /// `Param.ty` before calling.

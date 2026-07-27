@@ -29,7 +29,7 @@ pub struct ImplFlags {
 /// The impl's name, visibility, and documentation live on the owning
 /// [`Entry`](crate::entry::Entry)'s [`Symbol`](crate::entry::Symbol).
 /// Impl methods and associated items appear as child entries.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Impl {
     /// Boolean modifiers for this impl (negative, blanket).
     pub flags: ImplFlags,

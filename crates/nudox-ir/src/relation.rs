@@ -256,7 +256,7 @@ impl Relation {
 /// * `forward` and `reverse` index vecs may contain duplicates only if the same
 ///   `RelationKey` is re-inserted with higher confidence (the index is not
 ///   updated on confidence-only upgrades, because the key is unchanged).
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct RelationSet {
     /// Primary store: `RelationKey → Relation`, in insertion order.
     ///

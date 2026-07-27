@@ -39,7 +39,7 @@ pub use self::{
 ///   └── Function "distance"
 ///       └── Param "other"
 /// ```
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     sym: Symbol,
     node: Node,
@@ -79,7 +79,7 @@ impl Entry {
         }
     }
 
-    pub(crate) fn reference(sym: Symbol, node: Node, idx: RawRef) -> Self {
+    pub fn reference(sym: Symbol, node: Node, idx: RawRef) -> Self {
         Self {
             sym,
             node,
@@ -88,7 +88,7 @@ impl Entry {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum EntryInner {
     Owned(Kind),
     Reference(RawRef),
@@ -102,6 +102,15 @@ impl EntryInner {
     pub fn as_owned_kind(&self) -> Option<&Kind> {
         match self {
             EntryInner::Owned(k) => Some(k),
+            EntryInner::Reference(_) => None,
+        }
+    }
+
+    /// Returns the [`KindDiscriminant`] of the owned kind, or `None` for a
+    /// reference entry.
+    pub fn discriminant(&self) -> Option<crate::kind::KindDiscriminant> {
+        match self {
+            EntryInner::Owned(k) => Some(k.discriminant()),
             EntryInner::Reference(_) => None,
         }
     }

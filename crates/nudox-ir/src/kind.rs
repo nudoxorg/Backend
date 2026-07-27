@@ -55,7 +55,7 @@ register_kinds! {
 
 macro_rules! register_kinds {
   ($($(#[$meta:meta])* $kind:ident = $disc:literal,)*) => {
-    #[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
     pub enum Kind {
       $(
       $(#[$meta])*
@@ -64,7 +64,7 @@ macro_rules! register_kinds {
     }
 
     impl Kind {
-      pub(crate) fn discriminant(&self) -> KindDiscriminant {
+      pub fn discriminant(&self) -> KindDiscriminant {
         match self {
           $(
           Kind::$kind(_) => KindDiscriminant::$kind,
@@ -82,7 +82,7 @@ macro_rules! register_kinds {
     }
 
     #[repr(u16)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
     pub enum KindDiscriminant {
       $(
       $(#[$meta])*
@@ -94,6 +94,17 @@ macro_rules! register_kinds {
       /// Returns the wire-stable `u16` value for this discriminant.
       pub fn as_u16(self) -> u16 {
         self as u16
+      }
+
+      /// Reconstruct a `KindDiscriminant` from its wire `u16` value.
+      ///
+      /// Returns `None` for values that do not correspond to any registered
+      /// kind (unrecognised or reserved discriminants).
+      pub fn from_u16(v: u16) -> Option<Self> {
+        match v {
+          $($disc => Some(KindDiscriminant::$kind),)*
+          _ => None,
+        }
       }
     }
 

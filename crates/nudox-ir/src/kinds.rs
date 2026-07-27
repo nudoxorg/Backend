@@ -16,7 +16,7 @@ pub mod ty;
 
 use crate::visitor::Visitor;
 
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Module;
 
 pub use self::{

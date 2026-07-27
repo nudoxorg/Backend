@@ -138,6 +138,7 @@ mod visitor;
 pub mod apply;
 pub mod body;
 pub mod change;
+pub mod continuity;
 pub mod codec;
 pub mod content;
 pub mod entry;

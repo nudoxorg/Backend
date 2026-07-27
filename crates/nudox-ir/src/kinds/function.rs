@@ -18,7 +18,7 @@ use crate::{
 // place.
 
 /// A function, method, or lambda with its full signature.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Function {
     /// How the function receives its `self`/`this`, if at all.
     ///

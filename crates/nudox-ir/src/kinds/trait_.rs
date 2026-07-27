@@ -43,7 +43,7 @@ pub struct TraitFlags {
 /// The trait's name, visibility, and documentation live on the owning
 /// [`Entry`](crate::entry::Entry)'s [`Symbol`](crate::entry::Symbol).
 /// Methods and associated items appear as child entries.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Trait {
     /// Boolean modifiers for this trait (unsafe, auto, sealed).
     pub flags: TraitFlags,

@@ -63,7 +63,7 @@ use crate::{
 /// The `target` still participates in identity *indirectly and correctly*: it
 /// is walked by the [`Visitor`] derive, so its nominal refs are lowered to
 /// `IntroId`s at seal time.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Alias {
     /// The right-hand-side type expression this alias expands to.
     ///

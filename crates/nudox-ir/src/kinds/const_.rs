@@ -10,7 +10,7 @@ use crate::{kinds::Type, visitor::Visitor};
 ///
 /// The const's name, visibility, and documentation live on the owning
 /// [`Entry`](crate::entry::Entry)'s [`Symbol`](crate::entry::Symbol).
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Const {
     /// The declared type of the constant.
     pub ty: Type,

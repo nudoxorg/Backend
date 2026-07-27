@@ -10,5 +10,5 @@ use crate::visitor::Visitor;
 /// owning [`Entry`](crate::entry::Entry) — no additional data is needed here.
 /// The re-export's name and visibility live on the entry's
 /// [`Symbol`](crate::entry::Symbol).
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Reexport;

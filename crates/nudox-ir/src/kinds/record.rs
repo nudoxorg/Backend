@@ -32,7 +32,7 @@ pub enum RecordForm {
     Union,
 }
 
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Record {
     /// The syntactic form of this record type.
     pub form: RecordForm,
@@ -124,7 +124,7 @@ mod tests {
 ///
 /// The field's name, visibility, and documentation live on the owning
 /// [`Entry`](crate::entry::Entry)'s [`Symbol`](crate::entry::Symbol).
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Field {
     /// How the field is keyed within its record.
     pub key: FieldKey,

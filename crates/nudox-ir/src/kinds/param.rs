@@ -4,7 +4,7 @@ use crate::{List, kinds::Type, visitor::Visitor};
 // the const-expression subsystem, which is intentionally deferred.
 
 /// A single parameter of a [`Function`](crate::kinds::Function).
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Param {
     /// The declared type of the parameter, if present.
     ///

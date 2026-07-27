@@ -11,7 +11,7 @@ use crate::{
 
 /// An algebraic sum type: a Rust `enum`, a discriminated/tagged union, or a
 /// sealed class hierarchy.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Enum {
     /// The variants of this sum type, in declaration order.
     pub variants: List<Ref<Variant>>,
@@ -69,7 +69,7 @@ pub enum VariantForm {
 /// Payload-carrying variants reference their payload as [`Field`] entries:
 /// tuple variants use [`FieldKey::Positional`](crate::kinds::record::FieldKey),
 /// struct variants use named fields, and unit variants carry none.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Variant {
     /// The syntactic form of this variant.
     pub form: VariantForm,

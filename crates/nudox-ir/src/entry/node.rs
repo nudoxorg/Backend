@@ -11,7 +11,7 @@ use crate::{List, index::RawRef, visitor::Visitor};
 /// External consumers that build a `PristineIntroTable` directly should
 /// construct a root `Node` with `Node::build(None::<RawRef>, [])` and let
 /// the table's `insert_live` call record the parent edge separately.
-#[derive(Debug, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub(super) parent: Option<RawRef>,
     pub(super) children: List<RawRef>,

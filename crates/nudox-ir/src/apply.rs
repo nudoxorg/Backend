@@ -23,7 +23,7 @@ use crate::{
 // StoredEntry (private)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 struct StoredEntry {
     entry: Entry,
     parent: Option<IntroId>,
@@ -55,7 +55,7 @@ struct StoredEntry {
 ///   that may run before the full entry set is inserted).
 /// * [`RelationSet`]'s own invariants (dedup, secondary-index consistency) are
 ///   maintained by [`RelationSet::insert`]; callers need not enforce them.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PristineIntroTable {
     map: HashMap<IntroId, StoredEntry>,
     children: HashMap<IntroId, Vec<IntroId>>,
@@ -181,6 +181,21 @@ impl PristineIntroTable {
     /// Iterate over all live intros and their entries.
     pub fn iter(&self) -> impl Iterator<Item = (IntroId, &Entry)> {
         self.map.iter().map(|(id, s)| (*id, &s.entry))
+    }
+
+    /// Alias for [`iter`](Self::iter) — iterate over all live intros and their
+    /// entries. Named `live_entries` for compatibility with callers that use the
+    /// old `workspace/ir` API.
+    pub fn live_entries(&self) -> impl Iterator<Item = (IntroId, &Entry)> {
+        self.iter()
+    }
+
+    /// True if `intro` is present (live) in this table.
+    ///
+    /// Alias for [`contains`](Self::contains) — named `is_live` for
+    /// compatibility with callers that use the old `workspace/ir` API.
+    pub fn is_live(&self, intro: IntroId) -> bool {
+        self.contains(intro)
     }
 }
 
