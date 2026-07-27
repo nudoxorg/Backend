@@ -72,7 +72,7 @@ pub enum Received {
     ///
     /// Each [`BodyWire`] in the batch is keyed by a content-derived
     /// [`ir::change::IntroId`] (never an arena index) and carries the
-    /// merged treesitter+oracle [`ir::BodyEmbed`] for that entry.
+    /// merged treesitter+oracle [`ir::body::BodyEmbed`] for that entry.
     /// The host associates these with the corresponding entry staged from a
     /// previous [`Received::Symbols`] batch.
     ///

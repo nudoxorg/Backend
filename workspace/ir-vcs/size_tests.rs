@@ -18,10 +18,10 @@ use std::path::Path;
 use libpijul::changestore::filesystem::FileSystem as FsChanges;
 
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
-use ir::apply::PristineIntroTable;
+use crate::wire::PayloadTable;
 use ir::kind::KindDiscriminant;
-use ir::symbol::Visibility;
-use ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
+use ir::entry::Visibility;
+use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
 
 use crate::repo::IrRepository;
 use crate::version::VersionLabel;
@@ -78,8 +78,8 @@ fn path_size(path: &Path) -> u64 {
 }
 
 /// Worst case: every symbol's blob changes every generation (no content sharing).
-fn table_worst(n: u32, generation: u32) -> PristineIntroTable {
-    let mut t = PristineIntroTable::new();
+fn table_worst(n: u32, generation: u32) -> PayloadTable {
+    let mut t = PayloadTable::new();
     for i in 0..n {
         t.insert_live(intro_n(i), func(&format!("s{i}_r{generation}")), None);
     }
@@ -88,8 +88,8 @@ fn table_worst(n: u32, generation: u32) -> PristineIntroTable {
 
 /// Shared case: generation `g` changes only the `delta` symbols in its rolling
 /// window, so successive versions share all but `delta` symbols.
-fn table_shared(n: u32, generation: u32, delta: u32) -> PristineIntroTable {
-    let mut t = PristineIntroTable::new();
+fn table_shared(n: u32, generation: u32, delta: u32) -> PayloadTable {
+    let mut t = PayloadTable::new();
     for i in 0..n {
         let changed_at = if i < generation * delta { i / delta + 1 } else { 0 };
         t.insert_live(intro_n(i), func(&format!("s{i}_r{changed_at}")), None);

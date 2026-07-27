@@ -1006,7 +1006,7 @@ fn run_producer_in_cage(
 /// # Sections staged onto `builder`
 ///
 /// - **IR section** (`builder.set_ir`): postcard-serialized
-///   `Vec<ir::wire::OwnedEntryPayload>` — one entry per `Symbols` batch entry,
+///   `Vec<ir_vcs::wire::OwnedEntryPayload>` — one entry per `Symbols` batch entry,
 ///   in stream order. This is what the IR-plane apply/checkout machinery reads.
 /// - **References section** (`builder.set_references`): a [`ReferenceSet`]
 ///   derived from the `Bodies` frames in the stream (INDEX-PLAN §5.1).
@@ -1016,7 +1016,7 @@ fn run_producer_in_cage(
 /// The `Occurrences` frames carry opaque producer-specific bytes with no
 /// public decoder in `ir` or `ir-vcs` (the format is intentionally producer-
 /// private and the host records them opaquely — see `stream::StreamedRecording`).
-/// The `Bodies` frames, however, carry fully decoded [`ir::BodyEmbed`] values
+/// The `Bodies` frames, however, carry fully decoded [`ir::body::BodyEmbed`] values
 /// with oracle-resolved call targets ([`ir::OracleCall`]) and type mentions
 /// ([`ir::OracleTypeMention`]) — both carry a [`ir::change::StableRef`] that
 /// identifies the target symbol across packages.
@@ -1061,7 +1061,7 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
         }
     }
 
-    let mut payloads: Vec<ir::wire::OwnedEntryPayload> = Vec::new();
+    let mut payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
     let mut identifiers: Vec<String> = Vec::new();
     // IntroId → source_path from the Symbols batches: used to group
     // oracle-derived references by their owning entry's source file.
@@ -1200,7 +1200,8 @@ fn build_reference_set_from_bodies(
     owning_pkg: Option<&str>,
 ) -> crate::registry::blob::ReferenceSet {
     use crate::registry::blob::{FileReferences, Reference, ReferenceSet};
-    use ir::{BodyEmbed, ReferenceKind};
+    use ir::body::BodyEmbed;
+    use ir::vocab::ReferenceKind;
     use smol_str::SmolStr;
 
     // Per-file accumulator: file_path → Vec<Reference>.
@@ -1289,7 +1290,7 @@ fn make_ref_target(
 /// that `finalize()` does not fail with `MissingIrSection` or
 /// `MissingReferencesSection`. Used when the stream is empty or undecodable.
 fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
-    let empty_payloads: Vec<ir::wire::OwnedEntryPayload> = Vec::new();
+    let empty_payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
     let ir_blob = postcard::to_allocvec(&empty_payloads).unwrap_or_default();
     let _ = builder.set_ir(bytes::Bytes::from(ir_blob));
     let empty_refs = crate::registry::blob::ReferenceSet { by_file: Vec::new() };

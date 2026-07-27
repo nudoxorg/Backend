@@ -18,24 +18,23 @@ use libpijul::working_copy::memory::Memory as MemWc;
 use libpijul::working_copy::{WorkingCopy, WorkingCopyRead};
 use libpijul::{MutTxnTExt, TxnTExt};
 
-use ir::change::{ChangeSetFingerprint, IntroId, PackageLineageId, StableRef};
-use ir::apply::{LinkRecord, PristineIntroTable};
+use ir::change::{IntroId, PackageLineageId, StableRef};
+use ir::apply::PristineIntroTable;
 use ir::kind::KindDiscriminant;
-use ir::wire::OwnedEntryPayload;
+use crate::vcs_types::{ChangeSetFingerprint, LinkRecord};
+use crate::wire::{OwnedEntryPayload, PayloadTable};
 use crate::archive::{seal_from_entries, SealEntry, SealedArchive};
 
 use crate::checkout::MaterializedIndex;
 use crate::error::VcsError;
-use ir::serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
+use crate::serialize::{intro_hex_of, is_symbol_path, symbol_path, LinkWire};
 
 /// Derive the type-skeleton fingerprint for a type-alias payload. F1 no longer
 /// stores it as a frame (§6.2), so the seal path recomputes it from the alias's
 /// type expression; non-alias kinds have no type fingerprint.
-fn type_fingerprint_of(p: &OwnedEntryPayload) -> Option<ir::index::TypeFingerprintId> {
-    if let ir::wire::KindWire::Type(alias) = &p.kind {
-        let mut sk = Vec::new();
-        ir::skeleton::type_wire_skeleton(&alias.ty, &mut sk);
-        Some(ir::skeleton::type_fingerprint(&sk))
+fn type_fingerprint_of(p: &OwnedEntryPayload) -> Option<crate::vcs_types::TypeFingerprintId> {
+    if let crate::wire::KindWire::Type(alias) = &p.kind {
+        Some(crate::vcs_types::type_fingerprint(&alias.ty))
     } else {
         None
     }
@@ -368,7 +367,7 @@ where
     ///
     /// Returns `Some(hex)` if any files changed (i.e. a change was recorded),
     /// or `None` if the IR is identical to the current channel tip (no-op).
-    pub fn record_generation(&self, ir: &PristineIntroTable) -> Result<Option<ChangeHashHex>, VcsError> {
+    pub fn record_generation(&self, ir: &PayloadTable) -> Result<Option<ChangeHashHex>, VcsError> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
@@ -642,7 +641,7 @@ where
     /// result reflects the channel *exactly* — never a stale file left behind by
     /// a prior generation or an `unrecord` (libpijul's `output` writes and
     /// updates files but does not delete ones absent from the channel).
-    pub fn materialize(&self) -> Result<PristineIntroTable, VcsError> {
+    pub fn materialize(&self) -> Result<PayloadTable, VcsError> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
@@ -673,7 +672,7 @@ where
             VcsError::Pijul(anyhow::anyhow!("commit (materialize): {e}"))
         })?;
 
-        let mut table = PristineIntroTable::new();
+        let mut table = PayloadTable::new();
         let package_id = &self.package;
 
         let files = wc.list_files();
@@ -889,7 +888,7 @@ where
                     .collect()
             })
             .collect();
-        let type_fps: Vec<Option<ir::index::TypeFingerprintId>> =
+        let type_fps: Vec<Option<crate::vcs_types::TypeFingerprintId>> =
             payloads.iter().map(type_fingerprint_of).collect();
 
         let entries: Vec<SealEntry<'_>> = intros
@@ -1960,7 +1959,9 @@ where
             .collect();
 
         // Materialize tip_table for Phase B continuity matching (§5.1).
-        // Read existing F1 files from the working copy into a PristineIntroTable.
+        // Read existing F1 files from the working copy, lower each OwnedEntryPayload
+        // to a nudox-ir Entry (via crate::lower), and insert into the Entry-based
+        // PristineIntroTable so that ir::continuity::resolve can operate on it.
         let mut tip_table = ir::apply::PristineIntroTable::new();
         for path in &symbol_paths {
             let intro = match crate::checkout::_try_intro_from_path(path) {
@@ -1973,7 +1974,8 @@ where
             }
             if let Ok(view) = crate::f1::F1View::from_bytes(&buf)
                 && let Ok(payload) = view.to_owned_payload() {
-                    tip_table.insert_live(intro, payload, view.parent());
+                    let entry = crate::lower::lower_payload(&payload);
+                    tip_table.insert_live(intro, entry, view.parent());
                 }
         }
 
@@ -2117,10 +2119,9 @@ fn parse_intro_hex(hex: &str, path: &str) -> Result<IntroId, VcsError> {
 mod delta_tests {
     use super::*;
     use ir::change::{EcosystemId, PackageName};
-    use ir::apply::PristineIntroTable;
     use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
-    use ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, SymbolWire};
+    use ir::entry::Visibility;
+    use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, PayloadTable, SymbolWire};
 
     fn pkg() -> PackageLineageId {
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("mylib"))
@@ -2152,8 +2153,8 @@ mod delta_tests {
         )
     }
 
-    fn table(entries: &[(u8, &str)]) -> PristineIntroTable {
-        let mut t = PristineIntroTable::new();
+    fn table(entries: &[(u8, &str)]) -> PayloadTable {
+        let mut t = PayloadTable::new();
         for (n, name) in entries {
             t.insert_live(intro(*n), func(name), None);
         }
@@ -2397,11 +2398,11 @@ mod delta_tests {
         }
     }
 
-    /// Helper: build a `PristineIntroTable` tied to `pkg` (for durable-repo tests).
+    /// Helper: build a `PayloadTable` tied to `pkg` (for durable-repo tests).
     fn table_pkg(
         _pkg: &PackageLineageId,
         entries: &[(u8, &str)],
-    ) -> ir::apply::PristineIntroTable {
+    ) -> PayloadTable {
         table(entries)
     }
 }

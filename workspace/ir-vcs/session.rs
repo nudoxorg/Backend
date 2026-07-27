@@ -25,17 +25,18 @@ use libpijul::{MutTxnTExt, TxnTExt};
 
 use ir::change::{IntroId, StableRef};
 use ir::apply::PristineIntroTable;
-use ir::wire::OwnedEntryPayload;
-use ir::BodyEmbed;
-use ir::body_wire::{body_path, deserialize_body, serialize_body};
+use ir::body::{BodyEmbed, BodyMergeNote};
+use ir::codec::{encode_body, decode_body, ir_path, Plane};
+use ir::view::IrView;
+use ir::continuity::Policy as ContinuityPolicy;
 
 use crate::protocol::BodyWire;
-use crate::continuity;
 use crate::f1::ContinuitySummary;
 use crate::error::VcsError;
 use crate::f1::{serialize_f1, F1View};
 use crate::repo::{ChangeHashHex, IrRepository, IrTip};
-use ir::serialize::{symbol_path, LinkWire};
+use crate::serialize::{symbol_path, LinkWire};
+use crate::wire::OwnedEntryPayload;
 
 // ---------------------------------------------------------------------------
 // GenerationMeta (§7.6)
@@ -339,7 +340,7 @@ where
         }
 
         let intro = from.intro;
-        let path = ir::serialize::symbol_path(intro);
+        let path = symbol_path(intro);
 
         if self.wc_paths.is_none() {
             let paths: HashSet<String> = self
@@ -504,22 +505,39 @@ where
             if self
                 .repo
                 .working_copy_ref()
-                .read_file(&body_path(*tip_id), &mut buf)
+                .read_file(&ir_path(*tip_id, Plane::Body), &mut buf)
                 .is_ok()
                 && !buf.is_empty()
-                && let Ok(body) = deserialize_body(&buf)
+                && let Ok(body) = decode_body(&buf)
             {
                 tip_bodies_bt.insert(*tip_id, body);
             }
         }
 
         // --- Phase B: continuity matching (declaration + body axis) ---
-        let (sigma, continuity) = continuity::compute_sigma_with_bodies(
-            &self.tip_table,
-            &staged_wire_entries,
+        //
+        // The matcher now lives in `nudox_ir::continuity`, because it is a pure
+        // function of two sealed generations and needs nothing from the patch
+        // engine. `IrView` carries the bodies alongside the table, which is why
+        // the old two-entry-point split (`compute_sigma` for declarations,
+        // `compute_sigma_with_bodies` for declarations+bodies) collapsed into a
+        // single `resolve` — the body axis is part of the input, not a variant
+        // of the call.
+        let mut prev_view = IrView::new(self.tip_table.clone());
+        for (id, body) in &tip_bodies_bt {
+            prev_view.set_body(*id, body.clone());
+        }
+
+        let next_view = crate::lower::build_ir_view_unnamed(
+            staged_wire_entries
+                .iter()
+                .map(|(id, payload, parent, _links)| (*id, payload.clone(), *parent)),
             &staged_bodies_bt,
-            &tip_bodies_bt,
         );
+
+        let subst = ir::continuity::resolve(&prev_view, &next_view, &ContinuityPolicy::default());
+        let sigma = subst.sigma();
+        let continuity = crate::lower::summarize_continuity(&subst, &prev_view, &next_view);
 
         // --- σ cascade: rewrite all staged files with durable ids ---
         let txn = self.repo.arc_txn_pub()?;
@@ -595,9 +613,9 @@ where
             // blind `add_file` on an already-tracked path. A body-only edit that
             // serializes to identical bytes is skipped (no spurious change).
             if let Some(body) = self.staged_bodies.get(wire_id)
-                && let Ok(body_bytes) = serialize_body(body)
+                && let Ok(body_bytes) = encode_body(body)
             {
-                let new_bpath = body_path(durable_id);
+                let new_bpath = ir_path(durable_id, Plane::Body);
                 let mut existing = Vec::new();
                 let _ = self.repo.working_copy_ref().read_file(&new_bpath, &mut existing);
                 if existing.is_empty() {
@@ -637,7 +655,7 @@ where
             let _ = self.repo.working_copy_ref().remove_path(&path, false);
             let _ = txn.write().remove_file(&path);
             // Remove the `.nb` body companion for the deleted symbol, if any.
-            let bpath = body_path(*intro);
+            let bpath = ir_path(*intro, Plane::Body);
             let _ = self.repo.working_copy_ref().remove_path(&bpath, false);
             let _ = txn.write().remove_file(&bpath);
         }

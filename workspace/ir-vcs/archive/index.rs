@@ -25,7 +25,7 @@
 //! Dense column: `ContentBlake3[32] × entry_count` (no header).
 
 use ir::change::{ContentBlake3, IntroId};
-use ir::index::{ArenaIdx, TypeFingerprintId};
+use crate::vcs_types::{ArenaIdx, TypeFingerprintId};
 
 use crate::archive::error::ArchiveError;
 

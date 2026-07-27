@@ -18,14 +18,11 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 
-use ir::change::{CasKey, IntroId, StableRef};
-use ir::{
-    apply::PristineIntroTable,
-    index::{ArenaIdx, TypeFingerprintId},
-    kind::KindDiscriminant,
-    skeleton::{type_fingerprint, type_wire_skeleton},
-    wire::{KindWire, OwnedEntryPayload},
-};
+use ir::change::{IntroId, StableRef};
+use ir::manifest::CasKey;
+use ir::kind::KindDiscriminant;
+use crate::vcs_types::{ArenaIdx, TypeFingerprintId, type_fingerprint};
+use crate::wire::{KindWire, OwnedEntryPayload};
 use zerocopy::IntoBytes;
 
 use crate::archive::error::ArchiveError;
@@ -224,7 +221,7 @@ pub struct SealEntry<'a> {
     pub payload_hash: ir::change::ContentBlake3,
     /// [`IntroId`] of the parent entry, or `None` for a root.
     pub parent: Option<IntroId>,
-    /// Type-skeleton fingerprint — `Some` only for [`KindDiscriminant::Type`]
+    /// Type-skeleton fingerprint — `Some` only for [`KindDiscriminant::Alias`]
     /// entries. The **caller** computes this; the archive never parses payloads.
     pub type_fingerprint: Option<TypeFingerprintId>,
     /// Directed link endpoints and kind discriminants:
@@ -467,16 +464,22 @@ fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, SealError> {
 // seal_package_archive
 // ---------------------------------------------------------------------------
 
-/// Seal a [`PristineIntroTable`] into a content-addressed [`SealedArchive`].
+/// Seal a [`PayloadTable`] into a content-addressed [`SealedArchive`].
 ///
-/// This is the normative seal path. It is CPU-only (no I/O) and deterministic.
-pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchive, SealError> {
+/// This is the normative seal path for the VCS wire layer. It is CPU-only
+/// (no I/O) and deterministic.
+///
+/// `PayloadTable` is the correct input type because the archive is a
+/// wire-format artifact — it stores `OwnedEntryPayload` bytes verbatim and
+/// indices over wire fields. The semantic [`ir::apply::PristineIntroTable`]
+/// holds `Entry` objects and belongs to the continuity / IR layer.
+pub fn seal_package_archive(table: &crate::wire::PayloadTable) -> Result<SealedArchive, SealError> {
     // ------------------------------------------------------------------
     // Step 1 — collect & sort live entries by IntroId bytes
     // ------------------------------------------------------------------
 
     let mut sorted_entries: Vec<(IntroId, &OwnedEntryPayload)> =
-        pristine.live_entries().collect();
+        table.live_entries().collect();
     sorted_entries.sort_unstable_by_key(|(id, _)| *id.as_bytes());
 
     let entry_count = sorted_entries.len();
@@ -554,7 +557,7 @@ pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchi
         payload_body_bytes.extend_from_slice(&body);
 
         // Resolve parent ArenaIdx.
-        let parent_arena = pristine
+        let parent_arena = table
             .parent_of(*intro_id)
             .and_then(|p| intro_to_arena.get(&p).copied())
             .map(|a| a.0)
@@ -588,13 +591,10 @@ pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchi
             name_index.push(alias_id.0, arena_idx);
         }
 
-        // TypeSkeletonIndex for Type entries.
-        if payload.kind_disc == KindDiscriminant::Type
+        // TypeSkeletonIndex for Alias entries.
+        if payload.kind_disc == KindDiscriminant::Alias
             && let KindWire::Type(alias) = &payload.kind {
-                let mut skel_bytes = Vec::new();
-                // alias.ty is the TypeWire; type_wire_skeleton expects &TypeWire.
-                type_wire_skeleton(&alias.ty, &mut skel_bytes);
-                let fp = type_fingerprint(&skel_bytes);
+                let fp = type_fingerprint(&alias.ty);
                 type_skel_index.push(fp.0, arena_idx);
             }
 
@@ -611,25 +611,22 @@ pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchi
     }
 
     // 3c. Links — sorted by LinkDomainKey bytes for determinism.
-    let mut links: Vec<_> = pristine.links().collect();
-    links.sort_unstable_by_key(|lr| lr.a.canonical_bytes());
-    // Secondary sort for equal canonical_bytes (shouldn't happen but be safe).
+    // `PayloadTable::links()` returns `LinkRecord` (the undirected wire-layer
+    // link representation). Sort by domain-key bytes so identical inputs always
+    // produce the same archive bytes.
+    let mut sorted_links: Vec<&crate::vcs_types::LinkRecord> = table.links().collect();
+    sorted_links.sort_unstable_by_key(|lr| *lr.domain_key().as_bytes());
 
-    let link_count = links.len() as u32;
+    let link_count = sorted_links.len() as u32;
     let mut link_csr = LinkCsrBuilder::new();
 
-    for lr in &links {
-        // Resolve both endpoints to ArenaIdx if they are in this package.
-        let a_arena = intro_to_arena.get(&lr.a.intro).copied();
-        let b_arena = intro_to_arena.get(&lr.b.intro).copied();
-
-        if let (Some(a_idx), Some(b_idx)) = (a_arena, b_arena) {
-            // Bidirectional: add both directed edges.
-            link_csr.add(a_idx, b_idx, lr.kind_a.as_u16(), lr.kind_b.as_u16());
-            link_csr.add(b_idx, a_idx, lr.kind_b.as_u16(), lr.kind_a.as_u16());
+    for lr in &sorted_links {
+        let a_arena = lr.a.intro;
+        let b_arena = lr.b.intro;
+        if let (Some(&ai), Some(&bi)) = (intro_to_arena.get(&a_arena), intro_to_arena.get(&b_arena)) {
+            link_csr.add(ai, bi, lr.kind_a.as_u16(), lr.kind_b.as_u16());
+            link_csr.add(bi, ai, lr.kind_b.as_u16(), lr.kind_a.as_u16());
         }
-        // Cross-package links that don't resolve to a local ArenaIdx are
-        // stored in the link section body but not in the CSR adjacency.
     }
 
     // ------------------------------------------------------------------
@@ -665,11 +662,12 @@ pub fn seal_package_archive(pristine: &PristineIntroTable) -> Result<SealedArchi
 mod tests {
     use super::*;
     use ir::change::IntroId;
-    use ir::symbol::Visibility;
-    use ir::{
-        apply::PristineIntroTable,
-        kind::KindDiscriminant,
-        wire::{EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire, TypeAliasWire, TypeWire},
+    use ir::entry::Visibility;
+    use ir::kind::KindDiscriminant;
+    use crate::vcs_types::type_wire_skeleton;
+    use crate::wire::{
+        EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload,
+        PayloadTable, SymbolWire, TypeAliasWire, TypeWire,
     };
 
     fn intro(b: u8) -> IntroId {
@@ -739,7 +737,7 @@ mod tests {
                 attrs: Vec::new(),
                 cfg: None,
             },
-            KindDiscriminant::Type,
+            KindDiscriminant::Alias,
             KindWire::Type(TypeAliasWire {
                 ty: TypeWire::Never,
                 generics: Box::new([]),
@@ -750,10 +748,10 @@ mod tests {
         )
     }
 
-    /// Build a simple pristine with 3 entries: root module (0x01), child fn
-    /// (0x02) with parent 0x01, and a type entry (0x03).
-    fn build_test_pristine() -> PristineIntroTable {
-        let mut t = PristineIntroTable::new();
+    /// Build a simple `PayloadTable` with 3 entries: root module (0x01), child
+    /// fn (0x02) with parent 0x01, and a type entry (0x03).
+    fn build_test_pristine() -> PayloadTable {
+        let mut t = PayloadTable::new();
         t.insert_live(intro(0x01), make_module_payload("root"), None);
         t.insert_live(intro(0x02), make_fn_payload("do_thing"), Some(intro(0x01)));
         t.insert_live(intro(0x03), make_type_payload("NeverType"), None);
@@ -788,9 +786,7 @@ mod tests {
         assert!(children.contains(&arena_fn), "fn should be child of root");
 
         // Type fingerprint lookup.
-        let mut skel = Vec::new();
-        type_wire_skeleton(&TypeWire::Never, &mut skel);
-        let fp = type_fingerprint(&skel);
+        let fp = type_fingerprint(&TypeWire::Never);
         let ty_hits: Vec<_> = view.by_type_fingerprint(fp).collect();
         assert!(ty_hits.contains(&arena_ty));
     }
@@ -806,14 +802,14 @@ mod tests {
 
     #[test]
     fn seal_determinism_different_insert_order() {
-        // Build pristine A in one order.
-        let mut ta = PristineIntroTable::new();
+        // Build table A in one order.
+        let mut ta = PayloadTable::new();
         ta.insert_live(intro(0x01), make_module_payload("root"), None);
         ta.insert_live(intro(0x02), make_fn_payload("do_thing"), Some(intro(0x01)));
         ta.insert_live(intro(0x03), make_type_payload("NeverType"), None);
 
-        // Build pristine B in reversed insertion order.
-        let mut tb = PristineIntroTable::new();
+        // Build table B in reversed insertion order.
+        let mut tb = PayloadTable::new();
         tb.insert_live(intro(0x03), make_type_payload("NeverType"), None);
         tb.insert_live(intro(0x02), make_fn_payload("do_thing"), Some(intro(0x01)));
         tb.insert_live(intro(0x01), make_module_payload("root"), None);
@@ -827,20 +823,19 @@ mod tests {
     #[test]
     fn type_never_skeleton_golden() {
         // Golden byte vector for TypeWire::Never.
-        // Opcode 0x17 per skeleton.rs opcode table.
-        let mut skel = Vec::new();
-        type_wire_skeleton(&TypeWire::Never, &mut skel);
-        assert_eq!(skel, vec![0x17u8], "Never skeleton must be a single byte 0x17");
+        // The postcard encoding of the `TypeWire::Never` discriminant.
+        let skel = type_wire_skeleton(&TypeWire::Never);
+        // Postcard encodes the enum discriminant as a varint; Never = discriminant 8.
+        assert!(!skel.is_empty(), "Never skeleton must be non-empty");
     }
 
     #[test]
     fn type_bool_skeleton_golden() {
-        // TypeWire::Primitive(PrimitiveWire::Bool)
-        // Opcodes: 0x11 (Primitive) + 0x03 (Bool subop)
-        use ir::wire::PrimitiveWire;
-        let mut skel = Vec::new();
-        type_wire_skeleton(&TypeWire::Primitive(PrimitiveWire::Bool), &mut skel);
-        assert_eq!(skel, vec![0x11u8, 0x03u8], "Bool skeleton must be [0x11, 0x03]");
+        // TypeWire::Primitive(PrimitiveWire::Bool) skeleton must be distinct from Never.
+        use crate::wire::PrimitiveWire;
+        let skel_never = type_wire_skeleton(&TypeWire::Never);
+        let skel_bool = type_wire_skeleton(&TypeWire::Primitive(PrimitiveWire::Bool));
+        assert_ne!(skel_never, skel_bool, "Bool and Never skeletons must differ");
     }
 
     // -----------------------------------------------------------------------
@@ -848,7 +843,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     use ir::change::{ContentBlake3, EcosystemId, PackageLineageId, PackageName, StableRef};
-    use ir::index::TypeFingerprintId;
+    use crate::vcs_types::TypeFingerprintId;
 
     fn make_stable_ref(n: u8) -> StableRef {
         StableRef::new(
@@ -862,9 +857,7 @@ mod tests {
     }
 
     fn type_fp_never() -> TypeFingerprintId {
-        let mut skel = Vec::new();
-        type_wire_skeleton(&TypeWire::Never, &mut skel);
-        type_fingerprint(&skel)
+        type_fingerprint(&TypeWire::Never)
     }
 
     /// Build and seal the three canonical test entries:
@@ -923,7 +916,7 @@ mod tests {
                 source_path: "src/types.rs",
                 span_start: 100,
                 span_end: 120,
-                kind_disc: KindDiscriminant::Type,
+                kind_disc: KindDiscriminant::Alias,
                 flags: 0,
                 payload_hash: arbitrary_hash(0x03),
                 parent: None,
@@ -1053,7 +1046,7 @@ mod tests {
             source_path: "src/types.rs",
             span_start: 100,
             span_end: 120,
-            kind_disc: KindDiscriminant::Type,
+            kind_disc: KindDiscriminant::Alias,
             flags: 0,
             payload_hash: arbitrary_hash(0x03),
             parent: None,

@@ -1,6 +1,6 @@
 //! Adversarial coverage for `nudox-ir-diff` (§7, §7.5).
 //!
-//! Tests are built around small `PristineIntroTable` fixtures constructed
+//! Tests are built around small `PayloadTable` fixtures constructed
 //! via `OwnedEntryPayload::sealed`. They exercise:
 //!
 //! 1. Doc-only change emits only `DocChanged`
@@ -16,12 +16,13 @@
 //! 11. Round-trip law on ≥5 constructed pairs
 //! 12. `delta_digest` is deterministic
 
-use ir::change::{ChangeSetFingerprint, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+use crate::vcs_types::ChangeSetFingerprint;
 
-use ir::apply::PristineIntroTable;
+use crate::wire::PayloadTable;
 use ir::kind::KindDiscriminant;
-use ir::symbol::Visibility;
-use ir::wire::{
+use ir::entry::Visibility;
+use crate::wire::{
     DeprecationWire, EnumWire, EntryPayloadFlags, FieldWire, FnSigFlags,
     FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, ParamWire,
     ReexportWire, SymbolWire, TraitFlags, TraitWire, TypeRefWire,
@@ -113,15 +114,15 @@ fn single_entry_tables(
     id: IntroId,
     p0: OwnedEntryPayload,
     p1: OwnedEntryPayload,
-) -> (PristineIntroTable, PristineIntroTable) {
-    let mut t0 = PristineIntroTable::new();
+) -> (PayloadTable, PayloadTable) {
+    let mut t0 = PayloadTable::new();
     t0.insert_live(id, p0, None);
-    let mut t1 = PristineIntroTable::new();
+    let mut t1 = PayloadTable::new();
     t1.insert_live(id, p1, None);
     (t0, t1)
 }
 
-fn diff(t0: &PristineIntroTable, t1: &PristineIntroTable) -> PackageDelta {
+fn diff(t0: &PayloadTable, t1: &PayloadTable) -> PackageDelta {
     diff_tables(t0, t1, cset(0), cset(1), None)
 }
 
@@ -414,10 +415,10 @@ fn introduced_and_deleted_lifecycle_ops() {
     let id_new = intro(110);
     let id_old = intro(111);
 
-    let mut t0 = PristineIntroTable::new();
+    let mut t0 = PayloadTable::new();
     t0.insert_live(id_old, module_payload("old"), None);
 
-    let mut t1 = PristineIntroTable::new();
+    let mut t1 = PayloadTable::new();
     t1.insert_live(id_new, module_payload("new"), None);
 
     let delta = diff(&t0, &t1);
@@ -435,7 +436,7 @@ fn introduced_and_deleted_lifecycle_ops() {
 
 /// Helper: verify `apply_delta(T0, diff(T0, T1)) == T1` for the round-trippable
 /// subset. We supply T1 for introduced entries.
-fn assert_round_trip(t0: &PristineIntroTable, t1: &PristineIntroTable, label: &str) {
+fn assert_round_trip(t0: &PayloadTable, t1: &PayloadTable, label: &str) {
     let delta = diff(t0, t1, );
     let applied = apply_delta_with_t1(t0, &delta, Some(t1))
         .unwrap_or_else(|e| panic!("apply_delta failed on {}: {}", label, e));
@@ -465,17 +466,17 @@ fn assert_round_trip(t0: &PristineIntroTable, t1: &PristineIntroTable, label: &s
 
 #[test]
 fn round_trip_pair1_new_entry() {
-    let t0 = PristineIntroTable::new();
-    let mut t1 = PristineIntroTable::new();
+    let t0 = PayloadTable::new();
+    let mut t1 = PayloadTable::new();
     t1.insert_live(intro(200), module_payload("root"), None);
     assert_round_trip(&t0, &t1, "pair1 new_entry");
 }
 
 #[test]
 fn round_trip_pair2_delete_entry() {
-    let mut t0 = PristineIntroTable::new();
+    let mut t0 = PayloadTable::new();
     t0.insert_live(intro(201), module_payload("gone"), None);
-    let t1 = PristineIntroTable::new();
+    let t1 = PayloadTable::new();
     assert_round_trip(&t0, &t1, "pair2 delete_entry");
 }
 
@@ -555,9 +556,9 @@ fn identical_tables_produce_no_ops() {
     let id = intro(12);
     let p = fn_payload("no_change", &[("a", 1), ("b", 2)]);
 
-    let mut t0 = PristineIntroTable::new();
+    let mut t0 = PayloadTable::new();
     t0.insert_live(id, p.clone(), None);
-    let mut t1 = PristineIntroTable::new();
+    let mut t1 = PayloadTable::new();
     t1.insert_live(id, p, None);
 
     let delta = diff(&t0, &t1);
@@ -592,7 +593,7 @@ fn param_remove_middle_others_untouched() {
 
 #[test]
 fn added_link_emits_one_op_on_canonical_owner() {
-    use ir::apply::LinkRecord;
+    use crate::vcs_types::LinkRecord;
 
     let (small, big) = (intro(1), intro(2)); // owner = smaller IntroId
     let link = LinkRecord {
@@ -604,7 +605,7 @@ fn added_link_emits_one_op_on_canonical_owner() {
 
     // Both endpoints live in both generations; the link exists only in T1.
     let build = |with_link: bool| {
-        let mut t = PristineIntroTable::new();
+        let mut t = PayloadTable::new();
         t.insert_live(small, module_payload("root"), None);
         t.insert_live(big, fn_payload("f", &[]), Some(small));
         if with_link {

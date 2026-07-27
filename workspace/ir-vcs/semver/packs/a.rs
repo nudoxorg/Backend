@@ -38,8 +38,8 @@ use smol_str::SmolStr;
 
 use ir::change::IntroId;
 use ir::kind::KindDiscriminant;
-use ir::wire::{KindWire, RecordForm, SelfKind, Sealed, TriState};
-use ir::symbol::Visibility;
+use crate::wire::{KindWire, RecordForm, SelfKind, Sealed, TriState};
+use ir::entry::Visibility;
 
 use crate::semver::report::{
     BreakClass, Certainty, Finding, FindingDetail, LintId, UncertainReason,
@@ -709,8 +709,9 @@ fn kind_token(d: KindDiscriminant) -> &'static str {
         KindDiscriminant::Module => "module",
         KindDiscriminant::Record => "record",
         KindDiscriminant::Field => "field",
+        KindDiscriminant::Param => "param",
         KindDiscriminant::Function => "function",
-        KindDiscriminant::Type => "type",
+        KindDiscriminant::Alias => "type",
         KindDiscriminant::Trait => "trait",
         KindDiscriminant::Impl => "impl",
         KindDiscriminant::Enum => "enum",
@@ -821,10 +822,10 @@ mod tests {
     use crate::semver::surface::{surface, ApiSurface, ExportPolicy};
     use crate::semver::report::BreakClass;
     use ir::change::IntroId;
-    use ir::apply::PristineIntroTable;
+    use crate::wire::PayloadTable;
     use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
-    use ir::wire::{
+    use ir::entry::Visibility;
+    use crate::wire::{
         AttrTok, EnumWire, EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire,
         OwnedEntryPayload, RecordForm, RecordWire, Sealed, SymbolWire, TraitFlags, TraitWire,
         TriState, VariantForm, VariantWire,
@@ -909,7 +910,7 @@ mod tests {
 
     /// Build a single-item surface from one payload (no parent).
     fn single_item_surface(id: IntroId, payload: OwnedEntryPayload) -> ApiSurface {
-        let mut table = PristineIntroTable::new();
+        let mut table = PayloadTable::new();
         table.insert_live(id, payload, Option::None);
         surface(&table, &ExportPolicy::default())
     }
@@ -927,7 +928,7 @@ mod tests {
         let id = intro(1);
         let old = single_item_surface(id, fn_payload("foo", Visibility::Public));
         let new = {
-            let table = PristineIntroTable::new();
+            let table = PayloadTable::new();
             surface(&table, &ExportPolicy::default())
         };
 
@@ -983,7 +984,7 @@ mod tests {
         let id = intro(3);
         let policy = ExportPolicy { visibility_floor: Visibility::Private, ..Default::default() };
         let build = |vis| {
-            let mut table = PristineIntroTable::new();
+            let mut table = PayloadTable::new();
             table.insert_live(id, fn_payload("bar", vis), Option::None);
             surface(&table, &policy)
         };
@@ -1021,12 +1022,12 @@ mod tests {
         let v1 = intro(11);
         let v2 = intro(12);
 
-        let mut old_table = PristineIntroTable::new();
+        let mut old_table = PayloadTable::new();
         old_table.insert_live(enum_id, enum_payload("MyEnum", &[v1]), Option::None);
         old_table.insert_live(v1, variant_payload("Alpha"), Some(enum_id));
         let old = surface(&old_table, &ExportPolicy::default());
 
-        let mut new_table = PristineIntroTable::new();
+        let mut new_table = PayloadTable::new();
         new_table.insert_live(enum_id, enum_payload("MyEnum", &[v1, v2]), Option::None);
         new_table.insert_live(v1, variant_payload("Alpha"), Some(enum_id));
         new_table.insert_live(v2, variant_payload("Beta"), Some(enum_id));
@@ -1063,7 +1064,7 @@ mod tests {
             EntryPayloadFlags::default(),
         );
 
-        let mut old_table = PristineIntroTable::new();
+        let mut old_table = PayloadTable::new();
         old_table.insert_live(enum_id, ne_enum_payload, Option::None);
         old_table.insert_live(v1, variant_payload("Alpha"), Some(enum_id));
         let old = surface(&old_table, &ExportPolicy::default());
@@ -1082,7 +1083,7 @@ mod tests {
             EntryPayloadFlags::default(),
         );
 
-        let mut new_table = PristineIntroTable::new();
+        let mut new_table = PayloadTable::new();
         new_table.insert_live(enum_id, ne_enum2, Option::None);
         new_table.insert_live(v1, variant_payload("Alpha"), Some(enum_id));
         new_table.insert_live(v2, variant_payload("Beta"), Some(enum_id));
@@ -1168,13 +1169,13 @@ mod tests {
         let priv_id = intro(51);
 
         // Old: one public fn + one private fn.
-        let mut old_table = PristineIntroTable::new();
+        let mut old_table = PayloadTable::new();
         old_table.insert_live(pub_id, fn_payload("pub_fn", Visibility::Public), Option::None);
         old_table.insert_live(priv_id, fn_payload("priv_fn", Visibility::Private), Option::None);
         let old = surface(&old_table, &ExportPolicy::default());
 
         // New: private fn removed.
-        let mut new_table = PristineIntroTable::new();
+        let mut new_table = PayloadTable::new();
         new_table.insert_live(pub_id, fn_payload("pub_fn", Visibility::Public), Option::None);
         let new = surface(&new_table, &ExportPolicy::default());
 
@@ -1231,7 +1232,7 @@ mod tests {
         sealed: Sealed,
         methods: &[(IntroId, &str, bool)],
     ) -> ApiSurface {
-        let mut table = PristineIntroTable::new();
+        let mut table = PayloadTable::new();
         table.insert_live(trait_id, trait_payload("Tr", sealed), Option::None);
         for (mid, mname, defaulted) in methods {
             table.insert_live(*mid, method_payload(mname, *defaulted), Some(trait_id));

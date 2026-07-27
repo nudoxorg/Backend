@@ -1,4 +1,4 @@
-//! Matcher-free structural diff between two [`PristineIntroTable`]s (§7.3).
+//! Matcher-free structural diff between two [`PayloadTable`]s (§7.3).
 //!
 //! [`diff_tables`] iterates the sorted union of both tables' intro IDs, emits
 //! lifecycle ops for entries that only appear in one table, and field-compares
@@ -31,13 +31,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ir::change::domain::LinkDomainKey;
-use ir::change::{ChangeSetFingerprint, IntroId};
+use crate::vcs_types::LinkDomainKey;
+use ir::change::IntroId;
+use crate::vcs_types::ChangeSetFingerprint;
 use smol_str::SmolStr;
 
-use ir::apply::{LinkRecord, PristineIntroTable};
-use ir::intro::sig_key;
-use ir::wire::{
+use crate::vcs_types::LinkRecord; use crate::wire::PayloadTable;
+use crate::vcs_types::sig_key;
+use crate::wire::{
     AttrTok, AutoFact, AutoState, AutoTrait, GenericParamWire, KindWire, OwnedEntryPayload,
     TriState, TypeRefWire, WherePredWire,
 };
@@ -49,7 +50,7 @@ use crate::diff::ir_op::{GenericsDelta, IrOp, SigKey, WherePred, op_sort_key};
 // Public entry points
 // ---------------------------------------------------------------------------
 
-/// Compute the structural delta between two [`PristineIntroTable`] generations.
+/// Compute the structural delta between two [`PayloadTable`] generations.
 ///
 /// - `from` / `to` are the channel-tip [`ChangeSetFingerprint`]s of T0 and T1.
 /// - `resurrected_ids` is an optional set of IDs the caller knows are
@@ -57,8 +58,8 @@ use crate::diff::ir_op::{GenericsDelta, IrOp, SigKey, WherePred, op_sort_key};
 ///   ops for those IDs are replaced with `Resurrected`. Historical replay may
 ///   pass `None`.
 pub fn diff_tables(
-    t0: &PristineIntroTable,
-    t1: &PristineIntroTable,
+    t0: &PayloadTable,
+    t1: &PayloadTable,
     from: ChangeSetFingerprint,
     to: ChangeSetFingerprint,
     resurrected_ids: Option<&BTreeSet<IntroId>>,
@@ -71,8 +72,8 @@ pub fn diff_tables(
 /// `partial` should be `Some(PartialDelta { deletions_valid: false,
 /// identity_final: false })` for checkpoint-to-checkpoint comparisons.
 pub fn diff_tables_partial(
-    t0: &PristineIntroTable,
-    t1: &PristineIntroTable,
+    t0: &PayloadTable,
+    t1: &PayloadTable,
     from: ChangeSetFingerprint,
     to: ChangeSetFingerprint,
     resurrected_ids: Option<&BTreeSet<IntroId>>,
@@ -120,10 +121,38 @@ pub fn diff_tables_partial(
             (Some(_), None) => ops_map.entry(*id).or_default().push(IrOp::Deleted),
             (Some(prev), Some(next)) => {
                 let (parent0, parent1) = (t0.parent_of(*id), t1.parent_of(*id));
-                // Fast path: identical payload AND parent ⇒ no field/continuity
-                // ops. (payload_hash excludes the parent edge, so a pure move —
-                // same payload, new parent — must still be compared for `Moved`.)
-                if prev.payload_hash == next.payload_hash && parent0 == parent1 {
+                // Fast path: identical payload AND parent AND children-set ⇒ no
+                // field/continuity ops.
+                //
+                // `payload_hash` is computed over the *entry payload* which
+                // intentionally excludes tree edges (parent + children).  For
+                // kinds whose child-id list IS embedded in the payload
+                // (Record.fields, Enum.variants, Variant.fields) the hash already
+                // covers child additions/removals.  For Module and Impl there is
+                // no such embedded list — a child added or removed under them does
+                // NOT move their payload_hash.
+                //
+                // We therefore compare `children_of` explicitly so that a Module
+                // or Impl whose child set changed is not silently skipped here.
+                // Even though `compare_kind_bodies` emits no kind-specific ops for
+                // those kinds today, the explicit check is necessary for two
+                // reasons:
+                //   1. Future: if a "module-item-added" op is ever introduced, the
+                //      fast-path must not suppress it.
+                //   2. Correctness gate: `compare_payloads` → `compare_kind_bodies`
+                //      passes through the Module/Impl arm; if that arm is extended
+                //      to emit ops, the fast-path already handles it correctly.
+                let children0 = t0.children_of(*id);
+                let children1 = t1.children_of(*id);
+                let children_changed = {
+                    // Compare as BTreeSets (order-independent; the child set of a
+                    // Module/Impl is unordered).
+                    use std::collections::BTreeSet;
+                    let s0: BTreeSet<_> = children0.iter().copied().collect();
+                    let s1: BTreeSet<_> = children1.iter().copied().collect();
+                    s0 != s1
+                };
+                if prev.payload_hash == next.payload_hash && parent0 == parent1 && !children_changed {
                     continue;
                 }
                 let field_ops = compare_payloads(prev, parent0, next, parent1);
@@ -412,7 +441,7 @@ struct ParamIdent {
     ty: TypeRefWire,
 }
 
-fn param_ident(p: &ir::wire::ParamWire) -> ParamIdent {
+fn param_ident(p: &crate::wire::ParamWire) -> ParamIdent {
     ParamIdent { name: p.name.clone(), ty: p.ty.clone() }
 }
 
@@ -425,8 +454,8 @@ fn param_ident(p: &ir::wire::ParamWire) -> ParamIdent {
 ///   (carrying the new type, hence round-trippable) rather than a remove+add pair
 ///   with a placeholder type. Unpaired old/new params yield `ParamRemoved`/`ParamAdded`.
 fn diff_params(
-    p0: &[ir::wire::ParamWire],
-    p1: &[ir::wire::ParamWire],
+    p0: &[crate::wire::ParamWire],
+    p1: &[crate::wire::ParamWire],
 ) -> Vec<IrOp> {
     if p0 == p1 {
         return vec![];
@@ -475,7 +504,7 @@ fn diff_params(
 
 /// Alignment predicate for the param LCS: named params match on name (so a type
 /// change keeps the pairing); unnamed params match only when their types agree.
-fn params_align(a: &ir::wire::ParamWire, b: &ir::wire::ParamWire) -> bool {
+fn params_align(a: &crate::wire::ParamWire, b: &crate::wire::ParamWire) -> bool {
     match (&a.name, &b.name) {
         (Some(x), Some(y)) => x == y,
         (None, None) => a.ty == b.ty,

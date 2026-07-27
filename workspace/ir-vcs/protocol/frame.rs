@@ -4,7 +4,7 @@
 //!
 //! All frame types carry only:
 //! - [`ir::change::StableRef`] — wire-stable cross-package symbol references.
-//! - [`ir::wire::OwnedEntryPayload`] — the sealed payload wire twin.
+//! - [`crate::wire::OwnedEntryPayload`] — the sealed payload wire twin.
 //! - [`heart::content::ContentHash`] / [`heart::content::JobKey`] — content digests.
 //! - Primitive scalars (counts, paths, version numbers).
 //!
@@ -14,7 +14,8 @@
 
 use heart::content::{ContentHash, JobKey};
 use ir::change::{IntroId, StableRef};
-use ir::{kind::KindDiscriminant, wire::OwnedEntryPayload};
+use ir::kind::KindDiscriminant;
+use crate::wire::OwnedEntryPayload;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ pub struct BodyWire {
     /// Content-derived identity of the owning entry (never an arena index).
     pub intro: IntroId,
     /// The merged body facts for this entry.
-    pub body: ir::BodyEmbed,
+    pub body: ir::body::BodyEmbed,
 }
 
 // ---------------------------------------------------------------------------

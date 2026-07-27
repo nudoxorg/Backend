@@ -49,8 +49,10 @@ sandbox   = { path = "../compiler/sandbox" }
 # index/registry which stay libpijul-free).
 ir-vcs    = { path = "../ir-vcs" }
 # IR data-model types (OwnedEntryPayload, SymbolWire, …) used by the stream
-# decoder in ingest_ir_bytes. This is the light, libpijul-FREE data model.
-ir        = { path = "../ir" }
+# decoder in ingest_ir_bytes. Aliased as `ir` — points to nudox-ir which is
+# the new canonical IR data model (workspace/ir is the legacy layer being
+# migrated away from; ir-vcs already uses nudox-ir via the same alias).
+ir        = { package = "nudox-ir", path = "../../crates/nudox-ir" }
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
 tokio        = { version = "1.52",  features = ["full"] }

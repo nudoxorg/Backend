@@ -5,10 +5,10 @@
 #![cfg(test)]
 
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
-use ir::apply::PristineIntroTable;
+use crate::wire::PayloadTable;
 use ir::kind::KindDiscriminant;
-use ir::symbol::Visibility;
-use ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
+use ir::entry::Visibility;
+use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
 
 use crate::refs::{BranchName, Ref, TagName};
 use crate::repo::{ChangeHashHex, IrRepository};
@@ -42,8 +42,8 @@ fn func(name: &str) -> OwnedEntryPayload {
         EntryPayloadFlags::default(),
     )
 }
-fn table(entries: &[(u8, &str)]) -> PristineIntroTable {
-    let mut t = PristineIntroTable::new();
+fn table(entries: &[(u8, &str)]) -> PayloadTable {
+    let mut t = PayloadTable::new();
     for (n, name) in entries {
         t.insert_live(intro(*n), func(name), None);
     }

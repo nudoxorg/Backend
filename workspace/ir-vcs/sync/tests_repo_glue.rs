@@ -3,11 +3,10 @@
 use std::sync::Arc;
 
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
-use ir::apply::PristineIntroTable;
 use ir::kind::KindDiscriminant;
-use ir::symbol::Visibility;
-use ir::wire::{
-    EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire,
+use ir::entry::Visibility;
+use crate::wire::{
+    EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, PayloadTable, SymbolWire,
 };
 
 use heart::sync::{ContentIo, SyncError};
@@ -64,14 +63,14 @@ fn function_payload(name: &str) -> OwnedEntryPayload {
     )
 }
 
-fn gen1() -> PristineIntroTable {
-    let mut ir = PristineIntroTable::new();
+fn gen1() -> PayloadTable {
+    let mut ir = PayloadTable::new();
     ir.insert_live(intro(1), function_payload("alpha"), None);
     ir
 }
 
-fn gen2() -> PristineIntroTable {
-    let mut ir = PristineIntroTable::new();
+fn gen2() -> PayloadTable {
+    let mut ir = PayloadTable::new();
     ir.insert_live(intro(1), function_payload("alpha"), None);
     ir.insert_live(intro(2), function_payload("beta"), None);
     ir

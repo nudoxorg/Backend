@@ -18,8 +18,8 @@
 
 use ir::change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
 use ir::kind::KindDiscriminant;
-use ir::symbol::Visibility;
-use ir::wire::{
+use ir::entry::Visibility;
+use crate::wire::{
     AttrTok, AutoFact, AutoState, AutoTrait, CfgExpr, ConstWire, DeprecationWire, DocLinkWire,
     EnumWire, FieldWire, FunctionWire, FnSigFlags, GenericParamWire, ImplFlags, ImplWire,
     KindWire, ModuleWire, OwnedEntryPayload, ParamWire, RecordForm, RecordWire, ReexportWire,
@@ -28,10 +28,10 @@ use ir::wire::{
 };
 use thiserror::Error;
 
-use ir::ascii::{
+use crate::ascii::{
     decode_typeexpr, decode_typeref, encode_typeexpr, encode_typeref, escape, hex_to_32, unescape,
 };
-use ir::serialize::LinkWire;
+use crate::serialize::LinkWire;
 
 // ---------------------------------------------------------------------------
 // Key registry constants — now inlined into the vendored libpijul fork as
@@ -72,7 +72,7 @@ pub enum F1Error {
     #[error("invalid UTF-8: {0}")]
     Utf8(#[from] std::str::Utf8Error),
     #[error("ascii encoding error: {0}")]
-    Ascii(#[from] ir::ascii::AsciiError),
+    Ascii(#[from] crate::ascii::AsciiError),
 }
 
 // ---------------------------------------------------------------------------
@@ -138,8 +138,9 @@ fn encode_kind_token(k: KindDiscriminant) -> &'static str {
         KindDiscriminant::Module => "module",
         KindDiscriminant::Record => "record",
         KindDiscriminant::Field => "field",
+        KindDiscriminant::Param => "param",
         KindDiscriminant::Function => "function",
-        KindDiscriminant::Type => "type",
+        KindDiscriminant::Alias => "type",
         KindDiscriminant::Trait => "trait",
         KindDiscriminant::Impl => "impl",
         KindDiscriminant::Enum => "enum",
@@ -156,7 +157,7 @@ fn decode_kind_token(s: &str) -> Result<KindDiscriminant, F1Error> {
         "record" => Ok(KindDiscriminant::Record),
         "field" => Ok(KindDiscriminant::Field),
         "function" => Ok(KindDiscriminant::Function),
-        "type" => Ok(KindDiscriminant::Type),
+        "type" => Ok(KindDiscriminant::Alias),
         "trait" => Ok(KindDiscriminant::Trait),
         "impl" => Ok(KindDiscriminant::Impl),
         "enum" => Ok(KindDiscriminant::Enum),
@@ -164,6 +165,7 @@ fn decode_kind_token(s: &str) -> Result<KindDiscriminant, F1Error> {
         "const" => Ok(KindDiscriminant::Const),
         "static" => Ok(KindDiscriminant::Static),
         "reexport" => Ok(KindDiscriminant::Reexport),
+        "param" => Ok(KindDiscriminant::Param),
         _ => Err(F1Error::Malformed(format!("unknown kind token: {}", s))),
     }
 }
@@ -797,6 +799,17 @@ pub fn serialize_f1(
     // Key 18 – out (S E, seq) — functions
 
     match &payload.kind {
+        KindWire::Param(p) => {
+            // A first-class Param entry encodes its (name, type) as a single
+            // `in` line — same token used for function input params, so the
+            // line parser is shared.
+            out.push_str(KEY_IN);
+            out.push('\t');
+            out.push_str(&escape(p.name.as_deref().unwrap_or("")));
+            out.push('\t');
+            out.push_str(&encode_typeref(&p.ty));
+            out.push('\n');
+        }
         KindWire::Function(f) => {
             // fnsig
             out.push_str(KEY_FNSIG);
@@ -1510,7 +1523,7 @@ impl<'a> F1View<'a> {
         };
 
         let kind = self.reconstruct_kind()?;
-        let flags = ir::wire::EntryPayloadFlags::default();
+        let flags = crate::wire::EntryPayloadFlags::default();
 
         let payload = OwnedEntryPayload::sealed(sym, self.kind_disc, kind, flags);
         Ok(payload)
@@ -1572,7 +1585,7 @@ impl<'a> F1View<'a> {
                 }))
             }
 
-            KindDiscriminant::Type => {
+            KindDiscriminant::Alias => {
                 let ty = self
                     .type_raw
                     .map(decode_typeexpr)
@@ -1692,6 +1705,17 @@ impl<'a> F1View<'a> {
                     .ok_or_else(|| F1Error::MissingField("retgt".into()))?;
                 Ok(KindWire::Reexport(ReexportWire { target }))
             }
+
+            KindDiscriminant::Param => {
+                // A first-class Param entry stores its type in the first `in`
+                // line (same format as function param lines: <name_esc>TAB<typeref>).
+                let pw = self
+                    .in_lines
+                    .first()
+                    .ok_or_else(|| F1Error::MissingField("in (param)".into()))
+                    .and_then(|s| parse_param_line(s))?;
+                Ok(KindWire::Param(pw))
+            }
         }
     }
 
@@ -1803,7 +1827,7 @@ pub fn compute_api_surface_hash(payload: &OwnedEntryPayload) -> ContentBlake3 {
 mod tests {
     use super::*;
     use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
-    use ir::wire::{
+    use crate::wire::{
         AutoFact, AutoState, AutoTrait, EntryPayloadFlags, FnSigFlags, GenericParamWire, ImplFlags,
         ImplWire, ModuleWire, OwnedEntryPayload, ReexportWire, SelfKind, StaticWire, SymbolWire,
         TraitFlags, TraitWire, TypeAliasWire, TypeRefWire, TypeWire, VariantForm, VariantWire,
@@ -1843,7 +1867,7 @@ mod tests {
             KindWire::Record(_) => KindDiscriminant::Record,
             KindWire::Field(_) => KindDiscriminant::Field,
             KindWire::Function(_) => KindDiscriminant::Function,
-            KindWire::Type(_) => KindDiscriminant::Type,
+            KindWire::Type(_) => KindDiscriminant::Alias,
             KindWire::Trait(_) => KindDiscriminant::Trait,
             KindWire::Impl(_) => KindDiscriminant::Impl,
             KindWire::Enum(_) => KindDiscriminant::Enum,
@@ -1851,6 +1875,7 @@ mod tests {
             KindWire::Const(_) => KindDiscriminant::Const,
             KindWire::Static(_) => KindDiscriminant::Static,
             KindWire::Reexport(_) => KindDiscriminant::Reexport,
+            KindWire::Param(_) => KindDiscriminant::Param,
         };
         OwnedEntryPayload::sealed(sym, disc, kind, EntryPayloadFlags::default())
     }
@@ -2035,7 +2060,7 @@ mod tests {
     #[test]
     fn f1_type_alias_round_trip() {
         let kind = KindWire::Type(TypeAliasWire {
-            ty: TypeWire::Primitive(ir::wire::PrimitiveWire::Bool),
+            ty: TypeWire::Primitive(crate::wire::PrimitiveWire::Bool),
             generics: Box::new([]),
             wheres: Box::new([]),
             auto: Box::new([]),
@@ -2195,7 +2220,7 @@ mod tests {
                 KindWire::Record(_) => KindDiscriminant::Record,
                 KindWire::Field(_) => KindDiscriminant::Field,
                 KindWire::Function(_) => KindDiscriminant::Function,
-                KindWire::Type(_) => KindDiscriminant::Type,
+                KindWire::Type(_) => KindDiscriminant::Alias,
                 KindWire::Trait(_) => KindDiscriminant::Trait,
                 KindWire::Impl(_) => KindDiscriminant::Impl,
                 KindWire::Enum(_) => KindDiscriminant::Enum,
@@ -2203,6 +2228,7 @@ mod tests {
                 KindWire::Const(_) => KindDiscriminant::Const,
                 KindWire::Static(_) => KindDiscriminant::Static,
                 KindWire::Reexport(_) => KindDiscriminant::Reexport,
+                KindWire::Param(_) => KindDiscriminant::Param,
             };
             let payload = OwnedEntryPayload::sealed(
                 base_sym("x"),

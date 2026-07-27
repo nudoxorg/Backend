@@ -269,10 +269,10 @@ mod tests {
     use super::*;
 
     use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
-    use ir::apply::PristineIntroTable;
+    use crate::wire::PayloadTable;
     use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
-    use ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
+    use ir::entry::Visibility;
+    use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
 
     use crate::version::VersionLabel;
 
@@ -307,8 +307,8 @@ mod tests {
     }
     /// `n` symbols; the first `changed` of them carry a `_v{v}` suffix so two
     /// generations differ by exactly `changed` symbols.
-    fn table(n: u32, changed: u32, v: u32) -> PristineIntroTable {
-        let mut t = PristineIntroTable::new();
+    fn table(n: u32, changed: u32, v: u32) -> PayloadTable {
+        let mut t = PayloadTable::new();
         for i in 0..n {
             let name = if i < changed { format!("s{i}_v{v}") } else { format!("s{i}") };
             t.insert_live(intro_n(i), func(&name), None);

@@ -15,14 +15,14 @@
 //! and [`crate::diff::delta::PackageDelta::canonical_bytes`].
 
 use ir::change::{ContentBlake3, IntroId, StableRef};
-use ir::change::domain::LinkDomainKey;
+use crate::vcs_types::LinkDomainKey;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use ir::wire::{
+use crate::wire::{
     AttrTok, AutoTrait, CfgExpr, FnSigFlags, TraitFlags, TriState, TypeRefWire, WherePredWire,
 };
-use ir::symbol::Visibility;
+use ir::entry::Visibility;
 
 // ---------------------------------------------------------------------------
 // SigKey
@@ -32,7 +32,7 @@ use ir::symbol::Visibility;
 ///
 /// `SigKey = blake3("nudox.sigkey.v1" || function_signature_skeleton(inputs, outputs) || 0xFE || fnsig_flag_bytes)`
 ///
-/// Computed by [`ir::intro::sig_key`] and never stored in the VCS file
+/// Computed by [`crate::vcs_types::sig_key`] and never stored in the VCS file
 /// (it is always re-derived). Carried inside [`IrOp::SignatureEvolved`] so that
 /// downstream consumers can check for overload-set churn without re-deriving.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]

@@ -42,7 +42,7 @@ use std::sync::Arc;
 
 use ir::change::IntroId;
 
-use ir::serialize::{intro_hex_of, is_symbol_path};
+use crate::serialize::{intro_hex_of, is_symbol_path};
 
 // ---------------------------------------------------------------------------
 // MaterializedIndex
@@ -102,7 +102,7 @@ impl MaterializedIndex {
 
     /// A **borrowed** [`F1View`](crate::f1::F1View) over a symbol's
     /// bytes — the materialized graph as zero-owned borrowed views, not an owned
-    /// `PristineIntroTable`. Returns `None` if the intro is absent, or `Some(Err)`
+    /// `PayloadTable`. Returns `None` if the intro is absent, or `Some(Err)`
     /// if the stored bytes are malformed.
     pub fn view(&self, intro: IntroId) -> Option<Result<crate::f1::F1View<'_>, crate::f1::F1Error>> {
         self.symbols.get(&intro).map(|arc| crate::f1::F1View::from_bytes(&arc[..]))
@@ -156,10 +156,10 @@ mod tests {
     use std::sync::Arc;
 
     use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
-    use ir::apply::PristineIntroTable;
+    use crate::wire::PayloadTable;
     use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
-    use ir::wire::{
+    use ir::entry::Visibility;
+    use crate::wire::{
         EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
     };
 
@@ -167,7 +167,7 @@ mod tests {
     use crate::repo::IrRepository;
 
     /// Decode a symbol blob's bytes back to its payload (for assertions).
-    fn payload_of(bytes: &[u8]) -> ir::wire::OwnedEntryPayload {
+    fn payload_of(bytes: &[u8]) -> crate::wire::OwnedEntryPayload {
         F1View::from_bytes(bytes).unwrap().to_owned_payload().unwrap()
     }
 
@@ -219,8 +219,8 @@ mod tests {
         )
     }
 
-    fn build_ir(entries: &[(u8, OwnedEntryPayload)]) -> PristineIntroTable {
-        let mut ir = PristineIntroTable::new();
+    fn build_ir(entries: &[(u8, OwnedEntryPayload)]) -> PayloadTable {
+        let mut ir = PayloadTable::new();
         for (n, payload) in entries {
             ir.insert_live(intro(*n), payload.clone(), None);
         }

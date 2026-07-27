@@ -259,9 +259,9 @@ impl TocEntry {
 pub struct EntryHead {
     /// The 32-byte [`ir::change::IntroId`] bytes.
     pub intro: [u8; 32],
-    /// [`ir::index::StrId`] (LE u32) into the StringTable for the entry's primary name.
+    /// [`crate::vcs_types::StrId`] (LE u32) into the StringTable for the entry's primary name.
     pub name: [u8; 4],
-    /// [`ir::index::StrId`] (LE u32) for `source_path`.
+    /// [`crate::vcs_types::StrId`] (LE u32) for `source_path`.
     pub source_path: [u8; 4],
     /// Span start byte offset (LE u32).
     pub span_start: [u8; 4],

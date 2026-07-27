@@ -31,11 +31,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ir::change::{ContentBlake3, IntroId};
-use ir::{
-    index::{ArenaIdx, TypeFingerprintId},
-    kind::KindDiscriminant,
-    wire::OwnedEntryPayload,
-};
+use ir::kind::KindDiscriminant;
+use crate::vcs_types::{ArenaIdx, TypeFingerprintId};
+use crate::wire::OwnedEntryPayload;
 use zerocopy::FromBytes;
 
 use crate::archive::error::ArchiveError;
@@ -266,7 +264,7 @@ impl<'a> PackageArchiveView<'a> {
         let n = st.len();
         let mut results = Vec::new();
         for i in 0..n {
-            if let Ok(s) = st.resolve(ir::index::StrId(i))
+            if let Ok(s) = st.resolve(crate::vcs_types::StrId(i))
                 && s == name {
                     // Found the StrId; collect all postings.
                     for idx in ni.iter_key(i) {

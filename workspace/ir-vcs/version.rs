@@ -12,7 +12,7 @@
 //! channel-tip Merkle that identifies its reconstructable IR (and keys the
 //! serve cache).
 
-use ir::change::ChangeSetFingerprint;
+use crate::vcs_types::ChangeSetFingerprint;
 use smol_str::SmolStr;
 
 use crate::error::VcsError;
