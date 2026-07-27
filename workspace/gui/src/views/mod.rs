@@ -13,3 +13,6 @@ pub use omni_search::{
     Cursor, OmniSearch, OmniSearchEvent, OpenDisposition, PreparedRow, ScopeChip, SearchAccess,
     SearchMode, SearchSnapshot, Section, SectionData, SectionStatus,
 };
+
+/// The streamed symbol page (§16) — the documentation centrepiece.
+pub mod symbol_page;

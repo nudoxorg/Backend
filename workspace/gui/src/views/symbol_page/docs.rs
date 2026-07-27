@@ -3,8 +3,8 @@
 //! # The one idea in this file
 //!
 //! **The list is laid out before the content exists, and it is never re-laid
-//! out.** `SymbolHead::section_plan` tells us how many sections are coming and
-//! roughly how tall each one is. From that we build, in a single frame:
+//! out.** `SymbolHead::section_plan` says how many sections are coming and how
+//! tall each one will be. From that we build, in a single frame:
 //!
 //! * a `ListState` spliced *once* to exactly `section_plan.len()` items, and
 //! * a `Vec<SectionSlot>` where slot `i` is permanently bound to plan entry `i`.
@@ -13,38 +13,38 @@
 //! insertion. The item count never changes for the life of a generation, so
 //! `ListState`'s logical scroll anchor — a `(item_ix, offset_in_item)` pair, not
 //! a pixel offset — stays valid no matter what arrives above or below the
-//! reader. This is the structural half of the guarantee.
+//! reader. That is the structural half of the guarantee.
 //!
 //! The dimensional half is [`reserved_height`]: the skeleton and the arrived
 //! content are laid out at the *same* reserved height, computed once from
 //! `SizeHint` (§9.4.1 — `Lines(n) → n × line_height`, `Rows(n) → n × row_height`,
-//! `Unknown → 3 lines`). Content is placed in a `min_h(reserved)` box, so a
-//! section can only ever grow past its reserve, never shrink below it. And when
-//! a slot's content lands we call `ListState::remeasure_items(i..i+1)`, which —
-//! unlike `splice` — keeps the anchor and, if the anchored item is the one being
+//! `Unknown → 3 lines`). Content sits in a `min_h(reserved)` box, so a section
+//! can only grow past its reserve, never shrink below it. And when a slot's
+//! content lands we call `ListState::remeasure_items(i..i+1)`, which — unlike
+//! `splice` — keeps the anchor and, if the anchored item is the one being
 //! remeasured, pins an absolute pending scroll (`list.rs:374`). Nothing the
 //! reader is looking at can move.
 //!
 //! Code blocks get the same treatment one level down (§9.4.2): the block is
 //! `line_count × mono.line_height` tall with `whitespace_nowrap`, so wrapping
-//! cannot change its height, and `Highlight` arriving only ever swaps
+//! cannot add a line, and `Highlight` arriving only ever swaps
 //! `HighlightStyle::color` on byte ranges of a single `StyledText`. Mono metrics
 //! are colour-invariant, so `highlight.sweep` is provably geometry-free.
 //!
 //! # Why inline runs are one `StyledText` and not a row of `div`s
 //!
-//! A paragraph rendered as a flex-wrap row of per-run `div`s cannot wrap
-//! *inside* a run at a run boundary — you get ragged, jumpy text that reflows
-//! differently as the window resizes. Instead every paragraph is concatenated at
-//! projection time into one `SharedString` plus a list of `(byte range, style)`
-//! pairs. `InteractiveText` then gives real inline flow *and* per-range click
-//! targets, which is how every `InlineRun::Link` becomes a live link.
+//! A paragraph rendered as a flex-wrap row of per-run `div`s cannot wrap *inside*
+//! a run — you get ragged text that reflows differently at every window width.
+//! Instead every paragraph is concatenated at projection time into one
+//! `SharedString` plus a list of `(byte range, style)` pairs. `InteractiveText`
+//! then gives real inline flow *and* per-range click targets, which is how every
+//! `InlineRun::Link` becomes a live link.
 //!
 //! # LD-7
 //!
 //! `RenderSection`, `ProseBlock` and `InlineRun` are all `#[non_exhaustive]`.
 //! Every match here has a fallback arm that renders a visible chip. Nothing is
-//! ever dropped silently and nothing panics.
+//! dropped silently and nothing panics.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -54,14 +54,13 @@ use std::time::Instant;
 use gpui::{
     AnyElement, App, ElementId, HighlightStyle, Hsla, InteractiveElement as _, InteractiveText,
     IntoElement, ListAlignment, ListState, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement as _, StyledText, Styled, Window, div,
+    StatefulInteractiveElement as _, Styled, StyledText, Window, div,
     prelude::FluentBuilder as _,
 };
-use gpui_component::{Sizable as _, StyledExt as _, skeleton::Skeleton};
+use gpui_component::{StyledExt as _, skeleton::Skeleton};
 use nudox_engine::wire::{
     CalloutLevel, FieldRow, HighlightSpan, InlineRun, LinkTarget, MemberRow, ProseBlock,
-    RenderSection, SectionId, SectionKind, SectionPlan, SigToken as WireSigToken, SizeHint,
-    SymbolKey,
+    RenderSection, SectionId, SectionKind, SectionPlan, SizeHint, SymbolKey,
 };
 
 use crate::motion::color::MotionColor;
@@ -69,7 +68,6 @@ use crate::motion::declarative::{entrance_id, rise_in};
 use crate::motion::spring::Spring;
 use crate::motion::tokens::{MotionTokens, ROW_CASCADE_WINDOW};
 use crate::theme::ext::ThemeExtAccessor as _;
-use crate::theme::kind::LocalKindDiscriminant;
 use crate::theme::tokens::{ColourRoles, KindColours};
 use crate::ui::{Badge, SigToken, SignatureLine};
 
@@ -78,10 +76,16 @@ use super::header::{KindChip, link_ix, shared, sig_tokens};
 /// Extra vertical slack folded into every reserve.
 ///
 /// `section.arrive` is `rise_in`, which animates a 6 px `margin-top` down to
-/// zero. Without slack that 6 px would briefly push the section past its
-/// reserve and force a re-measure mid-animation. One space token of headroom
-/// absorbs it entirely, so the entrance is free.
+/// zero. Without slack that 6 px would briefly push a section past its reserve
+/// and force a re-measure on every frame of the entrance. One space token of
+/// headroom absorbs it, so the entrance costs nothing.
 const RISE_SLACK_TOKENS: f32 = 1.0;
+
+/// How many skeleton bars we are willing to draw for one section.
+///
+/// A 400-line prose section does not need 400 shimmer bars to read as "text is
+/// coming"; past a couple of dozen the effect is noise and the cost is real.
+const MAX_SKELETON_BARS: usize = 24;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Geometry
@@ -89,9 +93,9 @@ const RISE_SLACK_TOKENS: f32 = 1.0;
 
 /// The line/row metrics §9.4's size-hint arithmetic is written against.
 ///
-/// Read once from the theme when a plan lands. GUI-PLAN §10.2 notes that these
-/// line heights are *locked* into this arithmetic — changing them is a
-/// design-system change, not a view change.
+/// Read once from the theme when a plan lands. §10.2 notes these line heights
+/// are *locked* into this arithmetic — changing them is a design-system change,
+/// not a view change.
 #[derive(Clone, Copy, Debug)]
 pub struct Metrics {
     prose_line: Pixels,
@@ -131,13 +135,14 @@ pub fn reserved_height(kind: SectionKind, hint: SizeHint, m: &Metrics) -> Pixels
     let body = match hint {
         SizeHint::Lines(n) => unit * (n.max(1) as f32),
         SizeHint::Rows(n) => m.row * (n.max(1) as f32),
-        // §9.4.1: no estimate → a three-line block.
+        // §9.4.1: no estimate → a three-line block. Never zero: a zero-height
+        // skeleton collapses the list and hands the reader a jump on arrival.
         _ => unit * 3.0,
     };
     body + m.pad_y + m.slack
 }
 
-/// The default outline label for a section we have not seen the content of yet.
+/// The default outline label for a section whose content has not arrived.
 ///
 /// This is why our sidebar exists before the document does.
 fn kind_label(kind: SectionKind) -> SharedString {
@@ -214,10 +219,10 @@ impl RichText {
                 InlineRun::Link { text: t, target } => {
                     text.push_str(t);
                     links.push(match target {
-                        LinkTarget::Symbol(key) => LinkDest::Symbol(*key),
+                        LinkTarget::Symbol(key) => LinkDest::Symbol(key.clone()),
                         LinkTarget::Url(u) => LinkDest::Url(shared(u)),
-                        // An unknown link target is still shown as text; it
-                        // simply is not clickable (LD-7 — visible, not silent).
+                        // An unknown target still shows its text; it simply is
+                        // not clickable (LD-7 — visible, not silent).
                         _ => LinkDest::Url(SharedString::from("")),
                     });
                     link_ranges.push(start..text.len());
@@ -251,13 +256,13 @@ struct CodeView {
     lang: SharedString,
     /// The engine's promised line count — this block's height, fixed (§9.4.2).
     line_count: u32,
-    /// Byte ranges with their class index into `classes`. Empty until
-    /// `DocEvent::Highlight` lands.
+    /// Byte ranges with their class index into `classes`. Empty until a
+    /// `DocEvent::Highlight` for this section lands.
     spans: Vec<(Range<usize>, usize)>,
     /// Distinct token classes present in this block.
     classes: Vec<SharedString>,
     /// One `highlight.sweep` colour spring per class, present only while the
-    /// sweep is running. Dropped on settle so a settled document ticks nothing.
+    /// sweep runs. Dropped on settle, so a finished document ticks nothing.
     sweep: Option<Vec<MotionColor>>,
 }
 
@@ -279,7 +284,13 @@ impl CodeView {
     }
 
     /// Ingest a `Highlight` event and arm the sweep. Projection time only.
-    fn apply_spans(&mut self, spans: &[HighlightSpan], colours: &ColourRoles, kinds: &KindColours, reduced: bool) {
+    fn apply_spans(
+        &mut self,
+        spans: &[HighlightSpan],
+        colours: &ColourRoles,
+        kinds: &KindColours,
+        reduced: bool,
+    ) {
         let mut classes: Vec<SharedString> = Vec::new();
         let mut out: Vec<(Range<usize>, usize)> = Vec::with_capacity(spans.len());
         let len = self.text.len();
@@ -289,7 +300,8 @@ impl CodeView {
             let end = span.end as usize;
             // Defensive: `StyledText::with_highlights` debug-asserts char
             // boundaries, and a producer bug must not become a panic (LD-7).
-            if start >= end || end > len
+            if start >= end
+                || end > len
                 || !self.text.is_char_boundary(start)
                 || !self.text.is_char_boundary(end)
             {
@@ -336,23 +348,13 @@ impl CodeView {
         }
         if !moving {
             // Settled: drop the springs so a finished page costs nothing.
-            self.settle();
+            self.sweep = None;
         }
         moving
     }
 
-    /// Freeze the sweep at its final colours.
-    fn settle(&mut self) {
-        self.sweep = None;
-    }
-
-    /// The colour a class paints at *right now*.
-    fn class_colour_now(
-        &self,
-        class_ix: usize,
-        colours: &ColourRoles,
-        kinds: &KindColours,
-    ) -> Hsla {
+    /// The colour a class paints at *this instant*.
+    fn class_colour_now(&self, class_ix: usize, colours: &ColourRoles, kinds: &KindColours) -> Hsla {
         match self.sweep.as_ref().and_then(|s| s.get(class_ix)) {
             Some(motion) => motion.value(),
             None => match self.classes.get(class_ix) {
@@ -365,9 +367,9 @@ impl CodeView {
 
 /// Map a highlighter token class onto the design system.
 ///
-/// Types and functions deliberately reuse the *kind* palette, so a `struct`
-/// name inside a code sample is the same hue as the `struct` badge beside it.
-/// That is a cross-surface consistency docs.rs has no way to offer.
+/// Types and functions deliberately reuse the *kind* palette, so a `struct` name
+/// inside a code sample is the same hue as the `struct` badge beside it — a
+/// cross-surface consistency docs.rs has no way to offer.
 fn class_colour(class: &str, colours: &ColourRoles, kinds: &KindColours) -> Hsla {
     match class {
         "keyword" | "kw" | "storage" | "keyword.control" => colours.accent,
@@ -379,7 +381,7 @@ fn class_colour(class: &str, colours: &ColourRoles, kinds: &KindColours) -> Hsla
         "variable" | "property" | "field" => kinds.field,
         "attribute" | "annotation" | "macro" => kinds.alias,
         "punctuation" | "operator" | "delimiter" => colours.fg_faint,
-        // Unknown class: readable default rather than an invisible one.
+        // Unknown class: a readable default rather than an invisible one.
         _ => colours.fg_default,
     }
 }
@@ -398,7 +400,7 @@ impl RowView {
     fn from_member(row: &MemberRow) -> Self {
         let mut links = Vec::new();
         Self {
-            key: row.key,
+            key: row.key.clone(),
             name: shared(&row.name),
             sig: sig_tokens(&row.sig, &mut links),
             links: Arc::from(links),
@@ -409,7 +411,7 @@ impl RowView {
     fn from_field(row: &FieldRow) -> Self {
         let mut links = Vec::new();
         Self {
-            key: row.key,
+            key: row.key.clone(),
             name: shared(&row.name),
             sig: sig_tokens(&row.ty_tokens, &mut links),
             links: Arc::from(links),
@@ -464,7 +466,7 @@ pub struct SectionSlot {
     pub reserved: Pixels,
     /// Outline label — the kind name until the real heading arrives.
     pub label: SharedString,
-    /// `true` once `label` came from the content rather than the plan.
+    /// `true` once `label` came from content rather than from the plan.
     pub label_refined: bool,
     /// When the content landed; drives the `section.arrive` window.
     pub arrived_at: Option<Instant>,
@@ -489,10 +491,10 @@ pub struct DocsBody {
     list: ListState,
     slots: Vec<SectionSlot>,
     metrics: Metrics,
-    /// Generation stamp — part of every entrance `ElementId` so a tab switch
+    /// Generation stamp — part of every entrance `ElementId`, so a tab switch
     /// inside one generation never replays an entrance (LD-19).
     generation: u64,
-    /// Number of sections consumed from the store's `Progressive` so far.
+    /// How many sections we have consumed from the store's `Progressive`.
     consumed: usize,
     /// Section ids whose highlights have already been ingested.
     highlighted: Vec<SectionId>,
@@ -503,11 +505,12 @@ pub struct DocsBody {
 impl DocsBody {
     /// An empty body, before any `Head` has landed.
     pub fn new(cx: &App) -> Self {
+        let sp = cx.theme_ext().space;
         Self {
-            // `Top` alignment: documents read downward. Overdraw of one section
-            // reserve keeps the next section measured before it is revealed, so
-            // fast scrolling never shows an unmeasured gap.
-            list: ListState::new(0, ListAlignment::Top, cx.theme_ext().space.space_8 * 8.0),
+            // `Top` alignment: documents read downward. The overdraw keeps the
+            // next screenful measured before it is revealed, so fast scrolling
+            // never shows an unmeasured gap.
+            list: ListState::new(0, ListAlignment::Top, sp.space_8 * 8.0),
             slots: Vec::new(),
             metrics: Metrics::from_theme(cx),
             generation: 0,
@@ -570,11 +573,11 @@ impl DocsBody {
         self.list.reset(self.slots.len());
     }
 
-    /// Pull any sections the store has accumulated but we have not projected.
+    /// Project any sections the store has accumulated but we have not.
     ///
     /// Returns `true` if anything changed. Called from the store observation,
     /// never from `render` — all the string work lives here.
-    pub fn sync_sections(&mut self, sections: &[RenderSection], cx: &App) -> bool {
+    pub fn sync_sections(&mut self, sections: &[RenderSection]) -> bool {
         if self.consumed >= sections.len() {
             return false;
         }
@@ -584,23 +587,24 @@ impl DocsBody {
         for section in &sections[self.consumed..] {
             let id = section.section_id();
             let Some(ix) = self.slots.iter().position(|s| s.id == id) else {
-                // A section the plan did not predict. Rather than insert (which
-                // would move every slot below it and break the anchor), we drop
-                // it and leave a trace — the plan is the layout contract.
+                // A section the plan did not predict. Inserting it would move
+                // every slot below and break the anchor, so we drop it and
+                // leave a trace: the plan is the layout contract.
                 tracing::warn!(section = id.0, "section id absent from section_plan");
                 continue;
             };
-            let view = self.project(section, cx);
+            let view = project_section(section);
+            let label = heading_label(&view);
             let slot = &mut self.slots[ix];
-            if let Some(label) = heading_label(&view) {
+            if let Some(label) = label {
                 slot.label = label;
                 slot.label_refined = true;
             }
             slot.body = Some(view);
             slot.arrived_at = Some(now);
             // Re-measure this one item. Unlike `splice`, this preserves the
-            // logical scroll anchor and pins an absolute offset if the anchored
-            // item is the one that changed (`list.rs:374`).
+            // logical scroll anchor and pins an absolute offset when the
+            // anchored item is the one that changed (`list.rs:374`).
             self.list.remeasure_items(ix..ix + 1);
             changed = true;
         }
@@ -611,9 +615,9 @@ impl DocsBody {
 
     /// Ingest highlight upgrades for code sections and arm their sweeps.
     ///
-    /// Colour only: no span can change a block's height, because the block's
-    /// height is `line_count × mono_line` and mono metrics do not vary with
-    /// colour (§9.4.2). We therefore deliberately do *not* remeasure here.
+    /// Colour only: no span can change a block's height, because that height is
+    /// `line_count × mono_line` and mono metrics do not vary with colour
+    /// (§9.4.2). We therefore deliberately do *not* remeasure here.
     pub fn sync_highlights(
         &mut self,
         highlights: &std::collections::HashMap<SectionId, Arc<[HighlightSpan]>>,
@@ -622,10 +626,10 @@ impl DocsBody {
         if highlights.is_empty() {
             return false;
         }
-        let ext = cx.theme_ext();
-        let colours = ext.colours;
-        let kinds = ext.kind_colours;
-        let reduced = ext.reduced_motion();
+        let (colours, kinds, reduced) = {
+            let ext = cx.theme_ext();
+            (ext.colours, ext.kind_colours, ext.reduced_motion())
+        };
         let mut changed = false;
 
         for (id, spans) in highlights {
@@ -641,9 +645,9 @@ impl DocsBody {
                     true
                 }
                 Some(SectionView::Blocks(blocks)) | Some(SectionView::Callout { blocks, .. }) => {
-                    // A `Highlight` for a prose section targets its fenced code
-                    // blocks; the protocol carries one span set per section, so
-                    // we apply it to the first code block in the section.
+                    // A `Highlight` for a prose section targets its fenced code;
+                    // the protocol carries one span set per section, so it
+                    // applies to that section's first code block.
                     match blocks.iter_mut().find_map(|b| match b {
                         BlockView::Code(c) => Some(c),
                         _ => None,
@@ -707,60 +711,23 @@ impl DocsBody {
         self.list.logical_scroll_top().item_ix
     }
 
-    // ── Projection (update time) ─────────────────────────────────────────────
-
-    fn project(&self, section: &RenderSection, cx: &App) -> SectionView {
-        match section {
-            RenderSection::Prose { blocks, .. } | RenderSection::Examples { blocks, .. } => {
-                SectionView::Blocks(blocks.iter().map(project_block).collect())
-            }
-            RenderSection::Callout { level, blocks, .. } => SectionView::Callout {
-                level: *level,
-                blocks: blocks.iter().map(project_block).collect(),
-            },
-            RenderSection::CodeBlock {
-                lang,
-                text,
-                line_count,
-                ..
-            } => SectionView::Code(CodeView::new(
-                shared(text),
-                shared(&lang.0),
-                *line_count,
-            )),
-            RenderSection::Members { entries, .. } => SectionView::Rows {
-                title: SharedString::from("Members"),
-                rows: entries.iter().map(RowView::from_member).collect(),
-            },
-            RenderSection::Fields { entries, .. } => SectionView::Rows {
-                title: SharedString::from("Fields"),
-                rows: entries.iter().map(RowView::from_field).collect(),
-            },
-            RenderSection::Unknown { kind_tag, .. } => SectionView::Unknown(shared(kind_tag)),
-            // LD-7: a section kind added after this binary was built.
-            _ => {
-                let _ = cx;
-                SectionView::Unknown(SharedString::from("unknown section"))
-            }
-        }
-    }
-
     // ── Render ───────────────────────────────────────────────────────────────
 
     /// Render planned section `ix`. This is `list()`'s item renderer.
     ///
-    /// Every path through this function produces an element inside a
-    /// `min_h(reserved)` box, so the promise made by the skeleton is kept
-    /// whether or not the content has arrived.
-    pub fn render_section(&self, ix: usize, _window: &mut Window, cx: &mut App) -> AnyElement {
+    /// Every path produces an element inside a `min_h(reserved)` box, so the
+    /// promise the skeleton made is kept whether or not content has arrived.
+    pub fn render_section(&self, ix: usize, _window: &mut Window, cx: &App) -> AnyElement {
         let Some(slot) = self.slots.get(ix) else {
             return div().into_any_element();
         };
 
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let scale = ext.motion_scale;
-        let colours = ext.colours;
+        // Every token used below is `Copy`, so the theme borrow ends here and
+        // nothing downstream is constrained by it.
+        let (sp, ts, colours, scale) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.type_scale, ext.colours, ext.motion_scale)
+        };
 
         let frame = div()
             .id(("doc.section", ix))
@@ -773,17 +740,19 @@ impl DocsBody {
             return frame.child(self.render_skeleton(slot, cx)).into_any_element();
         };
 
-        let content = match body {
+        let content: AnyElement = match body {
             SectionView::Blocks(blocks) => div()
                 .v_flex()
                 .w_full()
                 .gap(sp.space_3)
-                .children(blocks.iter().enumerate().map(|(bx, block)| {
-                    self.render_block(ix, bx, block, cx)
-                }))
+                .children(
+                    blocks
+                        .iter()
+                        .enumerate()
+                        .map(|(bx, block)| self.render_block(ix, bx, block, cx)),
+                )
                 .into_any_element(),
-            SectionView::Callout { level, blocks } => self
-                .render_callout(ix, *level, blocks, cx),
+            SectionView::Callout { level, blocks } => self.render_callout(ix, *level, blocks, cx),
             SectionView::Code(code) => self.render_code(ix, 0, code, cx),
             SectionView::Rows { title, rows } => self.render_rows(ix, title, rows, cx),
             SectionView::Unknown(tag) => div()
@@ -799,8 +768,8 @@ impl DocsBody {
                 ))
                 .child(
                     div()
-                        .text_size(ext.type_scale.dense.size)
-                        .line_height(ext.type_scale.dense.line_height)
+                        .text_size(ts.dense.size)
+                        .line_height(ts.dense.line_height)
                         .text_color(colours.fg_faint)
                         .child(SharedString::from(
                             "This section was produced by a newer toolchain.",
@@ -811,16 +780,27 @@ impl DocsBody {
 
         // §9.4.3 / LD-19: the entrance is keyed on (generation, section_id), so
         // it fires once when the section lands and never again — not when the
-        // reader scrolls back, and not when they switch tabs and return.
+        // reader scrolls back, and not when they leave the tab and return.
         let animate = slot
             .arrived_at
-            .is_some_and(|t| t.elapsed() < ROW_CASCADE_WINDOW);
+            .is_some_and(|t| t.elapsed() < ROW_CASCADE_WINDOW)
+            && scale > 0.0;
 
-        if animate && scale > 0.0 {
-            let motion = MotionTokens::new(scale);
-            let id: ElementId = entrance_id("doc.section.enter", self.generation, slot.id.0 as usize);
+        if animate {
+            // Borrow the global when it exists; fall back to a local only when
+            // it does not (tests, headless), so the hot path allocates nothing.
+            let local;
+            let motion: &MotionTokens = match cx.try_global::<MotionTokens>() {
+                Some(tokens) => tokens,
+                None => {
+                    local = MotionTokens::new(scale);
+                    &local
+                }
+            };
+            let id: ElementId =
+                entrance_id("doc.section.enter", self.generation, slot.id.0 as usize);
             frame
-                .child(rise_in(div().w_full().child(content), id, &motion))
+                .child(rise_in(div().w_full().child(content), id, motion))
                 .into_any_element()
         } else {
             frame.child(content).into_any_element()
@@ -829,8 +809,7 @@ impl DocsBody {
 
     /// The pre-content skeleton: exactly the geometry the plan promised.
     fn render_skeleton(&self, slot: &SectionSlot, cx: &App) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
+        let sp = cx.theme_ext().space;
         let m = &self.metrics;
 
         let unit = match slot.kind {
@@ -841,7 +820,7 @@ impl DocsBody {
         // Derive the bar count from the same reserve the content will honour,
         // so the skeleton is the content's silhouette rather than a guess.
         let usable = slot.reserved - m.pad_y - m.slack;
-        let bars = ((usable / unit).max(1.0) as usize).min(24);
+        let bars = ((f32::from(usable) / f32::from(unit)).round().max(1.0) as usize).min(MAX_SKELETON_BARS);
         let bar_h = unit - sp.space_1;
 
         div()
@@ -849,12 +828,13 @@ impl DocsBody {
             .w_full()
             .gap(sp.space_1)
             .children((0..bars).map(|bx| {
-                // Ragged right edge reads as text rather than as a progress bar.
-                let last = bx + 1 == bars;
+                // A ragged right edge on the last bar reads as text rather than
+                // as a progress bar.
+                let ragged = bars > 1 && bx + 1 == bars;
                 Skeleton::new()
                     .h(bar_h)
-                    .when(last && bars > 1, |s| s.w_3_4())
-                    .when(!(last && bars > 1), |s| s.w_full())
+                    .when(ragged, |s| s.w_3_4())
+                    .when(!ragged, |s| s.w_full())
             }))
             .into_any_element()
     }
@@ -866,10 +846,10 @@ impl DocsBody {
         block: &BlockView,
         cx: &App,
     ) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let ts = ext.type_scale;
-        let colours = ext.colours;
+        let (sp, ts, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.type_scale, ext.colours)
+        };
 
         match block {
             BlockView::Paragraph(rich) => div()
@@ -915,8 +895,8 @@ impl DocsBody {
                         )
                         .child(div().flex_1().overflow_hidden().child(self.render_rich(
                             section_ix,
-                            // Keep list items from colliding with sibling
-                            // blocks in the element-id space (LD-19).
+                            // Keep list items out of sibling blocks' element-id
+                            // space (LD-19).
                             block_ix * 1_000 + item_ix + 1,
                             rich,
                             cx,
@@ -951,8 +931,10 @@ impl DocsBody {
         rich: &RichText,
         cx: &App,
     ) -> AnyElement {
-        let ext = cx.theme_ext();
-        let colours = ext.colours;
+        let (border_width, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space.border_width, ext.colours)
+        };
 
         let styles: Vec<(Range<usize>, HighlightStyle)> = rich
             .styles
@@ -981,7 +963,7 @@ impl DocsBody {
                     RunStyle::Link => HighlightStyle {
                         color: Some(colours.accent),
                         underline: Some(gpui::UnderlineStyle {
-                            thickness: ext.space.border_width,
+                            thickness: border_width,
                             color: Some(colours.accent),
                             wavy: false,
                         }),
@@ -1006,8 +988,9 @@ impl DocsBody {
         let links = rich.links.clone();
         let on_open = self.on_open.clone();
         InteractiveText::new(id, text)
-            .on_click(rich.link_ranges.to_vec(), move |link_ix, window, cx| {
-                match links.get(link_ix) {
+            .on_click(
+                rich.link_ranges.to_vec(),
+                move |link_ix, window, cx| match links.get(link_ix) {
                     Some(LinkDest::Symbol(key)) => {
                         if let Some(open) = on_open.as_ref() {
                             open(key, window, cx);
@@ -1019,8 +1002,8 @@ impl DocsBody {
                         }
                     }
                     None => {}
-                }
-            })
+                },
+            )
             .into_any_element()
     }
 
@@ -1032,11 +1015,10 @@ impl DocsBody {
         code: &CodeView,
         cx: &App,
     ) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let ts = ext.type_scale;
-        let colours = ext.colours;
-        let kinds = ext.kind_colours;
+        let (sp, ts, colours, kinds) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.type_scale, ext.colours, ext.kind_colours)
+        };
 
         let styles: Vec<(Range<usize>, HighlightStyle)> = code
             .spans
@@ -1053,27 +1035,33 @@ impl DocsBody {
             .collect();
 
         let text = StyledText::new(code.text.clone()).with_highlights(styles);
+        let uid = section_ix * 100_000 + block_ix;
 
         div()
-            .id(("doc.code", section_ix * 100_000 + block_ix))
             .w_full()
-            // §9.4.2: the block's height is `line_count` mono lines, fixed
-            // before any highlight arrives and unchanged by every one after.
+            // §9.4.2: the block's height is `line_count` mono lines — fixed
+            // before any highlight arrives, and unchanged by every one after.
             .min_h(code.height(&self.metrics))
             .rounded(sp.r_md)
             .bg(colours.bg_base)
             .border_1()
             .border_color(colours.border_default)
-            .px(sp.space_3)
-            .py(sp.space_2)
-            .font_family("monospace")
-            .text_size(ts.mono.size)
-            .line_height(ts.mono.line_height)
-            .text_color(colours.fg_muted)
-            // Long lines scroll; they never wrap, so they can never add a line.
-            .whitespace_nowrap()
-            .overflow_x_scroll()
-            .child(text)
+            .child(
+                div()
+                    .id(("doc.code", uid))
+                    .w_full()
+                    .px(sp.space_3)
+                    .py(sp.space_2)
+                    .font_family("monospace")
+                    .text_size(ts.mono.size)
+                    .line_height(ts.mono.line_height)
+                    .text_color(colours.fg_muted)
+                    // Long lines scroll; they never wrap, so they can never add
+                    // a line and never change this block's height.
+                    .whitespace_nowrap()
+                    .overflow_x_scroll()
+                    .child(text),
+            )
             .when(!code.lang.is_empty(), |el| {
                 el.child(
                     div()
@@ -1097,9 +1085,10 @@ impl DocsBody {
         blocks: &[BlockView],
         cx: &App,
     ) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let colours = ext.colours;
+        let (sp, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.colours)
+        };
 
         let accent = match level {
             CalloutLevel::Note => colours.info,
@@ -1131,10 +1120,10 @@ impl DocsBody {
 
     /// A dense member/field table — the docs.rs pattern, with linked signatures.
     ///
-    /// LD-6 note: this is a *section* of the document body, which is already
-    /// virtualized by the enclosing `list()`. Member counts inside one section
-    /// are bounded by the plan's `Rows(n)` hint; a module with thousands of
-    /// items is chunked by the producer into several `Members` sections.
+    /// LD-6 note: this is a *section* of the document body, which the enclosing
+    /// `list()` already virtualizes. Row counts inside one section are bounded
+    /// by the plan's `Rows(n)` hint; a module with thousands of items is chunked
+    /// by the producer into several `Members` sections.
     fn render_rows(
         &self,
         section_ix: usize,
@@ -1142,10 +1131,10 @@ impl DocsBody {
         rows: &[RowView],
         cx: &App,
     ) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let ts = ext.type_scale;
-        let colours = ext.colours;
+        let (sp, ts, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.type_scale, ext.colours)
+        };
 
         div()
             .v_flex()
@@ -1165,7 +1154,7 @@ impl DocsBody {
             )
             .children(rows.iter().enumerate().map(|(rx, row)| {
                 let row_id = section_ix * 100_000 + rx;
-                let key = row.key;
+                let key = row.key.clone();
                 let on_open = self.on_open.clone();
                 let links = row.links.clone();
                 let link_open = self.on_open.clone();
@@ -1233,6 +1222,35 @@ impl DocsBody {
 // Free projection helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+fn project_section(section: &RenderSection) -> SectionView {
+    match section {
+        RenderSection::Prose { blocks, .. } | RenderSection::Examples { blocks, .. } => {
+            SectionView::Blocks(blocks.iter().map(project_block).collect())
+        }
+        RenderSection::Callout { level, blocks, .. } => SectionView::Callout {
+            level: *level,
+            blocks: blocks.iter().map(project_block).collect(),
+        },
+        RenderSection::CodeBlock {
+            lang,
+            text,
+            line_count,
+            ..
+        } => SectionView::Code(CodeView::new(shared(text), shared(&lang.0), *line_count)),
+        RenderSection::Members { entries, .. } => SectionView::Rows {
+            title: SharedString::from("Members"),
+            rows: entries.iter().map(RowView::from_member).collect(),
+        },
+        RenderSection::Fields { entries, .. } => SectionView::Rows {
+            title: SharedString::from("Fields"),
+            rows: entries.iter().map(RowView::from_field).collect(),
+        },
+        RenderSection::Unknown { kind_tag, .. } => SectionView::Unknown(shared(kind_tag)),
+        // LD-7: a section kind added after this binary was built.
+        _ => SectionView::Unknown(SharedString::from("unknown section")),
+    }
+}
+
 fn project_block(block: &ProseBlock) -> BlockView {
     match block {
         ProseBlock::Paragraph(runs) => BlockView::Paragraph(RichText::from_runs(runs)),
@@ -1268,29 +1286,19 @@ fn project_block(block: &ProseBlock) -> BlockView {
 
 /// The outline label a section earns once its content arrives.
 ///
-/// A heading is better than a kind name, and a `Members`/`Fields` table names
-/// itself. Everything else keeps the plan's label.
+/// A heading beats a kind name, and a `Members`/`Fields` table names itself.
+/// Everything else keeps the plan's label.
 fn heading_label(view: &SectionView) -> Option<SharedString> {
     match view {
         SectionView::Blocks(blocks) | SectionView::Callout { blocks, .. } => {
             blocks.iter().find_map(|b| match b {
-                BlockView::Heading { text, .. } if !text.text.is_empty() => {
-                    Some(text.text.clone())
-                }
+                BlockView::Heading { text, .. } if !text.text.is_empty() => Some(text.text.clone()),
                 _ => None,
             })
         }
         SectionView::Rows { title, .. } => Some(title.clone()),
         _ => None,
     }
-}
-
-/// `SigToken` is re-exported for the tests below and for `refs.rs`.
-pub(crate) type WireToken = WireSigToken;
-
-/// The kind-colour lookup used by both member badges and syntax classes.
-pub(crate) fn kind_colour_of(k: LocalKindDiscriminant, kinds: &KindColours) -> Hsla {
-    k.colour(kinds)
 }
 
 #[cfg(test)]
@@ -1308,6 +1316,11 @@ mod tests {
         }
     }
 
+    fn palette() -> (ColourRoles, KindColours) {
+        let theme = crate::theme::themes::dark_theme();
+        (theme.colours, theme.kind_colours)
+    }
+
     /// §9.4.1: `Lines(n)` reserves `n` line heights, plus the section's own
     /// padding and rise slack.
     #[test]
@@ -1318,7 +1331,7 @@ mod tests {
     }
 
     /// Code and example sections measure in mono lines, not prose lines —
-    /// otherwise a 40-line sample would reserve the wrong height.
+    /// otherwise a 40-line sample reserves the wrong height.
     #[test]
     fn code_hint_reserves_mono_lines() {
         let m = metrics();
@@ -1335,7 +1348,7 @@ mod tests {
     }
 
     /// §9.4.1: no estimate is a three-line block, never zero. A zero-height
-    /// skeleton would collapse the list and hand the reader a jump on arrival.
+    /// skeleton collapses the list and hands the reader a jump on arrival.
     #[test]
     fn unknown_hint_reserves_three_lines() {
         let m = metrics();
@@ -1352,8 +1365,8 @@ mod tests {
     }
 
     /// The rise slack must exceed `rise_in`'s 6 px offset, or the entrance
-    /// animation would push a section past its reserve and force a re-measure
-    /// on every frame of the animation.
+    /// animation pushes a section past its reserve and forces a re-measure on
+    /// every frame of the animation.
     #[test]
     fn slack_absorbs_the_rise_offset() {
         assert!(metrics().slack >= px(6.0));
@@ -1384,7 +1397,8 @@ mod tests {
         assert_eq!(cursor, rich.text.len(), "styles must cover the whole string");
     }
 
-    /// A link's clickable range must address exactly its own text.
+    /// A link's clickable range must address exactly its own text, or clicking
+    /// one link opens another.
     #[test]
     fn link_ranges_address_their_own_text() {
         let runs = vec![
@@ -1393,33 +1407,33 @@ mod tests {
                 text: "Result".into(),
                 target: LinkTarget::Url("https://example.invalid".into()),
             },
+            InlineRun::Text(" now".into()),
         ];
         let rich = RichText::from_runs(&runs);
         assert_eq!(rich.link_ranges.len(), 1);
         let r = rich.link_ranges[0].clone();
         assert_eq!(&rich.text[r], "Result");
+        assert_eq!(rich.links.len(), 1);
     }
 
-    /// LD-7: an unknown inline run is visible, never an empty gap.
+    /// An empty run contributes no style range — an empty `(0..0, Text)` pair
+    /// would trip `StyledText`'s run arithmetic.
     #[test]
-    fn unknown_inline_run_is_visible() {
-        // `InlineRun` is `#[non_exhaustive]`, so we cannot construct a future
-        // variant here; we assert the fallback text the `_` arm emits is
-        // non-empty, which is the property that matters.
+    fn empty_runs_contribute_no_range() {
         let rich = RichText::from_runs(&[InlineRun::Text("".into())]);
-        assert!(rich.styles.is_empty(), "an empty run contributes no range");
+        assert!(rich.styles.is_empty());
+        assert!(rich.text.is_empty());
     }
 
     /// A code block's height depends only on `line_count`, never on whether
-    /// highlights have arrived. This is the §9.4.2 guarantee, in one assertion.
+    /// highlights have arrived. This is §9.4.2 in one assertion.
     #[test]
     fn highlight_cannot_change_code_height() {
         let m = metrics();
+        let (colours, kinds) = palette();
         let mut code = CodeView::new("fn main() {}".into(), "rust".into(), 3);
         let before = code.height(&m);
 
-        let colours = crate::theme::themes::dark_theme().colours;
-        let kinds = crate::theme::themes::dark_theme().kind_colours;
         code.apply_spans(
             &[HighlightSpan {
                 start: 0,
@@ -1435,17 +1449,17 @@ mod tests {
         assert_eq!(code.spans.len(), 1);
     }
 
-    /// Out-of-range or non-boundary spans are dropped, not panicked on: a
+    /// Out-of-range, inverted and empty spans are dropped, not panicked on: a
     /// producer bug must never take the page down (LD-7).
     #[test]
-    fn out_of_range_spans_are_dropped() {
+    fn malformed_spans_are_dropped() {
+        let (colours, kinds) = palette();
         let mut code = CodeView::new("ab".into(), "rust".into(), 1);
-        let colours = crate::theme::themes::dark_theme().colours;
-        let kinds = crate::theme::themes::dark_theme().kind_colours;
         code.apply_spans(
             &[
                 HighlightSpan { start: 0, end: 99, class: "keyword".into() },
                 HighlightSpan { start: 5, end: 1, class: "string".into() },
+                HighlightSpan { start: 1, end: 1, class: "string".into() },
                 HighlightSpan { start: 0, end: 1, class: "keyword".into() },
             ],
             &colours,
@@ -1455,13 +1469,27 @@ mod tests {
         assert_eq!(code.spans.len(), 1, "only the valid span survives");
     }
 
+    /// Spans that would split a multi-byte character are dropped rather than
+    /// reaching `StyledText`'s char-boundary debug assertion.
+    #[test]
+    fn non_boundary_spans_are_dropped() {
+        let (colours, kinds) = palette();
+        let mut code = CodeView::new("é".into(), "rust".into(), 1);
+        code.apply_spans(
+            &[HighlightSpan { start: 0, end: 1, class: "keyword".into() }],
+            &colours,
+            &kinds,
+            true,
+        );
+        assert!(code.spans.is_empty());
+    }
+
     /// Reduced motion snaps the sweep: the colour still changes, the time
     /// dimension does not exist (LD-17).
     #[test]
     fn reduced_motion_snaps_the_sweep() {
+        let (colours, kinds) = palette();
         let mut code = CodeView::new("let x = 1;".into(), "rust".into(), 1);
-        let colours = crate::theme::themes::dark_theme().colours;
-        let kinds = crate::theme::themes::dark_theme().kind_colours;
         code.apply_spans(
             &[HighlightSpan { start: 0, end: 3, class: "keyword".into() }],
             &colours,
@@ -1471,13 +1499,45 @@ mod tests {
         assert!(!code.tick(Instant::now()), "a snapped sweep must not animate");
     }
 
+    /// Distinct classes get distinct springs; repeats share one.
+    #[test]
+    fn classes_are_deduplicated() {
+        let (colours, kinds) = palette();
+        let mut code = CodeView::new("let x = 1;".into(), "rust".into(), 1);
+        code.apply_spans(
+            &[
+                HighlightSpan { start: 0, end: 3, class: "keyword".into() },
+                HighlightSpan { start: 4, end: 5, class: "variable".into() },
+                HighlightSpan { start: 8, end: 9, class: "keyword".into() },
+            ],
+            &colours,
+            &kinds,
+            true,
+        );
+        assert_eq!(code.classes.len(), 2);
+        assert_eq!(code.spans.len(), 3);
+    }
+
+    /// An unknown token class still paints readable text rather than vanishing.
+    #[test]
+    fn unknown_class_is_readable() {
+        let (colours, kinds) = palette();
+        assert_eq!(
+            class_colour("no-such-class", &colours, &kinds),
+            colours.fg_default
+        );
+    }
+
     /// Ordered list markers are built at projection time, so `render` never
     /// formats a string (§1.1.4).
     #[test]
     fn ordered_list_markers_are_precomputed() {
         let block = ProseBlock::List {
             ordered: true,
-            items: vec![vec![InlineRun::Text("one".into())], vec![InlineRun::Text("two".into())]],
+            items: vec![
+                vec![InlineRun::Text("one".into())],
+                vec![InlineRun::Text("two".into())],
+            ],
         };
         match project_block(&block) {
             BlockView::List { items } => {
@@ -1502,6 +1562,40 @@ mod tests {
             SectionKind::Unknown,
         ] {
             assert!(!kind_label(kind).is_empty(), "{kind:?} has no outline label");
+        }
+    }
+
+    /// A heading refines the outline label; a section without one keeps the
+    /// plan's placeholder.
+    #[test]
+    fn headings_refine_the_outline_label() {
+        let with_heading = project_section(&RenderSection::Prose {
+            id: SectionId(1),
+            blocks: vec![ProseBlock::Heading {
+                level: 1,
+                runs: vec![InlineRun::Text("Errors".into())],
+            }],
+        });
+        assert_eq!(heading_label(&with_heading).as_deref(), Some("Errors"));
+
+        let without = project_section(&RenderSection::Prose {
+            id: SectionId(2),
+            blocks: vec![ProseBlock::Paragraph(vec![InlineRun::Text("hi".into())])],
+        });
+        assert!(heading_label(&without).is_none());
+    }
+
+    /// An unknown section renders as a chip carrying the producer's own tag,
+    /// never as an empty gap (LD-7).
+    #[test]
+    fn unknown_section_keeps_its_tag() {
+        let view = project_section(&RenderSection::Unknown {
+            id: SectionId(3),
+            kind_tag: "diagram".into(),
+        });
+        match view {
+            SectionView::Unknown(tag) => assert_eq!(&*tag, "diagram"),
+            _ => panic!("expected an unknown section"),
         }
     }
 }

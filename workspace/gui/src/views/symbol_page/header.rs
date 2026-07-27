@@ -32,11 +32,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement as _, Styled, Window, div,
-    prelude::FluentBuilder as _, uniform_list,
+    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement, RenderOnce, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _,
+    uniform_list,
 };
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
+use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _, h_flex};
 use nudox_engine::wire::{
     KindTag, Provenance as WireProvenance, SharedStr, SigToken as WireSigToken, SymbolHead,
     SymbolKey, Visibility,
@@ -94,7 +94,7 @@ pub(crate) fn sig_tokens(src: &[WireSigToken], links: &mut Vec<SymbolKey>) -> Ve
             WireSigToken::Ty { text, target } => SigToken::Ty {
                 text: shared(text),
                 target: target.as_ref().map(|k| {
-                    links.push(*k);
+                    links.push(k.clone());
                     link_id(links.len() - 1)
                 }),
             },
@@ -238,7 +238,7 @@ impl HeaderModel {
             .breadcrumb
             .iter()
             .map(|c| Crumb {
-                key: c.key,
+                key: c.key.clone(),
                 label: shared(&c.label),
             })
             .collect();
@@ -380,7 +380,7 @@ impl RenderOnce for SymbolHeader {
             .flex_wrap()
             .children(crumbs.iter().enumerate().map(|(ix, crumb)| {
                 let is_last = ix + 1 == crumb_count;
-                let key = crumb.key;
+                let key = crumb.key.clone();
                 let handler = on_crumb.clone();
                 let colour = if is_last {
                     colours.fg_default
@@ -418,7 +418,7 @@ impl RenderOnce for SymbolHeader {
         let trust = Badge::for_provenance("symbol.header.trust", model.provenance, cx);
 
         // ── Row 2: signature  ·······················  kind · vis · version ──
-        let signature = SignatureLine::new("symbol.header.signature", model.signature)
+        let signature = SignatureLine::new("symbol.header.signature", model.signature.clone())
             .when_some(on_link, |line, handler| {
                 let links = sig_links.clone();
                 line.on_navigate(move |ui_key, window, cx| {

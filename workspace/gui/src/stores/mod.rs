@@ -28,5 +28,6 @@ pub mod nav;
 pub mod project;
 pub mod registry;
 pub mod search;
+pub mod search_model;
 pub mod shell;
 pub mod symbol;

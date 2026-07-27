@@ -20,6 +20,16 @@ pub mod vertex;
 pub use adapter::{CorpusAdapter, GraphError};
 pub use vertex::Vertex;
 
+/// The raw GraphQL SDL source of `schema.graphql`, for serving to agents.
+///
+/// Exposed so that `nudox-mcp` (and any other crate that needs to serve the
+/// schema as text) can share a single `include_str!` rather than reaching
+/// into this crate's source tree with their own path (LR-7: one schema).
+///
+/// Equivalent to the parsed form returned by [`schema()`]; both point at the
+/// same file, and `tests/schema_source.rs` asserts they agree.
+pub const SCHEMA_SDL: &str = include_str!("../schema.graphql");
+
 /// Parse `schema.graphql` exactly once and return the singleton [`Schema`].
 ///
 /// Parses on the first call and caches the result in a process-global

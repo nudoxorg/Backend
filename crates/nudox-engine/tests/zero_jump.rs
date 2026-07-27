@@ -28,7 +28,7 @@ fn actual_size(section: &RenderSection) -> SizeHint {
         blocks
             .iter()
             .map(|b| match b {
-                ProseBlock::Paragraph(_) => 1,
+                ProseBlock::Paragraph { .. } => 1,
                 ProseBlock::Heading { .. } => 1,
                 ProseBlock::List { items, .. } => items.len().max(1) as u32,
                 ProseBlock::Rule => 1,

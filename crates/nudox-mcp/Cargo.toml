@@ -52,7 +52,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macro
 # `CancellationToken` only — `McpEndpoint` keeps the token that
 # `StreamableHttpServerConfig` already owns rather than inventing a second
 # shutdown signal. Same pin and features as `nudox-engine`.
-tokio-util = { version = "0.7", features = ["sync"] }
+tokio-util = { version = "0.7", default-features = false }
 tracing = { workspace = true }
 
 [dev-dependencies]

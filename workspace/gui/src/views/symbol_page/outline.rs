@@ -154,16 +154,17 @@ impl Outline {
         on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
         cx: &App,
     ) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let ts = ext.type_scale;
-        let colours = ext.colours;
+        // Both tokens are `Copy`, so the theme borrow ends here and nothing
+        // downstream is constrained by it.
+        let (sp, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.colours)
+        };
 
         let entries = self.entries.clone();
         let count = entries.len();
         let active = self.active;
         let pick: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(on_pick);
-        let row_h = ts.dense.line_height + sp.space_2;
 
         let header = {
             let mut h = SectionHeader::new(SharedString::from("ON THIS PAGE"));

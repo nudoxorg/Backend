@@ -15,8 +15,8 @@
 //!   the first event.
 //! * The body is a skeleton of *exactly* the right shape before a single section
 //!   has been parsed, because `section_plan` carries a `SizeHint` per section
-//!   (§9.4.1). Sections then replace their skeletons in place. See
-//!   [`docs`] for how the zero-jump guarantee is actually enforced.
+//!   (§9.4.1). Sections then replace their skeletons in place. See [`docs`] for
+//!   how the zero-jump guarantee is actually enforced.
 //! * The outline exists before the document does, and doubles as a progress
 //!   display — see [`outline`].
 //! * Refs and Impls fill in the background while you read, and their tab counts
@@ -26,22 +26,22 @@
 //!
 //! # Module layout
 //!
-//! | Module      | Owns                                                     |
-//! |-------------|----------------------------------------------------------|
-//! | [`header`]  | breadcrumb, signature, kind, version picker, trust badge  |
-//! | [`docs`]    | the virtualized section list and the zero-jump machinery  |
-//! | [`outline`] | the plan-derived sidebar with scroll sync                 |
-//! | [`refs`]    | the grouped references table and the implementors table   |
-//! | this file   | `WorkspaceItem`, the inner tab strip, store wiring        |
+//! | Module      | Owns                                                      |
+//! |-------------|-----------------------------------------------------------|
+//! | [`header`]  | breadcrumb, signature, kind, version picker, trust badge   |
+//! | [`docs`]    | the virtualized section list and the zero-jump machinery   |
+//! | [`outline`] | the plan-derived sidebar with scroll sync                  |
+//! | [`refs`]    | the grouped references table and the implementors table    |
+//! | this file   | `WorkspaceItem`, the inner tab strip, store wiring         |
 //!
 //! # TODO(store) — the `SymbolStore` surface this page consumes
 //!
-//! Everything below already exists in `crate::stores::symbol` except where
-//! noted. This page reads only; it never mutates store state directly.
+//! Everything below already exists in `crate::stores::symbol`. This page reads
+//! only; it never mutates store state except through these methods.
 //!
 //! ```text
 //! SymbolStore<E: SymbolEngine>
-//!   .doc(TabId) -> Option<&SymbolDoc>          // read-only projection source
+//!   .doc(TabId) -> Option<&SymbolDoc>          // the sole projection source
 //!   .open(SymbolKey, OpenDisposition, cx)      // link / crumb / row navigation
 //!   .reload(TabId, cx)                         // retry from the error bar
 //!   .set_version(TabId, cx)                    // version picker
@@ -52,7 +52,6 @@
 //!   .sections: Progressive<RenderSection>      // body, append-only
 //!   .highlights: HashMap<SectionId, Arc<[HighlightSpan]>>
 //!   .refs / .impls: Progressive<RefsPage|ImplsPage>
-//!   .refs_total / .impls_total: u64
 //!   .slot_meta: StreamSlot<()>                 // phase, error, generation
 //! ```
 //!
@@ -62,8 +61,8 @@
 //!    takes no argument, so the picker is fed by [`SymbolPage::set_versions`]
 //!    from whoever owns version data. With no versions installed the chip is
 //!    simply not shown — we do not render an affordance we cannot honour.
-//! 2. **No `line` on `RefRow`.** [`refs`] recovers a line number from a
-//!    `path` of the form `src/foo.rs:120` and leaves the column blank otherwise.
+//! 2. **No `line` on `RefRow`.** [`refs`] recovers a line number from a `path`
+//!    of the form `src/foo.rs:120` and leaves the column blank otherwise.
 
 pub mod docs;
 pub mod header;
@@ -74,9 +73,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, InteractiveElement as _, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement as _, Styled, Subscription, Window, div, list,
-    prelude::FluentBuilder as _,
+    AnyElement, App, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
+    Window, div, list, prelude::FluentBuilder as _,
 };
 use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _, skeleton::Skeleton};
 use nudox_engine::wire::SymbolKey;
@@ -85,7 +84,7 @@ use crate::app::actions::{
     CopySymbolUri, GoToDocsTab, GoToRefsTab, GoToSourceTab, GoToTimelineTab, NextInnerTab,
     OpenVersionPicker, PrevInnerTab,
 };
-use crate::bridge::slot::{Display as SlotDisplay, SKELETON_GRACE};
+use crate::bridge::slot::{Display as SlotDisplay, SlotError};
 use crate::motion::tokens::MotionTokens;
 use crate::stores::events::OpenDisposition;
 use crate::stores::symbol::{SymbolDoc, SymbolEngine, SymbolStore, TabId};
@@ -115,7 +114,7 @@ pub enum InnerTab {
     Source,
     /// Cross-references to this symbol.
     Refs,
-    /// Types implementing this trait / impls of this type.
+    /// Types implementing this trait, or impls of this type.
     Impls,
     /// Lineage over generations (§22.1).
     Timeline,
@@ -173,13 +172,13 @@ impl InnerTab {
 ///
 /// Instead we map every one of `Display`'s seven arms onto a §16 behaviour, in
 /// one exhaustive match ([`SymbolPage::classify`]). The compile-time guarantee
-/// `slot_view` gives — no state can be forgotten — is preserved; only the
+/// `slot_view` provides — no state can be forgotten — is preserved; only the
 /// *rendering* of each state is specialised to this page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PageState {
     /// Nothing requested yet.
     Empty,
-    /// Requested; no `Head` yet. Header chassis + grace-gated skeleton.
+    /// Requested; no `Head` yet. Header chassis, grace-gated skeleton.
     Awaiting,
     /// `Head` landed; sections still arriving.
     Streaming,
@@ -195,8 +194,16 @@ enum PageState {
 
 impl PageState {
     /// Whether a superseded generation should be dimmed (LD-15).
+    ///
+    /// Only states that still show readable content dim; dimming a cold load
+    /// would be dimming nothing.
     fn is_stale(self) -> bool {
         matches!(self, PageState::Stale | PageState::StaleError)
+    }
+
+    /// Whether the body has been asked for but has not arrived.
+    fn is_awaiting(self) -> bool {
+        matches!(self, PageState::Awaiting | PageState::Streaming)
     }
 }
 
@@ -207,7 +214,7 @@ impl PageState {
 /// One open symbol, as a workspace tab.
 pub struct SymbolPage<E: SymbolEngine> {
     tab: TabId,
-    store: gpui::Entity<SymbolStore<E>>,
+    store: Entity<SymbolStore<E>>,
 
     /// Projected once per generation from `SymbolHead`.
     header: HeaderModel,
@@ -229,7 +236,10 @@ pub struct SymbolPage<E: SymbolEngine> {
     head_gen: u64,
     /// Cached stream state, recomputed on every store notification.
     state: PageState,
-    error: Option<crate::bridge::slot::SlotError>,
+    error: Option<SlotError>,
+    /// The error's message, formatted once when it changes rather than on every
+    /// frame the retry bar is on screen (§1.1.4).
+    error_text: Option<SharedString>,
     refs_streaming: bool,
     impls_streaming: bool,
 
@@ -243,11 +253,11 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// Build a page for an already-opened tab.
     ///
     /// The store has issued the stream; this view attaches to it. Nothing here
-    /// blocks, allocates a document, or waits for an event — the first frame
-    /// paints the header chassis and the (grace-gated) skeleton.
+    /// blocks, parses, or waits for an event — the first frame paints the header
+    /// chassis and whatever the store already has.
     pub fn new(
         tab: TabId,
-        store: gpui::Entity<SymbolStore<E>>,
+        store: Entity<SymbolStore<E>>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -258,7 +268,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
         {
             let store = store.downgrade();
             docs.on_open(move |key, _window, cx| {
-                let key = *key;
+                let key = key.clone();
                 let _ = store.update(cx, |store, cx| {
                     store.open(key, OpenDisposition::Replace, cx);
                 });
@@ -266,10 +276,11 @@ impl<E: SymbolEngine> SymbolPage<E> {
         }
 
         // Scroll sync: the body's visible range drives both the outline
-        // highlight and the engine's highlight priority. This handler runs
-        // during the list's own scroll handling, so it must never touch the
-        // `ListState` again (that would re-borrow its `RefCell`); it only
-        // updates view state.
+        // highlight and the engine's highlight priority.
+        //
+        // This handler runs *inside* the list's own scroll handling, while its
+        // `RefCell` is borrowed, so it must never touch the `ListState` again.
+        // It only reads view state and notifies.
         {
             let weak = cx.entity().downgrade();
             docs.list_state().set_scroll_handler(move |event, _window, cx| {
@@ -294,10 +305,12 @@ impl<E: SymbolEngine> SymbolPage<E> {
             refs: refs::RefsTable::new(),
             impls: refs::ImplsTable::new(),
             active: InnerTab::Docs,
+            // Docs is the only eager tab; the rest load on first activation.
             loaded: [true, false, false, false, false, false],
             head_gen: 0,
             state: PageState::Empty,
             error: None,
+            error_text: None,
             refs_streaming: false,
             impls_streaming: false,
             last_priority: None,
@@ -352,8 +365,9 @@ impl<E: SymbolEngine> SymbolPage<E> {
             // same step that installs the new head, so an empty section list is
             // the signal that the head we can see belongs to the new generation.
             let generation = doc.slot_meta.generation.0;
+            let head_is_new = generation != self.head_gen && doc.sections.is_empty();
             if let Some(head) = doc.head.as_ref() {
-                if generation != self.head_gen && doc.sections.is_empty() {
+                if head_is_new {
                     self.head_gen = generation;
                     let mut model = HeaderModel::from_head(head);
                     model.versions = self.versions.clone();
@@ -367,7 +381,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
             }
 
             // ── Body ────────────────────────────────────────────────────────
-            dirty |= self.docs.sync_sections(doc.sections.parts(), cx);
+            dirty |= self.docs.sync_sections(doc.sections.parts());
             dirty |= self.docs.sync_highlights(&doc.highlights, cx);
 
             // ── Ancillary tabs (they fill while the reader reads — §9.1) ────
@@ -382,9 +396,14 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 self.state = next_state;
                 dirty = true;
             }
-            let next_error = doc.slot_meta.error.clone();
-            if next_error != self.error {
-                self.error = next_error;
+            if doc.slot_meta.error != self.error {
+                self.error = doc.slot_meta.error.clone();
+                // `SlotError: Display`. Formatted here, once per failure, so the
+                // retry bar costs nothing per frame (§1.1.4).
+                self.error_text = self
+                    .error
+                    .as_ref()
+                    .map(|e| SharedString::from(e.to_string()));
                 dirty = true;
             }
         }
@@ -401,30 +420,28 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// Exhaustive by construction — adding a `Display` variant breaks this
     /// match, which is the point.
     fn classify(doc: &SymbolDoc) -> PageState {
-        let has_content = doc.head.is_some();
+        let readable = doc.head.is_some();
         match doc.slot_meta.display() {
             SlotDisplay::Empty => PageState::Empty,
-            // `StreamSlot<()>` only stores `Some(())` at `Done`, so these two
-            // arms cover the whole of a live stream. Whether the page is
-            // readable is decided by the head, not by the slot's value.
+            // `StreamSlot<()>` only stores `Some(())` at `Done`, so this arm
+            // covers the whole of a live stream. Whether the page is readable is
+            // decided by the head, not by the slot's value.
             SlotDisplay::Skeleton { .. } => {
-                if has_content {
-                    // A head from a previous generation is on screen while a
-                    // new one loads: that is LD-15 stale-while-revalidate.
-                    if doc.sections.is_empty() && doc.slot_meta.phase.is_active() {
-                        PageState::Streaming
-                    } else {
-                        PageState::Stale
-                    }
-                } else {
+                if !readable {
                     PageState::Awaiting
+                } else if doc.sections.is_empty() && doc.slot_meta.phase.is_active() {
+                    PageState::Streaming
+                } else {
+                    // A head from a previous generation is on screen while a new
+                    // one loads: LD-15 stale-while-revalidate.
+                    PageState::Stale
                 }
             }
             SlotDisplay::Partial(_) => PageState::Streaming,
             SlotDisplay::Stale(_) => PageState::Stale,
             SlotDisplay::Fresh(_) => PageState::Ready,
             SlotDisplay::Error(_) => {
-                if has_content {
+                if readable {
                     PageState::StaleError
                 } else {
                     PageState::ColdError
@@ -437,8 +454,6 @@ impl<E: SymbolEngine> SymbolPage<E> {
     // ── Interaction ──────────────────────────────────────────────────────────
 
     fn on_body_scroll(&mut self, range: std::ops::Range<usize>, cx: &mut Context<Self>) {
-        let mut dirty = self.outline.set_active(range.start);
-
         // §9.4.5: tell the engine what the reader can actually see, so the
         // highlighter works on the viewport first. Coalesced at 4 Hz.
         let due = self
@@ -446,17 +461,17 @@ impl<E: SymbolEngine> SymbolPage<E> {
             .is_none_or(|t| t.elapsed() >= HIGHLIGHT_PRIORITY_INTERVAL);
         if due {
             self.last_priority = Some(Instant::now());
-            let ids = self.docs.visible_ids(range);
+            let ids = self.docs.visible_ids(range.clone());
             if !ids.is_empty() {
                 self.store.read(cx).visible_sections(self.tab, &ids);
             }
         }
 
-        if dirty {
+        // Only repaint when the highlighted outline entry actually moves; a
+        // scroll that stays inside one section costs nothing.
+        if self.outline.set_active(range.start) {
             cx.notify();
         }
-        dirty = false;
-        let _ = dirty;
     }
 
     fn activate(&mut self, tab: InnerTab, cx: &mut Context<Self>) {
@@ -484,19 +499,13 @@ impl<E: SymbolEngine> SymbolPage<E> {
         cx.notify();
     }
 
-    fn open_symbol(&self, key: SymbolKey, cx: &mut App) {
-        self.store.update(cx, |store, cx| {
-            store.open(key, OpenDisposition::Replace, cx);
-        });
-    }
-
     // ── Rendering ────────────────────────────────────────────────────────────
 
     fn render_tab_strip(&self, cx: &mut Context<Self>) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let ts = ext.type_scale;
-        let colours = ext.colours;
+        let (sp, ts, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.type_scale, ext.colours)
+        };
         let active = self.active;
 
         div()
@@ -525,11 +534,13 @@ impl<E: SymbolEngine> SymbolPage<E> {
                     .px(sp.space_2)
                     .py(sp.space_2)
                     .cursor_pointer()
+                    // Every tab reserves the underline, so activating one never
+                    // shifts the strip by a pixel.
                     .border_b_2()
                     .border_color(if is_active {
                         colours.accent
                     } else {
-                        gpui::transparent_black()
+                        colours.bg_raised
                     })
                     .text_size(ts.ui.size)
                     .line_height(ts.ui.line_height)
@@ -542,7 +553,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
                     .on_click(cx.listener(move |page, _, _window, cx| page.activate(tab, cx)))
                     .child(tab.label())
                     // Counts tick up as pages land (§9.1). The value is
-                    // pre-formatted when the page arrives, never in render.
+                    // pre-formatted on arrival, never in render.
                     .children(count.map(|text| {
                         let label = CountLabel::new(text);
                         if streaming { label.animating() } else { label }
@@ -578,18 +589,22 @@ impl<E: SymbolEngine> SymbolPage<E> {
         }
     }
 
-    fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&self, show_skeleton: bool, cx: &mut Context<Self>) -> AnyElement {
+        // Lazy tabs: a tab that has never been activated builds nothing at all.
+        if !self.loaded[self.active.ix()] {
+            return div().size_full().into_any_element();
+        }
+
         match self.active {
-            InnerTab::Docs => self.render_docs(cx),
+            InnerTab::Docs => self.render_docs(show_skeleton, cx),
             InnerTab::Refs => {
                 let streaming = self.refs_streaming;
                 let store = self.store.downgrade();
-                let tab = self.tab;
                 let entity = cx.entity().downgrade();
                 self.refs.render(
                     streaming,
                     move |key, _window, cx| {
-                        let key = *key;
+                        let key = key.clone();
                         let _ = store.update(cx, |store, cx| {
                             store.open(key, OpenDisposition::Replace, cx);
                         });
@@ -607,11 +622,10 @@ impl<E: SymbolEngine> SymbolPage<E> {
             InnerTab::Impls => {
                 let streaming = self.impls_streaming;
                 let store = self.store.downgrade();
-                let _ = tab_unused(self.tab);
                 self.impls.render(
                     streaming,
                     move |key, _window, cx| {
-                        let key = *key;
+                        let key = key.clone();
                         let _ = store.update(cx, |store, cx| {
                             store.open(key, OpenDisposition::Replace, cx);
                         });
@@ -640,34 +654,47 @@ impl<E: SymbolEngine> SymbolPage<E> {
         }
     }
 
-    /// The Docs tab: outline rail plus the virtualized section list.
-    fn render_docs(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let ext = cx.theme_ext();
-        let scale = ext.motion_scale;
+    /// The Docs tab: the virtualized section list plus the outline rail.
+    fn render_docs(&self, show_skeleton: bool, cx: &mut Context<Self>) -> AnyElement {
+        let scale = cx.theme_ext().motion_scale;
 
         if !self.docs.has_plan() {
-            // No plan yet. `Awaiting` shows the grace-gated skeleton; anything
-            // else genuinely has nothing to say.
-            return match self.state {
-                PageState::Awaiting | PageState::Streaming => {
+            // No `section_plan` yet, so there is no geometry to promise. Show
+            // three placeholder bars only once the 120 ms skeleton grace has
+            // elapsed (`StreamSlot::show_skeleton`), so a fast local open goes
+            // header → real skeleton with nothing flashing in between.
+            if self.state.is_awaiting() {
+                return if show_skeleton {
                     plan_placeholder(cx)
-                }
-                PageState::ColdError | PageState::StaleError => div().into_any_element(),
-                _ => EmptyState::new(
-                    IconName::BookOpen,
-                    SharedString::from("No documentation"),
-                    SharedString::from("This symbol has no documented sections."),
-                    MotionTokens::new(scale),
-                )
-                .into_any_element(),
-            };
+                } else {
+                    // Inside the grace window: the header is already up, and a
+                    // skeleton that appears for 40 ms then vanishes is worse
+                    // than no skeleton at all.
+                    div().size_full().into_any_element()
+                };
+            }
+            // An error has its own chrome (the cold-error page, or the retry bar
+            // below); "no documentation" would be a lie on top of it.
+            if matches!(self.state, PageState::ColdError | PageState::StaleError) {
+                return div().size_full().into_any_element();
+            }
+            return EmptyState::new(
+                IconName::BookOpen,
+                SharedString::from("No documentation"),
+                SharedString::from("This symbol has no documented sections."),
+                MotionTokens::new(scale),
+            )
+            .into_any_element();
         }
 
         let body = list(
             self.docs.list_state().clone(),
-            cx.processor(|page, ix: usize, window: &mut Window, cx: &mut App| {
-                page.docs.render_section(ix, window, cx)
-            }),
+            cx.processor(
+                |page: &mut Self, ix: usize, window: &mut Window, cx: &mut Context<Self>| {
+                    let app: &App = cx;
+                    page.docs.render_section(ix, window, app)
+                },
+            ),
         )
         .flex_1();
 
@@ -692,14 +719,14 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// The slim retry bar shown when a refresh failed over readable content
     /// (LD-16: errors are states, not dialogs).
     fn render_error_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let error = self.error.as_ref()?;
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let ts = ext.type_scale;
-        let colours = ext.colours;
-        // `SlotError: Display`; the message is built here, on an error path
-        // that is reached once per failure — not on the streaming path.
-        let message = SharedString::from(error.to_string());
+        if self.state != PageState::StaleError {
+            return None;
+        }
+        let message = self.error_text.clone()?;
+        let (sp, ts, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.type_scale, ext.colours)
+        };
 
         Some(
             div()
@@ -749,14 +776,15 @@ impl<E: SymbolEngine> SymbolPage<E> {
     }
 }
 
-/// A placeholder used only while `section_plan` itself has not arrived.
+/// Three bars shown only while `section_plan` itself has not arrived.
 ///
-/// Once the plan lands this is replaced by the real, correctly-sized skeleton
-/// in [`docs::DocsBody`]. It is grace-gated so a fast local open never flashes.
+/// Once the plan lands this is replaced by the real, correctly-sized skeleton in
+/// [`docs::DocsBody`], which is the one that carries the zero-jump promise.
 fn plan_placeholder(cx: &App) -> AnyElement {
-    let ext = cx.theme_ext();
-    let sp = ext.space;
-    let ts = ext.type_scale;
+    let (sp, ts) = {
+        let ext = cx.theme_ext();
+        (ext.space, ext.type_scale)
+    };
     div()
         .v_flex()
         .w_full()
@@ -772,12 +800,7 @@ fn plan_placeholder(cx: &App) -> AnyElement {
 }
 
 /// A designed state for a tab whose backing surface is not built yet (LD-16).
-fn stub_tab(
-    icon: IconName,
-    title: &'static str,
-    description: &'static str,
-    cx: &App,
-) -> AnyElement {
+fn stub_tab(icon: IconName, title: &'static str, description: &'static str, cx: &App) -> AnyElement {
     EmptyState::new(
         icon,
         SharedString::from(title),
@@ -786,10 +809,6 @@ fn stub_tab(
     )
     .into_any_element()
 }
-
-/// Keeps the `Impls` arm symmetric with `Refs` without an unused-variable warn.
-#[inline]
-fn tab_unused(_tab: TabId) {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Render
@@ -805,17 +824,22 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
             window.request_animation_frame();
         }
 
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let colours = ext.colours;
+        let colours = cx.theme_ext().colours;
         let stale = self.state.is_stale();
+
+        // The 120 ms skeleton grace is time-based, so it is read here rather
+        // than cached in `sync_from_store`.
+        let show_skeleton = {
+            let store = self.store.clone();
+            store
+                .read(cx)
+                .doc(self.tab)
+                .is_some_and(|doc| doc.slot_meta.show_skeleton())
+        };
 
         // ── Cold error: nothing readable, so the error *is* the page ─────────
         if self.state == PageState::ColdError {
-            let error = self
-                .error
-                .clone()
-                .unwrap_or(crate::bridge::slot::SlotError::Cancelled);
+            let error = self.error.clone().unwrap_or(SlotError::Cancelled);
             let tab = self.tab;
             let store = self.store.clone();
             return div()
@@ -832,10 +856,8 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
         }
 
         // ── Header — paints from `Head` alone, in one frame ──────────────────
-        let entity = cx.entity().downgrade();
-        let nav = entity.clone();
-        let picker_entity = entity.clone();
-        let version_entity = entity.clone();
+        let picker_entity = cx.entity().downgrade();
+        let version_entity = cx.entity().downgrade();
         let store_for_links = self.store.downgrade();
         let store_for_crumbs = self.store.downgrade();
 
@@ -843,13 +865,13 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
             .stale(stale)
             .picker_open(self.picker_open)
             .on_crumb(move |key, _window, cx| {
-                let key = *key;
+                let key = key.clone();
                 let _ = store_for_crumbs.update(cx, |store, cx| {
                     store.open(key, OpenDisposition::Replace, cx);
                 });
             })
             .on_link(move |key, _window, cx| {
-                let key = *key;
+                let key = key.clone();
                 let _ = store_for_links.update(cx, |store, cx| {
                     store.open(key, OpenDisposition::Replace, cx);
                 });
@@ -874,10 +896,8 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
             });
 
         let tab_strip = self.render_tab_strip(cx);
-        let body = self.render_body(cx);
+        let body = self.render_body(show_skeleton, cx);
         let error_bar = self.render_error_bar(cx);
-        let _ = sp;
-        let _ = nav;
 
         div()
             .id("symbol.page")
@@ -929,13 +949,13 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
 
 impl<E: SymbolEngine> WorkspaceItem for SymbolPage<E> {
     fn tab_content(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let ts = ext.type_scale;
-        let colours = ext.colours;
+        let (sp, ts, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.type_scale, ext.colours)
+        };
 
-        // Every string here was built at projection time; this is a clone of
-        // `Arc`s and nothing more (§13.4 performance contract).
+        // Every string here was built at projection time; this is a handful of
+        // `Arc` bumps and nothing more (§13.4 performance contract).
         let live = self.refs_streaming || self.impls_streaming;
         let count = (self.refs.total() > 0).then(|| self.refs.total_text());
 
@@ -993,19 +1013,12 @@ impl<E: SymbolEngine> WorkspaceItem for SymbolPage<E> {
     }
 }
 
-/// Re-exported so callers do not have to name the grace constant themselves.
-pub use crate::bridge::slot::SKELETON_GRACE as SYMBOL_SKELETON_GRACE;
-const _: () = {
-    // Keeps the re-export honest if the bridge ever renames the constant.
-    assert!(SKELETON_GRACE.as_millis() > 0);
-};
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The tab order in §16 is left-to-right Docs → Graph, and `ix()` must
-    /// agree with `ALL` or keyboard navigation lands on the wrong tab.
+    /// The tab order in §16 is left-to-right Docs → Graph, and `ix()` must agree
+    /// with `ALL` or keyboard navigation lands on the wrong tab.
     #[test]
     fn tab_indices_match_declaration_order() {
         for (ix, tab) in InnerTab::ALL.iter().enumerate() {
@@ -1032,8 +1045,7 @@ mod tests {
         assert_eq!(back as usize, InnerTab::Graph.ix());
     }
 
-    /// Only the states that still show readable content dim (LD-15). Dimming
-    /// a cold load would be dimming nothing.
+    /// Only the states that still show readable content dim (LD-15).
     #[test]
     fn only_readable_states_dim() {
         assert!(PageState::Stale.is_stale());
@@ -1042,10 +1054,21 @@ mod tests {
         assert!(!PageState::Streaming.is_stale());
         assert!(!PageState::Ready.is_stale());
         assert!(!PageState::ColdError.is_stale());
+        assert!(!PageState::Empty.is_stale());
     }
 
-    /// §9.4.5 says 4 Hz; anything faster would spam the engine on every
-    /// scroll frame.
+    /// Only the states that have actually asked for content show a skeleton;
+    /// an idle or finished page must not shimmer at the reader.
+    #[test]
+    fn only_requested_states_await() {
+        assert!(PageState::Awaiting.is_awaiting());
+        assert!(PageState::Streaming.is_awaiting());
+        assert!(!PageState::Empty.is_awaiting());
+        assert!(!PageState::Ready.is_awaiting());
+        assert!(!PageState::ColdError.is_awaiting());
+    }
+
+    /// §9.4.5 says 4 Hz; anything faster spams the engine on every scroll frame.
     #[test]
     fn highlight_priority_is_coalesced_at_4hz() {
         assert_eq!(HIGHLIGHT_PRIORITY_INTERVAL, Duration::from_millis(250));
