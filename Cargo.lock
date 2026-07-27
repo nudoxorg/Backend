@@ -4581,24 +4581,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ir"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "heart",
- "nonempty",
- "postcard",
- "proptest",
- "rustc-hash 1.1.0",
- "semver",
- "serde",
- "smol_str 0.2.2",
- "thiserror 1.0.69",
- "uuid",
-]
-
-[[package]]
 name = "ir-vcs"
 version = "0.1.0"
 dependencies = [

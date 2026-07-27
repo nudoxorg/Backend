@@ -43,7 +43,6 @@ members = [
     # `ir-vcs` (the libpijul/iroh-linked patch engine / serve / diff / semver /
     # transfer). `registry` reads only the light `ir` and no longer transitively
     # links libpijul.
-    "workspace/ir",
     "workspace/ir-vcs",
     # ── Shared content-transfer plane (CONSOLIDATION-NOTES §8b/§8c) ───────────
     # The ONE abstracted iroh/iroh-blobs + bao provide-fetch. heart stays
