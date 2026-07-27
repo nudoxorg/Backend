@@ -281,6 +281,11 @@ fn lower_ts_type_impl<'a>(
 }
 
 /// Lower a type parameter list to owned generic params.
+///
+/// OXC 0.139.0 exposes TypeScript 4.7+ variance modifiers via
+/// `TSTypeParameter::r#in` and `TSTypeParameter::out`.  We wire them into
+/// `GenericParamOwned::variance` so `emit.rs` can forward them to
+/// `GenericParam::Type::variance`.
 pub fn lower_type_params<'a>(
     tp: &TSTypeParameterDeclaration<'a>,
     source: &'a str,
@@ -294,10 +299,21 @@ pub fn lower_type_params<'a>(
                 .map(|c| vec![lower_ts_type(c, source)])
                 .unwrap_or_default();
             let default = p.default.as_ref().map(|d| lower_ts_type(d, source));
+            // TS 4.7+ `in`/`out` variance annotations.
+            // OXC: `p.r#in == true` → contravariant (`in T` means the type is
+            // consumed / write-only), `p.out == true` → covariant (`out T` means
+            // the type is produced / read-only).
+            // When both or neither are set: None (no explicit annotation).
+            let variance = match (p.r#in, p.out) {
+                (true, false) => Some(nudox_ir::kinds::ty::Variance::Contravariant),
+                (false, true) => Some(nudox_ir::kinds::ty::Variance::Covariant),
+                _ => None,
+            };
             GenericParamOwned {
                 name: p.name.name.to_string(),
                 bounds,
                 default,
+                variance,
             }
         })
         .collect()

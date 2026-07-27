@@ -24,7 +24,9 @@ use crate::{
 
 // ── Sealed trait (tsz seam) ───────────────────────────────────────────────────
 
-mod sealed {
+// `pub(crate)` so the tsz oracle in `oracle::tsz` can implement `TsOracleSeal`
+// without the trait being implementable by external crates.
+pub(crate) mod sealed {
     pub trait TsOracleSeal {}
 }
 
@@ -44,6 +46,16 @@ pub trait TsOracle: sealed::TsOracleSeal {
 /// only fully-owned `ModuleFacts` — no arena references.
 pub struct OwnedOracle {
     pub(crate) modules: Vec<ModuleFacts>,
+}
+
+impl OwnedOracle {
+    /// Wrap an already-extracted set of module facts.
+    ///
+    /// Used in integration tests and the tsz oracle path to promote OXC output
+    /// into an `OwnedOracle` without accessing the private `modules` field.
+    pub fn new(modules: Vec<ModuleFacts>) -> Self {
+        OwnedOracle { modules }
+    }
 }
 
 impl sealed::TsOracleSeal for OwnedOracle {}
@@ -117,3 +129,18 @@ where
 // `impl<T> From<T> for T` already exists in core (the reflexive blanket impl).
 // The `where O: From<OwnedOracle>` bound on `Producer for TypescriptProducer<O>`
 // is satisfied for `O = OwnedOracle` by the core blanket impl.
+
+#[cfg(feature = "tsz")]
+impl TypescriptProducer<crate::oracle::tsz::TszOracle> {
+    /// Construct a TypeScript producer backed by the tsz checker oracle.
+    ///
+    /// The tsz tier runs OXC first for structure, then enriches missing types
+    /// (inferred returns, cross-module resolution, `Promise<T>` unwrapping,
+    /// object shapes) via the in-process tsz TypeScript checker.
+    ///
+    /// Requires `--features tsz`.  Any tsz failure falls back to OXC-only
+    /// output transparently.
+    pub fn new_tsz() -> Self {
+        TypescriptProducer { _marker: std::marker::PhantomData }
+    }
+}

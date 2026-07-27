@@ -464,11 +464,19 @@ pub enum LiteralOwned {
 }
 
 /// A fully-owned generic parameter.
+///
+/// `variance` carries the TypeScript 4.7+ declaration-site `in`/`out` variance
+/// annotation.  `None` means no annotation was present (the common case).
+/// `Some(Covariant)` = `out T`, `Some(Contravariant)` = `in T`.
+/// OXC 0.139.0 exposes this via `TSTypeParameter::r#in` and `TSTypeParameter::out`.
 #[derive(Debug, Clone)]
 pub struct GenericParamOwned {
     pub name: String,
     pub bounds: Vec<TypeOwned>,
     pub default: Option<TypeOwned>,
+    /// Declaration-site variance annotation from TS 4.7+ `in`/`out` modifiers.
+    /// `None` = no annotation (invariant by convention for most TS params).
+    pub variance: Option<nudox_ir::kinds::ty::Variance>,
 }
 
 // ── ModuleFacts ────────────────────────────────────────────────────────────────

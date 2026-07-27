@@ -39,7 +39,7 @@ use nudox_ir::{
         Alias, Const, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function,
         GenericParam, Module, Param, ParamAttribute, Record, RecordForm, Static, Trait,
         Variant, VariantForm,
-        ty::{Primitive, Type},
+        ty::{Primitive, TupleElement, Type},
     },
 };
 
@@ -831,21 +831,54 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             Type::Intersection(arms.iter().map(lower_type).collect::<Vec<_>>().into_boxed_slice())
         }
         TypeOwned::Tuple(members) => {
-            Type::Tuple(members.iter().map(lower_type).collect::<Vec<_>>().into_boxed_slice())
+            let elems: Vec<TupleElement> = members
+                .iter()
+                .map(|m| match m {
+                    TypeOwned::NamedTupleElem { label, ty } => TupleElement::Named {
+                        label: label.clone(),
+                        ty: lower_type(ty),
+                    },
+                    other => TupleElement::Positional(lower_type(other)),
+                })
+                .collect();
+            Type::Tuple(elems.into_boxed_slice())
         }
         TypeOwned::Array(inner) => {
             // Model `T[]` as a Slice.
             Type::Slice(Box::new(lower_type(inner)))
         }
         // ── Named tuple element (item 10) ─────────────────────────────────
-        // The IR's Type::Tuple carries positional types only; there is no
-        // slot for element labels.  We emit the element type, which preserves
-        // the type information.  The label is held in TypeOwned::NamedTupleElem
-        // but is discarded at the IR boundary until nudox-ir adds a named-tuple
-        // element type.  See the TypeOwned::NamedTupleElem doc for the requested
-        // IR change signature.
-        TypeOwned::NamedTupleElem { ty, .. } => lower_type(ty),
-        TypeOwned::Function(_) => Type::Primitive(Primitive::Builtin("Function".to_string())),
+        // When NamedTupleElem appears outside a Tuple context (the
+        // TSType::TSNamedTupleMember top-level path in types.rs), wrap it in a
+        // single-element named tuple so the label is not lost.  The normal path
+        // is through TypeOwned::Tuple where each element is matched above.
+        TypeOwned::NamedTupleElem { label, ty } => {
+            Type::Tuple(
+                [TupleElement::Named {
+                    label: label.clone(),
+                    ty: lower_type(ty),
+                }]
+                .into(),
+            )
+        }
+        // ── Function / constructor types (item: FunctionPointer) ──────────
+        // TypeOwned::Function was previously lowered to
+        // Primitive::Builtin("Function"), losing all signature information.
+        // Type::FunctionPointer now exists in nudox-ir; use it.
+        TypeOwned::Function(body) => {
+            let params: Vec<Type> = body
+                .params
+                .iter()
+                .map(|p| p.ty.as_ref().map(lower_type).unwrap_or(Type::Any))
+                .collect();
+            let ret = body.return_type.as_ref().map(|r| Box::new(lower_type(r)));
+            // TypeScript functions are always managed; no ABI.
+            Type::FunctionPointer {
+                params: params.into_boxed_slice(),
+                ret,
+                abi: None,
+            }
+        }
         TypeOwned::Literal(lit) => lower_literal(lit),
         TypeOwned::Unsupported(s) => Type::Primitive(Primitive::Builtin(s.clone())),
     }
@@ -873,6 +906,9 @@ fn lower_generics(params: &[GenericParamOwned]) -> Vec<GenericParam> {
             name: p.name.clone(),
             bounds: p.bounds.iter().map(lower_type).collect::<Vec<_>>().into_boxed_slice(),
             default: p.default.as_ref().map(lower_type),
+            // Wire TS 4.7+ `in`/`out` declaration-site variance annotations.
+            // `None` when no modifier was present (the common case).
+            variance: p.variance,
         })
         .collect()
 }

@@ -388,6 +388,108 @@ fn test_jsdoc_parse_raw_no_deprecation() {
 
 // ── Test 9: Module-level TSZ seam ─────────────────────────────────────────────
 
+// ── TSZ oracle tier tests (--features tsz) ────────────────────────────────────
+
+/// Verify that OXC alone yields `None` return type for an unannotated function,
+/// and that TszOracle fills it in with the checker-inferred concrete type.
+///
+/// This test writes a real `.ts` file to a temp directory, runs OXC extraction,
+/// then promotes to `TszOracle` (which runs tsz enrichment), and compares.
+///
+/// Gated behind `--features tsz` — the type and constructor are unavailable
+/// without the feature.
+#[cfg(feature = "tsz")]
+#[test]
+fn test_tsz_enriches_inferred_return_type() {
+    use std::io::Write;
+    use nudox_producer_typescript::{TszOracle, OwnedOracle};
+    use nudox_producer_typescript::producer::TsOracle;
+    use nudox_producer_typescript::extract::{DeclBody, TypeOwned};
+
+    // Write a TypeScript file with NO explicit return annotation.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ts_path = dir.path().join("infer.ts");
+    {
+        let mut f = std::fs::File::create(&ts_path).expect("create ts file");
+        writeln!(f, "export function add(a: number, b: number) {{ return a + b; }}").expect("write");
+    }
+
+    // OXC extraction.
+    let entry_points = vec![ts_path.clone()];
+    let modules = nudox_producer_typescript::graph::build_and_extract(
+        &entry_points,
+        dir.path(),
+    ).expect("oxc extract");
+
+    // Verify OXC produced the function with None return type.
+    let add_oxc = modules.iter()
+        .flat_map(|m| m.declarations.iter())
+        .find(|d| d.name == "add")
+        .expect("OXC should find `add`");
+    let DeclBody::Function(oxc_fn) = &add_oxc.body else {
+        panic!("expected Function body");
+    };
+    assert!(
+        oxc_fn.return_type.is_none(),
+        "OXC should yield None return type for unannotated function, got: {:?}",
+        oxc_fn.return_type
+    );
+
+    // Promote to TszOracle (runs enrichment).
+    let owned = OwnedOracle::new(modules);
+    let tsz: TszOracle = TszOracle::from(owned);
+
+    // Find the enriched function.
+    let add_tsz = tsz.modules().iter()
+        .flat_map(|m| m.declarations.iter())
+        .find(|d| d.name == "add")
+        .expect("TszOracle should still have `add`");
+    let DeclBody::Function(tsz_fn) = &add_tsz.body else {
+        panic!("expected Function body from TszOracle");
+    };
+
+    // tsz should have filled in `number` (the inferred return type of a + b).
+    match &tsz_fn.return_type {
+        Some(TypeOwned::Number) => {
+            // Perfect: tsz correctly inferred `number`.
+        }
+        Some(other) => {
+            // Acceptable if tsz returned a compatible representation (e.g. via
+            // the format+reparse path, which might give Nominal("number")).
+            // Any concrete type is better than None.
+            match other {
+                TypeOwned::Nominal(name) if name == "number" => {}
+                TypeOwned::Any | TypeOwned::Unknown => {
+                    panic!(
+                        "tsz enrichment should improve on None; got opaque type: {other:?}"
+                    );
+                }
+                _ => {
+                    // Something concrete was inferred — that's an improvement.
+                    // Don't assert the exact spelling; checker representation may vary.
+                }
+            }
+        }
+        None => {
+            panic!(
+                "tsz enrichment should have filled in return type for `add`, still None"
+            );
+        }
+    }
+}
+
+/// The `TypescriptProducer::<TszOracle>::new_tsz()` constructor compiles and
+/// produces the correct type signature (compile-time seam test).
+#[cfg(feature = "tsz")]
+#[test]
+fn test_tsz_producer_constructor() {
+    use nudox_producer_typescript::{TypescriptProducer, TszOracle};
+    let _: TypescriptProducer<TszOracle> = TypescriptProducer::new_tsz();
+    // No panic = the tsz producer seam is wired end-to-end.
+}
+
+// ── Test 9: Module-level TSZ seam (OXC) ──────────────────────────────────────
+
 /// This is a compile-time seam test, not a runtime test.
 /// It verifies that `TypescriptProducer` is generic over `O: TsOracle`, that
 /// `OwnedOracle` implements it, and that a future tsz oracle would only need to:

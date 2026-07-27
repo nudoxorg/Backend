@@ -4,6 +4,18 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Enable the tsz in-process TypeScript checker oracle (tier 2).
+# Off by default so the common build stays lean (tsz pulls in wasm-bindgen stubs
+# and a large rayon pool init). Enable with: --features tsz
+tsz = [
+    "dep:tsz-core",
+    "dep:tsz-binder",
+    "dep:tsz-solver",
+    "dep:tsz-checker",
+    "dep:rustc-hash",
+]
+
 [dependencies]
 nudox-ir = { path = "../nudox-ir" }
 nudox-producer = { path = "../nudox-producer" }
@@ -37,9 +49,22 @@ oxc_resolver = { version = "=11.23.0" }
 serde_json = { workspace = true }
 tracing = "0.1"
 
+# ── tsz oracle tier (optional, feature-gated) ──────────────────────────────────
+# tsz 0.1.x is NOT on crates.io at the needed commit; pin to the exact git SHA
+# documented in build/third-party/git-fragment.bzl (TSZ_REV).
+# wasm-bindgen is an unconditional dep in tsz-scanner/tsz-parser/tsz-core; on
+# native targets it compiles to no-op stubs — expected, not a blocker.
+tsz-core    = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-core",    optional = true }
+tsz-binder  = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-binder",  optional = true }
+tsz-solver  = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-solver",  optional = true }
+tsz-checker = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-checker", optional = true }
+rustc-hash  = { version = "2.1", optional = true }
+
 [dev-dependencies]
 # Tests parse literal TypeScript source strings in-process.
 oxc_allocator = { version = "=0.139.0" }
 oxc_parser = { version = "=0.139.0" }
 oxc_semantic = { version = "=0.139.0", features = ["jsdoc"] }
 oxc_span = { version = "=0.139.0" }
+# Used by the tsz-gated integration test that writes a real .ts file to disk.
+tempfile = "3"

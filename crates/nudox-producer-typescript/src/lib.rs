@@ -46,9 +46,14 @@ pub mod entry;
 pub mod extract;
 pub mod graph;
 pub mod id;
+pub mod oracle;
 pub mod producer;
 
 pub use producer::TypescriptProducer;
 
 // Re-export the oracle type so callers can name it.
 pub use producer::OwnedOracle;
+
+// Re-export TszOracle when the tsz feature is active.
+#[cfg(feature = "tsz")]
+pub use oracle::tsz::TszOracle;
