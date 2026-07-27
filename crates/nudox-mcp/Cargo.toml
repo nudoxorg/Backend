@@ -16,23 +16,10 @@ license.workspace = true
 [dependencies]
 nudox-engine = { path = "../nudox-engine" }
 nudox-graph = { path = "../nudox-graph" }
-# TODO(engine): this dependency exists for exactly two items —
-# `change::EcosystemId` and `change::PackageName` — and is confined to
-# `src/dto.rs::SymbolKeyDto::to_wire`.
-#
-# `EngineHandle::open_symbol` takes a `SymbolKey` (= `nudox_ir::change::StableRef`),
-# but `nudox_engine::wire` re-exports only `SymbolKey`/`IntroId`/`PackageLineageId`
-# — not the two newtypes needed to *build* a `PackageLineageId`. There is
-# therefore no way to turn an agent-supplied `"ecosystem:name#introhex"` string
-# into a `SymbolKey` through the engine's public surface, and `get_symbol` is
-# unimplementable without it.
-#
-# Delete this dependency as soon as `nudox_engine::wire` adds
-# `pub use nudox_ir::change::{EcosystemId, PackageName};` (or, better, a
-# `SymbolKey` string codec). No IR type is read here — LR-8's "a tool that reads
-# nudox-ir directly is a finding" is about walking `Entry`/`IrView`, which this
-# crate never does.
-nudox-ir = { path = "../nudox-ir" }
+# `nudox-ir` is intentionally absent. `nudox_engine::wire` re-exports
+# `EcosystemId` and `PackageName` (the two newtypes `SymbolKeyDto::to_wire`
+# needs to build a `SymbolKey`), so this crate constructs keys through the
+# engine's public surface alone — LR-8 satisfied.
 
 # axum 0.8 is the version rmcp 2.2 itself tests `StreamableHttpService`
 # against (rmcp-2.2.0/Cargo.toml `[dev-dependencies.axum]`). `StreamableHttpService`

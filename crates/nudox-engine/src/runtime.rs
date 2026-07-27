@@ -355,3 +355,30 @@ impl EngineHandle {
         (token, cancel)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Convenience constructors
+// ---------------------------------------------------------------------------
+
+impl Engine {
+    /// Start an engine over the built-in fixture corpus.
+    ///
+    /// # Why this lives here and not in the caller
+    ///
+    /// `lindsey` must not depend on `nudox-store` (§L0's dependency law): a view
+    /// that can name the store can come to depend on the shape of the IR, which
+    /// is the coupling the whole layering exists to prevent. So the *caller*
+    /// expresses intent — "start with fixtures" — and the engine, which already
+    /// depends on the store, chooses the `IrSource`.
+    ///
+    /// LR-5 makes the swap trivial: `ProducerSource` implements the same trait,
+    /// so pointing this at a real workspace changes one line here and nothing
+    /// above it.
+    #[cfg(feature = "fixtures")]
+    pub fn start_with_fixtures(config: EngineConfig) -> EngineHandle {
+        Self::start(
+            config,
+            nudox_store::source::fixtures::FixtureSource::rich(),
+        )
+    }
+}

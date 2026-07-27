@@ -32,13 +32,15 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nudox_engine::wire::{DocEvent, Gen, HitRow, KindDiscriminant, QueryEvent, SearchEvent};
+use nudox_engine::wire::{
+    DocEvent, Gen, HitRow, KindDiscriminant, QueryEvent, RenderSection, SearchEvent, SymbolHead,
+};
 use nudox_engine::{EngineHandle, GraphQuery, SearchQuery};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::dto::{HitRowDto, RenderSectionDto, SymbolHeadDto, SymbolKeyDto};
 use crate::error::McpError;
+use crate::key::SymbolKeyDto;
 
 /// The Trustfall query behind `list_packages`.
 ///
@@ -147,21 +149,28 @@ pub struct GraphSchemaArgs {}
 // ---------------------------------------------------------------------------
 
 /// The result of `search_symbols`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+///
+/// `hits` are [`nudox_engine::wire::HitRow`] values serialised directly.  Every
+/// `key` field is the canonical `"ecosystem:name#introhex"` string; pass it
+/// straight to `get_symbol` or `find_usages`.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct SearchResult {
     /// Matching symbols, most relevant first.
-    pub hits: Vec<HitRowDto>,
+    pub hits: Vec<HitRow>,
     /// `true` when results were cut off at `limit` and more exist.
     pub truncated: bool,
 }
 
 /// The result of `get_symbol`: a symbol's complete documentation page.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+///
+/// The head and sections are [`nudox_engine::wire`] types serialised directly
+/// (LR-2: derived from the wire vocabulary, never hand-written).
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct SymbolDoc {
     /// Identity, signature, provenance, and the page's section plan.
-    pub head: SymbolHeadDto,
+    pub head: Box<SymbolHead>,
     /// The rendered sections, in `head.section_plan` order.
-    pub sections: Vec<RenderSectionDto>,
+    pub sections: Vec<RenderSection>,
 }
 
 /// One symbol that references the symbol passed to `find_usages`.
@@ -326,12 +335,14 @@ impl NudoxTools {
             return Err(McpError::TruncatedStream);
         }
 
-        let mut hits: Vec<HitRowDto> = rows.iter().map(HitRowDto::from_wire).collect();
-
         // The engine's `SearchQuery` has no package filter (see the
         // `TODO(engine)` note in lib.rs), so it is applied here on the keys the
         // engine already returned. This filters engine output; it does not
         // re-implement search.
+        //
+        // We render the key as a string once (for the lineage prefix check) and
+        // clone only the rows we keep. The serialised form in the final JSON is
+        // produced by serde via `wire::HitRow`'s `Serialize` impl.
         if let Some(packages) = &args.packages {
             if packages.is_empty() {
                 return Err(McpError::InvalidArgument {
@@ -340,23 +351,38 @@ impl NudoxTools {
                         .to_owned(),
                 });
             }
-            hits.retain(|h| h.lineage().is_some_and(|l| packages.iter().any(|p| p == l)));
+            rows.retain(|h| {
+                let lineage = format!(
+                    "{}:{}",
+                    h.key.package.ecosystem.as_str(),
+                    h.key.package.name.as_str(),
+                );
+                packages.iter().any(|p| *p == lineage)
+            });
         }
 
         // A symbol can hit in more than one search section (name *and* kind),
         // and the sections are ranked independently. Deduplicate on the key —
         // not with `dedup_by`, which only removes *adjacent* duplicates and
         // would leave a pair whose scores happened to differ.
-        let mut seen = std::collections::HashSet::with_capacity(hits.len());
-        hits.retain(|h| seen.insert(h.key.0.clone()));
+        let mut seen = std::collections::HashSet::with_capacity(rows.len());
+        rows.retain(|h| {
+            let key_str = format!(
+                "{}:{}#{}",
+                h.key.package.ecosystem.as_str(),
+                h.key.package.name.as_str(),
+                h.key.intro.to_hex(),
+            );
+            seen.insert(key_str)
+        });
 
         // The merged list must be re-sorted before it is truncated, or the
         // ceiling would cut by section order rather than by relevance.
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        rows.sort_by(|a, b| b.score.total_cmp(&a.score));
 
-        let truncated = hits.len() > limit;
-        hits.truncate(limit);
-        Ok(SearchResult { hits, truncated })
+        let truncated = rows.len() > limit;
+        rows.truncate(limit);
+        Ok(SearchResult { hits: rows, truncated })
     }
 
     /// `get_symbol`, minus the MCP wrapping.
@@ -365,14 +391,14 @@ impl NudoxTools {
         let generation = self.next_gen();
         let (_stream, rx) = self.engine.open_symbol(key, generation);
 
-        let mut head: Option<SymbolHeadDto> = None;
-        let mut sections: Vec<RenderSectionDto> = Vec::new();
+        let mut head: Option<Box<SymbolHead>> = None;
+        let mut sections: Vec<RenderSection> = Vec::new();
         let mut terminated = false;
 
         while let Ok(event) = rx.recv_async().await {
             match event {
-                DocEvent::Head(h) => head = Some(SymbolHeadDto::from_wire(&h)),
-                DocEvent::Section(s) => sections.push(RenderSectionDto::from_wire(&s)),
+                DocEvent::Head(h) => head = Some(h),
+                DocEvent::Section(s) => sections.push(s),
                 // Highlight spans are a GUI-only progressive upgrade and carry
                 // no information an agent can use; Refs/Impls pages are served
                 // by `find_usages` and `graph_query` instead.
