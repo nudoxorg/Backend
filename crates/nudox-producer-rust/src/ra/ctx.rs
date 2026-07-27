@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use ra_ap_base_db::SourceDatabase;
 use ra_ap_hir::{
-    Adt, Crate, DisplayTarget, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Semantics,
+    Crate, DisplayTarget, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Semantics,
     Trait, Visibility,
 };
 use ra_ap_ide_db::{FileId, RootDatabase, line_index::LineIndex};

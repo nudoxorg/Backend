@@ -75,7 +75,7 @@ pub(crate) fn lower_crate(
     let mut impls: Vec<(Impl, Option<RaId>)> = Vec::new();
 
     for module in &modules {
-        let mod_def = ModuleDef::Module(*module);
+        let _mod_def = ModuleDef::Module(*module);
         let mod_parent: Option<RaId> = module
             .parent(ctx.db)
             .and_then(|p| ctx.ra_id(ModuleDef::Module(p)));

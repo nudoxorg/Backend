@@ -37,7 +37,7 @@ use ra_ap_syntax::ast::HasTypeBounds;
 use ra_ap_syntax::{AstNode, ast::HasGenericParams};
 
 use nudox_ir::{
-    index::{RawRef, Ref},
+    index::Ref,
     kinds::{
         Alias, AutoFact, Const, Enum, Field, FieldAttribute, FieldKey,
         Function, Impl as IrImpl, ImplFlags, Module as IrModule, Param, Record, RecordForm,
@@ -329,6 +329,10 @@ fn lower_enum(
 
     let auto: Vec<AutoFact> = Vec::new();
 
+    // Release ref_for before the variant loop so `out` is not double-borrowed
+    // (declare_hir_fields creates its own ref_for internally).
+    drop(ref_for);
+
     // Declare variant entries.
     let variant_refs: Vec<Ref<Variant>> = e
         .variants(ctx.db)
@@ -389,7 +393,6 @@ fn lower_enum(
             out.refer::<Variant>(variant_id)
         })
         .collect();
-    drop(ref_for);
 
     let enum_body = Enum::builder()
         .variants(variant_refs)
@@ -418,19 +421,15 @@ fn lower_union(
     let Some(union_id) = ctx.ra_id(def) else {
         return Ok(());
     };
-    let mut ref_for = make_ref_for!(out);
-
-    // Declare fields.
+    // Declare fields (declare_hir_fields creates its own ref_for internally).
     let field_refs = declare_hir_fields(
         ctx,
         &union_id,
         u.fields(ctx.db),
         RecordForm::Struct,
-        &mut ref_for,
         parent.clone(),
         out,
     );
-    drop(ref_for);
 
     // Unions are represented as `Record` with `RecordForm::Struct` for now.
     // The new IR has no separate Union kind.
@@ -959,7 +958,7 @@ fn declare_hir_fields(
 
 /// Declare all input params and return their `Ref<Param>` list.
 pub(crate) fn declare_params(
-    ctx: &LowerCtx<'_>,
+    _ctx: &LowerCtx<'_>,
     fn_id: &RaId,
     params: &[function::ParamData],
     parent: Option<RaId>,

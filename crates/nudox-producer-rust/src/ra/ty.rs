@@ -42,7 +42,7 @@ use std::panic::{self, AssertUnwindSafe};
 use ra_ap_hir::{HirDisplay, ModuleDef, Mutability, PathResolution, attach_db};
 use ra_ap_syntax::{
     AstNode,
-    ast::{self, HasGenericArgs, HasTypeBounds, PathSegmentKind},
+    ast::{self, HasGenericArgs, PathSegmentKind},
 };
 use tracing::debug;
 

@@ -14,7 +14,7 @@
 //!   parsing is best-effort; unknown forms fall through to `CfgExpr::Other`.
 
 use ra_ap_hir::{
-    Adt, DocLinkDef, HasAttrs, HasSource, IsInnerDoc, ModuleDef, resolve_doc_path_on,
+    Adt, DocLinkDef, HasAttrs, IsInnerDoc, ModuleDef, resolve_doc_path_on,
 };
 use ra_ap_syntax::AstToken;
 use ra_ap_syntax::{

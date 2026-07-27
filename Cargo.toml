@@ -58,6 +58,7 @@ members = [
     "crates/nudox-producer-go",
     "crates/nudox-producer-csharp",
     "crates/nudox-producer-rust",
+    "crates/nudox-producer-typescript",
 ]
 
 # Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`

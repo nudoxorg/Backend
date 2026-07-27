@@ -18,7 +18,7 @@ use ra_ap_project_model::{CargoWorkspace, ProjectWorkspaceKind, TargetKind};
 use tracing::{debug, info, warn};
 
 use nudox_ir::lower::Lowering;
-use nudox_producer::{PackageSource, ProducerError};
+use nudox_producer::PackageSource;
 
 use crate::RaId;
 use crate::error::RustProducerError;
