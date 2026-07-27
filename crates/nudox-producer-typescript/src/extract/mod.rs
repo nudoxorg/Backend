@@ -392,13 +392,14 @@ pub struct ParamFact {
 /// `TypeVar(name)` represents a use of a *generic type parameter* — e.g. `T`
 /// in `Array<T>`.  `Nominal(name)` represents a reference to a declared type
 /// (class, interface, alias).  The distinction matters for the IR:
-/// `Type::TypeVar` (when it lands) will carry a plain string; `Type::Nominal`
-/// carries a `RawRef` (content-addressed after sealing).
+/// `Type::TypeVar` carries a plain string; `Type::Nominal` carries a `RawRef`
+/// (content-addressed after sealing).
 ///
-/// In the current IR (`nudox-ir` as of 2026-07-25) `Type::TypeVar` does not
-/// yet exist.  `emit.rs` maps `TypeOwned::TypeVar` to `Type::Nominal` via a
-/// placeholder `Ref` that names the parameter string.  Once the IR adds
-/// `Type::TypeVar(String)`, update `emit::lower_type_owned` to use it.
+/// `nudox_ir::kinds::ty::Type::TypeVar(String)` exists and `emit::lower_type`
+/// maps `TypeOwned::TypeVar` straight onto it.  `TypeOwned::Nominal` still
+/// degrades to `Primitive::Builtin(name)` in that helper because constructing
+/// `Type::Nominal(RawRef)` requires the `Lowering<TsId>` sink, which the pure
+/// helper does not hold — an acquisition-boundary limitation, not an IR gap.
 #[derive(Debug, Clone)]
 pub enum TypeOwned {
     Any,
@@ -419,8 +420,7 @@ pub enum TypeOwned {
     Nominal(String),
     /// A use of a generic type parameter (e.g. `T`, `K`, `V`).
     ///
-    /// Emitted as `Type::Nominal` today; will become `Type::TypeVar(name)` once
-    /// the IR adds that variant.  See the seam note on `TypeOwned` above.
+    /// Emitted as `Type::TypeVar(name)`.  See the seam note on `TypeOwned` above.
     TypeVar(String),
     Apply { base: Box<TypeOwned>, args: Vec<TypeOwned> },
     Union(Vec<TypeOwned>),
@@ -428,24 +428,56 @@ pub enum TypeOwned {
     Tuple(Vec<TypeOwned>),
     /// A named tuple element: `label: T` inside a `TSTupleType`.
     ///
-    /// IR gap: `Type::Tuple` in nudox-ir carries only positional types; there is
-    /// no slot for element labels.  To carry this through without silent loss we
-    /// box the pair here and emit it to the IR as the element type alone.
-    ///
-    /// Requested IR change (nudox-ir):
-    ///
-    /// ```text
-    /// enum TupleElement { Positional(Type), Named { label: String, ty: Type } }
-    /// // Replace: Type::Tuple(List<Type>) with Type::Tuple(List<TupleElement>)
-    /// ```
-    ///
-    /// Once that change lands, `emit::lower_type` should map `NamedTupleElem`
-    /// to `TupleElement::Named { label, ty: lower_type(ty) }`.
+    /// The label survives into the IR: `Type::Tuple` carries
+    /// `List<TupleElement>` and `emit::lower_type` maps this to
+    /// `TupleElement::Named { label, ty }`.  A `NamedTupleElem` appearing
+    /// outside a `Tuple` is wrapped in a single-element named tuple so the
+    /// label is still not lost.
     NamedTupleElem { label: String, ty: Box<TypeOwned> },
     Array(Box<TypeOwned>),
     Function(Box<FunctionBody>),
     Literal(LiteralOwned),
     Unsupported(String),
+
+    /// A TypeScript conditional type: `T extends string ? A : B`.
+    /// Mapped directly to `Type::Conditional` in nudox-ir.
+    Conditional {
+        check: Box<TypeOwned>,
+        extends_ty: Box<TypeOwned>,
+        then_ty: Box<TypeOwned>,
+        else_ty: Box<TypeOwned>,
+    },
+
+    /// A TypeScript mapped type: `{ readonly [P in keyof T]?: T[P] }`.
+    /// `readonly` and `optional` are tri-state (Add/Remove/Absent).
+    Mapped {
+        key_var: String,
+        source: Box<TypeOwned>,
+        value: Box<TypeOwned>,
+        readonly: nudox_ir::kinds::ty::MappedModifier,
+        optional: nudox_ir::kinds::ty::MappedModifier,
+    },
+
+    /// A TypeScript template literal type: `` `prefix-${T}` ``.
+    TemplateLiteral(Vec<TemplatePart>),
+
+    /// An object type literal: `{ x: number; y?: string }`.
+    /// Mapped to `Type::AnonymousRecord { form: Struct, ... }`.
+    ObjectLiteral(Vec<AnonFieldOwned>),
+}
+
+#[derive(Debug, Clone)]
+pub enum TemplatePart {
+    Literal(String),
+    Interpolated(Box<TypeOwned>),
+}
+
+#[derive(Debug, Clone)]
+pub struct AnonFieldOwned {
+    pub name: String,
+    pub ty: TypeOwned,
+    pub optional: bool,
+    pub readonly: bool,
 }
 
 #[derive(Debug, Clone)]

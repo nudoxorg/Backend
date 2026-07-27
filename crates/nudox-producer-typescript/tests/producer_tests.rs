@@ -867,20 +867,9 @@ fn test_keyof_type_lowers_to_apply() {
 
 /// `type R = { readonly [P in keyof T]: T[P] }` — TSMappedType.
 ///
-/// VERIFIED BROKEN: The OXC path returns `TypeOwned::Unsupported("mapped type")`
-/// for all `TSMappedType` nodes.  The fallback is **explicit** — there is a
-/// dedicated match arm with a named description string, not a `_ => Any` silent
-/// drop.  The IR gap is that `TypeOwned` (and therefore `nudox_ir::kinds::ty::Type`)
-/// has no `MappedType` variant.  To represent this faithfully, the IR would need:
-///
-/// ```text
-/// Type::MappedType { key_param: String, source: Box<Type>, body: Box<Type>, readonly: bool, optional: bool }
-/// ```
-///
-/// Until that lands, the fallback is `TypeOwned::Unsupported("mapped type")` which
-/// propagates to `nudox_ir::kinds::ty::Type::Any` in `emit.rs`.
+/// Mapped types now lower to `TypeOwned::Mapped` with the real IR slot.
 #[test]
-fn test_mapped_type_is_explicit_unsupported() {
+fn test_mapped_type_lowers_to_real_mapped() {
     let src = r#"
         export type ReadonlyPerson<T> = { readonly [P in keyof T]: T[P] };
     "#;
@@ -893,31 +882,21 @@ fn test_mapped_type_is_explicit_unsupported() {
         panic!("expected TypeAlias, got {:?}", std::mem::discriminant(&alias_decl.body));
     };
 
-    // VERIFIED: mapped types produce Unsupported, not a silent Any.
+    // Mapped types now have a real IR slot: TypeOwned::Mapped.
     assert!(
-        matches!(&body.target, TypeOwned::Unsupported(msg) if msg == "mapped type"),
-        "mapped type must lower to TypeOwned::Unsupported(\"mapped type\"); \
-         got {:?} — if this is TypeOwned::Any the fallback is silent (a bug); \
-         if it is something else the arm changed",
+        matches!(&body.target, TypeOwned::Mapped { key_var, readonly, .. }
+            if !key_var.is_empty() && *readonly == nudox_ir::kinds::ty::MappedModifier::Add),
+        "{{ readonly [P in keyof T]: T[P] }} must lower to TypeOwned::Mapped with readonly=Add; \
+         got {:?}",
         body.target
     );
 }
 
 /// `type C<T> = T extends string ? string : never` — TSConditionalType.
 ///
-/// VERIFIED BROKEN: The OXC path returns `TypeOwned::Unsupported("conditional type")`
-/// for all `TSConditionalType` nodes.  The fallback is **explicit** — there is a
-/// dedicated match arm with a named description string, not a `_ => Any` drop.
-/// The IR gap: `TypeOwned` / `nudox_ir::kinds::ty::Type` has no conditional type
-/// variant.  A faithful representation would need:
-///
-/// ```text
-/// Type::Conditional { check: Box<Type>, extends: Box<Type>, then: Box<Type>, otherwise: Box<Type> }
-/// ```
-///
-/// Until that lands, the fallback is `TypeOwned::Unsupported("conditional type")`.
+/// Conditional types now lower to `TypeOwned::Conditional` with the real IR slot.
 #[test]
-fn test_conditional_type_is_explicit_unsupported() {
+fn test_conditional_type_lowers_to_real_conditional() {
     let src = r#"
         export type IsString<T> = T extends string ? string : never;
     "#;
@@ -930,12 +909,82 @@ fn test_conditional_type_is_explicit_unsupported() {
         panic!("expected TypeAlias, got {:?}", std::mem::discriminant(&alias_decl.body));
     };
 
-    // VERIFIED: conditional types produce Unsupported, not a silent Any.
+    // Conditional types now have a real IR slot: TypeOwned::Conditional.
     assert!(
-        matches!(&body.target, TypeOwned::Unsupported(msg) if msg == "conditional type"),
-        "conditional type must lower to TypeOwned::Unsupported(\"conditional type\"); \
-         got {:?} — if this is TypeOwned::Any the fallback is silent (a bug); \
-         if it is something else the arm changed",
+        matches!(&body.target, TypeOwned::Conditional { .. }),
+        "T extends string ? string : never must lower to TypeOwned::Conditional; \
+         got {:?}",
         body.target
     );
+}
+
+#[test]
+fn test_template_literal_type_lowers_to_real_template_literal() {
+    let src = r#"
+        export type Greeting<T extends string> = `hello-${T}`;
+    "#;
+    let facts = parse_module(src, "template_literal_test");
+    let alias = facts.declarations.iter().find(|d| d.name == "Greeting")
+        .expect("Greeting must be present");
+    let DeclBody::TypeAlias(body) = &alias.body else {
+        panic!("expected TypeAlias");
+    };
+    assert!(
+        matches!(&body.target, TypeOwned::TemplateLiteral(_)),
+        "template literal type must lower to TypeOwned::TemplateLiteral; got {:?}",
+        body.target
+    );
+}
+
+#[test]
+fn test_object_type_literal_lowers_to_object_literal() {
+    let src = r#"
+        export type Point = { x: number; y?: string };
+    "#;
+    let facts = parse_module(src, "object_literal_test");
+    let alias = facts.declarations.iter().find(|d| d.name == "Point")
+        .expect("Point must be present");
+    let DeclBody::TypeAlias(body) = &alias.body else {
+        panic!("expected TypeAlias");
+    };
+    match &body.target {
+        TypeOwned::ObjectLiteral(members) => {
+            let x = members.iter().find(|m| m.name == "x").expect("must have field x");
+            assert!(!x.optional, "x must be required");
+            let y = members.iter().find(|m| m.name == "y").expect("must have field y");
+            assert!(y.optional, "y must be optional");
+        }
+        other => panic!("object type literal must lower to ObjectLiteral; got {:?}", other),
+    }
+}
+
+/// `` type X = `hello` `` — a no-substitution template literal in type position.
+///
+/// This arrives as `TSLiteralType(TSLiteral::TemplateLiteral)`, a different AST
+/// node from the interpolating `TSType::TSTemplateLiteralType`. It is still a
+/// template literal type with one fixed span, so it must lower to
+/// `TypeOwned::TemplateLiteral` rather than degrading to `Unsupported`.
+#[test]
+fn test_no_substitution_template_literal_lowers_to_template_literal() {
+    let src = r#"
+        export type Greeting = `hello`;
+    "#;
+    let facts = parse_module(src, "no_subst_template_test");
+    let alias = facts
+        .declarations
+        .iter()
+        .find(|d| d.name == "Greeting")
+        .expect("Greeting must be present");
+    let DeclBody::TypeAlias(body) = &alias.body else {
+        panic!("expected TypeAlias");
+    };
+    match &body.target {
+        TypeOwned::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 1, "one fixed span, no interpolations");
+        }
+        other => panic!(
+            "no-substitution template literal must lower to TemplateLiteral, not \
+             Unsupported; got {other:?}"
+        ),
+    }
 }

@@ -15,7 +15,8 @@ use oxc_ast::ast::{
 use oxc_span::GetSpan;
 
 use super::{
-    FunctionBody, GenericParamOwned, LiteralOwned, ParamFact, ReceiverKind, TypeOwned,
+    AnonFieldOwned, FunctionBody, GenericParamOwned, LiteralOwned, ParamFact, ReceiverKind,
+    TemplatePart, TypeOwned,
 };
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -159,16 +160,55 @@ fn lower_ts_type_impl<'a>(
         }
 
         // ── Conditional type ───────────────────────────────────────────────
-        TSType::TSConditionalType(_) => {
-            TypeOwned::Unsupported("conditional type".to_string())
+        TSType::TSConditionalType(c) => {
+            TypeOwned::Conditional {
+                check: Box::new(lower_ts_type_impl(&c.check_type, source, type_params)),
+                extends_ty: Box::new(lower_ts_type_impl(&c.extends_type, source, type_params)),
+                then_ty: Box::new(lower_ts_type_impl(&c.true_type, source, type_params)),
+                else_ty: Box::new(lower_ts_type_impl(&c.false_type, source, type_params)),
+            }
         }
 
         // ── Mapped type ────────────────────────────────────────────────────
-        TSType::TSMappedType(_) => TypeOwned::Unsupported("mapped type".to_string()),
+        TSType::TSMappedType(m) => {
+            use nudox_ir::kinds::ty::MappedModifier;
+            use oxc_ast::ast::TSMappedTypeModifierOperator;
+            let key_var = m.key.name.to_string();
+            let source_ty = Box::new(lower_ts_type_impl(&m.constraint, source, type_params));
+            let value_ty = m.type_annotation
+                .as_ref()
+                .map(|v| Box::new(lower_ts_type_impl(v, source, type_params)))
+                .unwrap_or_else(|| Box::new(TypeOwned::Any));
+            let readonly = match &m.readonly {
+                Some(TSMappedTypeModifierOperator::True) | Some(TSMappedTypeModifierOperator::Plus) => MappedModifier::Add,
+                Some(TSMappedTypeModifierOperator::Minus) => MappedModifier::Remove,
+                None => MappedModifier::Absent,
+            };
+            let optional = match &m.optional {
+                Some(TSMappedTypeModifierOperator::True) | Some(TSMappedTypeModifierOperator::Plus) => MappedModifier::Add,
+                Some(TSMappedTypeModifierOperator::Minus) => MappedModifier::Remove,
+                None => MappedModifier::Absent,
+            };
+            TypeOwned::Mapped { key_var, source: source_ty, value: value_ty, readonly, optional }
+        }
 
         // ── Template literal ───────────────────────────────────────────────
-        TSType::TSTemplateLiteralType(_) => {
-            TypeOwned::Unsupported("template literal type".to_string())
+        TSType::TSTemplateLiteralType(tl) => {
+            let mut parts: Vec<TemplatePart> = Vec::new();
+            // TSTemplateLiteralType has `quasis: Vec<TemplateElement>` and `types: Vec<TSType>`
+            // They alternate: quasi[0], type[0], quasi[1], type[1], ..., quasi[n]
+            for (i, quasi) in tl.quasis.iter().enumerate() {
+                let s = quasi.value.cooked.as_ref()
+                    .map(|s| s.as_str().to_string())
+                    .unwrap_or_else(|| quasi.value.raw.as_str().to_string());
+                if !s.is_empty() {
+                    parts.push(TemplatePart::Literal(s));
+                }
+                if let Some(ty) = tl.types.get(i) {
+                    parts.push(TemplatePart::Interpolated(Box::new(lower_ts_type_impl(ty, source, type_params))));
+                }
+            }
+            TypeOwned::TemplateLiteral(parts)
         }
 
         // ── Indexed access ─────────────────────────────────────────────────
@@ -241,7 +281,63 @@ fn lower_ts_type_impl<'a>(
         }
 
         // ── Type literal (object shape) ────────────────────────────────────
-        TSType::TSTypeLiteral(_) => TypeOwned::Unsupported("type literal".to_string()),
+        TSType::TSTypeLiteral(lit) => {
+            use oxc_ast::ast::TSSignature;
+            let mut members: Vec<AnonFieldOwned> = Vec::new();
+            for member in &lit.members {
+                match member {
+                    TSSignature::TSPropertySignature(p) => {
+                        let name = p.key.static_name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "__computed".to_string());
+                        let ty = p.type_annotation.as_ref()
+                            .map(|a| lower_ts_type_impl(&a.type_annotation, source, type_params))
+                            .unwrap_or(TypeOwned::Any);
+                        members.push(AnonFieldOwned {
+                            name,
+                            ty,
+                            optional: p.optional,
+                            readonly: p.readonly,
+                        });
+                    }
+                    TSSignature::TSMethodSignature(m) => {
+                        let name = m.key.static_name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "__method".to_string());
+                        let params: Vec<TypeOwned> = m.params.items.iter()
+                            .map(|p| p.type_annotation.as_ref()
+                                .map(|a| lower_ts_type_impl(&a.type_annotation, source, type_params))
+                                .unwrap_or(TypeOwned::Any))
+                            .collect();
+                        let ret = m.return_type.as_ref()
+                            .map(|r| lower_ts_type_impl(&r.type_annotation, source, type_params));
+                        members.push(AnonFieldOwned {
+                            name,
+                            ty: TypeOwned::Function(Box::new(FunctionBody {
+                                generics: vec![],
+                                params: params.into_iter().map(|ty| ParamFact {
+                                    name: "_".to_string(),
+                                    ty: Some(ty),
+                                    is_optional: false,
+                                    is_rest: false,
+                                    is_readonly: false,
+                                }).collect(),
+                                return_type: ret,
+                                is_async: false,
+                                is_generator: false,
+                                has_body: false,
+                                receiver: ReceiverKind::None,
+                            })),
+                            optional: m.optional,
+                            readonly: false,
+                        });
+                    }
+                    // Index signatures, call signatures, construct signatures — skip.
+                    _ => {}
+                }
+            }
+            TypeOwned::ObjectLiteral(members)
+        }
 
         // ── Named tuple member (internal, shouldn't appear at top level) ───
         TSType::TSNamedTupleMember(m) => lower_ts_tuple_element(&m.element_type, source, type_params),
@@ -339,8 +435,34 @@ fn lower_ts_literal(lit: &TSLiteral<'_>) -> TypeOwned {
                 .unwrap_or_else(|| b.value.as_str().to_string());
             TypeOwned::Literal(LiteralOwned::BigInt(repr))
         }
-        TSLiteral::TemplateLiteral(_) => {
-            TypeOwned::Unsupported("template literal type".to_string())
+        // A template literal inside `TSLiteralType` — e.g. `` type X = `hello` ``.
+        // Distinct from `TSType::TSTemplateLiteralType` (handled above), which is
+        // the interpolating form `` `a-${T}` ``.
+        //
+        // A no-substitution template IS a template literal type with a single
+        // fixed span, so it lowers to `TypeOwned::TemplateLiteral`. When
+        // `expressions` is non-empty the interpolations are *value* expressions,
+        // not types — that is not valid in a type position and has no `Type`
+        // representation, so it stays `Unsupported` naming the construct.
+        TSLiteral::TemplateLiteral(tl) => {
+            if tl.expressions.is_empty() {
+                let text = tl
+                    .quasis
+                    .iter()
+                    .map(|q| {
+                        q.value
+                            .cooked
+                            .as_ref()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| q.value.raw.to_string())
+                    })
+                    .collect::<String>();
+                TypeOwned::TemplateLiteral(vec![TemplatePart::Literal(text)])
+            } else {
+                TypeOwned::Unsupported(
+                    "template literal with value interpolation in type position".to_string(),
+                )
+            }
         }
         TSLiteral::UnaryExpression(u) => {
             // `-1` literal: render as number.
@@ -388,11 +510,10 @@ fn lower_ts_tuple_element<'a>(
         TSTupleElement::TSRestType(r) => {
             TypeOwned::Array(Box::new(lower_ts_type_impl(&r.type_annotation, source, type_params)))
         }
-        // ── Item 10: Named tuple member — preserve the label (item 10) ────
+        // ── Named tuple member — preserve the label ───────────────────────
         // Previously the label was stripped, which is a silent data loss.
-        // We emit TypeOwned::NamedTupleElem so the label survives into the IR
-        // pipeline. emit.rs maps this to the element type (IR gap; see
-        // TypeOwned::NamedTupleElem doc for the requested IR change).
+        // We emit TypeOwned::NamedTupleElem; emit.rs maps it to
+        // TupleElement::Named { label, ty }, so the label reaches the IR.
         TSTupleElement::TSNamedTupleMember(m) => {
             let label = m.label.name.to_string();
             let ty = lower_ts_tuple_element(&m.element_type, source, type_params);

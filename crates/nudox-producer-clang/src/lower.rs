@@ -506,7 +506,11 @@ fn lower_type(ty: &OracleType) -> Type {
             }
         }
         OracleType::TypeVar(name) => Type::TypeVar(name.clone()),
-        OracleType::Inferred => Type::Any,
+        // `auto` / `__auto_type` / `decltype(auto)` — a specific type exists in the
+        // source but libclang did not resolve it at oracle time. Use Type::Inferred
+        // rather than Type::Any: the distinction matters (Any = genuinely dynamic,
+        // Inferred = producer resolution gap).
+        OracleType::Inferred => Type::Inferred,
     }
 }
 
@@ -544,5 +548,30 @@ fn lower_generic_param(p: &OracleGenericParam) -> GenericParam {
                 variance: None,
             }
         }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `OracleType::Inferred` must lower to `Type::Inferred`, not `Type::Any`.
+    ///
+    /// Clang's `auto`, `__auto_type`, and `decltype(auto)` all produce
+    /// `OracleType::Inferred` in the oracle. These are producer resolution gaps,
+    /// not genuine top types — `Type::Any` would be semantically wrong.
+    #[test]
+    fn inferred_oracle_type_lowers_to_inferred_not_any() {
+        let ty = lower_type(&OracleType::Inferred);
+        assert!(
+            matches!(ty, Type::Inferred),
+            "OracleType::Inferred must lower to Type::Inferred; got {ty:?}"
+        );
+        assert!(
+            !matches!(ty, Type::Any),
+            "OracleType::Inferred must NOT lower to Type::Any"
+        );
     }
 }

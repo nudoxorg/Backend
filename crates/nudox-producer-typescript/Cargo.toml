@@ -68,3 +68,5 @@ oxc_semantic = { version = "=0.139.0", features = ["jsdoc"] }
 oxc_span = { version = "=0.139.0" }
 # Used by the tsz-gated integration test that writes a real .ts file to disk.
 tempfile = "3"
+# Needed for nudox_ir::kinds::ty::MappedModifier in test assertions.
+nudox-ir = { path = "../nudox-ir" }

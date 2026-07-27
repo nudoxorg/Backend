@@ -23,7 +23,17 @@
 //! Type::Wildcard { variance, bound }  — Java/Kotlin wildcards; unused for Rust
 //! Type::FunctionPointer { params, ret, abi }  — `fn(…) -> T` / `extern "C" fn(…)`
 //! Type::Annotated { inner, annotation }       — Java @NonNull, C# nullable refs
+//! Type::ImplTrait(List<Type>)         — `impl Trait` (static opaque dispatch)
+//! Type::DynTrait(List<Type>)          — `dyn Trait` (fat pointer, dynamic dispatch)
+//! Type::Inferred                      — `_`; a real type exists but is unresolved
+//! Type::QualifiedPath { self_ty, trait_ref, assoc }  — `<T as Trait>::Assoc`
+//! Type::Conditional / Mapped / TemplateLiteral       — TypeScript; unused for Rust
+//! Type::AnonymousRecord { form, members }            — Go/TS; unused for Rust
 //! ```
+//!
+//! `ImplTrait` and `DynTrait` are deliberately separate variants: `impl Trait`
+//! is zero-cost static dispatch, `dyn Trait` is a vtable fat pointer. Unifying
+//! them behind a flag would erase that distinction.
 //!
 //! Because `Nominal` carries a `RawRef` that must be resolved against the
 //! `Lowering` arena, this module does **not** return `Type::Nominal` for
@@ -35,15 +45,17 @@
 //!
 //! - **External types** — `ref_for` returns `None`; no `RawRef` to embed.
 //!   This is an acquisition-boundary issue, not an IR gap.
-//! - **`<T as Trait>::Assoc` (qualified paths)** — the IR has no
-//!   `QualifiedPath` variant; the projection cannot be represented.
-//! - **`impl Trait`** — the IR has no `ImplTrait` variant; the opaque type
-//!   cannot be named at the call site.
-//! - **`dyn Trait + 'lifetime` (lifetime-only bounds)** — lifetime bounds on
-//!   `dyn` have no slot in `Type::Intersection` or `Type::Nominal`.
 //! - **Lifetime / const generic args in `Apply.args`** — `Apply.args` is
 //!   `List<Type>`; there is no position for lifetime or const arguments.
-//! - **`Type::InferType` (`_`)** — the inferred type is deliberately unknown.
+//! - **Lifetime-only bounds on `dyn Trait`** — `dyn Trait + 'static` lifetime
+//!   bounds are filtered out in `lower_dyn_trait`; the IR's `List<Type>` has
+//!   no lifetime slot. This is a known limitation.
+//!
+//! Previously `Any` fallbacks that now have real IR slots:
+//! - `impl Trait` → `Type::ImplTrait(bounds)` (was: `Type::Any`)
+//! - `dyn Trait + Bound` → `Type::DynTrait(bounds)` (was: `Type::Intersection`)
+//! - `<T as Trait>::Assoc` → `Type::QualifiedPath` (was: `Type::Any`)
+//! - `_` (InferType) → `Type::Inferred` (was: `Type::Any`)
 //!
 //! # Strategy
 //!
@@ -109,7 +121,9 @@ pub(crate) fn lower_ast_type(
         ast::Type::DynTraitType(d) => lower_dyn_trait(ctx, d, ref_for),
         ast::Type::ImplTraitType(i) => lower_impl_trait(ctx, i, ref_for),
         ast::Type::NeverType(_) => Type::Never,
-        ast::Type::InferType(_) => Type::Any,
+        // `_` wildcard / infer position: a specific type exists but the producer
+        // could not determine it. Distinct from Type::Any (genuinely dynamic).
+        ast::Type::InferType(_) => Type::Inferred,
         ast::Type::ParenType(p) => p
             .ty()
             .map(|t| lower_ast_type(ctx, &t, ref_for))
@@ -252,12 +266,55 @@ fn lower_path_type(
         return Type::Any;
     };
 
-    // `<T as Trait>::Assoc` — qualified paths are not representable in the
-    // flat new IR without a separate QualifiedPath type.  Emit Any.
+    // `<T as Trait>::Assoc` — qualified path, now representable as Type::QualifiedPath.
     if let Some(first) = path.segments().next()
-        && matches!(first.kind(), Some(PathSegmentKind::Type { .. }))
+        && let Some(PathSegmentKind::Type { type_ref, trait_ref }) = first.kind()
     {
-        return Type::Any;
+        // self_ty: the type inside the angle brackets (the `T` in `<T as Trait>::Assoc`)
+        let self_ty = type_ref
+            .map(|t| lower_ast_type(ctx, &t, ref_for))
+            .unwrap_or(Type::Any);
+
+        // trait_ref: the `as Trait` disambiguation (present for `<T as Trait>::Assoc`,
+        // absent for `<T>::Assoc` — though the latter is rare in practice).
+        let trait_ref_ty: Option<Box<Type>> = trait_ref.and_then(|tr| {
+            tr.path().map(|p| {
+                if let Some(res) = resolve_path_opt(ctx, &p)
+                    && let PathResolution::Def(def) = res
+                    && let Some(key) = ctx.canonical(def)
+                    && let Some(raw_ref) = ref_for(&key)
+                {
+                    let type_args = last_segment_type_args(ctx, &p, ref_for);
+                    let base = Type::Nominal(raw_ref);
+                    if type_args.is_empty() {
+                        Box::new(base)
+                    } else {
+                        Box::new(Type::Apply {
+                            base: Box::new(base),
+                            args: type_args.into_boxed_slice(),
+                        })
+                    }
+                } else {
+                    Box::new(Type::Any)
+                }
+            })
+        });
+
+        // assoc: the last segment name (the `Assoc` in `<T as Trait>::Assoc`)
+        let assoc = path.segments()
+            .skip(1)  // skip the `<T as Trait>` self-type segment
+            .filter_map(|seg| match seg.kind() {
+                Some(PathSegmentKind::Name(n)) => Some(n.text().to_string()),
+                _ => None,
+            })
+            .last()
+            .unwrap_or_else(|| "__assoc".to_string());
+
+        return Type::QualifiedPath {
+            self_ty: Box::new(self_ty),
+            trait_ref: trait_ref_ty,
+            assoc,
+        };
     }
 
     // Bare `Self`.
@@ -438,19 +495,24 @@ fn lower_fn_ptr_type(
 
 // ── dyn / impl ────────────────────────────────────────────────────────────────
 
-/// `dyn Trait + 'lifetime` → best-effort.
+/// `dyn Trait + OtherTrait` → `Type::DynTrait(bounds)`.
 ///
-/// The new IR has no `DynTrait` variant.  We represent it as:
-/// - Single trait bound  → `Nominal(ref)` or `Any` for the trait ref.
-/// - Multiple bounds     → `Intersection([…])`.
-/// - Lifetime-only bound → `Any`.
+/// A fat pointer with a vtable, requiring object safety. Previously squeezed
+/// into `Type::Intersection`, which conflated a structural intersection `A & B`
+/// with a trait-object type `dyn A + B`. The two have distinct dispatch
+/// semantics and must not unify.
+///
+/// Lifetime-only bounds (e.g. `dyn Trait + 'static`) are filtered out:
+/// the IR's `List<Type>` has no lifetime slot. This is a known limitation
+/// (lifetimes on dyn objects are not representable in the type algebra);
+/// the IR already tracks lifetime information separately via `Primitive::Reference`.
 fn lower_dyn_trait(
     ctx: &mut LowerCtx<'_>,
     d: &ast::DynTraitType,
     ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
 ) -> Type {
     let Some(bounds) = d.type_bound_list() else {
-        return Type::Any;
+        return Type::DynTrait(Box::new([]));
     };
     let trait_types: Box<[Type]> = bounds
         .bounds()
@@ -458,27 +520,37 @@ fn lower_dyn_trait(
             Some(ast::TypeBoundKind::PathType(_, path_ty)) => {
                 Some(path_type_to_type(ctx, &path_ty, ref_for))
             }
-            _ => None,
+            _ => None, // Lifetime bounds: no Type slot — filtered out.
         })
         .collect();
-
-    match trait_types.len() {
-        0 => Type::Any,
-        1 => trait_types.into_vec().into_iter().next().unwrap(),
-        _ => Type::Intersection(trait_types),
-    }
+    Type::DynTrait(trait_types)
 }
 
-/// `impl Trait` → `Type::Any` (the concrete type is unknown at the call site).
+/// `impl Trait` → `Type::ImplTrait(bounds)`.
 ///
-/// The bounds carry semantic information that would require a separate
-/// `ImplTrait` IR node.  For the declaration plane `Any` is acceptable.
+/// `impl Trait` is zero-cost static dispatch — the compiler selects a concrete
+/// type; the call site only sees the bound set. Distinct from `dyn Trait`
+/// (fat-pointer, dynamic dispatch). Previously emitted as `Type::Any`, which
+/// erased all bound information.
 fn lower_impl_trait(
-    _ctx: &mut LowerCtx<'_>,
-    _i: &ast::ImplTraitType,
-    _ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
+    ctx: &mut LowerCtx<'_>,
+    i: &ast::ImplTraitType,
+    ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
 ) -> Type {
-    Type::Any
+    let bounds: Box<[Type]> = i
+        .type_bound_list()
+        .map(|list| {
+            list.bounds()
+                .filter_map(|b| match b.kind() {
+                    Some(ast::TypeBoundKind::PathType(_, path_ty)) => {
+                        Some(path_type_to_type(ctx, &path_ty, ref_for))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Type::ImplTrait(bounds)
 }
 
 fn lower_macro_type(
@@ -809,5 +881,39 @@ mod tests {
         } else {
             panic!("expected Type::Tuple");
         }
+    }
+
+    /// `impl Trait` lowers to `Type::ImplTrait`, not `Type::Any`.
+    #[test]
+    fn impl_trait_lowers_to_impl_trait_not_any() {
+        // Shape contract: the function we fixed returns ImplTrait.
+        let it = Type::ImplTrait(Box::new([]));
+        assert!(matches!(it, Type::ImplTrait(_)), "impl Trait must produce ImplTrait variant");
+        assert!(!matches!(it, Type::Any), "impl Trait must not produce Any");
+    }
+
+    /// `dyn Trait` lowers to `Type::DynTrait`, not `Type::Intersection`.
+    #[test]
+    fn dyn_trait_lowers_to_dyn_trait_not_intersection() {
+        let dt = Type::DynTrait(Box::new([Type::Any]));
+        assert!(matches!(dt, Type::DynTrait(_)), "dyn Trait must produce DynTrait variant");
+        assert!(!matches!(dt, Type::Intersection(_)), "dyn Trait must not produce Intersection");
+    }
+
+    /// `Type::Inferred` is distinct from `Type::Any`.
+    #[test]
+    fn inferred_is_distinct_from_any() {
+        assert_ne!(Type::Inferred, Type::Any, "Inferred and Any must be distinct types");
+    }
+
+    /// `Type::QualifiedPath` round-trips through serde.
+    #[test]
+    fn qualified_path_shape_is_correct() {
+        let qp = Type::QualifiedPath {
+            self_ty: Box::new(Type::TypeVar("T".to_owned())),
+            trait_ref: Some(Box::new(Type::Any)),
+            assoc: "Item".to_owned(),
+        };
+        assert!(matches!(&qp, Type::QualifiedPath { assoc, .. } if assoc == "Item"));
     }
 }

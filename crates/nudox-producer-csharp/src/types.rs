@@ -246,13 +246,22 @@ fn lower_named(
         return prim;
     }
 
-    // `Outer<T>.Inner`: we cannot represent qualified-path member projection
-    // without `Type::QualifiedPath`.
-    // KNOWN GAP: the new IR has no `QualifiedPath` variant in ty.rs.
-    // A future `Type::QualifiedPath { base: Box<Type>, member: String }`
-    // would allow `Outer<T>.Inner` to be faithfully represented.
-    if owner.is_some() {
-        return Type::Any;
+    // `Outer<T>.Inner` — nested generic type member projection.
+    //
+    // C# emits this for inner types of generic outer types, e.g.
+    // `System.Collections.Generic.Dictionary<K,V>.KeyCollection`.
+    // The IR now has `Type::QualifiedPath { self_ty, trait_ref: None, assoc }`:
+    // - `self_ty`: the outer type (lowered from `owner`)
+    // - `trait_ref`: `None` — C# dot-qualified paths have no `as Trait` disambiguation
+    // - `assoc`: the simple name of the inner type (arity stripped)
+    if let Some(owner_sig) = owner {
+        let self_ty = lower_type_depth(owner_sig, name_to_doc_id, out, depth + 1);
+        let assoc = simple_name(name); // strips arity backticks, takes last segment
+        return Type::QualifiedPath {
+            self_ty: Box::new(self_ty),
+            trait_ref: None,
+            assoc,
+        };
     }
 
     // Attempt to resolve the FQN to a doc-id from within the current extraction.
@@ -573,5 +582,93 @@ pub fn type_display(t: &TypeSig) -> String {
         TypeSig::Dynamic {} => "dynamic".to_string(),
         TypeSig::NullableValue { inner } => format!("{}?", type_display(inner)),
         TypeSig::Error { name } => simple_name(name),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nudox_ir::{entry::Symbol, entry::Visibility, package::PackageId};
+    use std::path::PathBuf;
+
+    fn make_sink() -> Lowering<String> {
+        let sym = Symbol {
+            name: "(root)".to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        Lowering::new(PackageId::path("test"), sym)
+    }
+
+    /// `Outer<T>.Inner` must lower to `Type::QualifiedPath`, not `Type::Any`.
+    ///
+    /// C# nested types of generic outer types (e.g.
+    /// `Dictionary<K,V>.KeyCollection`) carry an `owner` in the oracle. That
+    /// owner used to be discarded and the whole type degraded to `Type::Any`.
+    /// `Type::QualifiedPath { self_ty, trait_ref: None, assoc }` now preserves
+    /// both the outer type and the inner member name. `trait_ref` is `None`
+    /// because C# dot-qualified paths have no `as Trait` disambiguation —
+    /// that slot exists for Rust's `<T as Trait>::Assoc`.
+    #[test]
+    fn nested_generic_inner_lowers_to_qualified_path_not_any() {
+        let mut sink = make_sink();
+        let names = HashMap::new();
+
+        // `System.Collections.Generic.Dictionary`2.KeyCollection`
+        let sig = TypeSig::Named {
+            name: "System.Collections.Generic.Dictionary`2.KeyCollection".to_owned(),
+            args: vec![],
+            owner: Some(Box::new(TypeSig::Named {
+                name: "System.Collections.Generic.Dictionary`2".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Class".to_owned(),
+            })),
+            nullable: String::new(),
+            type_kind: "Class".to_owned(),
+        };
+
+        let lowered = lower_type(&sig, &names, &mut sink);
+        match &lowered {
+            Type::QualifiedPath {
+                trait_ref, assoc, ..
+            } => {
+                assert!(
+                    trait_ref.is_none(),
+                    "C# dot-qualified paths must carry trait_ref: None"
+                );
+                assert_eq!(
+                    assoc, "KeyCollection",
+                    "assoc must be the inner type's simple name (arity stripped)"
+                );
+            }
+            other => panic!("Outer<T>.Inner must lower to QualifiedPath, got {other:?}"),
+        }
+        assert!(
+            !matches!(lowered, Type::Any),
+            "Outer<T>.Inner must NOT degrade to Type::Any"
+        );
+    }
+
+    /// `simple_name` strips metadata arity backticks and takes the last segment.
+    #[test]
+    fn simple_name_strips_arity_and_namespace() {
+        assert_eq!(
+            simple_name("System.Collections.Generic.Dictionary`2"),
+            "Dictionary"
+        );
+        assert_eq!(simple_name("Foo.Bar"), "Bar");
     }
 }

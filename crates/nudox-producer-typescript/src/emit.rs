@@ -881,6 +881,46 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
         }
         TypeOwned::Literal(lit) => lower_literal(lit),
         TypeOwned::Unsupported(s) => Type::Primitive(Primitive::Builtin(s.clone())),
+        TypeOwned::Conditional { check, extends_ty, then_ty, else_ty } => {
+            Type::Conditional {
+                check: Box::new(lower_type(check)),
+                extends_ty: Box::new(lower_type(extends_ty)),
+                then_ty: Box::new(lower_type(then_ty)),
+                else_ty: Box::new(lower_type(else_ty)),
+            }
+        }
+        TypeOwned::Mapped { key_var, source, value, readonly, optional } => {
+            Type::Mapped {
+                key_var: key_var.clone(),
+                source: Box::new(lower_type(source)),
+                value: Box::new(lower_type(value)),
+                readonly: *readonly,
+                optional: *optional,
+            }
+        }
+        TypeOwned::TemplateLiteral(parts) => {
+            use nudox_ir::kinds::ty::TemplatePart as IrPart;
+            let ir_parts: Vec<IrPart> = parts.iter().map(|p| match p {
+                crate::extract::TemplatePart::Literal(s) => IrPart::Literal(s.clone()),
+                crate::extract::TemplatePart::Interpolated(ty) => {
+                    IrPart::Interpolated(Box::new(lower_type(ty)))
+                }
+            }).collect();
+            Type::TemplateLiteral(ir_parts.into_boxed_slice())
+        }
+        TypeOwned::ObjectLiteral(members) => {
+            use nudox_ir::kinds::ty::{AnonField, AnonRecordForm};
+            let ir_members: Vec<AnonField> = members.iter().map(|m| AnonField {
+                name: m.name.clone(),
+                ty: lower_type(&m.ty),
+                optional: m.optional,
+                readonly: m.readonly,
+            }).collect();
+            Type::AnonymousRecord {
+                form: AnonRecordForm::Struct,
+                members: ir_members.into_boxed_slice(),
+            }
+        }
     }
 }
 

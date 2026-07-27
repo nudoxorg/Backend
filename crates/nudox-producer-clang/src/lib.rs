@@ -30,10 +30,6 @@
 //!
 //! # IR gaps
 //!
-//! * **Union**: [`RecordForm`] has no `Union` variant.  C unions are emitted
-//!   as `RecordForm::Struct` with a field attribute comment.  This is a gap in
-//!   the IR that needs a new `RecordForm::Union` variant.
-//!
 //! * **Macro constants**: `#define FOO 42`-style macros that are purely
 //!   numeric constants are not emitted; libclang does not expose their values
 //!   in the AST in a typed way without extra token work.

@@ -25,10 +25,13 @@
 //!   Single return → `ret = Some(T)`.  Multi-return → `ret = Some(Tuple(...))`.
 //!   No return → `ret = None`.  Previously used `Apply { TypeVar("func") }`
 //!   which abused `TypeVar` and lost the input/output boundary.
-//! * **Struct literal** (anonymous) → `Type::Any`.
-//!   IR GAP: no inline struct literal type.
-//! * **Interface literal** → `Type::Any` for non-empty interfaces.
-//!   IR GAP: no inline interface type.
+//! * **Struct literal** (anonymous) → `Type::AnonymousRecord { form: Struct, members }`.
+//!   Previously degraded to `Type::Any`; now uses the new IR variant.
+//!   KNOWN LIMITATION: FunctionPointer in field types loses param names — IR gap.
+//! * **Interface literal** → `Type::AnonymousRecord { form: Interface, members }` for
+//!   non-empty interfaces; each method becomes an `AnonField` with a `FunctionPointer` ty.
+//!   Previously degraded to `Type::Any`; now uses the new IR variant.
+//!   KNOWN LIMITATION: FunctionPointer loses param names — IR gap flagged for later pass.
 //! * **Constraint union** → `Type::Union(parts)`, with `~T` approximation
 //!   terms encoded as `Type::Apply { base: TypeVar("~"), args: [T] }`.
 //! * **TypeParam** → `Type::TypeVar(name)` — a use of a generic parameter.
@@ -39,7 +42,7 @@ use nudox_ir::{
     kinds::{
         function::Receiver,
         generics::GenericParam,
-        ty::{Primitive, TupleElement, Type, Width},
+        ty::{AnonField, AnonRecordForm, Primitive, TupleElement, Type, Width},
     },
 };
 
@@ -250,18 +253,64 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
             }
         }
 
-        // IR GAP: no inline struct literal type.  Falls back to Any.
-        TypeKind::Struct => Type::Any,
+        TypeKind::Struct => {
+            // Anonymous struct literal: `struct { X int; Y string }`.
+            // Now representable as Type::AnonymousRecord { form: Struct, members }.
+            //
+            // KNOWN LIMITATION: FunctionPointer carries param types but NOT param names.
+            // Go struct fields that are function types lose their parameter names here.
+            // This is an IR gap in FunctionPointer, flagged for a later pass.
+            let members: Box<[AnonField]> = t
+                .fields
+                .iter()
+                .map(|f| AnonField {
+                    name: f.name.clone(),
+                    ty: f.r#type
+                        .as_ref()
+                        .map(|ft| lower_type_depth_low(ft, low, depth + 1))
+                        .unwrap_or(Type::Any),
+                    optional: false,
+                    readonly: false,
+                })
+                .collect();
+            Type::AnonymousRecord {
+                form: AnonRecordForm::Struct,
+                members,
+            }
+        }
 
         TypeKind::Interface => {
             if t.is_empty_interface() {
                 // empty interface = `any` = top type
                 Type::Any
             } else {
-                // IR GAP: no faithful inline interface literal type.
-                // Anonymous non-empty interfaces cannot be faithfully represented
-                // in the new IR's Type algebra.  Type::Any is the honest fallback.
-                Type::Any
+                // Anonymous interface literal: `interface { Foo() bool }`.
+                // Now representable as Type::AnonymousRecord { form: Interface, members }.
+                // Each method's `signature` is a TypeKind::Func oracle Type; recursing
+                // into it via lower_type_depth_low produces a Type::FunctionPointer.
+                //
+                // KNOWN LIMITATION: FunctionPointer carries param types but NOT param names.
+                // `func(ctx context.Context) error` loses `ctx`. IR gap flagged for later pass.
+                let members: Box<[AnonField]> = t
+                    .explicit_methods
+                    .iter()
+                    .map(|m| {
+                        let ty = m.signature
+                            .as_ref()
+                            .map(|sig| lower_type_depth_low(sig, low, depth + 1))
+                            .unwrap_or(Type::Any);
+                        AnonField {
+                            name: m.name.clone(),
+                            ty,
+                            optional: false,
+                            readonly: false,
+                        }
+                    })
+                    .collect();
+                Type::AnonymousRecord {
+                    form: AnonRecordForm::Interface,
+                    members,
+                }
             }
         }
 
@@ -897,6 +946,104 @@ mod tests {
                 assert!(abi.is_none(), "func() must have no ABI");
             }
             other => panic!("empty func type must lower to FunctionPointer, got {other:?}"),
+        }
+    }
+
+    // ── AnonymousRecord for struct and interface ──────────────────────────────
+
+    /// Anonymous `struct { X int }` must lower to `AnonymousRecord { form: Struct }`.
+    #[test]
+    fn anonymous_struct_lowers_to_anonymous_record_struct() {
+        use nudox_ir::kinds::ty::AnonRecordForm;
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Struct,
+            fields: Box::new([oracle::StructField {
+                name: "X".to_string(),
+                r#type: Some(oracle::Type {
+                    kind: TypeKind::Basic,
+                    name: "int32".to_string(),
+                    ..Default::default()
+                }),
+                tag: String::new(),
+                embedded: false,
+                exported: true,
+            }]),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&t, &mut low) {
+            Type::AnonymousRecord { form, members } => {
+                assert_eq!(form, AnonRecordForm::Struct, "struct kind must produce Struct form");
+                assert_eq!(members.len(), 1, "one field");
+                assert_eq!(members[0].name, "X");
+                assert!(!members[0].optional);
+                assert!(!members[0].readonly);
+            }
+            other => panic!("anonymous struct must lower to AnonymousRecord, got {other:?}"),
+        }
+    }
+
+    /// Empty anonymous `interface{}` must remain `Type::Any` (it means `any`).
+    /// Non-empty anonymous `interface { Foo() bool }` must lower to
+    /// `AnonymousRecord { form: Interface }`.
+    #[test]
+    fn empty_interface_stays_any_non_empty_becomes_anonymous_record() {
+        use nudox_ir::kinds::ty::AnonRecordForm;
+        let mut low = make_low();
+
+        // Empty interface = Type::Any.
+        let empty = oracle::Type {
+            kind: TypeKind::Interface,
+            ..Default::default()
+        };
+        assert!(
+            matches!(lower_type_with_lowering(&empty, &mut low), Type::Any),
+            "empty interface must remain Type::Any"
+        );
+
+        // Non-empty interface: one explicit method `Foo() bool`.
+        let sig = oracle::Type {
+            kind: TypeKind::Func,
+            results: Box::new([oracle::Param {
+                name: String::new(),
+                r#type: Some(oracle::Type {
+                    kind: TypeKind::Basic,
+                    name: "bool".to_string(),
+                    ..Default::default()
+                }),
+            }]),
+            ..Default::default()
+        };
+        let non_empty = oracle::Type {
+            kind: TypeKind::Interface,
+            explicit_methods: Box::new([oracle::MethodSig {
+                name: "Foo".to_string(),
+                exported: true,
+                signature: Some(sig),
+                pos: None,
+                pkg: String::new(),
+            }]),
+            all_methods: Box::new([]),
+            ..Default::default()
+        };
+        match lower_type_with_lowering(&non_empty, &mut low) {
+            Type::AnonymousRecord { form, members } => {
+                assert_eq!(
+                    form,
+                    AnonRecordForm::Interface,
+                    "non-empty interface must produce Interface form"
+                );
+                assert_eq!(members.len(), 1, "one method");
+                assert_eq!(members[0].name, "Foo");
+                assert!(
+                    matches!(members[0].ty, Type::FunctionPointer { .. }),
+                    "method ty must be FunctionPointer, got {:?}",
+                    members[0].ty
+                );
+            }
+            other => panic!(
+                "non-empty interface must lower to AnonymousRecord, got {other:?}"
+            ),
         }
     }
 }
