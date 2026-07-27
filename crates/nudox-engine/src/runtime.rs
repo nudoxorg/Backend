@@ -231,7 +231,13 @@ pub struct StreamHandle {
 }
 
 impl StreamHandle {
-    pub(crate) fn new(generation: crate::wire::Gen, canceller: impl Fn() + Send + 'static) -> Self {
+    /// Construct a handle for `generation`, cancelled by `canceller` on drop.
+    ///
+    /// Public because `StreamHandle` is now the *only* stream handle in the
+    /// system — the GUI re-exports this type rather than wrapping it — so
+    /// anything that stands in for the engine (a test double, an alternative
+    /// search backend) has to be able to produce one.
+    pub fn new(generation: crate::wire::Gen, canceller: impl Fn() + Send + 'static) -> Self {
         Self { generation, canceller: Box::new(canceller) }
     }
 

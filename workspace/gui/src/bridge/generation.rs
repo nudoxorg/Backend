@@ -34,14 +34,22 @@ use std::fmt;
 /// `Gen(0)` is never issued by `GenSource::next` (the source starts at `0`
 /// and returns `1` on the first call), so `Gen(0)` can be used as a
 /// "not yet started" sentinel if needed.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Gen(pub u64);
-
-impl fmt::Display for Gen {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Gen({})", self.0)
-    }
-}
+///
+/// # One `Gen`, not two
+///
+/// This is a **re-export** of `nudox_engine::wire::Gen`, not a parallel type.
+///
+/// A generation is only meaningful because both ends agree on it: the store
+/// stamps a query, the engine echoes the stamp on every event, and the drain
+/// closure compares them to drop stale answers. Defining a GUI-side `Gen`
+/// alongside the wire one meant a lossy `Gen(other.0)` conversion at every
+/// crossing — and a conversion is exactly the place where an off-by-one or a
+/// swapped argument stops being a type error and becomes a stale row that
+/// nobody notices.
+///
+/// Same argument as LR-1 for `SymbolKey`: an identifier shared across a seam
+/// belongs to the protocol, and the protocol is `nudox-engine::wire`.
+pub use nudox_engine::wire::Gen;
 
 /// Per-slot generation counter.
 ///
