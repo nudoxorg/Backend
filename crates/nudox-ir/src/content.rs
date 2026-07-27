@@ -740,6 +740,7 @@ fn encode_param_attribute(out: &mut Vec<u8>, attr: &ParamAttribute) {
         ParamAttribute::Isolated => out.push(0x05),
         ParamAttribute::Variadic => out.push(0x06),
         ParamAttribute::Optional => out.push(0x07),
+        ParamAttribute::KeywordOnly => out.push(0x08),
     }
 }
 

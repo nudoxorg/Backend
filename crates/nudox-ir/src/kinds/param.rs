@@ -53,4 +53,11 @@ pub enum ParamAttribute {
 
     /// May be omitted entirely at call-sites.
     Optional,
+
+    /// Must be passed by keyword; cannot be passed positionally.
+    ///
+    /// Python parameters after a bare `*` (`def f(a, *, b)`), and the same
+    /// distinction in any language that has it. Without this the caller
+    /// contract is misreported: a keyword-only parameter looks positional.
+    KeywordOnly,
 }
