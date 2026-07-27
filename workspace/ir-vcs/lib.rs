@@ -29,7 +29,6 @@ pub mod semver;
 /// sink/receiver state machines. The host-side driver is [`stream`].
 pub mod protocol;
 
-pub mod blob;
 pub mod checkout;
 pub mod checkpoint;
 pub mod continuity;
@@ -62,7 +61,6 @@ pub use f1::{
     compute_api_surface_hash, serialize_f1, ContinuityOp, ContinuitySummary, F1Error, F1View,
     RenameEdge,
 };
-pub use blob::{serialize_symbol_blob, BlobError, LinkView, SymbolView};
 pub use checkout::MaterializedIndex;
 pub use checkpoint::{
     Checkpoint, CheckpointCache, CheckpointConfig, Retention, ServeStrategy, Served,

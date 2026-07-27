@@ -75,12 +75,6 @@ pub enum F1Error {
     Ascii(#[from] ir::ascii::AsciiError),
 }
 
-impl From<crate::blob::BlobError> for F1Error {
-    fn from(e: crate::blob::BlobError) -> Self {
-        F1Error::Malformed(e.to_string())
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Continuity summary types (used by FinishReport)
 // ---------------------------------------------------------------------------

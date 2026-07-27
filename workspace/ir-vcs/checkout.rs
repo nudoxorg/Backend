@@ -100,7 +100,7 @@ impl MaterializedIndex {
         self.symbols.keys().copied()
     }
 
-    /// A **borrowed** [`SymbolView`](crate::f1::F1View) over a symbol's
+    /// A **borrowed** [`F1View`](crate::f1::F1View) over a symbol's
     /// bytes — the materialized graph as zero-owned borrowed views, not an owned
     /// `PristineIntroTable`. Returns `None` if the intro is absent, or `Some(Err)`
     /// if the stored bytes are malformed.
@@ -108,7 +108,7 @@ impl MaterializedIndex {
         self.symbols.get(&intro).map(|arc| crate::f1::F1View::from_bytes(&arc[..]))
     }
 
-    /// Iterate `(IntroId, SymbolView)` over every symbol, borrowed.
+    /// Iterate `(IntroId, F1View)` over every symbol, borrowed.
     pub fn views(&self) -> impl Iterator<Item = (IntroId, Result<crate::f1::F1View<'_>, crate::f1::F1Error>)> + '_ {
         self.symbols
             .iter()

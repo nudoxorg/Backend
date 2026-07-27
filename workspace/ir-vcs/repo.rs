@@ -839,14 +839,10 @@ where
     /// Seal a serve archive **directly from a [`MaterializedIndex`]** — the read
     /// path never materializes an owned `PristineIntroTable`. Each symbol's index
     /// bytes are handed to the archive verbatim as the (opaque) payload; the
-    /// archive's lookup indices are built from borrowed [`SymbolView`] metadata.
-    /// The expensive libpijul reconstruction was already paid (incrementally) to
-    /// build the index; this is a borrow + cheap memcpy assembly.
-    ///
-    /// NOTE (P1c→P4 migration): After the F1 migration the working-copy bytes are
-    /// NdIrF1 format, not NdIrSym V1.  This path still uses `SymbolView` for
-    /// metadata extraction; it needs to be migrated to `F1View` in a follow-up
-    /// once the archive sealing contract is updated for wire-v2 kinds.
+    /// archive's lookup indices are built from borrowed [`F1View`](crate::f1::F1View)
+    /// metadata. The expensive libpijul reconstruction was already paid
+    /// (incrementally) to build the index; this is a borrow + cheap memcpy
+    /// assembly.
     pub fn seal_from_index(&self, index: &MaterializedIndex) -> Result<SealedArchive, VcsError> {
         // Stable intro order so the parallel owned side-tables line up.
         let mut intros: Vec<IntroId> = index.intros().collect();
@@ -866,9 +862,9 @@ where
         }
 
         // F1 deliberately drops the derived `payload_hash`/`type_fingerprint`
-        // frames (§6.2), so — unlike the V1 borrowed `SymbolView` path — the seal
-        // reconstructs owned payloads once and derives the seal metadata from
-        // them. The owned payloads outlive the borrowed `SealEntry`s below.
+        // frames (§6.2), so the seal reconstructs owned payloads once and
+        // derives the seal metadata from them. The owned payloads outlive the
+        // borrowed `SealEntry`s below.
         let payloads: Vec<OwnedEntryPayload> = views
             .iter()
             .enumerate()
@@ -1650,7 +1646,7 @@ where
     // ----- ref-based serving -----
 
     /// **Reconstruct a reference's full IR** (branch/tag/version) as a
-    /// [`MaterializedIndex`] of borrowed [`SymbolView`]s — a graph walk of that
+    /// [`MaterializedIndex`] of borrowed [`F1View`](crate::f1::F1View)s — a graph walk of that
     /// ref's channel, O(state). Age-independent.
     pub fn materialize_ref(&self, reference: &Ref) -> Result<MaterializedIndex, VcsError> {
         let txn = self.arc_txn()?;
