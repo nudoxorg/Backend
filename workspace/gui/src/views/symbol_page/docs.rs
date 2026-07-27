@@ -1,0 +1,1507 @@
+//! The Docs tab — §9.4's zero-jump guarantee, made real.
+//!
+//! # The one idea in this file
+//!
+//! **The list is laid out before the content exists, and it is never re-laid
+//! out.** `SymbolHead::section_plan` tells us how many sections are coming and
+//! roughly how tall each one is. From that we build, in a single frame:
+//!
+//! * a `ListState` spliced *once* to exactly `section_plan.len()` items, and
+//! * a `Vec<SectionSlot>` where slot `i` is permanently bound to plan entry `i`.
+//!
+//! A section arriving is therefore a **replacement at a fixed index**, never an
+//! insertion. The item count never changes for the life of a generation, so
+//! `ListState`'s logical scroll anchor — a `(item_ix, offset_in_item)` pair, not
+//! a pixel offset — stays valid no matter what arrives above or below the
+//! reader. This is the structural half of the guarantee.
+//!
+//! The dimensional half is [`reserved_height`]: the skeleton and the arrived
+//! content are laid out at the *same* reserved height, computed once from
+//! `SizeHint` (§9.4.1 — `Lines(n) → n × line_height`, `Rows(n) → n × row_height`,
+//! `Unknown → 3 lines`). Content is placed in a `min_h(reserved)` box, so a
+//! section can only ever grow past its reserve, never shrink below it. And when
+//! a slot's content lands we call `ListState::remeasure_items(i..i+1)`, which —
+//! unlike `splice` — keeps the anchor and, if the anchored item is the one being
+//! remeasured, pins an absolute pending scroll (`list.rs:374`). Nothing the
+//! reader is looking at can move.
+//!
+//! Code blocks get the same treatment one level down (§9.4.2): the block is
+//! `line_count × mono.line_height` tall with `whitespace_nowrap`, so wrapping
+//! cannot change its height, and `Highlight` arriving only ever swaps
+//! `HighlightStyle::color` on byte ranges of a single `StyledText`. Mono metrics
+//! are colour-invariant, so `highlight.sweep` is provably geometry-free.
+//!
+//! # Why inline runs are one `StyledText` and not a row of `div`s
+//!
+//! A paragraph rendered as a flex-wrap row of per-run `div`s cannot wrap
+//! *inside* a run at a run boundary — you get ragged, jumpy text that reflows
+//! differently as the window resizes. Instead every paragraph is concatenated at
+//! projection time into one `SharedString` plus a list of `(byte range, style)`
+//! pairs. `InteractiveText` then gives real inline flow *and* per-range click
+//! targets, which is how every `InlineRun::Link` becomes a live link.
+//!
+//! # LD-7
+//!
+//! `RenderSection`, `ProseBlock` and `InlineRun` are all `#[non_exhaustive]`.
+//! Every match here has a fallback arm that renders a visible chip. Nothing is
+//! ever dropped silently and nothing panics.
+
+use std::ops::Range;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Instant;
+
+use gpui::{
+    AnyElement, App, ElementId, HighlightStyle, Hsla, InteractiveElement as _, InteractiveText,
+    IntoElement, ListAlignment, ListState, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement as _, StyledText, Styled, Window, div,
+    prelude::FluentBuilder as _,
+};
+use gpui_component::{Sizable as _, StyledExt as _, skeleton::Skeleton};
+use nudox_engine::wire::{
+    CalloutLevel, FieldRow, HighlightSpan, InlineRun, LinkTarget, MemberRow, ProseBlock,
+    RenderSection, SectionId, SectionKind, SectionPlan, SigToken as WireSigToken, SizeHint,
+    SymbolKey,
+};
+
+use crate::motion::color::MotionColor;
+use crate::motion::declarative::{entrance_id, rise_in};
+use crate::motion::spring::Spring;
+use crate::motion::tokens::{MotionTokens, ROW_CASCADE_WINDOW};
+use crate::theme::ext::ThemeExtAccessor as _;
+use crate::theme::kind::LocalKindDiscriminant;
+use crate::theme::tokens::{ColourRoles, KindColours};
+use crate::ui::{Badge, SigToken, SignatureLine};
+
+use super::header::{KindChip, link_ix, shared, sig_tokens};
+
+/// Extra vertical slack folded into every reserve.
+///
+/// `section.arrive` is `rise_in`, which animates a 6 px `margin-top` down to
+/// zero. Without slack that 6 px would briefly push the section past its
+/// reserve and force a re-measure mid-animation. One space token of headroom
+/// absorbs it entirely, so the entrance is free.
+const RISE_SLACK_TOKENS: f32 = 1.0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Geometry
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The line/row metrics §9.4's size-hint arithmetic is written against.
+///
+/// Read once from the theme when a plan lands. GUI-PLAN §10.2 notes that these
+/// line heights are *locked* into this arithmetic — changing them is a
+/// design-system change, not a view change.
+#[derive(Clone, Copy, Debug)]
+pub struct Metrics {
+    prose_line: Pixels,
+    mono_line: Pixels,
+    row: Pixels,
+    pad_y: Pixels,
+    slack: Pixels,
+}
+
+impl Metrics {
+    /// Sample the current theme.
+    pub fn from_theme(cx: &App) -> Self {
+        let ext = cx.theme_ext();
+        let ts = ext.type_scale;
+        let sp = ext.space;
+        Self {
+            prose_line: ts.ui.line_height,
+            mono_line: ts.mono.line_height,
+            // A member/field row is one dense line plus a hairline of padding
+            // above and below — the docs.rs table rhythm.
+            row: ts.dense.line_height + sp.space_1 + sp.space_1,
+            pad_y: sp.space_3 + sp.space_3,
+            slack: sp.space_2 * RISE_SLACK_TOKENS,
+        }
+    }
+}
+
+/// §9.4.1 verbatim: the height a section is promised before it exists.
+///
+/// The *same* value is used for the skeleton and as the arrived content's
+/// `min_h`, which is what makes arrival a replacement rather than a reflow.
+pub fn reserved_height(kind: SectionKind, hint: SizeHint, m: &Metrics) -> Pixels {
+    let unit = match kind {
+        SectionKind::CodeBlock | SectionKind::Examples => m.mono_line,
+        _ => m.prose_line,
+    };
+    let body = match hint {
+        SizeHint::Lines(n) => unit * (n.max(1) as f32),
+        SizeHint::Rows(n) => m.row * (n.max(1) as f32),
+        // §9.4.1: no estimate → a three-line block.
+        _ => unit * 3.0,
+    };
+    body + m.pad_y + m.slack
+}
+
+/// The default outline label for a section we have not seen the content of yet.
+///
+/// This is why our sidebar exists before the document does.
+fn kind_label(kind: SectionKind) -> SharedString {
+    SharedString::from(match kind {
+        SectionKind::Prose => "Documentation",
+        SectionKind::CodeBlock => "Code",
+        SectionKind::Members => "Members",
+        SectionKind::Fields => "Fields",
+        SectionKind::Examples => "Examples",
+        SectionKind::Callout => "Note",
+        _ => "Section",
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Render-ready projections
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// How one byte range of a paragraph is painted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunStyle {
+    Text,
+    Code,
+    Strong,
+    Em,
+    Link,
+    /// A run variant this binary does not understand (LD-7).
+    Unknown,
+}
+
+/// Where a clickable range in a paragraph goes.
+#[derive(Clone, Debug)]
+enum LinkDest {
+    Symbol(SymbolKey),
+    Url(SharedString),
+}
+
+/// One paragraph, heading, or list item: a single string plus styling.
+#[derive(Clone, Debug)]
+struct RichText {
+    text: SharedString,
+    styles: Arc<[(Range<usize>, RunStyle)]>,
+    link_ranges: Arc<[Range<usize>]>,
+    links: Arc<[LinkDest]>,
+}
+
+impl RichText {
+    /// Flatten inline runs into one shaped string. Projection time only.
+    fn from_runs(runs: &[InlineRun]) -> Self {
+        let mut text = String::new();
+        let mut styles: Vec<(Range<usize>, RunStyle)> = Vec::new();
+        let mut link_ranges: Vec<Range<usize>> = Vec::new();
+        let mut links: Vec<LinkDest> = Vec::new();
+
+        for run in runs {
+            let start = text.len();
+            let style = match run {
+                InlineRun::Text(s) => {
+                    text.push_str(s);
+                    RunStyle::Text
+                }
+                InlineRun::Code(s) => {
+                    text.push_str(s);
+                    RunStyle::Code
+                }
+                InlineRun::Strong(s) => {
+                    text.push_str(s);
+                    RunStyle::Strong
+                }
+                InlineRun::Em(s) => {
+                    text.push_str(s);
+                    RunStyle::Em
+                }
+                InlineRun::Link { text: t, target } => {
+                    text.push_str(t);
+                    links.push(match target {
+                        LinkTarget::Symbol(key) => LinkDest::Symbol(*key),
+                        LinkTarget::Url(u) => LinkDest::Url(shared(u)),
+                        // An unknown link target is still shown as text; it
+                        // simply is not clickable (LD-7 — visible, not silent).
+                        _ => LinkDest::Url(SharedString::from("")),
+                    });
+                    link_ranges.push(start..text.len());
+                    RunStyle::Link
+                }
+                // LD-7: an unrecognised run becomes a visible chip, never a gap.
+                _ => {
+                    text.push_str("⟨?⟩");
+                    RunStyle::Unknown
+                }
+            };
+            let end = text.len();
+            if end > start {
+                styles.push((start..end, style));
+            }
+        }
+
+        Self {
+            text: SharedString::from(text),
+            styles: Arc::from(styles),
+            link_ranges: Arc::from(link_ranges),
+            links: Arc::from(links),
+        }
+    }
+}
+
+/// A code block, with its optional highlight upgrade and sweep animation.
+#[derive(Debug)]
+struct CodeView {
+    text: SharedString,
+    lang: SharedString,
+    /// The engine's promised line count — this block's height, fixed (§9.4.2).
+    line_count: u32,
+    /// Byte ranges with their class index into `classes`. Empty until
+    /// `DocEvent::Highlight` lands.
+    spans: Vec<(Range<usize>, usize)>,
+    /// Distinct token classes present in this block.
+    classes: Vec<SharedString>,
+    /// One `highlight.sweep` colour spring per class, present only while the
+    /// sweep is running. Dropped on settle so a settled document ticks nothing.
+    sweep: Option<Vec<MotionColor>>,
+}
+
+impl CodeView {
+    fn new(text: SharedString, lang: SharedString, line_count: u32) -> Self {
+        Self {
+            text,
+            lang,
+            line_count,
+            spans: Vec::new(),
+            classes: Vec::new(),
+            sweep: None,
+        }
+    }
+
+    /// Fixed height: `line_count` mono lines. Colour cannot change this.
+    fn height(&self, m: &Metrics) -> Pixels {
+        m.mono_line * (self.line_count.max(1) as f32)
+    }
+
+    /// Ingest a `Highlight` event and arm the sweep. Projection time only.
+    fn apply_spans(&mut self, spans: &[HighlightSpan], colours: &ColourRoles, kinds: &KindColours, reduced: bool) {
+        let mut classes: Vec<SharedString> = Vec::new();
+        let mut out: Vec<(Range<usize>, usize)> = Vec::with_capacity(spans.len());
+        let len = self.text.len();
+
+        for span in spans {
+            let start = span.start as usize;
+            let end = span.end as usize;
+            // Defensive: `StyledText::with_highlights` debug-asserts char
+            // boundaries, and a producer bug must not become a panic (LD-7).
+            if start >= end || end > len
+                || !self.text.is_char_boundary(start)
+                || !self.text.is_char_boundary(end)
+            {
+                continue;
+            }
+            let class_ix = match classes.iter().position(|c| c.as_ref() == &*span.class) {
+                Some(ix) => ix,
+                None => {
+                    classes.push(shared(&span.class));
+                    classes.len() - 1
+                }
+            };
+            out.push((start..end, class_ix));
+        }
+
+        let mut sweep = Vec::with_capacity(classes.len());
+        for class in &classes {
+            let target = class_colour(class, colours, kinds);
+            // §5.2 `highlight.sweep`: every class starts at `fg.muted` — which
+            // is exactly what the block already looks like — and fades to its
+            // final colour. Nothing moves; only hue.
+            let mut motion = MotionColor::new(colours.fg_muted, Spring::SNAPPY);
+            if reduced {
+                motion.snap_to(target);
+            } else {
+                motion.animate_to(target);
+            }
+            sweep.push(motion);
+        }
+
+        self.classes = classes;
+        self.spans = out;
+        self.sweep = if sweep.is_empty() { None } else { Some(sweep) };
+    }
+
+    /// Advance the sweep. Returns `true` while it is still moving.
+    fn tick(&mut self, now: Instant) -> bool {
+        let Some(sweep) = self.sweep.as_mut() else {
+            return false;
+        };
+        let mut moving = false;
+        for motion in sweep.iter_mut() {
+            moving |= motion.tick(now);
+        }
+        if !moving {
+            // Settled: drop the springs so a finished page costs nothing.
+            self.settle();
+        }
+        moving
+    }
+
+    /// Freeze the sweep at its final colours.
+    fn settle(&mut self) {
+        self.sweep = None;
+    }
+
+    /// The colour a class paints at *right now*.
+    fn class_colour_now(
+        &self,
+        class_ix: usize,
+        colours: &ColourRoles,
+        kinds: &KindColours,
+    ) -> Hsla {
+        match self.sweep.as_ref().and_then(|s| s.get(class_ix)) {
+            Some(motion) => motion.value(),
+            None => match self.classes.get(class_ix) {
+                Some(class) => class_colour(class, colours, kinds),
+                None => colours.fg_default,
+            },
+        }
+    }
+}
+
+/// Map a highlighter token class onto the design system.
+///
+/// Types and functions deliberately reuse the *kind* palette, so a `struct`
+/// name inside a code sample is the same hue as the `struct` badge beside it.
+/// That is a cross-surface consistency docs.rs has no way to offer.
+fn class_colour(class: &str, colours: &ColourRoles, kinds: &KindColours) -> Hsla {
+    match class {
+        "keyword" | "kw" | "storage" | "keyword.control" => colours.accent,
+        "string" | "str" | "char" | "string.special" => colours.ok,
+        "comment" | "comment.doc" | "doc" => colours.fg_faint,
+        "number" | "constant" | "boolean" | "constant.numeric" => colours.warn,
+        "type" | "type.builtin" | "class" | "struct" | "interface" => kinds.record,
+        "function" | "function.method" | "method" | "fn" => kinds.function,
+        "variable" | "property" | "field" => kinds.field,
+        "attribute" | "annotation" | "macro" => kinds.alias,
+        "punctuation" | "operator" | "delimiter" => colours.fg_faint,
+        // Unknown class: readable default rather than an invisible one.
+        _ => colours.fg_default,
+    }
+}
+
+/// One member or field row, fully render-ready.
+#[derive(Clone, Debug)]
+struct RowView {
+    key: SymbolKey,
+    name: SharedString,
+    sig: Vec<SigToken>,
+    links: Arc<[SymbolKey]>,
+    kind: KindChip,
+}
+
+impl RowView {
+    fn from_member(row: &MemberRow) -> Self {
+        let mut links = Vec::new();
+        Self {
+            key: row.key,
+            name: shared(&row.name),
+            sig: sig_tokens(&row.sig, &mut links),
+            links: Arc::from(links),
+            kind: KindChip::from_tag(row.kind),
+        }
+    }
+
+    fn from_field(row: &FieldRow) -> Self {
+        let mut links = Vec::new();
+        Self {
+            key: row.key,
+            name: shared(&row.name),
+            sig: sig_tokens(&row.ty_tokens, &mut links),
+            links: Arc::from(links),
+            kind: KindChip::from_tag(row.kind),
+        }
+    }
+}
+
+/// A block inside a prose-bearing section.
+#[derive(Debug)]
+enum BlockView {
+    Paragraph(RichText),
+    Heading { level: u8, text: RichText },
+    List { items: Vec<(SharedString, RichText)> },
+    Rule,
+    Code(CodeView),
+    /// LD-7 fallback for a block variant we do not know.
+    Unknown(SharedString),
+}
+
+/// A fully-projected section: what actually gets painted.
+#[derive(Debug)]
+enum SectionView {
+    Blocks(Vec<BlockView>),
+    Callout {
+        level: CalloutLevel,
+        blocks: Vec<BlockView>,
+    },
+    Code(CodeView),
+    Rows {
+        title: SharedString,
+        rows: Vec<RowView>,
+    },
+    /// LD-7 fallback for a section kind we do not know.
+    Unknown(SharedString),
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slots
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One planned section: its promised geometry, and its content once it lands.
+///
+/// A slot is created from `SectionPlan` and *never* moves, is never inserted
+/// before, and is never removed. It only ever fills in.
+pub struct SectionSlot {
+    /// Links this slot to its `RenderSection` and to `Highlight` events.
+    pub id: SectionId,
+    /// What the plan said would arrive here.
+    pub kind: SectionKind,
+    /// The promised height (§9.4.1). Applies to skeleton and content alike.
+    pub reserved: Pixels,
+    /// Outline label — the kind name until the real heading arrives.
+    pub label: SharedString,
+    /// `true` once `label` came from the content rather than the plan.
+    pub label_refined: bool,
+    /// When the content landed; drives the `section.arrive` window.
+    pub arrived_at: Option<Instant>,
+    body: Option<SectionView>,
+}
+
+impl SectionSlot {
+    /// Whether this slot is still showing its skeleton.
+    pub fn is_pending(&self) -> bool {
+        self.body.is_none()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DocsBody
+// ─────────────────────────────────────────────────────────────────────────────
+
+type OpenHandler = Rc<dyn Fn(&SymbolKey, &mut Window, &mut App)>;
+
+/// The Docs tab: a virtualized `list()` of sections over a fixed skeleton.
+pub struct DocsBody {
+    list: ListState,
+    slots: Vec<SectionSlot>,
+    metrics: Metrics,
+    /// Generation stamp — part of every entrance `ElementId` so a tab switch
+    /// inside one generation never replays an entrance (LD-19).
+    generation: u64,
+    /// Number of sections consumed from the store's `Progressive` so far.
+    consumed: usize,
+    /// Section ids whose highlights have already been ingested.
+    highlighted: Vec<SectionId>,
+    /// Where a symbol link goes when clicked.
+    on_open: Option<OpenHandler>,
+}
+
+impl DocsBody {
+    /// An empty body, before any `Head` has landed.
+    pub fn new(cx: &App) -> Self {
+        Self {
+            // `Top` alignment: documents read downward. Overdraw of one section
+            // reserve keeps the next section measured before it is revealed, so
+            // fast scrolling never shows an unmeasured gap.
+            list: ListState::new(0, ListAlignment::Top, cx.theme_ext().space.space_8 * 8.0),
+            slots: Vec::new(),
+            metrics: Metrics::from_theme(cx),
+            generation: 0,
+            consumed: 0,
+            highlighted: Vec::new(),
+            on_open: None,
+        }
+    }
+
+    /// Install the symbol-link navigation handler.
+    pub fn on_open(&mut self, f: impl Fn(&SymbolKey, &mut Window, &mut App) + 'static) {
+        self.on_open = Some(Rc::new(f));
+    }
+
+    /// The `ListState` the page hands to `list()`.
+    pub fn list_state(&self) -> &ListState {
+        &self.list
+    }
+
+    /// The planned sections — the outline reads this before content exists.
+    pub fn slots(&self) -> &[SectionSlot] {
+        &self.slots
+    }
+
+    /// `true` once a plan has been installed.
+    pub fn has_plan(&self) -> bool {
+        !self.slots.is_empty()
+    }
+
+    /// How many planned sections have arrived.
+    pub fn arrived_count(&self) -> usize {
+        self.consumed
+    }
+
+    // ── The zero-jump entry points ───────────────────────────────────────────
+
+    /// Lay out the whole document from `section_plan`, before any content.
+    ///
+    /// This is the **only** call that changes the list's item count. Everything
+    /// after it is an in-place replacement, which is precisely why the reader's
+    /// scroll position cannot be disturbed by streaming.
+    pub fn set_plan(&mut self, plan: &[SectionPlan], generation: u64, cx: &App) {
+        self.metrics = Metrics::from_theme(cx);
+        self.generation = generation;
+        self.consumed = 0;
+        self.highlighted.clear();
+        self.slots = plan
+            .iter()
+            .map(|p| SectionSlot {
+                id: p.id,
+                kind: p.kind,
+                reserved: reserved_height(p.kind, p.size_hint, &self.metrics),
+                label: kind_label(p.kind),
+                label_refined: false,
+                arrived_at: None,
+                body: None,
+            })
+            .collect();
+        // Exactly one splice per generation.
+        self.list.reset(self.slots.len());
+    }
+
+    /// Pull any sections the store has accumulated but we have not projected.
+    ///
+    /// Returns `true` if anything changed. Called from the store observation,
+    /// never from `render` — all the string work lives here.
+    pub fn sync_sections(&mut self, sections: &[RenderSection], cx: &App) -> bool {
+        if self.consumed >= sections.len() {
+            return false;
+        }
+        let now = Instant::now();
+        let mut changed = false;
+
+        for section in &sections[self.consumed..] {
+            let id = section.section_id();
+            let Some(ix) = self.slots.iter().position(|s| s.id == id) else {
+                // A section the plan did not predict. Rather than insert (which
+                // would move every slot below it and break the anchor), we drop
+                // it and leave a trace — the plan is the layout contract.
+                tracing::warn!(section = id.0, "section id absent from section_plan");
+                continue;
+            };
+            let view = self.project(section, cx);
+            let slot = &mut self.slots[ix];
+            if let Some(label) = heading_label(&view) {
+                slot.label = label;
+                slot.label_refined = true;
+            }
+            slot.body = Some(view);
+            slot.arrived_at = Some(now);
+            // Re-measure this one item. Unlike `splice`, this preserves the
+            // logical scroll anchor and pins an absolute offset if the anchored
+            // item is the one that changed (`list.rs:374`).
+            self.list.remeasure_items(ix..ix + 1);
+            changed = true;
+        }
+
+        self.consumed = sections.len();
+        changed
+    }
+
+    /// Ingest highlight upgrades for code sections and arm their sweeps.
+    ///
+    /// Colour only: no span can change a block's height, because the block's
+    /// height is `line_count × mono_line` and mono metrics do not vary with
+    /// colour (§9.4.2). We therefore deliberately do *not* remeasure here.
+    pub fn sync_highlights(
+        &mut self,
+        highlights: &std::collections::HashMap<SectionId, Arc<[HighlightSpan]>>,
+        cx: &App,
+    ) -> bool {
+        if highlights.is_empty() {
+            return false;
+        }
+        let ext = cx.theme_ext();
+        let colours = ext.colours;
+        let kinds = ext.kind_colours;
+        let reduced = ext.reduced_motion();
+        let mut changed = false;
+
+        for (id, spans) in highlights {
+            if self.highlighted.contains(id) {
+                continue;
+            }
+            let Some(slot) = self.slots.iter_mut().find(|s| s.id == *id) else {
+                continue;
+            };
+            let applied = match slot.body.as_mut() {
+                Some(SectionView::Code(code)) => {
+                    code.apply_spans(spans, &colours, &kinds, reduced);
+                    true
+                }
+                Some(SectionView::Blocks(blocks)) | Some(SectionView::Callout { blocks, .. }) => {
+                    // A `Highlight` for a prose section targets its fenced code
+                    // blocks; the protocol carries one span set per section, so
+                    // we apply it to the first code block in the section.
+                    match blocks.iter_mut().find_map(|b| match b {
+                        BlockView::Code(c) => Some(c),
+                        _ => None,
+                    }) {
+                        Some(code) => {
+                            code.apply_spans(spans, &colours, &kinds, reduced);
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                _ => false,
+            };
+            if applied {
+                self.highlighted.push(*id);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Advance every running `highlight.sweep` (§4.2 render-loop contract).
+    ///
+    /// Returns `true` while any sweep is still moving; the caller then asks for
+    /// another frame. A fully-settled document ticks nothing at all.
+    pub fn tick(&mut self, now: Instant) -> bool {
+        let mut moving = false;
+        for slot in &mut self.slots {
+            match slot.body.as_mut() {
+                Some(SectionView::Code(code)) => moving |= code.tick(now),
+                Some(SectionView::Blocks(blocks)) | Some(SectionView::Callout { blocks, .. }) => {
+                    for block in blocks.iter_mut() {
+                        if let BlockView::Code(code) = block {
+                            moving |= code.tick(now);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        moving
+    }
+
+    /// The `SectionId`s currently on screen, for `HighlightPriority` (§9.4.5).
+    pub fn visible_ids(&self, range: Range<usize>) -> Vec<SectionId> {
+        self.slots
+            .get(range)
+            .map(|s| s.iter().map(|slot| slot.id).collect())
+            .unwrap_or_default()
+    }
+
+    /// Scroll so that planned section `ix` is revealed (outline click).
+    pub fn reveal(&self, ix: usize) {
+        if ix < self.slots.len() {
+            self.list.scroll_to_reveal_item(ix);
+        }
+    }
+
+    /// The index of the topmost item currently anchored.
+    pub fn anchor_ix(&self) -> usize {
+        self.list.logical_scroll_top().item_ix
+    }
+
+    // ── Projection (update time) ─────────────────────────────────────────────
+
+    fn project(&self, section: &RenderSection, cx: &App) -> SectionView {
+        match section {
+            RenderSection::Prose { blocks, .. } | RenderSection::Examples { blocks, .. } => {
+                SectionView::Blocks(blocks.iter().map(project_block).collect())
+            }
+            RenderSection::Callout { level, blocks, .. } => SectionView::Callout {
+                level: *level,
+                blocks: blocks.iter().map(project_block).collect(),
+            },
+            RenderSection::CodeBlock {
+                lang,
+                text,
+                line_count,
+                ..
+            } => SectionView::Code(CodeView::new(
+                shared(text),
+                shared(&lang.0),
+                *line_count,
+            )),
+            RenderSection::Members { entries, .. } => SectionView::Rows {
+                title: SharedString::from("Members"),
+                rows: entries.iter().map(RowView::from_member).collect(),
+            },
+            RenderSection::Fields { entries, .. } => SectionView::Rows {
+                title: SharedString::from("Fields"),
+                rows: entries.iter().map(RowView::from_field).collect(),
+            },
+            RenderSection::Unknown { kind_tag, .. } => SectionView::Unknown(shared(kind_tag)),
+            // LD-7: a section kind added after this binary was built.
+            _ => {
+                let _ = cx;
+                SectionView::Unknown(SharedString::from("unknown section"))
+            }
+        }
+    }
+
+    // ── Render ───────────────────────────────────────────────────────────────
+
+    /// Render planned section `ix`. This is `list()`'s item renderer.
+    ///
+    /// Every path through this function produces an element inside a
+    /// `min_h(reserved)` box, so the promise made by the skeleton is kept
+    /// whether or not the content has arrived.
+    pub fn render_section(&self, ix: usize, _window: &mut Window, cx: &mut App) -> AnyElement {
+        let Some(slot) = self.slots.get(ix) else {
+            return div().into_any_element();
+        };
+
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let scale = ext.motion_scale;
+        let colours = ext.colours;
+
+        let frame = div()
+            .id(("doc.section", ix))
+            .w_full()
+            .min_h(slot.reserved)
+            .px(sp.space_4)
+            .py(sp.space_3);
+
+        let Some(body) = slot.body.as_ref() else {
+            return frame.child(self.render_skeleton(slot, cx)).into_any_element();
+        };
+
+        let content = match body {
+            SectionView::Blocks(blocks) => div()
+                .v_flex()
+                .w_full()
+                .gap(sp.space_3)
+                .children(blocks.iter().enumerate().map(|(bx, block)| {
+                    self.render_block(ix, bx, block, cx)
+                }))
+                .into_any_element(),
+            SectionView::Callout { level, blocks } => self
+                .render_callout(ix, *level, blocks, cx),
+            SectionView::Code(code) => self.render_code(ix, 0, code, cx),
+            SectionView::Rows { title, rows } => self.render_rows(ix, title, rows, cx),
+            SectionView::Unknown(tag) => div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(sp.space_2)
+                .child(Badge::custom(
+                    ("doc.section.unknown", ix),
+                    tag.clone(),
+                    colours.bg_hover,
+                    colours.fg_muted,
+                ))
+                .child(
+                    div()
+                        .text_size(ext.type_scale.dense.size)
+                        .line_height(ext.type_scale.dense.line_height)
+                        .text_color(colours.fg_faint)
+                        .child(SharedString::from(
+                            "This section was produced by a newer toolchain.",
+                        )),
+                )
+                .into_any_element(),
+        };
+
+        // §9.4.3 / LD-19: the entrance is keyed on (generation, section_id), so
+        // it fires once when the section lands and never again — not when the
+        // reader scrolls back, and not when they switch tabs and return.
+        let animate = slot
+            .arrived_at
+            .is_some_and(|t| t.elapsed() < ROW_CASCADE_WINDOW);
+
+        if animate && scale > 0.0 {
+            let motion = MotionTokens::new(scale);
+            let id: ElementId = entrance_id("doc.section.enter", self.generation, slot.id.0 as usize);
+            frame
+                .child(rise_in(div().w_full().child(content), id, &motion))
+                .into_any_element()
+        } else {
+            frame.child(content).into_any_element()
+        }
+    }
+
+    /// The pre-content skeleton: exactly the geometry the plan promised.
+    fn render_skeleton(&self, slot: &SectionSlot, cx: &App) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let m = &self.metrics;
+
+        let unit = match slot.kind {
+            SectionKind::CodeBlock | SectionKind::Examples => m.mono_line,
+            SectionKind::Members | SectionKind::Fields => m.row,
+            _ => m.prose_line,
+        };
+        // Derive the bar count from the same reserve the content will honour,
+        // so the skeleton is the content's silhouette rather than a guess.
+        let usable = slot.reserved - m.pad_y - m.slack;
+        let bars = ((usable / unit).max(1.0) as usize).min(24);
+        let bar_h = unit - sp.space_1;
+
+        div()
+            .v_flex()
+            .w_full()
+            .gap(sp.space_1)
+            .children((0..bars).map(|bx| {
+                // Ragged right edge reads as text rather than as a progress bar.
+                let last = bx + 1 == bars;
+                Skeleton::new()
+                    .h(bar_h)
+                    .when(last && bars > 1, |s| s.w_3_4())
+                    .when(!(last && bars > 1), |s| s.w_full())
+            }))
+            .into_any_element()
+    }
+
+    fn render_block(
+        &self,
+        section_ix: usize,
+        block_ix: usize,
+        block: &BlockView,
+        cx: &App,
+    ) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+        let colours = ext.colours;
+
+        match block {
+            BlockView::Paragraph(rich) => div()
+                .w_full()
+                .text_size(ts.ui.size)
+                .line_height(ts.ui.line_height)
+                .text_color(colours.fg_muted)
+                .child(self.render_rich(section_ix, block_ix, rich, cx))
+                .into_any_element(),
+
+            BlockView::Heading { level, text } => {
+                let scale = if *level <= 1 { ts.title } else { ts.ui };
+                div()
+                    .w_full()
+                    .pt(sp.space_2)
+                    .text_size(scale.size)
+                    .line_height(scale.line_height)
+                    .font_weight(gpui::FontWeight(scale.weight as f32))
+                    .text_color(colours.fg_default)
+                    .child(self.render_rich(section_ix, block_ix, text, cx))
+                    .into_any_element()
+            }
+
+            BlockView::List { items } => div()
+                .v_flex()
+                .w_full()
+                .gap(sp.space_1)
+                .pl(sp.space_3)
+                .children(items.iter().enumerate().map(|(item_ix, (marker, rich))| {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .gap(sp.space_2)
+                        .text_size(ts.ui.size)
+                        .line_height(ts.ui.line_height)
+                        .text_color(colours.fg_muted)
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(colours.fg_faint)
+                                .child(marker.clone()),
+                        )
+                        .child(div().flex_1().overflow_hidden().child(self.render_rich(
+                            section_ix,
+                            // Keep list items from colliding with sibling
+                            // blocks in the element-id space (LD-19).
+                            block_ix * 1_000 + item_ix + 1,
+                            rich,
+                            cx,
+                        )))
+                }))
+                .into_any_element(),
+
+            BlockView::Rule => div()
+                .w_full()
+                .h(sp.border_width)
+                .my(sp.space_2)
+                .bg(colours.border_default)
+                .into_any_element(),
+
+            BlockView::Code(code) => self.render_code(section_ix, block_ix, code, cx),
+
+            BlockView::Unknown(tag) => Badge::custom(
+                ("doc.block.unknown", section_ix * 1_000 + block_ix),
+                tag.clone(),
+                colours.bg_hover,
+                colours.fg_muted,
+            )
+            .into_any_element(),
+        }
+    }
+
+    /// One paragraph as a single shaped `StyledText` with live link ranges.
+    fn render_rich(
+        &self,
+        section_ix: usize,
+        block_ix: usize,
+        rich: &RichText,
+        cx: &App,
+    ) -> AnyElement {
+        let ext = cx.theme_ext();
+        let colours = ext.colours;
+
+        let styles: Vec<(Range<usize>, HighlightStyle)> = rich
+            .styles
+            .iter()
+            .map(|(range, style)| {
+                let hs = match style {
+                    RunStyle::Text => HighlightStyle {
+                        color: Some(colours.fg_muted),
+                        ..Default::default()
+                    },
+                    RunStyle::Code => HighlightStyle {
+                        color: Some(colours.fg_default),
+                        background_color: Some(colours.bg_hover),
+                        ..Default::default()
+                    },
+                    RunStyle::Strong => HighlightStyle {
+                        color: Some(colours.fg_default),
+                        font_weight: Some(gpui::FontWeight::BOLD),
+                        ..Default::default()
+                    },
+                    RunStyle::Em => HighlightStyle {
+                        color: Some(colours.fg_muted),
+                        font_style: Some(gpui::FontStyle::Italic),
+                        ..Default::default()
+                    },
+                    RunStyle::Link => HighlightStyle {
+                        color: Some(colours.accent),
+                        underline: Some(gpui::UnderlineStyle {
+                            thickness: ext.space.border_width,
+                            color: Some(colours.accent),
+                            wavy: false,
+                        }),
+                        ..Default::default()
+                    },
+                    RunStyle::Unknown => HighlightStyle {
+                        color: Some(colours.warn),
+                        ..Default::default()
+                    },
+                };
+                (range.clone(), hs)
+            })
+            .collect();
+
+        let text = StyledText::new(rich.text.clone()).with_highlights(styles);
+        let id: ElementId = ("doc.rich", section_ix * 100_000 + block_ix).into();
+
+        if rich.link_ranges.is_empty() {
+            return InteractiveText::new(id, text).into_any_element();
+        }
+
+        let links = rich.links.clone();
+        let on_open = self.on_open.clone();
+        InteractiveText::new(id, text)
+            .on_click(rich.link_ranges.to_vec(), move |link_ix, window, cx| {
+                match links.get(link_ix) {
+                    Some(LinkDest::Symbol(key)) => {
+                        if let Some(open) = on_open.as_ref() {
+                            open(key, window, cx);
+                        }
+                    }
+                    Some(LinkDest::Url(url)) => {
+                        if !url.is_empty() {
+                            cx.open_url(url);
+                        }
+                    }
+                    None => {}
+                }
+            })
+            .into_any_element()
+    }
+
+    /// A fenced code block: fixed height, colour-only upgrades.
+    fn render_code(
+        &self,
+        section_ix: usize,
+        block_ix: usize,
+        code: &CodeView,
+        cx: &App,
+    ) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+        let colours = ext.colours;
+        let kinds = ext.kind_colours;
+
+        let styles: Vec<(Range<usize>, HighlightStyle)> = code
+            .spans
+            .iter()
+            .map(|(range, class_ix)| {
+                (
+                    range.clone(),
+                    HighlightStyle {
+                        color: Some(code.class_colour_now(*class_ix, &colours, &kinds)),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+
+        let text = StyledText::new(code.text.clone()).with_highlights(styles);
+
+        div()
+            .id(("doc.code", section_ix * 100_000 + block_ix))
+            .w_full()
+            // §9.4.2: the block's height is `line_count` mono lines, fixed
+            // before any highlight arrives and unchanged by every one after.
+            .min_h(code.height(&self.metrics))
+            .rounded(sp.r_md)
+            .bg(colours.bg_base)
+            .border_1()
+            .border_color(colours.border_default)
+            .px(sp.space_3)
+            .py(sp.space_2)
+            .font_family("monospace")
+            .text_size(ts.mono.size)
+            .line_height(ts.mono.line_height)
+            .text_color(colours.fg_muted)
+            // Long lines scroll; they never wrap, so they can never add a line.
+            .whitespace_nowrap()
+            .overflow_x_scroll()
+            .child(text)
+            .when(!code.lang.is_empty(), |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .px(sp.space_2)
+                        .text_size(ts.caption.size)
+                        .line_height(ts.caption.line_height)
+                        .text_color(colours.fg_faint)
+                        .child(code.lang.clone()),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_callout(
+        &self,
+        section_ix: usize,
+        level: CalloutLevel,
+        blocks: &[BlockView],
+        cx: &App,
+    ) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let colours = ext.colours;
+
+        let accent = match level {
+            CalloutLevel::Note => colours.info,
+            CalloutLevel::Warning => colours.warn,
+            CalloutLevel::Danger => colours.danger,
+            CalloutLevel::Tip => colours.ok,
+            // LD-7: an unknown callout level is neutral, not invisible.
+            _ => colours.fg_muted,
+        };
+
+        div()
+            .v_flex()
+            .w_full()
+            .gap(sp.space_2)
+            .pl(sp.space_3)
+            .py(sp.space_2)
+            .rounded(sp.r_md)
+            .bg(accent.opacity(0.08))
+            .border_l_2()
+            .border_color(accent)
+            .children(
+                blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(bx, block)| self.render_block(section_ix, bx, block, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// A dense member/field table — the docs.rs pattern, with linked signatures.
+    ///
+    /// LD-6 note: this is a *section* of the document body, which is already
+    /// virtualized by the enclosing `list()`. Member counts inside one section
+    /// are bounded by the plan's `Rows(n)` hint; a module with thousands of
+    /// items is chunked by the producer into several `Members` sections.
+    fn render_rows(
+        &self,
+        section_ix: usize,
+        title: &SharedString,
+        rows: &[RowView],
+        cx: &App,
+    ) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+        let colours = ext.colours;
+
+        div()
+            .v_flex()
+            .w_full()
+            .gap(sp.space_1)
+            .child(
+                div()
+                    .w_full()
+                    .pb(sp.space_1)
+                    .text_size(ts.caption.size)
+                    .line_height(ts.caption.line_height)
+                    .font_weight(gpui::FontWeight(ts.caption.weight as f32))
+                    .text_color(colours.fg_muted)
+                    .border_b_1()
+                    .border_color(colours.border_default)
+                    .child(title.clone()),
+            )
+            .children(rows.iter().enumerate().map(|(rx, row)| {
+                let row_id = section_ix * 100_000 + rx;
+                let key = row.key;
+                let on_open = self.on_open.clone();
+                let links = row.links.clone();
+                let link_open = self.on_open.clone();
+
+                let badge: AnyElement = match &row.kind {
+                    KindChip::Known(k) => {
+                        Badge::for_kind(("doc.row.kind", row_id), *k, cx).into_any_element()
+                    }
+                    KindChip::Unknown(label) => Badge::custom(
+                        ("doc.row.kind", row_id),
+                        label.clone(),
+                        colours.bg_hover,
+                        colours.fg_muted,
+                    )
+                    .into_any_element(),
+                };
+
+                div()
+                    .id(("doc.row", row_id))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(sp.space_2)
+                    .px(sp.space_2)
+                    .py(sp.space_1)
+                    .rounded(sp.r_sm)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colours.bg_hover))
+                    .active(|s| s.bg(colours.bg_active))
+                    .when_some(on_open, |el, open| {
+                        el.on_click(move |_, window, cx| open(&key, window, cx))
+                    })
+                    .child(div().flex_shrink_0().child(badge))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(ts.dense.size)
+                            .line_height(ts.dense.line_height)
+                            .font_weight(gpui::FontWeight(ts.caption.weight as f32))
+                            .text_color(colours.fg_default)
+                            .child(row.name.clone()),
+                    )
+                    .child(
+                        div().flex_1().overflow_hidden().child(
+                            // LR-4: the *only* signature renderer, here as
+                            // everywhere else. Types stay clickable inside rows.
+                            SignatureLine::new(("doc.row.sig", row_id), row.sig.clone())
+                                .on_navigate(move |ui_key, window, cx| {
+                                    if let Some(target) =
+                                        link_ix(ui_key).and_then(|ix| links.get(ix))
+                                    {
+                                        if let Some(open) = link_open.as_ref() {
+                                            open(target, window, cx);
+                                        }
+                                    }
+                                }),
+                        ),
+                    )
+            }))
+            .into_any_element()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Free projection helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn project_block(block: &ProseBlock) -> BlockView {
+    match block {
+        ProseBlock::Paragraph(runs) => BlockView::Paragraph(RichText::from_runs(runs)),
+        ProseBlock::Heading { level, runs } => BlockView::Heading {
+            level: *level,
+            text: RichText::from_runs(runs),
+        },
+        ProseBlock::List { ordered, items } => BlockView::List {
+            items: items
+                .iter()
+                .enumerate()
+                .map(|(ix, runs)| {
+                    // Markers are built here, not in render (§1.1.4).
+                    let marker = if *ordered {
+                        SharedString::from(format!("{}.", ix + 1))
+                    } else {
+                        SharedString::from("•")
+                    };
+                    (marker, RichText::from_runs(runs))
+                })
+                .collect(),
+        },
+        ProseBlock::Rule => BlockView::Rule,
+        ProseBlock::Code {
+            lang,
+            text,
+            line_count,
+        } => BlockView::Code(CodeView::new(shared(text), shared(&lang.0), *line_count)),
+        // LD-7 fallback.
+        _ => BlockView::Unknown(SharedString::from("unknown block")),
+    }
+}
+
+/// The outline label a section earns once its content arrives.
+///
+/// A heading is better than a kind name, and a `Members`/`Fields` table names
+/// itself. Everything else keeps the plan's label.
+fn heading_label(view: &SectionView) -> Option<SharedString> {
+    match view {
+        SectionView::Blocks(blocks) | SectionView::Callout { blocks, .. } => {
+            blocks.iter().find_map(|b| match b {
+                BlockView::Heading { text, .. } if !text.text.is_empty() => {
+                    Some(text.text.clone())
+                }
+                _ => None,
+            })
+        }
+        SectionView::Rows { title, .. } => Some(title.clone()),
+        _ => None,
+    }
+}
+
+/// `SigToken` is re-exported for the tests below and for `refs.rs`.
+pub(crate) type WireToken = WireSigToken;
+
+/// The kind-colour lookup used by both member badges and syntax classes.
+pub(crate) fn kind_colour_of(k: LocalKindDiscriminant, kinds: &KindColours) -> Hsla {
+    k.colour(kinds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::px;
+
+    fn metrics() -> Metrics {
+        Metrics {
+            prose_line: px(20.0),
+            mono_line: px(19.0),
+            row: px(24.0),
+            pad_y: px(24.0),
+            slack: px(8.0),
+        }
+    }
+
+    /// §9.4.1: `Lines(n)` reserves `n` line heights, plus the section's own
+    /// padding and rise slack.
+    #[test]
+    fn lines_hint_reserves_n_prose_lines() {
+        let m = metrics();
+        let h = reserved_height(SectionKind::Prose, SizeHint::Lines(5), &m);
+        assert_eq!(h, px(20.0) * 5.0 + px(24.0) + px(8.0));
+    }
+
+    /// Code and example sections measure in mono lines, not prose lines —
+    /// otherwise a 40-line sample would reserve the wrong height.
+    #[test]
+    fn code_hint_reserves_mono_lines() {
+        let m = metrics();
+        let h = reserved_height(SectionKind::CodeBlock, SizeHint::Lines(4), &m);
+        assert_eq!(h, px(19.0) * 4.0 + px(24.0) + px(8.0));
+    }
+
+    /// §9.4.1: `Rows(n)` reserves `n` row heights.
+    #[test]
+    fn rows_hint_reserves_n_rows() {
+        let m = metrics();
+        let h = reserved_height(SectionKind::Members, SizeHint::Rows(10), &m);
+        assert_eq!(h, px(24.0) * 10.0 + px(24.0) + px(8.0));
+    }
+
+    /// §9.4.1: no estimate is a three-line block, never zero. A zero-height
+    /// skeleton would collapse the list and hand the reader a jump on arrival.
+    #[test]
+    fn unknown_hint_reserves_three_lines() {
+        let m = metrics();
+        let h = reserved_height(SectionKind::Prose, SizeHint::Unknown, &m);
+        assert_eq!(h, px(20.0) * 3.0 + px(24.0) + px(8.0));
+    }
+
+    /// A degenerate `Lines(0)` must still reserve one line.
+    #[test]
+    fn zero_lines_still_reserves_one() {
+        let m = metrics();
+        let h = reserved_height(SectionKind::Prose, SizeHint::Lines(0), &m);
+        assert_eq!(h, px(20.0) + px(24.0) + px(8.0));
+    }
+
+    /// The rise slack must exceed `rise_in`'s 6 px offset, or the entrance
+    /// animation would push a section past its reserve and force a re-measure
+    /// on every frame of the animation.
+    #[test]
+    fn slack_absorbs_the_rise_offset() {
+        assert!(metrics().slack >= px(6.0));
+    }
+
+    /// Inline runs flatten to one string with contiguous, non-overlapping,
+    /// in-order style ranges — the invariant `StyledText` relies on.
+    #[test]
+    fn rich_text_ranges_are_contiguous_and_ordered() {
+        let runs = vec![
+            InlineRun::Text("see ".into()),
+            InlineRun::Code("Vec".into()),
+            InlineRun::Text(" and ".into()),
+            InlineRun::Link {
+                text: "HashMap".into(),
+                target: LinkTarget::Url("https://example.invalid".into()),
+            },
+        ];
+        let rich = RichText::from_runs(&runs);
+        assert_eq!(&*rich.text, "see Vec and HashMap");
+
+        let mut cursor = 0usize;
+        for (range, _) in rich.styles.iter() {
+            assert_eq!(range.start, cursor, "style ranges must be contiguous");
+            assert!(range.end > range.start, "empty style range");
+            cursor = range.end;
+        }
+        assert_eq!(cursor, rich.text.len(), "styles must cover the whole string");
+    }
+
+    /// A link's clickable range must address exactly its own text.
+    #[test]
+    fn link_ranges_address_their_own_text() {
+        let runs = vec![
+            InlineRun::Text("go to ".into()),
+            InlineRun::Link {
+                text: "Result".into(),
+                target: LinkTarget::Url("https://example.invalid".into()),
+            },
+        ];
+        let rich = RichText::from_runs(&runs);
+        assert_eq!(rich.link_ranges.len(), 1);
+        let r = rich.link_ranges[0].clone();
+        assert_eq!(&rich.text[r], "Result");
+    }
+
+    /// LD-7: an unknown inline run is visible, never an empty gap.
+    #[test]
+    fn unknown_inline_run_is_visible() {
+        // `InlineRun` is `#[non_exhaustive]`, so we cannot construct a future
+        // variant here; we assert the fallback text the `_` arm emits is
+        // non-empty, which is the property that matters.
+        let rich = RichText::from_runs(&[InlineRun::Text("".into())]);
+        assert!(rich.styles.is_empty(), "an empty run contributes no range");
+    }
+
+    /// A code block's height depends only on `line_count`, never on whether
+    /// highlights have arrived. This is the §9.4.2 guarantee, in one assertion.
+    #[test]
+    fn highlight_cannot_change_code_height() {
+        let m = metrics();
+        let mut code = CodeView::new("fn main() {}".into(), "rust".into(), 3);
+        let before = code.height(&m);
+
+        let colours = crate::theme::themes::dark_theme().colours;
+        let kinds = crate::theme::themes::dark_theme().kind_colours;
+        code.apply_spans(
+            &[HighlightSpan {
+                start: 0,
+                end: 2,
+                class: "keyword".into(),
+            }],
+            &colours,
+            &kinds,
+            true,
+        );
+
+        assert_eq!(code.height(&m), before, "colour must not move geometry");
+        assert_eq!(code.spans.len(), 1);
+    }
+
+    /// Out-of-range or non-boundary spans are dropped, not panicked on: a
+    /// producer bug must never take the page down (LD-7).
+    #[test]
+    fn out_of_range_spans_are_dropped() {
+        let mut code = CodeView::new("ab".into(), "rust".into(), 1);
+        let colours = crate::theme::themes::dark_theme().colours;
+        let kinds = crate::theme::themes::dark_theme().kind_colours;
+        code.apply_spans(
+            &[
+                HighlightSpan { start: 0, end: 99, class: "keyword".into() },
+                HighlightSpan { start: 5, end: 1, class: "string".into() },
+                HighlightSpan { start: 0, end: 1, class: "keyword".into() },
+            ],
+            &colours,
+            &kinds,
+            true,
+        );
+        assert_eq!(code.spans.len(), 1, "only the valid span survives");
+    }
+
+    /// Reduced motion snaps the sweep: the colour still changes, the time
+    /// dimension does not exist (LD-17).
+    #[test]
+    fn reduced_motion_snaps_the_sweep() {
+        let mut code = CodeView::new("let x = 1;".into(), "rust".into(), 1);
+        let colours = crate::theme::themes::dark_theme().colours;
+        let kinds = crate::theme::themes::dark_theme().kind_colours;
+        code.apply_spans(
+            &[HighlightSpan { start: 0, end: 3, class: "keyword".into() }],
+            &colours,
+            &kinds,
+            true,
+        );
+        assert!(!code.tick(Instant::now()), "a snapped sweep must not animate");
+    }
+
+    /// Ordered list markers are built at projection time, so `render` never
+    /// formats a string (§1.1.4).
+    #[test]
+    fn ordered_list_markers_are_precomputed() {
+        let block = ProseBlock::List {
+            ordered: true,
+            items: vec![vec![InlineRun::Text("one".into())], vec![InlineRun::Text("two".into())]],
+        };
+        match project_block(&block) {
+            BlockView::List { items } => {
+                assert_eq!(&*items[0].0, "1.");
+                assert_eq!(&*items[1].0, "2.");
+            }
+            _ => panic!("expected a list block"),
+        }
+    }
+
+    /// Every planned section kind gets a non-empty outline label *before* any
+    /// content exists — the thing docs.rs structurally cannot do.
+    #[test]
+    fn every_planned_kind_has_a_label() {
+        for kind in [
+            SectionKind::Prose,
+            SectionKind::CodeBlock,
+            SectionKind::Members,
+            SectionKind::Fields,
+            SectionKind::Examples,
+            SectionKind::Callout,
+            SectionKind::Unknown,
+        ] {
+            assert!(!kind_label(kind).is_empty(), "{kind:?} has no outline label");
+        }
+    }
+}

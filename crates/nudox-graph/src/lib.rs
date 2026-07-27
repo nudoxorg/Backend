@@ -1,7 +1,7 @@
 //! nudox-graph — the Trustfall query plane over the local IR corpus.
 //!
 //! This crate exposes a single [`CorpusAdapter`] that implements
-//! [`AsyncBasicAdapter`] over the [`Corpus`] store. Queries are expressed in
+//! [`AsyncAdapter`] over the [`Corpus`] store. Queries are expressed in
 //! GraphQL against `schema.graphql` and executed with
 //! `trustfall::execute_query_async`.
 //!

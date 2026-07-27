@@ -29,7 +29,14 @@ use std::{
 
 use triomphe::Arc as TArc;
 
-pub use nudox_ir::change::{IntroId, PackageLineageId, StableRef as SymbolKey};
+// LR-1 says `SymbolKey` is the one key everywhere — which means the pieces
+// needed to *build* one must travel with it. Without `EcosystemId` and
+// `PackageName` a consumer can receive a key but never construct one, and would
+// be pushed into inventing a parallel id type, which is exactly what LR-1
+// forbids.
+pub use nudox_ir::change::{
+    EcosystemId, IntroId, PackageLineageId, PackageName, StableRef as SymbolKey,
+};
 pub use nudox_ir::entry::Visibility;
 pub use nudox_ir::kind::KindDiscriminant;
 
