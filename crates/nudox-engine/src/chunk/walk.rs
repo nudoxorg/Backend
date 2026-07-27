@@ -396,7 +396,7 @@ fn build_prose_blocks(events: Vec<Event<'_>>, section_heading: &str) -> Vec<Pros
     if !section_heading.is_empty() {
         blocks.push(ProseBlock::Heading {
             level: 2,
-            runs: vec![crate::wire::InlineRun::Text(SharedStr::from(section_heading))],
+            runs: vec![crate::wire::InlineRun::Text { text: SharedStr::from(section_heading) }],
         });
     }
 
@@ -431,7 +431,7 @@ fn build_prose_blocks(events: Vec<Event<'_>>, section_heading: &str) -> Vec<Pros
             }
             Event::End(TagEnd::Paragraph) => {
                 if state == BlockState::Paragraph && !inline_buf.is_empty() {
-                    blocks.push(ProseBlock::Paragraph(std::mem::take(&mut inline_buf)));
+                    blocks.push(ProseBlock::Paragraph { runs: std::mem::take(&mut inline_buf) });
                 }
                 state = BlockState::None;
             }
@@ -507,7 +507,7 @@ fn build_prose_blocks(events: Vec<Event<'_>>, section_heading: &str) -> Vec<Pros
             Event::End(TagEnd::BlockQuote(_)) => {
                 in_blockquote = false;
                 if !blockquote_inline.is_empty() {
-                    blocks.push(ProseBlock::Paragraph(std::mem::take(&mut blockquote_inline)));
+                    blocks.push(ProseBlock::Paragraph { runs: std::mem::take(&mut blockquote_inline) });
                 }
             }
 
@@ -534,7 +534,7 @@ fn build_prose_blocks(events: Vec<Event<'_>>, section_heading: &str) -> Vec<Pros
                 if let Some(url) = link_url.take() {
                     let run = crate::wire::InlineRun::Link {
                         text: SharedStr::from(link_text_buf.as_str()),
-                        target: LinkTarget::Url(SharedStr::from(url.as_str())),
+                        target: LinkTarget::Url { url: SharedStr::from(url.as_str()) },
                     };
                     push_inline(&mut inline_buf, &mut blockquote_inline, in_blockquote, run);
                 }
@@ -550,23 +550,23 @@ fn build_prose_blocks(events: Vec<Event<'_>>, section_heading: &str) -> Vec<Pros
                     link_text_buf.push_str(&text);
                 } else {
                     let run = if in_strong {
-                        crate::wire::InlineRun::Strong(SharedStr::from(text.as_ref()))
+                        crate::wire::InlineRun::Strong { text: SharedStr::from(text.as_ref()) }
                     } else if in_em {
-                        crate::wire::InlineRun::Em(SharedStr::from(text.as_ref()))
+                        crate::wire::InlineRun::Em { text: SharedStr::from(text.as_ref()) }
                     } else {
-                        crate::wire::InlineRun::Text(SharedStr::from(text.as_ref()))
+                        crate::wire::InlineRun::Text { text: SharedStr::from(text.as_ref()) }
                     };
                     push_inline(&mut inline_buf, &mut blockquote_inline, in_blockquote, run);
                 }
             }
 
             Event::Code(text) => {
-                let run = crate::wire::InlineRun::Code(SharedStr::from(text.as_ref()));
+                let run = crate::wire::InlineRun::Code { text: SharedStr::from(text.as_ref()) };
                 push_inline(&mut inline_buf, &mut blockquote_inline, in_blockquote, run);
             }
 
             Event::SoftBreak | Event::HardBreak => {
-                let run = crate::wire::InlineRun::Text(SharedStr::from(" "));
+                let run = crate::wire::InlineRun::Text { text: SharedStr::from(" ") };
                 push_inline(&mut inline_buf, &mut blockquote_inline, in_blockquote, run);
             }
 

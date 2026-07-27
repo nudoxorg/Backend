@@ -85,7 +85,7 @@ async fn stream_symbol(
         Some(p) => p,
         None => {
             let _ = tx.send_async(DocEvent::Failed(
-                EngineError::PackageNotLoaded(key.package.clone()),
+                EngineError::PackageNotLoaded { package: key.package.clone() },
             ))
             .await;
             return;
@@ -108,9 +108,9 @@ async fn stream_symbol(
         Some(pair) => pair,
         None => {
             let _ = tx
-                .send_async(DocEvent::Failed(EngineError::Chunk(
-                    "chunker returned None for a live entry".into(),
-                )))
+                .send_async(DocEvent::Failed(EngineError::Chunk {
+                    message: "chunker returned None for a live entry".into(),
+                }))
                 .await;
             return;
         }

@@ -24,9 +24,11 @@ use std::{
     hash::{Hash, Hasher},
     ops::Deref,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::Serialize;
 use triomphe::Arc as TArc;
 
 // LR-1 says `SymbolKey` is the one key everywhere — which means the pieces
@@ -39,6 +41,52 @@ pub use nudox_ir::change::{
 };
 pub use nudox_ir::entry::Visibility;
 pub use nudox_ir::kind::KindDiscriminant;
+
+// ---------------------------------------------------------------------------
+// Serialisation helpers
+// ---------------------------------------------------------------------------
+
+/// Serialise a `SymbolKey` as the canonical `"ecosystem:name#introhex"` string.
+pub fn serialize_symbol_key<S: serde::Serializer>(
+    key: &SymbolKey,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    let repr = format!(
+        "{}:{}#{}",
+        key.package.ecosystem.as_str(),
+        key.package.name.as_str(),
+        key.intro.to_hex()
+    );
+    s.serialize_str(&repr)
+}
+
+/// Serialise an `Option<SymbolKey>` as an optional canonical string.
+pub fn serialize_symbol_key_opt<S: serde::Serializer>(
+    key: &Option<SymbolKey>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    match key {
+        Some(k) => serialize_symbol_key(k, s),
+        None => s.serialize_none(),
+    }
+}
+
+/// Serialise a `PackageLineageId` as `"ecosystem:name"`.
+pub fn serialize_lineage_id<S: serde::Serializer>(
+    id: &PackageLineageId,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&format!("{}:{}", id.ecosystem.as_str(), id.name.as_str()))
+}
+
+/// Serialise a `SystemTime` as unix seconds (u64).
+pub fn serialize_unix_secs<S: serde::Serializer>(
+    t: &SystemTime,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    s.serialize_u64(secs)
+}
 
 // ---------------------------------------------------------------------------
 // SharedStr
@@ -115,6 +163,21 @@ impl Hash for SharedStr {
     }
 }
 
+impl Serialize for SharedStr {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl JsonSchema for SharedStr {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("SharedStr")
+    }
+    fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
+        json_schema!({ "type": "string" })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Newtype ids  (§L7.2: newtype every id)
 // ---------------------------------------------------------------------------
@@ -122,11 +185,11 @@ impl Hash for SharedStr {
 /// A monotonically increasing token that identifies one *logical query
 /// generation*.  Every event in a stream carries the `Gen` it answers; stores
 /// drop events whose gen ≠ current (GUI-PLAN §2.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct Gen(pub u64);
 
 /// A stable, opaque id for a remote corpus generation (used in `Provenance`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct GenerationId(pub u64);
 
 /// A per-stream section id, assigned sequentially by the chunker.
@@ -134,14 +197,14 @@ pub struct GenerationId(pub u64);
 /// `SectionId(0)` is reserved (never emitted); sections begin at 1.
 /// The GUI uses these to correlate `Highlight` events with already-painted
 /// sections, and to key the `ListState` geometry (§9.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct SectionId(pub u32);
 
 /// Discriminates the three search result sections (Name / Type / Semantic).
 ///
 /// Kept as a `u8` newtype rather than an enum so forward-compat variants can be
 /// added without a breaking match arm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 pub struct SearchSectionId(pub u8);
 
 // ---------------------------------------------------------------------------
@@ -153,7 +216,8 @@ pub struct SearchSectionId(pub u8);
 /// Every symbol hit, tab, and package row carries a provenance badge (LD-8).
 /// The GUI maps each variant to a trust-chrome color token (§10.4) — the
 /// variant *is* the state; no boolean flags.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Provenance {
     /// Produced on this machine from source we can see (§10.4 `trust.local`).
@@ -163,7 +227,11 @@ pub enum Provenance {
     /// Served remotely, not yet materialised (`trust.remote`).
     Remote { generation: GenerationId },
     /// Last-known-good, served while offline (`trust.stale`).
-    Stale { as_of: SystemTime },
+    Stale {
+        #[serde(serialize_with = "serialize_unix_secs")]
+        #[schemars(with = "u64")]
+        as_of: SystemTime,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +269,59 @@ impl From<KindDiscriminant> for KindTag {
     }
 }
 
+impl Serialize for KindTag {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self {
+            KindTag::Known(d) => {
+                let mut st = s.serialize_struct("KindTag", 2)?;
+                st.serialize_field("kind", "known")?;
+                // `KindDiscriminant` is a fieldless enum deriving `serde::Serialize`,
+                // so serde emits the variant name (e.g. "Module", "Function") as a
+                // plain string. Going through `Serialize` rather than `Debug` keeps
+                // the wire label on a format contract instead of on `Debug` output,
+                // and avoids allocating a `String` per token.
+                st.serialize_field("name", d)?;
+                st.end()
+            }
+            KindTag::Unknown(raw) => {
+                let mut st = s.serialize_struct("KindTag", 2)?;
+                st.serialize_field("kind", "unknown")?;
+                st.serialize_field("raw", raw)?;
+                st.end()
+            }
+        }
+    }
+}
+
+impl JsonSchema for KindTag {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("KindTag")
+    }
+    fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "known" },
+                        "name": { "type": "string" }
+                    },
+                    "required": ["kind", "name"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "unknown" },
+                        "raw": { "type": "integer" }
+                    },
+                    "required": ["kind", "raw"]
+                }
+            ]
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Signature tokens  (§9.2 `SigToken`, LR-4)
 // ---------------------------------------------------------------------------
@@ -211,6 +332,9 @@ impl From<KindDiscriminant> for KindTag {
 /// underlying `Type::Nominal(RawRef)` resolves through the corpus (LR-4).
 /// `Kw` and `Punct` carry `&'static str` to avoid any per-token allocation
 /// on the hot path.
+///
+/// `Deserialize` is intentionally absent: `Kw` and `Punct` hold `&'static str`
+/// which cannot be reconstructed from owned bytes at runtime.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum SigToken {
@@ -230,6 +354,82 @@ pub enum SigToken {
     Lifetime(SharedStr),
 }
 
+impl Serialize for SigToken {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self {
+            SigToken::Kw(kw) => {
+                let mut st = s.serialize_struct("SigToken", 2)?;
+                st.serialize_field("kind", "kw")?;
+                st.serialize_field("text", kw)?;
+                st.end()
+            }
+            SigToken::Ident(id) => {
+                let mut st = s.serialize_struct("SigToken", 2)?;
+                st.serialize_field("kind", "ident")?;
+                st.serialize_field("text", id)?;
+                st.end()
+            }
+            SigToken::Ty { text, target } => {
+                let mut st = s.serialize_struct("SigToken", 3)?;
+                st.serialize_field("kind", "ty")?;
+                st.serialize_field("text", text)?;
+                let target_str: Option<String> = target.as_ref().map(|k| {
+                    format!(
+                        "{}:{}#{}",
+                        k.package.ecosystem.as_str(),
+                        k.package.name.as_str(),
+                        k.intro.to_hex()
+                    )
+                });
+                st.serialize_field("target", &target_str)?;
+                st.end()
+            }
+            SigToken::Punct(p) => {
+                let mut st = s.serialize_struct("SigToken", 2)?;
+                st.serialize_field("kind", "punct")?;
+                st.serialize_field("text", p)?;
+                st.end()
+            }
+            SigToken::Ws => {
+                let mut st = s.serialize_struct("SigToken", 1)?;
+                st.serialize_field("kind", "ws")?;
+                st.end()
+            }
+            SigToken::Generic(g) => {
+                let mut st = s.serialize_struct("SigToken", 2)?;
+                st.serialize_field("kind", "generic")?;
+                st.serialize_field("text", g)?;
+                st.end()
+            }
+            SigToken::Lifetime(l) => {
+                let mut st = s.serialize_struct("SigToken", 2)?;
+                st.serialize_field("kind", "lifetime")?;
+                st.serialize_field("text", l)?;
+                st.end()
+            }
+        }
+    }
+}
+
+impl JsonSchema for SigToken {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("SigToken")
+    }
+    fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["kw", "ident", "ty", "punct", "ws", "generic", "lifetime"]
+                }
+            },
+            "required": ["kind"]
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Breadcrumb
 // ---------------------------------------------------------------------------
@@ -237,9 +437,11 @@ pub enum SigToken {
 /// One crumb in the breadcrumb trail shown above a symbol page.
 ///
 /// Each crumb is clickable: the GUI navigates to `key` when activated.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct CrumbRef {
     /// The stable identity of this ancestor.
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
     pub key: SymbolKey,
     /// The display label (typically the ancestor's short name).
     pub label: SharedStr,
@@ -253,7 +455,8 @@ pub struct CrumbRef {
 ///
 /// Derived from the entry before any markdown is parsed so that the skeleton
 /// geometry (§9.4) can be laid out before content arrives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SectionKind {
     /// Free-form prose (parsed markdown).
@@ -277,7 +480,8 @@ pub enum SectionKind {
 /// `Lines(n)` → `n × line_height`; `Rows(n)` → `n × row_height`; `Unknown`
 /// → 3-line block.  The numbers are advisory; the real section replaces the
 /// skeleton at the same height class, so scroll position never teleports.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SizeHint {
     /// Estimated line count (prose, code blocks).
@@ -293,7 +497,7 @@ pub enum SizeHint {
 /// Sent to the GUI in `SymbolHead::section_plan` before any `Section` events
 /// arrive, so it can pre-lay the skeleton.  The chunker computes this from the
 /// same walk that produces the actual sections (one-walk guarantee, §9.4).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct SectionPlan {
     /// Stable id that links this plan entry to its `RenderSection`.
     pub id: SectionId,
@@ -308,7 +512,8 @@ pub struct SectionPlan {
 // ---------------------------------------------------------------------------
 
 /// The semantic level of a callout block (GitHub `[!NOTE]` / `[!WARNING]` …).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CalloutLevel {
     /// Informational note.
@@ -328,7 +533,7 @@ pub enum CalloutLevel {
 // ---------------------------------------------------------------------------
 
 /// The info string on a fenced code block (`rust`, `python`, …).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct LangId(pub SharedStr);
 
 // ---------------------------------------------------------------------------
@@ -336,30 +541,36 @@ pub struct LangId(pub SharedStr);
 // ---------------------------------------------------------------------------
 
 /// The target of a hyperlink inside rendered prose.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum LinkTarget {
     /// A cross-reference to another symbol (renders as `page.handoff`).
-    Symbol(SymbolKey),
+    Symbol {
+        #[serde(serialize_with = "serialize_symbol_key")]
+        #[schemars(with = "String")]
+        key: SymbolKey,
+    },
     /// An external URL (opens in the system browser).
-    Url(SharedStr),
+    Url { url: SharedStr },
 }
 
 /// A single run of inline text inside a [`ProseBlock`].
 ///
 /// Kept flat (no nesting) so the GUI can render each run in a single pass
 /// without a recursive element tree.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum InlineRun {
     /// Plain text.
-    Text(SharedStr),
+    Text { text: SharedStr },
     /// Inline code span (`` `foo` ``).
-    Code(SharedStr),
+    Code { text: SharedStr },
     /// Strong/bold text.
-    Strong(SharedStr),
+    Strong { text: SharedStr },
     /// Emphasis/italic text.
-    Em(SharedStr),
+    Em { text: SharedStr },
     /// A hyperlink.
     Link { text: SharedStr, target: LinkTarget },
 }
@@ -369,11 +580,12 @@ pub enum InlineRun {
 // ---------------------------------------------------------------------------
 
 /// A block-level element inside a [`RenderSection::Prose`] or similar.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ProseBlock {
     /// A paragraph of inline runs.
-    Paragraph(Vec<InlineRun>),
+    Paragraph { runs: Vec<InlineRun> },
     /// A heading inside a section (H1 only — H2+ splits into a new section).
     Heading { level: u8, runs: Vec<InlineRun> },
     /// An ordered or unordered list.
@@ -389,9 +601,11 @@ pub enum ProseBlock {
 // ---------------------------------------------------------------------------
 
 /// A summary row for one member inside a `Members` section.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct MemberRow {
     /// Stable identity of this member.
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
     pub key: SymbolKey,
     /// Short display name.
     pub name: SharedStr,
@@ -400,13 +614,16 @@ pub struct MemberRow {
     /// Kind tag for the badge.
     pub kind: KindTag,
     /// Visibility badge.
+    #[schemars(with = "String")]
     pub visibility: Visibility,
 }
 
 /// A summary row for one field inside a `Fields` section.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct FieldRow {
     /// Stable identity of this field or variant.
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
     pub key: SymbolKey,
     /// Short display name.
     pub name: SharedStr,
@@ -425,7 +642,8 @@ pub struct FieldRow {
 /// Emitted in `section_plan` order via `DocEvent::Section`.  The section id
 /// links back to the corresponding `SectionPlan` so the GUI can swap the
 /// skeleton for live content.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RenderSection {
     /// Free-form prose (parsed markdown).
@@ -471,7 +689,7 @@ impl RenderSection {
 /// Emitted after the section via `DocEvent::Highlight` so the code block
 /// appears immediately as monochrome text and upgrades in place — zero
 /// geometry change (§9.4.2, `highlight.sweep`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct HighlightSpan {
     /// Byte offset of the start of this span in the code block's text.
     pub start: u32,
@@ -489,9 +707,11 @@ pub struct HighlightSpan {
 ///
 /// Sent before any section arrives so the GUI can paint the breadcrumb,
 /// signature, and skeleton immediately (< 50 ms local, §9.1).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct SymbolHead {
     /// Stable identity of this symbol (LR-1).
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
     pub key: SymbolKey,
     /// Ancestor chain, root-first, each crumb clickable.
     pub breadcrumb: Vec<CrumbRef>,
@@ -500,6 +720,7 @@ pub struct SymbolHead {
     /// Kind tag for the badge and icon.
     pub kind: KindTag,
     /// Visibility for the access modifier label.
+    #[schemars(with = "String")]
     pub visibility: Visibility,
     /// Trust provenance for the badge chrome (LD-8).
     pub provenance: Provenance,
@@ -520,9 +741,11 @@ pub struct SymbolHead {
 /// The GUI renders this with zero string work in `render()` (§1.1.4):
 /// `sig_preview` is a pre-tokenised signature; `display_name` is already a
 /// `SharedStr`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct HitRow {
     /// Stable identity for navigation.
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
     pub key: SymbolKey,
     /// Display name (may include path prefix for disambiguation).
     pub display_name: SharedStr,
@@ -541,9 +764,11 @@ pub struct HitRow {
 // ---------------------------------------------------------------------------
 
 /// One reference in a `RefsPage`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct RefRow {
     /// The symbol that holds this reference.
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
     pub target: SymbolKey,
     /// Display path of the referencing symbol.
     pub path: SharedStr,
@@ -552,7 +777,7 @@ pub struct RefRow {
 }
 
 /// A paged list of cross-references to this symbol.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct RefsPage {
     /// The references in this page.
     pub refs: Arc<[RefRow]>,
@@ -561,16 +786,18 @@ pub struct RefsPage {
 }
 
 /// One implementation in an `ImplsPage`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct ImplRow {
     /// The impl entry.
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
     pub key: SymbolKey,
     /// Short display label (e.g. `impl Display for Point`).
     pub label: SharedStr,
 }
 
 /// A paged list of trait implementations for this symbol.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct ImplsPage {
     /// The impls in this page.
     pub impls: Arc<[ImplRow]>,
@@ -585,7 +812,7 @@ pub struct ImplsPage {
 /// One result row from a Trustfall graph query.
 ///
 /// Column order is established by the preceding `QueryEvent::Columns` event.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct QueryRow {
     /// Cell values in column order.
     pub cells: Arc<[SharedStr]>,
@@ -608,17 +835,27 @@ pub struct QueryRow {
 /// entry and the toast queue. Every variant therefore carries owned, cloneable
 /// data and never a `#[source]` chain to a non-`Clone` cause; where an
 /// underlying error exists it is flattened to a `String` at the boundary.
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EngineError {
-    #[error("package {0} is not loaded")]
-    PackageNotLoaded(PackageLineageId),
+    #[error("package {package} is not loaded")]
+    PackageNotLoaded {
+        /// The lineage id that was not found in the loaded corpus.
+        /// Serialised as `"ecosystem:name"` via `serialize_lineage_id`.
+        #[serde(serialize_with = "serialize_lineage_id")]
+        #[schemars(with = "String")]
+        package: PackageLineageId,
+    },
 
     #[error("symbol not found")]
     SymbolNotFound,
 
-    #[error("chunker error: {0}")]
-    Chunk(String),
+    #[error("chunker error: {message}")]
+    Chunk {
+        /// The underlying error message from the chunker.
+        message: String,
+    },
 
     #[error("stream cancelled")]
     Cancelled,

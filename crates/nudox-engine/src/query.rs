@@ -142,7 +142,7 @@ pub(crate) async fn run_query(
             let _ = tx
                 .send_async(QueryEvent::Failed {
                     generation,
-                    error: EngineError::Chunk(e.to_string()),
+                    error: EngineError::Chunk { message: e.to_string() },
                 })
                 .await;
             return;
@@ -165,7 +165,7 @@ pub(crate) async fn run_query(
                 let _ = tx
                     .send_async(QueryEvent::Failed {
                         generation,
-                        error: EngineError::Chunk(e.to_string()),
+                        error: EngineError::Chunk { message: e.to_string() },
                     })
                     .await;
                 return;

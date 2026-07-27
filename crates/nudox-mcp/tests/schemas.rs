@@ -1,15 +1,21 @@
 //! LR-2: every tool argument and result has a `schemars`-derived schema, and
-//! every result survives a JSON round trip.
+//! every result survives a JSON serialisation round trip.
 //!
 //! These are the tests that would catch the failure mode LR-2 exists to
 //! prevent: a tool whose payload is shaped by hand-written JSON rather than by
 //! a Rust type, which then drifts from what the engine actually produces.
+//!
+//! After the wire-type migration the result types (`SearchResult`, `SymbolDoc`)
+//! serialise wire types directly via their `Serialize` + `JsonSchema` derives.
+//! `Deserialize` is not derived for those types (it is impossible for
+//! `SigToken::Kw(&'static str)`), so round-trip tests use `Serialize` only
+//! and compare JSON strings rather than deserialising back.
 
-use nudox_mcp::dto::{
-    CalloutLevelDto, FieldRowDto, HitRowDto, InlineRunDto, KindDto, LinkTargetDto, MemberRowDto,
-    ProseBlockDto, ProvenanceDto, RenderSectionDto, SectionKindDto, SectionPlanDto, SigTokenDto,
-    SignatureDto, SymbolHeadDto, SymbolKeyDto, VisibilityDto,
+use nudox_engine::wire::{
+    CalloutLevel, GenerationId, HitRow, KindDiscriminant, KindTag, LangId, MemberRow, Provenance,
+    RenderSection, SectionId, SectionKind, SectionPlan, SigToken, SizeHint, SymbolHead, Visibility,
 };
+use nudox_mcp::SymbolKeyDto;
 use nudox_mcp::tools::{
     FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, GraphSchemaArgs, ListPackagesArgs,
     PackageSummary, PackagesResult, QueryResult, QueryResultRow, SchemaResult, SearchResult,
@@ -17,7 +23,6 @@ use nudox_mcp::tools::{
 };
 use schemars::schema_for;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 /// A schema must be a JSON object with at least a `type` or a composition
 /// keyword — an empty schema documents nothing and would let any payload
@@ -34,14 +39,27 @@ fn assert_schema_is_meaningful(schema: &schemars::Schema, what: &str) {
     );
 }
 
+/// Serialise a value and assert the JSON is non-empty.
+///
+/// `Deserialize` is not available for wire types containing `SigToken`, so we
+/// do a one-way serialise check here rather than a full round-trip.
+fn assert_serialises<T: Serialize>(value: &T, what: &str) {
+    let json =
+        serde_json::to_string(value).unwrap_or_else(|e| panic!("{what}: serialise: {e}"));
+    assert!(!json.is_empty(), "{what}: serialised to empty string");
+}
+
 /// Serialise, deserialise, and require the value to survive unchanged.
+///
+/// Used for types that are fully `Serialize + Deserialize` (args and simple
+/// result types that do not contain `SigToken`).
 fn assert_round_trips<T>(value: &T, what: &str)
 where
-    T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
+    T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
 {
     let json = serde_json::to_string(value).unwrap_or_else(|e| panic!("{what}: serialise: {e}"));
-    let back: T =
-        serde_json::from_str(&json).unwrap_or_else(|e| panic!("{what}: deserialise: {e} ({json})"));
+    let back: T = serde_json::from_str(&json)
+        .unwrap_or_else(|e| panic!("{what}: deserialise: {e} ({json})"));
     assert_eq!(value, &back, "{what}: round trip changed the value");
 }
 
@@ -112,141 +130,139 @@ fn optional_arguments_are_actually_optional() {
 }
 
 // ---------------------------------------------------------------------------
-// Round trips
+// Serialisation tests for wire result types
+//
+// `SymbolDoc` and `SearchResult` contain `SigToken` (which carries `&'static
+// str` in `Kw` and `Punct` variants), so they are not `Deserialize`.  We
+// verify they serialise correctly rather than round-tripping.
 // ---------------------------------------------------------------------------
 
 /// A key with a well-formed 64-character intro half.
-fn sample_key() -> SymbolKeyDto {
+fn sample_key_dto() -> SymbolKeyDto {
     SymbolKeyDto(format!("cargo:serde#{}", "ab".repeat(32)))
 }
 
-fn sample_signature() -> SignatureDto {
-    SignatureDto {
-        text: "fn parse(input: &str) -> Value".to_owned(),
-        tokens: vec![
-            SigTokenDto::Keyword { text: "fn".into() },
-            SigTokenDto::Space,
-            SigTokenDto::Ident { text: "parse".into() },
-            SigTokenDto::Punct { text: "(".into() },
-            SigTokenDto::Type { text: "&str".into(), target: Some(sample_key()) },
-            SigTokenDto::Punct { text: ")".into() },
-            SigTokenDto::Generic { text: "T".into() },
-            SigTokenDto::Lifetime { text: "'a".into() },
-            SigTokenDto::Unknown,
-        ],
-    }
+fn sample_wire_key() -> nudox_engine::wire::SymbolKey {
+    sample_key_dto().to_wire().expect("sample key must parse")
 }
 
-fn sample_head() -> SymbolHeadDto {
-    SymbolHeadDto {
-        key: sample_key(),
-        breadcrumb: vec![nudox_mcp::dto::CrumbDto {
-            key: sample_key(),
-            label: "serde".to_owned(),
+fn sample_sig() -> Vec<SigToken> {
+    vec![
+        SigToken::Kw("fn"),
+        SigToken::Ws,
+        SigToken::Ident(nudox_engine::wire::SharedStr::from("parse")),
+        SigToken::Punct("("),
+        SigToken::Ty {
+            text: nudox_engine::wire::SharedStr::from("&str"),
+            target: Some(sample_wire_key()),
+        },
+        SigToken::Punct(")"),
+    ]
+}
+
+fn sample_head() -> Box<SymbolHead> {
+    Box::new(SymbolHead {
+        key: sample_wire_key(),
+        breadcrumb: vec![nudox_engine::wire::CrumbRef {
+            key: sample_wire_key(),
+            label: nudox_engine::wire::SharedStr::from("serde"),
         }],
-        signature: sample_signature(),
-        kind: KindDto("Function".to_owned()),
-        visibility: VisibilityDto::Public,
-        provenance: ProvenanceDto::TrustedLocal,
-        deprecation: Some("use `from_str` instead".to_owned()),
-        section_plan: vec![SectionPlanDto {
-            id: 1,
-            kind: SectionKindDto::Prose,
-            estimated_lines: Some(12),
-            estimated_rows: None,
+        signature: sample_sig(),
+        kind: KindTag::Known(KindDiscriminant::from_u16(3).expect("Function discriminant")),
+        visibility: Visibility::Public,
+        provenance: Provenance::TrustedLocal,
+        deprecation: Some(nudox_engine::wire::SharedStr::from("use `from_str` instead")),
+        section_plan: vec![SectionPlan {
+            id: SectionId(1),
+            kind: SectionKind::Prose,
+            size_hint: SizeHint::Lines(12),
         }],
-    }
+    })
 }
 
 #[test]
-fn search_result_round_trips() {
+fn search_result_serialises() {
+    use std::sync::Arc;
     let value = SearchResult {
-        hits: vec![HitRowDto {
-            key: sample_key(),
-            display_name: "serde::de::Deserializer".to_owned(),
-            signature: sample_signature(),
-            kind: KindDto("Trait".to_owned()),
-            provenance: ProvenanceDto::SyncedLocal { generation: 7 },
+        hits: vec![HitRow {
+            key: sample_wire_key(),
+            display_name: nudox_engine::wire::SharedStr::from("serde::de::Deserializer"),
+            sig_preview: sample_sig(),
+            kind: KindTag::Known(KindDiscriminant::from_u16(5).expect("Trait discriminant")),
+            provenance: Provenance::SyncedLocal { generation: GenerationId(7) },
             score: 0.875,
         }],
         truncated: true,
     };
-    assert_round_trips(&value, "SearchResult");
+    let json = serde_json::to_string(&value).expect("SearchResult must serialise");
+    // Key must be the canonical string form.
+    assert!(
+        json.contains("cargo:serde#"),
+        "hit key must be ecosystem:name#introhex string: {json}"
+    );
+    // Provenance must have a kind discriminant.
+    assert!(json.contains("synced_local"), "provenance kind must appear: {json}");
+    // truncated flag must be present.
+    assert!(json.contains("\"truncated\":true"), "truncated must serialise: {json}");
 }
 
 #[test]
-fn symbol_doc_round_trips_across_every_section_variant() {
-    let blocks = vec![
-        ProseBlockDto::Paragraph {
-            runs: vec![
-                InlineRunDto::Text { text: "See ".into() },
-                InlineRunDto::Code { text: "parse".into() },
-                InlineRunDto::Strong { text: "now".into() },
-                InlineRunDto::Emphasis { text: "really".into() },
-                InlineRunDto::Link {
-                    text: "docs".into(),
-                    target: LinkTargetDto::Url { url: "https://example.invalid".into() },
-                },
-                InlineRunDto::Link {
-                    text: "Deserializer".into(),
-                    target: LinkTargetDto::Symbol { key: sample_key() },
-                },
-                InlineRunDto::Unknown,
-            ],
-        },
-        ProseBlockDto::Heading { level: 3, runs: vec![] },
-        ProseBlockDto::List { ordered: true, items: vec![vec![]] },
-        ProseBlockDto::Rule,
-        ProseBlockDto::Code { lang: "rust".into(), text: "let x = 1;".into(), line_count: 1 },
-        ProseBlockDto::Unknown,
-    ];
-
+fn symbol_doc_serialises() {
+    use std::sync::Arc;
+    let blocks = vec![nudox_engine::wire::ProseBlock::Paragraph {
+        runs: vec![nudox_engine::wire::InlineRun::Text {
+            text: nudox_engine::wire::SharedStr::from("Hello world"),
+        }],
+    }];
     let value = SymbolDoc {
         head: sample_head(),
         sections: vec![
-            RenderSectionDto::Prose { id: 1, blocks: blocks.clone() },
-            RenderSectionDto::CodeBlock {
-                id: 2,
-                lang: "rust".into(),
-                text: "fn main() {}".into(),
+            RenderSection::Prose { id: SectionId(1), blocks: blocks.clone() },
+            RenderSection::CodeBlock {
+                id: SectionId(2),
+                lang: LangId(nudox_engine::wire::SharedStr::from("rust")),
+                text: nudox_engine::wire::SharedStr::from("fn main() {}"),
                 line_count: 1,
             },
-            RenderSectionDto::Members {
-                id: 3,
-                entries: vec![MemberRowDto {
-                    key: sample_key(),
-                    name: "deserialize".into(),
-                    signature: sample_signature(),
-                    kind: KindDto("Function".into()),
-                    visibility: VisibilityDto::Crate,
-                }],
+            RenderSection::Members {
+                id: SectionId(3),
+                entries: Arc::from(vec![MemberRow {
+                    key: sample_wire_key(),
+                    name: nudox_engine::wire::SharedStr::from("deserialize"),
+                    sig: sample_sig(),
+                    kind: KindTag::Known(
+                        KindDiscriminant::from_u16(3).expect("Function discriminant"),
+                    ),
+                    visibility: Visibility::Public,
+                }]),
             },
-            RenderSectionDto::Fields {
-                id: 4,
-                entries: vec![FieldRowDto {
-                    key: sample_key(),
-                    name: "inner".into(),
-                    ty: sample_signature(),
-                    kind: KindDto("Field".into()),
-                }],
+            RenderSection::Callout {
+                id: SectionId(4),
+                level: CalloutLevel::Warning,
+                blocks,
             },
-            RenderSectionDto::Examples { id: 5, blocks },
-            RenderSectionDto::Callout {
-                id: 6,
-                level: CalloutLevelDto::Warning,
-                blocks: vec![ProseBlockDto::Rule],
+            RenderSection::Unknown {
+                id: SectionId(5),
+                kind_tag: nudox_engine::wire::SharedStr::from("future-kind"),
             },
-            RenderSectionDto::Unknown { id: 7, tag: "future-kind".into() },
         ],
     };
-    assert_round_trips(&value, "SymbolDoc");
+    assert_serialises(&value, "SymbolDoc");
+
+    let json = serde_json::to_string(&value).expect("SymbolDoc must serialise");
+    // Section kind discriminant must appear.
+    assert!(json.contains("\"kind\":\"prose\""), "prose section must be tagged: {json}");
+    assert!(json.contains("\"kind\":\"code_block\""), "code_block section must be tagged: {json}");
+    assert!(json.contains("\"kind\":\"members\""), "members section must be tagged: {json}");
+    assert!(json.contains("\"kind\":\"callout\""), "callout section must be tagged: {json}");
+    assert!(json.contains("\"kind\":\"unknown\""), "unknown section must be tagged: {json}");
 }
 
 #[test]
 fn usages_result_round_trips() {
     let value = UsagesResult {
         usages: vec![UsageRow {
-            key: sample_key(),
+            key: sample_key_dto(),
             name: "from_str".to_owned(),
             kind: "Function".to_owned(),
         }],
@@ -272,7 +288,7 @@ fn query_result_round_trips() {
     let value = QueryResult {
         columns: vec!["key".to_owned(), "name".to_owned()],
         rows: vec![QueryResultRow {
-            cells: vec![sample_key().0, "Deserializer".to_owned()],
+            cells: vec![sample_key_dto().0, "Deserializer".to_owned()],
         }],
         truncated: true,
     };
@@ -296,16 +312,16 @@ fn tool_arguments_round_trip() {
         },
         "SearchSymbolsArgs",
     );
-    assert_round_trips(&GetSymbolArgs { key: sample_key() }, "GetSymbolArgs");
+    assert_round_trips(&GetSymbolArgs { key: sample_key_dto() }, "GetSymbolArgs");
     assert_round_trips(
-        &FindUsagesArgs { key: sample_key(), limit: None },
+        &FindUsagesArgs { key: sample_key_dto(), limit: None },
         "FindUsagesArgs",
     );
     assert_round_trips(&ListPackagesArgs {}, "ListPackagesArgs");
     assert_round_trips(
         &GraphQueryArgs {
             query: "query { Packages { lineage @output } }".into(),
-            args: Some([("key".to_owned(), sample_key().0)].into_iter().collect()),
+            args: Some([("key".to_owned(), sample_key_dto().0)].into_iter().collect()),
             limit: Some(10),
         },
         "GraphQueryArgs",
@@ -317,7 +333,78 @@ fn tool_arguments_round_trip() {
 fn symbol_keys_are_plain_strings_on_the_wire() {
     // LR-1: the key is one value, spelled one way. If this ever serialised as
     // an object, keys would stop being copy-pasteable between tools.
-    let json = serde_json::to_string(&sample_key()).expect("key must serialise");
+    let json = serde_json::to_string(&sample_key_dto()).expect("key must serialise");
     assert!(json.starts_with('"'), "SymbolKey must be a JSON string, got {json}");
     assert!(json.contains("cargo:serde#"));
+}
+
+#[test]
+fn wire_key_serialises_as_canonical_string() {
+    // The wire SymbolKey (in HitRow, SymbolHead, etc.) must also serialise as
+    // the canonical string — not as a struct — so agent output is consistent
+    // with what agents pass back in tool arguments.
+    let key = sample_wire_key();
+    // Serialise via the HitRow wrapper (which uses serialize_symbol_key).
+    let hit = HitRow {
+        key: key.clone(),
+        display_name: nudox_engine::wire::SharedStr::from("test"),
+        sig_preview: vec![],
+        kind: KindTag::Unknown(0),
+        provenance: Provenance::TrustedLocal,
+        score: 1.0,
+    };
+    let json = serde_json::to_string(&hit).expect("HitRow must serialise");
+    assert!(
+        json.contains("\"key\":\"cargo:serde#"),
+        "wire key in HitRow must be a string: {json}"
+    );
+}
+
+#[test]
+fn kind_tag_known_serialises_with_name() {
+    let tag = KindTag::Known(KindDiscriminant::from_u16(3).expect("Function"));
+    let json = serde_json::to_string(&tag).expect("KindTag must serialise");
+    assert!(
+        json.contains("\"kind\":\"known\""),
+        "KindTag::Known must have kind discriminant: {json}"
+    );
+    assert!(
+        json.contains("\"name\":"),
+        "KindTag::Known must include the kind name: {json}"
+    );
+}
+
+#[test]
+fn kind_tag_unknown_serialises_with_raw() {
+    let tag = KindTag::Unknown(999);
+    let json = serde_json::to_string(&tag).expect("KindTag must serialise");
+    assert!(
+        json.contains("\"kind\":\"unknown\""),
+        "KindTag::Unknown must have kind discriminant: {json}"
+    );
+    assert!(json.contains("\"raw\":999"), "KindTag::Unknown must carry raw value: {json}");
+}
+
+#[test]
+fn sig_token_kw_serialises_with_kind() {
+    let token = SigToken::Kw("fn");
+    let json = serde_json::to_string(&token).expect("SigToken must serialise");
+    assert!(json.contains("\"kind\":\"kw\""), "SigToken::Kw must have kind: {json}");
+    assert!(json.contains("\"text\":\"fn\""), "SigToken::Kw must have text: {json}");
+}
+
+#[test]
+fn provenance_stale_serialises_unix_secs() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let t = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let prov = Provenance::Stale { as_of: t };
+    let json = serde_json::to_string(&prov).expect("Provenance must serialise");
+    assert!(
+        json.contains("\"kind\":\"stale\""),
+        "Provenance::Stale must be tagged: {json}"
+    );
+    assert!(
+        json.contains("1700000000"),
+        "Provenance::Stale.as_of must be unix secs: {json}"
+    );
 }

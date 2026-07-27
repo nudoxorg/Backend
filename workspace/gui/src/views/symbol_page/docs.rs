@@ -200,27 +200,27 @@ impl RichText {
         for run in runs {
             let start = text.len();
             let style = match run {
-                InlineRun::Text(s) => {
+                InlineRun::Text { text: s } => {
                     text.push_str(s);
                     RunStyle::Text
                 }
-                InlineRun::Code(s) => {
+                InlineRun::Code { text: s } => {
                     text.push_str(s);
                     RunStyle::Code
                 }
-                InlineRun::Strong(s) => {
+                InlineRun::Strong { text: s } => {
                     text.push_str(s);
                     RunStyle::Strong
                 }
-                InlineRun::Em(s) => {
+                InlineRun::Em { text: s } => {
                     text.push_str(s);
                     RunStyle::Em
                 }
                 InlineRun::Link { text: t, target } => {
                     text.push_str(t);
                     links.push(match target {
-                        LinkTarget::Symbol(key) => LinkDest::Symbol(key.clone()),
-                        LinkTarget::Url(u) => LinkDest::Url(shared(u)),
+                        LinkTarget::Symbol { key } => LinkDest::Symbol(key.clone()),
+                        LinkTarget::Url { url: u } => LinkDest::Url(shared(u)),
                         // An unknown target still shows its text; it simply is
                         // not clickable (LD-7 — visible, not silent).
                         _ => LinkDest::Url(SharedString::from("")),
@@ -1253,7 +1253,7 @@ fn project_section(section: &RenderSection) -> SectionView {
 
 fn project_block(block: &ProseBlock) -> BlockView {
     match block {
-        ProseBlock::Paragraph(runs) => BlockView::Paragraph(RichText::from_runs(runs)),
+        ProseBlock::Paragraph { runs } => BlockView::Paragraph(RichText::from_runs(runs)),
         ProseBlock::Heading { level, runs } => BlockView::Heading {
             level: *level,
             text: RichText::from_runs(runs),
@@ -1377,12 +1377,12 @@ mod tests {
     #[test]
     fn rich_text_ranges_are_contiguous_and_ordered() {
         let runs = vec![
-            InlineRun::Text("see ".into()),
-            InlineRun::Code("Vec".into()),
-            InlineRun::Text(" and ".into()),
+            InlineRun::Text { text: "see ".into() },
+            InlineRun::Code { text: "Vec".into() },
+            InlineRun::Text { text: " and ".into() },
             InlineRun::Link {
                 text: "HashMap".into(),
-                target: LinkTarget::Url("https://example.invalid".into()),
+                target: LinkTarget::Url { url: "https://example.invalid".into() },
             },
         ];
         let rich = RichText::from_runs(&runs);
@@ -1402,12 +1402,12 @@ mod tests {
     #[test]
     fn link_ranges_address_their_own_text() {
         let runs = vec![
-            InlineRun::Text("go to ".into()),
+            InlineRun::Text { text: "go to ".into() },
             InlineRun::Link {
                 text: "Result".into(),
-                target: LinkTarget::Url("https://example.invalid".into()),
+                target: LinkTarget::Url { url: "https://example.invalid".into() },
             },
-            InlineRun::Text(" now".into()),
+            InlineRun::Text { text: " now".into() },
         ];
         let rich = RichText::from_runs(&runs);
         assert_eq!(rich.link_ranges.len(), 1);
@@ -1420,7 +1420,7 @@ mod tests {
     /// would trip `StyledText`'s run arithmetic.
     #[test]
     fn empty_runs_contribute_no_range() {
-        let rich = RichText::from_runs(&[InlineRun::Text("".into())]);
+        let rich = RichText::from_runs(&[InlineRun::Text { text: "".into() }]);
         assert!(rich.styles.is_empty());
         assert!(rich.text.is_empty());
     }
@@ -1535,8 +1535,8 @@ mod tests {
         let block = ProseBlock::List {
             ordered: true,
             items: vec![
-                vec![InlineRun::Text("one".into())],
-                vec![InlineRun::Text("two".into())],
+                vec![InlineRun::Text { text: "one".into() }],
+                vec![InlineRun::Text { text: "two".into() }],
             ],
         };
         match project_block(&block) {
@@ -1573,14 +1573,14 @@ mod tests {
             id: SectionId(1),
             blocks: vec![ProseBlock::Heading {
                 level: 1,
-                runs: vec![InlineRun::Text("Errors".into())],
+                runs: vec![InlineRun::Text { text: "Errors".into() }],
             }],
         });
         assert_eq!(heading_label(&with_heading).as_deref(), Some("Errors"));
 
         let without = project_section(&RenderSection::Prose {
             id: SectionId(2),
-            blocks: vec![ProseBlock::Paragraph(vec![InlineRun::Text("hi".into())])],
+            blocks: vec![ProseBlock::Paragraph { runs: vec![InlineRun::Text { text: "hi".into() }] }],
         });
         assert!(heading_label(&without).is_none());
     }

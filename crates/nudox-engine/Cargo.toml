@@ -22,6 +22,10 @@ flume = { workspace = true }
 futures = { workspace = true }
 pulldown-cmark = { workspace = true }
 rustc-hash = { workspace = true }
+# `schemars` + `serde` are what let the wire types *be* the MCP schema (LR-2):
+# `nudox-mcp` derives its tool schemas from these types rather than mirroring
+# them by hand, so the protocol has exactly one definition.
+schemars = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
