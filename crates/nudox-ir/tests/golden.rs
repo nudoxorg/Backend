@@ -367,7 +367,7 @@ f31fad1178c5fff29493c908322618c6c24d15c76f00f2cae539f5a322c0e677";
 /// postcard because postcard is not a workspace dependency. A digest is used
 /// rather than embedding kilobytes of JSON, which would make diffs unreadable.
 /// Protects: the on-wire encoding of every entry kind and every field value.
-const GOLDEN_ENTRIES_B3: &str = "87d953a9543e331942a6415482c6c73d2fa6c9341cc4a1c7200280ca5770dfaa";
+const GOLDEN_ENTRIES_B3: &str = "2a354a579edc1ff02635cadd5be3719647067c2a5204de6dcc981a1a85fc0c54";
 
 /// IntroId of the sorted-first `draw` overload.
 /// Which overload this is depends on how their BLAKE3 digests sort; run
