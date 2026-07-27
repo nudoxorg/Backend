@@ -34,8 +34,6 @@
 //! This entire module is compiled only with `--features tsz`.  The default
 //! build is unaffected.
 
-use std::path::{Path, PathBuf};
-
 use rustc_hash::FxHashMap;
 
 use tsz_binder::state::BinderState;
@@ -98,56 +96,6 @@ impl From<crate::producer::OwnedOracle> for TszOracle {
         }
         TszOracle { modules }
     }
-}
-
-// ── File discovery ────────────────────────────────────────────────────────────
-
-fn is_ts_source(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".ts")
-        || lower.ends_with(".tsx")
-        || lower.ends_with(".mts")
-        || lower.ends_with(".cts")
-}
-
-fn is_skipped_dir(name: &str) -> bool {
-    matches!(
-        name,
-        "node_modules" | ".git" | ".hg" | "dist" | "build" | "out" | "coverage" | "target"
-    )
-}
-
-fn discover_ts_files(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_type = match entry.file_type() {
-                Ok(ft) => ft,
-                Err(_) => continue,
-            };
-            if file_type.is_dir() {
-                let skip = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(is_skipped_dir)
-                    .unwrap_or(false);
-                if !skip {
-                    stack.push(path);
-                }
-            } else if file_type.is_file() && is_ts_source(&path) {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    Ok(out)
 }
 
 // ── Recovered type record ─────────────────────────────────────────────────────

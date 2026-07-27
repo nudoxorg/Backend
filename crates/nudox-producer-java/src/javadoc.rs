@@ -185,19 +185,19 @@ pub fn parse(
                     out.see.push(rendered);
                 }
             }
-            "apiNote" | "implSpec" | "implNote" => {
-                if !rendered.is_empty() {
-                    let label = match name.as_str() {
-                        "apiNote" => "API note",
-                        "implSpec" => "Implementation requirements",
-                        _ => "Implementation note",
-                    };
-                    let section = format!("{label}: {rendered}");
-                    body = Some(match body.take() {
-                        Some(b) => format!("{b}\n\n{section}"),
-                        None => section,
-                    });
-                }
+            "apiNote" | "implSpec" | "implNote"
+                if !rendered.is_empty() =>
+            {
+                let label = match name.as_str() {
+                    "apiNote" => "API note",
+                    "implSpec" => "Implementation requirements",
+                    _ => "Implementation note",
+                };
+                let section = format!("{label}: {rendered}");
+                body = Some(match body.take() {
+                    Some(b) => format!("{b}\n\n{section}"),
+                    None => section,
+                });
             }
             _ => {}
         }
@@ -288,27 +288,27 @@ fn expand_inline_tags(
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] == b'{' && bytes.get(i + 1) == Some(&b'@') {
-            if let Some(end) = matching_brace(text, i) {
-                let inner = &text[i + 2..end];
-                let (tag, raw_body) = match inner.split_once(char::is_whitespace) {
-                    Some((t, b)) => (t, b.trim()),
-                    None => (inner, ""),
-                };
-                let body = match tag {
-                    "code" | "literal" | "snippet" | "systemProperty" => {
-                        raw_body.to_string()
-                    }
-                    _ => expand_inline_tags(
-                        raw_body, flavor, self_type, resolver, links, depth + 1,
-                    ),
-                };
-                out.push_str(&render_inline_tag(
-                    tag, &body, flavor, self_type, resolver, links,
-                ));
-                i = end + 1;
-                continue;
-            }
+        if bytes[i] == b'{' && bytes.get(i + 1) == Some(&b'@')
+            && let Some(end) = matching_brace(text, i)
+        {
+            let inner = &text[i + 2..end];
+            let (tag, raw_body) = match inner.split_once(char::is_whitespace) {
+                Some((t, b)) => (t, b.trim()),
+                None => (inner, ""),
+            };
+            let body = match tag {
+                "code" | "literal" | "snippet" | "systemProperty" => {
+                    raw_body.to_string()
+                }
+                _ => expand_inline_tags(
+                    raw_body, flavor, self_type, resolver, links, depth + 1,
+                ),
+            };
+            out.push_str(&render_inline_tag(
+                tag, &body, flavor, self_type, resolver, links,
+            ));
+            i = end + 1;
+            continue;
         }
         let c = text[i..].chars().next().unwrap_or('\u{FFFD}');
         out.push(c);
@@ -506,34 +506,34 @@ fn decode_entities(text: &str) -> String {
     let mut i = 0;
     let bytes = text.as_bytes();
     while i < bytes.len() {
-        if bytes[i] == b'&' {
-            if let Some(semi) = text[i..].find(';').filter(|&s| s <= 12) {
-                let entity = &text[i + 1..i + semi];
-                let decoded = match entity {
-                    "amp" => Some('&'),
-                    "lt" => Some('<'),
-                    "gt" => Some('>'),
-                    "quot" => Some('"'),
-                    "apos" => Some('\''),
-                    "nbsp" => Some(' '),
-                    _ => entity
-                        .strip_prefix('#')
-                        .and_then(|num| {
-                            if let Some(hex) =
-                                num.strip_prefix('x').or_else(|| num.strip_prefix('X'))
-                            {
-                                u32::from_str_radix(hex, 16).ok()
-                            } else {
-                                num.parse::<u32>().ok()
-                            }
-                        })
-                        .and_then(char::from_u32),
-                };
-                if let Some(ch) = decoded {
-                    out.push(ch);
-                    i += semi + 1;
-                    continue;
-                }
+        if bytes[i] == b'&'
+            && let Some(semi) = text[i..].find(';').filter(|&s| s <= 12)
+        {
+            let entity = &text[i + 1..i + semi];
+            let decoded = match entity {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                _ => entity
+                    .strip_prefix('#')
+                    .and_then(|num| {
+                        if let Some(hex) =
+                            num.strip_prefix('x').or_else(|| num.strip_prefix('X'))
+                        {
+                            u32::from_str_radix(hex, 16).ok()
+                        } else {
+                            num.parse::<u32>().ok()
+                        }
+                    })
+                    .and_then(char::from_u32),
+            };
+            if let Some(ch) = decoded {
+                out.push(ch);
+                i += semi + 1;
+                continue;
             }
         }
         let c = text[i..].chars().next().unwrap_or('\u{FFFD}');
@@ -583,36 +583,36 @@ fn resolve_markdown_refs(
             i += 2;
             continue;
         }
-        if bytes[i] == b'[' {
-            if let Some(close) = text[i + 1..].find(']').map(|o| i + 1 + o) {
-                let first = &text[i + 1..close];
-                let after = bytes.get(close + 1);
-                match after {
-                    Some(b'(') => {}
-                    Some(b'[') => {
-                        if let Some(close2) =
-                            text[close + 2..].find(']').map(|o| close + 2 + o)
-                        {
-                            let reference = &text[close + 2..close2];
-                            if is_element_reference(reference) {
-                                links.push(resolve_reference(
-                                    reference,
-                                    self_type,
-                                    resolver,
-                                ));
-                                out.push_str(first);
-                                i = close2 + 1;
-                                continue;
-                            }
-                        }
-                    }
-                    _ => {
-                        if is_element_reference(first) {
-                            links.push(resolve_reference(first, self_type, resolver));
-                            out.push_str(&format!("`{first}`"));
-                            i = close + 1;
+        if bytes[i] == b'['
+            && let Some(close) = text[i + 1..].find(']').map(|o| i + 1 + o)
+        {
+            let first = &text[i + 1..close];
+            let after = bytes.get(close + 1);
+            match after {
+                Some(b'(') => {}
+                Some(b'[') => {
+                    if let Some(close2) =
+                        text[close + 2..].find(']').map(|o| close + 2 + o)
+                    {
+                        let reference = &text[close + 2..close2];
+                        if is_element_reference(reference) {
+                            links.push(resolve_reference(
+                                reference,
+                                self_type,
+                                resolver,
+                            ));
+                            out.push_str(first);
+                            i = close2 + 1;
                             continue;
                         }
+                    }
+                }
+                _ => {
+                    if is_element_reference(first) {
+                        links.push(resolve_reference(first, self_type, resolver));
+                        out.push_str(&format!("`{first}`"));
+                        i = close + 1;
+                        continue;
                     }
                 }
             }

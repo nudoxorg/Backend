@@ -295,6 +295,26 @@ pub enum Width {
     Arch,
 }
 
+impl Width {
+    /// 8-bit width
+    pub const W8: Self = Width::Fixed(NonZero::new(8).unwrap());
+
+    /// 16-bit width
+    pub const W16: Self = Width::Fixed(NonZero::new(16).unwrap());
+
+    /// 32-bit width
+    pub const W32: Self = Width::Fixed(NonZero::new(32).unwrap());
+
+    /// 64-bit width
+    pub const W64: Self = Width::Fixed(NonZero::new(64).unwrap());
+
+    /// 80-bit width
+    pub const W80: Self = Width::Fixed(NonZero::new(80).unwrap());
+
+    /// 128-bit width
+    pub const W128: Self = Width::Fixed(NonZero::new(128).unwrap());
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -555,24 +575,4 @@ mod tests {
         );
         assert_ne!(ty_skeleton(&ab), ty_skeleton(&xy));
     }
-}
-
-impl Width {
-    /// 8-bit width
-    pub const W8: Self = Width::Fixed(NonZero::new(8).unwrap());
-
-    /// 16-bit width
-    pub const W16: Self = Width::Fixed(NonZero::new(16).unwrap());
-
-    /// 32-bit width
-    pub const W32: Self = Width::Fixed(NonZero::new(32).unwrap());
-
-    /// 64-bit width
-    pub const W64: Self = Width::Fixed(NonZero::new(64).unwrap());
-
-    /// 80-bit width
-    pub const W80: Self = Width::Fixed(NonZero::new(80).unwrap());
-
-    /// 128-bit width
-    pub const W128: Self = Width::Fixed(NonZero::new(128).unwrap());
 }

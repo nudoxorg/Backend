@@ -109,10 +109,10 @@ pub fn build_and_extract(
                 match resolver.resolve(parent_dir, spec_str) {
                     Ok(res) => {
                         let resolved = res.into_path_buf();
-                        if resolved.is_file() && is_ts_module_path(&resolved) {
-                            if visited.insert(resolved.clone()) {
-                                queue.push_back(resolved);
-                            }
+                        if resolved.is_file() && is_ts_module_path(&resolved)
+                            && visited.insert(resolved.clone())
+                        {
+                            queue.push_back(resolved);
                         }
                     }
                     Err(err) => {

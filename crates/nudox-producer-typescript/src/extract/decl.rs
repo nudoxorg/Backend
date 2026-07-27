@@ -644,27 +644,24 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
             let mut synth_seen: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             for stmt in ctor_body.statements.iter() {
-                if let Statement::ExpressionStatement(expr_stmt) = stmt {
-                    if let Expression::AssignmentExpression(assign) = &expr_stmt.expression {
-                        if assign.operator == AssignmentOperator::Assign {
-                            if let AssignmentTarget::StaticMemberExpression(mem) = &assign.left {
-                                if matches!(&mem.object, Expression::ThisExpression(_)) {
-                                    let prop_name = mem.property.name.to_string();
-                                    if !declared_field_names.contains(&prop_name)
-                                        && synth_seen.insert(prop_name.clone())
-                                    {
-                                        declared_field_names.insert(prop_name.clone());
-                                        members.push(MemberFact {
-                                            name: prop_name,
-                                            kind: MemberKind::Property { ty: None },
-                                            modifiers: MemberModifiers::default(),
-                                            doc: DocFacts::default(),
-                                            decorators: Vec::new(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
+                if let Statement::ExpressionStatement(expr_stmt) = stmt
+                    && let Expression::AssignmentExpression(assign) = &expr_stmt.expression
+                    && assign.operator == AssignmentOperator::Assign
+                    && let AssignmentTarget::StaticMemberExpression(mem) = &assign.left
+                    && matches!(&mem.object, Expression::ThisExpression(_))
+                {
+                    let prop_name = mem.property.name.to_string();
+                    if !declared_field_names.contains(&prop_name)
+                        && synth_seen.insert(prop_name.clone())
+                    {
+                        declared_field_names.insert(prop_name.clone());
+                        members.push(MemberFact {
+                            name: prop_name,
+                            kind: MemberKind::Property { ty: None },
+                            modifiers: MemberModifiers::default(),
+                            doc: DocFacts::default(),
+                            decorators: Vec::new(),
+                        });
                     }
                 }
             }

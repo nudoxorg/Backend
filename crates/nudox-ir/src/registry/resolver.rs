@@ -34,7 +34,6 @@ use crate::{
 /// The resolver is held behind a `tokio::sync::Mutex`, so only one resolution
 /// runs at a time. If your resolver is stateless or internally thread-safe,
 /// consider wrapping a lock-free data structure.
-
 pub trait RegistryResolver: Sized + 'static {
     /// The tool-specific entry identifier within a package.
     ///

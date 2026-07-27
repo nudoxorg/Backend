@@ -44,15 +44,15 @@ impl ParsedDoc {
     /// The prose body: summary, then remarks, then any examples.
     pub fn documentation(&self) -> Option<String> {
         let mut sections: Vec<String> = Vec::new();
-        if let Some(s) = &self.summary {
-            if !s.is_empty() {
-                sections.push(s.clone());
-            }
+        if let Some(s) = &self.summary
+            && !s.is_empty()
+        {
+            sections.push(s.clone());
         }
-        if let Some(r) = &self.remarks {
-            if !r.is_empty() {
-                sections.push(r.clone());
-            }
+        if let Some(r) = &self.remarks
+            && !r.is_empty()
+        {
+            sections.push(r.clone());
         }
         for ex in &self.examples {
             sections.push(format!("Example:\n{ex}"));
@@ -173,14 +173,14 @@ fn strip_arity(name: &str) -> String {
 /// Strip an outer `<member …>…</member>` wrapper, returning the inner content.
 fn strip_member_wrapper(doc: &str) -> &str {
     let trimmed = doc.trim();
-    if let Some(rest) = trimmed.strip_prefix("<member") {
-        if let Some(gt) = rest.find('>') {
-            let inner = &rest[gt + 1..];
-            if let Some(end) = inner.rfind("</member>") {
-                return &inner[..end];
-            }
-            return inner;
+    if let Some(rest) = trimmed.strip_prefix("<member")
+        && let Some(gt) = rest.find('>')
+    {
+        let inner = &rest[gt + 1..];
+        if let Some(end) = inner.rfind("</member>") {
+            return &inner[..end];
         }
+        return inner;
     }
     trimmed
 }

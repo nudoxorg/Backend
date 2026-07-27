@@ -559,7 +559,7 @@ fn lower_type_params(
             // The GenericParam already holds them; emit a WherePred for consumers
             // that only read the where clause.
             wheres.push(WherePred {
-                target: Type::Any, // stand-in: no Type::TypeParam yet
+                target: Type::TypeVar(tp.name.to_string()),
                 bounds: bounds.into_boxed_slice(),
             });
         } else {
@@ -1203,34 +1203,34 @@ fn lower_method(
     // --- Output params (return type only). --------------------------------
     let mut output_refs: Vec<Ref<nudox_ir::kinds::param::Param>> = Vec::new();
 
-    if let Some(ret) = &m.return_type {
-        if !ret.is_void() {
-            let ret_id = JavaId(format!("{owner_qname}#{}/$return", m.name));
-            let ret_ty = lower_type(ctx,ret);
-            let ret_doc = parsed
-                .as_ref()
-                .and_then(|p| p.returns.clone())
-                .unwrap_or_default();
-            let ret_sym = Symbol {
-                name: String::new(),
-                visibility: Visibility::Public,
-                documentation: ret_doc,
-                source: PathBuf::from(src),
-                span: 0..0,
-                aliases: Box::new([]),
-                deprecation: None,
-                doc_links: Box::new([]),
-                attrs: Box::new([]),
-                cfg: None,
-            };
-            let rref = ctx.low.declare(
-                ret_id,
-                Some(mid.clone()),
-                ret_sym,
-                nudox_ir::kinds::param::Param::builder().ty(ret_ty).build(),
-            );
-            output_refs.push(rref);
-        }
+    if let Some(ret) = &m.return_type
+        && !ret.is_void()
+    {
+        let ret_id = JavaId(format!("{owner_qname}#{}/$return", m.name));
+        let ret_ty = lower_type(ctx, ret);
+        let ret_doc = parsed
+            .as_ref()
+            .and_then(|p| p.returns.clone())
+            .unwrap_or_default();
+        let ret_sym = Symbol {
+            name: String::new(),
+            visibility: Visibility::Public,
+            documentation: ret_doc,
+            source: PathBuf::from(src),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        let rref = ctx.low.declare(
+            ret_id,
+            Some(mid.clone()),
+            ret_sym,
+            nudox_ir::kinds::param::Param::builder().ty(ret_ty).build(),
+        );
+        output_refs.push(rref);
     }
 
     // Lower the declared throws clause into `Function::throws: List<Type>`.
@@ -1437,10 +1437,10 @@ fn lower_constructor(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method) {
     let (fn_generics, fn_wheres) = lower_type_params(ctx,&m.type_params);
 
     let mut doc_sections: Vec<String> = Vec::new();
-    if let Some(p) = &parsed {
-        if let Some(text) = p.documentation() {
-            doc_sections.push(text);
-        }
+    if let Some(p) = &parsed
+        && let Some(text) = p.documentation()
+    {
+        doc_sections.push(text);
     }
 
     let doc_links: Vec<String> = parsed.as_ref().map(|p| p.links.clone()).unwrap_or_default();

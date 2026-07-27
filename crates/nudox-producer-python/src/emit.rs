@@ -696,7 +696,7 @@ mod tests {
             .downcast::<Function>()
             .expect("fetch must be a Function");
         assert!(
-            body.body().modifiers.iter().any(|m| *m == FnModifier::Async),
+            body.body().modifiers.contains(&FnModifier::Async),
             "async function must carry FnModifier::Async"
         );
     }

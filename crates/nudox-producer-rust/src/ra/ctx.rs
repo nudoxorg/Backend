@@ -16,18 +16,13 @@
 //! (e.g. two `fn new` in different inherent impls) we append `#1`, `#2`, … so
 //! `Lowering` does not see duplicate keys.
 
-use std::sync::Arc;
-
-use ra_ap_base_db::SourceDatabase;
 use ra_ap_hir::{
-    Crate, DisplayTarget, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Semantics,
-    Trait, Visibility,
+    Crate, DisplayTarget, HasVisibility, Module, ModuleDef, ScopeDef, Semantics,
+    Visibility,
 };
-use ra_ap_ide_db::{FileId, RootDatabase, line_index::LineIndex};
-use ra_ap_syntax::Edition;
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use ra_ap_ide_db::RootDatabase;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
-use std::hash::Hasher;
 
 use nudox_ir::entry::{Deprecation, DocLink, Visibility as IrVisibility};
 
@@ -37,22 +32,12 @@ use crate::RaId;
 /// A canonical path key, e.g. `"my_crate::Foo::bar"`.
 pub(crate) type PathKey = SmolStr;
 
-/// Bucketed impls for inherent methods + trait protocol membership.
-#[derive(Default)]
-pub(crate) struct ImplIndex {
-    /// ADT-keyed local inherent/trait impls.
-    pub(crate) by_self_ty: FxHashMap<PathKey, Vec<Impl>>,
-    /// Blanket impls whose self_ty is a bare generic param.
-    pub(crate) blanket: Vec<(Trait, Impl)>,
-}
-
 /// Per-crate lowering state.
 pub(crate) struct LowerCtx<'db> {
     pub(crate) db: &'db RootDatabase,
     pub(crate) sema: Semantics<'db, RootDatabase>,
     pub(crate) krate: Crate,
     pub(crate) display: DisplayTarget,
-    pub(crate) edition: Edition,
     pub(crate) document_private: bool,
 
     /// Canonical path string → `RaId` (same string; kept for cache hit test).
@@ -60,14 +45,6 @@ pub(crate) struct LowerCtx<'db> {
 
     /// All public paths per def (re-export aliases, incl. globs).
     pub(crate) alias_cache: FxHashMap<PathKey, FxHashSet<Vec<String>>>,
-
-    /// Trait- and self-ty-bucketed impls.
-    pub(crate) impls: ImplIndex,
-
-    /// FileId → LineIndex, lazily built for source-map extraction.
-    pub(crate) lines: FxHashMap<FileId, Arc<LineIndex>>,
-
-    pub(crate) visiting: FxHashSet<PathKey>,
 
     /// Counter per canonical path stem; used to disambiguate overloads.
     ///
@@ -80,19 +57,14 @@ pub(crate) struct LowerCtx<'db> {
 impl<'db> LowerCtx<'db> {
     pub(crate) fn new(db: &'db RootDatabase, krate: Crate, document_private: bool) -> Self {
         let display = krate.to_display_target(db);
-        let edition = krate.edition(db);
         LowerCtx {
             sema: Semantics::new(db),
             db,
             krate,
             display,
-            edition,
             document_private,
             path_cache: FxHashMap::default(),
             alias_cache: FxHashMap::default(),
-            impls: ImplIndex::default(),
-            lines: FxHashMap::default(),
-            visiting: FxHashSet::default(),
             overload_count: FxHashMap::default(),
         }
     }
@@ -261,49 +233,6 @@ impl<'db> LowerCtx<'db> {
         }
     }
 
-    // ── Impl index ────────────────────────────────────────────────────────────
-
-    /// Rebuild the impl index from `Impl::all_in_crate`.
-    ///
-    /// Must be called after the full module walk so all ADT paths are cached.
-    pub(crate) fn build_impl_index(&mut self) {
-        let all: Vec<Impl> = Impl::all_in_crate(self.db, self.krate);
-        let mut by_self_ty: FxHashMap<PathKey, Vec<Impl>> = FxHashMap::default();
-        let mut blanket: Vec<(Trait, Impl)> = Vec::new();
-
-        for imp in all {
-            let self_ty = imp.self_ty(self.db);
-
-            if let Some(adt) = self_ty.as_adt() {
-                if let Some(key) = self.canonical(ModuleDef::Adt(adt)) {
-                    by_self_ty.entry(key).or_default().push(imp);
-                }
-                continue;
-            }
-            if self_ty.as_type_param(self.db).is_some() {
-                if let Some(tr) = imp.trait_(self.db) {
-                    blanket.push((tr, imp));
-                }
-            }
-        }
-
-        self.impls.by_self_ty = by_self_ty;
-        self.impls.blanket = blanket;
-    }
-
-    // ── LineIndex ─────────────────────────────────────────────────────────────
-
-    /// Lazy `LineIndex` for `file_id`.
-    pub(crate) fn line_index(&mut self, file_id: FileId) -> Option<Arc<LineIndex>> {
-        if let Some(li) = self.lines.get(&file_id) {
-            return Some(li.clone());
-        }
-        let text = self.db.file_text(file_id).text(self.db);
-        let li = Arc::new(LineIndex::new(text));
-        self.lines.insert(file_id, li.clone());
-        Some(li)
-    }
-
     // ── Path segments ─────────────────────────────────────────────────────────
 
     /// Defining-module path segments for `def`, crate name first.
@@ -333,16 +262,6 @@ impl<'db> LowerCtx<'db> {
         segs.reverse();
         Some(segs)
     }
-}
-
-// ── Stable hash (for type_links, deferred to resolution plane) ───────────────
-
-/// Deterministic hash of a canonical path; used for link keys when no Ref is
-/// available (e.g. external types that are not lowered in this pass).
-pub(crate) fn stable_id(path: &PathKey) -> i64 {
-    let mut hasher = FxHasher::default();
-    hasher.write(path.as_bytes());
-    hasher.finish() as i64
 }
 
 /// Rustc / display crate name (`odd-duck` package → `odd_duck`).

@@ -41,10 +41,10 @@ pub fn jsdoc_for_node<'a>(semantic: &'a Semantic<'a>, node_id: NodeId) -> DocFac
 
 /// Resolve JSDoc for an arbitrary span (fallback for TS-only AST kinds).
 pub fn jsdoc_for_span<'a>(semantic: &'a Semantic<'a>, span: Span) -> DocFacts {
-    if let Some(docs) = semantic.jsdoc().get_all_by_span(span) {
-        if let Some(jsdoc) = docs.last() {
-            return extract_doc_facts(jsdoc.clone());
-        }
+    if let Some(docs) = semantic.jsdoc().get_all_by_span(span)
+        && let Some(jsdoc) = docs.last()
+    {
+        return extract_doc_facts(jsdoc.clone());
     }
 
     let source = semantic.source_text();

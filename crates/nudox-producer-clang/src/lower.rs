@@ -145,11 +145,7 @@ fn lower_record(rec: &OracleRecord, oracle: &ClangOracle, out: &mut Lowering<Usr
     // Super-types.
     let super_types: Vec<Type> = rec.super_types.iter().map(lower_type).collect();
 
-    // RecordForm — IR has no Union variant; map union → Struct (gap noted in module doc).
-    let form = match (rec.is_union, rec.is_class) {
-        _ if rec.is_union => RecordForm::Union,
-        _ => RecordForm::Struct,
-    };
+    let form = if rec.is_union { RecordForm::Union } else { RecordForm::Struct };
 
     let sym = make_sym(
         &rec.name,

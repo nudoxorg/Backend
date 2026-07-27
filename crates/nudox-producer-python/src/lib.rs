@@ -51,7 +51,7 @@
 //! 1. The `Field` would carry `FieldKey::Named` which clashes with the method.
 //! 2. The type is available on the `Function`'s return param, which is the
 //!    canonical place for property types.
-//! If a future consumer needs `Field` semantics, the emit layer can be extended.
+//!    If a future consumer needs `Field` semantics, the emit layer can be extended.
 //!
 //! # @classmethod decision
 //!

@@ -5,11 +5,10 @@
 //!   1. A **pure parser** ([`parse`] / [`ParsedDocstring`]) that takes the raw
 //!      text of a Python docstring (with or without surrounding quotes) and
 //!      pulls out a summary, body prose, per-parameter descriptions, and a
-//!      returns description. It detects Google (`Args:`), NumPy (`Parameters`
-//!      + dashes), and Sphinx (`:param x:`) conventions. It is deliberately
-//!      pragmatic — "good enough for full-resolution IR", not a perfect parser
-//!      — and is unit-tested directly at the bottom of this file (no pyrefly
-//!      needed).
+//!      returns description. It detects Google (`Args:`), NumPy
+//!      (`Parameters` with dashes), and Sphinx (`:param x:`) conventions.
+//!      The parser is deliberately pragmatic ("good enough for full-resolution
+//!      IR") and is unit-tested directly at the bottom of this file.
 //!
 //!   2. A key-based lookup layer ([`DocCatalog`]) that maps module / top-level
 //!      def / top-level class / method names to their parsed docstrings. When
@@ -192,10 +191,10 @@ fn strip_quotes(text: &str) -> &str {
         matches!(c, 'r' | 'R' | 'b' | 'B' | 'u' | 'U' | 'f' | 'F')
     });
     for q in ["\"\"\"", "'''", "\"", "'"] {
-        if let Some(inner) = after_prefix.strip_prefix(q) {
-            if let Some(inner) = inner.strip_suffix(q) {
-                return inner;
-            }
+        if let Some(inner) = after_prefix.strip_prefix(q)
+            && let Some(inner) = inner.strip_suffix(q)
+        {
+            return inner;
         }
     }
     trimmed
@@ -302,10 +301,10 @@ fn section_kind(lines: &[String], idx: usize) -> Option<SectionKind> {
         return Some(SectionKind::Other);
     }
 
-    if let Some(name) = trimmed.strip_suffix(':') {
-        if let Some(kind) = header_kind(name) {
-            return Some(kind);
-        }
+    if let Some(name) = trimmed.strip_suffix(':')
+        && let Some(kind) = header_kind(name)
+    {
+        return Some(kind);
     }
 
     if header_kind(trimmed).is_some()

@@ -128,18 +128,13 @@ pub struct DocFacts {
 // ── Per-declaration data ──────────────────────────────────────────────────────
 
 /// Typed modifiers on a TypeScript declaration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Accessibility {
+    #[default]
     Public,
     Protected,
     Private,
     PrivateField,
-}
-
-impl Default for Accessibility {
-    fn default() -> Self {
-        Accessibility::Public
-    }
 }
 
 /// Modifiers that can appear on class members.

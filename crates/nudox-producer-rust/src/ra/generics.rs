@@ -162,38 +162,36 @@ fn path_type_to_type(
     let Some(path) = path_ty.path() else {
         return nudox_ir::kinds::Type::Any;
     };
-    if let Some(res) = ty::resolve_path_opt(ctx, &path) {
-        use ra_ap_hir::PathResolution;
-        if let PathResolution::Def(def) = res {
-            if let Some(key) = ctx.canonical(def)
-                && let Some(raw_ref) = ref_for(&key)
-            {
-                // Generic args on the trait ref; only type args kept.
-                let type_args: Box<[nudox_ir::kinds::Type]> = path
-                    .segment()
-                    .and_then(|s| s.generic_arg_list())
-                    .map(|list| {
-                        list.generic_args()
-                            .filter_map(|arg| match arg {
-                                ast::GenericArg::TypeArg(ta) => ta
-                                    .ty()
-                                    .map(|t| ty::lower_ast_type(ctx, &t, ref_for)),
-                                _ => None,
-                            })
-                            .collect()
+    use ra_ap_hir::PathResolution;
+    if let Some(res) = ty::resolve_path_opt(ctx, &path)
+        && let PathResolution::Def(def) = res
+        && let Some(key) = ctx.canonical(def)
+        && let Some(raw_ref) = ref_for(&key)
+    {
+        // Generic args on the trait ref; only type args kept.
+        let type_args: Box<[nudox_ir::kinds::Type]> = path
+            .segment()
+            .and_then(|s| s.generic_arg_list())
+            .map(|list| {
+                list.generic_args()
+                    .filter_map(|arg| match arg {
+                        ast::GenericArg::TypeArg(ta) => ta
+                            .ty()
+                            .map(|t| ty::lower_ast_type(ctx, &t, ref_for)),
+                        _ => None,
                     })
-                    .unwrap_or_default();
+                    .collect()
+            })
+            .unwrap_or_default();
 
-                let base = nudox_ir::kinds::Type::Nominal(raw_ref);
-                if type_args.is_empty() {
-                    return base;
-                }
-                return nudox_ir::kinds::Type::Apply {
-                    base: Box::new(base),
-                    args: type_args,
-                };
-            }
+        let base = nudox_ir::kinds::Type::Nominal(raw_ref);
+        if type_args.is_empty() {
+            return base;
         }
+        return nudox_ir::kinds::Type::Apply {
+            base: Box::new(base),
+            args: type_args,
+        };
     }
     nudox_ir::kinds::Type::Any
 }

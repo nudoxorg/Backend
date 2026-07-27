@@ -227,7 +227,10 @@ fn ast_param_types(
         return f
             .params_without_self(ctx.db)
             .iter()
-            .map(|p| ty::lower_hir_type_fallback(ctx, &p.ty(), ref_for))
+            .map(|p| {
+                let hir_ty = p.ty();
+                ty::lower_hir_type_fallback(ctx, hir_ty, ref_for)
+            })
             .collect();
     };
     let Some(list) = src.value.param_list() else {
@@ -239,14 +242,18 @@ fn ast_param_types(
         .map(|(i, p)| match p.ty() {
             Some(t) => {
                 if let Some(hp) = hir_params.get(i) {
-                    ty::lower_type_prefer_ast(ctx, Some(&t), &hp.ty(), ref_for)
+                    let hir_ty = hp.ty();
+                    ty::lower_type_prefer_ast(ctx, Some(&t), hir_ty, ref_for)
                 } else {
                     ty::lower_ast_type(ctx, &t, ref_for)
                 }
             }
             None => hir_params
                 .get(i)
-                .map(|hp| ty::lower_hir_type_fallback(ctx, &hp.ty(), ref_for))
+                .map(|hp| {
+                    let hir_ty = hp.ty();
+                    ty::lower_hir_type_fallback(ctx, hir_ty, ref_for)
+                })
                 .unwrap_or(Type::Any),
         })
         .collect()

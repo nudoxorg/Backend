@@ -186,16 +186,16 @@ fn parse_doc(raw: &str) -> (Option<Deprecation>, Box<[DocLink]>) {
         }
 
         // Paragraph start: check for Deprecated: prefix.
-        if prev_blank {
-            if let Some(rest) = trimmed.strip_prefix("Deprecated:") {
-                in_deprecated_para = true;
-                let note = rest.trim();
-                if !note.is_empty() {
-                    deprecated_lines.push(note);
-                }
-                prev_blank = false;
-                continue;
+        if prev_blank
+            && let Some(rest) = trimmed.strip_prefix("Deprecated:")
+        {
+            in_deprecated_para = true;
+            let note = rest.trim();
+            if !note.is_empty() {
+                deprecated_lines.push(note);
             }
+            prev_blank = false;
+            continue;
         }
 
         if in_deprecated_para {

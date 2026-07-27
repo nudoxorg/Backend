@@ -80,7 +80,7 @@ pub fn map_visibility(s: &str) -> nudox_ir::entry::Visibility {
 ///
 /// `out` is borrowed mutably so `refer` can be called for nominal types.
 /// `refer` is idempotent and order-independent, so forward references are free.
-pub fn lower_type<'a>(
+pub fn lower_type(
     t: &TypeSig,
     name_to_doc_id: &HashMap<String, String>,
     out: &mut Lowering<String>,

@@ -288,7 +288,6 @@ fn lower_free_function(
     let Some(fd) = function::lower_function(ctx, f, &mut ref_for) else {
         return Ok(());
     };
-    drop(ref_for);
 
     // Declare Param entries first, then build Refs for the Function body.
     let input_refs = declare_params(ctx, &fn_id, &fd.input_params, parent.clone(), out);
@@ -369,9 +368,7 @@ fn lower_struct(
     let hir_self = attach_db(ctx.db, || ra_ap_hir::Adt::Struct(s).ty(ctx.db));
     let auto: Vec<AutoFact> = probe_auto_traits_partial(ctx, &hir_self);
 
-    drop(ref_for);
 
-    // Declare field entries after releasing ref_for so out is free.
     let field_refs = match s.kind(ctx.db) {
         StructKind::Unit => Vec::new(),
         StructKind::Tuple | StructKind::Record => {
@@ -426,9 +423,7 @@ fn lower_enum(
     let hir_self = attach_db(ctx.db, || ra_ap_hir::Adt::Enum(e).ty(ctx.db));
     let auto: Vec<AutoFact> = probe_auto_traits_partial(ctx, &hir_self);
 
-    // Release ref_for before the variant loop so `out` is not double-borrowed
     // (declare_hir_fields creates its own ref_for internally).
-    drop(ref_for);
 
     // Declare variant entries.
     let variant_refs: Vec<Ref<Variant>> = e
@@ -652,7 +647,6 @@ fn lower_trait(
         },
         sealed: detect_sealed(ctx, t),
     };
-    drop(ref_for);
 
     // Declare assoc items as children.
     lower_trait_assoc_items(ctx, t, &trait_id, out)?;
@@ -774,7 +768,6 @@ pub(crate) fn lower_impl(
         negative: imp.is_negative(ctx.db),
         blanket: attach_db(ctx.db, || imp.self_ty(ctx.db).as_type_param(ctx.db).is_some()),
     };
-    drop(ref_for);
 
     // Declare impl methods as children.
     for item in imp.items(ctx.db) {
@@ -919,7 +912,6 @@ fn lower_type_alias(
                 .collect()
         })
         .unwrap_or_default();
-    drop(ref_for);
 
     let alias_body = Alias::builder()
         .maybe_target(target.filter(|t| !matches!(t, nudox_ir::kinds::Type::Any)))
@@ -1001,7 +993,6 @@ fn lower_const(
             }
         }
     };
-    drop(ref_for);
 
     let const_body = Const::builder().ty(const_ty).maybe_value(value).build();
 
@@ -1038,7 +1029,6 @@ fn lower_static(
     };
 
     let mutable = s.is_mut(ctx.db);
-    drop(ref_for);
 
     let static_body = Static::builder().ty(static_ty).mutable(mutable).build();
 
@@ -1110,7 +1100,6 @@ fn declare_hir_fields(
                 FieldData { field_id, key, ty: field_ty, visibility, doc }
             })
             .collect()
-        // ref_for dropped here, releasing the borrow on out
     };
 
     // Pass 2: declare all fields into `out` (ref_for is gone; out is free).

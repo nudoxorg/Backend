@@ -19,44 +19,20 @@ use crate::error::RustProducerError;
 
 // ── Policy types ──────────────────────────────────────────────────────────────
 
-/// How the proc-macro server is located.
-#[derive(Debug, Clone)]
-pub enum ProcMacroPolicy {
-    /// Use the sysroot's `rust-analyzer-proc-macro-srv`.
-    Sysroot,
-    /// Skip expansion entirely.
-    Disabled,
-}
-
-/// How deep auto/blanket-impl synthesis goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ProbeTier {
-    Off,
-    #[default]
-    Std,
-    Graph,
-}
-
 /// Configuration for a single workspace load.
 #[derive(Debug, Clone)]
 pub struct ExtractConfig {
-    pub document_private: bool,
     pub offline: bool,
     pub run_build_scripts: bool,
-    pub proc_macros: ProcMacroPolicy,
-    pub probe: ProbeTier,
     pub num_threads: usize,
 }
 
 impl ExtractConfig {
-    /// Defaults matched to the rustdoc path (offline, build scripts on, std probes).
-    pub fn for_extract(document_private: bool) -> Self {
+    /// Defaults matched to the rustdoc path (offline, build scripts on).
+    pub fn for_extract() -> Self {
         Self {
-            document_private,
             offline: true,
             run_build_scripts: true,
-            proc_macros: ProcMacroPolicy::Sysroot,
-            probe: ProbeTier::Std,
             num_threads: thread::available_parallelism()
                 .map(|n| n.get().min(8))
                 .unwrap_or(1),
@@ -98,7 +74,7 @@ pub(crate) fn load(
     root: &Path,
     document_private: bool,
 ) -> Result<LoadedWorkspace, RustProducerError> {
-    let cfg = ExtractConfig::for_extract(document_private);
+    let cfg = ExtractConfig::for_extract();
 
     let cargo_config = build_cargo_config(&cfg);
     let load_config = build_load_config(&cfg);
@@ -133,7 +109,7 @@ pub(crate) fn load(
         load_workspace(ws.clone(), &cargo_config.extra_env, &load_config)
             .map_err(|e| RustProducerError::Load(e.to_string()))?;
 
-    if proc_macro.is_none() && !matches!(cfg.proc_macros, ProcMacroPolicy::Disabled) {
+    if proc_macro.is_none() {
         warn!("proc-macro server unavailable; macro-generated items will be missing");
     }
 
@@ -172,17 +148,10 @@ fn build_cargo_config(cfg: &ExtractConfig) -> CargoConfig {
 fn build_load_config(cfg: &ExtractConfig) -> LoadCargoConfig {
     LoadCargoConfig {
         load_out_dirs_from_check: cfg.run_build_scripts,
-        with_proc_macro_server: proc_macro_choice(&cfg.proc_macros),
+        with_proc_macro_server: ProcMacroServerChoice::Sysroot,
         prefill_caches: false,
         num_worker_threads: cfg.num_threads.max(1),
         proc_macro_processes: 1,
-    }
-}
-
-fn proc_macro_choice(policy: &ProcMacroPolicy) -> ProcMacroServerChoice {
-    match policy {
-        ProcMacroPolicy::Sysroot => ProcMacroServerChoice::Sysroot,
-        ProcMacroPolicy::Disabled => ProcMacroServerChoice::None,
     }
 }
 

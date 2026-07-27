@@ -163,7 +163,7 @@ fn emit_interface(
 
     // Emit methods as child Function entries.
     for method in &body.methods {
-        let method_id = TsId::new(id.module.clone(), &format!("{}::{}", id.name, method.name), 0);
+        let method_id = TsId::new(id.module.clone(), format!("{}::{}", id.name, method.name), 0);
         let method_sym = Symbol {
             name: method.name.clone(),
             visibility: accessibility_to_visibility(method.modifiers.accessibility),
@@ -181,7 +181,7 @@ fn emit_interface(
 
     // Emit properties as child Field entries.
     for prop in &body.properties {
-        let prop_id = TsId::new(id.module.clone(), &format!("{}::{}", id.name, prop.name), 0);
+        let prop_id = TsId::new(id.module.clone(), format!("{}::{}", id.name, prop.name), 0);
         let prop_sym = Symbol {
             name: prop.name.clone(),
             visibility: accessibility_to_visibility(prop.modifiers.accessibility),
@@ -295,7 +295,7 @@ fn emit_class(
             MemberKind::Property { ty } | MemberKind::Accessor { ty } => {
                 let field_id = TsId::new(
                     id.module.clone(),
-                    &format!("{}::{}", id.name, member.name),
+                    format!("{}::{}", id.name, member.name),
                     idx as u32,
                 );
                 let fref: Ref<Field> = out.refer(field_id.clone());
@@ -355,7 +355,7 @@ fn emit_class(
                 for (overload_idx, sig) in sigs_ref.iter().enumerate() {
                     let method_id = TsId::new(
                         id.module.clone(),
-                        &format!("{}::{}", id.name, member.name),
+                        format!("{}::{}", id.name, member.name),
                         (idx * 1000 + overload_idx) as u32,
                     );
                     let method_sym = Symbol {
@@ -376,7 +376,7 @@ fn emit_class(
             MemberKind::Constructor(s) => {
                 let method_id = TsId::new(
                     id.module.clone(),
-                    &format!("{}::{}", id.name, member.name),
+                    format!("{}::{}", id.name, member.name),
                     (idx * 1000) as u32,
                 );
                 let method_sym = Symbol {
@@ -397,7 +397,7 @@ fn emit_class(
             MemberKind::StaticBlock { name: block_name } => {
                 let sb_id = TsId::new(
                     id.module.clone(),
-                    &format!("{}::{}", id.name, block_name),
+                    format!("{}::{}", id.name, block_name),
                     idx as u32,
                 );
                 let sb_sym = Symbol {
@@ -463,7 +463,7 @@ fn emit_enum(
     let mut variant_refs: Vec<Ref<Variant>> = Vec::with_capacity(body.variants.len());
 
     for (idx, v) in body.variants.iter().enumerate() {
-        let variant_id = TsId::new(id.module.clone(), &format!("{}::{}", id.name, v.name), idx as u32);
+        let variant_id = TsId::new(id.module.clone(), format!("{}::{}", id.name, v.name), idx as u32);
         let vref: Ref<Variant> = out.refer(variant_id.clone());
         variant_refs.push(vref);
 
@@ -547,7 +547,7 @@ fn emit_function(
 
     for (idx, p) in body.params.iter().enumerate() {
         let param_id =
-            TsId::new(id.module.clone(), &format!("{}::param::{}", id.name, p.name), idx as u32);
+            TsId::new(id.module.clone(), format!("{}::param::{}", id.name, p.name), idx as u32);
         let pref: Ref<Param> = out.refer(param_id.clone());
         param_refs.push(pref);
 
@@ -564,7 +564,7 @@ fn emit_function(
     // Output parameter: return type, if any.
     let mut output_refs: Vec<Ref<Param>> = Vec::new();
     if let Some(ret) = &body.return_type {
-        let ret_id = TsId::new(id.module.clone(), &format!("{}::return", id.name), 0);
+        let ret_id = TsId::new(id.module.clone(), format!("{}::return", id.name), 0);
         let rref: Ref<Param> = out.refer(ret_id.clone());
         output_refs.push(rref);
         let param_sym = Symbol {
@@ -916,18 +916,9 @@ fn lower_generics(params: &[GenericParamOwned]) -> Vec<GenericParam> {
 // ── Symbol construction ────────────────────────────────────────────────────────
 
 fn make_sym(decl: &DeclFact) -> Symbol {
-    // Visibility is not Clone; reconstruct from the discriminant.
-    let visibility = match decl.visibility {
-        Visibility::Public => Visibility::Public,
-        Visibility::Private => Visibility::Private,
-        Visibility::Protected => Visibility::Protected,
-        Visibility::Internal => Visibility::Internal,
-        Visibility::Package => Visibility::Package,
-        Visibility::Crate => Visibility::Crate,
-    };
     Symbol {
         name: decl.name.clone(),
-        visibility,
+        visibility: decl.visibility,
         documentation: decl.doc.doc.clone().unwrap_or_default(),
         source: decl.module.clone(),
         span: (decl.span_start as usize)..(decl.span_end as usize),

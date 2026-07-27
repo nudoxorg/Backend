@@ -408,10 +408,10 @@ fn function_sig_key(f: &Function) -> ContentBlake3 {
 fn oracle_ref_set(facts: &BodyFacts) -> BTreeSet<&StableRef> {
     let mut set = BTreeSet::new();
     for call in &facts.oracle.calls {
-        if call.confidence.is_graph_worthy() {
-            if let Some(target) = &call.target {
-                set.insert(target);
-            }
+        if call.confidence.is_graph_worthy()
+            && let Some(target) = &call.target
+        {
+            set.insert(target);
         }
     }
     for tm in &facts.oracle.type_mentions {
@@ -851,27 +851,27 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
 
     let mut del_bucket: BTreeMap<Bucket, Vec<IntroId>> = BTreeMap::new();
     for d in &deleted_ids {
-        if let Some(entry) = prior_map.get(d) {
-            if let Some(disc) = entry.kind().discriminant() {
-                let parent = prev.parent_of(*d);
-                del_bucket
-                    .entry(bucket_of(disc, parent, &entry.sym().name))
-                    .or_default()
-                    .push(*d);
-            }
+        if let Some(entry) = prior_map.get(d)
+            && let Some(disc) = entry.kind().discriminant()
+        {
+            let parent = prev.parent_of(*d);
+            del_bucket
+                .entry(bucket_of(disc, parent, &entry.sym().name))
+                .or_default()
+                .push(*d);
         }
     }
 
     let mut add_bucket: BTreeMap<Bucket, Vec<IntroId>> = BTreeMap::new();
     for a in &added_ids {
-        if let Some(&(disc, parent)) = next_meta.get(a) {
-            if let Some(entry) = next.entry(*a) {
-                let durable_parent = parent.map(|p| sigma.get(&p).copied().unwrap_or(p));
-                add_bucket
-                    .entry(bucket_of(disc, durable_parent, &entry.sym().name))
-                    .or_default()
-                    .push(*a);
-            }
+        if let Some(&(disc, parent)) = next_meta.get(a)
+            && let Some(entry) = next.entry(*a)
+        {
+            let durable_parent = parent.map(|p| sigma.get(&p).copied().unwrap_or(p));
+            add_bucket
+                .entry(bucket_of(disc, durable_parent, &entry.sym().name))
+                .or_default()
+                .push(*a);
         }
     }
 
@@ -880,10 +880,9 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
     for (bucket, ds) in &del_bucket {
         if let (Some([d]), Some(adds)) =
             (<&[IntroId; 1]>::try_from(ds.as_slice()).ok(), add_bucket.get(bucket))
+            && let Ok([a]) = <&[IntroId; 1]>::try_from(adds.as_slice())
         {
-            if let Some([a]) = <&[IntroId; 1]>::try_from(adds.as_slice()).ok() {
-                forced_high.insert(*a, *d);
-            }
+            forced_high.insert(*a, *d);
         }
     }
 
@@ -1101,7 +1100,7 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
                         r_ov_forced: false,
                         shape_matched: kind_shape_hash(next_entry)
                             == prior_entry
-                                .map(|pe| kind_shape_hash(pe))
+                                .map(kind_shape_hash)
                                 .unwrap_or_else(|| kind_shape_hash(next_entry)),
                         name_matched: true,
                         parent_matched: true,
@@ -1223,19 +1222,6 @@ mod tests {
         s
     }
 
-    fn sym_with_src(name: &str, src: &str) -> Symbol {
-        let mut s = sym(name);
-        s.source = PathBuf::from(src);
-        s
-    }
-
-    fn sym_rich(name: &str, doc: &str, src: &str) -> Symbol {
-        let mut s = sym(name);
-        s.documentation = doc.to_owned();
-        s.source = PathBuf::from(src);
-        s
-    }
-
     fn module_entry(s: Symbol) -> crate::entry::Entry {
         crate::entry::Entry::new(s, Node::build(None::<RawRef>, []), Module.into_kind())
     }
@@ -1326,10 +1312,6 @@ mod tests {
             tree: TreesitterBody::default(),
             oracle: OracleBody { calls, type_mentions: vec![], reads_writes: vec![] },
         })
-    }
-
-    fn sigma_of(s: &Substitution) -> BTreeMap<IntroId, IntroId> {
-        s.sigma()
     }
 
     fn is_continued(s: &Substitution, next: IntroId, prior: IntroId) -> bool {
@@ -1583,8 +1565,7 @@ mod tests {
             "a lone rename must be continued at the default threshold"
         );
 
-        let mut strict = Policy::default();
-        strict.threshold_high = 65; // above the pair's score of 60
+        let strict = Policy { threshold_high: 65, ..Policy::default() }; // above the pair's score of 60
         let strict_s = resolve(&prev, &next, &strict);
         assert!(
             is_continued(&strict_s, intro(2), intro(1)),
@@ -1831,8 +1812,7 @@ mod tests {
         let mut next = view_with(vec![(intro(2), record_entry(sym("New")), None)]);
         next.set_body(intro(2), body_with_calls(&["alloc", "log"]));
 
-        let mut p = Policy::default();
-        p.enable_body_axis = false;
+        let p = Policy { enable_body_axis: false, ..Policy::default() };
         let s = resolve(&prev, &next, &p);
         assert!(is_new(&s, intro(2)), "body disabled → shape(50) < HIGH → not continued");
     }

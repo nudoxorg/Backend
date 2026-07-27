@@ -160,7 +160,7 @@ pub(crate) fn cfg_expr<D: HasAttrs + Copy>(
     def: D,
 ) -> Option<CfgExpr> {
     let ra_cfg = def.attrs(ctx.db).cfgs(ctx.db)?;
-    Some(lower_cfg(&ra_cfg))
+    Some(lower_cfg(ra_cfg))
 }
 
 fn lower_cfg(cfg: &ra_ap_cfg::CfgExpr) -> CfgExpr {
@@ -217,13 +217,13 @@ pub(crate) fn doc_links<D: HasAttrs + Copy>(
 
     for link in extract_doc_link_targets(docs) {
         let resolved = resolve_doc_path_on(ctx.db, def, &link, None, IsInnerDoc::No);
-        if let Some(DocLinkDef::ModuleDef(resolved_def)) = resolved {
-            if let Some(target_key) = ctx.canonical(resolved_def) {
-                out.push(DocLink {
-                    target: target_key.to_string(),
-                    label: Some(link),
-                });
-            }
+        if let Some(DocLinkDef::ModuleDef(resolved_def)) = resolved
+            && let Some(target_key) = ctx.canonical(resolved_def)
+        {
+            out.push(DocLink {
+                target: target_key.to_string(),
+                label: Some(link),
+            });
         }
     }
 
@@ -253,7 +253,7 @@ fn extract_doc_link_targets(docs: &str) -> Vec<String> {
         let target = if let Some(rest) = after.strip_prefix('(') {
             rest.split(')').next().map(|s| s.trim())
         } else if let Some(rest) = after.strip_prefix(':') {
-            rest.trim_start().split_whitespace().next()
+            rest.split_whitespace().next()
         } else {
             None
         };

@@ -254,10 +254,10 @@ fn lower_path_type(
 
     // `<T as Trait>::Assoc` — qualified paths are not representable in the
     // flat new IR without a separate QualifiedPath type.  Emit Any.
-    if let Some(first) = path.segments().next() {
-        if matches!(first.kind(), Some(PathSegmentKind::Type { .. })) {
-            return Type::Any;
-        }
+    if let Some(first) = path.segments().next()
+        && matches!(first.kind(), Some(PathSegmentKind::Type { .. }))
+    {
+        return Type::Any;
     }
 
     // Bare `Self`.
@@ -569,22 +569,20 @@ fn path_type_to_type(
     let Some(path) = path_ty.path() else {
         return Type::Any;
     };
-    if let Some(res) = resolve_path_opt(ctx, &path) {
-        if let PathResolution::Def(def) = res {
-            if let Some(key) = ctx.canonical(def)
-                && let Some(raw_ref) = ref_for(&key)
-            {
-                let type_args = last_segment_type_args(ctx, &path, ref_for);
-                let base = Type::Nominal(raw_ref);
-                if type_args.is_empty() {
-                    return base;
-                }
-                return Type::Apply {
-                    base: Box::new(base),
-                    args: type_args.into_boxed_slice(),
-                };
-            }
+    if let Some(res) = resolve_path_opt(ctx, &path)
+        && let PathResolution::Def(def) = res
+        && let Some(key) = ctx.canonical(def)
+        && let Some(raw_ref) = ref_for(&key)
+    {
+        let type_args = last_segment_type_args(ctx, &path, ref_for);
+        let base = Type::Nominal(raw_ref);
+        if type_args.is_empty() {
+            return base;
         }
+        return Type::Apply {
+            base: Box::new(base),
+            args: type_args.into_boxed_slice(),
+        };
     }
     Type::Any
 }

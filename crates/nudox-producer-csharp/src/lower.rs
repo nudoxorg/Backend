@@ -655,7 +655,7 @@ fn lower_delegate(
         let ret_text = sig
             .return_type
             .as_ref()
-            .map(|t| types::type_display(t))
+            .map(types::type_display)
             .unwrap_or_else(|| "void".to_string());
         extra.push(format!(
             "Invoke signature: `({}) → {}`",
@@ -918,15 +918,15 @@ fn lower_event(
     }
     // Surface asymmetric accessor accessibilities (add/remove can differ from
     // the event's own declared accessibility).
-    if let Some(add_vis) = &e.add_accessibility {
-        if add_vis != &e.accessibility {
-            extra.push(format!("Add accessor: `{add_vis}`"));
-        }
+    if let Some(add_vis) = &e.add_accessibility
+        && add_vis != &e.accessibility
+    {
+        extra.push(format!("Add accessor: `{add_vis}`"));
     }
-    if let Some(rem_vis) = &e.remove_accessibility {
-        if rem_vis != &e.accessibility {
-            extra.push(format!("Remove accessor: `{rem_vis}`"));
-        }
+    if let Some(rem_vis) = &e.remove_accessibility
+        && rem_vis != &e.accessibility
+    {
+        extra.push(format!("Remove accessor: `{rem_vis}`"));
     }
     if e.hidden {
         extra.push("Hidden (`EditorBrowsable(Never)`).".to_string());
@@ -1009,15 +1009,15 @@ fn lower_method(
 
     // --- Output parameters (return value). ---
     let mut output_refs: Vec<Ref<Param>> = Vec::new();
-    if let Some(ret) = &m.return_type {
-        if !is_void(ret) {
-            let ret_id = format!("{method_id}#ret");
-            // Forward-refer first so the ref is stable.
-            let r: Ref<Param> = out.refer(ret_id.clone());
-            output_refs.push(r);
-            let parsed_returns = parsed.as_ref().and_then(|p| p.returns.clone());
-            lower_return_param(ret, m, &parsed_returns, &method_id, name_to_doc_id, out);
-        }
+    if let Some(ret) = &m.return_type
+        && !is_void(ret)
+    {
+        let ret_id = format!("{method_id}#ret");
+        // Forward-refer first so the ref is stable.
+        let r: Ref<Param> = out.refer(ret_id.clone());
+        output_refs.push(r);
+        let parsed_returns = parsed.as_ref().and_then(|p| p.returns.clone());
+        lower_return_param(ret, m, &parsed_returns, &method_id, name_to_doc_id, out);
     }
 
     // Exception documentation from `<exception cref>` XML tags.

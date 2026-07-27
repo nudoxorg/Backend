@@ -368,27 +368,27 @@ fn visit_enum(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&
     });
 
     for child in entity.get_children() {
-        if child.get_kind() == EntityKind::EnumConstantDecl {
-            if child.is_in_main_file() {
-                let vname = child.get_name().unwrap_or_default();
-                if vname.is_empty() {
-                    continue;
-                }
-                let vusr = entity_usr(child);
-                if vusr.is_empty() {
-                    continue;
-                }
-                let discr = child.get_enum_constant_value().map(|(signed, _)| signed);
-                oracle.variants.push(OracleVariant {
-                    usr: vusr,
-                    name: vname,
-                    source_file: entity_file(child),
-                    byte_offset: entity_offset(child),
-                    discr,
-                    documentation: documentation(child),
-                    parent_usr: Some(this_usr.clone()),
-                });
+        if child.get_kind() == EntityKind::EnumConstantDecl
+            && child.is_in_main_file()
+        {
+            let vname = child.get_name().unwrap_or_default();
+            if vname.is_empty() {
+                continue;
             }
+            let vusr = entity_usr(child);
+            if vusr.is_empty() {
+                continue;
+            }
+            let discr = child.get_enum_constant_value().map(|(signed, _)| signed);
+            oracle.variants.push(OracleVariant {
+                usr: vusr,
+                name: vname,
+                source_file: entity_file(child),
+                byte_offset: entity_offset(child),
+                discr,
+                documentation: documentation(child),
+                parent_usr: Some(this_usr.clone()),
+            });
         }
     }
 }
