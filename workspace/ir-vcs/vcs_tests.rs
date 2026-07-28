@@ -1,16 +1,16 @@
 //! Gate tests for the libpijul-backed IR VCS.
 //!
-//! These prove the whole pivot works end-to-end: a `PristineIntroTable` records
+//! These prove the whole pivot works end-to-end: a `PayloadTable` records
 //! into libpijul, materializes back identically, accumulates history, unrecords,
 //! and seals a deterministic archive — with libpijul owning changes/deps/unrecord.
 
 use ir::change::{
     EcosystemId, IntroId, PackageLineageId, PackageName, StableRef,
 };
-use ir::apply::{LinkRecord, PristineIntroTable};
+use crate::vcs_types::LinkRecord; use crate::wire::PayloadTable;
 use ir::kind::KindDiscriminant;
-use ir::symbol::Visibility;
-use ir::wire::{
+use ir::entry::Visibility;
+use crate::wire::{
     EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
 };
 
@@ -67,10 +67,10 @@ fn module(name: &str) -> OwnedEntryPayload {
 
 /// A module `root` (intro 1) with a nested function `do_thing` (intro 2) linked
 /// to it.
-fn sample_ir() -> PristineIntroTable {
+fn sample_ir() -> PayloadTable {
     let m = intro(1);
     let f = intro(2);
-    let mut ir = PristineIntroTable::new();
+    let mut ir = PayloadTable::new();
     ir.insert_live(m, module("root"), None);
     ir.insert_live(f, function("do_thing"), Some(m));
     ir.insert_link(LinkRecord {
@@ -122,7 +122,7 @@ fn history_accumulates_across_generations() {
     let m = intro(1);
 
     // Gen A: just the module.
-    let mut a = PristineIntroTable::new();
+    let mut a = PayloadTable::new();
     a.insert_live(m, module("root"), None);
     let ha = repo.record_generation(&a).unwrap().unwrap();
 
@@ -146,7 +146,7 @@ fn unrecord_reverts_to_prior_generation() {
     let repo = IrRepository::in_memory(pkg(), "main").unwrap();
     let m = intro(1);
 
-    let mut a = PristineIntroTable::new();
+    let mut a = PayloadTable::new();
     a.insert_live(m, module("root"), None);
     repo.record_generation(&a).unwrap().unwrap();
 
@@ -238,8 +238,8 @@ fn vlabel(s: &str) -> VersionLabel {
 }
 
 /// A flat table of top-level functions (no parents, no links) keyed by intro.
-fn func_table(entries: &[(u8, &str)]) -> PristineIntroTable {
-    let mut t = PristineIntroTable::new();
+fn func_table(entries: &[(u8, &str)]) -> PayloadTable {
+    let mut t = PayloadTable::new();
     for (n, name) in entries {
         t.insert_live(intro(*n), function(name), None);
     }
@@ -738,10 +738,10 @@ fn bench_replay_vs_snapshot() {
     const VERSIONS: u32 = 6; // number of published versions
     const DELTA: u32 = 8; // symbols changed between versions
 
-    fn table_gen(generation: u32) -> PristineIntroTable {
+    fn table_gen(generation: u32) -> PayloadTable {
         // Every symbol's name embeds the generation only if it's in the changed
         // window, so successive generations differ by DELTA symbols.
-        let mut t = PristineIntroTable::new();
+        let mut t = PayloadTable::new();
         for i in 0..N {
             let changed_at = if i < generation * DELTA {
                 (i / DELTA + 1).min(generation)
@@ -861,9 +861,9 @@ fn bench_replay_vs_snapshot() {
 
 use crate::session::StagedEntry;
 
-/// Convert a `PristineIntroTable` entry into a `StagedEntry` for session staging.
+/// Convert a `PayloadTable` entry into a `StagedEntry` for session staging.
 fn table_entry_to_staged(
-    table: &PristineIntroTable,
+    table: &PayloadTable,
     intro_id: IntroId,
 ) -> StagedEntry {
     let payload = table.get(intro_id).unwrap().clone();
@@ -871,7 +871,7 @@ fn table_entry_to_staged(
     // Collect links where this intro is the canonical owner.
     let package = pkg();
     let self_ref = StableRef::new(package.clone(), intro_id);
-    let links: Vec<ir::serialize::LinkWire> = table
+    let links: Vec<crate::serialize::LinkWire> = table
         .links()
         .filter(|l| l.a == self_ref || l.b == self_ref)
         .filter_map(|l| {
@@ -896,7 +896,7 @@ fn table_entry_to_staged(
             } else {
                 (l.kind_b, l.kind_a, l.a.clone())
             };
-            Some(ir::serialize::LinkWire { other, kind_self, kind_other })
+            Some(crate::serialize::LinkWire { other, kind_self, kind_other })
         })
         .collect();
 
@@ -960,7 +960,7 @@ fn session_equivalence_property() {
 fn session_deletion_semantics() {
     // Start with 3 symbols.
     let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
-    let mut initial = PristineIntroTable::new();
+    let mut initial = PayloadTable::new();
     initial.insert_live(intro(1), module("root"), None);
     initial.insert_live(intro(2), function("alpha"), None);
     initial.insert_live(intro(3), function("beta"), None);
@@ -993,7 +993,7 @@ fn session_checkpoint_mid_session() {
     let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
 
     // Start: record 3 symbols.
-    let mut initial = PristineIntroTable::new();
+    let mut initial = PayloadTable::new();
     initial.insert_live(intro(1), module("root"), None);
     initial.insert_live(intro(2), function("alpha"), None);
     initial.insert_live(intro(3), function("beta"), None);
@@ -1005,7 +1005,7 @@ fn session_checkpoint_mid_session() {
         let mut session = repo.begin_recording().unwrap();
 
         // Stage intro(1) with changed content.
-        let mut changed = PristineIntroTable::new();
+        let mut changed = PayloadTable::new();
         changed.insert_live(intro(1), module("root_v2"), None);
         changed.insert_live(intro(2), function("alpha"), None);
 
@@ -1044,7 +1044,7 @@ fn session_checkpoint_mid_session() {
 fn session_checkpoint_never_deletes() {
     let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
 
-    let mut initial = PristineIntroTable::new();
+    let mut initial = PayloadTable::new();
     initial.insert_live(intro(1), module("root"), None);
     initial.insert_live(intro(2), function("alpha"), None);
     initial.insert_live(intro(3), function("beta"), None);
@@ -1055,7 +1055,7 @@ fn session_checkpoint_never_deletes() {
     // only state to inspect.
     {
         let mut session = repo.begin_recording().unwrap();
-        let mut changed = PristineIntroTable::new();
+        let mut changed = PayloadTable::new();
         changed.insert_live(intro(1), module("root_v2"), None);
         session
             .stage(vec![table_entry_to_staged(&changed, intro(1))])
@@ -1080,7 +1080,7 @@ fn session_checkpoint_never_deletes() {
 fn session_crash_resume() {
     let mut repo = IrRepository::in_memory(pkg(), "main").unwrap();
 
-    let mut initial = PristineIntroTable::new();
+    let mut initial = PayloadTable::new();
     initial.insert_live(intro(1), module("root"), None);
     initial.insert_live(intro(2), function("alpha"), None);
     initial.insert_live(intro(3), function("beta"), None);
@@ -1138,7 +1138,7 @@ fn session_large_batch_stage() {
     const N: u8 = 100;
 
     // Build a table of N top-level functions.
-    let mut table = PristineIntroTable::new();
+    let mut table = PayloadTable::new();
     for i in 0..N {
         table.insert_live(intro(i), function(&format!("sym_{i}")), None);
     }
@@ -1203,7 +1203,7 @@ fn session_foreign_package_rejected() {
 
     // Build a valid entry (correct package).
     let valid_intro = intro(10);
-    let mut valid_table = PristineIntroTable::new();
+    let mut valid_table = PayloadTable::new();
     valid_table.insert_live(valid_intro, function("valid_sym"), None);
     let valid_entry = table_entry_to_staged(&valid_table, valid_intro);
 
@@ -1255,9 +1255,9 @@ fn stream_content_hash(seed: u8) -> ContentHash {
 
 /// Build a `WireEntry` for a function symbol belonging to `pkg()`.
 fn wire_entry(name: &str, seed: u8) -> WireEntry {
-    use ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
+    use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
     use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
+    use ir::entry::Visibility;
 
     let sym = SymbolWire {
         name: name.to_owned(),
@@ -1349,7 +1349,7 @@ fn produce_stream(
 /// test is covered by `stream_separate_links_frame`.
 #[test]
 fn stream_happy_path_equivalence() {
-    use ir::apply::{LinkRecord, PristineIntroTable};
+    use crate::vcs_types::LinkRecord; use crate::wire::PayloadTable;
     use ir::kind::KindDiscriminant;
 
     let m_seed = 0x10u8;
@@ -1385,8 +1385,8 @@ fn stream_happy_path_equivalence() {
         StreamedRecording::Aborted { .. } => panic!("expected Finished"),
     }
 
-    // Build the equivalent PristineIntroTable for reference.
-    let mut ir = PristineIntroTable::new();
+    // Build the equivalent PayloadTable for reference.
+    let mut ir = PayloadTable::new();
     ir.insert_live(m_intro, function("root"), None);
     ir.insert_live(f_intro, function("do_thing"), Some(m_intro));
     ir.insert_link(LinkRecord {
@@ -1438,7 +1438,7 @@ fn stream_happy_path_equivalence() {
 fn stream_separate_links_frame() {
     use crate::protocol::{FrameWriter, StreamFrame, IR_STREAM_VERSION};
     use ir::kind::KindDiscriminant;
-    use ir::apply::{LinkRecord, PristineIntroTable};
+    use crate::vcs_types::LinkRecord; use crate::wire::PayloadTable;
 
     let m_seed = 0x10u8;
     let f_seed = 0x20u8;
@@ -1484,7 +1484,7 @@ fn stream_separate_links_frame() {
     assert!(matches!(outcome, StreamedRecording::Finished { .. }), "must finish");
 
     // Build reference via record_generation.
-    let mut ir = PristineIntroTable::new();
+    let mut ir = PayloadTable::new();
     ir.insert_live(m_intro, function("root"), None);
     ir.insert_live(f_intro, function("do_thing"), Some(m_intro));
     ir.insert_link(LinkRecord {
@@ -1681,9 +1681,9 @@ fn stream_foreign_package_rejected() {
     let foreign_pkg = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("other"));
     let foreign_ref = StableRef::new(foreign_pkg, IntroId::from_raw([0xEE; 32]));
 
-    use ir::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
+    use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
     use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
+    use ir::entry::Visibility;
 
     let foreign_entry = WireEntry {
         stable: foreign_ref,

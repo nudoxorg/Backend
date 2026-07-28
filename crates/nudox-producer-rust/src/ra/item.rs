@@ -12,11 +12,33 @@
 //! the parent is the trait's `RaId`.  For impl methods the parent is the impl's
 //! `RaId`.
 //!
+//! # ID scheme
+//!
+//! See `ctx.rs` for the authoritative description.  In brief:
+//!
+//! - Nested items (impl/trait members, fields, variants, params) always derive
+//!   their id from their parent via `LowerCtx::child_id(parent, name)`.  The
+//!   parent impl id encodes the self type and trait, so even items with the
+//!   same name in different impls are distinct.
+//!
+//! - Module-level type-namespace items (struct, enum, union, trait, mod, type
+//!   alias) use bare names: `child_id(module_id, name)` = `"crate::name"`.
+//!
+//! - Module-level value-namespace items (fn, const, static) append `!v`:
+//!   `child_id(module_id, "name!v")`.  This prevents collision with a
+//!   same-named module or type (e.g. `mod serve` vs `fn serve` in axum).
+//!
+//! - Module-level macro items append `!m`: `child_id(module_id, "name!m")`.
+//!
+//! The `!` delimiter cannot appear in any Rust identifier or path, ruling out
+//! false collisions.
+//!
 //! # Param IDs
 //!
 //! Parameters are separate entries (kind = `Param`).  Their `RaId` is
 //! `"{fn_id}::param::{name}"` for inputs and `"{fn_id}::param::return"` for
-//! the output.  These are synthetic but unique per function.
+//! the output.  These are synthetic but unique per function, because `fn_id`
+//! itself is now globally unique.
 //!
 //! # IR gaps
 //!
@@ -30,13 +52,14 @@
 use std::path::PathBuf;
 
 use ra_ap_hir::{
-    Adt, AssocItem, FieldSource, HasSource, HasVisibility, Impl, LangItem, Module,
-    ModuleDef, ScopeDef, Struct, StructKind, Trait, attach_db,
+    Adt, AsAssocItem, AssocItem, AssocItemContainer, FieldSource, Function as HirFunction,
+    HasSource, HasVisibility, HirDisplay, Impl, LangItem, Module, ModuleDef, PathResolution,
+    ScopeDef, Struct, StructKind, Trait, attach_db,
 };
-use ra_ap_syntax::ast::HasTypeBounds;
-use ra_ap_syntax::{AstNode, ast::HasGenericParams};
+use ra_ap_syntax::{AstNode, SyntaxKind, ast::{self as syn_ast, HasTypeBounds, HasGenericParams}};
 
 use nudox_ir::{
+    id::UniqueId,
     index::Ref,
     kinds::{
         Alias, AutoFact, Const, Enum, Field, FieldAttribute, FieldKey,
@@ -44,36 +67,155 @@ use nudox_ir::{
         Reexport, Static, Trait as IrTrait, TraitFlags, TriState, Variant, VariantForm,
     },
     lower::Lowering,
+    package::PackageId,
+    vocab::{ReferenceKind, RelSpan},
 };
 
 use crate::RaId;
 use crate::error::RustProducerError;
 use super::{
-    ctx::LowerCtx,
+    ctx::{LowerCtx, PendingOcc, PendingTarget},
     docs, function, generics, source, ty,
 };
+
+// ── Namespace tag helper ──────────────────────────────────────────────────────
+
+/// Return the namespace suffix for `def` when it lives at module level.
+///
+/// Rust has three namespaces — type, value, and macro — and a module can hold
+/// items with the same name in different namespaces simultaneously (e.g. `mod
+/// serve` in the type namespace and `fn serve` in the value namespace).  To
+/// prevent id collisions we append a short, `!`-delimited tag to value- and
+/// macro-namespace items.  Type-namespace items (modules, structs, enums,
+/// traits, type aliases) remain bare.
+///
+/// The same rule must be applied **consistently** everywhere an id is derived
+/// from a `ModuleDef` at module level:
+/// - `lower()` (declaration ids)
+/// - `lower_module()` re-export ids    ← previously missing, now uses this fn
+///
+/// Using this single helper ensures the two sites can never drift.
+fn ns_tag(def: ModuleDef) -> &'static str {
+    match def {
+        // Value namespace.
+        ModuleDef::Function(_) | ModuleDef::Const(_) | ModuleDef::Static(_) => "!v",
+        // Macro namespace.
+        ModuleDef::Macro(_) => "!m",
+        // Type namespace (module, struct, enum, union, trait, type alias,
+        // builtin type, enum variant).  Bare — no tag.
+        _ => "",
+    }
+}
+
+// ── Single id authority ───────────────────────────────────────────────────────
+
+/// The single source of truth for "what is this def's `RaId`".
+///
+/// Container-aware and namespace-tagged, so a *reference* key and a
+/// *declaration* key for the same item are equal by construction.
+///
+/// | Item kind                       | Returned id                          |
+/// |---------------------------------|--------------------------------------|
+/// | Assoc item in a trait           | `{trait_id}::{name}`                 |
+/// | Assoc item in an impl           | `{impl_id}::{name}` (no ns tag)      |
+/// | Module-level fn / const / static| `{module_canonical}{ns_tag!v}`       |
+/// | Module-level macro              | `{module_canonical}{ns_tag!m}`       |
+/// | All other module-level items    | `{module_canonical}` (bare)          |
+///
+/// This is the **authoritative** id constructor.  It must be called at both
+/// declaration sites and reference sites so the two can never diverge.
+///
+/// The function is `pub(super)` so that `ty.rs` and `generics.rs` can import it
+/// via `super::item::id_of`.
+pub(super) fn id_of(ctx: &mut LowerCtx<'_>, def: ModuleDef) -> Option<RaId> {
+    // ── Assoc items: container-aware id ──────────────────────────────────────
+    let assoc: Option<AssocItem> = match def {
+        ModuleDef::Function(f) => f.as_assoc_item(ctx.db),
+        ModuleDef::TypeAlias(ta) => ta.as_assoc_item(ctx.db),
+        ModuleDef::Const(c) => c.as_assoc_item(ctx.db),
+        _ => None,
+    };
+
+    if let Some(ai) = assoc {
+        let name = def.name(ctx.db)?.as_str().to_owned();
+        return match ai.container(ctx.db) {
+            AssocItemContainer::Trait(t) => {
+                let trait_id = ctx.ra_id(ModuleDef::Trait(t))?;
+                Some(ctx.child_id(&trait_id, &name))
+            }
+            AssocItemContainer::Impl(imp) => {
+                let iid = impl_id(ctx, imp);
+                Some(ctx.child_id(&iid, &name))
+            }
+        };
+    }
+
+    // ── Module-level items: canonical path + ns_tag ───────────────────────────
+    // `ctx.canonical(def)` returns the untagged module path (e.g. `axum::serve`
+    // for both the module and the function).  We append the namespace tag so the
+    // reference key matches the declaration key.
+    let canon = ctx.canonical(def)?;
+    let tag = ns_tag(def);
+    if tag.is_empty() {
+        Some(canon)
+    } else {
+        Some(RaId::from(format!("{canon}{tag}").as_str()))
+    }
+}
 
 // ── RefFor helper closure ─────────────────────────────────────────────────────
 
 /// Build a `ref_for` closure that maps a canonical path key to a
-/// `Ref<Param>`-compatible `RawRef` by forwarding to `Lowering::refer`.
+/// `Ref<Param>`-compatible `RawRef`.
 ///
-/// The closure is generic over `K: nudox_ir::kind::EntryKind` but for
-/// `Type::Nominal` we need a `RawRef`.  We use `Lowering::refer::<nudox_ir::kinds::Module>`
-/// as an untyped vehicle (the kind does not matter for `RawRef` purposes; we
-/// always erase to `RawRef` immediately).  The produced `RawRef` is valid as
-/// long as the `Lowering` session is alive.
+/// **Local keys** (those belonging to `ctx.krate`) are resolved via
+/// `Lowering::refer` — a forward-reference that `finish` resolves once all
+/// declarations are in.
+///
+/// **Foreign keys** (belonging to a different crate) are resolved via
+/// `Lowering::refer_import`, producing a cross-package `RawRef`.  The
+/// `PackageId` is synthesised from the first path segment of the key (the
+/// crate name), using `PackageId::path`.  `PackageId::path` is the only
+/// constructor available; we pass the crate name as a synthetic "path" string.
+/// This is deterministic (crate names are unique in a Cargo lockfile) and
+/// stable across runs.
 ///
 /// `Ref::into_raw` is confirmed public in `nudox_ir::index` (line 268 of
 /// index.rs: `pub fn into_raw(self) -> RawRef`).  The cast is sound.
 macro_rules! make_ref_for {
-    ($lowering:ident) => {{
-        |key: &crate::ra::ctx::PathKey| -> Option<nudox_ir::index::RawRef> {
-            // We produce a Ref<IrModule> as the typed vehicle and immediately
-            // erase it.  The type parameter does not affect the interned index
-            // — it is purely a phantom marker.
-            let typed: Ref<IrModule> = $lowering.refer(key.clone());
-            Some(typed.into_raw())
+    ($ctx:ident, $lowering:ident) => {{
+        // Compute the local crate name and reborrow the lowering sink so that
+        // a `move` closure can own both without consuming the original `$lowering`
+        // variable in the caller's scope.
+        //
+        // Reborrow pattern: `let r = &mut *$lowering` creates a shorter-lived
+        // &mut that is distinct from `$lowering`.  When the `move` closure captures
+        // `r`, it borrows `$lowering` for the closure's lifetime.  Once the closure
+        // is dropped (at end of each call site's scope), `$lowering` is usable again
+        // — e.g. for `out.declare(...)` calls that follow.
+        let local_crate: String = super::ctx::crate_name($ctx.db, $ctx.krate);
+        let _lowering_reborrow = &mut *$lowering;
+        move |key: &crate::ra::ctx::PathKey| -> Option<nudox_ir::index::RawRef> {
+            // Decide whether `key` belongs to the local crate.
+            // A key is local iff it starts with `{local_crate}` followed by
+            // either end-of-string (the crate root) or `::`.
+            let n = local_crate.len();
+            let is_local = key.starts_with(local_crate.as_str())
+                && (key.len() == n
+                    || key.as_bytes().get(n) == Some(&b':'));
+
+            if is_local {
+                let typed: Ref<IrModule> = _lowering_reborrow.refer(key.clone());
+                Some(typed.into_raw())
+            } else {
+                // Foreign package: use the first `::` segment as the crate
+                // name and synthesise a `PackageId` from it.
+                let foreign_crate = key.split("::").next().unwrap_or("_");
+                let pkg_id = PackageId::path(foreign_crate);
+                let uid = UniqueId::new(pkg_id, key.clone());
+                let typed: Ref<IrModule> = _lowering_reborrow.refer_import(uid);
+                Some(typed.into_raw())
+            }
         }
     }};
 }
@@ -110,6 +252,7 @@ pub(crate) fn lower_module(
         attrs: Box::new([]),
     });
     let sym = parts.into_symbol(PathBuf::new(), 0..0);
+    ctx.check_unique(&mod_id);
     out.declare(mod_id.clone(), parent, sym, IrModule);
 
     // ── Re-exports (pub use) ──────────────────────────────────────────────────
@@ -117,8 +260,28 @@ pub(crate) fn lower_module(
     // differs from their *canonical path* are re-exports.  Each such item gets
     // a `Reexport` entry (backed by `declare_ref`) pointing at the original.
     //
-    // A re-export's RaId is `<module_id>::<scope_name>` so that duplicate
-    // names across modules stay distinct.
+    // A re-export's RaId is `<module_id>::<scope_name><ns_tag>` where the
+    // namespace tag mirrors exactly what `lower()` applies when declaring the
+    // item: value-namespace items (fn / const / static) get `!v`, macro items
+    // get `!m`, type-namespace items remain bare.  Previously the tag was
+    // absent here, causing collisions such as:
+    //
+    //   `axum::serve`    — both the *module* (type ns, bare) and the
+    //                      re-exported *function* (value ns) landed on the
+    //                      same id `axum::serve`.
+    //
+    //   `axum::routing::method_filter::Debug` — the *trait* `Debug` (type ns)
+    //                      and the *derive macro* `Debug` (macro ns) both
+    //                      landed on the same id.
+    //
+    // The `ns_tag()` helper (defined at the top of this module) is shared with
+    // `lower()` so the two sites cannot drift.
+    //
+    // NOTE: The `is_reexport` check still compares *untagged* scope paths
+    // against the canonical key (which is also untagged — `ctx.canonical()`
+    // never includes `!v`/`!m`).  This is intentional: tagging the scope path
+    // would produce false positives (every function in its own module would
+    // look like a re-export because its tagged scope path ≠ untagged canon key).
     let module_segs: Option<Vec<String>> = ctx.path_segments(ModuleDef::Module(module));
 
     // Collect (scope_name, child_def) pairs for re-exports, to avoid holding
@@ -141,12 +304,13 @@ pub(crate) fn lower_module(
         .collect();
 
     for (scope_name, child) in scope_items {
-        // canonical path of the defining item
+        // canonical path of the defining item (always untagged)
         let Some(canon_key) = ctx.canonical(child) else {
             continue;
         };
 
-        // scope path of this entry = module_segs + scope_name
+        // scope path of this entry = module_segs + scope_name (untagged)
+        // Used only for the "is this actually a re-export?" test.
         let is_reexport = if let Some(ref segs) = module_segs {
             let mut scope_segs = segs.clone();
             scope_segs.push(scope_name.to_string());
@@ -160,19 +324,44 @@ pub(crate) fn lower_module(
             continue;
         }
 
-        // RaId for the re-export: "<module_id>::<scope_name>"
-        let reexport_id = RaId::from(format!("{mod_id}::{scope_name}").as_str());
+        // RaId for the re-export: "<module_id>::<scope_name><ns_tag>"
+        // The namespace tag disambiguates items from different namespaces that
+        // share a scope name (e.g. the trait `Debug` vs the derive macro `Debug`).
+        let tag = ns_tag(child);
+        let reexport_id = RaId::from(format!("{mod_id}::{scope_name}{tag}").as_str());
 
-        // We use `refer` to obtain a Ref pointing to the canonical entry; the
-        // canonical entry may be declared later (forward-ref is fine).
-        // `Ref<T>` is phantom-typed so we obtain a `Ref<IrModule>` (any kind
-        // works), erase it to a `RawRef`, then cast to `Ref<Reexport>` for the
-        // `declare_ref` call.  The phantom type does not affect the stored index.
+        // The `target_ref` must point to the *declaration* id of the canonical
+        // item, which includes the namespace tag.  `canon_key` (from
+        // `ctx.canonical()`) is always untagged — it reflects the defining-path
+        // hierarchy without any namespace suffix.  The actual declaration id for
+        // value-namespace items (fn / const / static) uses `!v`, and for macros
+        // `!m` (see `lower()`).  We therefore construct the tagged key here.
+        //
+        // For type-namespace items `tag = ""`, so `tagged_key == canon_key`.
+        let tagged_key: smol_str::SmolStr =
+            smol_str::SmolStr::from(format!("{canon_key}{tag}").as_str());
+
+        // Obtain a Ref pointing to the canonical entry.  For foreign-crate items
+        // that are re-exported, we must use `refer_import` (not `refer`) to avoid
+        // creating an undeclared local slot.  A key is local iff it starts with the
+        // current crate's name followed by end-of-string or `::`.
+        let local_crate_name = super::ctx::crate_name(ctx.db, ctx.krate);
         let target_ref: Ref<Reexport> = {
-            let raw: nudox_ir::index::RawRef = out.refer::<IrModule>(canon_key).into_raw();
+            let n = local_crate_name.len();
+            let is_local_key = tagged_key.starts_with(local_crate_name.as_str())
+                && (tagged_key.len() == n || tagged_key.as_bytes().get(n) == Some(&b':'));
+
+            let raw: nudox_ir::index::RawRef = if is_local_key {
+                out.refer::<IrModule>(tagged_key).into_raw()
+            } else {
+                let foreign_crate = tagged_key.split("::").next().unwrap_or("_");
+                let pkg_id = PackageId::path(foreign_crate);
+                let uid = UniqueId::new(pkg_id, tagged_key.clone());
+                out.refer_import::<IrModule>(uid).into_raw()
+            };
             match raw.as_local() {
                 Some(untyped_idx) => nudox_ir::index::Ref::Local(untyped_idx.typed()),
-                // Should never happen during Lowering (all refs are Local at this stage).
+                // Import refs also come back as Local in the import index.
                 None => continue,
             }
         };
@@ -190,6 +379,7 @@ pub(crate) fn lower_module(
             cfg: None,
         };
 
+        ctx.check_unique(&reexport_id);
         out.declare_ref::<Reexport>(
             reexport_id,
             Some(mod_id.clone()),
@@ -207,6 +397,19 @@ pub(crate) fn lower_module(
 ///
 /// Trait assoc items and impl methods are emitted by `lower_trait` and
 /// `lower_impl` respectively.
+///
+/// # Namespace disambiguation
+///
+/// Rust has three namespaces: type, value, and macro.  A module can contain
+/// both `mod serve` (type ns) and `fn serve` (value ns) — they are distinct
+/// items but would produce the same id without disambiguation.  We tag
+/// value-namespace items with `!v` and macro-namespace items with `!m`:
+/// `module_id::serve!v` and `module_id::serve!m`.  Type-namespace items remain
+/// bare.  The `!` delimiter cannot appear in a Rust identifier or path.
+///
+/// This tag is applied **only at module level**.  Items nested inside impl/trait
+/// blocks do not need a namespace tag because the parent impl id already provides
+/// full disambiguation.
 pub(crate) fn lower(
     ctx: &mut LowerCtx<'_>,
     def: ModuleDef,
@@ -219,7 +422,14 @@ pub(crate) fn lower(
 
     match def {
         ModuleDef::Function(f) => {
-            lower_free_function(ctx, f, parent, out)?;
+            // Value namespace: tag with `!v` so `fn serve` does not collide
+            // with `mod serve` or `struct Serve`.
+            let fn_name = f.name(ctx.db).as_str().to_owned();
+            let fn_id = parent
+                .as_ref()
+                .map(|p| ctx.child_id(p, &format!("{fn_name}!v")))
+                .unwrap_or_else(|| ctx.ra_id(def).unwrap_or_else(|| RaId::from(fn_name.as_str())));
+            lower_free_function_with_id(ctx, f, fn_id, parent, out)?;
         }
         ModuleDef::Adt(Adt::Struct(s)) => {
             lower_struct(ctx, s, parent, out)?;
@@ -237,18 +447,50 @@ pub(crate) fn lower(
             lower_type_alias(ctx, ModuleDef::TypeAlias(ta), parent, out)?;
         }
         ModuleDef::Const(c) => {
-            lower_const(ctx, c, parent, out)?;
-        }
-        ModuleDef::Static(s) => {
-            lower_static(ctx, s, parent, out)?;
-        }
-        ModuleDef::Macro(m) => {
-            // No Macro kind in new IR — emit as Module.
-            let Some(id) = ctx.ra_id(ModuleDef::Macro(m)) else {
+            // `const _: () = …` has no name and therefore no identity.
+            //
+            // It is unnameable and unreferenceable by construction — nothing
+            // can import it, no signature can mention it, and no doc tool
+            // shows it. It exists for its side effects at compile time
+            // (assertions, trait-impl hygiene), and macros emit it freely:
+            // `pin_project_lite` and derive expansions put several in one
+            // module, which is how six of them collided on `{module}::_!v`.
+            //
+            // Synthesising an identity for something that has none would mean
+            // inventing a positional or counter-based id — exactly the
+            // order-dependent construct the rest of this module exists to
+            // avoid. Skipping is not a loss of fidelity: there is nothing here
+            // for a consumer to refer to.
+            let Some(name) = c.name(ctx.db) else {
                 return Ok(());
             };
+            // Value namespace: tag with `!v`.
+            let const_name = name.as_str().to_owned();
+            let const_id = parent
+                .as_ref()
+                .map(|p| ctx.child_id(p, &format!("{const_name}!v")))
+                .unwrap_or_else(|| ctx.ra_id(def).unwrap_or_else(|| RaId::from(const_name.as_str())));
+            lower_const_with_id(ctx, c, const_id, parent, out)?;
+        }
+        ModuleDef::Static(s) => {
+            // Value namespace: tag with `!v`.
+            let static_name = s.name(ctx.db).as_str().to_owned();
+            let static_id = parent
+                .as_ref()
+                .map(|p| ctx.child_id(p, &format!("{static_name}!v")))
+                .unwrap_or_else(|| ctx.ra_id(def).unwrap_or_else(|| RaId::from(static_name.as_str())));
+            lower_static_with_id(ctx, s, static_id, parent, out)?;
+        }
+        ModuleDef::Macro(m) => {
+            // Macro namespace: tag with `!m`.  No Macro kind in new IR — emit as Module.
+            let macro_name = m.name(ctx.db).as_str().to_owned();
+            let macro_id = parent
+                .as_ref()
+                .map(|p| ctx.child_id(p, &format!("{macro_name}!m")))
+                .unwrap_or_else(|| ctx.ra_id(ModuleDef::Macro(m)).unwrap_or_else(|| RaId::from(macro_name.as_str())));
             let parts = ctx.symbol_parts(ModuleDef::Macro(m)).unwrap_or_else(default_parts);
-            out.declare(id, parent, parts.into_symbol(PathBuf::new(), 0..0), IrModule);
+            ctx.check_unique(&macro_id);
+            out.declare(macro_id, parent, parts.into_symbol(PathBuf::new(), 0..0), IrModule);
         }
         ModuleDef::BuiltinType(b) => {
             // Emit as Alias with no target.
@@ -265,6 +507,7 @@ pub(crate) fn lower(
                 attrs: Box::new([]),
                 cfg: None,
             };
+            ctx.check_unique(&id);
             out.declare(id, parent, sym, Alias::builder().maybe_target(None).build());
         }
         ModuleDef::Module(_) | ModuleDef::EnumVariant(_) => {}
@@ -274,17 +517,21 @@ pub(crate) fn lower(
 
 // ── Free function ─────────────────────────────────────────────────────────────
 
-fn lower_free_function(
+/// Lower a free or impl/trait-assoc function with an already-computed `fn_id`.
+///
+/// The caller is responsible for computing a globally unique `fn_id`:
+/// - module-level: `child_id(module_id, "{name}!v")` (value-ns tag)
+/// - impl/trait member: `child_id(impl_or_trait_id, name)` (no tag needed;
+///   the parent id already encodes the self type and trait)
+fn lower_free_function_with_id(
     ctx: &mut LowerCtx<'_>,
-    f: ra_ap_hir::Function,
+    f: HirFunction,
+    fn_id: RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
 ) -> Result<(), RustProducerError> {
     let def = ModuleDef::Function(f);
-    let Some(fn_id) = ctx.ra_id(def) else {
-        return Ok(());
-    };
-    let mut ref_for = make_ref_for!(out);
+    let mut ref_for = make_ref_for!(ctx, out);
     let Some(fd) = function::lower_function(ctx, f, &mut ref_for) else {
         return Ok(());
     };
@@ -301,6 +548,7 @@ fn lower_free_function(
                 .maybe_ty(pd.ty.clone())
                 .attributes(pd.attributes.iter().copied())
                 .build();
+            ctx.check_unique(&param_id);
             out.declare(param_id.clone(), parent.clone(), param_sym, param_body);
             let r: Ref<Param> = out.refer(param_id);
             r
@@ -322,8 +570,308 @@ fn lower_free_function(
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
     let sym = parts.into_symbol(src_path, span);
 
-    out.declare(fn_id, parent, sym, fn_body);
+    ctx.check_unique(&fn_id);
+    out.declare(fn_id.clone(), parent, sym, fn_body);
+
+    // Record occurrences from the function body (post-declare so fn_id is valid).
+    // Individual sema calls inside are already panic-guarded; a body with no
+    // AST source (e.g. `BuiltinDeriveImplMethod`) returns early itself.
+    record_body_occurrences(ctx, f, &fn_id);
+
     Ok(())
+}
+
+// ── Body occurrence recording ─────────────────────────────────────────────────
+
+/// Walk a function's AST body and record pre-seal occurrence facts into
+/// `ctx.occurrence_buf`.
+///
+/// # What is recorded
+///
+/// * `MethodCall`: every `recv.method(args)` expression whose target function
+///   can be resolved via `Semantics::resolve_method_call`.
+/// * `FunctionCall`: every `path(args)` expression whose callee resolves to a
+///   function via `Semantics::resolve_path` on the call's path prefix.
+/// * `TypeReference`: every `PathType` in the body whose target is a struct /
+///   enum / union / trait resolved via `Semantics::resolve_path`.
+///
+/// # Cost bound
+///
+/// Each function body is capped at `MAX_BODY_OCCS` emitted occurrences to
+/// avoid pathological compile-time blowup from auto-generated code. The walk
+/// also avoids emitting the same `(owner, target, kind)` triple twice.
+///
+/// # Confidence
+///
+/// All occurrences emitted here carry `Confidence::Oracle` — every fact is
+/// backed by RA's full type-inference pass, not heuristics.
+///
+/// # Cross-crate targets
+///
+/// Local targets (same crate) are stored as `PendingTarget::Local(ra_id)`.
+/// Foreign targets are stored as `PendingTarget::Foreign(canonical_path)`.
+/// Both are resolved to `IntroId` / `StableRef` post-seal.
+fn record_body_occurrences(
+    ctx: &mut LowerCtx<'_>,
+    f: HirFunction,
+    fn_id: &RaId,
+) {
+    /// Maximum occurrences per function body before we stop recording.
+    const MAX_BODY_OCCS: usize = 500;
+
+    // Get the function's AST source. BuiltinDeriveImplMethod falls back to the
+    // trait method AST, which has no body → we bail early on `None`.
+    let Some(src) = ctx.sema.source(f).or_else(|| f.source(ctx.db)) else {
+        return;
+    };
+    // `ast::Fn::body()` returns the body block; `None` for declarations
+    // (e.g. trait method stubs) and for BuiltinDeriveImplMethod fallbacks.
+    let Some(body) = src.value.body() else {
+        return;
+    };
+
+    // The function's span start in the file — used to compute relative spans.
+    let fn_span_start: Option<usize> = {
+        let fn_node = src.value.syntax().text_range();
+        Some(u32::from(fn_node.start()) as usize)
+    };
+
+    let local_crate = super::ctx::crate_name(ctx.db, ctx.krate);
+    let mut emitted: usize = 0;
+
+    // Walk every descendant node in the body once.
+    for node in body.syntax().descendants() {
+        if emitted >= MAX_BODY_OCCS {
+            break;
+        }
+
+        match node.kind() {
+            // ── Method call: `receiver.method(args)` ─────────────────────────
+            SyntaxKind::METHOD_CALL_EXPR => {
+                let Some(call) = syn_ast::MethodCallExpr::cast(node.clone()) else {
+                    continue;
+                };
+                let Some(target_fn) = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| ctx.sema.resolve_method_call(&call)),
+                )
+                .ok()
+                .flatten() else {
+                    continue;
+                };
+
+                let Some(target_id) = method_call_target_id(ctx, target_fn, &local_crate) else {
+                    continue;
+                };
+
+                let span = call.name_ref().map(|nr| {
+                    let r = nr.syntax().text_range();
+                    rel_span(fn_span_start, r)
+                });
+
+                ctx.occurrence_buf.push(PendingOcc {
+                    owner: fn_id.clone(),
+                    target: target_id,
+                    kind: ReferenceKind::MethodCall,
+                    span,
+                });
+                emitted += 1;
+            }
+
+            // ── Path call: `func(args)` or `Type::method(args)` ──────────────
+            SyntaxKind::CALL_EXPR => {
+                let Some(call) = syn_ast::CallExpr::cast(node.clone()) else {
+                    continue;
+                };
+                let Some(callee) = call.expr() else {
+                    continue;
+                };
+                // Extract the path from the callee expression.
+                let path_opt = match &callee {
+                    syn_ast::Expr::PathExpr(pe) => pe.path(),
+                    _ => continue,
+                };
+                let Some(path) = path_opt else {
+                    continue;
+                };
+                let Some(resolution) = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| ctx.sema.resolve_path(&path)),
+                )
+                .ok()
+                .flatten() else {
+                    continue;
+                };
+
+                let Some(target_id) = path_resolution_to_target(ctx, resolution, &local_crate)
+                else {
+                    continue;
+                };
+
+                let span = {
+                    let r = path.syntax().text_range();
+                    Some(rel_span(fn_span_start, r))
+                };
+
+                ctx.occurrence_buf.push(PendingOcc {
+                    owner: fn_id.clone(),
+                    target: target_id,
+                    kind: ReferenceKind::FunctionCall,
+                    span,
+                });
+                emitted += 1;
+            }
+
+            // ── Type references: `Foo`, `Foo<T>`, `<T as Trait>::Assoc` ──────
+            SyntaxKind::PATH_TYPE => {
+                let Some(pt) = syn_ast::PathType::cast(node.clone()) else {
+                    continue;
+                };
+                let Some(path) = pt.path() else {
+                    continue;
+                };
+                let Some(resolution) = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| ctx.sema.resolve_path(&path)),
+                )
+                .ok()
+                .flatten() else {
+                    continue;
+                };
+
+                // Only record type-namespace targets.
+                let Some(target_id) = type_ref_target(ctx, resolution, &local_crate) else {
+                    continue;
+                };
+
+                let span = {
+                    let r = path.syntax().text_range();
+                    Some(rel_span(fn_span_start, r))
+                };
+
+                ctx.occurrence_buf.push(PendingOcc {
+                    owner: fn_id.clone(),
+                    target: target_id,
+                    kind: ReferenceKind::TypeReference,
+                    span,
+                });
+                emitted += 1;
+            }
+
+            _ => {}
+        }
+    }
+}
+
+/// Compute a `RelSpan` from a salsa `TextRange` and an optional owner span start.
+#[inline]
+fn rel_span(
+    fn_span_start: Option<usize>,
+    r: ra_ap_syntax::TextRange,
+) -> RelSpan {
+    let start = u32::from(r.start()) as usize;
+    let end = u32::from(r.end()) as usize;
+    if let Some(base) = fn_span_start {
+        RelSpan::new(
+            start.saturating_sub(base) as u32,
+            end.saturating_sub(base) as u32,
+        )
+    } else {
+        RelSpan::new(start as u32, end as u32)
+    }
+}
+
+/// Resolve a method call's target `Function` to a `PendingTarget`.
+///
+/// Returns `None` when the method has no canonical path (anonymous impl on a
+/// block-local type) or when it belongs to a crate with no display name.
+fn method_call_target_id(
+    ctx: &mut LowerCtx<'_>,
+    target_fn: HirFunction,
+    local_crate: &str,
+) -> Option<PendingTarget> {
+    let ra_def = ModuleDef::Function(target_fn);
+    let canon = ctx.canonical(ra_def)?;
+    if canon.starts_with(local_crate)
+        && (canon.len() == local_crate.len()
+            || canon.as_bytes().get(local_crate.len()) == Some(&b':'))
+    {
+        // Local — but we need the id_of form (with assoc container + ns tag).
+        let full_id = id_of(ctx, ra_def)?;
+        Some(PendingTarget::Local(full_id))
+    } else {
+        Some(PendingTarget::Foreign(canon.to_string()))
+    }
+}
+
+/// Convert a `PathResolution` to a `PendingTarget` (function-call context).
+fn path_resolution_to_target(
+    ctx: &mut LowerCtx<'_>,
+    res: PathResolution,
+    local_crate: &str,
+) -> Option<PendingTarget> {
+    let def = match res {
+        PathResolution::Def(d) => d,
+        _ => return None,
+    };
+    // Only function-like targets.
+    if !matches!(def, ModuleDef::Function(_)) {
+        return None;
+    }
+    let canon = ctx.canonical(def)?;
+    if canon.starts_with(local_crate)
+        && (canon.len() == local_crate.len()
+            || canon.as_bytes().get(local_crate.len()) == Some(&b':'))
+    {
+        let full_id = id_of(ctx, def)?;
+        Some(PendingTarget::Local(full_id))
+    } else {
+        Some(PendingTarget::Foreign(canon.to_string()))
+    }
+}
+
+/// Convert a `PathResolution` to a `PendingTarget` (type-reference context).
+///
+/// Returns `None` for non-type-namespace targets (functions, consts, modules).
+fn type_ref_target(
+    ctx: &mut LowerCtx<'_>,
+    res: PathResolution,
+    local_crate: &str,
+) -> Option<PendingTarget> {
+    let def = match res {
+        PathResolution::Def(d) => d,
+        _ => return None,
+    };
+    // Type namespace: struct, enum, union, trait, type alias.
+    match def {
+        ModuleDef::Adt(_) | ModuleDef::Trait(_) | ModuleDef::TypeAlias(_) => {}
+        _ => return None,
+    }
+    let canon = ctx.canonical(def)?;
+    if canon.starts_with(local_crate)
+        && (canon.len() == local_crate.len()
+            || canon.as_bytes().get(local_crate.len()) == Some(&b':'))
+    {
+        let full_id = id_of(ctx, def)?;
+        Some(PendingTarget::Local(full_id))
+    } else {
+        Some(PendingTarget::Foreign(canon.to_string()))
+    }
+}
+
+/// Lower an impl/trait assoc function where the id is derived from the parent
+/// impl/trait id via `child_id`.
+///
+/// Called from `lower_impl` and `lower_trait_assoc_items`.  The `parent` here
+/// is the impl's or trait's `RaId`, which already encodes the self type and
+/// optional trait, so the child name alone is sufficient disambiguation.
+fn lower_assoc_function(
+    ctx: &mut LowerCtx<'_>,
+    f: HirFunction,
+    parent_id: &RaId,
+    parent: Option<RaId>,
+    out: &mut Lowering<RaId>,
+) -> Result<(), RustProducerError> {
+    let fn_name = f.name(ctx.db).as_str().to_owned();
+    let fn_id = ctx.child_id(parent_id, &fn_name);
+    lower_free_function_with_id(ctx, f, fn_id, parent, out)
 }
 
 // ── Struct ────────────────────────────────────────────────────────────────────
@@ -338,7 +886,7 @@ fn lower_struct(
     let Some(struct_id) = ctx.ra_id(def) else {
         return Ok(());
     };
-    let mut ref_for = make_ref_for!(out);
+    let mut ref_for = make_ref_for!(ctx, out);
 
     let form = match s.kind(ctx.db) {
         StructKind::Unit => RecordForm::Unit,
@@ -388,6 +936,7 @@ fn lower_struct(
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
     let sym = parts.into_symbol(src_path, span);
 
+    ctx.check_unique(&struct_id);
     out.declare(struct_id, parent, sym, record_body);
     Ok(())
 }
@@ -404,7 +953,7 @@ fn lower_enum(
     let Some(enum_id) = ctx.ra_id(def) else {
         return Ok(());
     };
-    let mut ref_for = make_ref_for!(out);
+    let mut ref_for = make_ref_for!(ctx, out);
 
     let (generics, wheres) = {
         let src = ctx.sema.source(e).or_else(|| e.source(ctx.db));
@@ -481,6 +1030,7 @@ fn lower_enum(
                 cfg: None,
             };
 
+            ctx.check_unique(&variant_id);
             out.declare(variant_id.clone(), Some(enum_id.clone()), variant_sym, variant_body);
             out.refer::<Variant>(variant_id)
         })
@@ -497,6 +1047,7 @@ fn lower_enum(
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
     let sym = parts.into_symbol(src_path, span);
 
+    ctx.check_unique(&enum_id);
     out.declare(enum_id, parent, sym, enum_body);
     Ok(())
 }
@@ -541,6 +1092,7 @@ fn lower_union(
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
     let sym = parts.into_symbol(src_path, span);
 
+    ctx.check_unique(&union_id);
     out.declare(union_id, parent, sym, record_body);
     Ok(())
 }
@@ -557,7 +1109,24 @@ fn lower_trait(
     let Some(trait_id) = ctx.ra_id(def) else {
         return Ok(());
     };
-    let mut ref_for = make_ref_for!(out);
+
+    // ── Guard: skip the whole trait if its id is already declared ────────────
+    //
+    // Mirrors the guard in `lower_impl`.  If the same trait is encountered a
+    // second time (e.g. because a crate-level re-export and a module-level
+    // declaration both appear in the walk), the first call wins.  Emitting
+    // members with a trait id that is *already* declared as a different kind
+    // (e.g. a Module) would silently re-parent them under that entry.
+    if out.is_declared(&trait_id) {
+        tracing::warn!(
+            trait_id = %trait_id,
+            "skipping duplicate trait: trait_id already declared; \
+             members will not be emitted to avoid orphaned parent links"
+        );
+        return Ok(());
+    }
+
+    let mut ref_for = make_ref_for!(ctx, out);
 
     let trait_ast = ctx
         .sema
@@ -608,7 +1177,7 @@ fn lower_trait(
                         ra_ap_hir::PathResolution::Def(d) => d,
                         _ => return None,
                     };
-                    let key = ctx.canonical(def)?;
+                    let key = id_of(ctx, def)?;
                     let raw_ref = ref_for(&key)?;
                     let base = nudox_ir::kinds::Type::Nominal(raw_ref);
                     // Recover written generic args from the last path segment.
@@ -630,7 +1199,7 @@ fn lower_trait(
                 .into_iter()
                 .filter_map(|st| {
                     let st_def = ModuleDef::Trait(st);
-                    let key = ctx.canonical(st_def)?;
+                    let key = id_of(ctx, st_def)?;
                     let raw_ref = ref_for(&key)?;
                     Some(nudox_ir::kinds::Type::Nominal(raw_ref))
                 })
@@ -648,9 +1217,6 @@ fn lower_trait(
         sealed: detect_sealed(ctx, t),
     };
 
-    // Declare assoc items as children.
-    lower_trait_assoc_items(ctx, t, &trait_id, out)?;
-
     let trait_body = IrTrait::builder()
         .flags(flags)
         .supers(supers)
@@ -662,7 +1228,25 @@ fn lower_trait(
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
     let sym = parts.into_symbol(src_path, span);
 
-    out.declare(trait_id, parent, sym, trait_body);
+    // ── Declare the trait entry FIRST, then its members ──────────────────────
+    //
+    // Mirrors the fix in `lower_impl`: if we declared assoc items *before* the
+    // trait entry and then a panic or early-return prevented the trait's own
+    // `out.declare` call, those members would have `parent = Some(trait_id)`
+    // pointing at a slot that is never filled — or, worse, at a *different*
+    // entry that happens to carry the same id string (e.g. the enclosing module
+    // when the trait_id was already interned via `intern(parent=trait_id)` in
+    // `declare_params`, and the module was declared with that same string).
+    //
+    // Declaring the trait first ensures that if the items loop panics, the trait
+    // entry itself still exists in the tree and the already-declared members
+    // keep a valid parent.
+    ctx.check_unique(&trait_id);
+    out.declare(trait_id.clone(), parent, sym, trait_body);
+
+    // ── Declare assoc items as children ──────────────────────────────────────
+    lower_trait_assoc_items(ctx, t, &trait_id, out)?;
+
     Ok(())
 }
 
@@ -675,18 +1259,24 @@ fn lower_trait_assoc_items(
     for item in t.items(ctx.db) {
         match item {
             AssocItem::Function(f) => {
-                lower_free_function(ctx, f, Some(trait_id.clone()), out)?;
+                // Use child_id(trait_id, name): the trait id already encodes
+                // the full path, so two traits with the same assoc fn name
+                // cannot collide.
+                lower_assoc_function(ctx, f, trait_id, Some(trait_id.clone()), out)?;
             }
             AssocItem::TypeAlias(ta) => {
-                lower_type_alias(
+                // Assoc type alias: id = child_id(trait_id, name).
+                lower_assoc_type_alias(
                     ctx,
-                    ModuleDef::TypeAlias(ta),
+                    ta,
+                    trait_id,
                     Some(trait_id.clone()),
                     out,
                 )?;
             }
             AssocItem::Const(c) => {
-                lower_const(ctx, c, Some(trait_id.clone()), out)?;
+                // Assoc const: id = child_id(trait_id, name).
+                lower_assoc_const(ctx, c, trait_id, Some(trait_id.clone()), out)?;
             }
         }
     }
@@ -719,6 +1309,24 @@ fn detect_sealed(
 /// Inherent impls are emitted as `Impl { of: None, … }`.  Trait impls carry
 /// `of: Some(Type::Nominal(trait_ref))`.  Child methods are declared under the
 /// impl's `RaId`.
+///
+/// # Member-before-impl ordering hazard (fixed)
+///
+/// The old ordering was:
+///   1. emit members (with `parent = Some(impl_id)`)
+///   2. `check_unique(&impl_id)` → panics on duplicate
+///   3. `out.declare(impl_id, ...)`
+///
+/// When step 2 panicked, the panic was caught by `catch_non_cancelled` in
+/// `walk.rs`, silently discarding the call.  The impl entry was never declared,
+/// so `slots[impl_id]` stayed `None` (referred but undeclared).  In `finish()`,
+/// a referred-but-undeclared id means the parent pointer resolves to `None`
+/// (root module), which is a Module-kind entry — exactly the bug where `fmt`
+/// entries appeared as children of a Module rather than an Impl.
+///
+/// **Fix**: declare the impl entry *first*, then emit members.  If the impl_id
+/// is a duplicate (already declared), we skip the whole impl including its
+/// members — an orphaned member is always worse than an absent one.
 pub(crate) fn lower_impl(
     ctx: &mut LowerCtx<'_>,
     imp: Impl,
@@ -732,7 +1340,28 @@ pub(crate) fn lower_impl(
 
     let impl_id = impl_id(ctx, imp);
 
-    let mut ref_for = make_ref_for!(out);
+    // ── Guard: skip the whole impl if its id is already declared ─────────────
+    //
+    // `check_unique` is a debug-only assert; `is_declared` is the release-safe
+    // equivalent.  Both are checked here so that:
+    //   • debug builds panic loudly at the duplicate site (not inside finish()),
+    //   • release builds skip cleanly without pushing to `duplicates`.
+    //
+    // Emitting members when the impl entry cannot be declared produces orphaned
+    // entries whose parent id is interned but never filled — `finish()` would
+    // then report the impl_id as undeclared (even though members reference it),
+    // or in the best case the members resolve their parent to root (Module),
+    // silently poisoning the child list of whichever entry has the same id.
+    if out.is_declared(&impl_id) {
+        tracing::warn!(
+            impl_id = %impl_id,
+            "skipping duplicate impl: impl_id already declared; \
+             members will not be emitted to avoid orphaned parent links"
+        );
+        return Ok(());
+    }
+
+    let mut ref_for = make_ref_for!(ctx, out);
 
     let self_ty = {
         let hir_self = attach_db(ctx.db, || imp.self_ty(ctx.db));
@@ -741,7 +1370,7 @@ pub(crate) fn lower_impl(
 
     let of_type = imp.trait_(ctx.db).and_then(|tr| {
         let tr_def = ModuleDef::Trait(tr);
-        let key = ctx.canonical(tr_def)?;
+        let key = id_of(ctx, tr_def)?;
         let raw_ref = ref_for(&key)?;
         Some(nudox_ir::kinds::Type::Nominal(raw_ref))
     });
@@ -769,27 +1398,6 @@ pub(crate) fn lower_impl(
         blanket: attach_db(ctx.db, || imp.self_ty(ctx.db).as_type_param(ctx.db).is_some()),
     };
 
-    // Declare impl methods as children.
-    for item in imp.items(ctx.db) {
-        if let AssocItem::Function(f) = item {
-            // Inherit visibility gate from the impl (trait methods always visible).
-            if imp.trait_(ctx.db).is_none()
-                && !ctx.document_private
-                && !matches!(f.visibility(ctx.db), ra_ap_hir::Visibility::Public)
-            {
-                continue;
-            }
-            lower_free_function(ctx, f, Some(impl_id.clone()), out)?;
-        }
-        // TypeAlias and Const assoc items inside impl blocks.
-        if let AssocItem::TypeAlias(ta) = item {
-            lower_type_alias(ctx, ModuleDef::TypeAlias(ta), Some(impl_id.clone()), out)?;
-        }
-        if let AssocItem::Const(c) = item {
-            lower_const(ctx, c, Some(impl_id.clone()), out)?;
-        }
-    }
-
     let impl_body = IrImpl::builder()
         .flags(flags)
         .maybe_of(of_type)
@@ -799,7 +1407,7 @@ pub(crate) fn lower_impl(
         .build();
 
     let sym = nudox_ir::entry::Symbol {
-        name: impl_id.to_string(),
+        name: impl_display_name(ctx, imp),
         visibility: nudox_ir::entry::Visibility::Public,
         documentation: docs::documentation(ctx, imp).unwrap_or_default(),
         source: PathBuf::new(),
@@ -811,59 +1419,267 @@ pub(crate) fn lower_impl(
         cfg: None,
     };
 
-    out.declare(impl_id, parent, sym, impl_body);
+    // ── Declare the impl entry FIRST ─────────────────────────────────────────
+    //
+    // Members reference `impl_id` as their parent.  If this declaration comes
+    // *after* the members (the old order), a panic here (caught by
+    // `catch_non_cancelled`) leaves the members with an undeclared parent —
+    // which `finish()` treats as "referred but never declared" and resolves to
+    // the root module.  Declaring first ensures the parent is always live before
+    // any member references it.
+    ctx.check_unique(&impl_id);
+    out.declare(impl_id.clone(), parent, sym, impl_body);
+
+    // ── Declare impl methods as children ─────────────────────────────────────
+    //
+    // Use lower_assoc_* so the id is child_id(impl_id, name) rather than
+    // ra_id(def), which would collide across different impls providing the same
+    // method name (e.g. Display::fmt in many types in one module).
+    //
+    // ALL assoc items are declared, regardless of visibility.  A private method
+    // that appears in a public signature (e.g. as a `Fn`-bound type argument)
+    // would leave a dangling `refer` slot if we skipped it here (Group C fix).
+    // Visibility is stored in `Symbol.visibility`; consumers filter on that.
+    for item in imp.items(ctx.db) {
+        if let AssocItem::Function(f) = item {
+            lower_assoc_function(ctx, f, &impl_id, Some(impl_id.clone()), out)?;
+        }
+        // TypeAlias and Const assoc items inside impl blocks.
+        if let AssocItem::TypeAlias(ta) = item {
+            lower_assoc_type_alias(ctx, ta, &impl_id, Some(impl_id.clone()), out)?;
+        }
+        if let AssocItem::Const(c) = item {
+            lower_assoc_const(ctx, c, &impl_id, Some(impl_id.clone()), out)?;
+        }
+    }
+
     Ok(())
 }
 
-/// Generate a unique `RaId` for an impl block.
+/// Generate a unique, semantic `RaId` for an impl block.
 ///
-/// Impls have no stable name in Rust.  We synthesise one from the crate
-/// module, the trait (if any), and the self-type's short name.  When two
-/// distinct impls produce the same label (which can happen) we append `#N`.
+/// Impls have no stable name in Rust.  We synthesise one from the module,
+/// the fully-rendered self type, the trait (if any), and the where clause:
+///
+/// - Inherent impl: `{module}::<{self_ty}>{where}`
+/// - Trait impl:    `{module}::<{self_ty} as {trait_canonical}{trait_args}>{where}`
+///
+/// ## Trait path (Cause 2 fix)
+///
+/// `trait_ref.display(db, display_target)` renders the trait name relative to
+/// the target crate, so two different traits named `Error` from different
+/// crates both render as plain `"Error"` — a collision (e.g. `serde_core::de::Error`
+/// vs `std::error::Error` for `PathDeserializationError`).
+///
+/// We fix this by splitting the trait key into two parts:
+/// 1. **Canonical path** — `ctx.canonical(ModuleDef::Trait(t))`, which always
+///    produces the fully-qualified defining path (`core::fmt::Debug`,
+///    `serde_core::de::Error`, etc.) regardless of the display target.
+/// 2. **Generic argument list** — extracted from `trait_ref.display()` as the
+///    substring starting at the first `<`.  For `From<axum::extract::InvalidUtf8>`
+///    this yields `<axum::extract::InvalidUtf8>`; for bare `Error` it yields `""`.
+///
+/// Combining them: `canonical_path + arg_suffix` gives a globally unique,
+/// fully-qualified key for any trait instantiation.
+///
+/// ## Where clause (Cause 3 fix)
+///
+/// Two inherent `impl<L, M, S, F> WithGracefulShutdown<L, M, S, F>` blocks in
+/// the same module differ only in their `where` clauses.  Including the where
+/// clause text (whitespace-normalised) in the key makes them distinct:
+///
+///   `axum::serve::<WithGracefulShutdown<L, M, S, F>> where L: Listener`
+///   `axum::serve::<WithGracefulShutdown<L, M, S, F>> where L: Listener, ...`
+///
+/// The generic param list is included too for the rarer case of two impls
+/// whose parameter declarations differ but whose where clauses are the same
+/// (e.g. `#[cfg]`-gated impls with different bounds spelled as params).
+///
+/// ## Last resort (not implemented)
+///
+/// If the above still collides (e.g. two `#[cfg]`-split impls that are
+/// syntactically identical), we would fall back to `source_path:line`.  That
+/// case has not been observed in axum and is deferred rather than implemented
+/// pessimistically.
+///
+/// A human-readable name for an impl block: `impl Debug for Foo<T>`.
+///
+/// # Why this is not the `RaId`
+///
+/// `impl_id` is an *identity*: it carries the module, the fully-qualified
+/// trait path, the rendered generics and where-clause, and the sorted member
+/// list, because all of that is needed to keep two impls apart. Using it as
+/// the display name put strings like
+/// `axum::extract::rejection::<FailedToDeserializeForm as core::fmt::Debug>[fmt]`
+/// into the `name` field — which is what the search index tokenises and what
+/// every UI shows. 791 of axum's entries were affected.
+///
+/// Identity and presentation are different jobs. This renders the impl the way
+/// rustdoc writes it, and nothing else depends on its exact shape.
+fn impl_display_name(ctx: &mut LowerCtx<'_>, imp: Impl) -> String {
+    let self_ty = attach_db(ctx.db, || {
+        imp.self_ty(ctx.db).display(ctx.db, ctx.display).to_string()
+    });
+    match attach_db(ctx.db, || imp.trait_ref(ctx.db)) {
+        Some(trait_ref) => {
+            // Use the bare trait name (e.g. "Debug") to avoid
+            // fully-qualified paths like "core::fmt::Debug" in names.
+            let short_name =
+                attach_db(ctx.db, || trait_ref.trait_().name(ctx.db).as_str().to_owned());
+            // Preserve generic arguments from the full display string.
+            let full_display = attach_db(ctx.db, || {
+                trait_ref.display(ctx.db, ctx.display).to_string()
+            });
+            let args = full_display
+                .find('<')
+                .map(|lt| full_display[lt..].to_owned())
+                .unwrap_or_default();
+            format!("impl {short_name}{args} for {self_ty}")
+        }
+        None => format!("impl {self_ty}"),
+    }
+}
+
+/// **No counter** — the key is purely structural and deterministic.
 fn impl_id(ctx: &mut LowerCtx<'_>, imp: Impl) -> RaId {
     let module = imp.module(ctx.db);
     let mod_key = ctx
         .canonical(ModuleDef::Module(module))
         .unwrap_or_else(|| smol_str::SmolStr::from("<anon>"));
 
-    let trait_part = imp
-        .trait_(ctx.db)
-        .and_then(|tr| ctx.canonical(ModuleDef::Trait(tr)))
-        .map(|k| format!("::{k}"))
-        .unwrap_or_default();
+    // Render the full self type including generic args.
+    let self_ty_str = attach_db(ctx.db, || {
+        imp.self_ty(ctx.db).display(ctx.db, ctx.display).to_string()
+    });
 
-    let self_part = {
-        let self_ty = attach_db(ctx.db, || imp.self_ty(ctx.db));
-        if let Some(adt) = attach_db(ctx.db, || self_ty.as_adt()) {
-            ctx.canonical(ModuleDef::Adt(adt))
-                .map(|k| format!("::{k}"))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        }
+    // Retrieve the AST for generic params + where clause (used for uniqueness
+    // between impls that share a self type and trait but differ in bounds).
+    let impl_ast = ctx.sema.source(imp).or_else(|| imp.source(ctx.db)).map(|s| s.value);
+
+    // Normalise-and-join generic params + where clause into a single suffix.
+    // Whitespace is collapsed so minor formatting differences do not cause
+    // false collisions.
+    let bounds_suffix: String = {
+        let generic_params = impl_ast
+            .as_ref()
+            .and_then(|ast| ast.generic_param_list())
+            .map(|gp| gp.syntax().text().to_string())
+            .unwrap_or_default();
+        let where_clause = impl_ast
+            .as_ref()
+            .and_then(|ast| ast.where_clause())
+            .map(|wc| wc.syntax().text().to_string())
+            .unwrap_or_default();
+        let raw = format!("{generic_params}{where_clause}");
+        // Collapse whitespace/newlines to single spaces for a stable key.
+        raw.split_whitespace().collect::<Vec<_>>().join(" ")
     };
 
-    let stem = smol_str::SmolStr::from(
-        format!("{mod_key}<impl{trait_part}for{self_part}>").as_str()
-    );
-    ctx.method_id(&mod_key, &stem)
+    // Tertiary tiebreaker: sorted assoc item names.
+    //
+    // When two inherent impls in the same module share identical generic params
+    // and where clauses (e.g. two `impl<H, T, S> HandlerService<H, T, S>` blocks
+    // with no where clause, or two `impl EventDataWriter` blocks), there is no
+    // semantic key derived from the impl *signature* that can distinguish them.
+    // In that case we sort the names of the impl's assoc items and append them.
+    //
+    // Rust forbids two items with the same name in the same type-namespace impl
+    // block, so the item sets of two impls of the same type are always disjoint
+    // (method named `foo` can appear in at most one inherent impl of `T`).
+    // Therefore: if the item sets differ, the sorted name list differs → unique.
+    //
+    // This key is purely semantic: it changes only when items are added, renamed,
+    // or removed, all of which are genuine changes to the impl block.  It does
+    // NOT churn when lines are added above the block, unlike a position-based
+    // fallback.
+    //
+    // Degenerate edge case: two `#[cfg]`-gated impls that are syntactically
+    // identical (same generics, same where clause, same item names).  If that
+    // occurs, `check_unique` will fire and the position-based fallback described
+    // in the design doc should be added at that time.
+    let items_names: String = {
+        let mut names: Vec<String> = imp
+            .items(ctx.db)
+            .into_iter()
+            .filter_map(|item| match item {
+                AssocItem::Function(f) => Some(f.name(ctx.db).as_str().to_owned()),
+                AssocItem::TypeAlias(ta) => Some(ta.name(ctx.db).as_str().to_owned()),
+                AssocItem::Const(c) => c.name(ctx.db).map(|n| n.as_str().to_owned()),
+            })
+            .collect();
+        names.sort();
+        names.join(",")
+    };
+
+    // Build the where/bounds/items suffix: bounds take priority; items are
+    // appended only when bounds alone may not be sufficient.
+    let where_part = if bounds_suffix.is_empty() {
+        if items_names.is_empty() {
+            String::new()
+        } else {
+            format!("[{items_names}]")
+        }
+    } else {
+        format!(" {bounds_suffix}[{items_names}]")
+    };
+
+    // Build the impl id based on whether this is a trait impl or inherent.
+    let id_str = if let Some(trait_) = imp.trait_(ctx.db) {
+        // Trait impl: `{module}::<{self_ty} as {canonical_trait}{args}>{where}`
+        //
+        // Use the canonical path of the trait (always fully qualified) rather
+        // than trait_ref.display() (which shortens to the local name and
+        // causes collisions between same-named traits from different crates).
+        let canonical_trait = ctx
+            .canonical(ModuleDef::Trait(trait_))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                // Fallback: render via trait_ref.display() if canonical fails.
+                // This should be rare (e.g. traits from macro-generated code).
+                attach_db(ctx.db, || {
+                    imp.trait_ref(ctx.db)
+                        .map(|tr| tr.display(ctx.db, ctx.display).to_string())
+                        .unwrap_or_else(|| "<unknown>".to_owned())
+                })
+            });
+
+        // Extract generic args from trait_ref.display() — the `<…>` portion.
+        // For `From<axum::extract::InvalidUtf8>` → `<axum::extract::InvalidUtf8>`.
+        // For bare `Error` (no generics) → `""`.
+        let trait_args: String = attach_db(ctx.db, || {
+            imp.trait_ref(ctx.db)
+                .map(|tr| {
+                    let display = tr.display(ctx.db, ctx.display).to_string();
+                    // Find the first `<` and take everything from there.
+                    display
+                        .find('<')
+                        .map(|lt| display[lt..].to_owned())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        });
+
+        format!("{mod_key}::<{self_ty_str} as {canonical_trait}{trait_args}>{where_part}")
+    } else {
+        // Inherent impl: `{module}::<{self_ty}>{where}`
+        format!("{mod_key}::<{self_ty_str}>{where_part}")
+    };
+
+    RaId::from(id_str.as_str())
 }
 
 // ── Type alias ────────────────────────────────────────────────────────────────
 
-fn lower_type_alias(
+/// Shared logic for lowering a type alias given an already-computed id.
+fn lower_type_alias_with_id(
     ctx: &mut LowerCtx<'_>,
-    def: ModuleDef,
+    ta: ra_ap_hir::TypeAlias,
+    ta_id: RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
 ) -> Result<(), RustProducerError> {
-    let ModuleDef::TypeAlias(ta) = def else {
-        return Ok(());
-    };
-    let Some(ta_id) = ctx.ra_id(def) else {
-        return Ok(());
-    };
-    let mut ref_for = make_ref_for!(out);
+    let def = ModuleDef::TypeAlias(ta);
+    let mut ref_for = make_ref_for!(ctx, out);
 
     let src = ctx.sema.source(ta).or_else(|| ta.source(ctx.db));
 
@@ -900,7 +1716,7 @@ fn lower_type_alias(
                         let path = path_ty.path()?;
                         let res = ty::resolve_path_opt(ctx, &path)?;
                         if let ra_ap_hir::PathResolution::Def(def) = res {
-                            let key = ctx.canonical(def)?;
+                            let key = id_of(ctx, def)?;
                             let raw = ref_for(&key)?;
                             Some(nudox_ir::kinds::Type::Nominal(raw))
                         } else {
@@ -924,23 +1740,55 @@ fn lower_type_alias(
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
     let sym = parts.into_symbol(src_path, span);
 
+    ctx.check_unique(&ta_id);
     out.declare(ta_id, parent, sym, alias_body);
     Ok(())
 }
 
+/// Lower a module-level type alias (type namespace, no `!v` / `!m` tag).
+fn lower_type_alias(
+    ctx: &mut LowerCtx<'_>,
+    def: ModuleDef,
+    parent: Option<RaId>,
+    out: &mut Lowering<RaId>,
+) -> Result<(), RustProducerError> {
+    let ModuleDef::TypeAlias(ta) = def else {
+        return Ok(());
+    };
+    let Some(ta_id) = ctx.ra_id(def) else {
+        return Ok(());
+    };
+    lower_type_alias_with_id(ctx, ta, ta_id, parent, out)
+}
+
+/// Lower an assoc type alias inside an impl/trait block.
+///
+/// The id is `child_id(parent_impl_or_trait_id, name)`, which is unique because
+/// the parent id encodes the self type and optional trait.
+fn lower_assoc_type_alias(
+    ctx: &mut LowerCtx<'_>,
+    ta: ra_ap_hir::TypeAlias,
+    parent_id: &RaId,
+    parent: Option<RaId>,
+    out: &mut Lowering<RaId>,
+) -> Result<(), RustProducerError> {
+    let ta_name = ta.name(ctx.db).as_str().to_owned();
+    let ta_id = ctx.child_id(parent_id, &ta_name);
+    lower_type_alias_with_id(ctx, ta, ta_id, parent, out)
+}
+
 // ── Const ─────────────────────────────────────────────────────────────────────
 
-fn lower_const(
+/// Shared logic for lowering a const given an already-computed id.
+fn lower_const_with_id(
     ctx: &mut LowerCtx<'_>,
     c: ra_ap_hir::Const,
+    const_id: RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
 ) -> Result<(), RustProducerError> {
     let def = ModuleDef::Const(c);
-    let Some(const_id) = ctx.ra_id(def) else {
-        return Ok(());
-    };
-    let mut ref_for = make_ref_for!(out);
+    let mut ref_for = make_ref_for!(ctx, out);
 
     let src = ctx.sema.source(c).or_else(|| c.source(ctx.db));
     let const_ty = if let Some(src) = &src
@@ -1000,23 +1848,41 @@ fn lower_const(
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
     let sym = parts.into_symbol(src_path, span);
 
+    ctx.check_unique(&const_id);
     out.declare(const_id, parent, sym, const_body);
     Ok(())
 }
 
+/// Lower an assoc const inside an impl/trait block.
+///
+/// The id is `child_id(parent_impl_or_trait_id, name)`.
+fn lower_assoc_const(
+    ctx: &mut LowerCtx<'_>,
+    c: ra_ap_hir::Const,
+    parent_id: &RaId,
+    parent: Option<RaId>,
+    out: &mut Lowering<RaId>,
+) -> Result<(), RustProducerError> {
+    // Const::name returns Option<Name> (anonymous consts in patterns use `_`).
+    let const_name = c.name(ctx.db)
+        .map(|n| n.as_str().to_owned())
+        .unwrap_or_else(|| "_".to_owned());
+    let const_id = ctx.child_id(parent_id, &const_name);
+    lower_const_with_id(ctx, c, const_id, parent, out)
+}
+
 // ── Static ────────────────────────────────────────────────────────────────────
 
-fn lower_static(
+/// Shared logic for lowering a static item given an already-computed id.
+fn lower_static_with_id(
     ctx: &mut LowerCtx<'_>,
     s: ra_ap_hir::Static,
+    static_id: RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
 ) -> Result<(), RustProducerError> {
     let def = ModuleDef::Static(s);
-    let Some(static_id) = ctx.ra_id(def) else {
-        return Ok(());
-    };
-    let mut ref_for = make_ref_for!(out);
+    let mut ref_for = make_ref_for!(ctx, out);
 
     let src = ctx.sema.source(s).or_else(|| s.source(ctx.db));
     let static_ty = if let Some(src) = &src
@@ -1036,6 +1902,7 @@ fn lower_static(
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
     let sym = parts.into_symbol(src_path, span);
 
+    ctx.check_unique(&static_id);
     out.declare(static_id, parent, sym, static_body);
     Ok(())
 }
@@ -1048,6 +1915,8 @@ fn lower_static(
 /// `out` parameter itself.
 struct FieldData {
     field_id: RaId,
+    /// Bare field name (e.g. `"value"`, not `"axum::extract::path::de::EnumDeserializer::value"`).
+    name: String,
     key: FieldKey,
     ty: nudox_ir::kinds::Type,
     visibility: nudox_ir::entry::Visibility,
@@ -1070,7 +1939,7 @@ fn declare_hir_fields(
     // Pass 1: compute all type / metadata while holding `ref_for` (which
     // borrows `out` via the closure).
     let data: Vec<FieldData> = {
-        let mut ref_for = make_ref_for!(out);
+        let mut ref_for = make_ref_for!(ctx, out);
         fields
             .iter()
             .enumerate()
@@ -1097,7 +1966,7 @@ fn declare_hir_fields(
                 let visibility = ctx.visibility(*f);
                 let doc = docs::documentation(ctx, *f).unwrap_or_default();
 
-                FieldData { field_id, key, ty: field_ty, visibility, doc }
+                FieldData { field_id, name: field_name, key, ty: field_ty, visibility, doc }
             })
             .collect()
     };
@@ -1113,7 +1982,7 @@ fn declare_hir_fields(
                 .build();
 
             let field_sym = nudox_ir::entry::Symbol {
-                name: fd.field_id.to_string(),
+                name: fd.name,
                 visibility: fd.visibility,
                 documentation: fd.doc,
                 source: PathBuf::new(),
@@ -1125,6 +1994,7 @@ fn declare_hir_fields(
                 cfg: None,
             };
 
+            ctx.check_unique(&fd.field_id);
             out.declare(fd.field_id.clone(), parent.clone(), field_sym, field_body);
             out.refer::<Field>(fd.field_id)
         })
@@ -1135,7 +2005,7 @@ fn declare_hir_fields(
 
 /// Declare all input params and return their `Ref<Param>` list.
 pub(crate) fn declare_params(
-    _ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     fn_id: &RaId,
     params: &[function::ParamData],
     parent: Option<RaId>,
@@ -1150,6 +2020,7 @@ pub(crate) fn declare_params(
                 .attributes(pd.attributes.iter().copied())
                 .build();
             let param_sym = plain_sym(&pd.name);
+            ctx.check_unique(&param_id);
             out.declare(param_id.clone(), parent.clone(), param_sym, param_body);
             out.refer::<Param>(param_id)
         })

@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 
 use ir::change::{IntroId, StableRef};
-use ir::wire::{
+use crate::wire::{
     ConstWire, EnumWire, FieldWire, FunctionWire, GenericParamWire, ImplWire, KindWire,
     OwnedEntryPayload, ParamWire, PrimitiveWire, RecordWire, ReexportWire, StaticWire, TraitWire,
     TypeAliasWire, TypeRefWire, TypeWire, VariantWire, WherePredWire,
@@ -173,6 +173,10 @@ fn map_kind(sigma: &Sigma, kind: &KindWire) -> KindWire {
         KindWire::Reexport(r) => KindWire::Reexport(ReexportWire {
             target: map_stable_ref(sigma, &r.target),
         }),
+        KindWire::Param(p) => KindWire::Param(ParamWire {
+            name: p.name.clone(),
+            ty: map_type_ref(sigma, &p.ty),
+        }),
     }
 }
 
@@ -202,8 +206,8 @@ mod tests {
     use super::*;
     use ir::change::{EcosystemId, PackageLineageId, PackageName};
     use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
-    use ir::wire::{EntryPayloadFlags, FnSigFlags, SymbolWire};
+    use ir::entry::Visibility;
+    use crate::wire::{EntryPayloadFlags, FnSigFlags, SymbolWire};
 
     fn intro(n: u8) -> IntroId {
         IntroId::from_raw([n; 32])
@@ -284,7 +288,7 @@ mod tests {
                 sym("R"),
                 KindDiscriminant::Record,
                 KindWire::Record(RecordWire {
-                    form: ir::wire::RecordForm::Struct,
+                    form: crate::wire::RecordForm::Struct,
                     fields: fields.into_boxed_slice(),
                     generics: Box::new([]),
                     wheres: Box::new([]),

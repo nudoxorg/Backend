@@ -60,6 +60,11 @@ pub struct LoadedWorkspace {
     pub ws: ProjectWorkspace,
     /// Whether private items should be lowered.
     pub document_private: bool,
+    /// The name of the package this workspace was loaded for.
+    ///
+    /// Carried here rather than on the producer value because `Producer::lower`
+    /// receives only the oracle — see the note on [`super::load`].
+    pub package_name: String,
     _proc_macro: Option<ProcMacroClient>,
 }
 
@@ -72,6 +77,7 @@ pub struct LoadedWorkspace {
 /// - Primes type caches in parallel before returning.
 pub(crate) fn load(
     root: &Path,
+    package_name: &str,
     document_private: bool,
 ) -> Result<LoadedWorkspace, RustProducerError> {
     let cfg = ExtractConfig::for_extract();
@@ -124,6 +130,7 @@ pub(crate) fn load(
         vfs,
         ws,
         document_private,
+        package_name: package_name.to_owned(),
         _proc_macro: proc_macro,
     })
 }

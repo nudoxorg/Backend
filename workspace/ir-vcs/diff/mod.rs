@@ -22,7 +22,7 @@
 //!
 //! ```ignore
 //! use crate::diff::{diff_tables, PackageDelta, delta_digest};
-//! use ir::change::ChangeSetFingerprint;
+//! use crate::vcs_types::ChangeSetFingerprint;
 //!
 //! let delta: PackageDelta = diff_tables(&t0, &t1, from_cset, to_cset, None);
 //! let digest = delta.delta_digest();

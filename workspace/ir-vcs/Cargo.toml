@@ -19,8 +19,10 @@ workspace = true
 path = "lib.rs"
 
 [dependencies]
-# The light IR data model (entry/symbol/kind/wire/change/view/vocab/…).
-ir           = { path = "../ir" }
+# The nudox-ir data model (entry/symbol/kind/change/view/vocab/body/…).
+# The `ir` package alias keeps all `use ir::` references compiling while the
+# migration from workspace/ir is in progress.
+ir           = { package = "nudox-ir", path = "../../crates/nudox-ir" }
 # The canonical `Language` enum lives in `heart`; `ir-vcs` reads it from there
 # and never links the `ecosystem` spec crate.
 heart        = { path = "../heart" }

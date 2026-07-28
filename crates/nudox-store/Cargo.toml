@@ -1,0 +1,33 @@
+[package]
+name = "nudox-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# L1 of GUI-LOCAL-PLAN §L0: the local corpus. Owns `IrView`s and everything
+# derived from them. Depends on `nudox-ir` and the producer plane; must never
+# depend on gpui, on a GUI type, or on anything above it in the stack.
+
+[features]
+default = []
+# `FixtureSource` — deterministic synthetic corpora for tests and dev (LR-5).
+fixtures = []
+
+[dependencies]
+nudox-ir = { path = "../nudox-ir" }
+nudox-producer = { path = "../nudox-producer" }
+nudox-producer-rust = { path = "../nudox-producer-rust" }
+
+futures = { workspace = true }
+indexmap = { workspace = true }
+rustc-hash = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+triomphe = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -41,7 +41,7 @@ use libpijul::changestore::ChangeStore;
 
 use crate::error::VcsError;
 use crate::repo::IrRepository;
-use ir::serialize::LinkWire;
+use crate::serialize::LinkWire;
 use crate::session::{FinishReport, StagedEntry};
 
 // ---------------------------------------------------------------------------
@@ -321,7 +321,7 @@ where
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Convert `crate::protocol::WireLink` vec to `ir::serialize::LinkWire` vec.
+/// Convert `crate::protocol::WireLink` vec to `crate::serialize::LinkWire` vec.
 ///
 /// The two types are structurally identical; this is a crate-boundary rename
 /// with no data transformation.

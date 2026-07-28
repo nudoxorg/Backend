@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use ir::index::StrId;
+use crate::vcs_types::StrId;
 
 use crate::archive::error::ArchiveError;
 

@@ -43,7 +43,6 @@ members = [
     # `ir-vcs` (the libpijul/iroh-linked patch engine / serve / diff / semver /
     # transfer). `registry` reads only the light `ir` and no longer transitively
     # links libpijul.
-    "workspace/ir",
     "workspace/ir-vcs",
     # ── Shared content-transfer plane (CONSOLIDATION-NOTES §8b/§8c) ───────────
     # The ONE abstracted iroh/iroh-blobs + bao provide-fetch. heart stays
@@ -62,6 +61,16 @@ members = [
     "crates/nudox-producer-clang",
     "crates/nudox-producer-java",
     "crates/nudox-producer-python",
+    # ── Local-first GUI planes (GUI-LOCAL-PLAN §L0) ──────────────────────────
+    # store → graph → engine → mcp. `lindsey` (workspace/gui) is deliberately
+    # NOT a member: it keeps its own lockfile so gpui stays out of the backend
+    # graph, and reaches these four by path. Dependency law, one direction only:
+    # lindsey → engine → {graph, store} → ir; mcp → {engine, graph}; and none of
+    # the four may link gpui.
+    "crates/nudox-store",
+    "crates/nudox-graph",
+    "crates/nudox-engine",
+    "crates/nudox-mcp",
 ]
 
 # Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
@@ -99,6 +108,17 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 triomphe = "0.1"
 vfs = "0.13"
+# ── Local-first GUI planes (GUI-LOCAL-PLAN) ──────────────────────────────────
+# The trustfall fork is pinned by rev, not branch: LD-10 pin discipline applies
+# to it exactly as it does to gpui. We need two things upstream 0.8.1 lacks — a
+# real `Adapter::Error` channel (LR-6) and the `AsyncAdapter` stream engine,
+# whose result stream is `!Send` and therefore drives the engine's LocalSet.
+trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "7e71e35715dfac561e3453c834b469a200330997", features = ["async"] }
+futures = "0.3"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["simd"] }
+flume = "0.11"
+schemars = "1"
+tracing = "0.1"
 
 [workspace.lints.clippy]
 result_large_err = "allow"

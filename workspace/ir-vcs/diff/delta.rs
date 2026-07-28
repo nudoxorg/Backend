@@ -16,7 +16,8 @@
 
 use std::collections::BTreeMap;
 
-use ir::change::{ChangeSetFingerprint, ContentBlake3, IntroId};
+use ir::change::{ContentBlake3, IntroId};
+use crate::vcs_types::ChangeSetFingerprint;
 use serde::{Deserialize, Serialize};
 
 use crate::diff::ir_op::{IrOp, op_sort_key};

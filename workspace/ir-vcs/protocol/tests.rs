@@ -16,15 +16,12 @@
 
 use heart::content::{ContentHash, JobKey};
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
-use ir::{
-    kind::KindDiscriminant,
-    wire::{
-        EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
-    },
+use ir::kind::KindDiscriminant;
+use ir::entry::Visibility;
+use ir::body::{BodyEmbed, BodyMergeNote, OracleBody, TreesitterBody, merge_body};
+use crate::wire::{
+    EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
 };
-use ir::symbol::Visibility;
-
-use ir::{BodyEmbed, BodyMergeNote, OracleBody, TreesitterBody, merge_body};
 
 use crate::protocol::{
     BodyWire, FailureKindWire, FrameReader, FrameWriter, PhaseWire, ProducerId, Received,
@@ -217,7 +214,7 @@ fn test_links_and_occurrences() {
         },
         WireLink {
             other: make_stable_ref("pkg_b", 40),
-            kind_self: KindDiscriminant::Type,
+            kind_self: KindDiscriminant::Alias,
             kind_other: KindDiscriminant::Function,
         },
     ])
@@ -639,7 +636,7 @@ fn bodies_frame_round_trips() {
     let oracle = OracleBody::default();
     // tree is non-empty (root_kind is set), so merge_body returns Present.
     let present_body = merge_body(
-        heart::Language::Rust,
+        ir::body::Language::Rust,
         tree,
         oracle,
         BodyMergeNote::treesitter_only(),

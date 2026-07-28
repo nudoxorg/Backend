@@ -28,11 +28,23 @@ use self::loaded::LoadedWorkspace;
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Load the Cargo workspace at `src.root` into a [`LoadedWorkspace`].
+///
+/// The package name travels with the loaded workspace. `Producer::lower` is
+/// handed only the oracle, so a name held on the producer *value* has to be
+/// configured correctly before `invoke` — and a registry that maps one
+/// producer per language cannot know the name of the package it is about to be
+/// asked for. That mismatch is not theoretical: `ProducerRegistry::with_rust_pilot`
+/// registered `RustProducer { name: String::new(), .. }`, and an empty name makes
+/// `documented_package_names` return nothing, so *every* package produced through
+/// the registry failed with "no documented packages found for ``".
+///
+/// Taking the name from the `PackageSource` here means it provably describes the
+/// package actually being loaded.
 pub(crate) fn load(
     src: &PackageSource,
     document_private: bool,
 ) -> Result<LoadedWorkspace, RustProducerError> {
-    loaded::load(src.root(), document_private)
+    loaded::load(src.root(), src.name.as_str(), document_private)
 }
 
 /// Walk every documented crate in the loaded workspace and emit declarations
@@ -47,6 +59,24 @@ pub(crate) fn lower_workspace(
     root_package_name: &str,
     out: &mut Lowering<RaId>,
 ) -> Result<(), RustProducerError> {
+    lower_workspace_inner(oracle, root_package_name, out).map(|_occs| ())
+}
+
+/// Like `lower_workspace` but also returns the collected pre-seal occurrence
+/// facts so the caller can resolve and publish them after `seal()`.
+pub(crate) fn lower_workspace_with_occs(
+    oracle: &LoadedWorkspace,
+    root_package_name: &str,
+    out: &mut Lowering<RaId>,
+) -> Result<Vec<ctx::PendingOcc>, RustProducerError> {
+    lower_workspace_inner(oracle, root_package_name, out)
+}
+
+fn lower_workspace_inner(
+    oracle: &LoadedWorkspace,
+    root_package_name: &str,
+    out: &mut Lowering<RaId>,
+) -> Result<Vec<ctx::PendingOcc>, RustProducerError> {
     let package_names = documented_package_names(
         &oracle.ws,
         root_package_name,
@@ -162,13 +192,15 @@ fn lower_all_packages_into(
     package_names: &[String],
     document_private: bool,
     out: &mut Lowering<RaId>,
-) -> Result<(), RustProducerError> {
+) -> Result<Vec<ctx::PendingOcc>, RustProducerError> {
     let crates = find_local_crates(db, package_names);
     if crates.is_empty() {
         return Err(RustProducerError::Load(format!(
             "no local hir::Crate matching packages {package_names:?}"
         )));
     }
+
+    let mut all_occs: Vec<ctx::PendingOcc> = Vec::new();
 
     for krate in crates {
         let crate_name = krate
@@ -179,15 +211,24 @@ fn lower_all_packages_into(
 
         // Catch Cancelled so it propagates out of attach_db correctly.
         // Non-Cancelled panics are caught per-item in `walk`.
+        //
+        // We need the ctx to be accessible after the walk so we can drain its
+        // occurrence_buf.  The workaround: store the ctx alongside the walk
+        // result by returning both from the closure.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut ctx = LowerCtx::new(db, krate, document_private);
             ctx.collect_aliases();
-            walk::lower_crate(&mut ctx, out)
+            let walk_result = walk::lower_crate(&mut ctx, out);
+            // Drain occurrence_buf before ctx is dropped.
+            let occs = std::mem::take(&mut ctx.occurrence_buf);
+            (walk_result, occs)
         }));
 
         match result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
+            Ok((Ok(()), occs)) => {
+                all_occs.extend(occs);
+            }
+            Ok((Err(e), _)) => return Err(e),
             Err(payload) => {
                 if payload.downcast_ref::<Cancelled>().is_some() {
                     return Err(RustProducerError::Cancelled);
@@ -200,5 +241,5 @@ fn lower_all_packages_into(
     }
 
     info!(packages = package_names.len(), "RA lowering complete");
-    Ok(())
+    Ok(all_occs)
 }

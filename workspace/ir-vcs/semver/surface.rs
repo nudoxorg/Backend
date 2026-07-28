@@ -1,6 +1,6 @@
 //! P4 — `ApiSurface` projection + three hash classes.
 //!
-//! [`surface`] is a pure function over a [`PristineIntroTable`] + [`ExportPolicy`]:
+//! [`surface`] is a pure function over a [`PayloadTable`] + [`ExportPolicy`]:
 //! it performs the §8.4 reachability BFS to determine which entries are exported,
 //! collects their moniker paths (canonical + reexport aliases), and computes the
 //! three per-item hash classes (§3.3).
@@ -22,9 +22,9 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use ir::change::{ContentBlake3, IntroId, StableRef};
-use ir::apply::PristineIntroTable;
-use ir::symbol::Visibility;
-use ir::wire::{
+use crate::wire::PayloadTable;
+use ir::entry::Visibility;
+use crate::wire::{
     AttrTok, AutoFact, AutoState, AutoTrait, CfgExpr, FnSigFlags, GenericParamWire, KindWire,
     OwnedEntryPayload, PrimitiveWire, RecordForm, SelfKind, Sealed, TraitFlags,
     TypeRefWire, TypeWire, VariantForm, WherePredWire, WidthWire,
@@ -130,7 +130,7 @@ pub struct ApiItem {
 /// The projected API surface of a package at one generation + config.
 ///
 /// This is a pure value derived from `surface(table, policy)`. It is not
-/// serialized into the store; the store holds the `PristineIntroTable` and this
+/// serialized into the store; the store holds the `PayloadTable` and this
 /// is recomputed on demand (or cached by `api_surface_hash`).
 #[derive(Clone, Debug)]
 pub struct ApiSurface {
@@ -148,7 +148,7 @@ pub struct ApiSurface {
 // surface() — the §8.4 reachability BFS
 // ---------------------------------------------------------------------------
 
-/// Project the exported `ApiSurface` from a materialized `PristineIntroTable`.
+/// Project the exported `ApiSurface` from a materialized `PayloadTable`.
 ///
 /// This is the §8.4 pure function: `surface(table, policy) -> ApiSurface`.
 ///
@@ -167,13 +167,13 @@ pub struct ApiSurface {
 /// 3. For each exported entry, collect all moniker paths (canonical + aliases
 ///    via re-export paths).
 /// 4. Compute per-item hash classes.
-pub fn surface(table: &PristineIntroTable, policy: &ExportPolicy) -> ApiSurface {
+pub fn surface(table: &PayloadTable, policy: &ExportPolicy) -> ApiSurface {
     surface_with_config(table, policy, ConfigId::DEFAULT)
 }
 
 /// Same as [`surface`] but attaches a specific `ConfigId` to the result.
 pub fn surface_with_config(
-    table: &PristineIntroTable,
+    table: &PayloadTable,
     policy: &ExportPolicy,
     config: ConfigId,
 ) -> ApiSurface {
@@ -376,7 +376,7 @@ pub(crate) fn is_doc_hidden(payload: &OwnedEntryPayload) -> bool {
 }
 
 /// Build a `parent → Vec<child>` index from the table.
-fn build_child_index(table: &PristineIntroTable) -> BTreeMap<IntroId, Vec<IntroId>> {
+fn build_child_index(table: &PayloadTable) -> BTreeMap<IntroId, Vec<IntroId>> {
     let mut index: BTreeMap<IntroId, Vec<IntroId>> = BTreeMap::new();
     for (id, _) in table.live_entries() {
         if let Some(parent) = table.parent_of(id) {
@@ -607,6 +607,15 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
         }
         KindWire::Module(_) => {
             // Modules carry no kind-specific S-marked fields beyond vis/kind.
+        }
+        KindWire::Param(p) => {
+            // 17. in — a Param entry's (name, type) is S-marked exactly like
+            // a function input parameter: name is identity-bearing, type is
+            // the primary signature surface.
+            if let Some(ref n) = p.name {
+                push_str(&mut buf, n);
+            }
+            push_type_ref(&mut buf, &p.ty);
         }
     }
 
@@ -894,9 +903,9 @@ fn push_trait_flags(buf: &mut Vec<u8>, tf: &TraitFlags) {
     buf.push(tf.is_auto as u8);
     buf.push(tf.is_unsafe as u8);
     buf.push(match tf.dyn_compat {
-        ir::wire::TriState::Yes => 0x01,
-        ir::wire::TriState::No => 0x02,
-        ir::wire::TriState::Unknown => 0x00,
+        crate::wire::TriState::Yes => 0x01,
+        crate::wire::TriState::No => 0x02,
+        crate::wire::TriState::Unknown => 0x00,
     });
     buf.push(match tf.sealed {
         Sealed::None => 0x00,
@@ -971,13 +980,13 @@ fn push_cfg(buf: &mut Vec<u8>, cfg: &CfgExpr) {
 mod tests {
     use super::*;
     use ir::change::IntroId;
-    use ir::apply::PristineIntroTable;
+    use crate::wire::PayloadTable;
     use ir::kind::KindDiscriminant;
-    use ir::wire::{
+    use crate::wire::{
         EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload,
         SymbolWire,
     };
-    use ir::symbol::Visibility;
+    use ir::entry::Visibility;
 
     fn make_sym(name: &str, vis: Visibility, doc: Option<&str>) -> SymbolWire {
         SymbolWire {
@@ -1056,7 +1065,7 @@ mod tests {
 
     #[test]
     fn surface_exports_pub_items() {
-        let mut table = PristineIntroTable::new();
+        let mut table = PayloadTable::new();
         let id = intro(1);
         table.insert_live(id, fn_payload("foo"), None);
 
@@ -1070,7 +1079,7 @@ mod tests {
 
     #[test]
     fn surface_excludes_private_items() {
-        let mut table = PristineIntroTable::new();
+        let mut table = PayloadTable::new();
         let id = intro(2);
         let sym = make_sym("bar", Visibility::Private, None);
         let payload = OwnedEntryPayload::sealed(
@@ -1093,7 +1102,7 @@ mod tests {
 
     #[test]
     fn surface_excludes_doc_hidden_by_default() {
-        let mut table = PristineIntroTable::new();
+        let mut table = PayloadTable::new();
         let id = intro(3);
         let mut sym = make_sym("hidden_fn", Visibility::Public, None);
         sym.attrs.push(AttrTok { token: "doc_hidden".into(), arg: None });
@@ -1121,7 +1130,7 @@ mod tests {
 
     #[test]
     fn surface_child_items_exported_under_parent() {
-        let mut table = PristineIntroTable::new();
+        let mut table = PayloadTable::new();
         let mod_id = intro(10);
         let fn_id = intro(11);
 

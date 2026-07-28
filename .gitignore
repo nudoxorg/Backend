@@ -172,3 +172,4 @@
 
 # Allow nested gitignores
 !/**/.gitignore
+.real-crates/

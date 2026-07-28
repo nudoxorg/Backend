@@ -20,7 +20,8 @@
 
 use std::sync::Arc;
 
-use ir::change::{ChangeSetFingerprint, PackageLineageId};
+use ir::change::PackageLineageId;
+use crate::vcs_types::ChangeSetFingerprint;
 
 use crate::semver::packs::a::run_pack_a;
 use crate::semver::report::{ApiReport, DepClosureStatus, SemverPolicy};
@@ -157,10 +158,10 @@ mod tests {
     use super::*;
     use crate::semver::surface::{surface, ExportPolicy};
     use ir::change::IntroId;
-    use ir::apply::PristineIntroTable;
+    use crate::wire::PayloadTable;
     use ir::kind::KindDiscriminant;
-    use ir::symbol::Visibility;
-    use ir::wire::{
+    use ir::entry::Visibility;
+    use crate::wire::{
         EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire,
     };
 
@@ -196,11 +197,11 @@ mod tests {
     }
 
     fn empty_surface() -> ApiSurface {
-        surface(&PristineIntroTable::new(), &ExportPolicy::default())
+        surface(&PayloadTable::new(), &ExportPolicy::default())
     }
 
     fn single_fn_surface(id: IntroId, name: &str) -> ApiSurface {
-        let mut t = PristineIntroTable::new();
+        let mut t = PayloadTable::new();
         t.insert_live(id, fn_payload(name), Option::None);
         surface(&t, &ExportPolicy::default())
     }

@@ -140,7 +140,7 @@ impl<W: Write> SymbolSink<W> {
         Ok(())
     }
 
-    /// Flush a single [`ir::BodyEmbed`] as a [`StreamFrame::Bodies`] frame.
+    /// Flush a single [`ir::body::BodyEmbed`] as a [`StreamFrame::Bodies`] frame.
     ///
     /// `intro` is the content-derived identity of the owning entry (never an
     /// arena index). This is a convenience shim over [`SymbolSink::emit_bodies`].
@@ -151,7 +151,7 @@ impl<W: Write> SymbolSink<W> {
     pub fn emit_body(
         &mut self,
         intro: IntroId,
-        body: ir::BodyEmbed,
+        body: ir::body::BodyEmbed,
     ) -> Result<(), StreamError> {
         self.emit_bodies(std::iter::once(BodyWire { intro, body }))
     }

@@ -29,11 +29,15 @@ pub mod semver;
 /// sink/receiver state machines. The host-side driver is [`stream`].
 pub mod protocol;
 
+pub mod ascii;
 pub mod checkout;
+pub mod lower;
+pub mod vcs_types;
+pub mod wire;
 pub mod checkpoint;
-pub mod continuity;
 pub mod error;
 pub mod f1;
+pub mod serialize;
 pub mod refs;
 pub mod repo;
 pub mod serve_cache;
@@ -65,7 +69,6 @@ pub use checkout::MaterializedIndex;
 pub use checkpoint::{
     Checkpoint, CheckpointCache, CheckpointConfig, Retention, ServeStrategy, Served,
 };
-pub use continuity::compute_sigma;
 pub use refs::{BranchName, Ref, RefKind, ResolvedRef, TagName};
 pub use repo::{ChangeHashHex, IrRepository, IrTip, VersionDiff};
 pub use serve_cache::{ServeCache, ServeSource, ServedArchive};

@@ -241,6 +241,20 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
         Ref::Local(idx.typed())
     }
 
+    /// Return `true` if `id` has already been fully declared via
+    /// [`declare`](Self::declare) or [`declare_ref`](Self::declare_ref).
+    ///
+    /// Returns `false` for ids that have only been *referred* (interned but not
+    /// yet declared) and for ids that are completely unknown to this session.
+    ///
+    /// Use this to guard against duplicate impl declarations before emitting
+    /// member entries: if an impl id is already declared, emitting members
+    /// with that id as their parent would produce dangling parent links once
+    /// the duplicate is reported by [`finish`](Self::finish).
+    pub fn is_declared(&self, id: &Id) -> bool {
+        self.slots.get(id).is_some_and(|s| s.is_some())
+    }
+
     /// Return a typed [`Ref`] for `id` without declaring it.
     ///
     /// The referenced entry may be declared later (before or after this call)

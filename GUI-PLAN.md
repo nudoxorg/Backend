@@ -162,7 +162,7 @@ Two mechanisms, used together:
 
 ```rust
 pub struct StreamHandle {
-    pub gen: Gen,
+    pub generation: Gen,
     canceller: Box<dyn Fn() + Send>,   // wraps client-side CancellationToken
 }
 impl Drop for StreamHandle { fn drop(&mut self) { (self.canceller)(); } }
@@ -220,7 +220,7 @@ pub fn delayed(delay_frac: f32, ease: impl Fn(f32) -> f32) -> impl Fn(f32) -> f3
 // Row ix in a fresh result set: total dur = 160ms + cap; delay = 16ms * min(ix, 8)
 ```
 
-**Entrance identity rule (critical with virtualization):** `uniform_list` mounts and unmounts rows on scroll; keying an entrance animation to the row would replay it on every scroll-back. Entrances are keyed to the *data generation*, not visibility: `ElementId` = `("search.row.enter", gen.0, ix)` and rows only wrap themselves in the animation while `gen_age() < 400 ms` (store records the `Instant` each gen's first page landed). After that window, rows render bare. Scrolling never animates; only *new results* do.
+**Entrance identity rule (critical with virtualization):** `uniform_list` mounts and unmounts rows on scroll; keying an entrance animation to the row would replay it on every scroll-back. Entrances are keyed to the *data generation*, not visibility: `ElementId` = `("search.row.enter", generation.0, ix)` and rows only wrap themselves in the animation while `gen_age() < 400 ms` (store records the `Instant` each gen's first page landed). After that window, rows render bare. Scrolling never animates; only *new results* do.
 
 ### §4.2 Retained tier — the `Motion<T>` spring kernel (interruptible, physical)
 
@@ -235,11 +235,11 @@ pub struct Spring { pub stiffness: f32, pub damping: f32, pub mass: f32 }
 
 impl Spring {
     /// Default UI spring — near-critical damping, settles in ~350 ms.
-    pub const DEFAULT: Spring = Spring { stiffness: 380.0, damping: 38.0, mass: 1.0 };
+    pub const DEFAULT: Spring = Spring { stiffness: 459.0, damping: 41.6, mass: 1.0 };
     /// Overlays, toasts — faster attack, settles ~220 ms.
-    pub const SNAPPY:  Spring = Spring { stiffness: 560.0, damping: 46.0, mass: 1.0 };
+    pub const SNAPPY:  Spring = Spring { stiffness: 1225.0, damping: 67.9, mass: 1.0 };
     /// Progress bars, graph settle — soft, settles ~600 ms.
-    pub const GENTLE:  Spring = Spring { stiffness: 170.0, damping: 24.0, mass: 1.0 };
+    pub const GENTLE:  Spring = Spring { stiffness: 145.0, damping: 23.4, mass: 1.0 };
 }
 
 /// A spring-animated scalar. Views own these in their state.
@@ -255,7 +255,7 @@ pub struct Motion {
 
 impl Motion {
     pub fn new(value: f32, spring: Spring) -> Self {
-        Self { value, velocity: 0.0, target: value, spring, last_tick: None, epsilon: 0.05 }
+        Self { value, velocity: 0.0, target: value, spring, last_tick: None, travel: 0.0 }
     }
     /// Retarget without touching velocity — this is what makes interruption smooth.
     pub fn animate_to(&mut self, target: f32) { self.target = target; }
@@ -291,6 +291,19 @@ impl Motion {
 }
 ```
 
+> **Correction (2026-07-27, measured).** The constants above are the retuned
+> ones. As originally specified — 380/38, 560/46, 170/24 with an *absolute*
+> `epsilon: 0.05` — settle time grew with travel distance, because the time for
+> a linear spring to cross a fixed threshold scales with the log of the distance
+> it covers. `DEFAULT` took **758 ms** over a 320 px dock but 517 ms over a
+> 1-unit chevron: two surfaces sharing one preset disagreed about what that
+> preset felt like, and the dock case breached §5.4's 700 ms cap. The fix is a
+> *relative* rest threshold (0.5 % of travel, with the rest velocity derived
+> from it so the two agree), which makes settle time scale-invariant, plus
+> stiffnesses re-solved so each preset hits its advertised time. Verified by
+> `presets_settle_at_advertised_time_regardless_of_travel`, which asserts the
+> same wall-clock across travels of 1, 320 and 4000 units.
+
 **The render-loop contract** (this is the entire integration — no registry, no global ticker; motion state is view-local and dies with the view):
 
 ```rust
@@ -317,7 +330,7 @@ Because `request_animation_frame` notifies only the rendering entity (`window.rs
 Motion is *never* triggered from render (render observes; it may tick, not retarget). Triggers live in exactly three places:
 
 1. **Actions/input handlers** — user intent: `ToggleSidebar` → `self.width.animate_to(0.0 | 320.0)`.
-2. **Store event subscriptions** — data arrival: `SearchEvent::Page { gen, .. }` → record `gen_arrival` (drives entrance windows), `count_ticker.animate_to(total as f32)`.
+2. **Store event subscriptions** — data arrival: `SearchEvent::Page { generation, .. }` → record `gen_arrival` (drives entrance windows), `count_ticker.animate_to(total as f32)`.
 3. **Focus/hover callbacks** — micro-feedback: hover tints and press-sink (§5.1) via GPUI's built-in `hover:`/`active:` style states where possible (zero-cost, no notify), `Motion` only where the built-ins can't express it (e.g., a hover that reveals a secondary row of actions with a slide).
 
 ## §5 The motion vocabulary (every animation in the app)
@@ -401,9 +414,9 @@ impl ClientHandle {
     /// Spawns the Tokio runtime on dedicated threads. Called ONCE in main(), before app.run.
     pub fn start(config: ClientConfig) -> ClientHandle;
     /// All capabilities below return immediately; results stream via flume receivers.
-    pub fn search(&self, q: SearchQuery, gen: Gen) -> (StreamHandle, flume::Receiver<SearchEvent>);
-    pub fn open_symbol(&self, key: SymbolKey, gen: Gen) -> (StreamHandle, flume::Receiver<DocEvent>);
-    pub fn open_package(&self, id: PackageId, gen: Gen) -> (StreamHandle, flume::Receiver<PackageEvent>);
+    pub fn search(&self, q: SearchQuery, generation: Gen) -> (StreamHandle, flume::Receiver<SearchEvent>);
+    pub fn open_symbol(&self, key: SymbolKey, generation: Gen) -> (StreamHandle, flume::Receiver<DocEvent>);
+    pub fn open_package(&self, id: PackageId, generation: Gen) -> (StreamHandle, flume::Receiver<PackageEvent>);
     pub fn resolve_project(&self, root: PathBuf) -> (StreamHandle, flume::Receiver<ProjectEvent>);
     pub fn sync(&self) -> flume::Receiver<SyncEvent>;          // long-lived, app lifetime
     pub fn jobs(&self) -> flume::Receiver<JobEvent>;           // long-lived, app lifetime
@@ -415,7 +428,7 @@ Requirements the stub and the real Wave-4 implementation both satisfy:
 
 - Never blocks the caller; `command` uses `try_send` on a bounded(64) channel and surfaces overflow as a `JobEvent::CommandRejected` (has never legitimately triggered = capacity review).
 - All receivers are `flume` bounded (Appendix C capacities) and close when the source completes — closure IS the completion signal for finite streams.
-- Every event enum carries `gen: Gen` where it answers a slotted query.
+- Every event enum carries `generation: Gen` where it answers a slotted query.
 
 ### §7.2 `Gen`
 
@@ -468,12 +481,12 @@ This ~25-line function replaces every ad-hoc `cx.spawn(Compat::new(...)).detach(
 ```rust
 impl SearchStore {
     pub fn query(&mut self, text: SharedString, cx: &mut Context<Self>) {
-        self.slot.gen = self.gens.next();                    // supersede
+        self.slot.generation = self.gens.next();                    // supersede
         self.slot.begin_loading();                           // keeps old value (LD-15)
-        let (handle, rx) = self.client.search(self.build_query(&text), self.slot.gen);
+        let (handle, rx) = self.client.search(self.build_query(&text), self.slot.generation);
         self.slot.handle = Some(handle);                     // drops+cancels predecessor (§2.3)
         self.drain_task = drain(cx, rx, |store, event, cx| {
-            if event.gen() != store.slot.gen { return }       // stale guard
+            if event.generation() != store.slot.generation { return }       // stale guard
             store.apply_search_event(event, cx);              // pure state mutation
         });
         cx.notify();
@@ -504,7 +517,7 @@ pub struct StreamSlot<T> {
     pub phase: Phase,
     pub value: Option<T>,          // survives reloads: stale-while-revalidate (LD-15)
     pub error: Option<SlotError>,
-    pub gen: Gen,
+    pub generation: Gen,
     pub handle: Option<StreamHandle>,
 }
 
@@ -568,7 +581,7 @@ pub struct SymbolHead {                       // ALWAYS the first event
     pub signature: Vec<SigToken>,             // typed tokens, see below
     pub kind: SymbolKindV1,                   // closed enum + Unknown(String) fallback
     pub visibility: VisibilityV1,
-    pub provenance: Provenance,               // TrustedLocal | SyncedLocal { gen } | Remote { gen } — LD-8 badge
+    pub provenance: Provenance,               // TrustedLocal | SyncedLocal { generation } | Remote { generation } — LD-8 badge
     pub deprecation: Option<SharedStr>,
     pub section_plan: Vec<SectionPlan>,       // what will stream + size hints → skeleton geometry (§9.4)
 }
@@ -625,7 +638,7 @@ Protocol invariants (tested in §28.2 with a property test over event permutatio
 
 1. **Skeleton from `section_plan`:** the page pre-lays every planned section as a skeleton sized by `SizeHint` (`Lines(n)` → `n × line_height`; `Rows(n)` → `n × row_height`; `Unknown` → 3-line block). Arrival replaces skeleton with content of the *same height class* → the scroll position never teleports while reading.
 2. **Code reserves geometry:** `CodeBlock.line_count` fixes the block height before text arrives fully styled; `Highlight` recolors runs (`highlight.sweep`, §5.2) with *no* geometry change — mono font metrics are constant across colors.
-3. **Sections mount with `section.arrive`** (§5.2), keyed `("doc.section", gen.0, section_id)` — first arrival animates, tab-switch re-renders don't (arrival windows, §4.1).
+3. **Sections mount with `section.arrive`** (§5.2), keyed `("doc.section", generation.0, section_id)` — first arrival animates, tab-switch re-renders don't (arrival windows, §4.1).
 4. **The body is a `list()`** (variable-height virtualized) whose items are sections — a 4 000-line mega-doc costs only its viewport. `ListState` measurement uses the same `SizeHint` before real measure.
 5. **Below-the-fold priority:** the M5 chunker emits sections in plan order but the *highlighter* prioritizes viewport-visible sections first (the GUI sends visible `SectionId`s over `ClientCommand::HighlightPriority` on scroll — best-effort, coalesced at 4 Hz).
 
@@ -1191,9 +1204,9 @@ Each milestone lists **goal → steps → acceptance**. Steps are ordered and be
 | `pulsating_between(a,b)` | gpui | breathing sine | shimmer, status dots |
 | `bounce(e)` | gpui | forward-then-back | badge pop, nav flash |
 | `delayed(d,e)` | ours §4.1 | stagger shim | cascades |
-| Spring DEFAULT 380/38/1 | ours | ~350 ms settle | docks, selection, chevrons, scroll |
-| Spring SNAPPY 560/46/1 | ours | ~220 ms settle | overlays, toasts, underline |
-| Spring GENTLE 170/24/1 | ours | ~600 ms settle | progress, counts, graph |
+| Spring DEFAULT 459/41.6/1 | ours | 350 ms settle (measured, travel-invariant) | docks, selection, chevrons, scroll |
+| Spring SNAPPY 1225/67.9/1 | ours | 225 ms settle (measured, travel-invariant) | overlays, toasts, underline |
+| Spring GENTLE 145/23.4/1 | ours | 600 ms settle (measured, travel-invariant) | progress, counts, graph |
 
 ## Appendix B — Keymap (macOS / Linux ctrl-equivalents)
 

@@ -9,8 +9,9 @@ use std::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use ir::change::{ChangeSetFingerprint, IntroId, PackageLineageId};
-use ir::wire::{CfgExpr, FnSigFlags};
+use ir::change::{IntroId, PackageLineageId};
+use crate::vcs_types::ChangeSetFingerprint;
+use crate::wire::{CfgExpr, FnSigFlags};
 
 use crate::semver::config::ConfigId;
 use crate::semver::surface::MonikerPath;

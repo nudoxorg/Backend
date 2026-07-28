@@ -1,4 +1,4 @@
-//! Round-trip application of a [`PackageDelta`] to a [`PristineIntroTable`] (§7.5).
+//! Round-trip application of a [`PackageDelta`] to a [`PayloadTable`] (§7.5).
 //!
 //! [`apply_delta`] produces the T1 table implied by the delta, sufficient to
 //! verify `apply_delta(T0, delta) == T1` on constructed fixture pairs.
@@ -54,8 +54,8 @@ use std::collections::BTreeSet;
 
 use ir::change::IntroId;
 
-use ir::apply::{LinkRecord, PristineIntroTable};
-use ir::wire::{
+use crate::vcs_types::LinkRecord; use crate::wire::PayloadTable;
+use crate::wire::{
     GenericParamWire, KindWire, OwnedEntryPayload, TypeRefWire, WherePredWire,
 };
 
@@ -82,16 +82,16 @@ impl core::error::Error for ApplyError {}
 // apply_delta
 // ---------------------------------------------------------------------------
 
-/// Apply a [`PackageDelta`] to a base [`PristineIntroTable`], producing T1.
+/// Apply a [`PackageDelta`] to a base [`PayloadTable`], producing T1.
 ///
 /// Entries with `Introduced`/`Resurrected` ops are skipped (the op carries no
 /// payload). Callers that need those entries in T1 should supply them via
 /// `apply_delta_with_t1`. The round-trip test fixture inserts T1 entries
 /// separately for introduced symbols.
 pub fn apply_delta(
-    base: &PristineIntroTable,
+    base: &PayloadTable,
     delta: &PackageDelta,
-) -> Result<PristineIntroTable, ApplyError> {
+) -> Result<PayloadTable, ApplyError> {
     apply_delta_with_t1(base, delta, None)
 }
 
@@ -102,10 +102,10 @@ pub fn apply_delta(
 /// in `t1` and inserted verbatim (preserving the round-trip law). When `t1` is
 /// `None`, those entries are skipped.
 pub fn apply_delta_with_t1(
-    base: &PristineIntroTable,
+    base: &PayloadTable,
     delta: &PackageDelta,
-    t1: Option<&PristineIntroTable>,
-) -> Result<PristineIntroTable, ApplyError> {
+    t1: Option<&PayloadTable>,
+) -> Result<PayloadTable, ApplyError> {
     // Snapshot all base entries into a BTreeMap so we can mutate them.
     let mut entries: std::collections::BTreeMap<IntroId, (OwnedEntryPayload, Option<IntroId>)> = base
         .live_entries()
@@ -158,8 +158,8 @@ pub fn apply_delta_with_t1(
         *parent = new_parent;
     }
 
-    // Reconstruct PristineIntroTable.
-    let mut result = PristineIntroTable::new();
+    // Reconstruct PayloadTable.
+    let mut result = PayloadTable::new();
     for (id, (payload, parent)) in entries {
         result.insert_live(id, payload, parent);
     }
@@ -230,7 +230,7 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
                 let mut params = f.input_params.to_vec();
                 let idx = (*index as usize).min(params.len());
                 // Placeholder; caller should supply T1 for true round-trip.
-                params.insert(idx, ir::wire::ParamWire {
+                params.insert(idx, crate::wire::ParamWire {
                     name: None,
                     ty: TypeRefWire::Same(IntroId::from_raw([0u8; 32])),
                 });
@@ -262,8 +262,8 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
         IrOp::ParamsReordered => {}
         IrOp::ReturnChanged { new, .. } => {
             if let KindWire::Function(ref mut f) = payload.kind {
-                let new_outputs: Vec<ir::wire::ParamWire> = new.iter()
-                    .map(|ty| ir::wire::ParamWire { name: None, ty: ty.clone() })
+                let new_outputs: Vec<crate::wire::ParamWire> = new.iter()
+                    .map(|ty| crate::wire::ParamWire { name: None, ty: ty.clone() })
                     .collect();
                 f.output_params = new_outputs.into_boxed_slice();
             }

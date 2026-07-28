@@ -1,5 +1,5 @@
 //! Lowering context: canonical path → RaId map, impl index, alias cache,
-//! duplicate-name counter, and visibility/doc helpers.
+//! and visibility/doc helpers.
 //!
 //! # What changed vs the old ctx.rs
 //!
@@ -12,9 +12,31 @@
 //! old code are also gone — the new `Lowering` sink is order-independent, so
 //! every item can be declared in one pass without buffering.
 //!
-//! The `duplicate counter` is new: when two items share the same canonical path
-//! (e.g. two `fn new` in different inherent impls) we append `#1`, `#2`, … so
-//! `Lowering` does not see duplicate keys.
+//! ## ID scheme
+//!
+//! Items are identified by a hierarchical path string.  The key rules are:
+//!
+//! 1. **Module-level items** (items whose parent is a module):
+//!    `{module_id}::{name}` for type-namespace items;
+//!    `{module_id}::{name}!v` for value-namespace items (fn / const / static)
+//!    that would otherwise collide with a same-named type-namespace item (e.g.
+//!    `mod serve` vs `fn serve` in axum);
+//!    `{module_id}::{name}!m` for macro-namespace items.
+//!    The `!v` / `!m` suffixes use `!` as the delimiter because `!` cannot
+//!    appear in a Rust identifier or path, making false collisions impossible.
+//!    The type namespace is left bare so existing ids for types, modules, traits,
+//!    and type aliases are unchanged.
+//!
+//! 2. **Nested items** (members of `impl` / `trait` blocks, fields, variants,
+//!    parameters): `{parent_id}::{name}`.  The parent `impl_id` or `trait_id`
+//!    already encodes the self type and trait, so two different impls providing
+//!    the same method name yield different ids without any counter.  This is
+//!    the primary fix for the axum `fmt` / `Future` / `Rejection` collisions.
+//!
+//! **Why no positional counter?**  A counter whose value depends on visit order
+//! (or worse, hash-map iteration order) produces different ids on different runs,
+//! which destroys the IR-VCS version history.  The scheme above is purely
+//! structural and deterministic.
 
 use ra_ap_hir::{
     Crate, DisplayTarget, HasVisibility, Module, ModuleDef, ScopeDef, Semantics,
@@ -24,13 +46,48 @@ use ra_ap_ide_db::RootDatabase;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
 
-use nudox_ir::entry::{Deprecation, DocLink, Visibility as IrVisibility};
+use nudox_ir::{
+    entry::{Deprecation, DocLink, Visibility as IrVisibility},
+    vocab::{ReferenceKind, RelSpan},
+};
 
 use super::docs;
 use crate::RaId;
 
 /// A canonical path key, e.g. `"my_crate::Foo::bar"`.
 pub(crate) type PathKey = SmolStr;
+
+// ── Pending occurrence — pre-seal occurrence fact ─────────────────────────────
+
+/// The endpoint of a pending occurrence.
+///
+/// After `seal()`, a `Local` endpoint resolves to an `IntroId` via the
+/// canonical-path → `IntroId` reverse map.  A `Foreign` endpoint already
+/// carries a stable external path that can be used to look up the target in
+/// the foreign package.
+#[derive(Debug, Clone)]
+pub(crate) enum PendingTarget {
+    /// Same-package entry; key is the `RaId` (canonical path string).
+    Local(RaId),
+    /// Cross-package entry; key is `"crate_name::path::to::Item"`.
+    Foreign(String),
+}
+
+/// A single pre-seal occurrence fact collected during the IR walk.
+///
+/// The owner is a local `RaId`.  The target is a `PendingTarget` (local or
+/// foreign).  Both are resolved to `IntroId` / `StableRef` post-seal.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingOcc {
+    /// The entry that contains this reference (the function, method, …).
+    pub(crate) owner: RaId,
+    /// The referenced symbol.
+    pub(crate) target: PendingTarget,
+    /// The category of the reference.
+    pub(crate) kind: ReferenceKind,
+    /// Source-text span relative to the owner's span start, if available.
+    pub(crate) span: Option<RelSpan>,
+}
 
 /// Per-crate lowering state.
 pub(crate) struct LowerCtx<'db> {
@@ -46,12 +103,19 @@ pub(crate) struct LowerCtx<'db> {
     /// All public paths per def (re-export aliases, incl. globs).
     pub(crate) alias_cache: FxHashMap<PathKey, FxHashSet<Vec<String>>>,
 
-    /// Counter per canonical path stem; used to disambiguate overloads.
+    /// Pre-seal occurrence facts collected during the crate walk.
     ///
-    /// When `(parent_path + "::" + name)` is seen for the N-th time (N>0) we
-    /// suffix the `RaId` with `#N`.  The counter is keyed by the *un-suffixed*
-    /// path so the suffix is stable across items.
-    overload_count: FxHashMap<PathKey, u32>,
+    /// Populated by `item::record_body_occurrences` while lowering function
+    /// bodies.  Resolved to `Occurrence` / `Relation` values post-seal by the
+    /// caller (see `ra::mod::lower_workspace_with_occurrences`).
+    pub(crate) occurrence_buf: Vec<PendingOcc>,
+
+    /// Debug-assertion set: every `RaId` emitted via `check_unique` is
+    /// recorded here.  This is a *check* only — it is never used as input to
+    /// id construction (that would introduce order-dependency).  The set is
+    /// compiled away in release builds.
+    #[cfg(debug_assertions)]
+    emitted: FxHashSet<RaId>,
 }
 
 impl<'db> LowerCtx<'db> {
@@ -65,7 +129,9 @@ impl<'db> LowerCtx<'db> {
             document_private,
             path_cache: FxHashMap::default(),
             alias_cache: FxHashMap::default(),
-            overload_count: FxHashMap::default(),
+            occurrence_buf: Vec::new(),
+            #[cfg(debug_assertions)]
+            emitted: FxHashSet::default(),
         }
     }
 
@@ -90,23 +156,42 @@ impl<'db> LowerCtx<'db> {
         self.canonical(def)
     }
 
-    /// Allocate a unique `RaId` for a method or associated item at
-    /// `parent_path::name`.
+    /// Build a `RaId` for an item that is a child of `parent`.
     ///
-    /// When two items share the same `(parent_path, name)` pair (e.g. two
-    /// inherent `impl` blocks both supplying `fn new`) the second and subsequent
-    /// ones get a `#N` suffix so `Lowering` does not see duplicate keys.
-    pub(crate) fn method_id(&mut self, parent_path: &PathKey, name: &str) -> RaId {
-        let stem = PathKey::from(format!("{parent_path}::{name}"));
-        let count = self.overload_count.entry(stem.clone()).or_insert(0);
-        if *count == 0 {
-            *count = 1;
-            stem
-        } else {
-            let id = PathKey::from(format!("{stem}#{}", *count));
-            *count += 1;
-            id
+    /// This is the primary id-construction method for all **nested** items:
+    /// impl members, trait members, fields, variants, and parameters.  It is
+    /// also safe to use for module-level type-namespace items (modules, structs,
+    /// enums, traits, type aliases), since `{module_id}::{name}` reproduces
+    /// the canonical path exactly.
+    ///
+    /// **Uniqueness guarantee** — Rust forbids two items with the same name in
+    /// the same impl/trait/struct/enum, so `{parent}::{name}` is unique within
+    /// its parent scope.  Across scopes, uniqueness is guaranteed because
+    /// `parent` itself is unique (each impl block has a distinct string derived
+    /// from its self type and trait).
+    ///
+    /// **No counter** — order-independent by construction.
+    pub(crate) fn child_id(&self, parent: &RaId, name: &str) -> RaId {
+        RaId::from(format!("{parent}::{name}").as_str())
+    }
+
+    /// Debug-assert that `id` has not been emitted before in this session.
+    ///
+    /// Call this in debug builds immediately before every `Lowering::declare`
+    /// invocation so that future regressions surface as immediate panics rather
+    /// than cryptic `LoweringError::Duplicate` errors 3000 entries later.
+    ///
+    /// The set is never consulted for id *construction* — it is a check only.
+    #[inline]
+    pub(crate) fn check_unique(&mut self, id: &RaId) {
+        #[cfg(debug_assertions)]
+        {
+            assert!(
+                self.emitted.insert(id.clone()),
+                "duplicate RaId emitted: {id}"
+            );
         }
+        let _ = id; // suppress unused warning in release
     }
 
     /// Alias segment vectors for a canonical key (excluding the primary path).
