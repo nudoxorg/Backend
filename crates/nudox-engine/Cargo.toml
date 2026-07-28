@@ -41,6 +41,8 @@ trustfall = { workspace = true }
 
 [dev-dependencies]
 nudox-store = { path = "../nudox-store", features = ["fixtures"] }
+nudox-producer = { path = "../nudox-producer" }
+nudox-producer-rust = { path = "../nudox-producer-rust" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 # The packages_subscription integration tests exercise `Engine::start_with_fixtures`
@@ -49,6 +51,35 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 [[test]]
 name = "packages_subscription"
 required-features = ["fixtures"]
+
+# Adversarial integration tests added 2026-07-27.
+# search_adversarial requires the fixture corpus.
+[[test]]
+name = "search_adversarial"
+required-features = ["fixtures"]
+
+# hyperlink_flows and multi_package_flows and versions_adversarial use
+# hand-built StaticSource packages (no fixture feature required).
+[[test]]
+name = "hyperlink_flows"
+
+[[test]]
+name = "multi_package_flows"
+
+[[test]]
+name = "versions_adversarial"
+
+[[test]]
+name = "protocol_adversarial"
+required-features = ["fixtures"]
+
+# Implementations and References emission tests — no fixture feature required.
+[[test]]
+name = "impls_refs_flows"
+
+# End-to-end hyperlink test against real producer output (.real-crates fixture).
+[[test]]
+name = "real_producer_links"
 
 [lints]
 workspace = true

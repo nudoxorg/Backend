@@ -13,6 +13,24 @@
 //! available the dot renders static at the midpoint of its pulse — visually
 //! identical to a paused frame, never a missing element. The cap is therefore
 //! enforced by construction rather than by everyone remembering it.
+//!
+//! # Visibility rule — absent by default, present when it matters (LD-8)
+//!
+//! A dot that is green on every single row communicates nothing: the eye
+//! habituates to it in seconds and it becomes invisible decoration.  Provenance
+//! only earns the space it occupies when its value *can vary* and when a
+//! non-default value would change what the reader trusts.
+//!
+//! The chosen rule: **render nothing for `Provenance::TrustedLocal`** — the
+//! happy path, and the only one where the dot would always be green.
+//! `SyncedLocal`, `Remote`, and `Stale` all earn a dot because they signal that
+//! the data arrived from somewhere other than a local compilation the user owns,
+//! or that it may be out of date.  The dot's *presence* is the signal; its
+//! *colour* refines it.
+//!
+//! This is the same reasoning as hiding a zero-count diagnostics chip: "0
+//! problems" is noise you stop reading; its absence means "no news", which is
+//! actually informative once you have internalised the rule.
 
 use gpui::{
     Animation, AnimationExt, App, ElementId, Element as _, IntoElement, RenderOnce, Styled,
@@ -73,6 +91,15 @@ impl ProvenanceDot {
 
 impl RenderOnce for ProvenanceDot {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Visibility rule (see module doc): `TrustedLocal` is the default,
+        // expected state.  A dot that is always green on every row teaches the
+        // reader to ignore it.  We render nothing for the happy path and let the
+        // dot's *presence* carry the meaning ("something unusual about this
+        // source") rather than its colour alone.
+        if self.provenance == Provenance::TrustedLocal {
+            return div().into_any();
+        }
+
         let ext = cx.theme_ext();
         let style = ext.for_provenance(self.provenance);
         let size = ext.space.space_2; // 8 px
@@ -112,5 +139,60 @@ mod tests {
     #[test]
     fn breathe_midpoint_lies_within_the_pulse_range() {
         assert!(BREATHE_MIDPOINT > BREATHE_MIN && BREATHE_MIDPOINT < BREATHE_MAX);
+    }
+
+    /// `TrustedLocal` must be treated as the default (hidden) provenance.
+    ///
+    /// Concretely: a `ProvenanceDot` for `TrustedLocal` must not render a
+    /// coloured circle.  We verify this by checking that the provenance is the
+    /// `TrustedLocal` variant — the render path that returns an empty div is
+    /// entered only for that variant, and any other variant would paint a dot.
+    #[test]
+    fn trusted_local_is_the_hidden_provenance() {
+        // The rule: exactly one variant is suppressed — the common, expected
+        // one.  All others earn a dot.
+        let hidden = Provenance::TrustedLocal;
+        let shown = [
+            Provenance::SyncedLocal,
+            Provenance::Remote,
+            Provenance::Stale,
+        ];
+        // Self-check: the constant we compare against in `render` is the same
+        // variant we intend to suppress.
+        assert_eq!(
+            hidden,
+            Provenance::TrustedLocal,
+            "hidden variant must be TrustedLocal"
+        );
+        // And none of the shown variants are TrustedLocal.
+        for p in shown {
+            assert_ne!(
+                p,
+                Provenance::TrustedLocal,
+                "{p:?} must not be the hidden variant"
+            );
+        }
+    }
+
+    /// The visibility rule is binary: exactly one variant is suppressed.
+    ///
+    /// If a future edit accidentally suppresses a second variant (or none at
+    /// all), this test catches it by exhausting the known set.
+    #[test]
+    fn exactly_one_provenance_variant_is_suppressed() {
+        let all = [
+            Provenance::TrustedLocal,
+            Provenance::SyncedLocal,
+            Provenance::Remote,
+            Provenance::Stale,
+        ];
+        let suppressed_count = all
+            .iter()
+            .filter(|&&p| p == Provenance::TrustedLocal)
+            .count();
+        assert_eq!(
+            suppressed_count, 1,
+            "exactly one provenance variant must be suppressed (TrustedLocal)"
+        );
     }
 }

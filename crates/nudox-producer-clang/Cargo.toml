@@ -9,5 +9,8 @@ nudox-ir     = { path = "../nudox-ir" }
 nudox-producer = { path = "../nudox-producer" }
 clang        = { workspace = true, features = ["clang_10_0"] }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 tempfile = "3"

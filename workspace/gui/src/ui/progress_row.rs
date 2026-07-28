@@ -144,7 +144,9 @@ impl RenderOnce for ProgressRow {
         let caption = ext.type_scale.caption;
 
         let bar_height = space.space_1; // 4 px hairline bar
-        let track = colours.bg_hover;
+        // Use border_default for the track so it reads clearly against the
+        // content background — bg_hover is too close to bg_base on light themes.
+        let track = colours.border_default;
         let fill = colours.accent;
 
         let filled_fraction = match self.kind {

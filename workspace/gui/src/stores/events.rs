@@ -118,6 +118,25 @@ pub struct GenerationChanged {
 }
 
 // ---------------------------------------------------------------------------
+// ProjectPanel → Shell
+// ---------------------------------------------------------------------------
+
+/// The user activated a package row — open its landing page.
+///
+/// Carries the resolved root [`SymbolKey`] rather than the package name, so
+/// the shell does not have to look anything up: the panel already held the
+/// answer, and re-deriving it would let the two disagree about which symbol a
+/// package's page is.
+///
+/// A package that has not finished loading has no root yet, and the panel
+/// simply does not emit — activation is a no-op rather than an error, because
+/// clicking a row that says "loading axum…" is a reasonable thing to do.
+#[derive(Clone, Debug)]
+pub struct PackageActivated {
+    pub root: nudox_engine::SymbolKey,
+}
+
+// ---------------------------------------------------------------------------
 // PackageStore → status bar
 // ---------------------------------------------------------------------------
 

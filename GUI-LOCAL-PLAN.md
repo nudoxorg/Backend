@@ -454,5 +454,22 @@ the milestone note.
 
 ---
 
+---
+
+## §L10 Layout traps
+
+GPUI layout has subtle rules that do not produce compiler errors but silently
+render nothing. Known traps — including the `max_h`-without-a-definite-height
+bug that caused the symbol-page docs clip, the empty Implementations section,
+and the empty refs list — are documented with failing patterns, symptoms, and
+fixes in:
+
+> **`workspace/gui/LAYOUT-TRAPS.md`**
+
+Read that file before touching any view that uses `max_h`, `size_full`, or
+`flex_1` inside a container whose height is not explicitly established.
+
+---
+
 *End of GUI-LOCAL-PLAN Rev 2. Read with `GUI-PLAN.md`; where they disagree, the table at the
 top of this file governs and nothing else does.*

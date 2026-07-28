@@ -288,7 +288,7 @@ impl NudoxTools {
 
 impl NudoxTools {
     /// `search_symbols`, minus the MCP wrapping.
-    pub(crate) async fn do_search(
+    pub async fn do_search(
         &self,
         args: SearchSymbolsArgs,
     ) -> Result<SearchResult, McpError> {
@@ -386,7 +386,7 @@ impl NudoxTools {
     }
 
     /// `get_symbol`, minus the MCP wrapping.
-    pub(crate) async fn do_get_symbol(&self, args: GetSymbolArgs) -> Result<SymbolDoc, McpError> {
+    pub async fn do_get_symbol(&self, args: GetSymbolArgs) -> Result<SymbolDoc, McpError> {
         let key = args.key.to_wire()?;
         let generation = self.next_gen();
         let (_stream, rx) = self.engine.open_symbol(key, generation);
@@ -422,7 +422,7 @@ impl NudoxTools {
     }
 
     /// `find_usages`, minus the MCP wrapping.
-    pub(crate) async fn do_find_usages(
+    pub async fn do_find_usages(
         &self,
         args: FindUsagesArgs,
     ) -> Result<UsagesResult, McpError> {
@@ -458,7 +458,7 @@ impl NudoxTools {
     }
 
     /// `list_packages`, minus the MCP wrapping.
-    pub(crate) async fn do_list_packages(&self) -> Result<PackagesResult, McpError> {
+    pub async fn do_list_packages(&self) -> Result<PackagesResult, McpError> {
         let result = self
             .run_query(
                 GraphQuery { query: PACKAGES_QUERY.to_owned(), args: BTreeMap::new() },
@@ -480,7 +480,7 @@ impl NudoxTools {
     }
 
     /// `graph_query`, minus the MCP wrapping.
-    pub(crate) async fn do_graph_query(
+    pub async fn do_graph_query(
         &self,
         args: GraphQueryArgs,
     ) -> Result<QueryResult, McpError> {

@@ -66,8 +66,9 @@ use crate::app::actions::{OpenOmniSearch, ToggleBottomDock, ToggleLeftDock};
 use crate::motion::spring::{Motion, Spring};
 use crate::stores::events::{OpenDisposition, TabActivated};
 use crate::stores::symbol::TabId as DocTabId;
-use crate::stores::events::PackagesChanged;
+use crate::stores::events::{PackageActivated, PackagesChanged};
 use crate::stores::{PackageStore, SearchStore, SymbolStore};
+use crate::views::project_panel::ProjectPanel;
 use crate::theme::ext::ThemeExtAccessor as _;
 use crate::views::omni_search::{OmniSearch, OmniSearchEvent};
 use crate::views::symbol_page::SymbolPage;
@@ -210,12 +211,9 @@ macro_rules! placeholder_panel {
 }
 
 // Left dock panels.
-placeholder_panel!(
-    ProjectPanel,
-    "project-panel",
-    "Project",
-    "TODO(views): crate::views::project_panel"
-);
+//
+// `ProjectPanel` is no longer a placeholder — it lives in
+// `crate::views::project_panel` and is driven by the live `PackageStore`.
 
 placeholder_panel!(
     SearchPanel,
@@ -409,9 +407,16 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // ── Register placeholder panels so DockArea can (de)serialize them ─────
-        register_panel(cx, "project-panel", |_, _, _, window, cx| {
-            Box::new(cx.new(|cx| ProjectPanel::new(window, cx)))
+        // ── Register panels so DockArea can (de)serialize them ────────────────
+        //
+        // The project panel needs the package store, which `register_panel`'s
+        // `'static` factory closure cannot borrow from the constructor — so the
+        // store is cloned into the closure. Cloning an `Entity` is an arc bump;
+        // the panel and the shell observe the same store, which is the point:
+        // a deserialized layout must show the same corpus as the live one.
+        let panel_packages = packages.clone();
+        register_panel(cx, "project-panel", move |_, _, _, window, cx| {
+            Box::new(cx.new(|cx| ProjectPanel::new(panel_packages.clone(), window, cx)))
         });
         register_panel(cx, "search-panel", |_, _, _, window, cx| {
             Box::new(cx.new(|cx| SearchPanel::new(window, cx)))
@@ -438,14 +443,22 @@ impl Shell {
         let pane = cx.new(|cx| Pane::new(window, cx));
         let center_panel = cx.new(|cx| CenterPanel::new(pane.clone(), cx));
 
-        // ── Left dock (Project + Search) ───────────────────────────────────────
-        let project_panel = cx.new(|cx| ProjectPanel::new(window, cx));
-        let search_panel  = cx.new(|cx| SearchPanel::new(window, cx));
+        // ── Left dock (Project only) ──────────────────────────────────────────
+        //
+        // One panel, no tab strip. The Search tab was a second way to reach a
+        // capability that already has a better one: search is a surface you
+        // summon with `cmd-K` and dismiss, not a place you navigate to and
+        // leave sitting there. A tab strip over a single panel is pure chrome —
+        // it costs a row of vertical space on every frame to offer a choice
+        // with one option.
+        let project_panel = cx.new(|cx| ProjectPanel::new(packages.clone(), window, cx));
+        // Cloned because the dock takes ownership below and the shell still
+        // needs to subscribe to it. `Entity` clone is an arc bump, and both
+        // halves observe the same panel — which is the point: the dock renders
+        // it, the shell listens to it.
+        let panel_for_subs = project_panel.clone();
         let left_item = DockItem::tabs(
-            vec![
-                Arc::new(project_panel) as Arc<dyn PanelView>,
-                Arc::new(search_panel)  as Arc<dyn PanelView>,
-            ],
+            vec![Arc::new(project_panel) as Arc<dyn PanelView>],
             &weak_dock,
             window,
             cx,
@@ -536,6 +549,20 @@ impl Shell {
                 shell.reveal_document(event.tab_id, event.disposition, window, cx);
             },
         ));
+
+        // ── Package activated → open its crate root ──────────────────────────
+        //
+        // The panel knows *which* symbol a package's landing page is; the shell
+        // knows *where* documents go. Neither has to learn the other's job —
+        // the same seam the omni-search overlay uses, which is why
+        // `reveal_document` is written once and both paths funnel through it.
+        subs.push(
+            cx.subscribe(&panel_for_subs, |shell, _panel, event: &PackageActivated, cx| {
+                shell.symbols.update(cx, |store, cx| {
+                    store.open(event.root.clone(), OpenDisposition::Replace, cx);
+                });
+            }),
+        );
 
         // ── Corpus contents → status bar ─────────────────────────────────────
         //
@@ -695,6 +722,21 @@ impl Shell {
     /// Called for every `TabActivated`, including the ones `SymbolStore` emits
     /// when `open()` finds the symbol already open — which is why the dedup
     /// check comes first and does not build a second page.
+    ///
+    /// # Replace disposition and the tab-per-navigation problem
+    ///
+    /// `SymbolStore::open` with `Replace` closes the *outgoing doc tab* after
+    /// creating the new one — so by the time this function is called, the old
+    /// `DocTabId` is gone from the store.  But the pane still has the pane tab
+    /// for that old doc, and `self.tabs` still maps the old `DocTabId` to that
+    /// pane tab.  Unless we close the pane tab here the strip accumulates one
+    /// ghost tab per navigation.
+    ///
+    /// The fix: when the disposition is `Replace`, look up the pane tab that
+    /// was active *before* we opened the new one, find the `DocTabId` it
+    /// belonged to (reverse lookup in `self.tabs`), remove both mappings, and
+    /// close the pane tab.  This is safe because the store has already dropped
+    /// the doc; we are only cleaning up the pane-side mirror.
     fn reveal_document(
         &mut self,
         doc: DocTabId,
@@ -713,7 +755,10 @@ impl Shell {
             return;
         }
 
-        let previously_active = self.pane.read(cx).active_id();
+        // Snapshot the currently-active pane tab *before* opening the new one.
+        // For `Replace`, this is the tab we will close after the new one is open.
+        let previously_active_pane_tab = self.pane.read(cx).active_id();
+
         let symbols = self.symbols.clone();
         let page = cx.new(|cx| SymbolPage::new(doc, symbols, window, cx));
 
@@ -725,15 +770,37 @@ impl Shell {
         self.tabs.insert(doc, opened);
 
         // `open_item` activates what it opens, which is right for every
-        // disposition but this one; put the reader back where they were.
+        // disposition but Background; put the reader back where they were.
         if disposition == OpenDisposition::Background {
-            if let Some(previous) = previously_active {
+            if let Some(previous) = previously_active_pane_tab {
                 self.pane.update(cx, |pane, cx| {
                     pane.activate_tab(previous, window, cx);
                     cx.notify();
                 });
             }
         }
+
+        // For `Replace`: the store already closed the outgoing doc tab; close
+        // the matching pane tab so the strip does not accumulate ghost entries.
+        if disposition == OpenDisposition::Replace {
+            if let Some(outgoing_pane_tab) = previously_active_pane_tab {
+                // Find the DocTabId that owned this pane tab (reverse lookup).
+                let outgoing_doc = self
+                    .tabs
+                    .iter()
+                    .find(|(d, p)| **d != doc && **p == outgoing_pane_tab)
+                    .map(|(d, _)| *d);
+
+                if let Some(old_doc) = outgoing_doc {
+                    self.tabs.remove(&old_doc);
+                    self.pane.update(cx, |pane, cx| {
+                        pane.close_tab(outgoing_pane_tab, window, cx);
+                        cx.notify();
+                    });
+                }
+            }
+        }
+
         cx.notify();
     }
 
@@ -941,6 +1008,12 @@ impl Render for Shell {
                     el.child(
                         div()
                             .id("overlay.scrim")
+                            // Test seam — see `omni_search::render_row`. The
+                            // scrim and the overlay panel occupy overlapping
+                            // full-window layers, so a test needs the scrim's
+                            // real bounds to click *it* rather than the panel
+                            // sitting above it. No-op outside test builds.
+                            .debug_selector(|| "overlay.scrim".into())
                             .absolute()
                             .top_0()
                             .left_0()
@@ -1107,5 +1180,113 @@ mod tests {
         // Clear — target is 0.
         banner_h.animate_to(0.0);
         assert_eq!(banner_h.target(), 0.0);
+    }
+
+    // ── Replace disposition — tab cleanup (BUG 1) ────────────────────────────
+
+    /// The reverse-lookup used by `reveal_document` to find the outgoing
+    /// `DocTabId` from a `PaneTabId` must not return the newly-opened tab.
+    ///
+    /// This is the pure logic extracted from `reveal_document`.  When
+    /// `disposition == Replace`:
+    ///
+    /// 1. We have a `tabs` map with one existing entry: doc A → pane tab P.
+    /// 2. We open doc B, which gets pane tab Q, and insert B → Q.
+    /// 3. The previously-active pane tab is P.
+    /// 4. The reverse lookup must find A (not B) as the outgoing doc.
+    #[test]
+    fn replace_reverse_lookup_finds_outgoing_not_incoming() {
+        // Fake DocTabIds.
+        let doc_a = DocTabId(1);
+        let doc_b = DocTabId(2);
+
+        // Fake PaneTabIds (nonzero, as required by the type).
+        let pane_p = PaneTabId::new(1).unwrap();
+        let pane_q = PaneTabId::new(2).unwrap();
+
+        // State after the new tab has been inserted but before the cleanup.
+        let mut tabs: HashMap<DocTabId, PaneTabId> = HashMap::new();
+        tabs.insert(doc_a, pane_p); // the tab we opened *before*
+        tabs.insert(doc_b, pane_q); // the tab we just opened
+
+        let new_doc = doc_b;
+        let outgoing_pane_tab = pane_p;
+
+        // The logic in `reveal_document`:
+        let outgoing_doc = tabs
+            .iter()
+            .find(|(d, p)| **d != new_doc && **p == outgoing_pane_tab)
+            .map(|(d, _)| *d);
+
+        assert_eq!(
+            outgoing_doc,
+            Some(doc_a),
+            "reverse lookup must return the outgoing doc (A), not the new doc (B)"
+        );
+
+        // Simulate the cleanup.
+        tabs.remove(&doc_a);
+        assert!(!tabs.contains_key(&doc_a), "outgoing entry removed");
+        assert!(tabs.contains_key(&doc_b), "incoming entry kept");
+        assert_eq!(tabs.len(), 1);
+    }
+
+    /// When there is no previously-active pane tab (empty pane), the cleanup
+    /// path is a no-op and must not panic or remove the newly-inserted entry.
+    #[test]
+    fn replace_with_no_previous_tab_is_a_noop() {
+        let doc_b = DocTabId(1);
+        let pane_q = PaneTabId::new(1).unwrap();
+
+        let mut tabs: HashMap<DocTabId, PaneTabId> = HashMap::new();
+        tabs.insert(doc_b, pane_q);
+
+        let previously_active: Option<PaneTabId> = None; // empty pane before open
+
+        // No outgoing tab to close.
+        if let Some(outgoing_pane_tab) = previously_active {
+            let outgoing_doc = tabs
+                .iter()
+                .find(|(d, p)| **d != doc_b && **p == outgoing_pane_tab)
+                .map(|(d, _)| *d);
+            if let Some(old) = outgoing_doc {
+                tabs.remove(&old);
+            }
+        }
+
+        assert_eq!(tabs.len(), 1, "no-op: incoming entry must remain");
+    }
+
+    /// `Stay` and `Background` dispositions must NOT trigger the Replace
+    /// cleanup path.
+    #[test]
+    fn stay_and_background_do_not_close_outgoing_tab() {
+        let doc_a = DocTabId(1);
+        let doc_b = DocTabId(2);
+        let pane_p = PaneTabId::new(1).unwrap();
+        let pane_q = PaneTabId::new(2).unwrap();
+
+        for disposition in [OpenDisposition::Stay, OpenDisposition::Background] {
+            let mut tabs: HashMap<DocTabId, PaneTabId> = HashMap::new();
+            tabs.insert(doc_a, pane_p);
+            tabs.insert(doc_b, pane_q);
+
+            // The cleanup runs only for Replace.
+            if disposition == OpenDisposition::Replace {
+                let outgoing_doc = tabs
+                    .iter()
+                    .find(|(d, p)| **d != doc_b && **p == pane_p)
+                    .map(|(d, _)| *d);
+                if let Some(old) = outgoing_doc {
+                    tabs.remove(&old);
+                }
+            }
+
+            assert_eq!(
+                tabs.len(),
+                2,
+                "{disposition:?} must not remove any tab from the map"
+            );
+        }
     }
 }

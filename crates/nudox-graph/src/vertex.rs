@@ -66,6 +66,27 @@ pub struct OccurrenceVertex {
 /// * `as_<variant>()` conversion methods used by trustfall's coercion engine.
 ///
 /// The variant names **must** match the type names declared in `schema.graphql`.
+///
+/// # Variant-to-schema mapping
+///
+/// | Variant | Schema type | KindDiscriminant |
+/// |---------|-------------|------------------|
+/// | `Package` | `Package` | — |
+/// | `Function` | `Function` | `Function` |
+/// | `Record` | `Record` | `Record` |
+/// | `Trait` | `Trait` | `Trait` |
+/// | `Impl` | `Impl` | `Impl` |
+/// | `Enum` | `Enum` | `Enum` |
+/// | `Field` | `Field` | `Field` |
+/// | `Const` | `Const` | `Const` |
+/// | `Alias` | `Alias` | `Alias` |
+/// | `Static` | `Static` | `Static` |
+/// | `Variant` | `Variant` | `Variant` |
+/// | `Module` | `Module` | `Module` |
+/// | `Reexport` | `Reexport` | `Reexport` |
+/// | `Param` | `Param` | `Param` |
+/// | `OtherSymbol` | `OtherSymbol` | `None` / `Reference` |
+/// | `Occurrence` | `Occurrence` | — |
 #[derive(Debug, Clone, TrustfallEnumVertex)]
 pub enum Vertex {
     Package(Arc<PackageView>),
@@ -77,6 +98,23 @@ pub enum Vertex {
     Field(SymbolVertex),
     Const(SymbolVertex),
     Alias(SymbolVertex),
+    /// A static variable declaration.  Previously collapsed into `OtherSymbol`;
+    /// promoted to its own variant so that `... on Static { }` coercions work.
+    Static(SymbolVertex),
+    /// An enum variant (unit, tuple, or struct form).  Previously collapsed
+    /// into `OtherSymbol`; promoted so that `... on Variant { }` coercions work.
+    Variant(SymbolVertex),
+    /// A module or namespace.  Previously collapsed into `OtherSymbol`;
+    /// promoted so that `... on Module { }` coercions work.
+    Module(SymbolVertex),
+    /// A re-export declaration.  Previously collapsed into `OtherSymbol`;
+    /// promoted so that `... on Reexport { }` coercions work.
+    Reexport(SymbolVertex),
+    /// A type or value parameter.  Previously collapsed into `OtherSymbol`;
+    /// promoted so that `... on Param { }` coercions work.
+    Param(SymbolVertex),
+    /// Catch-all for `None` (reference entries) and any future discriminant
+    /// the schema has no named type for yet.  See schema comment on `OtherSymbol`.
     OtherSymbol(SymbolVertex),
     Occurrence(OccurrenceVertex),
 }
@@ -89,7 +127,7 @@ pub enum Vertex {
 ///
 /// Returns `None` for `Package` and `Occurrence`, which are not symbols.
 /// Used in the adapter's resolvers to share property/neighbor logic across
-/// all nine concrete symbol types.
+/// all fourteen concrete symbol types.
 pub fn as_symbol_vertex(v: &Vertex) -> Option<&SymbolVertex> {
     match v {
         Vertex::Function(sv)
@@ -100,6 +138,11 @@ pub fn as_symbol_vertex(v: &Vertex) -> Option<&SymbolVertex> {
         | Vertex::Field(sv)
         | Vertex::Const(sv)
         | Vertex::Alias(sv)
+        | Vertex::Static(sv)
+        | Vertex::Variant(sv)
+        | Vertex::Module(sv)
+        | Vertex::Reexport(sv)
+        | Vertex::Param(sv)
         | Vertex::OtherSymbol(sv) => Some(sv),
         Vertex::Package(_) | Vertex::Occurrence(_) => None,
     }

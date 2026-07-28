@@ -50,18 +50,32 @@ fn served_sdl_parses_to_the_same_schema_nudox_graph_exposes() {
         );
     }
 
-    // The implementors the tool descriptions name must actually be there.
+    // The implementors the tool descriptions name must actually be there —
+    // including the five formerly-collapsed kinds promoted to their own types.
     let symbol_subtypes: Vec<&str> = parsed
         .subtypes("Symbol")
         .expect("Symbol must be defined")
         .collect();
-    for implementor in ["Function", "Record", "Trait", "Impl", "Enum", "Field", "Const", "Alias"] {
+    for implementor in [
+        "Function", "Record", "Trait", "Impl", "Enum", "Field", "Const", "Alias",
+        // The five formerly-collapsed kinds now have dedicated schema types
+        // (Limit 2 fix). An agent can write `... on Variant { }` etc.
+        "Static", "Variant", "Module", "Reexport", "Param",
+    ] {
         assert!(
             symbol_subtypes.contains(&implementor),
             "schema must define the {implementor} implementor that graph_query's description \
              promises"
         );
     }
+
+    // Verify the Occurrence → target edge (Limit 1 fix).
+    // The schema exposes `target: Symbol` on `Occurrence` so agents can follow
+    // `occurrencesOf { target { name kind } }` without a second query.
+    assert!(
+        nudox_mcp::SCHEMA_SDL.contains("target: Symbol"),
+        "schema must declare the Occurrence.target edge to Symbol"
+    );
 }
 
 #[test]

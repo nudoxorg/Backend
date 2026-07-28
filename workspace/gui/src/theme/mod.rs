@@ -61,8 +61,8 @@ pub use ext::{NudoxThemeExt, Provenance, ThemeExtAccessor};
 pub use kind::LocalKindDiscriminant;
 pub use themes::{dark_theme, light_theme};
 pub use tokens::{
-    ColourRoles, ElevLevel, ElevTokens, KindColours, SpaceTokens, TrustStyle, TrustTokens,
-    TypeScale, TypeToken,
+    ColourRoles, ElevLevel, ElevTokens, KindColours, SpaceTokens, SyntaxColours, TrustStyle,
+    TrustTokens, TypeScale, TypeToken,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,6 +148,7 @@ mod tests {
             assert_opaque(k.static_, "kind.static_", t);
             assert_opaque(k.reexport, "kind.reexport", t);
             assert_opaque(k.param, "kind.param", t);
+            assert_opaque(k.kind_fg_on, "kind.kind_fg_on", t);
         }};
     }
 

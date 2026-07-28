@@ -730,6 +730,32 @@ pub struct SymbolHead {
     /// (§9.4).  Computed by the same walk that emits the sections — not
     /// estimated — so the skeleton is *derived* geometry, not a guess.
     pub section_plan: Vec<SectionPlan>,
+
+    // ── Source location ───────────────────────────────────────────────────────
+    //
+    // The path is whatever the producer recorded in `Symbol::source`.  It may be
+    // absolute (build-machine absolute), package-relative, or empty when the
+    // producer did not record a location.  A future producer pass can strip the
+    // package root at lowering time; we carry what we have rather than silently
+    // drop it.
+    //
+    // `source_span` is a **byte** range, not a line range.  Converting bytes to
+    // line numbers requires reading the file, which the engine deliberately does
+    // not do on the documentation path.  A producer that wants to surface line
+    // numbers should record them in the IR directly; until then the GUI should
+    // label these offsets explicitly (e.g. "bytes 10–42") so the user is never
+    // misled into thinking they are line numbers.
+
+    /// The path of the file in which the symbol is defined, as recorded by the
+    /// producer.  `None` when the producer did not supply a source location or
+    /// when `Symbol::source` is the empty path.
+    pub source_path: Option<SharedStr>,
+
+    /// The byte range of the symbol's definition within `source_path`.
+    ///
+    /// These are **byte** offsets, not line numbers.  `None` when
+    /// `source_path` is `None`.
+    pub source_span: Option<[u32; 2]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +820,26 @@ pub struct ImplRow {
     pub key: SymbolKey,
     /// Short display label (e.g. `impl Display for Point`).
     pub label: SharedStr,
+    /// `true` when `ImplFlags::blanket` is set — i.e. the impl applies to all
+    /// types satisfying a bound (`impl<T: Bound> Trait for T`).
+    ///
+    /// Blanket impls are rendered in a separate collapsed subheading because
+    /// they describe the ecosystem's structure, not the specific type being
+    /// viewed (docs.rs pattern).
+    pub is_blanket: bool,
+    /// The trait being implemented, rendered as a plain string.
+    ///
+    /// `None` for inherent impls (`impl Foo { … }`).  Used to group variadic
+    /// arity families: a 16-tuple Handler family all share the same
+    /// `trait_label`.
+    pub trait_label: Option<SharedStr>,
+    /// Number of generic type arguments on the *self type* at the outermost
+    /// `Type::Apply` level.
+    ///
+    /// `0` for a bare nominal self type (`impl Foo`), `N` for `impl Foo<T1,
+    /// …, TN>`.  Groups with ≥3 consecutive values of this field collapse to a
+    /// single arity-range summary row in the GUI.
+    pub self_generic_count: u32,
 }
 
 /// A paged list of trait implementations for this symbol.
@@ -803,6 +849,271 @@ pub struct ImplsPage {
     pub impls: Arc<[ImplRow]>,
     /// Total impl count across all pages.
     pub total: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Versions  (multi-generation corpus, §L2.4)
+// ---------------------------------------------------------------------------
+
+/// One loaded generation of a package.
+///
+/// The corpus can hold several versions of the same `PackageLineageId` — that
+/// is the whole point of `PackageLineageId` being version-free (it names the
+/// *lineage*, not one release). `VersionRow` is the GUI-facing projection of
+/// one of those generations: enough to fill a dropdown item and no more.
+///
+/// `symbol_count` is the declaration-table size of *that* generation, not of
+/// the lineage. Two rows for the same package routinely disagree, and the
+/// difference is itself informative (a version that suddenly halves its symbol
+/// count is usually a producer failure, not an API purge).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct VersionRow {
+    /// The version string exactly as the caller supplied it in
+    /// [`crate::PackageVersionSpec::version`].
+    ///
+    /// Deliberately *not* normalised. The engine parses a copy of it for
+    /// ordering (see `crate::versions`), but what the GUI shows is the string
+    /// the user typed, because a dropdown that silently rewrites `1.2` to
+    /// `1.2.0` is a dropdown the user cannot match against their manifest.
+    pub version: SharedStr,
+    /// True for exactly one row: the *selected* generation.
+    ///
+    /// Every version-free path in the engine — `open_symbol`, `search`,
+    /// `query` — resolves against this generation, because `Corpus` is keyed
+    /// by lineage alone and therefore has room for exactly one resident
+    /// `PackageView` per package. Switching it is
+    /// [`crate::EngineHandle::select_version`].
+    ///
+    /// "Selected" rather than "resident" because the two can disagree for the
+    /// brief window between a `select_version` call and its
+    /// [`VersionEvent::Switched`]: the selection is recorded synchronously, the
+    /// corpus write is not. `select_version` documents why that ordering is the
+    /// right one for a caller driving a dropdown.
+    pub is_current: bool,
+    /// Number of entries in this generation's declaration table.
+    pub symbol_count: u64,
+}
+
+/// Every loaded generation of one package, newest first.
+///
+/// Returned by [`crate::EngineHandle::versions`]. Newest-first because that is
+/// the order a dropdown wants: the release the user most likely means is the
+/// one under the cursor when the list opens.
+///
+/// An empty `versions` list means the package is not loaded at all — it is not
+/// an error, and it is distinguishable from "loaded, one version" by `len()`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct VersionList {
+    /// The lineage these versions belong to.
+    #[serde(serialize_with = "serialize_lineage_id")]
+    #[schemars(with = "String")]
+    pub package: PackageLineageId,
+    /// The loaded generations, newest first.  See `crate::versions` for the
+    /// exact ordering rule (semver-shaped where parseable, load order to break
+    /// ties, unparseable strings sorted below all parseable ones).
+    pub versions: Arc<[VersionRow]>,
+}
+
+impl VersionList {
+    /// The generation the corpus currently serves, if any package is loaded.
+    pub fn current(&self) -> Option<&VersionRow> {
+        self.versions.iter().find(|v| v.is_current)
+    }
+
+    /// The number of loaded generations.
+    pub fn len(&self) -> usize {
+        self.versions.len()
+    }
+
+    /// True when no generation of this package is loaded.
+    pub fn is_empty(&self) -> bool {
+        self.versions.is_empty()
+    }
+
+    /// True if `version` names a loaded generation.
+    pub fn contains(&self, version: &str) -> bool {
+        self.versions.iter().any(|v| &*v.version == version)
+    }
+}
+
+/// The outcome of a [`crate::EngineHandle::select_version`] request.
+///
+/// Exactly one of these is ever sent on the returned receiver, which then
+/// closes. It is an event rather than a return value because repointing the
+/// corpus takes the corpus write lock, which is `async`; the GUI cannot block
+/// on that from a render pass.
+///
+/// The `generation` is the `Gen` the caller passed in, echoed back so a GUI
+/// that has already moved on can drop a stale switch without applying it
+/// (§9.3).
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum VersionEvent {
+    /// The corpus now serves `version` for `package`.
+    ///
+    /// Every open stream targeting this package is now answering against the
+    /// *old* generation and must be re-issued under a fresh `Gen`.
+    Switched {
+        /// The generation this switch answers.
+        generation: Gen,
+        /// The package whose resident generation changed.
+        package: PackageLineageId,
+        /// The version now resident in the corpus.
+        version: SharedStr,
+    },
+    /// The requested version is not loaded; the corpus is unchanged.
+    ///
+    /// Not an error — the engine only holds what it was asked to load, and a
+    /// GUI may legitimately ask for a version it saw in a manifest but never
+    /// requested.
+    NotLoaded {
+        /// The generation this answer belongs to.
+        generation: Gen,
+        /// The package that was asked about.
+        package: PackageLineageId,
+        /// The version that was requested and is absent.
+        version: SharedStr,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Timeline  (§L2.5 — a symbol's history, keyed on IntroId)
+// ---------------------------------------------------------------------------
+
+/// What happened to a symbol in one version of its package.
+///
+/// # Why `Present` exists alongside `Introduced`
+///
+/// This distinction is the whole honesty budget of the feature. A timeline is
+/// computed by walking the versions the corpus *happens to hold*, which is
+/// almost never the package's full release history. If a symbol appears in the
+/// oldest loaded version, the engine has no evidence about whether it was born
+/// there or has existed for twenty releases — so it reports [`Self::Present`],
+/// which claims only what is observed.
+///
+/// [`Self::Introduced`] is reserved for the case where the engine has positive
+/// evidence: the symbol is *absent* from at least one older loaded version and
+/// present here. That is a real introduction, and it is the only case in which
+/// the word is used.
+///
+/// The single-version corpus therefore produces exactly one row, and that row
+/// says `Present` — never `Introduced`, never an empty list.
+///
+/// # Why renames are their own variant
+///
+/// `IntroId` is assigned once, at first insertion, and a rename never changes
+/// it (K18). So a rename is visible here as "same `IntroId`, different
+/// `Symbol::name`" — the one classification that would be impossible with any
+/// name-keyed history scheme, and the reason the timeline is keyed on
+/// `IntroId` rather than on a path string.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TimelineChange {
+    /// The symbol is present in the oldest loaded version.
+    ///
+    /// No claim is made about when it was introduced — see the type docs.
+    Present,
+    /// The symbol is absent from an older loaded version and present here.
+    ///
+    /// This is an observed introduction, not an inferred one.
+    Introduced,
+    /// Same `IntroId`, different name — the symbol was renamed (K18).
+    Renamed {
+        /// The name it carried in the previous version it appeared in.
+        from: SharedStr,
+    },
+    /// Newly carries a deprecation marker.
+    Deprecated,
+    /// A previously-present deprecation marker was removed.
+    Undeprecated,
+    /// The rendered signature differs from the previous version it appeared in.
+    SignatureChanged,
+    /// The signature is identical but the visibility modifier changed.
+    VisibilityChanged,
+    /// Only the doc comment changed.
+    DocsChanged,
+    /// Nothing the engine can observe changed.
+    Unchanged,
+    /// Present in an earlier loaded version, absent here.
+    ///
+    /// The row still exists because "it is gone" is the most load-bearing fact
+    /// a timeline can carry.
+    Removed,
+}
+
+/// One point in a symbol's history: what it looked like in one version.
+///
+/// `signature` is produced by the same `chunk::signature::tokens` that builds
+/// [`SymbolHead::signature`] (LR-4: signatures are rendered exactly once, in
+/// one place), so a timeline row and a symbol page cannot disagree about what
+/// a declaration looks like.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct TimelineRow {
+    /// The package version this row describes.
+    pub version: SharedStr,
+    /// The headline classification for this version.
+    ///
+    /// At most one classification is reported per row even when several apply
+    /// (a rename that also changes the signature, say). The priority order is
+    /// `Removed` > `Introduced`/`Present` > `Renamed` > `Deprecated` >
+    /// `Undeprecated` > `SignatureChanged` > `VisibilityChanged` >
+    /// `DocsChanged` > `Unchanged`, i.e. rarest-and-most-consequential first.
+    /// The other fields on this row remain authoritative regardless of which
+    /// label won, so a GUI that wants to show "renamed *and* deprecated" can
+    /// diff `name` and `deprecated` against the adjacent row itself.
+    pub change: TimelineChange,
+    /// The symbol's name in this version.  Empty for [`TimelineChange::Removed`].
+    pub name: SharedStr,
+    /// The rendered signature in this version.
+    ///
+    /// Empty for [`TimelineChange::Removed`] — there is no declaration left to
+    /// render, and an empty token list is the honest representation of that.
+    pub sig: Vec<SigToken>,
+    /// Whether the symbol carries a deprecation marker in this version.
+    ///
+    /// This is *state*, not change: it stays `true` for every version after a
+    /// deprecation lands, while `change` reports `Deprecated` only on the
+    /// version where it first appeared.
+    pub deprecated: bool,
+    /// True for the version the corpus currently serves (`VersionRow::is_current`).
+    pub is_current: bool,
+}
+
+/// A symbol's history across every loaded version of its package.
+///
+/// # What this is keyed on
+///
+/// `IntroId`. Two lowerings of the same package at different versions share
+/// `IntroId`s for every symbol that persisted, so "the versions in which this
+/// `IntroId` appears" *is* the symbol's timeline — no side table, no parallel
+/// history structure, no name matching.
+///
+/// # What the one-version case looks like
+///
+/// Exactly one row, classified [`TimelineChange::Present`]. The GUI should
+/// render it as "present in 0.8.9", not "introduced in 0.8.9": with a single
+/// generation loaded the engine has no evidence about introduction.
+///
+/// `rows` is never empty for a symbol that exists — if the package is loaded
+/// at all, the symbol appears in at least the generation the page was opened
+/// against.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct Timeline {
+    /// The symbol this timeline describes.
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
+    pub key: SymbolKey,
+    /// One row per loaded version in which the symbol was present, plus a
+    /// trailing [`TimelineChange::Removed`] row for each version after it
+    /// disappeared.  Newest first, matching [`VersionList::versions`].
+    pub rows: Arc<[TimelineRow]>,
+    /// How many generations of this package were examined to build `rows`.
+    ///
+    /// `rows.len()` can be smaller (a symbol added in 0.3 has no rows for 0.1
+    /// or 0.2). Carrying the denominator lets the GUI say "3 of 5 versions"
+    /// instead of implying the corpus only ever held three.
+    pub versions_examined: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -872,11 +1183,36 @@ pub enum EngineError {
 /// 2. `Section`s arrive in `section_plan` order.
 /// 3. `Highlight` only references already-sent sections.
 /// 4. Applying any prefix of a valid stream yields a valid page.
+/// 5. `Timeline` arrives at most once, after `Head` and before the first
+///    `Section` (see the variant docs for why it is not a `Section`).
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum DocEvent {
     /// Symbol metadata + skeleton geometry — exactly once, always first.
     Head(Box<SymbolHead>),
+    /// The symbol's history across the loaded versions of its package.
+    ///
+    /// # Why this is not a `RenderSection`
+    ///
+    /// Sections are the vertical flow of the page and are enumerated in
+    /// `SymbolHead::section_plan` so the GUI can pre-lay their skeleton (§9.4).
+    /// The timeline is a *tab*, not a band in that flow — giving it a
+    /// `SectionId` would reserve geometry in a column it never occupies and
+    /// would make `section_plan` disagree with what actually renders there.
+    ///
+    /// # Ordering
+    ///
+    /// Emitted immediately after `Head`, before any `Section`. Invariant 2
+    /// (sections arrive in `section_plan` order) is about `Section` events
+    /// relative to one another and is untouched by this. Emitting early rather
+    /// than at the end means the Timeline tab is already populated the first
+    /// time the user clicks it, instead of being the one tab that makes them
+    /// wait for the body of a page they are not reading.
+    ///
+    /// Sent unconditionally whenever the symbol resolves — including when only
+    /// one version of the package is loaded, in which case it carries exactly
+    /// one row. See [`Timeline`] for what that row claims and does not claim.
+    Timeline(Timeline),
     /// One section of content, in `section_plan` order.
     Section(RenderSection),
     /// Async syntax-highlight upgrade for a previously-sent code section.

@@ -12,7 +12,7 @@ use gpui::{
     AnyElement, App, IntoElement, ParentElement, RenderOnce, SharedString, Window,
     prelude::FluentBuilder as _,
 };
-use gpui_component::{ActiveTheme as _, h_flex};
+use gpui_component::h_flex;
 
 use crate::theme::ext::ThemeExtAccessor as _;
 use gpui::prelude::*;
@@ -72,7 +72,7 @@ impl RenderOnce for SectionHeader {
         let ext = cx.theme_ext();
         let sp = ext.space;
         let ts = ext.type_scale;
-        let theme = cx.theme();
+        let colours = ext.colours;
 
         h_flex()
             .w_full()
@@ -80,22 +80,22 @@ impl RenderOnce for SectionHeader {
             .py(sp.space_1)
             .gap(sp.space_2)
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(colours.border_default)
             // Title
             .child(
                 gpui::div()
                     .flex_1()
-                    .text_color(theme.muted_foreground)
+                    .text_color(colours.fg_muted)
                     .text_size(ts.caption.size)
                     .line_height(ts.caption.line_height)
                     .font_weight(gpui::FontWeight(ts.caption.weight as f32))
                     .child(self.title),
             )
-            // Optional count
+            // Optional count — one step fainter than the title to recede gently
             .when_some(self.count, |el, count| {
                 el.child(
                     gpui::div()
-                        .text_color(theme.muted_foreground.opacity(0.6))
+                        .text_color(colours.fg_faint)
                         .text_size(ts.caption.size)
                         .line_height(ts.caption.line_height)
                         .font_weight(gpui::FontWeight(ts.caption.weight as f32))

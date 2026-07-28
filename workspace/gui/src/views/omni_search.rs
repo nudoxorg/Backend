@@ -52,18 +52,18 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, ParentElement as _, Pixels,
-    Point, Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled,
-    UniformListDecoration, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
-    relative, uniform_list,
+    AnyElement, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, MouseMoveEvent,
+    ParentElement as _, Pixels, Point, Render, ScrollStrategy, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, UniformListDecoration,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative, uniform_list,
 };
 use gpui_component::{Icon, IconName, h_flex, v_flex};
 
 use crate::app::actions::{
-    ConfirmOverlay, DismissOverlay, JumpToSection1, JumpToSection2, JumpToSection3,
+    ConfirmOverlay, Copy, Cut, DismissOverlay, JumpToSection1, JumpToSection2, JumpToSection3,
     MoveSelectionDown, MoveSelectionUp, NextSection, OpenInBackgroundTab, OpenWithoutClosing,
-    PrevSection,
+    Paste, PrevSection, Redo, SelectAll, Undo,
 };
 use crate::motion::permits::LoopPermit;
 use crate::motion::tokens::{MotionTokens, ROW_CASCADE_WINDOW};
@@ -120,6 +120,251 @@ const SELECTION_FILL_ALPHA: f32 = 0.16;
 /// Opacity of the faint module path beside a hit's name.
 const PATH_OPACITY: f32 = 0.75;
 
+/// Opacity of the per-row package label — quiet enough not to compete with
+/// the symbol name, visible enough to read at a glance.
+const PACKAGE_OPACITY: f32 = 0.55;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resting-bar (auto-reveal) constants
+//
+// The search surface has two modes:
+//
+//   RESTING — a slim, low-contrast bar pinned to the top of the window.
+//             Height = RESTING_BAR_H.  Pointer anywhere outside the reveal
+//             zone contracts back to this state after CONTRACT_LAG_MS.
+//
+//   REVEALED — the full 640 px overlay, identical to the cmd-K modal.
+//              Triggered by focus, a non-empty query, open results, or
+//              pointer inside the reveal zone.
+//
+// # Hysteresis design
+//
+// Expansion trigger: pointer y < REVEAL_ZONE_H.
+// Contraction trigger: pointer y >= REVEAL_ZONE_H *after* CONTRACT_LAG_MS.
+//
+// REVEAL_ZONE_H > RESTING_BAR_H deliberately.  A pointer that grazes the bar
+// enters the reveal zone before it reaches the bar's hot pixels, so the
+// surface expands predictably rather than flickering at the boundary.
+//
+// CONTRACT_LAG_MS ensures that a momentary mouse exit (moving to a search
+// result) does not collapse the panel.  Collapse requires the pointer to stay
+// *outside* the zone for the full lag period — not just visit outside briefly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Height of the resting pill, in px.  Chosen to match one `ui` line-height
+/// plus two `space_2` gutters so it sits in the type grid.
+const RESTING_BAR_H: f32 = 36.0;
+
+/// Pointer must be within this many px from the top edge to trigger expansion.
+/// Larger than `RESTING_BAR_H` so the user does not have to pixel-hunt.
+const REVEAL_ZONE_H: f32 = 80.0;
+
+/// How many milliseconds the pointer must remain outside `REVEAL_ZONE_H`
+/// before contraction is allowed.  Prevents flicker when moving to results.
+const CONTRACT_LAG_MS: u64 = 400;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RevealState — the auto-reveal state machine
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Whether the search bar is in its resting (contracted) or revealed (expanded)
+/// state.
+///
+/// The transition is governed by a small set of rules that form a monotone
+/// lattice: once a *pinning* condition is true, the bar stays open until *all*
+/// pinning conditions are false.  This is the single property that makes the
+/// interaction feel non-flickery: you can only go from open→closed if the bar
+/// is genuinely idle.
+///
+/// # State machine (pure function, no I/O — see unit tests at end of file)
+///
+/// ```text
+/// Resting ──pointer_enters_zone──▶ Revealed
+///         ──cmd-K / focus──────────▶ Revealed
+///
+/// Revealed ──pointer_leaves_zone ──▶ ExitingZone(exit_at: Instant)
+///          (if not pinned)
+///
+/// ExitingZone ──pointer_re-enters──▶ Revealed
+///             ──Instant::now() >= exit_at && !pinned──▶ Resting
+/// ```
+///
+/// "Pinned" = focused OR query non-empty OR results list open.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RevealState {
+    /// Slim bar: no pointer in zone, not focused, empty query.
+    Resting,
+    /// Full overlay: pointer in zone, or focused, or non-empty query.
+    Revealed,
+    /// Pointer has left the zone; contract after `exit_at` if still not pinned.
+    ExitingZone {
+        /// When we are allowed to actually contract (if not pinned by then).
+        exit_at: Instant,
+    },
+}
+
+impl RevealState {
+    /// Advance the state given the current conditions.
+    ///
+    /// This is a **pure function of inputs** and `now`.  It never touches any
+    /// GPUI context, which is why it is testable without a window.
+    ///
+    /// Parameters:
+    /// - `pointer_in_zone` — pointer is within `REVEAL_ZONE_H` px from the top.
+    /// - `pinned` — focused, non-empty query, or results open.
+    /// - `now` — current instant (real or simulated for tests).
+    pub fn step(self, pointer_in_zone: bool, pinned: bool, now: Instant) -> RevealState {
+        match self {
+            RevealState::Resting => {
+                if pointer_in_zone || pinned {
+                    RevealState::Revealed
+                } else {
+                    RevealState::Resting
+                }
+            }
+            RevealState::Revealed => {
+                if !pointer_in_zone && !pinned {
+                    RevealState::ExitingZone {
+                        exit_at: now
+                            + std::time::Duration::from_millis(CONTRACT_LAG_MS),
+                    }
+                } else {
+                    RevealState::Revealed
+                }
+            }
+            RevealState::ExitingZone { exit_at } => {
+                if pointer_in_zone || pinned {
+                    // Re-entry: cancel pending contraction.
+                    RevealState::Revealed
+                } else if now >= exit_at {
+                    RevealState::Resting
+                } else {
+                    RevealState::ExitingZone { exit_at }
+                }
+            }
+        }
+    }
+
+    /// Whether the overlay surface should be rendered at full height.
+    pub fn is_revealed(&self) -> bool {
+        matches!(self, RevealState::Revealed | RevealState::ExitingZone { .. })
+    }
+
+    /// Whether the bar is in its resting (contracted) state.
+    pub fn is_resting(&self) -> bool {
+        matches!(self, RevealState::Resting)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Edit history for the search input
+//
+// The input has no caret widget — it uses `on_key_down` to accumulate text
+// rather than a third-party editor, because a standard text widget would
+// swallow `↑`/`↓`/`enter`/`escape` before they reached the §15 navigation
+// bindings.  The trade-off is that we must supply our own Undo/Redo stack and
+// a minimal selection model.
+//
+// # Selection model
+//
+// Selection is a pair of byte offsets into the UTF-8 query string: `sel_start`
+// and `sel_end`.  `SelectAll` sets both to cover the full string.  `Copy`,
+// `Cut`, and `Paste` use these to read/write the selected slice.  When the
+// user types a character or `Backspace`, the selection is cleared (both set to
+// the length of the new string, acting as a caret at the end).
+//
+// This is the minimum model that makes ⌘A + ⌘C + ⌘V + ⌘X genuinely work.  A
+// full model would also track insertion-point movement (⌘←, ⌘→, shift-⌘-A),
+// but the §15 overlay does not need those — it clears rather than edits, and
+// cut/copy on a non-selection is a common enough pattern (copy all) that
+// SelectAll + Copy works.
+//
+// # Undo/Redo
+//
+// A ring buffer of `SharedString` states, capped at `EDIT_HISTORY_LIMIT`.  The
+// present value is always at `history[history_cursor]`.  Each call to
+// `set_input` pushes the *previous* value before overwriting; Undo steps back,
+// Redo steps forward.  The buffer is truncated on every non-Undo/Redo edit so
+// Redo is unavailable after a non-history mutation (standard text-editor
+// contract).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Maximum number of undo states kept.
+///
+/// 64 steps gives about 50–100 keystrokes of history, which covers the typical
+/// "I typed the wrong thing" recovery without materialising a proportional
+/// amount of memory.
+const EDIT_HISTORY_LIMIT: usize = 64;
+
+/// Minimal text-editing state for the search input.
+///
+/// Selection is expressed as byte offsets into the query `SharedString`.  Both
+/// offsets equal to `len()` means "cursor at end, nothing selected".
+#[derive(Clone, Debug, Default)]
+pub struct InputEditState {
+    /// Start of the current selection (inclusive), as a byte index.
+    pub sel_start: usize,
+    /// End of the current selection (exclusive), as a byte index.
+    pub sel_end: usize,
+    /// Undo history stack — oldest at index 0.
+    history: Vec<SharedString>,
+    /// Index of the current undo position.  Pointing past the end means "no
+    /// history to undo"; the current value is stored in the store snapshot, not
+    /// here.
+    history_cursor: usize,
+}
+
+impl InputEditState {
+    /// Call before every `set_input` that is not an Undo/Redo.
+    ///
+    /// Pushes `prev_value` onto the history stack and resets `history_cursor`
+    /// to the new end.  Truncates any Redo states above the current cursor and
+    /// caps the buffer at `EDIT_HISTORY_LIMIT`.
+    fn push_history(&mut self, prev_value: SharedString) {
+        // Truncate Redo branch: anything above cursor is discarded.
+        self.history.truncate(self.history_cursor);
+        self.history.push(prev_value);
+        // Cap the buffer to avoid unbounded growth.
+        if self.history.len() > EDIT_HISTORY_LIMIT {
+            self.history.remove(0);
+        }
+        self.history_cursor = self.history.len();
+    }
+
+    /// Attempt to undo.  Returns the state to restore, or `None` if already at
+    /// the oldest entry.
+    fn undo(&mut self, current: SharedString) -> Option<SharedString> {
+        if self.history_cursor == 0 {
+            return None;
+        }
+        // Push the current value so Redo can get back to it — but only if we
+        // have not already pushed it (i.e., we are at the tip of the branch).
+        if self.history_cursor == self.history.len() {
+            self.history.push(current);
+        }
+        self.history_cursor -= 1;
+        self.history.get(self.history_cursor).cloned()
+    }
+
+    /// Attempt to redo.  Returns the state to restore, or `None` if already at
+    /// the newest entry.
+    fn redo(&mut self) -> Option<SharedString> {
+        let next = self.history_cursor + 1;
+        if next >= self.history.len() {
+            return None;
+        }
+        self.history_cursor = next;
+        self.history.get(self.history_cursor).cloned()
+    }
+
+    /// Clamp selection offsets to `[0, len]` so a string-shrinking edit never
+    /// leaves the selection out of bounds.
+    fn clamp_to(&mut self, len: usize) {
+        self.sel_start = self.sel_start.min(len);
+        self.sel_end = self.sel_end.min(len);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // (Sections, Cursor, SearchMode, ScopeChip, PreparedRow, SectionStatus,
 //  SectionData, SearchSnapshot are re-exported from crate::stores::search_model
@@ -129,6 +374,22 @@ const PATH_OPACITY: f32 = 0.75;
 // `SearchAccess` is defined in `crate::stores::search_model` and re-exported
 // above.  The view's movement policy functions reference it through the bound
 // `S: SearchAccess` on `OmniSearch<S>`.
+
+/// Extract the package name from a module-path prefix.
+///
+/// `path` is a string like `"tokio::runtime::"` or `"serde_json::value::"`,
+/// produced by [`split_qualified_name`].  Returns a `SharedString` containing
+/// the leading segment (e.g. `"tokio"`, `"serde_json"`), or `None` when the
+/// path is empty or has no `::` separator.
+///
+/// Used by [`OmniSearch::render_row`] to render a package label inline with the
+/// symbol name.  Called in render — see §1.1.4 note in `render_row`.
+fn extract_package_label(path: &SharedString) -> Option<SharedString> {
+    if path.is_empty() {
+        return None;
+    }
+    path.find("::").map(|end| SharedString::from(path[..end].to_owned()))
+}
 
 /// A stand-in [`SearchAccess`] so this view compiles and can be driven before
 /// the real store lands.
@@ -525,9 +786,14 @@ struct FooterHint {
 }
 
 /// The §15 footer, in display order.
+///
+/// Binding semantics after the "no default tab" rework:
+///   enter      → Replace (replace current view in place, close overlay)
+///   cmd-enter  → Stay    (open as new tab, keep overlay open)
+///   alt-enter  → Background (open behind current tab, keep overlay)
 const FOOTER_SPEC: [(&str, &str); 5] = [
     ("open", "enter"),
-    ("keep open", "cmd-enter"),
+    ("new tab", "cmd-enter"),
     ("background", "alt-enter"),
     ("section", "tab"),
     ("close", "escape"),
@@ -586,10 +852,54 @@ pub struct OmniSearch<S: SearchAccess> {
     /// Row height in pixels, derived from type tokens on first render and
     /// reused by the bar spring so the spring and the layout cannot disagree.
     row_height: f32,
+
+    // ── Resting-bar / auto-reveal ─────────────────────────────────────────
+
+    /// Current reveal state: `Resting`, `Revealed`, or `ExitingZone`.
+    ///
+    /// Updated in `on_mouse_move` and every render cycle; never written from
+    /// inside a `uniform_list` closure (those run in a context that cannot
+    /// borrow `self`).
+    reveal: RevealState,
+
+    /// Spring that drives the panel height: `RESTING_BAR_H` when contracted,
+    /// the natural full height when expanded.  Backed by `Spring::SNAPPY`
+    /// (same as the overlay entrance) so reveal and entry feel identical.
+    reveal_height: Motion,
+
+    /// Text-editing state: selection offsets and undo/redo history.
+    ///
+    /// Kept on the view because the store holds only the committed text
+    /// (`SearchSnapshot::input`); ephemeral editing state that affects
+    /// rendering but not search dispatch lives here.
+    edit: InputEditState,
+
+    /// Whether the pointer is currently inside the reveal zone (y <
+    /// `REVEAL_ZONE_H` from the top of the window).  Updated by the
+    /// `on_mouse_move` listener registered on the root element.
+    pointer_in_zone: bool,
+
+    /// Tracks whether our focus handle currently holds keyboard focus.
+    ///
+    /// `FocusHandle::is_focused` requires a `&Window` which is not available
+    /// in `&App`-only contexts.  We mirror the state here via subscriptions
+    /// set up in `new()` and stored in `_focus_subs`.
+    is_focused: bool,
+
+    /// Subscriptions that mirror focus gain/loss into `is_focused`.
+    ///
+    /// Stored here so they are dropped (and thus unregistered) when this view
+    /// is dropped — LD-18: no `.detach()`.
+    _focus_subs: Vec<Subscription>,
 }
 
 impl<S: SearchAccess> OmniSearch<S> {
     /// Build the overlay over `store` and take focus.
+    ///
+    /// When opened via `cmd-K` the bar is immediately `Revealed` and focused.
+    /// When embedded as a resting affordance, the caller should construct with
+    /// `focus_immediately = false` and not call `window.focus` — the bar will
+    /// take focus on the first click or `cmd-K`.
     pub fn new(store: Entity<S>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -598,6 +908,23 @@ impl<S: SearchAccess> OmniSearch<S> {
         enter_opacity.animate_to(1.0);
         let mut enter_rise = Motion::new(OVERLAY_RISE_PX, Spring::SNAPPY);
         enter_rise.animate_to(0.0);
+
+        // When opened via cmd-K the bar starts fully revealed; the spring is
+        // already at target so its first tick immediately returns `false`.
+        let reveal_height = Motion::new(RESTING_BAR_H, Spring::SNAPPY);
+
+        // Mirror focus state into `is_focused` via subscriptions so that
+        // `is_pinned` (called from `&App`-only contexts) does not need a
+        // `&Window`.  Stored in `_focus_subs` so they are cancelled when the
+        // view is dropped — LD-18: no `.detach()`.
+        let focus_sub = cx.on_focus(&focus, window, |view, _window, cx| {
+            view.is_focused = true;
+            cx.notify();
+        });
+        let blur_sub = cx.on_blur(&focus, window, |view, _window, cx| {
+            view.is_focused = false;
+            cx.notify();
+        });
 
         OmniSearch {
             store,
@@ -614,7 +941,51 @@ impl<S: SearchAccess> OmniSearch<S> {
             shimmer_permit: None,
             footer: build_footer_hints(),
             row_height: 0.0,
+            edit: InputEditState::default(),
+            reveal: RevealState::Revealed,
+            reveal_height,
+            pointer_in_zone: false,
+            is_focused: true, // We just called window.focus(&focus), so we start focused.
+            _focus_subs: vec![focus_sub, blur_sub],
         }
+    }
+
+    // ── Reveal / contract ────────────────────────────────────────────────────
+
+    /// Called by the root element's `on_mouse_move` listener.
+    ///
+    /// Updates `pointer_in_zone` and advances the reveal state machine.  Does
+    /// not animate — animation is driven by `tick()` on the next render.
+    ///
+    /// LD-18: this handler is on the view struct, not a detached task, so it
+    /// is cancelled automatically when the view is dropped.
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let in_zone = f32::from(event.position.y) < REVEAL_ZONE_H;
+        if in_zone == self.pointer_in_zone {
+            return; // No change: avoid spurious notifies.
+        }
+        self.pointer_in_zone = in_zone;
+        // Step the state machine immediately so is_revealed reflects the new
+        // pointer position on this frame.
+        let now = Instant::now();
+        let snapshot = self.store.read(cx).snapshot();
+        let pinned = self.is_pinned_from_snapshot(&snapshot);
+        self.reveal = self.reveal.clone().step(self.pointer_in_zone, pinned, now);
+        cx.notify();
+    }
+
+    /// Whether a *pinning* condition is currently true, given a snapshot.
+    ///
+    /// Pinned = focused, or query non-empty, or there are visible results.
+    /// While pinned, the bar must not contract even if the pointer has left.
+    ///
+    /// Uses `self.is_focused` (mirrored from focus/blur subscriptions) rather
+    /// than `FocusHandle::is_focused` because the latter requires a `&Window`.
+    fn is_pinned_from_snapshot(&self, snapshot: &SearchSnapshot) -> bool {
+        self.is_focused
+            || !snapshot.input.is_empty()
+            || snapshot.total_hits() > 0
+            || !snapshot.recents.is_empty()
     }
 
     // ── Selection ────────────────────────────────────────────────────────────
@@ -766,10 +1137,31 @@ impl<S: SearchAccess> OmniSearch<S> {
 
     // ── Text entry ───────────────────────────────────────────────────────────
 
+    /// Commit `text` to the store.
+    ///
+    /// Pushes the previous value onto the undo history, resets the bar
+    /// position, and moves the selection to the end of the new string.
     fn set_input(&mut self, text: SharedString, cx: &mut Context<Self>) {
+        let prev = self.store.read(cx).snapshot().input;
+        self.edit.push_history(prev);
+        let len = text.len();
         self.store.update(cx, |store, cx| store.set_input(text, cx));
+        // Caret to end, no selection.
+        self.edit.sel_start = len;
+        self.edit.sel_end = len;
         // A new query invalidates the old cursor; drop it so the first `↓`
         // lands on the new top hit rather than resuming an unrelated position.
+        self.bar_section = None;
+        self.bar.snap_to(0.0);
+        cx.notify();
+    }
+
+    /// Restore `text` from undo/redo without recording a new history entry.
+    fn restore_input(&mut self, text: SharedString, cx: &mut Context<Self>) {
+        let len = text.len();
+        self.store.update(cx, |store, cx| store.set_input(text, cx));
+        self.edit.sel_start = len;
+        self.edit.sel_end = len;
         self.bar_section = None;
         self.bar.snap_to(0.0);
         cx.notify();
@@ -778,6 +1170,15 @@ impl<S: SearchAccess> OmniSearch<S> {
     /// Handle a key as *text*. Navigation keys are already actions (they are
     /// resolved by `app::keymaps` before key listeners run), so they are
     /// filtered out here and never double-handled.
+    ///
+    /// Note: `cmd-a`, `cmd-c`, `cmd-x`, `cmd-v`, `cmd-z`, `cmd-shift-z` are
+    /// **actions** handled by `on_select_all`, `on_copy`, etc., not by this
+    /// listener.  They arrive here only as key-down events if the platform does
+    /// not dispatch them as actions first — but since we register `on_action`
+    /// listeners and GPUI dispatches actions before key-down handlers, the
+    /// platform shortcuts are consumed before reaching this path.  The
+    /// `modifiers.platform || modifiers.control` guard below acts as a
+    /// belt-and-suspenders safety net.
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let modifiers = keystroke.modifiers;
@@ -790,14 +1191,8 @@ impl<S: SearchAccess> OmniSearch<S> {
 
         if modifiers.platform || modifiers.control {
             match keystroke.key.as_str() {
-                "v" => {
-                    if let Some(pasted) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        let mut next = current.to_string();
-                        next.push_str(pasted.trim());
-                        self.set_input(SharedString::from(next), cx);
-                    }
-                }
-                // `cmd-backspace` / `ctrl-u`: clear the line.
+                // Editing actions (a/c/x/v/z) are handled as actions above;
+                // only cmd-backspace / ctrl-u (line-clear) remain here.
                 "backspace" | "u" => self.set_input(SharedString::default(), cx),
                 _ => {}
             }
@@ -812,7 +1207,12 @@ impl<S: SearchAccess> OmniSearch<S> {
             if modifiers.alt {
                 truncate_last_word(&mut next);
             } else {
-                next.pop();
+                // If something is selected, delete the selection.
+                if self.edit.sel_start < self.edit.sel_end {
+                    next.replace_range(self.edit.sel_start..self.edit.sel_end, "");
+                } else {
+                    next.pop();
+                }
             }
             self.set_input(SharedString::from(next), cx);
             return;
@@ -824,9 +1224,95 @@ impl<S: SearchAccess> OmniSearch<S> {
         if typed.is_empty() || typed.chars().any(char::is_control) {
             return;
         }
+        // If a selection exists, replace it with the typed character.
         let mut next = current.to_string();
-        next.push_str(typed);
+        if self.edit.sel_start < self.edit.sel_end {
+            next.replace_range(self.edit.sel_start..self.edit.sel_end, typed);
+        } else {
+            next.push_str(typed);
+        }
         self.set_input(SharedString::from(next), cx);
+    }
+
+    // ── Editing actions ───────────────────────────────────────────────────────
+    //
+    // These are called by GPUI's action dispatch (before on_key_down) when the
+    // platform modifier is held.  They must never silently no-op when the user
+    // expects feedback; the rule is: if an action cannot do its job (empty
+    // clipboard on Paste, nothing to undo), it returns without calling
+    // `set_input` so no spurious history entry is created.
+
+    fn on_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        let len = self.store.read(cx).snapshot().input.len();
+        self.edit.sel_start = 0;
+        self.edit.sel_end = len;
+        cx.notify();
+    }
+
+    /// `cmd-c` — copy the selected text (or the whole query when nothing is
+    /// explicitly selected).
+    fn on_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        let input = self.store.read(cx).snapshot().input;
+        let text = if self.edit.sel_start < self.edit.sel_end {
+            input[self.edit.sel_start..self.edit.sel_end].to_owned()
+        } else {
+            // No selection: copy all (standard "copy line" behaviour).
+            input.to_string()
+        };
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// `cmd-x` — cut the selected text to the clipboard and remove it from
+    /// the query.  When nothing is selected, cuts the whole query.
+    fn on_cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
+        let input = self.store.read(cx).snapshot().input;
+        if self.edit.sel_start < self.edit.sel_end {
+            let text = input[self.edit.sel_start..self.edit.sel_end].to_owned();
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            let mut next = input.to_string();
+            next.replace_range(self.edit.sel_start..self.edit.sel_end, "");
+            self.set_input(SharedString::from(next), cx);
+        } else if !input.is_empty() {
+            // No selection: cut all.
+            cx.write_to_clipboard(ClipboardItem::new_string(input.to_string()));
+            self.set_input(SharedString::default(), cx);
+        }
+    }
+
+    /// `cmd-v` — paste from the clipboard, replacing any selection.
+    fn on_paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(pasted) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let pasted = pasted.trim().to_owned();
+        if pasted.is_empty() {
+            return;
+        }
+        let current = self.store.read(cx).snapshot().input;
+        let mut next = current.to_string();
+        if self.edit.sel_start < self.edit.sel_end {
+            next.replace_range(self.edit.sel_start..self.edit.sel_end, &pasted);
+        } else {
+            next.push_str(&pasted);
+        }
+        self.set_input(SharedString::from(next), cx);
+    }
+
+    /// `cmd-z` — undo the last edit.
+    fn on_undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        let current = self.store.read(cx).snapshot().input;
+        if let Some(prev) = self.edit.undo(current) {
+            self.restore_input(prev, cx);
+        }
+    }
+
+    /// `cmd-shift-z` — redo the last undone edit.
+    fn on_redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(next) = self.edit.redo() {
+            self.restore_input(next, cx);
+        }
     }
 
     // ── Motion ───────────────────────────────────────────────────────────────
@@ -837,9 +1323,26 @@ impl<S: SearchAccess> OmniSearch<S> {
     fn tick(&mut self, now: Instant, snapshot: &SearchSnapshot, reduced: bool) -> bool {
         let counts = snapshot.counts();
 
+        // Advance the reveal state machine on every tick so ExitingZone
+        // transitions to Resting when the lag has elapsed — even if no mouse
+        // event has fired.
+        let pinned = self.is_pinned_from_snapshot(snapshot);
+        self.reveal = self.reveal.clone().step(self.pointer_in_zone, pinned, now);
+
+        // Drive the reveal-height spring toward its target.
+        let height_target = if self.reveal.is_revealed() {
+            // Unconstrained — the panel grows to its natural content height.
+            // We use a large sentinel value; the element's `max_h(relative(…))`
+            // clamps the actual rendered height so the spring overshoots cleanly.
+            9999.0_f32
+        } else {
+            RESTING_BAR_H
+        };
+
         if reduced {
             self.enter_opacity.snap_to(1.0);
             self.enter_rise.snap_to(0.0);
+            self.reveal_height.snap_to(height_target);
             if let Some(cursor) = snapshot.selection {
                 self.bar.snap_to(cursor.row as f32 * self.row_height);
                 self.bar_section = Some(cursor.section);
@@ -850,13 +1353,21 @@ impl<S: SearchAccess> OmniSearch<S> {
             return false;
         }
 
+        self.reveal_height.animate_to(height_target);
+
         let mut animating = false;
         animating |= self.enter_opacity.tick(now);
         animating |= self.enter_rise.tick(now);
         animating |= self.bar.tick(now);
+        animating |= self.reveal_height.tick(now);
 
         for (ix, runtime) in self.sections.iter_mut().enumerate() {
             animating |= runtime.tick_count(now, counts[ix] as f32, false);
+        }
+
+        // While ExitingZone, keep ticking until the lag expires.
+        if matches!(self.reveal, RevealState::ExitingZone { .. }) {
+            animating = true;
         }
 
         animating
@@ -895,18 +1406,37 @@ impl<S: SearchAccess> OmniSearch<S> {
 impl<S: SearchAccess> OmniSearch<S> {
     /// Row height, derived from the type scale rather than fixed.
     ///
-    /// A row is one `ui` line (the name) plus one `mono` line (the signature)
-    /// plus a `space_2` gutter. Deriving it means changing the type scale moves
-    /// the rows and the selection bar together — they cannot drift apart,
-    /// because the bar's spring targets `row * this`.
+    /// A row is one `title` line (the name) over one `mono` line (the
+    /// signature), plus a `space_2` gutter. Deriving it means changing the type
+    /// scale moves the rows and the selection bar together — they cannot drift
+    /// apart, because the bar's spring targets `row * this`.
+    ///
+    /// # Why the name is `title` and not `ui`
+    ///
+    /// A result answers two questions in order: *what is it called*, then
+    /// *what shape does it have*. Rendering both at one size makes the reader
+    /// parse left-to-right to work out which is which; giving the name the
+    /// larger token lets the eye jump straight to it when scanning and drop to
+    /// the signature only when comparing.
+    ///
+    /// # Why the path tier is not counted here
+    ///
+    /// The row *renders* a third tier — the module path — but only when
+    /// `HitRow::display_name` carried a prefix, which today happens solely to
+    /// disambiguate across packages. `uniform_list` requires one fixed height
+    /// for every row, so reserving a line that is usually empty buys dead space
+    /// on every result to serve a minority. When the wire carries a real module
+    /// path per hit, this becomes three tiers and the reservation pays for
+    /// itself.
     fn row_height(cx: &App) -> f32 {
         let ext = cx.theme_ext();
-        f32::from(ext.type_scale.ui.line_height)
+        f32::from(ext.type_scale.title.line_height)
             + f32::from(ext.type_scale.mono.line_height)
             + f32::from(ext.space.space_2)
     }
 
-    /// The input row: query text with a caret, then mode and scope chips.
+    /// The input row: query text with a caret and optional selection highlight,
+    /// then mode and scope chips.
     fn render_input_row(&self, snapshot: &SearchSnapshot, cx: &App) -> AnyElement {
         let ext = cx.theme_ext();
         let sp = ext.space;
@@ -915,10 +1445,72 @@ impl<S: SearchAccess> OmniSearch<S> {
         let store = self.store.clone();
 
         let query_is_empty = snapshot.input.is_empty();
-        let query: SharedString = if query_is_empty {
-            SharedString::from("Search symbols, types, or ask in prose")
+
+        // Pre-compute selection bounds.  Both are byte offsets; clamp to actual
+        // length so a stale `sel_end` from a previous longer string is harmless.
+        let text_len = snapshot.input.len();
+        let sel_start = self.edit.sel_start.min(text_len);
+        let sel_end = self.edit.sel_end.min(text_len);
+        let has_selection = sel_start < sel_end;
+
+        // §1.1.4: all SharedStrings computed here, before the div tree, so
+        // render never calls String::from or slicing at draw time.
+        let (prefix, selected, suffix): (SharedString, SharedString, SharedString) =
+            if has_selection && !query_is_empty {
+                (
+                    SharedString::from(snapshot.input[..sel_start].to_owned()),
+                    SharedString::from(snapshot.input[sel_start..sel_end].to_owned()),
+                    SharedString::from(snapshot.input[sel_end..].to_owned()),
+                )
+            } else {
+                (
+                    SharedString::default(),
+                    SharedString::default(),
+                    snapshot.input.clone(),
+                )
+            };
+
+        let text_colour = if query_is_empty {
+            colours.fg_faint
         } else {
-            snapshot.input.clone()
+            colours.fg_default
+        };
+
+        // The text display.  When there is an active selection, three runs are
+        // rendered: prefix · [highlighted selection] · suffix.  When there is no
+        // selection the single `suffix` run holds the entire query.
+        let text_run: gpui::AnyElement = if has_selection && !query_is_empty {
+            h_flex()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(ts.title.size)
+                .line_height(ts.title.line_height)
+                .text_color(text_colour)
+                .child(div().child(prefix))
+                .child(
+                    div()
+                        .bg(colours.accent.opacity(0.28))
+                        .rounded(sp.r_sm)
+                        .child(selected),
+                )
+                .child(div().child(suffix))
+                .into_any_element()
+        } else {
+            let placeholder_or_text = if query_is_empty {
+                SharedString::from("Search symbols, types, or ask in prose")
+            } else {
+                suffix // == full query in non-selection branch
+            };
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(ts.title.size)
+                .line_height(ts.title.line_height)
+                .text_color(text_colour)
+                .child(placeholder_or_text)
+                .into_any_element()
         };
 
         let query_line = h_flex()
@@ -930,24 +1522,12 @@ impl<S: SearchAccess> OmniSearch<S> {
             .child(
                 Icon::new(IconName::Search).text_color(colours.fg_faint),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(ts.title.size)
-                    .line_height(ts.title.line_height)
-                    .text_color(if query_is_empty {
-                        colours.fg_faint
-                    } else {
-                        colours.fg_default
-                    })
-                    .child(query),
-            )
+            .child(text_run)
             // The caret. Static rather than blinking: a blink is an infinite
             // animation and §5.4 only allows three in the whole app — a search
-            // caret is not worth one of them.
-            .when(!query_is_empty, |el| {
+            // caret is not worth one of them.  Hidden when a selection is active
+            // because the selection highlight is the visual anchor.
+            .when(!query_is_empty && !has_selection, |el| {
                 el.child(
                     div()
                         .w(sp.border_width)
@@ -985,11 +1565,25 @@ impl<S: SearchAccess> OmniSearch<S> {
             .into_any_element()
     }
 
-    /// One hit row: kind badge · name · signature · path · trust badge.
+    /// One hit row: kind badge · name · signature · path+package · trust badge.
     ///
     /// A free function of `(section, ix, row)` rather than a method, because it
     /// runs inside the `'static` `uniform_list` closure which cannot borrow the
     /// view.
+    ///
+    /// # Package label (cross-package search)
+    ///
+    /// When the index spans more than one package, `HitRow::display_name` is
+    /// package-qualified (e.g. `tokio::runtime::Runtime`).  `PreparedRow::path`
+    /// holds the prefix including the package name (`"tokio::runtime::"`).  We
+    /// extract the package name from the leading segment of `path` and render it
+    /// as a quiet inline label on the *same tier as the name* (tier 1, `title`
+    /// size but `fg_faint` and `PACKAGE_OPACITY`), placed after the leaf name
+    /// separated by a `·` separator.  This matches the visual hierarchy the task
+    /// requests: secondary, not competing, same line rather than a fourth tier.
+    ///
+    /// When `path` is empty (single-package corpus, or a bare name) no label is
+    /// added and the row is unchanged.
     fn render_row(
         section: Section,
         ix: usize,
@@ -1001,6 +1595,18 @@ impl<S: SearchAccess> OmniSearch<S> {
         let sp = ext.space;
         let ts = ext.type_scale;
         let colours = ext.colours;
+
+        // Extract the package name from the leading path segment.
+        // `path` looks like `"tokio::runtime::"` or `"serde_json::value::"`.
+        // The package name is everything before the first `::`.
+        //
+        // §1.1.4 NOTE: this is one `SharedString` allocation per visible row per
+        // render frame.  The proper fix is to add `package: SharedString` to
+        // `PreparedRow` in `stores/search_model.rs` and compute it in
+        // `PreparedRow::from_hit` — see "Seams" in the commit description.
+        // Until that field exists, this is the least-wrong place: at least it is
+        // a bounded-size operation on an already-typed string, not a `format!`.
+        let package_label: Option<SharedString> = extract_package_label(&row.path);
 
         let kind_badge = match row.kind {
             Some(kind) => Badge::for_kind(("search.row.kind", ix), kind, cx),
@@ -1015,6 +1621,18 @@ impl<S: SearchAccess> OmniSearch<S> {
 
         div()
             .id((section.row_id(), ix))
+            // Test seam. `debug_selector` records this element's painted
+            // bounds in `Window::rendered_frame.debug_bounds`, which
+            // `VisualTestContext::debug_bounds` reads — that is how an
+            // integration test discovers where a row landed so it can
+            // `simulate_click` at real coordinates and go through the actual
+            // hit-test pipeline.
+            //
+            // It is not diagnostic clutter: without it the only way to test a
+            // click is to invoke the handler directly, which passes while the
+            // click path is broken — exactly the bug this row shipped with.
+            // Outside test builds `debug_selector` is a no-op (`div.rs:806`).
+            .debug_selector(move || format!("search.row.{}.{}", section.index(), ix))
             .h(row_height)
             .w_full()
             .px(sp.space_3)
@@ -1029,6 +1647,11 @@ impl<S: SearchAccess> OmniSearch<S> {
                 v_flex()
                     .flex_1()
                     .overflow_hidden()
+                    // Tier 1 — the name (leaf), at `title`, plus the owning
+                    // package as a quiet inline secondary element on the same
+                    // baseline.  The package is dimmed (`PACKAGE_OPACITY`) so
+                    // the eye jumps to the name first and drops to the package
+                    // only when disambiguating across packages.
                     .child(
                         h_flex()
                             .items_baseline()
@@ -1037,29 +1660,54 @@ impl<S: SearchAccess> OmniSearch<S> {
                             .whitespace_nowrap()
                             .child(
                                 div()
-                                    .text_size(ts.ui.size)
-                                    .line_height(ts.ui.line_height)
+                                    .text_size(ts.title.size)
+                                    .line_height(ts.title.line_height)
                                     .font_weight(gpui::FontWeight(ts.title.weight as f32))
                                     .text_color(colours.fg_default)
                                     .child(row.leaf.clone()),
                             )
-                            .when(!row.path.is_empty(), |el| {
+                            // Package name: same `title` size but faint and
+                            // separated by a middle-dot.  Inlined here rather
+                            // than in a tier below because it answers "which
+                            // package" at the same visual level as "what name",
+                            // not "where in the module tree".
+                            .when_some(package_label, |el, pkg| {
                                 el.child(
                                     div()
-                                        .text_size(ts.caption.size)
-                                        .line_height(ts.caption.line_height)
-                                        .text_color(colours.fg_faint)
-                                        .opacity(PATH_OPACITY)
-                                        .child(row.path.clone()),
+                                        .text_size(ts.ui.size)
+                                        .line_height(ts.title.line_height)
+                                        .text_color(colours.fg_muted)
+                                        .opacity(PACKAGE_OPACITY)
+                                        .flex()
+                                        .items_baseline()
+                                        .gap(sp.space_1)
+                                        .child(SharedString::from("·"))
+                                        .child(pkg),
                                 )
                             }),
                     )
+                    // Tier 2 — the signature, at `mono`.
                     .child(
                         div().overflow_hidden().child(SignatureLine::new(
                             ("search.row.sig", ix),
                             row.sig.clone(),
                         )),
-                    ),
+                    )
+                    // Tier 3 — the full module path within the package, at
+                    // `caption`. Quietest: the tie-breaker when two hits in
+                    // the same package share a leaf name.
+                    .when(!row.path.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .text_size(ts.caption.size)
+                                .line_height(ts.caption.line_height)
+                                .text_color(colours.fg_faint)
+                                .opacity(PATH_OPACITY)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(row.path.clone()),
+                        )
+                    }),
             )
             .child(Badge::for_provenance(
                 ("search.row.trust", ix),
@@ -1166,8 +1814,17 @@ impl<S: SearchAccess> OmniSearch<S> {
                         let key = row.key.clone();
                         let this = this.clone();
                         let element = Self::render_row(section, ix, row, row_height, cx).on_click(
-                            move |_, _window, cx| {
+                            move |event, _window, cx| {
                                 let key = key.clone();
+                                // cmd-click opens as a new foreground tab and
+                                // keeps the overlay open (user can pick more
+                                // results); plain click replaces the current
+                                // view and closes the overlay.
+                                let disposition = if event.modifiers().platform {
+                                    OpenDisposition::Stay
+                                } else {
+                                    OpenDisposition::Replace
+                                };
                                 let _ = this.update(cx, |view, cx| {
                                     view.apply_cursor(
                                         Some(Cursor {
@@ -1176,10 +1833,7 @@ impl<S: SearchAccess> OmniSearch<S> {
                                         }),
                                         cx,
                                     );
-                                    cx.emit(OmniSearchEvent::Open {
-                                        key,
-                                        disposition: OpenDisposition::Replace,
-                                    });
+                                    cx.emit(OmniSearchEvent::Open { key, disposition });
                                 });
                             },
                         );
@@ -1348,13 +2002,15 @@ impl<S: SearchAccess> OmniSearch<S> {
                     let key = row.key.clone();
                     let this = this.clone();
                     Self::render_row(Section::Name, ix, row, row_height, cx)
-                        .on_click(move |_, _window, cx| {
+                        .on_click(move |event, _window, cx| {
                             let key = key.clone();
+                            let disposition = if event.modifiers().platform {
+                                OpenDisposition::Stay
+                            } else {
+                                OpenDisposition::Replace
+                            };
                             let _ = this.update(cx, |_view, cx| {
-                                cx.emit(OmniSearchEvent::Open {
-                                    key,
-                                    disposition: OpenDisposition::Replace,
-                                });
+                                cx.emit(OmniSearchEvent::Open { key, disposition });
                             });
                         })
                         .into_any_element()
@@ -1427,6 +2083,43 @@ impl<S: SearchAccess> OmniSearch<S> {
             )
             .into_any_element()
     }
+
+    /// The slim pill shown when the bar is in its resting state.
+    ///
+    /// It is visually understated: a low-contrast rounded bar with a search
+    /// icon and dimmed placeholder text.  On pointer approach the full panel
+    /// springs in over it.
+    fn render_resting_bar(&self, cx: &App) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+        let colours = ext.colours;
+
+        h_flex()
+            .id("search.resting")
+            .w(OVERLAY_WIDTH)
+            .h(px(RESTING_BAR_H))
+            .items_center()
+            .gap(sp.space_2)
+            .px(sp.space_3)
+            // Softer background than the revealed overlay — visually present
+            // but not demanding attention.
+            .bg(colours.bg_raised.opacity(0.72))
+            .rounded(sp.r_xl)
+            .border(sp.border_width)
+            .border_color(colours.border_default.opacity(0.5))
+            .cursor_pointer()
+            .child(Icon::new(IconName::Search).text_color(colours.fg_faint))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(ts.ui.size)
+                    .line_height(ts.ui.line_height)
+                    .text_color(colours.fg_faint)
+                    .child(SharedString::from("Search…")),
+            )
+            .into_any_element()
+    }
 }
 
 impl<S: SearchAccess> Focusable for OmniSearch<S> {
@@ -1491,24 +2184,54 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
             column.into_any_element()
         };
 
-        let panel = v_flex()
-            .w(OVERLAY_WIDTH)
-            .max_h(relative(OVERLAY_MAX_HEIGHT_FRACTION))
-            .overflow_hidden()
-            .bg(colours.bg_overlay)
-            .rounded(sp.r_xl)
-            .border(sp.border_width)
-            .border_color(dark_border)
-            .shadow(elevation)
-            .child(self.render_input_row(&snapshot, cx))
-            .child(
-                div()
-                    .id("search.results")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(body),
-            )
-            .child(self.render_footer(cx));
+        // Height of the panel driven by the reveal spring.  When resting the
+        // spring targets `RESTING_BAR_H`; when revealed it targets a large
+        // sentinel that lets the panel reach `max_h(relative(…))`.  The
+        // `overflow_hidden` on the panel ensures the spring value acts as a
+        // hard clip while the content itself stays unchanged.
+        let panel_height = self.reveal_height.value();
+        let is_resting = self.reveal.is_resting() && panel_height <= RESTING_BAR_H + 1.0;
+
+        let panel = if is_resting {
+            // In the fully-contracted resting state, render the slim pill
+            // instead of the full panel.  The pill takes focus on click,
+            // which advances the reveal state machine on the next tick.
+            v_flex()
+                .w(OVERLAY_WIDTH)
+                .occlude()
+                .child(self.render_resting_bar(cx))
+                .into_any_element()
+        } else {
+            v_flex()
+                .w(OVERLAY_WIDTH)
+                // `h` is set to the spring value so the panel grows/shrinks
+                // smoothly.  The `max_h(relative(…))` rule clamps the value to
+                // 60 % of the window height — the same cap as the original
+                // modal overlay.  `overflow_hidden` clips the content during
+                // the spring's approach so no content peeks outside the
+                // animated boundary.
+                .h(px(panel_height))
+                .max_h(relative(OVERLAY_MAX_HEIGHT_FRACTION))
+                // See long comment above: `.occlude()` makes the panel modal
+                // in the mouse sense.  Do NOT remove this.
+                .occlude()
+                .overflow_hidden()
+                .bg(colours.bg_overlay)
+                .rounded(sp.r_xl)
+                .border(sp.border_width)
+                .border_color(dark_border)
+                .shadow(elevation)
+                .child(self.render_input_row(&snapshot, cx))
+                .child(
+                    div()
+                        .id("search.results")
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .child(body),
+                )
+                .child(self.render_footer(cx))
+                .into_any_element()
+        };
 
         div()
             .id("search.overlay")
@@ -1527,7 +2250,17 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
             .on_action(cx.listener(Self::on_jump_1))
             .on_action(cx.listener(Self::on_jump_2))
             .on_action(cx.listener(Self::on_jump_3))
+            // Text-editing actions — bound in keymaps under `OmniSearch`.
+            .on_action(cx.listener(Self::on_select_all))
+            .on_action(cx.listener(Self::on_copy))
+            .on_action(cx.listener(Self::on_cut))
+            .on_action(cx.listener(Self::on_paste))
+            .on_action(cx.listener(Self::on_undo))
+            .on_action(cx.listener(Self::on_redo))
             .on_key_down(cx.listener(Self::on_key_down))
+            // Mouse-move on the full window div so we know when the pointer
+            // enters the reveal zone even while the panel is contracted.
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
             .size_full()
             .flex()
             .justify_center()
@@ -1779,6 +2512,99 @@ mod tests {
         assert!(!is_navigation_key("backspace"));
     }
 
+    // ── InputEditState — editing action model ─────────────────────────────────
+
+    #[test]
+    fn select_all_covers_full_string() {
+        let mut edit = InputEditState::default();
+        // Simulate having typed "axum" (4 bytes).
+        edit.sel_start = 4;
+        edit.sel_end = 4;
+        // SelectAll should set both offsets to 0..4.
+        let len = 4usize;
+        edit.sel_start = 0;
+        edit.sel_end = len;
+        assert_eq!(edit.sel_start, 0);
+        assert_eq!(edit.sel_end, 4);
+    }
+
+    #[test]
+    fn undo_restores_previous_value() {
+        let mut edit = InputEditState::default();
+        let v0 = SharedString::from("ax");
+        let v1 = SharedString::from("axum");
+        // Push v0 as history before moving to v1.
+        edit.push_history(v0.clone());
+        // Undo: pass the current value (v1) and expect to get v0 back.
+        let restored = edit.undo(v1.clone());
+        assert_eq!(restored, Some(v0));
+    }
+
+    #[test]
+    fn undo_at_oldest_entry_returns_none() {
+        let mut edit = InputEditState::default();
+        let result = edit.undo(SharedString::from("anything"));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn redo_after_undo_restores_latest() {
+        let mut edit = InputEditState::default();
+        let v0 = SharedString::from("a");
+        let v1 = SharedString::from("ax");
+        // Simulate two edits: a → ax.
+        edit.push_history(v0.clone()); // push "a" before editing to "ax"
+        // Undo back to "a" (passing current value "ax").
+        let _ = edit.undo(v1.clone());
+        // Redo should give back "ax".
+        let redone = edit.redo();
+        assert_eq!(redone, Some(v1));
+    }
+
+    #[test]
+    fn redo_unavailable_after_new_edit() {
+        let mut edit = InputEditState::default();
+        let v0 = SharedString::from("a");
+        let v1 = SharedString::from("ax");
+        let v2 = SharedString::from("axum");
+        // Two edits.
+        edit.push_history(v0.clone());
+        edit.push_history(v1.clone());
+        // Undo once.
+        let _ = edit.undo(v2.clone());
+        // New edit (push_history truncates the Redo branch).
+        edit.push_history(SharedString::from("a"));
+        // Redo is now unavailable.
+        let result = edit.redo();
+        assert_eq!(result, None, "Redo must be unavailable after a new edit");
+    }
+
+    #[test]
+    fn push_history_caps_at_limit() {
+        let mut edit = InputEditState::default();
+        // Overflow the limit.
+        for i in 0..(EDIT_HISTORY_LIMIT + 10) {
+            edit.push_history(SharedString::from(i.to_string()));
+        }
+        assert!(
+            edit.history.len() <= EDIT_HISTORY_LIMIT,
+            "history must never grow past EDIT_HISTORY_LIMIT, len={}",
+            edit.history.len()
+        );
+    }
+
+    #[test]
+    fn clamp_to_shrinks_both_offsets() {
+        let mut edit = InputEditState {
+            sel_start: 8,
+            sel_end: 12,
+            ..Default::default()
+        };
+        edit.clamp_to(4);
+        assert_eq!(edit.sel_start, 4);
+        assert_eq!(edit.sel_end, 4);
+    }
+
     #[test]
     fn every_section_has_a_distinct_entrance_namespace() {
         let namespaces: Vec<&str> = Section::ALL
@@ -1790,5 +2616,146 @@ mod tests {
             namespaces[1] != namespaces[0] && namespaces[2] != namespaces[1],
             "entrance ids pack (gen, ix): a shared namespace would collide"
         );
+    }
+
+    // ── RevealState machine ───────────────────────────────────────────────────
+    //
+    // These tests exercise the pure state-machine `RevealState::step` function
+    // without a window.  They are the primary correctness guard for the
+    // hysteresis and pin-while-working properties.
+
+    fn far_future() -> Instant {
+        // An Instant well past any lag window.
+        Instant::now() + std::time::Duration::from_secs(60)
+    }
+
+    fn just_now() -> Instant {
+        Instant::now()
+    }
+
+    #[test]
+    fn resting_stays_resting_when_pointer_outside_and_not_pinned() {
+        let s = RevealState::Resting.step(false, false, just_now());
+        assert_eq!(s, RevealState::Resting);
+    }
+
+    #[test]
+    fn resting_reveals_on_pointer_enter() {
+        let s = RevealState::Resting.step(true, false, just_now());
+        assert_eq!(s, RevealState::Revealed);
+    }
+
+    #[test]
+    fn resting_reveals_when_pinned() {
+        // Pinned = focused / non-empty query / results open.
+        let s = RevealState::Resting.step(false, true, just_now());
+        assert_eq!(s, RevealState::Revealed);
+    }
+
+    #[test]
+    fn revealed_stays_revealed_while_pointer_in_zone() {
+        let s = RevealState::Revealed.step(true, false, just_now());
+        assert_eq!(s, RevealState::Revealed);
+    }
+
+    #[test]
+    fn revealed_stays_revealed_while_pinned() {
+        let s = RevealState::Revealed.step(false, true, just_now());
+        assert_eq!(s, RevealState::Revealed);
+    }
+
+    #[test]
+    fn revealed_enters_exiting_zone_when_pointer_leaves_and_not_pinned() {
+        let before = just_now();
+        let s = RevealState::Revealed.step(false, false, before);
+        match s {
+            RevealState::ExitingZone { exit_at } => {
+                // `exit_at` must be at least `CONTRACT_LAG_MS` after `before`.
+                let lag = std::time::Duration::from_millis(CONTRACT_LAG_MS);
+                assert!(
+                    exit_at >= before + lag,
+                    "exit_at should be at least CONTRACT_LAG_MS in the future"
+                );
+            }
+            other => panic!("expected ExitingZone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exiting_zone_re_enters_revealed_on_pointer_return() {
+        let exit_at = just_now() + std::time::Duration::from_millis(CONTRACT_LAG_MS);
+        let s = RevealState::ExitingZone { exit_at }.step(true, false, just_now());
+        assert_eq!(s, RevealState::Revealed);
+    }
+
+    #[test]
+    fn exiting_zone_re_enters_revealed_when_pinned() {
+        let exit_at = just_now() + std::time::Duration::from_millis(CONTRACT_LAG_MS);
+        let s = RevealState::ExitingZone { exit_at }.step(false, true, just_now());
+        assert_eq!(s, RevealState::Revealed);
+    }
+
+    #[test]
+    fn exiting_zone_contracts_to_resting_after_lag_expires() {
+        // exit_at is in the past.
+        let exit_at = Instant::now() - std::time::Duration::from_millis(1);
+        let s = RevealState::ExitingZone { exit_at }.step(false, false, far_future());
+        assert_eq!(s, RevealState::Resting);
+    }
+
+    #[test]
+    fn exiting_zone_stays_exiting_before_lag_expires() {
+        let now = just_now();
+        let exit_at = now + std::time::Duration::from_millis(CONTRACT_LAG_MS);
+        // Step at `now`, before `exit_at`.
+        let s = RevealState::ExitingZone { exit_at }.step(false, false, now);
+        assert!(
+            matches!(s, RevealState::ExitingZone { .. }),
+            "should not contract before the lag expires, got {s:?}"
+        );
+    }
+
+    /// The key UX invariant: a pinned bar NEVER contracts, even after the lag.
+    #[test]
+    fn pinned_bar_never_contracts() {
+        // Start revealed with pointer outside.
+        let s0 = RevealState::Revealed.step(false, true, just_now());
+        // Stays Revealed (pinned), not ExitingZone.
+        assert_eq!(s0, RevealState::Revealed);
+
+        // Even if we force ExitingZone state and pin is true: should re-reveal.
+        let exit_at = Instant::now() - std::time::Duration::from_millis(1);
+        let s1 = RevealState::ExitingZone { exit_at }.step(false, true, far_future());
+        assert_eq!(s1, RevealState::Revealed, "pinned bar must not contract");
+    }
+
+    // ── extract_package_label ─────────────────────────────────────────────────
+
+    #[test]
+    fn package_label_extracts_leading_segment() {
+        let path = SharedString::from("tokio::runtime::");
+        let label = extract_package_label(&path);
+        assert_eq!(label.map(|s| s.as_ref().to_owned()), Some("tokio".to_owned()));
+    }
+
+    #[test]
+    fn package_label_for_top_level_path() {
+        // A two-segment path: package is still the first.
+        let path = SharedString::from("serde_json::value::");
+        let label = extract_package_label(&path);
+        assert_eq!(label.map(|s| s.as_ref().to_owned()), Some("serde_json".to_owned()));
+    }
+
+    #[test]
+    fn package_label_is_none_for_empty_path() {
+        let path = SharedString::default();
+        assert!(extract_package_label(&path).is_none());
+    }
+
+    #[test]
+    fn package_label_is_none_for_bare_name() {
+        // `split_qualified_name("Value")` returns an empty path.
+        let path = SharedString::default();
+        assert!(extract_package_label(&path).is_none());
     }
 }

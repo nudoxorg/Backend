@@ -6356,6 +6356,8 @@ dependencies = [
  "futures",
  "nudox-graph",
  "nudox-ir",
+ "nudox-producer",
+ "nudox-producer-rust",
  "nudox-store",
  "pulldown-cmark",
  "rustc-hash 2.1.3",

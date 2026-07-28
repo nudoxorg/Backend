@@ -36,7 +36,8 @@ use gpui::{App, Global};
 use gpui_component::ActiveTheme as _;
 
 use crate::theme::tokens::{
-    ColourRoles, ElevTokens, KindColours, SpaceTokens, TrustStyle, TrustTokens, TypeScale,
+    ColourRoles, ElevTokens, KindColours, SpaceTokens, SyntaxColours, TrustStyle, TrustTokens,
+    TypeScale,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -87,6 +88,13 @@ pub struct NudoxThemeExt {
     pub elev: ElevTokens,
     /// Per-kind badge colours at matched luminance (§10.3 tail).
     pub kind_colours: KindColours,
+    /// Syntax token colour assignments (§10.6).
+    ///
+    /// Used by `SignatureLine`, code-block renderers, and any other component
+    /// that needs to colour-code lexical token classes.  The values align with
+    /// the `class_colour` function in `views/symbol_page/docs.rs` so that
+    /// signatures and code blocks share one colour vocabulary.
+    pub syntax: SyntaxColours,
     /// Motion duration multiplier.  `1.0` = full fidelity, `0.5` = reduced,
     /// `0.0` = instant-cut (animations degrade gracefully — §6.1).
     pub motion_scale: f32,

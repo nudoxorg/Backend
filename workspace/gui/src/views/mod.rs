@@ -8,6 +8,7 @@
 //! channels, or spawn.
 
 pub mod omni_search;
+pub mod project_panel;
 
 pub use omni_search::{
     Cursor, OmniSearch, OmniSearchEvent, OpenDisposition, PreparedRow, ScopeChip, SearchAccess,

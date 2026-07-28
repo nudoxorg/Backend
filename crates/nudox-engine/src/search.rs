@@ -275,18 +275,32 @@ fn collect_name_hits(
             // LR-4: signature from the single renderer.
             let sig_preview = signature::tokens(ir_entry, pkg);
 
-            // Disambiguate display name with path prefix when two packages have
-            // the same name.
-            let display_name: SharedStr =
-                if packages.len() > 1 {
-                    let path = indexes
-                        .path_of(entry.intro)
-                        .map(|p| p.as_ref())
-                        .unwrap_or(entry.display.as_str());
-                    SharedStr::from(path)
+            // Disambiguate the display name once the corpus holds more than
+            // one package.
+            //
+            // `path_of` is the *in-package* moniker, so on its own it cannot
+            // separate `a::Router` from `b::Router` — both roots render the
+            // same string, and the reader is shown two identical rows for two
+            // different symbols. The package name has to be part of it.
+            //
+            // The moniker already begins with the crate's root module for most
+            // producers (Rust's root module is named after the crate), so
+            // prefixing unconditionally would yield `axum::axum.routing.…`.
+            // Prepend only when the first segment is not already the package.
+            let display_name: SharedStr = if packages.len() > 1 {
+                let base = indexes
+                    .path_of(entry.intro)
+                    .map(|p| p.as_ref().to_owned())
+                    .unwrap_or_else(|| entry.display.as_str().to_owned());
+                let pkg_name = pkg.lineage().name.as_str();
+                if base.split(['.', ':']).next() == Some(pkg_name) {
+                    SharedStr::from(base)
                 } else {
-                    SharedStr::from(entry.display.as_str())
-                };
+                    SharedStr::from(format!("{pkg_name}::{base}"))
+                }
+            } else {
+                SharedStr::from(entry.display.as_str())
+            };
 
             // Score: exact match scores 1.0, prefix match scores by ratio.
             let score = if entry.key == prefix_lower {

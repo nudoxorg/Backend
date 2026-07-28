@@ -26,7 +26,7 @@
 //! fixture corpus loads packages nobody requested by name.
 
 use gpui::{Context, EventEmitter, SharedString, Task};
-use nudox_engine::PackageLoadEvent;
+use nudox_engine::{PackageLoadEvent, SymbolKey, wire::{EcosystemId, Gen, PackageLineageId, PackageName, VersionEvent, VersionList}};
 
 use crate::bridge::drain::drain;
 use crate::stores::events::PackagesChanged;
@@ -47,6 +47,25 @@ pub trait PackageEngine: 'static {
     /// call, so a late subscriber sees a complete picture — the store does not
     /// have to race engine startup.
     fn packages(&self) -> flume::Receiver<PackageLoadEvent>;
+
+    /// Every loaded generation of `package`, newest first.
+    ///
+    /// Synchronous — the version list is already resident in memory; see
+    /// `nudox_engine::versions` for the locking rationale.  An unloaded
+    /// package returns an empty `VersionList`.
+    fn versions(&self, package: &PackageLineageId) -> VersionList;
+
+    /// Switch which generation of `package` the corpus serves.
+    ///
+    /// Returns a one-shot receiver that fires `VersionEvent::Switched` when the
+    /// corpus write has landed, or `VersionEvent::NotLoaded` when the requested
+    /// version is not held.
+    fn select_version(
+        &self,
+        package: PackageLineageId,
+        version: &str,
+        generation: Gen,
+    ) -> flume::Receiver<VersionEvent>;
 }
 
 /// The real engine satisfies the capability directly — a forwarding impl with
@@ -55,6 +74,19 @@ pub trait PackageEngine: 'static {
 impl PackageEngine for nudox_engine::EngineHandle {
     fn packages(&self) -> flume::Receiver<PackageLoadEvent> {
         nudox_engine::EngineHandle::packages(self)
+    }
+
+    fn versions(&self, package: &PackageLineageId) -> VersionList {
+        nudox_engine::EngineHandle::versions(self, package)
+    }
+
+    fn select_version(
+        &self,
+        package: PackageLineageId,
+        version: &str,
+        generation: Gen,
+    ) -> flume::Receiver<VersionEvent> {
+        nudox_engine::EngineHandle::select_version(self, package, version, generation)
     }
 }
 
@@ -84,6 +116,19 @@ pub enum PackageStatus {
 pub struct PackageRow {
     pub name: SharedString,
     pub status: PackageStatus,
+    /// The lineage identifier for this package (ecosystem + name).
+    ///
+    /// Stored here so the project panel can call `engine.versions(lineage)` at
+    /// display time without reconstructing the key from strings.  `None` for
+    /// rows that were seeded by the caller but have not yet received a
+    /// `PackageLoadEvent::Loaded` — a pending row has no ecosystem yet.
+    pub lineage: Option<PackageLineageId>,
+    /// The package's root symbol — its crate / top-level module.
+    ///
+    /// `None` until the package reports `Ready`. A pending row has nothing to
+    /// navigate to yet, which is precisely why activating one must be a no-op
+    /// rather than an error.
+    pub root: Option<SymbolKey>,
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +154,8 @@ impl<E: PackageEngine> PackageStore<E> {
             .map(|name| PackageRow {
                 name: SharedString::from(name.clone()),
                 status: PackageStatus::Pending,
+                lineage: None, // unknown until the Loaded event arrives
+                root: None,
             })
             .collect();
 
@@ -136,17 +183,34 @@ impl<E: PackageEngine> PackageStore<E> {
     /// `Ready`/`Failed` in place, keeping its position so the list does not
     /// reorder under the user. An unrecognised name appends.
     fn apply(&mut self, event: PackageLoadEvent) {
-        let (name, status) = match event {
+        let (name, status, lineage, root) = match event {
             PackageLoadEvent::Loaded {
-                name, symbol_count, ..
-            } => (name, PackageStatus::Ready {
-                symbols: symbol_count,
-            }),
+                name,
+                ecosystem,
+                symbol_count,
+                root,
+                ..
+            } => {
+                let lid = PackageLineageId::new(
+                    EcosystemId::new(&*ecosystem),
+                    PackageName::new(&*name),
+                );
+                (
+                    name,
+                    PackageStatus::Ready {
+                        symbols: symbol_count,
+                    },
+                    Some(lid),
+                    root,
+                )
+            }
             PackageLoadEvent::LoadFailed { name, error, .. } => (
                 name,
                 PackageStatus::Failed {
                     message: SharedString::from(error.to_string()),
                 },
+                None,
+                None,
             ),
             // `PackageLoadEvent` is `#[non_exhaustive]`; a variant added later
             // is not a reason to lose the rows we already have.
@@ -155,14 +219,50 @@ impl<E: PackageEngine> PackageStore<E> {
 
         let name = SharedString::from(name.to_string());
         match self.rows.iter_mut().find(|r| r.name == name) {
-            Some(row) => row.status = status,
-            None => self.rows.push(PackageRow { name, status }),
+            Some(row) => {
+                row.status = status;
+                // A later event must not clear a lineage or root we already
+                // know: a failure after a successful load should not silently
+                // make the package unnavigable.
+                if lineage.is_some() {
+                    row.lineage = lineage;
+                }
+                if root.is_some() {
+                    row.root = root;
+                }
+            }
+            None => self.rows.push(PackageRow {
+                name,
+                status,
+                lineage,
+                root,
+            }),
         }
     }
 
     /// Every known package, in request-then-arrival order.
     pub fn rows(&self) -> &[PackageRow] {
         &self.rows
+    }
+
+    /// Every loaded generation of `package`, newest first.
+    ///
+    /// Delegates to the engine synchronously.  Returns an empty list when the
+    /// package has not finished loading yet, or was never requested.
+    pub fn versions(&self, package: &PackageLineageId) -> VersionList {
+        self.engine.versions(package)
+    }
+
+    /// Switch which generation of `package` the corpus serves.
+    ///
+    /// Returns a one-shot receiver; fire-and-observe with `drain`.
+    pub fn select_version(
+        &self,
+        package: PackageLineageId,
+        version: &str,
+        generation: Gen,
+    ) -> flume::Receiver<VersionEvent> {
+        self.engine.select_version(package, version, generation)
     }
 
     /// How many packages are in the corpus and queryable.
@@ -246,6 +346,25 @@ mod tests {
         fn packages(&self) -> flume::Receiver<PackageLoadEvent> {
             self.rx.clone()
         }
+
+        fn versions(&self, _package: &PackageLineageId) -> VersionList {
+            VersionList {
+                package: _package.clone(),
+                versions: std::sync::Arc::from(vec![]),
+            }
+        }
+
+        fn select_version(
+            &self,
+            package: PackageLineageId,
+            version: &str,
+            generation: Gen,
+        ) -> flume::Receiver<VersionEvent> {
+            let (tx, rx) = flume::bounded(1);
+            let version = nudox_engine::wire::SharedStr::from(version);
+            let _ = tx.try_send(VersionEvent::NotLoaded { generation, package, version });
+            rx
+        }
     }
 
     fn store_with(
@@ -265,6 +384,8 @@ mod tests {
                 .map(|name| PackageRow {
                     name: SharedString::from(name.clone()),
                     status: PackageStatus::Pending,
+                    lineage: None,
+                    root: None,
                 })
                 .collect(),
             _drain: None,
@@ -278,6 +399,29 @@ mod tests {
             ecosystem: SharedStr::from("cargo"),
             version: None,
             symbol_count: symbols,
+            // No root: these tests exercise status folding and label
+            // formatting, not navigation. `root_is_retained_across_a_later_event`
+            // below is the one that supplies a real key.
+            root: None,
+        }
+    }
+
+    /// A stable `SymbolKey` standing in for a package's root module.
+    fn sample_key() -> SymbolKey {
+        use nudox_engine::wire::IntroId;
+        SymbolKey::new(
+            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("axum")),
+            IntroId::from_raw([1; 32]),
+        )
+    }
+
+    fn loaded_with_root(name: &str, symbols: u64, root: SymbolKey) -> PackageLoadEvent {
+        PackageLoadEvent::Loaded {
+            name: SharedStr::from(name),
+            ecosystem: SharedStr::from("cargo"),
+            version: None,
+            symbol_count: symbols,
+            root: Some(root),
         }
     }
 
@@ -361,5 +505,38 @@ mod tests {
             store.rows()[0].status,
             PackageStatus::Ready { symbols: 3060 },
         );
+    }
+
+    /// A `Ready` event carries the package's root; the panel navigates to it.
+    #[test]
+    fn a_ready_package_records_its_root() {
+        let (_tx, mut store) = store_with(&["axum"]);
+        assert!(store.rows()[0].root.is_none(), "pending row has no root yet");
+
+        store.apply(loaded_with_root("axum", 4220, sample_key()));
+
+        assert_eq!(store.rows()[0].root, Some(sample_key()));
+    }
+
+    /// A later failure must not erase a root we already learned.
+    ///
+    /// Otherwise a transient failure after a successful load silently makes the
+    /// package unnavigable — which presents exactly like "clicking the package
+    /// does nothing", the bug this field exists to fix.
+    #[test]
+    fn a_later_failure_does_not_clear_a_known_root() {
+        let (_tx, mut store) = store_with(&[]);
+        store.apply(loaded_with_root("axum", 4220, sample_key()));
+        store.apply(failed("axum", "producer died"));
+
+        assert_eq!(
+            store.rows()[0].root,
+            Some(sample_key()),
+            "root must survive a later failure",
+        );
+        assert!(matches!(
+            store.rows()[0].status,
+            PackageStatus::Failed { .. }
+        ));
     }
 }

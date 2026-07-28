@@ -66,6 +66,10 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac10
 name = "shell_flow"
 path = "tests/shell_flow.rs"
 
+[[test]]
+name = "adversarial"
+path = "tests/adversarial.rs"
+
 [lints.rust]
 unused_imports = "warn"
 dead_code = "warn"

@@ -220,7 +220,19 @@ pub(crate) fn vertex_for_intro(
         Some(KindDiscriminant::Field) => Vertex::Field(sv),
         Some(KindDiscriminant::Const) => Vertex::Const(sv),
         Some(KindDiscriminant::Alias) => Vertex::Alias(sv),
-        // Module, Variant, Static, Reexport, Param, and Reference entries.
+        // The five formerly-collapsed kinds each now have their own variant so
+        // that `... on Variant { }` / `... on Static { }` etc. type-coercions
+        // in Trustfall queries work correctly.  A vertex type in the SDL that
+        // the adapter never emits would silently return nothing for any query
+        // that coerces to it — the exact failure we are preventing.
+        Some(KindDiscriminant::Static) => Vertex::Static(sv),
+        Some(KindDiscriminant::Variant) => Vertex::Variant(sv),
+        Some(KindDiscriminant::Module) => Vertex::Module(sv),
+        Some(KindDiscriminant::Reexport) => Vertex::Reexport(sv),
+        Some(KindDiscriminant::Param) => Vertex::Param(sv),
+        // `None` covers reference entries that carry no KindDiscriminant.
+        // Any future discriminant the adapter does not recognise also lands here
+        // so that queries written against the Symbol interface keep working.
         _ => Vertex::OtherSymbol(sv),
     })
 }
@@ -892,6 +904,77 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                 })
             }
 
+            // ── Occurrence → target ────────────────────────────────────────
+            //
+            // Resolves the `targetKey` string into a full `Symbol` vertex so
+            // that a single query can traverse:
+            //
+            //   occurrencesOf { target { name kind } }
+            //
+            // without a second round-trip query filtered by key.  The edge is
+            // optional in the SDL — when the target's package is not loaded in
+            // the corpus yet we yield zero neighbors rather than an error, so
+            // queries stay robust against partially-loaded corpora.
+            //
+            // Cost: O(1) `Corpus::entry` lookup per occurrence — identical to
+            // the `Symbols` pushdown path on `key` equality.
+            ("Occurrence", "target") => {
+                let corpus_clone = corpus.clone();
+                async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
+                    let ov = match vertex.as_occurrence() {
+                        Some(ov) => ov,
+                        None => {
+                            let e = GraphError::UnknownEdge {
+                                ty: "Occurrence".to_string(),
+                                edge: "target".to_string(),
+                            };
+                            return Box::pin(stream::once(async move { Err(e) }))
+                                as VertexStream<'vertex, Result<Vertex, GraphError>>;
+                        }
+                    };
+                    // Read the target StableRef out of the occurrence slice.
+                    // `occurrences_of` borrows `ov.owner.package`, so we must
+                    // clone the target before `ov` is moved into the async block.
+                    let target_sr = {
+                        let occs = ov.owner.package.view().occurrences_of(ov.owner.intro);
+                        match occs.get(ov.occ_index) {
+                            Some(occ) => occ.target.clone(),
+                            None => {
+                                // Occurrence index is out of range — this is a
+                                // programming error (the index is computed from the
+                                // same slice), but we return empty rather than
+                                // panicking so the query terminates cleanly.
+                                return Box::pin(stream::empty());
+                            }
+                        }
+                    };
+                    let corpus2 = corpus_clone.clone();
+                    Box::pin(stream::once(async move {
+                        // Look up the package that owns the target.  If it is
+                        // not loaded, yield nothing (optional edge).
+                        let pkg = match corpus2.package(&target_sr.package).await {
+                            Some(p) => p,
+                            None => return Ok(None),
+                        };
+                        // Build the vertex.  A missing intro in a loaded package
+                        // is a corpus inconsistency; surface it as an error so
+                        // the caller can diagnose it rather than silently losing
+                        // the row.
+                        let v = vertex_for_intro(pkg, target_sr.intro)?;
+                        Ok(Some(v))
+                    })
+                    // `stream::once` yields `Result<Option<Vertex>, GraphError>`.
+                    // We must flatten the `Option` into a zero-or-one element
+                    // stream without losing the `Result` wrapper.
+                    .flat_map(|result| match result {
+                        Err(e) => Box::pin(stream::once(async move { Err(e) }))
+                            as VertexStream<'vertex, Result<Vertex, GraphError>>,
+                        Ok(None) => Box::pin(stream::empty()),
+                        Ok(Some(v)) => Box::pin(stream::once(async move { Ok(v) })),
+                    }))
+                })
+            }
+
             // ── Trait → implementors ───────────────────────────────────────
             ("Trait", "implementors") => {
                 let corpus_clone = corpus.clone();
@@ -980,6 +1063,11 @@ fn extract_symbol_vertex(vertex: &Vertex) -> Option<&SymbolVertex> {
         | Vertex::Field(sv)
         | Vertex::Const(sv)
         | Vertex::Alias(sv)
+        | Vertex::Static(sv)
+        | Vertex::Variant(sv)
+        | Vertex::Module(sv)
+        | Vertex::Reexport(sv)
+        | Vertex::Param(sv)
         | Vertex::OtherSymbol(sv) => Some(sv),
         Vertex::Package(_) | Vertex::Occurrence(_) => None,
     }

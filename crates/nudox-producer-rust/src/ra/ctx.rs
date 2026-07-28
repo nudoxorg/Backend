@@ -46,13 +46,48 @@ use ra_ap_ide_db::RootDatabase;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
 
-use nudox_ir::entry::{Deprecation, DocLink, Visibility as IrVisibility};
+use nudox_ir::{
+    entry::{Deprecation, DocLink, Visibility as IrVisibility},
+    vocab::{ReferenceKind, RelSpan},
+};
 
 use super::docs;
 use crate::RaId;
 
 /// A canonical path key, e.g. `"my_crate::Foo::bar"`.
 pub(crate) type PathKey = SmolStr;
+
+// ── Pending occurrence — pre-seal occurrence fact ─────────────────────────────
+
+/// The endpoint of a pending occurrence.
+///
+/// After `seal()`, a `Local` endpoint resolves to an `IntroId` via the
+/// canonical-path → `IntroId` reverse map.  A `Foreign` endpoint already
+/// carries a stable external path that can be used to look up the target in
+/// the foreign package.
+#[derive(Debug, Clone)]
+pub(crate) enum PendingTarget {
+    /// Same-package entry; key is the `RaId` (canonical path string).
+    Local(RaId),
+    /// Cross-package entry; key is `"crate_name::path::to::Item"`.
+    Foreign(String),
+}
+
+/// A single pre-seal occurrence fact collected during the IR walk.
+///
+/// The owner is a local `RaId`.  The target is a `PendingTarget` (local or
+/// foreign).  Both are resolved to `IntroId` / `StableRef` post-seal.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingOcc {
+    /// The entry that contains this reference (the function, method, …).
+    pub(crate) owner: RaId,
+    /// The referenced symbol.
+    pub(crate) target: PendingTarget,
+    /// The category of the reference.
+    pub(crate) kind: ReferenceKind,
+    /// Source-text span relative to the owner's span start, if available.
+    pub(crate) span: Option<RelSpan>,
+}
 
 /// Per-crate lowering state.
 pub(crate) struct LowerCtx<'db> {
@@ -67,6 +102,13 @@ pub(crate) struct LowerCtx<'db> {
 
     /// All public paths per def (re-export aliases, incl. globs).
     pub(crate) alias_cache: FxHashMap<PathKey, FxHashSet<Vec<String>>>,
+
+    /// Pre-seal occurrence facts collected during the crate walk.
+    ///
+    /// Populated by `item::record_body_occurrences` while lowering function
+    /// bodies.  Resolved to `Occurrence` / `Relation` values post-seal by the
+    /// caller (see `ra::mod::lower_workspace_with_occurrences`).
+    pub(crate) occurrence_buf: Vec<PendingOcc>,
 
     /// Debug-assertion set: every `RaId` emitted via `check_unique` is
     /// recorded here.  This is a *check* only — it is never used as input to
@@ -87,6 +129,7 @@ impl<'db> LowerCtx<'db> {
             document_private,
             path_cache: FxHashMap::default(),
             alias_cache: FxHashMap::default(),
+            occurrence_buf: Vec::new(),
             #[cfg(debug_assertions)]
             emitted: FxHashSet::default(),
         }

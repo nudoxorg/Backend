@@ -11,8 +11,10 @@
 //! The invariants are upheld structurally: this module emits `Head` first,
 //! then iterates `sections` in the order the chunker produced them (emitting
 //! a `Highlight` immediately after each section so invariant 3 is trivially
-//! true), then emits `Done`. A cancelled stream (receiver dropped) simply
-//! stops; the prefix up to that point is a valid partial page.
+//! true), then emits `Impls` and `Refs` pages (interleaved freely after
+//! `Head` per the protocol validator), and finally emits `Done`. A cancelled
+//! stream (receiver dropped) simply stops; the prefix up to that point is a
+//! valid partial page.
 
 use std::sync::Arc;
 
@@ -20,9 +22,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
-    chunk,
+    chunk, timeline,
     runtime::{EngineHandle, StreamHandle},
-    wire::{DocEvent, EngineError, Gen, HighlightSpan, SymbolKey},
+    versions::{VersionRegistry, VersionSlice},
+    wire::{
+        DocEvent, EngineError, Gen, HighlightSpan, ImplRow, ImplsPage, RefRow, RefsPage, SharedStr,
+        SymbolKey,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -30,6 +36,28 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const DOC_CHANNEL_CAP: usize = 64;
+
+// ---------------------------------------------------------------------------
+// Paging constants
+// ---------------------------------------------------------------------------
+
+/// Maximum number of `ImplRow` entries per `Impls` page event.
+///
+/// Impls are cheap to enumerate (one scan of `by_kind[Impl]`), but a struct
+/// like `axum::Router` in a large crate can accumulate 50–100 trait impls.
+/// Sending them all in one event would make the first paint of the Impls tab
+/// wait for the whole scan before the channel releases.  25 rows is roughly
+/// one viewport height — the user sees the first screenful immediately and
+/// further pages arrive while they are reading.
+const IMPLS_PAGE_SIZE: usize = 25;
+
+/// Maximum number of `RefRow` entries per `Refs` page event.
+///
+/// Usages (`FunctionCall`, `FieldAccess`, etc.) can be numerous for popular
+/// items (hundreds of call sites for a widely-used function).  50 rows per
+/// page keeps individual channel messages small while still delivering a full
+/// screenful of results on each page.
+const REFS_PAGE_SIZE: usize = 50;
 
 // ---------------------------------------------------------------------------
 // open_symbol
@@ -45,10 +73,19 @@ impl EngineHandle {
     /// # Protocol
     ///
     /// 1. `Head` — always first; carries the `SymbolHead` and `section_plan`.
-    /// 2. `Section` × N — in `section_plan` order.
-    /// 3. `Done` — terminal.
+    /// 2. `Timeline` — the symbol's history across loaded versions.
+    /// 3. `Section` × N — in `section_plan` order.
+    /// 4. `Done` — terminal.
     ///
     /// On error: `Failed(EngineError)` — terminal.
+    ///
+    /// # Which version this answers
+    ///
+    /// The generation currently resident in the `Corpus` — see
+    /// [`EngineHandle::select_version`]. `SymbolKey` carries no version, and
+    /// deliberately so: `IntroId` is stable across versions, so the same key
+    /// opens the same symbol in whichever generation is current, and switching
+    /// version does not invalidate a link, a tab, or a history entry.
     pub fn open_symbol(
         &self,
         key: SymbolKey,
@@ -60,7 +97,16 @@ impl EngineHandle {
 
         let corpus = self.corpus();
         let highlighter = self.highlighter();
-        self.spawn(stream_symbol(corpus, highlighter, key, generation, tx, cancel_token));
+        let versions = self.versions_registry();
+        self.spawn(stream_symbol(
+            corpus,
+            versions,
+            highlighter,
+            key,
+            generation,
+            tx,
+            cancel_token,
+        ));
 
         (handle, rx)
     }
@@ -72,6 +118,7 @@ impl EngineHandle {
 
 async fn stream_symbol(
     corpus: nudox_store::corpus::Corpus,
+    versions: Arc<VersionRegistry>,
     highlighter: crate::highlight::SharedHighlighter,
     key: SymbolKey,
     generation: Gen,
@@ -125,6 +172,46 @@ async fn stream_symbol(
     }
     if tx.send_async(DocEvent::Head(Box::new(head))).await.is_err() {
         debug!("doc stream: receiver dropped after Head");
+        return;
+    }
+
+    // --- Emit Timeline -----------------------------------------------------
+    //
+    // Immediately after `Head` and before the first `Section`. The Timeline is
+    // a tab, not a band in the vertical flow, so it has no `SectionId` and does
+    // not appear in `section_plan` — but a tab the user can click at any moment
+    // should not be the one part of the page that is still empty because the
+    // body is streaming. It is cheap enough to justify the position: one map
+    // lookup and one signature render per loaded generation.
+    //
+    // The registry normally has slices for any package the corpus holds,
+    // because the seeding task records before it inserts. The fallback below
+    // covers the case where something put a `PackageView` into the corpus
+    // without going through that path: rather than emit an empty timeline —
+    // which would read as "this symbol has no history", a claim we have no
+    // basis for — we synthesise a single slice from the resident package. The
+    // result is the same honest one-row `Present` timeline a genuinely
+    // single-version corpus produces.
+    let slices = {
+        let recorded = versions.slices(&key.package);
+        if recorded.is_empty() {
+            vec![VersionSlice {
+                version: SharedStr::from(crate::versions::UNVERSIONED),
+                package: Arc::clone(&pkg_arc),
+                is_current: true,
+            }]
+        } else {
+            recorded
+        }
+    };
+    let timeline = timeline::build(&key, &slices);
+    drop(slices); // release the extra PackageView handles before streaming
+
+    if cancel.is_cancelled() {
+        return;
+    }
+    if tx.send_async(DocEvent::Timeline(timeline)).await.is_err() {
+        debug!("doc stream: receiver dropped after Timeline");
         return;
     }
 
@@ -202,9 +289,300 @@ async fn stream_symbol(
         }
     }
 
+    // --- Emit Impls --------------------------------------------------------
+    //
+    // An `Impl` entry whose `self_ty` resolves to the symbol being viewed is
+    // an implementation of this type.  We find them by scanning the package's
+    // `by_kind[Impl]` bucket — every impl in the package lives there — and
+    // selecting those whose `self_ty` is a `Nominal(Intro(key.intro))` or
+    // `Apply { base: Nominal(Intro(key.intro)), .. }` (the common case of
+    // `impl Debug for Vec<T>` where the outer type has a generic argument).
+    //
+    // # Why `self_ty` and not the `mentions` posting list
+    //
+    // The `mentions` posting list indexes `of` (the *trait* in a trait impl)
+    // and supertrait bounds — it is the right structure for "who implements
+    // this trait".  For the Implementations tab we want the opposite question:
+    // "which impl blocks declare `Self = this type`".  That information is
+    // only directly available by inspecting `Impl::self_ty`.
+    //
+    // # Ordering guarantee
+    //
+    // We sort impls by their rendered label string before paginating.  The
+    // sorted order is stable across two calls to `stream_symbol` on the same
+    // package (labels are derived deterministically from the IR), and it
+    // groups related impls together in a way that is useful for reading
+    // (inherent impls before trait impls, alphabetical within each group).
+    //
+    // # Empty-is-a-real-answer
+    //
+    // A symbol with no impls must still receive exactly one `Impls` event
+    // with `done: true` and an empty `impls` slice.  Without that event the
+    // GUI cannot distinguish "none" from "still loading", which is the exact
+    // failure mode that made this empty forever.
+    if !cancel.is_cancelled() {
+        let impls_result =
+            collect_impls(key.intro, &pkg_arc, key.package.clone());
+        emit_impls_pages(&tx, &cancel, impls_result).await;
+        if cancel.is_cancelled() {
+            return;
+        }
+    }
+
+    // --- Emit Refs ---------------------------------------------------------
+    //
+    // `usages_of(key)` returns every entry whose occurrence postings include a
+    // reference to `key` at `Confidence >= Index` — the graph-worthy floor
+    // (see `PackageIndexes::usages_floor_is_confidence_index`).  These are
+    // *call sites*, field accesses, and other active uses: the kind of
+    // cross-reference a user means when they ask "where is this symbol used?".
+    //
+    // We deliberately do NOT include `mentions_of(key)` in the Refs tab.
+    // `mentions` indexes trait-impl `of` edges and supertrait bounds — those
+    // are structural relationships already visible in the Implementations tab
+    // (impls where `of = key`) and in the symbol's own signature (supers).
+    // Mixing them into Refs would show duplicates and confuse the intent of
+    // the two tabs.
+    //
+    // `usages` and `mentions` together cover both directions of the reference
+    // graph: `usages` = "who calls / accesses me" (Refs tab), `mentions` =
+    // "who extends or implements me" (Implementations tab via `self_ty` scan).
+    //
+    // # Empty-is-a-real-answer
+    //
+    // Same logic as Impls: a symbol with no usages emits one empty page with
+    // `done: true` so the GUI can transition to the "no references" state.
+    if !cancel.is_cancelled() {
+        let refs_result = collect_refs(key.intro, &pkg_arc, key.package.clone());
+        emit_refs_pages(&tx, &cancel, refs_result).await;
+        if cancel.is_cancelled() {
+            return;
+        }
+    }
+
     // --- Emit Done ---------------------------------------------------------
     if !cancel.is_cancelled() {
         let _ = tx.send_async(DocEvent::Done).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Impl collection
+// ---------------------------------------------------------------------------
+
+/// Collect all `ImplRow`s for the type identified by `target`.
+///
+/// Walks `pkg.indexes().by_kind[KindDiscriminant::Impl]` — every impl in
+/// the package — and selects those whose `self_ty` points at `target`.
+/// The result is sorted by label string for deterministic emission order.
+fn collect_impls(
+    target: nudox_ir::change::IntroId,
+    pkg: &nudox_store::package::PackageView,
+    lineage: nudox_ir::change::PackageLineageId,
+) -> Vec<ImplRow> {
+    use nudox_ir::kind::{Kind, KindDiscriminant};
+    use nudox_ir::kinds::Type;
+    use nudox_ir::index::Ref;
+
+    let view = pkg.view();
+    let indexes = pkg.indexes();
+
+    // Retrieve the bucket; an absent key means zero impls, which is fine.
+    let impl_ids = match indexes.by_kind.get(&KindDiscriminant::Impl) {
+        Some(ids) => ids,
+        None => return Vec::new(),
+    };
+
+    // Determine whether a `Type` resolves to `target` in this package.
+    // We recurse one level into `Type::Apply` to handle `impl Trait for Vec<T>`
+    // where the outer type is an Apply whose base is the Nominal we want.
+    let ty_matches = |ty: &Type| -> bool {
+        match ty {
+            Type::Nominal(Ref::Intro(id)) => *id == target,
+            // Generic application: `impl Debug for Router<E>` — the outer
+            // `Apply` has a `Nominal(Intro(router_intro))` as its base.
+            Type::Apply { base, .. } => matches!(base.as_ref(), Type::Nominal(Ref::Intro(id)) if *id == target),
+            _ => false,
+        }
+    };
+
+    let mut rows: Vec<ImplRow> = impl_ids
+        .iter()
+        .filter_map(|&impl_intro| {
+            let entry = view.entry(impl_intro)?;
+            let impl_data = match entry.kind().as_owned_kind() {
+                Some(Kind::Impl(i)) => i,
+                _ => return None,
+            };
+            if !ty_matches(&impl_data.self_ty) {
+                return None;
+            }
+            // Render the impl signature as the label.  `chunk::signature::tokens`
+            // produces something like `impl Debug for Router<E>` which is exactly
+            // what the Implementations tab wants to display.  We flatten the
+            // token vec to a string for the sort key and for the label field.
+            let sig_tokens = crate::chunk::signature::tokens(entry, pkg);
+            let label_text = crate::chunk::signature::tokens_to_text(&sig_tokens);
+            let key = SymbolKey::new(lineage.clone(), impl_intro);
+
+            // is_blanket — directly from `ImplFlags`.
+            let is_blanket = impl_data.flags.blanket;
+
+            // trait_label — render `of` to text if present.
+            let trait_label: Option<SharedStr> = impl_data.of.as_ref().map(|of_ty| {
+                let mut toks = Vec::new();
+                crate::chunk::signature::push_type(&mut toks, of_ty, pkg);
+                SharedStr::from(crate::chunk::signature::tokens_to_text(&toks).as_str())
+            });
+
+            // self_generic_count — the number of args at the outermost Apply level.
+            let self_generic_count: u32 = match &impl_data.self_ty {
+                Type::Apply { args, .. } => args.len() as u32,
+                _ => 0,
+            };
+
+            Some(ImplRow {
+                key,
+                label: SharedStr::from(label_text.as_str()),
+                is_blanket,
+                trait_label,
+                self_generic_count,
+            })
+        })
+        .collect();
+
+    // Sort by label for stable, deterministic ordering across calls.
+    rows.sort_unstable_by(|a, b| (*a.label).cmp(&*b.label));
+    rows
+}
+
+/// Emit `Impls` pages for `rows`, paginated by `IMPLS_PAGE_SIZE`.
+///
+/// Always emits at least one page (possibly empty) so the GUI can exit the
+/// "still loading" state.  The last page carries `done: true`.
+async fn emit_impls_pages(
+    tx: &flume::Sender<DocEvent>,
+    cancel: &CancellationToken,
+    rows: Vec<ImplRow>,
+) {
+    let total = rows.len() as u64;
+    if rows.is_empty() {
+        // No impls — one empty terminal page.
+        let _ = tx
+            .send_async(DocEvent::Impls {
+                page: ImplsPage { impls: Arc::from([] as [ImplRow; 0]), total: 0 },
+                done: true,
+            })
+            .await;
+        return;
+    }
+
+    let mut chunks = rows.chunks(IMPLS_PAGE_SIZE).peekable();
+    while let Some(chunk) = chunks.next() {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let done = chunks.peek().is_none();
+        let page = ImplsPage {
+            impls: chunk.iter().cloned().collect::<Vec<_>>().into(),
+            total,
+        };
+        if tx.send_async(DocEvent::Impls { page, done }).await.is_err() {
+            debug!("doc stream: receiver dropped during Impls");
+            return;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Refs collection
+// ---------------------------------------------------------------------------
+
+/// Collect all `RefRow`s for the symbol identified by `target`.
+///
+/// Uses `PackageIndexes::usages_of` — occurrence postings at
+/// `Confidence >= Index` — which represent active use sites (call sites,
+/// field accesses, etc.).  See the `stream_symbol` comment above for why
+/// `mentions_of` is intentionally excluded here.
+fn collect_refs(
+    target: nudox_ir::change::IntroId,
+    pkg: &nudox_store::package::PackageView,
+    lineage: nudox_ir::change::PackageLineageId,
+) -> Vec<RefRow> {
+    use nudox_ir::change::StableRef;
+
+    let indexes = pkg.indexes();
+    let view = pkg.view();
+
+    let target_sr = StableRef::new(lineage.clone(), target);
+    let usage_ids = indexes.usages_of(&target_sr);
+
+    let mut rows: Vec<RefRow> = usage_ids
+        .iter()
+        .filter_map(|&owner| {
+            // Skip entries that no longer exist (shouldn't happen in a sealed
+            // table, but be defensive against future non-live entries).
+            let entry = view.entry(owner)?;
+            let path = indexes
+                .path_of(owner)
+                .map(|p| SharedStr::from(&**p))
+                .unwrap_or_else(|| SharedStr::from(entry.sym().name.as_str()));
+
+            // Derive a short kind label from the entry's kind discriminant.
+            // This is the "precision badge" the wire spec describes on `RefRow`.
+            let kind_tag = entry
+                .kind()
+                .discriminant()
+                .map(|d| SharedStr::from(format!("{d:?}").as_str()))
+                .unwrap_or_else(|| SharedStr::from("ref"));
+
+            Some(RefRow {
+                target: SymbolKey::new(lineage.clone(), owner),
+                path,
+                kind_tag,
+            })
+        })
+        .collect();
+
+    // Sort by path for deterministic ordering.
+    rows.sort_unstable_by(|a, b| (*a.path).cmp(&*b.path));
+    rows
+}
+
+/// Emit `Refs` pages for `rows`, paginated by `REFS_PAGE_SIZE`.
+///
+/// Always emits at least one page (possibly empty) so the GUI can exit the
+/// "still loading" state.  The last page carries `done: true`.
+async fn emit_refs_pages(
+    tx: &flume::Sender<DocEvent>,
+    cancel: &CancellationToken,
+    rows: Vec<RefRow>,
+) {
+    let total = rows.len() as u64;
+    if rows.is_empty() {
+        let _ = tx
+            .send_async(DocEvent::Refs {
+                page: RefsPage { refs: Arc::from([] as [RefRow; 0]), total: 0 },
+                done: true,
+            })
+            .await;
+        return;
+    }
+
+    let mut chunks = rows.chunks(REFS_PAGE_SIZE).peekable();
+    while let Some(chunk) = chunks.next() {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let done = chunks.peek().is_none();
+        let page = RefsPage {
+            refs: chunk.iter().cloned().collect::<Vec<_>>().into(),
+            total,
+        };
+        if tx.send_async(DocEvent::Refs { page, done }).await.is_err() {
+            debug!("doc stream: receiver dropped during Refs");
+            return;
+        }
     }
 }
 
@@ -360,6 +738,134 @@ mod tests {
             matches!(ev, DocEvent::Failed(_)),
             "missing symbol must produce Failed, got {:?}",
             ev
+        );
+    }
+
+    // ── Timeline ─────────────────────────────────────────────────────────────
+
+    use crate::{
+        test_support::{entry as spec, intro, lineage, package, start_and_settle},
+        wire::{Timeline, TimelineChange},
+    };
+
+    /// Start a settled engine over `generations` of one lineage, open the
+    /// symbol at `intro(n)`, and return the whole event sequence.
+    async fn events_for(
+        generations: Vec<(&str, std::sync::Arc<nudox_store::package::PackageView>)>,
+        n: u8,
+    ) -> Vec<DocEvent> {
+        let lid = lineage("axum");
+        let engine = start_and_settle(&lid, generations).await;
+
+        let key = nudox_ir::change::StableRef::new(lid, intro(n));
+        let (handle, rx) = engine.open_symbol(key, Gen(1));
+
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.recv_async().await {
+            let terminal = matches!(ev, DocEvent::Done | DocEvent::Failed(_));
+            events.push(ev);
+            if terminal {
+                break;
+            }
+        }
+        drop(handle);
+        events
+    }
+
+    fn timeline_of(events: &[DocEvent]) -> &Timeline {
+        events
+            .iter()
+            .find_map(|e| match e {
+                DocEvent::Timeline(t) => Some(t),
+                _ => None,
+            })
+            .expect("every resolved symbol gets a Timeline event")
+    }
+
+    #[tokio::test]
+    async fn timeline_arrives_after_head_and_before_any_section() {
+        let lid = lineage("axum");
+        let events = events_for(vec![("0.8.9", package(&lid, vec![spec(1, "Router")]))], 1).await;
+
+        let head_at = events
+            .iter()
+            .position(|e| matches!(e, DocEvent::Head(_)))
+            .expect("Head must be present");
+        let timeline_at = events
+            .iter()
+            .position(|e| matches!(e, DocEvent::Timeline(_)))
+            .expect("Timeline must be present");
+        let first_section = events
+            .iter()
+            .position(|e| matches!(e, DocEvent::Section(_)));
+
+        assert_eq!(head_at, 0, "Head is still first");
+        assert!(timeline_at > head_at, "Timeline follows Head");
+        if let Some(section_at) = first_section {
+            assert!(
+                timeline_at < section_at,
+                "Timeline precedes the first Section"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn one_loaded_version_produces_one_present_row_not_an_empty_timeline() {
+        // This is what a user sees first with a single-version corpus, and the
+        // claim has to be "present in 0.8.9" — never "introduced in 0.8.9",
+        // which the engine has no evidence for, and never nothing at all.
+        let lid = lineage("axum");
+        let events = events_for(vec![("0.8.9", package(&lid, vec![spec(1, "Router")]))], 1).await;
+        let t = timeline_of(&events);
+
+        assert_eq!(t.rows.len(), 1);
+        assert_eq!(t.rows[0].change, TimelineChange::Present);
+        assert_eq!(&*t.rows[0].version, "0.8.9");
+        assert_eq!(t.versions_examined, 1);
+        assert!(!t.rows[0].sig.is_empty(), "the row carries a signature");
+    }
+
+    #[tokio::test]
+    async fn two_generations_classify_the_change_between_them() {
+        let lid = lineage("axum");
+        let events = events_for(
+            vec![
+                ("0.7.9", package(&lid, vec![spec(1, "Router").docs("old")])),
+                ("0.8.1", package(&lid, vec![spec(1, "Router").docs("new")])),
+            ],
+            1,
+        )
+        .await;
+        let t = timeline_of(&events);
+
+        assert_eq!(t.rows.len(), 2);
+        assert_eq!(t.rows[0].change, TimelineChange::DocsChanged);
+        assert_eq!(&*t.rows[0].version, "0.8.1");
+        assert!(t.rows[0].is_current, "the newest generation is current");
+        assert_eq!(t.rows[1].change, TimelineChange::Present);
+    }
+
+    #[tokio::test]
+    async fn a_symbol_added_in_a_later_version_is_introduced() {
+        let lid = lineage("axum");
+        let events = events_for(
+            vec![
+                ("0.7.9", package(&lid, vec![spec(1, "Router")])),
+                (
+                    "0.8.1",
+                    package(&lid, vec![spec(1, "Router"), spec(2, "Extractor")]),
+                ),
+            ],
+            2,
+        )
+        .await;
+        let t = timeline_of(&events);
+
+        assert_eq!(t.rows.len(), 1, "no row for the version that lacked it");
+        assert_eq!(t.rows[0].change, TimelineChange::Introduced);
+        assert_eq!(
+            t.versions_examined, 2,
+            "but both generations were examined"
         );
     }
 }

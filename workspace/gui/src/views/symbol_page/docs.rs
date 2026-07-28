@@ -68,7 +68,7 @@ use crate::motion::declarative::{entrance_id, rise_in};
 use crate::motion::spring::Spring;
 use crate::motion::tokens::{MotionTokens, ROW_CASCADE_WINDOW};
 use crate::theme::ext::ThemeExtAccessor as _;
-use crate::theme::tokens::{ColourRoles, KindColours};
+use crate::theme::tokens::{ColourRoles, KindColours, SyntaxColours};
 use crate::ui::{Badge, SigToken, SignatureLine};
 
 use super::header::{KindChip, link_ix, shared, sig_tokens};
@@ -288,7 +288,7 @@ impl CodeView {
         &mut self,
         spans: &[HighlightSpan],
         colours: &ColourRoles,
-        kinds: &KindColours,
+        syntax: &SyntaxColours,
         reduced: bool,
     ) {
         let mut classes: Vec<SharedString> = Vec::new();
@@ -319,7 +319,7 @@ impl CodeView {
 
         let mut sweep = Vec::with_capacity(classes.len());
         for class in &classes {
-            let target = class_colour(class, colours, kinds);
+            let target = class_colour(class, syntax);
             // §5.2 `highlight.sweep`: every class starts at `fg.muted` — which
             // is exactly what the block already looks like — and fades to its
             // final colour. Nothing moves; only hue.
@@ -354,12 +354,12 @@ impl CodeView {
     }
 
     /// The colour a class paints at *this instant*.
-    fn class_colour_now(&self, class_ix: usize, colours: &ColourRoles, kinds: &KindColours) -> Hsla {
+    fn class_colour_now(&self, class_ix: usize, syntax: &SyntaxColours) -> Hsla {
         match self.sweep.as_ref().and_then(|s| s.get(class_ix)) {
             Some(motion) => motion.value(),
             None => match self.classes.get(class_ix) {
-                Some(class) => class_colour(class, colours, kinds),
-                None => colours.fg_default,
+                Some(class) => class_colour(class, syntax),
+                None => syntax.ident,
             },
         }
     }
@@ -367,22 +367,34 @@ impl CodeView {
 
 /// Map a highlighter token class onto the design system.
 ///
-/// Types and functions deliberately reuse the *kind* palette, so a `struct` name
-/// inside a code sample is the same hue as the `struct` badge beside it — a
-/// cross-surface consistency docs.rs has no way to offer.
-fn class_colour(class: &str, colours: &ColourRoles, kinds: &KindColours) -> Hsla {
+/// # Why this reads `SyntaxColours` rather than picking off the other palettes
+///
+/// A token's colour follows its *lexical role*, which is a third axis beside UI
+/// state ([`ColourRoles`]) and symbol kind ([`KindColours`]). Before
+/// `SyntaxColours` existed this function and [`crate::ui::signature_line`] each
+/// chose their own colours off those two axes — and disagreed: a type name came
+/// out steel blue in a code block and sky blue in a signature, so the same word
+/// changed colour depending on which surface you read it on.
+///
+/// Both now read one token set. That is what makes `struct` in a code sample
+/// identical to the `struct` badge beside it — cross-surface consistency
+/// docs.rs has no way to offer. Adding a class here without a matching
+/// `SyntaxColours` field re-opens exactly the drift the type exists to close.
+fn class_colour(class: &str, syntax: &SyntaxColours) -> Hsla {
     match class {
-        "keyword" | "kw" | "storage" | "keyword.control" => colours.accent,
-        "string" | "str" | "char" | "string.special" => colours.ok,
-        "comment" | "comment.doc" | "doc" => colours.fg_faint,
-        "number" | "constant" | "boolean" | "constant.numeric" => colours.warn,
-        "type" | "type.builtin" | "class" | "struct" | "interface" => kinds.record,
-        "function" | "function.method" | "method" | "fn" => kinds.function,
-        "variable" | "property" | "field" => kinds.field,
-        "attribute" | "annotation" | "macro" => kinds.alias,
-        "punctuation" | "operator" | "delimiter" => colours.fg_faint,
+        "keyword" | "kw" | "storage" | "keyword.control" => syntax.kw,
+        "string" | "str" | "char" | "string.special" => syntax.string_lit,
+        "comment" | "comment.doc" | "doc" => syntax.comment,
+        "boolean" => syntax.boolean,
+        "number" | "constant" | "constant.numeric" => syntax.number_lit,
+        "type" | "type.builtin" | "class" | "struct" | "interface" => syntax.ty_name,
+        "function" | "function.method" | "method" | "fn" => syntax.fn_name,
+        "variable" | "property" | "field" => syntax.generic,
+        "attribute" | "annotation" => syntax.attr,
+        "macro" => syntax.macro_,
+        "punctuation" | "operator" | "delimiter" => syntax.punct,
         // Unknown class: a readable default rather than an invisible one.
-        _ => colours.fg_default,
+        _ => syntax.ident,
     }
 }
 
@@ -626,9 +638,9 @@ impl DocsBody {
         if highlights.is_empty() {
             return false;
         }
-        let (colours, kinds, reduced) = {
+        let (colours, syntax, reduced) = {
             let ext = cx.theme_ext();
-            (ext.colours, ext.kind_colours, ext.reduced_motion())
+            (ext.colours, ext.syntax, ext.reduced_motion())
         };
         let mut changed = false;
 
@@ -641,7 +653,7 @@ impl DocsBody {
             };
             let applied = match slot.body.as_mut() {
                 Some(SectionView::Code(code)) => {
-                    code.apply_spans(spans, &colours, &kinds, reduced);
+                    code.apply_spans(spans, &colours, &syntax, reduced);
                     true
                 }
                 Some(SectionView::Blocks(blocks)) | Some(SectionView::Callout { blocks, .. }) => {
@@ -653,7 +665,7 @@ impl DocsBody {
                         _ => None,
                     }) {
                         Some(code) => {
-                            code.apply_spans(spans, &colours, &kinds, reduced);
+                            code.apply_spans(spans, &colours, &syntax, reduced);
                             true
                         }
                         None => false,
@@ -1015,9 +1027,15 @@ impl DocsBody {
         code: &CodeView,
         cx: &App,
     ) -> AnyElement {
-        let (sp, ts, colours, kinds) = {
+        let (sp, ts, colours, kinds, syntax) = {
             let ext = cx.theme_ext();
-            (ext.space, ext.type_scale, ext.colours, ext.kind_colours)
+            (
+                ext.space,
+                ext.type_scale,
+                ext.colours,
+                ext.kind_colours,
+                ext.syntax,
+            )
         };
 
         let styles: Vec<(Range<usize>, HighlightStyle)> = code
@@ -1027,7 +1045,7 @@ impl DocsBody {
                 (
                     range.clone(),
                     HighlightStyle {
-                        color: Some(code.class_colour_now(*class_ix, &colours, &kinds)),
+                        color: Some(code.class_colour_now(*class_ix, &syntax)),
                         ..Default::default()
                     },
                 )
@@ -1321,6 +1339,10 @@ mod tests {
         (theme.colours, theme.kind_colours)
     }
 
+    fn palette_syntax() -> SyntaxColours {
+        crate::theme::themes::dark_theme().syntax
+    }
+
     /// §9.4.1: `Lines(n)` reserves `n` line heights, plus the section's own
     /// padding and rise slack.
     #[test]
@@ -1430,7 +1452,8 @@ mod tests {
     #[test]
     fn highlight_cannot_change_code_height() {
         let m = metrics();
-        let (colours, kinds) = palette();
+        let (colours, _kinds) = palette();
+        let syntax = palette_syntax();
         let mut code = CodeView::new("fn main() {}".into(), "rust".into(), 3);
         let before = code.height(&m);
 
@@ -1441,7 +1464,7 @@ mod tests {
                 class: "keyword".into(),
             }],
             &colours,
-            &kinds,
+            &syntax,
             true,
         );
 
@@ -1453,7 +1476,8 @@ mod tests {
     /// producer bug must never take the page down (LD-7).
     #[test]
     fn malformed_spans_are_dropped() {
-        let (colours, kinds) = palette();
+        let (colours, _kinds) = palette();
+        let syntax = palette_syntax();
         let mut code = CodeView::new("ab".into(), "rust".into(), 1);
         code.apply_spans(
             &[
@@ -1463,7 +1487,7 @@ mod tests {
                 HighlightSpan { start: 0, end: 1, class: "keyword".into() },
             ],
             &colours,
-            &kinds,
+            &syntax,
             true,
         );
         assert_eq!(code.spans.len(), 1, "only the valid span survives");
@@ -1473,12 +1497,13 @@ mod tests {
     /// reaching `StyledText`'s char-boundary debug assertion.
     #[test]
     fn non_boundary_spans_are_dropped() {
-        let (colours, kinds) = palette();
+        let (colours, _kinds) = palette();
+        let syntax = palette_syntax();
         let mut code = CodeView::new("é".into(), "rust".into(), 1);
         code.apply_spans(
             &[HighlightSpan { start: 0, end: 1, class: "keyword".into() }],
             &colours,
-            &kinds,
+            &syntax,
             true,
         );
         assert!(code.spans.is_empty());
@@ -1488,12 +1513,13 @@ mod tests {
     /// dimension does not exist (LD-17).
     #[test]
     fn reduced_motion_snaps_the_sweep() {
-        let (colours, kinds) = palette();
+        let (colours, _kinds) = palette();
+        let syntax = palette_syntax();
         let mut code = CodeView::new("let x = 1;".into(), "rust".into(), 1);
         code.apply_spans(
             &[HighlightSpan { start: 0, end: 3, class: "keyword".into() }],
             &colours,
-            &kinds,
+            &syntax,
             true,
         );
         assert!(!code.tick(Instant::now()), "a snapped sweep must not animate");
@@ -1502,7 +1528,8 @@ mod tests {
     /// Distinct classes get distinct springs; repeats share one.
     #[test]
     fn classes_are_deduplicated() {
-        let (colours, kinds) = palette();
+        let (colours, _kinds) = palette();
+        let syntax = palette_syntax();
         let mut code = CodeView::new("let x = 1;".into(), "rust".into(), 1);
         code.apply_spans(
             &[
@@ -1511,7 +1538,7 @@ mod tests {
                 HighlightSpan { start: 8, end: 9, class: "keyword".into() },
             ],
             &colours,
-            &kinds,
+            &syntax,
             true,
         );
         assert_eq!(code.classes.len(), 2);
@@ -1521,11 +1548,8 @@ mod tests {
     /// An unknown token class still paints readable text rather than vanishing.
     #[test]
     fn unknown_class_is_readable() {
-        let (colours, kinds) = palette();
-        assert_eq!(
-            class_colour("no-such-class", &colours, &kinds),
-            colours.fg_default
-        );
+        let syntax = palette_syntax();
+        assert_eq!(class_colour("no-such-class", &syntax), syntax.ident);
     }
 
     /// Ordered list markers are built at projection time, so `render` never

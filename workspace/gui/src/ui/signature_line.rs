@@ -125,12 +125,12 @@ impl RenderOnce for SignatureLine {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let ext = cx.theme_ext();
         let mono = ext.type_scale.mono;
-        let colours = ext.colours;
-        let kw_colour = colours.accent;
-        let ty_colour = colours.info;
-        let punct_colour = colours.fg_faint;
-        let ident_colour = colours.fg_default;
-        let generic_colour = colours.fg_muted;
+        let syn = ext.syntax;
+        let kw_colour = syn.kw;
+        let ty_colour = syn.ty_name;
+        let punct_colour = syn.punct;
+        let ident_colour = syn.ident;
+        let generic_colour = syn.generic;
 
         // `Rc` so each `Ty` token's click handler can share one caller-supplied
         // closure without cloning the boxed `dyn Fn` per token.

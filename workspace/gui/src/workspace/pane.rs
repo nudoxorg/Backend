@@ -73,7 +73,7 @@ use gpui::prelude::*;
 pub struct TabId(NonZeroU32);
 
 impl TabId {
-    fn new(n: u32) -> Option<Self> {
+    pub(crate) fn new(n: u32) -> Option<Self> {
         NonZeroU32::new(n).map(TabId)
     }
 }

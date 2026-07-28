@@ -29,5 +29,8 @@ rustc-hash = { workspace = true }
 smol_str   = "0.3"
 tracing    = "0.1"
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 serde_json = { workspace = true }

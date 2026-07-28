@@ -15,9 +15,15 @@
 //!
 //! ## Progressive accumulation
 //!
-//! `sections`, `refs`, `impls`, and `timeline` are `Progressive<T>` (§8.2):
-//! append-only during a generation. The GUI never reflows earlier content
-//! because a later event arrived.
+//! `sections`, `refs`, and `impls` are `Progressive<T>` (§8.2): append-only
+//! during a generation. The GUI never reflows earlier content because a later
+//! event arrived.
+//!
+//! `timeline` is deliberately *not* progressive. The engine computes a symbol's
+//! version history in one pass over the loaded generations and emits it whole,
+//! exactly once, so there is nothing to accumulate — modelling it as an
+//! append-only sequence would invent a partial state the protocol never
+//! produces.
 //!
 //! ## Highlight storage
 //!
@@ -32,7 +38,7 @@ use std::sync::Arc;
 use gpui::{Context, Task};
 use nudox_engine::wire::{
     DocEvent, HighlightSpan, ImplsPage, RefsPage, RenderSection,
-    SectionId, SymbolHead, SymbolKey,
+    SectionId, SymbolHead, SymbolKey, Timeline,
 };
 
 use crate::bridge::drain::drain;
@@ -159,6 +165,19 @@ pub struct SymbolDoc {
     pub refs_total: u64,
     /// Running total impls count.
     pub impls_total: u64,
+
+    /// The symbol's version history, once the engine sends it.
+    ///
+    /// Not a `Progressive` like `sections`/`refs`/`impls`: the engine computes
+    /// a timeline in one pass over the loaded generations and emits it whole,
+    /// exactly once, between `Head` and the first `Section`. There is nothing
+    /// to accumulate.
+    ///
+    /// `None` means "not yet delivered", never "this symbol has no history" —
+    /// a symbol present in a single loaded version still gets one row. A view
+    /// that renders `None` as "no history" would be lying about the common
+    /// case, which is that only one version is loaded.
+    pub timeline: Option<Timeline>,
 }
 
 impl SymbolDoc {
@@ -176,6 +195,7 @@ impl SymbolDoc {
             drain_task: Task::ready(()),
             refs_total: 0,
             impls_total: 0,
+            timeline: None,
         }
     }
 
@@ -190,6 +210,9 @@ impl SymbolDoc {
         self.impls.reset();
         self.refs_total = 0;
         self.impls_total = 0;
+        // Cleared with the rest of the content: a timeline belongs to the
+        // generation that produced it, and switching versions re-computes it.
+        self.timeline = None;
     }
 }
 
@@ -203,6 +226,12 @@ pub struct SymbolStore<E: SymbolEngine> {
     pub docs: HashMap<TabId, SymbolDoc>,
     /// Reverse index: `SymbolKey → TabId` for dedup in `open()`.
     key_to_tab: HashMap<SymbolKey, TabId>,
+    /// The tab a `Replace` open should supersede.
+    ///
+    /// Tracked here rather than read back from the pane because the store is
+    /// what decides tab lifetime; asking the view would make the answer depend
+    /// on render order.
+    active: Option<TabId>,
     next_tab_id: u64,
     engine: E,
 }
@@ -212,6 +241,7 @@ impl<E: SymbolEngine> SymbolStore<E> {
         Self {
             docs: HashMap::new(),
             key_to_tab: HashMap::new(),
+            active: None,
             next_tab_id: 1,
             engine,
         }
@@ -232,9 +262,28 @@ impl<E: SymbolEngine> SymbolStore<E> {
     ) -> TabId {
         // Dedup: re-activate existing tab.
         if let Some(&tab_id) = self.key_to_tab.get(&key) {
+            self.active = Some(tab_id);
             cx.emit(TabActivated { tab_id, disposition });
             return tab_id;
         }
+
+        // `Replace` means *replace*, not "open another one".
+        //
+        // The variant has always been documented as "replace the currently
+        // active tab (or open in foreground if no tab)", but the implementation
+        // allocated a new tab unconditionally — so every navigation grew the
+        // tab strip and the default gesture silently accumulated tabs the user
+        // never asked for. Opening a new tab is now something you opt into by
+        // holding the platform modifier, which is what `Stay` expresses.
+        //
+        // The outgoing tab is closed *after* the new one is created so its
+        // `SymbolDoc` — and with it the drain task — is dropped only once the
+        // replacement exists. Closing first would leave a frame with no
+        // document at all.
+        let outgoing = match disposition {
+            OpenDisposition::Replace => self.active,
+            OpenDisposition::Background | OpenDisposition::Stay => None,
+        };
 
         // Allocate a new tab.
         let tab_id = TabId(self.next_tab_id);
@@ -258,7 +307,19 @@ impl<E: SymbolEngine> SymbolStore<E> {
         self.docs.insert(tab_id, doc);
         self.key_to_tab.insert(key, tab_id);
 
+        // `Background` opens behind the reader, so it must not steal the
+        // active slot — otherwise the *next* `Replace` would close the tab the
+        // user is looking at instead of the one they opened behind it.
+        if !matches!(disposition, OpenDisposition::Background) {
+            self.active = Some(tab_id);
+        }
+
         cx.emit(TabActivated { tab_id, disposition });
+
+        if let Some(outgoing) = outgoing {
+            self.close(outgoing, cx);
+        }
+
         cx.notify();
         tab_id
     }
@@ -397,6 +458,13 @@ impl<E: SymbolEngine> SymbolStore<E> {
                 doc.slot_meta.fail(SlotError::Transient {
                     message: error.to_string(),
                 });
+            }
+
+            DocEvent::Timeline(timeline) => {
+                // Arrives after `Head` and before the first `Section` (§9.3),
+                // so the version strip is populated by the time a reader could
+                // plausibly look for it.
+                doc.timeline = Some(timeline);
             }
 
             // Forward-compat: unknown variants ignored (LD-7).

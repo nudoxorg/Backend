@@ -98,10 +98,13 @@ impl RenderOnce for Toolbar {
         let caption = ext.type_scale.caption;
 
         let chips = self.chips.into_iter().map(move |chip| {
+            // Inactive chips: transparent resting state so only the active chip
+            // has a fill — reduces visual noise and makes the selection obvious.
+            // Active chips: full accent fill.
             let (bg, fg) = if chip.active {
                 (colours.accent, colours.accent_fg_on)
             } else {
-                (colours.bg_hover, colours.fg_muted)
+                (colours.bg_base, colours.fg_muted)
             };
 
             let mut el = div()

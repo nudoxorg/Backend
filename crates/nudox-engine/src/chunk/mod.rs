@@ -236,6 +236,23 @@ mod tests {
                     // may interleave freely after Head
                     assert!(have_head, "Refs/Impls before Head");
                 }
+                DocEvent::Timeline(_) => {
+                    // The timeline is a *tab*, not a section: it carries no
+                    // `SectionId` and occupies no space in the document
+                    // column, which is why `section_plan` never promises
+                    // geometry for it.
+                    //
+                    // It still has a place in the order. It needs `Head` for
+                    // the symbol's identity, and it must precede the first
+                    // `Section` so the tab is populated by the time a reader
+                    // could plausibly switch to it — a tab that fills in after
+                    // the body has finished streaming reads as broken.
+                    assert!(have_head, "Timeline before Head");
+                    assert!(
+                        sent_sections.is_empty(),
+                        "Timeline must precede the first Section",
+                    );
+                }
                 DocEvent::Done | DocEvent::Failed(_) => {
                     terminal = true;
                 }

@@ -48,6 +48,9 @@ default = []
 # during build (pyrefly_bundled downloads a typeshed).
 pyrefly = []
 
+[lints]
+workspace = true
+
 [dependencies]
 nudox-ir      = { path = "../nudox-ir" }
 nudox-producer = { path = "../nudox-producer" }

@@ -58,9 +58,10 @@ impl Badge {
     pub fn for_kind(id: impl Into<ElementId>, kind: LocalKindDiscriminant, cx: &App) -> Self {
         let ext = cx.theme_ext();
         let colour = kind.colour(&ext.kind_colours);
-        // fg_on is always dark text on the kind colours (matched luminance 0.55/0.62).
-        // We pick from the theme's foreground-on-accent token as a reasonable proxy.
-        let fg_on = cx.theme().accent_foreground;
+        // fg_on is precomputed per theme in KindColours.kind_fg_on: white in light
+        // (badges at l=0.38 are dark) and near-black in dark (badges at l=0.62 are
+        // bright).  Using the precomputed scalar avoids any conditional in render.
+        let fg_on = ext.kind_colours.kind_fg_on;
         Self {
             id: id.into(),
             label: kind.short_label().into(),

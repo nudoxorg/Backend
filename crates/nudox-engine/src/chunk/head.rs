@@ -17,6 +17,46 @@ use nudox_store::package::PackageView;
 
 use crate::wire::{CrumbRef, KindTag, Provenance, SharedStr, SymbolHead, SymbolKey};
 
+// ---------------------------------------------------------------------------
+// Source-location helpers
+// ---------------------------------------------------------------------------
+
+/// Convert `Symbol::source` and `Symbol::span` into the wire representation.
+///
+/// Returns `(None, None)` when the producer did not supply a source path
+/// (i.e. `Symbol::source` is the empty path `""` or `.`).
+///
+/// The path is carried as-is from the IR — it may be absolute, relative to the
+/// package root, or partially qualified depending on the producer.  No attempt
+/// is made to make it relative here because `PackageView` holds no package root
+/// path; that is a future producer concern.
+///
+/// The span is a **byte** range, not a line range.  Converting bytes to line
+/// numbers would require reading the file, which is outside the engine's doc
+/// path.  The GUI must not present these as line numbers.
+fn source_location(entry: &Entry) -> (Option<SharedStr>, Option<[u32; 2]>) {
+    let path = &entry.sym().source;
+
+    // An empty or trivially-relative path means "not recorded".
+    let path_str = path.to_string_lossy();
+    if path_str.is_empty() || path_str == "." {
+        return (None, None);
+    }
+
+    let span = &entry.sym().span;
+    // `Range<usize>` → `[u32; 2]`.  Saturate rather than panic on producers
+    // that emit unrealistic offsets.
+    let wire_span = [
+        u32::try_from(span.start).unwrap_or(u32::MAX),
+        u32::try_from(span.end).unwrap_or(u32::MAX),
+    ];
+
+    (
+        Some(SharedStr::from(path_str.as_ref())),
+        Some(wire_span),
+    )
+}
+
 /// Build the `SymbolHead` for `entry` at `intro`.
 ///
 /// # Arguments
@@ -101,6 +141,10 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
 
     let section_plan = super::plan::section_plan(intro, entry, view, package);
 
+    // ── Source location ───────────────────────────────────────────────────────
+
+    let (source_path, source_span) = source_location(entry);
+
     SymbolHead {
         key,
         breadcrumb,
@@ -110,6 +154,8 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
         provenance,
         deprecation,
         section_plan,
+        source_path,
+        source_span,
     }
 }
 
@@ -208,6 +254,71 @@ mod tests {
             for (p, s) in h.section_plan.iter().zip(sects.iter()) {
                 assert_eq!(p.id, s.section_id(), "plan/section id mismatch for '{}'", entry.sym().name);
             }
+        }
+    }
+
+    /// Helper that builds a minimal `Entry` — just enough to exercise
+    /// `source_location`.  We use a module kind because `Module` is a unit
+    /// struct and requires no extra data.
+    fn minimal_entry(source: &str, span: std::ops::Range<usize>) -> nudox_ir::entry::Entry {
+        use nudox_ir::{
+            entry::{Node, Symbol, Visibility},
+            index::RawRef,
+            kind::Kind,
+            kinds::Module,
+        };
+        let sym = Symbol {
+            name: "test_sym".to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::from(source),
+            span,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        nudox_ir::entry::Entry::new(sym, Node::build(None::<RawRef>, []), Kind::Module(Module))
+    }
+
+    #[test]
+    fn source_location_roundtrips() {
+        let entry = minimal_entry("src/lib.rs", 10..42);
+        let (path, span) = source_location(&entry);
+        assert!(path.is_some(), "non-empty source should produce a path");
+        assert_eq!(&**path.as_ref().unwrap(), "src/lib.rs");
+        assert_eq!(span, Some([10u32, 42u32]));
+    }
+
+    #[test]
+    fn source_location_empty_source_returns_none() {
+        let entry = minimal_entry("", 0..0);
+        let (path, span) = source_location(&entry);
+        assert!(path.is_none(), "empty source path must yield None");
+        assert!(span.is_none());
+    }
+
+    /// The rich fixture uses `PathBuf::new()` (empty) for all symbols, so every
+    /// head should carry `None` for the source fields — this confirms we are not
+    /// fabricating paths.
+    #[test]
+    fn head_source_is_none_when_fixture_has_empty_paths() {
+        let view = build_rich_view();
+        let pkg = PackageView::build(view, StoreProvenance::TrustedLocal);
+
+        for (intro, entry) in pkg.view().entries() {
+            let h = head(intro, entry, pkg.view(), &pkg);
+            assert!(
+                h.source_path.is_none(),
+                "fixture uses empty paths — source_path must be None for '{}'",
+                entry.sym().name
+            );
+            assert!(
+                h.source_span.is_none(),
+                "fixture uses empty paths — source_span must be None for '{}'",
+                entry.sym().name
+            );
         }
     }
 

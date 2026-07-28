@@ -8,19 +8,27 @@
 //! `lindsey` never creates a Tokio runtime of its own. Everything async goes
 //! through the `EngineHandle` returned by [`Engine::start`].
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 use tokio::task::LocalSet;
 use tracing::info;
 
+use nudox_ir::change::PackageLineageId;
 use nudox_store::{
     corpus::Corpus,
     source::{IrSource, LoadEvent, LoadRequest},
 };
 
-use crate::{PackageLoadEvent, PackageSpec, ProducerLanguage};
+use crate::{
+    PackageHistorySpec, PackageLoadEvent, PackageSpec, ProducerLanguage,
+    versions::VersionRegistry,
+};
 
 // ---------------------------------------------------------------------------
 // EngineConfig
@@ -65,7 +73,18 @@ impl std::fmt::Debug for EngineConfig {
 pub(crate) struct EngineInner {
     /// The live corpus of loaded packages.  Cheap to clone; the engine and
     /// every handle share the same `Arc`-backed world view.
+    ///
+    /// Holds exactly one generation per lineage — the *current* one. Every
+    /// other loaded generation lives in [`Self::versions`].
     pub(crate) corpus: Corpus,
+    /// Every loaded generation of every package, and which one is current.
+    ///
+    /// The corpus answers "what is the world"; this answers "what else have we
+    /// got". Kept in step with the corpus by the seeding task below and by
+    /// `EngineHandle::select_version`; see `crate::versions` for why the two
+    /// structures are separate rather than the corpus being made
+    /// version-keyed.
+    pub(crate) versions: Arc<VersionRegistry>,
     /// The Trustfall schema singleton — returned by `EngineHandle::schema`.
     pub(crate) schema: &'static trustfall::Schema,
     /// The host-supplied highlighter, if any (see `crate::highlight`).
@@ -122,6 +141,7 @@ impl Engine {
 
         let corpus = Corpus::new();
         let schema = nudox_graph::schema();
+        let versions = Arc::new(VersionRegistry::new());
 
         // Capacity 64: broadcast channel for package load notifications.  See
         // `EngineInner::pkg_tx` for the capacity rationale.
@@ -131,6 +151,7 @@ impl Engine {
 
         let inner = Arc::new(EngineInner {
             corpus: corpus.clone(),
+            versions: Arc::clone(&versions),
             schema,
             highlighter: config.highlighter.clone(),
             pkg_tx: pkg_tx.clone(),
@@ -145,29 +166,86 @@ impl Engine {
         // live notifications.  `send` returns `Err` only when there are no
         // receivers (which is fine at startup — we just drop the notification).
         let seed_corpus = corpus.clone();
+        let seed_versions = Arc::clone(&versions);
         runtime.spawn(async move {
             use futures::StreamExt as _;
+
+            // Version strings awaiting their `Ready`, keyed by lineage.
+            //
+            // `LoadEvent::Ready` carries only an `Arc<PackageView>`, and
+            // `PackageView` has no version field — a `PackageLineageId` is
+            // version-free by design and nothing downstream of it ever needed
+            // the number. The only place the version appears in the load
+            // protocol is `LoadEvent::Discovered { hint: PackageHint { version } }`.
+            //
+            // Recovering it here is sound because the `IrSource` contract
+            // requires `Discovered` before `Ready` for every package, and both
+            // in-tree sources are strictly sequential per package
+            // (`ProducerSource::load` drives descriptors with `then`, which
+            // awaits each in turn). A FIFO per lineage therefore pairs each
+            // `Ready` with its own `Discovered` even when several generations
+            // of the same lineage are being loaded.
+            //
+            // A hypothetical source that interleaved *two generations of the
+            // same lineage* could mispair them; a source that interleaves
+            // different lineages cannot, because the queues are per-lineage.
+            // The durable fix is a `version` field on `PackageView` (or on
+            // `LoadEvent::Ready`), which is a `nudox-store` change and so out
+            // of scope here.
+            let mut pending: HashMap<PackageLineageId, VecDeque<Option<String>>> = HashMap::new();
+
             let mut stream = source.load(LoadRequest::default());
             while let Some(event) = stream.next().await {
                 match event {
+                    Ok(LoadEvent::Discovered { lineage, hint }) => {
+                        pending.entry(lineage).or_default().push_back(hint.version);
+                    }
                     Ok(LoadEvent::Ready { package }) => {
-                        // Count symbols before moving the package into the corpus.
+                        // Count symbols before the package is handed on.
                         let symbol_count = package.view().table().len() as u64;
-                        let name = package.lineage().name.as_str().to_owned();
-                        let ecosystem = package.lineage().ecosystem.as_str().to_owned();
-                        let version: Option<String> = None; // not carried in PackageView
-                        seed_corpus.insert(package).await;
+                        let lineage = package.lineage().clone();
+                        let name = lineage.name.as_str().to_owned();
+                        let ecosystem = lineage.ecosystem.as_str().to_owned();
+                        let version = pending
+                            .get_mut(&lineage)
+                            .and_then(|q| q.pop_front())
+                            .flatten();
+
+                        // Record the generation first. The registry decides
+                        // whether this generation becomes the resident one —
+                        // it is the single place that rule lives, so the
+                        // corpus cannot drift from the version list.
+                        //
+                        // This also fixes a latent ordering bug: previously
+                        // every `Ready` was inserted unconditionally, so with
+                        // several generations of one package the corpus ended
+                        // up holding whichever finished producing last rather
+                        // than the newest.
+                        if let Some(resident) = seed_versions.record(
+                            &lineage,
+                            version.clone(),
+                            Arc::clone(&package),
+                        ) {
+                            seed_corpus.insert(resident).await;
+                        }
 
                         let event = PackageLoadEvent::Loaded {
                             name: name.into(),
                             ecosystem: ecosystem.into(),
                             version,
                             symbol_count,
+                            root: package_root_key(&package),
                         };
                         // Ignore `Err`: no subscribers yet is fine.
                         let _ = pkg_tx.send(event);
                     }
                     Ok(LoadEvent::Failed { lineage, error }) => {
+                        // Consume this package's queued version so the FIFO
+                        // stays aligned for the lineage's later generations.
+                        // `Discovered` is emitted for the failing package too.
+                        if let Some(q) = pending.get_mut(&lineage) {
+                            q.pop_front();
+                        }
                         tracing::warn!(
                             package = %lineage,
                             "package load failed: {error}",
@@ -179,7 +257,7 @@ impl Engine {
                         };
                         let _ = pkg_tx.send(event);
                     }
-                    Ok(_) => {} // Discovered / Progress — informational only
+                    Ok(_) => {} // Progress — informational only
                     Err(e) => {
                         tracing::error!("stream-level load error: {e}");
                         break;
@@ -352,6 +430,15 @@ impl EngineHandle {
         self.inner.corpus.clone()
     }
 
+    /// A clone of the version registry handle.
+    ///
+    /// Used by `doc.rs` to build timelines and by `crate::versions` to serve
+    /// `versions`/`select_version`. Not part of the `lindsey`-facing surface:
+    /// the registry deals in `Arc<PackageView>`, which must not cross §L0.
+    pub(crate) fn versions_registry(&self) -> Arc<VersionRegistry> {
+        Arc::clone(&self.inner.versions)
+    }
+
     /// Spawn a future on the engine's multi-thread runtime.
     pub(crate) fn spawn<F>(&self, fut: F) -> tokio::task::JoinHandle<F::Output>
     where
@@ -468,6 +555,21 @@ impl EngineHandle {
     /// packages faster than the reconciler consumes them.  `RecvError::Lagged`
     /// is handled by logging at `warn` level and continuing — a lagging status
     /// bar must not kill the stream.
+    ///
+    /// # One row per package, not per generation
+    ///
+    /// The corpus can now hold several generations of one package, but this
+    /// stream still emits exactly one `Loaded` per lineage — a package list
+    /// wants one row for `axum`, not three. The `version` field carries the
+    /// *current* generation, read from the version registry at emit time
+    /// rather than from whichever `Ready` happened to arrive first.
+    ///
+    /// A generation that lands after the row was emitted therefore does not
+    /// produce a second row, and does not update the one already sent. That is
+    /// deliberate: [`EngineHandle::versions`] is the surface for "what else is
+    /// loaded", it is a synchronous read, and re-reading it on each
+    /// `PackageLoadEvent` is cheaper and less racy than trying to keep a
+    /// one-shot event stream authoritative about a growing set.
     pub fn packages(&self) -> flume::Receiver<PackageLoadEvent> {
         // Capacity 32 per Appendix C.
         let (tx, rx) = flume::bounded::<PackageLoadEvent>(32);
@@ -478,6 +580,7 @@ impl EngineHandle {
         // the dedup loop in step 3 collapses it to one emission.
         let live_rx = self.inner.pkg_tx.subscribe();
         let corpus = self.inner.corpus.clone();
+        let versions = Arc::clone(&self.inner.versions);
 
         self.spawn(async move {
             // Step 2 — snapshot of all packages already in the corpus at this
@@ -496,11 +599,18 @@ impl EngineHandle {
                 let name = pkg.lineage().name.as_str().to_owned();
                 let ecosystem = pkg.lineage().ecosystem.as_str().to_owned();
                 emitted.insert(name.clone());
+                // The snapshot comes from the corpus, which holds the current
+                // generation; the registry is what knows its version string.
+                let version = versions
+                    .versions(pkg.lineage())
+                    .current()
+                    .map(|v| v.version.to_string());
                 let event = PackageLoadEvent::Loaded {
                     name: name.into(),
                     ecosystem: ecosystem.into(),
-                    version: None,
+                    version,
                     symbol_count,
+                    root: package_root_key(&pkg),
                 };
                 // Backpressure: if the GUI is slow, we block here rather than
                 // dropping events.  This is the correct trade-off: the status
@@ -520,10 +630,11 @@ impl EngineHandle {
             loop {
                 let ev = live_rx.recv().await;
                 match ev {
-                    Ok(event) => {
+                    Ok(mut event) => {
                         // Deduplicate: if this package was already emitted from
                         // the snapshot, skip it.  We key on `name` because that
-                        // is the identity the GUI shows.
+                        // is the identity the GUI shows — and because several
+                        // generations of one package must collapse to one row.
                         let should_skip = match &event {
                             PackageLoadEvent::Loaded { name, .. } => {
                                 !emitted.insert(name.to_string())
@@ -534,6 +645,24 @@ impl EngineHandle {
                         };
                         if should_skip {
                             continue;
+                        }
+                        // Report the *current* generation's version rather than
+                        // this event's, which is whichever `Ready` won the race
+                        // to arrive first and is not necessarily the newest.
+                        if let PackageLoadEvent::Loaded {
+                            name,
+                            ecosystem,
+                            version,
+                            ..
+                        } = &mut event
+                        {
+                            let lineage = PackageLineageId::new(
+                                nudox_ir::change::EcosystemId::new(&**ecosystem),
+                                nudox_ir::change::PackageName::new(&**name),
+                            );
+                            if let Some(current) = versions.versions(&lineage).current() {
+                                *version = Some(current.version.to_string());
+                            }
                         }
                         if tx.send_async(event).await.is_err() {
                             return; // receiver dropped
@@ -562,6 +691,28 @@ impl EngineHandle {
 
         rx
     }
+}
+
+// ---------------------------------------------------------------------------
+// Package root
+// ---------------------------------------------------------------------------
+
+/// The `SymbolKey` of a package's root entry — its crate / top-level module.
+///
+/// The root is the one entry with no parent. A well-formed package has exactly
+/// one; this takes the first in declaration order so the answer is
+/// deterministic even if a producer ever emits a second unparented entry (the
+/// `IrView` iteration order is the insertion order of the sealed table, not a
+/// hash order).
+///
+/// Returns `None` for a package with no unparented entry, which would be
+/// malformed rather than merely empty.
+fn package_root_key(pkg: &nudox_store::package::PackageView) -> Option<crate::SymbolKey> {
+    let view = pkg.view();
+    view.entries()
+        .map(|(intro, _)| intro)
+        .find(|intro| view.parent_of(*intro).is_none())
+        .map(|intro| crate::SymbolKey::new(pkg.lineage().clone(), intro))
 }
 
 // ---------------------------------------------------------------------------
@@ -618,28 +769,261 @@ impl Engine {
     /// infrastructure; `start_with_producer` is the production path and must
     /// always be available.
     pub fn start_with_producer(config: EngineConfig, packages: Vec<PackageSpec>) -> EngineHandle {
+        // Every `PackageSpec` is a one-generation history. Routing both
+        // constructors through the same code path means the single-version
+        // caller and the multi-version caller cannot diverge — in particular
+        // the single-version corpus still populates the version registry, so
+        // `versions()` returns one row rather than an empty list and a symbol
+        // page still gets a (one-row) timeline.
+        Self::start_with_versions(config, packages.into_iter().map(Into::into).collect())
+    }
+
+    /// Start an engine that produces IR for several versions of each package.
+    ///
+    /// This is [`Engine::start_with_producer`] generalised along the axis the
+    /// corpus was previously missing: a [`PackageHistorySpec`] names one
+    /// package and *N* on-disk roots, one per version, and the engine loads all
+    /// of them.
+    ///
+    /// # What this buys
+    ///
+    /// A symbol timeline and a version dropdown are the same capability seen
+    /// from two ends, and both need the same precondition: more than one
+    /// generation of a package resident at once. Two lowerings of one package
+    /// at different versions share `IntroId`s for every symbol that persisted
+    /// (that is what `IntroId` is *for*), so once both are loaded a symbol's
+    /// history is a lookup of one id across the generations and nothing else
+    /// has to be recorded.
+    ///
+    /// # Which version is served
+    ///
+    /// All of them are loaded; the newest is *current*, meaning it is the one
+    /// resident in the `Corpus` and therefore the one `open_symbol`, `search`
+    /// and `query` answer from. Newest is decided by
+    /// `crate::versions::VersionOrder` (semver-shaped where the string parses,
+    /// load order to break ties). A caller changes the selection with
+    /// [`EngineHandle::select_version`] and enumerates the options with
+    /// [`EngineHandle::versions`].
+    ///
+    /// Ordering of the loads does not matter: the newest generation ends up
+    /// current whether it finished producing first or last.
+    ///
+    /// # Cost
+    ///
+    /// Linear. Loading four versions runs the producer four times and holds
+    /// four `PackageView`s. There is no incremental or shared-storage path
+    /// between generations — the IR-native VCS in `workspace/ir-vcs` is where
+    /// that belongs, and wiring it in is not a `nudox-engine` change.
+    pub fn start_with_versions(
+        config: EngineConfig,
+        packages: Vec<PackageHistorySpec>,
+    ) -> EngineHandle {
         use nudox_store::source::producer::{PackageDescriptor, ProducerRegistry, ProducerSource};
 
         let registry = Arc::new(ProducerRegistry::with_rust_pilot());
         let descriptors: Vec<PackageDescriptor> = packages
             .into_iter()
-            .map(|spec| {
-                // Convert the engine-owned `PackageSpec` into the store-owned
-                // `PackageDescriptor`.  The conversion is trivial because
-                // `PackageDescriptor::cargo` already handles the common case of
-                // a Cargo/Rust package; for other ecosystems we would add more
-                // arms here without touching the caller.
-                match spec.language {
-                    ProducerLanguage::Rust => PackageDescriptor::cargo(
-                        spec.root,
-                        spec.name,
-                        spec.version,
-                    ),
-                }
+            .flat_map(|history| {
+                let name = history.name;
+                let language = history.language;
+                history.versions.into_iter().map(move |v| {
+                    // Convert the engine-owned spec into the store-owned
+                    // `PackageDescriptor`. Every generation of a package
+                    // produces the *same* `PackageLineageId` — that is the
+                    // point: the lineage is version-free, so the two
+                    // generations are recognisably the same package and their
+                    // `IntroId`s are comparable.
+                    match language {
+                        ProducerLanguage::Rust => {
+                            PackageDescriptor::cargo(v.root, name.clone(), v.version)
+                        }
+                    }
+                })
             })
             .collect();
 
         let source = ProducerSource::new(registry, descriptors);
         Self::start(config, source)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — the multi-generation seeding path
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        test_support::{lineage, package_with, start_and_settle},
+        wire::{Gen, VersionEvent},
+    };
+
+    /// Start a settled engine over a fixed list of `(version, package)`
+    /// generations for the `axum` lineage.
+    async fn engine_with(
+        generations: Vec<(&str, Arc<nudox_store::package::PackageView>)>,
+    ) -> (EngineHandle, PackageLineageId) {
+        let lid = lineage("axum");
+        let engine = start_and_settle(&lid, generations).await;
+        (engine, lid)
+    }
+
+    #[tokio::test]
+    async fn every_generation_of_one_package_is_retained() {
+        // The behaviour this whole feature turns on: before, the second
+        // `Ready` for a lineage replaced the first in the corpus and the
+        // first was simply lost.
+        let lid = lineage("axum");
+        let (engine, _) = engine_with(vec![
+            ("0.7.9", package_with(&lid, &[(1, "Router")])),
+            ("0.8.1", package_with(&lid, &[(1, "Router")])),
+            ("0.9.0", package_with(&lid, &[(1, "Router")])),
+        ])
+        .await;
+
+        let list = engine.versions(&lid);
+        assert_eq!(list.len(), 3);
+        let seen: Vec<&str> = list.versions.iter().map(|v| &*v.version).collect();
+        assert_eq!(seen, vec!["0.9.0", "0.8.1", "0.7.9"], "newest first");
+    }
+
+    #[tokio::test]
+    async fn the_newest_generation_is_current_regardless_of_arrival_order() {
+        // Deliberately deliver the newest first, so "last writer wins" — the
+        // behaviour the corpus alone would give — is the wrong answer.
+        let lid = lineage("axum");
+        let (engine, _) = engine_with(vec![
+            ("0.9.0", package_with(&lid, &[(1, "a"), (2, "b"), (3, "c")])),
+            ("0.7.9", package_with(&lid, &[(1, "a")])),
+        ])
+        .await;
+
+        assert_eq!(
+            &*engine.versions(&lid).current().unwrap().version,
+            "0.9.0"
+        );
+        // And the corpus agrees: it holds the 3-symbol generation, not the
+        // 1-symbol one that arrived last.
+        let resident = engine.corpus().package(&lid).await.unwrap();
+        assert_eq!(resident.view().table().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn select_version_repoints_the_corpus() {
+        let lid = lineage("axum");
+        let (engine, _) = engine_with(vec![
+            ("0.7.9", package_with(&lid, &[(1, "a")])),
+            ("0.8.1", package_with(&lid, &[(1, "a"), (2, "b")])),
+        ])
+        .await;
+
+        // Sanity: the newest is current to begin with.
+        assert_eq!(engine.corpus().package(&lid).await.unwrap().view().table().len(), 2);
+
+        let rx = engine.select_version(lid.clone(), "0.7.9", Gen(7));
+        let ev = rx.recv_async().await.expect("exactly one event is sent");
+        match ev {
+            VersionEvent::Switched {
+                generation,
+                version,
+                ..
+            } => {
+                assert_eq!(generation, Gen(7), "the caller's Gen is echoed back");
+                assert_eq!(&*version, "0.7.9");
+            }
+            other => panic!("expected Switched, got {other:?}"),
+        }
+
+        // Every version-free path now answers from 0.7.9.
+        assert_eq!(engine.corpus().package(&lid).await.unwrap().view().table().len(), 1);
+        assert_eq!(
+            &*engine.versions(&lid).current().unwrap().version,
+            "0.7.9"
+        );
+    }
+
+    #[tokio::test]
+    async fn selecting_an_unloaded_version_reports_not_loaded_and_changes_nothing() {
+        let lid = lineage("axum");
+        let (engine, _) = engine_with(vec![("0.7.9", package_with(&lid, &[(1, "a")]))]).await;
+
+        let rx = engine.select_version(lid.clone(), "9.9.9", Gen(2));
+        let ev = rx.recv_async().await.expect("exactly one event is sent");
+        assert!(matches!(ev, VersionEvent::NotLoaded { .. }), "got {ev:?}");
+        assert_eq!(
+            &*engine.versions(&lid).current().unwrap().version,
+            "0.7.9"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_version_corpus_still_populates_the_registry() {
+        // The one-version case must produce a one-row list, not an empty one:
+        // it is what a caller sees first, and an empty dropdown would read as
+        // "versions are unavailable" rather than "there is one".
+        let lid = lineage("axum");
+        let (engine, _) = engine_with(vec![("0.8.9", package_with(&lid, &[(1, "Router")]))]).await;
+
+        let list = engine.versions(&lid);
+        assert_eq!(list.len(), 1);
+        assert_eq!(&*list.versions[0].version, "0.8.9");
+        assert!(list.versions[0].is_current);
+    }
+
+    #[tokio::test]
+    async fn an_unloaded_package_yields_an_empty_version_list() {
+        let lid = lineage("axum");
+        let (engine, _) = engine_with(vec![("0.8.9", package_with(&lid, &[(1, "a")]))]).await;
+        assert!(engine.versions(&lineage("never-loaded")).is_empty());
+    }
+
+    #[tokio::test]
+    async fn packages_reports_one_row_per_lineage_carrying_the_current_version() {
+        let lid = lineage("axum");
+        let (engine, _) = engine_with(vec![
+            ("0.7.9", package_with(&lid, &[(1, "a")])),
+            ("0.8.1", package_with(&lid, &[(1, "a")])),
+        ])
+        .await;
+
+        let rx = engine.packages();
+        let mut rows = Vec::new();
+        // Drain what is immediately available; the stream stays open for
+        // future arrivals, so a blocking drain would never terminate.
+        while let Ok(ev) = rx.recv_async().await {
+            rows.push(ev);
+            if rows.len() == 1 {
+                break;
+            }
+        }
+
+        assert_eq!(rows.len(), 1, "two generations collapse to one package row");
+        match &rows[0] {
+            PackageLoadEvent::Loaded { name, version, .. } => {
+                assert_eq!(&**name, "axum");
+                assert_eq!(
+                    version.as_deref(),
+                    Some("0.8.1"),
+                    "the row carries the current generation, not the first to arrive"
+                );
+            }
+            other => panic!("expected Loaded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_package_spec_converts_to_a_one_generation_history() {
+        let spec = PackageSpec {
+            root: PathBuf::from("/src/axum"),
+            name: "axum".to_owned(),
+            version: "0.8.9".to_owned(),
+            language: ProducerLanguage::Rust,
+        };
+        let history: PackageHistorySpec = spec.into();
+        assert_eq!(history.name, "axum");
+        assert_eq!(history.versions.len(), 1);
+        assert_eq!(history.versions[0].version, "0.8.9");
+        assert_eq!(history.versions[0].root, PathBuf::from("/src/axum"));
     }
 }

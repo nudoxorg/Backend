@@ -24,6 +24,10 @@
 //! * [`search`]  — name/type/semantic fan-out over `PackageIndexes` (LR-10).
 //! * [`query`]   — drives `CorpusAdapter` on the `LocalSet`; emits
 //!                 `QueryEvent` streams.
+//! * [`versions`] — the version plane: holding several generations of one
+//!                 package, and choosing which one the corpus serves.
+//! * [`timeline`] — a symbol's history across those generations, keyed on
+//!                 `IntroId`.
 //!
 //! # `EngineHandle` public surface (§7.1 + §L5)
 //!
@@ -32,6 +36,8 @@
 //! EngineHandle::open_symbol(key, gen)   -> (StreamHandle, Receiver<DocEvent>)
 //! EngineHandle::open_package(id, gen)   -> (StreamHandle, Receiver<PackageEvent>)  // stub
 //! EngineHandle::packages()              -> Receiver<PackageLoadEvent>
+//! EngineHandle::versions(pkg)           -> VersionList                             // sync
+//! EngineHandle::select_version(pkg, v, gen) -> Receiver<VersionEvent>
 //! EngineHandle::resolve_project(root)   -> (StreamHandle, Receiver<ProjectEvent>)  // stub
 //! EngineHandle::sync()                  -> Receiver<SyncEvent>                     // stub
 //! EngineHandle::jobs()                  -> Receiver<JobEvent>                      // stub
@@ -39,6 +45,11 @@
 //! EngineHandle::query(q, gen)           -> (StreamHandle, Receiver<QueryEvent>)
 //! EngineHandle::schema()                -> &'static Schema
 //! ```
+//!
+//! `versions` is the one synchronous query on the handle. The justification is
+//! in [`versions`]: it reads data that is already fully resident, cannot arrive
+//! partially, and has nothing for a `Gen` to guard, so a channel would buy a
+//! task hop and no correctness.
 
 pub mod wire;
 pub mod chunk;
@@ -47,6 +58,11 @@ pub mod doc;
 pub mod highlight;
 pub mod search;
 pub mod query;
+pub mod timeline;
+pub mod versions;
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 // Re-export the primary public surface so callers can `use nudox_engine::*`
 // if they prefer.
@@ -56,7 +72,7 @@ pub use query::GraphQuery;
 pub use wire::{
     DocEvent, EngineError, Gen, GenerationId, HitRow, KindTag, Provenance, QueryEvent,
     QueryRow, RenderSection, SearchEvent, SearchSectionId, SectionId, SharedStr, SymbolHead,
-    SymbolKey,
+    SymbolKey, Timeline, TimelineChange, TimelineRow, VersionEvent, VersionList, VersionRow,
 };
 // `PackageLoadEvent`, `PackageSpec`, and `ProducerLanguage` are defined below
 // and are `pub`; they are visible to `lindsey` as `nudox_engine::PackageLoadEvent`
@@ -134,6 +150,103 @@ pub struct PackageSpec {
 }
 
 // ---------------------------------------------------------------------------
+// PackageVersionSpec / PackageHistorySpec
+// ---------------------------------------------------------------------------
+
+/// One on-disk version of a package.
+///
+/// A component of [`PackageHistorySpec`]. Carries only the two things that
+/// differ between generations of the same package — where it is unpacked and
+/// what it calls itself — because everything else (name, ecosystem, language)
+/// is a property of the *lineage* and would be a lie to vary per version.
+#[derive(Clone, Debug)]
+pub struct PackageVersionSpec {
+    /// Absolute path to this version's package root (the directory containing
+    /// `Cargo.toml`, `go.mod`, `*.csproj`, …).
+    ///
+    /// Every version needs its own root. Two versions of a crate are two
+    /// source trees; there is no way to ask a producer for "the same directory
+    /// but at 0.7.9".
+    pub root: PathBuf,
+    /// The version string (e.g. `"0.8.1"`).
+    ///
+    /// Shown verbatim in [`crate::wire::VersionRow::version`] and in every
+    /// [`crate::wire::TimelineRow`]. It is parsed *only* for ordering, and a
+    /// string that does not parse is still loaded and still listed — it just
+    /// sorts below the ones that do (see `crate::versions`).
+    pub version: String,
+}
+
+/// Several versions of one package, to be loaded together.
+///
+/// Passed to [`Engine::start_with_versions`]. Like [`PackageSpec`] it contains
+/// only `std`-owned types so `lindsey` can construct one without naming
+/// `nudox-store` or `nudox-ir` (§L0).
+///
+/// # Why this rather than a `Vec<PackageSpec>`
+///
+/// A list of `PackageSpec`s can already express "load axum 0.7.9 and axum
+/// 0.8.1" — they would produce the same `PackageLineageId` and the engine would
+/// load both. But nothing in the type says they are the same package, so
+/// nothing stops a caller from giving two generations different names, or the
+/// same version twice, and the resulting corpus would be quietly wrong. Making
+/// the lineage a property of the outer struct and the version a property of the
+/// inner one puts the invariant in the type: one name, one language, N roots.
+///
+/// # Example (from `lindsey`)
+///
+/// ```rust,ignore
+/// Engine::start_with_versions(config, vec![
+///     PackageHistorySpec {
+///         name: "axum".to_owned(),
+///         language: ProducerLanguage::Rust,
+///         versions: vec![
+///             PackageVersionSpec { root: "/src/axum-0.7.9".into(), version: "0.7.9".into() },
+///             PackageVersionSpec { root: "/src/axum-0.8.1".into(), version: "0.8.1".into() },
+///         ],
+///     },
+/// ])
+/// ```
+///
+/// A one-element `versions` list is exactly equivalent to the corresponding
+/// [`PackageSpec`], and is what `start_with_producer` builds internally.
+#[derive(Clone, Debug)]
+pub struct PackageHistorySpec {
+    /// Package name as it appears in the ecosystem registry.  Shared by every
+    /// version, because it is what makes them one lineage.
+    pub name: String,
+    /// The source language.  Determines which producer runs, for all versions.
+    pub language: ProducerLanguage,
+    /// The versions to load, in any order.
+    ///
+    /// Order here is not precedence: the engine sorts them (see
+    /// `crate::versions`) so the newest becomes current regardless of the order
+    /// they are listed in or the order their producers happen to finish.
+    ///
+    /// An empty list loads nothing and is not an error — it is the honest
+    /// encoding of "this package has no versions to load", which a caller
+    /// filtering a manifest can legitimately produce.
+    pub versions: Vec<PackageVersionSpec>,
+}
+
+impl From<PackageSpec> for PackageHistorySpec {
+    /// Every single-version request is a one-generation history.
+    ///
+    /// This is what lets `start_with_producer` delegate to
+    /// `start_with_versions` instead of maintaining a second load path.
+    fn from(spec: PackageSpec) -> Self {
+        Self {
+            name: spec.name,
+            language: spec.language,
+            versions: vec![PackageVersionSpec {
+                root: spec.root,
+                version: spec.version,
+            }],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PackageLoadEvent
 // ---------------------------------------------------------------------------
 
@@ -170,6 +283,18 @@ pub enum PackageLoadEvent {
         /// the status bar's "N symbols" count.  This is the symbol count at
         /// the time of insertion; it does not change after that.
         symbol_count: u64,
+        /// The package's root entry — its crate / top-level module.
+        ///
+        /// Carried on the event rather than exposed as a separate query,
+        /// because every consumer that wants it wants it *at this moment*: a
+        /// package list needs somewhere to navigate the instant a row appears,
+        /// and a second round trip to ask "what is this package's root" would
+        /// re-derive something the engine held while building the event.
+        ///
+        /// `None` only when the package has no unparented entry, which means a
+        /// malformed IR rather than an empty package — every producer declares
+        /// a root module.
+        root: Option<SymbolKey>,
     },
 
     /// A package failed to load; the remaining packages are unaffected.

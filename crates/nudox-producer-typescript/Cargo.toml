@@ -60,6 +60,9 @@ tsz-solver  = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e31
 tsz-checker = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-checker", optional = true }
 rustc-hash  = { version = "2.1", optional = true }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 # Tests parse literal TypeScript source strings in-process.
 oxc_allocator = { version = "=0.139.0" }

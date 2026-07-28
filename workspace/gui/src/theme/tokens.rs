@@ -373,5 +373,134 @@ pub struct KindColours {
     pub reexport: Hsla,
     /// Kind::Param (13) — function parameter.
     pub param: Hsla,
+    /// Text colour to use on a surface filled with any kind colour.
+    ///
+    /// All 13 kind colours share a single lightness plane (l=0.38 in light,
+    /// l=0.62 in dark).  In the light theme, l=0.38 is dark enough that white
+    /// text is required for WCAG AA contrast.  In the dark theme, l=0.62 is
+    /// bright enough that near-black text is required.  A single scalar avoids
+    /// per-badge conditional logic in render — every badge just uses this field.
+    pub kind_fg_on: Hsla,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §10.6  Syntax token colours
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Colour assignments for syntax token classes (GUI-PLAN §10.6).
+///
+/// # Why a separate struct from `ColourRoles`?
+///
+/// `ColourRoles` encodes *semantic UI state*: is this text muted? is this
+/// surface elevated?  `SyntaxColours` encodes *lexical role*: is this token a
+/// keyword, a type name, a string literal?  The two axes are orthogonal —
+/// a keyword can appear in a primary-surface signature AND in a raised-card
+/// code block, but it must have the same colour in both.  Keeping the syntax
+/// palette separate means `SignatureLine`, code-block renderers, and any future
+/// inline-snippet component all pull from one authoritative source, guaranteeing
+/// visual consistency across the documentation browser.
+///
+/// # Alignment with `class_colour` in `views/symbol_page/docs.rs`
+///
+/// The `class_colour` function in the docs renderer maps tree-sitter capture
+/// class strings to colours.  The field values here must be chosen to match
+/// that mapping; concretely:
+/// - `class_colour("keyword", …)` returns `colours.accent` → `kw` should align.
+/// - `class_colour("type", …)` returns `kinds.record` → `ty_name` should align.
+/// - `class_colour("function", …)` returns `kinds.function` → `fn_name` aligns.
+/// - `class_colour("string", …)` returns `colours.ok` → `string_lit` aligns.
+/// - `class_colour("number", …)` returns `colours.warn` → `number_lit` aligns.
+/// - `class_colour("comment", …)` returns `colours.fg_faint` → `comment` aligns.
+/// - `class_colour("punctuation", …)` returns `colours.fg_faint` → `punct` aligns.
+/// - `class_colour("attribute", …)` returns `kinds.alias` → `attr` aligns.
+///
+/// This alignment means that `pub` in a signature renders identically to `pub`
+/// in a code block — one colour system for all code surfaces.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SyntaxColours {
+    /// Language keywords: `pub`, `fn`, `struct`, `impl`, `use`, `let`, `return`.
+    ///
+    /// Matches `class_colour("keyword")` → `colours.accent` (indigo/blue-violet).
+    /// Keywords are the grammatical skeleton of code; they deserve the accent
+    /// hue because they guide parsing at a glance.
+    pub kw: Hsla,
+
+    /// Type names: user-defined structs, enums, traits, and built-in types.
+    ///
+    /// Matches `class_colour("type")` → `kinds.record` (steel blue).
+    /// Type names are the most navigable thing in a signature: hovering over a
+    /// type navigates to its page.  The record/struct hue makes them feel
+    /// "structural" — they describe data shapes.
+    pub ty_name: Hsla,
+
+    /// The declared identifier (the name being defined).
+    ///
+    /// Rendered at `fg_default` — it is the most important token on the line
+    /// (the thing the user searched for) and should read with maximum clarity,
+    /// not compete with colour-coded neighbours.
+    pub ident: Hsla,
+
+    /// Generic parameter names: `T`, `'a`, `Output`, `Error`.
+    ///
+    /// Matches `class_colour("variable")` → `kinds.field` (blue-purple).
+    /// Generics are placeholders; the field/property hue conveys "this is a
+    /// slot, not a concrete thing."
+    pub generic: Hsla,
+
+    /// Function and method names in call position.
+    ///
+    /// Matches `class_colour("function")` → `kinds.function` (green-cyan).
+    pub fn_name: Hsla,
+
+    /// Punctuation: `(`, `)`, `,`, `->`, `<`, `>`, `::`, `;`.
+    ///
+    /// Matches `class_colour("punctuation")` → `colours.fg_faint`.
+    /// Punctuation is structural glue; it should recede so the reader's eye
+    /// skips over it to the semantically loaded tokens.
+    pub punct: Hsla,
+
+    /// String literals: `"hello"`, `r#"raw"#`.
+    ///
+    /// Matches `class_colour("string")` → `colours.ok` (green).
+    /// Green for string literals is the VS Code / docs.rs convention; the
+    /// semantic reason is that strings are "value data" rather than code
+    /// structure, and the ok/success family of greens communicates "inert data."
+    pub string_lit: Hsla,
+
+    /// Numeric literals: `42`, `3.14`, `0xff`.
+    ///
+    /// Matches `class_colour("number")` → `colours.warn` (amber).
+    /// The amber warn family is used because numeric constants are the most
+    /// common "magic value" in code and a slight warm emphasis helps the eye
+    /// locate them in a wall of text.
+    pub number_lit: Hsla,
+
+    /// Comments and documentation comments.
+    ///
+    /// Matches `class_colour("comment")` → `colours.fg_faint`.
+    /// Comments are prose interpolated into code; faint rendering de-emphasises
+    /// them so the reader's primary attention stays on the executable tokens.
+    pub comment: Hsla,
+
+    /// Attributes and annotations: `#[derive(…)]`, `@Override`.
+    ///
+    /// Matches `class_colour("attribute")` → `kinds.alias` (amber).
+    /// Attributes are metadata attached to declarations; the alias/redirection
+    /// hue communicates "this modifies the thing, it is not the thing itself."
+    pub attr: Hsla,
+
+    /// Macro invocations: `println!`, `vec!`, `format!`.
+    ///
+    /// Matches `class_colour("macro")` → `kinds.alias`.
+    /// Same hue as attributes (both are meta-level constructs that expand into
+    /// code the reader does not see inline).
+    pub macro_: Hsla,
+
+    /// Boolean literals and built-in constants: `true`, `false`, `nil`, `null`.
+    ///
+    /// Matches `class_colour("boolean")` → `colours.warn` (amber).
+    /// Booleans are special constants; treating them like other numeric literals
+    /// keeps the number-of-colour-categories low (a key principle of restraint).
+    pub boolean: Hsla,
 }
 
