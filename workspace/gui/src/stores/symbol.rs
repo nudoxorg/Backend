@@ -76,6 +76,26 @@ pub trait SymbolEngine: 'static {
     fn highlight_priority(&self, _tab_id: TabId, _visible: &[SectionId]) {}
 }
 
+/// The real engine satisfies the capability directly.
+///
+/// `bridge::handle::StreamHandle` is a re-export of `nudox_engine::StreamHandle`,
+/// so this is a forwarding impl with no conversion — which is the point of the
+/// re-export. The moment a conversion appears here, the two handle types have
+/// drifted and one of them is a mirror.
+impl SymbolEngine for nudox_engine::EngineHandle {
+    fn open_symbol(
+        &self,
+        key: SymbolKey,
+        generation: nudox_engine::wire::Gen,
+    ) -> (StreamHandle, flume::Receiver<DocEvent>) {
+        nudox_engine::EngineHandle::open_symbol(self, key, generation)
+    }
+
+    // `highlight_priority` keeps the default no-op: the engine highlights every
+    // code section as it chunks, so there is no queue to reorder yet. When the
+    // tree-sitter plane lands it becomes a real command (§9.4.5).
+}
+
 // ---------------------------------------------------------------------------
 // SymbolDoc
 // ---------------------------------------------------------------------------
@@ -88,6 +108,27 @@ pub struct SymbolDoc {
     /// Symbol head (metadata, signature, section plan).
     /// `None` until the first `DocEvent::Head` arrives.
     pub head: Option<Box<SymbolHead>>,
+    /// The generation `head` was delivered for.
+    ///
+    /// # Why this is stored rather than inferred
+    ///
+    /// A view needs to know *when to re-project the header*, and the obvious
+    /// proxy — "the generation changed" — is wrong: `reload` and `set_version`
+    /// bump the generation before the new head arrives, and the old head is
+    /// deliberately left on screen until it does (LD-15).
+    ///
+    /// The next proxy — "the generation changed and `sections` is empty" — is
+    /// wrong for a subtler reason. `drain` applies every event available in one
+    /// wake, and GPUI coalesces the resulting notifications into a single
+    /// observer call. So a fast local open delivers `Head`, all its sections,
+    /// and `Done` before the view is woken once, and the view sees a populated
+    /// section list on its *first* look. Under that proxy the header then never
+    /// projects at all — a symbol page with a blank header and "No
+    /// documentation", which is exactly what shipped until this field existed.
+    ///
+    /// Recording the answer removes the guess: the head belongs to whichever
+    /// generation delivered it, and nothing about event batching can change it.
+    pub head_gen: Option<u64>,
 
     // ── Streamed content ─────────────────────────────────────────────────
     /// Documentation sections, in `section_plan` order (§8.2 / §9.3).
@@ -125,6 +166,7 @@ impl SymbolDoc {
         Self {
             key,
             head: None,
+            head_gen: None,
             sections: Progressive::new(),
             highlights: HashMap::new(),
             refs: Progressive::new(),
@@ -141,6 +183,7 @@ impl SymbolDoc {
     /// and `set_version`).
     fn reset_content(&mut self) {
         self.head = None;
+        self.head_gen = None;
         self.sections.reset();
         self.highlights.clear();
         self.refs.reset();
@@ -293,9 +336,13 @@ impl<E: SymbolEngine> SymbolStore<E> {
                 doc.slot_meta.first_event();
                 // Stale guard: the head carries no gen — we trust it is current
                 // because the handle was just issued. Reset content for the new gen.
+                let generation = doc.slot_meta.generation.0;
                 doc.reset_content();
                 let key = doc.key.clone();
                 doc.head = Some(head);
+                // Stamped *after* `reset_content`, which clears it — this is the
+                // one fact a view cannot reconstruct from the doc alone.
+                doc.head_gen = Some(generation);
                 cx.emit(HeadReady { tab_id, key });
             }
 

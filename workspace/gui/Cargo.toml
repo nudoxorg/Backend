@@ -45,6 +45,18 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dev-dependencies]
+# `test-support` is what makes GPUI testable without a display: it enables
+# `TestPlatform` + the seeded `TestDispatcher`, so `#[gpui::test]` runs an
+# entire app — entities, windows, focus, keystrokes, actions — deterministically
+# on one thread. Same pin as the runtime dependency; a mismatch would give two
+# incompatible `Entity` types.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["test-support"] }
+
+[[test]]
+name = "shell_flow"
+path = "tests/shell_flow.rs"
+
 [lints.rust]
 unused_imports = "warn"
 dead_code = "warn"

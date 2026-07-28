@@ -17,8 +17,9 @@ use gpui::{App, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_component_assets::Assets;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
+use lindsey::app::keymaps;
 use lindsey::motion::tokens::MotionTokens;
-use lindsey::stores::search::SearchStore;
+use lindsey::stores::{SearchStore, SymbolStore};
 use lindsey::theme::ext::NudoxThemeExt;
 use lindsey::workspace::shell::Shell;
 
@@ -56,12 +57,20 @@ fn main() {
             // installed before the first frame renders.
             cx.set_global(MotionTokens::new(1.0));
 
+            // ── Keymap (Appendix B) ─────────────────────────────────────────
+            //
+            // `app::keymaps` is the single source of truth: the `?` cheat sheet
+            // and the command palette both render from the same registry that
+            // is handed to GPUI here, so a binding cannot exist without being
+            // discoverable and cannot be documented without working.
+            cx.bind_keys(keymaps::all_bindings());
+
             // ── Stores (LD-1: views subscribe to stores; stores own I/O) ────
             //
-            // TODO(shell): hand this to the shell so `cmd-K` can open the
-            // omni-search overlay over it. Constructed here because store
-            // lifetime is app-scoped, not window-scoped.
-            let _search = cx.new(|_| SearchStore::new(engine.clone()));
+            // App-scoped, not window-scoped. A search query and a set of open
+            // documents outlive any particular overlay or pane that shows them.
+            let search = cx.new(|_| SearchStore::new(engine.clone()));
+            let symbols = cx.new(|_| SymbolStore::new(engine.clone()));
 
             let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
             cx.open_window(
@@ -69,7 +78,9 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
-                |window, cx| cx.new(|cx| Shell::new(window, cx)),
+                |window, cx| {
+                    cx.new(|cx| Shell::new(search.clone(), symbols.clone(), window, cx))
+                },
             )
             .expect("failed to open window");
 

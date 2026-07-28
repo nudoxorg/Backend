@@ -232,8 +232,9 @@ pub struct SymbolPage<E: SymbolEngine> {
     /// Lazy tabs (§16): a tab's content is not built until it is first shown.
     loaded: [bool; 6],
 
-    /// Generation of the currently projected head.
-    head_gen: u64,
+    /// Generation of the currently projected head, mirroring
+    /// [`SymbolDoc::head_gen`]. `None` until a head has been projected.
+    head_gen: Option<u64>,
     /// Cached stream state, recomputed on every store notification.
     state: PageState,
     error: Option<SlotError>,
@@ -307,7 +308,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
             active: InnerTab::Docs,
             // Docs is the only eager tab; the rest load on first activation.
             loaded: [true, false, false, false, false, false],
-            head_gen: 0,
+            head_gen: None,
             state: PageState::Empty,
             error: None,
             error_text: None,
@@ -361,14 +362,17 @@ impl<E: SymbolEngine> SymbolPage<E> {
             // A generation bump alone is not enough to re-project: `reload` and
             // `set_version` advance the generation *before* the new `Head`
             // arrives, and the old head is deliberately left in place so the
-            // page stays readable (LD-15). The store resets `sections` in the
-            // same step that installs the new head, so an empty section list is
-            // the signal that the head we can see belongs to the new generation.
-            let generation = doc.slot_meta.generation.0;
-            let head_is_new = generation != self.head_gen && doc.sections.is_empty();
+            // page stays readable (LD-15). So the question is not "has the
+            // generation moved?" but "is the head on screen the one the store
+            // currently holds?" — which `SymbolDoc::head_gen` answers directly.
+            // See its doc comment for why inferring this from `sections` looked
+            // right and silently blanked every page.
+            let generation = doc.head_gen;
+            let head_is_new = generation.is_some() && generation != self.head_gen;
             if let Some(head) = doc.head.as_ref() {
                 if head_is_new {
                     self.head_gen = generation;
+                    let generation = generation.unwrap_or_default();
                     let mut model = HeaderModel::from_head(head);
                     model.versions = self.versions.clone();
                     model.active_version = self.active_version;
@@ -711,7 +715,19 @@ impl<E: SymbolEngine> SymbolPage<E> {
             .flex()
             .flex_row()
             .size_full()
-            .child(div().flex_1().overflow_hidden().child(body))
+            // The column must be a flex container, not a bare `div`. GPUI's
+            // default display is `Block`, in which `flex_1()` on the list is
+            // inert and its height resolves to auto — i.e. zero. The outline
+            // beside it renders from the same plan, so the failure looks like
+            // "the document is empty" rather than "the list has no height".
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(body),
+            )
             .when(!self.outline.is_empty(), |el| el.child(outline))
             .into_any_element()
     }
@@ -948,7 +964,7 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl<E: SymbolEngine> WorkspaceItem for SymbolPage<E> {
-    fn tab_content(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn tab_content(&self, cx: &App) -> AnyElement {
         let (sp, ts, colours) = {
             let ext = cx.theme_ext();
             (ext.space, ext.type_scale, ext.colours)

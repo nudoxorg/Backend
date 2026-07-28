@@ -180,16 +180,13 @@ impl SearchAccess for StubSearchStore {
 // Events
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// How a committed hit should open (mirrors `stores::events::OpenDisposition`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OpenDisposition {
-    /// `enter` — open and close the overlay.
-    Replace,
-    /// `cmd-enter` — open without closing the overlay.
-    KeepOverlay,
-    /// `alt-enter` — open in a background tab; the overlay keeps focus.
-    BackgroundTab,
-}
+/// How a committed hit should open.
+///
+/// This is `stores::events::OpenDisposition` itself, not a mirror of it. A view
+/// enum that "mirrors" a store enum is two enums that must be kept in agreement
+/// by hand, and the conversion between them is a place for `Stay` to silently
+/// become `Replace`. There is one disposition vocabulary in this app.
+pub use crate::stores::events::OpenDisposition;
 
 /// What the overlay reports upward. The shell owns the overlay stack (§13.5),
 /// so this view never closes itself — it says what happened.
@@ -731,7 +728,7 @@ impl<S: SearchAccess> OmniSearch<S> {
     }
 
     fn on_open_keep(&mut self, _: &OpenWithoutClosing, _: &mut Window, cx: &mut Context<Self>) {
-        self.commit(OpenDisposition::KeepOverlay, cx);
+        self.commit(OpenDisposition::Stay, cx);
     }
 
     fn on_open_background(
@@ -740,7 +737,7 @@ impl<S: SearchAccess> OmniSearch<S> {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.commit(OpenDisposition::BackgroundTab, cx);
+        self.commit(OpenDisposition::Background, cx);
     }
 
     fn commit(&mut self, disposition: OpenDisposition, cx: &mut Context<Self>) {
@@ -1201,6 +1198,14 @@ impl<S: SearchAccess> OmniSearch<S> {
                     .collect()
             },
         )
+        // `uniform_list` defaults to `ListSizingBehavior::Auto`, which means it
+        // takes its height from its own style rather than from its items — and
+        // a bare `div()` is `display: Block` in GPUI, so an auto-height child
+        // resolves to *zero*. The wrapper below has the definite height, so the
+        // space was reserved and the list inside it was 0 px tall: a section
+        // header reading "2" above a blank band. `h_full` resolves against that
+        // definite parent height, which is what makes the rows exist.
+        .h_full()
         .track_scroll(&self.sections[index].scroll);
 
         // The gliding bar rides in this list's scrolled content space, so it
@@ -1355,7 +1360,10 @@ impl<S: SearchAccess> OmniSearch<S> {
                         .into_any_element()
                 })
                 .collect()
-        });
+        })
+        // Same reason as `render_section`: without a definite height the list
+        // lays out at zero and the recents band renders empty.
+        .h_full();
 
         let visible = count.min(VISIBLE_ROWS_PER_SECTION);
         v_flex()

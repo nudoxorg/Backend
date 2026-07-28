@@ -46,13 +46,14 @@
 //! and carries a `TODO(views)` comment naming the eventual module.  They are
 //! correct GPUI `Panel` implementations so `DockArea` can serialize them.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, IntoElement, ParentElement as _, Render, SharedString, Styled,
-    Subscription, Window, actions, div, px,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
     prelude::FluentBuilder as _,
 };
 use gpui_component::dock::{
@@ -61,27 +62,32 @@ use gpui_component::dock::{
     };
 use serde_json::Value as JsonValue;
 
+use crate::app::actions::{OpenOmniSearch, ToggleBottomDock, ToggleLeftDock};
 use crate::motion::spring::{Motion, Spring};
+use crate::stores::events::{OpenDisposition, TabActivated};
+use crate::stores::symbol::TabId as DocTabId;
+use crate::stores::{SearchStore, SymbolStore};
 use crate::theme::ext::ThemeExtAccessor as _;
-use crate::workspace::pane::Pane;
+use crate::views::omni_search::{OmniSearch, OmniSearchEvent};
+use crate::views::symbol_page::SymbolPage;
+use crate::workspace::overlays::{OverlayKind, OverlayStack};
+use crate::workspace::pane::{Pane, TabId as PaneTabId};
 use crate::workspace::status_bar::StatusBar;
 use gpui::prelude::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Actions (Appendix B)
+// Actions
 // ─────────────────────────────────────────────────────────────────────────────
-
-actions!(
-    shell,
-    [
-        /// Toggle left sidebar dock (cmd-B).
-        ToggleLeftDock,
-        /// Toggle bottom dock (cmd-J).
-        ToggleBottomDock,
-        /// Toggle right dock.
-        ToggleRightDock,
-    ]
-);
+//
+// The shell declares none of its own. Every action it answers to lives in
+// `app::actions` and is bound in `app::keymaps`, which is what keeps the `?`
+// cheat sheet and the command palette a complete account of what actually
+// works (see the `app::keymaps` module docs).
+//
+// This file used to declare its own `ToggleLeftDock`. That is a *different
+// type* from the one `keymaps` binds, so `cmd-B` dispatched an action nothing
+// listened for while both halves looked correct in isolation. Actions are
+// declared once, centrally, for exactly that reason.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BannerKind
@@ -320,6 +326,34 @@ pub struct Shell {
     pane: Entity<Pane>,
     status_bar: Entity<StatusBar>,
 
+    // ── Stores (LD-1: the shell owns them; views only subscribe) ─────────────
+    /// Search state, shared by the omni-search overlay and (later) the search
+    /// panel. App-scoped: a query survives closing and reopening the overlay.
+    search: Entity<SearchStore>,
+    /// Open symbol documents. One entry per open tab; `open()` dedups by key.
+    symbols: Entity<SymbolStore>,
+
+    // ── Overlays (§13.5) ─────────────────────────────────────────────────────
+    /// Which overlays are open, innermost last.
+    overlays: OverlayStack,
+    /// The live omni-search view, while `OverlayKind::OmniSearch` is on the
+    /// stack. Dropping it tears down the view; `omni_subs` goes with it.
+    omni: Option<Entity<OmniSearch<SearchStore>>>,
+    /// Subscriptions belonging to the current overlay. Cleared on close, so an
+    /// overlay's callbacks cannot outlive the overlay (LD-18).
+    omni_subs: Vec<Subscription>,
+    /// Scrim opacity, 0 → 1 (§5.3 `overlay.in`, SNAPPY).
+    scrim: Motion,
+
+    /// Which pane tab shows which open document.
+    ///
+    /// `SymbolStore` dedups by `SymbolKey` and reports the *document* tab id;
+    /// the pane numbers its own tabs independently. Without this map, opening
+    /// an already-open symbol would either add a duplicate tab or activate an
+    /// unrelated one — the two id spaces are deliberately not interchangeable
+    /// (both are called `TabId`, hence the aliases at the imports).
+    tabs: HashMap<DocTabId, PaneTabId>,
+
     // ── Dock springs (GUI-PLAN §5.3 `dock.slide`, LD-5) ─────────────────────
     /// LEFT dock width — DEFAULT spring.  Animate_to 0.0 to close, previous
     /// size to re-open.  Ticked in `render`; `request_animation_frame` called
@@ -353,9 +387,22 @@ pub struct Shell {
     _subs: Vec<Subscription>,
 }
 
+/// Scrim alpha at full strength (§13.5). Dark enough to push the page back,
+/// light enough that the reader keeps their place in it.
+const SCRIM_ALPHA: f32 = 0.42;
+
 impl Shell {
     /// Construct the shell, wiring up the `DockArea` and all placeholder panels.
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    ///
+    /// The stores arrive from `main` already holding a live `EngineHandle`: the
+    /// corpus is loading before the first frame paints, so by the time anyone
+    /// presses `cmd-K` there is something to find (LR-10).
+    pub fn new(
+        search: Entity<SearchStore>,
+        symbols: Entity<SymbolStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // ── Register placeholder panels so DockArea can (de)serialize them ─────
         register_panel(cx, "project-panel", |_, _, _, window, cx| {
             Box::new(cx.new(|cx| ProjectPanel::new(window, cx)))
@@ -458,10 +505,40 @@ impl Shell {
             }));
         }
 
+        // ── The one store→shell edge (§12.10): a document wants a tab ─────────
+        //
+        // `SymbolStore::open` is called from three places — the overlay, a
+        // signature link, a crumb — and none of them knows about panes. They
+        // all funnel through this event, so tab placement policy is written
+        // once, here.
+        subs.push(cx.subscribe_in(
+            &symbols,
+            window,
+            |shell, _store, event: &TabActivated, window, cx| {
+                shell.reveal_document(event.tab_id, event.disposition, window, cx);
+            },
+        ));
+
+        // Focus the pane so the very first keystroke has somewhere to land.
+        // Actions dispatch from the focused element upward; with nothing
+        // focused, `cmd-K` on a fresh window would do nothing at all.
+        let pane_focus = pane.read(cx).focus_handle(cx);
+        window.focus(&pane_focus, cx);
+
         Self {
             dock_area,
             pane,
             status_bar,
+
+            search,
+            symbols,
+
+            overlays: OverlayStack::new(),
+            omni: None,
+            omni_subs: Vec::new(),
+            scrim: Motion::new(0.0, Spring::SNAPPY),
+
+            tabs: HashMap::new(),
 
             left_w:   Motion::new(LEFT_DOCK_DEFAULT_W,  Spring::DEFAULT),
             bottom_h: Motion::new(0.0,                  Spring::DEFAULT),
@@ -481,6 +558,150 @@ impl Shell {
             saved_state: None,
             _subs: subs,
         }
+    }
+
+    // ── Omni-search overlay (§13.5, §15) ─────────────────────────────────────
+
+    /// `cmd-K`: open the fused search overlay over whatever is on screen.
+    ///
+    /// The *store* is app-scoped and the *view* is overlay-scoped. That split
+    /// is deliberate: closing the overlay must not throw away a query the user
+    /// spent time refining, but it must throw away the view's scroll offsets,
+    /// springs, and focus trap — otherwise reopening restores a half-animated
+    /// widget in a state nothing produced.
+    fn open_omni_search(
+        &mut self,
+        _: &OpenOmniSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlays.contains(&OverlayKind::OmniSearch) {
+            // Already open: re-take focus rather than stacking a second one.
+            if let Some(omni) = &self.omni {
+                let focus = omni.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
+            }
+            return;
+        }
+
+        self.overlays.push(OverlayKind::OmniSearch, None);
+
+        let search = self.search.clone();
+        let omni = cx.new(|cx| OmniSearch::new(search, window, cx));
+        self.omni_subs = vec![cx.subscribe_in(
+            &omni,
+            window,
+            |shell, _view, event: &OmniSearchEvent, window, cx| {
+                shell.on_omni_event(event, window, cx);
+            },
+        )];
+        self.omni = Some(omni);
+
+        if cx.theme_ext().reduced_motion() {
+            self.scrim.snap_to(1.0);
+        } else {
+            self.scrim.animate_to(1.0);
+        }
+        cx.notify();
+    }
+
+    /// What the overlay reports upward (§15 — the view never closes itself).
+    fn on_omni_event(
+        &mut self,
+        event: &OmniSearchEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            OmniSearchEvent::Open { key, disposition } => {
+                let (key, disposition) = (key.clone(), *disposition);
+                // `open` dedups by key and answers with `TabActivated`, which
+                // `reveal_document` turns into a pane tab. The overlay does not
+                // know panes exist, and the pane does not know search exists.
+                self.symbols.update(cx, |store, cx| {
+                    store.open(key, disposition, cx);
+                });
+                // `Stay` (cmd-enter) and `Background` (alt-enter) both exist so
+                // you can open several hits from one query without retyping it.
+                if disposition == OpenDisposition::Replace {
+                    self.close_overlay(window, cx);
+                }
+            }
+            OmniSearchEvent::Dismiss => self.close_overlay(window, cx),
+        }
+    }
+
+    /// Pop the top overlay and give focus back.
+    ///
+    /// Focus restoration is the half that gets forgotten: an overlay that
+    /// vanishes without handing focus anywhere leaves the next keystroke going
+    /// to nothing, and the app appears to have frozen (LD-13).
+    fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlays.pop().is_none() {
+            return;
+        }
+        self.omni = None;
+        // Dropping the subscriptions with the view is the whole teardown.
+        self.omni_subs.clear();
+
+        if cx.theme_ext().reduced_motion() {
+            self.scrim.snap_to(0.0);
+        } else {
+            self.scrim.animate_to(0.0);
+        }
+
+        let focus = self.pane.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    // ── Document tabs ────────────────────────────────────────────────────────
+
+    /// Place an opened document in the centre pane, or re-activate its tab.
+    ///
+    /// Called for every `TabActivated`, including the ones `SymbolStore` emits
+    /// when `open()` finds the symbol already open — which is why the dedup
+    /// check comes first and does not build a second page.
+    fn reveal_document(
+        &mut self,
+        doc: DocTabId,
+        disposition: OpenDisposition,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(&existing) = self.tabs.get(&doc) {
+            if disposition != OpenDisposition::Background {
+                self.pane.update(cx, |pane, cx| {
+                    pane.activate_tab(existing, window, cx);
+                    cx.notify();
+                });
+            }
+            cx.notify();
+            return;
+        }
+
+        let previously_active = self.pane.read(cx).active_id();
+        let symbols = self.symbols.clone();
+        let page = cx.new(|cx| SymbolPage::new(doc, symbols, window, cx));
+
+        let opened = self.pane.update(cx, |pane, cx| {
+            let id = pane.open_item(page, Vec::new(), window, cx);
+            cx.notify();
+            id
+        });
+        self.tabs.insert(doc, opened);
+
+        // `open_item` activates what it opens, which is right for every
+        // disposition but this one; put the reader back where they were.
+        if disposition == OpenDisposition::Background {
+            if let Some(previous) = previously_active {
+                self.pane.update(cx, |pane, cx| {
+                    pane.activate_tab(previous, window, cx);
+                    cx.notify();
+                });
+            }
+        }
+        cx.notify();
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -581,6 +802,28 @@ impl Shell {
     pub fn pane(&self) -> &Entity<Pane> {
         &self.pane
     }
+
+    /// The interactive overlay, if any (§13.5).
+    ///
+    /// Exposed for tests: "did `cmd-K` open the search?" is otherwise only
+    /// answerable by rendering and looking, which is exactly the kind of
+    /// assertion that passes for the wrong reason.
+    pub fn overlay_kind_on_top(&self) -> Option<&OverlayKind> {
+        self.overlays.top().map(|entry| &entry.kind)
+    }
+
+    /// How many overlays are stacked (§13.5 — Escape pops exactly one).
+    pub fn overlay_depth(&self) -> usize {
+        self.overlays.depth()
+    }
+
+    /// Which pane tab is showing `doc`, if it is open.
+    ///
+    /// The two id spaces are deliberately distinct; this is the only sanctioned
+    /// crossing between them.
+    pub fn pane_tab_for_document(&self, doc: DocTabId) -> Option<PaneTabId> {
+        self.tabs.get(&doc).copied()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -610,6 +853,7 @@ impl Render for Shell {
         animating |= self.bottom_h.tick(now);
         animating |= self.right_w.tick(now);
         animating |= self.banner_h.tick(now);
+        animating |= self.scrim.tick(now);
 
         let reduced = cx.theme_ext().reduced_motion();
         if animating && !reduced {
@@ -643,10 +887,71 @@ impl Render for Shell {
                 })
         });
 
+        // ── Overlay layer (§13.5) ─────────────────────────────────────────────
+        //
+        // Absolutely positioned over the whole shell rather than nested inside
+        // the dock area, so an overlay covers the docks and status bar too —
+        // a search panel that a sidebar can occlude is not a modal surface.
+        let scrim_opacity = self.scrim.value();
+        let overlay = self.omni.clone().map(|omni| {
+            let dismissable = self
+                .overlays
+                .top()
+                .is_some_and(|entry| entry.kind.dismiss_on_scrim_click());
+
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .when(self.overlays.wants_scrim(), |el| {
+                    el.child(
+                        div()
+                            .id("overlay.scrim")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .bg(gpui::black().opacity(scrim_opacity * SCRIM_ALPHA))
+                            // A modal refuses this (§13.5): a destructive
+                            // confirmation that a stray click dismisses trains
+                            // people to click through the next one.
+                            .when(dismissable, |el| {
+                                el.on_click(cx.listener(|shell, _, window, cx| {
+                                    shell.close_overlay(window, cx);
+                                }))
+                            }),
+                    )
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .child(omni),
+                )
+        });
+
         // ── Full shell layout ─────────────────────────────────────────────────
         div()
             .id("shell")
+            // `global` is the context `app::keymaps` binds `cmd-K`, `cmd-B` and
+            // the rest against; `Workspace` is here for bindings that should
+            // stop at the shell. Both are matched by name, so the root must
+            // declare `global` explicitly — GPUI has no implicit root context.
+            .key_context("Workspace global")
+            .on_action(cx.listener(Self::open_omni_search))
+            .on_action(cx.listener(|shell, _: &ToggleLeftDock, window, cx| {
+                shell.toggle_left_dock(window, cx);
+            }))
+            .on_action(cx.listener(|shell, _: &ToggleBottomDock, window, cx| {
+                shell.toggle_bottom_dock(window, cx);
+            }))
             .size_full()
+            // The overlay layer is absolute; without this it would position
+            // against the window rather than the shell.
+            .relative()
             .flex()
             .flex_col()
             .bg(theme.colours.bg_base)
@@ -667,6 +972,7 @@ impl Render for Shell {
                     .border_color(theme.colours.border_default)
                     .child(self.status_bar.clone()),
             )
+            .children(overlay)
     }
 }
 

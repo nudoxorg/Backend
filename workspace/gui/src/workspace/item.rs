@@ -101,13 +101,15 @@ pub trait WorkspaceItem: 'static {
     ///
     /// No `format!` or allocation-heavy work here — use pre-built
     /// `SharedString`s from store state.
-    fn tab_content(
-        &mut self,
-        window: &mut gpui::Window,
-        cx: &mut gpui::Context<Self>,
-    ) -> AnyElement
-    where
-        Self: gpui::Render;
+    /// # Why `&self` and `&App`
+    ///
+    /// `Pane::render` calls this for every open tab, from inside its own
+    /// `update`. Taking `&mut Context<Self>` would mean re-entering the item's
+    /// entity while the pane is mid-render — legal in GPUI but only by
+    /// accident, and it invites an implementation that mutates during layout
+    /// and then wonders why the tab strip is a frame behind. A tab label is a
+    /// projection of state the item already holds; `&self` says so.
+    fn tab_content(&self, cx: &gpui::App) -> AnyElement;
 
     /// A compile-time constant identifying the screen class.
     ///

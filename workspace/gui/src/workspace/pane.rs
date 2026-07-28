@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! pub struct ItemSlot {
-//!     item: AnyView,                    // the content view
+//!     item: Box<dyn TabItem>,           // the content view, type-erased
 //!     _subs: Vec<Subscription>,         // subscriptions this tab holds
 //!     // (future: in-flight StreamHandle goes here too — drops = cancels)
 //! }
@@ -51,13 +51,14 @@ use std::num::NonZeroU32;
 use std::time::Instant;
 
 use gpui::{
-    AnyView, App, AppContext as _, Context, Element, ElementId, EventEmitter,
+    AnyElement, AnyView, App, AppContext as _, Context, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Window, actions, div, px,
     prelude::FluentBuilder as _,
 };
 
 use crate::motion::spring::{Motion, Spring};
-use crate::theme::ext::ThemeExtAccessor as _;
+use crate::theme::ext::{Provenance, ThemeExtAccessor as _};
+use crate::workspace::item::WorkspaceItem;
 use gpui::prelude::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,12 +92,68 @@ impl TabIdSource {
 // ItemSlot — the one-drop container (§3.2)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TabItem — the erased [`WorkspaceItem`]
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What a `Pane` needs from a tab once the concrete view type is forgotten.
+///
+/// # Why this exists rather than a bare `AnyView`
+///
+/// `AnyView` is enough to *render* a tab's content and nothing else. It cannot
+/// answer "what should the tab button say?", because [`WorkspaceItem`] is not
+/// object-safe through `AnyView` — there is no downcast back to the trait.
+///
+/// A pane holding only `AnyView`s therefore has to invent tab labels, and the
+/// invention is always the same one: `"Tab 1"`, `"Tab 2"`. That is not a
+/// placeholder that gets replaced later; it is a structural dead end, because
+/// nothing in the pane's types will ever complain about it.
+///
+/// So the erasure happens one level up. [`Pane::open_item`] takes an
+/// `Entity<V>` where `V: WorkspaceItem`, and the blanket impl below is the only
+/// way to produce a `Box<dyn TabItem>` — which means every tab that exists has
+/// a real label by construction.
+pub trait TabItem: 'static {
+    /// The element drawn inside the tab button (§13.4).
+    fn tab_content(&self, cx: &App) -> AnyElement;
+
+    /// The content view, for the pane's body.
+    fn view(&self) -> AnyView;
+
+    /// The screen class, for the perf harness (§25).
+    fn telemetry_id(&self, cx: &App) -> &'static str;
+
+    /// Trust chrome for this tab's content (LD-8).
+    fn provenance(&self, cx: &App) -> Provenance;
+}
+
+impl<V> TabItem for Entity<V>
+where
+    V: WorkspaceItem + Render,
+{
+    fn tab_content(&self, cx: &App) -> AnyElement {
+        self.read(cx).tab_content(cx)
+    }
+
+    fn view(&self) -> AnyView {
+        self.clone().into()
+    }
+
+    fn telemetry_id(&self, cx: &App) -> &'static str {
+        self.read(cx).telemetry_id()
+    }
+
+    fn provenance(&self, cx: &App) -> Provenance {
+        self.read(cx).provenance()
+    }
+}
+
 /// A single open tab.
 ///
 /// **Structural guarantee:** dropping this value closes the tab completely.
 ///
-/// - `item` is the `AnyView` for the content.  When the count drops to zero
-///   (no other entity holds a strong ref), GPUI frees the view.
+/// - `item` is the erased content view.  When the count drops to zero (no other
+///   entity holds a strong ref), GPUI frees the view.
 /// - `_subs` is the set of `Subscription`s this tab owns.  Dropping them
 ///   unregisters the callbacks without any manual cleanup call.  No
 ///   `.detach()` is legal here — LD-18.
@@ -108,8 +165,8 @@ impl TabIdSource {
 pub struct ItemSlot {
     /// The tab's stable identity.
     pub id: TabId,
-    /// The content view.
-    pub item: AnyView,
+    /// The content view, with its concrete type erased but its tab label kept.
+    pub item: Box<dyn TabItem>,
     /// All subscriptions this tab holds.  Dropped with the slot — LD-18.
     pub _subs: Vec<Subscription>,
 }
@@ -243,16 +300,27 @@ impl Pane {
 
     /// Open a new tab containing `item` and activate it.
     ///
+    /// Takes the concrete `Entity<V>` rather than an `AnyView` so the tab label
+    /// comes from the item itself — see [`TabItem`] for why that is a type-level
+    /// concern and not a convenience.
+    ///
     /// Returns the stable [`TabId`] for the new tab.
-    pub fn open_item(
+    pub fn open_item<V>(
         &mut self,
-        item: AnyView,
+        item: Entity<V>,
         subs: Vec<Subscription>,
         _: &mut Window,
         _: &mut Context<Self>,
-    ) -> TabId {
+    ) -> TabId
+    where
+        V: WorkspaceItem + Render,
+    {
         let id = self.id_source.next();
-        self.slots.push(ItemSlot { id, item, _subs: subs });
+        self.slots.push(ItemSlot {
+            id,
+            item: Box::new(item),
+            _subs: subs,
+        });
         self.tab_springs.push(Motion::new(0.0, Spring::DEFAULT));
         self.active_ix = self.slots.len() - 1;
         id
@@ -293,9 +361,9 @@ impl Pane {
         }
     }
 
-    /// The currently active `AnyView`, if any tab is open.
-    pub fn active_item(&self) -> Option<&AnyView> {
-        self.slots.get(self.active_ix).map(|s| &s.item)
+    /// The currently active content view, if any tab is open.
+    pub fn active_item(&self) -> Option<AnyView> {
+        self.slots.get(self.active_ix).map(|s| s.item.view())
     }
 
     /// The id of the currently active tab.
@@ -497,16 +565,11 @@ impl Render for Pane {
                                     }
                                 },
                             )
-                            // The tab's inner content comes from the WorkspaceItem
-                            // below — for now a placeholder text label since the
-                            // AnyView cannot be called as WorkspaceItem here.
-                            // TODO(views): downcast AnyView to &mut dyn WorkspaceItem
-                            // and call tab_content once GPUI exposes a safe downcast.
-                            .child(
-                                div()
-                                    .text_size(theme.type_scale.ui.size)
-                                    .child(SharedString::from(format!("Tab {}", ix + 1)))
-                            )
+                            // The label is the item's own (§13.4): icon, title,
+                            // provenance dot, and any streaming count. `TabItem`
+                            // keeps that reachable after type erasure, so a pane
+                            // can never invent a name for content it holds.
+                            .child(slot.item.tab_content(cx))
                             // Close button — revealed by group-hover (§13.4).
                             .child(
                                 div()
@@ -564,7 +627,7 @@ impl Render for Pane {
             div()
                 .flex_1()
                 .overflow_hidden()
-                .child(slot.item.clone())
+                .child(slot.item.view())
                 .into_any_element()
         } else {
             // Empty pane — designed empty state (LD-9/LD-16).

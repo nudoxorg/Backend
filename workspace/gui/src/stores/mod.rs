@@ -31,3 +31,24 @@ pub mod search;
 pub mod search_model;
 pub mod shell;
 pub mod symbol;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The shipping instantiations
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Stores are generic over a narrow engine capability trait (`SearchEngine`,
+// `SymbolEngine`) so each can be driven by a test double. The *app*, though,
+// has exactly one engine, and spelling `SearchStore<EngineHandle>` at every
+// call site invites two failures: a second instantiation appearing by accident,
+// and a `Shell` made generic over an engine it will only ever have one of.
+//
+// These aliases are the app's answer to "which engine", stated once.
+
+/// The engine the shipping app runs on (LR-9).
+pub type Engine = nudox_engine::EngineHandle;
+
+/// [`search::SearchStore`] over the real engine.
+pub type SearchStore = search::SearchStore<Engine>;
+
+/// [`symbol::SymbolStore`] over the real engine.
+pub type SymbolStore = symbol::SymbolStore<Engine>;

@@ -45,3 +45,11 @@ For each change in the T-1 and T-2 F1-path fixtures:
 ### Verdict
 
 F1 cross-key count = **0** (required: 0 per L-5). ✓
+
+## T-12 per-case table (from `t12_hunk_quality_metric`)
+
+| Case | Cross-key hunks |
+|---|---|
+| All T-2 cases (8 total) | 0 |
+| Required | 0 |
+| Verdict | PASS ✓ |

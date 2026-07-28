@@ -6359,6 +6359,7 @@ dependencies = [
  "nudox-store",
  "pulldown-cmark",
  "rustc-hash 2.1.3",
+ "schemars 1.2.2",
  "serde",
  "thiserror 2.0.19",
  "tokio",
@@ -6407,16 +6408,20 @@ dependencies = [
 name = "nudox-mcp"
 version = "0.1.0"
 dependencies = [
- "futures",
+ "axum 0.8.9",
  "nudox-engine",
  "nudox-graph",
+ "nudox-store",
+ "rand 0.10.2",
  "rmcp",
  "schemars 1.2.2",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util 0.7.19",
  "tracing",
+ "trustfall 0.8.1 (git+https://github.com/philocalyst/trustfall?rev=7e71e35715dfac561e3453c834b469a200330997)",
 ]
 
 [[package]]
