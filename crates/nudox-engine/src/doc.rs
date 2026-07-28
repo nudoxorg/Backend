@@ -9,9 +9,10 @@
 //! 5. `Done` or `Failed` is the terminal event; nothing follows it.
 //!
 //! The invariants are upheld structurally: this module emits `Head` first,
-//! then iterates `sections` in the order the chunker produced them, then
-//! emits `Done`. A cancelled stream (receiver dropped) simply stops; the
-//! prefix up to that point is a valid partial page.
+//! then iterates `sections` in the order the chunker produced them (emitting
+//! a `Highlight` immediately after each section so invariant 3 is trivially
+//! true), then emits `Done`. A cancelled stream (receiver dropped) simply
+//! stops; the prefix up to that point is a valid partial page.
 
 use std::sync::Arc;
 
@@ -21,7 +22,7 @@ use tracing::debug;
 use crate::{
     chunk,
     runtime::{EngineHandle, StreamHandle},
-    wire::{DocEvent, EngineError, Gen, SymbolKey},
+    wire::{DocEvent, EngineError, Gen, HighlightSpan, SymbolKey},
 };
 
 // ---------------------------------------------------------------------------
@@ -58,7 +59,8 @@ impl EngineHandle {
         let handle = StreamHandle::new(generation, cancel_fn);
 
         let corpus = self.corpus();
-        self.spawn(stream_symbol(corpus, key, generation, tx, cancel_token));
+        let highlighter = self.highlighter();
+        self.spawn(stream_symbol(corpus, highlighter, key, generation, tx, cancel_token));
 
         (handle, rx)
     }
@@ -70,6 +72,7 @@ impl EngineHandle {
 
 async fn stream_symbol(
     corpus: nudox_store::corpus::Corpus,
+    highlighter: crate::highlight::SharedHighlighter,
     key: SymbolKey,
     generation: Gen,
     tx: flume::Sender<DocEvent>,
@@ -125,13 +128,76 @@ async fn stream_symbol(
         return;
     }
 
-    // --- Emit Sections in plan order ---------------------------------------
+    // --- Emit Sections in plan order, with Highlight upgrade after each ----
+    //
+    // `Highlight` invariant (§9.3 invariant 3): a `Highlight` event must only
+    // reference a `SectionId` that has already been sent.  We uphold this by
+    // always emitting the `Section` first, then immediately emitting the
+    // corresponding `Highlight`.  The two sends are sequential on a single
+    // async task, so no receiver can observe a `Highlight` before its
+    // `Section` — even if the channel has slack capacity.
+    //
+    // Highlighting never fails the stream: `highlight::highlight` returns an
+    // empty span list for unknown languages or parse failures, and we emit that
+    // empty list as a `Highlight` event rather than skipping it.  Skipping
+    // would leave the GUI in "highlight pending" limbo for the section; an
+    // empty-span event is the explicit signal that "highlighting was attempted
+    // and produced nothing".
     for section in sections {
         if cancel.is_cancelled() {
             return;
         }
+
+        // Compute spans *before* sending the Section so the Highlight can be
+        // sent right after with zero additional latency cost on the hot path.
+        // Tree-sitter is fast enough that this is dominated by the channel
+        // send, not the parse.
+        //
+        // If there are multiple code blocks inside a single prose section (e.g.
+        // an Examples section with several fenced blocks), we concatenate their
+        // spans.  Because `code_sources` only returns code-bearing blocks, the
+        // spans are generated per-block and then merged.  Spans within a block
+        // are byte-relative to that block's text, which is exactly what the GUI
+        // expects: it maps `SectionId` → block text, then applies spans over
+        // it.  When a prose section has multiple code blocks, each call to
+        // `highlight::highlight` starts at offset 0 relative to its own block
+        // text — the GUI's `sync_highlights` path stores one span list per
+        // section, so we only highlight the first code block in a multi-block
+        // section (the common case is one code block per section anyway).
+        //
+        // With no highlighter installed every section still gets an empty
+        // `Highlight`. Keeping the *protocol* unconditional while the *content*
+        // is optional means the consumer's state machine is identical either
+        // way — a host without grammars renders uncoloured code, never code
+        // stuck waiting for a highlight that will never arrive.
+        let spans: Arc<[HighlightSpan]> = match (&highlighter, first_code_block(&section)) {
+            (Some(highlighter), Some((source, language))) => {
+                highlighter.highlight(source, language).into()
+            }
+            // Non-code sections, and code sections in a host with no grammars.
+            _ => Arc::from([] as [HighlightSpan; 0]),
+        };
+
+        let section_id = section.section_id();
+
         if tx.send_async(DocEvent::Section(section)).await.is_err() {
             debug!("doc stream: receiver dropped during Section");
+            return;
+        }
+
+        if cancel.is_cancelled() {
+            return;
+        }
+
+        // Invariant 3 is satisfied here by construction: `Section(section_id)`
+        // was just sent on the line above, so the section is already in the
+        // receiver's buffer when `Highlight { section: section_id, .. }` lands.
+        if tx
+            .send_async(DocEvent::Highlight { section: section_id, spans })
+            .await
+            .is_err()
+        {
+            debug!("doc stream: receiver dropped during Highlight");
             return;
         }
     }
@@ -295,5 +361,38 @@ mod tests {
             "missing symbol must produce Failed, got {:?}",
             ev
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Code-block extraction
+// ---------------------------------------------------------------------------
+
+/// The first code block in a section, as `(source, language)`.
+///
+/// # Why only the first
+///
+/// A `Highlight` event carries one span list per `SectionId`, and spans are
+/// byte offsets relative to the block they came from. Concatenating the spans
+/// of several blocks would silently reinterpret the second block's offsets
+/// against the first block's text — colouring the wrong characters, which is
+/// worse than no colour. One block per section is the overwhelmingly common
+/// shape; carrying more would need a per-block id in the wire protocol.
+fn first_code_block(section: &crate::wire::RenderSection) -> Option<(&str, &str)> {
+    use crate::wire::{ProseBlock, RenderSection};
+
+    fn from_blocks(blocks: &[ProseBlock]) -> Option<(&str, &str)> {
+        blocks.iter().find_map(|block| match block {
+            ProseBlock::Code { text, lang, .. } => Some((text.as_ref(), lang.0.as_ref())),
+            _ => None,
+        })
+    }
+
+    match section {
+        RenderSection::CodeBlock { text, lang, .. } => Some((text.as_ref(), lang.0.as_ref())),
+        RenderSection::Prose { blocks, .. }
+        | RenderSection::Examples { blocks, .. }
+        | RenderSection::Callout { blocks, .. } => from_blocks(blocks),
+        _ => None,
     }
 }

@@ -43,6 +43,7 @@ pub mod wire;
 pub mod chunk;
 pub mod runtime;
 pub mod doc;
+pub mod highlight;
 pub mod search;
 pub mod query;
 

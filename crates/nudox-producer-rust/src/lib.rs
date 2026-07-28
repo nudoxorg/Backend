@@ -88,12 +88,22 @@ pub type RaId = smol_str::SmolStr;
 /// The `direct_repo` flag controls whether private items and workspace-local
 /// library members are included (matching the old `document_private` +
 /// workspace-member BFS from `ra::generate_ir`).
-#[derive(Debug, Clone)]
+/// # Why there is no `name` field
+///
+/// There used to be one, and `lower` read it. But `lower` is handed only the
+/// oracle, so the name had to be configured on the producer *value* before
+/// `invoke` — and a [`ProducerRegistry`] holds one producer per *language*,
+/// so it cannot know which package it is about to be asked for. It registered
+/// `name: String::new()`, an empty name makes `documented_package_names` return
+/// nothing, and every package produced through the registry failed with
+/// "no documented packages found for ``".
+///
+/// The name now travels on [`LoadedWorkspace`], taken from the `PackageSource`
+/// that `invoke` was given, so it provably describes the package being lowered.
+///
+/// [`ProducerRegistry`]: nudox_store::source::producer::ProducerRegistry
+#[derive(Debug, Clone, Default)]
 pub struct RustProducer {
-    /// The primary package name as Cargo reports it.
-    pub name: String,
-    /// Cargo version string (used for logging; not interpreted here).
-    pub version: String,
     /// If `true`: document private items + pull in local workspace library deps.
     pub direct_repo: bool,
 }
@@ -117,10 +127,12 @@ impl Producer for RustProducer {
         oracle: &LoadedWorkspace,
         out: &mut nudox_ir::lower::Lowering<RaId>,
     ) -> Result<(), ProducerError> {
-        ra::lower_workspace(oracle, &self.name, out).map_err(|e| ProducerError::UnsupportedConstruct {
-            package: self.name.clone(),
-            symbol: String::new(),
-            description: e.to_string(),
+        ra::lower_workspace(oracle, &oracle.package_name, out).map_err(|e| {
+            ProducerError::UnsupportedConstruct {
+                package: oracle.package_name.clone(),
+                symbol: String::new(),
+                description: e.to_string(),
+            }
         })
     }
 }

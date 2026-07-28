@@ -24,18 +24,30 @@ use nudox_store::{
 // ---------------------------------------------------------------------------
 
 /// Configuration for the engine runtime.
-#[derive(Debug, Clone)]
+#[derive(Clone, Default)]
 pub struct EngineConfig {
     /// The root directory of the project workspace (not yet used for discovery;
     /// stored for future `resolve_project` use).
     pub workspace_root: Option<PathBuf>,
     /// Number of Tokio worker threads.  `None` → one per logical core.
     pub worker_threads: Option<usize>,
+    /// Syntax highlighter for code sections, if the host supplies one.
+    ///
+    /// The engine decides *when* a section is highlighted and guarantees the
+    /// §9.3 ordering; the host decides *how*. See [`crate::highlight`] for why
+    /// this cannot simply be a dependency of this crate.
+    pub highlighter: crate::highlight::SharedHighlighter,
 }
 
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self { workspace_root: None, worker_threads: None }
+impl std::fmt::Debug for EngineConfig {
+    /// Hand-written because `dyn Highlighter` is not `Debug` — requiring it
+    /// would force every host implementation to derive it for no reader benefit.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineConfig")
+            .field("workspace_root", &self.workspace_root)
+            .field("worker_threads", &self.worker_threads)
+            .field("highlighter", &self.highlighter.is_some())
+            .finish()
     }
 }
 
@@ -53,6 +65,8 @@ pub(crate) struct EngineInner {
     pub(crate) corpus: Corpus,
     /// The Trustfall schema singleton — returned by `EngineHandle::schema`.
     pub(crate) schema: &'static trustfall::Schema,
+    /// The host-supplied highlighter, if any (see `crate::highlight`).
+    pub(crate) highlighter: crate::highlight::SharedHighlighter,
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +106,11 @@ impl Engine {
 
         let corpus = Corpus::new();
         let schema = nudox_graph::schema();
-        let inner = Arc::new(EngineInner { corpus: corpus.clone(), schema });
+        let inner = Arc::new(EngineInner {
+            corpus: corpus.clone(),
+            schema,
+            highlighter: config.highlighter.clone(),
+        });
 
         // Seed the corpus from the source on the runtime's thread pool.
         // We do this eagerly on start so that searches issued immediately
@@ -276,6 +294,11 @@ impl EngineHandle {
     ///
     /// Used internally by search, query, and doc layers. Not part of the
     /// `lindsey`-facing surface.
+    /// The host-supplied highlighter, if any.
+    pub(crate) fn highlighter(&self) -> crate::highlight::SharedHighlighter {
+        self.inner.highlighter.clone()
+    }
+
     pub(crate) fn corpus(&self) -> Corpus {
         self.inner.corpus.clone()
     }

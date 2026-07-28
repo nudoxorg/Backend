@@ -126,14 +126,11 @@ impl ProducerRegistry {
     /// under `Language::Rust`.
     pub fn with_rust_pilot() -> Self {
         let mut reg = Self::new();
-        reg.register(
-            Language::Rust,
-            RustProducer {
-                name: String::new(), // overridden per-package by `PackageSource::name`
-                version: String::new(),
-                direct_repo: false,
-            },
-        );
+        // The producer carries no package identity: it reads the name from the
+        // `PackageSource` it is invoked with. That is what makes one registered
+        // producer per language correct — see `RustProducer`'s type docs for the
+        // bug that shape used to hide.
+        reg.register(Language::Rust, RustProducer { direct_repo: false });
         reg
     }
 

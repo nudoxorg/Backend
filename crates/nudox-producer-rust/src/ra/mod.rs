@@ -28,11 +28,23 @@ use self::loaded::LoadedWorkspace;
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Load the Cargo workspace at `src.root` into a [`LoadedWorkspace`].
+///
+/// The package name travels with the loaded workspace. `Producer::lower` is
+/// handed only the oracle, so a name held on the producer *value* has to be
+/// configured correctly before `invoke` — and a registry that maps one
+/// producer per language cannot know the name of the package it is about to be
+/// asked for. That mismatch is not theoretical: `ProducerRegistry::with_rust_pilot`
+/// registered `RustProducer { name: String::new(), .. }`, and an empty name makes
+/// `documented_package_names` return nothing, so *every* package produced through
+/// the registry failed with "no documented packages found for ``".
+///
+/// Taking the name from the `PackageSource` here means it provably describes the
+/// package actually being loaded.
 pub(crate) fn load(
     src: &PackageSource,
     document_private: bool,
 ) -> Result<LoadedWorkspace, RustProducerError> {
-    loaded::load(src.root(), document_private)
+    loaded::load(src.root(), src.name.as_str(), document_private)
 }
 
 /// Walk every documented crate in the loaded workspace and emit declarations

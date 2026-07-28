@@ -38,6 +38,15 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 nudox-engine = { path = "../../crates/nudox-engine", features = ["fixtures"] }
 
 # ── Bridge & support ─────────────────────────────────────────────────────────
+# Syntax highlighting. Upstream tree-sitter rather than arborium because
+# gpui-component (pinned by rev) already owns links = "tree-sitter" in this
+# workspace graph; see nudox_engine::highlight for why the engine itself
+# cannot name either one.
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+
 anyhow = "1"
 flume = "0.11"
 serde = { version = "1", features = ["derive"] }

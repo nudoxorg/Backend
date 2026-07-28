@@ -12,12 +12,15 @@
 //! LR-10 in miniature: local data is not something we wait for, it is something
 //! that is already there.
 
+use std::sync::Arc;
+
 use gpui::prelude::*;
 use gpui::{App, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_component_assets::Assets;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 use lindsey::app::keymaps;
+use lindsey::highlight::TreeSitterHighlighter;
 use lindsey::motion::tokens::MotionTokens;
 use lindsey::stores::{SearchStore, SymbolStore};
 use lindsey::theme::ext::NudoxThemeExt;
@@ -36,7 +39,16 @@ fn main() {
     // Started before the window so the corpus is loading while GPUI is still
     // creating its first frame. The GUI thread never awaits it — packages
     // arrive as `LoadEvent`s and the search index simply grows.
-    let engine = Engine::start_with_fixtures(EngineConfig::default());
+    // The engine owns *when* a code section is highlighted and the protocol
+    // ordering around it; lindsey supplies *how*. That split is not taste — the
+    // engine compiles into two workspaces whose graphs already have different,
+    // mutually exclusive owners of the tree-sitter C library, so it cannot link
+    // one itself. See `nudox_engine::highlight`.
+    let config = EngineConfig {
+        highlighter: Some(Arc::new(TreeSitterHighlighter)),
+        ..EngineConfig::default()
+    };
+    let engine = Engine::start_with_fixtures(config);
     tracing::info!("engine started");
 
     // This gpui rev splits the platform out of the core crate: `Application`
